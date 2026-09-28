@@ -138,3 +138,65 @@ TEST_CASE("mesh query: a swept volume is the volume between the two positions") 
   }
   CHECK(std::fabs(grown - 1.0) < 1e-12);
 }
+
+TEST_CASE("mesh query: triangle distances, and a nearly coplanar pair decided in its plane") {
+  // Two parallel unit triangles 2 mm apart, one over the other: 2 mm.
+  const D3 a0{0, 0, 0}, a1{1, 0, 0}, a2{0, 1, 0};
+  const D3 up{0, 0, 0.002};
+  CHECK(std::fabs(triangle_distance(a0, a1, a2, a0 + up, a1 + up, a2 + up) - 0.002) < 1e-15);
+  // Side by side in one plane, 0.5 apart along x: the edge-to-edge distance.
+  const D3 right{1.5, 0, 0};
+  CHECK(std::fabs(triangle_distance(a0, a1, a2, a0 + right, a1 + right, a2 + right) - 0.5) < 1e-15);
+  // Crossing in general position: zero, and both tests agree.
+  const D3 b0{0.25, 0.25, -0.5}, b1{0.25, 0.25, 0.5}, b2{0.9, 0.9, 0.0};
+  CHECK(triangles_cross(a0, a1, a2, b0, b1, b2));
+  CHECK(triangles_intersect(a0, a1, a2, b0, b1, b2));
+  CHECK(triangle_distance(a0, a1, a2, b0, b1, b2) == 0.0);
+  // Nearly coplanar and apart in the plane — a flat surface's own chords, a picometre off flat —
+  // is apart; nearly coplanar and overlapping in the plane is crossing.
+  const D3 noise{0, 0, 1e-12};
+  const D3 far0 = a0 + right + noise, far1 = a1 + right, far2 = a2 + right - noise;
+  CHECK_FALSE(triangles_cross(a0, a1, a2, far0, far1, far2));
+  CHECK(triangle_distance(a0, a1, a2, far0, far1, far2) > 0.49);
+  const D3 shift{0.2, 0.2, 0};
+  CHECK(triangles_cross(a0, a1, a2, a0 + shift + noise, a1 + shift, a2 + shift - noise));
+  // Segments: skew, parallel, and end to end.
+  CHECK(std::fabs(segment_distance(D3{0, 0, 0}, D3{1, 0, 0}, D3{0.5, -1, 1}, D3{0.5, 1, 1}) - 1.0) <
+        1e-15);
+  CHECK(std::fabs(segment_distance(D3{0, 0, 0}, D3{1, 0, 0}, D3{0, 1, 0}, D3{1, 1, 0}) - 1.0) <
+        1e-15);
+  CHECK(std::fabs(segment_distance(D3{0, 0, 0}, D3{1, 0, 0}, D3{3, 0, 0}, D3{4, 0, 0}) - 2.0) <
+        1e-15);
+}
+
+TEST_CASE("mesh query: the candidate pairs of two hierarchies are every pair within reach") {
+  // Two rows of small triangles 1 mm apart: within 1.5 mm every facing pair is a candidate, within
+  // 0.5 mm none is.
+  Vector<D3> a;
+  Vector<D3> b;
+  Vector<u32> t;
+  for (u32 i = 0; i < 8; ++i) {
+    const f64 x = 0.01 * i;
+    a.push_back(D3{x, 0, 0});
+    a.push_back(D3{x + 0.008, 0, 0});
+    a.push_back(D3{x, 0.008, 0});
+    b.push_back(D3{x, 0, 0.001});
+    b.push_back(D3{x + 0.008, 0, 0.001});
+    b.push_back(D3{x, 0.008, 0.001});
+    t.push_back(3 * i);
+    t.push_back(3 * i + 1);
+    t.push_back(3 * i + 2);
+  }
+  TriangleBvh ba;
+  TriangleBvh bb;
+  ba.build(std::span<const D3>(a.data(), a.size()), std::span<const u32>(t.data(), t.size()));
+  bb.build(std::span<const D3>(b.data(), b.size()), std::span<const u32>(t.data(), t.size()));
+  Vector<std::pair<u32, u32>> pairs;
+  ba.candidate_pairs(bb, 0.0015, pairs);
+  u32 facing = 0;
+  for (const auto& [i, j] : pairs)
+    facing += i == j ? 1u : 0u;
+  CHECK(facing == 8);
+  ba.candidate_pairs(bb, 0.0005, pairs);
+  CHECK(pairs.empty());
+}

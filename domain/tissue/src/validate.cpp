@@ -1,6 +1,8 @@
 #include "cells.h"
 #include "energy.h"
+#include "layered.h"
 #include "mesh_query.h"
+#include "model.h"
 
 #include <core/json/json.h>
 #include <domain/geometry/limit_surface.h>
@@ -21,182 +23,11 @@ namespace engine::tissue {
 
 namespace {
 
-using query::D3;
-using query::d3;
+// The resolved model and the helpers every row is written with (model.h), shared with the
+// layered model's rows (layered.cpp).
+using namespace detail;
 
-constexpr f64 k_ml = 1.0e6;  // cubic metres to millilitres
-constexpr f64 k_mm = 1.0e3;  // metres to millimetres
 constexpr const char* k_loop_rule = "loop-hoppe-1994-v1";
-
-// ---- small helpers ------------------------------------------------------------------------------
-
-std::string str(u64 v) { return std::to_string(v); }
-
-std::string mm(f64 metres) {
-  char buffer[64];
-  std::snprintf(buffer, sizeof(buffer), "%.4g mm", metres * k_mm);
-  return buffer;
-}
-
-std::string xyz(D3 p) {
-  char buffer[128];
-  std::snprintf(buffer, sizeof(buffer), "(%.5f, %.5f, %.5f)", p.x, p.y, p.z);
-  return buffer;
-}
-
-JsonValue number(f64 v) { return std::isfinite(v) ? JsonValue(v) : JsonValue::null(); }
-
-// p50, p95, min and max of a distribution, scaled (1e3 for millimetres), and how many values.
-JsonValue stats(Vector<f64> values, f64 scale) {
-  JsonValue out = JsonValue::object();
-  out.set("count", JsonValue(static_cast<u64>(values.size())));
-  if (values.empty()) return out;
-  std::sort(values.begin(), values.end());
-  const auto at = [&](f64 q) {
-    const u32 i = static_cast<u32>(std::floor(q * static_cast<f64>(values.size() - 1)));
-    return values[i] * scale;
-  };
-  out.set("min", number(values.front() * scale));
-  out.set("p50", number(at(0.50)));
-  out.set("p95", number(at(0.95)));
-  out.set("max", number(values.back() * scale));
-  return out;
-}
-
-f64 percentile(Vector<f64> values, f64 q) {
-  if (values.empty()) return 0.0;
-  std::sort(values.begin(), values.end());
-  return values[static_cast<u32>(std::floor(q * static_cast<f64>(values.size() - 1)))];
-}
-
-// Typed views of blocks. A reference that does not resolve, or resolves to the wrong kind or an
-// element count the caller did not expect, is a problem string, collected by the resolve row.
-struct Blocks {
-  const TissueFile& file;
-  Vector<std::string>& problems;
-
-  const TissueBlock* get(const std::string& name, BlockKind kind, const std::string& who) const {
-    if (name.empty()) {
-      problems.push_back(who + " names no block");
-      return nullptr;
-    }
-    const TissueBlock* b = file.find(name);
-    if (b == nullptr) {
-      problems.push_back(who + " names block '" + name + "', which the file does not hold");
-      return nullptr;
-    }
-    if (b->kind != kind) {
-      problems.push_back(who + " names block '" + name + "', a " +
-                         block_kind_name(static_cast<u32>(b->kind)) + " where a " +
-                         block_kind_name(static_cast<u32>(kind)) + " is needed");
-      return nullptr;
-    }
-    return b;
-  }
-  template <class T>
-  bool read(const std::string& name, BlockKind kind, const std::string& who, Vector<T>& out,
-            u32 per_element = 1) const {
-    const TissueBlock* b = get(name, kind, who);
-    if (b == nullptr) return false;
-    out.resize(static_cast<u32>(b->count * per_element));
-    if (!b->bytes.empty()) std::memcpy(out.data(), b->bytes.data(), b->bytes.size());
-    return true;
-  }
-  bool optional(const std::string& name) const { return !name.empty(); }
-};
-
-// ---- the resolved model -------------------------------------------------------------------------
-
-struct SheetModel {
-  const Sheet* def = nullptr;
-  Vector<u32> region_node;  // sheet-local control vertex -> region node
-  Vector<u32> faces;        // sheet-local control triangles
-  geometry::LoopLimitSurface surface;
-  bool ok = false;
-};
-
-struct StateModel {
-  std::string name;
-  const RegionState* def = nullptr;  // null for the construction
-  StateRole role = StateRole::Construction;
-  Vector<Vec3> nodes;
-  Vector<Vec3> expected_visible;
-};
-
-// How deep a ten-node cell is split when its Jacobian's Bernstein coefficients alone do not decide
-// its sign: eight pieces a level, and only the undecided ones go on.
-constexpr u32 k_jacobian_depth = 4;
-
-struct RegionModel {
-  const Region* def = nullptr;
-  Vector<Vec3> nodes;
-  // The cells as authored, `per_cell` node indices each: 4, or 10 for a quadratic cage.
-  u32 per_cell = 4;
-  Vector<u32> cell_nodes;
-  // The four-node cells the rows whose meaning is linear walk: the cells themselves for a
-  // four-node cage, the same-node linear subdivision (eight a cell, cells.h) for a ten-node one.
-  // `parent` is each one's cell.
-  Vector<u32> tets;
-  Vector<u32> parent;
-  Vector<SheetModel> sheets;
-  i32 top = -1;
-  i32 support = -1;
-  Vector<u32> stitch;
-  Vector<u32> boundary;  // the tetrahedra's boundary faces, outward
-  Vector<StateModel> states;
-  i32 reference = -1;
-  bool ok = false;
-
-  Vector<Vec3> sheet_nodes(const SheetModel& sheet, const Vector<Vec3>& state) const {
-    Vector<Vec3> out;
-    for (const u32 n : sheet.region_node)
-      out.push_back(state[n]);
-    return out;
-  }
-
-  bool quadratic() const noexcept { return per_cell == 10; }
-  u32 cell_count() const noexcept { return static_cast<u32>(cell_nodes.size() / per_cell); }
-  const u32* cell(u32 c) const noexcept { return cell_nodes.data() + per_cell * c; }
-  // A cell's nodes at `x`, as doubles: the first `per_cell` entries of `out`.
-  void gather(u32 c, const Vector<Vec3>& x, query::D3 out[10]) const noexcept {
-    for (u32 k = 0; k < per_cell; ++k)
-      out[k] = query::d3(x[cell(c)[k]]);
-  }
-  // A cell's exact signed volume at `x`: a tetrahedron's, or a ten-node cell's integral of det J.
-  f64 cell_volume(u32 c, const Vector<Vec3>& x) const noexcept {
-    query::D3 p[10];
-    gather(c, x, p);
-    return quadratic() ? cells::quadratic_volume(p) : query::tet_volume(p[0], p[1], p[2], p[3]);
-  }
-  // What the rows whose meaning is linear walk, and the boundary they see, in words: every such
-  // row names it, so a number measured on the subdivision is never read as the cells'.
-  std::string linear_representation() const {
-    if (!quadratic()) return "the tetrahedra";
-    return "the same-node linear subdivision: " + str(tets.size() / 4) +
-           " four-node cells, eight to each of the " + str(cell_count()) + " ten-node cells";
-  }
-  const char* boundary_representation() const noexcept {
-    return quadratic() ? "the same-node linear subdivision's boundary: four triangles to each "
-                         "ten-node face, through every boundary node"
-                       : "the tetrahedra's boundary";
-  }
-  const char* cell_word() const noexcept { return quadratic() ? "cell" : "tetrahedron"; }
-};
-
-const char* role_name(RegionRole role) noexcept {
-  return role == RegionRole::Reference ? "Reference" : "Runtime";
-}
-
-struct FrameModel {
-  const Frame* def = nullptr;
-  Vector<Vec3> vertices;
-  Vector<D3> points;
-  Vector<u32> triangles;
-  Vector<f32> cover;
-  Vector<u8> provenance;
-  query::SignedSurface surface;
-  bool ok = false;
-};
 
 struct ObservationModel {
   Vector<Vec3> positions;
@@ -224,16 +55,6 @@ struct BindingModel {
   geometry::SurfaceBindReport bind_report;
   bool ok = false;
 };
-
-bool contains_sorted(const Vector<u32>& sorted, u32 value) {
-  return std::binary_search(sorted.begin(), sorted.end(), value);
-}
-
-bool strictly_ascending(const Vector<u32>& ids) {
-  for (u32 i = 1; i < ids.size(); ++i)
-    if (!(ids[i - 1] < ids[i])) return false;
-  return true;
-}
 
 // The boundary faces of a tetrahedral mesh: every face used by one tetrahedron, wound outward.
 Vector<u32> tet_boundary(const Vector<u32>& tets, const Vector<Vec3>& nodes) {
@@ -449,11 +270,19 @@ class Validator {
   Vector<std::string> problems_;
   Blocks blocks_;
 
+  void check_requirements();
+
   ObservationModel observation_;
+  // Whether the definition declares an observation at all. Since TissueDefinition version 2 it
+  // need not: a layered-model fixture whose skin is its material boundary reproduces no accepted
+  // observation, and one that declares none (the whole record at its defaults) is not run through
+  // the observation's rows. A binding still needs one.
+  bool observation_declared_ = true;
   Vector<RegionModel> regions_;
   Vector<FrameModel> frames_;
   Vector<BindingModel> bindings_;
   query::SignedSurface skin_;  // the observation, for the construction and the reference
+  LayeredModel layered_;
 };
 
 void Validator::run() {
@@ -477,6 +306,7 @@ void Validator::run() {
     if (def_.format != k_tissue_format) fail(r, "format is '" + def_.format + "'");
     if (def_.units != "m") fail(r, "units are '" + def_.units + "'");
   }
+  observation_declared_ = !(def_.observation == Observation{});
   resolve();
   check_observation();
   check_regions();
@@ -486,6 +316,12 @@ void Validator::run() {
   check_skin_and_depth();
   check_bindings();
   check_volumes();
+  // The layered model's rows, after every row of the definition as it was: a file that uses none
+  // of its records gets none of them, and its report is the one it always had.
+  check_layered(LayeredContext{file_, regions_, frames_,
+                               observation_.ok ? &observation_.positions : nullptr, options_},
+                layered_, report_);
+  check_requirements();
   for (const ValidationRow& r : report_.rows) {
     if (r.verdict != Verdict::fail) continue;
     if (r.severity == Severity::error) ++report_.errors;
@@ -501,6 +337,9 @@ void Validator::resolve() {
   resolve_regions();
   resolve_frames();
   resolve_bindings();
+  resolve_layered(LayeredContext{file_, regions_, frames_,
+                                 observation_.ok ? &observation_.positions : nullptr, options_},
+                  problems_, layered_);
   ValidationRow& r = row("blocks.resolve", "the definition", Severity::error,
                          "every reference names a block of the right kind and count, every index "
                          "in range",
@@ -517,6 +356,10 @@ void Validator::resolve() {
 }
 
 void Validator::resolve_observation() {
+  if (!observation_declared_) {
+    observation_.ok = false;
+    return;
+  }
   const Observation& o = def_.observation;
   ObservationModel& m = observation_;
   const u32 n = o.vertex_count;
@@ -663,7 +506,12 @@ void Validator::resolve_regions() {
       ok = ok && sm.ok;
       m.sheets.push_back(std::move(sm));
     }
-    if (m.top < 0)
+    // A region that declares no Loop sheet at all — no sheet, no top, no support, no stitch — is a
+    // layered-model region whose skin, when it has one, is its material boundary: not a region
+    // missing its top sheet.
+    m.sheetless = region.sheets.empty() && region.top_sheet.empty() &&
+                  region.support_sheet.empty() && region.shell_stitch.empty();
+    if (m.top < 0 && !m.sheetless)
       problems_.push_back(who + " names no top sheet it has ('" + region.top_sheet + "')");
     if (!region.shell_stitch.empty())
       blocks_.read(region.shell_stitch, BlockKind::ShellStitch, who + ".shell_stitch", m.stitch, 3);
@@ -693,7 +541,7 @@ void Validator::resolve_regions() {
       m.states.push_back(std::move(sm));
     }
     if (m.reference < 0) m.reference = 0;  // no reference: the construction stands in
-    m.ok = ok && m.top >= 0;
+    m.ok = ok && (m.top >= 0 || m.sheetless);
     regions_.push_back(std::move(m));
   }
 }
@@ -748,6 +596,10 @@ void Validator::resolve_bindings() {
     if (binding.rule != k_loop_rule)
       problems_.push_back(who + " uses refinement rule '" + binding.rule +
                           "', which this build does not compute");
+    if (!observation_declared_) {
+      problems_.push_back(who + " binds the observation's ids, and the definition declares none");
+      ok = false;
+    }
     if (m.region >= 0) {
       const RegionModel& region = regions_[m.region];
       for (u32 s = 0; s < region.sheets.size(); ++s)
@@ -889,6 +741,7 @@ Vector<Vec3> Validator::skin_at(i32 region, const StateModel& state) const {
 // ---- the observation contract -------------------------------------------------------------------
 
 void Validator::check_observation() {
+  if (!observation_declared_) return;
   const Observation& o = def_.observation;
   const std::string subject = "observation of " + o.base_id;
   ObservationModel& m = observation_;
@@ -1261,7 +1114,8 @@ void Validator::check_regions() {
       }
       numbers.set("mass_kg", number(mass));
     }
-    {
+    // A region with no Loop sheet has no sheet to hold to Hoppe's rules and no smooth shell.
+    if (!region.sheetless) {
       ValidationRow& r =
           row("region.sheets", subject, Severity::warning,
               reference ? "every sheet a Loop surface of at most five faces at any control "
@@ -1396,7 +1250,7 @@ void Validator::check_regions() {
       }
       r.value.set("states", std::move(per_state));
     }
-    {
+    if (!region.sheetless) {
       ValidationRow& r =
           row("region.shell_closed", subject, Severity::error,
               "the sheets' refined triangles and the stitch close a consistently "
@@ -1742,8 +1596,8 @@ void Validator::check_mechanics() {
       }
     }
 
-    // ---- through-thickness resolution
-    {
+    // ---- through-thickness resolution (between the two sheets: none without them)
+    if (!region.sheetless) {
       ValidationRow& r =
           row("region.through_thickness", subject, Severity::info,
               "reported: the cells that span both sheets, and the nodes inside the cage",
@@ -1893,16 +1747,21 @@ void Validator::check_mechanics() {
           return strained(s) / (0.5 * k_gamma * k_gamma * volume);
         };
         // The region's frame: the top sheet's mean normal at the rest, and two directions in its
-        // plane, the first as close to x as the plane allows.
-        const SheetModel& top = region.sheets[region.top];
-        D3 normal;
-        for (u32 f = 0; f + 2 < top.faces.size(); f += 3) {
-          const D3 a = x0[top.region_node[top.faces[f]]];
-          const D3 b = x0[top.region_node[top.faces[f + 1]]];
-          const D3 c = x0[top.region_node[top.faces[f + 2]]];
-          normal = normal + query::cross(b - a, c - a);
+        // plane, the first as close to x as the plane allows. A region with no top sheet has no
+        // frame of its own, and only the global shears are reported.
+        const bool framed = region.top >= 0;
+        D3 normal{0.0, 0.0, 1.0};
+        if (framed) {
+          const SheetModel& top = region.sheets[region.top];
+          normal = D3{};
+          for (u32 f = 0; f + 2 < top.faces.size(); f += 3) {
+            const D3 a = x0[top.region_node[top.faces[f]]];
+            const D3 b = x0[top.region_node[top.faces[f + 1]]];
+            const D3 c = x0[top.region_node[top.faces[f + 2]]];
+            normal = normal + query::cross(b - a, c - a);
+          }
+          normal = query::unit(normal);
         }
-        normal = query::unit(normal);
         D3 t1 = D3{1.0, 0.0, 0.0} - normal * normal.x;
         if (query::length(t1) < 0.1) t1 = D3{0.0, 1.0, 0.0} - normal * normal.y;
         t1 = query::unit(t1);
@@ -1918,7 +1777,8 @@ void Validator::check_mechanics() {
         JsonValue per_plane = JsonValue::object();
         f64 lowest = std::numeric_limits<f64>::infinity();
         f64 highest = 0.0;
-        for (const Plane& p : planes) {
+        for (u32 pi = 0; pi < (framed ? 6u : 3u); ++pi) {
+          const Plane& p = planes[pi];
           const f64 shear = plane(p.a, p.b);
           JsonValue e = JsonValue::object();
           e.set("shear_pa", number(shear));
@@ -1944,7 +1804,8 @@ void Validator::check_mechanics() {
             {"xx+yy-2zz", D3{1, 0, 0}, D3{0, 1, 0}, D3{0, 0, 1}, true},
             {"in_plane_difference", t1, t2, normal, false},
             {"in_plane_vs_normal", t1, t2, normal, true}};
-        for (const Difference& d : differences) {
+        for (u32 di = 0; di < (framed ? 4u : 2u); ++di) {
+          const Difference& d = differences[di];
           const f64 av[3] = {d.a.x, d.a.y, d.a.z};
           const f64 bv[3] = {d.b.x, d.b.y, d.b.z};
           const f64 cv[3] = {d.c.x, d.c.y, d.c.z};
@@ -1986,9 +1847,10 @@ void Validator::check_mechanics() {
         r.value.set("shears", std::move(per_plane));
         r.value.set("anisotropy_min", number(lowest));
         r.value.set("anisotropy_max", number(highest));
-        JsonValue frame = JsonValue::array();
-        for (const f64 c : {normal.x, normal.y, normal.z})
-          frame.push_back(number(c));
+        JsonValue frame = framed ? JsonValue::array() : JsonValue::null();
+        if (framed)
+          for (const f64 c : {normal.x, normal.y, normal.z})
+            frame.push_back(number(c));
         r.value.set("region_normal", std::move(frame));
         JsonValue& numbers = region_numbers(region);
         numbers.set("affine_isotropic_ratio", number(isotropic / mu));
@@ -2462,19 +2324,42 @@ void Validator::check_frames() {
       JsonValue cross_states = JsonValue::object();
       query::TriangleBvh frame_bvh;
       frame_bvh.build(frame.vertices, frame.triangles);
+      // A frame with FrameStates (TissueDefinition version 2) is where its transform puts it at
+      // each state; one with none is where its vertices are, in every state, as it always was.
+      bool moves = false;
+      for (const FrameState& fs : def_.frame_states)
+        moves = moves || (fs.frame_kind == TargetKind::Frame && fs.frame == frame.def->name);
       for (const StateModel& s : region.states) {
+        const Vector<D3>* frame_points = &frame.points;
+        const query::SignedSurface* frame_surface = &frame.surface;
+        const query::TriangleBvh* state_bvh = &frame_bvh;
+        Vector<D3> moved_points;
+        query::SignedSurface moved_surface;
+        query::TriangleBvh moved_bvh;
+        if (moves) {
+          const RigidTransform at = rigid_transform(frame_state(def_, frame.def->name, s.name));
+          for (const D3& p : frame.points)
+            moved_points.push_back(at.apply(p));
+          moved_surface.build(std::span<const D3>(moved_points.data(), moved_points.size()),
+                              frame.triangles);
+          moved_bvh.build(std::span<const D3>(moved_points.data(), moved_points.size()),
+                          frame.triangles);
+          frame_points = &moved_points;
+          frame_surface = &moved_surface;
+          state_bvh = &moved_bvh;
+        }
         u32 inside = 0;
         f64 nearest = std::numeric_limits<f64>::infinity();
         u32 nearest_node = 0;
         for (u32 n = 0; n < s.nodes.size(); ++n) {
           const D3 p = d3(s.nodes[n]);
-          const f64 w = query::winding_number(p, frame.points, frame.triangles);
+          const f64 w = query::winding_number(p, *frame_points, frame.triangles);
           if (w > 0.5) {
             if (inside == 0)
               fail(report_.rows[contain_index], "state " + s.name + ", node " + str(n));
             ++inside;
           }
-          const query::SignedSurface::Result q = frame.surface.query(p);
+          const query::SignedSurface::Result q = frame_surface->query(p);
           if (std::fabs(q.distance) < nearest) {
             nearest = std::fabs(q.distance);
             nearest_node = n;
@@ -2492,7 +2377,7 @@ void Validator::check_frames() {
         query::TriangleBvh pl;
         pl.build(s.nodes, region.boundary);
         Vector<std::pair<u32, u32>> witnesses;
-        const u64 pl_count = pl.intersections(frame_bvh, 1, &witnesses);
+        const u64 pl_count = pl.intersections(*state_bvh, 1, &witnesses);
         Vector<D3> shell_points;
         Vector<u32> shell_faces;
         for (const SheetModel& sheet : region.sheets) {
@@ -2506,7 +2391,7 @@ void Validator::check_frames() {
           if (v < shell_points.size()) shell_faces.push_back(v);
         query::TriangleBvh smooth;
         smooth.build(shell_points, shell_faces);
-        const u64 smooth_count = smooth.intersections(frame_bvh, 1, &witnesses);
+        const u64 smooth_count = smooth.intersections(*state_bvh, 1, &witnesses);
         JsonValue c = JsonValue::object();
         c.set("piecewise_linear", JsonValue(pl_count));
         c.set("smooth_shell", JsonValue(smooth_count));
@@ -2531,7 +2416,8 @@ void Validator::check_skin_and_depth() {
   if (!observation_.ok) return;
   for (u32 ri = 0; ri < regions_.size(); ++ri) {
     RegionModel& region = regions_[ri];
-    if (!region.ok) continue;
+    // The skin follows a Loop top sheet: a region without one is bound to no observed skin.
+    if (!region.ok || region.top < 0) continue;
     const std::string subject = "region " + region.def->name;
     const SheetModel& top = region.sheets[region.top];
 
@@ -3229,6 +3115,43 @@ void Validator::check_volumes() {
     RegionModel& region = regions_[ri];
     if (!region.ok) continue;
     const std::string subject = "region " + region.def->name;
+    if (region.top < 0) {
+      // No Loop sheet, so no smooth shell, no top sweep and no bound visible body: the cage's own
+      // volumes, which is all there is to report together, and nothing about coverage.
+      ValidationRow& r =
+          row("volume.report", subject, Severity::info,
+              "reported: the cage's volume at every state; the region has no Loop sheet, so "
+              "there is no smooth shell, top sweep or bound visible body to report beside it",
+              "a region whose skin is its material boundary is its cells' volume");
+      JsonValue states = JsonValue::object();
+      for (const StateModel& s : region.states) {
+        f64 cage = 0.0;
+        for (u32 c = 0; c < region.cell_count(); ++c)
+          cage += region.cell_volume(c, s.nodes);
+        JsonValue e = JsonValue::object();
+        e.set("cage_ml", number(cage * k_ml));
+        if (region.quadratic())
+          e.set("cage_linear_ml", number(cage_volume(region.tets, s.nodes) * k_ml));
+        JsonValue& sn = state_numbers(region, s);
+        sn.set("role", JsonValue(static_cast<u64>(s.role)));
+        for (auto [key, value] : e.as_object())
+          sn.set(key, value);
+        states.set(s.name, std::move(e));
+      }
+      r.value.set("reference_state", JsonValue(region.states[region.reference].name));
+      r.value.set("states", std::move(states));
+      JsonValue representations = JsonValue::object();
+      representations.set(
+          "cage_ml",
+          JsonValue(region.quadratic() ? "complete: the ten-node cells' exact volume, every node"
+                                       : "complete: the tetrahedra, every node"));
+      if (region.quadratic())
+        representations.set("cage_linear_ml",
+                            JsonValue("the same-node linear subdivision, every node: what the "
+                                      "curvature of the cells adds is cage_ml minus this"));
+      r.value.set("representations", std::move(representations));
+      continue;
+    }
     const SheetModel& top = region.sheets[region.top];
     const StateModel& reference = region.states[region.reference];
     const Vector<D3> top_ref =
@@ -3520,6 +3443,59 @@ void Validator::check_volumes() {
       r.witness = "the binding is restricted and containment could not be evaluated";
     }
   }
+}
+
+// ---- the requirements
+// -------------------------------------------------------------------------------
+
+// The gate (capabilities.h) has already refused a file that requires what this build lacks; what
+// is left to check is the file against itself. A row it requires that never ran on it, or ran and
+// was skipped, is data the requirement promised and the file does not carry: the gate passed and
+// checked nothing.
+void Validator::check_requirements() {
+  const Requirements& q = def_.requirements;
+  if (q.records.empty() && q.blocks.empty() && q.rows.empty() && q.laws.empty()) return;
+  Vector<std::string> unmet;
+  JsonValue rows = JsonValue::object();
+  for (const std::string& id : q.rows) {
+    u32 ran = 0;
+    u32 skipped = 0;
+    for (const ValidationRow& other : report_.rows) {
+      if (other.id != id) continue;
+      if (other.verdict == Verdict::skipped)
+        ++skipped;
+      else
+        ++ran;
+    }
+    JsonValue e = JsonValue::object();
+    e.set("ran", JsonValue(ran));
+    e.set("skipped", JsonValue(skipped));
+    rows.set(id, std::move(e));
+    if (ran == 0 || skipped > 0)
+      unmet.push_back("row " + id + (ran == 0 && skipped == 0 ? " never ran" : " was skipped"));
+  }
+  JsonValue blocks = JsonValue::array();
+  for (const std::string& kind : q.blocks) {
+    bool held = false;
+    for (const TissueBlock& b : file_.blocks)
+      held = held || block_kind_name(static_cast<u32>(b.kind)) == kind;
+    blocks.push_back(JsonValue(kind));
+    if (!held) unmet.push_back("block kind " + kind + " is required and no block is of it");
+  }
+  ValidationRow& r = row("definition.requirements", "the definition", Severity::error,
+                         "every row the file requires ran on it, none skipped, and every block "
+                         "kind it requires is the kind of one of its blocks",
+                         "a requirement the data never reaches passed the capability gate and "
+                         "checked nothing");
+  r.value.set("rows", std::move(rows));
+  r.value.set("blocks", std::move(blocks));
+  r.value.set("records", JsonValue(static_cast<u64>(q.records.size())));
+  r.value.set("laws", JsonValue(static_cast<u64>(q.laws.size())));
+  JsonValue list = JsonValue::array();
+  for (const std::string& u : unmet)
+    list.push_back(JsonValue(u));
+  r.value.set("unmet", std::move(list));
+  if (!unmet.empty()) fail(r, unmet.front());
 }
 
 }  // namespace

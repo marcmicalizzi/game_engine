@@ -1,6 +1,7 @@
 # tissue: the engine's tissue definition, v0 — the schema'd definition of a deformable tissue
 # body (schemas/tissue.schema), its `.tissue` container and the interchange the authoring side
-# writes, and the validators and report the reviews specified (docs/subsystems/tissue.md;
+# writes, the validators and report the reviews specified, the layered volume model's records and
+# rows, and the capability gate a file's requirements go through (docs/subsystems/tissue.md;
 # docs/plan/05-simulation.md §5.14 and §5.16, 07 §7.10 and §7.11; ADR-0026, ADR-0029, ADR-0032).
 # No solver and no GPU pass: a definition, checked.
 #
@@ -13,10 +14,12 @@ engine_capability_requires(tissue physics)
 
 engine_module(NAME tissue LAYER domain OPTIONAL
   DEPS base containers math hash io json schema schemas geometry physics
-  SOURCES src/sha256.cpp src/tissue_file.cpp src/mesh_query.cpp src/cells.cpp src/energy.cpp
-          src/validate.cpp src/expect.cpp src/synthetic.cpp)
+  SOURCES src/sha256.cpp src/tissue_file.cpp src/capabilities.cpp src/mesh_query.cpp
+          src/cells.cpp src/energy.cpp src/validate.cpp src/layered.cpp src/expect.cpp
+          src/synthetic.cpp src/layered_synthetic.cpp)
 
 engine_module_tests(NAME tissue
   SOURCES tests/sha256_tests.cpp tests/tissue_file_tests.cpp tests/mesh_query_tests.cpp
           tests/cells_tests.cpp tests/energy_tests.cpp tests/validate_tests.cpp
-          tests/quadratic_tests.cpp tests/expect_tests.cpp tests/size_table.cpp)
+          tests/quadratic_tests.cpp tests/expect_tests.cpp tests/p2_face_tests.cpp
+          tests/layered_tests.cpp tests/capabilities_tests.cpp tests/size_table.cpp)

@@ -65,4 +65,33 @@ struct SyntheticOptions {
 
 SyntheticTissue make_synthetic_tissue(const SyntheticOptions& options = {});
 
+// ---- the layered model's worked examples (docs/subsystems/tissue.md, "The layered model's
+// fixtures") --------------------------------------------------------------------------------------
+//
+// Two neutral mechanical fixtures in the shape of the design packet's (RUNS.md), generated from
+// formulas: nothing is solved, measured or anatomical, and every state is a prescribed shape.
+// Both are ten-node reference bodies with straight-sided cells (edge nodes at the midpoints) and
+// neither declares an observation or a Loop sheet: their skin, where they have one, is the
+// material boundary.
+//
+//   the slab       160 x 80 x 15 mm of fat (8 x 4 x 2 hexahedra of six cells, 384 ten-node cells)
+//                  0.7 mm above a closed base frame; a uniform thickness field over its lower
+//                  surface, partitioned into two depots (x < 0, x > 0); a mechanical skin on its
+//                  upper surface, sampled at every node of it; a self-contact pair of that skin
+//                  (offset 1 mm, locality 5 mm) with one incident exclusion, and the lower surface
+//                  against the base (offset 0.1 mm); states rest, reference and a 3% compression
+//                  with a 0.25 mm upward bias; a certificate record of the reference, uncertified
+//   the fusiform   120 mm long, radius 5 mm at the ends and 15 mm at the middle (12 x 2 x 2
+//                  hexahedra, 288 ten-node cells), between two box handles 0.7 mm beyond its ends:
+//                  an essential attachment at the origin with a patch and a transition collar, a
+//                  spring at the insertion; the active rest driver `fusiform-arch-v1` (activation
+//                  and pose angle, two samples: the identity and a = 0.5 at 60 degrees); states
+//                  rest, reference and "posed", the insertion handle turned 60 degrees about y
+//                  and the body bent smoothly to follow it; contact against both handles, the
+//                  origin's patch excluded against its own
+//
+// Each declares its requirements: the records, block kinds, rows and laws its meaning depends on.
+TissueFile make_layered_slab();
+TissueFile make_layered_fusiform();
+
 }  // namespace engine::tissue

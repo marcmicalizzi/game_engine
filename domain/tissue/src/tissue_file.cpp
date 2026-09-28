@@ -1,12 +1,14 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/tissue/capabilities.h>
 #include <domain/tissue/sha256.h>
 #include <domain/tissue/tissue_file.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <string>
 
 namespace engine::tissue {
@@ -39,7 +41,8 @@ bool known_kind_name(std::string_view name) {
 // this build does not know are dropped from the table and unknown fields ignored, each with a
 // warning, so that a newer writer's file still loads.
 bool definition_from_json(std::string_view text, bool strict, TissueDefinition& out,
-                          Vector<std::string>* warnings, std::string* error) {
+                          Vector<std::string>* warnings, std::string* error,
+                          CapabilityFailure* capability, const Capabilities* capabilities) {
   JsonValue json;
   const JsonParseResult parsed = parse_json(text, json);
   if (!parsed.ok)
@@ -47,6 +50,17 @@ bool definition_from_json(std::string_view text, bool strict, TissueDefinition& 
                            std::to_string(parsed.line) + ", column " +
                            std::to_string(parsed.column));
   if (!json.is_object()) return fail(error, "the definition is not a JSON object");
+  // The requirements first, on the JSON as written: a file this build could not read at all (an
+  // enumerator it does not know is an error in core/schema) still fails as the capability it is.
+  {
+    CapabilityFailure failure;
+    if (!check_requirements_json(
+            json, capabilities != nullptr ? *capabilities : build_capabilities(), failure)) {
+      const std::string sentence = failure.sentence;
+      if (capability != nullptr) *capability = std::move(failure);
+      return fail(error, sentence);
+    }
+  }
   if (!strict) {
     if (JsonValue* blocks = json.find("blocks"); blocks != nullptr && blocks->is_array()) {
       JsonValue::Array kept;
@@ -153,6 +167,8 @@ u32 block_element_size(BlockKind kind) noexcept {
     case BlockKind::CableEdges: return 8;
     case BlockKind::FrameCoverProvenance: return 1;
     case BlockKind::QuadraticTetrahedra: return 40;
+    case BlockKind::BoundaryFaceRefs: return 8;
+    case BlockKind::MaterialSurfaceCoordinates: return 16;
   }
   return 0;
 }
@@ -190,6 +206,8 @@ const char* block_kind_name(u32 kind) noexcept {
     case BlockKind::StateNodes: return "StateNodes";
     case BlockKind::ExpectedVisible: return "ExpectedVisible";
     case BlockKind::QuadraticTetrahedra: return "QuadraticTetrahedra";
+    case BlockKind::BoundaryFaceRefs: return "BoundaryFaceRefs";
+    case BlockKind::MaterialSurfaceCoordinates: return "MaterialSurfaceCoordinates";
   }
   return "unknown";
 }
@@ -211,6 +229,71 @@ void seal_block(TissueFile& file, const TissueBlock& block) {
   entry->count = block.count;
   entry->bytes = block.bytes.size();
   entry->sha256 = sha256_hex(block.bytes);
+}
+
+namespace {
+
+// What a default-constructed object of a record writes: the defaults a reader fills in.
+JsonValue default_json(const schema::TypeInfo& info) {
+  void* memory = ::operator new(info.size, std::align_val_t(info.align));
+  info.ops->construct(memory);
+  JsonValue out;
+  schema::to_json(info, memory, out);
+  info.ops->destroy(memory);
+  ::operator delete(memory, std::align_val_t(info.align));
+  return out;
+}
+
+void strip_new_defaults(const schema::TypeRef& type, JsonValue& json);
+
+// Leaves out every field of a record introduced after its version 1 that holds its default, and
+// recurses into everything else.
+void strip_record(const schema::TypeInfo& info, JsonValue& json) {
+  if (!json.is_object()) return;
+  JsonValue defaults;
+  bool have_defaults = false;
+  for (const schema::FieldInfo& f : info.fields) {
+    JsonValue* value = json.find(f.name);
+    if (value == nullptr) continue;
+    if (f.since_version > 1) {
+      if (!have_defaults) {
+        defaults = default_json(info);
+        have_defaults = true;
+      }
+      const JsonValue* fallback = defaults.find(f.name);
+      if (fallback != nullptr && *fallback == *value) {
+        json.as_object().erase(std::string_view(f.name));
+        continue;
+      }
+    }
+    strip_new_defaults(f.type, *value);
+  }
+}
+
+void strip_new_defaults(const schema::TypeRef& type, JsonValue& json) {
+  switch (type.kind) {
+    case schema::Kind::Struct:
+      if (type.type != nullptr) strip_record(*type.type, json);
+      break;
+    case schema::Kind::Optional:
+      if (!json.is_null() && type.element != nullptr) strip_new_defaults(*type.element, json);
+      break;
+    case schema::Kind::Array:
+    case schema::Kind::FixedArray:
+      if (json.is_array() && type.element != nullptr)
+        for (usize i = 0; i < json.size(); ++i)
+          strip_new_defaults(*type.element, json[i]);
+      break;
+    default: break;
+  }
+}
+
+}  // namespace
+
+JsonValue definition_json(const TissueDefinition& definition) {
+  JsonValue json = schema::to_json(definition);
+  strip_record(schema::type_of<TissueDefinition>(), json);
+  return json;
 }
 
 std::string topology_sha256(std::span<const u32> indices) {
@@ -253,7 +336,7 @@ bool encode_tissue_file(const TissueFile& file, Vector<u8>& out, std::string* er
       return fail(error, "block '" + block.name + "' is not in the definition's table");
 
   std::string json;
-  if (!write_json(schema::to_json(definition), json, JsonWriteOptions{.pretty = false}))
+  if (!write_json(definition_json(definition), json, JsonWriteOptions{.pretty = false}))
     return fail(error, "the definition holds a number JSON cannot represent");
 
   // Names, one-based offsets into them.
@@ -369,7 +452,8 @@ bool read_tissue_file_info(std::span<const u8> bytes, TissueFileInfo& out, std::
   return true;
 }
 
-bool read_tissue_file_memory(std::span<const u8> bytes, TissueFile& out, std::string* error) {
+bool read_tissue_file_memory(std::span<const u8> bytes, TissueFile& out, std::string* error,
+                             CapabilityFailure* capability, const Capabilities* capabilities) {
   out = TissueFile{};
   TissueFileInfo info;
   if (!read_tissue_file_info(bytes, info, error)) return false;
@@ -380,7 +464,9 @@ bool read_tissue_file_memory(std::span<const u8> bytes, TissueFile& out, std::st
   const std::string_view text(reinterpret_cast<const char*>(bytes.data() + definition->offset),
                               static_cast<usize>(definition->element_count));
   TissueFile file;
-  if (!definition_from_json(text, false, file.definition, &file.warnings, error)) return false;
+  if (!definition_from_json(text, false, file.definition, &file.warnings, error, capability,
+                            capabilities))
+    return false;
   if (file.definition.format != k_tissue_format)
     return fail(error, "the definition's format is '" + file.definition.format + "', not '" +
                            k_tissue_format + "'");
@@ -434,20 +520,23 @@ bool read_tissue_file_memory(std::span<const u8> bytes, TissueFile& out, std::st
   return true;
 }
 
-bool read_tissue_file(std::string_view path, TissueFile& out, std::string* error) {
+bool read_tissue_file(std::string_view path, TissueFile& out, std::string* error,
+                      CapabilityFailure* capability, const Capabilities* capabilities) {
   std::string bytes;
   const io::Status status = io::read_file(path, bytes);
   if (status != io::Status::Ok)
     return fail(error,
                 std::string("cannot read ") + std::string(path) + ": " + io::status_name(status));
   return read_tissue_file_memory(
-      std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()), out, error);
+      std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()), out, error,
+      capability, capabilities);
 }
 
 // ---- the interchange
 // --------------------------------------------------------------------------------
 
-bool import_interchange(std::string_view json_path, TissueFile& out, std::string* error) {
+bool import_interchange(std::string_view json_path, TissueFile& out, std::string* error,
+                        CapabilityFailure* capability, const Capabilities* capabilities) {
   out = TissueFile{};
   std::string text;
   const io::Status status = io::read_file(json_path, text);
@@ -455,7 +544,8 @@ bool import_interchange(std::string_view json_path, TissueFile& out, std::string
     return fail(error, std::string("cannot read ") + std::string(json_path) + ": " +
                            io::status_name(status));
   TissueFile file;
-  if (!definition_from_json(text, true, file.definition, nullptr, error)) return false;
+  if (!definition_from_json(text, true, file.definition, nullptr, error, capability, capabilities))
+    return false;
   if (file.definition.format != k_tissue_format)
     return fail(error, "the definition's format is '" + file.definition.format + "', not '" +
                            k_tissue_format + "'");
@@ -514,7 +604,7 @@ bool export_interchange(const TissueFile& file, std::string_view directory, std:
       return fail(error, "cannot write " + path + ": " + io::status_name(status));
   }
   std::string json;
-  if (!write_json(schema::to_json(copy.definition), json, JsonWriteOptions{.pretty = true}))
+  if (!write_json(definition_json(copy.definition), json, JsonWriteOptions{.pretty = true}))
     return fail(error, "the definition holds a number JSON cannot represent");
   json.push_back('\n');
   const std::string path = io::join_path(directory, std::string(stem) + ".json");

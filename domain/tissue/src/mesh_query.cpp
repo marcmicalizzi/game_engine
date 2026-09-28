@@ -382,6 +382,42 @@ TriangleBvh::Hit TriangleBvh::first_hit(D3 origin, D3 direction, f64 t_min, f64 
   return best;
 }
 
+void TriangleBvh::candidate_pairs(const TriangleBvh& other, f64 distance,
+                                  Vector<std::pair<u32, u32>>& out) const {
+  out.clear();
+  if (nodes_.empty() || other.nodes_.empty()) return;
+  const f64 reach = distance * distance;
+  const auto gap_squared = [](const Node& a, const Node& b) {
+    const f64 dx = std::max({b.lo.x - a.hi.x, 0.0, a.lo.x - b.hi.x});
+    const f64 dy = std::max({b.lo.y - a.hi.y, 0.0, a.lo.y - b.hi.y});
+    const f64 dz = std::max({b.lo.z - a.hi.z, 0.0, a.lo.z - b.hi.z});
+    return dx * dx + dy * dy + dz * dz;
+  };
+  Vector<std::pair<u32, u32>> stack;
+  stack.push_back({0, 0});
+  while (!stack.empty()) {
+    const auto [ia, ib] = stack.back();
+    stack.pop_back();
+    const Node& a = nodes_[ia];
+    const Node& b = other.nodes_[ib];
+    if (gap_squared(a, b) > reach) continue;
+    if (a.count > 0 && b.count > 0) {
+      for (u32 i = a.first; i < a.first + a.count; ++i)
+        for (u32 j = b.first; j < b.first + b.count; ++j)
+          out.push_back({order_[i], other.order_[j]});
+      continue;
+    }
+    if (a.count == 0) {
+      stack.push_back({a.first, ib});
+      stack.push_back({a.first + 1, ib});
+    } else {
+      stack.push_back({ia, b.first});
+      stack.push_back({ia, b.first + 1});
+    }
+  }
+  std::sort(out.begin(), out.end());
+}
+
 u64 TriangleBvh::intersections(const TriangleBvh& other, u32 max_witnesses,
                                Vector<std::pair<u32, u32>>* witnesses) const {
   if (nodes_.empty() || other.nodes_.empty()) return 0;
@@ -550,6 +586,115 @@ bool triangles_intersect(D3 v0, D3 v1, D3 v2, D3 u0, D3 u1, D3 u2) noexcept {
   if (i1[0] > i1[1]) std::swap(i1[0], i1[1]);
   if (i2[0] > i2[1]) std::swap(i2[0], i2[1]);
   return !(i1[1] < i2[0] || i2[1] < i1[0]);
+}
+
+f64 point_triangle_distance(D3 p, D3 a, D3 b, D3 c) noexcept {
+  return length(p - nearest_on_triangle(p, a, b, c).point);
+}
+
+f64 segment_distance(D3 p1, D3 q1, D3 p2, D3 q2) noexcept {
+  // Ericson, Real-Time Collision Detection §5.1.9, ClosestPtSegmentSegment.
+  constexpr f64 k_eps = 1e-30;
+  const D3 d1 = q1 - p1;
+  const D3 d2 = q2 - p2;
+  const D3 r = p1 - p2;
+  const f64 a = dot(d1, d1);
+  const f64 e = dot(d2, d2);
+  const f64 f = dot(d2, r);
+  f64 s = 0.0;
+  f64 t = 0.0;
+  if (a <= k_eps && e <= k_eps) return length(p1 - p2);
+  if (a <= k_eps) {
+    t = std::clamp(f / e, 0.0, 1.0);
+  } else {
+    const f64 c = dot(d1, r);
+    if (e <= k_eps) {
+      s = std::clamp(-c / a, 0.0, 1.0);
+    } else {
+      const f64 b = dot(d1, d2);
+      const f64 denom = a * e - b * b;
+      s = denom > 0.0 ? std::clamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+      t = (b * s + f) / e;
+      if (t < 0.0) {
+        t = 0.0;
+        s = std::clamp(-c / a, 0.0, 1.0);
+      } else if (t > 1.0) {
+        t = 1.0;
+        s = std::clamp((b - c) / a, 0.0, 1.0);
+      }
+    }
+  }
+  return length((p1 + d1 * s) - (p2 + d2 * t));
+}
+
+namespace {
+
+// Whether segment pq crosses triangle abc away from its plane: the ends on opposite sides of it by
+// more than `eps`, and the crossing point inside it. A segment within `eps` of the plane at both
+// ends is the coplanar test's to decide.
+bool segment_crosses(D3 p, D3 q, D3 a, D3 b, D3 c, f64 eps) noexcept {
+  D3 n = cross(b - a, c - a);
+  const f64 area2 = length(n);
+  if (!(area2 > 0.0)) return false;
+  n = n * (1.0 / area2);
+  const f64 sp = dot(n, p - a);
+  const f64 sq = dot(n, q - a);
+  if ((sp > eps && sq > eps) || (sp < -eps && sq < -eps)) return false;
+  if (std::fabs(sp) <= eps && std::fabs(sq) <= eps) return false;
+  if (sp * sq > 0.0) return false;  // one end within eps, the other clearly on the same side
+  const f64 t = std::clamp(sp / (sp - sq), 0.0, 1.0);
+  const D3 x = p + (q - p) * t;
+  // Inside by the signed areas of the three sub-triangles against the normal.
+  const f64 wa = dot(cross(b - x, c - x), n);
+  const f64 wb = dot(cross(c - x, a - x), n);
+  const f64 wc = dot(cross(a - x, b - x), n);
+  const f64 slack = -eps * area2;
+  return wa >= slack && wb >= slack && wc >= slack;
+}
+
+}  // namespace
+
+bool triangles_cross(D3 a0, D3 a1, D3 a2, D3 b0, D3 b1, D3 b2) noexcept {
+  const D3 a[3] = {a0, a1, a2};
+  const D3 b[3] = {b0, b1, b2};
+  f64 size = 0.0;
+  for (u32 i = 0; i < 3; ++i) {
+    size = std::max(size, length(a[(i + 1) % 3] - a[i]));
+    size = std::max(size, length(b[(i + 1) % 3] - b[i]));
+  }
+  const f64 eps = 1.0e-10 * size;
+  // Nearly coplanar: every corner of each within eps of the other's plane.
+  const auto planar = [&](const D3 t[3], const D3 u[3]) {
+    D3 n = cross(t[1] - t[0], t[2] - t[0]);
+    const f64 l = length(n);
+    if (!(l > 0.0)) return true;
+    n = n * (1.0 / l);
+    for (u32 i = 0; i < 3; ++i)
+      if (std::fabs(dot(n, u[i] - t[0])) > eps) return false;
+    return true;
+  };
+  if (planar(a, b) && planar(b, a))
+    return coplanar(cross(a1 - a0, a2 - a0), a0, a1, a2, b0, b1, b2);
+  for (u32 i = 0; i < 3; ++i) {
+    if (segment_crosses(a[i], a[(i + 1) % 3], b0, b1, b2, eps)) return true;
+    if (segment_crosses(b[i], b[(i + 1) % 3], a0, a1, a2, eps)) return true;
+  }
+  return false;
+}
+
+f64 triangle_distance(D3 a0, D3 a1, D3 a2, D3 b0, D3 b1, D3 b2) noexcept {
+  if (triangles_cross(a0, a1, a2, b0, b1, b2)) return 0.0;
+  f64 best = std::numeric_limits<f64>::infinity();
+  const D3 a[3] = {a0, a1, a2};
+  const D3 b[3] = {b0, b1, b2};
+  for (u32 k = 0; k < 3; ++k) {
+    best = std::min(best, point_triangle_distance(a[k], b0, b1, b2));
+    best = std::min(best, point_triangle_distance(b[k], a0, a1, a2));
+  }
+  for (u32 i = 0; i < 3; ++i)
+    for (u32 j = 0; j < 3; ++j)
+      best = std::min(best, segment_distance(a[i], a[(i + 1) % 3], b[j], b[(j + 1) % 3]));
+  return best;
 }
 
 f64 winding_number(D3 p, std::span<const D3> positions, std::span<const u32> triangles) noexcept {

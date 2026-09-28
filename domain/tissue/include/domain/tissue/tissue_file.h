@@ -29,6 +29,7 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/json/json_value.h>
 
 #include <cstring>
 #include <schemas/tissue.h>
@@ -37,6 +38,9 @@
 #include <string_view>
 
 namespace engine::tissue {
+
+struct Capabilities;       // capabilities.h
+struct CapabilityFailure;  // capabilities.h
 
 inline constexpr u32 k_tissue_file_version = 1;
 inline constexpr u32 k_tissue_file_alignment = 16;
@@ -101,9 +105,17 @@ bool write_tissue_file(std::string_view path, const TissueFile& file, std::strin
 // Reads a container: refuses a wrong magic or version, a section past the end, a content hash or a
 // block hash that does not match, and a definition that is missing or not a TissueDefinition;
 // skips, with a warning, a section of a kind it does not know. `out` is replaced.
-bool read_tissue_file(std::string_view path, TissueFile& out, std::string* error = nullptr);
+//
+// **Before anything else of the definition is read, its requirements are checked** against
+// `capabilities` (this build's when null; capabilities.h): a file that requires what the build does
+// not have is refused, `*capability` says what (when given), and `error` is its sentence. That is
+// a capability failure, which a caller tells apart from damage by `capability->failed()`.
+bool read_tissue_file(std::string_view path, TissueFile& out, std::string* error = nullptr,
+                      CapabilityFailure* capability = nullptr,
+                      const Capabilities* capabilities = nullptr);
 bool read_tissue_file_memory(std::span<const u8> bytes, TissueFile& out,
-                             std::string* error = nullptr);
+                             std::string* error = nullptr, CapabilityFailure* capability = nullptr,
+                             const Capabilities* capabilities = nullptr);
 
 // What `engine-content tissue info` prints: the header and every section, known or not.
 struct TissueFileSectionInfo {
@@ -130,8 +142,11 @@ bool read_tissue_file_info(std::span<const u8> bytes, TissueFileInfo& out,
 // times the kind's element size, the file is exactly that long, and its SHA-256 is the table's.
 // Refuses a duplicate block name, a `format` other than `k_tissue_format`, and anything the schema
 // cannot read; unknown JSON fields are refused here (an interchange is written for this format),
-// where a container read only warns.
-bool import_interchange(std::string_view json_path, TissueFile& out, std::string* error = nullptr);
+// where a container read only warns. The definition's requirements are checked first, as for a
+// container: a capability failure is reported through `capability` before any field is read.
+bool import_interchange(std::string_view json_path, TissueFile& out, std::string* error = nullptr,
+                        CapabilityFailure* capability = nullptr,
+                        const Capabilities* capabilities = nullptr);
 
 // Writes a TissueFile as an interchange: `<directory>/<stem>.json` and one `<stem>.<block>.bin`
 // per block, the table's `file`, `count`, `bytes` and `sha256` filled from the blocks. For tests
@@ -162,5 +177,12 @@ void add_block(TissueFile& file, std::string name, BlockKind kind, std::span<con
 // The topology hash the observation contract carries: SHA-256 over the face indices widened to
 // little-endian u64, face by face and corner by corner (schemas/tissue.schema, `topology_sha256`).
 std::string topology_sha256(std::span<const u32> indices);
+
+// The definition as the container and the interchange write it: its JSON, with every field a
+// record gained after its version 1 left out while it holds its default. A definition that uses
+// nothing new is then written as the builds before the field wrote it — an older reader finds no
+// field it does not know — and a reader that knows the field reads its default back, so nothing
+// changes meaning either way.
+JsonValue definition_json(const TissueDefinition& definition);
 
 }  // namespace engine::tissue

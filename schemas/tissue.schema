@@ -107,6 +107,18 @@ enum BlockKind : u32 {
   /// `tetra10`, name the last two the other way round, (1, 3) then (2, 3): a writer holding cells
   /// in that order swaps nodes 8 and 9, and `region.cell_edge_nodes` refuses a file that did not.
   QuadraticTetrahedra = 38
+  /// u32 x2, read from TissueDefinition version 2: oriented boundary faces of a ten-node region,
+  /// each (cell, local face) — the cell's index in its region's QuadraticTetrahedra block, then the
+  /// face in **Gmsh's numbering**: 0 is (0, 2, 1), 1 is (0, 1, 3), 2 is (0, 3, 2), 3 is (3, 1, 2),
+  /// each wound outward from its cell (counter-clockwise seen from outside). A face's six nodes
+  /// are its three corners in that order and then the edge nodes of (a, b), (b, c), (c, a): Gmsh's
+  /// six-node triangle. A material surface's faces, an attachment's patch, a contact exclusion's.
+  BoundaryFaceRefs = 39
+  /// 16 bytes, read from TissueDefinition version 2: u32, then f32 x3 — a point of a material
+  /// boundary surface, the face's index in the surface's BoundaryFaceRefs block and the point's
+  /// barycentrics over the face's three corners, in the face's corner order, each in [0, 1] and
+  /// summing to one. A material skin's sampled ids are bound by it.
+  MaterialSurfaceCoordinates = 40
 }
 
 /// One binary block of the interchange: a file beside the JSON, or a section of the container.
@@ -232,7 +244,105 @@ struct Sheet @version(1) {
   level: u32 = 3
 }
 
-struct Region @version(2) {
+// ---- the layered model: parameters and the active rest shape (Region version 3) ------------------
+//
+// The layered volume model the authoring side and the engine agreed on 2026-09-27 (plan 05 §5.16,
+// the 2026-09-26 evening and 2026-09-27 addenda; docs/subsystems/tissue.md, "The layered model"):
+// bone as the frame, muscle as a region with a pose-dependent rest shape, fat as a
+// material-coordinate thickness field whose depots partition its volume, skin as a mechanical
+// surface on the quadratic material boundary, and face contact with self-contact. Every record
+// below is an append-only addition: a definition that uses none of them reads with its old meaning.
+
+/// One parameter of a domain, in SI units, with its range and the law that owns it.
+struct Parameter @version(1) {
+  /// A stable name: "activation", "pose_angle".
+  name: string
+  /// Its SI unit, one of the table's spellings (docs/subsystems/tissue.md): "1" for a ratio or an
+  /// activation, "m", "rad", "Pa", "kg/m^3", "N/m", "s".
+  unit: string
+  min: f64 = 0
+  max: f64 = 0
+  /// The value at which the owning law is the identity (no activation, no pose): the canonical
+  /// reference.
+  reference: f64 = 0
+  /// The law that owns it, as "<kind>:<name>": "rest_driver:<region>", "thickness_field:<field>",
+  /// "contact_policy:<policy>", or "morphology:<name>" for a law the definition does not carry.
+  owner: string
+}
+
+/// A named parameter space: stable names, units and ranges (the rows `parameters.domain` and
+/// `state.parameters` read).
+struct ParameterDomain @version(1) {
+  name: string
+  parameters: Parameter[]
+  note: string
+}
+
+struct ParameterValue @version(1) {
+  name: string
+  value: f64 = 0
+}
+
+/// A file something was made from, by path and SHA-256: provenance, reported and not opened.
+struct SourceHash @version(1) {
+  path: string
+  sha256: string
+}
+
+/// One point of a parameter domain and the region's natural configuration its parameters
+/// regenerate: a named snapshot (a rest or an active target), never a solved state.
+struct ParameterSample @version(1) {
+  name: string
+  domain: string
+  region: string
+  /// A value for every parameter of the domain, and for nothing else.
+  values: ParameterValue[]
+  /// StateNodes: the region's natural configuration at these values, one position per node.
+  snapshot: string
+  /// The snapshot's SHA-256 as the authoring side recorded it: its reproducible identity, checked
+  /// against the block.
+  snapshot_sha256: string
+  sources: SourceHash[]
+  note: string
+}
+
+/// The coefficients of the active rest law `fusiform-arch-v1` (docs/subsystems/tissue.md, "The
+/// active rest shape"): lambda(a) = 1 - activation_contraction a, and an arch of height arch_m sin
+/// theta at the middle.
+struct FusiformArchCoefficients @version(1) {
+  activation_contraction: f64 = 0.2
+  /// Metres.
+  arch_m: f64 = 0
+}
+
+/// A region's pose-dependent natural (rest) shape (Region version 3): a target deformation
+/// G(X, a, theta) of the frozen material reference, evaluated from parameters and never overwritten
+/// with a solution, so that the elastic deformation is F G^-1. The observed pose is not its own
+/// stress-free state, and the natural length is not the attachment distance.
+struct ActiveRestShape @version(1) {
+  /// The law, one spelling with its version: "fusiform-arch-v1" is the one this build evaluates.
+  law: string
+  /// The law's coefficients, read with the law's own schema type (FusiformArchCoefficients).
+  coefficients: json
+  /// The canonical reference state the law maps from: "construction", or a state of the region.
+  reference_state: string
+  /// The canonical frame, body coordinates: its origin (metres), the axial direction x and the
+  /// first transverse direction y, unit and orthogonal; z is x cross y.
+  origin_m: f64[3]
+  axis: f64[3]
+  transverse: f64[3]
+  /// L, metres: what the law's arch is measured along. Never the current attachment distance.
+  natural_length_m: f64 = 0
+  /// The domain whose parameters drive it, and which of them is the activation and which the pose
+  /// angle.
+  domain: string
+  activation: string
+  pose: string
+  /// The ParameterSamples whose snapshots are this driver's targets.
+  samples: string[]
+}
+
+struct Region @version(3) {
   name: string
   kind: RegionKind = Volume
   cage: CageKind = Tetrahedral
@@ -260,6 +370,9 @@ struct Region @version(2) {
   /// A cage the runtime solves, or a certified reference body a runtime cage is derived from:
   /// under `Reference` the runtime-only limits are reported, not failed.
   role: RegionRole = Runtime @since(2)
+  /// The region's pose-dependent rest shape, when it has one: a muscle is a Volume region with
+  /// this, never a cage kind of its own.
+  rest_driver: ActiveRestShape? @since(3)
 }
 
 // ---- frames, surfaces, attachments -------------------------------------------------------------
@@ -330,7 +443,20 @@ enum TargetKind : u8 {
   Bone = 4
 }
 
-struct Attachment @version(1) {
+/// How an attachment holds its nodes (Attachment version 2).
+enum AttachmentEnforcement : u8 {
+  /// The version-1 meaning, unchanged and the default: a spring — `Fixed` is a stiff spring, not a
+  /// weld — with `stiffness_pa` or plan 07 §7.10's default. Every attachment written before
+  /// version 2 is one.
+  Spring = 0
+  /// An essential (exact) constraint: the nodes are prescribed, at every state, where the target
+  /// frame's rigid transform carries their positions at the construction. It is never a stiff
+  /// spring: it has no stiffness, and one declared is refused. Kind `Fixed`, to a frame or the
+  /// world.
+  Essential = 1
+}
+
+struct Attachment @version(2) {
   name: string
   region: string
   /// A node set of the region.
@@ -338,8 +464,38 @@ struct Attachment @version(1) {
   kind: AttachmentKind = Fixed
   target_kind: TargetKind = World
   target: string
-  /// Pascals; absent leaves plan 07 §7.10's default.
+  /// Pascals; absent leaves plan 07 §7.10's default. A spring's only: an essential attachment has
+  /// none.
   stiffness_pa: f64?
+  /// Spring (the version-1 meaning) or Essential.
+  enforcement: AttachmentEnforcement = Spring @since(2)
+  /// An essential attachment's material map: the MaterialBoundarySurface its patch lies on, and
+  /// the patch itself, a BoundaryFaceRefs block of that surface's faces, every node of which the
+  /// attachment holds. A finite patch, never a single vertex.
+  patch_surface: string @since(2)
+  patch: string @since(2)
+  /// A node set of the region: the soft transition collar this attachment owns, disjoint from the
+  /// nodes it holds. Exact attachment and soft transition are different data.
+  transition_band: string @since(2)
+}
+
+/// A frame's (or a bone's) rigid transform at one state (TissueDefinition version 2): a point of
+/// the frame's own vertices goes to R x + t in body coordinates. A frame with no FrameState for a
+/// state is where its vertices are. A frame's FrameStates, in the order the definition lists them,
+/// are its load path.
+struct FrameState @version(1) {
+  frame: string
+  /// `Frame` (a Frame of this definition) or `Bone` (a bone by the skeleton's name).
+  frame_kind: TargetKind = Frame
+  /// "construction", or a RegionState's name.
+  state: string
+  /// R, row-major: a proper rotation, orthonormal with determinant +1. A frame is rigid: nothing
+  /// here scales or shears it to make tissue fit.
+  rotation: f64[9]
+  translation_m: f64[3]
+  /// How the transform travels from the previous FrameState of the load path to this one, one
+  /// spelling the certificate pins ("rigid-screw-v1"): reported, never interpolated here.
+  interpolation: string
 }
 
 // ---- the skin binding ----------------------------------------------------------------------------
@@ -598,10 +754,246 @@ struct DepthBudget @version(1) {
   skin_clearance_floor_m: f64 = 0
 }
 
+// ---- the layered model: fat, the material boundary, the skin, contact ------------------------------
+
+/// The coefficients of the thickness law `cosine-modulation-v1`, DESIGN's one distribution control:
+/// h = h_mean [1 + d cos(2 pi u / L) cos(pi v / W)] over u in [-L/2, L/2], v in [-W/2, W/2], whose
+/// area mean is h_mean: it redistributes the volume and never adds to it.
+struct CosineModulation @version(1) {
+  /// d, with |d| < 1.
+  modulation: f64 = 0
+  /// L and W, metres.
+  length_m: f64 = 0
+  width_m: f64 = 0
+}
+
+/// Fat as a material-coordinate thickness field (TissueDefinition version 2): a thickness h(u, v)
+/// over the canonical coordinates of its reference surface, generating the material volume of
+/// `region`. Thickness is not softness: the region's moduli are separate inputs, and so are the
+/// skin's rest area and stiffness.
+struct ThicknessField @version(1) {
+  name: string
+  /// The Volume region whose material the field generates.
+  region: string
+  /// The MaterialBoundarySurface h is measured from: the lower reference surface.
+  surface: string
+  /// How h is laid off from it, one spelling the construction pins ("inward-normal-v1"): reported.
+  normal_convention: string
+  /// "uniform-v1" (h is the mean everywhere) or "cosine-modulation-v1": the laws this build reads.
+  law: string
+  /// h_mean, metres.
+  mean_thickness_m: f64 = 0
+  /// The law's coefficients, read with its own schema type (CosineModulation); null for uniform.
+  coefficients: json
+  /// The authoring side's own ledger, independently integrated: the region's reference volume
+  /// (m³) and mass (kg), which the engine recomputes from the cells.
+  declared_volume_m3: f64?
+  declared_mass_kg: f64?
+}
+
+/// One depot: its share of every cell of the field's region.
+struct Depot @version(1) {
+  name: string
+  /// PhaseFraction: this depot's share of each cell's volume, in [0, 1].
+  shares: string
+  declared_volume_m3: f64?
+  declared_mass_kg: f64?
+}
+
+/// Depots as partitions of one thickness field's volume (TissueDefinition version 2): in every
+/// cell the shares sum to one. A depot partitions or redistributes the field's volume; it never
+/// adds to it, and its mass is stored density times reference volume, never a deformed cell's.
+struct DepotPartition @version(1) {
+  name: string
+  /// The ThicknessField whose volume is partitioned.
+  field: string
+  depots: Depot[]
+}
+
+/// An oriented surface on a ten-node region's quadratic material boundary (TissueDefinition
+/// version 2): the six-node faces themselves, which the membrane, the contact and the material skin
+/// binding share. It is not a Loop `Sheet`, and not `MembraneTriangles`: those keep their meaning.
+/// A feature's identity is stable with the region's numbering: a face is its (cell, local face), a
+/// vertex its region node, an edge its two corner nodes.
+struct MaterialBoundarySurface @version(1) {
+  name: string
+  region: string
+  /// BoundaryFaceRefs: each a boundary face of the region, wound outward from its cell.
+  faces: string
+  /// How a face is evaluated: "p2-six-node-v1", Gmsh's six-node triangle with quadratic Lagrange
+  /// shape functions, the one this build reads.
+  evaluation: string = "p2-six-node-v1"
+  note: string
+}
+
+/// A mechanical skin on a material boundary surface (TissueDefinition version 2): a tension-bearing
+/// membrane that shares the boundary's material coordinates and nodes, with a natural metric of its
+/// own. The Loop `Sheet`, `MembraneTriangles` and `SkinBinding` are not this surface and keep their
+/// meaning.
+struct MaterialSkin @version(1) {
+  name: string
+  /// A MaterialBoundarySurface.
+  surface: string
+  /// The membrane law, one spelling the execution declaration pins, and its parameters: carried and
+  /// reported, not evaluated here.
+  law: string
+  law_parameters: json
+  /// E·t, N/m, and the membrane's Poisson's ratio.
+  stiffness_n_per_m: f64 = 0
+  poisson: f64 = 0.45
+  /// The membrane's thickness, metres, where its law reads one: reported.
+  thickness_m: f64?
+  /// StateNodes: the configuration of the region whose surface is the skin's natural metric;
+  /// empty is the construction. A larger envelope is a different metric, not a lower modulus.
+  rest_nodes: string
+  /// The skin is the boundary itself, at zero normal offset: declared, never assumed. Version 1
+  /// reads no other skin.
+  coincident: bool = false
+  /// CanonicalIds: the skin's sampled ids; MaterialSurfaceCoordinates: one point of the surface per
+  /// id, in the ids' order. The material-surface binding.
+  sample_ids: string
+  sample_coordinates: string
+}
+
+/// What one side of a contact pair is.
+enum ContactSurfaceKind : u8 {
+  /// A MaterialBoundarySurface of this definition.
+  MaterialSurface = 0
+  /// A Frame of this definition: its closed triangles, moved by its FrameStates.
+  Frame = 1
+}
+
+/// Whether a pair separates or is an interface.
+enum ContactEligibility : u8 {
+  /// Unilateral separation: the pair may part and may not come within its offset.
+  Unilateral = 0
+  /// An intentionally attached interface: nothing about it is checked for separation.
+  Attached = 1
+}
+
+/// Why an exclusion exempts exact features from a pair.
+enum ExclusionReason : u8 {
+  /// Incident features of one region's surfaces, which meet legally along their shared nodes.
+  Incident = 0
+  /// An essential attachment's owned interface: its patch against its own target frame.
+  Attachment = 1
+}
+
+struct ContactSide @version(1) {
+  kind: ContactSurfaceKind = MaterialSurface
+  /// The MaterialBoundarySurface's or the Frame's name.
+  name: string
+  /// Who owns it: the surface's region, or the frame's own name.
+  owner: string
+}
+
+/// Exact features a pair does not test, and why. Element by element: `a_faces[i]` is exempt
+/// against `b_faces[i]`; when side b is a frame, `b_faces` is empty and each face of `a_faces` is
+/// exempt against the whole frame.
+struct ContactExclusion @version(1) {
+  reason: ExclusionReason = Incident
+  /// BoundaryFaceRefs of side a's surface.
+  a_faces: string
+  /// BoundaryFaceRefs of side b's surface, as many as `a_faces`; empty against a frame.
+  b_faces: string
+  /// The essential attachment whose owned interface this is (reason `Attachment`).
+  attachment: string
+  note: string
+}
+
+/// How a family of pairs is certified (TissueDefinition version 2): the potential and the proxy the
+/// authoring certificate runs under, with its tolerances and work caps. Carried and reported; the
+/// engine evaluates none of the mechanics.
+struct ContactPolicy @version(1) {
+  name: string
+  /// The contact potential's id and its parameters, as the execution declaration pins them.
+  potential: string
+  potential_parameters: json
+  /// How far above a pair's offset the potential begins acting, metres.
+  activation_m: f64 = 0
+  /// How a curved face is proxied, one spelling. Whatever it says, the engine's own rows test each
+  /// six-node face by its four chords.
+  proxy_rule: string
+  /// The locality relation of a positive offset within one continuous surface: features closer
+  /// than this in the canonical reference configuration are local and held to nonintersection
+  /// only. A self-contact pair with a positive offset needs it.
+  locality_m: f64?
+  /// The certificate's curved-to-proxy deviation target (metres), its subdivision depth, and its
+  /// work caps: proxy subtriangles and narrow-phase feature tests per certificate.
+  proxy_epsilon_m: f64 = 0
+  max_depth: u32 = 0
+  max_subtriangles: u64 = 0
+  max_feature_tests: u64 = 0
+  note: string
+}
+
+/// Two oriented surfaces that may meet, and how (TissueDefinition version 2): one contract for self
+/// contact, region against region and region against frame.
+struct ContactPair @version(1) {
+  name: string
+  a: ContactSide
+  b: ContactSide
+  /// Side a and side b are one surface.
+  self_contact: bool = false
+  eligibility: ContactEligibility = Unilateral
+  /// The physical separation delta, metres: the pair's declared offset, never a numerical
+  /// allowance and never anatomical cover.
+  offset_m: f64 = 0
+  /// A ContactPolicy.
+  policy: string
+  exclusions: ContactExclusion[]
+}
+
+/// An authoring-side certificate of one state, as provenance (TissueDefinition version 2): the
+/// engine verifies the hash of the state it names and names the certificate as the authority for
+/// what it proves. It never becomes a pass of the engine's own.
+struct ReferenceCertificate @version(1) {
+  name: string
+  region: string
+  /// "construction", or a RegionState's name.
+  state: string
+  /// SHA-256 of the state's node block (RegionNodes for the construction, else StateNodes).
+  state_sha256: string
+  /// SHA-256s of the certificate's inputs and protocol: reported, their bytes not being in the file.
+  input_sha256: string
+  protocol_sha256: string
+  /// Who certifies, and with what.
+  authority: string
+  implementation: string
+  /// "certified-separated", "demonstrated-violation", "unresolved", ...: reported, never read.
+  outcome: string
+  /// The certificate's bounds (least separation, work counts): reported as given.
+  bounds: json
+  /// The witness artifact, by SHA-256 and path.
+  witness_sha256: string
+  witness_path: string
+  /// Recomputed independently, not only authored.
+  recomputed: bool = false
+  note: string
+}
+
+/// What a file's meaning depends on (TissueDefinition version 2). A reader that lacks any of it
+/// refuses the file with a capability failure before it reads anything else, never falling back
+/// and never reading it as an expected physical failure (docs/subsystems/tissue.md,
+/// "Capabilities").
+struct Requirements @version(1) {
+  /// Schema names: a record ("ContactPair"), one of its fields ("Attachment.enforcement"), an
+  /// enumeration or one of its enumerators ("AttachmentEnforcement.Essential").
+  records: string[]
+  /// Block kinds, by name ("BoundaryFaceRefs").
+  blocks: string[]
+  /// Validator rows, by id, that must be implemented, evaluated or info-only ("contact.pairs").
+  rows: string[]
+  /// Laws, by spelling ("fusiform-arch-v1", "p2-six-node-v1"): a row whose law a build does not
+  /// evaluate is skipped, and a skip declared in a fixture would be a missing capability read as an
+  /// expected outcome, so the law belongs here.
+  laws: string[]
+}
+
 // ---- the definition ------------------------------------------------------------------------------
 
 /// A tissue definition: everything above for one body.
-struct TissueDefinition @version(1) {
+struct TissueDefinition @version(2) {
   /// "engine.tissue.v0".
   format: string
   name: string
@@ -619,6 +1011,21 @@ struct TissueDefinition @version(1) {
   budgets: DepthBudget[]
   /// Where the data came from, for a reader: a study, a packet, a script.
   provenance: string
+  /// What a reader must have to read this file with its meaning, checked before anything else: the
+  /// file's `requires` list, spelled `requirements` because `requires` is a C++20 keyword and a
+  /// field's name is its member's.
+  requirements: Requirements @since(2)
+  /// The layered model (docs/subsystems/tissue.md, "The layered model").
+  parameter_domains: ParameterDomain[] @since(2)
+  parameter_samples: ParameterSample[] @since(2)
+  frame_states: FrameState[] @since(2)
+  thickness_fields: ThicknessField[] @since(2)
+  depot_partitions: DepotPartition[] @since(2)
+  material_surfaces: MaterialBoundarySurface[] @since(2)
+  material_skins: MaterialSkin[] @since(2)
+  contact_policies: ContactPolicy[] @since(2)
+  contact_pairs: ContactPair[] @since(2)
+  certificates: ReferenceCertificate[] @since(2)
 }
 
 // ---- the fixture expectation ---------------------------------------------------------------------

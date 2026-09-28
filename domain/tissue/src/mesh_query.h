@@ -78,6 +78,12 @@ class TriangleBvh {
   u64 intersections(const TriangleBvh& other, u32 max_witnesses,
                     Vector<std::pair<u32, u32>>* witnesses) const;
 
+  // Every pair of triangles, one from each hierarchy, whose leaves' boxes come within `distance` of
+  // each other: the candidates an exact distance test then decides, sorted (this, other). A
+  // hierarchy paired with itself lists (i, j) and (j, i) and (i, i).
+  void candidate_pairs(const TriangleBvh& other, f64 distance,
+                       Vector<std::pair<u32, u32>>& out) const;
+
  private:
   struct Node {
     D3 lo;
@@ -122,6 +128,25 @@ class SignedSurface {
 
 // Whether two triangles intersect (Möller 1997, with the coplanar case), in double.
 bool triangles_intersect(D3 a0, D3 a1, D3 a2, D3 b0, D3 b1, D3 b2) noexcept;
+
+// Whether two triangles intersect, decided so that a nearly coplanar pair is not guessed at: an
+// edge of one crossing the other where the two are apart by more than a tolerance of 1e-10 of
+// their size, and the pair tested in their common plane where every corner of each lies within
+// that tolerance of the other's plane. `triangles_intersect` (Möller's test as published, which
+// the version-1 rows use) is exact for a pair in general position and unreliable for a nearly
+// coplanar one, and a surface's own chords are nearly coplanar wherever the surface is flat: the
+// layered model's rows, which test a surface against itself, use this one.
+bool triangles_cross(D3 a0, D3 a1, D3 a2, D3 b0, D3 b1, D3 b2) noexcept;
+
+// The least distance from a point to a triangle, and between two segments (Ericson §5.1.9), in
+// double.
+f64 point_triangle_distance(D3 p, D3 a, D3 b, D3 c) noexcept;
+f64 segment_distance(D3 p0, D3 p1, D3 q0, D3 q1) noexcept;
+// The least distance between two triangles: zero when they cross (`triangles_cross`), and
+// otherwise the least of the six vertex-to-triangle and nine edge-to-edge distances, which is where
+// two disjoint triangles' closest pair lies. In double, with no directed rounding: a measurement,
+// not a bound.
+f64 triangle_distance(D3 a0, D3 a1, D3 a2, D3 b0, D3 b1, D3 b2) noexcept;
 
 // The generalized winding number of `p` with respect to a closed, consistently wound triangle mesh
 // (Jacobson, Kavan and Sorkine-Hornung 2013; each triangle's solid angle by Van Oosterom and

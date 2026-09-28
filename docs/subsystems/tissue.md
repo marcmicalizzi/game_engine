@@ -11,7 +11,13 @@ the engine, and the **validators and report** the reviews of the neutral torso s
 [07 §7.10 and §7.11](../plan/07-content-pipeline.md#711-characters),
 [ADR-0026](../adr/0026-deformable-volumes-first-class.md),
 [ADR-0029](../adr/0029-deformable-volume-budgets.md),
-[ADR-0032](../adr/0032-characters-are-parameter-vectors.md)). **Nothing here simulates**: the
+[ADR-0032](../adr/0032-characters-are-parameter-vectors.md)). Since version 2 of the definition it
+also carries the **layered volume model** the authoring side and the engine agreed on 2026-09-27
+([below](#the-layered-model)) — parameters, a pose-dependent rest shape, frame states, essential
+attachments, a thickness field and its depots, the quadratic material boundary and a mechanical
+skin on it, face contact with self-contact, and certificate provenance — and a **capability gate**
+([below](#capabilities-and-the-requirements-rule)): a file names what its meaning depends on, and a
+build that lacks any of it refuses the file rather than misread it. **Nothing here simulates**: the
 states are node positions the authoring side solved, and the engine binds, transfers, measures and
 checks them. An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)):
 `ENGINE_WITH_TISSUE=OFF`, `ENGINE_WITH_PHYSICS=OFF` (it requires physics, below) or a `*-minimal`
@@ -29,7 +35,10 @@ cannot be lower; and nothing in it ticks, renders or allocates per frame, so it 
 
 **Owned data.** A `TissueFile` owns a definition and its blocks' bytes. A `TissueReport` owns the
 rows and numbers one validation produced; an `ExpectationResult` what a fixture's declaration made
-of one. `SyntheticTissue` owns the generated example. Nothing else holds a tissue definition; the
+of one. `SyntheticTissue` owns the generated example, and `make_layered_slab` and
+`make_layered_fusiform` return the layered model's two. `Capabilities` is what a build reads and
+evaluates, and a `CapabilityFailure` what a file required that it lacked. Nothing else holds a
+tissue definition; the
 render path, the solver and the content build's derived steps that will read one do not exist yet
 (below, "Not yet").
 
@@ -38,8 +47,23 @@ render path, the solver and the content build's derived steps that will read one
   read; a container's content hash covers every byte after its header.
 - A container's section kinds are append-only (`BlockKind` in `schemas/tissue.schema`); a reader
   **skips** a kind it does not know, drops a table entry of an unknown kind and ignores an unknown
-  definition field, each with a warning, and never refuses a file for being newer.
-- Writing what was read gives the same bytes: the definition is stored as canonical JSON.
+  definition field, each with a warning, and never refuses a file for being newer — **unless the
+  file's requirements name something the reader lacks**: then it refuses the file as a capability
+  failure before it reads anything else, and that is never a validation result and never a
+  declared failure the fixture mode can match
+  ([Capabilities](#capabilities-and-the-requirements-rule)).
+- Writing what was read gives the same bytes: the definition is stored as canonical JSON, with every
+  field added after its record's version 1 left out while it holds its default, so a definition
+  that uses nothing new is written as the builds before the field wrote it.
+- An attachment without `enforcement` is a spring, `Fixed`'s version-1 meaning; an `Essential` one
+  is exact, and nothing reads it as a stiff spring.
+- A definition that uses none of the layered model's records gets none of its rows: its report is
+  the one it always had, row for row and number for number (the native supine fixtures' 43 rows
+  are the regression that holds it).
+- The layered model's geometric rows are **chordal** — a six-node face is tested by its four chords —
+  and say so in their threshold; what the engine cannot evaluate (curved and continuous separation,
+  the contact potential, the membrane's relaxation) its rows report as info and name the authoring
+  certificate as the authority for, and never turn into a pass.
 - A binding's normal mode is the string it was authored with; nothing substitutes another mode.
 - Every validator row states its threshold and names a witness when it fails.
 - The equilibrium gap and the reference's volumetric strain are diagnostics: they are reported and
@@ -56,14 +80,20 @@ render path, the solver and the content build's derived steps that will read one
 `block_element_size`, `block_kind_name`, `TissueBlock`, `TissueFile`, `encode_tissue_file`,
 `write_tissue_file`, `read_tissue_file`, `read_tissue_file_memory`, `TissueFileInfo`,
 `read_tissue_file_info`, `import_interchange`, `export_interchange`, `seal_block`, `add_block`,
-`topology_sha256`. `domain/tissue/validate.h`: `Severity`, `Verdict`, `ValidationRow`,
+`topology_sha256`, `definition_json` (the reads and the import take an optional
+`CapabilityFailure*` and `const Capabilities*`, this build's when null).
+`domain/tissue/capabilities.h`: `RowStatus`, `row_status_name`, `RowCapability`,
+`row_capabilities`, `Capabilities` (`has_record`, `has_block`, `has_law`, `row`, `strip`),
+`build_capabilities`, `CapabilityFailure`, `check_requirements_json`, `check_requirements`,
+`capabilities_json`. `domain/tissue/validate.h`: `Severity`, `Verdict`, `ValidationRow`,
 `ValidateOptions`, `TissueReport`, `validate_tissue`, `rows_json`, `report_json`.
 `domain/tissue/expect.h`: `k_expect_format`, `k_expect_rule`, `parse_expectation`,
 `read_expectation`, `ExpectationDifference`, `ExpectationResult`, `compare_expectation`,
 `difference_kind_name`, `expectation_json`, `expectation_text`, `expectation_from_report`,
-`write_expectation`. `domain/tissue/synthetic.h`: `SyntheticOptions`, `make_synthetic_tissue`.
-`domain/tissue/sha256.h`: `Sha256`, `sha256`, `sha256_hex`. The types themselves are
-`engine::tissue::*` in `<schemas/tissue.h>`, generated from `schemas/tissue.schema`.
+`write_expectation`. `domain/tissue/synthetic.h`: `SyntheticOptions`, `make_synthetic_tissue`,
+`make_layered_slab`, `make_layered_fusiform`. `domain/tissue/sha256.h`: `Sha256`, `sha256`,
+`sha256_hex`. The types themselves are `engine::tissue::*` in `<schemas/tissue.h>`, generated from
+`schemas/tissue.schema`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `io`, `json`, `schema`, `schemas`,
 `geometry`, `physics`.
@@ -80,14 +110,25 @@ name mechanics, never anatomy.
 
 | Object | What it holds |
 |---|---|
-| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance) |
+| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance); and since version 3 `rest_driver`, a pose-dependent rest shape ([the layered model](#the-layered-model)) — a muscle is a `Volume` region with one, never a cage kind of its own |
 | `Frame` | a closed, outward-wound rigid proxy: vertices and triangles; **declared cover per vertex** with its `CoverProvenance` (`Undeclared`, `Fitted`, `AuthoredTransform`, `Authored`) and a provenance note, because a frame contracted to fit is a size changed, not discovered; `proxy`; the frames it lies `inside` |
 | `Surface` | an attachment target that is not a frame, flagged `proxy` |
-| `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone |
+| `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone; since version 2 its `enforcement` — `Spring`, the default and every earlier attachment's meaning, or `Essential`, exact — with an essential one's `patch` on a material surface and the `transition_band` it owns ([the layered model](#the-layered-model)) |
 | `SkinBinding` | the region and sheet it follows; the Loop level and **the refinement rule** (`loop-hoppe-1994-v1`, geometry.md's numbering and masks); the **normal mode** (below); the **domain**, an explicit set of canonical ids the binding may write; the **footprint** (ids at weight one) and the **transition band** (ids and weights in (0, 1), its width and profile) as two authored objects; and the per-domain-id **records**: refined triangle, barycentrics, optional authored offset, optional authored reference normal |
 | `Observation` | the declared base (`base_id`, vertex count, faces, `topology_sha256`), the accepted observation's positions, the **declared domain** (explicit ids), the base's positions at every id outside it, the signed deviation inside it, landmarks by canonical id, the **load** (gravity vector in body coordinates, medium and its density, pose, fill), and **acceptance** as a separate record (who, when, which sheet) |
 | `RegionState` | a region's nodes at a state, its `role` (`Reference` — what the binding is paired with —, `Rest`, `Response`, `Construction`), its `provenance` (`Authored`, `ForwardFromAuthoredRest`, `InverseStatics`, `ForwardFromReference`), its load, and — required for `InverseStatics` — an `InverseFit`: the fit's `method` (`surface-targeted`, `legacy-all-nodes`), how it extended the correction to the interior (`harmonic`, `elastic`, `none`), its step, the node sets it held, its residual, its smallest cell ratio, and the **`solver`** the rest was recovered against (`InverseSolver`: `kind` `xpbd` with `iterations`, `step_s` and optionally `duration_s` and `damping_per_s`, or `static-minimization` with `gradient_tolerance_n`; and the `implementation`); optionally the authoring side's own transferred visible surface, for the agreement row |
 | `DepthBudget` | the layer order along the local normal — frame, clearance, support, tissue, roof, cover, exterior — with the clearance's minimum, the width above which a clearance is a named **slot** or an undeclared depth, the slot's name, the cover layer's range, target and **purpose**, the area fraction of the roof the range must hold on, the absolute visible-minus-top-surface volume target, and the **skin clearance floor**, the least distance the simulated tissue surface keeps inside the transferred skin (0, bare containment, by default) |
+
+**What a definition may leave out, since version 2.** An **observation** that declares nothing —
+the record at its defaults, which is what an interchange that omits it reads as — is absent: none of
+the observation's rows run, and a `SkinBinding` (which binds the observation's ids) is a resolve
+problem. A **region with no Loop sheet at all** (no sheets, no top, no support, no stitch) is not a
+region missing its top sheet: the rows over the sheets (`region.sheets`, `region.shell_closed`,
+`region.through_thickness`, the skin and depth rows, the coverage row) do not run for it,
+`region.affine_patch` reports the global shears alone (it has no region frame), and
+`volume.report` reports its cells' volume. Both exist for the layered model's fixtures, whose skin
+is their material boundary and which reproduce no accepted observation; every definition written
+before them declares both, and reads as it did.
 
 **Why the inverse fit declares its interior.** One observed exterior fixes where the skin is and
 says nothing about where the interior nodes rest; two inverse fits of one observation that placed
@@ -146,6 +187,25 @@ little-endian, f32 IEEE binary32, u32 unsigned, u8 a byte:
 | `NodeSet` 12, `CanonicalIds` 30, `FootpointTriangles` 32 | u32 | node sets; id sets, **strictly ascending**; one refined triangle per domain id |
 | `PhaseFraction` 13, `MembraneStiffness` 15, `CableStiffness` 17, `FrameCover` 22, `IdValues` 31, `FootpointOffsets` 34 | f32 | one value per element of what it annotates (NaN where a cover or an offset is not declared) |
 | `FrameCoverProvenance` 23 | u8 | one `CoverProvenance` per frame vertex |
+| `BoundaryFaceRefs` 39 | u32 × 2 | since version 2: oriented boundary faces of a ten-node region, `(cell, local face)` — the cell's index in its `QuadraticTetrahedra` block, then Gmsh's local face 0 to 3 (below) — for a material surface's faces, an attachment's patch, a contact exclusion's faces |
+| `MaterialSurfaceCoordinates` 40 | u32, then f32 × 3: 16 bytes | since version 2: a point of a material surface — the face's index in the surface's `BoundaryFaceRefs`, then barycentrics over its three corners in the face's corner order, each in [0, 1], summing to one — one per id of a material skin's sampled ids |
+
+**A boundary face is Gmsh's.** Local face 0 of a ten-node cell is its corners (0, 2, 1), face 1 is
+(0, 1, 3), face 2 (0, 3, 2), face 3 (3, 1, 2) — Gmsh's `faces_tetra`, each wound outward
+(counter-clockwise seen from outside a positive cell) and each opposite the corner it lacks (3, 2,
+1, 0). Its six nodes are those three corners, then the edge nodes of (a, b), (b, c), (c, a): Gmsh's
+six-node triangle (`MSH` type 9), which with the cell's edge order (below, "The ten-node cell") is
+face 0's cell nodes (0, 2, 1, 6, 5, 4), face 1's (0, 1, 3, 4, 9, 7), face 2's (0, 3, 2, 7, 8, 6)
+and face 3's (3, 1, 2, 9, 5, 8). Its identity is stable with the region's numbering: a face is its
+`(cell, local face)`, a vertex its region node, an edge its two corner nodes. In NumPy a
+`MaterialSurfaceCoordinates` block is a structured array,
+`np.dtype([('face', '<u4'), ('b', '<f4', 3)])`, 16 bytes a record with no padding.
+
+**The requirements.** Since version 2 a definition names what its meaning depends on in
+`requirements` — the file's `requires` list, spelled so because `requires` is a C++20 keyword and a
+field's name is its member's: `{"records": [...], "blocks": [...], "rows": [...], "laws": [...]}`.
+It is checked before anything else of the file is read; see
+[Capabilities](#capabilities-and-the-requirements-rule).
 
 Kinds 1 and 2 are the container's own and never an interchange block. In a Blender script a block is
 
@@ -164,14 +224,19 @@ indices widened to little-endian u64, face by face and corner by corner — NumP
 the spelling study019 recorded, so the hash the authoring side already published verifies.
 Enumerations are spelled by their schema names (`"Tetrahedral"`, `"SlidingBilateral"`); a field
 left out takes its schema default. `engine-content tissue example <dir>` writes the synthetic
-definition as a complete interchange, the worked example of every field, and beside it
+definition as a complete interchange, the worked example of every field (a field added after its
+record's version 1 is written only where it is not its default, so the later examples show those),
+and beside it
 `synthetic-quadratic.json`, the worked example of a ten-node reference body (`"cage":
-"TetrahedralQuadratic"`, `"role": "Reference"`, a `QuadraticTetrahedra` block).
+"TetrahedralQuadratic"`, `"role": "Reference"`, a `QuadraticTetrahedra` block), and
+`layered-slab.json` and `layered-fusiform.json`, the worked examples of every layered record
+([below](#the-layered-models-fixtures)).
 
 `import_interchange` refuses what does not add up — an unknown kind, a byte count that is not
 count × element, a file of another length, a hash that differs, a duplicate name, a `format` other
 than `engine.tissue.v0`, and any field the schema does not have — because an interchange is written
-for this format. A container only warns about the last kind of thing.
+for this format. A container only warns about the last kind of thing. Both refuse, first, a file
+whose requirements this build does not meet, and say it is a capability failure.
 
 ## The container: `.tissue`
 
@@ -186,7 +251,11 @@ for each in `TissueFile::warnings`, which the validators turn into a `file.read`
 plan's rule for element kinds ([07 §7.11](../plan/07-content-pipeline.md#711-characters)): a region
 whose kind a build lacks falls back rather than failing the file. What a read refuses is damage: a
 wrong magic or version, a section past the end, a content hash that differs, and a block whose bytes
-are not the SHA-256 the table records.
+are not the SHA-256 the table records — and, told apart from damage, a definition whose requirements
+the build does not meet: a capability failure, which a file opts into by naming what its meaning
+depends on ([Capabilities](#capabilities-and-the-requirements-rule)). The definition is written with
+every field its record gained after version 1 left out while it holds its default, so a file that
+uses nothing new carries no field an older reader would warn about.
 
 ## The ten-node cell
 
@@ -266,11 +335,73 @@ runtime's: cell quality, orientation and edge nodes, materials, containment and 
 depth budget and the cover, the binding rows, the volumes, and the inverse-statics declarations (a
 certified state still names what it was solved against). The diagnostics stay diagnostics.
 
+## The layered model
+
+The authoring side's design packet `astra-layered-volume-design-2026-09-26` (`MANIFEST.json`
+`dc7971e0…`) settled the model's shape with the engine side on 2026-09-27
+([05 §5.16](../plan/05-simulation.md#516-characters-at-run-time)): bone as the frame, muscle as a
+region with a pose-dependent rest shape, fat as a material-coordinate thickness field whose depots
+partition its volume, skin as a mechanical membrane on the quadratic material boundary, and one face
+contact contract for self, region and frame contact. Its `INTERCHANGE.md` was the engine's work
+list; the records below are what was built from it, **append-only**: new records and new fields
+under version increments (`TissueDefinition` 2, `Region` 3, `Attachment` 2, every new record 1),
+new enumerators appended, and a definition that uses none of them reading exactly as it did. **What
+the packet asked not to be done, is not**: the Loop `Sheet`, `MembraneTriangles` and `SkinBinding`
+keep their meaning and are not the material boundary; `Fixed` stays a spring; there is no `Muscle`
+or `Fat` cage kind — they are `Volume` regions with declared laws.
+
+| Record | What it holds | Rows |
+|---|---|---|
+| `ParameterDomain`, `Parameter` | stable names, each with an SI unit of a closed table (`1`, `m`, `rad`, `Pa`, `kg/m^3`, `N/m`, `s`, `m/s^2`, `kg`), a range, the value at which its law is the identity (`reference`), and its owner `"<kind>:<name>"` — `rest_driver:<region>`, `thickness_field:<field>`, `contact_policy:<policy>`, or `morphology:<name>` for a law the definition does not carry | `parameters.domain` |
+| `ParameterSample`, `ParameterValue`, `SourceHash` | a point of a domain for a region, one value per parameter; its **snapshot**, the region's natural configuration at those values (a `StateNodes` block: a rest or an active target, never a solved state), with the snapshot's SHA-256 as recorded — its reproducible identity — and the sources it was made from, by path and hash | `state.parameters` |
+| `Region.rest_driver`: `ActiveRestShape` | the law and its version in one spelling (`fusiform-arch-v1` is the one this build evaluates), its coefficients as JSON read with the law's own record (`FusiformArchCoefficients`), the canonical reference state it maps from, the canonical frame (origin, axial and first transverse direction), the natural length L, the domain and which of its parameters are the activation and the pose angle, and the samples whose snapshots are its targets | `muscle.rest_identity`, `muscle.target_volume`, `muscle.passive_reference`, `muscle.objectivity` |
+| `FrameState` | a frame's (or a bone's) rigid transform at a state (`"construction"` or a state's name): a row-major rotation, orthonormal with determinant +1, and a translation, in doubles in the JSON; and the rule the certificate pins for how it travels from the frame's previous state. A frame's FrameStates in the definition's order are its load path; a frame with none at a state is where its vertices are | `frame.rigidity`, `attachment.pose_binding`, `contact.frame_trajectory`; and `frame.containment` and `frame.intersections` test the frame where its FrameState puts it |
+| `Attachment.enforcement`, `.patch_surface`, `.patch`, `.transition_band` | `Spring` (the default: version 1's meaning, unchanged) or `Essential`: exact, kind `Fixed`, to a frame or the world, no stiffness. An essential attachment holds its nodes where the target frame's transform at each state carries their construction positions (the frame binding's material map; frame-local targets are the construction's, undone by the construction's transform), and names its finite patch — faces of a material surface, a `BoundaryFaceRefs` block — and the collar node set it owns | `attachment.enforcement`, `attachment.pose_binding`, `attachment.contact_compatibility`; `attachment.reaction_balance` is not implemented |
+| `ThicknessField`, `CosineModulation` | fat as a thickness over a material surface's canonical coordinates, generating a `Volume` region's material: the region, the surface it is measured from, its normal convention (a spelling the construction pins), its law — `uniform-v1`, or `cosine-modulation-v1`, DESIGN's h = h_mean [1 + d cos(2πu/L) cos(πv/W)] — with its mean and coefficients, and the authoring side's own ledger (reference volume and mass) | `fat.thickness_positive`, `fat.field_jacobian`, `fat.mass_ledger` |
+| `DepotPartition`, `Depot` | the depots of one field, each a share of every cell of the field's region (a `PhaseFraction` block: a per-cell volume fraction, exactly that block's meaning) with its declared volume and mass; in every cell the shares sum to one — a depot partitions or redistributes the field's volume and never adds to it | `fat.depot_partition`, `fat.mass_ledger` |
+| `MaterialBoundarySurface` | an oriented surface of a ten-node region's own boundary faces (`BoundaryFaceRefs`, Gmsh's local faces, outward), evaluated as six-node triangles (`p2-six-node-v1`); shared by the membrane, the contact and the skin binding | `surface.material_boundary`, `surface.orientation`, `surface.embedding` |
+| `MaterialSkin` | a mechanical membrane on a material surface: its law and parameters (carried, pinned by the execution declaration, not evaluated), E·t and ν, an optional thickness, its **natural metric** (a `StateNodes` block of the region whose surface is the skin's rest; empty is the construction), its declared `coincident` zero offset — version 1 reads no other skin, and never assumes it — and its **material-surface binding**, sampled canonical ids (`CanonicalIds`) with one `MaterialSurfaceCoordinates` point each | `skin.material_binding`, `skin.rest_metric`, `skin.energy_transfer` |
+| `ContactPolicy` | the potential and its parameters, the activation distance above an offset, the proxy rule, the **locality relation** (`locality_m`: features closer than this in the canonical reference, within one region, are local and held to nonintersection only), and the certificate's proxy-deviation target, depth and work caps — carried and reported | `contact.pairs` |
+| `ContactPair`, `ContactSide`, `ContactExclusion` | two sides, each a material surface or a frame with its owner; the self-contact flag; eligibility (`Unilateral` separation, or an `Attached` interface nothing checks); the physical offset; the policy; and exact exclusions: faces of side a against faces of side b element by element (against a frame, each a face against the whole frame), with their reason — `Incident` (faces of one region sharing a node) or `Attachment` (an essential attachment's patch against its own frame) | `contact.pairs`, `contact.exclusions`, `contact.curved_clearance`, `contact.constraint_compatibility`, `contact.trajectory` |
+| `ReferenceCertificate` | an authoring certificate of one state, as provenance: the state's SHA-256 (verified), its inputs', protocol's and witness's (reported: their bytes are not in the file), the authority and implementation, the outcome and bounds as given, and whether it was independently recomputed | `reference.certificate_provenance` |
+| `Requirements` | what the file's meaning depends on: records and fields, block kinds, rows, laws | the gate, and `definition.requirements` |
+
+**Where the build departs from the packet's proposal, and why.** Names are the packet's except
+where they collide or cannot be spelled: `requires` is `requirements` (a C++20 keyword); the depot's
+shares reuse `PhaseFraction` and the essential patch and the exclusions reuse `BoundaryFaceRefs`,
+because their meaning is exactly theirs; the frame binding is not a record of its own but the
+essential attachment's patch and material map beside the `FrameState`s; and the laws are named
+(`fusiform-arch-v1`, `uniform-v1`, `cosine-modulation-v1`, `p2-six-node-v1`) because a law a build
+evaluates is a capability it can require. **`MaterialRestMetric` is not added**: the skin's natural
+metric is a named rest snapshot, a `StateNodes` block of the region, which carries it without a new
+kind (the packet's own condition, "where not derived from a named rest snapshot"). **`RigidTransforms`
+is not added**: a transform is a `FrameState` of twelve doubles in the JSON, where a block would
+round it to float32, and a fixture's frames have a handful of states. Essential **frame-local
+targets** are not a block either: they are the held nodes' construction positions in the frame's
+coordinates, which is what "held where the frame puts them" means for every fixture the packet
+describes; a target that is not the construction's is a field to add when a fixture needs one.
+
+**What each row can and cannot evaluate.** The geometric rows walk chords: a six-node face is its
+four chords, the same-node subdivision's boundary, and `surface.embedding`,
+`contact.curved_clearance` and `contact.constraint_compatibility` say "chordal" in their threshold.
+Each also reports how far the curved faces can be from their chords — the Bernstein bound of a face
+against its four chords, from its control net at one level of subdivision (CONTACT.md's construction,
+in double and without directed rounding: a reported deviation, never a certificate and never added
+to a separation). What the engine does not evaluate at all it reports as **info** and names the
+authority for: `contact.trajectory` and `contact.frame_trajectory` (continuous collision along a
+load path, straight or rigid), `skin.energy_transfer` (the membrane energy on six-node faces, its
+compression relaxation, its gradient's transfer through the shape functions), and
+`reference.certificate_provenance`, which verifies the one hash whose bytes are in the file and is
+never a pass — only a state hash that does not match fails it. `attachment.reaction_balance` is
+**not implemented** — reactions come from the P2 potential and the solve, and no record carries
+them yet — and is never emitted; a file that requires it fails the gate.
+
 ## Validators
 
 `validate_tissue` runs every row; `engine-content tissue validate` prints them as one JSON line and
 exits 1 when an **error** row fails (or, in the fixture mode below, when the outcome is not the
-declared one). Rows with a threshold the plan states but calls a quality gate are **warnings**; rows
+declared one), and 3, with no rows at all, when the file fails the capability gate
+([Capabilities](#capabilities-and-the-requirements-rule)). Rows with a threshold the plan states but calls a quality gate are **warnings**; rows
 the reviews ask to see and never gate are **info**. On a ten-node cage each row that walks cells
 works as "The ten-node cell" says, and on a reference body the two runtime-only limits report
 ("Reference bodies"). The ids:
@@ -315,6 +446,43 @@ works as "The ten-node cell" says, and on a reference body the two runtime-only 
 | `binding.transfer_agreement` | warning | the engine's transfer within 0.01 mm of the authoring side's at every domain vertex | two implementations of one transfer, compared |
 | `volume.report`, `volume.visible_vs_top` | info, warning | the four volumes and the decomposition, reported together, each labelled with the representation it is measured on, and **the posterior sweep** (the support sheet's, on its limit surface and on its control triangles) as its own line beside them; \|visible − top swept\| within the budget's absolute target | a response is compared with the top surface's sweep, never with the cage |
 | `volume.omitted_volume` | warning (error when containment could not run) | the sheets span every simulated surface node that can move; otherwise the volume those nodes sweep beyond what the bound surface carries, per state, the smooth shell, top sweep and visible body labelled `restricted`, and **containment mandatory** | a binding over a subset of a cage's surface nodes is not a representation of that cage, and containment is then the only check on what it omits |
+
+**The layered model's rows** ([The layered model](#the-layered-model)) run after all of the above,
+only for the records a definition has, one row per record (or pair, or attachment) named in its
+subject. Status is the capability line's: *evaluated* rows can fail; *info-only* rows report and
+never gate; the one *not-implemented* row is never emitted.
+
+| Row | Severity; status | Threshold | Why |
+|---|---|---|---|
+| `parameters.domain` | error; evaluated | a unique name; each parameter a unique name, a unit of the table, finite min ≤ reference ≤ max, and an owner naming a law of the definition that reads this domain (or a morphology law it does not carry) | a parameter is a stable name, a unit and a range, owned by the law it drives |
+| `state.parameters` | error; evaluated | a domain and a region that exist; one value for every parameter and none other, each finite and in its range; the snapshot one position per node, its SHA-256 the recorded one; the same values never regenerating two different snapshots | a snapshot is reproducible from its parameters, and its identity is its bytes |
+| `muscle.rest_identity` | error; evaluated | the canonical reference state exists, the samples are the region's and its domain's, and the sample at every parameter's reference value has a snapshot equal to the reference state bit for bit | the law is the identity at zero activation and pose, and that is sampled, not assumed |
+| `muscle.target_volume` | error; evaluated | every target's exact volume within 1e-5 of the reference's, relative, every cell's within 1e-4, every target cell's det J proven positive; the mass the reference's | activation preserves reference volume and mass; analytic det G = 1 is not claimed for rounded data, so it is measured |
+| `muscle.passive_reference` | error; evaluated | the canonical reference is the construction, the reference or a rest, never a response; no target is a solved (response) state bit for bit; the natural length positive | the observed pose is not its own stress-free state: no current-pose reset |
+| `muscle.objectivity` | error; evaluated (skipped for a law this build does not evaluate) | every target is the law on the canonical reference in the driver's canonical frame within 0.1 µm, the frame's axes unit and orthogonal to 1e-9; each target's best-fit rotation against the reference reported | a target is a function of the material and the parameters, never of the current pose; a snapshot alone is not a law. The energy's invariance under a rigid motion of F G⁻¹ is the certificate's |
+| `frame.rigidity` | error; evaluated | every FrameState names a frame (or a bone) and a state that exist, one per state; its rotation orthonormal to 1e-9 with determinant +1 to 1e-9, its translation finite, its interpolation named | a frame is rigid: nothing scales or shears it to make tissue fit |
+| `attachment.enforcement` | error; evaluated | an essential attachment is `Fixed`, to a frame or the world, with no stiffness; its patch faces of a material surface of its region, every node of which it holds; a spring carries no patch; a transition band a node set disjoint from the held nodes, owned once; no node held by two essential attachments | an essential attachment is exact and never a stiff spring; exact attachment and soft transition are different data |
+| `attachment.pose_binding` | error (a spring's reported, never failed); evaluated | at every state every held node where the target frame's transform carries its construction position, within 0.1 µm (the world: where it was built) | an essential attachment is prescribed; a spring's stretch is a force, not a violation |
+| `attachment.reaction_balance` | —; **not implemented** | — | reactions come from the P2 potential and the solve, and no record carries them: the gate refuses a file that requires the row |
+| `contact.frame_trajectory` | info; info-only | a frame's load path: each step's rotation angle, translation and interpolation rule | a rigid rotation is not a linear vertex path: continuous collision along it is the certificate's |
+| `surface.material_boundary` | error; evaluated | a ten-node region; faces in range, none twice, each a boundary face (no other cell has it); evaluated `p2-six-node-v1` | the material boundary is the quadratic cells' own outer faces, not a Loop sheet |
+| `surface.orientation` | error; evaluated | every face out of its cell at the construction; faces consistently wound (a shared edge in opposite directions, none shared thrice) | the membrane, the contact's sign and the skin agree on one orientation |
+| `surface.embedding` | error; evaluated, **chordal** | at every state no two chords that share no node cross, no chord without area, no two sharing an edge folded onto each other (normals' dot above −0.99) | a positive det J does not prove the surface does not pass through itself |
+| `fat.thickness_positive` | error; evaluated (skipped for an unknown law) | a `Volume` region and a surface of it; `uniform-v1`'s mean above 0; `cosine-modulation-v1`'s h_mean (1 − \|d\|) above 0 with \|d\| < 1 and L, W above 0 | thickness is a positive material-coordinate field, not softness |
+| `fat.field_jacobian` | error; evaluated | every cell of the field's region proven positive at the construction (Bernstein, depth 4) | a positive thickness proves nothing about the realized offset, which can fold |
+| `fat.depot_partition` | error; evaluated | a field no other partition names; depots named once, each a share in [0, 1] of every cell; in every cell the shares sum to one within 1e-6 | a share that leaves a cell short or over is volume lost or added |
+| `fat.mass_ledger` | error; evaluated | the region's reference volume and mass (exact cells, density × reference volume) within 1e-6 of the field's declared ledger; each partition's depots summing to them within 1e-9 and each within 1e-6 of what it declares; h_mean × the reference surface's area reported beside it, never substituted | a depot never adds volume; mass is stored density times reference volume |
+| `skin.material_binding` | error; evaluated | a material surface; its zero-offset coincidence declared; sampled ids strictly ascending, each a valid point of the surface (barycentrics in [0, 1] summing to one within 1e-6); with an observation, each id one of its vertices and the surface there within 0.1 µm of it at the region's reference | the mechanical skin is the boundary itself; the observation's identity where there is one (D3's, to float32, since a P2 evaluation is arithmetic and not a copy) |
+| `skin.rest_metric` | error; evaluated | a law named, E·t > 0 N/m, −1 < ν < 0.5, a declared thickness > 0; the natural metric regular on every face (the area element above 0 at its corners, edge midpoints and seven interior points); the natural and constructed areas reported | a larger envelope is a different metric, not a lower modulus |
+| `skin.energy_transfer` | info; info-only | the law, its parameters, E·t, ν, the faces | the membrane's energy, relaxation and gradient transfer are the certificate's |
+| `contact.pairs` | error; evaluated | a unique name; both sides resolve with their owners, at least one a surface; self contact exactly when both are one surface; an offset ≥ 0; a policy with a potential, a proxy rule, an activation distance, a deviation target, a depth and work caps; a locality relation when a self-contact offset is positive | one declared contract for self, region and frame contact |
+| `contact.exclusions` | error; evaluated | every exclusion exact: its faces the sides' own; an incident one pairs faces of one region sharing a node; an attachment one names an essential attachment whose patch is on side a and whose target is side b's frame, and only that patch | an exclusion that masks a nonincident feature hides the overlap it exempts |
+| `attachment.contact_compatibility` | error; evaluated | every unilateral pair between an essential patch's surface and its frame excludes the whole patch against it, by an exclusion naming the attachment | an owned coincidence is not a unilateral barrier; every other pairing stays active |
+| `contact.curved_clearance` | error; evaluated, **chordal** | at every state every eligible chord pair strictly above its required separation — the pair's offset, or, within one region, nonintersection for features closer than the locality relation in the canonical reference — incident chords and exclusions exempt; the chords' deviation from the curved faces reported apart | every eligible pair starts and stays above its offset, equality being the barrier's boundary; the curved surfaces are the certificate's |
+| `contact.constraint_compatibility` | error; evaluated, **chordal** | no pair within its separation at any state with both sides prescribed (held by an essential attachment, or a frame) | such a pair is infeasible, not a violation a solve can remove |
+| `contact.trajectory` | info; info-only | the pair's states in order with the chordal least separation at each | continuous separation between states is the certificate's |
+| `reference.certificate_provenance` | info; info-only (fails only on a state hash that does not match) | the certified state's SHA-256 verified against its block; everything else reported as given | the certificate is the authority; a supplied pass never becomes the engine's own |
+| `definition.requirements` | error; evaluated, only when the file has requirements | every row the file requires ran on it, none skipped; every block kind it requires is one of its blocks' | a requirement the data never reaches passed the gate and checked nothing |
 
 **The volume report** is the plan's four quantities at every state, always together: the cage's
 piecewise-linear volume (the tetrahedra's sum), the closed smooth shell (the sheets' limit surfaces
@@ -392,6 +560,57 @@ declares". `engine-content tissue validate <file> --expect <expected.json>` is t
   engine's additions are written only where they differ from their defaults, so a declaration of
   failures alone is exactly what a v1 writer produces. `report` already writes the report as data (one
   JSON line), so it gained no flag.
+- **A missing capability is never an expected failure.** A file that fails the capability gate is
+  refused before any row exists, so there is nothing to match, and `validate --expect` exits 3 as
+  it does without the flag; and a declaration that names a row this build does not implement — not
+  in its capability table, or `not-implemented` there — is refused the same way before anything is
+  validated, whatever verdict it declares, because declaring that row `Skipped` would turn a
+  capability the build lacks into an outcome the fixture accepts.
+
+## Capabilities and the requirements rule
+
+**The problem it solves.** A reader that meets something it does not know skips it with a warning,
+so that a newer file still loads — right for a block a region can fall back from, and wrong for a
+field that changes the meaning of one the reader does know: a build from before version 2 reading
+an essential attachment ignores `enforcement` and reads `Fixed`, a stiff spring, and validates the
+wrong body without a word. The pinned release the supine fixtures were validated with (`0fd48ede…`,
+from `5e7c8d1`) is such a reader for every layered record, which is why the packet asked for a new
+capability pin before any layered fixture is certified, and why that release stays the comparator
+only for the subset it reads.
+
+**The line.** `engine-content tissue capabilities` prints what this build reads and evaluates as one
+JSON line (`domain/tissue/capabilities.h`; [apps](apps.md#engine-content-tissue-the-tissue-definition)):
+`schema_version` (the `TissueDefinition` record's version, 2) and `container_version` (1);
+`records`, every record reachable from `TissueDefinition` and the laws' coefficient records with its
+version; `fields`, every `Record.field`; `enums` with their enumerators; `blocks`, every interchange
+block kind; `rows`, every validator row as `evaluated`, `info-only` or `not-implemented`; `laws` by
+family (`rest_driver`, `thickness`, `surface_evaluation`, `normal_mode`, `refinement_rule`,
+`energy`); the kinds of requirement it reads; and the commit it was built from. The records, fields
+and enumerators come from the generated schema reflection — the reader's own view, which cannot
+drift from what it reads — and the rows from one table the tests hold every emitted row to.
+
+**The rule.** A definition's `requirements` (the `requires` list) names what its meaning depends on:
+`records` — a record (`"ContactPair"`), one field (`"Attachment.enforcement"`), an enumeration or
+one enumerator (`"AttachmentEnforcement.Essential"`); `blocks` by kind name; `rows` by id, which
+must be implemented (evaluated or info-only); and `laws` by spelling. A reader checks them **on the
+JSON as written, before it reads anything else** — so a file it could not read at all (an
+enumerator from the future is an error in `core/schema` even where unknown fields are ignored)
+still fails as the capability it is — and refuses the file when it lacks any of them: a **capability
+failure**, with its own sentence naming everything missing and its own exit code, 3, from every
+`engine-content tissue` command that reads a file. The gate fails closed: requirements that are not
+an object of string arrays, or that name a kind of requirement the reader does not know, are
+themselves a capability failure. A file with no requirements is read as before, with its old
+meaning — every file written before version 2 is one. **What a writer lists**: every record,
+field, enumerator, block kind, row and law whose absence from a reader would change what the file
+means or leave it unchecked — the layered fixtures list theirs — and nothing it merely carries.
+Inside this build, `definition.requirements` holds a file to its own list: a required row that
+never ran on it, or ran skipped, is data the requirement promised and the file does not carry.
+
+**Both directions are tested** (`capabilities_tests.cpp`): an old file — the synthetic definition,
+requiring nothing — reads in this build and in a simulated older one with the same definition; a
+new file read by the simulated older build (this build's capabilities with the layered records,
+blocks, rows and laws stripped) is refused as a capability failure naming each, from the container
+and from the interchange; and the fixture mode refuses to match one (`tissue_tests.cpp`).
 
 ## The declared energy, the patch test and the equilibrium gap
 
@@ -610,6 +829,43 @@ and fails only `cover.range`, and its exact volume is the solid torus section's 
 million (99.1515 against 99.1519 ml; the four-node slab's chords give 98.4045 and the same nodes'
 subdivision 98.9647). It is the body the fixture-mode test declares two failures for.
 
+## The layered model's fixtures
+
+`make_layered_slab()` and `make_layered_fusiform()` (`synthetic.h`, `src/layered_synthetic.cpp`)
+are the packet's two neutral fixtures in shape (RUNS.md), generated from formulas, nothing solved:
+ten-node reference bodies with straight-sided cells (edge nodes at the midpoints, the canonical
+reference the packet asks for), Kuhn-split hexahedra, DESIGN's synthetic constants, gravity zero, no
+observation and no Loop sheet — their skin, where they have one, is the material boundary. Each
+declares its requirements, and `engine-content tissue example` writes both as interchanges and
+containers, the worked examples of every layered record.
+
+- **The slab**: 160 × 80 × 15 mm of fat (K 100 kPa, μ 350 Pa, 950 kg/m³), 384 cells and 765 nodes,
+  0.7 mm above a closed base; its upper and lower surfaces (64 faces each); a `uniform-v1` thickness
+  field of 15 mm over the lower one declaring 192 ml and 0.1824 kg, which the cells hold to 7 parts
+  in 10⁸; two depots (x < 0 and x > 0) of 96 ml each; a skin on the upper surface (E·t 80 N/m,
+  ν 0.45) sampled at all 153 of its nodes; a self-contact pair of that skin (offset 1 mm, locality
+  5 mm) with one incident exclusion and the lower surface against the base (offset 0.1 mm), under a
+  policy carrying CONTACT.md's certificate bounds; states rest, reference and "compressed" (3%
+  shorter, a 0.25 mm upward bias whose curvature the chords miss by 4.4 µm); and an uncertified
+  certificate record of the reference, whose hash the row verifies.
+- **The fusiform**: 120 mm long, radius 5 mm at the ends and 15 mm at the middle, 288 cells and 625
+  nodes (K 100 kPa, μ 1000 Pa, 1050 kg/m³); two box handles 0.7 mm beyond its ends; an essential
+  origin with an 8-face patch on the closed boundary and a collar it owns, and a spring insertion;
+  `fusiform-arch-v1` driven by activation (0 to 1) and pose angle (0 to π/3) with two samples, the
+  identity and a = 0.5 at 60°; states rest, reference and "posed", the insertion handle turned 60°
+  about y by a FrameState and the body bent by a smoothstep of its length to follow it; contact
+  against both handles, the origin's patch excluded against its own. The law reproduces the active
+  target to 1.5 nm and the target keeps its volume to 1.5 parts in 10⁸ (float32).
+
+Both pass every row clean — every error, warning and info row, nothing skipped. **Their variants**
+(`layered_tests.cpp`) fail chosen rows on purpose, and the fixture mode matches a declaration of
+exactly those: the slab with an incident exclusion naming two faces that share no node, a depot
+share that leaves a cell over, the base raised to 0.05 mm under the fat, and a skin that does not
+declare its coincidence (`contact.exclusions`, `fat.depot_partition`, `fat.mass_ledger`,
+`contact.curved_clearance`, `skin.material_binding`); the fusiform with an active target missing its
+transverse compensation, a stiffness on its essential attachment, and a frame state that scales
+(`muscle.target_volume`, `muscle.objectivity`, `attachment.enforcement`, `frame.rigidity`).
+
 ## Testing
 
 `tools/dev.ps1 test -Filter tissue`: `sha256_tests.cpp` (FIPS 180-4's examples, streaming in pieces
@@ -656,16 +912,41 @@ one ulp off, failing `cover.range` and `observation.landmarks` on purpose, match
 v1 declaration of those two; a failure left undeclared, a declared row that passes, a severity moved,
 a value outside its tolerance and a skipped row nobody declared each a difference; a first run's
 written declaration matching that run; a declaration of failures alone written exactly as v1; a
-declaration that is not one refused); the size table pins the two container records.
+declaration that is not one refused); `p2_face_tests.cpp` (Gmsh's four local faces are the cell's,
+outward, with their edge nodes; a straight face is its triangle; a face lifted h at one edge node
+departs from its chords by h/4, sampled, and its Bernstein bound is h/2); `mesh_query_tests.cpp`
+also holds the distances the contact rows measure with (parallel, side by side, crossing, and a
+nearly coplanar pair — apart and overlapping — decided in its plane) and the candidate pairs of two
+hierarchies; `layered_tests.cpp` (both fixtures clean with every layered row present; their variants
+matched by their declarations; a held node moved a micrometre failing the essential attachment,
+and a version-1 attachment reading as a spring; a file with none of the records getting none of the
+rows; both round-tripping through the interchange and the container to the same report; a required
+row the data never reaches failing `definition.requirements`); `capabilities_tests.cpp` (the
+table's records, fields, blocks, rows and laws; every emitted row in the table with its status,
+info-only rows at info severity; requirements met, unmet, of an unknown kind or unreadable; an
+older build refusing a new file from the container and the interchange while both read an old
+one; a future enumerator refused as the capability a file requires; the writer leaving out what a
+definition does not use); the size table pins the two container records.
 `apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
-`validate`, `report` and the fixture mode's `--write-expect` and `--expect`.
+`validate`, `report` and the fixture mode's `--write-expect` and `--expect`; `capabilities`; the
+layered fixtures imported byte for byte and validated clean; a file requiring a row this build does
+not implement refused by `import` and `validate` with exit 3 and by `--expect` whatever it declares,
+and a declaration naming such a row refused against a sound file; and **the native supine
+fixtures**, found by `ENGINE_TISSUE_SUPINE_NATIVE` or the owner's handoff path and skipped where
+absent: each `reference-native.tissue` checked against its pinned SHA-256 before it is read, copied
+with its `EXPECTED-FAILURES.predeclared.json` to the test's scratch directory, and validated in the
+fixture mode — exit 0, 43 rows, 27 pass, 12 info, 4 fail, as the pinned release gave. Nothing of the
+packet is committed.
 
 **Performance notes.** Content-build code, CPU, double precision in the geometric queries, not a
 hot path: study019 validates and reports in about 10 s in `msvc-debug`, most of it the winding
 numbers (275 nodes against 4,096 frame triangles, in four states) and the shell-against-skin
 intersection pass; a supine fixture's ten-node body in about 21 s, its 1,635 nodes costing what
 study019's 275 did six times over. A ten-node cell's Jacobian is 64 determinants and, only where
-they do not decide, eight pieces a level to depth 4. Nothing here runs per frame.
+they do not decide, eight pieces a level to depth 4. The layered fixtures validate in under a
+second each in `msvc-debug`; the contact rows measure only the chord pairs whose boxes come within a
+pair's offset and activation band, found through the same bounding-volume hierarchy the
+intersection rows use. Nothing here runs per frame.
 
 ## LOD policy and determinism stance
 
@@ -692,6 +973,28 @@ simulates.
   writes the kind natively; and a build older than this one refuses a container naming
   `TetrahedralQuadratic` outright rather than falling back, because an unknown enumerator is an
   error in `core/schema` where an unknown field or block kind is skipped.
+- **Resolved 2026-09-28: the interchange carries the layered model's records, behind a capability
+  gate** ([The layered model](#the-layered-model),
+  [Capabilities](#capabilities-and-the-requirements-rule)). What it leaves open, each a question for
+  the next packet rather than a guess made here: **reactions** — `attachment.reaction_balance` is
+  not implemented, because no record carries a state's attachment reactions and the engine has no
+  P2 potential to compute them; **explicit frame-local targets** for an essential attachment whose
+  held nodes are not where the construction put them (a prestretched attachment); **a sampled
+  thickness field** (`ThicknessField`'s "field law or samples": which ids a sample is keyed by —
+  canonical ids of a skin, or region nodes of the reference surface — is not settled, so only the
+  two analytic laws are read); **the locality relation**'s definition — this build reads a distance
+  in the canonical reference configuration (`ContactPolicy.locality_m`), the narrowest reading of
+  "pinned in canonical material coordinates", and CONTACT.md makes the relation an execution
+  blocker whose final form may be a graph distance or a feature relation instead; **the membrane law,
+  the contact potential and the proxy rule** are spellings carried for the certificate and pinned by
+  the execution declaration, which this build does not evaluate (their rows are info); and **what a
+  frame's interpolation rule means** — carried and reported, never interpolated here. Where the
+  version-1 rows meet the new records: `frame.containment` and `frame.intersections` follow a
+  frame's FrameStates, but the depth budget reads a frame as authored, and the equilibrium gap
+  slides a node on a frame as authored; a region's skin rows need a Loop top sheet and an
+  observation, so the mechanical skin is checked by its own rows only. The pinned release
+  `0fd48ede…` reads none of the layered records and knows no requirements: a layered file needs a
+  build from this change, whose `tissue capabilities` line is the pin.
 No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
 attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
 without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
