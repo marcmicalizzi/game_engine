@@ -508,13 +508,21 @@ enum TerrainGenerator : u8 {
   Dunes = 1
 }
 
+/// One storm's transport gain (`Terrain.storm_gains`).
+struct StormGain @version(1) {
+  /// The storm's index in the record's period, in day order, from 0.
+  storm: u32 = 0
+  gain: f32 = 1
+}
+
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
 /// Version 2 added the generator; a version 1 terrain reads as the waves it always drew. Version 4
 /// added `provider`, the ground provider's name (ADR-0046), which `generator` is read as when it is
-/// empty.
-struct Terrain @version(4) {
+/// empty. Version 5 added the wind's day (`diurnal_*`) and the storms' transport gains
+/// (`storm_gain`, `storm_gains`); their defaults are the record as it was, to the bit.
+struct Terrain @version(5) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -552,7 +560,30 @@ struct Terrain @version(4) {
   /// beside `generator: Dunes` is refused. A name the executable does not carry is refused with a
   /// sentence naming it.
   provider: string @since(4)
+  /// With the generator: the wind's day (docs/subsystems/terrain.md, "The day's wind"). How far its
+  /// strength swings over the day, as a share of the day's own strength: 0 (the default) is a day
+  /// spread evenly as before; 1 falls calm at the night's lowest; up to 2, calm for longer. Its sand
+  /// is redistributed over the day, never added to.
+  diurnal_strength: f32 = 0 @since(5)
+  /// The hour the wind is strongest, [0, 24): mid-afternoon, after the day's heat.
+  diurnal_peak_hour: f32 = 15 @since(5)
+  /// How far the wind veers either side of the day's direction over the day, degrees, [0, 90]; 0
+  /// (the default) holds the day's direction. It shortens the day's net transport, as a turning
+  /// wind does.
+  diurnal_veer_deg: f32 = 0 @since(5)
+  /// The hour the veer passes through the day's direction turning positive (anticlockwise seen from
+  /// above), [0, 24).
+  diurnal_veer_hour: f32 = 12 @since(5)
+  /// A storm's transport gain (docs/subsystems/terrain.md, "A storm scales transport"): its hours
+  /// move this many times the sand their wind does, (0, 1000]. A stylization, like a band's
+  /// `celerity_scale`, never physics: a real dune does not visibly walk in a storm. The wind's
+  /// direction, the day and the clock are untouched. 1, the default, is the record as before.
+  storm_gain: f32 = 1 @since(5)
+  /// Gains for single storms, by their index in the record's period in day order (the order
+  /// `engine-content terrain --storms` lists them; the period repeats every eight years).
+  storm_gains: StormGain[] @since(5)
 }
+
 
 /// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).
 enum RingRuins : u8 {

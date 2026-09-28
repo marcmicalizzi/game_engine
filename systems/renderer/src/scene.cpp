@@ -1034,6 +1034,14 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     out.terrain.sand_flux = t.sand_flux;
     out.terrain.storms_per_year = t.storms_per_year;
     out.terrain.storm_strength = t.storm_strength;
+    out.terrain.diurnal_strength = t.diurnal_strength;
+    out.terrain.diurnal_peak_hour = t.diurnal_peak_hour;
+    out.terrain.diurnal_veer_deg = t.diurnal_veer_deg;
+    out.terrain.diurnal_veer_hour = t.diurnal_veer_hour;
+    out.terrain.storm_gain = t.storm_gain;
+    out.terrain.storm_gains.clear();
+    for (const scene::StormGain& g : t.storm_gains)
+      out.terrain.storm_gains.push_back(TerrainDesc::StormGain{g.storm, g.gain});
     out.terrain.has_bands = false;
     out.terrain.bands.clear();
     if (t.bands.has_value()) {

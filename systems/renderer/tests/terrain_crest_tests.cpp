@@ -255,3 +255,135 @@ TEST_CASE("renderer: the erg's big dunes advance by their band's travel, as Bagn
     }
   }
 }
+
+TEST_CASE("renderer: how fast the erg's bands walk in a storm, gain by gain, at the game's rate") {
+  // The number the owner chooses a storm's transport gain by (terrain.md, "A storm scales
+  // transport"; docs/experiments/wind-day-and-storm-gain-2026-09-28.md): at one game second a real
+  // second, metres a second each band travels over its storms' hours — the mean over the record's
+  // storms and the strongest hour of any — at a gain of 1, 10, 50 and 250, beside a calm day's
+  // mean.
+  const std::string path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(path)) {
+    MESSAGE("the desert-erg scene is not here; skipped");
+    return;
+  }
+  SceneDesc scene;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, scene, error), error);
+  REQUIRE(scene.terrain.storms_per_year > 0u);
+  constexpr i64 k_hour_us = 3'600 * terrain::k_us_per_second;
+  f64 barchan_at_1 = 0.0;
+  for (const f32 gain : {1.0f, 10.0f, 50.0f, 250.0f}) {
+    TerrainDesc desc = scene.terrain;
+    desc.storm_gain = gain;
+    const TerrainSampler sampler(desc);
+    const terrain::DuneField* field = terrain::dune_field(sampler.provider());
+    REQUIRE(field != nullptr);
+    const terrain::WindRecord& wind = field->wind();
+    // The storms' own transport per second: over each storm's hours, and its strongest hour.
+    f64 storm_sum = 0.0;
+    f64 storm_seconds = 0.0;
+    f64 strongest = 0.0;
+    for (const terrain::WindStorm& st : wind.storms()) {
+      for (i32 h = st.first_hour; h < st.first_hour + st.hours; ++h) {
+        const i64 t = static_cast<i64>(st.day) * terrain::k_us_per_day + h * k_hour_us;
+        const f64 cm2 = static_cast<f64>(wind.between(t, t + k_hour_us).magnitude);
+        storm_sum += cm2;
+        storm_seconds += 3'600.0;
+        strongest = std::max(strongest, cm2 / 3'600.0);
+      }
+    }
+    const f64 storm_mean = storm_sum / storm_seconds;  // cm^2 a second
+    // A calm day's: the record's mean day.
+    const f64 day_mean = static_cast<f64>(wind.period_total().magnitude) /
+                         (static_cast<f64>(terrain::k_record_days) * 86'400.0);
+    char line[400];
+    i32 n = std::snprintf(line, sizeof line, "gain %4.0f:", static_cast<f64>(gain));
+    for (const char* name : {"barchan", "crest", "draa", "mega-draa"}) {
+      u32 b = ~0u;
+      for (u32 k = 0; k < field->band_count(); ++k)
+        if (std::strcmp(field->band_name(k), name) == 0) b = k;
+      REQUIRE(b != ~0u);
+      // Bagnold's rule as `DuneField::displacement` takes it: cm^2 over the celerity height in mm,
+      // times 100 for mm^2; millimetres to metres.
+      const f64 height_mm = static_cast<f64>(field->band_height(b));
+      const auto mps = [&](f64 cm2_per_s) { return cm2_per_s * 100.0 / height_mm / 1000.0; };
+      n += std::snprintf(line + n, sizeof line - static_cast<usize>(n),
+                         " %s %.2e m/s in a storm (strongest hour %.2e, a mean day %.2e);", name,
+                         mps(storm_mean), mps(strongest), mps(day_mean));
+      if (gain == 1.0f && std::strcmp(name, "barchan") == 0) barchan_at_1 = mps(storm_mean);
+      if (gain == 250.0f && std::strcmp(name, "barchan") == 0) {
+        // The gain multiplies the storm's share of its hours; the day's own share rides along.
+        CHECK(mps(storm_mean) > 200.0 * barchan_at_1);
+        CHECK(mps(storm_mean) < 250.0 * barchan_at_1);
+      }
+    }
+    MESSAGE(std::string(line));
+    // The renderer's cadence reads the same travel: over a storm's hours it is the gained one.
+    const terrain::WindStorm& st = wind.storms()[0];
+    const f64 from = static_cast<f64>(st.day) * 86'400.0 + st.first_hour * 3'600.0;
+    const f64 to = from + st.hours * 3'600.0;
+    const f64 travel = terrain_band_travel_m(sampler, from, to);
+    const i64 cm2 =
+        wind.between(static_cast<i64>(from * 1e6), static_cast<i64>(to * 1e6)).magnitude;
+    f64 most = 0.0;
+    for (u32 b = 0; b < field->band_count(); ++b)
+      most = std::max(
+          most, static_cast<f64>(cm2) * 100.0 / static_cast<f64>(field->band_height(b)) / 1000.0);
+    CHECK(travel == doctest::Approx(most));
+  }
+}
+
+TEST_CASE("renderer: the storm erg's barchans walk through its storm and stand after it") {
+  // content/test-scenes/desert-erg-storm: the erg with the wind's day on and a storm gain of 1,000,
+  // starting at 12:50 in the ten-hour storm that blows from 09:00 of day 1,095 (its README).
+  const std::string path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg-storm/scene.json",
+                      "content/test-scenes/desert-erg-storm/scene.json");
+  if (!test::path_exists(path)) {
+    MESSAGE("the desert-erg-storm scene is not here; skipped");
+    return;
+  }
+  SceneDesc scene;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, scene, error), error);
+  const TerrainSampler sampler(scene.terrain);
+  const terrain::DuneField* field = terrain::dune_field(sampler.provider());
+  REQUIRE(field != nullptr);
+  REQUIRE(field->wind().diurnal());
+  const i64 t0 = static_cast<i64>(std::llround(scene.terrain.time_s * 1.0e6));
+  constexpr i64 k_hour_us = 3'600 * terrain::k_us_per_second;
+  CHECK(field->wind().wind_at(t0).storm);  // blowing from the first frame
+  CHECK(field->wind().wind_at(t0).gain_q16 == 1000 * 65536);
+  const auto walk = [&](u32 band, i64 from, i64 to) {
+    i64 x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+    field->displacement(band, from, x0, z0);
+    field->displacement(band, to, x1, z1);
+    return std::sqrt(static_cast<f64>(x1 - x0) * static_cast<f64>(x1 - x0) +
+                     static_cast<f64>(z1 - z0) * static_cast<f64>(z1 - z0)) /
+           1000.0;
+  };
+  u32 barchan = ~0u;
+  for (u32 k = 0; k < field->band_count(); ++k)
+    if (std::strcmp(field->band_name(k), "barchan") == 0) barchan = k;
+  REQUIRE(barchan != ~0u);
+  const i64 start = terrain::day_of(t0) * terrain::k_us_per_day + 9 * k_hour_us;  // 09:00
+  CHECK_FALSE(field->wind().wind_at(start - k_hour_us).storm);
+  // Hour by hour through the storm: the barchans' speed, millimetres a second at the game's rate.
+  std::string hours = "the barchans' speed through the storm, mm/s from 09:00:";
+  for (i64 h = 0; h < 10; ++h) {
+    char cell[16];
+    std::snprintf(cell, sizeof cell, " %.2f",
+                  walk(barchan, start + h * k_hour_us, start + (h + 1) * k_hour_us) / 3.6);
+    hours += cell;
+  }
+  MESSAGE(hours);
+  const f64 storm = walk(barchan, start, start + 10 * k_hour_us);
+  const f64 after = walk(barchan, start + 10 * k_hour_us, start + 20 * k_hour_us);
+  MESSAGE("the barchans walk " << storm << " m through the storm's ten hours and " << after
+                               << " m in the ten after it");
+  CHECK(storm > 150.0);
+  CHECK(after < 1.0);
+}

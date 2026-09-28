@@ -44,11 +44,44 @@ constexpr u32 k_samples = 192;
 // The erg's waves, its fastest band: about 330 m a year, 0.9 m a game day.
 constexpr f64 k_speed = 0.9 / 86'400.0;
 
-// A dune profile travelling downwind: 2 m tall, 12 m from crest to crest, a sharp brink.
-Vector<f32> profile(f64 time_s, f64 spacing) {
+// How far the waves have travelled by a game time, metres: `k_speed` a second, and during a storm
+// (`from`..`to`, game seconds) `factor` times that — the storm's flux over a mean hour's, times
+// its transport gain (terrain.md, "A storm scales transport"). No storm is a straight line.
+struct Transport {
+  f64 from = 0.0;
+  f64 to = 0.0;
+  f64 factor = 1.0;
+  f64 travel(f64 t) const noexcept {
+    const f64 in = std::clamp(t, from, to) - from;
+    return k_speed * (t + (factor - 1.0) * in);
+  }
+  // The cadence by displacement (`terrain_next_time`): the game time after `start` at which the
+  // waves will have travelled `target`, clamped to [start + lo, start + hi]. The travel is
+  // piecewise linear, so its inverse is exact; `gained` false reads the storm as a calm day's.
+  f64 next_time(f64 start, f64 target, f64 lo, f64 hi, bool gained = true) const noexcept {
+    const Transport calm{};
+    const Transport& t = gained ? *this : calm;
+    f64 a = start;
+    f64 b = start + hi;
+    if (t.travel(b) - t.travel(start) <= target) return b;
+    for (u32 i = 0; i < 64; ++i) {
+      const f64 mid = 0.5 * (a + b);
+      if (t.travel(mid) - t.travel(start) <= target) {
+        a = mid;
+      } else {
+        b = mid;
+      }
+    }
+    return std::max(a, start + lo);
+  }
+};
+
+// A dune profile travelling downwind by `travel` metres: 2 m tall, 12 m from crest to crest, a
+// sharp brink.
+Vector<f32> profile_at(f64 travel, f64 spacing) {
   Vector<f32> out(k_samples);
   for (u32 i = 0; i < k_samples; ++i) {
-    const f64 x = static_cast<f64>(i) * spacing - k_speed * time_s;
+    const f64 x = static_cast<f64>(i) * spacing - travel;
     const f64 u = x / 12.0 - std::floor(x / 12.0);
     out[i] = static_cast<f32>(u < 0.8 ? 2.0 * u / 0.8 : 2.0 * (1.0 - u) / 0.2);
   }
@@ -91,6 +124,9 @@ struct ModelRun {
   Vector<f64> rate_of;
   Vector<f64> advance_of;
   u32 changes = 0;
+  // The most the waves travelled between the two fields of any pair, over the level's spacing:
+  // at most the cadence's fraction when the pair is a slide, more when it is a cross-fade.
+  f64 max_pair_travel_share = 0.0;
 };
 
 // The rate from a frame on: frame 0 is the start, and a later one is a change made between the
@@ -103,7 +139,10 @@ struct RateStep {
 
 ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
                    std::span<const LevelSpec> specs, u32 stall_at = 0, u32 stall = 0,
-                   usize depth_override = 0) {
+                   usize depth_override = 0, const Transport* transport = nullptr,
+                   f64 min_step_s = 60.0, bool cadence_gained = true) {
+  const Transport calm{};
+  const Transport& sand = transport != nullptr ? *transport : calm;
   f64 rate = schedule[0].rate;
   u32 next_step = 1;
   // Game time is the start plus `rate * real` since the last change plus what the changes before
@@ -119,7 +158,7 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
   const u32 n = static_cast<u32>(specs.size());
   const f64 t0 = 94'608'000.0;
   const f64 fraction = 0.25;
-  const f64 min_step = 60.0;
+  const f64 min_step = min_step_s;
   const f64 max_step = 2'592'000.0;
   const f64 lead = 1.5;
   struct Level {
@@ -146,7 +185,7 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
     l.budget = fraction * l.spacing;
     l.window.nx = k_samples;
     l.window.nz = 1;
-    l.a = profile(t0, l.spacing);
+    l.a = profile_at(sand.travel(t0), l.spacing);
     l.b = l.a;
     l.latest = l.a;
     l.previous = l.a;
@@ -193,7 +232,10 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
     // Take a finished field (TerrainMotion::take_finished).
     if (busy && f >= done_at) {
       Level& l = levels[busy_level];
-      Vector<f32> field = profile(busy_time, l.spacing);
+      Vector<f32> field = profile_at(sand.travel(busy_time), l.spacing);
+      run.max_pair_travel_share =
+          std::max(run.max_pair_travel_share,
+                   (sand.travel(busy_time) - sand.travel(l.latest_time)) / l.spacing);
       TerrainNextField nf;
       nf.ready = true;
       nf.time_s = busy_time;
@@ -284,7 +326,7 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
       if (best != ~0u) {
         Level& l = levels[best];
         const f64 cadence =
-            best_from + std::clamp(fraction * l.spacing / k_speed, min_step, max_step);
+            sand.next_time(best_from, fraction * l.spacing, min_step, max_step, cadence_gained);
         TerrainKeepUp keep;
         keep.rate = rate;
         keep.lead = lead;
@@ -795,4 +837,48 @@ TEST_CASE("renderer: the highest rate one field worker keeps on the displacement
   CHECK(now > 1'000.0);
   CHECK(then >= now);
   CHECK(now < 604'800.0);  // a week a second is not a slide on the CPU (the GPU note says why)
+}
+
+TEST_CASE("renderer: a storm at the game's own rate moves the sand within its bound, as a slide") {
+  // A storm's transport gain (terrain.md, "A storm scales transport") at one game second a real
+  // second: the waves' travel is its hours' flux — sixteen mean hours' at the peak — times the gain
+  // for forty seconds of a hundred, and nothing else about the clock changes. The cadence reads
+  // the gained travel (`terrain_band_travel_m` is the record's integral, which carries the gain),
+  // so a storm's fields come as often as its sand moves and each pair is a slide of at most a
+  // quarter of a sample; timed by a calm day's travel, a gain of 50 would cross-fade pairs a
+  // sample and more apart.
+  const RateStep own[] = {{0, 1.0}};
+  const f64 t0 = 94'608'000.0;
+  for (const f64 gain : {1.0, 10.0, 50.0}) {
+    CAPTURE(gain);
+    const Transport storm{t0 + 30.0, t0 + 70.0, 16.0 * gain};
+    const ModelRun r = run_model(own, Mode::after, 6'000, k_erg, 0, 0, 0, &storm, 1.0);
+    char line[240];
+    std::snprintf(line, sizeof line,
+                  "a storm at gain %.0f at the game's rate: %u fields, largest pair %.3f of a "
+                  "sample, largest move %.3f of the bound, window ratio %.2f, stop-go %.3f",
+                  gain, r.fields, r.max_pair_travel_share, r.max_move_share, r.window_ratio,
+                  r.stop_go);
+    MESSAGE(std::string(line));
+    CHECK(r.max_move_share <= 1.0 + 1.0e-4);
+    CHECK(r.exact_ends);
+    CHECK(r.shared);
+    CHECK(r.stop_go == 0.0);
+    CHECK(r.window_ratio <= 1.25);
+    CHECK(r.max_pair_travel_share <= 0.25 + 1.0e-6);
+  }
+  // What the gain would cost a cadence that read a calm day's travel, and what the old floor of a
+  // minute between fields costs a gain of 50 on the inner ring.
+  const Transport storm{t0 + 30.0, t0 + 70.0, 16.0 * 50.0};
+  const ModelRun blind = run_model(own, Mode::after, 6'000, k_erg, 0, 0, 0, &storm, 1.0, false);
+  const ModelRun minute = run_model(own, Mode::after, 6'000, k_erg, 0, 0, 0, &storm, 60.0);
+  char line[200];
+  std::snprintf(line, sizeof line,
+                "gain 50 timed by a calm day's travel: largest pair %.2f samples; with a minute "
+                "between fields at least: %.2f",
+                blind.max_pair_travel_share, minute.max_pair_travel_share);
+  MESSAGE(std::string(line));
+  CHECK(blind.max_pair_travel_share > 0.5);
+  CHECK(minute.max_pair_travel_share > 0.25);
+  CHECK(blind.max_move_share <= 1.0 + 1.0e-4);  // the bound still holds; the motion is a fade
 }

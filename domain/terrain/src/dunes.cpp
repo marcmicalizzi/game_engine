@@ -228,6 +228,22 @@ u64 field_hash(const FieldDesc& desc) noexcept {
                         w.storm_spread_turn, w.storm_speed_q16})
       h = hash_combine(h, static_cast<u64>(static_cast<u32>(v)));
   }
+  // The day's profile and the storms' transport gains, likewise only when a record has them.
+  if (w.diurnal_q16 != 0 || w.veer_turn != 0) {
+    h = hash_combine(h, 0x444955524E414Cull);  // "DIURNAL"
+    for (const i32 v : {w.diurnal_q16, static_cast<i32>(w.diurnal_peak_turn), w.veer_turn,
+                        static_cast<i32>(w.veer_phase_turn)})
+      h = hash_combine(h, static_cast<u64>(static_cast<u32>(v)));
+  }
+  if (w.storm_gain_q16 != k_one_q16 || !w.storm_gains.empty()) {
+    h = hash_combine(h, 0x4741494Eull);  // "GAIN"
+    h = hash_combine(h, static_cast<u64>(static_cast<u32>(w.storm_gain_q16)));
+    h = hash_combine(h, w.storm_gains.size());
+    for (const WindParams::StormGain& g : w.storm_gains) {
+      h = hash_combine(h, static_cast<u64>(static_cast<u32>(g.storm)));
+      h = hash_combine(h, static_cast<u64>(static_cast<u32>(g.gain_q16)));
+    }
+  }
   if (!desc.bands.empty()) {
     h = hash_combine(h, 0x42414E44ull);  // "BAND"
     h = hash_combine(h, desc.bands.size());

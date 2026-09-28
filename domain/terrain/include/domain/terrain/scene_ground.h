@@ -17,6 +17,7 @@
 #include <domain/terrain/dunes.h>
 
 #include <schemas/scene.h>
+#include <string>
 
 namespace engine::terrain {
 
@@ -27,6 +28,11 @@ inline constexpr const char* k_ground_provider = "dunes";
 // ridges and basins in millimetres, and its band table when it has one. What the provider is built
 // from; exposed so a caller can hold the same field (a test, a report).
 FieldDesc field_desc_of(const scene::Terrain& entry);
+
+// The entry's generator fields checked as the provider checks them — its time, sand flux, storms,
+// the wind's day and the storms' gains; the band table is `validate_bands`' — false with a
+// sentence. `engine-content terrain` asks the same.
+bool validate_terrain_entry(const scene::Terrain& entry, std::string* error = nullptr);
 
 // The field a ground this provider made holds, or null for another provider's ground.
 const DuneField* dune_field(const scene_gen::GroundProvider& ground) noexcept;

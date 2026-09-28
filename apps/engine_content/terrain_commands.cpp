@@ -4,14 +4,15 @@
 // command is refused with a sentence, as `ruins` is.
 //
 //   terrain <scene.json> --tile <x,z> [--time <s>] [--cells <n>] [--detail full|dunes|coarse|floor]
-//                        [--tile-size <m>] [--crests]
+//                        [--tile-size <m>] [--crests] [--storms]
 //
 // The scene's `terrain` is read for the generator's description — seed, dune height and
 // wavelength, ridges, basins, sand flux — whether or not it names the generator, so an agent can
 // look at what the generator would make of any terrain; `--time` overrides the scene's `time`. The
 // line is `engine.terrain.TileReport`: the tile's range and mean, its content hash (the number the
 // golden tests pin, `tile_hash`) and the field's (`field_hash`), the day's wind and sand flux, how
-// far each band has moved since time zero, and — with `--crests` — every crest line.
+// far each band has moved since time zero, and — with `--crests` — every crest line, and with
+// `--storms` every storm of the wind record's period.
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -56,6 +57,8 @@ constexpr int k_exit_error = 1;
     "      --detail <d>        full, dunes (default), coarse or floor\n"
     "      --tile-size <m>     a tile's edge in metres (default 32)\n"
     "      --crests            list every crest line crossing the tile\n"
+    "      --storms            list every storm of the wind record's period (their index is what\n"
+    "                          the terrain's storm_gains name)\n"
     "      --stats             the statistics of a square round the tile (`region`)\n"
     "      --stats-side <m>    its side (default 4096)\n"
     "      --stats-spacing <m> its grid (default 8)\n"
@@ -129,58 +132,6 @@ bool read_scene_terrain(const std::string& path, scene::Terrain& out, std::strin
   return true;
 }
 
-// The generator's description from a scene's terrain, the conversion the renderer makes
-// (systems/renderer/src/terrain.cpp, `field_desc`): metres to millimetres rounded, m^2 a year to
-// cm^2 a day.
-terrain::FieldDesc field_desc(const scene::Terrain& t) {
-  terrain::FieldDesc f;
-  f.seed = t.seed;
-  f.wind.seed = t.seed;
-  f.dune_height = terrain::to_mm(t.dune_height);
-  f.wavelength = terrain::to_mm(t.dune_wavelength);
-  f.wind.flux_cm2_per_day =
-      static_cast<i32>(std::floor(static_cast<f64>(t.sand_flux) * 10'000.0 / 365.0 + 0.5));
-  f.wind.storms_per_year = static_cast<i32>(t.storms_per_year);
-  f.wind.storm_speed_q16 =
-      static_cast<i32>(std::floor(static_cast<f64>(t.storm_strength) * 65'536.0 + 0.5));
-  for (const scene::Ridge& r : t.ridges) {
-    f.ridges.push_back(terrain::RidgeFeature{terrain::to_mm(r.from.x), terrain::to_mm(r.from.y),
-                                             terrain::to_mm(r.to.x), terrain::to_mm(r.to.y),
-                                             terrain::to_mm(r.width)});
-  }
-  for (const scene::Basin& b : t.basins) {
-    f.basins.push_back(terrain::BasinFeature{terrain::to_mm(b.center.x), terrain::to_mm(b.center.y),
-                                             terrain::to_mm(b.radius)});
-  }
-  if (t.bands.has_value()) {
-    for (const scene::TerrainBand& b : *t.bands) {
-      terrain::BandMetres m;
-      m.name = b.name;
-      m.kind = b.kind == scene::DuneKind::Barchan ? terrain::PrimitiveKind::barchan
-                                                  : terrain::PrimitiveKind::transverse;
-      m.height_min = b.height_min;
-      m.height_max = b.height_max;
-      m.cell = b.cell;
-      m.share = b.share;
-      m.length_min = b.length_min;
-      m.length_max = b.length_max;
-      m.stoss = b.stoss;
-      m.bend = b.bend;
-      m.sinuosity = b.sinuosity;
-      m.spread_deg = b.spread_deg;
-      m.sharpness = b.sharpness;
-      m.side_days = b.side_days;
-      m.sharp_days = b.sharp_days;
-      m.couple = static_cast<terrain::BandCouple>(b.couple);
-      m.couple_width = b.couple_width;
-      m.far = b.far;
-      m.celerity_scale = b.celerity_scale;
-      f.bands.push_back(terrain::band_from_metres(m));
-    }
-  }
-  return f;
-}
-
 std::string hex(u64 v) {
   char text[17];
   std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(v));
@@ -247,6 +198,7 @@ int terrain_command(int argc, char** argv) {
   u32 cells = 128;
   f64 tile_m = 32.0;
   bool crests = false;
+  bool storms = false;
   bool stats = false;
   f64 stats_side_m = 4096.0;
   f64 stats_spacing_m = 8.0;
@@ -298,6 +250,8 @@ int terrain_command(int argc, char** argv) {
         return usage("--detail is full, dunes, coarse or floor");
     } else if (arg == "--crests") {
       crests = true;
+    } else if (arg == "--storms") {
+      storms = true;
     } else if (arg == "--stats") {
       stats = true;
     } else if (arg == "--stats-side") {
@@ -332,17 +286,13 @@ int terrain_command(int argc, char** argv) {
   if (!have_time) time_s = source.time;
   const i64 time_us = static_cast<i64>(std::floor(time_s * 1'000'000.0 + 0.5));
 
-  const terrain::FieldDesc desc = field_desc(source);
+  if (!terrain::validate_terrain_entry(source, &error))
+    return failed(scene_path + ": terrain: " + error);
+  const terrain::FieldDesc desc = terrain::field_desc_of(source);
   if (source.bands.has_value() &&
       !terrain::validate_bands(
           std::span<const terrain::BandDesc>(desc.bands.data(), desc.bands.size()), &error)) {
     return failed(scene_path + ": terrain.bands: " + error);
-  }
-  if (source.storms_per_year > static_cast<u32>(terrain::k_max_storms_per_year) ||
-      !(source.storm_strength > 0.0f) || !(source.storm_strength <= 3.0f)) {
-    return failed(scene_path +
-                  ": terrain: storms_per_year must be within 0..31 and "
-                  "storm_strength within (0, 3]");
   }
   const terrain::DuneField field(desc);
   terrain::TileOptions options;
@@ -399,6 +349,24 @@ int terrain_command(int argc, char** argv) {
     }
   }
   report.eval_ms = static_cast<f64>(elapsed) / 1e6;
+  if (storms) {
+    const terrain::WindRecord& wind = field.wind();
+    for (u32 k = 0; k < wind.storms().size(); ++k) {
+      const terrain::WindStorm& st = wind.storms()[k];
+      terrain::StormReport r;
+      r.index = k;
+      r.day = static_cast<u32>(st.day);
+      r.first_hour = static_cast<u32>(st.first_hour);
+      r.hours = static_cast<u32>(st.hours);
+      r.direction_deg = static_cast<f32>(static_cast<f64>(st.turn) * 360.0 / 65'536.0);
+      r.peak = static_cast<f32>(static_cast<f64>(st.peak_q16) / 65'536.0);
+      r.gain = static_cast<f32>(static_cast<f64>(st.gain_q16) / 65'536.0);
+      r.storm_flux_m2 = static_cast<f32>(static_cast<f64>(st.storm_magnitude[24]) * 1e-4);
+      r.day_flux_m2 =
+          static_cast<f32>(static_cast<f64>(st.hour[24].magnitude - st.storm_magnitude[24]) * 1e-4);
+      report.storms.push_back(std::move(r));
+    }
+  }
 
   // The tile's own statistics over its grid, and with --stats a square round it.
   const i64 spacing = tile_mm / static_cast<i64>(cells);

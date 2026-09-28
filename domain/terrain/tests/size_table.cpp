@@ -15,7 +15,7 @@ using namespace engine;
 // sinuous crests (terrain.md, "The band table"); a gather holds a few hundred.
 ENGINE_EXPECT_SIZE(96, 8, terrain::Primitive);
 // Flux x, z and magnitude, speed (16), direction and the calm flag (4).
-ENGINE_EXPECT_SIZE(20, 4, terrain::WindDay);
+ENGINE_EXPECT_SIZE(32, 8, terrain::WindDay);
 // Time (8), centre (8), two radii and a yaw (6), depth and rim (4), kind and five spare bytes (6):
 // exactly `k_stamp_bytes`, its record form.
 ENGINE_EXPECT_SIZE(32, 8, terrain::Stamp);

@@ -92,6 +92,19 @@ struct TerrainDesc {
   // (terrain.md, "Storms"). None by default, and none leaves the hash as it was.
   u32 storms_per_year = 0;
   f32 storm_strength = 2.5f;
+  // With `dunes`: the wind's day and the storms' transport gains (terrain.md, "The day's wind",
+  // "A storm scales transport"; `engine.scene.Terrain` version 5). The defaults are the record as
+  // it was and leave the hash as it was.
+  f32 diurnal_strength = 0.0f;
+  f32 diurnal_peak_hour = 15.0f;
+  f32 diurnal_veer_deg = 0.0f;
+  f32 diurnal_veer_hour = 12.0f;
+  f32 storm_gain = 1.0f;
+  struct StormGain {
+    u32 storm = 0;
+    f32 gain = 1.0f;
+  };
+  Vector<StormGain> storm_gains;
   // The ground provider's name (`engine.scene.Terrain.provider`; scene_gen.md). Empty: the one
   // `generator` names.
   std::string provider;

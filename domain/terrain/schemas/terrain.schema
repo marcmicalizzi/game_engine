@@ -76,9 +76,29 @@ struct StatsReport @version(1) {
   hash: string
 }
 
+/// One storm of the wind record's period (`engine-content terrain --storms`;
+/// docs/subsystems/terrain.md, "Storms", "A storm scales transport"): which it is, when it blows,
+/// where it moves the sand, how strong, its transport gain, and the sand it moves.
+struct StormReport @version(1) {
+  /// Its index in the period in day order: what `engine.scene.Terrain.storm_gains` names.
+  index: u32 = 0
+  /// Its day in the eight-year period, from 0, and its hours of that day.
+  day: u32 = 0
+  first_hour: u32 = 0
+  hours: u32 = 0
+  /// Where it moves the sand to, degrees about +y from +x.
+  direction_deg: f32 = 0
+  /// Its strongest hour's wind, as a multiple of the record's mean.
+  peak: f32 = 0
+  gain: f32 = 1
+  /// The sand its hours move, gained, and the day's own besides, square metres (per metre width).
+  storm_flux_m2: f32 = 0
+  day_flux_m2: f32 = 0
+}
+
 /// `engine-content terrain <scene> --tile x,z --time t`: one tile of a scene's dune field at one
-/// game time, as one JSON line for tests and agents.
-struct TileReport @version(2) {
+/// game time, as one JSON line for tests and agents. Version 3 added `storms`.
+struct TileReport @version(3) {
   /// "engine.terrain.tile".
   format: string
   tile_x: i32 = 0
@@ -116,4 +136,6 @@ struct TileReport @version(2) {
   tile_stats: StatsReport? @since(2)
   /// With --stats: a square round the tile, larger than one dune (4,096 m at 8 m by default).
   region: StatsReport? @since(2)
+  /// With --storms: every storm of the wind record's period, in day order.
+  storms: StormReport[] @since(3)
 }

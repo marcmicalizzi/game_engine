@@ -65,7 +65,11 @@ struct TimeLapseConfig {
   // How far, as a share of a level's spacing, the fastest band may travel between two fields — and
   // how far any vertex may move in one frame: `renderer.terrain.move_fraction`.
   f64 fraction = 0.25;
-  f64 min_step_s = 60.0;  // game seconds between fields at least: `renderer.terrain.min_step_s`
+  // Game seconds between fields at least: `renderer.terrain.min_step_s`. A second since
+  // 2026-09-28 (a minute before): a storm with a transport gain moves the sand at the game's own
+  // rate fast enough that a minute between fields let a pair span half a sample and cross-fade
+  // (terrain_clock_tests.cpp, "a storm at the game's own rate").
+  f64 min_step_s = 1.0;
   f64 max_step_s = 2'592'000.0;  // and at most (30 days): `renderer.terrain.max_step_s`
   // How far ahead of what an evaluation costs the next field is timed, as a multiple of the last
   // evaluation's wall time at the rate: `renderer.terrain.lead`. Not with `wait`.

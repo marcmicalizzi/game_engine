@@ -198,6 +198,17 @@ scene::Terrain terrain_entry(const TerrainDesc& desc) {
   }
   t.storms_per_year = desc.storms_per_year;
   t.storm_strength = desc.storm_strength;
+  t.diurnal_strength = desc.diurnal_strength;
+  t.diurnal_peak_hour = desc.diurnal_peak_hour;
+  t.diurnal_veer_deg = desc.diurnal_veer_deg;
+  t.diurnal_veer_hour = desc.diurnal_veer_hour;
+  t.storm_gain = desc.storm_gain;
+  for (const TerrainDesc::StormGain& g : desc.storm_gains) {
+    scene::StormGain sg;
+    sg.storm = g.storm;
+    sg.gain = g.gain;
+    t.storm_gains.push_back(sg);
+  }
   t.provider = std::string(terrain_provider(desc));
   return t;
 }
@@ -405,6 +416,18 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
     if (desc.storms_per_year > 0) {
       h = hash_combine(hash_combine(h, 0x53544F524Dull), desc.storms_per_year);  // "STORM"
       h = mix_f32(h, desc.storm_strength);
+    }
+    // The wind's day and the storms' gains, only when a scene asks for them.
+    if (desc.diurnal_strength != 0.0f || desc.diurnal_veer_deg != 0.0f) {
+      h = hash_combine(h, 0x444955524E414Cull);  // "DIURNAL"
+      for (const f32 v : {desc.diurnal_strength, desc.diurnal_peak_hour, desc.diurnal_veer_deg,
+                          desc.diurnal_veer_hour})
+        h = mix_f32(h, v);
+    }
+    if (desc.storm_gain != 1.0f || !desc.storm_gains.empty()) {
+      h = mix_f32(hash_combine(h, 0x4741494Eull), desc.storm_gain);  // "GAIN"
+      for (const TerrainDesc::StormGain& g : desc.storm_gains)
+        h = mix_f32(hash_combine(h, g.storm), g.gain);
     }
     if (desc.has_bands) {
       h = hash_combine(h, desc.bands.size());

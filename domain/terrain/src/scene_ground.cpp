@@ -268,14 +268,7 @@ bool dunes_make(const scene::Terrain& entry, const scene_gen::Context&,
     if (error != nullptr) *error = std::move(sentence);
     return false;
   };
-  if (!(entry.time >= 0.0) || !(entry.time < 3.0e11) || !(entry.sand_flux >= 0.0f) ||
-      !(entry.sand_flux <= 100'000.0f) || entry.storms_per_year > 31 ||
-      !(entry.storm_strength > 0.0f) || !(entry.storm_strength <= 3.0f)) {
-    return fail(
-        "the dune generator's time must be within [0, 3e11) s, its sand_flux within "
-        "[0, 100000] m^2 a year, its storms_per_year within 0..31 and its storm_strength "
-        "within (0, 3]");
-  }
+  if (!validate_terrain_entry(entry, error)) return false;
   const FieldDesc desc = field_desc_of(entry);
   if (entry.bands.has_value()) {
     if (desc.bands.empty())
@@ -298,6 +291,42 @@ const scene_gen::Registrar k_dunes_registrar{k_dunes};
 
 }  // namespace
 
+bool validate_terrain_entry(const scene::Terrain& entry, std::string* error) {
+  const auto fail = [&](std::string sentence) {
+    if (error != nullptr) *error = std::move(sentence);
+    return false;
+  };
+  if (!(entry.time >= 0.0) || !(entry.time < 3.0e11) || !(entry.sand_flux >= 0.0f) ||
+      !(entry.sand_flux <= 100'000.0f) || entry.storms_per_year > 31 ||
+      !(entry.storm_strength > 0.0f) || !(entry.storm_strength <= 3.0f)) {
+    return fail(
+        "the dune generator's time must be within [0, 3e11) s, its sand_flux within "
+        "[0, 100000] m^2 a year, its storms_per_year within 0..31 and its storm_strength "
+        "within (0, 3]");
+  }
+  const auto hour = [](f32 h) { return h >= 0.0f && h < 24.0f; };
+  if (!(entry.diurnal_strength >= 0.0f && entry.diurnal_strength <= 2.0f) ||
+      !hour(entry.diurnal_peak_hour) ||
+      !(entry.diurnal_veer_deg >= 0.0f && entry.diurnal_veer_deg <= 90.0f) ||
+      !hour(entry.diurnal_veer_hour)) {
+    return fail(
+        "the wind's day: diurnal_strength must be within [0, 2], diurnal_veer_deg within [0, 90] "
+        "and the two hours within [0, 24)");
+  }
+  const auto gain = [](f32 g) { return g > 0.0f && g <= 1000.0f; };
+  if (!gain(entry.storm_gain)) return fail("storm_gain must be within (0, 1000]");
+  const u32 storms = entry.storms_per_year * static_cast<u32>(k_record_years);
+  for (const scene::StormGain& g : entry.storm_gains) {
+    if (!gain(g.gain)) return fail("storm_gains: a gain must be within (0, 1000]");
+    if (g.storm >= storms) {
+      return fail("storm_gains: storm " + std::to_string(g.storm) +
+                  " is not in the record, which " + "holds " + std::to_string(storms) +
+                  " (storms_per_year times " + std::to_string(k_record_years) + " years)");
+    }
+  }
+  return true;
+}
+
 FieldDesc field_desc_of(const scene::Terrain& t) {
   FieldDesc f;
   f.seed = t.seed;
@@ -310,6 +339,22 @@ FieldDesc field_desc_of(const scene::Terrain& t) {
   f.wind.storms_per_year = static_cast<i32>(t.storms_per_year);
   f.wind.storm_speed_q16 =
       static_cast<i32>(std::floor(static_cast<f64>(t.storm_strength) * 65'536.0 + 0.5));
+  // The wind's day: hours to binary angles of the day, degrees to binary angles of a turn.
+  const auto q16 = [](f32 v) {
+    return static_cast<i32>(std::floor(static_cast<f64>(v) * 65'536.0 + 0.5));
+  };
+  const auto day_angle = [](f32 hour) {
+    return static_cast<u16>(
+        static_cast<i64>(std::floor(static_cast<f64>(hour) * 65'536.0 / 24.0 + 0.5)) & 0xFFFF);
+  };
+  f.wind.diurnal_q16 = q16(t.diurnal_strength);
+  f.wind.diurnal_peak_turn = day_angle(t.diurnal_peak_hour);
+  f.wind.veer_turn =
+      static_cast<i32>(std::floor(static_cast<f64>(t.diurnal_veer_deg) * 65'536.0 / 360.0 + 0.5));
+  f.wind.veer_phase_turn = day_angle(t.diurnal_veer_hour);
+  f.wind.storm_gain_q16 = q16(t.storm_gain);
+  for (const scene::StormGain& g : t.storm_gains)
+    f.wind.storm_gains.push_back(WindParams::StormGain{static_cast<i32>(g.storm), q16(g.gain)});
   for (const scene::Ridge& r : t.ridges) {
     f.ridges.push_back(RidgeFeature{to_mm(r.from.x), to_mm(r.from.y), to_mm(r.to.x), to_mm(r.to.y),
                                     to_mm(r.width)});

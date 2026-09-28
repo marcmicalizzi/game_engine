@@ -177,3 +177,44 @@ TEST_CASE("engine-content terrain: refusals") {
   CHECK(run({"terrain", odd, "--tile", "0,0", "--cells", "7"}).exit_code == 1);  // 32 m in 7 cells
   CHECK(run({"terrain", odd, "--tile", "0,0", "--cells", "8"}).exit_code == 0);
 }
+
+TEST_CASE("engine-content terrain: --storms lists the record's storms, their gains and the day") {
+  const std::string scene =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg-storm/scene.json",
+                      "content/test-scenes/desert-erg-storm/scene.json");
+  if (!test::path_exists(scene)) {
+    MESSAGE("skipped: " << scene << " is not here");
+    return;
+  }
+  const Output a = run({"terrain", scene, "--tile", "0,0", "--cells", "8", "--storms"});
+  REQUIRE_MESSAGE(a.exit_code == 0, a.text);
+  JsonValue line;
+  REQUIRE(parse_json(a.text, line).ok);
+  const JsonValue* storms = line.find("storms");
+  REQUIRE(storms != nullptr);
+  CHECK(storms->size() == 96);  // twelve a year over the eight-year period
+  // Storm 42 is the scene's: day 1,095 from 09:00 for ten hours, at the scene's gain of 1,000.
+  const JsonValue& storm = (*storms)[42];
+  CHECK(number(storm, "index") == 42.0);
+  CHECK(number(storm, "day") == 1095.0);
+  CHECK(number(storm, "first_hour") == 9.0);
+  CHECK(number(storm, "hours") == 10.0);
+  CHECK(number(storm, "gain") == 1000.0);
+  CHECK(number(storm, "storm_flux_m2") > 100.0 * number(storm, "day_flux_m2"));
+  // The scene's time is inside it: the tile's wind is a storm's.
+  const JsonValue* blowing = line.find("storm");
+  bool is_storm = false;
+  REQUIRE(blowing != nullptr);
+  (void)blowing->get_bool(is_storm);
+  CHECK(is_storm);
+  // Out of range, the wind's day and the gains are refused with the provider's sentence.
+  const test::TempDir tmp("engine_content_terrain_wind");
+  const std::string bad = tmp.file("bad.json");
+  {
+    std::ofstream f(bad);
+    f << R"({"terrain":{"size":3,"extent":10,"generator":"Dunes","storms_per_year":1,)"
+      << R"("storm_gains":[{"storm":8,"gain":5}]}})";
+  }
+  const Output refused = run({"terrain", bad, "--tile", "0,0", "--cells", "8"});
+  CHECK(refused.exit_code == 1);  // storm 8 of a one-a-year record's eight: not there
+}

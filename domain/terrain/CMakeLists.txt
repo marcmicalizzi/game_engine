@@ -30,7 +30,7 @@ engine_module(NAME terrain LAYER domain OPTIONAL WHOLE_ARCHIVE
 
 engine_module_tests(NAME terrain
   SOURCES tests/terrain_tests.cpp tests/overlay_tests.cpp tests/rings_tests.cpp
-          tests/size_table.cpp)
+          tests/size_table.cpp tests/wind_day_tests.cpp)
 
 # terrain.tile.eval: one 32 m tile at the overlay's 25 cm grid, heights, normals and crests.
 # terrain.overlay.decay: a tile's overlay decayed by a game hour, trampled and not.

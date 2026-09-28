@@ -18,7 +18,7 @@ tunables::Float move_fraction{
     "renderer.terrain.move_fraction", 0.25, 0.01, 4.0,
     "How far, as a share of a terrain level's spacing, the dune field's fastest band may travel "
     "between two evaluated fields, and how far any vertex may move in one frame"};
-tunables::Float min_step_s{"renderer.terrain.min_step_s", 60.0, 1.0, 1.0e7,
+tunables::Float min_step_s{"renderer.terrain.min_step_s", 1.0, 1.0, 1.0e7,
                            "Game seconds between two evaluated fields of the dune field, at least"};
 tunables::Float max_step_s{"renderer.terrain.max_step_s", 2'592'000.0, 60.0, 3.2e7,
                            "Game seconds between two evaluated fields of the dune field, at most"};
