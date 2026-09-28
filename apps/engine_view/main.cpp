@@ -85,6 +85,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 using namespace engine;
 
@@ -113,6 +114,15 @@ tunables::Float fly_turn_rate{"view.fly.turn_rate", 2.5, 0.01, 100.0,
                               "Stick turn rate, radians per second at full deflection"};
 tunables::Float fly_pitch_limit{"view.fly.pitch_limit_deg", 89.0, 1.0, 89.9,
                                 "How far the interactive camera may pitch up or down, degrees"};
+
+// Not part of a session: it bounds what a window does to the desktop it is on, whatever is flown
+// in it (docs/subsystems/apps.md, "Pacing"). Every present of a windowed swapchain goes through
+// the desktop's compositor, and a small window that presents as fast as it can presents thousands
+// of times a second: measured on 2026-09-28, nothing on the desktop repainted for as long as such
+// a window lived, and for most of a minute after it had closed.
+tunables::Int present_max_hz{"view.present.max_hz", 120, 0, 100000,
+                             "The most presents a second a window makes when its display does not "
+                             "pace it (mailbox, immediate, --pace off); 0 removes the ceiling"};
 
 // clang-format off
 constexpr const char* k_usage =
@@ -148,7 +158,7 @@ constexpr const char* k_usage =
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
-    "                   [--pace auto|display|off] [--borderless] [--no-present-timing]\n"
+    "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
@@ -397,6 +407,9 @@ constexpr const char* k_usage =
     "  --present <m>    the window's present mode: fifo (the default, with vsync), fifo-relaxed,\n"
     "                   mailbox, immediate or fifo-latest-ready, FIFO where the surface lacks it;\n"
     "                   --no-vsync is mailbox, else immediate\n"
+    "  --present-max-hz <n>  the most presents a second a window makes when its display does\n"
+    "                   not pace it (default view.present.max_hz, 120); 0 removes the ceiling,\n"
+    "                   and a small window without one stops the whole desktop repainting\n"
     "  --swapchain-images <n>  images to ask the window's swapchain for, 2..8 (default 3)\n"
     "  --frames-in-flight <n>  frames the window's loop records ahead of the GPU, 1..3 (default 2)\n"
     "  --borderless     a window with no title bar or border at the primary display's top-left\n"
@@ -455,6 +468,7 @@ struct Options {
   u32 swapchain_images = 3;
   u32 frames_in_flight = k_frames_in_flight;
   std::string pace = "auto";
+  i64 present_max_hz = -1;     // --present-max-hz; -1 takes view.present.max_hz
   bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
   bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
   bool borderless = false;     // --borderless: no decorations, at the primary display's corner
@@ -1784,7 +1798,8 @@ const char* present_mode_name(VkPresentModeKHR mode) {
 scene::FlythroughPresentation presentation_summary(const Options& options,
                                                    const gfx::Swapchain& swapchain,
                                                    std::span<const scene::FrameRecord> records,
-                                                   u32 recreated, const view::DisplayPacer* pacer) {
+                                                   u32 recreated, const view::DisplayPacer* pacer,
+                                                   u32 max_hz, u64 ceiling_waits) {
   scene::FlythroughPresentation out;
   out.present_mode = present_mode_name(swapchain.present_mode());
   out.requested_mode =
@@ -1793,6 +1808,8 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
   out.requested_images = options.swapchain_images;
   out.frames_in_flight = options.frames_in_flight;
   out.pacing = pacer != nullptr ? "display" : "off";
+  out.max_hz = pacer != nullptr ? 0 : max_hz;
+  out.ceiling_waits = ceiling_waits;
   if (pacer != nullptr) {
     out.pace_misses = pacer->misses();
     out.pace_switches = pacer->switches();
@@ -3338,6 +3355,14 @@ int main(int argc, char** argv) {
         return k_exit_usage;
       }
       (images ? options.swapchain_images : options.frames_in_flight) = n;
+    } else if (a == "--present-max-hz") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n) || n > 100000u) {
+        std::fprintf(stderr, "engine-view: --present-max-hz expects a number within 0..100000\n");
+        return k_exit_usage;
+      }
+      options.present_max_hz = static_cast<i64>(n);
     } else if (a == "--present") {
       if (!next_value(argc, argv, i, a, options.present)) return k_exit_usage;
       if (!view::parse_present_mode(options.present, nullptr)) {
@@ -4225,6 +4250,17 @@ int main(int argc, char** argv) {
     // still turns over its events.
     constexpr u64 k_pace_timeout_ns = 50'000'000;
     view::DisplayPacer pacer(static_cast<i64>(swapchain.refresh_ns()));
+    // The ceiling on a window its display does not pace (`view.present.max_hz`, above).
+    const i64 ceiling_hz =
+        options.present_max_hz >= 0 ? options.present_max_hz : present_max_hz.get();
+    const i64 ceiling_period_ns = ceiling_hz > 0 ? 1'000'000'000 / ceiling_hz : 0;
+    if (ceiling_hz == 0 && !pace_display) {
+      ENGINE_LOG_WARN(log_view,
+                      "no ceiling on this window's presents: a small window its display does not "
+                      "pace stops the whole desktop repainting while it lives");
+    }
+    i64 last_frame_start_ns = 0;
+    u64 ceiling_waits = 0;
 
     bool running = true;
     bool resize_pending = false;
@@ -4253,7 +4289,23 @@ int main(int argc, char** argv) {
         paced_ns = after_pace - before_pace;
         if (target != 0) pacer.waited(after_pace, shown);
       }
+      // ---- the ceiling on a window its display does not pace --------------------------------
+      // Mailbox, immediate and `--pace off` leave the cadence to the swapchain's own waits, and a
+      // small window has none: it would present thousands of times a second, every one of them
+      // through the desktop's compositor. So a frame starts no sooner than a period after the one
+      // before it. Yielding rather than sleeping, because the period is a few milliseconds and the
+      // system's sleep is coarser than that. Ticks are the session's own and never the frames',
+      // so a recording replays to the same trajectory with the ceiling and without.
+      if (ceiling_period_ns > 0 && !pace_display && last_frame_start_ns != 0) {
+        const i64 due = last_frame_start_ns + ceiling_period_ns;
+        if (time::monotonic_ns() < due) {
+          ++ceiling_waits;
+          while (time::monotonic_ns() < due)
+            std::this_thread::yield();
+        }
+      }
       const i64 frame_start = time::monotonic_ns();
+      last_frame_start_ns = frame_start;
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
       const std::span<const input::RawEvent> injected = interactive.injected.events();
@@ -4742,7 +4794,7 @@ int main(int argc, char** argv) {
       summary.presentation = presentation_summary(
           options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
           swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0,
-          pace_display ? &pacer : nullptr);
+          pace_display ? &pacer : nullptr, static_cast<u32>(ceiling_hz), ceiling_waits);
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));

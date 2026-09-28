@@ -691,3 +691,89 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   CHECK(written.ticks < 800u);
   CHECK(recording.map_hash() == view::default_fly_map().hash());
 }
+
+TEST_CASE("engine-view: --present-max-hz takes a number, and nothing else") {
+  CHECK(run_view({"--present-max-hz"}).exit_code == 2);
+  CHECK(run_view({"--present-max-hz", "fast"}).exit_code == 2);
+  CHECK(run_view({"--present-max-hz", "-1"}).exit_code == 2);
+  CHECK(run_view({"--present-max-hz", "100001"}).exit_code == 2);
+}
+
+TEST_CASE("engine-view: a window its display does not pace presents under a ceiling") {
+  // A window of 256×160 on mailbox or immediate draws a frame in microseconds and, left alone,
+  // presents thousands of times a second; every one of those goes through the desktop's
+  // compositor, which on 2026-09-28 stopped the owner's whole desktop repainting for as long as
+  // such a window lived (apps.md, "Pacing"). So the loop holds a frame back until a period has
+  // passed since the one before it. The session is its ticks' and replays to the same trajectory
+  // under any ceiling. Needs a display and a device; skips without.
+  const test::TempDir tmp("engine_view_ceiling");
+  const std::string log = fixture();
+  const std::string committed =
+      read_text(content_path("content/input-logs/sessions/fly-synthetic.trajectory.json"));
+  if (!test::path_exists(log) || committed.empty()) {
+    MESSAGE("the session fixture is not in this bundle");
+    return;
+  }
+  JsonValue expected;
+  REQUIRE(parse_json(committed, expected).ok);
+
+  struct Case {
+    const char* flag_value;  // "" takes the tunable's default
+    u64 ceiling;
+  };
+  for (const Case c : {Case{"", 120}, Case{"60", 60}}) {
+    CAPTURE(c.ceiling);
+    const std::string jsonl =
+        tmp.file(std::string("ceiling-") + std::to_string(c.ceiling) + ".jsonl");
+    std::vector<std::string> args = {
+        "--replay-input", log,   "--windowed", "--benchmark", jsonl,   "--no-vsync",
+        "--width",        "256", "--height",   "160",         "--ddc", tmp.file("ddc")};
+    if (c.flag_value[0] != '\0') {
+      args.push_back("--present-max-hz");
+      args.push_back(c.flag_value);
+    }
+    const Run run = run_view(args);
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output);
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    JsonValue summary;
+    REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+    const JsonValue* trajectory = trajectory_of(summary);
+    REQUIRE(trajectory != nullptr);
+    CHECK(text_of(trajectory, "hash") == text_of(&expected, "hash"));
+
+    const std::string text = read_text(jsonl);
+    u64 records = 0;
+    JsonValue last;
+    for (usize begin = 0; begin < text.size();) {
+      const usize end = text.find('\n', begin);
+      const usize stop = end == std::string::npos ? text.size() : end;
+      JsonValue line;
+      if (stop > begin && parse_json(text.substr(begin, stop - begin), line).ok) {
+        if (line.find("repeat") != nullptr) {
+          ++records;
+        } else {
+          last = std::move(line);
+        }
+      }
+      begin = stop + 1;
+    }
+    const JsonValue* presentation = last.find("presentation");
+    REQUIRE_MESSAGE(presentation != nullptr, text);
+    const std::string mode = text_of(presentation, "present_mode");
+    if (mode != "mailbox" && mode != "immediate") {
+      MESSAGE("this surface has neither mailbox nor immediate (" << mode << "): nothing to cap");
+      return;
+    }
+    CHECK(text_of(presentation, "pacing") == "off");
+    CHECK(number_of(presentation, "max_hz") == doctest::Approx(static_cast<f64>(c.ceiling)));
+    CHECK(number_of(presentation, "ceiling_waits") > 0.0);
+    // The fixture is 480 ticks at 240 a second: two seconds of session, and the loading before
+    // its first tick draws frames too. Four times the ceiling is room for that; without a ceiling
+    // the count is in the thousands.
+    CHECK(records > 0);
+    CHECK(records <= c.ceiling * 4);
+  }
+}

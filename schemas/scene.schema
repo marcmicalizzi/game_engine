@@ -1037,7 +1037,7 @@ struct FlythroughTextures @version(1) {
 /// and where the frames' waits went. What a frame-time distribution has to be read against,
 /// since the same GPU work paces differently under another present mode or queue depth
 /// (docs/subsystems/apps.md, "Pacing").
-struct FlythroughPresentation @version(1) {
+struct FlythroughPresentation @version(2) {
   /// The present mode the swapchain was created with: "fifo", "fifo_relaxed", "mailbox",
   /// "immediate" or "fifo_latest_ready"; and the one `--present` asked for ("auto" when it
   /// asked for none, which is FIFO with vsync).
@@ -1057,6 +1057,11 @@ struct FlythroughPresentation @version(1) {
   /// their refresh, and stalls; `view::DisplayPacer::misses`), and its changes of depth.
   pace_misses: u64 = 0
   pace_switches: u32 = 0
+  /// The ceiling on the window's presents a second while its display did not pace it
+  /// (`view.present.max_hz`, `--present-max-hz`; 0 is none, and so is a run the display paced),
+  /// and the frames the ceiling held back.
+  max_hz: u32 = 0 @since(2)
+  ceiling_waits: u64 = 0 @since(2)
   /// `--borderless`: the window had no decorations and sat at the primary display's corner.
   borderless: bool = false
   /// The display's refresh as the swapchain reports it (VK_EXT_present_timing), 0 where it
