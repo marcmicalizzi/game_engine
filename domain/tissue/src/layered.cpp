@@ -115,6 +115,8 @@ class Rows {
   void fat();
   void skins();
   void contact();
+  void separated_contact(u32 attachment);
+  void target_gaps();
   void certificates();
 
   // The transform of a frame at a state of a region: its FrameState there, or where it is.
@@ -725,8 +727,11 @@ void Rows::attachments() {
   for (u32 ai = 0; ai < def_.attachments.size(); ++ai) {
     const Attachment& a = def_.attachments[ai];
     const bool essential = a.enforcement == AttachmentEnforcement::Essential;
-    const bool uses_new =
-        essential || !a.patch.empty() || !a.patch_surface.empty() || !a.transition_band.empty();
+    // `gap_m != 0` is true for a NaN too: a gap that is not a number is declared, not absent.
+    const bool declares_interface =
+        a.interface != AttachmentInterface::Coincident || a.gap_m != 0.0;
+    const bool uses_new = essential || !a.patch.empty() || !a.patch_surface.empty() ||
+                          !a.transition_band.empty() || declares_interface;
     if (!uses_new) continue;
     const i32 ri = find_region(c_, a.region);
     const std::string subject = "attachment " + a.name;
@@ -734,7 +739,8 @@ void Rows::attachments() {
         "attachment.enforcement", subject, Severity::error,
         "an essential attachment is kind Fixed, to a frame or the world, with no stiffness; "
         "its patch a set of faces of a material surface of its region, every node of which it "
-        "holds; a spring carries no patch; a transition band a node set of the region, disjoint "
+        "holds; a spring carries no patch, no Separated interface and no gap; a transition band a "
+        "node set of the region, disjoint "
         "from the held nodes and owned by one attachment; no node held by two essential "
         "attachments",
         "an essential attachment is an exact constraint and never a stiff spring; exact "
@@ -767,9 +773,23 @@ void Rows::attachments() {
             break;
           }
       }
-    } else if (!a.patch.empty() || !a.patch_surface.empty()) {
-      fail(r,
-           "a spring attachment names a patch: a patch is an essential attachment's material map");
+    } else {
+      if (!a.patch.empty() || !a.patch_surface.empty())
+        fail(
+            r,
+            "a spring attachment names a patch: a patch is an essential attachment's material map");
+      // A spring's stretch is a force whatever it starts at, so where its nodes lie against the
+      // target says nothing a spring reads; an interface or a gap on one is data it would ignore.
+      if (a.interface != AttachmentInterface::Coincident)
+        fail(
+            r,
+            "a spring attachment declares interface Separated: the interface says how an essential "
+            "attachment holds its patch against its frame, and a spring, whose stretch is a "
+            "force, reads none");
+      if (a.gap_m != 0.0)
+        fail(r, "a spring attachment declares a gap of " + mm(a.gap_m) +
+                    ": the gap is a separated essential tie's, and a spring, whose stretch is a "
+                    "force, reads none");
     }
     const PatchModel& patch = m_.patches[ai];
     if (!a.patch.empty()) {
@@ -1744,9 +1764,13 @@ void Rows::contact() {
   // ---- attachment.contact_compatibility
   for (u32 ai = 0; ai < def_.attachments.size(); ++ai) {
     const Attachment& a = def_.attachments[ai];
-    if (a.enforcement != AttachmentEnforcement::Essential || a.patch.empty() ||
-        a.target_kind != TargetKind::Frame)
+    if (a.enforcement != AttachmentEnforcement::Essential || a.target_kind != TargetKind::Frame)
       continue;
+    if (a.interface == AttachmentInterface::Separated) {
+      separated_contact(ai);
+      continue;
+    }
+    if (a.patch.empty()) continue;
     ValidationRow& r =
         row("attachment.contact_compatibility", "attachment " + a.name, Severity::error,
             "every unilateral contact pair between the patch's surface and the attachment's frame "
@@ -1782,6 +1806,8 @@ void Rows::contact() {
     r.value.set("pairs_between_patch_and_frame", JsonValue(pairs));
     r.value.set("patch_faces", JsonValue(static_cast<u64>(patch.refs.size() / 2)));
   }
+
+  target_gaps();
 
   // ---- the chordal clearance, per unilateral pair and state
   for (const PairModel& pm : m_.pairs) {
@@ -2022,6 +2048,181 @@ void Rows::contact() {
       r.value.set("states", std::move(path));
       r.value.set("authority", JsonValue("the authoring certificate"));
     }
+  }
+}
+
+// ---- attachment.contact_compatibility, a separated tie's
+//
+// A patch held flush on its frame owns that coincidence, and the tissue just outside the patch
+// approaches zero distance from the frame, so no uniform positive clearance can hold at its edge:
+// the patch is excluded against its frame. A tie across a declared gap has no such edge, and its
+// contact against its own frame is what keeps the tissue beside the patch off the frame; excluding
+// it would switch off the barrier the mode exists to keep.
+void Rows::separated_contact(u32 ai) {
+  const Attachment& a = def_.attachments[ai];
+  ValidationRow& r = row(
+      "attachment.contact_compatibility", "attachment " + a.name, Severity::error,
+      "a separated tie keeps its contact: a unilateral contact pair between the patch's surface "
+      "and "
+      "the attachment's frame exists, no pair between them is an attached interface, and no "
+      "exclusion of such a pair exempts a face of the patch or names this attachment",
+      "a tie across a declared gap is not an owned coincidence: the patch against its own frame "
+      "stays an active unilateral pair, and every other pairing stays active too");
+  r.value.set("interface", JsonValue("Separated"));
+  const PatchModel& patch = m_.patches[ai];
+  if (a.patch_surface.empty())
+    fail(r,
+         "the separated tie names no patch surface, so no contact pair can hold its patch apart "
+         "from its frame");
+  u32 unilateral = 0;
+  u32 excluded = 0;
+  for (const PairModel& pm : m_.pairs) {
+    const ContactPair& p = *pm.def;
+    if (a.patch_surface.empty() ||
+        !(p.a.kind == ContactSurfaceKind::MaterialSurface && p.a.name == a.patch_surface &&
+          p.b.kind == ContactSurfaceKind::Frame && p.b.name == a.target))
+      continue;
+    if (p.eligibility != ContactEligibility::Unilateral) {
+      fail(r, "pair " + p.name +
+                  " between the patch's surface and its frame is an attached interface, which "
+                  "nothing checks: a separated tie's contact is unilateral");
+      continue;
+    }
+    ++unilateral;
+    for (u32 ei = 0; ei < p.exclusions.size(); ++ei) {
+      const ContactExclusion& e = p.exclusions[ei];
+      const ExclusionModel& em = pm.exclusions[ei];
+      u32 in_patch = 0;
+      for (u32 f = 0; f + 1 < em.a.size(); f += 2)
+        for (u32 k = 0; k + 1 < patch.refs.size(); k += 2)
+          if (em.a[f] == patch.refs[k] && em.a[f + 1] == patch.refs[k + 1]) {
+            ++in_patch;
+            break;
+          }
+      const bool names = e.reason == ExclusionReason::Attachment && e.attachment == a.name;
+      if (in_patch == 0 && !names) continue;
+      excluded += in_patch;
+      fail(r, "pair " + p.name + " exclusion " + str(ei) + " exempts " + str(in_patch) +
+                  " patch faces against their own frame" +
+                  (names ? std::string(" and names this attachment") : std::string()) +
+                  ": a separated tie's contact stays active");
+    }
+  }
+  if (unilateral == 0 && !a.patch_surface.empty())
+    fail(r, "no unilateral contact pair between surface " + a.patch_surface + " and frame " +
+                a.target + ": nothing keeps the held patch apart from its frame");
+  r.value.set("unilateral_pairs", JsonValue(unilateral));
+  r.value.set("patch_faces", JsonValue(static_cast<u64>(patch.refs.size() / 2)));
+  r.value.set("excluded_patch_faces", JsonValue(excluded));
+}
+
+// ---- attachment.target_gap
+//
+// Emitted for an essential attachment that declares anything of the interface: a separated tie, or
+// a coincident one with a gap (which fails). A coincident attachment at its zero gap is version 2's
+// meaning and gets no row, so a definition written before version 3 reports as it did. A spring
+// reads neither field, and one that declares either fails attachment.enforcement instead.
+void Rows::target_gaps() {
+  for (u32 ai = 0; ai < def_.attachments.size(); ++ai) {
+    const Attachment& a = def_.attachments[ai];
+    if (a.enforcement != AttachmentEnforcement::Essential) continue;
+    const bool separated = a.interface == AttachmentInterface::Separated;
+    if (!separated && a.gap_m == 0.0) continue;
+    ValidationRow& r = row(
+        "attachment.target_gap", "attachment " + a.name, Severity::error,
+        "a separated tie's gap is strictly positive; every held node's frame-local target (its "
+        "construction position in the frame's own coordinates, inverse(T_construction) "
+        "X_construction, which each state's T_s carries to that state) lies at the declared gap "
+        "from the frame's surface, signed outward, within 0.1 um; the gap is not below the offset "
+        "of any unilateral pair between the patch's surface and the frame; the policy's activation "
+        "distance is reported beside it and not judged; a coincident attachment's gap is zero. "
+        "Chordal: the held nodes against the frame's triangles, not the curved six-node faces "
+        "between them; it certifies no trajectory between states and no clearance of the tissue "
+        "beside the patch",
+        "a separated tie is prescribed across a gap it declares, and where its targets lie is "
+        "geometry to check; whether a tie inside the contact's activation band is wanted is the "
+        "authoring side's mechanics, reported here and never judged");
+    r.value.set("interface", JsonValue(separated ? "Separated" : "Coincident"));
+    r.value.set("gap_mm", number(a.gap_m * k_mm));
+    if (!separated) {
+      fail(r, "a coincident attachment declares a gap of " + mm(a.gap_m) +
+                  ": coincident is flush on its frame, and a patch held across a gap is a "
+                  "separated tie that says so");
+      continue;
+    }
+    r.value.set("tolerance_mm", number(k_position_m * k_mm));
+    if (!(a.gap_m > 0.0) || !std::isfinite(a.gap_m))
+      fail(r,
+           "the declared gap is " + mm(a.gap_m) + ": a separated tie's gap is strictly positive");
+    if (a.target_kind != TargetKind::Frame) {
+      fail(r,
+           "a separated tie is to a frame: the world has no surface to hold the patch apart from");
+      continue;
+    }
+    const FrameModel* frame = find_frame(c_, a.target);
+    const i32 ri = find_region(c_, a.region);
+    if (frame == nullptr || !frame->ok || ri < 0 || !c_.regions[ri].ok) {
+      fail(r, "the attachment's region or frame does not resolve (attachments.resolve)");
+      continue;
+    }
+    const RegionModel& region = c_.regions[ri];
+    const RigidTransform at_construction = frame_at(a.target, "construction");
+    f64 least = std::numeric_limits<f64>::infinity();
+    f64 greatest = -std::numeric_limits<f64>::infinity();
+    f64 worst = 0.0;
+    f64 worst_distance = 0.0;
+    u32 worst_node = 0;
+    u32 held = 0;
+    u32 off = 0;
+    for (const u32 v : node_set(c_, region, a.nodes)) {
+      if (v >= region.nodes.size()) continue;
+      ++held;
+      // Rigid transforms keep distances, so the target's distance from the frame at a state is its
+      // frame-local one: measured once, against the frame's own triangles.
+      const D3 local = at_construction.unapply(d3(region.nodes[v]));
+      const f64 d = frame->surface.query(local).distance;
+      least = std::min(least, d);
+      greatest = std::max(greatest, d);
+      const f64 departure = std::fabs(d - a.gap_m);
+      if (!(departure <= k_position_m)) ++off;
+      if (!(departure <= worst)) {
+        worst = departure;
+        worst_distance = d;
+        worst_node = v;
+      }
+    }
+    r.value.set("held_nodes", JsonValue(held));
+    r.value.set("least_distance_mm", number(least * k_mm));
+    r.value.set("greatest_distance_mm", number(greatest * k_mm));
+    r.value.set("max_departure_mm", number(worst * k_mm));
+    r.value.set("worst_node", JsonValue(worst_node));
+    if (off > 0)
+      fail(r, str(off) + " held nodes' frame-local targets are off the declared gap: node " +
+                  str(worst_node) + " at " + mm(worst_distance) +
+                  " from the frame's surface, not " + mm(a.gap_m));
+    JsonValue pairs = JsonValue::array();
+    for (const PairModel& pm : m_.pairs) {
+      const ContactPair& p = *pm.def;
+      if (!(p.a.kind == ContactSurfaceKind::MaterialSurface && p.a.name == a.patch_surface &&
+            p.b.kind == ContactSurfaceKind::Frame && p.b.name == a.target))
+        continue;
+      const bool unilateral = p.eligibility == ContactEligibility::Unilateral;
+      const ContactPolicy* policy = nullptr;
+      for (const ContactPolicy& candidate : def_.contact_policies)
+        if (candidate.name == p.policy) policy = &candidate;
+      JsonValue e = JsonValue::object();
+      e.set("pair", JsonValue(p.name));
+      e.set("eligibility", JsonValue(unilateral ? "Unilateral" : "Attached"));
+      e.set("offset_mm", number(p.offset_m * k_mm));
+      e.set("activation_mm",
+            policy != nullptr ? number(policy->activation_m * k_mm) : JsonValue::null());
+      pairs.push_back(std::move(e));
+      if (unilateral && a.gap_m < p.offset_m)
+        fail(r, "the declared gap of " + mm(a.gap_m) + " is below pair " + p.name +
+                    "'s offset of " + mm(p.offset_m) +
+                    ": the held patch would sit inside the barrier it keeps");
+    }
+    r.value.set("pairs", std::move(pairs));
   }
 }
 

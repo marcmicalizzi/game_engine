@@ -87,6 +87,7 @@ constexpr RowCapability k_rows[] = {
     {"contact.pairs", evaluated},
     {"contact.exclusions", evaluated},
     {"attachment.contact_compatibility", evaluated},
+    {"attachment.target_gap", evaluated},  // Attachment version 3: the separated tie
     {"contact.curved_clearance", evaluated},
     {"contact.constraint_compatibility", evaluated},
     {"contact.trajectory", info_only},

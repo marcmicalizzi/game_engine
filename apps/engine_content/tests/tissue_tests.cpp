@@ -198,6 +198,22 @@ TEST_CASE("tissue: capabilities is one line: the schema, the records and blocks,
   CHECK(status == "info-only");
   run.result.find("rows")->find("contact.curved_clearance")->get_string(status);
   CHECK(status == "evaluated");
+  // The separated tie (Attachment version 3): its field, its enumeration and its row.
+  CHECK(count(*run.result.find("records"), "Attachment") == 3);
+  const JsonValue* fields = run.result.find("fields");
+  REQUIRE(fields != nullptr);
+  u32 tie_fields = 0;
+  for (usize i = 0; i < fields->size(); ++i) {
+    std::string_view field;
+    (*fields)[i].get_string(field);
+    tie_fields += field == "Attachment.interface" || field == "Attachment.gap_m" ? 1u : 0u;
+  }
+  CHECK(tie_fields == 2);
+  const JsonValue* interfaces = run.result.find("enums")->find("AttachmentInterface");
+  REQUIRE(interfaces != nullptr);
+  CHECK(interfaces->size() == 2);
+  run.result.find("rows")->find("attachment.target_gap")->get_string(status);
+  CHECK(status == "evaluated");
   CHECK(run.result.find("build")->find("commit") != nullptr);
   CHECK(content({"tissue", "capabilities", "extra"}).exit_code == 2);
 }
@@ -208,7 +224,7 @@ TEST_CASE("tissue: the layered model's fixtures, and a capability failure is exi
   Run run = content({"tissue", "example", dir});
   INFO(run.output);
   REQUIRE(run.exit_code == 0);
-  for (const char* stem : {"layered-slab", "layered-fusiform"}) {
+  for (const char* stem : {"layered-slab", "layered-fusiform", "layered-tied-slab"}) {
     const std::string interchange = dir + "/" + stem + ".json";
     const std::string container = tmp.file(std::string(stem) + ".tissue");
     run = content({"tissue", "import", interchange, container});
@@ -223,6 +239,16 @@ TEST_CASE("tissue: the layered model's fixtures, and a capability failure is exi
     CHECK(run.exit_code == 0);
     CHECK(count(run.result, "errors") == 0);
     CHECK(count(run.result, "warnings") == 0);
+    // The tied slab's two grips are separated ties, each with its gap row.
+    u32 gaps = 0;
+    const JsonValue* rows = run.result.find("rows");
+    REQUIRE(rows != nullptr);
+    for (usize i = 0; i < rows->size(); ++i) {
+      std::string_view id;
+      (*rows)[i].find("id")->get_string(id);
+      gaps += id == "attachment.target_gap" ? 1u : 0u;
+    }
+    CHECK(gaps == (std::string_view(stem) == "layered-tied-slab" ? 2u : 0u));
   }
 
   // A file that requires a row this build does not implement: refused by import and by validate

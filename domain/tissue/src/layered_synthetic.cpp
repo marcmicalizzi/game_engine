@@ -240,15 +240,23 @@ ContactPolicy synthetic_policy(std::string name) {
 
 // ---- the slab -----------------------------------------------------------------------------------
 
-TissueFile make_layered_slab() {
+namespace {
+
+// The slab; with `tied`, held at both ends by jaws across a declared gap (make_layered_tied_slab).
+// Everything `tied` adds is added after the plain slab's own data, so the plain slab is the same
+// bytes it was before the tied variant existed.
+TissueFile layered_slab(bool tied) {
   TissueFile file;
   TissueDefinition& d = file.definition;
   d.format = k_tissue_format;
-  d.name = "layered slab";
+  d.name = tied ? "layered tied slab" : "layered slab";
   d.description =
-      "a fat slab of ten-node cells over a closed base, with a thickness field, two depots, a "
-      "mechanical skin on its upper surface and face contact: generated, not measured";
-  d.provenance = "domain/tissue/src/layered_synthetic.cpp, make_layered_slab";
+      tied ? "the layered slab held at both ends by jaws across a declared 0.4 mm gap: separated "
+             "essential ties whose patch-and-jaw contact stays active; generated, not measured"
+           : "a fat slab of ten-node cells over a closed base, with a thickness field, two depots, "
+             "a mechanical skin on its upper surface and face contact: generated, not measured";
+  d.provenance = tied ? "domain/tissue/src/layered_synthetic.cpp, make_layered_tied_slab"
+                      : "domain/tissue/src/layered_synthetic.cpp, make_layered_slab";
 
   constexpr f64 length = 0.16;
   constexpr f64 width = 0.08;
@@ -412,6 +420,71 @@ TissueFile make_layered_slab() {
   base.policy = "slab";
   d.contact_pairs.push_back(base);
 
+  // ---- the tied variant: a jaw at each end, the end face held across a declared gap
+  if (tied) {
+    // Inside the pair's activation band (0.1 mm offset plus 0.5 mm), so the clearance row measures
+    // the patch against its jaw; whether a tie there is wanted is not the fixture's to say.
+    constexpr f64 gap = 0.0004;
+    // The compression shortens the slab 3% about its middle, so each end moves in by this.
+    const f64 shift = 0.5 * (1.0 - 0.97) * length;
+    for (const bool at_left : {true, false}) {
+      const std::string side = at_left ? "left" : "right";
+      const f64 sign = at_left ? -1.0 : 1.0;
+      // The jaw's inner face `gap` beyond the end face, overhanging the slab's section by 5 mm
+      // across and 0.5 mm above and below (still 0.2 mm above the base).
+      const f64 inner = sign * (0.5 * length + gap);
+      const f64 outer = sign * (0.5 * length + 0.01);
+      put_box(file, side + " jaw", D{std::min(inner, outer), -0.5 * width - 0.005, -0.0005},
+              D{std::max(inner, outer), 0.5 * width + 0.005, thickness + 0.0005});
+      FrameState at_construction;
+      at_construction.frame = side + " jaw";
+      at_construction.state = "construction";
+      at_construction.rotation = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+      at_construction.translation_m = {0, 0, 0};
+      at_construction.interpolation = "synthetic-unpinned";
+      d.frame_states.push_back(at_construction);
+      FrameState compressed_by = at_construction;
+      compressed_by.state = "compressed";
+      compressed_by.translation_m = {-sign * shift, 0, 0};
+      d.frame_states.push_back(compressed_by);
+
+      // The end face: a material surface, the patch (the whole of it) and the nodes it holds.
+      const Vector<u32> end = boundary_faces(m, [&](D p) {
+        return at_left ? p.x < -0.5 * length + 1.0e-9 : p.x > 0.5 * length - 1.0e-9;
+      });
+      put(file, "surface." + side, BlockKind::BoundaryFaceRefs, end, 2);
+      put(file, "set." + side, BlockKind::NodeSet, face_nodes(m, end));
+      d.regions[0].node_sets.push_back(
+          NodeSetRef{side + " end", "set." + side, "the nodes the " + side + " grip holds"});
+      d.material_surfaces.push_back(MaterialBoundarySurface{side + " end", "fat", "surface." + side,
+                                                            "p2-six-node-v1",
+                                                            "the " + side + " grip's patch"});
+
+      Attachment grip;
+      grip.name = side + " grip";
+      grip.region = "fat";
+      grip.nodes = side + " end";
+      grip.kind = AttachmentKind::Fixed;
+      grip.target_kind = TargetKind::Frame;
+      grip.target = side + " jaw";
+      grip.enforcement = AttachmentEnforcement::Essential;
+      grip.patch_surface = side + " end";
+      grip.patch = "surface." + side;
+      grip.interface = AttachmentInterface::Separated;
+      grip.gap_m = gap;
+      d.attachments.push_back(grip);
+
+      // The patch against its own jaw stays an active unilateral pair: no exclusion.
+      ContactPair against;
+      against.name = side + " end on " + side + " jaw";
+      against.a = ContactSide{ContactSurfaceKind::MaterialSurface, side + " end", "fat"};
+      against.b = ContactSide{ContactSurfaceKind::Frame, side + " jaw", side + " jaw"};
+      against.offset_m = 0.0001;  // CONTACT.md: fat against a rigid frame
+      against.policy = "slab";
+      d.contact_pairs.push_back(against);
+    }
+  }
+
   // ---- a certificate record: provenance of nothing certified
   ReferenceCertificate certificate;
   certificate.name = "reference";
@@ -442,8 +515,25 @@ TissueFile make_layered_slab() {
                          "contact.curved_clearance",
                          "contact.constraint_compatibility"};
   d.requirements.laws = {"uniform-v1", "p2-six-node-v1"};
+  if (tied) {
+    // An older reader would skip `interface` and `gap_m` as unknown fields and read each grip as
+    // a coincident tie with its contact switched off: the file names both, so it refuses instead.
+    for (const char* record :
+         {"FrameState", "Attachment.enforcement", "AttachmentEnforcement.Essential",
+          "Attachment.interface", "AttachmentInterface.Separated", "Attachment.gap_m"})
+      d.requirements.records.push_back(record);
+    for (const char* r : {"frame.rigidity", "attachment.enforcement", "attachment.pose_binding",
+                          "attachment.contact_compatibility", "attachment.target_gap"})
+      d.requirements.rows.push_back(r);
+  }
   return file;
 }
+
+}  // namespace
+
+TissueFile make_layered_slab() { return layered_slab(false); }
+
+TissueFile make_layered_tied_slab() { return layered_slab(true); }
 
 // ---- the fusiform muscle ------------------------------------------------------------------------
 

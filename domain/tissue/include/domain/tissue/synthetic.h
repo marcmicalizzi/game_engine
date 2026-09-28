@@ -89,9 +89,14 @@ SyntheticTissue make_synthetic_tissue(const SyntheticOptions& options = {});
 //                  rest, reference and "posed", the insertion handle turned 60 degrees about y
 //                  and the body bent smoothly to follow it; contact against both handles, the
 //                  origin's patch excluded against its own
+//   the tied slab  the slab held at both ends by box jaws across a declared 0.4 mm gap: each end
+//                  face a material surface, the patch of an essential grip whose interface is
+//                  `Separated` (Attachment version 3), and a unilateral pair against its jaw with
+//                  no exclusion; the jaws move in with the 3% compression by FrameStates
 //
 // Each declares its requirements: the records, block kinds, rows and laws its meaning depends on.
 TissueFile make_layered_slab();
 TissueFile make_layered_fusiform();
+TissueFile make_layered_tied_slab();
 
 }  // namespace engine::tissue

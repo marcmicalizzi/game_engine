@@ -35,8 +35,8 @@ cannot be lower; and nothing in it ticks, renders or allocates per frame, so it 
 
 **Owned data.** A `TissueFile` owns a definition and its blocks' bytes. A `TissueReport` owns the
 rows and numbers one validation produced; an `ExpectationResult` what a fixture's declaration made
-of one. `SyntheticTissue` owns the generated example, and `make_layered_slab` and
-`make_layered_fusiform` return the layered model's two. `Capabilities` is what a build reads and
+of one. `SyntheticTissue` owns the generated example, and `make_layered_slab`,
+`make_layered_fusiform` and `make_layered_tied_slab` return the layered model's three. `Capabilities` is what a build reads and
 evaluates, and a `CapabilityFailure` what a file required that it lacked. Nothing else holds a
 tissue definition; the
 render path, the solver and the content build's derived steps that will read one do not exist yet
@@ -57,6 +57,10 @@ render path, the solver and the content build's derived steps that will read one
   that uses nothing new is written as the builds before the field wrote it.
 - An attachment without `enforcement` is a spring, `Fixed`'s version-1 meaning; an `Essential` one
   is exact, and nothing reads it as a stiff spring.
+- An essential attachment without `interface` is `Coincident`, version 2's meaning: flush on its
+  frame, its patch excluded against it. A `Separated` one is held `gap_m` off its frame with that
+  contact active, and nothing reads either as the other
+  ([Two interfaces](#two-interfaces-a-coincident-patch-and-a-separated-tie)).
 - A definition that uses none of the layered model's records gets none of its rows: its report is
   the one it always had, row for row and number for number (the native supine fixtures' 43 rows
   are the regression that holds it).
@@ -91,7 +95,7 @@ render path, the solver and the content build's derived steps that will read one
 `read_expectation`, `ExpectationDifference`, `ExpectationResult`, `compare_expectation`,
 `difference_kind_name`, `expectation_json`, `expectation_text`, `expectation_from_report`,
 `write_expectation`. `domain/tissue/synthetic.h`: `SyntheticOptions`, `make_synthetic_tissue`,
-`make_layered_slab`, `make_layered_fusiform`. `domain/tissue/sha256.h`: `Sha256`, `sha256`,
+`make_layered_slab`, `make_layered_fusiform`, `make_layered_tied_slab`. `domain/tissue/sha256.h`: `Sha256`, `sha256`,
 `sha256_hex`. The types themselves are `engine::tissue::*` in `<schemas/tissue.h>`, generated from
 `schemas/tissue.schema`.
 
@@ -113,7 +117,7 @@ name mechanics, never anatomy.
 | `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance); and since version 3 `rest_driver`, a pose-dependent rest shape ([the layered model](#the-layered-model)) — a muscle is a `Volume` region with one, never a cage kind of its own |
 | `Frame` | a closed, outward-wound rigid proxy: vertices and triangles; **declared cover per vertex** with its `CoverProvenance` (`Undeclared`, `Fitted`, `AuthoredTransform`, `Authored`) and a provenance note, because a frame contracted to fit is a size changed, not discovered; `proxy`; the frames it lies `inside` |
 | `Surface` | an attachment target that is not a frame, flagged `proxy` |
-| `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone; since version 2 its `enforcement` — `Spring`, the default and every earlier attachment's meaning, or `Essential`, exact — with an essential one's `patch` on a material surface and the `transition_band` it owns ([the layered model](#the-layered-model)) |
+| `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone; since version 2 its `enforcement` — `Spring`, the default and every earlier attachment's meaning, or `Essential`, exact — with an essential one's `patch` on a material surface and the `transition_band` it owns ([the layered model](#the-layered-model)); since version 3 an essential one's `interface` — `Coincident`, the default and every earlier attachment's meaning, or `Separated` — and `gap_m`, a separated tie's declared gap from its frame ([two interfaces](#two-interfaces-a-coincident-patch-and-a-separated-tie)) |
 | `SkinBinding` | the region and sheet it follows; the Loop level and **the refinement rule** (`loop-hoppe-1994-v1`, geometry.md's numbering and masks); the **normal mode** (below); the **domain**, an explicit set of canonical ids the binding may write; the **footprint** (ids at weight one) and the **transition band** (ids and weights in (0, 1), its width and profile) as two authored objects; and the per-domain-id **records**: refined triangle, barycentrics, optional authored offset, optional authored reference normal |
 | `Observation` | the declared base (`base_id`, vertex count, faces, `topology_sha256`), the accepted observation's positions, the **declared domain** (explicit ids), the base's positions at every id outside it, the signed deviation inside it, landmarks by canonical id, the **load** (gravity vector in body coordinates, medium and its density, pose, fill), and **acceptance** as a separate record (who, when, which sheet) |
 | `RegionState` | a region's nodes at a state, its `role` (`Reference` — what the binding is paired with —, `Rest`, `Response`, `Construction`), its `provenance` (`Authored`, `ForwardFromAuthoredRest`, `InverseStatics`, `ForwardFromReference`), its load, and — required for `InverseStatics` — an `InverseFit`: the fit's `method` (`surface-targeted`, `legacy-all-nodes`), how it extended the correction to the interior (`harmonic`, `elastic`, `none`), its step, the node sets it held, its residual, its smallest cell ratio, and the **`solver`** the rest was recovered against (`InverseSolver`: `kind` `xpbd` with `iterations`, `step_s` and optionally `duration_s` and `damping_per_s`, or `static-minimization` with `gradient_tolerance_n`; and the `implementation`); optionally the authoring side's own transferred visible surface, for the agreement row |
@@ -229,8 +233,8 @@ record's version 1 is written only where it is not its default, so the later exa
 and beside it
 `synthetic-quadratic.json`, the worked example of a ten-node reference body (`"cage":
 "TetrahedralQuadratic"`, `"role": "Reference"`, a `QuadraticTetrahedra` block), and
-`layered-slab.json` and `layered-fusiform.json`, the worked examples of every layered record
-([below](#the-layered-models-fixtures)).
+`layered-slab.json`, `layered-fusiform.json` and `layered-tied-slab.json`, the worked examples of
+every layered record ([below](#the-layered-models-fixtures)), the last of a separated tie.
 
 `import_interchange` refuses what does not add up — an unknown kind, a byte count that is not
 count × element, a file of another length, a hash that differs, a duplicate name, a `format` other
@@ -344,7 +348,8 @@ region with a pose-dependent rest shape, fat as a material-coordinate thickness 
 partition its volume, skin as a mechanical membrane on the quadratic material boundary, and one face
 contact contract for self, region and frame contact. Its `INTERCHANGE.md` was the engine's work
 list; the records below are what was built from it, **append-only**: new records and new fields
-under version increments (`TissueDefinition` 2, `Region` 3, `Attachment` 2, every new record 1),
+under version increments (`TissueDefinition` 2, `Region` 3, `Attachment` 2 — and 3 for the
+separated tie, [below](#two-interfaces-a-coincident-patch-and-a-separated-tie) — every new record 1),
 new enumerators appended, and a definition that uses none of them reading exactly as it did. **What
 the packet asked not to be done, is not**: the Loop `Sheet`, `MembraneTriangles` and `SkinBinding`
 keep their meaning and are not the material boundary; `Fixed` stays a spring; there is no `Muscle`
@@ -357,6 +362,7 @@ or `Fat` cage kind — they are `Volume` regions with declared laws.
 | `Region.rest_driver`: `ActiveRestShape` | the law and its version in one spelling (`fusiform-arch-v1` is the one this build evaluates), its coefficients as JSON read with the law's own record (`FusiformArchCoefficients`), the canonical reference state it maps from, the canonical frame (origin, axial and first transverse direction), the natural length L, the domain and which of its parameters are the activation and the pose angle, and the samples whose snapshots are its targets | `muscle.rest_identity`, `muscle.target_volume`, `muscle.passive_reference`, `muscle.objectivity` |
 | `FrameState` | a frame's (or a bone's) rigid transform at a state (`"construction"` or a state's name): a row-major rotation, orthonormal with determinant +1, and a translation, in doubles in the JSON; and the rule the certificate pins for how it travels from the frame's previous state. A frame's FrameStates in the definition's order are its load path; a frame with none at a state is where its vertices are | `frame.rigidity`, `attachment.pose_binding`, `contact.frame_trajectory`; and `frame.containment` and `frame.intersections` test the frame where its FrameState puts it |
 | `Attachment.enforcement`, `.patch_surface`, `.patch`, `.transition_band` | `Spring` (the default: version 1's meaning, unchanged) or `Essential`: exact, kind `Fixed`, to a frame or the world, no stiffness. An essential attachment holds its nodes where the target frame's transform at each state carries their construction positions (the frame binding's material map; frame-local targets are the construction's, undone by the construction's transform), and names its finite patch — faces of a material surface, a `BoundaryFaceRefs` block — and the collar node set it owns | `attachment.enforcement`, `attachment.pose_binding`, `attachment.contact_compatibility`; `attachment.reaction_balance` is not implemented |
+| `Attachment.interface`, `.gap_m` (Attachment version 3) | how an essential patch lies against its frame: `Coincident` (the default: flush, its contact against the frame excluded) or `Separated` (held `gap_m` off the frame's surface, that contact active) | `attachment.contact_compatibility` (per interface), `attachment.target_gap` |
 | `ThicknessField`, `CosineModulation` | fat as a thickness over a material surface's canonical coordinates, generating a `Volume` region's material: the region, the surface it is measured from, its normal convention (a spelling the construction pins), its law — `uniform-v1`, or `cosine-modulation-v1`, DESIGN's h = h_mean [1 + d cos(2πu/L) cos(πv/W)] — with its mean and coefficients, and the authoring side's own ledger (reference volume and mass) | `fat.thickness_positive`, `fat.field_jacobian`, `fat.mass_ledger` |
 | `DepotPartition`, `Depot` | the depots of one field, each a share of every cell of the field's region (a `PhaseFraction` block: a per-cell volume fraction, exactly that block's meaning) with its declared volume and mass; in every cell the shares sum to one — a depot partitions or redistributes the field's volume and never adds to it | `fat.depot_partition`, `fat.mass_ledger` |
 | `MaterialBoundarySurface` | an oriented surface of a ten-node region's own boundary faces (`BoundaryFaceRefs`, Gmsh's local faces, outward), evaluated as six-node triangles (`p2-six-node-v1`); shared by the membrane, the contact and the skin binding | `surface.material_boundary`, `surface.orientation`, `surface.embedding` |
@@ -380,6 +386,58 @@ round it to float32, and a fixture's frames have a handful of states. Essential 
 targets** are not a block either: they are the held nodes' construction positions in the frame's
 coordinates, which is what "held where the frame puts them" means for every fixture the packet
 describes; a target that is not the construction's is a field to add when a fixture needs one.
+
+### Two interfaces: a coincident patch and a separated tie
+
+An essential attachment holds its patch where its frame puts it, and version 2 read that one way:
+the patch sits **flush** on the frame. That is an owned coincidence with a geometric problem at its
+edge — the tissue just outside the patch approaches zero distance from the rigid surface, so no
+uniform positive clearance can hold there — which is why a coincident patch is excluded from
+contact against its own frame and every other pairing stays active. The authoring side's next
+fixture is the other case: a grip that holds the tissue **across a declared gap**, with all
+patch-and-frame contact kept active. Nothing at its edge approaches the frame; its contact against
+its own frame is exactly what keeps the tissue beside the patch off it; and excluding that contact
+would switch off the barrier the grip relies on. The same held nodes carry two different
+mechanics, so the attachment says which (Attachment version 3, append-only; the authoring side
+stated the need in `astra-interchange-response-221-2026-09-28`, `MANIFEST.json` `f42fd088…`,
+sections 2 and 5, and the engine side answered with this design):
+
+- **`interface: Coincident`**, the default and every earlier attachment's meaning, with `gap_m` 0.
+  `attachment.contact_compatibility` is unchanged: every unilateral pair between the patch's surface
+  and the frame excludes the whole patch by an exclusion naming the attachment. A non-zero `gap_m`
+  fails `attachment.target_gap`: a patch held across a gap is a separated tie and says so.
+- **`interface: Separated`** with `gap_m` > 0, the declared frame-local gap between the held patch
+  and its frame's surface. **No** exclusion of the patch against its own frame is required, and one
+  that is declared fails `attachment.contact_compatibility` — any exclusion of such a pair that covers
+  a patch face or names the attachment, whatever its reason; the unilateral pair of the patch's
+  surface and its frame must exist, and no pair between them may be an `Attached` interface, which
+  nothing checks. `attachment.target_gap` checks the geometry: the gap positive; every held node's
+  frame-local target — the existing derivation, x_target(s) = T_s T_construction⁻¹ X_construction,
+  whose distance from the frame is the same at every state because T_s is rigid, so it is measured
+  once against the frame's own triangles — at `gap_m` from the frame's surface, signed outward,
+  within 0.1 µm (the float32 argument `attachment.pose_binding` already states: positions are f32 in
+  every block, a few ulps at a fixture's scale); and the gap not below the offset of any unilateral
+  pair between the patch's surface and the frame. It reports the gap beside each pair's offset and
+  its policy's activation distance and does **not** judge that relation — whether a tie inside the
+  activation band is wanted is the authoring side's mechanics. It is **chordal** and says so in its
+  threshold: nodes against the frame's triangles, not the curved faces between them; it certifies no
+  trajectory between states and no clearance of the tissue beside the patch, which is what
+  `contact.curved_clearance` over the kept pair and the certificate are for. A separated tie is to a
+  frame; one to the world has no surface to be apart from and fails the row.
+
+A **spring** ignores both fields — its stretch is a force, whatever gap it starts at — and a spring
+that declares `Separated` or a gap fails `attachment.enforcement` with a sentence saying why. Both
+fields default to what every earlier file meant and the writer omits a later field at its default,
+so a file written before version 3 is the same bytes and reports as it did: `attachment.target_gap`
+is emitted only for an essential attachment that declares one of the two (the fusiform's coincident
+origin gets none). A file that uses the mode names `Attachment.interface`,
+`AttachmentInterface.Separated` and `Attachment.gap_m` in its requirements, because a build from
+before version 3 would skip both fields as unknown and read each grip as a coincident tie whose
+contact is meant to be excluded; the gate refuses the file instead
+([Capabilities](#capabilities-and-the-requirements-rule)). The field is named `interface`, which is
+also a macro in Windows' COM headers (`<combaseapi.h>` defines it as `struct`): no translation unit
+that includes the generated `<schemas/tissue.h>` includes those today — MSVC compiling the member is
+the proof — and one that ever needs both must keep the COM headers out.
 
 **What each row can and cannot evaluate.** The geometric rows walk chords: a six-node face is its
 four chords, the same-node subdivision's boundary, and `surface.embedding`,
@@ -461,7 +519,7 @@ never gate; the one *not-implemented* row is never emitted.
 | `muscle.passive_reference` | error; evaluated | the canonical reference is the construction, the reference or a rest, never a response; no target is a solved (response) state bit for bit; the natural length positive | the observed pose is not its own stress-free state: no current-pose reset |
 | `muscle.objectivity` | error; evaluated (skipped for a law this build does not evaluate) | every target is the law on the canonical reference in the driver's canonical frame within 0.1 µm, the frame's axes unit and orthogonal to 1e-9; each target's best-fit rotation against the reference reported | a target is a function of the material and the parameters, never of the current pose; a snapshot alone is not a law. The energy's invariance under a rigid motion of F G⁻¹ is the certificate's |
 | `frame.rigidity` | error; evaluated | every FrameState names a frame (or a bone) and a state that exist, one per state; its rotation orthonormal to 1e-9 with determinant +1 to 1e-9, its translation finite, its interpolation named | a frame is rigid: nothing scales or shears it to make tissue fit |
-| `attachment.enforcement` | error; evaluated | an essential attachment is `Fixed`, to a frame or the world, with no stiffness; its patch faces of a material surface of its region, every node of which it holds; a spring carries no patch; a transition band a node set disjoint from the held nodes, owned once; no node held by two essential attachments | an essential attachment is exact and never a stiff spring; exact attachment and soft transition are different data |
+| `attachment.enforcement` | error; evaluated | an essential attachment is `Fixed`, to a frame or the world, with no stiffness; its patch faces of a material surface of its region, every node of which it holds; a spring carries no patch, no `Separated` interface and no gap; a transition band a node set disjoint from the held nodes, owned once; no node held by two essential attachments | an essential attachment is exact and never a stiff spring; exact attachment and soft transition are different data; a spring's stretch is a force, whatever gap it starts at |
 | `attachment.pose_binding` | error (a spring's reported, never failed); evaluated | at every state every held node where the target frame's transform carries its construction position, within 0.1 µm (the world: where it was built) | an essential attachment is prescribed; a spring's stretch is a force, not a violation |
 | `attachment.reaction_balance` | —; **not implemented** | — | reactions come from the P2 potential and the solve, and no record carries them: the gate refuses a file that requires the row |
 | `contact.frame_trajectory` | info; info-only | a frame's load path: each step's rotation angle, translation and interpolation rule | a rigid rotation is not a linear vertex path: continuous collision along it is the certificate's |
@@ -477,7 +535,8 @@ never gate; the one *not-implemented* row is never emitted.
 | `skin.energy_transfer` | info; info-only | the law, its parameters, E·t, ν, the faces | the membrane's energy, relaxation and gradient transfer are the certificate's |
 | `contact.pairs` | error; evaluated | a unique name; both sides resolve with their owners, at least one a surface; self contact exactly when both are one surface; an offset ≥ 0; a policy with a potential, a proxy rule, an activation distance, a deviation target, a depth and work caps; a locality relation when a self-contact offset is positive | one declared contract for self, region and frame contact |
 | `contact.exclusions` | error; evaluated | every exclusion exact: its faces the sides' own; an incident one pairs faces of one region sharing a node; an attachment one names an essential attachment whose patch is on side a and whose target is side b's frame, and only that patch | an exclusion that masks a nonincident feature hides the overlap it exempts |
-| `attachment.contact_compatibility` | error; evaluated | every unilateral pair between an essential patch's surface and its frame excludes the whole patch against it, by an exclusion naming the attachment | an owned coincidence is not a unilateral barrier; every other pairing stays active |
+| `attachment.contact_compatibility` | error; evaluated | `Coincident`: every unilateral pair between an essential patch's surface and its frame excludes the whole patch against it, by an exclusion naming the attachment. `Separated`: a unilateral pair between them exists, none is an attached interface, and no exclusion of one covers a patch face or names the attachment | an owned coincidence is not a unilateral barrier; a tie across a gap keeps its contact, and excluding it switches off the barrier the tie relies on; every other pairing stays active either way |
+| `attachment.target_gap` | error; evaluated, **chordal**; only for an essential attachment that declares an interface or a gap | `Separated`: the gap above 0; every held node's frame-local target, T_construction⁻¹ X_construction, at the gap from the frame's triangles, signed outward, within 0.1 µm; the gap not below any unilateral patch-and-frame pair's offset; the policy's activation distance reported, not judged. `Coincident`: the gap 0 | a separated tie is prescribed across a gap it declares, and where its targets lie is geometry; whether a tie inside the activation band is wanted is the authoring side's mechanics; it certifies no trajectory and no clearance of neighbouring tissue |
 | `contact.curved_clearance` | error; evaluated, **chordal** | at every state every eligible chord pair strictly above its required separation — the pair's offset, or, within one region, nonintersection for features closer than the locality relation in the canonical reference — incident chords and exclusions exempt; the chords' deviation from the curved faces reported apart | every eligible pair starts and stays above its offset, equality being the barrier's boundary; the curved surfaces are the certificate's |
 | `contact.constraint_compatibility` | error; evaluated, **chordal** | no pair within its separation at any state with both sides prescribed (held by an essential attachment, or a frame) | such a pair is infeasible, not a violation a solve can remove |
 | `contact.trajectory` | info; info-only | the pair's states in order with the chordal least separation at each | continuous separation between states is the certificate's |
@@ -587,7 +646,11 @@ block kind; `rows`, every validator row as `evaluated`, `info-only` or `not-impl
 family (`rest_driver`, `thickness`, `surface_evaluation`, `normal_mode`, `refinement_rule`,
 `energy`); the kinds of requirement it reads; and the commit it was built from. The records, fields
 and enumerators come from the generated schema reflection — the reader's own view, which cannot
-drift from what it reads — and the rows from one table the tests hold every emitted row to.
+drift from what it reads — and the rows from one table the tests hold every emitted row to. The
+separated tie added `"Attachment": 3` to `records`, `Attachment.interface` and `Attachment.gap_m` to
+`fields`, `"AttachmentInterface": ["Coincident", "Separated"]` to `enums` and
+`"attachment.target_gap": "evaluated"` to `rows`; `schema_version` stays 2, since the definition
+record itself did not change.
 
 **The rule.** A definition's `requirements` (the `requires` list) names what its meaning depends on:
 `records` — a record (`"ContactPair"`), one field (`"Attachment.enforcement"`), an enumeration or
@@ -610,7 +673,13 @@ never ran on it, or ran skipped, is data the requirement promised and the file d
 requiring nothing — reads in this build and in a simulated older one with the same definition; a
 new file read by the simulated older build (this build's capabilities with the layered records,
 blocks, rows and laws stripped) is refused as a capability failure naming each, from the container
-and from the interchange; and the fixture mode refuses to match one (`tissue_tests.cpp`).
+and from the interchange; a build simulated from between the two (this one's with only the separated
+tie's field, enumeration and row stripped) refuses the tied slab the same way, naming
+`Attachment.interface`, `AttachmentInterface.Separated`, `Attachment.gap_m` and
+`attachment.target_gap`, where without the gate it would skip both fields and read each grip as a
+coincident tie — and still reads the fusiform, whose coincident origin requires none of them; and the
+fixture mode refuses to match one (`tissue_tests.cpp`). A capability failure is what every
+`engine-content tissue` command turns into exit 3, before any row is written.
 
 ## The declared energy, the patch test and the equilibrium gap
 
@@ -835,8 +904,10 @@ subdivision 98.9647). It is the body the fixture-mode test declares two failures
 are the packet's two neutral fixtures in shape (RUNS.md), generated from formulas, nothing solved:
 ten-node reference bodies with straight-sided cells (edge nodes at the midpoints, the canonical
 reference the packet asks for), Kuhn-split hexahedra, DESIGN's synthetic constants, gravity zero, no
-observation and no Loop sheet — their skin, where they have one, is the material boundary. Each
-declares its requirements, and `engine-content tissue example` writes both as interchanges and
+observation and no Loop sheet — their skin, where they have one, is the material boundary.
+`make_layered_tied_slab()` is the slab held by grips across a declared gap, the separated tie's
+fixture ([two interfaces](#two-interfaces-a-coincident-patch-and-a-separated-tie)). Each declares
+its requirements, and `engine-content tissue example` writes all three as interchanges and
 containers, the worked examples of every layered record.
 
 - **The slab**: 160 × 80 × 15 mm of fat (K 100 kPa, μ 350 Pa, 950 kg/m³), 384 cells and 765 nodes,
@@ -856,15 +927,40 @@ containers, the worked examples of every layered record.
   about y by a FrameState and the body bent by a smoothstep of its length to follow it; contact
   against both handles, the origin's patch excluded against its own. The law reproduces the active
   target to 1.5 nm and the target keeps its volume to 1.5 parts in 10⁸ (float32).
+- **The tied slab**: the slab, byte for byte in everything it shares with it (the plain slab is
+  generated by the same function and is the same bytes it was), plus a box **jaw** at each end whose
+  inner face is 0.4 mm beyond the end face and overhangs the section by 5 mm across and 0.5 mm above
+  and below; each end face a material surface of 16 faces and 45 nodes, the patch of an essential
+  **grip** to its jaw with `interface: Separated` and `gap_m` 0.4 mm; a unilateral pair of each end
+  face against its jaw (offset 0.1 mm, the slab's policy) with **no exclusion**; and each jaw's
+  FrameStates, the identity at the construction and 2.4 mm inward at "compressed", which is where
+  the 3% compression takes the end faces. The gap lies inside the pair's activation band (offset plus
+  0.5 mm), so `contact.curved_clearance` measures the patch against its jaw: 0.39999 mm at every
+  state, 768 chord pairs a side. `attachment.target_gap` reads every held node's frame-local target
+  at 0.3999993 mm, 0.68 nm off the declared gap. It requires `Attachment.interface`,
+  `AttachmentInterface.Separated` and `Attachment.gap_m` with the essential records and the five
+  attachment and frame rows.
 
-Both pass every row clean — every error, warning and info row, nothing skipped. **Their variants**
+All three pass every row clean — every error, warning and info row, nothing skipped (the tied slab's
+80 rows). **Their variants**
 (`layered_tests.cpp`) fail chosen rows on purpose, and the fixture mode matches a declaration of
 exactly those: the slab with an incident exclusion naming two faces that share no node, a depot
 share that leaves a cell over, the base raised to 0.05 mm under the fat, and a skin that does not
 declare its coincidence (`contact.exclusions`, `fat.depot_partition`, `fat.mass_ledger`,
 `contact.curved_clearance`, `skin.material_binding`); the fusiform with an active target missing its
 transverse compensation, a stiffness on its essential attachment, and a frame state that scales
-(`muscle.target_volume`, `muscle.objectivity`, `attachment.enforcement`, `frame.rigidity`).
+(`muscle.target_volume`, `muscle.objectivity`, `attachment.enforcement`, `frame.rigidity`). The
+separated tie's are one variant each, each matched by its own declaration: the tied slab with an
+exclusion of its left patch against its own jaw (`attachment.contact_compatibility`); with the left
+pair's offset raised to 0.5 mm, above the 0.4 mm gap (`attachment.target_gap`, and
+`contact.curved_clearance` and `contact.constraint_compatibility` of that pair, whose chords are
+prescribed on both sides); with one held node, an interior corner of the left end face, moved
+0.02 mm into the slab in the construction and every state alike, so its pose binding holds and it is
+0.42 mm from its jaw (`attachment.target_gap` alone: a corner node's quadratic shape function
+integrates to zero over each flat face, so no cell's volume moves to first order and the ledger
+holds); the fusiform's coincident origin declaring the 0.7 mm its handle actually is
+(`attachment.target_gap`); and the fusiform's spring insertion declaring `Separated` and a gap
+(`attachment.enforcement`, and no `attachment.target_gap` row for it).
 
 ## Testing
 
@@ -917,19 +1013,26 @@ outward, with their edge nodes; a straight face is its triangle; a face lifted h
 departs from its chords by h/4, sampled, and its Bernstein bound is h/2); `mesh_query_tests.cpp`
 also holds the distances the contact rows measure with (parallel, side by side, crossing, and a
 nearly coplanar pair — apart and overlapping — decided in its plane) and the candidate pairs of two
-hierarchies; `layered_tests.cpp` (both fixtures clean with every layered row present; their variants
-matched by their declarations; a held node moved a micrometre failing the essential attachment,
-and a version-1 attachment reading as a spring; a file with none of the records getting none of the
-rows; both round-tripping through the interchange and the container to the same report; a required
-row the data never reaches failing `definition.requirements`); `capabilities_tests.cpp` (the
-table's records, fields, blocks, rows and laws; every emitted row in the table with its status,
-info-only rows at info severity; requirements met, unmet, of an unknown kind or unreadable; an
-older build refusing a new file from the container and the interchange while both read an old
-one; a future enumerator refused as the capability a file requires; the writer leaving out what a
-definition does not use); the size table pins the two container records.
+hierarchies; `layered_tests.cpp` (the three fixtures clean with every layered row present, the
+tied slab's grips each with one unilateral pair and no excluded patch face, its held nodes at the
+gap within the stated tolerance, the clearance row measuring its patches at the gap, and no
+`attachment.target_gap` row on the fixtures written before it; their variants matched by their
+declarations, the separated tie's one declaration each; a held node moved a micrometre failing the
+essential attachment, and a version-1 attachment reading as a spring; a file with none of the
+records getting none of the rows; all three round-tripping through the interchange and the
+container to the same report; a required row the data never reaches failing
+`definition.requirements`); `capabilities_tests.cpp` (the table's records, fields, blocks, rows and
+laws, `Attachment` at version 3 with its interface enumeration; every emitted row in the table with
+its status, info-only rows at info severity; requirements met, unmet, of an unknown kind or
+unreadable; an older build refusing a new file from the container and the interchange while both
+read an old one, and a build from before the tie refusing the tied slab while it reads the
+fusiform; a future enumerator refused as the capability a file requires; the writer leaving out
+what a definition does not use, the fusiform's coincident origin written without `interface` or
+`gap_m`); the size table pins the two container records.
 `apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
-`validate`, `report` and the fixture mode's `--write-expect` and `--expect`; `capabilities`; the
-layered fixtures imported byte for byte and validated clean; a file requiring a row this build does
+`validate`, `report` and the fixture mode's `--write-expect` and `--expect`; `capabilities`, with
+the tie's field, enumeration and row; the three layered fixtures imported byte for byte and
+validated clean, the tied slab with its two gap rows; a file requiring a row this build does
 not implement refused by `import` and `validate` with exit 3 and by `--expect` whatever it declares,
 and a declaration naming such a row refused against a sound file; and **the native supine
 fixtures**, found by `ENGINE_TISSUE_SUPINE_NATIVE` or the owner's handoff path and skipped where
@@ -995,6 +1098,12 @@ simulates.
   observation, so the mechanical skin is checked by its own rows only. The pinned release
   `0fd48ede…` reads none of the layered records and knows no requirements: a layered file needs a
   build from this change, whose `tissue capabilities` line is the pin.
+- **Resolved later on 2026-09-28: a tie across a declared gap** (`interface: Separated`,
+  [Two interfaces](#two-interfaces-a-coincident-patch-and-a-separated-tie)). What it leaves open: the
+  gap is one number for the whole patch, so a patch held at a varying distance from a curved grip
+  needs per-node targets — the explicit frame-local targets above, still not a field; and a file
+  that uses the tie needs a build whose capability line lists `attachment.target_gap`, which the
+  layered model's first pin does not.
 No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
 attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
 without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.

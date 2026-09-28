@@ -1,9 +1,10 @@
 // The layered volume model's records and rows (docs/subsystems/tissue.md, "The layered model"),
-// against its two fixtures (synthetic.h, "the layered model's worked examples"): each passes every
-// row clean; each has a variant that fails chosen rows on purpose, which the fixture mode matches
-// against a declaration of exactly those; the round trip through the interchange and the container
-// keeps the report; an essential attachment is exact and never read as a spring; and a file that
-// uses none of the records gets none of the rows.
+// against its three fixtures (synthetic.h, "the layered model's worked examples"): each passes
+// every row clean; each has variants that fail chosen rows on purpose, which the fixture mode
+// matches against a declaration of exactly those; the round trip through the interchange and the
+// container keeps the report; an essential attachment is exact and never read as a spring, and a
+// separated tie keeps its contact where a coincident one excludes it; and a file that uses none of
+// the records gets none of the rows.
 #include "fixture.h"
 
 #include <core/json/json.h>
@@ -146,6 +147,174 @@ TEST_CASE("layered: the fusiform passes every row clean") {
   CHECK(gap == doctest::Approx(0.7).epsilon(1e-4));
 }
 
+TEST_CASE("layered: the tied slab passes every row clean, its contact against its jaws active") {
+  const TissueFile tied = make_layered_tied_slab();
+  REQUIRE(tied.definition.attachments.size() == 2);
+  const f64 gap = tied.definition.attachments[0].gap_m;
+  CHECK(tied.definition.attachments[0].interface == AttachmentInterface::Separated);
+  CHECK(gap == 0.0004);
+  const TissueReport report = validated(tied);
+  check_clean(report);
+  CHECK(count(report, "attachment.target_gap") == 2);
+  for (const char* side : {"left", "right"}) {
+    const std::string grip = std::string("attachment ") + side + " grip";
+    INFO(grip);
+    // No exclusion is declared, and none is needed: the patch against its own jaw is an active
+    // unilateral pair, measured by the clearance row at the declared gap.
+    const ValidationRow* compatible = find(report, "attachment.contact_compatibility", grip);
+    REQUIRE(compatible != nullptr);
+    CHECK(compatible->verdict == Verdict::pass);
+    u64 n = 0;
+    compatible->value.find("unilateral_pairs")->get_u64(n);
+    CHECK(n == 1);
+    compatible->value.find("excluded_patch_faces")->get_u64(n);
+    CHECK(n == 0);
+    // Every held node's frame-local target at the gap, within the stated 0.1 um; the gap beside
+    // the pair's offset and the policy's activation distance, the last reported and not judged.
+    const ValidationRow* target = find(report, "attachment.target_gap", grip);
+    REQUIRE(target != nullptr);
+    CHECK(target->verdict == Verdict::pass);
+    CHECK(target->threshold.find("hordal") != std::string::npos);
+    CHECK(target->threshold.find("within 0.1 um") != std::string::npos);
+    f64 v = 0.0;
+    target->value.find("gap_mm")->get_f64(v);
+    CHECK(v == doctest::Approx(0.4));
+    target->value.find("max_departure_mm")->get_f64(v);
+    CHECK(v < 1.0e-4);
+    target->value.find("held_nodes")->get_u64(n);
+    CHECK(n == 45);
+    const JsonValue& pair = (*target->value.find("pairs"))[0];
+    pair.find("offset_mm")->get_f64(v);
+    CHECK(v == doctest::Approx(0.1));
+    pair.find("activation_mm")->get_f64(v);
+    CHECK(v == doctest::Approx(0.5));
+    // The clearance row measures the patch against its jaw, at the gap, in every state.
+    const ValidationRow* clearance =
+        find(report, "contact.curved_clearance",
+             std::string("contact pair ") + side + " end on " + side + " jaw");
+    REQUIRE(clearance != nullptr);
+    clearance->value.find("states")->find("compressed")->find("least_nonlocal_mm")->get_f64(v);
+    CHECK(v == doctest::Approx(gap * 1.0e3).epsilon(1.0e-4));
+  }
+  // A coincident attachment at its zero gap is version 2's meaning and gets no row of the tie's:
+  // the fixtures written before it report as they did.
+  CHECK(count(validated(make_layered_fusiform()), "attachment.target_gap") == 0);
+  CHECK(count(validated(make_layered_slab()), "attachment.target_gap") == 0);
+}
+
+TEST_CASE("layered: the tied slab's variants fail the rows chosen, and each declaration matches") {
+  const auto matches = [](const TissueReport& report, const char* declaration) {
+    ExpectationResult result;
+    compare_expectation(report, declared(declaration), result);
+    INFO(expectation_text(result));
+    CHECK(result.matched());
+  };
+  const auto pair_named = [](TissueFile& file, std::string_view name) -> ContactPair& {
+    u32 at = 0;
+    for (u32 i = 0; i < file.definition.contact_pairs.size(); ++i)
+      if (file.definition.contact_pairs[i].name == name) at = i;
+    REQUIRE(file.definition.contact_pairs[at].name == name);
+    return file.definition.contact_pairs[at];
+  };
+
+  SUBCASE("a separated tie that excludes its patch against its own frame") {
+    TissueFile tied = make_layered_tied_slab();
+    pair_named(tied, "left end on left jaw")
+        .exclusions.push_back(ContactExclusion{ExclusionReason::Attachment, "surface.left", "",
+                                               "left grip", "switches the tie's contact off"});
+    const TissueReport report = validated(tied);
+    matches(report, R"({
+      "format": "astra.tissue.expected-failures.v1",
+      "failures": [{"id": "attachment.contact_compatibility", "subject": "attachment left grip",
+                    "severity": "error"}]
+    })");
+    CHECK(find(report, "attachment.contact_compatibility", "attachment left grip")
+              ->witness.find("exempts 16 patch faces") != std::string::npos);
+  }
+
+  SUBCASE("a gap below the pair's offset") {
+    // The offset raised past the 0.4 mm gap: the tie holds its patch inside its own barrier, which
+    // the clearance row sees too, and both sides of those chords are prescribed.
+    TissueFile tied = make_layered_tied_slab();
+    pair_named(tied, "left end on left jaw").offset_m = 0.0005;
+    const TissueReport report = validated(tied);
+    matches(report, R"({
+      "format": "astra.tissue.expected-failures.v1",
+      "failures": [
+        {"id": "attachment.target_gap", "subject": "attachment left grip", "severity": "error"},
+        {"id": "contact.curved_clearance", "subject": "contact pair left end on left jaw",
+         "severity": "error"},
+        {"id": "contact.constraint_compatibility", "subject": "contact pair left end on left jaw",
+         "severity": "error"}]
+    })");
+    CHECK(find(report, "attachment.target_gap", "attachment left grip")
+              ->witness.find("below pair left end on left jaw's offset") != std::string::npos);
+  }
+
+  SUBCASE("a held node off the declared gap") {
+    // An interior corner of the left end face (y = 0, z = 7.5 mm) moved 0.02 mm into the slab in
+    // the construction and every state alike, so it is still where its jaw carries it (the pose
+    // binding holds) and it is 0.42 mm from the jaw. A corner node's quadratic shape function
+    // integrates to zero over each of its flat faces, so no cell's volume moves to first order.
+    TissueFile tied = make_layered_tied_slab();
+    const Vector<u32> held = fixture::read<u32>(tied, "set.left");
+    const Vector<Vec3> nodes = fixture::read<Vec3>(tied, "fat.nodes");
+    u32 moved = ~0u;
+    for (const u32 v : held)
+      if (std::fabs(nodes[v].y) < 1.0e-6f && std::fabs(nodes[v].z - 0.0075f) < 1.0e-6f) moved = v;
+    REQUIRE(moved != ~0u);
+    for (const char* block : {"fat.nodes", "state.rest", "state.reference", "state.compressed"}) {
+      Vector<Vec3> x = fixture::read<Vec3>(tied, block);
+      x[moved].x += 2.0e-5f;
+      fixture::replace(tied, block, x);
+    }
+    // The certificate record names the reference's bytes, which moved with it.
+    tied.definition.certificates[0].state_sha256 = sha256_hex(tied.find("state.reference")->bytes);
+    const TissueReport report = validated(tied);
+    matches(report, R"({
+      "format": "astra.tissue.expected-failures.v1",
+      "failures": [{"id": "attachment.target_gap", "subject": "attachment left grip",
+                    "severity": "error"}]
+    })");
+    CHECK(find(report, "attachment.target_gap", "attachment left grip")
+              ->witness.find("node " + std::to_string(moved) + " at 0.42 mm") != std::string::npos);
+  }
+
+  SUBCASE("a coincident attachment that declares a gap") {
+    // The fusiform's origin is coincident, excluded against its handle, which is 0.7 mm off: a
+    // gap declared on it is a separated tie spelled as a coincident one.
+    TissueFile fusiform = make_layered_fusiform();
+    fusiform.definition.attachments[0].gap_m = 0.0007;
+    fusiform.definition.requirements.records.push_back("Attachment.gap_m");
+    const TissueReport report = validated(fusiform);
+    matches(report, R"({
+      "format": "astra.tissue.expected-failures.v1",
+      "failures": [{"id": "attachment.target_gap", "subject": "attachment origin",
+                    "severity": "error"}]
+    })");
+    CHECK(find(report, "attachment.target_gap", "attachment origin")
+              ->witness.find("a coincident attachment declares a gap") != std::string::npos);
+  }
+
+  SUBCASE("a spring that declares a separated interface and a gap") {
+    // A spring reads neither: its stretch is a force. It fails its enforcement, never the tie's
+    // row.
+    TissueFile fusiform = make_layered_fusiform();
+    fusiform.definition.attachments[1].interface = AttachmentInterface::Separated;
+    fusiform.definition.attachments[1].gap_m = 0.0007;
+    const TissueReport report = validated(fusiform);
+    matches(report, R"({
+      "format": "astra.tissue.expected-failures.v1",
+      "failures": [{"id": "attachment.enforcement", "subject": "attachment insertion",
+                    "severity": "error"}]
+    })");
+    CHECK(find(report, "attachment.enforcement", "attachment insertion")
+              ->witness.find("a spring attachment declares interface Separated") !=
+          std::string::npos);
+    CHECK(find(report, "attachment.target_gap", "attachment insertion") == nullptr);
+  }
+}
+
 TEST_CASE("layered: the slab's variant fails the rows chosen, and its declaration matches") {
   TissueFile slab = make_layered_slab();
   // An incident exclusion that names two faces sharing no node: it masks a nonincident pair.
@@ -284,7 +453,8 @@ TEST_CASE("layered: a file that uses none of the records gets none of the rows")
 
 TEST_CASE("layered: both fixtures round-trip through the interchange and the container") {
   engine::test::TempDir tmp("tissue_layered_round_trip");
-  for (const TissueFile& file : {make_layered_slab(), make_layered_fusiform()}) {
+  for (const TissueFile& file :
+       {make_layered_slab(), make_layered_fusiform(), make_layered_tied_slab()}) {
     INFO(file.definition.name);
     std::string error;
     REQUIRE(export_interchange(file, tmp.path(), "fixture", &error));
@@ -292,6 +462,7 @@ TEST_CASE("layered: both fixtures round-trip through the interchange and the con
     REQUIRE(import_interchange(tmp.file("fixture.json"), imported, &error));
     CHECK(imported.definition.material_surfaces == file.definition.material_surfaces);
     CHECK(imported.definition.contact_pairs == file.definition.contact_pairs);
+    CHECK(imported.definition.attachments == file.definition.attachments);
     CHECK(imported.definition.requirements == file.definition.requirements);
     Vector<u8> bytes;
     REQUIRE(encode_tissue_file(imported, bytes, &error));

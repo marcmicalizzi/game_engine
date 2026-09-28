@@ -456,7 +456,21 @@ enum AttachmentEnforcement : u8 {
   Essential = 1
 }
 
-struct Attachment @version(2) {
+/// Where an essential attachment's patch lies against its frame (Attachment version 3). A spring
+/// reads neither enumerator: its stretch is a force, whatever gap it starts at.
+enum AttachmentInterface : u8 {
+  /// The version-2 meaning, unchanged and the default: the patch sits flush on its frame's surface,
+  /// the coincidence is the attachment's own, and the patch is excluded from contact against that
+  /// frame (attachment.contact_compatibility). Every attachment written before version 3 is one.
+  Coincident = 0
+  /// A kinematic tie across a declared gap: the patch is held `gap_m` off its frame's surface and
+  /// its contact against that frame stays active — no exclusion of the patch against its own frame
+  /// is declared, and one that is fails the file (attachment.target_gap and
+  /// attachment.contact_compatibility).
+  Separated = 1
+}
+
+struct Attachment @version(3) {
   name: string
   region: string
   /// A node set of the region.
@@ -477,6 +491,13 @@ struct Attachment @version(2) {
   /// A node set of the region: the soft transition collar this attachment owns, disjoint from the
   /// nodes it holds. Exact attachment and soft transition are different data.
   transition_band: string @since(2)
+  /// An essential attachment's interface: Coincident (the default, version 2's meaning) or
+  /// Separated. A spring ignores it, and one that says Separated is refused.
+  interface: AttachmentInterface = Coincident @since(3)
+  /// Metres: the declared frame-local gap between a Separated attachment's held patch and its
+  /// frame's surface, strictly positive; zero for a Coincident one. A spring ignores it, and one
+  /// that declares a gap is refused.
+  gap_m: f64 = 0 @since(3)
 }
 
 /// A frame's (or a bone's) rigid transform at one state (TissueDefinition version 2): a point of

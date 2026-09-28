@@ -16,7 +16,7 @@
 //   tissue capabilities                             what this build reads and evaluates, one line
 //   tissue example <directory>                      the synthetic definition, its ten-node
 //                                                   reference-body variant and the layered model's
-//                                                   two fixtures, as interchanges and containers:
+//                                                   three fixtures, as interchanges and containers:
 //                                                   worked examples of the format
 //
 // **Exit 3 is a capability failure**: the file requires a record, a block kind, a row or a law
@@ -76,8 +76,8 @@ const char* k_tissue_usage =
     "                                           <directory>/synthetic.json with its blocks and\n"
     "                                           <directory>/synthetic.tissue, its ten-node\n"
     "                                           reference body as synthetic-quadratic.*, and the\n"
-    "                                           layered model's fixtures as layered-slab.* and\n"
-    "                                           layered-fusiform.*\n"
+    "                                           layered model's fixtures as layered-slab.*,\n"
+    "                                           layered-fusiform.* and layered-tied-slab.*\n"
     "exit 3 is a capability failure: the file requires what this build does not have, or the\n"
     "declaration names a row it does not implement; never a validation result.\n";
 
@@ -338,6 +338,9 @@ int example_command(const std::string& directory) {
   JsonValue fusiform;
   if (!write(tissue::make_layered_fusiform(), "layered-fusiform", fusiform)) return failed(error);
   out.set("layered_fusiform", std::move(fusiform));
+  JsonValue tied;
+  if (!write(tissue::make_layered_tied_slab(), "layered-tied-slab", tied)) return failed(error);
+  out.set("layered_tied_slab", std::move(tied));
   print_json(out);
   return k_exit_ok;
 }

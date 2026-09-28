@@ -3,7 +3,8 @@
 // read; a file that requires what a build lacks refused as a capability failure, never as damage
 // and never as a validation result — in both directions: an old file in this build reads with its
 // old meaning, and a new file in an older build (simulated by stripping capabilities from a copy of
-// this one's) is refused, not misread.
+// this one's: one from before the layered model, one from before the separated tie) is refused,
+// not misread.
 #include "fixture.h"
 
 #include <core/json/json.h>
@@ -56,6 +57,11 @@ Capabilities older_build() {
                            "Attachment.enforcement",
                            "AttachmentEnforcement",
                            "AttachmentEnforcement.Essential",
+                           "Attachment.interface",
+                           "Attachment.gap_m",
+                           "AttachmentInterface",
+                           "AttachmentInterface.Coincident",
+                           "AttachmentInterface.Separated",
                            "ThicknessField",
                            "DepotPartition",
                            "MaterialBoundarySurface",
@@ -83,6 +89,19 @@ Capabilities older_build() {
   return c;
 }
 
+// A build from after the layered model and before the separated tie (Attachment version 2): this
+// one's capabilities with only the tie's field, enumeration and row stripped. Its reader would skip
+// `interface` and `gap_m` as unknown fields and read a separated grip as a coincident one, which
+// is exactly what the gate is for.
+Capabilities build_before_the_tie() {
+  Capabilities c = build_capabilities();
+  for (const char* name :
+       {"Attachment.interface", "Attachment.gap_m", "AttachmentInterface",
+        "AttachmentInterface.Coincident", "AttachmentInterface.Separated", "attachment.target_gap"})
+    REQUIRE(c.strip(name));
+  return c;
+}
+
 }  // namespace
 
 TEST_CASE("capabilities: every record, block, row and law this build has, as one table") {
@@ -91,13 +110,30 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
   CHECK(c.schema_version == 2);
   CHECK(c.container_version == k_tissue_file_version);
   // Records and their fields come from the schema's reflection: the reader's own view.
-  for (const char* name :
-       {"TissueDefinition", "Region", "Region.rest_driver", "Region.role", "Attachment.enforcement",
-        "AttachmentEnforcement.Essential", "CageKind.TetrahedralQuadratic", "ContactPair",
-        "ContactPolicy.locality_m", "MaterialBoundarySurface", "MaterialSkin.coincident",
-        "ThicknessField", "DepotPartition", "ParameterSample", "FrameState.rotation",
-        "ReferenceCertificate", "Requirements.laws", "FusiformArchCoefficients.arch_m",
-        "CosineModulation"})
+  for (const char* name : {"TissueDefinition",
+                           "Region",
+                           "Region.rest_driver",
+                           "Region.role",
+                           "Attachment.enforcement",
+                           "AttachmentEnforcement.Essential",
+                           "CageKind.TetrahedralQuadratic",
+                           "ContactPair",
+                           "ContactPolicy.locality_m",
+                           "MaterialBoundarySurface",
+                           "MaterialSkin.coincident",
+                           "ThicknessField",
+                           "DepotPartition",
+                           "ParameterSample",
+                           "FrameState.rotation",
+                           "ReferenceCertificate",
+                           "Requirements.laws",
+                           "FusiformArchCoefficients.arch_m",
+                           "CosineModulation",
+                           "Attachment.interface",
+                           "Attachment.gap_m",
+                           "AttachmentInterface",
+                           "AttachmentInterface.Coincident",
+                           "AttachmentInterface.Separated"})
     CHECK_MESSAGE(c.has_record(name), std::string(name));
   CHECK_FALSE(c.has_record("Muscle"));
   CHECK_FALSE(c.has_record("Fat"));
@@ -113,6 +149,7 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
   CHECK(c.row("skin.energy_transfer") == RowStatus::info_only);
   CHECK(c.row("attachment.reaction_balance") == RowStatus::not_implemented);
   CHECK(contains(c.row_ids, "attachment.reaction_balance"));
+  CHECK(c.row("attachment.target_gap") == RowStatus::evaluated);
   CHECK(c.row("no.such_row") == RowStatus::not_implemented);
   CHECK(c.has_law("fusiform-arch-v1"));
   CHECK(c.has_law("limit-interpolated"));
@@ -123,10 +160,16 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
   CHECK(line.find("records")->find("Attachment") != nullptr);
   u64 version = 0;
   line.find("records")->find("Attachment")->get_u64(version);
-  CHECK(version == 2);
+  CHECK(version == 3);
   line.find("records")->find("Region")->get_u64(version);
   CHECK(version == 3);
   CHECK(line.find("enums")->find("AttachmentEnforcement")->size() == 2);
+  const JsonValue* interfaces = line.find("enums")->find("AttachmentInterface");
+  REQUIRE(interfaces != nullptr);
+  REQUIRE(interfaces->size() == 2);
+  std::string_view spelled;
+  (*interfaces)[1].get_string(spelled);
+  CHECK(spelled == "Separated");
   std::string_view status;
   line.find("rows")->find("attachment.reaction_balance")->get_string(status);
   CHECK(status == "not-implemented");
@@ -137,7 +180,7 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
 
 TEST_CASE("capabilities: every row a report emits is in the table, with the status it claims") {
   const TissueFile files[] = {make_synthetic_tissue().file, make_layered_slab(),
-                              make_layered_fusiform()};
+                              make_layered_fusiform(), make_layered_tied_slab()};
   const Capabilities& c = build_capabilities();
   Vector<std::string> emitted;
   for (const TissueFile& file : files) {
@@ -154,7 +197,7 @@ TEST_CASE("capabilities: every row a report emits is in the table, with the stat
       if (!contains(emitted, r.id)) emitted.push_back(r.id);
     }
   }
-  // And every evaluated or info-only row of the layered model is reached by the two fixtures.
+  // And every evaluated or info-only row of the layered model is reached by its three fixtures.
   for (const RowCapability& r : row_capabilities()) {
     const std::string_view id = r.id;
     const bool layered = id.rfind("parameters.", 0) == 0 || id == "state.parameters" ||
@@ -245,6 +288,37 @@ TEST_CASE("capabilities: an older build refuses a new file, and this build reads
   CHECK(capability.failed());
   CHECK(import_interchange(json, back, &error, &capability));
 
+  // A build from before the separated tie refuses the tied slab, as the container and as the
+  // interchange, naming the field, the enumerator and the row it lacks — where, without the gate,
+  // it would skip `interface` and `gap_m` and read each grip as a coincident tie whose contact is
+  // meant to be excluded. engine-content turns this refusal into exit 3 before any row is written
+  // (tissue_commands.cpp, capability_failed). The same build still reads the fusiform, whose
+  // coincident origin requires none of it.
+  const Capabilities before_tie = build_before_the_tie();
+  const TissueFile tied = make_layered_tied_slab();
+  const Vector<u8> tied_bytes = encoded(tied);
+  capability = CapabilityFailure{};
+  CHECK_FALSE(read_tissue_file_memory(tied_bytes, back, &error, &capability, &before_tie));
+  CHECK(capability.failed());
+  CHECK(error == capability.sentence);
+  CHECK(mentions(capability, "record Attachment.interface"));
+  CHECK(mentions(capability, "record AttachmentInterface.Separated"));
+  CHECK(mentions(capability, "record Attachment.gap_m"));
+  CHECK(mentions(capability, "row attachment.target_gap"));
+  CHECK(capability.missing.size() == 4);
+  REQUIRE(export_interchange(tied, tmp.path(), "tied", &error));
+  capability = CapabilityFailure{};
+  CHECK_FALSE(import_interchange(tmp.file("tied.json"), back, &error, &capability, &before_tie));
+  CHECK(mentions(capability, "record AttachmentInterface.Separated"));
+  capability = CapabilityFailure{};
+  CHECK(read_tissue_file_memory(bytes, back, &error, &capability, &before_tie));
+  CHECK_FALSE(capability.failed());
+  // This build reads the tie as the tie.
+  CHECK(read_tissue_file_memory(tied_bytes, back, &error, &capability));
+  CHECK_FALSE(capability.failed());
+  CHECK(back.definition.attachments[0].interface == AttachmentInterface::Separated);
+  CHECK(back.definition.attachments[0].gap_m == 0.0004);
+
   // The old file — the synthetic definition, which requires nothing — reads in the older build
   // and in this one, with the same definition: its meaning is its old one.
   const TissueFile old = make_synthetic_tissue().file;
@@ -293,8 +367,9 @@ TEST_CASE("capabilities: a definition that uses nothing new is written as before
   const TissueFile old = make_synthetic_tissue().file;
   const JsonValue written = definition_json(old.definition);
   const std::string json = write_json(written);
-  for (const char* key : {"\"requirements\"", "\"parameter_domains\"", "\"contact_pairs\"",
-                          "\"enforcement\"", "\"rest_driver\"", "\"patch\""})
+  for (const char* key :
+       {"\"requirements\"", "\"parameter_domains\"", "\"contact_pairs\"", "\"enforcement\"",
+        "\"rest_driver\"", "\"patch\"", "\"interface\"", "\"gap_m\""})
     CHECK_MESSAGE(json.find(key) == std::string::npos, std::string(key));
   // A runtime region's `role` (Region version 2) is its default and is left out; the ten-node
   // synthetic says it, because a reference body's is not.
@@ -309,8 +384,22 @@ TEST_CASE("capabilities: a definition that uses nothing new is written as before
   REQUIRE(read_tissue_file_memory(bytes, back));
   CHECK(back.definition == old.definition);
   CHECK(encoded(back) == bytes);
-  // A layered file says what it uses.
+  // A layered file says what it uses. The fusiform's coincident origin at its zero gap is
+  // Attachment version 2's meaning and is written as version 2 wrote it; the tied slab's grips say
+  // they are separated, and by how much.
   const std::string layered = write_json(definition_json(make_layered_fusiform().definition));
   for (const char* key : {"\"requirements\"", "\"enforcement\"", "\"rest_driver\"", "\"patch\""})
     CHECK_MESSAGE(layered.find(key) != std::string::npos, std::string(key));
+  CHECK(layered.find("\"interface\"") == std::string::npos);
+  CHECK(layered.find("\"gap_m\"") == std::string::npos);
+  const JsonValue tied = definition_json(make_layered_tied_slab().definition);
+  const JsonValue& grip = (*tied.find("attachments"))[0];
+  std::string_view interface_name;
+  REQUIRE(grip.find("interface") != nullptr);
+  grip.find("interface")->get_string(interface_name);
+  CHECK(interface_name == "Separated");
+  f64 gap = 0.0;
+  REQUIRE(grip.find("gap_m") != nullptr);
+  grip.find("gap_m")->get_f64(gap);
+  CHECK(gap == 0.0004);
 }
