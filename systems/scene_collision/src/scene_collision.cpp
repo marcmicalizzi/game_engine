@@ -571,8 +571,9 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
         proxy_remap_.insert(source, corner[k]);
       }
       if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2]) continue;
-      // A mirror's scale reverses the winding; put it back, so the faces face out.
-      const bool mirrored = (scale.x < 0.0f) != (scale.y < 0.0f) != (scale.z < 0.0f);
+      // A mirror's scale — an odd number of negative axes — reverses the winding; put it back, so
+      // the faces face out.
+      const bool mirrored = ((scale.x < 0.0f) != (scale.y < 0.0f)) != (scale.z < 0.0f);
       proxy_indices_.push_back(corner[0]);
       proxy_indices_.push_back(mirrored ? corner[2] : corner[1]);
       proxy_indices_.push_back(mirrored ? corner[1] : corner[2]);
