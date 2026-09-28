@@ -55,9 +55,13 @@ constants and `cage_size_verdict`, `volume_compliance_for`, and `SoftBodyBudget`
 (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), body creation and
 destruction, transform and velocity access, `move_kinematic`, activation and sleep, the batch
 `read_transforms`, `spawn_debris`, soft-body creation and `read_soft_body_vertices`, `cast_ray`,
-`cast_shape`, `step`, `contact_events`, and `stats`.
+`cast_shape`, `step`, `contact_events`, and `stats`. `domain/physics/character.h`
+([The character](#the-character)): `Ground`/`ground_name`, `CharacterConfig`, `CharacterInput`,
+`CharacterState`, `hash_character_state`, and `CharacterBody` — `create`, `step`, `teleport`,
+`state`, `feet`, `eye`, `hash`.
 
-**Depends on.** `base`, `containers`, `math`, `time`, `jobs`, `log`.
+**Depends on.** `base`, `containers`, `math`, `hash` (the character's state chain), `time`,
+`jobs`, `log`.
 
 ---
 
@@ -510,6 +514,85 @@ The module holds no opinion about tiers and assigns none; it reports the number 
 acts on. Per step and unsmoothed, because smoothing is the tier logic's decision and a number
 that has already been smoothed cannot be un-smoothed.
 
+## The character
+
+`CharacterBody` (`character.h`, `src/character.cpp`) is plan 05 §5.11's "character controllers via
+Jolt's": the backend's `CharacterVirtual` behind the engine's types, the way everything else in the
+module is wrapped. It is the walker a host puts under a first-person camera, and it is the capsule
+every later locomotion layer — the character rig's bone capsules, foot placement, footprints in the
+sand — adds to rather than replaces.
+
+**Why the virtual character, and why it is not a body.** A virtual character is not integrated by
+the step: each tick it is *swept* through the world by queries against the bodies that are there,
+slides along what it hits, climbs what is low enough to be a step, and stands on what is flat
+enough to stand on. So it moves exactly when and as far as its caller says, on the caller's
+thread, and no contact solver can push a player through a wall because a step was long. The
+other kind — Jolt's `Character`, a rigid body with its rotation locked — is pushed by the solver
+and would make the walk a function of the step's contact order. That is why `CharacterBody` is a
+class of its own and not a `BodyDesc`: it has no body, other bodies do not see it (a character
+that must push crates wants the backend's inner body, which is not wrapped yet), and
+`World::step` does not move it. A caller with dynamic bodies steps the character before the world,
+as the backend's own sample does. `World` names it a friend because the sweep runs through the
+world's own narrow-phase queries and scratch arena, which live in `World::Impl`.
+
+**The rules are a config, the tick is the caller's.** `CharacterConfig` carries the capsule (a
+height, a radius — the capsule is lifted so the character's position is its **feet**, which is
+what a caller means by where it stands), the eye height, walk and sprint speeds, the slope limit
+past which it slides, the step height it climbs, gravity, a jump speed, a mass, and the fixed step
+rate. Nothing in it is a tunable: a host fills it from its own (engine-view's `view.walk.*`), so
+the module stays a function of what it is handed. `step(CharacterInput)` advances exactly
+`1 / step_hz`: the simulation's tick, never a frame's duration, so the same inputs over the same
+bodies land on the same floats at any frame rate. The input is a horizontal direction in **world
+space**, at most unit length (a half-pushed stick walks at half speed), a sprint flag and a jump
+press. It is not a heading: turning a yaw into a direction takes a sine and a cosine, and the C
+library's are not the same function on MSVC and glibc, so that is the caller's (engine-view's
+`fly_sin_cos`, a polynomial every compiler evaluates to the same bits).
+
+**One step**, as the backend's own sample composes it, and each piece is there for a reason a
+test holds:
+
+1. **The velocity to sweep with.** On ground it can stand on, the character takes the ground's
+   velocity (zero for everything static) and a jump, when pressed and not already rising, adds
+   `jump_speed` upwards; anywhere else — in the air, on a face past the limit — it keeps its own
+   vertical speed, which is what makes a fall a fall and a slide a slide. Then gravity for the
+   tick, and the input's horizontal velocity on top, in the air too: a walker that cannot steer a
+   jump is a worse walker, not a more physical one.
+2. **The sweep** (`ExtendedUpdate`): velocity towards a steep face is cancelled first, so walking
+   into a face past the limit gets nowhere; the capsule is swept and slides along what it hits; if
+   it went from standing to not, and not upwards, it is swept down up to half a metre (or a step,
+   if that is more) and put on the floor — which is what keeps it on a dune's lee slope instead of
+   skipping down it in little falls; and if it moved less than asked for against something steep,
+   it tries to step up `step_height`, over and down, which is the stair and the ruin's fallen block.
+3. **Standing still on a slope holds.** Gravity projected on a slope's plane is a slide along it,
+   a few centimetres a second on a gentle dune; so while the input asks for no movement, a
+   contact with a static surface it can stand on zeroes the velocity the solver hands back
+   (`OnContactSolve`). A face past the limit is exempt, which is what makes it slide there.
+4. **Only the round bottom holds it up** (`mSupportingVolume`), so a contact on its side is a wall
+   however the wall's normal leans; and a back face holds it up only if it faces sideways, so a
+   two-sided ledge seen from below is a ceiling and not a floor.
+
+**Its state is a plain struct that hashes.** `CharacterState` — feet, velocity, the ground's
+normal, where it stands (`Ground`: on ground, on steep ground, touching something that does not
+hold it up, in the air) and the step count — is 48 bytes, pinned in the size table, and
+`hash()` chains every field's bits after `create`, every `step` and every `teleport`. The
+backend sorts a character's contacts by body id and sub-shape and, against other characters, by a
+character id whose default is a process-wide counter: a replay's result would then depend on how
+many characters the process had made before, so `CharacterConfig::id` gives each one its own.
+Body ids are the world's and come out of its free list in creation order, so the same bodies made
+in the same order give the same walk — which is why a host that streams bodies in and out round a
+walker has to do it at fixed ticks and in a fixed order, never on a frame's schedule.
+
+**Pinned.** The scripted walk in `tests/character_tests.cpp` — 2,400 steps at 240 Hz over a
+heightfield with two walls and a raised slab, turning, sprinting, jumping six times and running
+into things — hashes to **`4efdb83d1aa9a5c6`** on MSVC, and the Linux container reproduces it with
+Clang 18 and GCC 13; the heightfield and the input are products and sums only, so nothing but the
+backend's own arithmetic stands between the input and the hash, and that is cross-platform
+deterministic ([Determinism](#determinism)). A change that moves it changes every recorded walk,
+and says why in its commit.
+
+**What a step costs** is `physics.character.step` in the bench (below): the sweep is a handful of
+shape queries against the bodies within reach.
+
 ## LOD policy and determinism stance
 
 [ADR-0027](../adr/0027-additive-capabilities.md) asks every capability for both, in writing.
@@ -534,14 +617,21 @@ The GPU is not involved at all: there is no derived GPU state here to read back.
 
 ## What is not wrapped yet
 
-Constraints and motors, character controllers (plan 05 §5.11 wants Jolt's, which is its own
-wrapper with its own tests), ragdolls, vehicles, sensors and triggers, `SaveState`/`RestoreState`
+Constraints and motors, ragdolls, vehicles, sensors and triggers, `SaveState`/`RestoreState`
 for rollback ([ADR-0016](../adr/0016-multiplayer-readiness.md)), scaled shape instances,
 collision groups and sub-shape filtering, overlap and collide-shape queries (only ray and shape
 casts are here), soft-body contact events, and Jolt's GPU hair solver. None of them needs the
 public surface to change shape; each is an addition.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Thirty-six cases: a sphere
+The character (above) is wrapped for a walker and no further: **not yet** its inner body (so
+rigid bodies do not see it and it pushes no crate), character-against-character collision, a
+change of shape (crouching, which also wants a ceiling test), swimming, moving platforms beyond
+what the backend's ground velocity already gives, its `SaveState` for rollback, and the character
+rig's contribution — bone capsules, foot placement, footprints — which is a layer over the capsule
+and not a replacement for it. NPC locomotion runs on nav links at LOD2 and has no controller there
+([05 §5.11](../plan/05-simulation.md#511-integration-notes)); at LOD0/1 it would be this class.
+
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Forty-four cases: a sphere
 dropped on a static box comes to rest within the penetration slop and falls asleep; a hundred
 boxes in ten towers of ten are still standing after 600 steps, with bounds on sideways drift and
 on how far anything sank; a kinematic box pushes a dynamic one and stays behind it; contact
@@ -587,6 +677,21 @@ above 1 is refused. The divergence itself is measured where it happened — the 
 `msvc-release` — rather than in a unit test, because a test that waits for a NaN is a test tuned
 to one machine's rounding.
 
+The character adds eight, in `tests/character_tests.cpp`, none of which needs a device: a config
+that describes no capsule is refused (a radius over half the height, an eye over the crown, a
+slope limit of 90°, no step rate, a second `create`); it stands on flat ground at its feet, with
+its eye `eye_height` above them; **it follows a heightfield's surface** — eight seconds across a
+bowl with a saddle in it, slopes to about 15°, every step on the ground and the feet between 0
+and 5 mm off the surface as the backend triangulates it (the test allows 5 cm, which covers a
+capsule's round bottom on a slope and the field's quantization); **a wall stops it** at its face
+less its radius and the backend's 2 cm padding, walking, sprinting and jumping into it alike;
+**it climbs a step under its step height and not one over it** (0.25 m climbed, 0.5 m stopped at
+the face); **it slides down a slope past the limit and stands on one under it** — a second on a
+25° ramp with no input moves it 0 m, on a 55° ramp 3.1 m downhill, walking up the 55° one gains
+nothing and up the 25° one it climbs; a jump rises by v²/2g to within 1% and lands after 2v/g,
+and a jump held in the air starts no second one; and the scripted walk above hashes the same
+twice, byte for byte, and to the pinned number.
+
 A single 100-high tower is *not* in the suite, and not because it was awkward to write: it falls
 over inside two seconds. That is a property of sequential-impulse solvers rather than of this
 wrapper — the bottom box carries a hundred times its own weight and the residual error at the
@@ -596,7 +701,7 @@ solver instead of one.
 
 The size table pins `BodyId`/`ShapeId`/`SoftBodyId` at 8 bytes, `ContactEvent` at 64 (one cache
 line, which is why the user data rides inline instead of being looked up per event), `RayHit`,
-`ShapeHit`, and the three cage-element structs.
+`ShapeHit`, the three cage-element structs, and `CharacterState` at 48 bytes.
 
 **The bench.** `bench/physics_bench.cpp` is the step cost of the module's own fixtures; beside it,
 `bench/e19_bench.cpp` is [experiment E19](../experiments/e19-lattice-cage.md) — a lattice cage

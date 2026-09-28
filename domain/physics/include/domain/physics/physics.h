@@ -15,9 +15,11 @@
 // worker threads and calling game code from there would make the tick order depend on the
 // scheduler.
 //
-// Not wrapped yet, deliberately: constraints and motors, character controllers (plan 05 §5.11
-// wants Jolt's, which is its own wrapper), ragdolls, vehicles, sensors and triggers, state
-// save/restore for rollback (ADR-0016), and Jolt's GPU hair solver.
+// The character controller plan 05 §5.11 asks for is `CharacterBody` (character.h), which sweeps
+// a capsule through this world's bodies at a fixed tick and is not a body of it.
+//
+// Not wrapped yet, deliberately: constraints and motors, ragdolls, vehicles, sensors and
+// triggers, state save/restore for rollback (ADR-0016), and Jolt's GPU hair solver.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -284,6 +286,9 @@ class World {
   void optimize_broad_phase();
 
  private:
+  // The character is swept through the backend's own queries and its scratch arena, which live in
+  // `Impl`; it is a class of its own because it is not a body (character.h).
+  friend class CharacterBody;
   struct Impl;
   Impl* impl_ = nullptr;
 };

@@ -10,9 +10,10 @@ include(EnginePhysics)
 engine_fetch_jolt()
 
 engine_module(NAME physics LAYER domain OPTIONAL CAPABILITY PHYSICS
-  DEPS base containers math time jobs log
+  DEPS base containers math hash time jobs log
   EXTERNAL_DEPS Jolt
-  SOURCES src/world.cpp src/shapes.cpp src/soft_body.cpp src/job_adapter.cpp src/backend.cpp)
+  SOURCES src/world.cpp src/shapes.cpp src/soft_body.cpp src/character.cpp src/job_adapter.cpp
+          src/backend.cpp)
 
 # Jolt's headers are third party, so the engine's warning policy applies to our code only.
 # Nothing outside src/ includes them: the public headers speak core/math and core/containers.
@@ -22,7 +23,7 @@ target_include_directories(engine_physics SYSTEM PRIVATE
 engine_module_tests(NAME physics
   SOURCES tests/rigid_body_tests.cpp tests/query_tests.cpp tests/soft_body_tests.cpp
           tests/soft_body_parallel_tests.cpp tests/deformable_tests.cpp
-          tests/determinism_tests.cpp tests/size_table.cpp
+          tests/determinism_tests.cpp tests/character_tests.cpp tests/size_table.cpp
   DEPS jobs)
 
 # Step cost for falling boxes at 1/4/8 workers and for soft cubes across worker, iteration and

@@ -11,6 +11,7 @@
 #include <core/base/macros.h>
 #include <core/containers/vector.h>
 #include <core/jobs/job_system.h>
+#include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <foundation/bench/bench.h>
 
@@ -198,4 +199,68 @@ ENGINE_BENCH_ARGS(physics_step_soft_cubes_8, "physics.step.soft_cubes_8", 1, 4, 
   while (state.keep_running())
     world.step();
   state.set_items(8 * static_cast<u64>(lattice.vertices.size()));
+}
+
+// One step of the character (character.h) at engine-view's 240 Hz tick, walking back and forth
+// over a 64 m heightfield tile at a metre and through a field of 200 standing and fallen blocks —
+// the ground and a ruin's pieces, which is what scene_collision puts round a walker. The sweep is
+// a few shape queries against what is within reach, so the number is per step and says what a
+// walker costs a tick.
+ENGINE_BENCH(physics_character_step, "physics.character.step") {
+  WorldOptions options;
+  options.max_bodies = 1024;
+  options.max_body_pairs = 4096;
+  options.max_contact_constraints = 4096;
+  World world;
+  world.init(options);
+  constexpr u32 k_side = 64;
+  Vector<f32> heights(k_side * k_side);
+  for (u32 j = 0; j < k_side; ++j) {
+    for (u32 i = 0; i < k_side; ++i) {
+      const f32 x = static_cast<f32>(i) - 32.0f;
+      const f32 z = static_cast<f32>(j) - 32.0f;
+      heights[j * k_side + i] = 0.003f * x * x + 0.04f * z;
+    }
+  }
+  HeightfieldDesc field;
+  field.heights = std::span<const f32>(heights.data(), heights.size());
+  field.sample_count = k_side;
+  field.offset = Vec3(-32.0f, 0.0f, -32.0f);
+  ShapeId field_shape;
+  world.create_heightfield(field, field_shape);
+  BodyDesc ground;
+  ground.shape = field_shape;
+  ground.motion = MotionType::Static;
+  ground.layer = Layer::Static;
+  BodyId ground_body;
+  world.create_body(ground, ground_body);
+  ShapeId block;
+  world.create_box(Vec3(0.3f, 0.15f, 0.3f), block);
+  for (u32 b = 0; b < 200; ++b) {
+    BodyDesc desc;
+    desc.shape = block;
+    desc.motion = MotionType::Static;
+    desc.layer = Layer::Static;
+    const f32 x = static_cast<f32>(b % 20) * 1.1f - 11.0f;
+    const f32 z = static_cast<f32>(b / 20) * 1.3f - 6.5f;
+    desc.transform.position = Vec3(x, 0.003f * x * x + 0.04f * z + 0.15f, z);
+    BodyId body;
+    world.create_body(desc, body);
+  }
+  world.optimize_broad_phase();
+  CharacterConfig config;
+  config.step_hz = 240;
+  CharacterBody character;
+  character.create(world, config, Vec3(-15.0f, 1.5f, 0.3f));
+  u32 step = 0;
+  while (state.keep_running()) {
+    CharacterInput input;
+    // Four seconds east, four west, over and among the blocks.
+    input.move = ((step / 960) & 1) == 0 ? Vec3(1.0f, 0.0f, 0.1f) : Vec3(-1.0f, 0.0f, -0.1f);
+    input.jump = (step % 700) == 350;
+    character.step(input);
+    ++step;
+  }
+  bench::keep(character.hash());
+  state.set_items(1);
 }

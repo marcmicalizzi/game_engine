@@ -1,6 +1,7 @@
 // Size table for domain/physics (ADR-0019). The pinned types are the ones that exist per
 // contact, per cage element, or per body handle, so their footprint is the module's footprint.
 #include <core/base/size_table.h>
+#include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 
 using namespace engine;
@@ -27,3 +28,6 @@ ENGINE_EXPECT_SIZE(20, 4, physics::SoftVolumeConstraint);
 // they are walked once per step, so the extra eight bytes are a step's read bandwidth and not a
 // per-element cost of the cage.
 ENGINE_EXPECT_SIZE(32, 4, physics::SoftAttachment);
+
+// A character between two steps: what a replay hashes and a host copies once a tick.
+ENGINE_EXPECT_SIZE(48, 8, physics::CharacterState);
