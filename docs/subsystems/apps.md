@@ -187,6 +187,7 @@ engine-content tissue import <interchange.json> <out.tissue>
 engine-content tissue info <file.tissue>
 engine-content tissue validate <file.tissue|interchange.json> [--no-modes] [--expect <expected.json> | --write-expect <expected.json>]
 engine-content tissue report <file.tissue|interchange.json> [--no-modes]
+engine-content tissue capabilities
 engine-content tissue example <directory>
 engine-content limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]
 engine-content normal-cases <cases.json> --out <results.json>
@@ -304,7 +305,9 @@ engine-content terrain content/test-scenes/desert-dunes/scene.json --tile 0,0 --
 - `--no-modes` skips transferring each binding under the other two normal modes, the one comparison that triples the transfers.
 - `validate <file> --expect <expected.json>` is **the fixture mode** ([tissue](tissue.md#the-fixture-mode)): the file declares the rows a regression fixture is known not to pass — the authoring side's `astra.tissue.expected-failures.v1`, read as a packet publishes it: `{"format", "match", "failures": [{"id", "subject", "severity", "witness"}], ...}` — and the exit is **0 exactly when the rows that fail or are skipped are those and only those**, by id, subject and severity, whatever the error count. Otherwise 1, with each difference (a declared row that passes, a failure nobody declared, a declared value the row no longer has) as a sentence on stderr and in the line's `"expect"`. A declaration that cannot be read is exit 1 before anything is validated.
 - `validate <file> --write-expect <expected.json>` writes the declaration this run would match, every failing or skipped row with its severity and witness, for review before it becomes a fixture's; exit 0. The two flags belong to `validate` and do not combine; `report` already writes its report as data and takes neither.
-- `example <directory>` writes the synthetic definition as `synthetic.json` with its blocks and as `synthetic.tissue`, and its ten-node reference-body variant as `synthetic-quadratic.json` and `.tissue`: the worked examples of the interchange an authoring tool can read field by field, the second of the `TetrahedralQuadratic` cage kind and the `Reference` role.
+- `capabilities` prints what this build reads and evaluates as one JSON line ([tissue](tissue.md#capabilities-and-the-requirements-rule)): `schema_version` (the definition record's), `container_version`, every record with its version, every `Record.field`, every enumeration with its enumerators, every interchange block kind, every validator row as `evaluated`, `info-only` or `not-implemented`, the laws it evaluates by family, the kinds of requirement it reads, and the commit it was built from. It is the capability pin an authoring packet records beside the binary's hash. It takes no argument.
+- **Exit 3 is a capability failure.** A file whose `requirements` (its `requires` list) name a record, field, enumerator, block kind, row or law this build does not have is refused by `import`, `info`, `validate` and `report` before anything of it is read, with a sentence naming everything missing on stderr and `{"file", "capability_failure": {"missing", "sentence"}}` as the line — never a validation result and never a row. `validate --expect` exits 3 on it too, whatever the declaration says, and refuses a declaration that names a row this build does not implement the same way before validating anything: a missing capability is never an expected physical failure.
+- `example <directory>` writes the synthetic definition as `synthetic.json` with its blocks and as `synthetic.tissue`, its ten-node reference-body variant as `synthetic-quadratic.json` and `.tissue`, and the layered model's two fixtures as `layered-slab.*` and `layered-fusiform.*`: the worked examples of the interchange an authoring tool can read field by field — the second of the `TetrahedralQuadratic` cage kind and the `Reference` role, the last two of every layered record, the two new block kinds and the requirements.
 
 ```
 engine-content tissue example scratch/tissue
@@ -313,9 +316,11 @@ engine-content tissue validate scratch/slab.tissue
 engine-content tissue report scratch/slab.tissue
 engine-content tissue validate scratch/tissue/synthetic-quadratic.tissue --write-expect scratch/expected.json
 engine-content tissue validate scratch/tissue/synthetic-quadratic.tissue --expect scratch/expected.json
+engine-content tissue validate scratch/tissue/layered-fusiform.tissue
+engine-content tissue capabilities
 ```
 
-On study019's neutral data, converted once (tissue.md has the table), `validate` returns 0 errors and 3 warnings in about 10 s in `msvc-debug`. The supine fixtures' ten-node bodies validate in about 21 s, and their packet's published declaration, read by `--expect`, says what tissue.md's table does.
+On study019's neutral data, converted once (tissue.md has the table), `validate` returns 0 errors and 3 warnings in about 10 s in `msvc-debug`. The supine fixtures' ten-node bodies validate in about 21 s, and their packet's published declaration, read by `--expect`, says what tissue.md's table does; the end-to-end test holds them to it where the machine has the packet. The layered fixtures validate clean in under a second each.
 
 ## engine-content limit-dump: the conformance exchange
 

@@ -13,9 +13,16 @@
 //                                                   that fail or are skipped are the declared ones
 //       --write-expect <expected.json>              write the declaration this run would match
 //   tissue report <file.tissue|interchange.json>    the rows and every number they stand on
-//   tissue example <directory>                      the synthetic definition, and its ten-node
-//                                                   reference-body variant, as interchanges and
-//                                                   containers: worked examples of the format
+//   tissue capabilities                             what this build reads and evaluates, one line
+//   tissue example <directory>                      the synthetic definition, its ten-node
+//                                                   reference-body variant and the layered model's
+//                                                   two fixtures, as interchanges and containers:
+//                                                   worked examples of the format
+//
+// **Exit 3 is a capability failure**: the file requires a record, a block kind, a row or a law
+// this build does not have (capabilities.h), or a fixture's declaration names a row it does not
+// implement. It is never a validation result — no row is written — and the fixture mode never
+// matches it against a declared failure: a missing capability is not an expected physical failure.
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -27,11 +34,14 @@
 
 #if ENGINE_CONTENT_TISSUE
 #include <core/containers/vector.h>
+#include <domain/tissue/capabilities.h>
 #include <domain/tissue/expect.h>
 #include <domain/tissue/synthetic.h>
 #include <domain/tissue/tissue_file.h>
 #include <domain/tissue/validate.h>
 #include <foundation/io/vfs.h>
+
+#include <engine_build_stamp.h>
 #endif
 
 namespace engine::content {
@@ -41,6 +51,7 @@ namespace {
 constexpr int k_exit_ok = 0;
 constexpr int k_exit_error = 1;
 constexpr int k_exit_usage = 2;
+[[maybe_unused]] constexpr int k_exit_capability = 3;
 
 const char* k_tissue_usage =
     "usage: engine-content tissue <command> ...\n"
@@ -57,10 +68,18 @@ const char* k_tissue_usage =
     "                   write the declaration this run would match, for review; exit 0\n"
     "  report <file.tissue|interchange.json>    the rows and the numbers they stand on\n"
     "      --no-modes   as above\n"
+    "  capabilities                             the schema version, every record, field, enum\n"
+    "                                           and block kind this build reads, every row as\n"
+    "                                           evaluated, info-only or not-implemented, and the\n"
+    "                                           laws it evaluates, as one JSON line\n"
     "  example <directory>                      write the synthetic definition as\n"
     "                                           <directory>/synthetic.json with its blocks and\n"
-    "                                           <directory>/synthetic.tissue, and its ten-node\n"
-    "                                           reference body as synthetic-quadratic.*\n";
+    "                                           <directory>/synthetic.tissue, its ten-node\n"
+    "                                           reference body as synthetic-quadratic.*, and the\n"
+    "                                           layered model's fixtures as layered-slab.* and\n"
+    "                                           layered-fusiform.*\n"
+    "exit 3 is a capability failure: the file requires what this build does not have, or the\n"
+    "declaration names a row it does not implement; never a validation result.\n";
 
 int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content tissue: %s\n", message);
@@ -85,10 +104,29 @@ bool ends_with(std::string_view text, std::string_view tail) {
   return text.size() >= tail.size() && text.substr(text.size() - tail.size()) == tail;
 }
 
-// A container, or an interchange when the path ends in .json.
-bool load(const std::string& path, tissue::TissueFile& out, std::string& error) {
-  if (ends_with(path, ".json")) return tissue::import_interchange(path, out, &error);
-  return tissue::read_tissue_file(path, out, &error);
+// A capability failure: its sentence on stderr, and a JSON line that says what is missing, so a
+// script reads it as readily as a report. Exit 3.
+int capability_failed(const std::string& path, const tissue::CapabilityFailure& failure) {
+  std::fprintf(stderr, "engine-content tissue: %s: %s\n", path.c_str(), failure.sentence.c_str());
+  JsonValue out = JsonValue::object();
+  out.set("file", JsonValue(path));
+  JsonValue capability = JsonValue::object();
+  JsonValue missing = JsonValue::array();
+  for (const std::string& m : failure.missing)
+    missing.push_back(JsonValue(m));
+  capability.set("missing", std::move(missing));
+  capability.set("sentence", JsonValue(failure.sentence));
+  out.set("capability_failure", std::move(capability));
+  print_json(out);
+  return k_exit_capability;
+}
+
+// A container, or an interchange when the path ends in .json. `capability` says whether a refusal
+// was a capability failure.
+bool load(const std::string& path, tissue::TissueFile& out, std::string& error,
+          tissue::CapabilityFailure& capability) {
+  if (ends_with(path, ".json")) return tissue::import_interchange(path, out, &error, &capability);
+  return tissue::read_tissue_file(path, out, &error, &capability);
 }
 
 JsonValue outline(const tissue::TissueDefinition& d) {
@@ -110,13 +148,25 @@ JsonValue outline(const tissue::TissueDefinition& d) {
   out.set("blocks", JsonValue(static_cast<u64>(d.blocks.size())));
   out.set("base_id", JsonValue(d.observation.base_id));
   out.set("accepted", JsonValue(d.observation.acceptance.accepted));
+  // The layered model's records, where the definition has any.
+  if (!d.material_surfaces.empty()) out.set("material_surfaces", names(d.material_surfaces));
+  if (!d.material_skins.empty()) out.set("material_skins", names(d.material_skins));
+  if (!d.thickness_fields.empty()) out.set("thickness_fields", names(d.thickness_fields));
+  if (!d.depot_partitions.empty()) out.set("depot_partitions", names(d.depot_partitions));
+  if (!d.contact_pairs.empty()) out.set("contact_pairs", names(d.contact_pairs));
+  if (!d.parameter_domains.empty()) out.set("parameter_domains", names(d.parameter_domains));
+  if (!d.parameter_samples.empty()) out.set("parameter_samples", names(d.parameter_samples));
+  if (!d.certificates.empty()) out.set("certificates", names(d.certificates));
   return out;
 }
 
 int import_command(const std::string& input, const std::string& output) {
   tissue::TissueFile file;
   std::string error;
-  if (!tissue::import_interchange(input, file, &error)) return failed(input + ": " + error);
+  tissue::CapabilityFailure capability;
+  if (!tissue::import_interchange(input, file, &error, &capability))
+    return capability.failed() ? capability_failed(input, capability)
+                               : failed(input + ": " + error);
   if (!tissue::write_tissue_file(output, file, &error)) return failed(output + ": " + error);
   std::string bytes;
   io::read_file(output, bytes);
@@ -140,7 +190,9 @@ int info_command(const std::string& path) {
   std::string error;
   if (!tissue::read_tissue_file_info(view, info, &error)) return failed(path + ": " + error);
   tissue::TissueFile file;
-  if (!tissue::read_tissue_file_memory(view, file, &error)) return failed(path + ": " + error);
+  tissue::CapabilityFailure capability;
+  if (!tissue::read_tissue_file_memory(view, file, &error, &capability))
+    return capability.failed() ? capability_failed(path, capability) : failed(path + ": " + error);
   JsonValue out = JsonValue::object();
   out.set("file", JsonValue(path));
   out.set("version", JsonValue(info.header.version));
@@ -184,8 +236,25 @@ int validate_command(const std::string& path, const ValidateArgs& args) {
   std::string error;
   if (!args.expect.empty() && !tissue::read_expectation(args.expect, expectation, &error))
     return failed(args.expect + ": " + error);
+  // A declared failure of a row this build does not implement is a capability the build lacks,
+  // not a failure it can match: refused before anything is validated.
+  if (!args.expect.empty()) {
+    const tissue::Capabilities& capabilities = tissue::build_capabilities();
+    tissue::CapabilityFailure unimplemented;
+    for (const tissue::ExpectedFailure& f : expectation.failures)
+      if (capabilities.row(f.id) == tissue::RowStatus::not_implemented)
+        unimplemented.missing.push_back("row " + f.id + ", which the declaration names");
+    if (unimplemented.failed()) {
+      unimplemented.sentence =
+          "a capability failure, not a fixture difference: the declaration names rows this build "
+          "does not implement, and a missing capability is never an expected failure";
+      return capability_failed(args.expect, unimplemented);
+    }
+  }
   tissue::TissueFile file;
-  if (!load(path, file, error)) return failed(path + ": " + error);
+  tissue::CapabilityFailure capability;
+  if (!load(path, file, error, capability))
+    return capability.failed() ? capability_failed(path, capability) : failed(path + ": " + error);
   tissue::ValidateOptions options;
   options.compare_modes = args.modes;
   tissue::TissueReport result;
@@ -221,24 +290,41 @@ int validate_command(const std::string& path, const ValidateArgs& args) {
   return k_exit_ok;
 }
 
+int capabilities_command() {
+  JsonValue out = tissue::capabilities_json(tissue::build_capabilities());
+  JsonValue build = JsonValue::object();
+  build.set("tool", JsonValue("engine-content"));
+  build.set("commit", JsonValue(build_stamp::commit()));
+  build.set("dirty", JsonValue(build_stamp::dirty()));
+  out.set("build", std::move(build));
+  print_json(out);
+  return k_exit_ok;
+}
+
 int example_command(const std::string& directory) {
   std::string error;
   if (io::make_directories(directory) != io::Status::Ok)
     return failed("cannot create '" + directory + "'");
   JsonValue out = JsonValue::object();
+  const auto write = [&](const tissue::TissueFile& file, const std::string& stem,
+                         JsonValue& entry) {
+    if (!tissue::export_interchange(file, directory, stem, &error)) return false;
+    const std::string container = io::join_path(directory, stem + ".tissue");
+    if (!tissue::write_tissue_file(container, file, &error)) return false;
+    entry = JsonValue::object();
+    entry.set("interchange", JsonValue(io::join_path(directory, stem + ".json")));
+    entry.set("container", JsonValue(container));
+    entry.set("blocks", JsonValue(static_cast<u64>(file.blocks.size())));
+    entry.set("definition", outline(file.definition));
+    return true;
+  };
   for (const bool quadratic : {false, true}) {
     tissue::SyntheticOptions options;
     options.quadratic = quadratic;
     const tissue::SyntheticTissue synthetic = tissue::make_synthetic_tissue(options);
-    const std::string stem = quadratic ? "synthetic-quadratic" : "synthetic";
-    if (!tissue::export_interchange(synthetic.file, directory, stem, &error)) return failed(error);
-    const std::string container = io::join_path(directory, stem + ".tissue");
-    if (!tissue::write_tissue_file(container, synthetic.file, &error)) return failed(error);
-    JsonValue e = JsonValue::object();
-    e.set("interchange", JsonValue(io::join_path(directory, stem + ".json")));
-    e.set("container", JsonValue(container));
-    e.set("blocks", JsonValue(static_cast<u64>(synthetic.file.blocks.size())));
-    e.set("definition", outline(synthetic.file.definition));
+    JsonValue e;
+    if (!write(synthetic.file, quadratic ? "synthetic-quadratic" : "synthetic", e))
+      return failed(error);
     if (quadratic) {
       out.set("quadratic", std::move(e));
     } else {
@@ -246,6 +332,12 @@ int example_command(const std::string& directory) {
         out.set(key, value);
     }
   }
+  JsonValue slab;
+  if (!write(tissue::make_layered_slab(), "layered-slab", slab)) return failed(error);
+  out.set("layered_slab", std::move(slab));
+  JsonValue fusiform;
+  if (!write(tissue::make_layered_fusiform(), "layered-fusiform", fusiform)) return failed(error);
+  out.set("layered_fusiform", std::move(fusiform));
   print_json(out);
   return k_exit_ok;
 }
@@ -284,6 +376,10 @@ int tissue_command(int argc, char** argv) {
     return usage("--expect and --write-expect belong to validate");
   if (!args.expect.empty() && !args.write_expect.empty())
     return usage("--expect compares with a declaration and --write-expect writes one: not both");
+  if (sub == "capabilities") {
+    if (count != 0 || !args.modes) return usage("capabilities takes nothing");
+    return capabilities_command();
+  }
   if (sub == "import") {
     if (count != 2) return usage("import takes an interchange JSON and an output path");
     return import_command(positional[0], positional[1]);
