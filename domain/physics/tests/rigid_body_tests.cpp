@@ -298,3 +298,35 @@ TEST_CASE("physics: a mesh or heightfield shape refuses to be dynamic") {
         Status::InvalidArgument);
   CHECK(world.create_sphere(-1.0f, unused) == Status::InvalidArgument);
 }
+
+TEST_CASE("physics: a shape says what the backend holds for it") {
+  World world;
+  REQUIRE(world.init(small_world_options()) == Status::Ok);
+  const Vec3 positions[4] = {Vec3(-1.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f),
+                             Vec3(1.0f, 0.0f, 1.0f), Vec3(-1.0f, 0.0f, 1.0f)};
+  const u32 indices[6] = {0, 1, 2, 0, 2, 3};
+  ShapeId mesh;
+  REQUIRE(world.create_mesh(std::span<const Vec3>(positions), std::span<const u32>(indices),
+                            mesh) == Status::Ok);
+  u64 bytes = 0;
+  u32 triangles = 0;
+  REQUIRE(world.shape_memory(mesh, false, bytes, triangles));
+  CHECK(bytes > 0);
+  CHECK(triangles == 2);
+  // A compound's own bytes, and with its children: the mesh under it counted once however many
+  // times it is placed.
+  const CompoundChild children[2] = {
+      {mesh, Transform3{}},
+      {mesh, Transform3{Vec3(3.0f, 0.0f, 0.0f), Quat::identity(), Vec3(1.0f, 1.0f, 1.0f)}}};
+  ShapeId compound;
+  REQUIRE(world.create_compound(std::span<const CompoundChild>(children), compound) == Status::Ok);
+  u64 own = 0;
+  u64 all = 0;
+  u32 own_triangles = 0;
+  u32 all_triangles = 0;
+  REQUIRE(world.shape_memory(compound, false, own, own_triangles));
+  REQUIRE(world.shape_memory(compound, true, all, all_triangles));
+  CHECK(all == own + bytes);
+  CHECK(all_triangles == 4);  // the triangles as placed: the mesh's two, twice
+  CHECK_FALSE(world.shape_memory(ShapeId{}, true, all, all_triangles));
+}

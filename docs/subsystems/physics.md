@@ -52,7 +52,8 @@ constants `k_deformable_ambient_budget_ms` / `k_deformable_hero_budget_ms`, the 
 constants and `cage_size_verdict`, `volume_compliance_for`, and `SoftBodyBudget`. `domain/physics/physics.h`: `WorldOptions`,
 `WorldStats`, `temp_allocator_size_for`, `CompoundChild`, `HeightfieldDesc`, `BodyDesc`,
 `RayHit`, `ShapeHit`, `ContactPhase`, `ContactEvent`, and `World` itself — shape creation
-(box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), body creation and
+(box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), what the backend holds
+for a shape (`shape_memory`: bytes and triangles, its own or with its children), body creation and
 destruction, transform and velocity access, `move_kinematic`, activation and sleep, the batch
 `read_transforms`, `spawn_debris`, soft-body creation and `read_soft_body_vertices`, `cast_ray`,
 `cast_shape`, `step`, `contact_events`, and `stats`. `domain/physics/character.h`
@@ -518,9 +519,10 @@ that has already been smoothed cannot be un-smoothed.
 
 `CharacterBody` (`character.h`, `src/character.cpp`) is plan 05 §5.11's "character controllers via
 Jolt's": the backend's `CharacterVirtual` behind the engine's types, the way everything else in the
-module is wrapped. It is the walker a host puts under a first-person camera, and it is the capsule
-every later locomotion layer — the character rig's bone capsules, foot placement, footprints in the
-sand — adds to rather than replaces.
+module is wrapped. It is the walker engine-view puts under its camera ([apps](apps.md#--interactive-a-camera-somebody-flies)), on
+the static bodies [scene_collision](scene_collision.md) keeps round it, and it is the capsule every
+later locomotion layer — the character rig's bone capsules, foot placement, footprints in the sand
+— adds to rather than replaces.
 
 **Why the virtual character, and why it is not a body.** A virtual character is not integrated by
 the step: each tick it is *swept* through the world by queries against the bodies that are there,
@@ -580,7 +582,8 @@ character id whose default is a process-wide counter: a replay's result would th
 many characters the process had made before, so `CharacterConfig::id` gives each one its own.
 Body ids are the world's and come out of its free list in creation order, so the same bodies made
 in the same order give the same walk — which is why a host that streams bodies in and out round a
-walker has to do it at fixed ticks and in a fixed order, never on a frame's schedule.
+walker has to do it at fixed ticks and in a fixed order, never on a frame's schedule
+([scene_collision](scene_collision.md#why-this-shape)).
 
 **Pinned.** The scripted walk in `tests/character_tests.cpp` — 2,400 steps at 240 Hz over a
 heightfield with two walls and a raised slab, turning, sprinting, jumping six times and running
@@ -591,7 +594,11 @@ deterministic ([Determinism](#determinism)). A change that moves it changes ever
 and says why in its commit.
 
 **What a step costs** is `physics.character.step` in the bench (below): the sweep is a handful of
-shape queries against the bodies within reach.
+shape queries against the bodies within reach. Over a 64 m heightfield among 200 static blocks,
+walking, turning back and jumping, **5.72 µs a step** on `msvc-release`
+(2026-09-28, median of seven repeats, best 5.68; the run started on a quiet machine and ended with
+other processes at 16% of the CPU, so an upper bound): at engine-view's 240 Hz tick, 1.4 ms a second,
+0.14% of one core.
 
 ## LOD policy and determinism stance
 
@@ -631,7 +638,7 @@ rig's contribution — bone capsules, foot placement, footprints — which is a 
 and not a replacement for it. NPC locomotion runs on nav links at LOD2 and has no controller there
 ([05 §5.11](../plan/05-simulation.md#511-integration-notes)); at LOD0/1 it would be this class.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Forty-four cases: a sphere
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Forty-five cases: a sphere
 dropped on a static box comes to rest within the penetration slop and falls asleep; a hundred
 boxes in ten towers of ten are still standing after 600 steps, with bounds on sideways drift and
 on how far anything sank; a kinematic box pushes a dynamic one and stays behind it; contact
@@ -641,8 +648,9 @@ and refuse to be destroyed underneath a body; a mesh shape refuses to be dynamic
 is symmetric and `Query` simulates against nothing; ray and shape casts report fraction, body,
 position, and normal, and respect a `LayerMask`; a sphere rests at exactly one radius above a
 flat heightfield and stays one radius off the surface while it rolls down a sloped one;
-heightfields and hulls refuse grids and point sets the backend cannot build; a step leaves no
-job of its own in the queue even when the pool's only worker is held busy, three hundred steps
+heightfields and hulls refuse grids and point sets the backend cannot build; a shape says what the
+backend holds for it, a compound's shared children in bytes once and in triangles as placed; a
+step leaves no job of its own in the queue even when the pool's only worker is held busy, three hundred steps
 through a deliberately small backend job pool at 1, 2, and 4 workers recycle it many times over
 and hand every job back by the time the world is destroyed, and a job system with no performance
 workers behaves as none at all (the regression tests for the drain above, and the reason the pool
@@ -703,7 +711,8 @@ The size table pins `BodyId`/`ShapeId`/`SoftBodyId` at 8 bytes, `ContactEvent` a
 line, which is why the user data rides inline instead of being looked up per event), `RayHit`,
 `ShapeHit`, the three cage-element structs, and `CharacterState` at 48 bytes.
 
-**The bench.** `bench/physics_bench.cpp` is the step cost of the module's own fixtures; beside it,
+**The bench.** `bench/physics_bench.cpp` is the step cost of the module's own fixtures (and, since
+2026-09-28, of one character step, `physics.character.step`: [The character](#the-character)); beside it,
 `bench/e19_bench.cpp` is [experiment E19](../experiments/e19-lattice-cage.md) — a lattice cage
 around a rigid two-bone core pressed to 30% of its depth and released, and the same cage under a
 sustained load — which prints its own JSON lines so the whole experiment re-runs on another

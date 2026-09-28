@@ -214,6 +214,11 @@ class World {
   Status create_compound(std::span<const CompoundChild> children, ShapeId& out);
   bool destroy_shape(ShapeId shape);
   bool shape_bounds(ShapeId shape, Aabb3& out) const;
+  // What the backend holds for a shape, bytes, and its triangles (a mesh's, a heightfield's two a
+  // cell): its own, or with `children` the bytes of every shape under it once (a compound's pieces,
+  // which are shared and may be counted elsewhere) and the triangles as placed, once a placement.
+  // False for a stale handle.
+  bool shape_memory(ShapeId shape, bool children, u64& bytes, u32& triangles) const;
   u32 shape_count() const noexcept;
 
   // --- bodies

@@ -5,6 +5,7 @@
 
 #include <core/log/log.h>
 
+#include <Jolt/Core/UnorderedSet.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
@@ -186,6 +187,20 @@ bool World::destroy_shape(ShapeId shape) {
   // turns that into a refusal instead of a dangling collision test.
   if (entry->body_refs != 0) return false;
   impl_->shapes.erase(shape.handle);
+  return true;
+}
+
+bool World::shape_memory(ShapeId shape, bool children, u64& bytes, u32& triangles) const {
+  if (impl_ == nullptr) return false;
+  const JPH::Shape* jph_shape = impl_->shape_ptr(shape);
+  if (jph_shape == nullptr) return false;
+  JPH::Shape::Stats stats = jph_shape->GetStats();
+  if (children) {
+    JPH::Shape::VisitedShapes visited;
+    stats = jph_shape->GetStatsRecursive(visited);
+  }
+  bytes = static_cast<u64>(stats.mSizeBytes);
+  triangles = static_cast<u32>(stats.mNumTriangles);
   return true;
 }
 
