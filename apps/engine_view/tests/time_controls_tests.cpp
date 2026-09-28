@@ -142,8 +142,9 @@ TEST_CASE("time controls: a rate is written the way the title writes it") {
 
 TEST_CASE("time controls: the fly session counts the keys, with the second revision of the map") {
   // The map's second revision binds [ ] , . to the four controls; a press is counted once, on the
-  // tick it went down, and moves the camera not at all.
-  const input::ActionMap map = view::default_fly_map();
+  // tick it went down, and moves the camera not at all. (The third, the walk mode's, appends to it
+  // and changes none of this: fly_tests.cpp.)
+  const input::ActionMap map = view::default_fly_map(2);
   view::FlyActions actions;
   std::string error;
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);

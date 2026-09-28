@@ -168,6 +168,9 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(
       run_view({"--interactive", "--start", "0,1,2", "0,0", "--camera-path", "p.json"}).exit_code ==
       2);
+  // `--walk` starts a live session walking; a replay starts as its recording did.
+  CHECK(run_view({"--walk"}).exit_code == 2);
+  CHECK(run_view({"--replay-input", log, "--walk"}).exit_code == 2);
   // `--capture-channels`: offscreen only, known names, and something to capture.
   CHECK(run_view({"--capture-channels", "ids", "--capture", "x.png"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--capture-channels", "albedo", "--capture", "x.png"}).exit_code ==

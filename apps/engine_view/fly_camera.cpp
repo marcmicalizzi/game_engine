@@ -16,6 +16,7 @@ namespace {
 constexpr u32 k_key_a = 4;
 constexpr u32 k_key_d = 7;
 constexpr u32 k_key_e = 8;
+constexpr u32 k_key_f = 9;
 constexpr u32 k_key_m = 16;
 constexpr u32 k_key_q = 20;
 constexpr u32 k_key_s = 22;
@@ -39,6 +40,7 @@ constexpr u32 k_pad_right_x = 2;
 constexpr u32 k_pad_right_y = 3;
 constexpr u32 k_pad_left_trigger = 4;
 constexpr u32 k_pad_right_trigger = 5;
+constexpr u32 k_pad_south = 1;
 constexpr u32 k_pad_north = 4;
 constexpr u32 k_pad_back = 5;
 constexpr u32 k_pad_left_stick = 8;
@@ -198,6 +200,18 @@ input::ActionMap default_fly_map(u32 revision) {
         map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
     map.bind(id, Binding{Source::Key, keys[c]});
   }
+  if (revision < 3) return map;
+
+  // Revision 3 (2026-09-28): the walk mode (walk.h). F was bound to nothing — WASD, E and Q, Space
+  // and the modifiers, Escape, M and the four rate keys were — and is where a hand on WASD already
+  // is. Jump is Space, which `lift` also binds: a flying camera reads `lift` and never `jump`, a
+  // walking one the reverse, so one key means the obvious thing in each. On a pad, jump is South;
+  // the switch is the keyboard's alone.
+  const input::ActionId walk = map.add_action("walk", input::ActionKind::Button);
+  map.bind(walk, Binding{Source::Key, k_key_f});
+  const input::ActionId jump = map.add_action("jump", input::ActionKind::Button);
+  map.bind(jump, Binding{Source::Key, k_key_space});
+  map.bind(jump, Binding{Source::GamepadButton, k_pad_south});
   return map;
 }
 
@@ -253,6 +267,23 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
       return false;
     }
     out.controls[c] = id;
+  }
+  // The walk mode's, optional the same way: a map without them only flies.
+  const struct {
+    const char* name;
+    input::ActionId* slot;
+  } walking[] = {{"walk", &out.walk}, {"jump", &out.jump}};
+  for (const auto& w : walking) {
+    const input::ActionId id = map.find_action(w.name);
+    *w.slot = input::k_invalid_action;
+    if (id == input::k_invalid_action) continue;
+    if (map.action_kind(id) != input::ActionKind::Button) {
+      if (error != nullptr) {
+        *error = std::string("the action map's '") + w.name + "' is not a button action";
+      }
+      return false;
+    }
+    *w.slot = id;
   }
   return true;
 }
@@ -335,7 +366,7 @@ Vec3 fly_right(const FlyState& state) noexcept {
   return Vec3{cy, 0.0f, -sy};  // rotate(quat(+y, yaw), +x)
 }
 
-void fly_tick(FlyState& state, const input::InputState& input, const FlyActions& actions,
+void fly_look(FlyState& state, const input::InputState& input, const FlyActions& actions,
               const FlyParams& params) noexcept {
   const f32 dt = 1.0f / static_cast<f32>(params.tick_hz);
   // ---- orientation: a mouse says how far, a stick how fast ----
@@ -354,6 +385,12 @@ void fly_tick(FlyState& state, const input::InputState& input, const FlyActions&
     yaw += k_two_pi_f;
   state.yaw = yaw;
   state.pitch = pitch;
+}
+
+void fly_tick(FlyState& state, const input::InputState& input, const FlyActions& actions,
+              const FlyParams& params) noexcept {
+  fly_look(state, input, actions, params);
+  const f32 dt = 1.0f / static_cast<f32>(params.tick_hz);
 
   // ---- position, along the orientation this tick ended with ----
   Vec2 move = input.axis2(actions.move);
@@ -457,6 +494,11 @@ JsonValue session_to_json(const SessionHeader& header) {
   fly.set("pitch_limit", JsonValue(header.params.pitch_limit));
   out.set("fly", std::move(fly));
   out.set("ticks", header.ticks);
+  if (header.has_walk) {
+    JsonValue walk = walk_params_to_json(header.walk);
+    walk.set("start_walking", header.walking);
+    out.set("walk", std::move(walk));
+  }
   return out;
 }
 
@@ -512,6 +554,20 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
   if (h.params.tick_hz == 0 || h.params.tick_hz > 100000) return fail("'tick_hz' is out of range");
   const JsonValue* ticks = value.find("ticks");
   if (ticks == nullptr || !ticks->get_u64(h.ticks)) return fail("no 'ticks'");
+  // The walk block, from 2026-09-28: absent in every session recorded before, which start flying
+  // with the defaults and whose maps cannot walk. Present, it must be one this build walks by.
+  if (const JsonValue* walk = value.find("walk"); walk != nullptr) {
+    std::string why;
+    if (!walk_params_from_json(*walk, h.walk, &why)) {
+      if (error != nullptr) *error = why;
+      return false;
+    }
+    const JsonValue* start_walking = walk->find("start_walking");
+    if (start_walking == nullptr || !start_walking->get_bool(h.walking)) {
+      return fail("the walk block does not say whether the session starts walking");
+    }
+    h.has_walk = true;
+  }
   out = std::move(h);
   return true;
 }
@@ -568,16 +624,51 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   capture_presses_ = 0;
   for (u32& presses : control_presses_)
     presses = 0;
+  walking_ = false;
+  mode_changes_ = 0;
+  // A session that starts walking (`--walk`) stands on the ground under its start camera before
+  // its first tick: the camera it starts from is the eye, and the trajectory's seed stays the
+  // header's start, so a replay seeds the same chain and drops the walker the same way.
+  if (header.walking && can_walk()) {
+    walking_ = true;
+    state_.position = walker_->drop(state_.position);
+    previous_ = state_;
+    trajectory_.last = state_;
+  }
   return true;
 }
+
+bool FlySession::can_walk() const noexcept { return walker_ != nullptr && walker_->available(); }
 
 void FlySession::on_tick(void* user, SimTick tick, const input::InputState& state) {
   FlySession& self = *static_cast<FlySession*>(user);
   self.previous_ = self.state_;
-  fly_tick(self.state_, state, self.actions_, self.header_.params);
+  // **Flying or walking** (walk.h). `walk` switches at the tick it was pressed on: onto the ground
+  // under the camera, or off it with the camera where it is. Walking, the look is the flight's and
+  // the walker moves the camera, the eye at its eye height; flying, the tick is the flight's alone.
+  const input::ActionId walk = self.actions_.walk;
+  if (walk != input::k_invalid_action && state.pressed(walk) && self.can_walk()) {
+    self.walking_ = !self.walking_;
+    ++self.mode_changes_;
+    if (self.walking_) self.state_.position = self.walker_->drop(self.state_.position);
+  }
+  if (self.walking_) {
+    fly_look(self.state_, state, self.actions_, self.header_.params);
+    WalkInput in;
+    in.move = state.axis2(self.actions_.move);
+    in.yaw = self.state_.yaw;
+    in.sprint = state.held(self.actions_.fast);
+    in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
+    self.state_.position = self.walker_->step(in);
+  } else {
+    fly_tick(self.state_, state, self.actions_, self.header_.params);
+  }
   self.tick_ = tick;
   self.trajectory_.ticks = tick.value;
   self.trajectory_.hash = hash_fly_state(self.trajectory_.hash, self.state_);
+  // A walking tick is marked in the chain, so a walk and a flight that happened to reach the same
+  // camera still hash apart; a session that never walks hashes as it always did.
+  if (self.walking_) self.trajectory_.hash = hash_combine(self.trajectory_.hash, 0x57414c4bull);
   self.trajectory_.last = self.state_;
   if (state.pressed(self.actions_.capture)) ++self.capture_presses_;
   for (u32 c = 0; c < k_view_controls; ++c) {

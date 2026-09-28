@@ -35,6 +35,8 @@
 // flipping. Forward at zero is -z and right is +x, the same `forward` `--fly` and every
 // `CameraPath` look along.
 
+#include "walk.h"
+
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
@@ -111,22 +113,28 @@ struct FlyActions {
   // Buttons, by `ViewControl`; `k_invalid_action` where the map has none.
   input::ActionId controls[k_view_controls] = {input::k_invalid_action, input::k_invalid_action,
                                                input::k_invalid_action, input::k_invalid_action};
+  // Buttons, the walk mode's (walk.h); `k_invalid_action` where the map has none, and then the
+  // session only flies. `walk` switches between flying and walking; `jump` jumps while walking.
+  input::ActionId walk = input::k_invalid_action;
+  input::ActionId jump = input::k_invalid_action;
 };
 
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
-// four viewer controls (2026-09-27). A revision appends and never reorders, and a log names the
-// hash of the map it was recorded against, so a log recorded against an earlier revision is
-// replayed with that revision (`default_fly_map_for`) rather than refused as a rebind: under it
-// every key means what it meant when the session was flown, and a key a later revision binds —
-// a `.` pressed before it meant anything — does nothing, as it did then.
-inline constexpr u32 k_fly_map_revision = 2;
+// four viewer controls (2026-09-27); 3 appends the walk mode's two, `walk` (F) and `jump` (Space,
+// the pad's South) (2026-09-28). A revision appends and never reorders, and a log names the hash
+// of the map it was recorded against, so a log recorded against an earlier revision is replayed
+// with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
+// means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
+// before it meant anything, an F pressed before it walked — does nothing, as it did then.
+inline constexpr u32 k_fly_map_revision = 3;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
 // pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
-// slower and faster and `,` `.` the dunes'; and on a gamepad the left stick to move, the triggers
-// up and down, the right stick to turn, the stick clicks fast and slow, Back as Escape and North to
-// mark. `revision` 1 is the map without the four time-lapse keys.
+// slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking; and
+// on a gamepad the left stick to move, the triggers up and down, the right stick to turn, the stick
+// clicks fast and slow, Back as Escape, North to mark and South to jump. `revision` 1 is the map
+// without the four time-lapse keys, 2 the map without the walk mode's.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).
@@ -150,6 +158,10 @@ Vec3 fly_right(const FlyState& state) noexcept;
 // camera points), lift along world up — at `speed` times `fast` and/or `slow`, over one tick's
 // `dt = 1 / tick_hz`. A diagonal of two keys is normalized; a stick's is already in its disc.
 void fly_tick(FlyState& state, const input::InputState& input, const FlyActions& actions,
+              const FlyParams& params) noexcept;
+// The look alone — the first half of `fly_tick`, the same arithmetic in the same order: what a
+// walking tick turns the camera by before the walker moves it (walk.h).
+void fly_look(FlyState& state, const input::InputState& input, const FlyActions& actions,
               const FlyParams& params) noexcept;
 
 // The camera the renderer draws from: the state's position, a target 100 m along forward (the
@@ -190,6 +202,14 @@ struct SessionHeader {
   // How many ticks the session ran: a replay runs exactly these, so a camera still moving when
   // the recording stopped stops at the same place.
   u64 ticks = 0;
+  // The walk mode (walk.h): whether the session started walking (`--walk`), and the walker's
+  // numbers, written as the header's `walk` block when `has_walk` (every live session since
+  // 2026-09-28). A header written before the walk mode existed has no `walk` block and reads as a
+  // session that starts flying with the defaults; its map has no `walk` action, so it never walks
+  // — and a header made without one writes none, so the committed fixtures stay their bytes.
+  bool has_walk = false;
+  bool walking = false;
+  WalkParams walk;
 };
 
 JsonValue session_to_json(const SessionHeader& header);
@@ -231,7 +251,13 @@ JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz);
 // once the input state has seen each bound code, except a marker, which is a push onto a list.
 class FlySession {
  public:
-  // The map must outlive the session. False when it lacks an action the camera reads.
+  // **The walker**, when the session may walk (walk.h): set before `start`, and it must outlive
+  // the session. A session with none, or with one that has no ground to walk on, only flies, and
+  // its `walk` presses change nothing.
+  void set_walker(Walker* walker) noexcept { walker_ = walker; }
+  // The map must outlive the session. False when it lacks an action the camera reads. A header
+  // that starts walking (`walking`) puts the walker on the ground under the start camera here, at
+  // tick 0, as a replay of it does.
   bool start(const input::ActionMap& map, const SessionHeader& header, std::string* error);
 
   // Every tick from `next()` to `to`: feed the events stamped with it, integrate, hash, and note a
@@ -277,9 +303,14 @@ class FlySession {
   const Trajectory& trajectory() const noexcept { return trajectory_; }
   const input::InputState& input() const noexcept { return input_; }
   const SessionHeader& header() const noexcept { return header_; }
+  // Whether the camera is on the walker now, and how often a `walk` press switched it.
+  bool walking() const noexcept { return walking_; }
+  u32 mode_changes() const noexcept { return mode_changes_; }
+  const Walker* walker() const noexcept { return walker_; }
 
  private:
   static void on_tick(void* user, SimTick tick, const input::InputState& state);
+  bool can_walk() const noexcept;
 
   input::InputState input_;
   FlyActions actions_;
@@ -290,6 +321,9 @@ class FlySession {
   Trajectory trajectory_;
   u32 capture_presses_ = 0;
   u32 control_presses_[k_view_controls] = {};
+  Walker* walker_ = nullptr;
+  bool walking_ = false;
+  u32 mode_changes_ = 0;
 };
 
 }  // namespace engine::view

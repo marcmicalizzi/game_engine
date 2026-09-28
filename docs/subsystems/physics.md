@@ -519,7 +519,7 @@ that has already been smoothed cannot be un-smoothed.
 
 `CharacterBody` (`character.h`, `src/character.cpp`) is plan 05 §5.11's "character controllers via
 Jolt's": the backend's `CharacterVirtual` behind the engine's types, the way everything else in the
-module is wrapped. It is the walker engine-view puts under its camera ([apps](apps.md#--interactive-a-camera-somebody-flies)), on
+module is wrapped. It is the walker engine-view puts under its camera ([apps](apps.md#walking)), on
 the static bodies [scene_collision](scene_collision.md) keeps round it, and it is the capsule every
 later locomotion layer — the character rig's bone capsules, foot placement, footprints in the sand
 — adds to rather than replaces.

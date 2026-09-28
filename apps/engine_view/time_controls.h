@@ -61,11 +61,15 @@ struct SunDay {
 // which it returns; `size` of 32 holds any rate the flags accept.
 const char* format_rate(f64 rate, char* out, usize size) noexcept;
 
-// **The window title's status**, in UTF-8: `dunes ×86,400 · sun ×3,600 · mouse captured (Esc frees
-// it)`. `dunes` is false for a scene whose terrain cannot move, and then the dunes are left out; a
-// replay (`live` false) has no pointer of its own and says nothing about it. Returns the length
-// written, which a `size` of 128 always holds.
+// **The window title's status**, in UTF-8: `walking · dunes ×86,400 · sun ×3,600 · mouse captured
+// (Esc frees it)`. The mode comes first (`flying`, `walking`, or `walking (ground only)` for a
+// walker that follows the ground and collides with nothing, walk.h), and not at all for a caller
+// that gives none; `dunes` is false for a scene whose terrain cannot move, and then the dunes are
+// left out; a replay (`live` false) has no pointer of its own and says nothing about it. Returns
+// the length written, which a `size` of 160 always holds.
+enum class TitleMode : u8 { none, flying, walking, walking_ground };
 struct TitleStatus {
+  TitleMode mode = TitleMode::none;
   bool dunes = false;
   f64 dune_rate = 0.0;
   f64 sun_rate = 0.0;

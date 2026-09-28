@@ -59,11 +59,20 @@ usize format_status(const TitleStatus& status, char* out, usize size) noexcept {
   char sun[32];
   format_rate(status.dune_rate, dunes, sizeof(dunes));
   format_rate(status.sun_rate, sun, sizeof(sun));
+  const char* mode = "";
+  switch (status.mode) {
+    case TitleMode::none: break;
+    case TitleMode::flying: mode = "flying"; break;
+    case TitleMode::walking: mode = "walking"; break;
+    case TitleMode::walking_ground: mode = "walking (ground only)"; break;
+  }
+  const char* after_mode = mode[0] != '\0' ? k_dot : "";
   int n = 0;
   if (status.dunes) {
-    n = std::snprintf(out, size, "dunes %s%s%ssun %s%s", k_times, dunes, k_dot, k_times, sun);
+    n = std::snprintf(out, size, "%s%sdunes %s%s%ssun %s%s", mode, after_mode, k_times, dunes,
+                      k_dot, k_times, sun);
   } else {
-    n = std::snprintf(out, size, "sun %s%s", k_times, sun);
+    n = std::snprintf(out, size, "%s%ssun %s%s", mode, after_mode, k_times, sun);
   }
   if (n < 0) {
     out[0] = '\0';

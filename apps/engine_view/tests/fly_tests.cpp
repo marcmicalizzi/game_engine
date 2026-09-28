@@ -194,9 +194,20 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   view::FlyActions actions;
   std::string error;
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);
-  // The camera's eight, and the time-lapse's four keys appended after them (revision 2).
-  CHECK(map.action_count() == 12);
+  // The camera's eight, the time-lapse's four keys appended after them (revision 2), and the walk
+  // mode's two after those (revision 3): `walk` on F and `jump` on Space.
+  CHECK(map.action_count() == 14);
+  CHECK(view::default_fly_map(2).action_count() == 12);
   CHECK(view::default_fly_map(1).action_count() == 8);
+  CHECK(actions.walk != input::k_invalid_action);
+  CHECK(actions.jump != input::k_invalid_action);
+  view::FlyActions second;
+  REQUIRE(view::resolve_fly_actions(view::default_fly_map(2), second, &error));
+  CHECK(second.walk == input::k_invalid_action);  // a revision 2 session cannot walk
+  CHECK(second.jump == input::k_invalid_action);
+  input::ActionMap found;
+  CHECK(view::default_fly_map_for(view::default_fly_map(2).hash(), found));
+  CHECK(found.action_count() == 12);
 
   const std::string expected = write_json(map.to_json(), JsonWriteOptions{.pretty = true}) + "\n";
   const std::string path = content_path("content/input-maps/engine-view.json");

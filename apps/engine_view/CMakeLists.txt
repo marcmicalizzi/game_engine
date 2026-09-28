@@ -25,15 +25,25 @@ endif()
 
 # The camera and the conversion are compiled into the tests as well as the app: the trajectory of
 # the committed session fixture is checked with no GPU and no window (tests/fly_tests.cpp), which
-# is the half of the replay test that runs on every machine CI has.
-set(_view_interactive fly_camera.cpp window_input.cpp time_controls.cpp)
+# is the half of the replay test that runs on every machine CI has. The walk mode (walk.cpp) is the
+# camera's too, and walks on the scene's ground provider in every configuration.
+set(_view_interactive fly_camera.cpp window_input.cpp time_controls.cpp walk.cpp)
+if(TARGET engine::scene_collision)
+  # The walker's collision (walk.h, docs/subsystems/scene_collision.md): a `physics::CharacterBody`
+  # on the static bodies the scene-collision capability keeps round it. Both capabilities are
+  # optional (ADR-0027), so this is `--animate`'s hand-made switch again: linked where they are
+  # configured, and without them the walker follows the ground, which the minimal build proves.
+  list(APPEND _view_deps physics scene_collision world sim)
+endif()
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
-                tests/interactive_tests.cpp tests/time_controls_tests.cpp ${_view_interactive})
+                tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
+                tests/walk_view_tests.cpp ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it through the registry, and the test writes the kit of boxes and counts the pieces with
-  # the assembler.
-  list(APPEND _view_tests tests/ruins_view_tests.cpp)
+  # the assembler. The walk into one of a ruin's walls writes the same kit beside the committed
+  # ruins-walk scene (docs/subsystems/apps.md, "Walking").
+  list(APPEND _view_tests tests/ruins_view_tests.cpp tests/walk_ruins_view_tests.cpp)
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
@@ -92,6 +102,12 @@ if(TARGET engine::world)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WORLD=1)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WORLD=1)
+  endif()
+endif()
+if(TARGET engine::scene_collision)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
   endif()
 endif()
 # The mesh end-to-end test also drives engine-content; apps/engine_content/CMakeLists.txt adds

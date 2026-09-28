@@ -143,7 +143,8 @@ constexpr const char* k_usage =
     "                   [--verify-occlusion] [--marker-captures <dir>] [--capture-channels <list>]\n"
     "                   [--require-quiet] [--wait-quiet <seconds>]\n"
     "                   [--world] [--world-log <out.jsonl>] [--world-handover <out.jsonl>]\n"
-    "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--record-input <log.jsonl>]\n"
+    "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--walk]\n"
+    "                   [--record-input <log.jsonl>]\n"
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
@@ -373,9 +374,15 @@ constexpr const char* k_usage =
     "                   the last frame's ms and the p99 over the last second. Starts at --start,\n"
     "                   else at --camera-path's first frame, else at the first frame of the scene\n"
     "                   file's own camera_path, else at the orbit camera. --benchmark writes the\n"
-    "                   flythrough JSONL of the session (one record per frame, ticks included)\n"
+    "                   flythrough JSONL of the session (one record per frame, ticks included).\n"
+    "                   F walks: the camera at eye height on a walker dropped onto the ground under\n"
+    "                   it, WASD along the ground, Shift to sprint, Space (a pad's South) to jump,\n"
+    "                   the look as in flight; F again flies from where it stands. The walker is a\n"
+    "                   capsule on the scene's collision (the ground, the ruins' walls) where the\n"
+    "                   build has physics, and follows the ground without it; the title says which\n"
     "  --start <x,y,z> <yaw,pitch>  --interactive: start the camera here, metres and degrees (yaw\n"
     "                   about +y counter-clockwise from above, 0 looking along -z; pitch up)\n"
+    "  --walk           --interactive: start walking, on the ground under the start camera\n"
     "  --record-input <f>  --interactive: write the session's input log, with a header naming\n"
     "                   the scene, the start camera, the tick rate, the map and this build\n"
     "  --replay-input <f>  fly a recorded session instead of the window's input: the same camera\n"
@@ -540,6 +547,9 @@ struct Options {
   Vec3 start_position{};
   f32 start_yaw_deg = 0.0f;
   f32 start_pitch_deg = 0.0f;
+  // `--walk`: a live session starts walking (walk.h) — on the ground under its start camera — where
+  // it would otherwise start flying; F switches either way.
+  bool walk = false;
   std::string record_input;
   std::string replay_input;
   std::string inject_input;
@@ -1625,7 +1635,42 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.params.look = static_cast<f32>(fly_look.get());
   h.params.turn_rate = static_cast<f32>(fly_turn_rate.get());
   h.params.pitch_limit = static_cast<f32>(fly_pitch_limit.get() * 3.14159265358979323846 / 180.0);
+  // The walk mode's numbers, read once like the flight's, and whether it starts walking.
+  h.has_walk = true;
+  h.walking = options.walk;
+  h.walk = view::walk_params_from_tunables();
   return h;
+}
+
+// The ground as the frames draw it, for the walker (walk.h): the scene's grid and, with a moving
+// terrain, the finest level's pair of fields and blend — what is drawn round the walker. A terrain
+// at its rest pose is still, whatever the motion's rate.
+view::DrawnGround drawn_ground(const renderer::TerrainMotion& lapse,
+                               const renderer::SceneData& scene) {
+  view::DrawnGround d;
+  if (scene.terrain.enabled) d.lattice = renderer::terrain_scene_lattice(scene.terrain);
+  if (!lapse.active() || lapse.level_count() == 0) return d;
+  u32 finest = 0;
+  for (u32 k = 1; k < lapse.level_count(); ++k) {
+    if (lapse.level_stats(k).spacing_m < lapse.level_stats(finest).spacing_m) finest = k;
+  }
+  const renderer::TerrainMotion::LevelStats s = lapse.level_stats(finest);
+  d.time_a = s.time_a;
+  d.time_b = s.time_b > s.time_a ? s.time_b : s.time_a;
+  d.blend = d.time_b > d.time_a ? s.blend : 0.0;
+  d.moving = d.time_b != d.time_a || d.time_a != scene.terrain.time_s;
+  return d;
+}
+
+// The session's walk block, beside the walker's own (apps.md, "Walking"): how it started, where it
+// is now, and how often F switched it.
+JsonValue walk_summary(const view::FlySession& session, const view::Walker& walker) {
+  JsonValue out = walker.summary_json();
+  out.set("start", session.header().walking ? "walk" : "fly");
+  out.set("mode", session.walking() ? "walk" : "fly");
+  out.set("mode_changes", static_cast<u64>(session.mode_changes()));
+  out.set("available", walker.available());
+  return out;
 }
 
 // The summary's `interactive` block: how the session was driven, its header, and the trajectory
@@ -1642,6 +1687,7 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   header.ticks = session.tick().value;
   out.set("session", view::session_to_json(header));
   out.set("trajectory", view::trajectory_to_json(session.trajectory(), header.params.tick_hz));
+  if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
   return out;
 }
 
@@ -2126,6 +2172,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // A replay is flown once: its frames are a function of its ticks, and a second pass over them
   // would measure the same frames again, which `--repeat` exists to do for a path's.
   const u32 repeats = options.benchmark.empty() || interactive.on ? 1u : options.repeats;
+  view::Walker walker;  // a recorded walk's (walk.h): outlives the session, which points at it
   view::FlySession session;
   const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
   const u32 ticks_per_frame =
@@ -2332,6 +2379,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
 
     if (interactive.on) {
       // ---- a recorded session, flown again ----------------------------------------------------
+      // With the recording's walk numbers, on the scene as loaded (walk.h): a recorded walk
+      // replays bit for bit over the scene it was recorded on.
+      if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error)) {
+        exit_code = fail("walk", error);
+        break;
+      }
+      walker.set_drawn(drawn_ground(time_lapse, scene_data));
+      session.set_walker(&walker);
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("replay", error);
         break;
@@ -2370,6 +2425,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
+        walker.set_drawn(drawn_ground(time_lapse, scene_data));
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
         renderer::FrameDesc frame;
         frame.camera = session.camera();
@@ -3212,6 +3268,8 @@ int main(int argc, char** argv) {
       }
     } else if (a == "--interactive") {
       options.interactive = true;
+    } else if (a == "--walk") {
+      options.walk = true;
     } else if (a == "--start") {
       std::string position;
       std::string angles;
@@ -3422,6 +3480,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "engine-view: --start and --camera-path both say where the session begins; "
                  "give one\n");
+    return k_exit_usage;
+  }
+  if (options.walk && !live) {
+    std::fprintf(stderr,
+                 "engine-view: --walk starts a live --interactive session walking; a replay "
+                 "starts as its recording started\n");
     return k_exit_usage;
   }
   if (!options.interactive && !options.input_map.empty()) {
@@ -3721,6 +3785,7 @@ int main(int argc, char** argv) {
   u32 joint_matrices = 0;
   std::string clip_text;
   // ---- the interactive camera (fly_camera.h), with --interactive or --replay-input ----------
+  view::Walker walker;  // the walk mode (walk.h): outlives the session, which points at it
   view::FlySession session;
   view::EdgeEvents edge;               // live: converted this frame, fed at the next tick
   input::InputLog recording;           // --record-input
@@ -4055,6 +4120,19 @@ int main(int argc, char** argv) {
                                                                             : nullptr;
         interactive.header = live_header(options, scene_data, start_path);
       }
+      // The walker, on the scene as loaded and the ground as the first frame draws it; with the
+      // header's numbers, so a replay walks with the recording's (walk.h).
+      if (!walker.start(interactive.header.walk, interactive.header.params.tick_hz, scene_data,
+                        &error)) {
+        exit_code = fail("walk", error);
+        break;
+      }
+      walker.set_drawn(drawn_ground(time_lapse, scene_data));
+      session.set_walker(&walker);
+      if (interactive.header.walking && !walker.available()) {
+        std::fprintf(stderr, "engine-view: nothing to walk on here (%s); flying\n",
+                     walker.why().c_str());
+      }
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("interactive", error);
         break;
@@ -4079,6 +4157,7 @@ int main(int argc, char** argv) {
     // The time-lapse keys' presses acted on so far (fly_camera.h, `ViewControl`), whether an
     // Escape asked the session to end, and whether the title has something new to say.
     u32 control_seen[view::k_view_controls] = {};
+    u32 modes_seen = 0;  // the walk mode's switches acted on (a console line and the title)
     bool exit_requested = false;
     bool title_dirty = true;
     char shown_title[256] = "";
@@ -4316,6 +4395,9 @@ int main(int argc, char** argv) {
         u64 to = clock.tick().value;
         if (session_end != 0 && to > session_end) to = session_end;
         const u64 before = session.tick().value;
+        // The ground as this frame draws it, for the walker's ticks (the time-lapse moved it
+        // above).
+        walker.set_drawn(drawn_ground(time_lapse, scene_data));
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -4357,6 +4439,18 @@ int main(int argc, char** argv) {
           while (control_seen[c] != session.control_presses(control)) {
             ++control_seen[c];
             if (step_rate(control)) title_dirty = true;
+          }
+        }
+        // The walk mode's switch, once however many ticks it took: a line on the console and the
+        // title at once.
+        if (modes_seen != session.mode_changes()) {
+          modes_seen = session.mode_changes();
+          title_dirty = true;
+          if (session.walking()) {
+            std::fprintf(stderr, "engine-view: walking (%s%s%s)\n", walker.collision(),
+                         walker.why().empty() ? "" : ": ", walker.why().c_str());
+          } else {
+            std::fprintf(stderr, "engine-view: flying\n");
           }
         }
         // The sun's day moves by the frame's simulated seconds — its ticks — at the rate now.
@@ -4484,6 +4578,10 @@ int main(int argc, char** argv) {
           title_dirty = false;
           last_title_ns = frame_start;
           view::TitleStatus status;
+          status.mode = !session.walking() ? view::TitleMode::flying
+                        : std::strcmp(walker.collision(), "physics") == 0
+                            ? view::TitleMode::walking
+                            : view::TitleMode::walking_ground;
           status.dunes = time_lapse.active();
           status.dune_rate = time_lapse.active() ? time_lapse.config().rate : 0.0;
           status.sun_rate = sun.rate;
