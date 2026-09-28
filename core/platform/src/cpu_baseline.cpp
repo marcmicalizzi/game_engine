@@ -19,6 +19,7 @@
 // check exists to prevent. `<cstdio>` and `<cstdlib>` only.
 #include <core/base/macros.h>
 #include <core/platform/cpu_baseline.h>
+#include <core/platform/error_dialogs.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -109,6 +110,10 @@ bool report_cpu_baseline(const CpuFeatures& features, CpuBaseline baseline) noex
 }
 
 void require_cpu_baseline() noexcept {
+  // Beside the baseline check because it has the same reach: every executable that links this
+  // module, before anything of its own has run (error_dialogs.h). Idempotent, so the mains that
+  // call this function again cost nothing.
+  quiet_error_dialogs();
   // `detect_cpu_features()` rather than the cached `cpu_features()`: this runs before main, and
   // a function-local static would reach for the compiler's thread-safe-statics machinery at a
   // point in the CRT's start-up where it has no business being asked. Two CPUID sequences cost
