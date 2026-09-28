@@ -31,6 +31,10 @@ Vec3 to_vec3(D p) {
   return Vec3{static_cast<f32>(p.x), static_cast<f32>(p.y), static_cast<f32>(p.z)};
 }
 
+// A stored (float32) position, read back in double: what every state is made from, so that a
+// state's nodes are the stored construction's moved, never the unrounded formula's.
+D to_d(Vec3 p) { return D{static_cast<f64>(p.x), static_cast<f64>(p.y), static_cast<f64>(p.z)}; }
+
 // A structured grid of (nx + 1) (ny + 1) (nz + 1) corners, each hexahedron six Kuhn tetrahedra
 // about its main diagonal (conforming across hexahedra), each oriented positive.
 struct Grid {
@@ -504,7 +508,7 @@ TissueFile make_layered_fusiform() {
   };
   Vector<Vec3> active;
   for (const Vec3& p : nodes)
-    active.push_back(to_vec3(law(D{p.x, p.y, p.z}, 0.5, theta)));
+    active.push_back(to_vec3(law(to_d(p), 0.5, theta)));
   put(file, "sample.identity", BlockKind::StateNodes, nodes);
   put(file, "sample.active", BlockKind::StateNodes, active);
 
@@ -574,7 +578,7 @@ TissueFile make_layered_fusiform() {
   for (u32 n = 0; n < m.x.size(); ++n) {
     const f64 t = along[n];
     const f64 w = t * t * (3.0 - 2.0 * t);
-    posed.push_back(to_vec3(turn(D{nodes[n].x, nodes[n].y, nodes[n].z}, theta * w)));
+    posed.push_back(to_vec3(turn(to_d(nodes[n]), theta * w)));
   }
   put(file, "state.rest", BlockKind::StateNodes, nodes);
   put(file, "state.reference", BlockKind::StateNodes, nodes);

@@ -199,10 +199,12 @@ TEST_CASE("layered: the fusiform's variant fails the rows chosen, and its declar
   Vector<Vec3> wrong;
   const f64 lambda = 1.0 - 0.2 * 0.5;
   for (const Vec3& p : reference) {
-    const f64 s = 2.0 * p.x / 0.12;
+    const f64 x = static_cast<f64>(p.x);
+    const f64 z = static_cast<f64>(p.z);
+    const f64 s = 2.0 * x / 0.12;
     wrong.push_back(
-        Vec3{static_cast<f32>(lambda * p.x), p.y,
-             static_cast<f32>(p.z / std::sqrt(lambda) +
+        Vec3{static_cast<f32>(lambda * x), p.y,
+             static_cast<f32>(z / std::sqrt(lambda) +
                               0.004 * std::sin(3.14159265358979 / 3.0) * (1.0 - s * s))});
   }
   fixture::replace(fusiform, "sample.active", wrong);
