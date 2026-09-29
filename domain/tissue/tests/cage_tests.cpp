@@ -180,7 +180,8 @@ TEST_CASE("cage: every node is a reference node, so every carried state is the r
   const Vector<u32> rim = read<u32>(cage, cage.definition.regions.front().node_sets[0].nodes);
   CHECK(!rim.empty());
   for (const u32 v : rim)  // on an end wall: x is 0 or the block's length, to f32
-    CHECK(block::bump(ref_nodes[source_of[v]].x, ref_nodes[source_of[v]].y) < 1e-6);
+    CHECK(block::bump(static_cast<f64>(ref_nodes[source_of[v]].x),
+                      static_cast<f64>(ref_nodes[source_of[v]].y)) < 1e-6);
 }
 
 TEST_CASE("cage: ADR-0029's budgets, and what a cage is derived from") {

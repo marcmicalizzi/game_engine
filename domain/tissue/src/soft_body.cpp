@@ -172,9 +172,7 @@ bool build_soft_body(const TissueFile& file, const SoftBodyOptions& options, Tis
     const Load& l = load->def->load;
     const f64 density = out.volume_m3 > 0.0 ? out.mass_kg / out.volume_m3 : 0.0;
     const f64 factor = density > 0.0 ? 1.0 - l.medium_density_kg_m3 / density : 1.0;
-    out.gravity =
-        Vec3{static_cast<f32>(l.gravity.x * factor), static_cast<f32>(l.gravity.y * factor),
-             static_cast<f32>(l.gravity.z * factor)};
+    out.gravity = to_vec3(d3(l.gravity) * factor);
   }
 
   // ---- the targets: every frame (contact, and a fixed attachment's anchor), and each surface an
