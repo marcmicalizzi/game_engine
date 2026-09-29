@@ -22,9 +22,12 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/gfx/cluster_cull.h>
+#include <systems/renderer/scene.h>
+#include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_time.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 
 #include <algorithm>
 #include <cmath>
@@ -881,4 +884,199 @@ TEST_CASE("renderer: a storm at the game's own rate moves the sand within its bo
   CHECK(blind.max_pair_travel_share > 0.5);
   CHECK(minute.max_pair_travel_share > 0.25);
   CHECK(blind.max_move_share <= 1.0 + 1.0e-4);  // the bound still holds; the motion is a fade
+}
+
+TEST_CASE("renderer: the owner's walk at 600 on the erg draws sand that never jumps") {
+  // The owner stood at the erg's start (x = 140, z = -60) on 2026-09-29 with the dunes at 600 game
+  // seconds a real second and saw the ground jump about once a second for the first 20,000 ticks,
+  // and then stop (docs/experiments/walk-in-time-lapse-2026-09-29.md). His frame records say the
+  // drawn sand did not: its largest move a frame was 0.2-1.3 mm and never three times its
+  // neighbours', while the camera — the walker's eye — stepped 4.7 cm at a time as the collision
+  // ground under it was rebuilt (scene_collision.md, "The walker goes with the ground"). This is
+  // his window's grid level with the erg's own cadence, on the committed scene: the clock, the
+  // keep-up rule, the one worker (59 frames an evaluation: his latency of 708 game seconds at 600
+  // is 1.2 times that), his rate changes at his frames, and the heights of the erg's own fields
+  // round the start, blended as the pool pass blends them. It holds his run to what the renderer
+  // promises, so the jump is not in the drawing: at 600 the fields are thousands of game seconds
+  // apart and never at the one-second floor, every handover is exact, no frame moves the sand
+  // three times more than both its neighbours, and what changes at 20,000 ticks is the wind — the
+  // record's next two days are calm, so the next field is 2.2 game days out and the sand slows
+  // about thirty-fold.
+  const std::string path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(path)) {
+    MESSAGE("not in this bundle: " << path);
+    return;
+  }
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  const TerrainSampler sampler(desc.terrain);
+  REQUIRE(sampler.moves());
+  const TerrainLattice lattice = terrain_scene_lattice(desc.terrain);
+  const f64 spacing = lattice.spacing;
+  const TimeLapseConfig lapse;  // the tunables' defaults: a quarter, a second, thirty days, 1.5
+  const f64 bound = lapse.fraction * spacing;
+  // A window of the grid round the start: 96 m either side.
+  constexpr u32 k_side = 128;
+  gfx::TerrainField window{};
+  window.i0 =
+      static_cast<i32>(std::floor((140.0 + static_cast<f64>(desc.terrain.extent)) / spacing)) -
+      static_cast<i32>(k_side / 2);
+  window.j0 =
+      static_cast<i32>(std::floor((-60.0 + static_cast<f64>(desc.terrain.extent)) / spacing)) -
+      static_cast<i32>(k_side / 2);
+  window.nx = k_side;
+  window.nz = k_side;
+  const auto field_at = [&](f64 t) {
+    Vector<f32> h(k_side * k_side);
+    REQUIRE(evaluate_terrain_window(sampler, t, lattice, window.i0, window.j0, k_side, k_side, 0,
+                                    terrain_window_blocks(k_side, k_side),
+                                    std::span<f32>(h.data(), h.size())));
+    return h;
+  };
+  const auto delta_of = [&](const Vector<f32>& from, const Vector<f32>& to) {
+    return terrain_field_delta(std::span<const f32>(from.data(), from.size()), window,
+                               std::span<const f32>(to.data(), to.size()), window);
+  };
+
+  // His rates (erg-walk-2026-09-29T1556): still, a minute a second at frame 298, 600 at 325, an
+  // hour at 1,400 and 600 again at 1,495, which he kept for the rest of this. A frame is a
+  // sixtieth of a second of the time-lapse's clock, as engine-view's window steps it.
+  const RateStep steps[] = {{0, 0.0}, {298, 60.0}, {325, 600.0}, {1400, 3'600.0}, {1495, 600.0}};
+  constexpr u32 k_frames = 7'800;  // past 20,000 ticks (84 s at 80 frames a second)
+  constexpr u32 k_eval_frames = 59;
+  const f64 t0 = desc.terrain.time_s;
+  TerrainClock clock;
+  clock.reset(TerrainClockConfig{});
+  f64 rate = 0.0;
+  u32 next_step = 1;
+  f64 game = t0;
+  f64 real = 0.0;
+  TerrainBlend blend;
+  blend.time_a = blend.time_b = blend.surface_s = t0;
+  Vector<f32> a = field_at(t0);
+  Vector<f32> b = a;
+  Vector<f32> drawn = a;
+  Vector<f32> previous = a;
+  // The worker: one field at a time, `k_eval_frames` each; the grid holds one after b.
+  bool busy = false;
+  u32 done_at = 0;
+  f64 busy_time = 0.0;
+  f64 newest = t0;
+  f64 newest_delta = 0.0;
+  f64 wanted = 0.0;  // real seconds the level came to want its next field (< 0: it has one)
+  TerrainNextField next;
+  Vector<f32> next_heights;
+  Vector<f64> pair_spans;  // game seconds between the two fields of each pair drawn
+  Vector<f64> moves;       // per frame, the largest move of any sample in the window
+  u32 late = 0;            // fields the keep-up rule timed past the cadence
+  bool exact = true;
+  u32 calm_frame = 0;  // the frame the pair over the calm days was taken
+  for (u32 f = 1; f <= k_frames; ++f) {
+    if (next_step < std::size(steps) && steps[next_step].frame <= f) {
+      const f64 to = steps[next_step++].rate;
+      rate = to;
+      clock.set_rate(to);
+      if (wanted >= 0.0 && !busy) wanted = real;  // TerrainMotion::set_rate
+    }
+    real += k_dt;
+    game += rate * k_dt;
+    if (busy && f >= done_at) {
+      next.ready = true;
+      next.time_s = busy_time;
+      next.delta_m = newest_delta;
+      clock.arrived(0, real - wanted);
+      wanted = -1.0;
+      busy = false;
+    }
+    const f64 before = blend.surface_s;
+    const f64 horizon = next.ready ? next.time_s : (blend.has_b ? blend.time_b : blend.time_a);
+    const f64 target = clock.advance(k_dt, game, before, std::max(horizon, before));
+    const f64 budgets[] = {bound};
+    f64 moved[1] = {};
+    u32 installed[1] = {};
+    const bool had_b = blend.has_b;
+    terrain_surface_frame(std::span<TerrainBlend>(&blend, 1), target,
+                          std::span<const f64>(budgets, 1), std::span<TerrainNextField>(&next, 1),
+                          std::span<f64>(moved, 1), std::span<u32>(installed, 1));
+    clock.settle(k_dt, before, blend.surface_s);
+    if (installed[0] > 0) {
+      if (had_b) a = b;
+      b = next_heights;
+      pair_spans.push_back(blend.time_b - blend.time_a);
+      if (blend.time_b - blend.time_a > 86'400.0 && calm_frame == 0) calm_frame = f;
+      wanted = real;
+    }
+    const f32 w = static_cast<f32>(blend.blend());
+    f64 most = 0.0;
+    for (u32 k = 0; k < drawn.size(); ++k) {
+      drawn[k] = blend.has_b ? a[k] * (1.0f - w) + b[k] * w : a[k];
+      if (blend.has_b && w == 1.0f && drawn[k] != b[k]) exact = false;
+      most = std::max(most, std::fabs(static_cast<f64>(drawn[k]) - static_cast<f64>(previous[k])));
+      previous[k] = drawn[k];
+    }
+    moves.push_back(most);
+    // The worker's next field (TerrainMotion::schedule): timed by the cadence, and pushed out by
+    // the keep-up rule to twice the lead times the worst turnaround at the rate.
+    if (!busy && !next.ready && wanted >= 0.0 && rate > 0.0) {
+      const f64 at = terrain_next_time(sampler, newest, spacing, lapse.fraction, lapse.min_step_s,
+                                       lapse.max_step_s);
+      TerrainKeepUp keep;
+      keep.rate = rate;
+      keep.turnaround_s = std::max(clock.turnaround_s(0), static_cast<f64>(k_eval_frames) * k_dt);
+      keep.lead = 2.0 * lapse.lead;
+      keep.frame_s = k_dt;
+      keep.delta_m = newest_delta;
+      keep.budget_m = bound;
+      keep.longest_step_s = lapse.max_step_s;
+      bool pushed = false;
+      busy_time = terrain_keep_up_time(newest, at, keep, &pushed);
+      late += pushed ? 1u : 0u;
+      next_heights = field_at(busy_time);
+      newest_delta = delta_of(blend.has_b ? b : a, next_heights);
+      newest = busy_time;
+      busy = true;
+      done_at = f + k_eval_frames;
+    }
+  }
+  // A jump: a frame whose largest move is three times the larger of its two neighbours' (and more
+  // than a micrometre: the sand at rest does not jump).
+  u32 jumps = 0;
+  for (u32 i = 1; i + 1 < moves.size(); ++i) {
+    if (moves[i] > 1.0e-6 && moves[i] > 3.0 * std::max(moves[i - 1], moves[i + 1])) ++jumps;
+  }
+  REQUIRE(calm_frame > 0);
+  f64 before_calm = 0.0;
+  f64 after_calm = 0.0;
+  for (u32 i = 0; i < moves.size(); ++i) {
+    if (i + 1 >= 1'495 && i + 1 < calm_frame) before_calm = std::max(before_calm, moves[i]);
+    if (i + 1 > calm_frame + 60) after_calm = std::max(after_calm, moves[i]);
+  }
+  char line[320];
+  std::snprintf(line, sizeof line,
+                "the owner's walk at 600: %u pairs (the shortest %.0f game s), %u timed late; the "
+                "sand's largest move a frame %.3f mm until the pair over the calm days at frame "
+                "%u (%.0f game s), %.4f mm after it; %u jumps",
+                static_cast<u32>(pair_spans.size()),
+                *std::min_element(pair_spans.begin(), pair_spans.end()), late, before_calm * 1000.0,
+                calm_frame, pair_spans.back(), after_calm * 1000.0, jumps);
+  MESSAGE(std::string(line));
+  CHECK(exact);
+  CHECK(jumps == 0);
+  // At 600 the fields are the displacement cadence's, thousands of game seconds apart: the
+  // one-second floor never decides one and the keep-up rule never pushes one.
+  CHECK(late == 0);
+  CHECK(*std::min_element(pair_spans.begin(), pair_spans.end()) > 1'000.0);
+  // His pairs, from the committed time: 24,708, 17,707, 5,322, 4,112, 4,668 and 12,290 game
+  // seconds, and then the two calm days.
+  REQUIRE(pair_spans.size() >= 7);
+  CHECK(pair_spans[0] == doctest::Approx(24'708.0).epsilon(1.0e-4));
+  CHECK(pair_spans[3] == doctest::Approx(4'111.77).epsilon(1.0e-4));
+  CHECK(pair_spans[6] == doctest::Approx(193'353.0).epsilon(1.0e-4));
+  // Before them the sand moves by tenths of a millimetre a frame; over them thirty times less —
+  // at the walker's feet, where the collision ground's old 5 cm steps then came minutes apart.
+  CHECK(before_calm < 2.0e-3);
+  CHECK(after_calm * 20.0 < before_calm);
 }
