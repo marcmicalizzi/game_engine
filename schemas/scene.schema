@@ -547,6 +547,13 @@ struct TerrainDetail @version(2) {
   /// alone, as version 1 drew them. 0 <= start < end <= 60.
   lee_start_deg: f32 = 0 @since(2)
   lee_end_deg: f32 = 0 @since(2)
+  /// The grain's finest octave, metres: gradient noise in octaves from `grain_size` halving down
+  /// to it, [0.0002, grain_size]. 0 (the default) is version 1's two octaves of value noise,
+  /// `grain_size` and a quarter of it.
+  grain_finest: f32 = 0 @since(2)
+  /// How far the grain leans the shading normal, as a root-mean-square slope, [0, 0.3]; 0 none.
+  /// Only with `grain_finest`.
+  grain_normal: f32 = 0 @since(2)
 }
 
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera

@@ -47,6 +47,21 @@ inline constexpr u32 k_ground_ripples = 1u;  // the phasor ripples perturb the s
 inline constexpr u32 k_ground_grain = 2u;    // the grain varies the albedo and the roughness
 // The ripples fade on ground that faces away from the wind (`lee_tan_start`/`end`): exposure.
 inline constexpr u32 k_ground_exposure = 4u;
+// The grain is gradient noise in `grain_octaves` octaves (and may lean the normal, `grain_normal`)
+// rather than the first pass's two octaves of value noise.
+inline constexpr u32 k_ground_gradient_grain = 8u;
+
+// The most octaves the grain takes: a 2 cm grain down to 0.2 mm is seven.
+inline constexpr u32 k_ground_max_grain_octaves = 8;
+// Gradient noise as the grain draws it (a corner's gradient five bits a component in [-1, 1], the
+// quintic fade) has a value of root-mean-square 0.182 and a gradient of 0.743 per cell over
+// (x, z), measured over the mirror (ground_detail_tests.cpp, "the grain reads as sand"). The
+// grain's albedo and roughness channels are scaled to `k_ground_grain_rms` over all its octaves,
+// which is what the first pass's two octaves of value noise had, so `grain_albedo` means what it
+// meant; its height to a slope of `grain_normal` root-mean-square.
+inline constexpr f32 k_ground_noise_rms = 0.182f;
+inline constexpr f32 k_ground_noise_slope_rms = 0.743f;
+inline constexpr f32 k_ground_grain_rms = 0.28f;
 
 // Kernels per lattice cell, mirrored in the shader. A point sums the 3 x 3 cells round it, eighteen
 // kernels, of which about a third reach it (a kernel's disc is pi R^2 of the 9 R^2 searched): with
@@ -67,7 +82,8 @@ inline constexpr f32 k_ground_taper = 0.35f;
 // much, so the rule moves the variance the pattern has, not the variance a perfect ripple would.
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
-// Mirrors GroundDetail in shaders/ground_detail.slang. 80 bytes.
+// Mirrors GroundDetail in shaders/ground_detail.slang. 96 bytes: the first pass's 80 and a row for
+// the second's grain, with three words spare.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -98,9 +114,15 @@ struct GroundDetailParams {
   // at which the ripples start to go, and at and past which there are none.
   f32 lee_tan_start = 0.0f;
   f32 lee_tan_end = 0.0f;
-  u32 pad2 = 0;
+  // The gradient grain (k_ground_gradient_grain): octaves from `grain_size` halving down to the
+  // scene's finest, and the root-mean-square slope its height leans the normal by.
+  u32 grain_octaves = 0;
+  f32 grain_normal = 0.0f;
+  u32 pad3 = 0;
+  u32 pad4 = 0;
+  u32 pad5 = 0;
 };
-static_assert(sizeof(GroundDetailParams) == 80);
+static_assert(sizeof(GroundDetailParams) == 96);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // The scene's numbers (the renderer's `engine.scene.TerrainDetail`): what a scene says, in metres
@@ -123,7 +145,26 @@ struct GroundDetailDesc {
   f32 grain_size = 0.02f;
   f32 grain_albedo = 0.08f;
   f32 grain_roughness = 0.05f;
+  // The grain's finest octave, metres: gradient noise in octaves from `grain_size` halving down to
+  // it. 0 (the default) is the first pass's two octaves of value noise, `grain_size` and a quarter.
+  f32 grain_finest = 0.0f;
+  // The root-mean-square slope the grain's height leans the shading normal by; 0 none.
+  f32 grain_normal = 0.0f;
 };
+
+// The gradient grain's octaves for a coarsest cell and a finest: `grain_size` halving until the
+// next would be under `grain_finest` (a thousandth of slack, so 2 cm to 1.25 mm is five), at most
+// k_ground_max_grain_octaves; 0 when there is no finest, the first pass's grain.
+inline u32 ground_grain_octaves(f32 grain_size, f32 grain_finest) noexcept {
+  if (!(grain_finest > 0.0f) || !(grain_size > 0.0f)) return 0;
+  u32 n = 1;
+  f32 size = grain_size;
+  while (n < k_ground_max_grain_octaves && size * 0.5f >= grain_finest * 0.999f) {
+    size *= 0.5f;
+    ++n;
+  }
+  return n;
+}
 
 // The kernels' radius and spread for a defect density, and the ripples' slope variance: the
 // arithmetic the block carries so the shader does not repeat it per pixel.
@@ -173,6 +214,12 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
   out.seed = seed;
   out.flags = (desc.ripple_height > 0.0f ? k_ground_ripples : 0u) |
               (desc.grain_albedo > 0.0f || desc.grain_roughness > 0.0f ? k_ground_grain : 0u);
+  out.grain_octaves = ground_grain_octaves(desc.grain_size, desc.grain_finest);
+  if (out.grain_octaves > 0) {
+    out.grain_normal = desc.grain_normal;
+    if (desc.grain_albedo > 0.0f || desc.grain_roughness > 0.0f || desc.grain_normal > 0.0f)
+      out.flags |= k_ground_grain | k_ground_gradient_grain;
+  }
   if (desc.lee_end_deg > desc.lee_start_deg) {
     out.flags |= k_ground_exposure;
     out.lee_tan_start = std::tan(radians(desc.lee_start_deg));

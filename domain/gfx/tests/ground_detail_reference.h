@@ -169,6 +169,71 @@ inline double exposure(const gfx::GroundDetailParams& d, Dvec3 normal) {
          smoothstep(static_cast<double>(d.lee_tan_start), static_cast<double>(d.lee_tan_end), fall);
 }
 
+// `ground_gradient_noise3`: three channels of gradient noise at (x, z) on a lattice of `size` —
+// the albedo's, the roughness's and the grain's height — each corner's three gradients drawn from
+// one hash, five bits a component, with the quintic fade; and the height channel's gradient over
+// the lattice's own coordinates (per cell).
+struct Grain3 {
+  double value[3] = {0.0, 0.0, 0.0};
+  double gx = 0.0;
+  double gz = 0.0;
+};
+
+inline void grain_gradient(u32 h, u32 channel, double& gx, double& gz) {
+  const u32 bits = h >> (10u * channel);
+  gx = (static_cast<double>(bits & 31u) - 15.5) * (1.0 / 15.5);
+  gz = (static_cast<double>((bits >> 5u) & 31u) - 15.5) * (1.0 / 15.5);
+}
+
+inline Grain3 gradient_noise3(double x, double z, double size, u32 seed, u32 stream) {
+  const double qx = x / size;
+  const double qz = z / size;
+  const double fx0 = std::floor(qx);
+  const double fz0 = std::floor(qz);
+  const double fx = qx - fx0;
+  const double fz = qz - fz0;
+  const i32 ix = static_cast<i32>(fx0);
+  const i32 iz = static_cast<i32>(fz0);
+  const double ux = fx * fx * fx * (fx * (fx * 6.0 - 15.0) + 10.0);
+  const double uz = fz * fz * fz * (fz * (fz * 6.0 - 15.0) + 10.0);
+  const double dux = 30.0 * fx * fx * (fx * (fx - 2.0) + 1.0);
+  const double duz = 30.0 * fz * fz * (fz * (fz - 2.0) + 1.0);
+  const u32 h00 = hash(ix, iz, seed, stream);
+  const u32 h10 = hash(ix + 1, iz, seed, stream);
+  const u32 h01 = hash(ix, iz + 1, seed, stream);
+  const u32 h11 = hash(ix + 1, iz + 1, seed, stream);
+  Grain3 out;
+  for (u32 c = 0; c < 3; ++c) {
+    double ax, az, bx, bz, cx, cz, dx, dz;
+    grain_gradient(h00, c, ax, az);
+    grain_gradient(h10, c, bx, bz);
+    grain_gradient(h01, c, cx, cz);
+    grain_gradient(h11, c, dx, dz);
+    const double va = ax * fx + az * fz;
+    const double vb = bx * (fx - 1.0) + bz * fz;
+    const double vc = cx * fx + cz * (fz - 1.0);
+    const double vd = dx * (fx - 1.0) + dz * (fz - 1.0);
+    const double k1 = vb - va;
+    const double k2 = vc - va;
+    const double k3 = va - vb - vc + vd;
+    out.value[c] = va + k1 * ux + k2 * uz + k3 * ux * uz;
+    if (c == 2) {
+      out.gx = ax + ux * (bx - ax) + uz * (cx - ax) + ux * uz * (ax - bx - cx + dx) +
+               dux * (k1 + k3 * uz);
+      out.gz = az + ux * (bz - az) + uz * (cz - az) + ux * uz * (az - bz - cz + dz) +
+               duz * (k2 + k3 * ux);
+    }
+  }
+  return out;
+}
+
+// A float's step at `m` metres (at least 1): the power of two at or under it times 2^-23.
+inline double float_step(double m) {
+  int exponent = 0;
+  std::frexp(m > 1.0 ? m : 1.0, &exponent);
+  return std::ldexp(1.0, exponent - 1 - 23);
+}
+
 struct Shading {
   Dvec3 normal;
   Dvec3 albedo;
@@ -225,7 +290,51 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
       out.roughness = std::sqrt(std::sqrt(alpha * alpha + lost));
     }
   }
-  if ((d.flags & gfx::k_ground_grain) != 0u) {
+  if ((d.flags & gfx::k_ground_gradient_grain) != 0u) {
+    const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
+    const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
+    const double footprint = lx > ly ? lx : ly;
+    const double ax = std::fabs(position.x);
+    const double az = std::fabs(position.z);
+    const double step = float_step(ax > az ? ax : az);
+    const double reach = footprint > 4.0 * step ? footprint : 4.0 * step;
+    const double octaves = static_cast<double>(d.grain_octaves);
+    double g[3] = {0.0, 0.0, 0.0};
+    double sx = 0.0, sz = 0.0, kept = 0.0;
+    double size = static_cast<double>(d.grain_size);
+    for (u32 o = 0; o < d.grain_octaves; ++o) {
+      const double f = fade(reach / size);
+      if (f > 0.0 || (full && o == 0)) {
+        const Grain3 n = gradient_noise3(position.x, position.z, size, d.seed, 16u + o);
+        if (o == 0) out.grain = n.value[0] / (3.0 * static_cast<double>(gfx::k_ground_noise_rms));
+        for (u32 c = 0; c < 3; ++c)
+          g[c] += n.value[c] * f;
+        sx += n.gx * f;
+        sz += n.gz * f;
+      }
+      kept += f * f;
+      size *= 0.5;
+    }
+    const double value_scale = static_cast<double>(gfx::k_ground_grain_rms) /
+                               (static_cast<double>(gfx::k_ground_noise_rms) * std::sqrt(octaves));
+    const double grain_normal = static_cast<double>(d.grain_normal);
+    const double slope_scale =
+        grain_normal * mask /
+        (static_cast<double>(gfx::k_ground_noise_slope_rms) * std::sqrt(octaves));
+    if (grain_normal > 0.0 && !full) {
+      const Dvec3 n = out.normal;
+      const double s = slope_scale * n.y;
+      out.normal = brdf_ref::normalize(Dvec3{n.x - sx * s, n.y, n.z - sz * s});
+      const double lost = grain_normal * grain_normal * mask * mask * (octaves - kept) / octaves;
+      if (lost > 0.0) {
+        const double alpha = out.roughness * out.roughness;
+        out.roughness = std::sqrt(std::sqrt(alpha * alpha + lost));
+      }
+    }
+    out.albedo = albedo * (1.0 + static_cast<double>(d.grain_albedo) * mask * g[0] * value_scale);
+    out.roughness = brdf_ref::clamp01(out.roughness + static_cast<double>(d.grain_roughness) *
+                                                          mask * g[1] * value_scale);
+  } else if ((d.flags & gfx::k_ground_grain) != 0u) {
     const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
     const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
     const double footprint = lx > ly ? lx : ly;

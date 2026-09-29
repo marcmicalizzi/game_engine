@@ -36,11 +36,16 @@
 static const uint k_ground_ripples = 1u;
 static const uint k_ground_grain = 2u;
 static const uint k_ground_exposure = 4u;
+static const uint k_ground_gradient_grain = 8u;
+// gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
+static const float k_ground_noise_rms = 0.182;
+static const float k_ground_noise_slope_rms = 0.743;
+static const float k_ground_grain_rms = 0.28;
 // Kernels per lattice cell (gfx::k_ground_impulses).
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
 
-// Mirrors gfx::GroundDetailParams (80 bytes).
+// Mirrors gfx::GroundDetailParams (96 bytes).
 struct GroundDetail {
   float4 wind;            // xy the direction the sand moves (x, z), unit; z sin(spread)
   float wavelength;       // metres crest to crest
@@ -58,7 +63,11 @@ struct GroundDetail {
   uint flags;
   float lee_tan_start;    // the fall along the wind at which the ripples start to go (exposure)
   float lee_tan_end;      // and where there are none
-  uint pad2;
+  uint grain_octaves;     // the gradient grain's octaves (k_ground_gradient_grain)
+  float grain_normal;     // the root-mean-square slope its height leans the normal by
+  uint pad3;
+  uint pad4;
+  uint pad5;
 };
 
 // PCG, as sampling.slang's `pcg_hash`: one multiply-add and a permutation, the same bits on every
@@ -206,6 +215,61 @@ float2 ground_value_noise2(float2 p, float size, uint seed, uint stream) {
   return lerp(lerp(v00, v10, u.x), lerp(v01, v11, u.x), u.y);
 }
 
+// Three channels of gradient noise at `p` on a lattice of `size` — the albedo's, the roughness's and
+// the grain's height — and the height's gradient over the lattice's coordinates (per cell). Each
+// corner's three gradients come from one hash, five bits a component in [-1, 1], so an octave is
+// four lattice hashes; the quintic fade makes the value's second derivative continuous, so the
+// normal the height leans has no crease. Gradient noise rather than value noise because it has no
+// lattice to see: it is zero at every lattice point and its extremes fall between them. The
+// lattice is counted in tiles of 4,096 cells as the value noise's is.
+struct GroundGrain {
+  float3 value;
+  float2 gradient;
+};
+
+float2 ground_grain_gradient(uint h, uint channel) {
+  const uint bits = h >> (10u * channel);
+  return (float2(float(bits & 31u), float((bits >> 5u) & 31u)) - 15.5) * (1.0 / 15.5);
+}
+
+GroundGrain ground_gradient_noise3(float2 p, float size, uint seed, uint stream) {
+  const float tile = size * 4096.0;
+  const float2 t = floor(p / tile);
+  const float2 q = (p - t * tile) / size;
+  const float2 f0 = floor(q);
+  const float2 f = q - f0;
+  const int2 i = int2(t) * 4096 + int2(f0);
+  const float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  const float2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  const uint h00 = ground_hash(i.x, i.y, seed, stream);
+  const uint h10 = ground_hash(i.x + 1, i.y, seed, stream);
+  const uint h01 = ground_hash(i.x, i.y + 1, seed, stream);
+  const uint h11 = ground_hash(i.x + 1, i.y + 1, seed, stream);
+  GroundGrain out;
+  out.value = float3(0.0, 0.0, 0.0);
+  out.gradient = float2(0.0, 0.0);
+  [unroll]
+  for (uint c = 0u; c < 3u; ++c) {
+    const float2 ga = ground_grain_gradient(h00, c);
+    const float2 gb = ground_grain_gradient(h10, c);
+    const float2 gc = ground_grain_gradient(h01, c);
+    const float2 gd = ground_grain_gradient(h11, c);
+    const float va = dot(ga, f);
+    const float vb = dot(gb, f - float2(1.0, 0.0));
+    const float vc = dot(gc, f - float2(0.0, 1.0));
+    const float vd = dot(gd, f - float2(1.0, 1.0));
+    const float k1 = vb - va;
+    const float k2 = vc - va;
+    const float k3 = va - vb - vc + vd;
+    out.value[c] = va + k1 * u.x + k2 * u.y + k3 * u.x * u.y;
+    if (c == 2u) {
+      out.gradient = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
+                     du * float2(k1 + k3 * u.y, k2 + k3 * u.x);
+    }
+  }
+  return out;
+}
+
 // What the detail makes of one shaded point, and what the debug view shows of it.
 struct GroundShading {
   float3 normal;     // the shading normal with the ripples in it
@@ -280,7 +344,51 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
       out.roughness = sqrt(sqrt(alpha * alpha + lost));
     }
   }
-  if ((d.flags & k_ground_grain) != 0u) {
+  if ((d.flags & k_ground_gradient_grain) != 0u) {
+    // Octaves from `grain_size` halving, each faded by the footprint as the ripples are and by the
+    // position's own precision: a float's step `m` metres out is the power of two under m times
+    // 2^-23 (its exponent's bits, exactly), the resolve's reconstruction is off by a few such steps,
+    // so four of them count as footprint and an octave is gone where its cell is under eight
+    // (docs/experiments/sand-detail-second-pass-2026-09-29.md measures what an octave loses there).
+    const float footprint = max(length(dpdx.xz), length(dpdy.xz));
+    const float far = max(max(abs(p.x), abs(p.y)), 1.0);
+    const float step = asfloat(asuint(far) & 0x7f800000u) * (1.0 / 8388608.0);
+    const float reach = max(footprint, 4.0 * step);
+    const float octaves = float(d.grain_octaves);
+    float3 g = float3(0.0, 0.0, 0.0);
+    float2 slope = float2(0.0, 0.0);
+    float kept = 0.0;
+    float size = d.grain_size;
+    for (uint o = 0u; o < d.grain_octaves; ++o) {
+      const float f = ground_fade(reach / size);
+      if (f > 0.0 || (full && o == 0u)) {
+        const GroundGrain n = ground_gradient_noise3(p, size, d.seed, 16u + o);
+        if (o == 0u) out.grain = n.value.x * (1.0 / (3.0 * k_ground_noise_rms));
+        g += n.value * f;
+        slope += n.gradient * f;
+      }
+      kept += f * f;
+      size *= 0.5;
+    }
+    // The albedo and roughness channels to k_ground_grain_rms over all the octaves, the height's
+    // slope to `grain_normal`: each octave the same share, so the sand is as rough at a millimetre
+    // as at a centimetre.
+    const float value_scale = k_ground_grain_rms / (k_ground_noise_rms * sqrt(octaves));
+    const float slope_scale = d.grain_normal * mask / (k_ground_noise_slope_rms * sqrt(octaves));
+    if (d.grain_normal > 0.0 && !full) {
+      const float3 n = out.normal;
+      out.normal = normalize(n - float3(slope.x, 0.0, slope.y) * (slope_scale * n.y));
+      // What the fades took of the grain's slope variance, into the roughness by the ripples'
+      // rule: the faded sand is rougher, not flatter.
+      const float lost = d.grain_normal * d.grain_normal * mask * mask * (octaves - kept) / octaves;
+      if (lost > 0.0) {
+        const float alpha = out.roughness * out.roughness;
+        out.roughness = sqrt(sqrt(alpha * alpha + lost));
+      }
+    }
+    out.albedo = albedo * (1.0 + d.grain_albedo * mask * g.x * value_scale);
+    out.roughness = saturate(out.roughness + d.grain_roughness * mask * g.y * value_scale);
+  } else if ((d.flags & k_ground_grain) != 0u) {
     const float footprint = max(length(dpdx.xz), length(dpdy.xz));
     const float coarse = ground_fade(footprint / d.grain_size);
     const float fine = ground_fade(4.0 * footprint / d.grain_size);

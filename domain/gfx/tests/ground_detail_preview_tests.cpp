@@ -393,6 +393,8 @@ TEST_CASE("ground detail preview: the sand from the mirror, before and after" * 
   gfx::GroundDetailDesc second;
   second.lee_start_deg = 10.0f;
   second.lee_end_deg = 18.0f;
+  second.grain_finest = 0.001f;
+  second.grain_normal = 0.06f;
   draw_all(dir, "before", first_pass, gfx::ground_detail_block(first, Vec2{1.0f, 0.0f}, 7u));
   draw_all(dir, "after", live, gfx::ground_detail_block(second, Vec2{1.0f, 0.0f}, 7u));
   MESSAGE("ground detail preview written to " << dir.path());

@@ -635,3 +635,128 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   frames.destroy();
   device.destroy();
 }
+
+TEST_CASE("ground detail: the grain reads as sand") {
+  // The constants the grain is scaled by are the noise's own, measured over the mirror; and the
+  // height channel's analytic gradient is the numeric one.
+  double v = 0.0, g = 0.0, gradient_off = 0.0;
+  u32 n = 0;
+  for (u32 j = 0; j < 400; ++j) {
+    for (u32 i = 0; i < 400; ++i) {
+      const double x = 0.0137 * i + 0.3;
+      const double z = 0.0113 * j - 2.0;
+      const gref::Grain3 a = gref::gradient_noise3(x, z, 0.1, 7u, 16u);
+      for (const double c : a.value)
+        v += c * c;
+      g += a.gx * a.gx + a.gz * a.gz;
+      ++n;
+      const gref::Grain3 b = gref::gradient_noise3(x + 1e-6, z, 0.1, 7u, 16u);
+      gradient_off = std::max(gradient_off, std::fabs((b.value[2] - a.value[2]) / 1e-5 - a.gx));
+    }
+  }
+  const double rms = std::sqrt(v / (3.0 * n));
+  const double slope_rms = std::sqrt(g / n);
+  MESSAGE("gradient noise: rms " << rms << ", slope rms " << slope_rms << " per cell");
+  CHECK(std::fabs(rms / static_cast<double>(gfx::k_ground_noise_rms) - 1.0) < 0.03);
+  CHECK(std::fabs(slope_rms / static_cast<double>(gfx::k_ground_noise_slope_rms) - 1.0) < 0.03);
+  CHECK(gradient_off < 1e-3);
+  CHECK(gfx::ground_grain_octaves(0.02f, 0.001f) == 5u);  // 20, 10, 5, 2.5, 1.25 mm
+  CHECK(gfx::ground_grain_octaves(0.02f, 0.0f) == 0u);
+  CHECK(gfx::ground_grain_octaves(0.02f, 0.02f) == 1u);
+  CHECK(gfx::ground_grain_octaves(0.2f, 0.0002f) == gfx::k_ground_max_grain_octaves);
+
+  // Precision far from the origin: the resolve's position is a float, whose step 3.7 km out is a
+  // quarter of a millimetre. Each octave evaluated at positions rounded to float against the
+  // exact ones, as a share of its own root-mean-square; an octave the fade keeps at more than
+  // half its weight there must hold to a sixth.
+  gfx::GroundDetailDesc desc;
+  desc.grain_finest = 0.001f;
+  desc.grain_normal = 0.06f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE(d.grain_octaves == 5u);
+  for (const double far : {900.0, 3700.0}) {
+    double size = static_cast<double>(d.grain_size);
+    for (u32 o = 0; o < d.grain_octaves; ++o, size *= 0.5) {
+      double err = 0.0;
+      u32 count = 0;
+      for (u32 i = 0; i < 20000; ++i) {
+        const double x = far + 0.000037 * i;
+        const double z = -0.5 * far + 0.000053 * i;
+        const double fx = static_cast<double>(static_cast<f32>(x));
+        const double fz = static_cast<double>(static_cast<f32>(z));
+        const gref::Grain3 exact = gref::gradient_noise3(x, z, size, 7u, 16u + o);
+        const gref::Grain3 rounded = gref::gradient_noise3(fx, fz, size, 7u, 16u + o);
+        err += (exact.value[0] - rounded.value[0]) * (exact.value[0] - rounded.value[0]);
+        ++count;
+      }
+      const double relative = std::sqrt(err / count) / static_cast<double>(gfx::k_ground_noise_rms);
+      const double step = gref::float_step(far);
+      const double weight = gref::fade(4.0 * step / size);
+      MESSAGE(far << " m out, octave " << size * 1000.0 << " mm: error " << relative
+                  << " of its rms, kept at " << weight);
+      if (weight > 0.5) CHECK(relative < 1.0 / 6.0);
+    }
+  }
+}
+
+TEST_CASE("ground detail: the grain's filter keeps the mean and adds no sparkle") {
+  // The pull-back's limits in a CPU form: sand seen from above at a pixel of 2 mm, 5 mm, 1 cm and
+  // 3 cm, each pixel shaded once with its footprint against the mean of 8 x 8 samples inside it
+  // with an eighth of it. The filtered picture's mean brightness is the supersampled one's (the
+  // rougher-not-flatter rule), and its pixel-to-pixel variation is not above the supersampled
+  // picture's (a term that should have faded and did not shows as sparkle).
+  gfx::GroundDetailDesc desc;
+  desc.ripple_height = 0.0f;  // the grain alone; the ripples' rule has its own test
+  desc.grain_finest = 0.001f;
+  desc.grain_normal = 0.06f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  const ref::Dvec3 up{0.0, 1.0, 0.0};
+  const ref::Dvec3 sun = ref::normalize(ref::Dvec3{-0.94, 0.342, 0.0});
+  const auto luma = [&](ref::Dvec3 p, double step) {
+    const ref::Dvec3 dx{step, 0.0, 0.0};
+    const ref::Dvec3 dz{0.0, 0.0, step};
+    const gref::Shading g = gref::shade(d, p, up, dx, dz, 1.0, albedo, 0.85);
+    ref::Surface s;
+    s.position = p;
+    s.normal = g.normal;
+    s.view = ref::normalize(ref::Dvec3{0.3, 1.0, 0.1});
+    s.albedo = g.albedo;
+    s.roughness = g.roughness;
+    return ref::luminance(
+        ref::shade(s, sun, 4.5, ref::Dvec3{0.45, 0.55, 0.75}, albedo, nullptr, 0, ref::Dvec3{}));
+  };
+  for (const double pixel : {0.002, 0.005, 0.01, 0.03}) {
+    constexpr u32 k_side = 40;
+    constexpr u32 k_sub = 8;
+    double sum_f = 0.0, sum_s = 0.0, sq_f = 0.0, sq_s = 0.0;
+    for (u32 j = 0; j < k_side; ++j) {
+      for (u32 i = 0; i < k_side; ++i) {
+        const double x0 = 11.0 + i * pixel;
+        const double z0 = -3.0 + j * pixel;
+        const double f = luma(ref::Dvec3{x0 + 0.5 * pixel, 0.0, z0 + 0.5 * pixel}, pixel);
+        double s = 0.0;
+        for (u32 b = 0; b < k_sub; ++b) {
+          for (u32 a = 0; a < k_sub; ++a) {
+            s += luma(
+                ref::Dvec3{x0 + (a + 0.5) * pixel / k_sub, 0.0, z0 + (b + 0.5) * pixel / k_sub},
+                pixel / k_sub);
+          }
+        }
+        s /= k_sub * k_sub;
+        sum_f += f;
+        sum_s += s;
+        sq_f += f * f;
+        sq_s += s * s;
+      }
+    }
+    const double n = k_side * k_side;
+    const double mean_f = sum_f / n, mean_s = sum_s / n;
+    const double sd_f = std::sqrt(std::max(sq_f / n - mean_f * mean_f, 0.0));
+    const double sd_s = std::sqrt(std::max(sq_s / n - mean_s * mean_s, 0.0));
+    MESSAGE("pixel " << pixel * 1000.0 << " mm: mean " << mean_f << " against " << mean_s
+                     << " supersampled, variation " << sd_f << " against " << sd_s);
+    CHECK(std::fabs(mean_f / mean_s - 1.0) < 0.01);
+    CHECK(sd_f <= sd_s * 1.25 + 1e-4);
+  }
+}

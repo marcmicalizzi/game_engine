@@ -107,7 +107,9 @@
       "grain_albedo": 0.08,
       "grain_roughness": 0.05,
       "lee_start_deg": 10,
-      "lee_end_deg": 18
+      "lee_end_deg": 18,
+      "grain_finest": 0.001,
+      "grain_normal": 0.06
     }
   }
 }
