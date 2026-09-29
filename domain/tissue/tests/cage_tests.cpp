@@ -382,7 +382,7 @@ struct SectionHash {
 };
 // Taken on MSVC 14.51, 2026-09-29.
 constexpr SectionHash k_golden[] = {
-    {"definition", "6caef29d5040e32f0b2943cab1f157fa6b78ac4c139e430b3d29daafbde145d6"},
+    {"definition", "23d78bce0e6acfac1c62af1286d312a5feab6ef7c39904e1c1637dce1153cc00"},
     {"cage.nodes", "3e78d305688e7f08c2797fc699929f1d3f7d43f258580006f75138f3a559ef8b"},
     {"cage.tets", "f07ddeee2fc9f56ffd2b4cd47c4e4d6839e4e30862417050c178cd53d482921d"},
     {"cage.phase.1", "2ce73cf10a221f0c10fe7ddbe15fbaa44b0e3d26e4469c4ed9d6a16f229e99eb"},
@@ -390,7 +390,7 @@ constexpr SectionHash k_golden[] = {
     {"cage.set.1", "a4184273505b701ef1ebbfbaaa950e1a069057cda711df50ede38da3b6be9907"},
     {"base.vertices", "87abe20c2b4094e94b5d5cd95afc027fb5e5f9d7a6977dddb7894ae0aa2434fd"},
     {"base.triangles", "8d6c2cef0f987a5b43db91b5ea47108059cd84c29d4afd621a258b2b72e59773"},
-    {"floor.vertices", "b657d14402152e82cb6930e26ed23730b4826a655c3982cad9780af0cf1cb5a4"},
+    {"floor.vertices", "b6c2eb4949c145eaa50dc1c2275a0eda5762a9a4c15a008e4d2e3080b2d7b38f"},
     {"floor.triangles", "0c6a9a02be5f7eb53fb20c6b5b3c610b857b50e630614fec5f4bfcd7fc6f1567"},
     {"cage.state.0", "07ea1c3891a241cf1c8dbb2063fb439aeef6e17822cfaa1d53f47bc5684dc43f"},
     {"cage.state.1", "334a0c1151dc4500ec684f6a2b61221dd02521ee5ddf31bf534b12ed3e09c7a9"},

@@ -396,6 +396,37 @@ TEST_CASE("tissue: cage derives a runtime cage from the ten-node example, and va
   CHECK(content({"tissue", "cage", reference}).exit_code == 2);
 }
 
+TEST_CASE("tissue: settle builds a runtime region as a soft body and settles it under a load") {
+  engine::test::TempDir tmp("content_tissue_settle");
+  const std::string dir = tmp.file("example");
+  REQUIRE(content({"tissue", "example", dir}).exit_code == 0);
+  const std::string slab = dir + "/synthetic.tissue";
+  const std::string written = tmp.file("settled.tissue");
+  Run run =
+      content({"tissue", "settle", slab, "--state", "pressed", "--repeat", "--write", written});
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  bool settled = false;
+  run.result.find("settled")->get_bool(settled);
+  CHECK(settled);
+  bool same = false;
+  run.result.find("repeat")->find("same_bytes")->get_bool(same);
+  CHECK(same);
+  REQUIRE(run.result.find("distance_mm") != nullptr);
+  CHECK(count(*run.result.find("distance_mm"), "count") == 147);
+  CHECK(count(run.result, "inverted_cells") == 0);
+  // The settled nodes as a state of the file, which validates.
+  run = content({"tissue", "validate", written, "--no-modes"});
+  INFO(run.output);
+  CHECK(run.exit_code == 0);
+  // A ten-node reference body is not a cage; a state that does not exist; the flags are settle's.
+  CHECK(content({"tissue", "settle", dir + "/synthetic-quadratic.tissue", "--state", "pressed"})
+            .exit_code == 1);
+  CHECK(content({"tissue", "settle", slab, "--state", "no such state"}).exit_code == 1);
+  CHECK(content({"tissue", "settle", slab}).exit_code == 2);
+  CHECK(content({"tissue", "validate", slab, "--repeat"}).exit_code == 2);
+}
+
 TEST_CASE("tissue: a runtime cage from each native supine fixture, and how far it is from it") {
   const std::string root = supine_root();
   if (root.empty()) {
@@ -428,15 +459,16 @@ TEST_CASE("tissue: a runtime cage from each native supine fixture, and how far i
       CHECK(count(*summary.find("collapses"), "interior") == (hero ? 0u : 19u));
       CHECK(count(*summary.find("collapses"), "boundary") == 0);
       CHECK(count(*summary.find("cage"), "boundary_nodes") == 242);
-      CHECK(number_at(*summary.find("cage"), "sicn_min") == doctest::Approx(0.119319).epsilon(1e-5));
+      CHECK(number_at(*summary.find("cage"), "sicn_min") ==
+            doctest::Approx(0.119319).epsilon(1e-5));
       CHECK(std::fabs(number_at(*summary.find("mass_ledger"), "difference_relative")) < 1e-6);
       run = content({"tissue", "validate", cage, "--source", reference, "--no-modes"});
       INFO(run.output);
       CHECK(run.exit_code == 0);
       CHECK(count(run.result, "errors") == 0);
       CHECK(count(run.result, "warnings") == 0);
-      for (const char* id : {"cage.source", "cage.volume", "cage.boundary_distance",
-                             "cage.state_displacement"})
+      for (const char* id :
+           {"cage.source", "cage.volume", "cage.boundary_distance", "cage.state_displacement"})
         CHECK_MESSAGE(verdict_of(run.result, id) == "pass", id);
       const JsonValue* boundary = row_of(run.result, "cage.boundary_distance");
       REQUIRE(boundary != nullptr);
@@ -446,6 +478,69 @@ TEST_CASE("tissue: a runtime cage from each native supine fixture, and how far i
       CHECK(number_at(*field->find("value"), "at_reference_nodes_max_mm") ==
             doctest::Approx(1.8059).epsilon(1e-3));
       CHECK(number_at(*field->find("value"), "at_cage_nodes_max_um") < 1e-6);
+    }
+  }
+}
+
+TEST_CASE("tissue: the supine cage as a soft body under the supine load, measured and pinned") {
+  // The measurement docs/experiments/tissue-runtime-cage-2026-09-29.md records, pinned as a
+  // regression and not a pass: the contact is the physics module's own (vertex against triangle,
+  // one-sided, frictionless on the support), not the face-based model the authoring side is still
+  // declaring, and how far the settled cage lies from the certified supine state is the gap later
+  // work closes. The positions are the same bytes on every run (Jolt's deterministic mode) and on
+  // every configuration, so the numbers are pinned tight.
+  const std::string root = supine_root();
+  if (root.empty()) {
+    MESSAGE("the native supine packet is not on this machine: skipped");
+    return;
+  }
+  engine::test::TempDir tmp("content_tissue_supine_settle");
+  const auto distance = [](const JsonValue& line, std::string_view key) {
+    return number_at(*line.find("distance_mm"), key);
+  };
+  for (const SupineCase& c : k_supine_cases) {
+    const std::string name = c.name;
+    INFO(name);
+    const std::string reference = copy_supine(root, c, tmp);
+    const std::string hero = tmp.file(name + ".hero.cage.tissue");
+    REQUIRE(content({"tissue", "cage", reference, hero, "--omit-state", "failed-standing-reference",
+                     "--hero"})
+                .exit_code == 0);
+    // The 275-node hero cage settles at ADR-0029's defaults (8 iterations, 2 sub-steps).
+    const bool first = name == "B2a-supine";
+    std::vector<std::string> args = {"tissue", "settle", hero, "--state", name};
+    if (first) args.push_back("--repeat");
+    Run run = content(args);
+    INFO(run.output);
+    REQUIRE(run.exit_code == 0);
+    CHECK(count(run.result, "steps") == 221);
+    CHECK(count(run.result, "inverted_cells") == 0);
+    CHECK(distance(run.result, "p50") == doctest::Approx(1.58027).epsilon(1e-4));
+    CHECK(distance(run.result, "p95") == doctest::Approx(3.54670).epsilon(1e-4));
+    CHECK(distance(run.result, "max") == doctest::Approx(4.02938).epsilon(1e-4));
+    CHECK(count(*run.result.find("largest"), "node") == 20);
+    if (first) {
+      bool same = false;
+      run.result.find("repeat")->find("same_bytes")->get_bool(same);
+      CHECK(same);
+      // The 256-node cage at the same settings does not settle: it keeps a vibration of 7 mm/s at
+      // two collision sub-steps a step (four settle it) while its shape stays where it is, so it
+      // is pinned at a fixed step count.
+      const std::string cage = tmp.file(name + ".cage.tissue");
+      REQUIRE(
+          content({"tissue", "cage", reference, cage, "--omit-state", "failed-standing-reference"})
+              .exit_code == 0);
+      run = content({"tissue", "settle", cage, "--state", name, "--max-steps", "300"});
+      INFO(run.output);
+      CHECK(run.exit_code == 1);
+      bool settled = true;
+      run.result.find("settled")->get_bool(settled);
+      CHECK_FALSE(settled);
+      CHECK(count(run.result, "steps") == 300);
+      CHECK(distance(run.result, "p50") == doctest::Approx(1.27003).epsilon(1e-4));
+      CHECK(distance(run.result, "p95") == doctest::Approx(2.84663).epsilon(1e-4));
+      CHECK(distance(run.result, "max") == doctest::Approx(3.35339).epsilon(1e-4));
+      CHECK(count(*run.result.find("largest"), "node") == 19);
     }
   }
 }

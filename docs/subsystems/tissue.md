@@ -20,9 +20,11 @@ skin on it, face contact with self-contact, and certificate provenance — and a
 build that lacks any of it refuses the file rather than misread it. Since 2026-09-29 it also holds
 the content build's **cage derivation** ([below](#cage-derivation)) — a `Reference` region of
 ten-node cells in, a `Runtime` region of four-node cells within ADR-0029's budget out, recording
-what it was derived from — and the rows that say how far a derived cage is from its reference. The
-states are node positions the authoring side solved, and the engine binds, transfers, measures,
-checks and carries them. An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)):
+what it was derived from — and the rows that say how far a derived cage is from its reference; and
+a runtime region can be **built as the physics module's soft body and settled** under the load a
+state names ([below](#a-soft-body-from-a-runtime-region)), which is how the engine first measures a
+cage in motion against the certified state it was derived with. The states are node positions the
+authoring side solved, and the engine binds, transfers, measures, checks and carries them. An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)):
 `ENGINE_WITH_TISSUE=OFF`, `ENGINE_WITH_PHYSICS=OFF` (it requires physics, below) or a `*-minimal`
 preset leaves the module and its tests out, and `engine-content` then refuses `tissue` with a
 sentence.
@@ -31,10 +33,13 @@ sentence.
 own container, validators and schema, which is a module's worth of owned data; it reads
 `domain/geometry` (the Loop limit surface and the surface binding a region's skin follows) and
 `domain/physics` (the cage-size verdict of ADR-0029, `deformable.h`), both domain modules, so it
-cannot be lower; and nothing in it ticks, renders or allocates per frame, so it has no business in
-`systems/`. The link to physics is for one header — the plan says the content validator reads
-`cage_size_verdict()` there — and physics is itself a capability, so the edge is declared
-(`engine_capability_requires(tissue physics)`) and tissue is off wherever physics is.
+cannot be lower; and nothing in it ticks in the game, renders or allocates per frame, so it has no
+business in `systems/` (the settle below steps a world of its own, as a content-build measurement).
+The link to physics is for the cage-size verdict — the plan says the content validator reads
+`cage_size_verdict()` there — and for the soft body a runtime region is built as; physics is itself
+a capability, so the edge is declared (`engine_capability_requires(tissue physics)`) and tissue,
+the cage derivation with it, is off wherever physics is: `msvc-minimal` builds an `engine-content`
+that refuses `tissue` whole, and every preset that has tissue has physics.
 
 **Owned data.** A `TissueFile` owns a definition and its blocks' bytes. A `TissueReport` owns the
 rows and numbers one validation produced; an `ExpectationResult` what a fixture's declaration made
@@ -110,11 +115,13 @@ exist yet (below, "Not yet").
 `make_layered_slab`, `make_layered_fusiform`, `make_layered_tied_slab`. `domain/tissue/sha256.h`: `Sha256`, `sha256`,
 `sha256_hex`. `domain/tissue/cage.h`: `k_cage_method`, `CageOptions`, `CageLedger`,
 `CageSummary`, `cage_build_key`, `derive_cage`, `cage_summary_json`; and `ValidateOptions` carries
-a derived cage's source for its rows (`cage_source`, `cage_source_sha256`). The types themselves are
+a derived cage's source for its rows (`cage_source`, `cage_source_sha256`).
+`domain/tissue/soft_body.h`: `SoftBodyOptions`, `SoftBodyTarget`, `TissueSoftBody`,
+`build_soft_body`, `SettleResult`, `settle_soft_body`, `settle_json`. The types themselves are
 `engine::tissue::*` in `<schemas/tissue.h>`, generated from `schemas/tissue.schema`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `io`, `json`, `schema`, `schemas`,
-`geometry`, `physics`.
+`geometry`, `physics`, `time` (the settle's wall clock).
 
 ---
 
@@ -476,6 +483,67 @@ the supine state's curvature (the reference's edge nodes up to 1.8 mm off the ch
 corners) is what four-node cells cannot hold. The energy share above 1 on the supine cages is the
 same fact seen as stiffness: linear tetrahedra of a nearly incompressible material (K = 100 kPa
 against μ of 350–1,000 Pa) lock, and that is the first thing a runtime solve on the cage meets.
+
+## A soft body from a runtime region
+
+`domain/tissue/soft_body.h` builds a `Runtime` region of four-node cells — a derived cage, or one
+imported as authored — as `domain/physics`'s soft body through its existing wrapping
+(`physics::SoftBodyDesc`; [physics](physics.md#a-soft-body-from-a-tissue-region) has the backend's
+side), and `settle_soft_body` steps it at the fixed step under the load a state names, from its
+rest, until the 99th percentile of its nodes' speeds stays under 0.1 mm/s for half a second or the
+step limit is reached — a percentile, because a node sliding on a triangulated support can chatter
+between two faces' planes for ever while the body has stopped, and those few are reported, not
+waited for — and measures the settled nodes against the state's;
+`engine-content tissue settle <cage.tissue> --state <name>` is it on the command line
+([apps](apps.md#engine-content-tissue-the-tissue-definition)). It is content-build and test code: a
+world of its own, single-threaded, with no LOD, no budget and no tier — the runtime deformation
+system that will own those is later work.
+
+| The definition | The soft body |
+|---|---|
+| cells | one volume constraint each, compliance 36 V0 / (K − 5μ/3), and one distance constraint per edge, compliance l0² / (2w) with w = (5/4) Σ μ V0 over the cells that share it: the XPBD form of the declared energy `bulk-edge-v0`, V0 and l0 at the rest |
+| materials | each cell's phases mixed by fraction, as `region.materials` mixes them |
+| mass | density × volume, a quarter of each cell to its corners, at the construction |
+| the rest | the region's `Rest` state (or one named), where the particles start and the constraints rest |
+| `Fixed` attachments | held — `Rigid` — where the node rests, carried by its frame's motion from the rest state to the load state; a spring's `stiffness_pa` is not converted (no conversion exists), and the module's `Spring` kind would sag a held node by g·dt²/2 a step (1.36 mm at 60 Hz) |
+| `SlidingBilateral`, `Unilateral` | contact with the target, frictionless — the physics module's own vertex-against-triangle contact, one-sided, so a surface is turned to face the region (by the sign of the summed signed distances of all its nodes) and set back 10 µm behind itself (a node exactly on a mesh vertex gets no contact) |
+| frames | static meshes where the load state's `FrameState` puts them: kinematic targets, and contact for every node |
+| the load | the state's gravity in the body's coordinates, less the medium's buoyancy at the body's mean density |
+| solver | ADR-0029's defaults: 8 iterations at 2 sub-steps of a 60 Hz step; plan 07 §7.10's damping (4 per second) and strain limit (0.5) |
+
+What it does not read: membranes and cables (no runtime law), a cable's slack and recruitment, a
+bone target, another region's sheet; the command's line lists what a file carries that the body
+left out. Two runs from scratch give the same bytes (the world is single-threaded and Jolt's
+deterministic mode is on), and a debug build gives a release build's positions to every digit.
+
+**The first settle: the supine cage under the supine load.** Each fixture's cage, derived with the
+failed standing reference left out, built from its rest (`historical-prolongated-rest`): 48 nodes
+held (`fixed-rim`, to the world), 121 sliding on `historical-support` (`posterior-sliding`), every
+node against the frame `thoracic-proxy`; gravity 9.798 m/s² along +y, the air's buoyancy taken off.
+Measured against the certified supine state carried onto the cage, which lies 2.36 mm (median) and
+5.40 mm (largest) from the rest ([results](../experiments/tissue-runtime-cage-2026-09-29.md), the
+same numbers for B2a and B2b, whose supine states are one state):
+
+| Cage, settings | Settles | Distance from the certified supine state: p50 / p95 / max | Where the largest is |
+|---|---|---|---|
+| 275 nodes (hero), ADR-0029's 8 iterations × 2 sub-steps | in 221 steps (3.7 s simulated; 0.52 s single-threaded in `msvc-release`) | 1.580 / 3.547 / 4.029 mm | node 20, a boundary node of the `surface` set, which the certified state moves 5.25 mm and the settle 9.19 |
+| 256 nodes, the same | **no**: a vibration of 7.3 mm/s at the 99th percentile (205 nodes above 0.1 mm/s) that 50 s — and 200 s — do not damp, the shape still: the same distances at 5 s, 50 s and 200 s to 10⁻³ mm | 1.270 / 2.847 / 3.354 mm | node 19, the same kind of node, 5.27 against 8.54 mm |
+| 256 nodes, 4 collision sub-steps | in 747 steps (12.5 s; 3.2 s) | 1.130 / 2.319 / 2.673 mm | node 20, 5.25 against 7.81 mm |
+
+**Read it as a measurement, not a pass.** The settled body sags further than the certified state
+does — its median node moves 3.15 mm (256 nodes) and 3.56 mm (275) from the rest against the
+certified 2.36 mm, its largest 8.5–9.2 against 5.40 mm — and the answer moves by a quarter with the
+solver's settings, because an XPBD relaxation's fixed point depends on its sub-steps and
+iterations ([why a rest names its solver](#the-definition)). The contact here is the physics
+module's own — a vertex against the nearest triangle of a static mesh, one-sided, frictionless on
+the support, a node's plane chosen once a collision sub-step — and not the face-based contact
+model the authoring side is still declaring for the layered model; the certified state was solved
+under a nodal floor contact and a consistent load on ten-node cells. Closing that gap — the same
+contact on both sides, the same element, a comparable solve — is later work, and the numbers
+above are pinned as a regression (`tissue_tests.cpp`) so that whatever closes it shows. The 256-node
+cage's vibration is the contact's: damping at 20 per second does not stop it, friction 0.2 slows it
+to 1.9 mm/s, 16 iterations do not stop it, and 4 collision sub-steps, which recompute each node's
+contact plane twice as often, do.
 
 ## The layered model
 
@@ -1183,7 +1251,13 @@ against its chords' 98.40; a supplied source with another SHA-256 failing `cage.
 carrying both regions measured from itself; the derivation round-tripping through the container
 byte for byte, and a definition without one writing no `derivation`; and **the committed bytes**:
 the block's cage derived twice to the same bytes, every section's SHA-256 against the table taken on
-MSVC); the size table pins the two container records.
+MSVC); `soft_body_tests.cpp` (the synthetic runtime slab built as a soft body — one volume
+constraint a cell, every edge once with a positive compliance, the lumped mass the body's, the rim
+held rigid, the box and the support its targets, the support turned to face the slab, the pressed
+state's gravity less the air's; settled under it with the rim where it rests, moved by its load,
+and the same bytes a second time; the block's derived cage settled on a floor it slides on,
+frictionless, the floor nodes held on it; a ten-node body, a missing state, a settle without a load
+and an attachment to a bone refused); the size table pins the two container records.
 `apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
 `validate`, `report` and the fixture mode's `--write-expect` and `--expect`; `capabilities`, with
 the tie's field, enumeration and row; the three layered fixtures imported byte for byte and
@@ -1199,8 +1273,12 @@ validated alone with the rows that need the source skipped, with `--source` ever
 with the wrong source failing `cage.source`; `--nodes 100`, `--nodes 300` refused without `--hero`
 and taken with it, a runtime cage refused, the flags cage's alone), and from each native supine
 fixture — refused without `--omit-state` (the failed standing reference), then derived at the
-default budget and as a hero with it, and validated with its source to exit 0. Nothing of the packet
-is committed.
+default budget and as a hero with it, and validated with its source to exit 0. And `settle`: the
+synthetic slab under "pressed", settled, the same bytes twice, written with its settled state and
+validated clean; a ten-node body, a missing state and its flags refused; and the supine
+measurement pinned — the hero cage of each fixture settling in 221 steps to 1.580 / 3.547 / 4.029
+mm at node 20, B2a's twice to the same bytes, and B2a's 256-node cage 300 steps in, unsettled, at
+1.270 / 2.847 / 3.353 mm at node 19. Nothing of the packet is committed.
 
 **Performance notes.** Content-build code, CPU, double precision in the geometric queries, not a
 hot path: study019 validates and reports in about 10 s in `msvc-debug`, most of it the winding
@@ -1216,14 +1294,17 @@ intersection rows use. Nothing here runs per frame.
 
 ADR-0027 asks both of a capability. **LOD**: none yet — the definition is authoring data, and the
 tier policy it will feed is §5.14's (full tissue at the hero and near tiers, a spring on the
-attachment points at mid, rest shape beyond), which belongs to the runtime that does not exist.
+attachment points at mid, rest shape beyond), which belongs to the runtime that does not exist; the
+derived cage is ADR-0029's T0 cage (one solve group, or a declared hero), and the settle runs it at
+T0's settings.
 **Determinism**: a definition is authored, persistent data; its container's bytes are a function of
 its content (canonical JSON, fixed section order), and the validators' numbers are a function of the
 file (every traversal breaks ties by index). A derived cage is derived data under the content
 build's rule: a function of its source, its options and its method alone — the same bytes on every
 thread count (it is single-threaded) and every toolchain (no C-library call decides anything;
-`cage_tests.cpp` pins the sections) — keyed by its build key. Nothing here enters the sim hash,
-because nothing here simulates.
+`cage_tests.cpp` pins the sections) — keyed by its build key. A settle is the physics module's
+deterministic world on one thread: the same bytes every run and on every configuration. Nothing
+here enters the sim hash, because nothing here runs in the game's tick.
 
 ## Not yet
 
@@ -1281,9 +1362,21 @@ because nothing here simulates.
   **membranes, cables and the active rest driver**, which no runtime law reads yet; and **the
   layered model** — its essential attachments refuse the derivation (their patch is a ten-node
   surface) and its other records are not carried.
-No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
-attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
-without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
+- **Built 2026-09-29, measured and not passed: a soft body from a runtime region**
+  ([A soft body from a runtime region](#a-soft-body-from-a-runtime-region)). What it leaves open:
+  **the gap to the certified supine state** (1.1–1.6 mm median, 2.7–4.0 mm largest, the settled body
+  sagging further than the certified one), which needs the same contact on both sides — the
+  face-based model the authoring side is declaring, not the physics module's vertex-against-triangle
+  contact — the same element (the certified state is ten-node cells, the cage four-node ones that
+  lock), and a comparable solve; **the vibration** of the 256-node cage at ADR-0029's two collision
+  sub-steps, which four settle; **a spring attachment's stiffness**, held rigid until a
+  stiffness-to-rate conversion accounts for the physics module's servo sag; **membranes, cables**
+  and the other records no runtime law reads; and **the runtime deformation system** itself —
+  simulation LOD tiers, the budget, the per-tick solve among other volumes, the render transfer —
+  which this settle, a content-build measurement in a world of its own, is not.
+No runtime deformation system: the tetrahedra, attachments and frames are simulated by the settle
+above, a measurement in a world of its own, and membranes and cables are described and checked,
+not simulated; a cable's slack and recruitment are carried without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
 No content-build step past the cage: a `.tissue` is imported, validated and derived into a runtime
 cage, and not into a binding stream in the cluster pages. No resolution of canonical ids against a built mesh's
 identity stream. No packed binding-record section (above). No transition-continuity row (the

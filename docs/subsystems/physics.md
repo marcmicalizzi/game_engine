@@ -332,8 +332,11 @@ distance field, layers and their boundary behaviour, adhesion, damage as constra
 simulation LOD, strain output, and the binding to render vertices. **Not here because the backend
 does not do it yet:** soft-against-soft contact (deferred by ADR-0026 — the pair count is
 quadratic in the interacting set), skinning a cage to a skeleton (`SoftBodySharedSettings`'s
-skinned constraints), per-region materials, and soft-body contact events (the rigid contact
-listener does not see them).
+skinned constraints), per-vertex contact filtering (every particle collides with every body its
+layer meets, so a surface one attachment slides on is a surface every node contacts), and
+soft-body contact events (the rigid contact listener does not see them). Per-region materials need
+nothing: every constraint carries its own compliance, which is how the tissue soft body gives each
+cell its own ([below](#a-soft-body-from-a-tissue-region)).
 
 ### How wide one cage's solve can go, and why it is not the worker count
 
@@ -514,6 +517,55 @@ cannot invite the wrong response.
 The module holds no opinion about tiers and assigns none; it reports the number the tier logic
 acts on. Per step and unsmoothed, because smoothing is the tier logic's decision and a number
 that has already been smoothed cannot be un-smoothed.
+
+### A soft body from a tissue region
+
+The first caller that is not a test or an experiment is `domain/tissue`'s `soft_body.h`
+([tissue](tissue.md#a-soft-body-from-a-runtime-region)): a tissue definition's `Runtime` region of
+four-node cells — the runtime cage the content build derives from a certified reference body —
+built as a `SoftBodyDesc` through this module's surface, unchanged. It is the evidence that the
+surface is enough for an authored volume, and it found four things about the backend that are
+written here because they are the backend's, and will catch the next caller too.
+
+| The definition | Becomes |
+|---|---|
+| each cell | a `SoftVolumeConstraint`, compliance `36 V0 / (K − 5μ/3)` |
+| each edge | a `SoftEdge`, compliance `l0² / (2 w)`, w = (5/4) Σ μ V0 over the cells sharing it |
+| the materials | per constraint, from each cell's phases: `compliance` is already per constraint, so per-cell material needed nothing new |
+| mass | `inverse_masses`, a quarter of each cell's density × volume to its corners |
+| a fixed attachment | a `Rigid` `SoftAttachment` to the frame's static body, where the node rests |
+| a sliding or unilateral one | contact with its target, a static `create_mesh` body |
+| the load | `WorldOptions::gravity` |
+
+Those are the XPBD forms of the tissue definition's declared energy `bulk-edge-v0` (a distance
+constraint stores `C²/2α` with C = l − l0, the volume constraint with C = 6V − 6V0, the latter the
+same equation `volume_compliance_for` rests on), so the declared (K, μ) are what the solver's
+constraints stand for at small strain, for any cell shape.
+
+**What the backend taught it**, each measured on the tissue tests' fixtures or the supine cage:
+
+- **A `Spring` attachment sags under gravity by g·dt²/2 every step.** The pre-pass steers the
+  velocity once a step and the particle keeps its mass, so gravity integrates during the step's
+  sub-steps after the steering: a spring at the step rate settles 1.36 mm past its anchor at 60 Hz,
+  whatever its rate. It is a servo's offset and not a spring's stretch, which is why the tissue
+  soft body holds a fixed attachment `Rigid` until a stiffness-to-rate conversion that accounts for
+  it exists.
+- **Vertex-against-mesh contact is one-sided and ten centimetres deep.** Jolt collides a
+  soft-body vertex with the nearest triangle of a mesh and treats one up to
+  `CollideSoftBodyVerticesVsTriangles::sTriangleThickness` (0.1 m) *behind* that triangle as
+  penetrating, projecting it onto the plane in one sub-step. A closed, outward-wound mesh is safe;
+  an open surface must face the body, and one facing away teleports every node within 10 cm of it:
+  the supine cage's support, oriented by the side its region's centroid is on — which for an open,
+  curved surface is only as good as the centroid's nearest feature — had 135 of 256 nodes up to
+  38 mm behind it and inverted 370 cells in one step. The tissue soft body orients a surface by the
+  sign of the summed signed distances of all its nodes.
+- **A vertex exactly on a mesh vertex or edge has no contact.** Its nearest feature is at zero
+  distance, the contact normal is the zero vector, and the backend drops the contact
+  (`normal.Dot(triangle_normal) > 0` fails): a node lying on a support built from the body's own
+  nodes falls through it. The tissue soft body sets a contact surface back 10 µm behind itself.
+- **A frictionless surface that ends at the body's edge lets it slide off.** A nearly
+  incompressible block pressed onto a floor exactly its own size bulged over the floor's edge and
+  never settled (0.7 m/s after 25 s); on a floor 20 mm wider it settled in 216 steps.
 
 ## The character
 

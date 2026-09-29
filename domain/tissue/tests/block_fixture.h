@@ -224,9 +224,12 @@ inline Block make_block(bool quadratic = true) {
   frame.triangles = "base.triangles";
   frame.provenance = "a box 4 mm under the block's floor";
   d.frames.push_back(frame);
-  // The floor: the block's plan at z = 0, two triangles facing down (outward from the block).
-  const Vector<Vec3> floor_vertices = {Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.12f, 0.0f, 0.0f},
-                                       Vec3{0.12f, 0.08f, 0.0f}, Vec3{0.0f, 0.08f, 0.0f}};
+  // The floor: a plane at z = 0 reaching 20 mm past the block's plan on every side, two triangles
+  // facing down (outward from the block). Past the plan, because a floor node slides on it without
+  // friction and a nearly incompressible block squeezed by its own weight bulges sideways: a floor
+  // that ended at the plan would let those nodes off its edge.
+  const Vector<Vec3> floor_vertices = {Vec3{-0.02f, -0.02f, 0.0f}, Vec3{0.14f, -0.02f, 0.0f},
+                                       Vec3{0.14f, 0.10f, 0.0f}, Vec3{-0.02f, 0.10f, 0.0f}};
   const Vector<u32> floor_faces = {0, 2, 1, 0, 3, 2};
   put(file, "floor.vertices", BlockKind::SurfaceVertices, floor_vertices);
   put(file, "floor.triangles", BlockKind::SurfaceTriangles, floor_faces, 3);

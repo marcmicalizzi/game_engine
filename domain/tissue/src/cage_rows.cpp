@@ -237,7 +237,8 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
     // ---- cage.boundary_distance
     {
       const std::string threshold =
-          "at every carried state, every boundary node of each body within " + mm_text(k_boundary_m) +
+          "at every carried state, every boundary node of each body within " +
+          mm_text(k_boundary_m) +
           " of the other's boundary: chordal — the reference's curved faces are their four chords "
           "(its linear subdivision's boundary), and the distance is from each side's nodes to the "
           "other's triangles, not a continuous Hausdorff distance";

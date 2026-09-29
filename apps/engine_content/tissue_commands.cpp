@@ -21,6 +21,9 @@
 //   tissue cage <reference.tissue> <out.tissue>     a runtime cage derived from a reference body
 //       [--nodes <n>] [--hero] [--region <name>]    within ADR-0029's budget (domain/tissue/cage.h)
 //       [--omit-state <name>]...
+//   tissue settle <cage.tissue> --state <name>      the runtime region as a soft body, settled
+//       [--repeat] [--write <out.tissue>]           under the state's load at the fixed step, and
+//       [--max-steps <n>] [--region <name>]         measured against the state (soft_body.h)
 //
 // `validate` and `report` take `--source <reference.tissue>` for a derived cage: the reference file
 // its derivation names, whose SHA-256 must be the recorded one, so the `cage.*` rows can measure
@@ -36,6 +39,8 @@
 #include <core/json/json.h>
 
 #include <cstdio>
+#include <cstring>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -45,6 +50,7 @@
 #include <domain/tissue/capabilities.h>
 #include <domain/tissue/expect.h>
 #include <domain/tissue/sha256.h>
+#include <domain/tissue/soft_body.h>
 #include <domain/tissue/synthetic.h>
 #include <domain/tissue/tissue_file.h>
 #include <domain/tissue/validate.h>
@@ -88,6 +94,19 @@ const char* k_tissue_usage =
     "      --region <name>  the reference region, when the file has more than one\n"
     "      --omit-state <name>  leave a state out (repeatable): a state one of the ten-node\n"
     "                     cells' corner tetrahedra inverts in is refused, never carried\n"
+    "  settle <cage.tissue> --state <name>      build a four-node Runtime region as the physics\n"
+    "                                           module's soft body, settle it at the fixed step\n"
+    "                                           under the state's load from its rest, and measure\n"
+    "                                           the settled nodes against the state's; exit 1 "
+    "when\n"
+    "                                           it does not settle\n"
+    "      --repeat       settle twice from scratch and say whether they give the same bytes\n"
+    "      --write <out.tissue>  the file with the settled nodes as a state \"<name>.settled\"\n"
+    "      --max-steps <n>       the step limit (3,000, 50 s at 60 Hz, by default)\n"
+    "      --sub-steps <n>, --iterations <n>\n"
+    "                            collision sub-steps a step and XPBD iterations a sub-step\n"
+    "                            (ADR-0029's 2 and 8 by default)\n"
+    "      --region <name>       the region, when the file has more than one runtime region\n"
     "  capabilities                             the schema version, every record, field, enum\n"
     "                                           and block kind this build reads, every row as\n"
     "                                           evaluated, info-only or not-implemented, and the\n"
@@ -381,6 +400,74 @@ int cage_command(const std::string& input, const std::string& output, const Cage
   return k_exit_ok;
 }
 
+struct SettleArgs {
+  std::string state;
+  std::string region;
+  std::string write;
+  bool repeat = false;
+  u32 max_steps = 0;
+  u32 sub_steps = 0;
+  u32 iterations = 0;
+};
+
+int settle_command(const std::string& path, const SettleArgs& args) {
+  tissue::TissueFile file;
+  std::string error;
+  tissue::CapabilityFailure capability;
+  if (!load(path, file, error, capability))
+    return capability.failed() ? capability_failed(path, capability) : failed(path + ": " + error);
+  tissue::SoftBodyOptions options;
+  options.region = args.region;
+  options.load_state = args.state;
+  if (args.max_steps != 0) options.max_steps = args.max_steps;
+  if (args.sub_steps != 0) options.sub_steps = args.sub_steps;
+  if (args.iterations != 0) options.iterations = args.iterations;
+  tissue::SettleResult result;
+  if (!tissue::settle_soft_body(file, options, result, &error)) return failed(path + ": " + error);
+  JsonValue out = tissue::settle_json(file, options, result);
+  out.set("file", JsonValue(path));
+  if (args.repeat) {
+    // A second settle from scratch: the same bytes, or a determinism failure worth an exit code.
+    tissue::SettleResult again;
+    if (!tissue::settle_soft_body(file, options, again, &error)) return failed(path + ": " + error);
+    const bool same = again.steps == result.steps && again.nodes.size() == result.nodes.size() &&
+                      std::memcmp(again.nodes.data(), result.nodes.data(),
+                                  result.nodes.size() * sizeof(Vec3)) == 0;
+    JsonValue repeat = JsonValue::object();
+    repeat.set("same_bytes", JsonValue(same));
+    repeat.set("wall_ms", JsonValue(again.wall_ms));
+    out.set("repeat", std::move(repeat));
+    if (!same) {
+      print_json(out);
+      return failed("two settles of " + path + " gave different bytes");
+    }
+  }
+  if (!args.write.empty()) {
+    // The cage with the settled nodes as a state of its own, for validate to read.
+    tissue::TissueFile settled = file;
+    const tissue::RegionState* load_state = nullptr;
+    for (const tissue::RegionState& s : file.definition.states)
+      if (s.name == args.state) load_state = &s;
+    tissue::RegionState state = *load_state;
+    state.name = args.state + ".settled";
+    state.nodes = "settled." + args.state;
+    state.role = tissue::StateRole::Response;
+    state.provenance = tissue::StateProvenance::ForwardFromAuthoredRest;
+    state.inverse.reset();
+    state.expected_visible.clear();
+    state.binding.clear();
+    tissue::add_block(settled, state.nodes, tissue::BlockKind::StateNodes,
+                      std::span<const Vec3>(result.nodes.data(), result.nodes.size()));
+    settled.definition.states.push_back(state);
+    if (!tissue::write_tissue_file(args.write, settled, &error))
+      return failed(args.write + ": " + error);
+    out.set("written", JsonValue(args.write));
+  }
+  print_json(out);
+  if (!result.settled) return failed(path + ": did not settle within the step limit");
+  return k_exit_ok;
+}
+
 int capabilities_command() {
   JsonValue out = tissue::capabilities_json(tissue::build_capabilities());
   JsonValue build = JsonValue::object();
@@ -453,9 +540,33 @@ int tissue_command(int argc, char** argv) {
   ValidateArgs args;
   CageArgs cage_args;
   bool cage_flags = false;
+  SettleArgs settle_args;
+  bool settle_flags = false;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
-    if (a == "--no-modes") {
+    if (a == "--state" || a == "--write") {
+      if (i + 1 >= argc) return usage("--state and --write take a name and a path");
+      (a == "--state" ? settle_args.state : settle_args.write) = argv[++i];
+      settle_flags = true;
+    } else if (a == "--repeat") {
+      settle_args.repeat = true;
+      settle_flags = true;
+    } else if (a == "--max-steps" || a == "--sub-steps" || a == "--iterations") {
+      if (i + 1 >= argc) return usage("--max-steps, --sub-steps and --iterations take a count");
+      const std::string_view v = argv[++i];
+      u32 parsed = 0;
+      for (const char c : v) {
+        if (c < '0' || c > '9' || parsed > 10000000u)
+          return usage("--max-steps, --sub-steps and --iterations take a count");
+        parsed = parsed * 10u + static_cast<u32>(c - '0');
+      }
+      if (v.empty() || parsed == 0)
+        return usage("--max-steps, --sub-steps and --iterations take a count");
+      (a == "--max-steps"   ? settle_args.max_steps
+       : a == "--sub-steps" ? settle_args.sub_steps
+                            : settle_args.iterations) = parsed;
+      settle_flags = true;
+    } else if (a == "--no-modes") {
       args.modes = false;
     } else if (a == "--expect" || a == "--write-expect" || a == "--source") {
       if (i + 1 >= argc) return usage("--expect, --write-expect and --source take a path");
@@ -495,6 +606,19 @@ int tissue_command(int argc, char** argv) {
     return usage("--expect and --write-expect belong to validate");
   if (sub != "validate" && sub != "report" && !args.source.empty())
     return usage("--source belongs to validate and report");
+  if (sub == "settle") {
+    // `--region` is settle's too: the cage's flags otherwise are not.
+    if (cage_args.nodes != 0 || cage_args.hero || !cage_args.omit_states.empty())
+      return usage("--nodes, --hero and --omit-state belong to cage");
+    if (count != 1) return usage("settle takes one cage file");
+    if (settle_args.state.empty()) return usage("settle needs --state <name>");
+    settle_args.region = cage_args.region;
+    return settle_command(positional[0], settle_args);
+  }
+  if (settle_flags)
+    return usage(
+        "--state, --write, --repeat, --max-steps, --sub-steps and --iterations belong to "
+        "settle");
   if (sub != "cage" && cage_flags)
     return usage("--nodes, --hero, --region and --omit-state belong to cage");
   if (sub == "cage") {

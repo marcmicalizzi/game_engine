@@ -4,12 +4,17 @@
   addendum "the engine first"; [07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets)):**
   what a runtime cage derived from a certified ten-node reference body is — its size against
   [ADR-0029](../adr/0029-deformable-volume-budgets.md)'s budget, its mass ledger, how far it is
-  from the reference in each state it carries.
+  from the reference in each state it carries — and, built as the physics module's soft body and
+  settled under the supine load, how far it lies from the certified supine state.
 - **Date:** 2026-09-29. **Machine:** Intel Core i9-10980XE (18 cores, 36 threads), 64 GB, Windows 11
-  Pro 26200. **Build:** `msvc-debug` (MSVC 14.51.36231). No GPU is involved.
-- **Machine state:** CPU load 2% before and 4% after the timed runs (`Win32_Processor.LoadPercentage`);
-  no GPU job and no other build running during them. Every number below except the timings is a
-  function of the input files and does not depend on the machine.
+  Pro 26200. **Build:** `msvc-debug` for the derivation, `msvc-release` for the settles' times
+  (MSVC 14.51.36231). No GPU is involved.
+- **Machine state:** the derivation's timed runs at 2% CPU load before and 4% after
+  (`Win32_Processor.LoadPercentage`), nothing else running. **The settles' times were taken beside
+  other agents' builds** — 15–28% load when each run started, 74–100% an hour earlier, `cl.exe`
+  processes the top consumers — so they are upper bounds, not costs. Every number below except
+  the times is a function of the input files: the positions are the same bytes on every run and in
+  both configurations.
 - **Decision:** none; the status notes in [05 §5.16](../plan/05-simulation.md#516-characters-at-run-time)
   and [07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets), and the thresholds of
   the `cage.*` rows ([tissue](../subsystems/tissue.md#how-far-the-cage-is-from-its-reference)).
@@ -78,6 +83,42 @@ At the cage's own nodes every carried state is the reference's to 4.5 × 10⁻¹
 the reference's field there, evaluated by Newton's method in the ten-node cells and compared with
 the node copied across.
 
+**The settle** ([tissue](../subsystems/tissue.md#a-soft-body-from-a-runtime-region)): each cage
+built as a soft body from its rest — 48 nodes held where they rest (`fixed-rim`, to the world), 121
+sliding without friction on `historical-support`, every node against the frame `thoracic-proxy`,
+gravity 9.798 m/s² along +y (the supine load, less the air) — stepped at 60 Hz until the 99th
+percentile of the nodes' speeds stays under 0.1 mm/s for half a second, and measured against the
+certified supine state carried onto the cage (which lies 2.36 mm from the rest at the median node,
+5.02 at the 95th percentile, 5.40 at the largest):
+
+```
+engine-content tissue settle B2a.hero.cage.tissue --state B2a-supine --repeat
+engine-content tissue settle B2a.cage.tissue --state B2a-supine --repeat
+engine-content tissue settle B2a.cage.tissue --state B2a-supine --repeat --sub-steps 4
+```
+
+| Cage, settings | Settles | Steps, simulated | Time (`msvc-release`, one thread) | Distance from the certified state: p50 / p95 / max | Largest at | Its settled / certified move from the rest |
+|---|---|---|---|---|---|---|
+| 275 (hero), 8 iterations × 2 sub-steps | yes | 221, 3.7 s | 0.52 s, 2.4 ms a step | 1.580 / 3.547 / 4.029 mm | node 20, boundary, `surface` | 9.19 / 5.25 mm |
+| 256, 8 × 2 | **no** | 3,000, 50 s | 6.5 s, 2.2 ms a step | 1.270 / 2.847 / 3.354 mm | node 19, boundary, `surface` | 8.54 / 5.27 mm |
+| 256, 8 × 4 | yes | 747, 12.5 s | 3.2 s, 4.3 ms a step | 1.130 / 2.319 / 2.673 mm | node 20, boundary, `surface` | 7.81 / 5.25 mm |
+
+The whole settled body moves further from the rest than the certified state does: median 3.56 mm
+(275), 3.15 mm (256) and 2.66 mm (256, four sub-steps) against 2.36 mm; 95th percentile 7.9, 7.3
+and 6.6 against 5.0 mm. No cell inverted; the strain clamp never needed a second sweep. **Two runs
+of each gave the same bytes**, B2a and B2b gave the same numbers (their supine states are one), and
+the 256-node cage 300 steps in reads 1.270 / 2.847 / 3.353 mm in `msvc-debug` and `msvc-release`
+alike, to every digit printed.
+
+**The 256-node cage at ADR-0029's two sub-steps does not settle.** Its 99th-percentile speed is
+17.6 mm/s at 1 s, 7.4 mm/s at 2 s and 7.3 mm/s at 50 s (205 of its 256 nodes above 0.1 mm/s; the
+fastest, a posterior node on the support, at 7.85 mm/s from 2 s through 200 s), while its shape
+does not move: the distances at 5 s, 50 s and 200 s agree to 10⁻³ mm. It is a vibration about a fixed shape, and it
+is the contact's: at 1,200 steps, damping of 20 per second leaves it at 4.4 mm/s, friction 0.2 at
+1.9 mm/s, 16 iterations at 6.1 mm/s, 4 iterations at 7.7 mm/s, and switching off the strain clamp
+changes nothing — while 4 collision sub-steps, which choose each node's contact plane twice as
+often, settle it (and 16 iterations at 2 sub-steps, the same 32 position solves a step, do not).
+
 The synthetic torus slab, for the thresholds: 147 corners and no collapse at the default budget
 (100 nodes by 25 interior and 22 boundary collapses, the boundary moved by 2 × 10⁻⁹ m); mass and
 volume −0.75% at every state (the curvature); the boundaries 0.66 mm apart at most; the field at its
@@ -98,20 +139,38 @@ nodes within 0.39 mm (0.41 mm at 100 nodes); energy share 0.93–0.95.
   between its corners — the same with the hero cage, because it is not a question of how many
   corners the cage keeps but of what a straight edge can follow.
 - **A four-node cage of this material stores 1.8–2.0 times the reference's strain energy for the
-  same displacement.** K = 100 kPa against μ of 350–1,000 Pa is nearly incompressible, and linear
-  tetrahedra lock; the P2 cells the reference was certified on do not.
+  same displacement** — K = 100 kPa against μ of 350–1,000 Pa is nearly incompressible, and linear
+  tetrahedra lock; the P2 cells the reference was certified on do not — **and yet settled, it sags
+  further than the certified state.** Stiffer by the energy, softer in the settle: an XPBD
+  relaxation at eight iterations is not the energy's minimum, and the posterior slides on a
+  frictionless support that the certified solve held by a nodal contact. Which of the two moves the
+  answer more is not something this measurement separates.
+- **The answer depends on the solver's settings by a quarter.** The same 256-node cage reads 1.27
+  mm at the median at two collision sub-steps and 1.13 mm at four; the hero reads 1.58. The fixed
+  point of an XPBD relaxation is a function of its sub-steps and iterations, which is exactly why
+  the definition makes a rest name its solver.
+- **The backend's contact cost most of the afternoon.** A support surface oriented by its region's
+  centroid put 135 of the 256 nodes up to 38 mm behind it, and Jolt, which treats a vertex up to
+  10 cm behind a triangle as penetrating, inverted 370 cells in the first step; a node lying exactly
+  on a support built from its own nodes gets no contact at all; a spring attachment sags 1.36 mm a
+  step under gravity. [physics](../subsystems/physics.md#a-soft-body-from-a-tissue-region) has the
+  four findings and what the soft body does about each.
 
 ## What it decides
 
 The `cage.*` rows' thresholds: mass 1%, volume 2%, boundaries 2 mm, field 2 mm, 1 µm at the cage's
 nodes — each passed by every carried state of both bodies, the supine state's boundary and field by
-12% and 10%, and each failed by what the failed standing reference would have been. It does not
-decide whether the cage is good enough to simulate on: that is a runtime question, and a separate
-measurement.
+12% and 10%, and each failed by what the failed standing reference would have been. And the first
+settle's numbers, **pinned as a regression, not passed** (`apps/engine_content/tests/tissue_tests.cpp`):
+the contact is the physics module's own, not the face-based model the authoring side is still
+declaring, and the 1.1–1.6 mm median and 2.7–4.0 mm largest distance from the certified supine
+state is the gap later work closes. It does not decide ADR-0029's sub-step default: one cage that
+vibrates at two sub-steps is a reason to measure more cages, not to double every cage's cost.
 
 ## Caveats
 
 Two fixtures that share their construction, rest and supine state to the digits shown; one synthetic
 body; one method. A reference whose corner boundary is larger than the budget would need boundary
 collapses, which these fixtures did not exercise (the synthetic slab and the tests' block did, on
-flat faces).
+flat faces). One settle configuration family, on one machine that was not quiet; the times are
+upper bounds, the positions are not affected.
