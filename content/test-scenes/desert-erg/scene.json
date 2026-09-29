@@ -100,7 +100,9 @@
       "ripple_slope_end_deg": 30,
       "grain_size": 0.02,
       "grain_albedo": 0.08,
-      "grain_roughness": 0.05
+      "grain_roughness": 0.05,
+      "lee_start_deg": 10,
+      "lee_end_deg": 18
     }
   }
 }

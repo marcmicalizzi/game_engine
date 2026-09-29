@@ -520,7 +520,7 @@ struct StormGain @version(1) {
 /// terrain's seed and the ground's wind, with no texture and nothing to meet at an edge. The
 /// mechanism is the engine's; these numbers are the scene's. Metres and degrees. Append-only: a
 /// field added later has a default that draws what the block drew before it.
-struct TerrainDetail @version(1) {
+struct TerrainDetail @version(2) {
   /// Crest to crest, metres: real wind ripples are 8 to 15 cm apart.
   ripple_wavelength: f32 = 0.12
   /// Crest to trough, metres: about a centimetre on real sand. 0 draws no ripples.
@@ -541,6 +541,12 @@ struct TerrainDetail @version(1) {
   grain_albedo: f32 = 0.08
   /// How far it moves the sand's perceptual roughness either way, [0, 0.5]; 0 none.
   grain_roughness: f32 = 0.05
+  /// The ripples' exposure to the wind, degrees of lee slope along the wind: on ground falling
+  /// away from the wind they start to go at `lee_start_deg` and are gone at `lee_end_deg`, since
+  /// sheltered sand is smooth. Both 0 (the default) is no exposure: the ripples fade by steepness
+  /// alone, as version 1 drew them. 0 <= start < end <= 60.
+  lee_start_deg: f32 = 0 @since(2)
+  lee_end_deg: f32 = 0 @since(2)
 }
 
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera

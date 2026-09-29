@@ -20,7 +20,7 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg-storm/
 | `diurnal_veer_deg` | 30 | 0 | the wind veers 30° either side of the day's direction, through it at noon |
 | `storm_gain` | 1,000 | 1 | every storm's hours move a thousand times the sand their wind does |
 
-Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux, and the sand's ripples and grain (`detail`, [the erg's README](../desert-erg/README.md#the-sand-close-up)) — is the erg's, so the storms are the erg's storms, at the same hours.
+Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux, and the sand's ripples and grain with their exposure to the wind (`detail`, [the erg's README](../desert-erg/README.md#the-sand-close-up)) — is the erg's, so the storms are the erg's storms, at the same hours.
 
 ## What to look at
 

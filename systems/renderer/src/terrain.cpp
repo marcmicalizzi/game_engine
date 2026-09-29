@@ -492,6 +492,8 @@ gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
   out.grain_size = d.grain_size;
   out.grain_albedo = d.grain_albedo;
   out.grain_roughness = d.grain_roughness;
+  out.lee_start_deg = d.lee_start_deg;
+  out.lee_end_deg = d.lee_end_deg;
   return out;
 }
 
@@ -521,6 +523,11 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
   if (!(d.grain_albedo >= 0.0f && d.grain_albedo <= 0.5f && d.grain_roughness >= 0.0f &&
         d.grain_roughness <= 0.5f)) {
     return fail("grain_albedo and grain_roughness must be within [0, 0.5]");
+  }
+  if (!((d.lee_start_deg == 0.0f && d.lee_end_deg == 0.0f) ||
+        (d.lee_start_deg >= 0.0f && d.lee_start_deg < d.lee_end_deg && d.lee_end_deg <= 60.0f))) {
+    return fail(
+        "the exposure's lee band must rise: 0 <= lee_start_deg < lee_end_deg <= 60, or both 0");
   }
   return true;
 }

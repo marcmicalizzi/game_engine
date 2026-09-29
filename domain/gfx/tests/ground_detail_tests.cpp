@@ -15,6 +15,7 @@
 // kernel edge, no wrap of the phase shows up as a jump between neighbouring points).
 #include "brdf_reference.h"
 #include "ground_detail_reference.h"
+#include "ground_detail_reference_v1.h"
 #include "raster_path.h"
 #include "scene_fixture.h"
 
@@ -138,6 +139,122 @@ TEST_CASE("ground detail: the block is the scene's numbers, and the pattern is c
     CHECK(ratio > 0.8);
     CHECK(ratio < 1.2);
   }
+}
+
+namespace {
+
+// A few thousand shaded points for the CPU cases: positions by the origin and kilometres out,
+// normals from flat to a slip face in every direction, footprints from none (the path tracer's) to
+// past every fade, the full debug evaluation and a partial sand share.
+struct Probe {
+  ref::Dvec3 position, normal, dpdx, dpdy;
+  double mask = 1.0;
+  bool full = false;
+};
+
+Probe probe(u32 i) {
+  u32 h = gref::pcg(i * 2654435761u + 12345u);
+  const auto next = [&h] {
+    h = gref::pcg(h);
+    return gref::unit(h);
+  };
+  Probe p;
+  const double far = (i % 3 == 0) ? 3700.0 : ((i % 3 == 1) ? 0.0 : 900.0);
+  p.position = ref::Dvec3{far + next() * 40.0 - 20.0, next() * 5.0, -far * 0.5 + next() * 40.0};
+  const double slope = next() * 40.0 * 3.14159265358979323846 / 180.0;
+  const double azimuth = next() * 2.0 * 3.14159265358979323846;
+  p.normal = ref::Dvec3{std::sin(slope) * std::cos(azimuth), std::cos(slope),
+                        std::sin(slope) * std::sin(azimuth)};
+  const double step = (i % 5 == 0) ? 0.0 : 0.0002 * std::pow(10.0, next() * 3.0);
+  p.dpdx = ref::Dvec3{step, 0.0, step * (next() - 0.5)};
+  p.dpdy = ref::Dvec3{step * (next() - 0.5), 0.0, step * (0.2 + 3.0 * next())};
+  p.mask = (i % 7 == 0) ? next() : 1.0;
+  p.full = (i % 11 == 0);
+  return p;
+}
+
+}  // namespace
+
+TEST_CASE("ground detail: the defaults are the first pass, to the bit") {
+  // A scene that names none of the second pass's numbers draws what the first pass drew: the live
+  // mirror with the defaults is the frozen one (ground_detail_reference_v1.h), exactly, for the
+  // defaults and for the erg's numbers, at every probe.
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  for (u32 variant = 0; variant < 2; ++variant) {
+    gfx::GroundDetailDesc desc;
+    if (variant == 1) {
+      desc.ripple_defects = 0.8f;
+      desc.grain_size = 0.03f;
+    }
+    const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{0.6f, -0.8f}, 7u);
+    u32 differ = 0;
+    for (u32 i = 0; i < 4000; ++i) {
+      const Probe p = probe(i);
+      const gref::Shading a =
+          gref::shade(d, p.position, p.normal, p.dpdx, p.dpdy, p.mask, albedo, 0.85, p.full);
+      const engine::ground_ref_v1::Shading b = engine::ground_ref_v1::shade(
+          d, p.position, p.normal, p.dpdx, p.dpdy, p.mask, albedo, 0.85, p.full);
+      const bool same = a.normal.x == b.normal.x && a.normal.y == b.normal.y &&
+                        a.normal.z == b.normal.z && a.albedo.x == b.albedo.x &&
+                        a.albedo.y == b.albedo.y && a.albedo.z == b.albedo.z &&
+                        a.roughness == b.roughness && a.weight == b.weight && a.fade == b.fade &&
+                        a.ripple == b.ripple && a.grain == b.grain;
+      if (!same) ++differ;
+    }
+    CHECK(differ == 0);
+  }
+}
+
+TEST_CASE("ground detail: the ripples go by which way the ground faces the wind") {
+  gfx::GroundDetailDesc desc;
+  desc.lee_start_deg = 10.0f;
+  desc.lee_end_deg = 18.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((d.flags & gfx::k_ground_exposure) != 0u);
+  CHECK((gfx::ground_detail_block(gfx::GroundDetailDesc{}, Vec2{1.0f, 0.0f}, 7u).flags &
+         gfx::k_ground_exposure) == 0u);
+  const double deg = 3.14159265358979323846 / 180.0;
+  // The ground leaning `slope` degrees, its normal turned `azimuth` from the wind (0: it falls
+  // along the wind, the lee; 180: it climbs into it, the windward side).
+  const auto normal = [deg](double slope, double azimuth) {
+    return ref::Dvec3{std::sin(slope * deg) * std::cos(azimuth * deg), std::cos(slope * deg),
+                      std::sin(slope * deg) * std::sin(azimuth * deg)};
+  };
+  CHECK(gref::exposure(d, normal(0.0, 0.0)) == 1.0);
+  CHECK(gref::exposure(d, normal(25.0, 180.0)) == 1.0);  // windward, however steep
+  CHECK(gref::exposure(d, normal(9.9, 0.0)) == 1.0);
+  CHECK(gref::exposure(d, normal(18.0, 0.0)) == doctest::Approx(0.0).epsilon(1e-9));
+  CHECK(gref::exposure(d, normal(25.0, 0.0)) == 0.0);
+  // A slope facing across the wind falls along it by less: 15 degrees at 60 from the wind is
+  // tan(15) cos(60) = 7.6 degrees of fall along it, fully exposed.
+  CHECK(gref::exposure(d, normal(15.0, 60.0)) == 1.0);
+  // Smooth in the normal: along a sweep of the lee slope through the band and of the azimuth round
+  // the compass, a hundredth of a degree never moves it by more than its steepest honest slope.
+  double previous = gref::exposure(d, normal(0.0, 0.0));
+  double largest = 0.0;
+  for (u32 i = 1; i <= 3000; ++i) {
+    const double e = gref::exposure(d, normal(i * 0.01, 0.0));
+    largest = std::max(largest, std::fabs(e - previous));
+    previous = e;
+  }
+  CHECK(largest < 0.004);  // 1.5 / 8 degrees x 0.01 degrees, and the tangent's stretch
+  // What the exposure takes is smooth sand, not unresolved sand: on a lee slope past the band,
+  // under a footprint that fades the ripples entirely, the roughness is the material's own —
+  // the ripples' lost variance, weighted by the exposure, is none.
+  gfx::GroundDetailParams ripples_only = d;
+  ripples_only.flags &= ~gfx::k_ground_grain;
+  const ref::Dvec3 far_step{0.2, 0.0, 0.0};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  const gref::Shading lee = gref::shade(ripples_only, ref::Dvec3{1.0, 0.0, 2.0}, normal(20.0, 0.0),
+                                        far_step, far_step, 1.0, albedo, 0.85);
+  CHECK(lee.exposure == 0.0);
+  CHECK(lee.weight == 0.0);
+  CHECK(lee.roughness == 0.85);
+  const gref::Shading windward =
+      gref::shade(ripples_only, ref::Dvec3{1.0, 0.0, 2.0}, normal(15.0, 180.0), far_step, far_step,
+                  1.0, albedo, 0.85);
+  CHECK(windward.exposure == 1.0);
+  CHECK(windward.roughness > 0.85);
 }
 
 TEST_CASE("ground detail: the resolve draws the CPU's function of position") {

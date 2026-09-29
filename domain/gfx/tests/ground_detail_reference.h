@@ -160,11 +160,21 @@ inline Noise2 value_noise2(double x, double z, double size, u32 seed, u32 stream
           mix(mix(v00.b, v10.b, ux), mix(v01.b, v11.b, ux), uz)};
 }
 
+// `ground_exposure`.
+inline double exposure(const gfx::GroundDetailParams& d, Dvec3 normal) {
+  const double fall =
+      (normal.x * static_cast<double>(d.wind.x) + normal.z * static_cast<double>(d.wind.y)) /
+      (normal.y > 1e-4 ? normal.y : 1e-4);
+  return 1.0 -
+         smoothstep(static_cast<double>(d.lee_tan_start), static_cast<double>(d.lee_tan_end), fall);
+}
+
 struct Shading {
   Dvec3 normal;
   Dvec3 albedo;
   double roughness = 1.0;
   double weight = 0.0;
+  double exposure = 1.0;
   double fade = 0.0;
   double ripple = 0.0;
   double grain = 0.0;
@@ -181,7 +191,8 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
   if ((d.flags & gfx::k_ground_ripples) != 0u) {
     const double slope = smoothstep(static_cast<double>(d.slope_cos_end),
                                     static_cast<double>(d.slope_cos_start), normal.y);
-    const double weight = mask * slope;
+    if ((d.flags & gfx::k_ground_exposure) != 0u) out.exposure = exposure(d, normal);
+    const double weight = mask * slope * out.exposure;
     const double wx = static_cast<double>(d.wind.x);
     const double wz = static_cast<double>(d.wind.y);
     const double spread = static_cast<double>(d.wind.z);

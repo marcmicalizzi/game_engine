@@ -35,6 +35,7 @@
 // GroundDetail::flags (gfx::k_ground_*).
 static const uint k_ground_ripples = 1u;
 static const uint k_ground_grain = 2u;
+static const uint k_ground_exposure = 4u;
 // Kernels per lattice cell (gfx::k_ground_impulses).
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
@@ -55,8 +56,8 @@ struct GroundDetail {
   float grain_roughness;  // the roughness's, either way
   uint seed;
   uint flags;
-  uint pad0;
-  uint pad1;
+  float lee_tan_start;    // the fall along the wind at which the ripples start to go (exposure)
+  float lee_tan_end;      // and where there are none
   uint pad2;
 };
 
@@ -171,6 +172,16 @@ GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry) {
   return out;
 }
 
+// How much the ground at `normal` faces the wind, [0, 1]: 1 on flat ground and ground that climbs
+// into the wind, falling to 0 across a band of lee slope. `dot(n.xz, w) / n.y` is the ground's
+// fall along the wind — the tangent of its slope down it, negative climbing into the wind and
+// positive falling away — so a slope facing across the wind falls along it by less. A function of
+// the normal and the wind alone: no data, no seam, and it follows a dune that moves.
+float ground_exposure(GroundDetail d, float3 normal) {
+  const float fall = dot(normal.xz, d.wind.xy) / max(normal.y, 1e-4);
+  return 1.0 - smoothstep(d.lee_tan_start, d.lee_tan_end, fall);
+}
+
 // Two channels of value noise at `p`, on a lattice of `size`, each in [-1, 1]. The lattice is
 // counted in tiles of 4,096 cells so that the fraction inside a cell keeps its precision thousands
 // of metres from the origin (a 5 mm cell 3 km out is 600,000 cells, where a float has four bits
@@ -200,7 +211,8 @@ struct GroundShading {
   float3 normal;     // the shading normal with the ripples in it
   float3 albedo;     // with the grain
   float roughness;   // with the grain and the ripples' lost slope variance
-  float weight;      // the ripples' share here: the sand share times the slope fade
+  float weight;      // the ripples' share here: the sand share, the slope fade and the exposure
+  float exposure;    // how much the ground faces the wind (1 without k_ground_exposure)
   float fade;        // the footprint's fade of the ripples
   float ripple;      // the ripples' height over their amplitude, before the weight and the fade
   float grain;       // the albedo grain's coarse octave, before any fade
@@ -220,6 +232,7 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   out.albedo = albedo;
   out.roughness = roughness;
   out.weight = 0.0;
+  out.exposure = 1.0;
   out.fade = 0.0;
   out.ripple = 0.0;
   out.grain = 0.0;
@@ -227,7 +240,10 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   const float2 p = position.xz;
   if ((d.flags & k_ground_ripples) != 0u) {
     const float slope = smoothstep(d.slope_cos_end, d.slope_cos_start, normal.y);
-    const float weight = mask * slope;
+    // Sand sheltered from the wind is smooth, not unresolved: what the exposure takes is taken
+    // from the weight, which the roughness transfer below is weighted by too.
+    if ((d.flags & k_ground_exposure) != 0u) out.exposure = ground_exposure(d, normal);
+    const float weight = mask * slope * out.exposure;
     // The footprint across the crests: the pixel's step along the wind, and across it by as much
     // as a kernel turned `spread` off the wind would see — per screen axis, the larger.
     const float2 w = d.wind.xy;

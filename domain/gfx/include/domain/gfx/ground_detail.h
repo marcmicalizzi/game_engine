@@ -45,6 +45,8 @@ namespace engine::gfx {
 // GroundDetailParams::flags.
 inline constexpr u32 k_ground_ripples = 1u;  // the phasor ripples perturb the shading normal
 inline constexpr u32 k_ground_grain = 2u;    // the grain varies the albedo and the roughness
+// The ripples fade on ground that faces away from the wind (`lee_tan_start`/`end`): exposure.
+inline constexpr u32 k_ground_exposure = 4u;
 
 // Kernels per lattice cell, mirrored in the shader. A point sums the 3 x 3 cells round it, eighteen
 // kernels, of which about a third reach it (a kernel's disc is pi R^2 of the 9 R^2 searched): with
@@ -90,9 +92,12 @@ struct GroundDetailParams {
   f32 grain_albedo = 0.0f;     // the albedo's variation, a share of it either way
   f32 grain_roughness = 0.0f;  // the perceptual roughness's, either way
   u32 seed = 0;                // the scene's: what every kernel and lattice value is drawn from
-  u32 flags = 0;               // k_ground_ripples | k_ground_grain
-  u32 pad0 = 0;
-  u32 pad1 = 0;
+  u32 flags = 0;               // k_ground_ripples | k_ground_grain | k_ground_exposure
+  // The exposure (k_ground_exposure): the ground's fall along the wind, `dot(n.xz, wind) / n.y`
+  // (the tangent of its slope down the wind: negative climbing into it, positive falling away),
+  // at which the ripples start to go, and at and past which there are none.
+  f32 lee_tan_start = 0.0f;
+  f32 lee_tan_end = 0.0f;
   u32 pad2 = 0;
 };
 static_assert(sizeof(GroundDetailParams) == 80);
@@ -110,6 +115,11 @@ struct GroundDetailDesc {
   f32 ripple_defects = 0.35f;
   f32 slope_start_deg = 22.0f;  // the ground's slope at which the ripples start to fade
   f32 slope_end_deg = 30.0f;    // and past which there are none
+  // The ripples' exposure to the wind: on ground falling away from it, they start to go at a lee
+  // slope of `lee_start_deg` along the wind and are gone at `lee_end_deg`. Both 0 (the default):
+  // no exposure, the first pass's ripples, which fade by steepness alone.
+  f32 lee_start_deg = 0.0f;
+  f32 lee_end_deg = 0.0f;
   f32 grain_size = 0.02f;
   f32 grain_albedo = 0.08f;
   f32 grain_roughness = 0.05f;
@@ -163,6 +173,11 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
   out.seed = seed;
   out.flags = (desc.ripple_height > 0.0f ? k_ground_ripples : 0u) |
               (desc.grain_albedo > 0.0f || desc.grain_roughness > 0.0f ? k_ground_grain : 0u);
+  if (desc.lee_end_deg > desc.lee_start_deg) {
+    out.flags |= k_ground_exposure;
+    out.lee_tan_start = std::tan(radians(desc.lee_start_deg));
+    out.lee_tan_end = std::tan(radians(desc.lee_end_deg));
+  }
   return out;
 }
 
