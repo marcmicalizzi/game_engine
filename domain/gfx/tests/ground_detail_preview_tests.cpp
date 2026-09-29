@@ -249,13 +249,13 @@ struct Dune {
       dh = 0.0;
       return;
     }
-    const usize last = y.size() - 1;
+    const u32 last = y.size() - 1;
     if (t >= static_cast<double>(last)) {
       h = y[last];
       dh = 0.0;
       return;
     }
-    const usize i = static_cast<usize>(t);
+    const u32 i = static_cast<u32>(t);
     const double f = t - static_cast<double>(i);
     h = y[i] + (y[i + 1] - y[i]) * f;
     dh = s[i] + (s[i + 1] - s[i]) * f;
