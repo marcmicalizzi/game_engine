@@ -1,7 +1,7 @@
 # ADR-0046: Scene generators register themselves; the scene reader and the world ring look them up by name
 
-- **Status:** Proposed
-- **Date:** 2026-09-26; built 2026-09-27, and awaiting the owner's acceptance (["As built"](#as-built-2026-09-27) says where the building departed from the decision as written)
+- **Status:** Accepted
+- **Date:** 2026-09-26; built 2026-09-27; accepted by the owner on 2026-09-29, after he had flown and walked the scenes it reads (["As built"](#as-built-2026-09-27) says where the building departed from the decision as written)
 - **Plan references:** docs/plan/02-architecture.md §2.8 (the registration points a capability attaches through), docs/plan/07-content-pipeline.md §7.6 (procedural generation: ruins, terrain, buildings as generators), docs/plan/03-data-model.md §3.7 (one tile grid, many consumers). Builds on [ADR-0027](0027-additive-capabilities.md) (decisions 1 and 3) and [ADR-0040](0040-the-tile-ring.md) (the ring's consumers in a declared order); **supersedes [ADR-0037](0037-scene-reader-links-ruins-where-configured.md) when accepted and built**, and closes the revisit clause of [ADR-0043](0043-dunes-as-a-function-of-time.md) and [ADR-0044](0044-island-city-plan-and-building-grammar.md) that named this design as the owner's.
 - **Docs touched:** [02 §2.8](../plan/02-architecture.md#28-adding-a-capability) (a row in the registration table), [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content) (status note); when built: [renderer](../subsystems/renderer.md), [world](../subsystems/world.md), [ruins](../subsystems/ruins.md), [terrain](../subsystems/terrain.md), [city](../subsystems/city.md), and a new subsystem page for the registry.
 
