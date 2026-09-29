@@ -1,3 +1,4 @@
+#include "cage_rows.h"
 #include "cells.h"
 #include "energy.h"
 #include "layered.h"
@@ -316,6 +317,9 @@ void Validator::run() {
   check_skin_and_depth();
   check_bindings();
   check_volumes();
+  // How far a derived cage is from its reference: only for a region that records a derivation, so
+  // a definition without one reports as it always did.
+  detail::check_cage(file_, regions_, options_, report_);
   // The layered model's rows, after every row of the definition as it was: a file that uses none
   // of its records gets none of them, and its report is the one it always had.
   check_layered(LayeredContext{file_, regions_, frames_,

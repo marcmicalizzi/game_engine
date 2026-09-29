@@ -18,6 +18,13 @@
 //                                                   reference-body variant and the layered model's
 //                                                   three fixtures, as interchanges and containers:
 //                                                   worked examples of the format
+//   tissue cage <reference.tissue> <out.tissue>     a runtime cage derived from a reference body
+//       [--nodes <n>] [--hero] [--region <name>]    within ADR-0029's budget (domain/tissue/cage.h)
+//       [--omit-state <name>]...
+//
+// `validate` and `report` take `--source <reference.tissue>` for a derived cage: the reference file
+// its derivation names, whose SHA-256 must be the recorded one, so the `cage.*` rows can measure
+// the cage against it.
 //
 // **Exit 3 is a capability failure**: the file requires a record, a block kind, a row or a law
 // this build does not have (capabilities.h), or a fixture's declaration names a row it does not
@@ -34,8 +41,10 @@
 
 #if ENGINE_CONTENT_TISSUE
 #include <core/containers/vector.h>
+#include <domain/tissue/cage.h>
 #include <domain/tissue/capabilities.h>
 #include <domain/tissue/expect.h>
+#include <domain/tissue/sha256.h>
 #include <domain/tissue/synthetic.h>
 #include <domain/tissue/tissue_file.h>
 #include <domain/tissue/validate.h>
@@ -66,8 +75,19 @@ const char* k_tissue_usage =
     "                   difference is printed to stderr and in the line's \"expect\"\n"
     "      --write-expect <expected.json>\n"
     "                   write the declaration this run would match, for review; exit 0\n"
+    "      --source <reference.tissue>\n"
+    "                   a derived cage's reference file, for the cage.* rows; its SHA-256 must\n"
+    "                   be the one the cage records\n"
     "  report <file.tissue|interchange.json>    the rows and the numbers they stand on\n"
-    "      --no-modes   as above\n"
+    "      --no-modes, --source   as above\n"
+    "  cage <reference.tissue> <out.tissue>     derive a runtime cage (four-node cells, a Runtime\n"
+    "                                           region) from a reference body of ten-node cells\n"
+    "                                           within ADR-0029's budget, as one JSON line\n"
+    "      --nodes <n>    the node budget: 256 by default, at most 256 without --hero, 800 with\n"
+    "      --hero         a hero volume (ADR-0029): the budget may reach 800\n"
+    "      --region <name>  the reference region, when the file has more than one\n"
+    "      --omit-state <name>  leave a state out (repeatable): a state one of the ten-node\n"
+    "                     cells' corner tetrahedra inverts in is refused, never carried\n"
     "  capabilities                             the schema version, every record, field, enum\n"
     "                                           and block kind this build reads, every row as\n"
     "                                           evaluated, info-only or not-implemented, and the\n"
@@ -228,7 +248,23 @@ struct ValidateArgs {
   bool modes = true;
   std::string expect;        // --expect: the fixture mode's declaration
   std::string write_expect;  // --write-expect: where to write the declaration this run matches
+  std::string source;        // --source: a derived cage's reference file
 };
+
+// A container's bytes and their SHA-256, and the file read from them. `capability` says whether a
+// refusal was a capability failure.
+bool load_container(const std::string& path, tissue::TissueFile& out, std::string& sha256,
+                    std::string& error, tissue::CapabilityFailure& capability) {
+  std::string bytes;
+  const io::Status status = io::read_file(path, bytes);
+  if (status != io::Status::Ok) {
+    error = std::string("cannot read it: ") + io::status_name(status);
+    return false;
+  }
+  const std::span<const u8> view(reinterpret_cast<const u8*>(bytes.data()), bytes.size());
+  sha256 = tissue::sha256_hex(view);
+  return tissue::read_tissue_file_memory(view, out, &error, &capability);
+}
 
 int validate_command(const std::string& path, const ValidateArgs& args) {
   // The declaration is read before the definition is validated, so a broken one costs nothing.
@@ -236,6 +272,15 @@ int validate_command(const std::string& path, const ValidateArgs& args) {
   std::string error;
   if (!args.expect.empty() && !tissue::read_expectation(args.expect, expectation, &error))
     return failed(args.expect + ": " + error);
+  // A derived cage's source: read whole, hashed, and handed to the cage rows.
+  tissue::TissueFile source;
+  std::string source_sha256;
+  if (!args.source.empty()) {
+    tissue::CapabilityFailure capability;
+    if (!load_container(args.source, source, source_sha256, error, capability))
+      return capability.failed() ? capability_failed(args.source, capability)
+                                 : failed(args.source + ": " + error);
+  }
   // A declared failure of a row this build does not implement is a capability the build lacks,
   // not a failure it can match: refused before anything is validated.
   if (!args.expect.empty()) {
@@ -257,6 +302,10 @@ int validate_command(const std::string& path, const ValidateArgs& args) {
     return capability.failed() ? capability_failed(path, capability) : failed(path + ": " + error);
   tissue::ValidateOptions options;
   options.compare_modes = args.modes;
+  if (!args.source.empty()) {
+    options.cage_source = &source;
+    options.cage_source_sha256 = source_sha256;
+  }
   tissue::TissueReport result;
   tissue::validate_tissue(file, options, result);
   JsonValue out = args.report ? tissue::report_json(result) : tissue::rows_json(result);
@@ -287,6 +336,48 @@ int validate_command(const std::string& path, const ValidateArgs& args) {
   }
   print_json(out);
   if (!args.report && result.errors > 0) return k_exit_error;
+  return k_exit_ok;
+}
+
+struct CageArgs {
+  u32 nodes = 0;
+  bool hero = false;
+  std::string region;
+  Vector<std::string> omit_states;
+};
+
+int cage_command(const std::string& input, const std::string& output, const CageArgs& args) {
+  tissue::TissueFile reference;
+  std::string sha256;
+  std::string error;
+  tissue::CapabilityFailure capability;
+  // A container is hashed as it is on disk; an interchange as this build encodes it.
+  const bool loaded = ends_with(input, ".json")
+                          ? tissue::import_interchange(input, reference, &error, &capability)
+                          : load_container(input, reference, sha256, error, capability);
+  if (!loaded)
+    return capability.failed() ? capability_failed(input, capability)
+                               : failed(input + ": " + error);
+  tissue::CageOptions options;
+  options.node_budget = args.nodes;
+  options.hero = args.hero;
+  options.region = args.region;
+  options.omit_states = args.omit_states;
+  options.source_sha256 = sha256;
+  tissue::TissueFile cage;
+  tissue::CageSummary summary;
+  if (!tissue::derive_cage(reference, options, cage, summary, &error))
+    return failed(input + ": " + error);
+  if (!tissue::write_tissue_file(output, cage, &error)) return failed(output + ": " + error);
+  JsonValue out = tissue::cage_summary_json(summary);
+  out.set("input", JsonValue(input));
+  out.set("output", JsonValue(output));
+  std::string bytes;
+  io::read_file(output, bytes);
+  out.set("bytes", JsonValue(static_cast<u64>(bytes.size())));
+  out.set("output_sha256", JsonValue(tissue::sha256_hex(std::span<const u8>(
+                               reinterpret_cast<const u8*>(bytes.data()), bytes.size()))));
+  print_json(out);
   return k_exit_ok;
 }
 
@@ -360,13 +451,38 @@ int tissue_command(int argc, char** argv) {
   std::string positional[2];
   u32 count = 0;
   ValidateArgs args;
+  CageArgs cage_args;
+  bool cage_flags = false;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (a == "--no-modes") {
       args.modes = false;
-    } else if (a == "--expect" || a == "--write-expect") {
-      if (i + 1 >= argc) return usage("--expect and --write-expect take a path");
-      (a == "--expect" ? args.expect : args.write_expect) = argv[++i];
+    } else if (a == "--expect" || a == "--write-expect" || a == "--source") {
+      if (i + 1 >= argc) return usage("--expect, --write-expect and --source take a path");
+      (a == "--expect"   ? args.expect
+       : a == "--source" ? args.source
+                         : args.write_expect) = argv[++i];
+    } else if (a == "--nodes") {
+      if (i + 1 >= argc) return usage("--nodes takes a count");
+      const std::string_view v = argv[++i];
+      u32 parsed = 0;
+      for (const char c : v) {
+        if (c < '0' || c > '9' || parsed > 100000u) return usage("--nodes takes a count");
+        parsed = parsed * 10u + static_cast<u32>(c - '0');
+      }
+      if (v.empty() || parsed == 0) return usage("--nodes takes a count");
+      cage_args.nodes = parsed;
+      cage_flags = true;
+    } else if (a == "--hero") {
+      cage_args.hero = true;
+      cage_flags = true;
+    } else if (a == "--region" || a == "--omit-state") {
+      if (i + 1 >= argc) return usage("--region and --omit-state take a name");
+      if (a == "--region")
+        cage_args.region = argv[++i];
+      else
+        cage_args.omit_states.push_back(argv[++i]);
+      cage_flags = true;
     } else if (!a.empty() && a[0] == '-') {
       return usage("unknown option");
     } else if (count < 2) {
@@ -377,6 +493,14 @@ int tissue_command(int argc, char** argv) {
   }
   if (sub != "validate" && (!args.expect.empty() || !args.write_expect.empty()))
     return usage("--expect and --write-expect belong to validate");
+  if (sub != "validate" && sub != "report" && !args.source.empty())
+    return usage("--source belongs to validate and report");
+  if (sub != "cage" && cage_flags)
+    return usage("--nodes, --hero, --region and --omit-state belong to cage");
+  if (sub == "cage") {
+    if (count != 2) return usage("cage takes a reference file and an output path");
+    return cage_command(positional[0], positional[1], cage_args);
+  }
   if (!args.expect.empty() && !args.write_expect.empty())
     return usage("--expect compares with a declaration and --write-expect writes one: not both");
   if (sub == "capabilities") {

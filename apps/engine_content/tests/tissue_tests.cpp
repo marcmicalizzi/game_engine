@@ -2,8 +2,9 @@
 // synthetic definition written as an interchange, imported into a container, described, validated
 // and reported, one JSON line each; a broken block or a broken contract refused with exit 1; the
 // capability line; the layered model's fixtures, and a capability failure as exit 3 that the
-// fixture mode never matches; and the authoring side's native supine fixtures, where the machine
-// has them, reading row for row as they always have.
+// fixture mode never matches; a runtime cage derived from a ten-node body and measured against it;
+// and the authoring side's native supine fixtures, where the machine has them, reading row for row
+// as they always have and each giving the runtime cage the experiment page records.
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <domain/tissue/sha256.h>
@@ -13,6 +14,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <span>
 #include <string>
 #include <vector>
@@ -51,6 +53,13 @@ u64 count(const JsonValue& v, std::string_view key) {
   u64 out = 0;
   const JsonValue* at = v.find(key);
   if (at != nullptr) at->get_u64(out);
+  return out;
+}
+
+f64 number_at(const JsonValue& v, std::string_view key) {
+  f64 out = 0.0;
+  const JsonValue* at = v.find(key);
+  if (at != nullptr) at->get_f64(out);
   return out;
 }
 
@@ -281,42 +290,180 @@ TEST_CASE("tissue: the layered model's fixtures, and a capability failure is exi
   CHECK(run.result.find("capability_failure") != nullptr);
 }
 
-TEST_CASE("tissue: the native supine fixtures still read, row for row") {
-  // The authoring side's native ten-node supine pair (docs/subsystems/tissue.md, "The supine
-  // fixtures"), found by ENGINE_TISSUE_SUPINE_NATIVE or where the owner's machine keeps it, and
-  // skipped where it is not: nothing of the packet is committed. Each file is checked against the
-  // hash the regression pins before it is read, and copied to the test's own scratch directory
-  // first — the packet's directory is never written or run from.
+namespace {
+
+// The authoring side's native ten-node supine pair (docs/subsystems/tissue.md, "The supine
+// fixtures"), found by ENGINE_TISSUE_SUPINE_NATIVE or where the owner's machine keeps it, and
+// skipped where it is not: nothing of the packet is committed. Each file is checked against the
+// hash the regression pins before it is read, and copied to the test's own scratch directory
+// first — the packet's directory is never written or run from.
+std::string supine_root() {
   std::string root = engine::test::detail::environment("ENGINE_TISSUE_SUPINE_NATIVE");
   if (root.empty())
     root =
         "D:/workspace/game_engine_assets/Blender/_handoff/astra-supine-native-reference-2026-09-26";
-  if (!engine::test::path_exists(root)) {
-    MESSAGE("the native supine packet is not on this machine (" << root << "): skipped");
+  return engine::test::path_exists(root) ? root : std::string();
+}
+
+struct SupineCase {
+  const char* name;
+  const char* sha256;
+};
+constexpr SupineCase k_supine_cases[] = {
+    {"B2a-supine", "56c034f7413d57d43bf235b2d68060dd61a07de19c1098b1c1cf1c52f5b3fefd"},
+    {"B2b-supine", "afb39fc7502979791d4bc0389bc3836d5b4cdf2b9314c6e05d501a3fda20d914"}};
+
+// The case's `reference-native.tissue`, its hash checked, copied into `dir`: the copy's path.
+std::string copy_supine(const std::string& root, const SupineCase& c, engine::test::TempDir& dir) {
+  std::string bytes;
+  REQUIRE(io::read_file(root + "/" + c.name + "/reference-native.tissue", bytes) == io::Status::Ok);
+  const std::string hash = tissue::sha256_hex(
+      std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()));
+  REQUIRE(hash == c.sha256);
+  const std::string file = dir.file(std::string(c.name) + ".tissue");
+  REQUIRE(io::write_file(file, bytes) == io::Status::Ok);
+  return file;
+}
+
+const JsonValue* row_of(const JsonValue& result, std::string_view id) {
+  const JsonValue* rows = result.find("rows");
+  if (rows == nullptr) return nullptr;
+  for (usize i = 0; i < rows->size(); ++i) {
+    std::string_view got;
+    (*rows)[i].find("id")->get_string(got);
+    if (got == id) return &(*rows)[i];
+  }
+  return nullptr;
+}
+
+std::string verdict_of(const JsonValue& result, std::string_view id) {
+  const JsonValue* r = row_of(result, id);
+  if (r == nullptr) return "absent";
+  std::string_view v;
+  r->find("verdict")->get_string(v);
+  return std::string(v);
+}
+
+}  // namespace
+
+TEST_CASE("tissue: cage derives a runtime cage from the ten-node example, and validates it") {
+  engine::test::TempDir tmp("content_tissue_cage");
+  const std::string dir = tmp.file("example");
+  REQUIRE(content({"tissue", "example", dir}).exit_code == 0);
+  const std::string reference = dir + "/synthetic-quadratic.tissue";
+  const std::string cage = tmp.file("cage.tissue");
+  Run run = content({"tissue", "cage", reference, cage});
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  CHECK(count(*run.result.find("cage"), "nodes") == 147);
+  CHECK(count(*run.result.find("cage"), "cells") == 432);
+  CHECK(count(run.result, "node_budget") == 256);
+  REQUIRE(run.result.find("mass_ledger") != nullptr);
+  CHECK(run.result.find("not_carried")->size() >= 5);
+
+  // Alone, it validates as a runtime cage; with its source, every cage row is evaluated.
+  run = content({"tissue", "validate", cage});
+  INFO(run.output);
+  CHECK(run.exit_code == 0);
+  CHECK(verdict_of(run.result, "region.cage_size") == "pass");
+  CHECK(verdict_of(run.result, "cage.source") == "pass");
+  CHECK(verdict_of(run.result, "cage.boundary_distance") == "skipped");
+  run = content({"tissue", "validate", cage, "--source", reference, "--no-modes"});
+  INFO(run.output);
+  CHECK(run.exit_code == 0);
+  CHECK(count(run.result, "errors") == 0);
+  for (const char* id :
+       {"cage.source", "cage.volume", "cage.boundary_distance", "cage.state_displacement"})
+    CHECK_MESSAGE(verdict_of(run.result, id) == "pass", id);
+  CHECK(verdict_of(run.result, "cage.strain_energy") == "info");
+  // The wrong source is an error.
+  run = content({"tissue", "validate", cage, "--source", dir + "/synthetic.tissue"});
+  CHECK(run.exit_code == 1);
+  CHECK(verdict_of(run.result, "cage.source") == "fail");
+
+  // A smaller budget collapses; a wider one than a solve group needs --hero; a runtime cage is not
+  // a reference body; the flags are cage's.
+  run = content({"tissue", "cage", reference, tmp.file("small.tissue"), "--nodes", "100"});
+  REQUIRE(run.exit_code == 0);
+  CHECK(count(*run.result.find("cage"), "nodes") == 100);
+  CHECK(content({"tissue", "cage", reference, tmp.file("x.tissue"), "--nodes", "300"}).exit_code ==
+        1);
+  CHECK(content({"tissue", "cage", reference, tmp.file("x.tissue"), "--nodes", "300", "--hero"})
+            .exit_code == 0);
+  CHECK(content({"tissue", "cage", dir + "/synthetic.tissue", tmp.file("y.tissue")}).exit_code ==
+        1);
+  CHECK(content({"tissue", "validate", cage, "--nodes", "10"}).exit_code == 2);
+  CHECK(content({"tissue", "cage", reference}).exit_code == 2);
+}
+
+TEST_CASE("tissue: a runtime cage from each native supine fixture, and how far it is from it") {
+  const std::string root = supine_root();
+  if (root.empty()) {
+    MESSAGE("the native supine packet is not on this machine: skipped");
     return;
   }
-  struct Case {
-    const char* name;
-    const char* sha256;
-  };
-  const Case cases[] = {
-      {"B2a-supine", "56c034f7413d57d43bf235b2d68060dd61a07de19c1098b1c1cf1c52f5b3fefd"},
-      {"B2b-supine", "afb39fc7502979791d4bc0389bc3836d5b4cdf2b9314c6e05d501a3fda20d914"}};
+  engine::test::TempDir tmp("content_tissue_supine_cage");
+  for (const SupineCase& c : k_supine_cases) {
+    const std::string name = c.name;
+    INFO(name);
+    const std::string reference = copy_supine(root, c, tmp);
+    // The failed standing reference is valid as ten-node cells only through their curvature: one
+    // corner tetrahedron inverts there, and the derivation refuses to carry it unless told to
+    // leave it out.
+    Run run = content({"tissue", "cage", reference, tmp.file(name + ".refused.tissue")});
+    CHECK(run.exit_code == 1);
+    for (const bool hero : {false, true}) {
+      INFO(hero);
+      const std::string cage = tmp.file(name + (hero ? ".hero" : "") + ".cage.tissue");
+      std::vector<std::string> args = {"tissue", "cage",         reference,
+                                       cage,     "--omit-state", "failed-standing-reference"};
+      if (hero) args.push_back("--hero");
+      run = content(args);
+      INFO(run.output);
+      REQUIRE(run.exit_code == 0);
+      // The numbers docs/experiments/tissue-runtime-cage-2026-09-29.md records.
+      const JsonValue& summary = run.result;
+      CHECK(count(*summary.find("cage"), "nodes") == (hero ? 275u : 256u));
+      CHECK(count(*summary.find("cage"), "cells") == (hero ? 846u : 746u));
+      CHECK(count(*summary.find("collapses"), "interior") == (hero ? 0u : 19u));
+      CHECK(count(*summary.find("collapses"), "boundary") == 0);
+      CHECK(count(*summary.find("cage"), "boundary_nodes") == 242);
+      CHECK(number_at(*summary.find("cage"), "sicn_min") == doctest::Approx(0.119319).epsilon(1e-5));
+      CHECK(std::fabs(number_at(*summary.find("mass_ledger"), "difference_relative")) < 1e-6);
+      run = content({"tissue", "validate", cage, "--source", reference, "--no-modes"});
+      INFO(run.output);
+      CHECK(run.exit_code == 0);
+      CHECK(count(run.result, "errors") == 0);
+      CHECK(count(run.result, "warnings") == 0);
+      for (const char* id : {"cage.source", "cage.volume", "cage.boundary_distance",
+                             "cage.state_displacement"})
+        CHECK_MESSAGE(verdict_of(run.result, id) == "pass", id);
+      const JsonValue* boundary = row_of(run.result, "cage.boundary_distance");
+      REQUIRE(boundary != nullptr);
+      CHECK(number_at(*boundary->find("value"), "max_mm") == doctest::Approx(1.7837).epsilon(1e-3));
+      const JsonValue* field = row_of(run.result, "cage.state_displacement");
+      REQUIRE(field != nullptr);
+      CHECK(number_at(*field->find("value"), "at_reference_nodes_max_mm") ==
+            doctest::Approx(1.8059).epsilon(1e-3));
+      CHECK(number_at(*field->find("value"), "at_cage_nodes_max_um") < 1e-6);
+    }
+  }
+}
+
+TEST_CASE("tissue: the native supine fixtures still read, row for row") {
+  const std::string root = supine_root();
+  if (root.empty()) {
+    MESSAGE("the native supine packet is not on this machine: skipped");
+    return;
+  }
   engine::test::TempDir tmp("content_tissue_supine");
-  for (const Case& c : cases) {
+  for (const SupineCase& c : k_supine_cases) {
     INFO(c.name);
-    std::string bytes;
-    REQUIRE(io::read_file(root + "/" + c.name + "/reference-native.tissue", bytes) ==
-            io::Status::Ok);
-    const std::string hash = tissue::sha256_hex(
-        std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()));
-    REQUIRE(hash == c.sha256);
+    const std::string file = copy_supine(root, c, tmp);
     std::string declaration;
     REQUIRE(io::read_file(root + "/" + c.name + "/EXPECTED-FAILURES.predeclared.json",
                           declaration) == io::Status::Ok);
-    const std::string file = tmp.file(std::string(c.name) + ".tissue");
     const std::string expected = tmp.file(std::string(c.name) + ".expected.json");
-    REQUIRE(io::write_file(file, bytes) == io::Status::Ok);
     REQUIRE(io::write_file(expected, declaration) == io::Status::Ok);
 
     Run run = content({"tissue", "validate", file, "--expect", expected});

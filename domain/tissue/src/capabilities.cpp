@@ -62,6 +62,12 @@ constexpr RowCapability k_rows[] = {
     {"volume.report", info_only},
     {"volume.visible_vs_top", evaluated},
     {"volume.omitted_volume", evaluated},
+    // A derived runtime cage against its reference (Region version 4, cage.h).
+    {"cage.source", evaluated},
+    {"cage.volume", evaluated},
+    {"cage.boundary_distance", evaluated},
+    {"cage.state_displacement", evaluated},
+    {"cage.strain_energy", info_only},
     // The layered model (TissueDefinition version 2).
     {"parameters.domain", evaluated},
     {"state.parameters", evaluated},
@@ -108,6 +114,7 @@ constexpr LawFamily k_laws[] = {
      {"triangle", "interpolated-vertex-area-weighted", "limit-interpolated", nullptr}},
     {"refinement_rule", {"loop-hoppe-1994-v1", nullptr, nullptr, nullptr}},
     {"energy", {"bulk-edge-v0", nullptr, nullptr, nullptr}},
+    {"cage_derivation", {"corner-collapse-v1", nullptr, nullptr, nullptr}},
 };
 
 void walk(const schema::TypeRef& ref, Vector<std::string>& names);

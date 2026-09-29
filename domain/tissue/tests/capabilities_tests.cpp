@@ -8,6 +8,7 @@
 #include "fixture.h"
 
 #include <core/json/json.h>
+#include <domain/tissue/cage.h>
 #include <domain/tissue/capabilities.h>
 #include <domain/tissue/synthetic.h>
 #include <domain/tissue/tissue_file.h>
@@ -162,7 +163,8 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
   line.find("records")->find("Attachment")->get_u64(version);
   CHECK(version == 3);
   line.find("records")->find("Region")->get_u64(version);
-  CHECK(version == 3);
+  CHECK(version == 4);  // version 4: a derived cage's `derivation`
+  CHECK(line.find("records")->find("CageDerivation") != nullptr);
   CHECK(line.find("enums")->find("AttachmentEnforcement")->size() == 2);
   const JsonValue* interfaces = line.find("enums")->find("AttachmentInterface");
   REQUIRE(interfaces != nullptr);
@@ -176,17 +178,33 @@ TEST_CASE("capabilities: every record, block, row and law this build has, as one
   line.find("rows")->find("contact.trajectory")->get_string(status);
   CHECK(status == "info-only");
   CHECK(line.find("laws")->find("thickness")->size() == 2);
+  // The derived cage's rows and its method.
+  line.find("rows")->find("cage.boundary_distance")->get_string(status);
+  CHECK(status == "evaluated");
+  line.find("rows")->find("cage.strain_energy")->get_string(status);
+  CHECK(status == "info-only");
+  CHECK(c.has_law("corner-collapse-v1"));
 }
 
 TEST_CASE("capabilities: every row a report emits is in the table, with the status it claims") {
+  // A runtime cage derived from the synthetic ten-node body, validated with its source: the cage
+  // rows (cage.h).
+  SyntheticOptions quadratic;
+  quadratic.quadratic = true;
+  const TissueFile reference = make_synthetic_tissue(quadratic).file;
+  TissueFile cage;
+  CageSummary summary;
+  REQUIRE(derive_cage(reference, CageOptions{}, cage, summary));
   const TissueFile files[] = {make_synthetic_tissue().file, make_layered_slab(),
-                              make_layered_fusiform(), make_layered_tied_slab()};
+                              make_layered_fusiform(), make_layered_tied_slab(), cage};
   const Capabilities& c = build_capabilities();
   Vector<std::string> emitted;
   for (const TissueFile& file : files) {
     TissueReport report;
     ValidateOptions options;
     options.compare_modes = false;
+    options.cage_source = &reference;
+    options.cage_source_sha256 = summary.source_sha256;
     validate_tissue(file, options, report);
     for (const ValidationRow& r : report.rows) {
       INFO(r.id);
@@ -205,7 +223,7 @@ TEST_CASE("capabilities: every row a report emits is in the table, with the stat
                          id.rfind("skin.", 0) == 0 || id.rfind("surface.", 0) == 0 ||
                          id.rfind("contact.", 0) == 0 || id.rfind("attachment.", 0) == 0 ||
                          id == "frame.rigidity" || id == "reference.certificate_provenance" ||
-                         id == "definition.requirements";
+                         id == "definition.requirements" || id.rfind("cage.", 0) == 0;
     if (!layered) continue;
     INFO(r.id);
     CHECK(contains(emitted, id) == (r.status != RowStatus::not_implemented));

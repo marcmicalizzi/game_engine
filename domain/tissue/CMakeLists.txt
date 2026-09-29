@@ -16,10 +16,12 @@ engine_module(NAME tissue LAYER domain OPTIONAL
   DEPS base containers math hash io json schema schemas geometry physics
   SOURCES src/sha256.cpp src/tissue_file.cpp src/capabilities.cpp src/mesh_query.cpp
           src/cells.cpp src/energy.cpp src/validate.cpp src/layered.cpp src/expect.cpp
-          src/synthetic.cpp src/layered_synthetic.cpp)
+          src/synthetic.cpp src/layered_synthetic.cpp src/body.cpp src/cage.cpp
+          src/cage_rows.cpp)
 
 engine_module_tests(NAME tissue
   SOURCES tests/sha256_tests.cpp tests/tissue_file_tests.cpp tests/mesh_query_tests.cpp
           tests/cells_tests.cpp tests/energy_tests.cpp tests/validate_tests.cpp
           tests/quadratic_tests.cpp tests/expect_tests.cpp tests/p2_face_tests.cpp
-          tests/layered_tests.cpp tests/capabilities_tests.cpp tests/size_table.cpp)
+          tests/layered_tests.cpp tests/capabilities_tests.cpp tests/cage_tests.cpp
+          tests/size_table.cpp)

@@ -342,7 +342,43 @@ struct ActiveRestShape @version(1) {
   samples: string[]
 }
 
-struct Region @version(3) {
+/// Where a runtime cage came from (Region version 4): the content build's derived step that turns a
+/// `Reference` region of ten-node cells into a `Runtime` region of four-node cells within ADR-0029's
+/// budget (`engine-content tissue cage`; docs/subsystems/tissue.md, "Cage derivation"). Provenance
+/// and the recorded mass ledger: a reader that does not know it reads the cage as a cage, so a file
+/// that carries one requires nothing. The `cage.*` rows read it.
+struct CageDerivation @version(1) {
+  /// The derivation, one spelling with its version: "corner-collapse-v1" is the one this build
+  /// derives with (the ten-node cells' corners, then half-edge collapses, interior first).
+  method: string
+  /// SHA-256 of the source container's bytes, 64 lower-case hex digits; empty when the source region
+  /// is a region of this same file.
+  source_sha256: string
+  /// The source definition's name and the source region's, as the source names them.
+  source_definition: string
+  source_region: string
+  /// The node budget the derivation was given (ADR-0029: 256, or up to 800 for a hero volume), and
+  /// how many corner nodes it started from.
+  node_budget: u32 = 0
+  corner_nodes: u32 = 0
+  /// The source's states the cage does not carry, by name, as the derivation was asked to leave
+  /// them out: a state whose ten-node cells are valid only through their curvature inverts a
+  /// four-node cell, and the derivation refuses to carry it rather than write a cage that fails.
+  omitted_states: string[]
+  /// SHA-256 over the method, the source's hash and region, the budget, the hero flag and the
+  /// omitted states: the derived entry's key, as a built mesh's is.
+  build_key: string
+  /// The mass ledger at the construction, as the derivation measured it: the source's exact volume
+  /// (m³, its ten-node cells') and mass (kg), and the cage's. The cage.volume row checks the cage's
+  /// against the file and holds the difference to its threshold.
+  source_volume_m3: f64 = 0
+  source_mass_kg: f64 = 0
+  cage_volume_m3: f64 = 0
+  cage_mass_kg: f64 = 0
+  note: string
+}
+
+struct Region @version(4) {
   name: string
   kind: RegionKind = Volume
   cage: CageKind = Tetrahedral
@@ -373,6 +409,9 @@ struct Region @version(3) {
   /// The region's pose-dependent rest shape, when it has one: a muscle is a Volume region with
   /// this, never a cage kind of its own.
   rest_driver: ActiveRestShape? @since(3)
+  /// A runtime cage derived by the content build from a reference body: what it was derived from,
+  /// how, and the mass ledger it closed with. Absent on a cage imported as authored.
+  derivation: CageDerivation? @since(4)
 }
 
 // ---- frames, surfaces, attachments -------------------------------------------------------------

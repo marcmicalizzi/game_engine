@@ -54,6 +54,12 @@ struct ValidateOptions {
   // Also transfer every binding's records under the other two normal modes and report how far the
   // modes are apart (the round-five closure's conformance comparison).
   bool compare_modes = true;
+  // A derived cage's source, for the `cage.*` rows (cage.h): the reference file its derivation
+  // names, and the SHA-256 of that file's bytes, which must be the one the cage records. Null when
+  // the source is not supplied: the rows then find it in the file itself (a file that carries both
+  // regions), or report that it was not handed over and skip what needs its cells.
+  const TissueFile* cage_source = nullptr;
+  std::string cage_source_sha256;
 };
 
 struct TissueReport {

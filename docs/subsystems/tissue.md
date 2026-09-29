@@ -17,9 +17,12 @@ also carries the **layered volume model** the authoring side and the engine agre
 attachments, a thickness field and its depots, the quadratic material boundary and a mechanical
 skin on it, face contact with self-contact, and certificate provenance — and a **capability gate**
 ([below](#capabilities-and-the-requirements-rule)): a file names what its meaning depends on, and a
-build that lacks any of it refuses the file rather than misread it. **Nothing here simulates**: the
-states are node positions the authoring side solved, and the engine binds, transfers, measures and
-checks them. An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)):
+build that lacks any of it refuses the file rather than misread it. Since 2026-09-29 it also holds
+the content build's **cage derivation** ([below](#cage-derivation)) — a `Reference` region of
+ten-node cells in, a `Runtime` region of four-node cells within ADR-0029's budget out, recording
+what it was derived from — and the rows that say how far a derived cage is from its reference. The
+states are node positions the authoring side solved, and the engine binds, transfers, measures,
+checks and carries them. An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)):
 `ENGINE_WITH_TISSUE=OFF`, `ENGINE_WITH_PHYSICS=OFF` (it requires physics, below) or a `*-minimal`
 preset leaves the module and its tests out, and `engine-content` then refuses `tissue` with a
 sentence.
@@ -37,10 +40,11 @@ cannot be lower; and nothing in it ticks, renders or allocates per frame, so it 
 rows and numbers one validation produced; an `ExpectationResult` what a fixture's declaration made
 of one. `SyntheticTissue` owns the generated example, and `make_layered_slab`,
 `make_layered_fusiform` and `make_layered_tied_slab` return the layered model's three. `Capabilities` is what a build reads and
-evaluates, and a `CapabilityFailure` what a file required that it lacked. Nothing else holds a
-tissue definition; the
-render path, the solver and the content build's derived steps that will read one do not exist yet
-(below, "Not yet").
+evaluates, and a `CapabilityFailure` what a file required that it lacked. `derive_cage` writes a new
+`TissueFile`, the derived cage, and a `CageSummary` of what it did (the collapses, the mass ledger,
+what it carried and what it did not). Nothing else holds a tissue definition; the render path, the
+runtime deformation system and the content build's other derived steps that will read one do not
+exist yet (below, "Not yet").
 
 **Invariants.**
 - A block's bytes are the ones its SHA-256 names, checked at import and again at every container
@@ -79,6 +83,14 @@ render path, the solver and the content build's derived steps that will read one
   one.
 - A fixture is accepted when its outcome is the declared one: the rows that fail or are skipped,
   by id, subject and severity, exactly.
+- **A derived cage's nodes are its reference's nodes**, so a state it carries is the reference's,
+  node for node and bit for bit, and a node set is its members that survive.
+- **A derived cage is positive in every state it carries**: a state its four-node cells cannot
+  represent is refused by name, never written, and a state left out on purpose is recorded
+  (`CageDerivation::omitted_states`).
+- A derived cage is the same bytes whatever builds it: its derivation is single-threaded, breaks
+  every tie by index and calls nothing of the C library but the square root (`cage_tests.cpp` pins
+  its sections' SHA-256s).
 
 **Public API.** `domain/tissue/tissue_file.h`: `TissueFileHeader`, `TissueFileSection`,
 `block_element_size`, `block_kind_name`, `TissueBlock`, `TissueFile`, `encode_tissue_file`,
@@ -96,8 +108,10 @@ render path, the solver and the content build's derived steps that will read one
 `difference_kind_name`, `expectation_json`, `expectation_text`, `expectation_from_report`,
 `write_expectation`. `domain/tissue/synthetic.h`: `SyntheticOptions`, `make_synthetic_tissue`,
 `make_layered_slab`, `make_layered_fusiform`, `make_layered_tied_slab`. `domain/tissue/sha256.h`: `Sha256`, `sha256`,
-`sha256_hex`. The types themselves are `engine::tissue::*` in `<schemas/tissue.h>`, generated from
-`schemas/tissue.schema`.
+`sha256_hex`. `domain/tissue/cage.h`: `k_cage_method`, `CageOptions`, `CageLedger`,
+`CageSummary`, `cage_build_key`, `derive_cage`, `cage_summary_json`; and `ValidateOptions` carries
+a derived cage's source for its rows (`cage_source`, `cage_source_sha256`). The types themselves are
+`engine::tissue::*` in `<schemas/tissue.h>`, generated from `schemas/tissue.schema`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `io`, `json`, `schema`, `schemas`,
 `geometry`, `physics`.
@@ -114,7 +128,7 @@ name mechanics, never anatomy.
 
 | Object | What it holds |
 |---|---|
-| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance); and since version 3 `rest_driver`, a pose-dependent rest shape ([the layered model](#the-layered-model)) — a muscle is a `Volume` region with one, never a cage kind of its own |
+| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance); since version 3 `rest_driver`, a pose-dependent rest shape ([the layered model](#the-layered-model)) — a muscle is a `Volume` region with one, never a cage kind of its own; and since version 4 `derivation`, a `CageDerivation` saying what a derived runtime cage was derived from — method, the source's SHA-256 and region, the budget, the states left out, the build key and the mass ledger ([below](#cage-derivation)) |
 | `Frame` | a closed, outward-wound rigid proxy: vertices and triangles; **declared cover per vertex** with its `CoverProvenance` (`Undeclared`, `Fitted`, `AuthoredTransform`, `Authored`) and a provenance note, because a frame contracted to fit is a size changed, not discovered; `proxy`; the frames it lies `inside` |
 | `Surface` | an attachment target that is not a frame, flagged `proxy` |
 | `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone; since version 2 its `enforcement` — `Spring`, the default and every earlier attachment's meaning, or `Essential`, exact — with an essential one's `patch` on a material surface and the `transition_band` it owns ([the layered model](#the-layered-model)); since version 3 an essential one's `interface` — `Coincident`, the default and every earlier attachment's meaning, or `Separated` — and `gap_m`, a separated tie's declared gap from its frame ([two interfaces](#two-interfaces-a-coincident-patch-and-a-separated-tie)) |
@@ -338,6 +352,130 @@ Everything else applies in full, because it is geometry, material or declaration
 runtime's: cell quality, orientation and edge nodes, materials, containment and intersections, the
 depth budget and the cover, the binding rows, the volumes, and the inverse-statics declarations (a
 certified state still names what it was solved against). The diagnostics stay diagnostics.
+
+## Cage derivation
+
+`engine-content tissue cage <reference.tissue> <out.tissue> [--nodes <n>] [--hero] [--region
+<name>] [--omit-state <name>]...` ([apps](apps.md#engine-content-tissue-the-tissue-definition);
+`domain/tissue/cage.h`, `src/cage.cpp`) is [07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets)'s
+"cage generation is a `derived` step" for the tetrahedral kind: a `Reference` region of ten-node
+cells in, a `Runtime` region of four-node cells within [ADR-0029](../adr/0029-deformable-volume-budgets.md)'s
+budget out — 256 nodes by default, a wider one only with `--hero` and never past 800 — written as a
+container of its own that carries what the runtime needs and records where it came from.
+
+**The coarsening, `corner-collapse-v1`, and why this one.** Two steps.
+
+1. **The ten-node cells' corner tetrahedra.** The edge nodes are dropped and each cell becomes the
+   tetrahedron of its four corners: the reference's own linear mesh, whose boundary is its boundary
+   faces' corner triangles. A certified reference is built as exactly that — study019's 275-node
+   cage with a node added on each of its 1,360 edges — so the corners are the mesh its mesher made,
+   and at a straight construction the corner tetrahedra fill the cells exactly.
+2. **Half-edge collapses, while the nodes are over the budget.** A node is moved onto a neighbour
+   and its cells re-coned from there, the cheapest first: **every collapse of an interior node
+   before any of a boundary node** — the boundary is kept as long as the interior can absorb the
+   budget — interior ones by edge length over the worst quality they leave, boundary ones by how far
+   they move the boundary (to 0.1 µm, so rounding on a flat face does not decide), then by edge
+   length over quality, every tie by the two nodes' indices. A collapse is taken only when **the
+   link condition** holds (Dey, Edelsbrunner, Guha and Nekhayev: the links of the two nodes meet in
+   the edge's link, the boundary coned to a virtual vertex), so it changes no topology; **every
+   re-coned cell is positive in every carried state**, and at every state no worse in SICN than
+   min(0.15, the worst of the cells it replaces) — above the validator's 0.1 line; **a boundary node
+   moves only along a boundary edge onto a boundary node**, turning no boundary face by more than
+   45° at the construction and none over in any state; and **every node set that holds the moved
+   node holds the one it moves onto**, so a set never loses its reach or empties. A budget the
+   collapses cannot reach is refused with a sentence rather than met by breaking one of these.
+
+**Every cage node is a reference node.** That is the reason for collapses over a remesh: a state
+carried onto the cage is the reference's displacement field evaluated at the cage's nodes
+*exactly*, because the field at a node is the node; a node set is its members that survive; the
+frame's clearances to the nodes are the reference's; nothing is interpolated or projected. The
+other road the plan names — a fresh tetrahedralization of a coarsened boundary — would need a
+tetrahedralizer the tree does not have (Gmsh is GPL, TetGen AGPL, fTetWild not vendored;
+[ADR-0014](../adr/0014-apache-2-license-and-dependency-policy.md), [05 §5.14](../plan/05-simulation.md#514-deformable-volumes)),
+would move every node, and would put the boundary where the coarsening chose instead of where the
+reference is. What collapses cannot do is coarsen a boundary much below its own node count while
+keeping its shape: a cage smaller than the corner boundary is reachable only where the boundary is
+flat enough to give nodes up (the synthetic torus slab's, below), and is refused elsewhere.
+
+**What it carries, and how.**
+
+| | Into the cage |
+|---|---|
+| Material phases | the reference's phases, each cage cell's fractions the **volume-weighted mean** of the reference's over the part of the reference it overlaps: every cage cell is clipped exactly against the reference's same-node linear subdivision (each piece taking its cell's fractions), so the cage holds each phase's volume where the reference held it |
+| The mass ledger | the reference's mass and volume (its exact ten-node cells), the cage's (its cells with the carried fractions, exactly as `region.materials` computes them), the difference, and the difference **closed**: the reference's curvature (exact less its linear subdivision), the reference's material outside the cage, and the cage's volume outside the reference — an identity on the three, printed by the command and recorded in the file |
+| Node sets | each set's members that survive, by the same name |
+| Attachments | the region's, as declared (to the world, a bone, a frame or a surface); one to another region's sheet is not carried (the other region is not); **an essential one refuses the derivation**, because its patch lies on a ten-node material surface a four-node cage does not have |
+| Frames, surfaces, frame states | untouched: the same records over the same blocks, byte for byte — except a frame state of a state left out, which goes with it |
+| States | every state of the region, the reference's field at the cage's nodes; **a state in which a corner tetrahedron is not positive refuses the derivation**, naming the state and the cell, and `--omit-state` leaves such a state out on purpose, recorded in `omitted_states` and in the build key |
+| Not carried, and listed | the Loop sheets, the shell stitch, the skin binding, the observation and the depth budgets (the render binding's, which binds to the cage later: "Not yet"); membranes and cables (no runtime law reads them yet); the active rest driver and every record of the layered model; other regions |
+
+**The record** (`Region.derivation`, `CageDerivation`, Region version 4): the method, the source's
+SHA-256 (of the container's bytes as the command read them, or of this build's encoding of an
+interchange), its definition's and region's names, the budget, the corner count, the states left
+out, **the build key** — SHA-256 over the method, the source's hash and region, the budget, the hero
+flag and the states left out, as a built mesh's key is over its source and options — and the ledger
+at the construction. A build without the field reads a derived cage as a cage and warns that it
+skipped a field; the file requires nothing, because nothing about the cage's meaning depends on
+its provenance.
+
+**Deterministic, on every toolchain.** Single-threaded — a supine reference derives in 2.7 s in
+`msvc-debug`, the overlap clipping most of it, so there is nothing to spread — every decision a
+comparison of doubles computed from the file's floats by sums, products, quotients and square
+roots, with every tie broken by index; no C-library call decides anything. `cage_tests.cpp` derives
+a cage from a polynomial ten-node block (no `sin` or `cos` anywhere in it) with interior and
+boundary collapses both, and pins every section's SHA-256; the Linux containers' GCC and Clang
+builds reproduce them. The thread count cannot enter; the toolchain does not.
+
+**On the supine fixtures** (the native pair, 1,635 nodes and 846 ten-node cells, 275 corners of
+which 242 on the boundary and 33 inside):
+
+| | B2a-supine and B2b-supine (the same numbers) |
+|---|---|
+| without `--omit-state` | refused: at the failed standing reference the corner tetrahedron of cell 467 is inverted, a cell whose det J the Bernstein bound proves positive only through its curvature (least Jacobian ratio 0.046 there) |
+| default budget, `--omit-state failed-standing-reference` | 256 nodes and 746 cells, `Ok`: 19 interior collapses and none on the boundary (242 boundary nodes kept); SICN min 0.119319 — study019's cell, untouched by the collapses |
+| `--hero` | the corners as they are: 275 nodes and 846 cells, no collapse, `Ok` as a hero |
+| the mass ledger | reference 0.3194020 kg (328.6028 ml), cage 0.3194019 kg (328.6028 ml): 4.3 × 10⁻⁸ kg apart, 1.4 × 10⁻⁷ of the mass; curvature 1.1 × 10⁻⁸ kg, reference outside the cage 2.2 × 10⁻⁷ kg, cage outside the reference 1.9 × 10⁻⁷ kg — the construction's cells are straight, so the ledger closes to the clipping's rounding |
+| validated as a runtime cage | 23 rows, 0 errors, 0 warnings; `region.volumetric_strain` skipped (the cage carries no reference-role state once the failed standing reference is left out) |
+
+## How far the cage is from its reference
+
+Five rows, emitted only for a region that records a derivation — a definition without one reports
+exactly as it did — and measured against the source the record names: a `Reference` region of the
+same file (a file that carries both), or the file handed to `validate --source`, whose SHA-256 must
+be the recorded one. Without either, `cage.source` and `cage.volume` still run (the ledger is in the
+record) and the three that need the reference's cells are **skipped**, saying so.
+
+| Row | Severity | Threshold | Why |
+|---|---|---|---|
+| `cage.source` | error | the method is one this build derives with; the build key is the one the record's method, source, budget, hero flag and omitted states give; the source region resolves in this file or in a supplied source whose SHA-256 is the recorded one | a cage whose source moved is not that source's cage |
+| `cage.volume` | warning | the cage's mass at the construction within **1%** of the reference's (exact ten-node volumes), from the recorded ledger; the cage's own mass and volume the recorded ones (the cage did not change after it was derived); with the source, the cage's volume within **2%** of the reference's exact volume at every carried state | the ledger closes: the cage holds the reference's material where the reference held it |
+| `cage.boundary_distance` | warning, **chordal** | at every carried state every boundary node of each body within **2 mm** of the other's boundary — the reference's curved faces by their four chords (its linear subdivision's boundary), node to triangle both ways, not a continuous Hausdorff distance; the reference's excursion outside and inside the cage reported beside it | contact, containment and the render binding read the body at the cage's boundary |
+| `cage.state_displacement` | warning | at every carried state: at the cage's nodes, the carried state within **1 µm** of the reference's field there (the ten-node shape functions at the node's place in the construction, found by Newton's method on the cell's quadratic map); at the reference's nodes, the cage's linear field within **2 mm** of the reference's own, with p50, p95 and max | a carried state is the reference's field at the cage's nodes; what the cage cannot represent of it shows at the nodes it does not have |
+| `cage.strain_energy` | info | reported: at every carried state, `bulk-edge-v0`'s energy of the cage over its rest against the reference's over its rest (on its linear subdivision), and the share | a coarser cage is stiffer; the share says by how much |
+
+**The thresholds, and what they were chosen from.** Measured on the supine pair's cages (the default
+and the hero, the failed standing reference left out), the synthetic torus slab's ten-node body
+(cells curved by up to 3.6% of an edge) and the tests' polynomial block:
+
+| | Supine, 256 / 275 nodes | Torus slab, 147 / 100 nodes | Threshold |
+|---|---|---|---|
+| mass at the construction | 1.4 × 10⁻⁷ | 0.75% (its cells' curvature) | 1% |
+| volume, worst carried state | −0.689% (supine) | −0.755% (rest) | 2% |
+| boundaries' largest distance | 1.784 mm at supine, reference node 999 (the reference 1.78 mm outside the cage's chords and 1.11 mm inside); 5.8 × 10⁻⁵ mm at the construction and the rest | 0.656 mm at "pressed" | 2 mm |
+| at the cage's nodes | 4.5 × 10⁻¹⁶ m | 2 × 10⁻¹⁷ m | 1 µm |
+| at the reference's nodes, supine or pressed | p50 0.128 / 0.100 mm, p95 0.730 / 0.701 mm, max 1.806 mm (node 999) | max 0.392 / 0.405 mm | 2 mm |
+| at the reference's nodes, the rest | max 0.793 mm (a collapsed interior node) / 0.00015 mm | max 0.108 / 0.111 mm | 2 mm |
+| strain-energy share, supine or pressed | 1.78 / 1.97 | 0.94 / 0.93 | reported |
+
+So the rows pass the fixtures with 12% (boundary) and 10% (field) to spare at the supine state and
+fail what the failed standing reference would have been — boundary 3.97 mm (B2a) and 4.33 mm (B2b)
+at node 784, field 4.01 and 4.37 mm there, volume −1.91% and −2.13% — had it not been refused
+first. The numbers are **a coarser linear cage against a curved reference**, not errors of the
+derivation: at the cage's own nodes the carried states are the reference's to the arithmetic, and
+the supine state's curvature (the reference's edge nodes up to 1.8 mm off the chords between their
+corners) is what four-node cells cannot hold. The energy share above 1 on the supine cages is the
+same fact seen as stiffness: linear tetrahedra of a nearly incompressible material (K = 100 kPa
+against μ of 350–1,000 Pa) lock, and that is the first thing a runtime solve on the cage meets.
 
 ## The layered model
 
@@ -650,7 +788,10 @@ drift from what it reads — and the rows from one table the tests hold every em
 separated tie added `"Attachment": 3` to `records`, `Attachment.interface` and `Attachment.gap_m` to
 `fields`, `"AttachmentInterface": ["Coincident", "Separated"]` to `enums` and
 `"attachment.target_gap": "evaluated"` to `rows`; `schema_version` stays 2, since the definition
-record itself did not change.
+record itself did not change. The cage derivation added `"Region": 4` and `"CageDerivation": 1` to
+`records` with their fields, the five `cage.*` rows (`cage.strain_energy` info-only, the rest
+evaluated), and the law family `cage_derivation` with `corner-collapse-v1`; a derived cage requires
+none of them.
 
 **The rule.** A definition's `requirements` (the `requires` list) names what its meaning depends on:
 `records` — a record (`"ContactPair"`), one field (`"Attachment.enforcement"`), an enumeration or
@@ -1028,7 +1169,21 @@ unreadable; an older build refusing a new file from the container and the interc
 read an old one, and a build from before the tie refusing the tied slab while it reads the
 fusiform; a future enumerator refused as the capability a file requires; the writer leaving out
 what a definition does not use, the fusiform's coincident origin written without `interface` or
-`gap_m`); the size table pins the two container records.
+`gap_m`), `Region` at version 4 with `CageDerivation`, the cage rows and `corner-collapse-v1`, and
+a derived cage validated with its source among the files whose every row must be in the table);
+`cage_tests.cpp` (a polynomial ten-node block, `tests/block_fixture.h`, of 140 corners, 30 inside:
+derived within 100 nodes by 30 interior collapses before 10 on its flat faces, SICN at least 0.15,
+the ledger's split an identity and the mass within 1%, 0 errors alone and every cage row passing
+with its source; every cage node a reference node and every carried state the reference's bit for
+bit, the rim set surviving on the end walls; the budgets — past 256 without `--hero`, past 800,
+the defaults 256 and 800, a runtime cage refused, 4 nodes unreachable; a state a corner tetrahedron
+inverts in refused by name and carried when left out, recorded and keyed, the construction never
+left out; the synthetic torus slab's ten-node body derived and validated clean, its 99.15 ml
+against its chords' 98.40; a supplied source with another SHA-256 failing `cage.source` and a file
+carrying both regions measured from itself; the derivation round-tripping through the container
+byte for byte, and a definition without one writing no `derivation`; and **the committed bytes**:
+the block's cage derived twice to the same bytes, every section's SHA-256 against the table taken on
+MSVC); the size table pins the two container records.
 `apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
 `validate`, `report` and the fixture mode's `--write-expect` and `--expect`; `capabilities`, with
 the tie's field, enumeration and row; the three layered fixtures imported byte for byte and
@@ -1038,8 +1193,14 @@ and a declaration naming such a row refused against a sound file; and **the nati
 fixtures**, found by `ENGINE_TISSUE_SUPINE_NATIVE` or the owner's handoff path and skipped where
 absent: each `reference-native.tissue` checked against its pinned SHA-256 before it is read, copied
 with its `EXPECTED-FAILURES.predeclared.json` to the test's scratch directory, and validated in the
-fixture mode — exit 0, 43 rows, 27 pass, 12 info, 4 fail, as the pinned release gave. Nothing of the
-packet is committed.
+fixture mode — exit 0, 43 rows, 27 pass, 12 info, 4 fail, as the pinned release gave. It drives
+`cage` too: from the ten-node example (147 nodes, the ledger and what was not carried in the line;
+validated alone with the rows that need the source skipped, with `--source` every cage row passing,
+with the wrong source failing `cage.source`; `--nodes 100`, `--nodes 300` refused without `--hero`
+and taken with it, a runtime cage refused, the flags cage's alone), and from each native supine
+fixture — refused without `--omit-state` (the failed standing reference), then derived at the
+default budget and as a hero with it, and validated with its source to exit 0. Nothing of the packet
+is committed.
 
 **Performance notes.** Content-build code, CPU, double precision in the geometric queries, not a
 hot path: study019 validates and reports in about 10 s in `msvc-debug`, most of it the winding
@@ -1058,8 +1219,11 @@ tier policy it will feed is §5.14's (full tissue at the hero and near tiers, a 
 attachment points at mid, rest shape beyond), which belongs to the runtime that does not exist.
 **Determinism**: a definition is authored, persistent data; its container's bytes are a function of
 its content (canonical JSON, fixed section order), and the validators' numbers are a function of the
-file (every traversal breaks ties by index). Nothing here enters the sim hash, because nothing here
-simulates.
+file (every traversal breaks ties by index). A derived cage is derived data under the content
+build's rule: a function of its source, its options and its method alone — the same bytes on every
+thread count (it is single-threaded) and every toolchain (no C-library call decides anything;
+`cage_tests.cpp` pins the sections) — keyed by its build key. Nothing here enters the sim hash,
+because nothing here simulates.
 
 ## Not yet
 
@@ -1104,17 +1268,31 @@ simulates.
   needs per-node targets — the explicit frame-local targets above, still not a field; and a file
   that uses the tie needs a build whose capability line lists `attachment.target_gap`, which the
   layered model's first pin does not.
+- **Resolved 2026-09-29: a reference body in, a runtime cage out** ([Cage derivation](#cage-derivation),
+  [How far the cage is from its reference](#how-far-the-cage-is-from-its-reference)). What it leaves
+  open, in the order the runtime path needs it: **the render mesh's binding to the cage** — the
+  skin binding, the Loop sheets it follows and the observation are not carried, and binding the
+  render surface to the cage's cells (07 §7.10's 12-byte record in the cluster pages) is the next
+  step; **section masks and graft attachment** after it; a **coarsened boundary** — a cage smaller
+  than its reference's corner boundary allows is refused where the boundary is not flat enough to
+  give nodes up, and a fresh tetrahedralization would need a tetrahedralizer the tree does not have;
+  **curvature** — a state whose ten-node cells hold only through their curvature (the supine
+  fixtures' failed standing reference) cannot be a four-node cage's and is left out by name;
+  **membranes, cables and the active rest driver**, which no runtime law reads yet; and **the
+  layered model** — its essential attachments refuse the derivation (their patch is a ten-node
+  surface) and its other records are not carried.
 No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
 attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
 without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
-No content-build step: a `.tissue` is imported and validated, not derived into a cage, compliances
-or a binding stream in the cluster pages. No resolution of canonical ids against a built mesh's
+No content-build step past the cage: a `.tissue` is imported, validated and derived into a runtime
+cage, and not into a binding stream in the cluster pages. No resolution of canonical ids against a built mesh's
 identity stream. No packed binding-record section (above). No transition-continuity row (the
 dihedral turning at the band against the base's own, gated per sector on the maximum), no rim step
 per sector, no ripple row on the thickness field, and no refinement-convergence row; the first two
 need a sector definition (a chart and its angle origin) the schema does not carry yet, the last a
 second fixture. No tetrahedralizer: the
-tetrahedral cage kind is imported (the authoring side's Gmsh), never generated. The equilibrium gap
+tetrahedral cage kind is imported (the authoring side's Gmsh) or derived from an imported one by
+collapses, never generated. The equilibrium gap
 does not include membranes (a tension field on principal stress, Pipkin's relaxed energy) or cables
 (the schema's slack and linear recruitment ramp is not the authoring kernel's cubic recruitment), so
 it is complete only at the nodes neither reaches; a unilateral contact's reaction is removed without
