@@ -32,6 +32,9 @@ static const uint k_no_texture = 0xffffffffu;
 static const uint k_material_mipped = 1u;        // built, mipmapped textures: sample with gradients
 static const uint k_material_normal_rg = 2u;     // a two-channel (BC5) normal map: rebuild z
 static const uint k_material_uv_transform = 4u;  // the UVs go through uv_transform and uv_offset
+// The material carries the ground's detail (ground_detail.slang), its sand share in the
+// metallic-roughness map's alpha: a terrain's, when its scene asks for the detail.
+static const uint k_material_ground_detail = 8u;
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 
@@ -42,7 +45,7 @@ struct ResolveMaterial {
   uint albedo_texture;  // bindless sampled-image slot; 0xffffffff for none
   uint sampler;         // bindless sampler slot of the base colour
   float uv_scale;
-  uint flags;           // k_material_mipped | k_material_normal_rg | k_material_uv_transform
+  uint flags;           // k_material_mipped | _normal_rg | _uv_transform | _ground_detail
   uint metallic_roughness_texture;  // glTF packing: G roughness, B metallic
   uint normal_texture;              // tangent space, UNORM, remapped to -1..1
   float normal_scale;               // scales the map's xy before it is normalized
@@ -322,6 +325,55 @@ void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_cent
   duv_dy = db_dy.x * uv0 + db_dy.y * uv1 + db_dy.z * uv2;
 }
 
+// The surface point's world-space change per pixel along the screen's two axes at `pixel_center`:
+// `screen_uv_gradients`' arithmetic, with the triangle's positions in place of its UVs — the
+// perspective-correct barycentrics' derivatives times the three corners. It is the footprint the
+// ground's detail is filtered by (ground_detail.slang), from the triangle alone for the reason the
+// UV derivatives are: the 2x2 quad a derivative instruction would difference straddles other
+// triangles in a fullscreen pass. Zero for a degenerate screen area or a collapsed w, which reads
+// as a footprint of nothing: the unfiltered detail.
+void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
+                               column_major float4x4 view_proj, uint width, uint height,
+                               out float3 dp_dx, out float3 dp_dy) {
+  dp_dx = float3(0.0, 0.0, 0.0);
+  dp_dy = float3(0.0, 0.0, 0.0);
+  float4 clip[3];
+  float2 screen[3];
+  const float2 size = float2(float(width), float(height));
+  for (uint i = 0; i < 3; ++i) {
+    clip[i] = mul(view_proj, float4(tri.p[i], 1.0));
+    const float2 ndc = clip[i].xy / clip[i].w;
+    screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
+  }
+  const float area = material_edge(screen[0], screen[1], screen[2]);
+  if (abs(area) <= 1e-12) return;
+  float3 l;
+  l.x = material_edge(screen[1], screen[2], pixel_center) / area;
+  l.y = material_edge(screen[2], screen[0], pixel_center) / area;
+  l.z = 1.0 - l.x - l.y;
+  const float3 dl_dx =
+      float3(screen[1].y - screen[2].y, screen[2].y - screen[0].y, screen[0].y - screen[1].y) /
+      area;
+  const float3 dl_dy =
+      float3(screen[2].x - screen[1].x, screen[0].x - screen[2].x, screen[1].x - screen[0].x) /
+      area;
+  const float3 inv_w = 1.0 / float3(clip[0].w, clip[1].w, clip[2].w);
+  const float3 q = l * inv_w;
+  const float q_sum = q.x + q.y + q.z;
+  if (abs(q_sum) <= 1e-20) return;
+  const float3 b = q / q_sum;
+  const float3 dq_dx = dl_dx * inv_w;
+  const float3 dq_dy = dl_dy * inv_w;
+  const float3 db_dx = (dq_dx - b * (dq_dx.x + dq_dx.y + dq_dx.z)) / q_sum;
+  const float3 db_dy = (dq_dy - b * (dq_dy.x + dq_dy.y + dq_dy.z)) / q_sum;
+  // The derivatives sum to zero, so the corners enter as edges from the first: a terrain's corners
+  // are thousands of metres from the origin and their differences are what the answer is made of.
+  const float3 e1 = tri.p[1] - tri.p[0];
+  const float3 e2 = tri.p[2] - tri.p[0];
+  dp_dx = db_dx.y * e1 + db_dx.z * e2;
+  dp_dy = db_dy.y * e1 + db_dy.z * e2;
+}
+
 // The hit triangle's tangent frame, from its own positions and UVs: with dp1 = T du1 + B dv1 and
 // dp2 = T du2 + B dv2, the two edge deltas and the two UV deltas solve for T and B, which are
 // then Gram-Schmidt orthonormalized against the shading normal so the frame is orthonormal and
@@ -377,6 +429,10 @@ struct MaterialSample {
   float roughness;
   float metallic;
   float3 emissive;
+  // The metallic-roughness map's alpha, 1 without the map: a `k_material_ground_detail` material's
+  // sand share, which its detail is weighted by. Every other material ignores it (glTF gives the
+  // map's alpha no meaning, and an image without one reads 1).
+  float detail_mask;
 };
 
 //
@@ -394,12 +450,14 @@ MaterialSample sample_material(ResolveMaterial material, float2 uv) {
   }
   sampled.roughness = material.albedo.w;
   sampled.metallic = material.emissive.w;
+  sampled.detail_mask = 1.0;
   if (material.metallic_roughness_texture != k_no_texture) {
     const uint s = slot_sampler(material, material.samplers_mr_normal, 0);
     const float4 mr = g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)]
                           .SampleLevel(g_samplers[NonUniformResourceIndex(s)], uv, 0);
     sampled.roughness *= mr.g;
     sampled.metallic *= mr.b;
+    sampled.detail_mask = mr.a;
   }
   sampled.emissive = material.emissive.rgb;
   if (material.emissive_texture != k_no_texture) {
@@ -428,6 +486,7 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
   }
   sampled.roughness = material.albedo.w;
   sampled.metallic = material.emissive.w;
+  sampled.detail_mask = 1.0;
   if (material.metallic_roughness_texture != k_no_texture) {
     const uint s = slot_sampler(material, material.samplers_mr_normal, 0);
     const float4 mr =
@@ -435,6 +494,7 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
             g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy);
     sampled.roughness *= mr.g;
     sampled.metallic *= mr.b;
+    sampled.detail_mask = mr.a;
   }
   sampled.emissive = material.emissive.rgb;
   if (material.emissive_texture != k_no_texture) {

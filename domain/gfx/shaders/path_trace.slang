@@ -35,13 +35,14 @@
 // constant, which is the white furnace the integrator is checked with.
 
 #include "brdf.slang"
+#include "ground_detail.slang"
 #include "material.slang"
 #include "sampling.slang"
 #include "scene.slang"
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Mirrors gfx::PathTraceParams (272 bytes).
+// Mirrors gfx::PathTraceParams (288 bytes).
 struct PathTraceParams {
   column_major float4x4 inv_view_proj;
   float4 camera;  // xyz eye position
@@ -72,6 +73,8 @@ struct PathTraceParams {
   uint64_t coverage;  // uint[width * height]: 1 where a primary ray hit geometry
   uint background;    // packed RGBA8 of the sky, quantized on the CPU
   float ray_bias_steps;  // plus this many steps of the hit surface's own grid (ray_offset)
+  uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
+  uint64_t pad;
 };
 
 struct PathTracePush {
@@ -213,13 +216,28 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // ray's side is `brdf_eval`'s clamp's to handle, and ends the path below.
     if (dot(shading_normal, s.geometric) < 0.0) shading_normal = -shading_normal;
 
+    // The ground's detail, the resolve's function of (x, z) (ground_detail.slang) **unfiltered**:
+    // a ray has no pixel footprint, and the jittered samples a reference pixel averages are the
+    // filter, so a converged reference is what the resolve's fade and roughness transfer stand for.
+    float3 albedo = sampled.albedo;
+    float roughness = sampled.roughness;
+    if ((material.flags & k_material_ground_detail) != 0 && params->ground_detail != 0) {
+      const GroundShading ground = ground_detail_shade(
+          ((GroundDetail*)params->ground_detail)[0], s.position, shading_normal,
+          float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), sampled.detail_mask, albedo, roughness,
+          false);
+      shading_normal = ground.normal;
+      albedo = ground.albedo;
+      roughness = ground.roughness;
+    }
+
     radiance += throughput * sampled.emissive;
 
     BrdfSurface surface;
-    surface.albedo = sampled.albedo;
+    surface.albedo = albedo;
     surface.normal = shading_normal;
     surface.view = -direction;
-    surface.roughness = sampled.roughness;
+    surface.roughness = roughness;
     surface.metallic = sampled.metallic;
 
     // Every ray from here leaves the surface by the resolve's own offset (`ray_offset`): the hit

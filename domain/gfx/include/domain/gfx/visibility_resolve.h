@@ -192,7 +192,7 @@ struct ResolveMaterial {
   u32 albedo_texture = k_no_texture;    // multiplies albedo
   u32 sampler = 0;                      // bindless sampler slot of the base colour
   f32 uv_scale = 1.0f;
-  u32 flags = 0;  // k_material_mipped | k_material_normal_rg | k_material_uv_transform
+  u32 flags = 0;  // k_material_mipped | _normal_rg | _uv_transform | _ground_detail
   u32 metallic_roughness_texture = k_no_texture;  // glTF packing: G roughness, B metallic
   u32 normal_texture = k_no_texture;              // tangent space, UNORM, remapped to -1..1
   f32 normal_scale = 1.0f;                        // scales the map's xy before it is normalized
@@ -237,6 +237,11 @@ inline constexpr u32 k_material_normal_rg = 2u;
 // `k_material_uv_transform`: the UVs go through `uv_transform` and `uv_offset` before any slot is
 // sampled, and their derivatives through the transform's linear part.
 inline constexpr u32 k_material_uv_transform = 4u;
+// `k_material_ground_detail`: the material draws the ground's detail (ground_detail.h) when the
+// frame hands over its block (`ResolveParams::ground_detail`), weighted by its sand share, which is
+// the metallic-roughness map's **alpha** (1 without the map; glTF gives that alpha no meaning). A
+// terrain's material, when its scene asks for the detail (docs/subsystems/renderer.md).
+inline constexpr u32 k_material_ground_detail = 8u;
 
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
@@ -290,6 +295,12 @@ enum class ResolveMode : u32 {
   // byte is the occlusion times 255. What the resolve multiplies its indirect term by, and
   // nothing else (texture.md, "Occlusion").
   Occlusion = 8,
+  // The ground's detail as data (ground_detail.h), on a material that carries it; black elsewhere.
+  // R is the ripples' height over their amplitude and B the grain's coarse octave, each a function
+  // of the point's world (x, z) alone, mapped from [-1, 1] to a byte; G is the share of the ripples
+  // the pixel draws — its sand share, times the fade by the ground's slope, times the fade by its
+  // footprint. What the seam tests compare against the CPU function of the same world position.
+  GroundDetail = 9,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the
@@ -318,7 +329,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 320 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 336 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -410,8 +421,14 @@ struct ResolveParams {
   // It took the pad word that kept the block 16-byte aligned, so the size is unchanged, and it is
   // zero for every caller that does not draw maps.
   u64 shadow_maps = 0;
+  // **The ground's detail** (`GroundDetailParams`, ground_detail.h), read for a material with
+  // `k_material_ground_detail`: wind ripples and grain, a function of the pixel's world position
+  // filtered by its footprint. Zero for every caller that does not draw it, and then no material
+  // reads anything it did not read before.
+  u64 ground_detail = 0;
+  u64 pad3 = 0;
 };
-static_assert(sizeof(ResolveParams) == 320);
+static_assert(sizeof(ResolveParams) == 336);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

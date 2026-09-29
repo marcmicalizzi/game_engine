@@ -40,6 +40,7 @@
 // plain module is what every other device draws with.
 
 #include "brdf.slang"
+#include "ground_detail.slang"
 #include "material.slang"
 #include "scene.slang"
 
@@ -53,7 +54,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (320 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (336 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -71,7 +72,8 @@ struct ResolveParams {
   uint width;
   uint height;
   uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs,
-              // 6 the sun's shadow alone, 7 the textured albedo unlit, 8 the ambient occlusion
+              // 6 the sun's shadow alone, 7 the textured albedo unlit, 8 the ambient occlusion,
+              // 9 the ground's detail as data
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, pair}
@@ -94,6 +96,8 @@ struct ResolveParams {
   uint64_t pair_entries;  // uint[pair_count]: this view's pair -> visible entry; 0: the pair is it
   uint64_t pairs;         // uint2[pair_count]: the scene's {instance, cluster} per pair; 0: none
   uint64_t shadow_maps;   // ShadowMapParams*, read with k_shadow_cascades; 0: none
+  uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
+  uint64_t pad3;
 };
 
 // Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
@@ -433,7 +437,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     return float4(o, o, o, 1.0);
   }
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
-  const float3 albedo = sampled.albedo;
+  float3 albedo = sampled.albedo;
   if (params->mode == 7) return float4(display_encode(albedo), 1.0);
   float3 shading_normal = s.normal;
   if (material.normal_texture != k_no_texture) {
@@ -454,11 +458,40 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // the lights on the far side of it through the surface. A normal merely leaning away from the
   // eye on the camera's side of its triangle is left alone; that is what the clamp is for.
   if (dot(shading_normal, s.geometric) < 0.0) shading_normal = -shading_normal;
+  // The ground's detail (ground_detail.slang): ripples in the shading normal, grain in the albedo
+  // and the roughness, a function of the point's world (x, z) filtered by this pixel's footprint —
+  // the reconstruction's own derivatives, from the triangle, as the UV's are. Only a material that
+  // carries it, and only when the frame hands over its block; everything else reads what it read.
+  float roughness = sampled.roughness;
+  const bool detailed =
+      (material.flags & k_material_ground_detail) != 0 && params->ground_detail != 0;
+  if (detailed) {
+    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
+    float3 dp_dx;
+    float3 dp_dy;
+    screen_position_gradients(tri, source, params->view_proj, params->width, params->height, dp_dx,
+                              dp_dy);
+    const GroundShading ground =
+        ground_detail_shade(((GroundDetail*)params->ground_detail)[0], s.position, shading_normal,
+                            dp_dx, dp_dy, sampled.detail_mask, albedo, roughness,
+                            params->mode == 9);
+    // The detail view (ResolveMode::GroundDetail): data, not colour — the ripples' height over
+    // their amplitude and the grain's coarse octave, each a function of (x, z) alone and mapped
+    // from [-1, 1], and the share of the ripples this pixel draws (sand, slope and footprint).
+    if (params->mode == 9) {
+      return float4(ground.ripple * 0.5 + 0.5, ground.weight * ground.fade,
+                    ground.grain * 0.5 + 0.5, 1.0);
+    }
+    shading_normal = ground.normal;
+    albedo = ground.albedo;
+    roughness = ground.roughness;
+  }
+  if (params->mode == 9) return float4(0.0, 0.0, 0.0, 1.0);
   BrdfSurface surface;
   surface.albedo = albedo;
   surface.normal = shading_normal;
   surface.view = normalize(params->camera.xyz - s.position);
-  surface.roughness = sampled.roughness;
+  surface.roughness = roughness;
   surface.metallic = sampled.metallic;
 
   // Shadows are `shadow_visibility`'s: a ray leaves the surface offset along the geometric normal

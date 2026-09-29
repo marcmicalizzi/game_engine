@@ -6,6 +6,7 @@
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/commands.h>
+#include <domain/gfx/ground_detail.h>
 #include <domain/gfx/path_trace.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
@@ -161,7 +162,15 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // hemisphere ambient took a lower half of its own — the ground lit by the frame's sun and sky —
 // so a face turned towards the ground is lit by it (docs/subsystems/renderer.md, "The sky above,
 // the ground below"). Three floats with no pad word left to take them, so the block grew a row.
-ENGINE_EXPECT_SIZE(320, 8, gfx::ResolveParams);
+// 336, not 320: `ground_detail`, the address of the ground's detail block below (2026-09-29), and a
+// pad word to keep the block a whole number of float4 rows. Zero for every frame that draws none.
+ENGINE_EXPECT_SIZE(336, 8, gfx::ResolveParams);
+
+// The ground's detail (ground_detail.h, docs/subsystems/gfx.md "The ground's detail"): the wind,
+// the ripples' shape and the kernels' lattice, the filter's slope variance, the slope fade and the
+// grain, read through an address once per shaded pixel of a material that carries it. One block a
+// frame, shared by every view and by the reference.
+ENGINE_EXPECT_SIZE(80, 4, gfx::GroundDetailParams);
 
 // The cascaded shadow maps (docs/subsystems/renderer.md, "Shadows"): per cascade its world-to-tile
 // matrix and three numbers the filter and the bias need; per frame four cascades, the light's
@@ -176,7 +185,9 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // number of float4 rows like every other addressed block.
 // 272, not 256: `ground`, the same albedo `ResolveParams::ground` carries, so an escaped ray below
 // the horizon sees the ground the resolve's hemisphere term puts there (2026-09-25).
-ENGINE_EXPECT_SIZE(272, 8, gfx::PathTraceParams);
+// 288, not 272: `ground_detail`, the resolve's block, which the reference draws unfiltered, and a
+// pad (2026-09-29).
+ENGINE_EXPECT_SIZE(288, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
 // slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a

@@ -37,7 +37,7 @@ inline constexpr u32 k_pt_uniform_sky = 1u;
 // comparison that is about shading rather than about antialiasing turns the jitter off.
 inline constexpr u32 k_pt_pixel_center = 2u;
 
-// Mirrors PathTraceParams in path_trace.slang. 272 bytes.
+// Mirrors PathTraceParams in path_trace.slang. 288 bytes.
 struct PathTraceParams {
   Mat4 inv_view_proj;  // clip to world, for the primary rays
   Vec4 camera{};       // xyz eye position
@@ -88,6 +88,11 @@ struct PathTraceParams {
   // where there is precision to spare (`pack_unorm_rgba8`) and handed over ready.
   u32 background = 0;
   f32 ray_bias_steps = 0.0f;  // steps of the hit surface's own grid added to `ray_bias`
+  // The ground's detail, the resolve's block (`ResolveParams::ground_detail`): the reference
+  // evaluates the same function of position **unfiltered**, since its jittered samples are the
+  // pixel's filter. Zero draws none.
+  u64 ground_detail = 0;
+  u64 pad = 0;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the
@@ -99,7 +104,7 @@ inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
   };
   return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
 }
-static_assert(sizeof(PathTraceParams) == 272);
+static_assert(sizeof(PathTraceParams) == 288);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // Russian roulette starts after this many scattering events, so a short path is never cut and a
