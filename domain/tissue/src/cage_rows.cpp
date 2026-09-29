@@ -31,11 +31,14 @@ constexpr f64 k_node_error_m = 1.0e-6;
 // The cage's own field at the reference's nodes against the reference's, at any carried state.
 constexpr f64 k_field_error_m = 0.002;
 
-std::string mm_text(f64 m) {
-  char buffer[64];
-  std::snprintf(buffer, sizeof(buffer), "%.4g mm", m * k_mm);
+// A number in four significant digits, for a sentence.
+std::string g4(f64 v) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%.4g", v);
   return buffer;
 }
+
+std::string mm_text(f64 m) { return g4(m * k_mm) + " mm"; }
 
 // A distribution in millimetres: p50, p95, max.
 JsonValue mm_stats(Vector<f64> values) { return stats(std::move(values), k_mm); }
@@ -152,13 +155,13 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
 
     // ---- cage.volume
     {
-      char threshold[256];
-      std::snprintf(threshold, sizeof(threshold),
-                    "the cage's mass at the construction within %.3g%% of the reference's (its "
-                    "exact ten-node cells'), from the recorded ledger; with the source, the "
-                    "cage's volume within %.3g%% of the reference's exact volume at every carried "
-                    "state; and the recorded cage numbers the file's own",
-                    k_mass_relative * 100.0, k_volume_relative * 100.0);
+      const std::string threshold =
+          "the cage's mass at the construction within " + g4(k_mass_relative * 100.0) +
+          "% of the reference's (its exact ten-node cells'), from the recorded ledger; with the "
+          "source, the cage's volume within " +
+          g4(k_volume_relative * 100.0) +
+          "% of the reference's exact volume at every carried state; and the recorded cage "
+          "numbers the file's own";
       ValidationRow& r =
           w.row("cage.volume", subject, Severity::warning, threshold,
                 "the mass ledger has to close: the cage holds the reference's material where the "
@@ -186,12 +189,9 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
           RowWriter::fail(r,
                           "the cage's own mass or volume is not the recorded one: the cage "
                           "changed after it was derived");
-        if (std::fabs(relative) > k_mass_relative) {
-          char buffer[128];
-          std::snprintf(buffer, sizeof(buffer), "mass %.4g kg against the reference's %.4g kg",
-                        mass.mass_kg, derivation.source_mass_kg);
-          RowWriter::fail(r, buffer);
-        }
+        if (std::fabs(relative) > k_mass_relative)
+          RowWriter::fail(r, "mass " + g4(mass.mass_kg) + " kg against the reference's " +
+                                 g4(derivation.source_mass_kg) + " kg");
       }
       if (both) {
         JsonValue per_state = JsonValue::object();
@@ -219,12 +219,9 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
         }
         r.value.set("states", std::move(per_state));
         r.value.set("volume_relative_max", number(worst));
-        if (worst > k_volume_relative) {
-          char buffer[160];
-          std::snprintf(buffer, sizeof(buffer), "state %s: volume %.3g%% from the reference's",
-                        worst_state.c_str(), worst * 100.0);
-          RowWriter::fail(r, buffer);
-        }
+        if (worst > k_volume_relative)
+          RowWriter::fail(r, "state " + worst_state + ": volume " + g4(worst * 100.0) +
+                                 "% from the reference's");
       } else {
         r.value.set("states", JsonValue::null());
         r.value.set("states_not_measured", JsonValue(source_error));
@@ -239,13 +236,11 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
 
     // ---- cage.boundary_distance
     {
-      char threshold[256];
-      std::snprintf(threshold, sizeof(threshold),
-                    "at every carried state, every boundary node of each body within %.3g mm of "
-                    "the other's boundary: chordal — the reference's curved faces are their four "
-                    "chords (its linear subdivision's boundary), and the distance is from each "
-                    "side's nodes to the other's triangles, not a continuous Hausdorff distance",
-                    k_boundary_m * k_mm);
+      const std::string threshold =
+          "at every carried state, every boundary node of each body within " + mm_text(k_boundary_m) +
+          " of the other's boundary: chordal — the reference's curved faces are their four chords "
+          "(its linear subdivision's boundary), and the distance is from each side's nodes to the "
+          "other's triangles, not a continuous Hausdorff distance";
       ValidationRow& r = w.row(
           "cage.boundary_distance", subject, Severity::warning, threshold,
           "the cage's boundary is where contact, containment and the render binding will read "
@@ -323,13 +318,12 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
 
     // ---- cage.state_displacement
     {
-      char threshold[320];
-      std::snprintf(threshold, sizeof(threshold),
-                    "at every carried state: at the cage's nodes, the carried state within %.3g "
-                    "um of the reference's field there (its ten-node shape functions at the "
-                    "node's place in the construction); at the reference's nodes, the cage's "
-                    "linear field within %.3g mm of the reference's own",
-                    k_node_error_m * 1.0e6, k_field_error_m * k_mm);
+      const std::string threshold =
+          "at every carried state: at the cage's nodes, the carried state within " +
+          g4(k_node_error_m * 1.0e6) +
+          " um of the reference's field there (its ten-node shape functions at the node's place "
+          "in the construction); at the reference's nodes, the cage's linear field within " +
+          mm_text(k_field_error_m) + " of the reference's own";
       ValidationRow& r =
           w.row("cage.state_displacement", subject, Severity::warning, threshold,
                 "a state carried onto the cage is the reference's displacement field at the cage's "
@@ -397,11 +391,8 @@ void check_cage(const TissueFile& file, const Vector<RegionModel>& regions,
           }
           if (field_max > field_worst) {
             field_worst = field_max;
-            char buffer[200];
-            std::snprintf(buffer, sizeof(buffer),
-                          "state %s: reference node %u, %.4g mm from the cage's field",
-                          s.name.c_str(), field_node, field_max * k_mm);
-            field_where = buffer;
+            field_where = "state " + s.name + ": reference node " + str(field_node) + ", " +
+                          mm_text(field_max) + " from the cage's field";
           }
         }
         r.value.set("states", std::move(per_state));
