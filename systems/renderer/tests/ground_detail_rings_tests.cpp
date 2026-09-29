@@ -302,10 +302,11 @@ TEST_CASE("sand detail: the same function on both sides of every ring and chunk 
         }
       }
       // The detail view's ripple is the scene's own profile, unfiltered: a function of (x, z).
-      const gref::Ripple r =
-          gref::ripple(block, world.x, world.z, static_cast<f64>(block.asymmetry));
+      const f64 wx = static_cast<f64>(world.x);
+      const f64 wz = static_cast<f64>(world.z);
+      const gref::Ripple r = gref::ripple(block, wx, wz, static_cast<f64>(block.asymmetry));
       const gref::Noise2 g =
-          gref::value_noise2(world.x, world.z, block.grain_size, block.seed, 16u);
+          gref::value_noise2(wx, wz, static_cast<f64>(block.grain_size), block.seed, 16u);
       const int ripple = std::abs(int{shot.color[p * 4]} -
                                   unorm(r.height / static_cast<f64>(block.amplitude) * 0.5 + 0.5));
       const int grain = std::abs(int{shot.color[p * 4 + 2]} - unorm(g.a * 0.5 + 0.5));
