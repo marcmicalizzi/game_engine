@@ -46,10 +46,14 @@ struct Ripple {
   double height = 0.0;
   double gx = 0.0;
   double gz = 0.0;
+  double turn = 0.0;   // the sum's phase as a fraction of a turn, (0, 1] (tests read it)
+  double taper = 0.0;  // |S|^2 / (|S|^2 + c^2)
 };
 
 // `asymmetry` is the profile's windward share as drawn: the scene's, or the filter's eased one.
-inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, double asymmetry) {
+// `scale` multiplies the wavelength and the height: the spacing's, 1 without it.
+inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, double asymmetry,
+                     double scale = 1.0) {
   const double cell = static_cast<double>(d.cell);
   const double qx = x / cell;
   const double qz = z / cell;
@@ -58,7 +62,7 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   const double wx = static_cast<double>(d.wind.x);
   const double wz = static_cast<double>(d.wind.y);
   const double spread = static_cast<double>(d.wind.z);
-  const double k = k_two_pi / static_cast<double>(d.wavelength);
+  const double k = k_two_pi / (static_cast<double>(d.wavelength) * scale);
   const double inv_r2 = 1.0 / (cell * cell);
   double sr = 0.0, si = 0.0;  // S
   double xr = 0.0, xi = 0.0;  // dS/dx
@@ -104,9 +108,9 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   const double c2 = static_cast<double>(d.magnitude_floor);
   const double denom = m2 + c2;
   const double taper = m2 / denom;
-  const double scale = 2.0 * c2 / (denom * denom);
-  const double dtx = (sr * xr + si * xi) * scale;
-  const double dtz = (sr * zr + si * zi) * scale;
+  const double dtaper = 2.0 * c2 / (denom * denom);
+  const double dtx = (sr * xr + si * xi) * dtaper;
+  const double dtz = (sr * zr + si * zi) * dtaper;
   const double tpx = (sr * xi - si * xr) / denom;
   const double tpz = (sr * zi - si * zr) / denom;
   const double turn = std::atan2(si, sr) / k_two_pi + 0.5;
@@ -121,7 +125,9 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   }
   const double profile = -std::cos(k_two_pi * u);
   const double dprofile = std::sin(k_two_pi * u) * du;
-  const double amplitude = static_cast<double>(d.amplitude);
+  const double amplitude = static_cast<double>(d.amplitude) * scale;
+  out.turn = turn;
+  out.taper = taper;
   out.height = amplitude * taper * profile;
   out.gx = (dtx * profile + tpx * dprofile) * amplitude;
   out.gz = (dtz * profile + tpz * dprofile) * amplitude;
@@ -306,6 +312,16 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
                                     static_cast<double>(d.slope_cos_start), normal.y);
     if ((d.flags & gfx::k_ground_exposure) != 0u) out.exposure = exposure(d, normal);
     const double weight = mask * slope * out.exposure;
+    double scale = 1.0;
+    if ((d.flags & gfx::k_ground_spacing) != 0u) {
+      const double climb =
+          -(normal.x * static_cast<double>(d.wind.x) + normal.z * static_cast<double>(d.wind.y)) /
+          (normal.y > 1e-4 ? normal.y : 1e-4);
+      const double sc = 1.0 + static_cast<double>(d.spacing_gain) * climb;
+      const double lo = static_cast<double>(d.spacing_min);
+      const double hi = static_cast<double>(d.spacing_max);
+      scale = sc < lo ? lo : (sc > hi ? hi : sc);
+    }
     const double wx = static_cast<double>(d.wind.x);
     const double wz = static_cast<double>(d.wind.y);
     const double spread = static_cast<double>(d.wind.z);
@@ -313,7 +329,7 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
         std::fabs(dpdx.x * wx + dpdx.z * wz) + std::fabs(-dpdx.x * wz + dpdx.z * wx) * spread;
     const double fy =
         std::fabs(dpdy.x * wx + dpdy.z * wz) + std::fabs(-dpdy.x * wz + dpdy.z * wx) * spread;
-    const double cycles = (fx > fy ? fx : fy) / static_cast<double>(d.wavelength);
+    const double cycles = (fx > fy ? fx : fy) / (static_cast<double>(d.wavelength) * scale);
     const double scene_asymmetry = static_cast<double>(d.asymmetry);
     const double asymmetry = 0.5 + (scene_asymmetry - 0.5) * fade(2.0 * cycles);
     const double f = fade(cycles);
@@ -321,16 +337,17 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
     out.fade = f;
     const double strength = weight * f;
     if (strength > 0.0 || full) {
-      const Ripple r = ripple(d, position.x, position.z, full ? scene_asymmetry : asymmetry);
-      out.ripple = r.height / static_cast<double>(d.amplitude);
+      const Ripple r = ripple(d, position.x, position.z, full ? scene_asymmetry : asymmetry, scale);
+      out.ripple = r.height / (static_cast<double>(d.amplitude) * scale);
       if (strength > 0.0 && !full) {
         const double s = normal.y * strength;
         out.normal = brdf_ref::normalize(Dvec3{normal.x - r.gx * s, normal.y, normal.z - r.gz * s});
       }
     }
-    const double scale = static_cast<double>(d.slope_scale);
-    const double full_variance = scale * (1.0 / scene_asymmetry + 1.0 / (1.0 - scene_asymmetry));
-    const double drawn_variance = scale * (1.0 / asymmetry + 1.0 / (1.0 - asymmetry)) * f * f;
+    const double slope_scale = static_cast<double>(d.slope_scale);
+    const double full_variance =
+        slope_scale * (1.0 / scene_asymmetry + 1.0 / (1.0 - scene_asymmetry));
+    const double drawn_variance = slope_scale * (1.0 / asymmetry + 1.0 / (1.0 - asymmetry)) * f * f;
     const double lost =
         weight * weight * (full_variance > drawn_variance ? full_variance - drawn_variance : 0.0);
     if (lost > 0.0) {

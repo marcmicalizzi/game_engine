@@ -899,3 +899,94 @@ TEST_CASE("ground detail: the streaks' filter keeps the mean and adds no sparkle
     CHECK(sd_f <= sd_s * 1.25 + 1e-4);
   }
 }
+
+TEST_CASE("ground detail: the ripples' spacing follows the wind, without a jump or a slide") {
+  gfx::GroundDetailDesc desc;
+  desc.spacing_gain = 2.5f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((d.flags & gfx::k_ground_spacing) != 0u);
+  const double deg = 3.14159265358979323846 / 180.0;
+  const auto windward = [deg](double slope) {
+    return ref::Dvec3{-std::sin(slope * deg), std::cos(slope * deg), 0.0};
+  };
+  const ref::Dvec3 none{};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  // The wavelength the pattern has: zero crossings of the height along the wind over 40 m, two a
+  // wavelength, at the flat's scale and at a 12-degree windward slope's (1 + 2.5 tan 12 = 1.53).
+  const auto crossings = [&](double scale) {
+    u32 count = 0;
+    double previous = gref::ripple(d, 0.0, 0.7, 0.5, scale).height;
+    for (u32 i = 1; i <= 80000; ++i) {
+      const double h = gref::ripple(d, 0.0005 * i, 0.7, 0.5, scale).height;
+      if ((h > 0.0) != (previous > 0.0)) ++count;
+      previous = h;
+    }
+    return count;
+  };
+  const double s12 = std::min(1.0 + 2.5 * std::tan(12.0 * deg), 1.6);
+  const u32 at_flat = crossings(1.0);
+  const u32 at_slope = crossings(s12);
+  MESSAGE("zero crossings over 40 m: " << at_flat << " on the flat, " << at_slope << " at scale "
+                                       << s12);
+  CHECK(static_cast<double>(at_flat) / at_slope == doctest::Approx(s12).epsilon(0.12));
+
+  // Scale on the windward slope, read back from shade(): the ripple's height over its own
+  // amplitude stays in [-1, 1] however the spacing scales it.
+  double largest = 0.0;
+  for (u32 i = 0; i < 2000; ++i) {
+    const gref::Shading g = gref::shade(d, ref::Dvec3{0.013 * i, 0.0, 0.3}, windward(12.0), none,
+                                        none, 1.0, albedo, 0.85, true);
+    largest = std::max(largest, std::fabs(g.ripple));
+  }
+  CHECK(largest <= 1.0 + 1e-9);
+
+  // No jump where the wavelength varies: over ground whose windward slope rises from 0 to 14
+  // degrees across 12 m — so the scale climbs from 1 to its clamp across dozens of lattice cells —
+  // the ripple's height at the scene's asymmetry never jumps between half-millimetre steps by
+  // more than its slope allows, as on the flat.
+  double previous_h = 0.0;
+  u32 jumps = 0;
+  for (u32 i = 0; i <= 24000; ++i) {
+    const double x = -2.0 + 0.0005 * i;
+    const double angle = std::clamp((x + 2.0) / 12.0, 0.0, 1.0) * 14.0;
+    const gref::Shading g = gref::shade(d, ref::Dvec3{x, 0.0, 0.43}, windward(angle), none, none,
+                                        1.0, albedo, 0.85, true);
+    const double h = g.ripple * static_cast<double>(d.amplitude);
+    // The steepest honest change over a step: the ripple's slope bound, 2 pi a / (w l) at the
+    // scene's asymmetry, with the scale's own change riding along.
+    const double bound = 2.0 * 3.14159265358979323846 * static_cast<double>(d.amplitude) /
+                         (0.25 * static_cast<double>(d.wavelength)) * 0.0005;
+    if (i > 0 && std::fabs(h - previous_h) > 2.0 * bound + 1e-6) ++jumps;
+    previous_h = h;
+  }
+  CHECK(jumps == 0);
+
+  // The slide: a tenth of a degree of normal on a 12-degree windward slope moves the phase at a
+  // kernel's edge by R dk; bounded analytically (renderer.md) at 27.8 gain sec^2 / s radians per
+  // radian, and measured on the mirror as the crests' displacement over 4,000 points where the sum
+  // stands above the taper: under a twentieth of a wavelength everywhere.
+  const double tenth = 0.1;
+  const double s0 = std::min(1.0 + 2.5 * std::tan(12.0 * deg), 1.6);
+  const double s1 = std::min(1.0 + 2.5 * std::tan((12.0 + tenth) * deg), 1.6);
+  const double k0 = 2.0 * 3.14159265358979323846 / (static_cast<double>(d.wavelength) * s0);
+  const double k1 = 2.0 * 3.14159265358979323846 / (static_cast<double>(d.wavelength) * s1);
+  const double bound =
+      static_cast<double>(d.cell) * std::fabs(k1 - k0) / (2.0 * 3.14159265358979323846);
+  double worst = 0.0;
+  for (u32 i = 0; i < 4000; ++i) {
+    const double x = 0.0371 * i;
+    const double z = 0.0213 * i - 3.0;
+    const gref::Ripple a = gref::ripple(d, x, z, 0.5, s0);
+    const gref::Ripple b = gref::ripple(d, x, z, 0.5, s1);
+    // The crest's displacement is the change of the sum's phase, in turns, which is wavelengths;
+    // read where the sum stands clear of the taper's floor (a defect's core has no crest to move).
+    if (a.taper < 0.5 || b.taper < 0.5) continue;
+    double shift = std::fabs(b.turn - a.turn);
+    if (shift > 0.5) shift = 1.0 - shift;
+    worst = std::max(worst, shift);
+  }
+  MESSAGE("a tenth of a degree of normal on a 12-degree windward slope: bound "
+          << bound << " wavelengths at a kernel's edge, measured " << worst);
+  CHECK(bound < 0.05);
+  CHECK(worst < 0.05);
+}

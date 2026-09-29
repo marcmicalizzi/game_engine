@@ -53,6 +53,8 @@ inline constexpr u32 k_ground_gradient_grain = 8u;
 // Grainflow streaks down the fall line where the ground falls away from the wind near the angle of
 // repose (`streak_*`).
 inline constexpr u32 k_ground_streaks = 16u;
+// The ripples' wavelength follows the ground's climb into the wind (`spacing_*`).
+inline constexpr u32 k_ground_spacing = 32u;
 
 // Streak kernels per lattice cell of `streak_length`: three cover about four fifths of a slip face
 // at the default width, so tongues touch and cross but leave sand between them.
@@ -90,7 +92,7 @@ inline constexpr f32 k_ground_taper = 0.35f;
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
 // Mirrors GroundDetail in shaders/ground_detail.slang. 128 bytes: the first pass's 80, and the
-// second's grain, streaks and three words spare.
+// second's grain, streaks and spacing.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -137,9 +139,11 @@ struct GroundDetailParams {
   f32 streak_roughness = 0.0f;
   f32 streak_slope = 0.0f;
   f32 streak_normal = 0.0f;
-  u32 pad3 = 0;
-  u32 pad4 = 0;
-  u32 pad5 = 0;
+  // The spacing (k_ground_spacing): the wavelength and the height are scaled by `clamp(1 + gain
+  // climb, min, max)`, climb being the ground's rise into the wind (minus its fall along it).
+  f32 spacing_gain = 0.0f;
+  f32 spacing_min = 1.0f;
+  f32 spacing_max = 1.0f;
 };
 static_assert(sizeof(GroundDetailParams) == 128);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
@@ -181,6 +185,13 @@ struct GroundDetailDesc {
   f32 streak_albedo = 0.06f;
   f32 streak_roughness = 0.04f;
   f32 streak_normal = 0.012f;
+  // The ripples' spacing follows the wind: the wavelength (and the height with it, so a ripple
+  // keeps its shape) is scaled by `1 + spacing_gain × climb`, the ground's rise into the wind as a
+  // tangent, clamped to [spacing_min, spacing_max] — longer where the flow speeds up climbing a
+  // windward slope. 0 (the default) is the scene's wavelength everywhere.
+  f32 spacing_gain = 0.0f;
+  f32 spacing_min = 0.8f;
+  f32 spacing_max = 1.6f;
 };
 
 // The gradient grain's octaves for a coarsest cell and a finest: `grain_size` halving until the
@@ -275,6 +286,12 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.streak_roughness = static_cast<f32>(static_cast<f64>(desc.streak_roughness) / rms);
     out.streak_slope = static_cast<f32>(static_cast<f64>(desc.streak_normal) / slope_rms);
     out.streak_normal = desc.streak_normal;
+  }
+  if (desc.spacing_gain != 0.0f && desc.spacing_max >= desc.spacing_min) {
+    out.flags |= k_ground_spacing;
+    out.spacing_gain = desc.spacing_gain;
+    out.spacing_min = desc.spacing_min;
+    out.spacing_max = desc.spacing_max;
   }
   if (desc.lee_end_deg > desc.lee_start_deg) {
     out.flags |= k_ground_exposure;

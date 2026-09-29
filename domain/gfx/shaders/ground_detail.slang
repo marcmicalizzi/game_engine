@@ -38,6 +38,7 @@ static const uint k_ground_grain = 2u;
 static const uint k_ground_exposure = 4u;
 static const uint k_ground_gradient_grain = 8u;
 static const uint k_ground_streaks = 16u;
+static const uint k_ground_spacing = 32u;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -76,9 +77,9 @@ struct GroundDetail {
   float streak_roughness;  // the roughness's
   float streak_slope;      // the normal's lean per unit of the sum's gradient
   float streak_normal;     // the root-mean-square slope that is, for the roughness transfer
-  uint pad3;
-  uint pad4;
-  uint pad5;
+  float spacing_gain;      // the wavelength's scale per unit of climb into the wind
+  float spacing_min;       // (k_ground_spacing) and its clamp
+  float spacing_max;
 };
 
 // PCG, as sampling.slang's `pcg_hash`: one multiply-add and a permutation, the same bits on every
@@ -110,13 +111,18 @@ struct GroundRipple {
   float2 gradient;
 };
 
-GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry) {
+// `scale` multiplies the wavelength and the height (the spacing, 1 without k_ground_spacing). It is
+// the pixel's own, from its normal, and every kernel reaching the pixel uses it, so the sum stays
+// coherent; it enters only through the wavenumber, which multiplies a kernel's offset from its
+// centre and never the absolute position, so a change in it slides a crest by at most the kernel's
+// radius times the change (renderer.md, "Spacing that follows the wind").
+GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scale) {
   const float inv_cell = 1.0 / d.cell;
   const float2 q = p * inv_cell;
   const int2 base = int2(floor(q));
   const float2 w = d.wind.xy;
   const float2 across = float2(-w.y, w.x);
-  const float k = k_ground_two_pi / d.wavelength;
+  const float k = k_ground_two_pi / (d.wavelength * scale);
   const float inv_r2 = inv_cell * inv_cell;
   // The complex sum S and its two partial derivatives, each a complex number (re, im).
   float2 s = float2(0.0, 0.0);
@@ -187,8 +193,9 @@ GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry) {
   const float profile = -pc;
   // d(profile)/d(turn) = 2 pi sin(2 pi u) du, and d(turn) = d(phase) / 2 pi.
   const float dprofile = ps * du;
-  out.height = d.amplitude * taper * profile;
-  out.gradient = (dtaper * profile + tapered_dphase * dprofile) * d.amplitude;
+  const float amplitude = d.amplitude * scale;
+  out.height = amplitude * taper * profile;
+  out.gradient = (dtaper * profile + tapered_dphase * dprofile) * amplitude;
   return out;
 }
 
@@ -367,13 +374,19 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     // from the weight, which the roughness transfer below is weighted by too.
     if ((d.flags & k_ground_exposure) != 0u) out.exposure = ground_exposure(d, normal);
     const float weight = mask * slope * out.exposure;
+    // The spacing: longer ripples where the ground climbs into the wind and the flow speeds up.
+    float scale = 1.0;
+    if ((d.flags & k_ground_spacing) != 0u) {
+      const float climb = -dot(normal.xz, d.wind.xy) / max(normal.y, 1e-4);
+      scale = clamp(1.0 + d.spacing_gain * climb, d.spacing_min, d.spacing_max);
+    }
     // The footprint across the crests: the pixel's step along the wind, and across it by as much
     // as a kernel turned `spread` off the wind would see — per screen axis, the larger.
     const float2 w = d.wind.xy;
     const float2 across = float2(-w.y, w.x);
     const float fx = abs(dot(dpdx.xz, w)) + abs(dot(dpdx.xz, across)) * d.wind.z;
     const float fy = abs(dot(dpdy.xz, w)) + abs(dot(dpdy.xz, across)) * d.wind.z;
-    const float cycles = max(fx, fy) / d.wavelength;
+    const float cycles = max(fx, fy) / (d.wavelength * scale);
     // Two stages. The profile's steep lee is a quarter of a wavelength, so its harmonics alias an
     // octave before the ripple does: they go first — the asymmetry eases to a plain sinusoid
     // between eight pixels a wavelength and four — and the ripple itself after, between four and
@@ -384,8 +397,8 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     out.fade = fade;
     const float strength = weight * fade;
     if (strength > 0.0 || full) {
-      const GroundRipple r = ground_ripple(d, p, full ? d.asymmetry : asymmetry);
-      out.ripple = r.height / d.amplitude;
+      const GroundRipple r = ground_ripple(d, p, full ? d.asymmetry : asymmetry, scale);
+      out.ripple = r.height / (d.amplitude * scale);
       if (strength > 0.0 && !full) {
         out.normal = normalize(normal - float3(r.gradient.x, 0.0, r.gradient.y) *
                                             (normal.y * strength));

@@ -503,6 +503,9 @@ gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
   out.streak_albedo = d.streak_albedo;
   out.streak_roughness = d.streak_roughness;
   out.streak_normal = d.streak_normal;
+  out.spacing_gain = d.spacing_gain;
+  out.spacing_min = d.spacing_min;
+  out.spacing_max = d.spacing_max;
   return out;
 }
 
@@ -559,6 +562,12 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
     return fail(
         "streak_albedo and streak_roughness must be within [0, 0.5] and streak_normal within "
         "[0, 0.3]");
+  }
+  if (!(d.spacing_gain >= 0.0f && d.spacing_gain <= 6.0f && d.spacing_min >= 0.5f &&
+        d.spacing_min <= 1.0f && d.spacing_max >= 1.0f && d.spacing_max <= 2.0f)) {
+    return fail(
+        "spacing_gain must be within [0, 6], spacing_min within [0.5, 1] and spacing_max within "
+        "[1, 2]");
   }
   return true;
 }

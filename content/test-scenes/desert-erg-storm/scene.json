@@ -116,7 +116,10 @@
       "streak_length": 2,
       "streak_albedo": 0.06,
       "streak_roughness": 0.04,
-      "streak_normal": 0.012
+      "streak_normal": 0.012,
+      "spacing_gain": 2.5,
+      "spacing_min": 0.8,
+      "spacing_max": 1.6
     }
   }
 }
