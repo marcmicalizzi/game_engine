@@ -231,7 +231,9 @@ constexpr const char* k_usage =
     "                   and normal maps under a sun), normals, uv, shadow (the sun's shadow\n"
     "                   alone: white lit, black shadowed, grey facing away), albedo (the\n"
     "                   textured base colour, unlit: what filtering and mip selection alone do),\n"
-    "                   occlusion (the material's ambient occlusion, unencoded: byte = AO * 255)\n"
+    "                   occlusion (the material's ambient occlusion, unencoded: byte = AO * 255),\n"
+    "                   detail (a terrain's sand detail as data: R ripple height, G the share\n"
+    "                   drawn, B grain; black elsewhere)\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
@@ -3171,8 +3173,9 @@ int main(int argc, char** argv) {
     } else if (a == "--view") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_view_mode(value, options.settings.view_mode)) {
-        std::fprintf(
-            stderr, "engine-view: --view expects id, tri, depth, shaded, normals, uv, or shadow\n");
+        std::fprintf(stderr,
+                     "engine-view: --view expects id, tri, depth, shaded, normals, uv, shadow, "
+                     "albedo, occlusion, or detail\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {

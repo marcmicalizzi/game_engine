@@ -109,7 +109,9 @@ bool ReferenceRenderer::create(const gfx::Device& device, GpuScene& scene, Scene
     destroy();
     return false;
   }
-  if (!gfx::create_buffer(device, sizeof(gfx::PathTraceParams), k_address, true, params_, error) ||
+  // The block, and the ground's detail behind it (renderer.md, "The sand close up").
+  if (!gfx::create_buffer(device, sizeof(gfx::PathTraceParams) + sizeof(gfx::GroundDetailParams),
+                          k_address, true, params_, error) ||
       !gfx::create_buffer(device, sizeof(gfx::ResolveLight) * k_frame_lights, k_address, true,
                           lights_, error) ||
       !timer_.create(device, 1, 4, error)) {
@@ -260,6 +262,14 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   if (settings.uniform_sky) {
     params.sun.w = 0.0f;
     params.light_count = 0;
+  }
+  // The sand's detail: the block the frame's resolve read, the same numbers and the same wind at
+  // the same surface time, which the path tracer draws unfiltered (path_trace.slang says why).
+  if (scene_->ground_detail()) {
+    const gfx::GroundDetailParams detail = scene_->ground_detail_params();
+    std::memcpy(static_cast<u8*>(params_.mapped) + sizeof(gfx::PathTraceParams), &detail,
+                sizeof(detail));
+    params.ground_detail = params_.address + sizeof(gfx::PathTraceParams);
   }
 
   const u32 batch = settings.batch == 0 ? settings.spp : settings.batch;

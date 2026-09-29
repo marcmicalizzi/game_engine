@@ -31,6 +31,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/gfx/ground_detail.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <schemas/scene.h>
@@ -108,7 +109,21 @@ struct TerrainDesc {
   // The ground provider's name (`engine.scene.Terrain.provider`; scene_gen.md). Empty: the one
   // `generator` names.
   std::string provider;
+  // The sand's detail, close up (`engine.scene.TerrainDetail`, `Terrain` version 6; renderer.md,
+  // "The sand close up"): wind ripples and grain the resolve draws as a function of position.
+  // `has_detail` false — a scene without the block — draws the terrain exactly as it was.
+  bool has_detail = false;
+  scene::TerrainDetail detail;
 };
+
+// The detail's numbers as the mechanism takes them (`gfx::GroundDetailDesc`, domain/gfx/
+// ground_detail.h): the scene's block, field for field.
+gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept;
+// False, with a sentence naming the field, for a detail block the mechanism cannot draw: a
+// wavelength outside [0.01, 1] m, a height outside [0, 0.1] m or more than half the wavelength, an
+// asymmetry outside [0.5, 0.95], defects outside [0, 1], a slope fade that does not rise within
+// [0, 90] degrees, a grain cell outside (0, 0.2] m, grain strengths outside [0, 0.5].
+bool validate_terrain_detail(const scene::TerrainDetail& detail, std::string* error);
 
 // The name of the ground provider a description is drawn by: `provider`, or the one `generator`
 // names ("waves", "dunes").
@@ -178,6 +193,10 @@ class TerrainSampler {
   const scene_gen::GroundProvider& provider() const noexcept { return provider_; }
   // Whether the ground moves with game time: the dunes do, the waves do not.
   bool moves() const noexcept { return provider_.moves(); }
+  // The wind the ground's surface detail lies across at game time `time_s`, a unit vector over
+  // (x, z) (`scene_gen::GroundOps::wind`): the dunes' ripple rule, the waves' prevailing wind.
+  // +x for a ground that says none.
+  Vec2 wind(f64 time_s) const noexcept;
   // False, with the sentence, when the named provider could not be made (above).
   bool ok() const noexcept { return error_.empty(); }
   const std::string& error() const noexcept { return error_; }
@@ -220,6 +239,10 @@ u32 terrain_material(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 struct TerrainSurface {
   Vec3 albedo{};
   f32 roughness = 1.0f;
+  // How much of the ground here is sand — the plain's and the basin's, 1; the ridge rock and the
+  // basin's floor, 0 — blended across the same bands as the colour: what the sand's detail is
+  // weighted by (renderer.md, "The sand close up").
+  f32 sand = 1.0f;
 };
 TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept;
 
@@ -237,7 +260,11 @@ u32 terrain_map_side(const TerrainDesc& desc) noexcept;
 // The terrain's two material maps over its UVs (`build_terrain_mesh`: u across x, v across z,
 // both [0, 1] over the grid), `side * side` RGBA8 texels each, rows in v order and texel centres
 // at the cell centres: `base_color` is `terrain_surface`'s albedo encoded sRGB, alpha 255;
-// `metallic_roughness` is glTF's packing, R 255 (no occlusion), G the roughness, B 0 (no metal).
+// `metallic_roughness` is glTF's packing, R 255 (no occlusion), G the roughness, B 0 (no metal),
+// and alpha 255 — or, when the description asks for the sand's detail, **the sand share**
+// (`TerrainSurface::sand`), which the resolve weights the detail by (`gfx::k_material_ground_
+// detail`). Without a ridge or a basin that is 255 everywhere too, so the bytes, and the cache
+// entry, are the ones a terrain without the detail has (`terrain_hash`).
 // The terrain's one material samples them with factors of one and clamped edges.
 void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color,
                        Vector<u8>& metallic_roughness);
@@ -247,7 +274,11 @@ void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color
 // (and the generator's own version) enter it only when the description names the dunes, so every
 // waves terrain keeps the hash, and the cache entry, it had; and a provider other than those two
 // enters it by its name, with every field, so two providers never share an entry. Naming the dunes
-// by `provider` or by `generator` is the same terrain and the same hash.
+// by `provider` or by `generator` is the same terrain and the same hash. **The detail's numbers
+// never enter it**: they are shading, drawn per frame from the block, and the mesh and its maps do
+// not depend on them. What the detail changes in the maps — the sand share in the
+// metallic-roughness map's alpha — enters it only where it changes their bytes, which is a terrain
+// with a ridge or a basin; the erg has neither, and keeps its hash and its cache entry.
 u64 terrain_hash(const TerrainDesc& desc) noexcept;
 
 // The grid: `size * size` positions, two counter-clockwise (seen from +y) triangles a quad, and

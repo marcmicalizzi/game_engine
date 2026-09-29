@@ -20,13 +20,14 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg-storm/
 | `diurnal_veer_deg` | 30 | 0 | the wind veers 30° either side of the day's direction, through it at noon |
 | `storm_gain` | 1,000 | 1 | every storm's hours move a thousand times the sand their wind does |
 
-Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux — is the erg's, so the storms are the erg's storms, at the same hours.
+Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux, and the sand's ripples and grain (`detail`, [the erg's README](../desert-erg/README.md#the-sand-close-up)) — is the erg's, so the storms are the erg's storms, at the same hours.
 
 ## What to look at
 
 - **The barchans walking** (the crescents on the interdune floors, 1.5–5 m): at 13:00–15:00 they move **12.9 mm a second**, about 0.8 m a minute, downwind (the storm moves the sand towards 189°, about −x). The storm's hours, from 09:00: 0.04, 1.25, 4.72, 9.45, 12.87, 12.87, 9.45, 4.72, 1.25, 0.05 mm/s — a half-sine of wind, cubed.
 - **The crests** (2.5–6 m) at three quarters of that, **the draa** (10–25 m) at a fifth, **the mega-draa** at a fortieth: 0.3 mm/s at the peak, a still horizon.
 - **The storm's end, and the evening**: from 19:00 the barchans stand — the ten hours after the storm move them 2 cm — and the night's wind falls calm by the day's own profile.
+- **The ripples under your feet** (`--walk`): they lie across the **day's** wind, the ripple term's rule, and so do not turn with the storm or the day's veer; they stand while the barchans walk over them and do not flatten in the storm's wind. That is the detail's first version — a function of position that turns with the wind but does not migrate ([renderer](../../../docs/subsystems/renderer.md#the-sand-close-up), "What does not reach it yet") — and a storm is where it shows most.
 
 ## The numbers
 

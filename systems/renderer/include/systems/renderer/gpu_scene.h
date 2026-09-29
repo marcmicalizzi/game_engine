@@ -30,6 +30,7 @@
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/ground_detail.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -38,6 +39,7 @@
 #include <systems/renderer/terrain_rings.h>
 #include <systems/renderer/tile_layout.h>
 
+#include <memory>
 #include <span>
 #include <string>
 
@@ -124,6 +126,20 @@ class GpuScene {
   const SceneData& data() const noexcept { return *data_; }
   gfx::BindlessSet& bindless() noexcept { return bindless_; }
   const gfx::BindlessSet& bindless() const noexcept { return bindless_; }
+
+  // ---- the sand's detail (renderer.md, "The sand close up") ------------------------------------
+  //
+  // Whether the scene draws it: a terrain whose description has a detail block, whose material
+  // then carries `gfx::k_material_ground_detail` (and the rings' slots with it, which draw with the
+  // terrain's material). The block a frame hands the resolve and the reference alike is the
+  // scene's numbers with the wind the ground provider says blows at the time the ground's surface
+  // stands at — the scene's own `time` until a moving terrain's motion says otherwise, every frame
+  // (`TerrainMotion::frame`). The ground is asked through a sampler the scene holds for it, since a
+  // dune field is too dear to make per frame; the renderer links no provider.
+  bool ground_detail() const noexcept { return ground_ != nullptr; }
+  gfx::GroundDetailParams ground_detail_params() const noexcept;
+  void set_ground_time(f64 time_s) noexcept { ground_time_s_ = time_s; }
+  f64 ground_time_s() const noexcept { return ground_time_s_; }
 
   u32 cluster_count() const noexcept { return cluster_count_; }
   u32 leaf_count() const noexcept { return leaf_count_; }
@@ -865,6 +881,9 @@ class GpuScene {
   Vector<u32> pending_mesh_writes_;   // mesh indices whose MeshDesc the next frame writes
   Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
   TerrainRingSet* rings_ = nullptr;   // during `create` only
+  // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.
+  std::unique_ptr<TerrainSampler> ground_;
+  f64 ground_time_s_ = 0.0;
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;

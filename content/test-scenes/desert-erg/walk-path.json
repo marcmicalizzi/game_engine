@@ -1,0 +1,91 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "desert-erg walk",
+  "description": "A walker's eyes over the erg's western floor, 1.65 m up, walking along the wind and turning across it.",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "znear": 0.05,
+  "keys": [
+    {
+      "time": 0,
+      "position": [
+        -1380,
+        1.65,
+        0
+      ],
+      "ground": true,
+      "target": [
+        -1420,
+        0.8,
+        -8
+      ],
+      "target_ground": true,
+      "fov_deg": 60
+    },
+    {
+      "time": 8,
+      "position": [
+        -1392,
+        1.65,
+        -2
+      ],
+      "ground": true,
+      "target": [
+        -1432,
+        0.8,
+        -10
+      ],
+      "target_ground": true,
+      "fov_deg": 60
+    },
+    {
+      "time": 12,
+      "position": [
+        -1398,
+        1.65,
+        -3
+      ],
+      "ground": true,
+      "target": [
+        -1398,
+        0.8,
+        37
+      ],
+      "target_ground": true,
+      "fov_deg": 60
+    },
+    {
+      "time": 20,
+      "position": [
+        -1398,
+        1.65,
+        9
+      ],
+      "ground": true,
+      "target": [
+        -1400,
+        0.3,
+        11
+      ],
+      "target_ground": true,
+      "fov_deg": 60
+    }
+  ],
+  "markers": [
+    {
+      "name": "along",
+      "note": "eye height over the western floor, looking along the wind (west): the crests run across the view",
+      "frame": 0
+    },
+    {
+      "name": "across",
+      "note": "turned across the wind (south): the crests run along the view",
+      "frame": 720
+    },
+    {
+      "name": "feet",
+      "note": "looking down a pace ahead: 12 cm ripples, the grain",
+      "frame": 1200
+    }
+  ]
+}

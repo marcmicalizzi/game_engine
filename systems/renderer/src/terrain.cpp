@@ -66,6 +66,10 @@ struct WavesGround {
   f32 roll_kx = 0.0f;
   f32 roll_kz = 0.0f;
   f32 roll_phase = 0.0f;
+  // The prevailing wind the waves' crests run across, as a unit vector: the one wind the waves
+  // have, and so the one their surface detail lies across at every time.
+  f32 wind_x = 1.0f;
+  f32 wind_z = 0.0f;
 };
 
 WavesGround* make_waves(const scene::Terrain& entry) {
@@ -75,6 +79,8 @@ WavesGround* make_waves(const scene::Terrain& entry) {
   // One prevailing wind: transverse dunes run across it, so every wave's crest is within about
   // 25 degrees of perpendicular to it and the field reads as a dune sea rather than as noise.
   const f32 wind = unit(state) * 2.0f * k_pi;
+  g->wind_x = std::cos(wind);
+  g->wind_z = std::sin(wind);
   for (u32 i = 0; i < k_waves; ++i) {
     Wave& w = g->waves[i];
     const f32 angle = wind + (unit(state) - 0.5f) * 0.9f;
@@ -133,9 +139,18 @@ f32 waves_height(const void* state, f32 x, f32 z) noexcept {
 
 void waves_destroy(void* state) noexcept { delete static_cast<WavesGround*>(state); }
 
+// Their prevailing wind, at every time: the waves do not move.
+bool waves_wind(const void* state, f64, f32& x, f32& z) noexcept {
+  const auto& g = *static_cast<const WavesGround*>(state);
+  x = g.wind_x;
+  z = g.wind_z;
+  return true;
+}
+
 // The waves have no time, no rings and no tiles of their own: a point function, which the registry
-// samples a point at a time for a grid.
-constexpr scene_gen::GroundOps k_waves_ops{.destroy = &waves_destroy, .height = &waves_height};
+// samples a point at a time for a grid; and one wind, which their detail lies across.
+constexpr scene_gen::GroundOps k_waves_ops{
+    .destroy = &waves_destroy, .height = &waves_height, .wind = &waves_wind};
 
 bool waves_make(const scene::Terrain& entry, const scene_gen::Context&,
                 scene_gen::GroundProvider& out, std::string*) {
@@ -210,6 +225,7 @@ scene::Terrain terrain_entry(const TerrainDesc& desc) {
     t.storm_gains.push_back(sg);
   }
   t.provider = std::string(terrain_provider(desc));
+  if (desc.has_detail) t.detail = desc.detail;
   return t;
 }
 
@@ -256,6 +272,13 @@ TerrainSampler::TerrainSampler(const TerrainDesc& desc) noexcept : desc_(&desc) 
   // Whatever could not be made, the waves over the same description: made directly, not through
   // the registry, so a sampler always has a ground.
   if (!provider_.valid()) provider_ = scene_gen::GroundProvider(&k_waves_ops, make_waves(entry));
+}
+
+Vec2 TerrainSampler::wind(f64 time_s) const noexcept {
+  f32 x = 1.0f;
+  f32 z = 0.0f;
+  if (!provider_.wind(time_s, x, z)) return Vec2{1.0f, 0.0f};
+  return Vec2{x, z};
 }
 
 f32 TerrainSampler::ridge_weight(f32 x, f32 z) const noexcept {
@@ -313,6 +336,8 @@ constexpr f32 k_surfaces[k_terrain_materials][4] = {
     {0.62f, 0.52f, 0.36f, 0.95f},  // basin sand
     {0.36f, 0.40f, 0.22f, 0.85f},  // the basin's floor
 };
+// Which of them is sand, which the sand's detail is drawn on: the plain's and the basin's.
+constexpr f32 k_surface_sand[k_terrain_materials] = {1.0f, 0.0f, 1.0f, 0.0f};
 
 // Half the width of the band a threshold of `material_at` is blended across, in the feature's
 // weight: the blend is exactly half-way at the threshold, so the hard classification is still
@@ -328,6 +353,7 @@ TerrainSurface mix(TerrainSurface a, u32 material, f32 t) noexcept {
   a.albedo = Vec3{a.albedo.x + (s[0] - a.albedo.x) * t, a.albedo.y + (s[1] - a.albedo.y) * t,
                   a.albedo.z + (s[2] - a.albedo.z) * t};
   a.roughness += (s[3] - a.roughness) * t;
+  a.sand += (k_surface_sand[material] - a.sand) * t;
   return a;
 }
 
@@ -376,7 +402,9 @@ void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color
       metallic_roughness[o + 0] = 255;
       metallic_roughness[o + 1] = unorm8(s.roughness);
       metallic_roughness[o + 2] = 0;
-      metallic_roughness[o + 3] = 255;
+      // The sand share, which the sand's detail is weighted by, when the scene asks for the detail;
+      // 255, as it always was, when it does not.
+      metallic_roughness[o + 3] = desc.has_detail ? unorm8(s.sand) : u8{255};
     }
   }
 }
@@ -444,7 +472,57 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
       }
     }
   }
+  // The sand's detail puts the sand share in the metallic-roughness map's alpha, which changes the
+  // maps' bytes only where a ridge or a basin makes some ground other than sand: only then is it
+  // another cache entry. Its numbers are shading and never enter (terrain.h says why).
+  if (desc.has_detail && (!desc.ridges.empty() || !desc.basins.empty()))
+    h = hash_combine(h, 0x53414E444D41534Bull);  // "SANDMASK"
   return h;
+}
+
+gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
+  const scene::TerrainDetail& d = desc.detail;
+  gfx::GroundDetailDesc out;
+  out.ripple_wavelength = d.ripple_wavelength;
+  out.ripple_height = d.ripple_height;
+  out.ripple_asymmetry = d.ripple_asymmetry;
+  out.ripple_defects = d.ripple_defects;
+  out.slope_start_deg = d.ripple_slope_start_deg;
+  out.slope_end_deg = d.ripple_slope_end_deg;
+  out.grain_size = d.grain_size;
+  out.grain_albedo = d.grain_albedo;
+  out.grain_roughness = d.grain_roughness;
+  return out;
+}
+
+bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) {
+  const auto fail = [&](const char* sentence) {
+    if (error != nullptr) *error = std::string("terrain.detail: ") + sentence;
+    return false;
+  };
+  if (!(d.ripple_wavelength >= 0.01f && d.ripple_wavelength <= 1.0f))
+    return fail("ripple_wavelength must be within [0.01, 1] m");
+  if (!(d.ripple_height >= 0.0f && d.ripple_height <= 0.1f &&
+        d.ripple_height <= 0.5f * d.ripple_wavelength)) {
+    return fail("ripple_height must be within [0, 0.1] m and at most half the wavelength");
+  }
+  if (!(d.ripple_asymmetry >= 0.5f && d.ripple_asymmetry <= 0.95f))
+    return fail("ripple_asymmetry must be within [0.5, 0.95]");
+  if (!(d.ripple_defects >= 0.0f && d.ripple_defects <= 1.0f))
+    return fail("ripple_defects must be within [0, 1]");
+  if (!(d.ripple_slope_start_deg >= 0.0f && d.ripple_slope_start_deg < d.ripple_slope_end_deg &&
+        d.ripple_slope_end_deg <= 90.0f)) {
+    return fail(
+        "the ripples' slope fade must rise: 0 <= ripple_slope_start_deg < "
+        "ripple_slope_end_deg <= 90");
+  }
+  if (!(d.grain_size > 0.0f && d.grain_size <= 0.2f))
+    return fail("grain_size must be within (0, 0.2] m");
+  if (!(d.grain_albedo >= 0.0f && d.grain_albedo <= 0.5f && d.grain_roughness >= 0.0f &&
+        d.grain_roughness <= 0.5f)) {
+    return fail("grain_albedo and grain_roughness must be within [0, 0.5]");
+  }
+  return true;
 }
 
 u32 terrain_height_blocks(const TerrainDesc& desc) noexcept {

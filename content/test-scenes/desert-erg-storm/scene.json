@@ -95,6 +95,17 @@
         "sharp_days": 1,
         "far": false
       }
-    ]
+    ],
+    "detail": {
+      "ripple_wavelength": 0.12,
+      "ripple_height": 0.008,
+      "ripple_asymmetry": 0.75,
+      "ripple_defects": 0.35,
+      "ripple_slope_start_deg": 22,
+      "ripple_slope_end_deg": 30,
+      "grain_size": 0.02,
+      "grain_albedo": 0.08,
+      "grain_roughness": 0.05
+    }
   }
 }

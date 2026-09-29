@@ -1457,6 +1457,9 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     last_move_m_ = std::max(last_move_m_, moved[k]);
     show(k);
   }
+  // The sand's detail lies across the wind at the time the surface stands for, which every level
+  // shares (renderer.md, "The sand close up").
+  scene_->set_ground_time(after);
   schedule_next();
 }
 

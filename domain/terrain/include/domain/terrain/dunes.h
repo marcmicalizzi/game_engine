@@ -324,6 +324,13 @@ class DuneField {
   // Each band's displacement by the wind from time 0 to `time_us`, mm: the closed form.
   void displacement(u32 band, i64 time_us, i64& dx, i64& dz) const noexcept;
 
+  // The direction the ripples lie across at `time_us`: a unit vector over (x, z) along which the
+  // sand moves. It is the ripple term's own rule (`Gather::ripple_*`) — the day's wind, turned in
+  // from yesterday's over the day's first two hours — as one direction, turned along the shorter
+  // arc between the two so that it is continuous in time; what a renderer that draws the ripples
+  // itself lays them across (docs/subsystems/terrain.md, "What the effect needs").
+  void ripple_wind(i64 time_us, f64& x, f64& z) const noexcept;
+
   // The primitive of one cell, at a time: exposed for the tests and for reports.
   bool primitive(u32 band, i64 cell_i, i64 cell_j, i64 time_us, Primitive& out) const noexcept;
 

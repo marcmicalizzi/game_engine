@@ -330,14 +330,14 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
-    // with the frame's lights behind the last and the shadow maps' block behind those, and one
-    // statistics block per view.
+    // with the frame's lights behind the last, the shadow maps' block behind those and the ground's
+    // detail behind that, and one statistics block per view.
     ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * (2 * views + cascades), k_address,
                             true, params_[slot], error) &&
          gfx::create_buffer(device,
                             sizeof(gfx::ResolveParams) * views +
                                 k_view_lights * sizeof(gfx::ResolveLight) +
-                                sizeof(gfx::ShadowMapParams),
+                                sizeof(gfx::ShadowMapParams) + sizeof(gfx::GroundDetailParams),
                             k_address, true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
                             stat_blocks_[slot], error);
@@ -1422,6 +1422,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // at from where it stands.
   const u64 shadow_maps_address =
       resolves_[slot].address + sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights);
+  // ---- the sand's detail (renderer.md, "The sand close up") -----------------------------------
+  //
+  // One block for every view, behind the shadow maps': the scene's numbers and the wind its ground
+  // says blows at the time the surface stands at. Zero for a scene that draws none, which is every
+  // scene without a terrain detail block: the resolve then reads exactly what it read before.
+  u64 ground_detail_address = 0;
+  if (scene.ground_detail()) {
+    const gfx::GroundDetailParams detail = scene.ground_detail_params();
+    const u64 offset =
+        sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights) + sizeof(gfx::ShadowMapParams);
+    std::memcpy(resolve_bytes + offset, &detail, sizeof(detail));
+    ground_detail_address = resolves_[slot].address + offset;
+  }
   u32 shadow_lod_view = 0;
   if (csm) {
     ShadowFit fit;
@@ -1635,6 +1648,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_cascades;
       resolve.shadow_maps = shadow_maps_address;
     }
+    resolve.ground_detail = ground_detail_address;
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------

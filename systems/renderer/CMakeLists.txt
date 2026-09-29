@@ -47,7 +47,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/sun_arc_tests.cpp
                     # The reader through the registry with generators of the test's own, in every
                     # configuration: with no capability linked, the minimal one included.
-                    tests/scene_gen_scene_tests.cpp)
+                    tests/scene_gen_scene_tests.cpp
+                    # The sand's detail on the renderer's own ground, the waves.
+                    tests/ground_detail_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.
@@ -57,9 +59,16 @@ if(TARGET engine::terrain)
   # A scene whose terrain names the dune generator: fields, hash, sampler against mesh, the ground,
   # and the time-lapse's cadence and blend; and on a GPU, the moving terrain's pool pass.
   list(APPEND _renderer_tests tests/terrain_generator_tests.cpp tests/terrain_motion_tests.cpp
-       tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp)
+       tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp
+       # The sand's detail across the rings' and their chunks' borders, and the dunes' wind.
+       tests/ground_detail_rings_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
+# The sand's detail is held to its CPU mirror in double precision, which lives beside the BSDF's
+# in domain/gfx's tests (ground_detail_reference.h, brdf_reference.h): one mirror for both modules.
+if(TARGET engine_renderer_tests)
+  target_include_directories(engine_renderer_tests PRIVATE "${CMAKE_SOURCE_DIR}/domain/gfx/tests")
+endif()
 # The generators reach the scene reader through the registry, so the tests that read a scene naming
 # one link its capability as a host does: its registrar is what makes the name one the reader knows.
 foreach(_gen ruins terrain)

@@ -369,6 +369,13 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
+  // The sand's detail: the terrain's ground, asked for the wind the ripples lie across, and the
+  // time its surface stands at — the scene's own until a moving terrain's motion moves it
+  // (renderer.md, "The sand close up").
+  if (data.terrain.enabled && data.terrain.has_detail && data.terrain_mesh < data.parts.size()) {
+    ground_ = std::make_unique<TerrainSampler>(data.terrain);
+    ground_time_s_ = data.terrain.time_s;
+  }
 
   // The rings' chunks built round the camera before the scene was, each into a slot of its ring,
   // staged now that every buffer they are copied into exists, and drawn from the first frame.
@@ -2201,6 +2208,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         material.normal_scale = source.normal_scale;
         material.occlusion_strength = source.occlusion_strength;
         material.uv_scale = 1.0f;
+        // The terrain's material draws the sand's detail when its scene asks for it, weighted by
+        // the sand share its metallic-roughness map carries in alpha (renderer.md, "The sand close
+        // up"). The rings' slots draw with this material too.
+        if (m == data_->terrain_mesh && data_->terrain.enabled && data_->terrain.has_detail)
+          material.flags |= gfx::k_material_ground_detail;
         if (use_built) {
           material.flags |= gfx::k_material_mipped;
           // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).
@@ -2632,7 +2644,16 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   return true;
 }
 
+gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
+  if (ground_ == nullptr) return gfx::GroundDetailParams{};
+  const TerrainDesc& terrain = data_->terrain;
+  return gfx::ground_detail_block(terrain_detail_desc(terrain), ground_->wind(ground_time_s_),
+                                  terrain.seed);
+}
+
 void GpuScene::destroy() noexcept {
+  ground_.reset();
+  ground_time_s_ = 0.0;
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
   // A dynamic scene's `instances` and `pair_table` name one of its table sets, which own them.

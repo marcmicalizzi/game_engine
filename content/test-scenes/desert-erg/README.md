@@ -27,6 +27,26 @@ A coupling fades across a **width** inside the taller dunes' footprints, about f
 
 Below them the ripples (12 cm apart, 6 mm high, the day's wind) are the field's detail term, drawn by the renderer's near-field refinement rather than the mesh.
 
+## The sand close up
+
+Since 2026-09-29 the sand carries **wind ripples and grain** (`"detail"` in `scene.json`, `engine.scene.TerrainDetail`; [renderer](../../../docs/subsystems/renderer.md#the-sand-close-up)): not a texture but a function of the ground's world position, the seed and the wind, drawn per pixel in the resolve and faded by each pixel's footprint, so it has no tile, no seam — across the rings, their chunks or an LOD cut — and no repeat. Every number is the scene's, in the block, and the defaults are written out so they can be tuned by editing: ripples 12 cm apart and 8 mm high, three quarters of a wavelength their windward slope, a defect density of 0.35, faded out between 22° and 30° of slope, and a 2 cm grain moving the albedo by 8% and the roughness by 0.05 either way. The ripples lie across the ground's wind at the surface's time: the day's wind, turned in from yesterday's over the day's first two hours, which here blows towards the west (−x). Removing the block draws the erg exactly as before; its terrain hash and cache entry are the same either way.
+
+```powershell
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start -1400,2,0 90,-10
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --camera-path content/test-scenes/desert-erg/walk-path.json --terrain-rings --offscreen --frames 1201 --capture walk.png --capture-every 240
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start 462,2,-40 23,-8 --sun 15,6
+```
+
+What to look at (the first two lines; `walk-path.json` is a 20 s walk at eye height whose markers are these views):
+
+- **Along the wind** (yaw 90, west, from (−1400, 0)): the crests run across the view, sinuous, with a crest ending or two joining every few wavelengths; each has a gentle lit windward slope towards you and a short dark lee away from you. They fade into smooth sand some tens of metres ahead — first the lee's sharpness, then the ripple — and should never turn into bands or a moiré as you walk.
+- **Across it** (yaw 180, south): the crests run along the view towards the horizon.
+- **At your feet** (pitch −50 or so): 12 cm ripples, and the grain as a soft mottle a couple of centimetres across; the millimetre grain is under a pixel even here.
+- **A crest at a low sun** (the third line, a mega-draa's brink with the sun 6° up in the east): the stoss's ripples lit at grazing, the brink and the slip face beyond it smooth — ripples fade out towards the angle of repose, and a slip face is avalanched sand.
+- **`--view detail`** shows the function as data: red the ripple height, blue the grain, green where the ripples are drawn.
+
+What does not look right yet: the ripples stand still (real ones migrate a centimetre a minute) and do not flatten in a storm; at a grazing sun they read less strongly than on real sand, because nothing shadows a ripple's lee from the next crest's; and there are no glints. The captures the change was judged by, and what they cost, are in [the experiment](../../../docs/experiments/sand-detail-2026-09-29.md).
+
 ## What to look at
 
 The camera path (`camera-path.json`, 60 s at 60 fps, west to east, which is upwind here) and its markers:

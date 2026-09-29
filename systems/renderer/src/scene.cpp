@@ -1074,6 +1074,17 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         out.terrain.bands.push_back(std::move(band));
       }
     }
+    // The sand's detail (renderer.md, "The sand close up"): the scene's numbers, checked here so a
+    // number the mechanism cannot draw is refused with the file rather than drawn wrong.
+    out.terrain.has_detail = t.detail.has_value();
+    out.terrain.detail = t.detail.has_value() ? *t.detail : scene::TerrainDetail{};
+    if (out.terrain.has_detail) {
+      std::string why;
+      if (!validate_terrain_detail(out.terrain.detail, &why)) {
+        error = path + ": " + why;
+        return false;
+      }
+    }
   }
   const u32 file_meshes = file.meshes.size();
   // One sampler for every height this read asks the terrain for — each grounded instance, each

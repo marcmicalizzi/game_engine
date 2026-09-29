@@ -16,8 +16,8 @@
 // long gentle windward slope and a short steep lee — and its **singularities**, where the kernels
 // cancel, are exactly the defects real ripples have: a crest that ends, two crests joining one. How
 // often that happens is the kernels' size in wavelengths (a narrower spectrum is longer, straighter
-// crests), which is what `GroundDetailDesc::ripple_defects` sets. The amplitude tapers where the sum is
-// small, so a defect is a crest fading out rather than a point where every phase meets.
+// crests), which is what `GroundDetailDesc::ripple_defects` sets. The amplitude tapers where the
+// sum is small, so a defect is a crest fading out rather than a point where every phase meets.
 //
 // **The filter** makes it look natural at a distance: the ripples fade by how many of their
 // wavelengths one pixel spans along the wind, measured from the reconstruction's own derivatives

@@ -967,6 +967,29 @@ i64 DuneField::detail_um(const Gather& g, i64 x, i64 z) const noexcept {
   return ripples + top + (((bottom - top) * tz) >> 16);
 }
 
+void DuneField::ripple_wind(i64 time_us, f64& x, f64& z) const noexcept {
+  // The gather's rule (`gather`, the ripple terms): today's direction and yesterday's, and the
+  // blend over the day's first two hours, from the same integer inputs. The gather blends the two
+  // patterns' heights; one direction is the angle between them, turned along the shorter arc so a
+  // day boundary, where the blend is 0 and yesterday's is the day before's today, is no step.
+  const i64 day = day_of(time_us);
+  const WindDay& today = wind_.day(day);
+  const WindDay& yesterday = wind_.day(day - 1);
+  const f64 blend = static_cast<f64>(min_i64(k_one_q16, ((time_us - day * k_us_per_day) * 65536) /
+                                                            k_ripple_realign_us)) /
+                    65536.0;
+  const f64 to =
+      std::atan2(static_cast<f64>(sin_q15(today.turn)), static_cast<f64>(cos_q15(today.turn)));
+  const f64 from = std::atan2(static_cast<f64>(sin_q15(yesterday.turn)),
+                              static_cast<f64>(cos_q15(yesterday.turn)));
+  constexpr f64 k_full_turn = 6.28318530717958647692;
+  f64 delta = std::remainder(to - from, k_full_turn);
+  if (delta <= -k_full_turn * 0.5) delta += k_full_turn;
+  const f64 angle = from + delta * blend;
+  x = std::cos(angle);
+  z = std::sin(angle);
+}
+
 namespace {
 
 // One band laid on the bands before it (terrain.md, "The repose limiter"): given its slope bound

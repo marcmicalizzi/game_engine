@@ -412,8 +412,10 @@ struct RenderSettings @version(9) {
   /// lights are unshadowed). auto: rt wherever the device has cluster acceleration structures and
   /// ray queries, csm where it has not (docs/subsystems/renderer.md, "Shadows").
   shadows: string = "auto"
-  /// id, tri, depth, shaded, normals, uv, or shadow (the sun's shadow alone: white where it
-  /// reaches the surface, black where a shadow ray is blocked, grey where the surface faces away).
+  /// id, tri, depth, shaded, normals, uv, shadow (the sun's shadow alone: white where it reaches
+  /// the surface, black where a shadow ray is blocked, grey where the surface faces away), albedo,
+  /// occlusion, or detail (the sand's ripples and grain as data: docs/subsystems/renderer.md, "The
+  /// sand close up").
   view: string = "shaded"
   /// Screen-space error threshold in pixels for LOD selection.
   lod_px: f32 = 1

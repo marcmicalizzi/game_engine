@@ -385,6 +385,11 @@ struct GroundOps {
   // How far the ground's fastest feature travels between two game times, metres: what a moving
   // ground's cadence is timed by. Null: 0.
   f64 (*travel_m)(const void* state, f64 from_s, f64 to_s) noexcept = nullptr;
+  // The wind the ground's surface detail lies across at game time `time_s`: the direction the sand
+  // moves over (x, z), a unit vector, continuous in time — what a renderer turns the ripples it
+  // draws by (docs/subsystems/renderer.md, "The sand close up"). False, and nothing written, for a
+  // ground with no wind to say. Thread-safe.
+  bool (*wind)(const void* state, f64 time_s, f32& x, f32& z) noexcept = nullptr;
   // The rings round a camera over a scene grid `extent_mm` either side at `spacing_mm` (terrain.md,
   // "Rings"). Null: this ground has none.
   bool (*make_rings)(const void* state, i64 extent_mm, i64 spacing_mm, GroundRings& out,
@@ -426,6 +431,11 @@ class GroundProvider {
   }
   f64 travel_m(f64 from_s, f64 to_s) const noexcept {
     return ops_->travel_m != nullptr ? ops_->travel_m(state_, from_s, to_s) : 0.0;
+  }
+  // The wind the surface detail lies across at `time_s` (`GroundOps::wind`); false for a ground
+  // that says none.
+  bool wind(f64 time_s, f32& x, f32& z) const noexcept {
+    return ops_ != nullptr && ops_->wind != nullptr && ops_->wind(state_, time_s, x, z);
   }
   bool has_rings() const noexcept { return ops_ != nullptr && ops_->make_rings != nullptr; }
   bool make_rings(i64 extent_mm, i64 spacing_mm, GroundRings& out, std::string* error) const;

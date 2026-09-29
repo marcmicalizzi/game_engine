@@ -515,14 +515,43 @@ struct StormGain @version(1) {
   gain: f32 = 1
 }
 
+/// The ground's detail on a terrain's sand (docs/subsystems/renderer.md, "The sand close up"): wind
+/// ripples and grain, drawn per pixel as a function of the surface point's world position, the
+/// terrain's seed and the ground's wind, with no texture and nothing to meet at an edge. The
+/// mechanism is the engine's; these numbers are the scene's. Metres and degrees. Append-only: a
+/// field added later has a default that draws what the block drew before it.
+struct TerrainDetail @version(1) {
+  /// Crest to crest, metres: real wind ripples are 8 to 15 cm apart.
+  ripple_wavelength: f32 = 0.12
+  /// Crest to trough, metres: about a centimetre on real sand. 0 draws no ripples.
+  ripple_height: f32 = 0.008
+  /// The windward share of a wavelength, [0.5, 0.95]: a ripple's long gentle slope faces the wind
+  /// and its short steep lee faces away.
+  ripple_asymmetry: f32 = 0.75
+  /// How often a crest ends or two crests join, [0, 1]: 0 is long straight crests, 1 a crest every
+  /// wavelength or two.
+  ripple_defects: f32 = 0.35
+  /// The ground's slope, degrees, at which the ripples start to fade, and past which there are
+  /// none: a slip face at the angle of repose is avalanched smooth.
+  ripple_slope_start_deg: f32 = 22
+  ripple_slope_end_deg: f32 = 30
+  /// The grain's coarse cell, metres; a finer octave a quarter of it lies under it. (0, 0.2].
+  grain_size: f32 = 0.02
+  /// How far the grain moves the sand's albedo either way, as a share of it, [0, 0.5]; 0 none.
+  grain_albedo: f32 = 0.08
+  /// How far it moves the sand's perceptual roughness either way, [0, 0.5]; 0 none.
+  grain_roughness: f32 = 0.05
+}
+
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
 /// Version 2 added the generator; a version 1 terrain reads as the waves it always drew. Version 4
 /// added `provider`, the ground provider's name (ADR-0046), which `generator` is read as when it is
 /// empty. Version 5 added the wind's day (`diurnal_*`) and the storms' transport gains
-/// (`storm_gain`, `storm_gains`); their defaults are the record as it was, to the bit.
-struct Terrain @version(5) {
+/// (`storm_gain`, `storm_gains`); their defaults are the record as it was, to the bit. Version 6
+/// added `detail`, the sand's ripples and grain; absent, the terrain draws as it did.
+struct Terrain @version(6) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -582,6 +611,10 @@ struct Terrain @version(5) {
   /// Gains for single storms, by their index in the record's period in day order (the order
   /// `engine-content terrain --storms` lists them; the period repeats every eight years).
   storm_gains: StormGain[] @since(5)
+  /// The sand's detail, close up (docs/subsystems/renderer.md, "The sand close up"). Null, the
+  /// default, draws no detail: the terrain exactly as it was. The ripples lie across the wind the
+  /// ground provider says blows at the surface's time, and fade out where its material is not sand.
+  detail: TerrainDetail? @since(6)
 }
 
 

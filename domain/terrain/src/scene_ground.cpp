@@ -109,6 +109,18 @@ f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
   return std::abs(most);
 }
 
+// The ripples' wind at a game time: the field's own rule (`DuneField::ripple_wind`), which the
+// renderer lays the ripples it draws across (renderer.md, "The sand close up").
+bool dunes_wind(const void* state, f64 time_s, f32& x, f32& z) noexcept {
+  const auto& g = *static_cast<const DunesGround*>(state);
+  f64 dx = 1.0;
+  f64 dz = 0.0;
+  g.field.ripple_wind(time_us_of(time_s), dx, dz);
+  x = static_cast<f32>(dx);
+  z = static_cast<f32>(dz);
+  return true;
+}
+
 // ---- the rings ----------------------------------------------------------------------------------
 
 // The caller's heights, as the rings' builder asks for them.
@@ -255,6 +267,7 @@ constexpr scene_gen::GroundOps k_dunes_ops{
     .grid = &dunes_grid,
     .evaluate = &dunes_evaluate,
     .travel_m = &dunes_travel_m,
+    .wind = &dunes_wind,
     .make_rings = &dunes_make_rings,
     .open_tiles = &dunes_open_tiles,
     .record = k_overlay_record,
