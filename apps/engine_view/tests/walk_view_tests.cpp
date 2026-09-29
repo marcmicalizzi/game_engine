@@ -226,3 +226,83 @@ TEST_CASE("engine-view: a walk up an erg dune and back replays to its own trajec
   CHECK(write_json(*replay_trajectory) == write_json(*trajectory));
   CHECK(text(replay_interactive->find("walk"), "hash") == text(walk, "hash"));
 }
+
+TEST_CASE(
+    "engine-view: a session started walking 60 m over the erg walks on W from its first tick") {
+  // The owner's start (2026-09-29, walk-erg.ps1): `--walk` from 60 m over the erg's floor at x =
+  // 140, z = -60, looking north, three views, the cascaded shadow maps, W held from the first tick.
+  // He reported that such a session ignored W A S D until F flew and F walked again; this is his
+  // start with every flag but the size, and the walker is where W puts it after one second of
+  // ticks (docs/experiments/walk-in-time-lapse-2026-09-29.md has what else was tried).
+  const test::TempDir tmp("engine_view_walk_start");
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(committed)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  std::string source;
+  REQUIRE(io::read_file(committed, source) == io::Status::Ok);
+  JsonValue erg;
+  REQUIRE(parse_json(source, erg).ok);
+  JsonValue terrain = *erg.find("terrain");
+  terrain.set("size", static_cast<u64>(257));
+  terrain.set("extent", JsonValue(256.0));
+  erg.set("terrain", std::move(terrain));
+  const std::string scene = tmp.file("erg.json");
+  REQUIRE(io::write_file(scene, write_json(erg)) == io::Status::Ok);
+  std::string path_text;
+  REQUIRE(io::read_file(committed.substr(0, committed.size() - std::string("scene.json").size()) +
+                            "camera-path.json",
+                        path_text) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("camera-path.json"), path_text) == io::Status::Ok);
+
+  constexpr u32 k_w = 26;
+  constexpr u32 k_m = 16;
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  const auto key = [&](u64 tick, u32 code, bool down) {
+    keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, code, down ? 1.0f : 0.0f, 0});
+  };
+  key(1, k_w, true);
+  key(240, k_m, true);  // a second of ticks
+  key(241, k_m, false);
+  key(480, k_w, false);
+  view::SessionHeader header;
+  header.ticks = 490;
+  keys.set_session(view::session_to_json(header));
+  const std::string inject = tmp.file("hold-w.jsonl");
+  REQUIRE(keys.save(inject) == io::Status::Ok);
+
+  const Run live =
+      run_view({"--interactive", "--walk",    "--start",    "140,60,-60", "0,0",
+                "--views",       "surround3", "--shadows",  "csm",        "--inject-input",
+                inject,          "--scene",   scene,        "--width",    "480",
+                "--height",      "96",        "--no-vsync", "--ddc",      tmp.file("ddc")});
+  if (live.exit_code == 3 || refused_without_dunes(live)) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(live, summary), live.output);
+  const JsonValue* interactive = summary.find("interactive");
+  REQUIRE(interactive != nullptr);
+  const JsonValue* walk = interactive->find("walk");
+  REQUIRE_MESSAGE(walk != nullptr, live.output);
+  CHECK(text(walk, "start") == "walk");
+  CHECK(text(walk, "mode") == "walk");
+  CHECK(number(walk, "mode_changes") == 0.0);
+  Vec3 second{};
+  REQUIRE(marker_at(interactive->find("trajectory"), 0, second));
+  MESSAGE(
+      "started walking (" << text(walk, "collision") << ") 60 m over the erg; after a second of "
+                          << "W the eye is at (" << second.x << ", " << second.y << ", " << second.z
+                          << "), " << number(walk, "distance_m") << " m walked in all");
+  // North is -z at yaw 0: 239 ticks at 1.5 m/s is 1.49 m, on the floor there.
+  CHECK(second.z < -60.0f - 1.2f);
+  CHECK(std::fabs(second.x - 140.0f) < 0.1f);
+  CHECK(second.y < 30.0f);  // on the ground, not where the camera started
+  CHECK(number(walk, "distance_m") > 2.5);
+}
