@@ -496,6 +496,13 @@ gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
   out.lee_end_deg = d.lee_end_deg;
   out.grain_finest = d.grain_finest;
   out.grain_normal = d.grain_normal;
+  out.streak_start_deg = d.streak_start_deg;
+  out.streak_full_deg = d.streak_full_deg;
+  out.streak_width = d.streak_width;
+  out.streak_length = d.streak_length;
+  out.streak_albedo = d.streak_albedo;
+  out.streak_roughness = d.streak_roughness;
+  out.streak_normal = d.streak_normal;
   return out;
 }
 
@@ -537,6 +544,22 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
     return fail("grain_normal must be within [0, 0.3]");
   if (d.grain_normal > 0.0f && d.grain_finest == 0.0f)
     return fail("grain_normal needs grain_finest: the first pass's grain has no height");
+  if (!((d.streak_start_deg == 0.0f && d.streak_full_deg == 0.0f) ||
+        (d.streak_start_deg >= 0.0f && d.streak_start_deg < d.streak_full_deg &&
+         d.streak_full_deg <= 60.0f))) {
+    return fail(
+        "the streaks' band must rise: 0 <= streak_start_deg < streak_full_deg <= 60, or both 0");
+  }
+  if (!(d.streak_width >= 0.05f && d.streak_width <= 5.0f && d.streak_length >= d.streak_width &&
+        d.streak_length <= 10.0f)) {
+    return fail("streak_width must be within [0.05, 5] m and streak_length within [width, 10] m");
+  }
+  if (!(d.streak_albedo >= 0.0f && d.streak_albedo <= 0.5f && d.streak_roughness >= 0.0f &&
+        d.streak_roughness <= 0.5f && d.streak_normal >= 0.0f && d.streak_normal <= 0.3f)) {
+    return fail(
+        "streak_albedo and streak_roughness must be within [0, 0.5] and streak_normal within "
+        "[0, 0.3]");
+  }
   return true;
 }
 

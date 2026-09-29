@@ -50,6 +50,13 @@ inline constexpr u32 k_ground_exposure = 4u;
 // The grain is gradient noise in `grain_octaves` octaves (and may lean the normal, `grain_normal`)
 // rather than the first pass's two octaves of value noise.
 inline constexpr u32 k_ground_gradient_grain = 8u;
+// Grainflow streaks down the fall line where the ground falls away from the wind near the angle of
+// repose (`streak_*`).
+inline constexpr u32 k_ground_streaks = 16u;
+
+// Streak kernels per lattice cell of `streak_length`: three cover about four fifths of a slip face
+// at the default width, so tongues touch and cross but leave sand between them.
+inline constexpr u32 k_ground_streak_impulses = 3;
 
 // The most octaves the grain takes: a 2 cm grain down to 0.2 mm is seven.
 inline constexpr u32 k_ground_max_grain_octaves = 8;
@@ -82,8 +89,8 @@ inline constexpr f32 k_ground_taper = 0.35f;
 // much, so the rule moves the variance the pattern has, not the variance a perfect ripple would.
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
-// Mirrors GroundDetail in shaders/ground_detail.slang. 96 bytes: the first pass's 80 and a row for
-// the second's grain, with three words spare.
+// Mirrors GroundDetail in shaders/ground_detail.slang. 128 bytes: the first pass's 80, and the
+// second's grain, streaks and three words spare.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -118,11 +125,23 @@ struct GroundDetailParams {
   // scene's finest, and the root-mean-square slope its height leans the normal by.
   u32 grain_octaves = 0;
   f32 grain_normal = 0.0f;
+  // The streaks (k_ground_streaks): the ground's fall along the wind (as `lee_tan_*`) at which they
+  // start and at which they are whole; a tongue's width and length, metres; and what the sum of the
+  // tongues, scaled to unit root-mean-square here, moves: the albedo (a share), the roughness, and
+  // the normal (`streak_slope`, the sum's gradient to a root-mean-square slope of `streak_normal`).
+  f32 streak_tan_start = 0.0f;
+  f32 streak_tan_full = 0.0f;
+  f32 streak_width = 0.4f;
+  f32 streak_length = 2.0f;
+  f32 streak_albedo = 0.0f;
+  f32 streak_roughness = 0.0f;
+  f32 streak_slope = 0.0f;
+  f32 streak_normal = 0.0f;
   u32 pad3 = 0;
   u32 pad4 = 0;
   u32 pad5 = 0;
 };
-static_assert(sizeof(GroundDetailParams) == 96);
+static_assert(sizeof(GroundDetailParams) == 128);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // The scene's numbers (the renderer's `engine.scene.TerrainDetail`): what a scene says, in metres
@@ -150,6 +169,18 @@ struct GroundDetailDesc {
   f32 grain_finest = 0.0f;
   // The root-mean-square slope the grain's height leans the shading normal by; 0 none.
   f32 grain_normal = 0.0f;
+  // Grainflow streaks on a slip face: on ground falling away from the wind they start at a lee
+  // slope of `streak_start_deg` along it and are whole at `streak_full_deg`; both 0 (the default)
+  // is none. Tongues `streak_width` across and `streak_length` long down the fall line, moving the
+  // albedo by `streak_albedo` (a share, root-mean-square), the roughness by `streak_roughness` and
+  // the normal by a root-mean-square slope of `streak_normal`.
+  f32 streak_start_deg = 0.0f;
+  f32 streak_full_deg = 0.0f;
+  f32 streak_width = 0.4f;
+  f32 streak_length = 2.0f;
+  f32 streak_albedo = 0.06f;
+  f32 streak_roughness = 0.04f;
+  f32 streak_normal = 0.012f;
 };
 
 // The gradient grain's octaves for a coarsest cell and a finest: `grain_size` halving until the
@@ -219,6 +250,31 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.grain_normal = desc.grain_normal;
     if (desc.grain_albedo > 0.0f || desc.grain_roughness > 0.0f || desc.grain_normal > 0.0f)
       out.flags |= k_ground_grain | k_ground_gradient_grain;
+  }
+  if (desc.streak_full_deg > desc.streak_start_deg && desc.streak_width > 0.0f &&
+      desc.streak_length > 0.0f) {
+    out.flags |= k_ground_streaks;
+    out.streak_tan_start = std::tan(radians(desc.streak_start_deg));
+    out.streak_tan_full = std::tan(radians(desc.streak_full_deg));
+    out.streak_width = desc.streak_width;
+    out.streak_length = desc.streak_length;
+    // The tongues' sum has `E S^2 = k / (3 L^2) pi a b / 7` for k kernels a cell of side L, each an
+    // amplitude uniform in [-1, 1] under `(1 - r^2)^3` over an ellipse of half-axes a = L/2 and
+    // b = W/2, and `E |grad S|^2 = k / (3 L^2) 0.6 pi a b (1/a^2 + 1/b^2)`; the block scales the
+    // sum by the first's root and its gradient by the second's (ground_detail_tests.cpp measures
+    // both).
+    const f64 a = 0.5 * static_cast<f64>(desc.streak_length);
+    const f64 b = 0.5 * static_cast<f64>(desc.streak_width);
+    const f64 density =
+        static_cast<f64>(k_ground_streak_impulses) /
+        (3.0 * static_cast<f64>(desc.streak_length) * static_cast<f64>(desc.streak_length));
+    const f64 pi = 3.14159265358979323846;
+    const f64 rms = std::sqrt(density * pi * a * b / 7.0);
+    const f64 slope_rms = std::sqrt(density * 0.6 * pi * a * b * (1.0 / (a * a) + 1.0 / (b * b)));
+    out.streak_albedo = static_cast<f32>(static_cast<f64>(desc.streak_albedo) / rms);
+    out.streak_roughness = static_cast<f32>(static_cast<f64>(desc.streak_roughness) / rms);
+    out.streak_slope = static_cast<f32>(static_cast<f64>(desc.streak_normal) / slope_rms);
+    out.streak_normal = desc.streak_normal;
   }
   if (desc.lee_end_deg > desc.lee_start_deg) {
     out.flags |= k_ground_exposure;

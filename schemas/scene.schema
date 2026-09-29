@@ -554,6 +554,21 @@ struct TerrainDetail @version(2) {
   /// How far the grain leans the shading normal, as a root-mean-square slope, [0, 0.3]; 0 none.
   /// Only with `grain_finest`.
   grain_normal: f32 = 0 @since(2)
+  /// Grainflow streaks on a slip face, degrees of lee slope along the wind: on ground falling away
+  /// from it they start at `streak_start_deg` and are whole at `streak_full_deg`, fading out toward
+  /// the brink and the toe as the slope leaves the band. Both 0 (the default) is none; else
+  /// 0 <= start < full <= 60.
+  streak_start_deg: f32 = 0 @since(2)
+  streak_full_deg: f32 = 0 @since(2)
+  /// A tongue's width across the fall line and its length down it, metres: [0.05, 5] and
+  /// [width, 10].
+  streak_width: f32 = 0.4 @since(2)
+  streak_length: f32 = 2 @since(2)
+  /// What the tongues move, each a root-mean-square: the albedo as a share of it and the
+  /// perceptual roughness, [0, 0.5], and the normal as a slope, [0, 0.3].
+  streak_albedo: f32 = 0.06 @since(2)
+  streak_roughness: f32 = 0.04 @since(2)
+  streak_normal: f32 = 0.012 @since(2)
 }
 
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera

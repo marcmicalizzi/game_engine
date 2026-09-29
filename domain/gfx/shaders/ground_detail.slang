@@ -37,6 +37,9 @@ static const uint k_ground_ripples = 1u;
 static const uint k_ground_grain = 2u;
 static const uint k_ground_exposure = 4u;
 static const uint k_ground_gradient_grain = 8u;
+static const uint k_ground_streaks = 16u;
+// Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
+static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
 static const float k_ground_noise_rms = 0.182;
 static const float k_ground_noise_slope_rms = 0.743;
@@ -45,7 +48,7 @@ static const float k_ground_grain_rms = 0.28;
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
 
-// Mirrors gfx::GroundDetailParams (96 bytes).
+// Mirrors gfx::GroundDetailParams (128 bytes).
 struct GroundDetail {
   float4 wind;            // xy the direction the sand moves (x, z), unit; z sin(spread)
   float wavelength;       // metres crest to crest
@@ -65,6 +68,14 @@ struct GroundDetail {
   float lee_tan_end;      // and where there are none
   uint grain_octaves;     // the gradient grain's octaves (k_ground_gradient_grain)
   float grain_normal;     // the root-mean-square slope its height leans the normal by
+  float streak_tan_start;  // the fall along the wind where the streaks start (k_ground_streaks)
+  float streak_tan_full;   // and where they are whole
+  float streak_width;      // metres, a tongue across
+  float streak_length;     // metres, a tongue along the fall line, and the lattice's cell
+  float streak_albedo;     // the albedo's share per unit of the tongues' sum
+  float streak_roughness;  // the roughness's
+  float streak_slope;      // the normal's lean per unit of the sum's gradient
+  float streak_normal;     // the root-mean-square slope that is, for the roughness transfer
   uint pad3;
   uint pad4;
   uint pad5;
@@ -270,6 +281,52 @@ GroundGrain ground_gradient_noise3(float2 p, float size, uint seed, uint stream)
   return out;
 }
 
+// Grainflow streaks: tongues of sand avalanched down a slip face, as a sum of kernels on a lattice
+// of `streak_length` fixed in the world, each an ellipse `streak_length` long down the fall line
+// and `streak_width` across under the bell `(1 - r^2)^3`, lighter or darker by a draw in [-1, 1].
+// **The fall line depends on the normal, and only an offset from a kernel's centre is ever
+// projected on it**: the offset is bounded by the kernel's reach, so a thousandth of a radian of
+// normal moves the pattern by a thousandth of a metre and not, 3 km from the origin, by metres —
+// the ripples' kernels work the same way. The sum and its gradient over (x, z).
+struct GroundStreak {
+  float value;
+  float2 gradient;
+};
+
+GroundStreak ground_streaks(GroundDetail d, float2 p, float2 fall) {
+  const float inv_cell = 1.0 / d.streak_length;
+  const float2 q = p * inv_cell;
+  const int2 base = int2(floor(q));
+  const float2 across = float2(-fall.y, fall.x);
+  const float inv_a2 = 4.0 / (d.streak_length * d.streak_length);
+  const float inv_b2 = 4.0 / (d.streak_width * d.streak_width);
+  GroundStreak out;
+  out.value = 0.0;
+  out.gradient = float2(0.0, 0.0);
+  for (int j = -1; j <= 1; ++j) {
+    for (int i = -1; i <= 1; ++i) {
+      const int2 c = base + int2(i, j);
+      for (uint n = 0u; n < k_ground_streak_impulses; ++n) {
+        uint h = ground_hash(c.x, c.y, d.seed, 32u + n);
+        const float ux = ground_unit(h);
+        h = ground_pcg(h);
+        const float uz = ground_unit(h);
+        const float2 offset = (q - (float2(c) + float2(ux, uz))) * d.streak_length;
+        const float u = dot(offset, fall);
+        const float w = dot(offset, across);
+        const float r2 = u * u * inv_a2 + w * w * inv_b2;
+        if (r2 >= 1.0) continue;
+        h = ground_pcg(h);
+        const float v = ground_unit(h) * 2.0 - 1.0;
+        const float t = 1.0 - r2;
+        out.value += v * (t * t * t);
+        out.gradient += (fall * (u * inv_a2) + across * (w * inv_b2)) * (v * -6.0 * t * t);
+      }
+    }
+  }
+  return out;
+}
+
 // What the detail makes of one shaded point, and what the debug view shows of it.
 struct GroundShading {
   float3 normal;     // the shading normal with the ripples in it
@@ -277,6 +334,7 @@ struct GroundShading {
   float roughness;   // with the grain and the ripples' lost slope variance
   float weight;      // the ripples' share here: the sand share, the slope fade and the exposure
   float exposure;    // how much the ground faces the wind (1 without k_ground_exposure)
+  float streak;      // the streaks' share here: the sand share times the slip face's band
   float fade;        // the footprint's fade of the ripples
   float ripple;      // the ripples' height over their amplitude, before the weight and the fade
   float grain;       // the albedo grain's coarse octave, before any fade
@@ -297,6 +355,7 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   out.roughness = roughness;
   out.weight = 0.0;
   out.exposure = 1.0;
+  out.streak = 0.0;
   out.fade = 0.0;
   out.ripple = 0.0;
   out.grain = 0.0;
@@ -401,6 +460,35 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     if (fine > 0.0) g += ground_value_noise2(p, d.grain_size * 0.25, d.seed, 17u) * (0.35 * fine);
     out.albedo = albedo * (1.0 + d.grain_albedo * mask * g.x);
     out.roughness = saturate(out.roughness + d.grain_roughness * mask * g.y);
+  }
+  if ((d.flags & k_ground_streaks) != 0u) {
+    // Where the ground falls away from the wind near the angle of repose, and by the sand share;
+    // faded by the footprint across a tongue, and the slope variance that takes into the roughness.
+    const float fall_tan = dot(normal.xz, d.wind.xy) / max(normal.y, 1e-4);
+    const float weight = mask * smoothstep(d.streak_tan_start, d.streak_tan_full, fall_tan);
+    out.streak = weight;
+    if (weight > 0.0 && !full) {
+      const float footprint = max(length(dpdx.xz), length(dpdy.xz));
+      const float fade = ground_fade(footprint / d.streak_width);
+      if (fade > 0.0) {
+        const float len = length(normal.xz);
+        const float2 fall = len > 1e-6 ? normal.xz / len : d.wind.xy;
+        const GroundStreak st = ground_streaks(d, p, fall);
+        const float strength = weight * fade;
+        out.albedo *= 1.0 + d.streak_albedo * strength * st.value;
+        out.roughness = saturate(out.roughness + d.streak_roughness * strength * st.value);
+        if (d.streak_slope > 0.0) {
+          const float3 n = out.normal;
+          out.normal = normalize(n - float3(st.gradient.x, 0.0, st.gradient.y) *
+                                         (d.streak_slope * strength * n.y));
+        }
+      }
+      const float lost = weight * weight * d.streak_normal * d.streak_normal * (1.0 - fade * fade);
+      if (lost > 0.0) {
+        const float alpha = out.roughness * out.roughness;
+        out.roughness = sqrt(sqrt(alpha * alpha + lost));
+      }
+    }
   }
   return out;
 }

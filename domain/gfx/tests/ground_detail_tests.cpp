@@ -760,3 +760,142 @@ TEST_CASE("ground detail: the grain's filter keeps the mean and adds no sparkle"
     CHECK(sd_f <= sd_s * 1.25 + 1e-4);
   }
 }
+
+TEST_CASE("ground detail: streaks run down a slip face and nowhere else") {
+  gfx::GroundDetailDesc desc;
+  desc.streak_start_deg = 22.0f;
+  desc.streak_full_deg = 30.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((d.flags & gfx::k_ground_streaks) != 0u);
+  const double deg = 3.14159265358979323846 / 180.0;
+  const auto normal = [deg](double slope, double azimuth) {
+    return ref::Dvec3{std::sin(slope * deg) * std::cos(azimuth * deg), std::cos(slope * deg),
+                      std::sin(slope * deg) * std::sin(azimuth * deg)};
+  };
+  const ref::Dvec3 none{};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  const auto weight = [&](ref::Dvec3 n) {
+    return gref::shade(d, ref::Dvec3{3.0, 0.0, 1.0}, n, none, none, 1.0, albedo, 0.85).streak;
+  };
+  CHECK(weight(normal(0.0, 0.0)) == 0.0);
+  CHECK(weight(normal(33.0, 180.0)) == 0.0);  // windward, however steep
+  CHECK(weight(normal(18.0, 0.0)) == 0.0);    // a gentle lee: smooth sand, neither
+  CHECK(weight(normal(32.0, 0.0)) == 1.0);    // a slip face
+  CHECK(weight(normal(26.0, 0.0)) > 0.0);
+  CHECK(weight(normal(26.0, 0.0)) < 1.0);
+  // No line anywhere: along a sweep of the lee slope from flat to past the angle of repose, every
+  // weight — the ripples' and the streaks' — and the shaded albedo change smoothly.
+  double largest_step = 0.0;
+  gfx::GroundDetailDesc all = desc;
+  all.lee_start_deg = 10.0f;
+  all.lee_end_deg = 18.0f;
+  const gfx::GroundDetailParams e = gfx::ground_detail_block(all, Vec2{1.0f, 0.0f}, 7u);
+  gref::Shading previous =
+      gref::shade(e, ref::Dvec3{3.0, 0.0, 1.0}, normal(0.0, 0.0), none, none, 1.0, albedo, 0.85);
+  for (u32 i = 1; i <= 4000; ++i) {
+    const gref::Shading g = gref::shade(e, ref::Dvec3{3.0, 0.0, 1.0}, normal(i * 0.01, 0.0), none,
+                                        none, 1.0, albedo, 0.85);
+    largest_step = std::max({largest_step, std::fabs(g.weight - previous.weight),
+                             std::fabs(g.streak - previous.streak),
+                             std::fabs(g.albedo.x - previous.albedo.x)});
+    previous = g;
+  }
+  CHECK(largest_step < 0.005);
+
+  // The block scales the tongues' sum to unit root-mean-square and its gradient to
+  // `streak_normal`: measured over a slip face's worth of points.
+  double v = 0.0, g2 = 0.0;
+  u32 count = 0;
+  for (u32 j = 0; j < 300; ++j) {
+    for (u32 i = 0; i < 300; ++i) {
+      const gref::Streak st = gref::streaks(d, 0.047 * i - 3.0, 0.053 * j + 1.0, 0.6, 0.8);
+      v += st.value * st.value;
+      g2 += st.gx * st.gx + st.gz * st.gz;
+      ++count;
+    }
+  }
+  const double rms = std::sqrt(v / count) * static_cast<double>(d.streak_albedo) /
+                     static_cast<double>(desc.streak_albedo);
+  const double slope_rms = std::sqrt(g2 / count) * static_cast<double>(d.streak_slope);
+  MESSAGE("streaks: unit sum's rms " << rms << ", slope rms " << slope_rms << " against "
+                                     << desc.streak_normal);
+  CHECK(std::fabs(rms - 1.0) < 0.1);
+  CHECK(std::fabs(slope_rms / static_cast<double>(desc.streak_normal) - 1.0) < 0.1);
+
+  // The trap: the fall line depends on the normal, and only an offset from a kernel's centre is
+  // projected on it, so turning the normal by a thousandth of a radian 3 km from the origin moves
+  // the pattern by what a thousandth of a radian moves a point a metre from a kernel's centre —
+  // not by what it would move a point 3 km from the origin.
+  double moved = 0.0;
+  const double turn = 0.001;
+  for (u32 i = 0; i < 2000; ++i) {
+    const double x = 3000.0 + 0.0137 * i;
+    const double z = -1500.0 + 0.0091 * i;
+    const gref::Streak a = gref::streaks(d, x, z, 1.0, 0.0);
+    const gref::Streak b = gref::streaks(d, x, z, std::cos(turn), std::sin(turn));
+    moved = std::max(moved, std::fabs(a.value - b.value));
+  }
+  const double sum_rms = std::sqrt(v / count);
+  MESSAGE("a thousandth of a radian of normal 3 km out moves the tongues' sum by at most "
+          << moved / sum_rms << " of its rms");
+  CHECK(moved < 0.05 * sum_rms);
+}
+
+TEST_CASE("ground detail: the streaks' filter keeps the mean and adds no sparkle") {
+  gfx::GroundDetailDesc desc;
+  desc.ripple_height = 0.0f;
+  desc.grain_albedo = 0.0f;
+  desc.grain_roughness = 0.0f;
+  desc.streak_start_deg = 22.0f;
+  desc.streak_full_deg = 30.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  const double slope = 32.0 * 3.14159265358979323846 / 180.0;
+  const ref::Dvec3 n{std::sin(slope), std::cos(slope), 0.0};
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  const ref::Dvec3 sun = ref::normalize(ref::Dvec3{0.2, 0.5, 0.8});
+  const auto luma = [&](double x, double z, double step) {
+    const double y = -(n.x * x + n.z * z) / n.y;
+    const ref::Dvec3 p{x, y, z};
+    const ref::Dvec3 dx{step, -n.x / n.y * step, 0.0};
+    const ref::Dvec3 dz{0.0, -n.z / n.y * step, step};
+    const gref::Shading g = gref::shade(d, p, n, dx, dz, 1.0, albedo, 0.85);
+    ref::Surface s;
+    s.position = p;
+    s.normal = g.normal;
+    s.view = ref::normalize(ref::Dvec3{0.8, 0.6, 0.1});
+    s.albedo = g.albedo;
+    s.roughness = g.roughness;
+    return ref::luminance(
+        ref::shade(s, sun, 4.5, ref::Dvec3{0.45, 0.55, 0.75}, albedo, nullptr, 0, ref::Dvec3{}));
+  };
+  for (const double pixel : {0.05, 0.1, 0.2, 0.4}) {
+    constexpr u32 k_side = 32;
+    constexpr u32 k_sub = 8;
+    double sum_f = 0.0, sum_s = 0.0, sq_f = 0.0, sq_s = 0.0;
+    for (u32 j = 0; j < k_side; ++j) {
+      for (u32 i = 0; i < k_side; ++i) {
+        const double x0 = 40.0 + i * pixel;
+        const double z0 = 7.0 + j * pixel;
+        const double f = luma(x0 + 0.5 * pixel, z0 + 0.5 * pixel, pixel);
+        double s = 0.0;
+        for (u32 b = 0; b < k_sub; ++b)
+          for (u32 a = 0; a < k_sub; ++a)
+            s +=
+                luma(x0 + (a + 0.5) * pixel / k_sub, z0 + (b + 0.5) * pixel / k_sub, pixel / k_sub);
+        s /= k_sub * k_sub;
+        sum_f += f;
+        sum_s += s;
+        sq_f += f * f;
+        sq_s += s * s;
+      }
+    }
+    const double count = k_side * k_side;
+    const double mean_f = sum_f / count, mean_s = sum_s / count;
+    const double sd_f = std::sqrt(std::max(sq_f / count - mean_f * mean_f, 0.0));
+    const double sd_s = std::sqrt(std::max(sq_s / count - mean_s * mean_s, 0.0));
+    MESSAGE("slip face, pixel " << pixel * 100.0 << " cm: mean " << mean_f << " against " << mean_s
+                                << ", variation " << sd_f << " against " << sd_s);
+    CHECK(std::fabs(mean_f / mean_s - 1.0) < 0.01);
+    CHECK(sd_f <= sd_s * 1.25 + 1e-4);
+  }
+}

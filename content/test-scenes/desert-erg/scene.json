@@ -104,7 +104,14 @@
       "lee_start_deg": 10,
       "lee_end_deg": 18,
       "grain_finest": 0.001,
-      "grain_normal": 0.06
+      "grain_normal": 0.06,
+      "streak_start_deg": 22,
+      "streak_full_deg": 30,
+      "streak_width": 0.4,
+      "streak_length": 2,
+      "streak_albedo": 0.06,
+      "streak_roughness": 0.04,
+      "streak_normal": 0.012
     }
   }
 }

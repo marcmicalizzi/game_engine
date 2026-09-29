@@ -74,7 +74,7 @@ Detail first_pass(const gfx::GroundDetailParams& d, Dvec3 p, Dvec3 n, Dvec3 dpdx
 
 Detail live(const gfx::GroundDetailParams& d, Dvec3 p, Dvec3 n, Dvec3 dpdx, Dvec3 dpdy) {
   const ground_ref::Shading s = ground_ref::shade(d, p, n, dpdx, dpdy, 1.0, k_albedo, k_roughness);
-  return {s.normal, s.albedo, s.roughness, s.weight, s.exposure, 0.0};
+  return {s.normal, s.albedo, s.roughness, s.weight, s.exposure, s.streak};
 }
 
 using DetailFn = Detail (*)(const gfx::GroundDetailParams&, Dvec3, Dvec3, Dvec3, Dvec3);
@@ -395,6 +395,8 @@ TEST_CASE("ground detail preview: the sand from the mirror, before and after" * 
   second.lee_end_deg = 18.0f;
   second.grain_finest = 0.001f;
   second.grain_normal = 0.06f;
+  second.streak_start_deg = 22.0f;
+  second.streak_full_deg = 30.0f;
   draw_all(dir, "before", first_pass, gfx::ground_detail_block(first, Vec2{1.0f, 0.0f}, 7u));
   draw_all(dir, "after", live, gfx::ground_detail_block(second, Vec2{1.0f, 0.0f}, 7u));
   MESSAGE("ground detail preview written to " << dir.path());

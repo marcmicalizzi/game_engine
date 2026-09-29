@@ -234,12 +234,60 @@ inline double float_step(double m) {
   return std::ldexp(1.0, exponent - 1 - 23);
 }
 
+// `ground_streaks`: the tongues' sum at (x, z) down the fall line `(fx, fz)`, and its gradient.
+struct Streak {
+  double value = 0.0;
+  double gx = 0.0;
+  double gz = 0.0;
+};
+
+inline Streak streaks(const gfx::GroundDetailParams& d, double x, double z, double fx, double fz) {
+  const double cell = static_cast<double>(d.streak_length);
+  const double qx = x / cell;
+  const double qz = z / cell;
+  const i32 bx = static_cast<i32>(std::floor(qx));
+  const i32 bz = static_cast<i32>(std::floor(qz));
+  const double ax = -fz;
+  const double az = fx;
+  const double inv_a2 = 4.0 / (cell * cell);
+  const double width = static_cast<double>(d.streak_width);
+  const double inv_b2 = 4.0 / (width * width);
+  Streak out;
+  for (i32 j = -1; j <= 1; ++j) {
+    for (i32 i = -1; i <= 1; ++i) {
+      const i32 cx = bx + i;
+      const i32 cz = bz + j;
+      for (u32 n = 0; n < gfx::k_ground_streak_impulses; ++n) {
+        u32 h = hash(cx, cz, d.seed, 32u + n);
+        const double ux = unit(h);
+        h = pcg(h);
+        const double uz = unit(h);
+        const double ox = (qx - (static_cast<double>(cx) + ux)) * cell;
+        const double oz = (qz - (static_cast<double>(cz) + uz)) * cell;
+        const double u = ox * fx + oz * fz;
+        const double w = ox * ax + oz * az;
+        const double r2 = u * u * inv_a2 + w * w * inv_b2;
+        if (r2 >= 1.0) continue;
+        h = pcg(h);
+        const double v = unit(h) * 2.0 - 1.0;
+        const double t = 1.0 - r2;
+        out.value += v * t * t * t;
+        const double k = v * -6.0 * t * t;
+        out.gx += (fx * u * inv_a2 + ax * w * inv_b2) * k;
+        out.gz += (fz * u * inv_a2 + az * w * inv_b2) * k;
+      }
+    }
+  }
+  return out;
+}
+
 struct Shading {
   Dvec3 normal;
   Dvec3 albedo;
   double roughness = 1.0;
   double weight = 0.0;
   double exposure = 1.0;
+  double streak = 0.0;
   double fade = 0.0;
   double ripple = 0.0;
   double grain = 0.0;
@@ -356,6 +404,43 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
     out.albedo = albedo * (1.0 + static_cast<double>(d.grain_albedo) * mask * ga);
     out.roughness =
         brdf_ref::clamp01(out.roughness + static_cast<double>(d.grain_roughness) * mask * gr);
+  }
+  if ((d.flags & gfx::k_ground_streaks) != 0u) {
+    const double wx = static_cast<double>(d.wind.x);
+    const double wz = static_cast<double>(d.wind.y);
+    const double fall_tan = (normal.x * wx + normal.z * wz) / (normal.y > 1e-4 ? normal.y : 1e-4);
+    const double weight = mask * smoothstep(static_cast<double>(d.streak_tan_start),
+                                            static_cast<double>(d.streak_tan_full), fall_tan);
+    out.streak = weight;
+    if (weight > 0.0 && !full) {
+      const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
+      const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
+      const double footprint = lx > ly ? lx : ly;
+      const double f = fade(footprint / static_cast<double>(d.streak_width));
+      if (f > 0.0) {
+        const double len = std::sqrt(normal.x * normal.x + normal.z * normal.z);
+        const double fx = len > 1e-6 ? normal.x / len : wx;
+        const double fz = len > 1e-6 ? normal.z / len : wz;
+        const Streak st = streaks(d, position.x, position.z, fx, fz);
+        const double strength = weight * f;
+        out.albedo =
+            out.albedo * (1.0 + static_cast<double>(d.streak_albedo) * strength * st.value);
+        out.roughness = brdf_ref::clamp01(out.roughness + static_cast<double>(d.streak_roughness) *
+                                                              strength * st.value);
+        const double slope = static_cast<double>(d.streak_slope);
+        if (slope > 0.0) {
+          const Dvec3 n = out.normal;
+          const double s = slope * strength * n.y;
+          out.normal = brdf_ref::normalize(Dvec3{n.x - st.gx * s, n.y, n.z - st.gz * s});
+        }
+      }
+      const double sn = static_cast<double>(d.streak_normal);
+      const double lost = weight * weight * sn * sn * (1.0 - f * f);
+      if (lost > 0.0) {
+        const double alpha = out.roughness * out.roughness;
+        out.roughness = std::sqrt(std::sqrt(alpha * alpha + lost));
+      }
+    }
   }
   return out;
 }
