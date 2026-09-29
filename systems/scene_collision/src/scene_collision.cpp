@@ -3,6 +3,7 @@
 #include <core/hash/hash.h>
 #include <core/log/log.h>
 #include <core/time/time.h>
+#include <domain/physics/character.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
@@ -427,18 +428,36 @@ f64 SceneCollision::stale_of(const Tile& tile) const noexcept {
   return static_cast<f64>(worst);
 }
 
-u32 SceneCollision::refresh(f32 x, f32 z) {
+u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
   if (ground_ == nullptr || !time_.moving || !ground_->moves() || tiles_.empty()) return 0;
+  // The tiles under the walker: every tile the square `reach` either side of (x, z) touches, which
+  // is the one holding the point unless a capsule of that radius stands near a tile's edge.
+  const f64 r = reach > 0.0f ? static_cast<f64>(reach) : 0.0;
+  const i64 ux0 =
+      floor_div(static_cast<i64>(std::floor((static_cast<f64>(x) - r) * 1000.0)), tile_mm_);
+  const i64 ux1 =
+      floor_div(static_cast<i64>(std::floor((static_cast<f64>(x) + r) * 1000.0)), tile_mm_);
+  const i64 uz0 =
+      floor_div(static_cast<i64>(std::floor((static_cast<f64>(z) - r) * 1000.0)), tile_mm_);
+  const i64 uz1 =
+      floor_div(static_cast<i64>(std::floor((static_cast<f64>(z) + r) * 1000.0)), tile_mm_);
+  const auto under_walker = [&](u64 key) {
+    const world::TileCoord c = world::tile_of_key(key);
+    return c.x >= ux0 && c.x <= ux1 && c.z >= uz0 && c.z <= uz1;
+  };
   // The tiles with work: a new pair of fields to evaluate (which is not yet a rebuild — at a slow
-  // rate the new b is the old heights to the millimetre), or heights further than the error from
-  // the drawn ones under the pair they have.
+  // rate the new b is the old heights to the millimetre), or heights further than their error
+  // from the drawn ones under the pair they have: a millimetre under the walker, where the ground
+  // it stands on must follow the drawn sand a frame at a time, `ground_error_m` elsewhere.
   const f64 limit = static_cast<f64>(config_.ground_error_m);
+  const f64 underfoot_limit = static_cast<f64>(k_underfoot_error_m);
   order_.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const Tile& t = tiles_.value_at(i);
     if (t.heights.empty()) continue;
     const bool pair = !t.moving || t.time_a != time_.time_a || t.time_b != time_.time_b;
-    if (!pair && !(stale_of(t) > limit)) continue;
+    const bool under = under_walker(tiles_.key_at(i));
+    if (!pair && !(stale_of(t) > (under ? underfoot_limit : limit))) continue;
     order_.push_back(tiles_.key_at(i));
   }
   if (order_.empty()) return 0;
@@ -449,12 +468,20 @@ u32 SceneCollision::refresh(f32 x, f32 z) {
     const f32 dz = (static_cast<f32>(c.z) + 0.5f) * tile - z;
     return dx * dx + dz * dz;
   };
+  // The tiles under the walker first, then nearest first; the budget is the others'.
   std::sort(order_.begin(), order_.end(), [&](u64 a, u64 b) {
+    const bool ua = under_walker(a);
+    const bool ub = under_walker(b);
+    if (ua != ub) return ua;
     const f32 da = distance2(a);
     const f32 db = distance2(b);
     return da != db ? da < db : a < b;
   });
-  const u32 count = std::min<u32>(order_.size(), config_.max_refreshes);
+  u32 under_count = 0;
+  while (under_count < order_.size() && under_walker(order_[under_count]))
+    ++under_count;
+  const u32 count = under_count + std::min<u32>(static_cast<u32>(order_.size()) - under_count,
+                                                config_.max_refreshes);
   const i64 xm = static_cast<i64>(std::floor(static_cast<f64>(x) * 1000.0));
   const i64 zm = static_cast<i64>(std::floor(static_cast<f64>(z) * 1000.0));
   const u64 underfoot_key = world::tile_key(world::TileCoord{
@@ -475,7 +502,7 @@ u32 SceneCollision::refresh(f32 x, f32 z) {
     // tile further off may wait behind nearer ones for several updates, and nobody stands on it.
     const f64 stale = stale_of(*t);
     const bool underfoot = order_[k] == underfoot_key;
-    if (stale > limit) {
+    if (stale > (k < under_count ? underfoot_limit : limit)) {
       if (underfoot) stats_.max_stale_m = stale > stats_.max_stale_m ? stale : stats_.max_stale_m;
       drop_ground_body(*t);
       blend_heights(*t, time_.blend);
@@ -516,6 +543,63 @@ bool SceneCollision::ground_height(f32 x, f32 z, f32& out) const noexcept {
                     static_cast<f32>(fx - static_cast<f64>(i)),
                     static_cast<f32>(fz - static_cast<f64>(j)));
   return true;
+}
+
+bool SceneCollision::ground_body(physics::BodyId body) const noexcept {
+  if (!body) return false;
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    if (tiles_.value_at(i).ground == body) return true;
+  }
+  return false;
+}
+
+// **The walker goes with the ground** (scene_collision.h). A rebuilt heightfield is a new static
+// body under a capsule the backend moves only by its own sweep, so the ground's motion reaches the
+// walker through nothing but this: the sand that drops away left a standing walker hovering on the
+// contact it had until the next rebuild snapped it down (the owner's jump, 2026-09-29), and the
+// sand that rose closed over its feet, where a heightfield's one-sided contact never pushes back,
+// and at a day a second went over its head (tests/time_lapse_tests.cpp has both, before and after).
+u32 SceneCollision::follow(physics::CharacterBody& walker) {
+  const Vec3 feet = walker.feet();
+  if (ground_ == nullptr || !time_.moving || !ground_->moves()) {
+    return refresh(feet.x, feet.z, walker.config().radius);
+  }
+  // Standing on the ground, not on a placement: what is straight under the capsule's centre, from
+  // just above its feet down past the round bottom's rise on the steepest ground it stands on
+  // (0.3 (1 / cos 40 - 1) = 9 cm, and the backend's padding), is a held tile's heightfield.
+  f32 before = 0.0f;
+  bool standing = false;
+  if (walker.state().ground == physics::Ground::OnGround && ground_height(feet.x, feet.z, before)) {
+    physics::RayHit hit;
+    const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+    standing =
+        physics_->cast_ray(Vec3{feet.x, feet.y + 0.05f, feet.z},
+                           Vec3{0.0f, -(0.05f + walker.config().radius), 0.0f}, hit, statics) &&
+        ground_body(hit.body);
+  }
+  const u32 done = refresh(feet.x, feet.z, walker.config().radius);
+  f32 after = 0.0f;
+  if (!ground_height(feet.x, feet.z, after)) return done;
+  Vec3 to = feet;
+  if (standing && after != before) {
+    // Carried: the offset it stood at over the ground (a slope's rise under its round bottom, the
+    // backend's padding) is kept, so a standing walker neither hovers nor sinks. Added to the new
+    // height rather than the change to the feet, so feet that stood at or over the ground are at
+    // or over it after, to the bit.
+    to.y = after + (feet.y - before);
+    ++stats_.carries;
+    stats_.max_carry_m = std::max(stats_.max_carry_m, std::fabs(static_cast<f64>(after - before)));
+  }
+  if (to.y < after) {
+    // Under the collision ground: lifted onto it. Counted from a tenth of a millimetre: below that
+    // it is the character settling a step's worth of gravity into a surface it stands on.
+    const f64 lift = static_cast<f64>(after - to.y);
+    if (lift > 1.0e-4) ++stats_.lifts;
+    stats_.max_lift_m = std::max(stats_.max_lift_m, lift);
+    to.y = after;
+  }
+  if (to.y != feet.y) (void)walker.teleport(to);
+  return done;
 }
 
 // ---- the placements

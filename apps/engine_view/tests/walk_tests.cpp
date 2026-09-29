@@ -13,8 +13,10 @@
 #include <foundation/input/input.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_time.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 
 #include <cmath>
 #include <cstring>
@@ -275,6 +277,104 @@ TEST_CASE("walk: the title says whether the camera flies or walks, and on what")
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text).rfind("flying \xC2\xB7 sun", 0) == 0);
 }
+
+#if ENGINE_VIEW_TESTS_DUNES && ENGINE_VIEW_WALK_PHYSICS
+TEST_CASE("walk: standing on the erg's moving sand, the eye moves with it and never steps") {
+  // The owner's start on the committed erg (x = 140, z = -60; the interdune floor at the
+  // mega-draa's toe) with the dunes at 600 game seconds a real second, where on 2026-09-29 his eye
+  // dropped 4.7 cm at a time every 0.7-4 s while the drawn sand under it sank 0.2-1.3 mm a frame
+  // (docs/experiments/walk-in-time-lapse-2026-09-29.md): the walker the window runs, handed the
+  // ground as the renderer's own model draws it a frame at a time (its cadence and its blend, the
+  // fields waited for) and stepped four ticks a frame with nothing pressed. Its eye moves with the
+  // drawn sand under it, a frame at a time and by what the sand moved give or take the collision's
+  // millimetre (scene_collision.md, "The walker goes with the ground").
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(committed)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  renderer::SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(renderer::read_scene_file(committed, desc, error), error);
+  renderer::SceneData scene;
+  scene.terrain = desc.terrain;
+  const renderer::TerrainSampler sampler(scene.terrain);
+  REQUIRE(sampler.moves());
+  view::Walker walker;
+  REQUIRE_MESSAGE(walker.start(view::WalkParams{}, 240, scene, &error), error);
+  REQUIRE(std::string(walker.collision()) == "physics");
+  const scene_gen::Lattice lattice = renderer::terrain_scene_lattice(scene.terrain);
+  const f64 spacing = lattice.spacing;
+  const renderer::TimeLapseConfig lapse;
+  renderer::TerrainBlend blend;
+  blend.time_a = blend.surface_s = scene.terrain.time_s;
+  renderer::TerrainNextField next;
+  const auto drawn = [&]() {
+    view::DrawnGround d;
+    d.lattice = lattice;
+    d.moving = true;
+    d.time_a = blend.time_a;
+    d.time_b = blend.has_b ? blend.time_b : blend.time_a;
+    d.blend = blend.blend();
+    return d;
+  };
+  walker.set_drawn(drawn());
+  Vec3 eye = walker.drop(Vec3{140.0f, 60.0f, -60.0f});
+  for (u32 tick = 0; tick < 120; ++tick)  // settled
+    eye = walker.step(view::WalkInput{});
+  // The drawn sand under the feet: the pair at the feet's point, blended as drawn.
+  const auto sand_at = [&](f32 x, f32 z) {
+    const scene_gen::Lattice point = scene_gen::ring_lattice(1);
+    const i32 i = static_cast<i32>(std::llround(static_cast<f64>(x) * 1000.0));
+    const i32 j = static_cast<i32>(std::llround(static_cast<f64>(z) * 1000.0));
+    f32 ha = 0.0f;
+    f32 hb = 0.0f;
+    const view::DrawnGround d = drawn();
+    REQUIRE(sampler.provider().evaluate(d.time_a, point, i, j, 1, 1, 0, 1, std::span<f32>(&ha, 1)));
+    REQUIRE(sampler.provider().evaluate(d.time_b, point, i, j, 1, 1, 0, 1, std::span<f32>(&hb, 1)));
+    const f32 t = static_cast<f32>(d.blend);
+    return ha * (1.0f - t) + hb * t;
+  };
+  f64 game = scene.terrain.time_s;
+  f32 last_eye = eye.y;
+  f32 last_sand = sand_at(eye.x, eye.z);
+  const f32 first_sand = last_sand;
+  f32 max_eye_step = 0.0f;
+  f32 max_sand_step = 0.0f;
+  f32 worst_gap = 0.0f;  // the eye's step over the sand's, in one frame
+  for (u32 frame = 0; frame < 1'200; ++frame) {
+    game += 600.0 / 60.0;
+    if (!next.ready) {
+      const f64 from = blend.has_b ? blend.time_b : blend.time_a;
+      next.time_s = renderer::terrain_next_time(sampler, from, spacing, lapse.fraction,
+                                                lapse.min_step_s, lapse.max_step_s);
+      next.delta_m = 2.0;  // at 600 the rate, not the per-frame bound, sets the pace
+      next.ready = true;
+    }
+    (void)renderer::terrain_blend_frame(blend, game, lapse.fraction * spacing, next);
+    walker.set_drawn(drawn());
+    for (u32 tick = 0; tick < 4; ++tick)
+      eye = walker.step(view::WalkInput{});
+    const f32 sand = sand_at(eye.x, eye.z);
+    max_eye_step = std::max(max_eye_step, std::fabs(eye.y - last_eye));
+    max_sand_step = std::max(max_sand_step, std::fabs(sand - last_sand));
+    worst_gap = std::max(worst_gap, std::fabs((eye.y - last_eye) - (sand - last_sand)));
+    last_eye = eye.y;
+    last_sand = sand;
+  }
+  MESSAGE("standing on the erg at 600 for 1,200 frames: the sand under the feet moved "
+          << last_sand - first_sand << " m, at most " << max_sand_step
+          << " m a frame; the eye at most " << max_eye_step << " m a frame, and at most "
+          << worst_gap << " m more or less than the sand; the ground under the feet at most "
+          << walker.stats().max_ground_error_m << " m off the drawn grid");
+  CHECK(last_sand - first_sand < -0.1f);  // it sinks, as it did under the owner
+  // Until 2026-09-29 the eye stood still and then dropped 4.7 cm in one frame, three times here.
+  CHECK(max_eye_step < 2.0e-3f);
+  CHECK(worst_gap < 1.5e-3f);
+}
+#endif
 
 TEST_CASE("walk: walking back and forth over the same ground is the same walk each time") {
   // Out and back, twice, in one session: the walker's hash chain differs between the legs (it

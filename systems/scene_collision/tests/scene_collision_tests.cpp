@@ -28,15 +28,22 @@ namespace {
 // -------------------------------------------------------------------
 
 // A tilted plane with a gentle saddle in it, still or moving: `speed` metres a game second along
-// +x for a ripple on top of it, which is what a time-lapse moves.
+// +x for a ripple on top of it, which is what a time-lapse moves; or the whole plane rising at
+// `rise` metres a game second until `turn` and falling as fast after it.
 struct TestGround {
   f32 ripple = 0.0f;  // metres of ripple height; 0 is a still ground
   f32 speed = 0.0f;
+  f32 rise = 0.0f;
+  f32 turn = 0.0f;
   f64 own_time = 0.0;
 };
 
 f32 ground_at(const TestGround& g, f32 x, f32 z, f64 t) noexcept {
-  const f32 base = 1.0f + 0.05f * x + 0.02f * z + 0.0005f * x * z;
+  f32 base = 1.0f + 0.05f * x + 0.02f * z + 0.0005f * x * z;
+  if (g.rise != 0.0f) {
+    const f32 s = static_cast<f32>(t);
+    base = base + g.rise * (s < g.turn ? s : 2.0f * g.turn - s);
+  }
   if (g.ripple == 0.0f) return base;
   const f32 phase = 0.35f * (x - g.speed * static_cast<f32>(t)) + 0.1f * z;
   return base + g.ripple * std::sin(phase);
@@ -632,6 +639,127 @@ TEST_CASE("scene_collision: a moving ground stays within its error of the drawn 
   still_collision.set_ground_time(time);
   CHECK(still_collision.refresh(wx, wz) == 0);
   CHECK(still_collision.stats().refreshes == 0);
+}
+
+TEST_CASE(
+    "scene_collision: a walker goes with a ground that rises and falls at the frame's bound") {
+  // The worst the renderer draws: a ground rising a quarter of the erg's 1.5 m spacing a frame —
+  // `renderer.terrain.move_fraction`'s bound, which a cross-fade at a day or a week a real second
+  // reaches (renderer.md, "The dunes in time-lapse") — for three game seconds and falling as fast
+  // for three, drawn as pairs one game second apart crossed a twentieth a frame, four 240 Hz ticks
+  // a frame. A walker standing on it goes with it: never under the collision ground after a
+  // refresh, on the drawn ground at the end of every frame, and moving by what the ground moved.
+  // A jump from it is overtaken by the rising sand and lifted onto it. Until 2026-09-29 the first
+  // rising frame closed over the capsule's round bottom, whose one-sided contact with a heightfield
+  // never pushes back, and the walker fell through (docs/subsystems/scene_collision.md, "The walker
+  // goes with the ground").
+  TestGround g;
+  g.rise = 7.5f;
+  g.turn = 3.0f;
+  scene_gen::GroundProvider ground(&k_moving_ops, &g);
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error), error);
+  GroundTime time;
+  time.moving = true;
+  collision.set_ground_time(time);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  const f32 wx = 10.0f;
+  const f32 wz = 10.0f;
+  world.update(at(wx, wz), 0, true);
+  f32 y = 0.0f;
+  REQUIRE(collision.ground_height(wx, wz, y));
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  physics::CharacterBody body;
+  REQUIRE(body.create(physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  for (u32 tick = 0; tick < 120; ++tick)
+    REQUIRE(body.step(physics::CharacterInput{}) == physics::Status::Ok);
+
+  f32 worst_below = 0.0f;  // after a refresh, the feet under the collision ground
+  f32 worst_off = 0.0f;    // after a frame, the feet off the drawn ground
+  f32 worst_lag = 0.0f;    // a frame's move of the feet against the ground's, the difference
+  f32 last_feet = body.feet().y;
+  f32 last_drawn = ground_at(g, wx, wz, 0.0);
+  f32 top = last_feet;
+  bool fell = false;
+  for (u32 frame = 1; frame <= 120; ++frame) {
+    time.time_a = static_cast<f64>((frame - 1) / 20);
+    time.time_b = time.time_a + 1.0;
+    time.blend = static_cast<f64>((frame - 1) % 20 + 1) / 20.0;
+    collision.set_ground_time(time);
+    for (u32 tick = 0; tick < 4; ++tick) {
+      collision.follow(body);
+      const Vec3 feet = body.feet();
+      f32 held = 0.0f;
+      REQUIRE(collision.ground_height(feet.x, feet.z, held));
+      worst_below = std::max(worst_below, held - feet.y);
+      // Jump on the second rising second's first tick: 4 m/s against sand rising at 22.5.
+      physics::CharacterInput in;
+      in.jump = frame == 21 && tick == 0;
+      REQUIRE(body.step(in) == physics::Status::Ok);
+    }
+    const Vec3 feet = body.feet();
+    const f32 a = ground_at(g, feet.x, feet.z, time.time_a);
+    const f32 b = ground_at(g, feet.x, feet.z, time.time_b);
+    const f32 t = static_cast<f32>(time.blend);
+    const f32 drawn = a * (1.0f - t) + b * t;
+    // Standing, that is: the frame of the jump ends 6 cm up, which the next one's sand overtakes.
+    if (frame != 21) worst_off = std::max(worst_off, std::fabs(feet.y - drawn));
+    if (frame > 1 && frame != 21 && frame != 22) {
+      worst_lag = std::max(worst_lag, std::fabs((feet.y - last_feet) - (drawn - last_drawn)));
+    }
+    if (feet.y < drawn - c.radius) fell = true;
+    top = std::max(top, feet.y);
+    last_feet = feet.y;
+    last_drawn = drawn;
+  }
+  const Stats& s = collision.stats();
+  MESSAGE("a ground rising and falling 0.375 m a frame: the feet at most "
+          << worst_below << " m under the collision ground after a refresh, " << worst_off
+          << " m off the drawn ground after a frame, a frame's move at most " << worst_lag
+          << " m off the ground's; " << s.carries << " carries (at most " << s.max_carry_m
+          << " m), " << s.lifts << " lifts (at most " << s.max_lift_m << " m), " << s.refreshes
+          << " rebuilds; the feet rose to " << top << " m");
+  CHECK_FALSE(fell);
+  CHECK(worst_below <= 1.0e-5f);
+  // On the collision ground (its lattice's triangulation is the drawn plane's own here, to a tenth
+  // of a millimetre) to the backend's padding, and moving with it.
+  CHECK(worst_off <= 0.03f);
+  CHECK(worst_lag <= 1.0e-3f);
+  CHECK(top > y + 22.0f);  // three game seconds at 7.5 m/s
+  CHECK(s.carries > 100);
+  CHECK(s.lifts > 0);  // the jump the sand caught
+  CHECK(physics.body_count() == s.bodies);
+
+  // On still ground `follow` is `refresh` and nothing else: no carry, no lift, no teleport in the
+  // walker's hash chain.
+  TestGround still;
+  scene_gen::GroundProvider still_ground(&k_still_ops, &still);
+  physics::World still_physics;
+  REQUIRE(still_physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision still_collision;
+  REQUIRE(still_collision.create(still_physics, scene, &still_ground, Config{}, &error));
+  world::World still_world(ring());
+  still_world.add_consumer(still_collision.consumer());
+  still_world.update(at(wx, wz), 0, true);
+  REQUIRE(still_collision.ground_height(wx, wz, y));
+  physics::CharacterBody a;
+  physics::CharacterBody b;
+  REQUIRE(a.create(still_physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  REQUIRE(b.create(still_physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  for (u32 tick = 0; tick < 240; ++tick) {
+    CHECK(still_collision.follow(a) == 0);
+    REQUIRE(a.step(physics::CharacterInput{}) == physics::Status::Ok);
+    REQUIRE(b.step(physics::CharacterInput{}) == physics::Status::Ok);
+  }
+  CHECK(a.hash() == b.hash());
+  CHECK(still_collision.stats().carries == 0);
+  CHECK(still_collision.stats().lifts == 0);
 }
 
 TEST_CASE("scene_collision: the tunables' defaults are the documented ones") {

@@ -4,6 +4,7 @@
 // arithmetic and a scene of boxes read whole. The dunes' own evaluation is the terrain
 // capability's cost and is measured in engine-view's summary, where the real ground is.
 #include <domain/geometry/cluster_lod.h>
+#include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <foundation/bench/bench.h>
 #include <systems/renderer/scene.h>
@@ -22,6 +23,26 @@ f32 still_height(const void*, f32 x, f32 z) noexcept {
   return 1.0f + 0.05f * x + 0.02f * z + 0.0005f * x * z;
 }
 constexpr scene_gen::GroundOps k_ground{.destroy = &still_destroy, .height = &still_height};
+
+// The same plane rising a centimetre a game second, which a time-lapse moves: evaluated in plain
+// arithmetic, so what is measured is the collision's own work and not a generator's.
+f32 rising_at(f32 x, f32 z, f64 t) noexcept {
+  return still_height(nullptr, x, z) + 0.01f * static_cast<f32>(t);
+}
+f32 rising_height(const void*, f32 x, f32 z) noexcept { return rising_at(x, z, 0.0); }
+bool rising_evaluate(const void*, f64 time, const scene_gen::Lattice& lattice, i32 i0, i32 j0,
+                     u32 nx, u32 nz, u32, u32, std::span<f32> heights) noexcept {
+  for (u32 j = 0; j < nz; ++j)
+    for (u32 i = 0; i < nx; ++i)
+      heights[j * nx + i] =
+          rising_at(lattice.x(i0 + static_cast<i32>(i)), lattice.z(j0 + static_cast<i32>(j)), time);
+  return true;
+}
+f64 rising_travel(const void*, f64 from, f64 to) noexcept { return 0.01 * (to - from); }
+constexpr scene_gen::GroundOps k_rising{.destroy = &still_destroy,
+                                        .height = &rising_height,
+                                        .evaluate = &rising_evaluate,
+                                        .travel_m = &rising_travel};
 
 // A 1.2 x 0.6 x 0.6 m block (a ruin's fallen stone, roughly), a hundred to a 32 m tile, over a
 // strip of 40 x 3 tiles.
@@ -131,5 +152,50 @@ ENGINE_BENCH(scene_collision_tick, "scene_collision.tick") {
     bench::keep(collision.refresh(x, 16.0f));
   }
   bench::keep(collision.stats().bodies);
+  state.set_items(1);
+}
+
+// What a frame of moving sand costs the walker's host (docs/subsystems/scene_collision.md, "The
+// walker goes with the ground"): the drawn blend moved on by a frame's worth, the tile under a
+// standing walker rebuilt at it (a 34 x 34 heightfield and its body, the broadphase after), and the
+// walker carried with it — the frame's first tick. The pair is fixed, so no field is evaluated:
+// that is the generator's cost, and comes a pair at a time.
+ENGINE_BENCH(scene_collision_follow, "scene_collision.follow") {
+  renderer::SceneData scene;
+  build(scene);
+  int unused = 0;
+  scene_gen::GroundProvider ground(&k_rising, &unused);
+  physics::WorldOptions options;
+  options.max_bodies = 1024;
+  physics::World physics;
+  physics.init(options);
+  scene_collision::SceneCollision collision;
+  std::string error;
+  collision.create(physics, scene, &ground, scene_collision::Config{}, &error);
+  scene_collision::GroundTime time;
+  time.moving = true;
+  time.time_a = 0.0;
+  time.time_b = 1000.0;  // ten metres of rise across the pair
+  collision.set_ground_time(time);
+  world::World ring(scene_collision::ring_params_from_tunables(32.0f));
+  ring.add_consumer(collision.consumer());
+  sim::ObserverSet at;
+  at.add(Vec3{16.0f, 0.0f, 16.0f}, 1.0f);
+  ring.update(at, 0, true);
+  f32 y = 0.0f;
+  collision.ground_height(16.0f, 16.0f, y);
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  physics::CharacterBody body;
+  body.create(physics, c, Vec3{16.0f, y + 0.02f, 16.0f});
+  u32 frame = 0;
+  while (state.keep_running()) {
+    // Two millimetres a frame, the pair crossed in 5,000 frames and started again.
+    time.blend = static_cast<f64>(frame % 5000 + 1) / 5000.0;
+    collision.set_ground_time(time);
+    bench::keep(collision.follow(body));
+    ++frame;
+  }
+  bench::keep(collision.stats().refreshes);
   state.set_items(1);
 }

@@ -233,20 +233,16 @@ struct Walker::Impl {
     t.blend = drawn.blend;
     return t;
   }
-  // The ring and the ground's refresh round (x, z), before a step or a drop: at a fixed tick and
-  // from the walker's own position, so a replay makes and lets go of the same bodies at the same
-  // ticks (walk.h, "Determinism").
-  void follow(Vec3 at, bool unlimited) {
+  // The ring round (x, z), before a step or a drop: at a fixed tick and from the walker's own
+  // position, so a replay makes and lets go of the same bodies at the same ticks (walk.h,
+  // "Determinism"). The ground's time goes to the consumer first, so a tile the ring makes now is
+  // made at the sand this frame draws; until 2026-09-29 it was made at the last tick's, which after
+  // a flight over moving sand was wherever the sand had been when the walker last walked.
+  void move_ring(Vec3 at, bool unlimited) {
     observers.clear();  // kept, so a tick allocates nothing
     observers.add(at, 1.0f);
-    ring.update(observers, ring_tick++, unlimited);
     consumer.set_ground_time(ground_time());
-    if (unlimited) {
-      while (consumer.refresh(at.x, at.z) > 0) {
-      }
-    } else {
-      (void)consumer.refresh(at.x, at.z);
-    }
+    ring.update(observers, ring_tick++, unlimited);
   }
 #endif
 
@@ -429,7 +425,9 @@ Vec3 Walker::drop(Vec3 camera) {
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
     // Every tile round the camera, and its ground as drawn, before anything is looked for.
-    w.follow(camera, true);
+    w.move_ring(camera, true);
+    while (w.consumer.refresh(camera.x, camera.z, w.params.radius) > 0) {
+    }
     // The highest surface below the camera; a camera under the ground (a flight below the sand)
     // comes up to the surface above it; nothing at all, the ground's own height.
     const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
@@ -478,7 +476,13 @@ Vec3 Walker::step(const WalkInput& input) {
   const Vec3 before = w.feet;
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
-    w.follow(before, false);
+    // The ground round the feet as this frame draws it, and the walker with it: carried by what a
+    // refresh changed under it, never left under it (scene_collision.h, `follow`).
+    w.move_ring(before, false);
+    (void)w.consumer.follow(w.body);
+    // What the step did, from where the sand left it: being carried up a rising dune is not
+    // climbing it.
+    const Vec3 from = w.body.feet();
     physics::CharacterInput in;
     in.move = direction;
     in.sprint = input.sprint;
@@ -490,7 +494,7 @@ Vec3 Walker::step(const WalkInput& input) {
       f32 h = 0.0f;
       if (w.consumer.ground_height(w.feet.x, w.feet.z, h)) held = h;
     }
-    w.note(before, w.feet, held);
+    w.note(from, w.feet, held);
     w.stats.hash = w.body.hash();
     return eye();
   }
@@ -564,6 +568,10 @@ JsonValue Walker::summary_json() const {
     ground.set("field_evaluations", s.field_evaluations);
     ground.set("max_stale_m", s.max_stale_m);
     ground.set("max_kept_m", s.max_kept_m);
+    ground.set("carries", s.carries);
+    ground.set("max_carry_m", s.max_carry_m);
+    ground.set("lifts", s.lifts);
+    ground.set("max_lift_m", s.max_lift_m);
     ms.set("activate_total", static_cast<f64>(s.activate_ns) / 1.0e6);
     ms.set("activate_max", static_cast<f64>(s.max_activate_ns) / 1.0e6);
     ms.set("deactivate_total", static_cast<f64>(s.deactivate_ns) / 1.0e6);

@@ -625,6 +625,8 @@ test holds:
    however the wall's normal leans; and a back face holds it up only if it faces sideways, so a
    two-sided ledge seen from below is a ceiling and not a floor.
 
+**Ground that moves under it is its host's to carry** (2026-09-29). Nothing here knows that a static body was rebuilt somewhere else: the sweep finds the new one where it is. So a heightfield rebuilt lower leaves a standing character on the contact it had until something snaps it down, and one rebuilt higher closes over its feet — a heightfield's contact is one-sided, and the slope hold (3, above) zeroes the velocity the backend's penetration recovery would have pushed it out with — until, past the round bottom's centre, it falls through. A host that moves the ground moves the character with it, before the step, by `teleport`: scene_collision's `follow` carries a standing walker by the change of the ground under its feet and lifts one the ground has risen past ([scene_collision](scene_collision.md#the-walker-goes-with-the-ground)). The character itself did not change, and neither did its pinned hash.
+
 **Its state is a plain struct that hashes.** `CharacterState` — feet, velocity, the ground's
 normal, where it stands (`Ground`: on ground, on steep ground, touching something that does not
 hold it up, in the air) and the step count — is 48 bytes, pinned in the size table, and

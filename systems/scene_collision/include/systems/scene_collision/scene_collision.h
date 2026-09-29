@@ -62,6 +62,9 @@
 namespace engine::renderer {
 struct SceneData;
 }
+namespace engine::physics {
+class CharacterBody;
+}
 
 namespace engine::scene_collision {
 
@@ -84,6 +87,14 @@ f32 mesh_error_tunable() noexcept;
 f32 ground_error_tunable() noexcept;
 // Ground tiles refreshed per update under a time-lapse: 2.
 u32 max_refreshes_tunable() noexcept;
+
+// How far the ground under the walker may stand off the drawn ground under a time-lapse before its
+// tile is rebuilt, metres (docs: "The ground moves"). A millimetre: the step a standing walker's
+// eye then takes is a pixel at most on the owner's 11520 x 2160, where `ground_error_m`'s 5 cm was
+// the jump the owner saw about once a second at 600 game seconds a real second (2026-09-29), and
+// the sand at the game's own rate still rebuilds nothing but that tile, a few times in ten minutes.
+// Not a tunable: a smaller one buys nothing the eye can see and rebuilds the tile every frame.
+inline constexpr f32 k_underfoot_error_m = 0.001f;
 
 struct Config {
   f32 tile_size = 32.0f;
@@ -133,10 +144,17 @@ struct Stats {
   u64 failures = 0;           // a generator or the backend refused a tile
   // How far the collision heights under the walker (the tile holding the point `refresh` is
   // given) stood off the drawn heights at its samples, metres: the largest a rebuild found (just
-  // past `ground_error_m`, by at most what the drawn sand moved since the last update), and the
-  // largest the rule left standing (under it).
+  // past `k_underfoot_error_m`, by at most what the drawn sand moved since the last update), and
+  // the largest the rule left standing (under it).
   f64 max_stale_m = 0.0;
   f64 max_kept_m = 0.0;
+  // What `follow` did to the walker (docs: "The walker goes with the ground"): the ticks it was
+  // carried with the ground it stood on and the most in one, and the times the ground had risen
+  // past its feet and it was lifted onto it, and the most.
+  u64 carries = 0;
+  f64 max_carry_m = 0.0;
+  u64 lifts = 0;
+  f64 max_lift_m = 0.0;
   i64 activate_ns = 0;
   i64 max_activate_ns = 0;
   i64 deactivate_ns = 0;
@@ -167,12 +185,27 @@ class SceneCollision {
   // The drawn ground's time, before an update: tiles activated after it are evaluated there.
   void set_ground_time(const GroundTime& time) noexcept { time_ = time; }
   const GroundTime& ground_time() const noexcept { return time_; }
-  // Keeps the held ground tiles on the drawn ground: a tile whose drawn pair of fields changed has
-  // the new field evaluated, and a tile whose heights stand more than `ground_error_m` off the
+  // Keeps the held ground tiles on the drawn ground (docs: "The ground moves"): a tile whose drawn
+  // pair of fields changed has the new field evaluated, and a tile whose heights stand off the
   // drawn ones at some sample — the pair blended as the renderer blends it — has its body rebuilt
-  // at the drawn blend. At most `max_refreshes` tiles of work, nearest to (x, z) first. Returns how
-  // many. Nothing moves on still ground, and this returns 0 there without looking.
-  u32 refresh(f32 x, f32 z);
+  // at the drawn blend. **The tiles under the walker** — the one holding (x, z) and any within
+  // `reach` of it, which a capsule of that radius can touch — are rebuilt once they stand more
+  // than `k_underfoot_error_m` off, at every update and outside the budget, so the ground a walker
+  // stands on follows the drawn sand a frame at a time; the others once they stand more than
+  // `ground_error_m` off, at most `max_refreshes` of them an update, nearest first. Returns the
+  // tiles worked. Nothing moves on still ground, and this returns 0 there without looking.
+  u32 refresh(f32 x, f32 z, f32 reach = 0.0f);
+  // **The walker goes with the ground** (docs: "The walker goes with the ground"): `refresh` round
+  // the walker's feet, within its capsule's radius, and then the walker moved with what that did
+  // under it, before its step. Standing on the ground — on a held tile's heightfield, not on a
+  // placement — it is carried straight up or down by the change of the collision ground under its
+  // feet, so it rises and sinks with the drawn sand and keeps the offset it stood at; and wherever
+  // it is, **a walker is never below the collision ground after a refresh**: feet the ground has
+  // risen past are lifted onto it. Both put it there with `physics::CharacterBody::teleport`, which
+  // leaves it standing with no velocity: the vertical speed of a fall or a jump the sand caught is
+  // dropped, as a landing drops it, and the horizontal speed is the input's, which every step sets
+  // anew. On still ground this is `refresh` and nothing else. Returns the tiles worked.
+  u32 follow(physics::CharacterBody& walker);
 
   // The collision ground's height at (x, z), from the heights the tile holding it was built with,
   // interpolated across the cell as the backend's heightfield triangulates it. False where no held
@@ -216,6 +249,7 @@ class SceneCollision {
   static void deactivate(void* context, const world::TileEvent& event);
   static void commit(void* context);
   bool build_ground(Tile& tile);
+  bool ground_body(physics::BodyId body) const noexcept;
   bool pair_fields(Tile& tile);
   f64 stale_of(const Tile& tile) const noexcept;
   bool evaluate_field(const Tile& tile, f64 time, Vector<f32>& out);
