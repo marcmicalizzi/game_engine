@@ -102,12 +102,16 @@ By the origin every channel of the detail view is within 2. The tolerances are t
 
 The detail adds 0.002 and 0.001; the second pass's streaks added 0.003 on the lee.
 
-## What could not be measured here
+## The cost on the GPU, measured after the merge
 
-- **The cost.** It is counted, not timed:
-  - grainflow: eight hashes, only on a slip face;
-  - patches: eight hashes a rippled pixel;
-  - steering: arithmetic;
-  - motion: one multiply a kernel.
+RTX 5090, `msvc-release` at `dffad32`, `engine-view --benchmark` offscreen over the erg's `walk-path.json` (1,201 frames, twice) at 11520×2160 `surround3`, under the machine-wide GPU lock with the GPU at 2 to 8% before each run and other agents' builds on the CPU (8 to 27% at the start of a run, 90 to 100% at the end of two of the nine). Three scenes: the erg with the detail off, with the second pass's numbers (streaks on, nothing of the third pass) and with the third pass's, each under cascaded maps, no shadows and traced shadows. The resolve pass's GPU milliseconds at the median; the frame's total beside it.
 
-  The ripples' eighteen kernels are unchanged. The owner measured that the detail costs 0.63 ms with cascaded maps; the patches will add to that, and their share needs the owner's GPU.
+| Shadows | Detail off | Second pass | Third pass | Second pass costs | Third pass costs | Frame, third pass |
+|---|---|---|---|---|---|---|
+| Cascaded maps | 0.897 | 1.625 | 1.760 | 0.728 | **0.862** | 2.71 |
+| None | 0.767 | 1.487 | 1.627 | 0.720 | 0.860 | 2.41 |
+| Traced | 2.313 | 2.495 | 2.556 | 0.182 | 0.243 | 3.22 |
+
+Two things moved. **The third pass's numbers cost 0.13 to 0.14 ms more than the second pass's** under the same shader (0.06 with traced shadows, where the resolve's cost is elsewhere): the patches' eight hashes a rippled pixel, the steering, the travel. And **the second pass's own numbers cost 0.10 ms more than they did before the third pass was compiled in** — 0.728 against the 0.63 measured at its merge with the same scene, the same path and the same shadows ([second pass](sand-detail-second-pass-2026-09-29.md#the-cost-on-the-gpu-measured-at-the-merge-2026-09-30)); the baseline without the detail is unchanged (0.897 against 0.922). That is the cost of the grainflow, patch, steering and motion code being in the shader at all, whichever flags are set, as the sky's stars cost their share whether or not they are drawn. Against the 0.33 ms the plan gave the sand at the owner's resolution, the third pass under cascaded maps is 0.86 ms: 2.6 times the budget, where the second pass was 1.9 times it.
+
+What to cut first, if the owner wants the budget back: the ripples' kernel sum is still eighteen kernels a pixel and is the largest term; the patches could take their two octaves from one hash instead of two (four hashes a pixel for eight); and the third pass's terms could be compiled as a variant of the resolve so a scene that does not set them pays nothing for their code.
