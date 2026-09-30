@@ -346,11 +346,16 @@ function Stop-MachineLockHeartbeat {
   finally. On a machine without the lock's directory it warns and returns a session that holds
   nothing, so the caller's code path is the same either way.
 
-  For the GPU lock (-Kind gpu) it also sets ENGINE_GPU_LOCK_HOLDER to this process's id until the
-  session closes. Every child started meanwhile inherits it, which is how a bench executable, a
-  test, or an engine-host started under the lock knows the lock it finds is held on its behalf
-  rather than by another agent: a bench does not warn that the GPU was spoken for, and a test's
-  GPU device neither waits for the lock nor releases it (foundation/gpu_lock).
+  For the GPU lock (-Kind gpu) it also sets ENGINE_GPU_LOCK_HOLDER to this process's id, and
+  ENGINE_GPU_LOCK_OWNER to the owner it holds under, until the session closes. Every child started
+  meanwhile inherits them, which is how a bench executable, a test, or an engine-host started
+  under the lock knows the lock it finds is held on its behalf rather than by another agent: a
+  bench does not warn that the GPU was spoken for, and a test's GPU device neither waits for the
+  lock nor releases it (foundation/gpu_lock). The owner goes with it because "mine" is owner and
+  pid together, and a lock taken with -Owner would otherwise be a stranger's to a child whose
+  environment names the default one. The other way round, a session opened where the lock is
+  already held on this run's behalf (inside `gpu-lock.ps1 run`, or inside another session) holds
+  nothing and waits for nothing: it would be waiting for its own parent.
 #>
 function Open-MachineLockSession {
   [CmdletBinding()]
@@ -365,12 +370,24 @@ function Open-MachineLockSession {
   )
   if (-not $Path) { $Path = Get-MachineLockPath -Kind $Kind }
   $label = "$Kind-lock"
-  $taken = Enter-MachineLock -Path $Path -Purpose $Purpose -Owner $Owner -LeaseMinutes $LeaseMinutes `
-                             -Wait:(-not $NoWait) -TimeoutMinutes $TimeoutMinutes -Label $label
   $session = [pscustomobject]@{
     Kind = $Kind; Handle = $null; Heartbeat = $null
-    PreviousHolder = $env:ENGINE_GPU_LOCK_HOLDER; SetHolder = $false
+    PreviousHolder = $env:ENGINE_GPU_LOCK_HOLDER; PreviousOwner = $env:ENGINE_GPU_LOCK_OWNER
+    SetHolder = $false
   }
+  # Already held on this run's behalf — a session inside `gpu-lock.ps1 run`, or inside another
+  # session — is used as it is, as the C++ side does (foundation/gpu_lock): waiting for it would be
+  # waiting for our own parent, until it gave up.
+  if ($Kind -eq 'gpu' -and $env:ENGINE_GPU_LOCK_HOLDER) {
+    $held = Read-MachineLock -Path $Path
+    if ($held.Present -and $held.Readable -and -not $held.Expired -and $held.Owner -eq $Owner -and
+        "$($held.Pid)" -eq "$env:ENGINE_GPU_LOCK_HOLDER") {
+      Write-Host "${label}: held on this run's behalf by pid $($held.Pid) ($($held.Purpose))"
+      return $session
+    }
+  }
+  $taken = Enter-MachineLock -Path $Path -Purpose $Purpose -Owner $Owner -LeaseMinutes $LeaseMinutes `
+                             -Wait:(-not $NoWait) -TimeoutMinutes $TimeoutMinutes -Label $label
   switch ($taken.Outcome) {
     'NoDirectory' {
       Write-Warning "${label}: $(Split-Path -Parent $Path) does not exist, so this machine does not use the lock; running without it"
@@ -381,7 +398,14 @@ function Open-MachineLockSession {
   }
   $session.Handle = $taken.Handle
   $session.Heartbeat = Start-MachineLockHeartbeat -Handle $taken.Handle
-  if ($Kind -eq 'gpu') { $env:ENGINE_GPU_LOCK_HOLDER = "$PID"; $session.SetHolder = $true }
+  if ($Kind -eq 'gpu') {
+    # The holder and the owner it holds under, both: a child decides "held for me" by owner and pid
+    # together, so a lock taken with -Owner has to hand that owner down, or a child with the
+    # default owner would not recognise its own parent's hold and would wait for it.
+    $env:ENGINE_GPU_LOCK_HOLDER = "$PID"
+    $env:ENGINE_GPU_LOCK_OWNER = $Owner
+    $session.SetHolder = $true
+  }
   return $session
 }
 
@@ -390,7 +414,11 @@ function Close-MachineLockSession {
   [CmdletBinding()]
   param($Session)
   if ($null -eq $Session) { return }
-  if ($Session.SetHolder) { $env:ENGINE_GPU_LOCK_HOLDER = $Session.PreviousHolder; $Session.SetHolder = $false }
+  if ($Session.SetHolder) {
+    $env:ENGINE_GPU_LOCK_HOLDER = $Session.PreviousHolder
+    $env:ENGINE_GPU_LOCK_OWNER = $Session.PreviousOwner
+    $Session.SetHolder = $false
+  }
   Stop-MachineLockHeartbeat -Job $Session.Heartbeat
   $Session.Heartbeat = $null
   Exit-MachineLock -Handle $Session.Handle

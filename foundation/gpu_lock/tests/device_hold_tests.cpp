@@ -511,26 +511,49 @@ TEST_CASE("device hold: a command wrapped in gpu-lock.ps1 run finds the lock its
     MESSAGE("not in this bundle: " << script);
     return;
   }
-  const Isolated isolated;
-  test::TempDir dir("gpu_hold_wrapped");
-  const std::string path = dir.file("gpu.lock");
-  const std::string report = dir.file("report.txt");
-  const std::string exec = "& '" + probe_exe() + "' --on --lock '" + path + "' --report '" +
-                           report + "' hold 0; exit $LASTEXITCODE";
-  const std::string_view argv[] = {"pwsh",    "-NoProfile", "-File", script,  "run", "-Purpose",
-                                   "wrapped", "-LockFile",  path,    "-Exec", exec};
-  platform::Process p;
-  std::string error;
-  if (!p.spawn(std::span<const std::string_view>(argv, std::size(argv)), &error, true)) {
-    MESSAGE("skipped: no pwsh to run tools/gpu-lock.ps1: " << error);
-    return;
+  // The three ways a run is still wrapped: under the default owner; by a gate that sets
+  // ENGINE_GPU_LOCK_OWNER in its environment; and by one that passes -Owner to the wrapper alone,
+  // whose children's environment names the default owner unless the wrapper hands its own down.
+  struct Case {
+    const char* what;
+    const char* env_owner;
+    const char* owner_arg;
+  };
+  const Case cases[] = {{"the default owner", "", ""},
+                        {"an owner in the environment", "fable-merge-env", ""},
+                        {"an owner given with -Owner", "", "fable-merge-arg"}};
+  for (const Case& c : cases) {
+    const Isolated isolated;
+    const test::ScopedEnv owner("ENGINE_GPU_LOCK_OWNER", c.env_owner);
+    // A regression would have the probe wait for its own parent: let it give up in seconds.
+    const test::ScopedEnv until(gpu_lock::k_env_wait_until, std::to_string(now_s() + 20));
+    test::TempDir dir("gpu_hold_wrapped");
+    const std::string path = dir.file("gpu.lock");
+    const std::string report = dir.file("report.txt");
+    const std::string exec = "& '" + probe_exe() + "' --on --lock '" + path + "' --report '" +
+                             report + "' hold 0; exit $LASTEXITCODE";
+    std::vector<std::string> args = {"pwsh",    "-NoProfile", "-File", script,  "run", "-Purpose",
+                                     "wrapped", "-LockFile",  path,    "-Exec", exec};
+    if (c.owner_arg[0] != '\0') {
+      args.push_back("-Owner");
+      args.push_back(c.owner_arg);
+    }
+    const std::vector<std::string_view> argv(args.begin(), args.end());
+    platform::Process p;
+    std::string error;
+    if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, true)) {
+      MESSAGE("skipped: no pwsh to run tools/gpu-lock.ps1: " << error);
+      return;
+    }
+    p.close_stdin();
+    std::string output;
+    p.read_all(output);
+    CHECK_MESSAGE(p.wait() == 0, c.what << ": " << output);
+    CHECK_MESSAGE(output.find("waiting for the GPU lock") == std::string::npos, c.what);
+    const auto seen = reports(report);
+    REQUIRE_MESSAGE(seen.size() == 1, c.what);
+    // The wrapper's hold, found through ENGINE_GPU_LOCK_HOLDER and the owner it runs under.
+    CHECK_MESSAGE(seen[0].second == "parents", c.what);
+    CHECK_MESSAGE(!exists(path), c.what);  // and the wrapper's to release
   }
-  p.close_stdin();
-  std::string output;
-  p.read_all(output);
-  CHECK_MESSAGE(p.wait() == 0, output);
-  const auto seen = reports(report);
-  REQUIRE(seen.size() == 1);
-  CHECK(seen[0].second == "parents");  // the wrapper's hold, found through ENGINE_GPU_LOCK_HOLDER
-  CHECK_FALSE(exists(path));           // and the wrapper's to release
 }

@@ -25,9 +25,11 @@
   (so -Minutes is the lease a crash would leave behind, not a limit on the command), and releases
   in a finally block so a failing command still releases. Exit code of `run` is the command's.
 
-  `run` sets ENGINE_GPU_LOCK_HOLDER to its own process id for the command, which is how a bench
-  executable inside it (`--require-quiet`, `--gpu-lock`) knows the lock it finds is held on its
-  behalf. A lock taken with a separate `acquire` belongs to a process that has already exited,
+  `run` sets ENGINE_GPU_LOCK_HOLDER to its own process id, and ENGINE_GPU_LOCK_OWNER to the owner
+  it holds under, for the command, which is how a bench executable inside it (`--require-quiet`,
+  `--gpu-lock`) or a test's GPU device knows the lock it finds is held on its behalf; a `run`
+  inside a `run` finds the outer one's lock its own and waits for nothing. A lock taken with a
+  separate `acquire` belongs to a process that has already exited,
   and a benchmark cannot tell it from another agent's: prefer `run`, or the harness's own
   `--gpu-lock`.
 

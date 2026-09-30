@@ -163,6 +163,39 @@ try {
   } catch { }
   Test-That 'and releases it when the block throws' { -not (Test-Path -LiteralPath $p) }
 
+  # A gate that names its owner with -Owner, not in its environment: the children decide "held
+  # for me" by owner and pid together, so the session hands its owner down with its pid.
+  $p = New-LockPath
+  $ownerBefore = $env:ENGINE_GPU_LOCK_OWNER
+  $holderBefore = $env:ENGINE_GPU_LOCK_HOLDER
+  $inside = $null
+  Invoke-WithMachineLock -Kind gpu -Path $p -Purpose 'gate' -Owner 'fable-merge-test' -ScriptBlock {
+    $script:inside = [pscustomobject]@{ Owner = $env:ENGINE_GPU_LOCK_OWNER; Holder = $env:ENGINE_GPU_LOCK_HOLDER }
+  }
+  Test-That 'a session hands its owner down with its pid' { $inside.Owner -eq 'fable-merge-test' -and $inside.Holder -eq "$PID" }
+  Test-That 'and puts both back when it closes' {
+    $env:ENGINE_GPU_LOCK_OWNER -eq $ownerBefore -and $env:ENGINE_GPU_LOCK_HOLDER -eq $holderBefore
+  }
+
+  # A session inside a session (gpu-smoke.ps1 inside `gpu-lock.ps1 run`): held on this run's
+  # behalf already, so it neither waits for its own parent nor takes anything. -NoWait makes a
+  # wait an error, so this fails loudly if it does not recognise the hold.
+  $p = New-LockPath
+  $nested = $null
+  Invoke-WithMachineLock -Kind gpu -Path $p -Purpose 'outer' -Owner 'fable-merge-test' -ScriptBlock {
+    $before = [IO.File]::ReadAllText($p)
+    $inner = Open-MachineLockSession -Kind gpu -Path $p -Purpose 'inner' -Owner 'fable-merge-test' -NoWait
+    $during = [IO.File]::ReadAllText($p)
+    Close-MachineLockSession -Session $inner
+    $script:nested = [pscustomobject]@{
+      Inner = $inner; Unchanged = ($during -eq $before); StillThere = (Test-Path -LiteralPath $p)
+    }
+  }
+  Test-That 'a session inside a session holds nothing and waits for nothing' {
+    $null -ne $nested -and $null -eq $nested.Inner.Handle -and $nested.Unchanged -and $nested.StillThere
+  }
+  Test-That 'and the outer one still releases' { -not (Test-Path -LiteralPath $p) }
+
   $p = Join-Path $scratch 'no-such-directory/gpu.lock'
   $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine'
   Test-That 'a missing lock directory is a machine without the protocol' { $r.Outcome -eq 'NoDirectory' }
