@@ -14,6 +14,6 @@ if(TARGET engine_mcp_bridge_tests)
   target_compile_definitions(engine_mcp_bridge_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_mcp_bridge_tests engine_engine_host)
   # The engine-host behind the bridge opens a GPU device for the render tools, and so can wait
-  # for the machine-wide GPU lock (ADR-0050).
+  # for the machine-wide GPU lock (ADR-0049).
   engine_test_waits_for_gpu(mcp_bridge)
 endif()

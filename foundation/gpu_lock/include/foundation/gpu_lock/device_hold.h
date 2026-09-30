@@ -1,7 +1,7 @@
 #pragma once
 
 // The machine-wide GPU lock held for exactly as long as this process has a GPU device open
-// (docs/subsystems/gpu_lock.md, ADR-0050).
+// (docs/subsystems/gpu_lock.md, ADR-0049).
 //
 // `gfx::Device::create` acquires a `DeviceHold` just before `vkCreateDevice`, and
 // `gfx::Device::destroy` releases it just after `vkDestroyDevice`. Every process that opens a

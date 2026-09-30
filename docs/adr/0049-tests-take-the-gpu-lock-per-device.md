@@ -1,4 +1,4 @@
-# ADR-0050: Tests take the GPU lock per device, at device creation
+# ADR-0049: Tests take the GPU lock per device, at device creation
 
 - **Status:** Proposed
 - **Date:** 2026-09-30

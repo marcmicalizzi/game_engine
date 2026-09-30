@@ -91,7 +91,7 @@ TEST_CASE("gfx: enumerating adapters beside an open device leaves the device's i
   CHECK_FALSE(device.valid());
 }
 
-// The one place a process's GPU use takes the machine-wide lock (ADR-0050): device creation, when
+// The one place a process's GPU use takes the machine-wide lock (ADR-0049): device creation, when
 // the switch is on. Pointed at a lock in this case's scratch directory, so the machine's real lock
 // is neither taken nor waited for here.
 TEST_CASE("gfx: a device holds the GPU lock while it lives, when the switch is on") {

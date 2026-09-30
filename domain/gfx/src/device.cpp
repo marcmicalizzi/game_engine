@@ -132,7 +132,7 @@ struct Device::Impl {
   u32 transfer_family = 0;
   // This device's share of the process's hold on the machine-wide GPU lock, taken just before
   // vkCreateDevice and let go just after the device is destroyed — when the test environment's
-  // switch is on, and not otherwise (foundation/gpu_lock/device_hold.h, ADR-0050).
+  // switch is on, and not otherwise (foundation/gpu_lock/device_hold.h, ADR-0049).
   gpu_lock::DeviceHold gpu_hold;
 };
 

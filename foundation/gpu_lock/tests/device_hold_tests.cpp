@@ -1,5 +1,5 @@
 // The GPU lock held for as long as a process has a GPU device open
-// (foundation/gpu_lock/device_hold.h; docs/subsystems/gpu_lock.md; ADR-0050).
+// (foundation/gpu_lock/device_hold.h; docs/subsystems/gpu_lock.md; ADR-0049).
 //
 // The first half runs in this process with an explicit configuration: counting devices, the
 // modes a first device can find, the keeper's refresh, a parent's hold going away, the hold log,

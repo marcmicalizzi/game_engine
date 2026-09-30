@@ -1,4 +1,4 @@
-# The machine-wide GPU lock in C++ (docs/subsystems/gpu_lock.md, ADR-0050): the protocol's file,
+# The machine-wide GPU lock in C++ (docs/subsystems/gpu_lock.md, ADR-0049): the protocol's file,
 # the benchmark harness's lease, and the hold a process keeps while it has a GPU device open,
 # which gfx::Device takes when the test environment's switch is on. PowerShell has the other
 # implementation, tools/lib/MachineLock.psm1.

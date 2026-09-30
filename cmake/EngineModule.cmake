@@ -359,7 +359,7 @@ endfunction()
 
 #   engine_test_waits_for_gpu(<test>)
 # Marks a test whose processes can open a GPU device, and so can wait for the machine-wide GPU
-# lock (ADR-0050, docs/subsystems/gpu_lock.md): TIMEOUT is its work plus the queue budget
+# lock (ADR-0049, docs/subsystems/gpu_lock.md): TIMEOUT is its work plus the queue budget
 # (ENGINE_TEST_WORK_TIMEOUT_S + ENGINE_TEST_GPU_LOCK_WAIT_S, cmake/EngineTesting.cmake), exit code
 # 75 — a wait that ran out before anything reached the GPU — is a skip and not a failure, and the
 # label `gpu` selects them (`ctest -L gpu`). A module's tests get it when the module or a test

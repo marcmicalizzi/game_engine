@@ -46,7 +46,7 @@ endif()
 # resolves the link at generate time, the same way engine_bench_main links engine::bench.
 target_link_libraries(engine_test_main PUBLIC engine::platform)
 
-# The GPU lock's two numbers for a test (ADR-0050, docs/subsystems/gpu_lock.md). A test takes the
+# The GPU lock's two numbers for a test (ADR-0049, docs/subsystems/gpu_lock.md). A test takes the
 # machine-wide lock when it, or a process it starts, opens a GPU device, and waits for it when
 # somebody else has it; the test main sets every wait in the test's tree to give up this many
 # seconds after the test started, with exit code 75, which CTest reports as a skip. Half an hour

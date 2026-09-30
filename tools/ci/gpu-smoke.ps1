@@ -106,7 +106,7 @@ Write-Section 'build'
 # "The GPU lock") the heavy GPU work runs under the machine-wide lock. The adapter
 # report opens no device and needs none. The suite takes it itself: every test
 # process holds it for as long as it has a GPU device open and no longer
-# (docs/subsystems/gpu_lock.md, ADR-0050), so wrapping ctest would only hold the
+# (docs/subsystems/gpu_lock.md, ADR-0049), so wrapping ctest would only hold the
 # card through the suite's CPU-only hour. The captures are this script's own
 # engine-view runs, which take nothing by themselves, so the script takes the
 # lock around them — just before the first, released before the report is

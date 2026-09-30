@@ -4,7 +4,7 @@
 // baseline check of ADR-0031 has to be the first thing a binary of this tree does, and a test
 // binary is a binary of this tree — the one that would otherwise be the first to meet a machine
 // too old for the build, since `ctest` is what a new machine runs first. And a test is what takes
-// the machine-wide GPU lock when it opens a GPU device (ADR-0050), which is decided here, once,
+// the machine-wide GPU lock when it opens a GPU device (ADR-0049), which is decided here, once,
 // for every test executable and every process one starts.
 // engine-lint: allow-exceptions test harness
 #define DOCTEST_CONFIG_IMPLEMENT

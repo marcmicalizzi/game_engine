@@ -1,6 +1,6 @@
 # The GPU lock per device: a suite's holds before and after (2026-09-30)
 
-**Question.** How long does a full `msvc-debug` suite hold the machine-wide GPU lock when every test takes it itself for as long as it has a GPU device open ([gpu_lock](../subsystems/gpu_lock.md), [ADR-0050](../adr/0050-tests-take-the-gpu-lock-per-device.md)), against the old way of one hold around the whole suite — and do two suites started together interleave and both pass?
+**Question.** How long does a full `msvc-debug` suite hold the machine-wide GPU lock when every test takes it itself for as long as it has a GPU device open ([gpu_lock](../subsystems/gpu_lock.md), [ADR-0049](../adr/0049-tests-take-the-gpu-lock-per-device.md)), against the old way of one hold around the whole suite — and do two suites started together interleave and both pass?
 
 **How.** Wall time from the script that started the suite; holds from the hold log (`ENGINE_GPU_LOCK_LOG`, one JSON line per hold with its length and how long it waited), counting only holds of the machine's lock, `D:\workspace\gpu.lock` — the suite's own tests of the lock write scratch locks of their own, which are not counted. The machine's state — CPU and GPU busy, memory, who held the lock — was sampled at each end of each run.
 
