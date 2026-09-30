@@ -81,3 +81,33 @@ So a rippled pixel pays about half again what it paid, and a slip-face pixel pay
   - about 6 at 3.7 km, shaded, where the 2.5 mm octave's normal is the term most exposed to the reconstruction's millimetre.
 - **How the streaks and the grain's normal look at 11520×2160 in motion.** The CPU filter tests hold the mean and the variation; crawl under a moving camera is the owner's eye's.
 - **The shelter the normal cannot see** (a brink's separation bubble, a ruin's lee). It is a design note in [renderer](../subsystems/renderer.md#the-sand-close-up), [terrain](../subsystems/terrain.md#what-the-effect-needs) and [scene_gen](../subsystems/scene_gen.md#the-two-kinds), not built.
+
+## The cost on the GPU, measured at the merge (2026-09-30)
+
+**What was run.** `engine-view` from `msvc-release` at `a4b3550`, offscreen, the erg flown along **`walk-path.json`**: a walker's eyes 1.65 m over the western floor, so the lower half of every frame is sand close enough to draw ripples. Three scenes that differ only in the `detail` block: none, the first pass's nine numbers, the ergs' second pass. The resolve pass's GPU milliseconds a frame, from `gfx::GpuTimer`, the median over 1,201 frames and three repeats, with cascaded shadows:
+
+| Detail | 1920×1080 median | p95 | p99 | 11520×2160 median | p95 | p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| none | 0.091 | 0.101 | 0.104 | 0.917 | 0.956 | 1.056 |
+| first pass | 0.133 | 0.141 | 0.166 | 1.452 | 1.478 | 1.748 |
+| second pass | 0.138 | 0.147 | 0.176 | 1.550 | 1.578 | 1.892 |
+
+**What the detail costs depends on the shadows**, which the first pass's page did not know. The same walk at 11520×2160 under each mode, two repeats:
+
+| Shadows | Resolve without the detail | The first pass adds | The second pass adds |
+|---|---:|---:|---:|
+| off | 0.788 | 0.531 | 0.632 |
+| cascaded maps (`csm`) | 0.922 | 0.530 | 0.630 |
+| traced (`rt`) | 2.327 | 0.113 | 0.119 |
+
+- **With cascaded maps or no shadows, the detail costs 0.53 ms a frame as the first pass drew it and 0.63 ms as the second draws it.** The second pass adds 0.10 ms, a fifth. The owner's walk script runs `--shadows csm`, so these are his numbers.
+- **With traced shadows it costs 0.11 and 0.12 ms**, which is the 0.09 ms the first pass's page measured, again. The likely reason, not established: a resolve that traces rays is waiting on traversal and memory for most of its 2.3 ms, and the detail's arithmetic runs in time the pass was already spending. A pass's GPU time is not the sum of its parts.
+- At 1920×1080 with cascaded maps the detail costs 0.043 and 0.048 ms, a twelfth of the surround's, as the pixel count says.
+
+**What this corrects.** The first pass's page gave 0.09 ms at the surround size and called it under the budget of a third of a millisecond. That holds under traced shadows and nowhere else. **Under the shadows the owner walks with, the first pass was already 0.2 ms over that budget, and the second pass is 0.3 ms over.** The whole frame is 2.5 ms of GPU time at 11520×2160, so the budget is a guard against creep and not a frame-rate limit; whether the detail has to come down is the owner's.
+
+**The machine's state.** RTX 5090, under the GPU lock (ours). Every pass the detail cannot touch — the cull, the Hi-Z, the rasterizer, the shadow maps — has the same median to four digits in all three scenes of a mode, so nothing else on the machine moved these numbers between runs. The harness still marked every run an upper bound: other processes used 1 to 20% of the CPU, and the GPU's busy counter read 52 to 99% at a run's end, which for an unthrottled offscreen run is mostly the run itself. Another session was working a diffusion model on and off that evening and held about 8 GB of the card's memory throughout.
+
+**What to cut first, if it has to come down.** The ripples, not the second pass's terms: eighteen kernels a pixel, each a hash chain and a sine and cosine, against the grain's sixteen hashes. Two candidates, neither built: skipping a lattice cell whose nearest point is further than a kernel's radius before hashing its kernels, which a point in a cell's middle can do for most of the eight neighbours; and drawing the ripples from one kernel a cell past the distance where the profile has already eased to a sinusoid.
+
+**A look.** Captures every sixtieth frame of the walk, first and second pass, and the second pass's detail view, read by the engine side. On the floor the two passes are close to the same picture at 1920×1080: the second's ripples stand a little further apart on the rising ground, and its grain is finer than a pixel shows from standing height at that size. The walk path stays on the floor and crosses no slip face, so the streaks and the smooth lee are not in these pictures; the owner's walk is where they are judged. In the detail view the near face of a low rise draws its ripples further out than the floor beside it, with a straight edge where the rise begins. A face turned toward the eye has a smaller footprint, so that is what the filter should do; an edge that straight is still worth the seams test's attention with the second pass on.
