@@ -520,7 +520,7 @@ struct StormGain @version(1) {
 /// terrain's seed and the ground's wind, with no texture and nothing to meet at an edge. The
 /// mechanism is the engine's; these numbers are the scene's. Metres and degrees. Append-only: a
 /// field added later has a default that draws what the block drew before it.
-struct TerrainDetail @version(2) {
+struct TerrainDetail @version(3) {
   /// Crest to crest, metres: real wind ripples are 8 to 15 cm apart.
   ripple_wavelength: f32 = 0.12
   /// Crest to trough, metres: about a centimetre on real sand. 0 draws no ripples.
@@ -577,6 +577,41 @@ struct TerrainDetail @version(2) {
   spacing_gain: f32 = 0 @since(2)
   spacing_min: f32 = 0.8 @since(2)
   spacing_max: f32 = 1.6 @since(2)
+  /// Grainflow on a slip face, the streaks' successor (renderer.md, "The slip face"): on ground
+  /// falling away from the wind the lanes start at `flow_start_deg` of lee slope along it and are
+  /// whole at `flow_full_deg`; both 0 (the default) is none, else 0 <= start < full <= 60.
+  flow_start_deg: f32 = 0 @since(3)
+  flow_full_deg: f32 = 0 @since(3)
+  /// The world lattice's cell, metres, [2, 50]: a lane runs about a cell down the fall line.
+  flow_cell: f32 = 10 @since(3)
+  /// A lane's width across the fall line, metres, [0.1, 3] and at most a fifth of the cell.
+  flow_width: f32 = 0.6 @since(3)
+  /// The lanes' relief as a root-mean-square slope, [0, 0.3], and their colour as a share of the
+  /// albedo, [0, 0.1]: a real slip face shows its grainflows by relief, barely by colour.
+  flow_normal: f32 = 0.05 @since(3)
+  flow_albedo: f32 = 0.015 @since(3)
+  /// How much a lane widens, as a share of its width, down one cell, [0, 1].
+  flow_widening: f32 = 0.3 @since(3)
+  /// The ripples in patches: a slow noise of position, its coarse octave `patch_size` metres
+  /// ([5, 500]; 0, the default, is none), scaling the wavelength and height within
+  /// [patch_min, patch_max] (0.5 <= min <= 1 <= max <= 2) and the defects by up to
+  /// `patch_defects` of themselves either way, [0, 1].
+  patch_size: f32 = 0 @since(3)
+  patch_min: f32 = 0.7 @since(3)
+  patch_max: f32 = 1.4 @since(3)
+  patch_defects: f32 = 0.5 @since(3)
+  /// Steering: on a slope oblique to the wind the ripples turn along its contours, by at most
+  /// `steer_max_deg` ([0, 45]; 0, the default, is none), taking `steer_gain` ([0, 4]) of the wind's
+  /// component along the slope's fall out of their direction.
+  steer_max_deg: f32 = 0 @since(3)
+  steer_gain: f32 = 1 @since(3)
+  /// The ripples move: `ripple_celerity` metres of travel per square metre of the wind's sand
+  /// transport across a metre of width ([0, 1000]; 0, the default, stands them still), and they
+  /// flatten as the wind's strength over the record's mean passes from `flatten_start` to
+  /// `flatten_end` (both 0: never; else 0 < start < end <= 20).
+  ripple_celerity: f32 = 0 @since(3)
+  flatten_start: f32 = 0 @since(3)
+  flatten_end: f32 = 0 @since(3)
 }
 
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera

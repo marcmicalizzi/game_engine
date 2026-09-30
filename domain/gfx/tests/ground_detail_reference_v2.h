@@ -1,12 +1,10 @@
 #pragma once
 
-// The CPU mirror of domain/gfx/shaders/ground_detail.slang, in double precision: the same phasor
-// ripples (the same lattice, the same hashes and draws — integer arithmetic, so the same kernels —
-// the same kernel, profile, taper and analytic gradient), the same value-noise grain, the same
-// footprint fades and the same roughness transfer. `ground_detail_tests.cpp` renders the detail on
-// the GPU and holds every pixel to this, shaded by `brdf_reference.h`; the renderer's seam tests
-// hold the detail view to it at each pixel's own world position. Changing ground_detail.slang means
-// changing this file in the same commit, and the tests then say by how much the two disagree.
+// **Frozen**: the CPU mirror of ground_detail.slang as the second pass merged it (main at be74b9f,
+// 2026-09-30), before the third (the long-streak slip face, patches and steering, moving ripples).
+// Never edited: the test that holds a scene naming none of the third pass's numbers to exactly this
+// function (ground_detail_tests.cpp, "the third pass's defaults are the second pass, to the bit"),
+// and the preview's "before" pictures. The live mirror is ground_detail_reference.h.
 
 #include "brdf_reference.h"
 
@@ -15,7 +13,7 @@
 
 #include <cmath>
 
-namespace engine::ground_ref {
+namespace engine::ground_ref_v2 {
 
 using brdf_ref::Dvec3;
 
@@ -52,17 +50,17 @@ struct Ripple {
 
 // `asymmetry` is the profile's windward share as drawn: the scene's, or the filter's eased one.
 // `scale` multiplies the wavelength and the height: the spacing's, 1 without it.
-// `(wx, wz)` and `spread` are the ripples' direction and kernel spread here, `travel` how far they
-// have moved along it (`ground_ripple`'s last three).
 inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, double asymmetry,
-                     double scale, double wx, double wz, double spread, double travel) {
+                     double scale = 1.0) {
   const double cell = static_cast<double>(d.cell);
   const double qx = x / cell;
   const double qz = z / cell;
   const i32 bx = static_cast<i32>(std::floor(qx));
   const i32 bz = static_cast<i32>(std::floor(qz));
+  const double wx = static_cast<double>(d.wind.x);
+  const double wz = static_cast<double>(d.wind.y);
+  const double spread = static_cast<double>(d.wind.z);
   const double k = k_two_pi / (static_cast<double>(d.wavelength) * scale);
-  const double shift = k * travel;
   const double inv_r2 = 1.0 / (cell * cell);
   double sr = 0.0, si = 0.0;  // S
   double xr = 0.0, xi = 0.0;  // dS/dx
@@ -90,7 +88,7 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
         const double t = 1.0 - r2;
         const double env = t * t * t;
         const double denv = -6.0 * t * t * inv_r2;
-        const double phase = k * (dx * ox + dz * oz) + phase0 - shift;
+        const double phase = k * (dx * ox + dz * oz) + phase0;
         const double cs = std::cos(phase);
         const double sn = std::sin(phase);
         sr += env * cs;
@@ -132,44 +130,6 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   out.gx = (dtx * profile + tpx * dprofile) * amplitude;
   out.gz = (dtz * profile + tpz * dprofile) * amplitude;
   return out;
-}
-
-// The block's own wind, spread and no travel.
-inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, double asymmetry,
-                     double scale = 1.0) {
-  return ripple(d, x, z, asymmetry, scale, static_cast<double>(d.wind.x),
-                static_cast<double>(d.wind.y), static_cast<double>(d.wind.z), 0.0);
-}
-
-// `ground_steer`.
-inline void steer(const gfx::GroundDetailParams& d, double& wx, double& wz, Dvec3 normal) {
-  const double ny = normal.y > 1e-4 ? normal.y : 1e-4;
-  const double gx = normal.x / ny;
-  const double gz = normal.z / ny;
-  const double g2 = gx * gx + gz * gz;
-  const double gain = static_cast<double>(d.steer_gain);
-  const double r = gain / (gain * g2 > 1.0 ? gain * g2 : 1.0);
-  const double along = (wx * gx + wz * gz) * r;
-  const double bx = wx - gx * along;
-  const double bz = wz - gz * along;
-  const double len = std::sqrt(bx * bx + bz * bz);
-  if (!(len > 1e-6)) return;
-  const double ux = bx / len;
-  const double uz = bz / len;
-  const double cs = wx * ux + wz * uz;
-  const double cos_max = static_cast<double>(d.steer_cos_max);
-  if (cs >= cos_max) {
-    wx = ux;
-    wz = uz;
-    return;
-  }
-  const double sn = wx * uz - wz * ux;
-  const double s =
-      sn >= 0.0 ? static_cast<double>(d.steer_sin_max) : -static_cast<double>(d.steer_sin_max);
-  const double ox = wx;
-  const double oz = wz;
-  wx = ox * cos_max - oz * s;
-  wz = oz * cos_max + ox * s;
 }
 
 // One channel pair of the value noise, each in [-1, 1].
@@ -325,95 +285,6 @@ inline Streak streaks(const gfx::GroundDetailParams& d, double x, double z, doub
   return out;
 }
 
-// `ground_patch`: two channels in [-1, 1].
-inline void patch(const gfx::GroundDetailParams& d, double x, double z, double& v0, double& v1) {
-  const double size = static_cast<double>(d.patch_size);
-  const Grain3 a = gradient_noise3(x, z, size, d.seed, 64u);
-  const Grain3 b = gradient_noise3(x, z, size * 0.5, d.seed, 65u);
-  const double k = 0.5 / (static_cast<double>(gfx::k_ground_noise_rms) * 1.118034);
-  const auto clamp1 = [](double v) { return v < -1.0 ? -1.0 : (v > 1.0 ? 1.0 : v); };
-  v0 = clamp1((a.value[0] + b.value[0] * 0.5) * k);
-  v1 = clamp1((a.value[1] + b.value[1] * 0.5) * k);
-}
-
-// `ground_grainflow`: the lanes' value and gradient at (x, z) down the fall line (fx, fz).
-struct Flow {
-  double value = 0.0;
-  double gx = 0.0;
-  double gz = 0.0;
-};
-
-inline Flow grainflow(const gfx::GroundDetailParams& d, double x, double z, double fx, double fz) {
-  const double ax = -fz;
-  const double az = fx;
-  const double cell = static_cast<double>(d.flow_cell);
-  const double width = static_cast<double>(d.flow_width);
-  const double widening = static_cast<double>(d.flow_widening);
-  const double qx = x / cell - 0.5;
-  const double qz = z / cell - 0.5;
-  const i32 bx = static_cast<i32>(std::floor(qx));
-  const i32 bz = static_cast<i32>(std::floor(qz));
-  const double fqx = qx - bx;
-  const double fqz = qz - bz;
-  const auto quintic = [](double t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); };
-  const double wqx = quintic(fqx);
-  const double wqz = quintic(fqz);
-  double sum = 0.0, gx = 0.0, gz = 0.0, w2 = 0.0;
-  for (i32 j = 0; j <= 1; ++j) {
-    for (i32 i = 0; i <= 1; ++i) {
-      const i32 cx = bx + i;
-      const i32 cz = bz + j;
-      const double w = (i == 0 ? 1.0 - wqx : wqx) * (j == 0 ? 1.0 - wqz : wqz);
-      const double ox = (qx - cx) * cell;
-      const double oz = (qz - cz) * cell;
-      const double t = ox * fx + oz * fz;
-      const double s0 = ox * ax + oz * az;
-      const double wd = 1.0 + widening * t;
-      const double widen = wd > 0.25 ? wd : 0.25;
-      const double s = s0 / (width * widen);
-      const double m = std::floor(s);
-      const double f = s - m;
-      const double u = quintic(f);
-      const double du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-      const u32 hc = hash(cx, cz, d.seed, 48u);
-      double g[2], win[2], dwin[2];
-      for (u32 e = 0; e < 2; ++e) {
-        u32 h = pcg(hc ^ static_cast<u32>(static_cast<i32>(m) + static_cast<i32>(e)));
-        g[e] = unit(h) * 2.0 - 1.0;
-        h = pcg(h);
-        const double start = (unit(h) - 0.9) * cell;
-        h = pcg(h);
-        const double end = start + (0.8 + 0.9 * unit(h)) * cell;
-        const double rise = 2.0 * width;
-        const double toe = 3.0 * width;
-        const double a = brdf_ref::clamp01((t - start) / rise);
-        const double b = brdf_ref::clamp01((t - (end - toe)) / toe);
-        const double sa = a * a * (3.0 - 2.0 * a);
-        const double sb = 1.0 - b * b * (3.0 - 2.0 * b);
-        win[e] = sa * sb;
-        const double dsa = (a > 0.0 && a < 1.0) ? 6.0 * a * (1.0 - a) / rise : 0.0;
-        const double dsb = (b > 0.0 && b < 1.0) ? -6.0 * b * (1.0 - b) / toe : 0.0;
-        dwin[e] = dsa * sb + sa * dsb;
-      }
-      const double n0 = g[0] * f * (1.0 - u);
-      const double n1 = g[1] * (f - 1.0) * u;
-      const double n = win[0] * n0 + win[1] * n1;
-      const double dn_ds =
-          win[0] * g[0] * ((1.0 - u) - f * du) + win[1] * g[1] * (u + (f - 1.0) * du);
-      const double dn_dt = dwin[0] * n0 + dwin[1] * n1;
-      const double k = s0 * widening / widen;
-      const double dsx = (ax - fx * k) / (width * widen);
-      const double dsz = (az - fz * k) / (width * widen);
-      sum += w * n;
-      gx += (dsx * dn_ds + fx * dn_dt) * w;
-      gz += (dsz * dn_ds + fz * dn_dt) * w;
-      w2 += w * w;
-    }
-  }
-  const double norm = 1.0 / std::sqrt(w2 > 1e-6 ? w2 : 1e-6);
-  return {sum * norm, gx * norm, gz * norm};
-}
-
 struct Shading {
   Dvec3 normal;
   Dvec3 albedo;
@@ -421,7 +292,6 @@ struct Shading {
   double weight = 0.0;
   double exposure = 1.0;
   double streak = 0.0;
-  double flow = 0.0;
   double fade = 0.0;
   double ripple = 0.0;
   double grain = 0.0;
@@ -439,12 +309,7 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
     const double slope = smoothstep(static_cast<double>(d.slope_cos_end),
                                     static_cast<double>(d.slope_cos_start), normal.y);
     if ((d.flags & gfx::k_ground_exposure) != 0u) out.exposure = exposure(d, normal);
-    double weight = mask * slope * out.exposure;
-    if ((d.flags & gfx::k_ground_motion) != 0u) weight *= static_cast<double>(d.ripple_live);
-    double wx = static_cast<double>(d.wind.x);
-    double wz = static_cast<double>(d.wind.y);
-    double spread = static_cast<double>(d.wind.z);
-    if ((d.flags & gfx::k_ground_steering) != 0u) steer(d, wx, wz, normal);
+    const double weight = mask * slope * out.exposure;
     double scale = 1.0;
     if ((d.flags & gfx::k_ground_spacing) != 0u) {
       const double climb =
@@ -455,26 +320,14 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
       const double hi = static_cast<double>(d.spacing_max);
       scale = sc < lo ? lo : (sc > hi ? hi : sc);
     }
-    if ((d.flags & gfx::k_ground_patches) != 0u) {
-      double v0 = 0.0, v1 = 0.0;
-      patch(d, position.x, position.z, v0, v1);
-      scale *=
-          static_cast<double>(d.patch_mid) * std::exp2(v0 * static_cast<double>(d.patch_half_log2));
-      const double sp = spread * (1.0 + v1 * static_cast<double>(d.patch_defects));
-      spread = sp < 0.9 ? sp : 0.9;
-    }
+    const double wx = static_cast<double>(d.wind.x);
+    const double wz = static_cast<double>(d.wind.y);
+    const double spread = static_cast<double>(d.wind.z);
     const double fx =
         std::fabs(dpdx.x * wx + dpdx.z * wz) + std::fabs(-dpdx.x * wz + dpdx.z * wx) * spread;
     const double fy =
         std::fabs(dpdy.x * wx + dpdy.z * wz) + std::fabs(-dpdy.x * wz + dpdy.z * wx) * spread;
-    double cycles = (fx > fy ? fx : fy) / (static_cast<double>(d.wavelength) * scale);
-    double travel = 0.0;
-    if ((d.flags & gfx::k_ground_motion) != 0u) {
-      travel = static_cast<double>(d.travel);
-      const double moving =
-          static_cast<double>(d.travel_per_frame) / (static_cast<double>(d.wavelength) * scale);
-      cycles = cycles > moving ? cycles : moving;
-    }
+    const double cycles = (fx > fy ? fx : fy) / (static_cast<double>(d.wavelength) * scale);
     const double scene_asymmetry = static_cast<double>(d.asymmetry);
     const double asymmetry = 0.5 + (scene_asymmetry - 0.5) * fade(2.0 * cycles);
     const double f = fade(cycles);
@@ -482,8 +335,7 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
     out.fade = f;
     const double strength = weight * f;
     if (strength > 0.0 || full) {
-      const Ripple r = ripple(d, position.x, position.z, full ? scene_asymmetry : asymmetry, scale,
-                              wx, wz, spread, travel);
+      const Ripple r = ripple(d, position.x, position.z, full ? scene_asymmetry : asymmetry, scale);
       out.ripple = r.height / (static_cast<double>(d.amplitude) * scale);
       if (strength > 0.0 && !full) {
         const double s = normal.y * strength;
@@ -605,128 +457,6 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
       }
     }
   }
-  if ((d.flags & gfx::k_ground_grainflow) != 0u) {
-    const double fall_tan =
-        (normal.x * static_cast<double>(d.wind.x) + normal.z * static_cast<double>(d.wind.y)) /
-        (normal.y > 1e-4 ? normal.y : 1e-4);
-    const double weight = mask * smoothstep(static_cast<double>(d.flow_tan_start),
-                                            static_cast<double>(d.flow_tan_full), fall_tan);
-    out.flow = weight;
-    if (weight > 0.0 && !full) {
-      const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
-      const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
-      const double footprint = lx > ly ? lx : ly;
-      const double f = fade(footprint / static_cast<double>(d.flow_width));
-      if (f > 0.0) {
-        const double len = std::sqrt(normal.x * normal.x + normal.z * normal.z);
-        const double fx = len > 1e-6 ? normal.x / len : static_cast<double>(d.wind.x);
-        const double fz = len > 1e-6 ? normal.z / len : static_cast<double>(d.wind.y);
-        const Flow lanes = grainflow(d, position.x, position.z, fx, fz);
-        const double strength = weight * f;
-        out.albedo =
-            out.albedo * (1.0 + static_cast<double>(d.flow_albedo) * strength * lanes.value);
-        const Dvec3 n = out.normal;
-        const double s =
-            static_cast<double>(d.flow_slope) * static_cast<double>(d.flow_width) * strength * n.y;
-        out.normal = brdf_ref::normalize(Dvec3{n.x - lanes.gx * s, n.y, n.z - lanes.gz * s});
-      }
-      const double fn = static_cast<double>(d.flow_normal);
-      const double lost = weight * weight * fn * fn * (1.0 - f * f);
-      if (lost > 0.0) {
-        const double alpha = out.roughness * out.roughness;
-        out.roughness = std::sqrt(std::sqrt(alpha * alpha + lost));
-      }
-    }
-  }
   return out;
 }
-
-// The ergs' numbers, field for field: content/test-scenes/desert-erg/scene.json, `terrain.detail`,
-// which turns every second-pass term on. The GPU cases in both modules draw them; the renderer's
-// rings test, which can read that scene (it names the dune generator), holds this copy to the file.
-inline gfx::GroundDetailDesc erg_numbers() {
-  gfx::GroundDetailDesc d;
-  d.ripple_wavelength = 0.12f;
-  d.ripple_height = 0.008f;
-  d.ripple_asymmetry = 0.75f;
-  d.ripple_defects = 0.35f;
-  d.slope_start_deg = 22.0f;
-  d.slope_end_deg = 30.0f;
-  d.grain_size = 0.02f;
-  d.grain_albedo = 0.08f;
-  d.grain_roughness = 0.05f;
-  d.lee_start_deg = 10.0f;
-  d.lee_end_deg = 18.0f;
-  d.grain_finest = 0.001f;
-  d.grain_normal = 0.06f;
-  d.streak_start_deg = 0.0f;  // the second pass's streaks, replaced by the grainflow below
-  d.streak_full_deg = 0.0f;
-  d.streak_width = 0.4f;
-  d.streak_length = 2.0f;
-  d.streak_albedo = 0.06f;
-  d.streak_roughness = 0.04f;
-  d.streak_normal = 0.012f;
-  d.spacing_gain = 2.5f;
-  d.spacing_min = 0.8f;
-  d.spacing_max = 1.6f;
-  d.flow_start_deg = 24.0f;
-  d.flow_full_deg = 30.0f;
-  d.flow_cell = 10.0f;
-  d.flow_width = 0.6f;
-  d.flow_normal = 0.05f;
-  d.flow_albedo = 0.015f;
-  d.flow_widening = 0.3f;
-  return d;
-}
-
-// The world point at screen position (sx, sy) — pixels, fractional — on the plane through
-// `plane_point` with normal `plane_normal` (any length): the camera ray through that point of the
-// pixel, which a footprint is the derivative of. The ground's detail reads the normal as much as
-// the point (the exposure, the spacing and the streaks are functions of it), so a sloped ground is
-// a plane of its own and not a height over a level one.
-inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, double sx, double sy, Dvec3 plane_point,
-                            Dvec3 plane_normal) {
-  const double t = 1.0 / std::tan(fov_y * 0.5);
-  const Dvec3 f = brdf_ref::normalize(target - eye);
-  const Dvec3 right = brdf_ref::normalize(brdf_ref::cross(f, up));
-  const Dvec3 camera_up = brdf_ref::cross(right, f);
-  const double ndc_x = 2.0 * sx / static_cast<double>(width) - 1.0;
-  const double ndc_y = 1.0 - 2.0 * sy / static_cast<double>(height);
-  const Dvec3 dir = f + right * (ndc_x * aspect / t) + camera_up * (ndc_y / t);
-  return eye +
-         dir * (brdf_ref::dot(plane_point - eye, plane_normal) / brdf_ref::dot(dir, plane_normal));
-}
-
-// The horizontal plane `plane_y`, which is `brdf_ref::pixel_on_plane` at any point of the pixel:
-// the same arithmetic as the general form's with a normal straight up, term for term.
-inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, double sx, double sy, double plane_y) {
-  return point_on_plane(eye, target, up, fov_y, aspect, width, height, sx, sy,
-                        Dvec3{0.0, plane_y, 0.0}, Dvec3{0.0, 1.0, 0.0});
-}
-
-// The footprint the resolve measures at pixel (px, py) of that plane: the point's change per pixel
-// along the screen's two axes, by central differences a hundredth of a pixel wide.
-inline void plane_footprint(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, u32 px, u32 py, Dvec3 plane_point,
-                            Dvec3 plane_normal, Dvec3& dpdx, Dvec3& dpdy) {
-  const double cx = static_cast<double>(px) + 0.5;
-  const double cy = static_cast<double>(py) + 0.5;
-  constexpr double h = 0.005;
-  const auto at = [&](double sx, double sy) {
-    return point_on_plane(eye, target, up, fov_y, aspect, width, height, sx, sy, plane_point,
-                          plane_normal);
-  };
-  dpdx = (at(cx + h, cy) - at(cx - h, cy)) * (1.0 / (2.0 * h));
-  dpdy = (at(cx, cy + h) - at(cx, cy - h)) * (1.0 / (2.0 * h));
-}
-
-inline void plane_footprint(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, u32 px, u32 py, double plane_y, Dvec3& dpdx,
-                            Dvec3& dpdy) {
-  plane_footprint(eye, target, up, fov_y, aspect, width, height, px, py, Dvec3{0.0, plane_y, 0.0},
-                  Dvec3{0.0, 1.0, 0.0}, dpdx, dpdy);
-}
-
-}  // namespace engine::ground_ref
+}  // namespace engine::ground_ref_v2

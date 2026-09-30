@@ -55,6 +55,27 @@ inline constexpr u32 k_ground_gradient_grain = 8u;
 inline constexpr u32 k_ground_streaks = 16u;
 // The ripples' wavelength follows the ground's climb into the wind (`spacing_*`).
 inline constexpr u32 k_ground_spacing = 32u;
+// Third pass. Grainflow lanes down a slip face (`flow_*`), long and seen by their relief.
+inline constexpr u32 k_ground_grainflow = 64u;
+// The ripples' wavelength, height and defects vary in patches across the world (`patch_*`).
+inline constexpr u32 k_ground_patches = 128u;
+// The ripples' direction is the wind turned along the contours of a slope oblique to it.
+inline constexpr u32 k_ground_steering = 256u;
+// The ripples travel with the transport, fade by their travel per frame, and flatten in a storm.
+inline constexpr u32 k_ground_motion = 512u;
+
+// Gradient noise in one dimension as the grainflow lanes draw it (a lattice point's gradient
+// uniform in [-1, 1], the quintic fade, each lane's gradient windowed along the fall line by its
+// own start and length) has a value of root-mean-square `k_ground_flow_rms` and a derivative of
+// `k_ground_flow_slope_rms` per lane width, after the four cells' blend: measured over the mirror
+// (ground_detail_tests.cpp, "grainflow lanes …"), and the block scales by them.
+inline constexpr f32 k_ground_flow_rms = 0.119f;
+inline constexpr f32 k_ground_flow_slope_rms = 0.429f;
+// The ripples' travel reaches the shader reduced modulo this many base wavelengths, in double
+// precision on the CPU, so a float carries it to a ten-thousandth of a wavelength; where the
+// spacing or the patches scale the wavelength, the phase steps once as the reduction wraps, which
+// at a centimetre a minute is once in about three game days (renderer.md, "Ripples that move").
+inline constexpr f64 k_ground_travel_period = 256.0;
 
 // Streak kernels per lattice cell of `streak_length`: three cover about four fifths of a slip face
 // at the default width, so tongues touch and cross but leave sand between them.
@@ -91,8 +112,8 @@ inline constexpr f32 k_ground_taper = 0.35f;
 // much, so the rule moves the variance the pattern has, not the variance a perfect ripple would.
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
-// Mirrors GroundDetail in shaders/ground_detail.slang. 128 bytes: the first pass's 80, and the
-// second's grain, streaks and spacing.
+// Mirrors GroundDetail in shaders/ground_detail.slang. 208 bytes: the first pass's 80, the second's
+// grain, streaks and spacing (128), and the third's grainflow, patches, steering and motion.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -144,8 +165,39 @@ struct GroundDetailParams {
   f32 spacing_gain = 0.0f;
   f32 spacing_min = 1.0f;
   f32 spacing_max = 1.0f;
+  // Third pass. Grainflow (k_ground_grainflow): the fall along the wind where the lanes start and
+  // are whole (as the streaks'), the world lattice's cell and a lane's width, metres, the normal's
+  // lean per unit of the lanes' derivative (to a root-mean-square slope of `flow_normal`), the
+  // albedo's share per unit of their value, and how much a lane widens down a cell.
+  f32 flow_tan_start = 0.0f;
+  f32 flow_tan_full = 0.0f;
+  f32 flow_cell = 10.0f;
+  f32 flow_width = 0.6f;
+  f32 flow_slope = 0.0f;
+  f32 flow_normal = 0.0f;
+  f32 flow_albedo = 0.0f;
+  f32 flow_widening = 0.0f;
+  // Patches (k_ground_patches): the noise's coarse cell, metres; the wavelength's scale is
+  // `patch_mid × 2^(v patch_half_log2)` for v in [-1, 1], and the kernels' spread `1 + v'
+  // patch_defects` of the scene's.
+  f32 patch_size = 30.0f;
+  f32 patch_mid = 1.0f;
+  f32 patch_half_log2 = 0.0f;
+  f32 patch_defects = 0.0f;
+  // Steering (k_ground_steering): the share of the wind's component along the ground's fall that
+  // the slope turns aside, and the turn's clamp as its cosine and sine. Motion (k_ground_motion):
+  // the ripples' height kept (1, falling to 0 in a storm), their travel along the wind, metres
+  // reduced modulo `k_ground_travel_period` wavelengths, and their travel in one frame.
+  f32 steer_gain = 0.0f;
+  f32 steer_cos_max = 1.0f;
+  f32 steer_sin_max = 0.0f;
+  f32 ripple_live = 1.0f;
+  f32 travel = 0.0f;
+  f32 travel_per_frame = 0.0f;
+  u32 pad6 = 0;
+  u32 pad7 = 0;
 };
-static_assert(sizeof(GroundDetailParams) == 128);
+static_assert(sizeof(GroundDetailParams) == 208);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // The scene's numbers (the renderer's `engine.scene.TerrainDetail`): what a scene says, in metres
@@ -192,6 +244,38 @@ struct GroundDetailDesc {
   f32 spacing_gain = 0.0f;
   f32 spacing_min = 0.8f;
   f32 spacing_max = 1.6f;
+  // Third pass; every term is off by default, which draws the second pass to the bit.
+  // Grainflow on a slip face, in place of the streaks: on ground falling away from the wind the
+  // lanes start at a lee slope of `flow_start_deg` and are whole at `flow_full_deg` (both 0: none).
+  // A world lattice of `flow_cell` metres, each cell a set of lanes `flow_width` across running the
+  // cell's length down the fall line and widening by `flow_widening` of their width across a cell;
+  // seen by their relief, a root-mean-square slope of `flow_normal`, and barely by colour,
+  // `flow_albedo` of the albedo.
+  f32 flow_start_deg = 0.0f;
+  f32 flow_full_deg = 0.0f;
+  f32 flow_cell = 10.0f;
+  f32 flow_width = 0.6f;
+  f32 flow_normal = 0.05f;
+  f32 flow_albedo = 0.015f;
+  f32 flow_widening = 0.3f;
+  // Patches: a slow noise of position in two octaves, the coarse one `patch_size` metres (0: none),
+  // scaling the ripples' wavelength and height together within [patch_min, patch_max] and their
+  // kernels' spread about the wind by up to `patch_defects` of it either way.
+  f32 patch_size = 0.0f;
+  f32 patch_min = 0.7f;
+  f32 patch_max = 1.4f;
+  f32 patch_defects = 0.5f;
+  // Steering: the ripples' direction is the wind with `steer_gain` of its component along the
+  // ground's fall taken out, turned at most `steer_max_deg` (0: none).
+  f32 steer_max_deg = 0.0f;
+  f32 steer_gain = 1.0f;
+  // Motion (the renderer fills the travel; `ground_detail_motion`): the ripples travel
+  // `ripple_celerity` metres for every square metre of sand the ground's wind moves across a metre
+  // of width (0: they stand), and flatten between `flatten_start` and `flatten_end` of the wind
+  // record's mean strength (0 and 0: never).
+  f32 ripple_celerity = 0.0f;
+  f32 flatten_start = 0.0f;
+  f32 flatten_end = 0.0f;
 };
 
 // The gradient grain's octaves for a coarsest cell and a finest: `grain_size` halving until the
@@ -287,6 +371,30 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.streak_slope = static_cast<f32>(static_cast<f64>(desc.streak_normal) / slope_rms);
     out.streak_normal = desc.streak_normal;
   }
+  if (desc.flow_full_deg > desc.flow_start_deg && desc.flow_width > 0.0f && desc.flow_cell > 0.0f) {
+    out.flags |= k_ground_grainflow;
+    out.flow_tan_start = std::tan(radians(desc.flow_start_deg));
+    out.flow_tan_full = std::tan(radians(desc.flow_full_deg));
+    out.flow_cell = desc.flow_cell;
+    out.flow_width = desc.flow_width;
+    out.flow_slope = desc.flow_normal / k_ground_flow_slope_rms;
+    out.flow_normal = desc.flow_normal;
+    out.flow_albedo = desc.flow_albedo / k_ground_flow_rms;
+    out.flow_widening = desc.flow_widening / desc.flow_cell;
+  }
+  if (desc.patch_size > 0.0f && desc.patch_max >= desc.patch_min && desc.patch_min > 0.0f) {
+    out.flags |= k_ground_patches;
+    out.patch_size = desc.patch_size;
+    out.patch_mid = std::sqrt(desc.patch_min * desc.patch_max);
+    out.patch_half_log2 = 0.5f * std::log2(desc.patch_max / desc.patch_min);
+    out.patch_defects = desc.patch_defects;
+  }
+  if (desc.steer_max_deg > 0.0f && desc.steer_gain > 0.0f) {
+    out.flags |= k_ground_steering;
+    out.steer_gain = desc.steer_gain;
+    out.steer_cos_max = std::cos(radians(desc.steer_max_deg));
+    out.steer_sin_max = std::sin(radians(desc.steer_max_deg));
+  }
   if (desc.spacing_gain != 0.0f && desc.spacing_max >= desc.spacing_min) {
     out.flags |= k_ground_spacing;
     out.spacing_gain = desc.spacing_gain;
@@ -299,6 +407,28 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.lee_tan_end = std::tan(radians(desc.lee_end_deg));
   }
   return out;
+}
+
+// The ripples' motion for a frame: `travel_m`, how far they have moved along the wind since the
+// ground's epoch (double: it grows without bound), `per_frame_m`, how far in this frame, and the
+// wind's strength over the record's mean, which flattens them between the scene's two numbers.
+// Sets k_ground_motion; the travel is reduced modulo `k_ground_travel_period` base wavelengths
+// here, in double, so the float the shader reads keeps a ten-thousandth of a wavelength.
+inline void ground_detail_motion(GroundDetailParams& d, const GroundDetailDesc& desc, f64 travel_m,
+                                 f64 per_frame_m, f32 strength) noexcept {
+  if (!(desc.ripple_celerity > 0.0f) && !(desc.flatten_end > desc.flatten_start)) return;
+  d.flags |= k_ground_motion;
+  const f64 period = k_ground_travel_period * static_cast<f64>(d.wavelength);
+  f64 t = std::fmod(travel_m, period);
+  if (t < 0.0) t += period;
+  d.travel = static_cast<f32>(t);
+  d.travel_per_frame = static_cast<f32>(std::fabs(per_frame_m));
+  d.ripple_live = 1.0f;
+  if (desc.flatten_end > desc.flatten_start) {
+    const f32 x = std::clamp(
+        (strength - desc.flatten_start) / (desc.flatten_end - desc.flatten_start), 0.0f, 1.0f);
+    d.ripple_live = 1.0f - x * x * (3.0f - 2.0f * x);
+  }
 }
 
 }  // namespace engine::gfx

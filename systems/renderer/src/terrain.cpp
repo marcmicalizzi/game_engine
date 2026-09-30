@@ -506,6 +506,22 @@ gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
   out.spacing_gain = d.spacing_gain;
   out.spacing_min = d.spacing_min;
   out.spacing_max = d.spacing_max;
+  out.flow_start_deg = d.flow_start_deg;
+  out.flow_full_deg = d.flow_full_deg;
+  out.flow_cell = d.flow_cell;
+  out.flow_width = d.flow_width;
+  out.flow_normal = d.flow_normal;
+  out.flow_albedo = d.flow_albedo;
+  out.flow_widening = d.flow_widening;
+  out.patch_size = d.patch_size;
+  out.patch_min = d.patch_min;
+  out.patch_max = d.patch_max;
+  out.patch_defects = d.patch_defects;
+  out.steer_max_deg = d.steer_max_deg;
+  out.steer_gain = d.steer_gain;
+  out.ripple_celerity = d.ripple_celerity;
+  out.flatten_start = d.flatten_start;
+  out.flatten_end = d.flatten_end;
   return out;
 }
 
@@ -568,6 +584,38 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
     return fail(
         "spacing_gain must be within [0, 6], spacing_min within [0.5, 1] and spacing_max within "
         "[1, 2]");
+  }
+  if (!((d.flow_start_deg == 0.0f && d.flow_full_deg == 0.0f) ||
+        (d.flow_start_deg >= 0.0f && d.flow_start_deg < d.flow_full_deg &&
+         d.flow_full_deg <= 60.0f))) {
+    return fail(
+        "the grainflow's band must rise: 0 <= flow_start_deg < flow_full_deg <= 60, or both 0");
+  }
+  if (!(d.flow_cell >= 2.0f && d.flow_cell <= 50.0f && d.flow_width >= 0.1f &&
+        d.flow_width <= 3.0f && d.flow_width <= 0.2f * d.flow_cell)) {
+    return fail(
+        "flow_cell must be within [2, 50] m and flow_width within [0.1, 3] m and a fifth of it");
+  }
+  if (!(d.flow_normal >= 0.0f && d.flow_normal <= 0.3f && d.flow_albedo >= 0.0f &&
+        d.flow_albedo <= 0.1f && d.flow_widening >= 0.0f && d.flow_widening <= 1.0f)) {
+    return fail("flow_normal must be within [0, 0.3], flow_albedo [0, 0.1], flow_widening [0, 1]");
+  }
+  if (!(d.patch_size == 0.0f || (d.patch_size >= 5.0f && d.patch_size <= 500.0f)))
+    return fail("patch_size must be 0 or within [5, 500] m");
+  if (!(d.patch_min >= 0.5f && d.patch_min <= 1.0f && d.patch_max >= 1.0f && d.patch_max <= 2.0f &&
+        d.patch_defects >= 0.0f && d.patch_defects <= 1.0f)) {
+    return fail("patch_min must be within [0.5, 1], patch_max [1, 2], patch_defects [0, 1]");
+  }
+  if (!(d.steer_max_deg >= 0.0f && d.steer_max_deg <= 45.0f && d.steer_gain >= 0.0f &&
+        d.steer_gain <= 4.0f)) {
+    return fail("steer_max_deg must be within [0, 45] and steer_gain within [0, 4]");
+  }
+  if (!(d.ripple_celerity >= 0.0f && d.ripple_celerity <= 1000.0f))
+    return fail("ripple_celerity must be within [0, 1000]");
+  if (!((d.flatten_start == 0.0f && d.flatten_end == 0.0f) ||
+        (d.flatten_start > 0.0f && d.flatten_start < d.flatten_end && d.flatten_end <= 20.0f))) {
+    return fail(
+        "the ripples' flattening must rise: 0 < flatten_start < flatten_end <= 20, or both 0");
   }
   return true;
 }

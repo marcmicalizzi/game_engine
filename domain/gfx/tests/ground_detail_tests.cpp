@@ -20,6 +20,7 @@
 #include "brdf_reference.h"
 #include "ground_detail_reference.h"
 #include "ground_detail_reference_v1.h"
+#include "ground_detail_reference_v2.h"
 #include "raster_path.h"
 #include "scene_fixture.h"
 
@@ -1217,4 +1218,150 @@ TEST_CASE("ground detail: the ripples' spacing follows the wind, without a jump 
           << bound << " wavelengths at a kernel's edge, measured " << worst);
   CHECK(bound < 0.05);
   CHECK(worst < 0.05);
+}
+
+TEST_CASE("ground detail: the third pass's defaults are the second pass, to the bit") {
+  // A scene that names none of the third pass's numbers draws what the second pass drew: the live
+  // mirror against the frozen one (ground_detail_reference_v2.h), with the ergs' numbers as the
+  // second pass shipped them and with the defaults, at every probe.
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  for (u32 variant = 0; variant < 2; ++variant) {
+    gfx::GroundDetailDesc desc;
+    if (variant == 1) {
+      desc.lee_start_deg = 10.0f;
+      desc.lee_end_deg = 18.0f;
+      desc.grain_finest = 0.001f;
+      desc.grain_normal = 0.06f;
+      desc.streak_start_deg = 22.0f;
+      desc.streak_full_deg = 30.0f;
+      desc.spacing_gain = 2.5f;
+    }
+    const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{0.6f, -0.8f}, 7u);
+    u32 differ = 0;
+    for (u32 i = 0; i < 4000; ++i) {
+      const Probe p = probe(i);
+      const gref::Shading a =
+          gref::shade(d, p.position, p.normal, p.dpdx, p.dpdy, p.mask, albedo, 0.85, p.full);
+      const engine::ground_ref_v2::Shading b = engine::ground_ref_v2::shade(
+          d, p.position, p.normal, p.dpdx, p.dpdy, p.mask, albedo, 0.85, p.full);
+      const bool same = a.normal.x == b.normal.x && a.normal.y == b.normal.y &&
+                        a.normal.z == b.normal.z && a.albedo.x == b.albedo.x &&
+                        a.albedo.y == b.albedo.y && a.albedo.z == b.albedo.z &&
+                        a.roughness == b.roughness && a.weight == b.weight && a.fade == b.fade &&
+                        a.ripple == b.ripple && a.grain == b.grain && a.streak == b.streak;
+      if (!same) ++differ;
+    }
+    CHECK(differ == 0);
+  }
+}
+
+TEST_CASE("ground detail: grainflow lanes are long, run down the fall line, and are scaled") {
+  gfx::GroundDetailDesc desc;
+  desc.flow_start_deg = 24.0f;
+  desc.flow_full_deg = 30.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((d.flags & gfx::k_ground_grainflow) != 0u);
+  // The constants the block scales by are the lanes' own, over a slip face's worth of points.
+  double v = 0.0, g2 = 0.0;
+  u32 count = 0;
+  for (u32 j = 0; j < 300; ++j) {
+    for (u32 i = 0; i < 300; ++i) {
+      const gref::Flow f = gref::grainflow(d, 0.37 * i - 50.0, 0.29 * j + 3.0, 0.6, 0.8);
+      v += f.value * f.value;
+      g2 += (f.gx * f.gx + f.gz * f.gz) * static_cast<double>(d.flow_width * d.flow_width);
+      ++count;
+    }
+  }
+  const double rms = std::sqrt(v / count);
+  const double slope_rms = std::sqrt(g2 / count);
+  MESSAGE("grainflow: value rms " << rms << ", slope rms " << slope_rms << " per lane width");
+  CHECK(std::fabs(rms / static_cast<double>(gfx::k_ground_flow_rms) - 1.0) < 0.1);
+  CHECK(std::fabs(slope_rms / static_cast<double>(gfx::k_ground_flow_slope_rms) - 1.0) < 0.1);
+
+  // Long: along the fall line the lanes change slowly and across it fast — the value's gradient
+  // along the fall line is under a fifth of its gradient across, on average.
+  double along = 0.0, across = 0.0;
+  for (u32 i = 0; i < 4000; ++i) {
+    const gref::Flow f = gref::grainflow(d, 0.113 * i - 200.0, 0.071 * i + 3.0, 0.6, 0.8);
+    along += std::fabs(f.gx * 0.6 + f.gz * 0.8);
+    across += std::fabs(-f.gx * 0.8 + f.gz * 0.6);
+  }
+  MESSAGE("grainflow: mean gradient along the fall line " << along / 4000.0 << ", across "
+                                                          << across / 4000.0);
+  CHECK(along < 0.2 * across);
+
+  // No seam: along lines crossing many cells, lanes and windows, the value never jumps between
+  // millimetre steps by more than its gradient allows.
+  u32 jumps = 0;
+  for (u32 line = 0; line < 4; ++line) {
+    double previous = gref::grainflow(d, -30.0, 1.7 + 3.1 * line, 0.6, 0.8).value;
+    for (u32 i = 1; i <= 60000; ++i) {
+      const double x = -30.0 + 0.001 * i;
+      const gref::Flow f = gref::grainflow(d, x, 1.7 + 3.1 * line + 0.0003 * i, 0.6, 0.8);
+      const double slope = std::hypot(f.gx, f.gz);
+      if (std::fabs(f.value - previous) > 2.0 * slope * 0.0011 + 1e-4) ++jumps;
+      previous = f.value;
+    }
+  }
+  CHECK(jumps == 0);
+
+  // The trap: the fall line depends on the normal and only offsets from a cell's centre are
+  // projected on it, so a thousandth of a radian of normal 3 km out moves the lanes by what it
+  // moves a point a cell from a centre.
+  double moved = 0.0;
+  const double turn = 0.001;
+  for (u32 i = 0; i < 2000; ++i) {
+    const double x = 3000.0 + 0.0137 * i;
+    const double z = -1500.0 + 0.0091 * i;
+    const gref::Flow a = gref::grainflow(d, x, z, 1.0, 0.0);
+    const gref::Flow b = gref::grainflow(d, x, z, std::cos(turn), std::sin(turn));
+    moved = std::max(moved, std::fabs(a.value - b.value));
+  }
+  MESSAGE("a thousandth of a radian of normal 3 km out moves the lanes by at most "
+          << moved / static_cast<double>(gfx::k_ground_flow_rms) << " of their rms");
+  CHECK(moved < 0.25 * static_cast<double>(gfx::k_ground_flow_rms));
+
+  // The filter keeps the mean: a 32-degree face shaded with the lanes against 8 x 8 supersampling
+  // at pixels of 5 cm to 40 cm.
+  gfx::GroundDetailDesc only = desc;
+  only.ripple_height = 0.0f;
+  only.grain_albedo = 0.0f;
+  only.grain_roughness = 0.0f;
+  const gfx::GroundDetailParams e = gfx::ground_detail_block(only, Vec2{1.0f, 0.0f}, 7u);
+  const double slope = 32.0 * 3.14159265358979323846 / 180.0;
+  const ref::Dvec3 n{std::sin(slope), std::cos(slope), 0.0};
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  const ref::Dvec3 sun = ref::normalize(ref::Dvec3{0.1, 0.35, 0.93});
+  const auto luma = [&](double x, double z, double step) {
+    const ref::Dvec3 p{x, -(n.x * x) / n.y, z};
+    const ref::Dvec3 dx{step, -n.x / n.y * step, 0.0};
+    const ref::Dvec3 dz{0.0, 0.0, step};
+    const gref::Shading g = gref::shade(e, p, n, dx, dz, 1.0, albedo, 0.85);
+    ref::Surface sf;
+    sf.position = p;
+    sf.normal = g.normal;
+    sf.view = ref::normalize(ref::Dvec3{0.8, 0.6, 0.1});
+    sf.albedo = g.albedo;
+    sf.roughness = g.roughness;
+    return ref::luminance(
+        ref::shade(sf, sun, 4.5, ref::Dvec3{0.45, 0.55, 0.75}, albedo, nullptr, 0, ref::Dvec3{}));
+  };
+  for (const double pixel : {0.05, 0.15, 0.4}) {
+    double sum_f = 0.0, sum_s = 0.0;
+    for (u32 j = 0; j < 24; ++j) {
+      for (u32 i = 0; i < 24; ++i) {
+        const double x0 = 40.0 + i * pixel;
+        const double z0 = 7.0 + j * pixel;
+        sum_f += luma(x0 + 0.5 * pixel, z0 + 0.5 * pixel, pixel);
+        double s = 0.0;
+        for (u32 b = 0; b < 8; ++b)
+          for (u32 a = 0; a < 8; ++a)
+            s += luma(x0 + (a + 0.5) * pixel / 8.0, z0 + (b + 0.5) * pixel / 8.0, pixel / 8.0);
+        sum_s += s / 64.0;
+      }
+    }
+    MESSAGE("grainflow at a pixel of " << pixel * 100.0 << " cm: mean " << sum_f / 576.0
+                                       << " against " << sum_s / 576.0 << " supersampled");
+    CHECK(std::fabs(sum_f / sum_s - 1.0) < 0.01);
+  }
 }

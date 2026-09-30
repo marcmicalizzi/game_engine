@@ -39,6 +39,13 @@ static const uint k_ground_exposure = 4u;
 static const uint k_ground_gradient_grain = 8u;
 static const uint k_ground_streaks = 16u;
 static const uint k_ground_spacing = 32u;
+static const uint k_ground_grainflow = 64u;
+static const uint k_ground_patches = 128u;
+static const uint k_ground_steering = 256u;
+static const uint k_ground_motion = 512u;
+// gfx::k_ground_flow_rms, k_ground_flow_slope_rms.
+static const float k_ground_flow_rms = 0.119;
+static const float k_ground_flow_slope_rms = 0.429;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -49,7 +56,7 @@ static const float k_ground_grain_rms = 0.28;
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
 
-// Mirrors gfx::GroundDetailParams (128 bytes).
+// Mirrors gfx::GroundDetailParams (208 bytes).
 struct GroundDetail {
   float4 wind;            // xy the direction the sand moves (x, z), unit; z sin(spread)
   float wavelength;       // metres crest to crest
@@ -80,6 +87,26 @@ struct GroundDetail {
   float spacing_gain;      // the wavelength's scale per unit of climb into the wind
   float spacing_min;       // (k_ground_spacing) and its clamp
   float spacing_max;
+  float flow_tan_start;   // grainflow (k_ground_grainflow): where the lanes start and are whole
+  float flow_tan_full;
+  float flow_cell;        // metres, the world lattice's cell
+  float flow_width;       // metres, a lane
+  float flow_slope;       // the normal's lean per unit of the lanes' derivative
+  float flow_normal;      // the root-mean-square slope that is, for the roughness transfer
+  float flow_albedo;      // the albedo's share per unit of the lanes' value
+  float flow_widening;    // per metre down the fall line
+  float patch_size;       // patches (k_ground_patches): the coarse cell, metres
+  float patch_mid;        // the wavelength's scale 2^(v half_log2) about the mid
+  float patch_half_log2;
+  float patch_defects;    // the spread's share either way
+  float steer_gain;       // steering (k_ground_steering)
+  float steer_cos_max;
+  float steer_sin_max;
+  float ripple_live;      // motion (k_ground_motion): the height kept, 0 in a storm
+  float travel;           // metres along the wind, reduced
+  float travel_per_frame; // metres this frame
+  uint pad6;
+  uint pad7;
 };
 
 // PCG, as sampling.slang's `pcg_hash`: one multiply-add and a permutation, the same bits on every
@@ -116,13 +143,18 @@ struct GroundRipple {
 // coherent; it enters only through the wavenumber, which multiplies a kernel's offset from its
 // centre and never the absolute position, so a change in it slides a crest by at most the kernel's
 // radius times the change (renderer.md, "Spacing that follows the wind").
-GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scale) {
+// `w` is the ripples' direction here and `spread` the sine of their kernels' spread about it (the
+// block's own wind and spread, or the steering's and the patches'), and `travel` how far they have
+// moved along it: every kernel's phase is taken back by k travel, so the crests move and the
+// kernels stay where the lattice put them.
+GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scale, float2 w,
+                           float spread, float travel) {
   const float inv_cell = 1.0 / d.cell;
   const float2 q = p * inv_cell;
   const int2 base = int2(floor(q));
-  const float2 w = d.wind.xy;
   const float2 across = float2(-w.y, w.x);
   const float k = k_ground_two_pi / (d.wavelength * scale);
+  const float shift = k * travel;
   const float inv_r2 = inv_cell * inv_cell;
   // The complex sum S and its two partial derivatives, each a complex number (re, im).
   float2 s = float2(0.0, 0.0);
@@ -145,14 +177,14 @@ GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scal
         h = ground_pcg(h);
         const float phase0 = ground_unit(h) * k_ground_two_pi;
         h = ground_pcg(h);
-        const float js = (ground_unit(h) * 2.0 - 1.0) * d.wind.z;
+        const float js = (ground_unit(h) * 2.0 - 1.0) * spread;
         const float2 dir = w * sqrt(1.0 - js * js) + across * js;
         const float t = 1.0 - r2;
         const float env = t * t * t;
         const float2 denv = offset * (-6.0 * t * t * inv_r2);
         float sn;
         float cs;
-        sincos(k * dot(dir, offset) + phase0, sn, cs);
+        sincos(k * dot(dir, offset) + phase0 - shift, sn, cs);
         const float2 e = float2(cs, sn);
         const float2 de = float2(-sn, cs) * (env * k);
         s += e * env;
@@ -334,6 +366,118 @@ GroundStreak ground_streaks(GroundDetail d, float2 p, float2 fall) {
   return out;
 }
 
+// Steering: the ripples' direction on a slope oblique to the wind turns along the contours, since
+// the flow climbing it is slowed and deflected. The wind loses `steer_gain` of its component along
+// the ground's fall `g = n.xz / n.y` (scaled down where that would reverse it, so it never does),
+// and the turn is clamped to the scene's largest. Straight up or down a slope it does not turn; on
+// the flat, nothing. Arithmetic only, and a function of the normal: only offsets from a kernel's
+// centre are ever projected on the result.
+float2 ground_steer(GroundDetail d, float2 w, float3 normal) {
+  const float2 g = normal.xz / max(normal.y, 1e-4);
+  const float g2 = dot(g, g);
+  const float r = d.steer_gain / max(1.0, d.steer_gain * g2);
+  const float2 bent = w - g * (dot(w, g) * r);
+  const float len = length(bent);
+  if (!(len > 1e-6)) return w;
+  const float2 b = bent / len;
+  const float cs = dot(w, b);
+  if (cs >= d.steer_cos_max) return b;
+  const float sn = w.x * b.y - w.y * b.x;
+  return w * d.steer_cos_max + float2(-w.y, w.x) * (sn >= 0.0 ? d.steer_sin_max : -d.steer_sin_max);
+}
+
+// Patches: two octaves of the grain's gradient noise at `patch_size` and half it, two channels —
+// the wavelength's and the defects' — each scaled to about [-1, 1] and clamped. A function of the
+// position alone, so it does not slide when the normal changes, and eight lattice hashes.
+float2 ground_patch(GroundDetail d, float2 p) {
+  const GroundGrain a = ground_gradient_noise3(p, d.patch_size, d.seed, 64u);
+  const GroundGrain b = ground_gradient_noise3(p, d.patch_size * 0.5, d.seed, 65u);
+  const float2 v = (a.value.xy + b.value.xy * 0.5) * (0.5 / (k_ground_noise_rms * 1.118034));
+  return clamp(v, -1.0, 1.0);
+}
+
+// Grainflow: lanes of avalanched sand down a slip face, long, and seen by their relief. A lattice
+// of `flow_cell` fixed in the world; in each cell a one-dimensional gradient noise of the
+// coordinate **across** the fall line measured from the cell's centre, so it is constant along
+// the fall line and a lane runs the cell's length; each lattice point's gradient windowed along the
+// fall line by a start and a length of its own, so a lane begins near the brink and ends in a
+// rounded toe; the across coordinate shrunk down the fall line, so a lane widens. The four nearest
+// cells blend by quintic weights, divided by the root of their squares so the blend keeps the
+// lanes' contrast. **Only offsets from a cell's centre are projected on the fall line**, so a
+// thousandth of a radian of normal moves a lane by a thousandth of a cell and never by metres 3 km
+// out. The value and its gradient over (x, z); the weights' own gradient is left out, the cell
+// being tens of lanes across. Two lattice hashes a cell, eight a pixel.
+struct GroundFlow {
+  float value;
+  float2 gradient;
+};
+
+GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
+  const float2 across = float2(-fall.y, fall.x);
+  const float cell = d.flow_cell;
+  const float2 q = p / cell - 0.5;
+  const int2 base = int2(floor(q));
+  const float2 fq = q - float2(base);
+  const float2 wq = fq * fq * fq * (fq * (fq * 6.0 - 15.0) + 10.0);
+  const float width = d.flow_width;
+  float sum = 0.0;
+  float2 grad = float2(0.0, 0.0);
+  float w2 = 0.0;
+  for (int j = 0; j <= 1; ++j) {
+    for (int i = 0; i <= 1; ++i) {
+      const int2 c = base + int2(i, j);
+      const float w = (i == 0 ? 1.0 - wq.x : wq.x) * (j == 0 ? 1.0 - wq.y : wq.y);
+      const float2 offset = (q - float2(c)) * cell;
+      const float t = dot(offset, fall);
+      const float s0 = dot(offset, across);
+      const float widen = max(1.0 + d.flow_widening * t, 0.25);
+      const float s = s0 / (width * widen);
+      const float m = floor(s);
+      const float f = s - m;
+      const float u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+      const float du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+      const uint hc = ground_hash(c.x, c.y, d.seed, 48u);
+      float g[2];
+      float win[2];
+      float dwin[2];
+      [unroll]
+      for (uint e = 0u; e < 2u; ++e) {
+        uint h = ground_pcg(hc ^ uint(int(m) + int(e)));
+        g[e] = ground_unit(h) * 2.0 - 1.0;
+        h = ground_pcg(h);
+        const float start = (ground_unit(h) - 0.9) * cell;
+        h = ground_pcg(h);
+        const float end = start + (0.8 + 0.9 * ground_unit(h)) * cell;
+        const float rise = 2.0 * width;
+        const float toe = 3.0 * width;
+        const float a = saturate((t - start) / rise);
+        const float b = saturate((t - (end - toe)) / toe);
+        const float sa = a * a * (3.0 - 2.0 * a);
+        const float sb = 1.0 - b * b * (3.0 - 2.0 * b);
+        win[e] = sa * sb;
+        const float dsa = (a > 0.0 && a < 1.0) ? 6.0 * a * (1.0 - a) / rise : 0.0;
+        const float dsb = (b > 0.0 && b < 1.0) ? -6.0 * b * (1.0 - b) / toe : 0.0;
+        dwin[e] = dsa * sb + sa * dsb;
+      }
+      const float n0 = g[0] * f * (1.0 - u);
+      const float n1 = g[1] * (f - 1.0) * u;
+      const float n = win[0] * n0 + win[1] * n1;
+      const float dn_ds = win[0] * g[0] * ((1.0 - u) - f * du) + win[1] * g[1] * (u + (f - 1.0) * du);
+      const float dn_dt = dwin[0] * n0 + dwin[1] * n1;
+      // ds/dp: across over the lane's width, and the widening's share along the fall line.
+      const float2 ds = (across - fall * (s0 * d.flow_widening / widen)) / (width * widen);
+      sum += w * n;
+      grad += (ds * dn_ds + fall * dn_dt) * w;
+      w2 += w * w;
+    }
+  }
+  const float norm = rsqrt(max(w2, 1e-6));
+  GroundFlow out;
+  out.value = sum * norm;
+  out.gradient = grad * norm;
+  return out;
+}
+
 // What the detail makes of one shaded point, and what the debug view shows of it.
 struct GroundShading {
   float3 normal;     // the shading normal with the ripples in it
@@ -342,6 +486,7 @@ struct GroundShading {
   float weight;      // the ripples' share here: the sand share, the slope fade and the exposure
   float exposure;    // how much the ground faces the wind (1 without k_ground_exposure)
   float streak;      // the streaks' share here: the sand share times the slip face's band
+  float flow;        // the grainflow lanes' share here, the same way
   float fade;        // the footprint's fade of the ripples
   float ripple;      // the ripples' height over their amplitude, before the weight and the fade
   float grain;       // the albedo grain's coarse octave, before any fade
@@ -363,6 +508,7 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   out.weight = 0.0;
   out.exposure = 1.0;
   out.streak = 0.0;
+  out.flow = 0.0;
   out.fade = 0.0;
   out.ripple = 0.0;
   out.grain = 0.0;
@@ -373,20 +519,39 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     // Sand sheltered from the wind is smooth, not unresolved: what the exposure takes is taken
     // from the weight, which the roughness transfer below is weighted by too.
     if ((d.flags & k_ground_exposure) != 0u) out.exposure = ground_exposure(d, normal);
-    const float weight = mask * slope * out.exposure;
+    float weight = mask * slope * out.exposure;
+    // A storm flattens them (motion): taken from the weight, since a flat bed is smooth.
+    if ((d.flags & k_ground_motion) != 0u) weight *= d.ripple_live;
+    // The ripples' direction and spread here: the wind's and the scene's, unless the ground steers
+    // them or a patch changes their defects.
+    float2 w = d.wind.xy;
+    float spread = d.wind.z;
+    if ((d.flags & k_ground_steering) != 0u) w = ground_steer(d, w, normal);
     // The spacing: longer ripples where the ground climbs into the wind and the flow speeds up.
     float scale = 1.0;
     if ((d.flags & k_ground_spacing) != 0u) {
       const float climb = -dot(normal.xz, d.wind.xy) / max(normal.y, 1e-4);
       scale = clamp(1.0 + d.spacing_gain * climb, d.spacing_min, d.spacing_max);
     }
+    if ((d.flags & k_ground_patches) != 0u) {
+      const float2 v = ground_patch(d, p);
+      scale *= d.patch_mid * exp2(v.x * d.patch_half_log2);
+      spread = min(spread * (1.0 + v.y * d.patch_defects), 0.9);
+    }
     // The footprint across the crests: the pixel's step along the wind, and across it by as much
     // as a kernel turned `spread` off the wind would see — per screen axis, the larger.
-    const float2 w = d.wind.xy;
     const float2 across = float2(-w.y, w.x);
-    const float fx = abs(dot(dpdx.xz, w)) + abs(dot(dpdx.xz, across)) * d.wind.z;
-    const float fy = abs(dot(dpdy.xz, w)) + abs(dot(dpdy.xz, across)) * d.wind.z;
-    const float cycles = max(fx, fy) / (d.wavelength * scale);
+    const float fx = abs(dot(dpdx.xz, w)) + abs(dot(dpdx.xz, across)) * spread;
+    const float fy = abs(dot(dpdy.xz, w)) + abs(dot(dpdy.xz, across)) * spread;
+    float cycles = max(fx, fy) / (d.wavelength * scale);
+    // A time-lapse blurs them as a camera's shutter would: their travel in one frame counts as
+    // footprint, so at a quarter of a wavelength a frame they start to go and at a half they are
+    // gone, their slope variance into the roughness like any other fade.
+    float travel = 0.0;
+    if ((d.flags & k_ground_motion) != 0u) {
+      travel = d.travel;
+      cycles = max(cycles, d.travel_per_frame / (d.wavelength * scale));
+    }
     // Two stages. The profile's steep lee is a quarter of a wavelength, so its harmonics alias an
     // octave before the ripple does: they go first — the asymmetry eases to a plain sinusoid
     // between eight pixels a wavelength and four — and the ripple itself after, between four and
@@ -397,7 +562,8 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     out.fade = fade;
     const float strength = weight * fade;
     if (strength > 0.0 || full) {
-      const GroundRipple r = ground_ripple(d, p, full ? d.asymmetry : asymmetry, scale);
+      const GroundRipple r =
+          ground_ripple(d, p, full ? d.asymmetry : asymmetry, scale, w, spread, travel);
       out.ripple = r.height / (d.amplitude * scale);
       if (strength > 0.0 && !full) {
         out.normal = normalize(normal - float3(r.gradient.x, 0.0, r.gradient.y) *
@@ -497,6 +663,33 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
         }
       }
       const float lost = weight * weight * d.streak_normal * d.streak_normal * (1.0 - fade * fade);
+      if (lost > 0.0) {
+        const float alpha = out.roughness * out.roughness;
+        out.roughness = sqrt(sqrt(alpha * alpha + lost));
+      }
+    }
+  }
+  if ((d.flags & k_ground_grainflow) != 0u) {
+    // Where the ground falls away from the wind near the angle of repose; faded by the footprint
+    // across a lane, the slope variance that takes into the roughness. Relief first: the albedo
+    // moves by a percent or two.
+    const float fall_tan = dot(normal.xz, d.wind.xy) / max(normal.y, 1e-4);
+    const float weight = mask * smoothstep(d.flow_tan_start, d.flow_tan_full, fall_tan);
+    out.flow = weight;
+    if (weight > 0.0 && !full) {
+      const float footprint = max(length(dpdx.xz), length(dpdy.xz));
+      const float fade = ground_fade(footprint / d.flow_width);
+      if (fade > 0.0) {
+        const float len = length(normal.xz);
+        const float2 fall = len > 1e-6 ? normal.xz / len : d.wind.xy;
+        const GroundFlow lanes = ground_grainflow(d, p, fall);
+        const float strength = weight * fade;
+        out.albedo *= 1.0 + d.flow_albedo * strength * lanes.value;
+        const float3 n = out.normal;
+        out.normal = normalize(n - float3(lanes.gradient.x, 0.0, lanes.gradient.y) *
+                                       (d.flow_slope * d.flow_width * strength * n.y));
+      }
+      const float lost = weight * weight * d.flow_normal * d.flow_normal * (1.0 - fade * fade);
       if (lost > 0.0) {
         const float alpha = out.roughness * out.roughness;
         out.roughness = sqrt(sqrt(alpha * alpha + lost));

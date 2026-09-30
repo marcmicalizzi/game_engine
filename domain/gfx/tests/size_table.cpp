@@ -170,7 +170,7 @@ ENGINE_EXPECT_SIZE(336, 8, gfx::ResolveParams);
 // the ripples' shape and the kernels' lattice, the filter's slope variance, the slope fade and the
 // grain, read through an address once per shaded pixel of a material that carries it. One block a
 // frame, shared by every view and by the reference.
-ENGINE_EXPECT_SIZE(128, 4, gfx::GroundDetailParams);
+ENGINE_EXPECT_SIZE(208, 4, gfx::GroundDetailParams);
 
 // The cascaded shadow maps (docs/subsystems/renderer.md, "Shadows"): per cascade its world-to-tile
 // matrix and three numbers the filter and the bias need; per frame four cascades, the light's

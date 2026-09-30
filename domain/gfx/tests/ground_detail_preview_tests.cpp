@@ -31,7 +31,7 @@
 //   and streak weight in green and blue where the mirror has them).
 #include "brdf_reference.h"
 #include "ground_detail_reference.h"
-#include "ground_detail_reference_v1.h"
+#include "ground_detail_reference_v2.h"
 
 #include <core/containers/vector.h>
 #include <domain/gfx/ground_detail.h>
@@ -66,15 +66,15 @@ struct Detail {
   double streak = 0.0;
 };
 
-Detail first_pass(const gfx::GroundDetailParams& d, Dvec3 p, Dvec3 n, Dvec3 dpdx, Dvec3 dpdy) {
-  const ground_ref_v1::Shading s =
-      ground_ref_v1::shade(d, p, n, dpdx, dpdy, 1.0, k_albedo, k_roughness);
-  return {s.normal, s.albedo, s.roughness, s.weight, 0.0, 0.0};
+Detail second_pass(const gfx::GroundDetailParams& d, Dvec3 p, Dvec3 n, Dvec3 dpdx, Dvec3 dpdy) {
+  const ground_ref_v2::Shading s =
+      ground_ref_v2::shade(d, p, n, dpdx, dpdy, 1.0, k_albedo, k_roughness);
+  return {s.normal, s.albedo, s.roughness, s.weight, s.exposure, s.streak};
 }
 
 Detail live(const gfx::GroundDetailParams& d, Dvec3 p, Dvec3 n, Dvec3 dpdx, Dvec3 dpdy) {
   const ground_ref::Shading s = ground_ref::shade(d, p, n, dpdx, dpdy, 1.0, k_albedo, k_roughness);
-  return {s.normal, s.albedo, s.roughness, s.weight, s.exposure, s.streak};
+  return {s.normal, s.albedo, s.roughness, s.weight, s.exposure, s.streak + s.flow};
 }
 
 using DetailFn = Detail (*)(const gfx::GroundDetailParams&, Dvec3, Dvec3, Dvec3, Dvec3);
@@ -272,13 +272,15 @@ struct Dune {
   }
   // Relative to the floor beyond the toe, which the profile's integral leaves below the upwind
   // floor: the bell lifts the whole profile, so both floors stand at 0 away from the dune.
+  // `scale` draws the same dune larger: its slip face is 2.4 m tall at 1, 20 m at 8.3.
+  double scale = 1.0;
   double height(double x, double z, Dvec3* normal) const {
     double h, dh, b, db;
-    profile(x, h, dh);
-    bell(z, b, db);
+    profile(x / scale, h, dh);
+    bell(z / scale, b, db);
     const double floor_up = y[0];
     if (normal != nullptr) *normal = ref::normalize(Dvec3{-(dh * b), 1.0, -((h - floor_up) * db)});
-    return (h - floor_up) * b;
+    return (h - floor_up) * b * scale;
   }
 };
 
@@ -291,7 +293,7 @@ bool hit_dune(const Dune& dune, const Camera& c, double sx, double sy, Dvec3& ou
                        c.up * (ndc_y * c.tan_half));
   double t0 = 0.0;
   double t = 0.0;
-  for (u32 i = 0; i < 4000 && t < 200.0; ++i) {
+  for (u32 i = 0; i < 8000 && t < 400.0; ++i) {
     const Dvec3 p = c.eye + dir * t;
     const double above = p.y - dune.height(p.x, p.z, nullptr);
     if (above <= 0.0) {
@@ -313,14 +315,15 @@ bool hit_dune(const Dune& dune, const Camera& c, double sx, double sy, Dvec3& ou
 // The walker's view of the dune from its flank, the footprint as the resolve measures it: the
 // neighbouring pixels' rays met with the surface's tangent plane at the hit.
 void dune_view(const test::TempDir& dir, const std::string& tag, DetailFn detail,
-               const gfx::GroundDetailParams& d, const Dune& dune) {
+               const gfx::GroundDetailParams& d, const Dune& dune, const std::string& name,
+               Dvec3 eye, Dvec3 forward, Dvec3 sun_a, const char* a, Dvec3 sun_b, const char* b) {
   Camera c;
   c.width = 1280;
   c.height = 720;
   c.aspect = static_cast<double>(c.width) / c.height;
   c.tan_half = std::tan(30.0 * k_deg);
-  c.eye = Dvec3{6.0, 1.65, -7.0};
-  c.forward = ref::normalize(Dvec3{-0.75, -0.05, 1.0});
+  c.eye = eye;
+  c.forward = ref::normalize(forward);
   c.right = ref::normalize(ref::cross(c.forward, Dvec3{0.0, 1.0, 0.0}));
   c.up = ref::cross(c.right, c.forward);
   Vector<u8> along, across, mask;
@@ -350,16 +353,16 @@ void dune_view(const test::TempDir& dir, const std::string& tag, DetailFn detail
       const Dvec3 dpdx = on_plane(px + 1.0, py + 0.5) - on_plane(px + 0.0, py + 0.5);
       const Dvec3 dpdy = on_plane(px + 0.5, py + 1.0) - on_plane(px + 0.5, py + 0.0);
       const Detail g = detail(d, p, n, dpdx, dpdy);
-      put(along, lit(g, p, -ray, sun_direction(true)));
-      put(across, lit(g, p, -ray, sun_direction(false)));
+      put(along, lit(g, p, -ray, sun_a));
+      put(across, lit(g, p, -ray, sun_b));
       mask.push_back(static_cast<u8>(std::lround(ref::clamp01(g.weight) * 255.0)));
       mask.push_back(static_cast<u8>(std::lround(ref::clamp01(g.exposure) * 255.0)));
       mask.push_back(static_cast<u8>(std::lround(ref::clamp01(g.streak) * 255.0)));
     }
   }
-  CHECK(write(dir, tag + "_eye_dune_along.png", c.width, c.height, along));
-  CHECK(write(dir, tag + "_eye_dune_across.png", c.width, c.height, across));
-  CHECK(write(dir, tag + "_mask_eye_dune.png", c.width, c.height, mask));
+  CHECK(write(dir, tag + "_" + name + "_" + a + ".png", c.width, c.height, along));
+  CHECK(write(dir, tag + "_" + name + "_" + b + ".png", c.width, c.height, across));
+  CHECK(write(dir, tag + "_mask_" + name + ".png", c.width, c.height, mask));
 }
 
 void draw_all(const test::TempDir& dir, const std::string& tag, DetailFn detail,
@@ -378,7 +381,23 @@ void draw_all(const test::TempDir& dir, const std::string& tag, DetailFn detail,
   top_view(dir, tag, "grain", detail, d, plane_normal(0.0, 1.0), 0.3, 0.3, 0.00025, 1000, false);
   eye_view(dir, tag, "flat", detail, d, plane_normal(0.0, 1.0));
   static const Dune dune;
-  dune_view(dir, tag, detail, d, dune);
+  dune_view(dir, tag, detail, d, dune, "eye_dune", Dvec3{6.0, 1.65, -7.0}, Dvec3{-0.75, -0.05, 1.0},
+            sun_direction(true), "along", sun_direction(false), "across");
+  // A slip face 20 m tall (the dune at 8.3 times; its toe near x = 35 m), from the floor
+  // downwind of it at 5, 20 and 60 m, the sun raking across it from the side, and in front of it.
+  static const Dune big = [] {
+    Dune b;
+    b.scale = 8.3;
+    return b;
+  }();
+  const double c20 = std::cos(20.0 * k_deg);
+  const double s20 = std::sin(20.0 * k_deg);
+  for (const double distance : {5.0, 20.0, 60.0}) {
+    const Dvec3 eye{35.0 + distance, 1.65, -0.35 * distance};
+    const Dvec3 target{17.0, 9.0, 0.0};
+    dune_view(dir, tag, detail, d, big, "slip_" + std::to_string(static_cast<int>(distance)) + "m",
+              eye, target - eye, Dvec3{0.0, s20, c20}, "raking", Dvec3{c20, s20, 0.0}, "front");
+  }
 }
 
 }  // namespace
@@ -387,9 +406,8 @@ TEST_CASE("ground detail preview: the sand from the mirror, before and after" * 
   test::TempDir dir("ground-detail-preview");
   REQUIRE(dir.ok());
   dir.keep();
-  // The first pass's numbers (the defaults) for "before", and the ergs' second pass
-  // (content/test-scenes/desert-erg, `terrain.detail`) for "after", with the wind along +x.
-  const gfx::GroundDetailDesc first;
+  // The ergs' second pass for "before", drawn by that pass's frozen mirror, and the ergs' numbers
+  // now (`ground_ref::erg_numbers()`, content/test-scenes/desert-erg) for "after", the wind +x.
   gfx::GroundDetailDesc second;
   second.lee_start_deg = 10.0f;
   second.lee_end_deg = 18.0f;
@@ -398,7 +416,13 @@ TEST_CASE("ground detail preview: the sand from the mirror, before and after" * 
   second.streak_start_deg = 22.0f;
   second.streak_full_deg = 30.0f;
   second.spacing_gain = 2.5f;
-  draw_all(dir, "before", first_pass, gfx::ground_detail_block(first, Vec2{1.0f, 0.0f}, 7u));
-  draw_all(dir, "after", live, gfx::ground_detail_block(second, Vec2{1.0f, 0.0f}, 7u));
+  second.streak_width = 0.4f;
+  second.streak_length = 2.0f;
+  second.streak_albedo = 0.06f;
+  second.streak_roughness = 0.04f;
+  second.streak_normal = 0.012f;
+  draw_all(dir, "before", second_pass, gfx::ground_detail_block(second, Vec2{1.0f, 0.0f}, 7u));
+  draw_all(dir, "after", live,
+           gfx::ground_detail_block(ground_ref::erg_numbers(), Vec2{1.0f, 0.0f}, 7u));
   MESSAGE("ground detail preview written to " << dir.path());
 }
