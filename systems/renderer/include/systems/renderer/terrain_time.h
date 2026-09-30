@@ -457,6 +457,14 @@ class TerrainMotion {
     bool moved = false;           // its chunks changed
     bool window_changed = false;  // and the window its fields cover with them
     bool has_b = false;
+    // The level held its pair for this rebuild (`freeze_mask_`). A tile level whose window stays
+    // where it was is not frozen: it goes on taking fields while its tiles are swapped, and the
+    // pairs step measures every field it holds against the new tiles instead (`measured_*`), which
+    // the swap applies to whichever of them the level still holds, by time.
+    bool frozen = true;
+    u32 measured = 0;
+    f64 measured_time[8] = {};
+    f64 measured_padding[8] = {};
     Field a;
     Field b;
     gfx::BufferResource staging_a;
@@ -568,8 +576,15 @@ class TerrainMotion {
     swapping
   } recentre_ = Recentre::none;
   // A ring level holds its pair from the freeze to the swap: the pair is what the swap carries
-  // over to the new layout, at the same blend.
-  bool frozen(u32 level) const noexcept { return level > 0 && recentre_ >= Recentre::pairs_asked; }
+  // over to the new layout, at the same blend. Every ring level is frozen at every re-centre; a
+  // tile level only when its window moves (`freeze_rings`), since a tile set's rebuilds come with
+  // every tile a camera crosses and a freeze drops the fields a level has after b (the model in
+  // terrain_clock_tests.cpp: freezing every level at every rebuild stood the sand still a frame in
+  // a hundred and sent it on at a third more than the rate).
+  bool frozen(u32 level) const noexcept {
+    return level > 0 && recentre_ >= Recentre::pairs_asked && (freeze_mask_ & (1u << level)) != 0;
+  }
+  u32 freeze_mask_ = 0;
   TerrainRingLayout shown_layout_;  // what the frames draw
   TerrainRingLayout pending_layout_;
   u32 pending_moved_ = 0;

@@ -140,10 +140,27 @@ struct RateStep {
   f64 rate = 0.0;
 };
 
+// **The world's tiles changing under a moving camera** (renderer.md, "The ground from the world's
+// tiles"): every `every` frames a rebuild of the tiles the world handed over is swapped in the way
+// a ring's re-centre is (`TerrainMotion`'s freeze, pairs and swap). While it is swapped the levels
+// it freezes hold their pair — their fields after b are dropped and no new one is taken — and the
+// one field worker, after the field it is on, carries the pairs over: a frame when no level's
+// window moved (the pairs' paddings measured again), `carry_frames` when one did, every
+// `window_every`-th rebuild, a level at a time in turn. `freeze_all` freezes every level each time,
+// as the rings' swap does; otherwise only a level whose window moves is frozen.
+struct Churn {
+  u32 every = 30;
+  u32 window_every = 4;
+  u32 pairs_frames = 1;
+  u32 carry_frames = 3;
+  bool freeze_all = true;
+};
+
 ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
                    std::span<const LevelSpec> specs, u32 stall_at = 0, u32 stall = 0,
                    usize depth_override = 0, const Transport* transport = nullptr,
-                   f64 min_step_s = 60.0, bool cadence_gained = true) {
+                   f64 min_step_s = 60.0, bool cadence_gained = true,
+                   const Churn* churn = nullptr) {
   const Transport calm{};
   const Transport& sand = transport != nullptr ? *transport : calm;
   f64 rate = schedule[0].rate;
@@ -205,6 +222,14 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
   u32 busy_level = 0;
   u32 done_at = 0;
   f64 busy_time = 0.0;
+  // The tiles' rebuilds (`Churn`): the levels frozen, the pairs step waiting for the worker, and
+  // the worker on it.
+  u32 frozen_mask = 0;
+  bool pairs_waiting = false;
+  bool pairs_busy = false;
+  u32 pairs_frames = 0;
+  u32 rebuilds = 0;
+  const u32 all_levels = (1u << n) - 1u;
   ModelRun run;
   Vector<f64> speed;  // per frame, the surface's advance over the true one
   speed.reserve(frames);
@@ -232,8 +257,43 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
     }
     real += k_dt;
     const f64 game = t0 + (game_before + rate * (real - real_at));
-    // Take a finished field (TerrainMotion::take_finished).
-    if (busy && f >= done_at) {
+    // A rebuild of the tiles comes to be swapped (TerrainMotion::freeze_rings): the levels it
+    // freezes drop their fields after b and take none until the swap.
+    if (churn != nullptr && f % churn->every == 0 && !pairs_waiting && !pairs_busy) {
+      const bool window =
+          churn->window_every > 0 && rebuilds % churn->window_every == churn->window_every - 1;
+      const u32 moved_level = (rebuilds / std::max(churn->window_every, 1u)) % n;
+      ++rebuilds;
+      frozen_mask = churn->freeze_all ? all_levels : (window ? 1u << moved_level : 0u);
+      for (u32 k = 0; k < n; ++k) {
+        if ((frozen_mask & (1u << k)) == 0) continue;
+        Level& l = levels[k];
+        l.queued.clear();
+        l.queued_next.clear();
+        next[k] = TerrainNextField{};
+        l.latest = l.b;
+        l.latest_time = blends[k].has_b ? blends[k].time_b : blends[k].time_a;
+        l.want_real = -1.0;
+      }
+      pairs_waiting = true;
+      pairs_frames = window ? churn->carry_frames : churn->pairs_frames;
+    }
+    // The pairs step done: the swap, and the levels it froze want their next fields again.
+    if (pairs_busy && f >= done_at) {
+      pairs_busy = false;
+      busy = false;
+      for (u32 k = 0; k < n; ++k) {
+        if ((frozen_mask & (1u << k)) != 0 && !levels[k].pending) levels[k].want_real = real;
+      }
+      frozen_mask = 0;
+    }
+    // Take a finished field (TerrainMotion::take_finished); one for a level frozen since it was
+    // asked for is retired unused.
+    if (busy && !pairs_busy && f >= done_at && (frozen_mask & (1u << busy_level)) != 0) {
+      levels[busy_level].pending = false;
+      busy = false;
+    }
+    if (busy && !pairs_busy && f >= done_at) {
       Level& l = levels[busy_level];
       Vector<f32> field = profile_at(sand.travel(busy_time), l.spacing);
       run.max_pair_travel_share =
@@ -279,6 +339,13 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
     terrain_surface_frame(std::span<TerrainBlend>(blends, n), target,
                           std::span<const f64>(budgets, n), std::span<TerrainNextField>(next, n),
                           std::span<f64>(moved, n), std::span<u32>(installed, n));
+    // The pairs step takes the worker once it is free.
+    if (pairs_waiting && !busy) {
+      pairs_waiting = false;
+      pairs_busy = true;
+      busy = true;
+      done_at = f + pairs_frames;
+    }
     if (mode == Mode::after) clock.settle(k_dt, before, blends[0].surface_s);
     for (u32 k = 1; k < n; ++k)
       run.shared = run.shared && blends[k].surface_s == blends[0].surface_s;
@@ -320,6 +387,7 @@ ModelRun run_model(std::span<const RateStep> schedule, Mode mode, u32 frames,
       f64 best_from = 0.0;
       for (u32 k = 0; k < n; ++k) {
         if (levels[k].pending || levels[k].queued.size() >= depth_of(k)) continue;
+        if ((frozen_mask & (1u << k)) != 0 || pairs_waiting) continue;
         const f64 from = levels[k].latest_time;
         if (best == ~0u || from < best_from) {
           best = k;
@@ -751,6 +819,52 @@ TEST_CASE("renderer: the surface clock across a change of rate") {
     surface = to;
   }
   CHECK(to_rest <= 45);
+}
+
+TEST_CASE("renderer: the time-lapse over the world's tiles, as they change under a flying camera") {
+  // The endless desert's tile levels (content/test-scenes/desert-endless: 32 m tiles at 4 m, 2 m,
+  // 1 m and 50 cm, coarsest first), each field over its level's window, timed at the erg's grid's
+  // 45 ns a sample on the owner's 16 cores — 2.1, 1.3, 0.6 and 0.4 million samples, so 6, 3, 2 and
+  // 1 frames — and the scene's grid, which draws nothing under tiles, no level at all. A rebuild
+  // every half second, as a camera at 60 m/s crosses a tile, and every fourth one moving a level's
+  // window. Every promise of the time-lapse holds either way. Freezing every level at every
+  // rebuild — the rings' swap, which drops every level's fields after b — stands the sand still a
+  // frame in a hundred and more and swings its speed from nothing to a third past the rate within a
+  // second (window ratios of 115–134, measured when written); freezing only the level whose window
+  // moves (`TerrainMotion::freeze_rings` for a tile set) never stands it, keeps a game day an hour
+  // as smooth as with no tile changing, and leaves a dip where a moved window's level waits for
+  // the field after its carried pair (window ratios 1.1, 4.9 and 11 at the three rates,
+  // against 1.0, 1.3 and 1.9 with nothing changing): the fields after b are not carried over a
+  // window's move.
+  constexpr LevelSpec k_tiles[] = {{4.0, 6, 4}, {2.0, 3, 4}, {1.0, 2, 4}, {0.5, 1, 4}};
+  for (const f64 rate : k_rates) {
+    CAPTURE(rate);
+    const ModelRun still = run_model(rate, Mode::after, 1'200, k_tiles);
+    report("tiles, none changing", rate, still);
+    for (const bool freeze_all : {true, false}) {
+      CAPTURE(freeze_all);
+      Churn churn;
+      churn.freeze_all = freeze_all;
+      const RateStep one[] = {{0, rate}};
+      const ModelRun r = run_model(std::span<const RateStep>(one), Mode::after, 1'200, k_tiles, 0,
+                                   0, 0, nullptr, 60.0, true, &churn);
+      report(freeze_all ? "tiles, every level frozen at a rebuild"
+                        : "tiles, the moved window's level frozen",
+             rate, r);
+      CHECK(r.max_move_share <= 1.0 + 1.0e-4);
+      CHECK(r.exact_ends);
+      CHECK(r.monotonic);
+      CHECK(r.shared);
+      CHECK(r.max_speed <= 1.5 + 1.0e-9);
+      CHECK(r.stop_go == 0.0);
+      if (freeze_all) {
+        CHECK(r.stopped > 0.0);  // the stutter the rings' freeze would bring to tiles
+      } else {
+        CHECK(r.stopped == 0.0);
+        if (rate <= 8'640.0) CHECK(r.window_ratio <= 1.25);
+      }
+    }
+  }
 }
 
 TEST_CASE("renderer: a stalled worker slows the sand to a stop and sets it off again gently") {

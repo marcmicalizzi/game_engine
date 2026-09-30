@@ -819,6 +819,21 @@ void TerrainMotion::run_pairs(Task& task) {
     Pair& p = task.pairs[k];
     if (!p.moved && !p.window_changed) continue;
     Level& level = levels_[k];
+    if (!p.frozen) {
+      // A tile level taking fields through the swap (its window stays): every field it holds —
+      // its cache keeps its a and everything after — measured against the tiles it will be drawn
+      // over and the ones it is drawn over now.
+      p.measured = 0;
+      for (const Cached& c : level.cache) {
+        if (p.measured >= std::size(p.measured_time) || !same_window(c.window, p.a.window))
+          continue;
+        p.measured_time[p.measured] = c.time_s;
+        p.measured_padding[p.measured] =
+            rings_->padding(k, std::span<const f32>(c.heights.data(), c.heights.size()), c.window);
+        ++p.measured;
+      }
+      continue;
+    }
     const gfx::TerrainField& w = p.a.window;
     const usize count = samples_of(w);
     Vector<f32> ha;
@@ -1170,8 +1185,15 @@ bool TerrainMotion::upload_chunks(bool all) {
 void TerrainMotion::freeze_rings() {
   frozen_frame_ = frames_;
   recentre_ = Recentre::pairs_asked;
-  for (u32 k = 1; k < levels_.size(); ++k)
+  // Every ring level; a tile level only when its window moves (`frozen`).
+  freeze_mask_ = 0;
+  for (u32 k = 1; k < levels_.size(); ++k) {
+    const bool freeze = !rings_->shares_vertices() ||
+                        !same_window(rings_->field_window(k, pending_layout_), levels_[k].window);
+    if (!freeze) continue;
+    freeze_mask_ |= 1u << k;
     drop_ahead(k);
+  }
 }
 
 // The field worker carries the held pairs over: into a ring's two free slots when its window
@@ -1190,6 +1212,7 @@ bool TerrainMotion::schedule_pairs() {
     Level& level = levels_[k];
     Pair& p = task.pairs[k];
     p.moved = (pending_moved_ & (1u << k)) != 0;
+    p.frozen = frozen(k);
     p.has_b = level.has_b;
     p.a = level.a;
     p.b = level.has_b ? level.b : Field{};
@@ -1291,6 +1314,19 @@ void TerrainMotion::swap_rings() {
       level.a = p.a;
       if (p.has_b) level.b = p.b;
       level.window = p.a.window;
+    } else if (p.moved && !p.frozen) {
+      // Whichever fields the level still holds of the ones measured: no smaller than they were,
+      // since what they are drawn over until this frame is part of what was measured.
+      const auto apply = [&](Field& f) {
+        for (u32 i = 0; i < p.measured; ++i) {
+          if (p.measured_time[i] == f.time_s)
+            f.padding_m = std::max(f.padding_m, p.measured_padding[i]);
+        }
+      };
+      apply(level.a);
+      if (level.has_b) apply(level.b);
+      for (u32 e = 0; e < level.ahead; ++e)
+        apply(level.next[e]);
     } else if (p.moved) {
       level.a.padding_m = p.a.padding_m;
       if (p.has_b) level.b.padding_m = p.b.padding_m;
@@ -1299,9 +1335,12 @@ void TerrainMotion::swap_rings() {
   }
   shown_layout_ = pending_layout_;
   recentre_ = Recentre::none;
-  // The rings want their next fields again from here: a freeze is not a field's turnaround.
-  for (u32 k = 1; k < levels_.size(); ++k)
-    if (levels_[k].ahead == 0) levels_[k].wanted_s = real_s_;
+  // The frozen levels want their next fields again from here: a freeze is not a field's
+  // turnaround.
+  for (u32 k = 1; k < levels_.size(); ++k) {
+    if ((freeze_mask_ & (1u << k)) != 0 && levels_[k].ahead == 0) levels_[k].wanted_s = real_s_;
+  }
+  freeze_mask_ = 0;
   ++ring_stats_.swaps;
   ring_stats_.last_swap_frames = static_cast<u32>(frames_ - asked_frame_);
   ring_stats_.last_frozen_frames = static_cast<u32>(frames_ - frozen_frame_);
@@ -1351,6 +1390,7 @@ void TerrainMotion::abandon_recentre(const std::string& why) {
   uploads_.clear();
   upload_next_ = 0;
   recentre_ = Recentre::none;
+  freeze_mask_ = 0;
 }
 
 // One frame's step of a re-centre; with `complete` (offscreen, and a frame whose surface waits
