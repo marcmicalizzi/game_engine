@@ -306,8 +306,8 @@ TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its v
     if (want != 3) {
       ++named;
       const Vec3 nrm = fine.normals[v];
-      const i32 eighths =
-          static_cast<i32>(std::lround(static_cast<f64>(std::atan2(nrm.z, nrm.x)) * 4.0 / 3.14159265358979));
+      const i32 eighths = static_cast<i32>(
+          std::lround(static_cast<f64>(std::atan2(nrm.z, nrm.x)) * 4.0 / 3.14159265358979));
       bad += !(std::abs(nrm.y) < 0.25f);
       bad += static_cast<u32>((eighths + 8) % 8) != want;
       // A vertex drawn from a coarser level is on that level's lattice.
