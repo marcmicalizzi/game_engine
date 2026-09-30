@@ -13,7 +13,7 @@
 //                 `slots` — a drawn entry from the bottom of the slice up, a shadow caster from
 //                 the top down — and counting it. The slices are as long as the instances'
 //                 meshes times the view count, so the result is sparse.
-//   ranges_main   one thread: what the set's capacity keeps (below), the prefix sum of it, the
+//   ranges_main   one workgroup: what the set's capacity keeps (below), the prefix sum of it, the
 //                 total record count the CLAS build reads from the device, and one 16-byte
 //                 bottom-level record per instance over that instance's run of CLAS addresses.
 //   emit_main     one thread per pair slot, moving the kept entries down into the dense
@@ -178,18 +178,63 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
 }
 
 // What the capacity keeps, the prefix sum over the instances, the total, and one bottom-level
-// record per instance. One thread, over the instances: at 90 instances it is nothing, and it is
-// the one place that sees every instance's count, which is what "whole instances, in order" needs.
+// record per instance. **One workgroup**: each thread sums a run of the instances and the group
+// scans the runs, which is the whole pass whenever everything the frame wants fits — every
+// instance kept, the records the prefix sum. It was one thread over the instances ("at 90
+// instances it is nothing"), and the world's tiles made it 40,000 instances, every tile slot one:
+// the RT chain took 7.50 ms a frame at the median over desert-endless's first minute at 1080p on
+// the RTX 5090 with one thread, and 0.67 ms over its whole flight with the group (gfx.md). Only a frame that wants more than the set holds takes the rule below, on
+// one thread, because it is the one place that sees every instance's count in order, which is
+// what "whole instances, in order" needs; it writes what it always wrote.
+static const uint k_ranges_threads = 256;  // numthreads below; the pass dispatches one group
+groupshared uint g_ranges_sum[k_ranges_threads];
+
 [shader("compute")]
-[numthreads(1, 1, 1)]
-void ranges_main() {
+[numthreads(256, 1, 1)]
+void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   uint* drawn = drawn_counts();
   uint* casters = caster_counts();
   uint* first = instance_first();
   BlasRecord* blas = (BlasRecord*)g_params.blas_records;
-  uint wanted = 0;
-  for (uint i = 0; i < g_params.instance_count; ++i)
-    wanted += drawn[i] + casters[i];
+  uint* record_count = (uint*)g_params.record_count;
+  const uint n = g_params.instance_count;
+  const uint t = group_thread.x;
+  const uint per = (n + k_ranges_threads - 1) / k_ranges_threads;
+  const uint begin = min(t * per, n);
+  const uint end = min(begin + per, n);
+  uint own = 0;
+  for (uint i = begin; i < end; ++i)
+    own += drawn[i] + casters[i];
+  g_ranges_sum[t] = own;
+  GroupMemoryBarrierWithGroupSync();
+  for (uint step = 1; step < k_ranges_threads; step <<= 1) {
+    const uint add = t >= step ? g_ranges_sum[t - step] : 0u;
+    GroupMemoryBarrierWithGroupSync();
+    g_ranges_sum[t] += add;
+    GroupMemoryBarrierWithGroupSync();
+  }
+  const uint wanted = g_ranges_sum[k_ranges_threads - 1];
+  if (wanted <= g_params.capacity) {
+    // Everything fits: nothing is dropped, and each run writes its instances from its prefix.
+    uint total = g_ranges_sum[t] - own;
+    for (uint i = begin; i < end; ++i) {
+      first[i] = total;
+      BlasRecord record;
+      record.count = drawn[i] + casters[i];
+      record.stride = 8;
+      record.references = g_params.clas_addresses + uint64_t(total) * 8;
+      blas[i] = record;
+      total += record.count;
+    }
+    if (t == 0) {
+      record_count[0] = wanted;
+      record_count[1] = wanted;
+      record_count[2] = 0;
+      record_count[3] = 0;
+    }
+    return;
+  }
+  if (t != 0) return;
   // Drawn clusters first, instance by instance; an instance that does not fit keeps nothing — its
   // casters go with its drawn clusters, since they would cast a part of its shadow and not the
   // rest — and the next one is tried, so a large instance cannot starve every small one behind
@@ -224,7 +269,6 @@ void ranges_main() {
     blas[i] = record;
     total += drawn[i] + casters[i];
   }
-  uint* record_count = (uint*)g_params.record_count;
   record_count[0] = total;  // what the build reads: never more than the capacity
   record_count[1] = wanted;
   record_count[2] = dropped_drawn;
