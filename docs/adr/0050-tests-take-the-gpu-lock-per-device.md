@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-09-30
 - **Plan references:** docs/plan/09-testing-profiling.md; docs/plan/11-performance-principles.md §11.8 (measurements on a shared machine)
-- **Docs touched:** `docs/subsystems/gpu_lock.md` (new), `docs/subsystems/bench.md` ("The GPU lock"), `docs/subsystems/gfx.md` ("Device"), `docs/subsystems/platform.md` (`Process::wait`), `docs/ci/self-hosted-runners.md`, `AGENTS.md`, `docs/experiments/gpu-lock-per-device-2026-09-30.md`
+- **Docs touched:** `docs/subsystems/gpu_lock.md` (new), `docs/subsystems/bench.md` ("The GPU lock"), `docs/subsystems/gfx.md` ("Device"), `docs/subsystems/window.md`, `docs/subsystems/platform.md` (`Process::wait`), `docs/ci/self-hosted-runners.md`, `AGENTS.md`, `docs/experiments/gpu-lock-per-device-2026-09-30.md`
 
 ## Context
 
@@ -26,8 +26,9 @@ The alternatives:
 3. **One hold per process, counted by device**: the first device takes the lock, later ones share it, the last releases it. The file carries a two-minute lease, refreshed every 30 s by a keeper thread that starts with the hold and is joined before the release returns.
 4. **Children**: while a process holds the lock it sets `ENGINE_GPU_LOCK_HOLDER` to its pid, so a child finds the lock held for it and neither waits nor releases; the writer releases. A child watches its parent's hold and, if the hold goes while the child still has a device, takes the lock in its own name when it is free or expired. `tools/gpu-lock.ps1 run` already sets the same variable, so a wrapped suite finds the lock its own everywhere, as before.
 5. **Giving up is a distinct outcome, not a failure**: every wait in a test's process tree ends at one absolute deadline, the test's start plus `ENGINE_TEST_GPU_LOCK_WAIT_S` (1,800 s); a process whose wait runs out prints who held the lock and exits with 75 before it used the GPU; `platform::Process::wait()` ends a parent that takes part in the lock with 75 when a child does; CTest reports 75 as a skip (`SKIP_RETURN_CODE`) for the tests that can wait, whose `TIMEOUT` is 600 s of work plus the 1,800 s of queue; and `tools/dev.ps1 test` exits 75 and names the tests that did not run.
+6. **A window is part of the hold**: `window::Window::create` joins the process's hold before a Vulkan window appears and `destroy()` leaves it after, so a process that has to wait does it with nothing on screen. Added the same day, after two test `engine-view`s that had opened their windows before waiting sat "Not responding" on the owner's desktop behind a merge gate's hold.
 
-A piece of code complies when it opens GPU devices only through `gfx::Device`, never takes the lock around a test run, and never treats exit code 75 as anything but "gave up waiting for the GPU lock".
+A piece of code complies when it opens GPU devices only through `gfx::Device` and their windows only through `window::Window`, never takes the lock around a test run, and never treats exit code 75 as anything but "gave up waiting for the GPU lock".
 
 ## Consequences
 

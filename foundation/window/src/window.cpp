@@ -680,6 +680,11 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
     if (error != nullptr) *error = "window::init() has not succeeded";
     return false;
   }
+  // The GPU lock before the window (WindowDesc::vulkan): whatever wait there is happens with
+  // nothing on screen. Found on 2026-09-30, when two test engine-views sat "Not responding" on
+  // the owner's desktop for a quarter of an hour behind a merge gate's hold, having opened their
+  // windows and then waited in Device::create, which pumps no messages.
+  if (desc.vulkan) (void)gpu_hold_.acquire();
   SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
   if (desc.resizable) flags |= SDL_WINDOW_RESIZABLE;
   if (desc.vulkan) flags |= SDL_WINDOW_VULKAN;
@@ -689,6 +694,7 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
                                         static_cast<int>(desc.height), flags);
   if (window == nullptr) {
     set_error(error, "SDL_CreateWindow");
+    gpu_hold_.release();
     return false;
   }
   if (desc.borderless) {
@@ -711,6 +717,7 @@ void Window::destroy() noexcept {
   SDL_DestroyWindow(static_cast<SDL_Window*>(handle_));
   handle_ = nullptr;
   id_ = 0;
+  gpu_hold_.release();  // the last of the process's holds (a device's, a window's) lets it go
 }
 
 void Window::refresh_pixel_size() noexcept {

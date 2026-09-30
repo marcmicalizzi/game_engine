@@ -7,8 +7,10 @@
 // `gfx::Device::destroy` releases it just after `vkDestroyDevice`. Every process that opens a
 // device — a test executable through `gfx_test::open_device` or the renderer's rigs,
 // `engine-view`, `engine-host` started by an end-to-end test or by `engine-cli` or `engine-mcp`
-// — opens it there, so that is the one place the lock is taken, and a test that never opens a
-// device never touches it.
+// — opens it there, so that is the one place the lock is taken for a device, and a test that
+// never opens a device never touches it. `window::Window::create` takes the same hold before a
+// Vulkan window appears (and `destroy()` leaves it), so that a process that has to wait does it
+// with nothing on screen rather than with a window that answers nothing.
 //
 // It happens only when the switch is on: `ENGINE_GPU_LOCK_ON_DEVICE=1`. The shared test main
 // (tests/support/test_main.cpp) sets it for every test executable unless it is already set, and

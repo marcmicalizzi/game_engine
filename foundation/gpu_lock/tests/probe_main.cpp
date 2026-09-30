@@ -16,6 +16,7 @@
 //                               hold <ms> more, release, exit with the child's code
 //   parent-dies -- <argv...>    hold, start the child, wait until it has reported, and exit 0
 //                               without releasing: a crash, as far as the lock can tell
+//   cycles <n>                  take and release a free lock n times and print the mean cost
 //   spawn -- <argv...>          hold nothing; run the child and exit with its code (a child that
 //                               gave up ends this process with 75 first, in platform::Process)
 #include <core/platform/cpu_baseline.h>
@@ -94,7 +95,7 @@ int usage() {
   std::fprintf(stderr,
                "usage: engine_gpu_lock_probe [--on] [--lock <path>] [--lease <s>] "
                "[--refresh <s>] [--poll <s>] [--report <file>] "
-               "hold <ms> | parent <ms> -- <argv> | parent-dies -- <argv> | "
+               "hold <ms> | parent <ms> -- <argv> | parent-dies -- <argv> | cycles <n> | "
                "spawn -- <argv>\n");
   return 2;
 }
@@ -156,6 +157,23 @@ int main(int argc, char** argv) {
     p.close_stdin();
   };
 
+  if (command == "cycles") {
+    // What a hold costs a device: n takes and releases of a free lock, timed. Not a test; how
+    // docs/subsystems/gpu_lock.md's performance note was measured.
+    const i64 n = i < argc ? std::atoll(argv[i]) : 100;
+    const auto began = std::chrono::steady_clock::now();
+    for (i64 k = 0; k < n; ++k) {
+      gpu_lock::DeviceHold cycle;
+      (void)cycle.acquire(config);
+      cycle.release();
+    }
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - began)
+                        .count();
+    std::printf("cycles=%lld mean_us=%.1f\n", static_cast<long long>(n),
+                static_cast<double>(ns) / 1000.0 / static_cast<double>(n > 0 ? n : 1));
+    return 0;
+  }
   if (command == "spawn") {
     if (child.size() < 2) return usage();
     platform::Process p;

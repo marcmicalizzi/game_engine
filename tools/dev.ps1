@@ -111,6 +111,12 @@ function Invoke-Test {
   if ($code -ne 0) { throw "tests failed ($code)" }
   if ($skipped.Count -gt 0) {
     Write-Host ("{0} test(s) did not run: their processes gave up waiting for the machine-wide GPU lock ({1}). " -f $skipped.Count, ($skipped -join ', ')) -ForegroundColor Yellow
+    # CTest keeps a skipped test's output out of the console; the line that says how long it
+    # waited and for whom is in the log, and it is the line a reader needs.
+    $log = Join-Path $BuildDir 'Testing/Temporary/LastTest.log'
+    if (Test-Path -LiteralPath $log) {
+      Select-String -LiteralPath $log -Pattern 'gpu-lock: gave up waiting' | ForEach-Object { Write-Host "  $($_.Line)" -ForegroundColor Yellow }
+    }
     Write-Host 'Nothing failed. Run them again when the lock is free: tools/gpu-lock.ps1 status says who has it.' -ForegroundColor Yellow
     exit 75
   }

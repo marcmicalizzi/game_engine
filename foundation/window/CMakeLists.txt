@@ -1,7 +1,7 @@
 # window: OS windows, input events, and Vulkan surface glue over SDL3 (ADR-0012). Headless
 # builds and machines without a display keep working: init() reports failure and callers skip.
 engine_module(NAME window LAYER foundation
-  DEPS base containers log
+  DEPS base containers log gpu_lock
   EXTERNAL_DEPS SDL3::SDL3
   SOURCES src/window.cpp)
 target_include_directories(engine_window SYSTEM PRIVATE

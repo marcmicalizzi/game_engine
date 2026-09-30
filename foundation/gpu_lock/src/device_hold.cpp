@@ -313,7 +313,15 @@ HoldMode establish(ProcessHold& h, const HoldConfig& config) {
                         format_iso8601_utc(deadline_s));
       announced = holder;
     }
-    const i64 sleep_s = std::min<i64>(std::max<i64>(h.config.poll_s, 1), deadline_s - now_s);
+    i64 sleep_s = std::min<i64>(std::max<i64>(h.config.poll_s, 1), deadline_s - now_s);
+    // A holder whose lease runs out before the next look is looked at again when it does: one
+    // that died (a crash, a killed test) is broken a second after its lease rather than up to a
+    // poll later. A live holder refreshes long before that, and a person's lock is never broken.
+    i64 holder_expires = 0;
+    if (seen.readable && seen.owner != "marc" && parse_iso8601_utc(seen.expires, holder_expires) &&
+        holder_expires >= now_s) {
+      sleep_s = std::min<i64>(sleep_s, holder_expires - now_s + 1);
+    }
     std::this_thread::sleep_for(std::chrono::seconds(std::max<i64>(sleep_s, 1)));
   }
 }

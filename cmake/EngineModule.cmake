@@ -344,15 +344,29 @@ function(_engine_modules_reach out module)
   set(${out} FALSE PARENT_SCOPE)
 endfunction()
 
+#   _engine_can_wait_for_gpu(<out> <start>...)
+# TRUE when the modules reach gfx, whose Device::create takes the GPU lock, or window, whose
+# Vulkan windows take it before they appear (docs/subsystems/gpu_lock.md).
+function(_engine_can_wait_for_gpu out)
+  _engine_modules_reach(_gfx gfx ${ARGN})
+  _engine_modules_reach(_window window ${ARGN})
+  if(_gfx OR _window)
+    set(${out} TRUE PARENT_SCOPE)
+  else()
+    set(${out} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
 #   engine_test_waits_for_gpu(<test>)
 # Marks a test whose processes can open a GPU device, and so can wait for the machine-wide GPU
 # lock (ADR-0050, docs/subsystems/gpu_lock.md): TIMEOUT is its work plus the queue budget
 # (ENGINE_TEST_WORK_TIMEOUT_S + ENGINE_TEST_GPU_LOCK_WAIT_S, cmake/EngineTesting.cmake), exit code
 # 75 — a wait that ran out before anything reached the GPU — is a skip and not a failure, and the
 # label `gpu` selects them (`ctest -L gpu`). A module's tests get it when the module or a test
-# dependency reaches gfx, an end-to-end test when its app does; a test that starts a process that
-# opens a device without linking gfx itself (engine-cli's and engine-mcp's, which start
-# engine-host) says so beside the line that names that process.
+# dependency reaches gfx or window (_engine_can_wait_for_gpu), an end-to-end test when its app
+# does; a test that starts a process that opens a device without linking either itself
+# (engine-cli's and engine-mcp's, which start engine-host) says so beside the line that names
+# that process.
 function(engine_test_waits_for_gpu test)
   if(NOT ENGINE_BUILD_TESTS OR NOT TEST ${test})
     return()
@@ -396,7 +410,7 @@ function(engine_module_tests)
   engine_apply_warnings(${_test_target})
   add_test(NAME ${ET_NAME} COMMAND ${_test_target})
   set_tests_properties(${ET_NAME} PROPERTIES LABELS "unit;${ET_NAME}")
-  _engine_modules_reach(_opens_devices gfx ${ET_NAME} ${ET_DEPS})
+  _engine_can_wait_for_gpu(_opens_devices ${ET_NAME} ${ET_DEPS})
   if(_opens_devices)
     engine_test_waits_for_gpu(${ET_NAME})
   endif()
@@ -562,7 +576,7 @@ function(engine_app)
     # top of the ten minutes (engine_test_waits_for_gpu above).
     set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}"
       RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
-    _engine_modules_reach(_opens_devices gfx ${EA_DEPS})
+    _engine_can_wait_for_gpu(_opens_devices ${EA_DEPS})
     if(_opens_devices)
       engine_test_waits_for_gpu(${EA_NAME})
     endif()

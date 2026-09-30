@@ -1,11 +1,22 @@
 #include <core/containers/vector.h>
+#include <core/time/time.h>
+#include <foundation/gpu_lock/device_hold.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 #include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
+#include <test_temp_dir.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <thread>
 
 using namespace engine;
 
@@ -374,4 +385,100 @@ TEST_CASE("window: the name table fixes what drivers call a device") {
   CHECK(window::resolve_device_name(0x1234, 0x5678, nullptr) == "1234 5678");
   CHECK(window::resolve_device_name(0, 0, nullptr) == "Unknown device");
   CHECK(window::resolve_device_name(0, 0, "Keyboard-ish thing") == "Keyboard-ish thing");
+}
+
+// A Vulkan window takes its process's hold on the machine-wide GPU lock before it appears
+// (WindowDesc::vulkan; docs/subsystems/gpu_lock.md, "Windows"). Waiting with a window on screen is
+// what put two test engine-views "Not responding" on the owner's desktop for a quarter of an hour
+// on 2026-09-30, so this case fails if a window of this process is on screen at any moment while
+// the lock it is waiting for is still somebody else's. The lock is a scratch one, left by a
+// holder whose lease runs out three seconds in, which the wait then breaks.
+TEST_CASE("window: a Vulkan window is not on screen while its process waits for the GPU lock") {
+#if ENGINE_PLATFORM_WINDOWS
+  std::string error;
+  if (!window::init(&error)) {
+    MESSAGE("no display: " << error);
+    return;
+  }
+  const test::TempDir dir("window_gpu_lock");
+  const std::string path = dir.file("gpu.lock");
+  const test::ScopedEnv lock("ENGINE_GPU_LOCK", path);
+  const test::ScopedEnv on(gpu_lock::k_env_on_device, "1");
+  const i64 now = time::wall_unix_ms() / 1000;
+  const test::ScopedEnv until(gpu_lock::k_env_wait_until, std::to_string(now + 60));
+  const test::ScopedEnv holder(gpu_lock::k_env_holder, "");
+  const test::ScopedEnv hold_log(gpu_lock::k_env_log, "");
+  const gpu_lock::Identity self = gpu_lock::current_identity();
+  const std::string theirs =
+      "{\"owner\":\"astra-blender\",\"purpose\":\"a render\",\"pid\":4321,"
+      "\"started\":\"" +
+      gpu_lock::format_iso8601_utc(now - 60) + "\",\"expires\":\"" +
+      gpu_lock::format_iso8601_utc(now + 3) + "\",\"host\":\"" + self.host + "\"}";
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << theirs;
+  }
+  auto file_text = [&] {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream s;
+    s << in.rdbuf();
+    return s.str();
+  };
+  // This process's top-level windows that are on screen.
+  auto visible_windows = [] {
+    struct Count {
+      DWORD pid;
+      int visible;
+    } count{::GetCurrentProcessId(), 0};
+    ::EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+          auto* c = reinterpret_cast<Count*>(param);
+          DWORD owner = 0;
+          ::GetWindowThreadProcessId(hwnd, &owner);
+          if (owner == c->pid && ::IsWindowVisible(hwnd)) ++c->visible;
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&count));
+    return count.visible;
+  };
+  REQUIRE(visible_windows() == 0);
+
+  std::atomic<bool> done{false};
+  std::atomic<int> looks_while_theirs{0};
+  std::atomic<int> windows_while_theirs{0};
+  std::thread watcher([&] {
+    while (!done.load()) {
+      if (file_text() == theirs) {
+        ++looks_while_theirs;
+        if (visible_windows() > 0) ++windows_while_theirs;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  window::WindowDesc desc;
+  desc.title = "engine gpu lock test";
+  desc.width = 96;
+  desc.height = 64;
+  desc.resizable = false;
+  desc.vulkan = true;
+  window::Window window;
+  const bool created = window.create(desc, &error);
+  done.store(true);
+  watcher.join();
+  if (!created) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
+  CHECK(looks_while_theirs.load() > 10);  // it did wait, for about three seconds
+  CHECK(windows_while_theirs.load() == 0);
+  CHECK(visible_windows() >= 1);
+  CHECK(gpu_lock::read(path, self, time::wall_unix_ms() / 1000).pid == self.pid);
+  window.destroy();
+  std::error_code ec;
+  CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path), ec));  // released with it
+  window::shutdown();
+#else
+  MESSAGE("counts the process's windows through the Win32 API; checked on Windows");
+#endif
 }
