@@ -1,7 +1,7 @@
 #pragma once
 
 // **The drawn ground** (docs/subsystems/world.md, "The consumers"; renderer.md, "The ground from
-// the world's tiles"; ADR-0048): the tiles the renderer draws the ground from, as the world's ring
+// the world's tiles"; ADR-0049): the tiles the renderer draws the ground from, as the world's ring
 // holds them. For every tile the ring holds it keeps the tile's ring, and at `commit` — once an
 // update in which any changed — it hands the whole set to the renderer's tile set
 // (`renderer::TerrainTileSet::set_tiles`), which rebuilds only the tiles whose key changed and

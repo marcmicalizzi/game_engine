@@ -1,7 +1,7 @@
 #pragma once
 
 // **The ground from the world's tiles** (docs/subsystems/renderer.md, "The ground from the world's
-// tiles"; ADR-0048): the terrain drawn as the world's tile grid, one chunk a tile, each tile a
+// tiles"; ADR-0049): the terrain drawn as the world's tile grid, one chunk a tile, each tile a
 // chunk of the terrain level its world ring gives it — the rings' GPU half (terrain_levels.h) laid
 // out by the world's ring instead of by squares round the camera.
 //
@@ -14,7 +14,7 @@
 //
 // **A tile's mesh** is its lattice points at the level's spacing, two counter-clockwise triangles a
 // cell with the scene grid's diagonal, its border locked, its UVs in the grid's frame, and a
-// cluster DAG built from the heights at the surface's time. **Seams** (ADR-0048 decision 3): where
+// cluster DAG built from the heights at the surface's time. **Seams** (ADR-0049 decision 3): where
 // a tile meets a coarser one its edge keeps only the coarser lattice's points — every other edge
 // vertex is collapsed onto the nearer kept one (the lower on a tie) and the triangles that
 // degenerates are dropped — and every vertex it shares with a coarser tile names that tile's level

@@ -1,4 +1,4 @@
-# ADR-0048: The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source
+# ADR-0049: The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source
 
 - **Status:** Proposed
 - **Date:** 2026-09-30

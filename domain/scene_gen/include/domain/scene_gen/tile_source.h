@@ -1,6 +1,6 @@
 #pragma once
 
-// **The tile source** (docs/subsystems/scene_gen.md, "The tile source"; ADR-0048): the seam
+// **The tile source** (docs/subsystems/scene_gen.md, "The tile source"; ADR-0049): the seam
 // between the ground and whoever draws it or walks on it. It answers the heights of a window of the
 // world's lattice at a spacing and a game time, and — for a ground that moves — how far its
 // fastest feature travels between two times, which is what a time-lapse times its fields by. It

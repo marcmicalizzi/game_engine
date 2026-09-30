@@ -1221,7 +1221,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // world to expand tile by tile.
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
   // Ground tiles are terrain levels, drawn through the deformed-vertex pool, which a scene whose
-  // instances come and go does not have yet (ADR-0048): the two are refused together.
+  // instances come and go does not have yet (ADR-0049): the two are refused together.
   if (out.world.enabled && out.world.ground && !out.streamed.empty()) {
     error = path +
             ": a world drawing its ground from tiles cannot stream placements yet (its ruins or "
