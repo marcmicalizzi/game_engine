@@ -273,6 +273,9 @@ struct GroundCase {
   const char* name = "";
   gfx::GroundDetailParams block;
   double climb_deg = 0.0;
+  // The slope's line turned off the wind by this much: 0 climbs or falls along the wind, where
+  // the steering has nothing to turn; anything else is ground oblique to it.
+  double turn_deg = 0.0;
   // A third look at each site: the feet at a millimetre a pixel (6 degrees over 160 pixels from
   // 1.6 m), the owner's pixel at his feet at 11520 x 2160. At the other two looks a pixel is a
   // centimetre or more, where the gradient grain's coarsest octave, 2 cm, has faded into the
@@ -294,6 +297,7 @@ struct GroundView {
   u32 missing = 0;   // pixels the reference sees the sand at and the GPU drew nothing at
   u32 rippled = 0;   // with ripples drawn: their share times their fade above 0
   u32 streaked = 0;  // with the streaks weighted in
+  u32 flowed = 0;    // with the grainflow's lanes weighted in
   u32 over_one = 0;  // shaded pixels more than 1 of 255 off
   int shaded = 0;
   int ripple = 0;
@@ -306,11 +310,17 @@ struct GroundView {
 
 // The plane's unit normal for a climb of `climb_deg` along the wind: `-dot(n.xz, w) / n.y`, the
 // climb as ground_detail.slang reads it, is its tangent.
-ref::Dvec3 climb_normal(const gfx::GroundDetailParams& d, double climb_deg) {
+// With `turn_deg` the line it climbs along is the wind's turned by that much about +y, so the
+// ground is oblique to the wind and the steering has a fall line to turn the ripples along.
+ref::Dvec3 climb_normal(const gfx::GroundDetailParams& d, double climb_deg, double turn_deg = 0.0) {
   const double t = climb_deg * 3.14159265358979323846 / 180.0;
+  const double a = turn_deg * 3.14159265358979323846 / 180.0;
   const double s = std::sin(t);
-  return ref::Dvec3{-s * static_cast<double>(d.wind.x), std::cos(t),
-                    -s * static_cast<double>(d.wind.y)};
+  const double wx = static_cast<double>(d.wind.x);
+  const double wz = static_cast<double>(d.wind.y);
+  const double lx = wx * std::cos(a) - wz * std::sin(a);
+  const double lz = wx * std::sin(a) + wz * std::cos(a);
+  return ref::Dvec3{-s * lx, std::cos(t), -s * lz};
 }
 
 // Draws the case on `device` from a walker's eyes 1.6 m over the sand looking along it and looking
@@ -334,7 +344,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     f32 x, z;
   };
   const Site sites[2] = {{0.0f, 0.0f}, {2917.37f, -2403.71f}};
-  const ref::Dvec3 normal = climb_normal(c.block, c.climb_deg);
+  const ref::Dvec3 normal = climb_normal(c.block, c.climb_deg, c.turn_deg);
   const bool level = c.climb_deg == 0.0;
   // The plane's height at (x, z) over its point at site `s`.
   const auto height = [&](u32 s, f32 x, f32 z) {
@@ -723,6 +733,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         if (here > 1) ++r.over_one;
         if (data.weight * data.fade > 0.0) ++r.rippled;
         if (g.streak > 0.0) ++r.streaked;
+        if (g.flow > 0.0) ++r.flowed;
         ++r.compared;
       }
     }
@@ -734,11 +745,11 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     }
     MESSAGE(std::string(c.name) << ", " << r.name << ": " << r.compared << " pixels compared, "
                                 << r.rippled << " with ripples drawn, " << r.streaked
-                                << " with streaks; shaded worst " << r.shaded << " of 255 ("
-                                << r.over_one << " over 1); detail view worst " << r.ripple
-                                << " on the ripple, " << r.share << " on its share, " << r.grain
-                                << " on the grain; " << r.clamped
-                                << " points clamped onto their triangle");
+                                << " with streaks, " << r.flowed << " with grainflow; shaded worst "
+                                << r.shaded << " of 255 (" << r.over_one
+                                << " over 1); detail view worst " << r.ripple << " on the ripple, "
+                                << r.share << " on its share, " << r.grain << " on the grain; "
+                                << r.clamped << " points clamped onto their triangle");
     CHECK(r.compared > k_size * k_size / 4);
     CHECK(r.missing == 0u);
     CHECK(r.shaded <= c.shaded[far]);
@@ -802,12 +813,23 @@ TEST_CASE("ground detail: the resolve draws the second pass's function on sloped
   gfx::Device device;
   if (!gfx_test::open_device(device)) return;
   if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
-  // The ergs' numbers with the test's wind: every second-pass term on, on ground that exercises
-  // each — level (the grain and its normal), climbing into the wind at 12 degrees (the spacing,
-  // 1.53), falling away from it at 14 (inside the exposure's band, 10 to 18), and at 26 and 32
-  // (the streaks' band, 22 to 30, and a whole slip face, where there are no ripples).
-  const gfx::GroundDetailParams erg =
-      gfx::ground_detail_block(gref::erg_numbers(), Vec2{0.6f, -0.8f}, 7u);
+  // The ergs' numbers as the second pass had them — its streaks on, 22 to 30 degrees, and none of
+  // the third pass, which has a case of its own below — with the test's wind: every second-pass
+  // term on, on ground that exercises each — level (the grain and its normal), climbing into the
+  // wind at 12 degrees (the spacing, 1.53), falling away from it at 14 (inside the exposure's
+  // band, 10 to 18), and at 26 and 32 (the streaks' band, and a whole slip face, where there are
+  // no ripples). The ergs themselves no longer draw the streaks; a scene still may.
+  gfx::GroundDetailDesc second = gref::erg_numbers();
+  second.streak_start_deg = 22.0f;
+  second.streak_full_deg = 30.0f;
+  second.flow_start_deg = 0.0f;
+  second.flow_full_deg = 0.0f;
+  second.patch_size = 0.0f;
+  second.steer_max_deg = 0.0f;
+  second.ripple_celerity = 0.0f;
+  second.flatten_start = 0.0f;
+  second.flatten_end = 0.0f;
+  const gfx::GroundDetailParams erg = gfx::ground_detail_block(second, Vec2{0.6f, -0.8f}, 7u);
   REQUIRE(erg.flags ==
           (gfx::k_ground_ripples | gfx::k_ground_grain | gfx::k_ground_exposure |
            gfx::k_ground_gradient_grain | gfx::k_ground_streaks | gfx::k_ground_spacing));
@@ -861,6 +883,97 @@ TEST_CASE("ground detail: the resolve draws the second pass's function on sloped
     // every ripple off the two steep lees, and the streaks start at 22 degrees.
     CHECK_MESSAGE((rippled > 0u) == slope.ripples, std::string(slope.name));
     CHECK_MESSAGE((streaked > 0u) == slope.streaks, std::string(slope.name));
+  }
+  device.destroy();
+}
+
+TEST_CASE("ground detail: the resolve draws the third pass's function on sloped sand") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The ergs' numbers as their scene has them, with the test's wind and a frame's motion: the
+  // ripples 3.7 cm along the wind and travelling 2 mm a frame (a sixtieth of a wavelength: under
+  // the shutter's fade, so the travel is a pure shift), the wind at its record's mean (nothing
+  // flattened), and the avalanche clock a third of the way round a cycle, advancing a hundredth
+  // of the lanes' share a frame. On ground that exercises each third-pass term:
+  //   - level: the patches and the travel;
+  //   - 12 degrees, its line 50 degrees off the wind: the steering, which turns the ripples along
+  //     the contours only where the ground is oblique to the wind, with the patches and the travel;
+  //   - the same slope with the storm's wind half way between the two flattening numbers: the
+  //     ripples at half their share;
+  //   - falling with the wind at 27 degrees, inside the grainflow's band (24 to 30), and at 32, a
+  //     whole slip face: the lanes and their episodes, and no ripples.
+  const gfx::GroundDetailDesc numbers = gref::erg_numbers();
+  gfx::GroundDetailParams erg = gfx::ground_detail_block(numbers, Vec2{0.6f, -0.8f}, 7u);
+  REQUIRE(erg.flags == (gfx::k_ground_ripples | gfx::k_ground_grain | gfx::k_ground_exposure |
+                        gfx::k_ground_gradient_grain | gfx::k_ground_spacing |
+                        gfx::k_ground_grainflow | gfx::k_ground_patches | gfx::k_ground_steering));
+  const double turnover = static_cast<double>(numbers.flow_turnover);
+  const double share = static_cast<double>(numbers.flow_share);
+  const double moved = (17.0 + 1.0 / 3.0) / turnover;
+  const double moved_step = 0.01 * share / turnover;
+  gfx::GroundDetailParams storm = erg;
+  gfx::ground_detail_motion(erg, numbers, 0.037, 0.002, 1.0f, moved, moved_step);
+  gfx::ground_detail_motion(storm, numbers, 0.037, 0.002,
+                            0.5f * (numbers.flatten_start + numbers.flatten_end), moved,
+                            moved_step);
+  REQUIRE((erg.flags & gfx::k_ground_motion) != 0u);
+  REQUIRE(erg.ripple_live == 1.0f);
+  REQUIRE(storm.ripple_live == doctest::Approx(0.5f));
+  REQUIRE(erg.flow_clock == doctest::Approx(1.0 / 3.0).epsilon(1e-4));
+  struct Slope {
+    const char* name;
+    const gfx::GroundDetailParams* block;
+    double climb_deg;
+    double turn_deg;
+    bool ripples;
+    bool lanes;
+  };
+  const Slope slopes[5] = {
+      {"third pass, level", &erg, 0.0, 0.0, true, false},
+      {"third pass, 12 degrees oblique to the wind", &erg, 12.0, 50.0, true, false},
+      {"third pass, 12 degrees oblique to the wind in a storm", &storm, 12.0, 50.0, true, false},
+      {"third pass, falling away from the wind at 27 degrees", &erg, -27.0, 0.0, false, true},
+      {"third pass, falling away from the wind at 32 degrees", &erg, -32.0, 0.0, false, true}};
+  for (const Slope& slope : slopes) {
+    GroundCase c;
+    c.name = slope.name;
+    c.block = *slope.block;
+    c.climb_deg = slope.climb_deg;
+    c.turn_deg = slope.turn_deg;
+    c.millimetre = true;
+    // The second pass's tolerances, and what the RTX 5090 drew (2026-09-30): by the origin 1 on
+    // the shaded picture at every look of every slope, the lanes included, and 2 at most on a
+    // channel of the detail view; 3.7 km out 4 on the shaded picture (the millimetre look, as
+    // the second pass) and 2 on a slip face. One number is wider, the raw ripple height 3.7 km
+    // out: 40 for the second pass's 28. The patches shorten the wavelength to 0.7 of the scene's
+    // at the least, so the reconstruction's millimetre is up to 1.43 times the phase it was, and
+    // they spread the kernels further, which steepens the phase between them. Measured on the
+    // 32-degree lee at the feet, where the view's top row is grazing pixels: 35 with the patches
+    // (their scale 0.76 at that pixel) and 22 with the patches alone switched off, everything
+    // else the same. No ripple is drawn on that slope (their share is 0 there, and the shaded
+    // picture is within 1); the channel shows the height the kernels would have.
+    c.shaded[0] = 2;
+    c.shaded[1] = 5;
+    c.ripple[0] = 2;
+    c.ripple[1] = 40;
+    c.share[0] = 2;
+    c.share[1] = 2;
+    c.grain[0] = 2;
+    c.grain[1] = 28;
+    Vector<GroundView> views;
+    draw_ground_case(device, c, views);
+    u32 rippled = 0;
+    u32 flowed = 0;
+    u32 streaked = 0;
+    for (const GroundView& v : views) {
+      rippled += v.rippled;
+      flowed += v.flowed;
+      streaked += v.streaked;
+    }
+    CHECK_MESSAGE((rippled > 0u) == slope.ripples, std::string(slope.name));
+    CHECK_MESSAGE((flowed > 0u) == slope.lanes, std::string(slope.name));
+    CHECK_MESSAGE(streaked == 0u, std::string(slope.name));
   }
   device.destroy();
 }

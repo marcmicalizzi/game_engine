@@ -15,8 +15,8 @@
 //   and distant sand is as bright as the supersampled ripples it stands for, not a mirror.
 // - The reference path tracer draws the same sand: at a pixel's centre, close up, it agrees with
 //   the resolve with the detail on about as well as with it off — the first pass on the waves as
-//   they are, and the second pass's terms (the ergs' numbers) at the feet on steeper waves, on a
-//   windward slope and on a lee in the streaks' band.
+//   they are, and the second and third passes' terms (the ergs' numbers) at the feet on steeper
+//   waves, on a windward slope and on a lee in the grainflow's band.
 //
 // The seams across the rings and their chunks are in ground_detail_rings_tests.cpp, which needs the
 // terrain capability's rings.
@@ -459,7 +459,7 @@ bool flip_against_reference(const gfx::Device& device, const SceneDesc& desc, co
 }
 
 // The ergs' numbers (`ground_ref::erg_numbers`, the desert-erg scene's `terrain.detail`) as a
-// scene's block: every second-pass term on. The rings' test holds the copy to the scene file.
+// scene's block: every term the ergs draw. The rings' test holds the copy to the scene file.
 scene::TerrainDetail erg_detail() {
   const gfx::GroundDetailDesc d = ground_ref::erg_numbers();
   scene::TerrainDetail t;
@@ -486,6 +486,24 @@ scene::TerrainDetail erg_detail() {
   t.spacing_gain = d.spacing_gain;
   t.spacing_min = d.spacing_min;
   t.spacing_max = d.spacing_max;
+  t.flow_start_deg = d.flow_start_deg;
+  t.flow_full_deg = d.flow_full_deg;
+  t.flow_cell = d.flow_cell;
+  t.flow_width = d.flow_width;
+  t.flow_normal = d.flow_normal;
+  t.flow_albedo = d.flow_albedo;
+  t.flow_widening = d.flow_widening;
+  t.flow_share = d.flow_share;
+  t.flow_turnover = d.flow_turnover;
+  t.patch_size = d.patch_size;
+  t.patch_min = d.patch_min;
+  t.patch_max = d.patch_max;
+  t.patch_defects = d.patch_defects;
+  t.steer_max_deg = d.steer_max_deg;
+  t.steer_gain = d.steer_gain;
+  t.ripple_celerity = d.ripple_celerity;
+  t.flatten_start = d.flatten_start;
+  t.flatten_end = d.flatten_end;
   return t;
 }
 
@@ -559,7 +577,7 @@ TEST_CASE("sand detail: the reference path tracer shades the same sand") {
   CHECK(flip_mean[1] < flip_mean[0] + 0.02f);
 }
 
-TEST_CASE("sand detail: the reference path tracer shades the second pass's sand on a slope") {
+TEST_CASE("sand detail: the reference path tracer shades the ergs' sand on a slope") {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE("renderer unavailable here: " << gpu.why);
@@ -568,21 +586,22 @@ TEST_CASE("sand detail: the reference path tracer shades the second pass's sand 
   test::TempDir tmp{"engine_renderer_sand_reference_slope"};
   const std::string ddc = slashes(tmp.native() / "ddc");
   // The waves steeper than the flat case's — 16 m over 60 m, whose flanks reach a slip face's
-  // slopes — with the ergs' numbers, every second-pass term on. Two walkers' feet: on ground
-  // climbing into the wind at about 12 degrees (the spacing, the ripples and the grain's normal)
-  // and on ground falling away from it at about 26 (no ripples, which the exposure takes, and the
-  // streaks' band), each against the same place without the detail.
+  // slopes — with the ergs' numbers, every term they draw. Two walkers' feet: on ground climbing
+  // into the wind at about 12 degrees (the spacing, the patches, the ripples and the grain's
+  // normal) and on ground falling away from it at about 26 (no ripples, which the exposure takes,
+  // and the grainflow's band, 24 to 30; the second pass's streaks, which the ergs drew here until
+  // the third pass, have gfx's own case), each against the same place without the detail.
   //
   // **On a grid of a metre, not the flat case's four.** Looking down at the feet, the camera's
   // plane meets the ground two or three metres behind the walker, and a 4 m triangle under the
   // feet reaches past it. The rasterizer clips such a triangle and draws it rightly, but the
   // resolve rebuilds a pixel's point from the corners divided by w (`reconstruct_screen`), which
   // is meaningless for a corner behind the camera, so it shades a point the pixel does not see —
-  // the limit gfx's own case builds its sand in metre cells to stay clear of. The tongues showed
-  // it: 2 m long, on the 4 m grid they ran on as stripes to the bottom of the resolved picture,
-  // where the path tracer drew them ending, and FLIP rose by 0.018 with the detail, 0.015 of it
-  // theirs; on the metre grid the two pictures draw the same tongues (renderer.md, "The sand
-  // close up").
+  // the limit gfx's own case builds its sand in metre cells to stay clear of. The second pass's
+  // tongues showed it: 2 m long, on the 4 m grid they ran on as stripes to the bottom of the
+  // resolved picture, where the path tracer drew them ending, and FLIP rose by 0.018 with the
+  // detail, 0.015 of it theirs; on the metre grid the two pictures drew the same tongues
+  // (renderer.md, "The sand close up").
   SceneDesc on = sand_scene(ddc, true, erg_detail());
   on.terrain.dune_height = 16.0f;
   on.terrain.dune_wavelength = 60.0f;
@@ -612,11 +631,11 @@ TEST_CASE("sand detail: the reference path tracer shades the second pass's sand 
             << flip_off << " without the detail, " << flip_on << " with it (the lower half "
             << halves_off[0] << " and " << halves_on[0] << ", the upper " << halves_off[1]
             << " and " << halves_on[1] << ")");
-    // The same sand in both: the detail adds 0.001 climbing into the wind and 0.003 on the lee
-    // (RTX 5090, 2026-09-30) — on the lee nearly all of it in the picture's upper half (0.006
-    // there, under 0.001 in the lower), ten metres down the slope, where the resolve fades a
-    // tongue by its footprint and a reference at the pixel's centre does not. Held to half the
-    // flat case's allowance.
+    // The same sand in both: with the third pass the detail adds 0.002 climbing into the wind and
+    // 0.001 on the lee (RTX 5090, 2026-09-30) — on the lee nearly all of it in the picture's upper
+    // half (0.003 there, under 0.001 in the lower), ten metres down the slope, where the resolve
+    // fades a lane by its footprint and a reference at the pixel's centre does not. The second
+    // pass's streaks added 0.003 there. Held to half the flat case's allowance.
     CHECK(flip_on < flip_off + 0.01f);
   }
 }

@@ -85,7 +85,7 @@ Measured on 2026-09-30 on the RTX 5090, through the mesh path, `msvc-debug`, und
 
 ### The resolve against the mirror
 
-`domain/gfx/tests/ground_detail_tests.cpp`, "the resolve draws the second pass's function on sloped sand" ([gfx](../subsystems/gfx.md), "The second pass on the GPU"): the ergs' numbers, every term on, with the test's wind, on five planes tilted along it, each by the origin and 3.7 km out, from a walker's eyes looking along the sand (a pixel up to a metre long), down at the feet (a centimetre) and down at the feet at a millimetre (6° over 160 pixels). The worst difference of any covered pixel from the CPU, of 255: shaded (and how many pixels are over 1), then the detail view's ripple height, drawn share and grain.
+`domain/gfx/tests/ground_detail_tests.cpp`, "the resolve draws the second pass's function on sloped sand" ([gfx](../subsystems/gfx.md), "The second pass on the GPU"; since the third pass the case draws the ergs' numbers as they were then, streaks on, and the third pass has [its own](sand-third-pass-2026-09-30.md#on-the-gpu-measured-at-the-merge)): the ergs' numbers, every term on, with the test's wind, on five planes tilted along it, each by the origin and 3.7 km out, from a walker's eyes looking along the sand (a pixel up to a metre long), down at the feet (a centimetre) and down at the feet at a millimetre (6° over 160 pixels). The worst difference of any covered pixel from the CPU, of 255: shaded (and how many pixels are over 1), then the detail view's ripple height, drawn share and grain.
 
 | Plane | Look | By the origin | 3.7 km out |
 |---|---|---|---|
@@ -113,7 +113,7 @@ The first pass on the same helper (the defaults, level sand) measures what it al
 
 ### The reference path tracer
 
-`systems/renderer/tests/ground_detail_tests.cpp`, "the reference path tracer shades the second pass's sand on a slope": the resolve against the path tracer, which calls the same function unfiltered, at 64 samples a pixel at the pixel's centre and one bounce, traced shadows, 160×120, on the renderer's waves made steep enough to have slip faces (16 m over 60 m) and laid out on a grid of a metre, with the ergs' numbers, at a walker's feet looking down the wind. FLIP's pooled mean, and its mean over the picture's lower half (the ground at the feet) and upper half:
+`systems/renderer/tests/ground_detail_tests.cpp`, "the reference path tracer shades the second pass's sand on a slope" (renamed "the ergs' sand on a slope" with the third pass, whose numbers it now draws): the resolve against the path tracer, which calls the same function unfiltered, at 64 samples a pixel at the pixel's centre and one bounce, traced shadows, 160×120, on the renderer's waves made steep enough to have slip faces (16 m over 60 m) and laid out on a grid of a metre, with the ergs' numbers, at a walker's feet looking down the wind. FLIP's pooled mean, and its mean over the picture's lower half (the ground at the feet) and upper half:
 
 | Ground at the feet | Without the detail | With it | Lower half, without / with | Upper half, without / with |
 |---|---|---|---|---|

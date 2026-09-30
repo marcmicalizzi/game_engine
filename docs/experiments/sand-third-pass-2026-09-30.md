@@ -72,14 +72,38 @@ In `after_eye_dune_*`, the floor's ripples bend along the dune's flank and their
 
 The first celerity tried, 10, was chosen from a guess at the record's flux: it gave 3.6 cm a day. The record's calm day is far below a real saltation flux (of order a square metre a day in an 8 m/s wind), because it is tuned to the dunes' migration and not to grain physics. So the ripples' celerity is a stylization, like the storm gain.
 
+## On the GPU, measured at the merge
+
+The pass was written where no GPU ran. At the merge, on the RTX 5090 through the mesh path (`msvc-debug`, under the machine-wide GPU lock), and on the Titan Xp through the vertex path (`linux-server`). These are differences between two computations of one picture, not timings.
+
+**What the first run found.** Two GPU cases failed, both for what they assumed and neither for what the shader draws:
+
+- gfx's second-pass case drew `ground_ref::erg_numbers()` and required the second pass's flags of it. It now draws the ergs' numbers as the second pass had them, and the third pass has a case of its own.
+- The rings' seam instrument reads one number back from a plain sinusoid, the spacing's scale. A patch scales the wavelength by position and the steering turns the ripples with the normal, so it read 26 pixels at the ring's border for 125 and called their doing a step of 0.053. It now runs without patches, steering and travel, and reads what it read before (125 pixels, 0.009 at most). What the steering adds at a border is bounded by the same step of the normal: 0.004 radians there, which by the mirror's measurement above moves a crest by 0.02 of a wavelength, half what the spacing does.
+
+**The resolve against the mirror** (`domain/gfx/tests/ground_detail_tests.cpp`, "the resolve draws the third pass's function on sloped sand"): the ergs' numbers with the test's wind and a frame's motion (3.7 cm of travel, 2 mm a frame, the wind at its mean, the avalanche clock a third of the way round a cycle), on five planes, each by the origin and 3.7 km out at three looks. Worst difference of 255 over the three looks:
+
+| Plane | Terms | Shaded, origin | Shaded, 3.7 km | Ripple height, 3.7 km | Grain, 3.7 km |
+|---|---|---|---|---|---|
+| Level | patches, travel | 1 | 4 | 16 | 16 |
+| 12°, its line 50° off the wind | steering, patches, travel | 1 | 4 | 7 | 19 |
+| The same, storm half way to flat | flattening | 1 | 3 | 7 | 19 |
+| Falling with the wind at 27° | lanes (partial weight), episodes | 1 | 2 | 24 | 15 |
+| Falling with the wind at 32° | lanes, episodes | 1 | 2 | 35 | 25 |
+
+By the origin every channel of the detail view is within 2. The tolerances are the second pass's (2 by the origin; 5, 28, 2 and 28 at 3.7 km) except the raw ripple height 3.7 km out, which is 40. The reason was isolated before it was widened: on the 32° lee at the feet, where the view's top row is grazing pixels, the channel is 35 with the patches and 22 with the patches alone switched off, everything else the same; the patch's scale at the worst pixel is 0.76, so the wavelength there is three quarters of the second pass's and the reconstruction's millimetre is that much more phase, and the patches also spread the kernels further. No ripple is drawn on that slope (the exposure takes them; the shaded picture is within 1): the channel shows the height the kernels would have. The author's expectation of 1 and 4 on the shaded picture held.
+
+**The reference path tracer** (`systems/renderer/tests/ground_detail_tests.cpp`, "the reference path tracer shades the ergs' sand on a slope", which was "the second pass's sand" and copied only the second pass's fields): FLIP against the path tracer at the feet, 64 samples, one bounce.
+
+| Ground at the feet | Without the detail | With it |
+|---|---|---|
+| Climbing into the wind at 11.9° | 0.0479 | 0.0495 |
+| Falling away from it at 26.0° (the lanes' band) | 0.0476 | 0.0491 |
+
+The detail adds 0.002 and 0.001; the second pass's streaks added 0.003 on the lee.
+
 ## What could not be measured here
 
-- **Anything on a GPU.** The GPU cases at the merge run on tilted planes. The author expects each new term to hold the existing tolerance (1 of 255 by the origin, 4 at 3.7 km) with these looks:
-  - grainflow, on a 32° plane falling with the wind (the lanes' normal is smooth and eight hashes a pixel, all integer);
-  - patches and steering, on a 12° plane across the wind (they change only the wavenumber and the direction the kernels already take);
-  - motion, on the flat with a travel of a few centimetres (one multiply a kernel).
-
-  At 3.7 km the lanes' `s = offset / width` is taken from an offset under a cell, so it keeps its precision.
 - **The cost.** It is counted, not timed:
   - grainflow: eight hashes, only on a slip face;
   - patches: eight hashes a rippled pixel;

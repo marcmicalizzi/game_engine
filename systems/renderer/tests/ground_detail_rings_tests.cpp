@@ -549,6 +549,17 @@ TEST_CASE("sand detail: the second pass on both sides of every ring and chunk bo
   metre.ripple_wavelength = 1.0f;
   metre.ripple_asymmetry = 0.5f;
   metre.ripple_defects = 0.0f;
+  // Without the third pass's patches, steering and travel: a patch scales the wavelength by
+  // position and the steering turns the ripples with the normal, and the read-back solves for one
+  // number, the spacing's (with them on it read 26 pixels at the ring's border and called their
+  // doing a step of 0.053). What the steering adds at a border is bounded by the same step of the
+  // normal: it turns the ripples by no more than the normal turns, and a tenth of a degree of it
+  // moves a crest by at most 0.009 wavelengths on the mirror (sand-third-pass-2026-09-30), so the
+  // inner ring's 0.004 radians moves one by 0.02 of a wavelength, half what the spacing does. A
+  // patch is a function of position and has no border.
+  metre.patch_size = 0.0f;
+  metre.steer_max_deg = 0.0f;
+  metre.ripple_celerity = 0.0f;
   SeamKind steps[3];
   draw_seams(gpu.device, ddc, metre, true, steps);
   // The step the level's normal takes at a border, as the spacing reads it: across the inner
