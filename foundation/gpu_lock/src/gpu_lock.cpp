@@ -1,7 +1,9 @@
+#include "lock_file.h"
+
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/time/time.h>
-#include <foundation/bench/gpu_lock.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <algorithm>
 #include <atomic>
@@ -22,13 +24,12 @@
 #include <unistd.h>
 #endif
 
-namespace engine::bench {
-
-namespace {
+namespace engine::gpu_lock {
 
 namespace fs = std::filesystem;
 
-// getenv, spelled the way MSVC compiles without a deprecation warning.
+namespace detail {
+
 std::string environment(const char* name) {
 #if ENGINE_COMPILER_MSVC
   char* value = nullptr;
@@ -40,6 +41,21 @@ std::string environment(const char* name) {
 #else
   const char* value = std::getenv(name);
   return value != nullptr ? std::string(value) : std::string{};
+#endif
+}
+
+void set_environment(const char* name, const std::string& value) {
+#if ENGINE_PLATFORM_WINDOWS
+  // Both copies: the C runtime's, which getenv and _dupenv_s read, and the OS block, which is
+  // what CreateProcess hands a child when it is given no environment of its own.
+  (void)::SetEnvironmentVariableA(name, value.empty() ? nullptr : value.c_str());
+  (void)_putenv_s(name, value.c_str());
+#else
+  if (value.empty()) {
+    (void)::unsetenv(name);
+  } else {
+    (void)::setenv(name, value.c_str(), 1);
+  }
 #endif
 }
 
@@ -62,37 +78,22 @@ std::string current_host() {
 #endif
 }
 
-bool parse_u64_text(std::string_view text, u64& out) noexcept {
-  if (text.empty()) return false;
-  u64 value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') return false;
-    value = value * 10 + static_cast<u64>(c - '0');
+std::string executable_path() {
+#if ENGINE_PLATFORM_WINDOWS
+  char buffer[4096] = {};
+  const DWORD n = ::GetModuleFileNameA(nullptr, buffer, static_cast<DWORD>(sizeof(buffer)));
+  if (n == 0 || n >= sizeof(buffer)) return {};
+  std::string path(buffer, n);
+#else
+  char buffer[4096] = {};
+  const ssize_t n = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+  if (n <= 0) return {};
+  std::string path(buffer, static_cast<usize>(n));
+#endif
+  for (char& c : path) {
+    if (c == '\\') c = '/';
   }
-  out = value;
-  return true;
-}
-
-// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
-i64 days_from_civil(i64 y, i64 m, i64 d) noexcept {
-  y -= m <= 2 ? 1 : 0;
-  const i64 era = (y >= 0 ? y : y - 399) / 400;
-  const i64 yoe = y - era * 400;
-  const i64 doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const i64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + doe - 719468;
-}
-
-void civil_from_days(i64 z, i64& y, i64& m, i64& d) noexcept {
-  z += 719468;
-  const i64 era = (z >= 0 ? z : z - 146096) / 146097;
-  const i64 doe = z - era * 146097;
-  const i64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  const i64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const i64 mp = (5 * doy + 2) / 153;
-  d = doy - (153 * mp + 2) / 5 + 1;
-  m = mp + (mp < 10 ? 3 : -9);
-  y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+  return path;
 }
 
 bool read_text(const std::string& path, std::string& out, bool& exists) {
@@ -117,18 +118,8 @@ bool read_text(const std::string& path, std::string& out, bool& exists) {
   return true;
 }
 
-i64 file_age_s(const std::string& path) {
-  std::error_code ec;
-  const auto written = fs::last_write_time(fs::path(path), ec);
-  if (ec) return 0;
-  const auto age = fs::file_time_type::clock::now() - written;
-  return std::chrono::duration_cast<std::chrono::seconds>(age).count();
-}
-
-// Create-new, or nothing: the atomic step the protocol rests on. "x" is C11's exclusive mode
-// (O_EXCL on POSIX, CREATE_NEW on Windows), so two processes can never both succeed.
-enum class CreateResult : u8 { Created, Exists, Failed };
-
+// "x" is C11's exclusive mode (O_EXCL on POSIX, CREATE_NEW on Windows), so two processes can
+// never both succeed.
 CreateResult create_exclusive(const std::string& path, std::string_view body) {
   std::FILE* f = nullptr;
 #if ENGINE_COMPILER_MSVC
@@ -145,6 +136,8 @@ CreateResult create_exclusive(const std::string& path, std::string_view body) {
   return ok && closed ? CreateResult::Created : CreateResult::Failed;
 }
 
+namespace {
+
 std::string unique_suffix() {
   std::random_device entropy;
   char buffer[48];
@@ -153,9 +146,22 @@ std::string unique_suffix() {
   return std::string(buffer);
 }
 
-// Writes `body` beside `path` and moves it over, so a reader sees the old file or the new one and
-// never half of either. std::filesystem::rename replaces an existing target on both platforms;
-// on Windows it fails for the moment a reader has the file open, so it is retried briefly.
+// Moves `from` to `to` only if `to` does not exist: how a breaker puts back a live lock it took
+// by mistake without clobbering one somebody created in the meantime.
+bool rename_no_replace(const std::string& from, const std::string& to) {
+#if ENGINE_PLATFORM_WINDOWS
+  return MoveFileExA(from.c_str(), to.c_str(), 0) != 0;
+#else
+  if (::link(from.c_str(), to.c_str()) != 0) return false;
+  (void)::unlink(from.c_str());
+  return true;
+#endif
+}
+
+}  // namespace
+
+// std::filesystem::rename replaces an existing target on both platforms; on Windows it fails for
+// the moment a reader has the file open, so it is retried briefly.
 bool replace_atomically(const std::string& path, std::string_view body) {
   const std::string tmp = path + "." + unique_suffix() + ".tmp";
   {
@@ -184,21 +190,6 @@ bool replace_atomically(const std::string& path, std::string_view body) {
   return false;
 }
 
-// Moves `from` to `to` only if `to` does not exist: how a breaker puts back a live lock it took
-// by mistake without clobbering one somebody created in the meantime.
-bool rename_no_replace(const std::string& from, const std::string& to) {
-#if ENGINE_PLATFORM_WINDOWS
-  return MoveFileExA(from.c_str(), to.c_str(), 0) != 0;
-#else
-  if (::link(from.c_str(), to.c_str()) != 0) return false;
-  (void)::unlink(from.c_str());
-  return true;
-#endif
-}
-
-// Breaks the lock whose bytes were `judged`, and only that one: moves the file aside (atomic, so
-// exactly one breaker gets any given file), then deletes it if it is the file that was judged
-// and puts it back if somebody replaced it in between.
 bool break_stale(const std::string& path, const std::string& judged) {
   const std::string grave = path + ".stale-" + unique_suffix();
   std::error_code ec;
@@ -208,22 +199,37 @@ bool break_stale(const std::string& path, const std::string& judged) {
   bool exists = false;
   (void)read_text(grave, moved, exists);
   if (moved == judged) {
-    fs::remove(fs::path(grave), ec);
+    (void)remove_file(grave);
     return true;
   }
-  if (!rename_no_replace(grave, path)) fs::remove(fs::path(grave), ec);
+  if (!rename_no_replace(grave, path)) (void)remove_file(grave);
   return false;
 }
 
-struct ParsedLock {
-  bool readable = false;
-  std::string owner;
-  std::string purpose;
-  std::string started;
-  std::string expires;
-  std::string host;
-  u64 pid = 0;
-};
+bool remove_file(const std::string& path) {
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    std::error_code ec;
+    const bool removed = fs::remove(fs::path(path), ec);
+    if (!ec) return removed || !fs::exists(fs::path(path), ec);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
+}
+
+void append_line(const std::string& path, std::string_view line) {
+  if (path.empty()) return;
+  std::string text(line);
+  text.push_back('\n');
+  std::FILE* f = nullptr;
+#if ENGINE_COMPILER_MSVC
+  (void)fopen_s(&f, path.c_str(), "ab");
+#else
+  f = std::fopen(path.c_str(), "ab");
+#endif
+  if (f == nullptr) return;  // best effort: a log that cannot be written never stops a device
+  (void)std::fwrite(text.data(), 1, text.size(), f);
+  std::fclose(f);
+}
 
 ParsedLock parse_lock(std::string_view text) {
   ParsedLock out;
@@ -243,21 +249,41 @@ ParsedLock parse_lock(std::string_view text) {
   if (const JsonValue* v = root.find("pid"); v != nullptr) {
     if (!v->get_u64(out.pid)) {
       std::string_view s;
-      if (v->get_string(s)) (void)parse_u64_text(s, out.pid);
+      if (v->get_string(s)) {
+        u64 value = 0;
+        bool digits = !s.empty();
+        for (const char c : s) {
+          if (c < '0' || c > '9') {
+            digits = false;
+            break;
+          }
+          value = value * 10 + static_cast<u64>(c - '0');
+        }
+        if (digits) out.pid = value;
+      }
     }
   }
   return out;
 }
 
-// The purpose is the holder's own one line; a very long one is somebody else's bug and is not
-// worth carrying into every report.
-constexpr usize k_max_purpose = 200;
+std::string lock_body(std::string_view owner, std::string_view purpose, u64 pid,
+                      std::string_view started, i64 expires_unix_s, std::string_view host) {
+  JsonValue body = JsonValue::object();
+  body.set("owner", owner);
+  body.set("purpose", purpose);
+  body.set("pid", pid);
+  body.set("started", started);
+  body.set("expires", format_iso8601_utc(expires_unix_s));
+  body.set("host", host);
+  return write_json(body, JsonWriteOptions{.pretty = false});
+}
 
 // ---- releasing on a signal --------------------------------------------------------------------
 
-// A lease that is held has its path here, so SIGINT and SIGTERM can delete the file before the
-// process dies: Ctrl+C on a measurement session should not leave the GPU spoken for until the
-// lease runs out. Only what a signal handler may touch lives here — a fixed buffer and atomics.
+namespace {
+
+// A hold's path is here while it is armed, so SIGINT and SIGTERM can delete the file before the
+// process dies. Only what a signal handler may touch lives here — a fixed buffer and atomics.
 char g_signal_path[1024] = {};
 std::atomic<i64> g_signal_expires{0};
 std::atomic<bool> g_signal_armed{false};
@@ -278,15 +304,19 @@ void release_on_signal(int sig) {
   std::raise(sig);
 }
 
-void arm_signal_release(const std::string& path, i64 expires_s) {
+}  // namespace
+
+void arm_signal_release(const std::string& path, i64 expires_unix_s) {
   if (path.size() >= sizeof(g_signal_path)) return;
   std::memcpy(g_signal_path, path.c_str(), path.size() + 1);
-  g_signal_expires.store(expires_s);
+  g_signal_expires.store(expires_unix_s);
   if (!g_signal_armed.exchange(true)) {
     g_previous_int = std::signal(SIGINT, release_on_signal);
     g_previous_term = std::signal(SIGTERM, release_on_signal);
   }
 }
+
+void update_signal_expiry(i64 expires_unix_s) { g_signal_expires.store(expires_unix_s); }
 
 void disarm_signal_release() {
   if (g_signal_armed.exchange(false)) {
@@ -294,6 +324,46 @@ void disarm_signal_release() {
     (void)std::signal(SIGTERM, g_previous_term == SIG_ERR ? SIG_DFL : g_previous_term);
   }
 }
+
+i64 now_unix_s() { return time::wall_unix_ms() / 1000; }
+
+}  // namespace detail
+
+namespace {
+
+// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
+i64 days_from_civil(i64 y, i64 m, i64 d) noexcept {
+  y -= m <= 2 ? 1 : 0;
+  const i64 era = (y >= 0 ? y : y - 399) / 400;
+  const i64 yoe = y - era * 400;
+  const i64 doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const i64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+void civil_from_days(i64 z, i64& y, i64& m, i64& d) noexcept {
+  z += 719468;
+  const i64 era = (z >= 0 ? z : z - 146096) / 146097;
+  const i64 doe = z - era * 146097;
+  const i64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const i64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const i64 mp = (5 * doy + 2) / 153;
+  d = doy - (153 * mp + 2) / 5 + 1;
+  m = mp + (mp < 10 ? 3 : -9);
+  y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+}
+
+i64 file_age_s(const std::string& path) {
+  std::error_code ec;
+  const auto written = fs::last_write_time(fs::path(path), ec);
+  if (ec) return 0;
+  const auto age = fs::file_time_type::clock::now() - written;
+  return std::chrono::duration_cast<std::chrono::seconds>(age).count();
+}
+
+// The purpose is the holder's own one line; a very long one is somebody else's bug and is not
+// worth carrying into every report.
+constexpr usize k_max_purpose = 200;
 
 }  // namespace
 
@@ -370,8 +440,8 @@ std::string format_iso8601_utc(i64 unix_s) {
 
 // ---- reading ---------------------------------------------------------------------------------
 
-std::string default_gpu_lock_path() {
-  std::string configured = environment("ENGINE_GPU_LOCK");
+std::string default_path() {
+  std::string configured = detail::environment("ENGINE_GPU_LOCK");
   if (!configured.empty()) return configured;
 #if ENGINE_PLATFORM_WINDOWS
   return "D:\\workspace\\gpu.lock";
@@ -380,33 +450,45 @@ std::string default_gpu_lock_path() {
 #endif
 }
 
-GpuLockIdentity current_gpu_lock_identity() {
-  GpuLockIdentity self;
-  self.owner = environment("ENGINE_GPU_LOCK_OWNER");
+Identity current_identity() {
+  Identity self;
+  self.owner = detail::environment("ENGINE_GPU_LOCK_OWNER");
   if (self.owner.empty()) self.owner = "claude-engine";
-  self.pid = current_pid();
-  (void)parse_u64_text(environment("ENGINE_GPU_LOCK_HOLDER"), self.holder_pid);
-  self.host = current_host();
+  self.pid = detail::current_pid();
+  const std::string holder = detail::environment("ENGINE_GPU_LOCK_HOLDER");
+  u64 value = 0;
+  bool digits = !holder.empty();
+  for (const char c : holder) {
+    if (c < '0' || c > '9') {
+      digits = false;
+      break;
+    }
+    value = value * 10 + static_cast<u64>(c - '0');
+  }
+  self.holder_pid = digits ? value : 0;
+  self.host = detail::current_host();
   return self;
 }
 
-GpuLockState read_gpu_lock(const std::string& path, const GpuLockIdentity& self, i64 now_unix_s) {
-  GpuLockState state;
+State read(const std::string& path, const Identity& self, i64 now_unix_s) {
+  State state;
   std::string text;
   bool exists = false;
-  const bool read = read_text(path, text, exists);
+  const bool got = detail::read_text(path, text, exists);
   if (!exists) return state;
   state.present = true;
-  if (!read) return state;  // held open by a writer: being written, so held and not expired
+  if (!got) return state;  // held open by a writer: being written, so held and not expired
 
-  const ParsedLock lock = parse_lock(text);
+  const detail::ParsedLock lock = detail::parse_lock(text);
   if (!lock.readable) {
     state.expired = file_age_s(path) > k_unreadable_stale_s;
     return state;
   }
   state.readable = true;
+  state.pid = lock.pid;
   state.owner = lock.owner;
   state.purpose = lock.purpose.substr(0, std::min(lock.purpose.size(), k_max_purpose));
+  state.started = lock.started;
   state.expires = lock.expires;
   i64 expires_s = 0;
   // An expiry nobody can read is a promise nobody made: expired.
@@ -419,34 +501,28 @@ GpuLockState read_gpu_lock(const std::string& path, const GpuLockIdentity& self,
 
 // ---- holding ---------------------------------------------------------------------------------
 
-const char* to_string(GpuLockLease::Outcome outcome) noexcept {
+const char* to_string(Lease::Outcome outcome) noexcept {
   switch (outcome) {
-    case GpuLockLease::Outcome::Taken: return "taken";
-    case GpuLockLease::Outcome::AlreadyMine: return "already held for this process";
-    case GpuLockLease::Outcome::NoDirectory: return "no lock directory";
-    case GpuLockLease::Outcome::TimedOut: return "timed out";
-    case GpuLockLease::Outcome::Error: return "error";
+    case Lease::Outcome::Taken: return "taken";
+    case Lease::Outcome::AlreadyMine: return "already held for this process";
+    case Lease::Outcome::NoDirectory: return "no lock directory";
+    case Lease::Outcome::TimedOut: return "timed out";
+    case Lease::Outcome::Error: return "error";
   }
   return "unknown";
 }
 
-GpuLockLease::~GpuLockLease() { release(); }
+Lease::~Lease() { release(); }
 
-std::string GpuLockLease::body_json() const {
-  JsonValue body = JsonValue::object();
-  body.set("owner", config_.self.owner);
-  body.set("purpose", config_.purpose);
-  body.set("pid", config_.self.pid);
-  body.set("started", started_);
-  body.set("expires", format_iso8601_utc(expires_s_));
-  body.set("host", config_.self.host);
-  return write_json(body, JsonWriteOptions{.pretty = false});
+std::string Lease::body_json() const {
+  return detail::lock_body(config_.self.owner, config_.purpose, config_.self.pid, started_,
+                           expires_s_, config_.self.host);
 }
 
-GpuLockLease::Outcome GpuLockLease::acquire(const Config& config) {
+Lease::Outcome Lease::acquire(const Config& config) {
   release();
   config_ = config;
-  path_ = config.path.empty() ? default_gpu_lock_path() : config.path;
+  path_ = config.path.empty() ? default_path() : config.path;
 
   const fs::path parent = fs::path(path_).parent_path();
   std::error_code ec;
@@ -456,34 +532,36 @@ GpuLockLease::Outcome GpuLockLease::acquire(const Config& config) {
   const i64 timeout_ns = std::max<i64>(config.timeout_s, 0) * i64{1'000'000'000};
   std::string announced;
   for (;;) {
-    const i64 now_s = time::wall_unix_ms() / 1000;
+    const i64 now_s = detail::now_unix_s();
     started_ = format_iso8601_utc(now_s);
     expires_s_ = now_s + std::max<i64>(config.lease_s, 1);
-    switch (create_exclusive(path_, body_json())) {
-      case CreateResult::Created:
+    switch (detail::create_exclusive(path_, body_json())) {
+      case detail::CreateResult::Created:
         held_ = true;
-        arm_signal_release(path_, expires_s_);
+        detail::arm_signal_release(path_, expires_s_);
         if (!announced.empty() && config.log != nullptr) {
           std::fprintf(config.log, "bench: gpu lock taken after %.0f s\n",
                        static_cast<f64>(time::monotonic_ns() - began_ns) / 1e9);
         }
         return Outcome::Taken;
-      case CreateResult::Failed: return Outcome::Error;
-      case CreateResult::Exists: break;
+      case detail::CreateResult::Failed: return Outcome::Error;
+      case detail::CreateResult::Exists: break;
     }
 
     std::string text;
     bool exists = false;
-    const bool read = read_text(path_, text, exists);
+    const bool got = detail::read_text(path_, text, exists);
     if (!exists) continue;  // released between the attempt and the look: try again at once
-    const GpuLockState seen = read_gpu_lock(path_, config.self, now_s);
-    if (seen.mine) return Outcome::AlreadyMine;
-    if (read && seen.expired && seen.owner != "marc") {
+    const State seen = read(path_, config.self, now_s);
+    // This process's own, or held for it by a wrapper that is still refreshing it. A wrapper's
+    // lock that has expired is a wrapper that died: it is broken like anybody else's below.
+    if (seen.mine && (seen.pid == config.self.pid || !seen.expired)) return Outcome::AlreadyMine;
+    if (got && seen.expired && seen.owner != "marc") {
       if (config.log != nullptr) {
         std::fprintf(config.log, "bench: breaking an expired gpu lock held by '%s' (%s)\n",
                      seen.owner.c_str(), seen.purpose.c_str());
       }
-      if (break_stale(path_, text)) continue;
+      if (detail::break_stale(path_, text)) continue;
     }
 
     const i64 waited_ns = time::monotonic_ns() - began_ns;
@@ -506,41 +584,40 @@ GpuLockLease::Outcome GpuLockLease::acquire(const Config& config) {
   }
 }
 
-void GpuLockLease::refresh_if_due() {
+void Lease::refresh_if_due() {
   if (!held_) return;
-  const i64 now_s = time::wall_unix_ms() / 1000;
+  const i64 now_s = detail::now_unix_s();
   const i64 lease = std::max<i64>(config_.lease_s, 1);
   if (expires_s_ - now_s > lease / 2) return;
   // Only a file that is still ours is refreshed; one somebody broke after it expired is theirs.
-  const GpuLockState seen = read_gpu_lock(path_, config_.self, now_s);
+  const State seen = read(path_, config_.self, now_s);
   if (!seen.present || !seen.readable || !seen.mine) {
     held_ = false;
-    disarm_signal_release();
+    detail::disarm_signal_release();
     return;
   }
   const i64 previous = expires_s_;
   expires_s_ = now_s + lease;
-  if (replace_atomically(path_, body_json())) {
-    g_signal_expires.store(expires_s_);
+  if (detail::replace_atomically(path_, body_json())) {
+    detail::update_signal_expiry(expires_s_);
   } else {
     expires_s_ = previous;  // retried at the next call
   }
 }
 
-void GpuLockLease::release() noexcept {
+void Lease::release() noexcept {
   if (!held_) return;
   held_ = false;
-  disarm_signal_release();
+  detail::disarm_signal_release();
   std::string text;
   bool exists = false;
-  if (!read_text(path_, text, exists)) return;
-  const ParsedLock lock = parse_lock(text);
+  if (!detail::read_text(path_, text, exists)) return;
+  const detail::ParsedLock lock = detail::parse_lock(text);
   // The file this lease wrote, and nobody else's: owner, pid and start time all match.
   if (lock.readable && lock.owner == config_.self.owner && lock.pid == config_.self.pid &&
       lock.started == started_) {
-    std::error_code ec;
-    fs::remove(fs::path(path_), ec);
+    (void)detail::remove_file(path_);
   }
 }
 
-}  // namespace engine::bench
+}  // namespace engine::gpu_lock

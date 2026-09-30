@@ -31,11 +31,13 @@ tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.j
 
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
 tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
-tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock; anything heavy on the GPU goes through it (docs/subsystems/bench.md)
+tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock, for heavy GPU work that is not a test run (docs/subsystems/bench.md); tests take it themselves
 tools/generate.ps1       image|3d|pipeline|manifest|ingest|balance ...  # generated images and meshes with provenance sidecars, outside the repo (docs/content-generation.md)
 tools/e10-harness.ps1    -Folder <dir of .glb>                          # content build + coarse-vs-finest picture check over generated meshes (E10)
 tools/blender-run.ps1    -Script <file.py> [-Out <dir>] [-GpuLock] -- <script args>   # headless Blender for a bpy script outside the repo; sidecars like generate.ps1's (E33)
 ```
+
+**A test run needs no GPU lock around it, and should not have one.** Every test executable, and every process it starts, takes the machine-wide lock itself in `gfx::Device::create` for as long as it has a GPU device open, so a suite holds the GPU for the minutes it uses it rather than the hour it runs, and a CPU-only test never touches it; a test whose wait for the lock runs out (half an hour) exits 75, CTest reports it as skipped, and `tools/dev.ps1 test` exits 75 naming it — run it again later ([gpu_lock](docs/subsystems/gpu_lock.md), [ADR-0050](docs/adr/0050-tests-take-the-gpu-lock-per-device.md)). The owner's own `engine-view` and `engine-host` sessions never take it.
 
 Generated images, meshes and the owner's workflow files live under `D:\workspace\game_engine_local\` and are **never committed**; `tools/generate.ps1` refuses an output directory inside the repository, and its Meshy stage enforces the credit rules ([docs/content-generation.md](docs/content-generation.md)). The bpy scripts of a procedural kit live there too (`blender-kits\<kit>\scripts\`), because the repository takes no Python: `tools/blender-run.ps1` runs one in a background Blender with its own empty profile — never the owner's running session — and refuses a script or an output inside the repository ([content generation](docs/content-generation.md#blender-toolsblender-runps1)).
 

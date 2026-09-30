@@ -19,9 +19,11 @@
 
   (`/tmp/<name>.lock` off Windows.) tools/gpu-lock.ps1 is the command line over this module,
   tools/linux-build.ps1 takes the build lock through it, and tools/ci/gpu-smoke.ps1 and
-  tools/ci/reference-compare.ps1 take the GPU lock through Open-MachineLockSession. The C++ bench
-  harness reads and takes the GPU lock itself (foundation/bench/gpu_lock.h), because it cannot
-  import a PowerShell module; the two are kept to the same file format and the same rules.
+  tools/ci/reference-compare.ps1 take the GPU lock through Open-MachineLockSession. The C++ side —
+  the bench harness's --gpu-lock, and every test process that opens a GPU device, which takes the
+  lock for as long as the device lives — reads and takes it through foundation/gpu_lock
+  (docs/subsystems/gpu_lock.md), because it cannot import a PowerShell module; the two are kept to
+  the same file format and the same rules.
 
   What this adds to the rules in GPU-LOCK.md, and why:
 
@@ -347,8 +349,8 @@ function Stop-MachineLockHeartbeat {
   For the GPU lock (-Kind gpu) it also sets ENGINE_GPU_LOCK_HOLDER to this process's id until the
   session closes. Every child started meanwhile inherits it, which is how a bench executable, a
   test, or an engine-host started under the lock knows the lock it finds is held on its behalf
-  rather than by another agent, and does not warn that the GPU was spoken for
-  (foundation/bench/gpu_lock.h).
+  rather than by another agent: a bench does not warn that the GPU was spoken for, and a test's
+  GPU device neither waits for the lock nor releases it (foundation/gpu_lock).
 #>
 function Open-MachineLockSession {
   [CmdletBinding()]

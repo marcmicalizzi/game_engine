@@ -11,12 +11,12 @@
 //
 // What is recorded, and nothing else: CPU busy percentage of the whole machine and of this
 // process (from which "others" follows by subtraction), GPU utilization and memory, whether
-// the Windows session is locked, and the machine-wide GPU lock (gpu_lock.h). **No process names,
-// no command lines, no user names** — the question is "how loaded is this box", and the answer
-// does not need to say by whom. The one exception is the GPU lock's owner label and purpose line,
-// which its holder wrote into a file every tool on the machine reads precisely so that anyone
-// waiting can see who has the GPU and why; a report that says "the GPU was spoken for" and not
-// by what would leave the reader to guess which of their numbers to distrust.
+// the Windows session is locked, and the machine-wide GPU lock (foundation/gpu_lock/gpu_lock.h).
+// **No process names, no command lines, no user names** — the question is "how loaded is this box",
+// and the answer does not need to say by whom. The one exception is the GPU lock's owner label and
+// purpose line, which its holder wrote into a file every tool on the machine reads precisely so
+// that anyone waiting can see who has the GPU and why; a report that says "the GPU was spoken for"
+// and not by what would leave the reader to guess which of their numbers to distrust.
 //
 //     const MachineState s = sample_machine_state(k_sample_window_ms);
 //     if (!is_quiet(s, QuietThresholds{})) { ... }
@@ -26,7 +26,7 @@
 // be able to tell "quiet" from "not measured".
 
 #include <core/base/types.h>
-#include <foundation/bench/gpu_lock.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <cstdio>
 #include <string>
@@ -60,10 +60,13 @@ struct MachineState {
   // Yes when a lock screen is up (Windows: a LogonUI.exe process exists). Unknown elsewhere.
   Tristate session_locked = Tristate::Unknown;
 
-  // The machine-wide GPU lock as it stood when the sample was taken (gpu_lock.h). Not present
-  // when there is no lock file, which is also what a machine that does not use the protocol
-  // reports.
-  GpuLockState gpu_lock;
+  // The machine-wide GPU lock as it stood when the sample was taken
+  // (foundation/gpu_lock/gpu_lock.h). Not present when there is no lock file, which is also what
+  // a machine that does not use the protocol reports. The type is spelled from the global
+  // namespace because the member shares the namespace's name, and naming the namespace
+  // unqualified before declaring the member would change the name's meaning inside the class
+  // (GCC refuses that).
+  ::engine::gpu_lock::State gpu_lock;
 };
 
 // Above either of these, the numbers of a run are upper bounds and the harness says so. The
@@ -114,8 +117,8 @@ class MachineSampler {
 };
 
 // The real one: GetSystemTimes/GetProcessTimes on Windows, /proc/stat and /proc/self/stat on
-// Linux, nvidia-smi for the GPU when it is on PATH, and the GPU lock at default_gpu_lock_path()
-// judged as current_gpu_lock_identity().
+// Linux, nvidia-smi for the GPU when it is on PATH, and the GPU lock at gpu_lock::default_path()
+// judged as gpu_lock::current_identity().
 MachineSampler& system_sampler();
 
 // system_sampler().sample(window_ms).

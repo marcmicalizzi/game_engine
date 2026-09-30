@@ -1,9 +1,15 @@
+#include <core/time/time.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
+#include <foundation/gpu_lock/device_hold.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
+#include <test_temp_dir.h>
 
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 using namespace engine;
@@ -63,6 +69,66 @@ TEST_CASE("gfx: device creation enables the feature chain the renderer needs") {
   device.wait_idle();
   device.destroy();
   CHECK_FALSE(device.valid());
+}
+
+// `enumerate_adapters` makes an instance of its own and loads it into volk's process-wide table;
+// beside an open device it has to put the device's instance back, or the device's teardown calls
+// through entry points of a destroyed instance. Until 2026-09-30 it did not, and engine-host
+// crashed on every exit after `gpu.adapters` had run beside a device (src/volk_instance.h). On a
+// machine where that happens this case crashes the executable in `destroy()`.
+TEST_CASE("gfx: enumerating adapters beside an open device leaves the device's instance loaded") {
+  gfx::Device device;
+  if (!open_device(device)) return;
+  const VkInstance instance = device.handles().instance;
+  CHECK(volkGetLoadedInstance() == instance);
+  Vector<gfx::AdapterInfo> adapters;
+  std::string error;
+  REQUIRE_MESSAGE(gfx::enumerate_adapters(adapters, &error), error);
+  CHECK_FALSE(adapters.empty());
+  CHECK(volkGetLoadedInstance() == instance);
+  device.wait_idle();
+  device.destroy();
+  CHECK_FALSE(device.valid());
+}
+
+// The one place a process's GPU use takes the machine-wide lock (ADR-0050): device creation, when
+// the switch is on. Pointed at a lock in this case's scratch directory, so the machine's real lock
+// is neither taken nor waited for here.
+TEST_CASE("gfx: a device holds the GPU lock while it lives, when the switch is on") {
+  const test::TempDir dir("gfx_device_gpu_lock");
+  const std::string path = dir.file("gpu.lock");
+  const test::ScopedEnv lock("ENGINE_GPU_LOCK", path);
+  const test::ScopedEnv holder(gpu_lock::k_env_holder, "");
+  const test::ScopedEnv hold_log(gpu_lock::k_env_log, "");
+  auto present = [&] {
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path(path), ec);
+  };
+  {
+    const test::ScopedEnv on(gpu_lock::k_env_on_device, "0");
+    gfx::Device device;
+    if (!open_device(device)) return;
+    CHECK_FALSE(present());  // the owner's own sessions: no switch, no lock
+  }
+  const test::ScopedEnv on(gpu_lock::k_env_on_device, "1");
+  gfx::Device first;
+  if (!open_device(first)) return;
+  REQUIRE(present());
+  const gpu_lock::Identity self = gpu_lock::current_identity();
+  const gpu_lock::State held = gpu_lock::read(path, self, time::wall_unix_ms() / 1000);
+  CHECK(held.pid == self.pid);
+  CHECK(held.purpose.find("engine_gfx_tests") != std::string::npos);
+  CHECK(gpu_lock::hold_status().devices == 1);
+  {
+    // Anything else in the process that holds for a device shares the hold (not a second live
+    // gfx::Device: one per process, gfx.md "One live device per process").
+    gpu_lock::DeviceHold other;
+    (void)other.acquire();
+    CHECK(gpu_lock::hold_status().devices == 2);
+  }
+  CHECK(present());  // the device still has it
+  first.destroy();
+  CHECK_FALSE(present());
 }
 
 TEST_CASE("gfx: offscreen clear and readback") {

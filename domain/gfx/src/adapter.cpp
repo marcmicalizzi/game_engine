@@ -1,3 +1,5 @@
+#include "volk_instance.h"
+
 #include <core/log/log.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
@@ -191,6 +193,7 @@ bool enumerate_adapters(Vector<AdapterInfo>& out, std::string* error) {
     if (error != nullptr)
       *error = std::string("vkEnumeratePhysicalDevices failed: ") + result_name(r);
     vkDestroyInstance(instance, nullptr);
+    detail::reload_device_instance();  // volk_instance.h
     return false;
   }
   for (u32 i = 0; i < count; ++i) {
@@ -199,6 +202,7 @@ bool enumerate_adapters(Vector<AdapterInfo>& out, std::string* error) {
     out.push_back(std::move(info));
   }
   vkDestroyInstance(instance, nullptr);
+  detail::reload_device_instance();  // volk_instance.h: a live device keeps its entry points
 
   std::sort(out.begin(), out.end(), [](const AdapterInfo& a, const AdapterInfo& b) {
     const bool da = a.type == AdapterType::DiscreteGpu;

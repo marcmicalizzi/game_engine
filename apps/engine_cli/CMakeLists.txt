@@ -11,6 +11,9 @@ engine_app(NAME engine_cli OUTPUT engine-cli
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)
+  # The engine-host these tests start opens a GPU device for render.*, and so can wait for the
+  # machine-wide GPU lock (ADR-0050).
+  engine_test_waits_for_gpu(engine_cli)
   # save_tests.cpp writes the player's action map and input log with the input module itself
   # (docs/subsystems/world.md, "The player"), and reads the save corpus under content/.
   target_link_libraries(engine_engine_cli_tests PRIVATE engine::input)

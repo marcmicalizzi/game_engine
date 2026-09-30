@@ -1,8 +1,8 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
-#include <foundation/bench/gpu_lock.h>
 #include <foundation/bench/machine_state.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <algorithm>
 #include <charconv>
@@ -247,9 +247,9 @@ class SystemSampler final : public MachineSampler {
     state.session_locked = read_session_locked();
     // Who "we" are does not change during a process, and the path only through the environment
     // it started with, so both are read once.
-    static const GpuLockIdentity self = current_gpu_lock_identity();
-    static const std::string lock_path = default_gpu_lock_path();
-    state.gpu_lock = read_gpu_lock(lock_path, self, time::wall_unix_ms() / 1000);
+    static const gpu_lock::Identity self = gpu_lock::current_identity();
+    static const std::string lock_path = gpu_lock::default_path();
+    state.gpu_lock = gpu_lock::read(lock_path, self, time::wall_unix_ms() / 1000);
     return state;
   }
 };
@@ -306,7 +306,7 @@ MachineState worst_of(const MachineState& a, const MachineState& b) noexcept {
 
 namespace {
 
-void describe_gpu_lock(const GpuLockState& lock, std::string& out) {
+void describe_gpu_lock(const gpu_lock::State& lock, std::string& out) {
   if (!lock.present) {
     out.append(", gpu lock free");
   } else if (!lock.readable) {
@@ -380,7 +380,7 @@ JsonValue machine_state_json(const MachineState& state) {
   }
   // null when there is no lock file; otherwise what it said, and whether it was this run's own.
   // An unreadable file is reported with null owner, purpose and expiry rather than left out.
-  const GpuLockState& lock = state.gpu_lock;
+  const gpu_lock::State& lock = state.gpu_lock;
   if (!lock.present) {
     o.set("gpu_lock", JsonValue::null());
   } else {

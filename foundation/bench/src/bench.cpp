@@ -7,8 +7,8 @@
 #include <core/platform/topology.h>
 #include <core/time/time.h>
 #include <foundation/bench/bench.h>
-#include <foundation/bench/gpu_lock.h>
 #include <foundation/bench/machine_state.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 #include <foundation/tunables/tunables.h>
 
 #include <algorithm>
@@ -380,14 +380,14 @@ int run(const Options& options, Vector<Result>* results) {
   // process spawn per module buys nothing there. Nothing has been changed yet at this point, so
   // an early return needs no unwinding — the GPU lock below is released by its destructor.
   MachineSampler& sampler = options.sampler != nullptr ? *options.sampler : system_sampler();
-  const GpuLockIdentity lock_self = current_gpu_lock_identity();
+  const gpu_lock::Identity lock_self = gpu_lock::current_identity();
   const std::string lock_path(options.gpu_lock_path);
   // A run told where the lock is reads it there rather than trusting the sampler's reading of the
   // machine default, so a test's scratch lock and the machine's real one never mix.
   auto sample = [&]() {
     MachineState state = sampler.sample(k_sample_window_ms);
     if (!lock_path.empty())
-      state.gpu_lock = read_gpu_lock(lock_path, lock_self, time::wall_unix_ms() / 1000);
+      state.gpu_lock = gpu_lock::read(lock_path, lock_self, time::wall_unix_ms() / 1000);
     return state;
   };
   const bool sampled = !options.smoke;
@@ -395,7 +395,7 @@ int run(const Options& options, Vector<Result>* results) {
   // --gpu-lock: the lock is the queue, so it is taken *before* the machine is judged quiet — a
   // run waits its turn first and then asks whether the machine is quiet enough, holding the GPU
   // while it asks. A smoke run is not a measurement and never takes it.
-  GpuLockLease lease;
+  gpu_lock::Lease lease;
   if (options.gpu_lock && sampled) {
     u64 variants = 0;
     for (const Registration* reg : regs) {
@@ -412,7 +412,7 @@ int run(const Options& options, Vector<Result>* results) {
       }
     }
     const u64 sweeps = sweep_target != nullptr ? sweep_values.size() : 1;
-    GpuLockLease::Config config;
+    gpu_lock::Lease::Config config;
     config.path = lock_path;
     config.self = lock_self;
     config.purpose = "bench " + std::string(options.filter.empty() ? "*" : options.filter);
@@ -421,27 +421,27 @@ int run(const Options& options, Vector<Result>* results) {
     config.timeout_s = options.gpu_lock_timeout_s;
     config.log = stderr;
     switch (lease.acquire(config)) {
-      case GpuLockLease::Outcome::Taken:
-      case GpuLockLease::Outcome::AlreadyMine: break;
-      case GpuLockLease::Outcome::NoDirectory:
+      case gpu_lock::Lease::Outcome::Taken:
+      case gpu_lock::Lease::Outcome::AlreadyMine: break;
+      case gpu_lock::Lease::Outcome::NoDirectory:
         std::fprintf(stderr,
                      "bench: the gpu lock's directory does not exist (%s); this machine does not "
                      "use the lock, so the run goes ahead without it\n",
-                     lock_path.empty() ? default_gpu_lock_path().c_str() : lock_path.c_str());
+                     lock_path.empty() ? gpu_lock::default_path().c_str() : lock_path.c_str());
         break;
-      case GpuLockLease::Outcome::TimedOut: {
-        const GpuLockState held =
-            read_gpu_lock(lock_path.empty() ? default_gpu_lock_path() : lock_path, lock_self,
-                          time::wall_unix_ms() / 1000);
+      case gpu_lock::Lease::Outcome::TimedOut: {
+        const gpu_lock::State held =
+            gpu_lock::read(lock_path.empty() ? gpu_lock::default_path() : lock_path, lock_self,
+                           time::wall_unix_ms() / 1000);
         std::fprintf(stderr,
                      "bench: gave up waiting for the gpu lock after %lld s; held by '%s': %s\n",
                      static_cast<long long>(options.gpu_lock_timeout_s), held.owner.c_str(),
                      held.purpose.c_str());
         return k_exit_not_quiet;
       }
-      case GpuLockLease::Outcome::Error:
+      case gpu_lock::Lease::Outcome::Error:
         std::fprintf(stderr, "bench: cannot write the gpu lock at %s\n",
-                     lock_path.empty() ? default_gpu_lock_path().c_str() : lock_path.c_str());
+                     lock_path.empty() ? gpu_lock::default_path().c_str() : lock_path.c_str());
         return 2;
     }
   }

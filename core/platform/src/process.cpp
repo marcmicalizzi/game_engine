@@ -1,6 +1,8 @@
 #include <core/containers/vector.h>
 #include <core/platform/process.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if ENGINE_PLATFORM_WINDOWS
@@ -102,6 +104,32 @@ std::string last_error_text() {
 }
 
 #endif
+
+// Process::wait()'s rule for a child that gave up waiting for the GPU lock (process.h). The
+// switch is the GPU lock's own (foundation/gpu_lock/device_hold.h, k_env_on_device); this module
+// sits below that one and so spells the name out.
+void end_with_a_child_that_gave_up(i32 code) noexcept {
+  if (code != k_exit_gpu_lock_gave_up) return;
+  bool on = false;
+#if ENGINE_COMPILER_MSVC
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, "ENGINE_GPU_LOCK_ON_DEVICE") == 0 && value != nullptr) {
+    on = std::strcmp(value, "1") == 0;
+    std::free(value);
+  }
+#else
+  const char* value = std::getenv("ENGINE_GPU_LOCK_ON_DEVICE");
+  on = value != nullptr && std::strcmp(value, "1") == 0;
+#endif
+  if (!on) return;
+  std::fputs(
+      "gpu-lock: a process this one started gave up waiting for the GPU lock (exit 75); this "
+      "one ends the same way\n",
+      stderr);
+  std::fflush(nullptr);
+  std::_Exit(k_exit_gpu_lock_gave_up);
+}
 
 }  // namespace
 
@@ -213,6 +241,7 @@ i32 Process::wait() noexcept {
     exit_code_ =
         ::GetExitCodeProcess(static_cast<HANDLE>(process_), &code) ? static_cast<i32>(code) : -1;
     exited_ = true;
+    end_with_a_child_that_gave_up(exit_code_);
   }
   return exit_code_;
 }
@@ -347,6 +376,7 @@ i32 Process::wait() noexcept {
     }
     exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     exited_ = true;
+    end_with_a_child_that_gave_up(exit_code_);
   }
   return exit_code_;
 }

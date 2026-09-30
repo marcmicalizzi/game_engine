@@ -1,3 +1,5 @@
+#include "volk_instance.h"
+
 #include <core/base/assert.h>
 #include <core/containers/vector.h>
 #include <core/log/log.h>
@@ -6,12 +8,30 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
+#include <foundation/gpu_lock/device_hold.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 
 namespace engine::gfx {
+
+namespace detail {
+
+namespace {
+std::atomic<VkInstance> g_device_instance{VK_NULL_HANDLE};
+}  // namespace
+
+void set_device_instance(VkInstance instance) noexcept { g_device_instance.store(instance); }
+VkInstance device_instance() noexcept { return g_device_instance.load(); }
+void reload_device_instance() noexcept {
+  if (const VkInstance live = g_device_instance.load(); live != VK_NULL_HANDLE) {
+    volkLoadInstanceOnly(live);
+  }
+}
+
+}  // namespace detail
 
 namespace {
 
@@ -110,6 +130,10 @@ struct Device::Impl {
   u32 graphics_family = 0;
   u32 compute_family = 0;
   u32 transfer_family = 0;
+  // This device's share of the process's hold on the machine-wide GPU lock, taken just before
+  // vkCreateDevice and let go just after the device is destroyed — when the test environment's
+  // switch is on, and not otherwise (foundation/gpu_lock/device_hold.h, ADR-0050).
+  gpu_lock::DeviceHold gpu_hold;
 };
 
 Device::~Device() { destroy(); }
@@ -254,6 +278,7 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     return fail("vkCreateInstance", r);
   }
   volkLoadInstanceOnly(h.instance);
+  detail::set_device_instance(h.instance);
   if (debug_utils) {
     vkCreateDebugUtilsMessengerEXT(h.instance, &messenger_info, nullptr, &h.messenger);
   }
@@ -578,6 +603,11 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   device_info.pQueueCreateInfos = queue_infos.data();
   device_info.enabledExtensionCount = device_extensions.enabled.size();
   device_info.ppEnabledExtensionNames = device_extensions.enabled.data();
+  // The machine-wide GPU lock, where the test environment asks for it: every process that opens
+  // a device opens it here, so this is the one place a test's GPU use is gated, and a test that
+  // never gets this far never touches the lock. It may wait, and a wait that runs out ends the
+  // process with 75 before anything reached the GPU (foundation/gpu_lock/device_hold.h).
+  (void)impl->gpu_hold.acquire();
   if (const VkResult r = vkCreateDevice(h.physical, &device_info, nullptr, &h.device);
       r != VK_SUCCESS) {
     return fail("vkCreateDevice", r);
@@ -635,8 +665,20 @@ void Device::destroy() noexcept {
   if (h.immediate_pool != VK_NULL_HANDLE) vkDestroyCommandPool(h.device, h.immediate_pool, nullptr);
   if (h.allocator != nullptr) vmaDestroyAllocator(h.allocator);
   if (h.device != VK_NULL_HANDLE) vkDestroyDevice(h.device, nullptr);
+  // The GPU lock goes with the device: vkDestroyDevice has returned, so nothing of this process
+  // is on the GPU any more, and the instance's teardown below touches no GPU. Released here rather
+  // than after it so that a crash in that teardown does not leave the GPU spoken for until the
+  // lease runs out — which is what engine-host did on every exit after `gpu.adapters` had run
+  // beside an open device, until volk_instance.h (gfx.md, "One live device per process").
+  impl_->gpu_hold.release();
+  // volk's instance table is this instance's again even if something loaded another meanwhile
+  // (volk_instance.h), and stops being named as live before the instance goes.
+  if (h.instance != VK_NULL_HANDLE && detail::device_instance() == h.instance) {
+    volkLoadInstanceOnly(h.instance);
+  }
   if (h.messenger != VK_NULL_HANDLE)
     vkDestroyDebugUtilsMessengerEXT(h.instance, h.messenger, nullptr);
+  if (detail::device_instance() == h.instance) detail::set_device_instance(VK_NULL_HANDLE);
   if (h.instance != VK_NULL_HANDLE) vkDestroyInstance(h.instance, nullptr);
   std::destroy_at(impl_);
   mem::deallocate(impl_, sizeof(Impl), alignof(Impl));

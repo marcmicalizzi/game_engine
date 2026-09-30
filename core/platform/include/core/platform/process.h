@@ -14,6 +14,11 @@
 
 namespace engine::platform {
 
+// The exit code of a process that gave up waiting for the machine-wide GPU lock before it used
+// the GPU (foundation/gpu_lock/device_hold.h): sysexits' EX_TEMPFAIL, "try again later", and no
+// other exit of this tree uses it. CTest reports a test that ends with it as skipped.
+inline constexpr i32 k_exit_gpu_lock_gave_up = 75;
+
 class Process {
  public:
   Process() noexcept = default;
@@ -38,6 +43,14 @@ class Process {
   bool read_all(std::string& out);
 
   // Waits for the child to exit and returns its exit code (-1 when unknown). Idempotent.
+  //
+  // A child that exits with k_exit_gpu_lock_gave_up while this process takes part in the GPU
+  // lock (ENGINE_GPU_LOCK_ON_DEVICE=1, which a test's processes inherit) ends this process
+  // with the same code, after one line on stderr, instead of returning: the child's wait for
+  // the GPU ran out before it did anything, so whatever this process asked of it did not
+  // happen, and the code has to reach the test at the root of the tree for CTest to report a
+  // skip rather than whatever failure the missing answer would otherwise turn into
+  // (docs/subsystems/gpu_lock.md, "Giving up"). Everywhere else it is returned like any code.
   i32 wait() noexcept;
   void kill() noexcept;
 

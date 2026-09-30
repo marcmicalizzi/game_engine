@@ -137,14 +137,14 @@ struct Options {
   i64 wait_quiet_s = 0;               // poll every 5 s until quiet or this many seconds have passed
   MachineSampler* sampler = nullptr;  // null uses system_sampler(); tests inject a fake
 
-  // The machine-wide GPU lock (gpu_lock.h). With `gpu_lock`, a measured run waits for the lock,
-  // holds it from before its first sample to after its last, refreshes it between benchmarks,
-  // and releases it however it ends; a lock a wrapper already took for this process is used as
-  // it is. A smoke run never takes it.
+  // The machine-wide GPU lock (foundation/gpu_lock/gpu_lock.h). With `gpu_lock`, a measured run
+  // waits for the lock, holds it from before its first sample to after its last, refreshes it
+  // between benchmarks, and releases it however it ends; a lock a wrapper already took for this
+  // process is used as it is. A smoke run never takes it.
   bool gpu_lock = false;
   i64 gpu_lock_timeout_s = 4 * 3600;  // give up (exit 4) if somebody else still holds it by then
   i64 gpu_lock_poll_s = 20;           // GPU-LOCK.md asks waiters to look every 15-30 s
-  // Empty: default_gpu_lock_path(), and the sampler's own reading of the lock stands. Set, the
+  // Empty: gpu_lock::default_path(), and the sampler's own reading of the lock stands. Set, the
   // run takes *and* reads the lock here instead — which is how a test keeps the machine's real
   // lock, and whoever holds it, out of its results.
   std::string_view gpu_lock_path;

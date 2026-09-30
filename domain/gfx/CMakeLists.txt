@@ -16,7 +16,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/path_trace.slang shaders/pair_expand.slang
                              shaders/sky_luts.slang)
 engine_module(NAME gfx LAYER domain
-  DEPS base containers memory hash json log math platform schemas io
+  DEPS base containers memory hash json log math platform schemas io gpu_lock
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp

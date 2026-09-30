@@ -46,6 +46,25 @@ endif()
 # resolves the link at generate time, the same way engine_bench_main links engine::bench.
 target_link_libraries(engine_test_main PUBLIC engine::platform)
 
+# The GPU lock's two numbers for a test (ADR-0050, docs/subsystems/gpu_lock.md). A test takes the
+# machine-wide lock when it, or a process it starts, opens a GPU device, and waits for it when
+# somebody else has it; the test main sets every wait in the test's tree to give up this many
+# seconds after the test started, with exit code 75, which CTest reports as a skip. Half an hour
+# is GPU-LOCK.md's rule 9 — a short job waits up to thirty minutes, because a measurement group's
+# lease is ten to thirty — and so it outlasts anything short that holds the card, and not a
+# diffusion batch or an hour of benchmarks, which a test should not sit behind.
+set(ENGINE_TEST_GPU_LOCK_WAIT_S 1800 CACHE STRING
+  "Seconds a test's processes may wait for the machine-wide GPU lock before giving up (exit 75)")
+# And what a test that can wait has for its own work on top of that: the ten minutes the
+# end-to-end tests have always had (cmake/EngineModule.cmake says why ten), which is also four
+# times the slowest GPU module test (renderer, about 140 s in msvc-debug). A test that can wait
+# gets TIMEOUT = work + queue, so a wait that ends at the deadline and then does all of the test's
+# work still ends inside it.
+set(ENGINE_TEST_WORK_TIMEOUT_S 600 CACHE STRING
+  "Seconds of work a test that can wait for the GPU lock has on top of the wait")
+target_compile_definitions(engine_test_main PRIVATE
+  ENGINE_TEST_GPU_LOCK_WAIT_S=${ENGINE_TEST_GPU_LOCK_WAIT_S})
+
 # Banned-pattern lint as a test so CI cannot forget it.
 find_program(ENGINE_PWSH NAMES pwsh powershell)
 if(ENGINE_PWSH)

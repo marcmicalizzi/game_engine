@@ -9,7 +9,11 @@
   Commands:
     configure   Run CMake with the preset (default: msvc-debug on Windows, linux-clang-debug on Linux).
     build       Build the preset (configures first if needed).
-    test        Run CTest for the preset. -Filter is a regex on test names.
+    test        Run CTest for the preset. -Filter is a regex on test names. Tests take the
+                machine-wide GPU lock themselves, per GPU device, so do not wrap this in
+                tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
+                run again (docs/subsystems/gpu_lock.md). Exits 75 when a test gave up
+                waiting for the lock and so did not run; 1 when one failed.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
                 -GpuLock passes --gpu-lock to each: every executable waits for the
@@ -93,8 +97,23 @@ function Invoke-Test {
   $args = @('--preset', $Preset)
   if ($Filter) { $args += @('-R', $Filter) }
   Push-Location $Root
-  try { & ctest @args; if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" } }
+  # Streamed and kept: CTest lists the tests that did not run at the end, and a test whose
+  # processes gave up waiting for the GPU lock (exit 75, SKIP_RETURN_CODE) is one of them. It
+  # did not fail — it did not run — and a run that skipped one must not read as a pass either,
+  # so it ends with the same 75 and says which (docs/subsystems/gpu_lock.md, "Giving up").
+  $lines = @()
+  try {
+    & ctest @args | Tee-Object -Variable lines | Out-Host
+    $code = $LASTEXITCODE
+  }
   finally { Pop-Location }
+  $skipped = @($lines | ForEach-Object { if ("$_" -match '^\s*\d+ - (\S+) \(Skipped\)') { $Matches[1] } })
+  if ($code -ne 0) { throw "tests failed ($code)" }
+  if ($skipped.Count -gt 0) {
+    Write-Host ("{0} test(s) did not run: their processes gave up waiting for the machine-wide GPU lock ({1}). " -f $skipped.Count, ($skipped -join ', ')) -ForegroundColor Yellow
+    Write-Host 'Nothing failed. Run them again when the lock is free: tools/gpu-lock.ps1 status says who has it.' -ForegroundColor Yellow
+    exit 75
+  }
 }
 
 function Invoke-Bench {

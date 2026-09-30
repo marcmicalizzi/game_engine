@@ -1,25 +1,25 @@
-// The machine-wide GPU lock from the harness's side (foundation/bench/gpu_lock.h;
-// docs/subsystems/bench.md, "The GPU lock"). Every case writes its lock into its own scratch
-// directory and points the reader, the lease or the run at it, so the machine's real lock — and
-// whoever holds it while the suite runs — never reaches a result.
+// The machine-wide GPU lock from the harness's side: what a reading of it makes of the machine
+// state (quiet or not, the description, the JSON, the WARNING) and what `--gpu-lock` does to a
+// run. The lock itself — reading, the lease, breaking, releasing — is foundation/gpu_lock's and
+// tested there (docs/subsystems/gpu_lock.md). Every case writes its lock into its own scratch
+// directory and points the reader or the run at it, so the machine's real lock — and whoever
+// holds it while the suite runs — never reaches a result.
 
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/time/time.h>
 #include <foundation/bench/bench.h>
-#include <foundation/bench/gpu_lock.h>
 #include <foundation/bench/machine_state.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <vector>
 
 using namespace engine;
 
@@ -36,8 +36,8 @@ std::string lock_json(std::string_view owner, u64 pid, i64 expires_unix_s, std::
   o.set("owner", owner);
   o.set("purpose", purpose);
   o.set("pid", pid);
-  o.set("started", bench::format_iso8601_utc(expires_unix_s - 600));
-  o.set("expires", bench::format_iso8601_utc(expires_unix_s));
+  o.set("started", gpu_lock::format_iso8601_utc(expires_unix_s - 600));
+  o.set("expires", gpu_lock::format_iso8601_utc(expires_unix_s));
   o.set("host", host);
   return write_json(o, JsonWriteOptions{.pretty = false});
 }
@@ -89,8 +89,7 @@ bool g_probe_saw_mine = false;
 
 ENGINE_BENCH(gpulock_probe, "test.gpulock.probe") {
   if (!g_probe_path.empty()) {
-    const bench::GpuLockState s =
-        bench::read_gpu_lock(g_probe_path, bench::current_gpu_lock_identity(), now_s());
+    const gpu_lock::State s = gpu_lock::read(g_probe_path, gpu_lock::current_identity(), now_s());
     g_probe_saw_mine = g_probe_saw_mine || (s.present && s.mine);
   }
   u64 x = 0;
@@ -116,31 +115,10 @@ bench::Options probe_run(const std::string& lock_path, bench::MachineSampler* sa
 
 }  // namespace
 
-TEST_CASE("gpu lock: ISO 8601 times round-trip, in the forms every holder writes") {
-  // 2026-09-22T18:40:00Z; midnight of that day is 1790035200.
-  const i64 t = 1790035200 + 18 * 3600 + 40 * 60;
-  CHECK(bench::format_iso8601_utc(t) == "2026-09-22T18:40:00Z");
-  i64 back = 0;
-  REQUIRE(bench::parse_iso8601_utc("2026-09-22T18:40:00Z", back));
-  CHECK(back == t);
-  // What Python's isoformat() writes, and a zone that is not UTC.
-  REQUIRE(bench::parse_iso8601_utc("2026-09-22T18:40:00.123456+00:00", back));
-  CHECK(back == t);
-  REQUIRE(bench::parse_iso8601_utc("2026-09-22T20:40:00+02:00", back));
-  CHECK(back == t);
-  CHECK(bench::format_iso8601_utc(0) == "1970-01-01T00:00:00Z");
-  CHECK_FALSE(bench::parse_iso8601_utc("", back));
-  CHECK_FALSE(bench::parse_iso8601_utc("22/09/2026 18:40", back));
-  CHECK_FALSE(bench::parse_iso8601_utc("2026-09-22T18:40:00Zjunk", back));
-  CHECK_FALSE(bench::parse_iso8601_utc("2026-13-22T18:40:00Z", back));
-}
-
-TEST_CASE("gpu lock: absent is free, and quiet") {
+TEST_CASE("gpu lock: absent is quiet") {
   test::TempDir dir("gpu_lock_absent");
-  const bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
   bench::MachineState s = calm();
-  s.gpu_lock = bench::read_gpu_lock(dir.file("gpu.lock"), self, now_s());
-  CHECK_FALSE(s.gpu_lock.present);
+  s.gpu_lock = gpu_lock::read(dir.file("gpu.lock"), gpu_lock::current_identity(), now_s());
   CHECK_FALSE(s.gpu_lock.held_by_other());
   CHECK(bench::is_quiet(s, bench::QuietThresholds{}));
   CHECK(bench::describe(s).find("gpu lock free") != std::string::npos);
@@ -150,19 +128,13 @@ TEST_CASE("gpu lock: absent is free, and quiet") {
 TEST_CASE("gpu lock: held by somebody else is not quiet, whatever the GPU sample says") {
   test::TempDir dir("gpu_lock_other");
   const std::string path = dir.file("gpu.lock");
-  const bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
+  const gpu_lock::Identity self = gpu_lock::current_identity();
 
   // Another tool on the machine: the Blender agent, rendering, with an idle-looking GPU sample.
   write_file(path, lock_json("astra-blender", 4321, now_s() + 1800, self.host, "bake: desert"));
   bench::MachineState s = calm();
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(s.gpu_lock.present);
-  CHECK(s.gpu_lock.readable);
-  CHECK_FALSE(s.gpu_lock.mine);
-  CHECK_FALSE(s.gpu_lock.expired);
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK(s.gpu_lock.held_by_other());
-  CHECK(s.gpu_lock.owner == "astra-blender");
-  CHECK(s.gpu_lock.purpose == "bake: desert");
   CHECK_FALSE(bench::is_quiet(s, bench::QuietThresholds{}));
   CHECK(bench::describe(s).find("gpu lock held by 'astra-blender': bake: desert") !=
         std::string::npos);
@@ -186,12 +158,9 @@ TEST_CASE("gpu lock: held by somebody else is not quiet, whatever the GPU sample
   std::fclose(f);
   CHECK(read_file(warn_path).find("the GPU lock was held by 'astra-blender'") != std::string::npos);
 
-  // Another *engine* agent: the same owner label, a different process. An owner match alone
-  // would call this ours, and one agent's measurement would run straight through another's render.
+  // Another *engine* agent: the same owner label, a different process.
   write_file(path, lock_json(self.owner, k_other_pid, now_s() + 1800, self.host));
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK_FALSE(s.gpu_lock.mine);
-  CHECK(s.gpu_lock.held_by_other());
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK_FALSE(bench::is_quiet(s, bench::QuietThresholds{}));
 
   // The worst of a run's two samples keeps the one somebody else held.
@@ -203,175 +172,38 @@ TEST_CASE("gpu lock: held by somebody else is not quiet, whatever the GPU sample
 TEST_CASE("gpu lock: held by this process, or for it, is quiet") {
   test::TempDir dir("gpu_lock_self");
   const std::string path = dir.file("gpu.lock");
-  bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
-  REQUIRE(self.pid != 0);
-  CHECK_FALSE(self.owner.empty());
+  gpu_lock::Identity self = gpu_lock::current_identity();
 
   // The harness took it itself (--gpu-lock).
   write_file(path, lock_json(self.owner, self.pid, now_s() + 1800, self.host));
   bench::MachineState s = calm();
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(s.gpu_lock.mine);
-  CHECK_FALSE(s.gpu_lock.held_by_other());
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK(bench::is_quiet(s, bench::QuietThresholds{}));
   CHECK(bench::describe(s).find("gpu lock ours") != std::string::npos);
   CHECK(bench::machine_state_json(s)["gpu_lock"]["mine"] == JsonValue(true));
 
-  // A wrapper took it for this process (tools/gpu-lock.ps1 run sets ENGINE_GPU_LOCK_HOLDER).
+  // A wrapper, or a process with a GPU device open, took it for this process.
   self.holder_pid = 4242;
   write_file(path, lock_json(self.owner, 4242, now_s() + 1800, self.host));
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(s.gpu_lock.mine);
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK(bench::is_quiet(s, bench::QuietThresholds{}));
-
-  // The right pid under another owner label, or on another host, is not ours.
-  write_file(path, lock_json("astra-blender", self.pid, now_s() + 1800, self.host));
-  CHECK_FALSE(bench::read_gpu_lock(path, self, now_s()).mine);
-  write_file(path, lock_json(self.owner, self.pid, now_s() + 1800, "some-other-box"));
-  if (!self.host.empty()) CHECK_FALSE(bench::read_gpu_lock(path, self, now_s()).mine);
 }
 
-TEST_CASE("gpu lock: expired is free — except a person's") {
+TEST_CASE("gpu lock: expired is quiet — except a person's") {
   test::TempDir dir("gpu_lock_expired");
   const std::string path = dir.file("gpu.lock");
-  const bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
+  const gpu_lock::Identity self = gpu_lock::current_identity();
 
   write_file(path, lock_json("astra-blender", 4321, now_s() - 60, self.host));
   bench::MachineState s = calm();
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(s.gpu_lock.present);
-  CHECK(s.gpu_lock.expired);
-  CHECK_FALSE(s.gpu_lock.held_by_other());
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK(bench::is_quiet(s, bench::QuietThresholds{}));
   CHECK(bench::describe(s).find("gpu lock expired ('astra-blender')") != std::string::npos);
   CHECK(bench::machine_state_json(s)["gpu_lock"]["expired"] == JsonValue(true));
 
-  // GPU-LOCK.md: a lock owned by "marc" is never broken by a tool, expired or not, so the person
-  // may still be using the GPU.
   write_file(path, lock_json("marc", 4321, now_s() - 60, self.host));
-  s.gpu_lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(s.gpu_lock.expired);
-  CHECK(s.gpu_lock.held_by_other());
+  s.gpu_lock = gpu_lock::read(path, self, now_s());
   CHECK_FALSE(bench::is_quiet(s, bench::QuietThresholds{}));
-}
-
-TEST_CASE("gpu lock: an unreadable file is being written until it is stale") {
-  test::TempDir dir("gpu_lock_unreadable");
-  const std::string path = dir.file("gpu.lock");
-  const bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
-  write_file(path, "{\"owner\":\"astra-");  // a writer caught half way
-  bench::GpuLockState lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(lock.present);
-  CHECK_FALSE(lock.readable);
-  CHECK_FALSE(lock.expired);
-  CHECK(lock.held_by_other());
-
-  // Left behind by a crash: older than k_unreadable_stale_s, and anyone may break it.
-  std::error_code ec;
-  std::filesystem::last_write_time(std::filesystem::path(path),
-                                   std::filesystem::file_time_type::clock::now() -
-                                       std::chrono::seconds(bench::k_unreadable_stale_s + 60),
-                                   ec);
-  REQUIRE_FALSE(ec);
-  lock = bench::read_gpu_lock(path, self, now_s());
-  CHECK(lock.expired);
-  CHECK_FALSE(lock.held_by_other());
-}
-
-TEST_CASE("gpu lock: a lease writes the protocol's file and deletes only its own") {
-  test::TempDir dir("gpu_lock_lease");
-  const std::string path = dir.file("gpu.lock");
-  bench::GpuLockLease::Config config;
-  config.path = path;
-  config.self = bench::current_gpu_lock_identity();
-  config.purpose = "bench test.*";
-  config.lease_s = 600;
-  config.timeout_s = 0;
-  config.log = nullptr;
-
-  {
-    bench::GpuLockLease lease;
-    REQUIRE(lease.acquire(config) == bench::GpuLockLease::Outcome::Taken);
-    CHECK(lease.held());
-    JsonValue body;
-    REQUIRE(parse_json(read_file(path), body).ok);
-    CHECK(body["owner"] == JsonValue(config.self.owner));
-    CHECK(body["purpose"] == JsonValue("bench test.*"));
-    u64 pid = 0;
-    CHECK(body["pid"].get_u64(pid));
-    CHECK(pid == config.self.pid);
-    std::string_view expires;
-    REQUIRE(body["expires"].get_string(expires));
-    i64 expires_s = 0;
-    REQUIRE(bench::parse_iso8601_utc(expires, expires_s));
-    CHECK(expires_s >= now_s() + 590);
-    CHECK(expires_s <= now_s() + 610);
-    CHECK(bench::read_gpu_lock(path, config.self, now_s()).mine);
-
-    // A second lease in the same process is told the lock is already its own and does not
-    // wait on itself, and does not delete it when it goes.
-    {
-      bench::GpuLockLease again;
-      CHECK(again.acquire(config) == bench::GpuLockLease::Outcome::AlreadyMine);
-      CHECK_FALSE(again.held());
-    }
-    CHECK(exists(path));
-  }
-  CHECK_FALSE(exists(path));  // released by the destructor
-
-  // Somebody replaced the file after this lease's own expired and broke it: releasing must not
-  // delete theirs.
-  {
-    bench::GpuLockLease lease;
-    REQUIRE(lease.acquire(config) == bench::GpuLockLease::Outcome::Taken);
-    write_file(path, lock_json("astra-blender", 4321, now_s() + 1800, config.self.host));
-    lease.release();
-  }
-  CHECK(exists(path));
-  CHECK(read_file(path).find("astra-blender") != std::string::npos);
-}
-
-TEST_CASE(
-    "gpu lock: a lease waits for somebody else's lock, breaks an expired one, and never "
-    "a person's") {
-  test::TempDir dir("gpu_lock_contended");
-  const std::string path = dir.file("gpu.lock");
-  bench::GpuLockLease::Config config;
-  config.path = path;
-  config.self = bench::current_gpu_lock_identity();
-  config.purpose = "bench test.*";
-  config.timeout_s = 0;
-  config.log = nullptr;
-
-  const std::string theirs = lock_json("astra-blender", 4321, now_s() + 1800, config.self.host);
-  write_file(path, theirs);
-  {
-    bench::GpuLockLease lease;
-    CHECK(lease.acquire(config) == bench::GpuLockLease::Outcome::TimedOut);
-    CHECK_FALSE(lease.held());
-  }
-  CHECK(read_file(path) == theirs);  // untouched
-
-  write_file(path, lock_json("astra-blender", 4321, now_s() - 5, config.self.host));
-  {
-    bench::GpuLockLease lease;
-    CHECK(lease.acquire(config) == bench::GpuLockLease::Outcome::Taken);
-    CHECK(bench::read_gpu_lock(path, config.self, now_s()).mine);
-  }
-  CHECK_FALSE(exists(path));
-
-  const std::string persons = lock_json("marc", 4321, now_s() - 5, config.self.host);
-  write_file(path, persons);
-  {
-    bench::GpuLockLease lease;
-    CHECK(lease.acquire(config) == bench::GpuLockLease::Outcome::TimedOut);
-  }
-  CHECK(read_file(path) == persons);
-
-  // A directory that does not exist is a machine that does not use the lock.
-  config.path = dir.file("no-such-directory/gpu.lock");
-  bench::GpuLockLease lease;
-  CHECK(lease.acquire(config) == bench::GpuLockLease::Outcome::NoDirectory);
 }
 
 TEST_CASE("bench: --gpu-lock holds the lock for the whole run and releases it") {
@@ -407,7 +239,7 @@ TEST_CASE("bench: --gpu-lock holds the lock for the whole run and releases it") 
 TEST_CASE("bench: somebody else's lock refuses --require-quiet and times out --gpu-lock") {
   test::TempDir dir("gpu_lock_refused");
   const std::string path = dir.file("gpu.lock");
-  const bench::GpuLockIdentity self = bench::current_gpu_lock_identity();
+  const gpu_lock::Identity self = gpu_lock::current_identity();
   const std::string theirs = lock_json(self.owner, k_other_pid, now_s() + 1800, self.host);
   write_file(path, theirs);
 

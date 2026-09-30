@@ -31,6 +31,11 @@
   and a benchmark cannot tell it from another agent's: prefer `run`, or the harness's own
   `--gpu-lock`.
 
+  A test run does not need `run`: every test process takes the lock itself for as long as it has
+  a GPU device open (docs/subsystems/gpu_lock.md), so wrapping `tools/dev.ps1 test` only holds
+  the GPU through the suite's CPU-only tests as well. It still works — the tests inside find the
+  lock held on their behalf and neither wait nor release — for anyone who does it anyway.
+
   `release` and `refresh` act on a lock whose owner is -Owner, whichever process took it, because
   `acquire` and `release` are separate processes by design. Every engine agent is
   "claude-engine", so they are for a lock you know is yours.

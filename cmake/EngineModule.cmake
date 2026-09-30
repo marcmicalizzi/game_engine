@@ -322,6 +322,46 @@ function(engine_module)
   endif()
 endfunction()
 
+#   _engine_modules_reach(<out> <module> <start>...)
+# TRUE in <out> when <module> is one of <start> or a dependency of one of them, through
+# ENGINE_MODULE_DEPS, however deep.
+function(_engine_modules_reach out module)
+  set(_seen "")
+  set(_queue ${ARGN})
+  while(_queue)
+    list(POP_FRONT _queue _m)
+    if("${_m}" STREQUAL "${module}")
+      set(${out} TRUE PARENT_SCOPE)
+      return()
+    endif()
+    if("${_m}" IN_LIST _seen OR NOT TARGET engine_${_m})
+      continue()
+    endif()
+    list(APPEND _seen "${_m}")
+    get_property(_deps TARGET engine_${_m} PROPERTY ENGINE_MODULE_DEPS)
+    list(APPEND _queue ${_deps})
+  endwhile()
+  set(${out} FALSE PARENT_SCOPE)
+endfunction()
+
+#   engine_test_waits_for_gpu(<test>)
+# Marks a test whose processes can open a GPU device, and so can wait for the machine-wide GPU
+# lock (ADR-0050, docs/subsystems/gpu_lock.md): TIMEOUT is its work plus the queue budget
+# (ENGINE_TEST_WORK_TIMEOUT_S + ENGINE_TEST_GPU_LOCK_WAIT_S, cmake/EngineTesting.cmake), exit code
+# 75 — a wait that ran out before anything reached the GPU — is a skip and not a failure, and the
+# label `gpu` selects them (`ctest -L gpu`). A module's tests get it when the module or a test
+# dependency reaches gfx, an end-to-end test when its app does; a test that starts a process that
+# opens a device without linking gfx itself (engine-cli's and engine-mcp's, which start
+# engine-host) says so beside the line that names that process.
+function(engine_test_waits_for_gpu test)
+  if(NOT ENGINE_BUILD_TESTS OR NOT TEST ${test})
+    return()
+  endif()
+  math(EXPR _timeout "${ENGINE_TEST_WORK_TIMEOUT_S} + ${ENGINE_TEST_GPU_LOCK_WAIT_S}")
+  set_tests_properties(${test} PROPERTIES TIMEOUT ${_timeout} SKIP_RETURN_CODE 75)
+  set_property(TEST ${test} APPEND PROPERTY LABELS gpu)
+endfunction()
+
 #   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...])
 # DEPS are test-only dependencies (other engine modules the tests use but the module does not).
 function(engine_module_tests)
@@ -356,6 +396,10 @@ function(engine_module_tests)
   engine_apply_warnings(${_test_target})
   add_test(NAME ${ET_NAME} COMMAND ${_test_target})
   set_tests_properties(${ET_NAME} PROPERTIES LABELS "unit;${ET_NAME}")
+  _engine_modules_reach(_opens_devices gfx ${ET_NAME} ${ET_DEPS})
+  if(_opens_devices)
+    engine_test_waits_for_gpu(${ET_NAME})
+  endif()
 endfunction()
 
 function(engine_finalize_modules)
@@ -513,8 +557,14 @@ function(engine_app)
     # 1600x1000 engine-view windows open), which is headroom for a slower machine and a colder
     # cache and still short enough that a hung child is reported inside a coffee break. It is
     # not a tripwire for slowness: a test that is merely slow under load must never fail, and
-    # none of these has ever come within an order of magnitude of this bound.
+    # none of these has ever come within an order of magnitude of this bound. An app that opens
+    # a GPU device can also wait for the machine-wide GPU lock, and its test gets the queue on
+    # top of the ten minutes (engine_test_waits_for_gpu above).
     set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}"
-      RESOURCE_LOCK "e2e_apps" TIMEOUT 600)
+      RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
+    _engine_modules_reach(_opens_devices gfx ${EA_DEPS})
+    if(_opens_devices)
+      engine_test_waits_for_gpu(${EA_NAME})
+    endif()
   endif()
 endfunction()
