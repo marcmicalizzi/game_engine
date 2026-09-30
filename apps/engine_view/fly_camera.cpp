@@ -23,6 +23,9 @@ constexpr u32 k_key_s = 22;
 constexpr u32 k_key_w = 26;
 constexpr u32 k_key_escape = 41;
 constexpr u32 k_key_space = 44;
+constexpr u32 k_key_0 = 39;
+constexpr u32 k_key_minus = 45;
+constexpr u32 k_key_equals = 46;
 constexpr u32 k_key_left_bracket = 47;
 constexpr u32 k_key_right_bracket = 48;
 constexpr u32 k_key_comma = 54;
@@ -133,6 +136,9 @@ const char* view_control_name(ViewControl control) noexcept {
     case ViewControl::sun_faster: return "sun_faster";
     case ViewControl::dunes_slower: return "dunes_slower";
     case ViewControl::dunes_faster: return "dunes_faster";
+    case ViewControl::exposure_darker: return "exposure_darker";
+    case ViewControl::exposure_brighter: return "exposure_brighter";
+    case ViewControl::exposure_hold: return "exposure_hold";
   }
   return "unknown";
 }
@@ -193,9 +199,9 @@ input::ActionMap default_fly_map(u32 revision) {
 
   // Revision 2 (2026-09-27): the time-lapse's two rates, keys only — a pad's d-pad is free for a
   // player's own map to bind.
-  const u32 keys[k_view_controls] = {k_key_left_bracket, k_key_right_bracket, k_key_comma,
+  const u32 keys[k_rate_controls] = {k_key_left_bracket, k_key_right_bracket, k_key_comma,
                                      k_key_period};
-  for (u32 c = 0; c < k_view_controls; ++c) {
+  for (u32 c = 0; c < k_rate_controls; ++c) {
     const input::ActionId id =
         map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
     map.bind(id, Binding{Source::Key, keys[c]});
@@ -212,6 +218,17 @@ input::ActionMap default_fly_map(u32 revision) {
   const input::ActionId jump = map.add_action("jump", input::ActionKind::Button);
   map.bind(jump, Binding{Source::Key, k_key_space});
   map.bind(jump, Binding{Source::GamepadButton, k_pad_south});
+  if (revision < 4) return map;
+
+  // Revision 4 (2026-09-30): a sky's exposure (renderer.md, "Exposure"), keys only. `-` and `=` are
+  // a zoom's out and in on every keyboard layout that has them side by side, and `0` beside them
+  // resets; none of the three was bound.
+  const u32 exposure_keys[3] = {k_key_minus, k_key_equals, k_key_0};
+  for (u32 c = k_rate_controls; c < k_view_controls; ++c) {
+    const input::ActionId id =
+        map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
+    map.bind(id, Binding{Source::Key, exposure_keys[c - k_rate_controls]});
+  }
   return map;
 }
 

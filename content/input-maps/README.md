@@ -11,7 +11,9 @@ What `engine-view --interactive` flies and walks with unless `--input-map <file>
 actions — `move`, `lift`, `look`, `turn`, `fast`, `slow`, `capture` and `marker` — then the
 time-lapse's four keys (`sun_slower`, `sun_faster`, `dunes_slower`, `dunes_faster`, revision 2),
 then the walk mode's two (`walk` on F and `jump` on Space and a pad's South, revision 3,
-[apps](../../docs/subsystems/apps.md#walking)), on the keyboard and mouse and on a gamepad. Key
+[apps](../../docs/subsystems/apps.md#walking)), then a sky's exposure keys (`exposure_darker` on
+`-`, `exposure_brighter` on `=`, `exposure_hold` on `0`, revision 4,
+[renderer](../../docs/subsystems/renderer.md#exposure)), on the keyboard and mouse and on a gamepad. Key
 codes are SDL scancodes, gamepad codes `window::GamepadButton` and `window::GamepadAxis`, and a
 pointer axis is `input::MouseAxisCode`.
 

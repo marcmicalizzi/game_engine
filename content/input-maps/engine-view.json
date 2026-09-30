@@ -259,6 +259,39 @@
       ],
       "kind": "button",
       "name": "jump"
+    },
+    {
+      "bindings": [
+        {
+          "code": 45,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "exposure_darker"
+    },
+    {
+      "bindings": [
+        {
+          "code": 46,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "exposure_brighter"
+    },
+    {
+      "bindings": [
+        {
+          "code": 39,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "exposure_hold"
     }
   ],
   "version": 1

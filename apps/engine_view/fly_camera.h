@@ -89,10 +89,23 @@ struct FlyState {
 // for the sun's day and `,` and `.` for the dunes (time_controls.h). They move nothing the
 // trajectory hashes, so they are not the integration's and `k_fly_version` does not change with
 // them. A map without them — the first revision, which every session recorded before 2026-09-27
-// carries — is still a map the camera flies with; the keys then do nothing.
-enum class ViewControl : u8 { sun_slower, sun_faster, dunes_slower, dunes_faster };
-inline constexpr u32 k_view_controls = 4;
-// "sun_slower", "sun_faster", "dunes_slower", "dunes_faster": the actions' names in a map.
+// carries — is still a map the camera flies with; the keys then do nothing. The last three are a
+// sky's exposure (renderer.md, "Exposure"; revision 4): `-` half a stop darker, `=` half a stop
+// brighter, `0` holds the exposure where it is or gives it back to the sky's rule.
+enum class ViewControl : u8 {
+  sun_slower,
+  sun_faster,
+  dunes_slower,
+  dunes_faster,
+  exposure_darker,
+  exposure_brighter,
+  exposure_hold
+};
+inline constexpr u32 k_view_controls = 7;
+// The time-lapse's four, the ones revision 2 of the map binds.
+inline constexpr u32 k_rate_controls = 4;
+// "sun_slower", "sun_faster", "dunes_slower", "dunes_faster", "exposure_darker",
+// "exposure_brighter", "exposure_hold": the actions' names in a map.
 const char* view_control_name(ViewControl control) noexcept;
 
 // The actions the camera reads, by id in one map. The map is data (`default_fly_map`, a file under
@@ -112,7 +125,9 @@ struct FlyActions {
   input::ActionId marker = input::k_invalid_action;  // Button: remember this tick's camera
   // Buttons, by `ViewControl`; `k_invalid_action` where the map has none.
   input::ActionId controls[k_view_controls] = {input::k_invalid_action, input::k_invalid_action,
-                                               input::k_invalid_action, input::k_invalid_action};
+                                               input::k_invalid_action, input::k_invalid_action,
+                                               input::k_invalid_action, input::k_invalid_action,
+                                               input::k_invalid_action};
   // Buttons, the walk mode's (walk.h); `k_invalid_action` where the map has none, and then the
   // session only flies. `walk` switches between flying and walking; `jump` jumps while walking.
   input::ActionId walk = input::k_invalid_action;
@@ -121,20 +136,22 @@ struct FlyActions {
 
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
 // four viewer controls (2026-09-27); 3 appends the walk mode's two, `walk` (F) and `jump` (Space,
-// the pad's South) (2026-09-28). A revision appends and never reorders, and a log names the hash
+// the pad's South) (2026-09-28); 4 appends a sky's three exposure keys, `-`, `=` and `0`
+// (2026-09-30). A revision appends and never reorders, and a log names the hash
 // of the map it was recorded against, so a log recorded against an earlier revision is replayed
 // with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
 // means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
 // before it meant anything, an F pressed before it walked — does nothing, as it did then.
-inline constexpr u32 k_fly_map_revision = 3;
+inline constexpr u32 k_fly_map_revision = 4;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
 // pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
-// slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking; and
+// slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking, `-`
+// `=` a sky's exposure darker and brighter and `0` to hold it; and
 // on a gamepad the left stick to move, the triggers up and down, the right stick to turn, the stick
 // clicks fast and slow, Back as Escape, North to mark and South to jump. `revision` 1 is the map
-// without the four time-lapse keys, 2 the map without the walk mode's.
+// without the four time-lapse keys, 2 the map without the walk mode's, 3 without the exposure's.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).

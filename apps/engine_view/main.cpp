@@ -134,6 +134,7 @@ constexpr const char* k_usage =
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
+    "                   [--time-of-day <hours>] [--exposure <stops>] [--exposure-ev100 <ev>]\n"
     "                   [--no-texture-sharing]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
@@ -199,6 +200,13 @@ constexpr const char* k_usage =
     "                   the arc through its start, tilted renderer.sun.arc_tilt_deg (40), and\n"
     "                   fades below the horizon. Independent of --time-rate; [ and ] step it in an\n"
     "                   --interactive window. The summary's \"sun\" block says where it ended\n"
+    "  --time-of-day <h>  a scene with a sky (renderer.md, \"The sky\"): start its clock at hour h\n"
+    "                   (17.5 is 17:30) of the day its ground stands at, rather than the ground's\n"
+    "                   own hour; --sun-rate runs the day on from there. The summary's \"sun\"\n"
+    "                   block has a \"sky\" block: the hour, the day, the sun, the moon, the EV\n"
+    "  --exposure <s>   a sky's exposure s stops brighter than its rule (renderer.md,\n"
+    "                   \"Exposure\"); --exposure-ev100 <ev> holds it at that exposure value\n"
+    "                   instead (15 a sunlit scene, -3 a moonlit one). - = and 0 in a window\n"
     "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
     "                   they stand where frame 0 puts them)\n"
     "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
@@ -379,7 +387,8 @@ constexpr const char* k_usage =
     "                   gives it back, and Esc with it given back ends the session), Shift fast,\n"
     "                   Alt slow, M drops a marker; [ and ] the sun's day slower and faster, , and .\n"
     "                   the dunes' time-lapse (0, 60, 600, 3600, 8640, 86400 game s a real s, and\n"
-    "                   604800 for the dunes); a gamepad's sticks, triggers, stick clicks, Back (as\n"
+    "                   604800 for the dunes), - and = a sky's exposure half a stop darker and\n"
+    "                   brighter and 0 to hold it; a gamepad's sticks, triggers, stick clicks, Back (as\n"
     "                   Esc) and North do the same. The camera integrates at a fixed tick\n"
     "                   (view.fly.tick_hz, 240) and never from frame time, and a frame draws it\n"
     "                   between the last two ticks; the title shows the two rates, the pointer,\n"
@@ -576,8 +585,21 @@ struct Options {
   // `--sun-rate`: the sun's day in game seconds per real second (lighting.h, "The sun's day");
   // unset takes the `renderer.sun.rate` tunable. The day's clock is the host's: `view::SunDay`.
   std::optional<f64> sun_rate;
+  // `--time-of-day`: a sky scene's hour to start at, on the day its ground stands at (renderer.md,
+  // "One clock"); unset, the ground's own hour.
+  std::optional<f64> time_of_day;
   renderer::RenderSettings settings;
 };
+
+// The offset `--time-of-day` puts on the world's one clock (FrameDesc::sun_time_s): the hours asked
+// for, less how far into its day the scene's ground already stands (renderer.md, "One clock"). Zero
+// without the flag or without a sky, whose stand-in sun has no hour.
+f64 sky_offset_s(const Options& options, const renderer::SceneData& scene) {
+  if (!options.time_of_day.has_value() || !scene.sky.has_value()) return 0.0;
+  const f64 start = scene.terrain.enabled ? scene.terrain.time_s : 0.0;
+  const f64 into_day = start - std::floor(start / 86400.0) * 86400.0;
+  return *options.time_of_day * 3600.0 - into_day;
+}
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
   if (i + 1 >= argc) {
@@ -1322,6 +1344,34 @@ JsonValue sun_summary(const renderer::RenderSettings& settings, const view::SunD
   return out;
 }
 
+// The same block with a scene's sky (renderer.md, "The sky"): the stand-in's arc is not what drew
+// the frame, so a `sky` block beside it says what did — the game time the sky stood at, the day of
+// the year and the local hour, the sun and the moon (azimuth from +x towards +z and elevation,
+// degrees), the moon's lit fraction, whether the cascaded maps followed it, and the exposure value
+// the last frame was drawn at and the light it was metered from.
+JsonValue sun_summary(const renderer::RenderSettings& settings, const view::SunDay& day,
+                      const renderer::Stats& stats) {
+  JsonValue out = sun_summary(settings, day);
+  const renderer::SkyStats& s = stats.sky;
+  if (!s.active) return out;
+  JsonValue sky = JsonValue::object();
+  sky.set("time_s", s.time_s);
+  sky.set("day_of_year", s.day_of_year);
+  sky.set("hour", s.hour);
+  sky.set("sun_azimuth_deg", static_cast<f64>(s.sun_azimuth_deg));
+  sky.set("sun_elevation_deg", static_cast<f64>(s.sun_elevation_deg));
+  sky.set("moon_azimuth_deg", static_cast<f64>(s.moon_azimuth_deg));
+  sky.set("moon_elevation_deg", static_cast<f64>(s.moon_elevation_deg));
+  sky.set("moon_lit", static_cast<f64>(s.moon_lit));
+  sky.set("moon_key", s.moon_key);
+  sky.set("ev100", static_cast<f64>(s.ev100));
+  sky.set("lux", static_cast<f64>(s.lux));
+  sky.set("sky_lux", static_cast<f64>(s.sky_lux));
+  sky.set("gpu_ms", stats.sky_ms());
+  out.set("sky", std::move(sky));
+  return out;
+}
+
 // The ray tracing chain's block of the summary line (renderer::RtStats): what the per-frame
 // structures hold room for now and at most, the budget as a capacity, what they would be sized for
 // if they were sized by the scene, their bytes, the resizes, and the frames that wanted more than
@@ -1978,6 +2028,7 @@ int run_reference(Options& options) {
       break;
     }
     renderer::ReferenceSettings reference_settings;
+    reference_settings.sun_time_s = sky_offset_s(options, scene_data);
     reference_settings.spp = options.reference;
     reference_settings.max_bounces = options.bounces;
     reference_settings.batch = options.spp_batch;
@@ -2201,8 +2252,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // at the frame index's own sixty a second, and two runs light the same frames alike.
   view::SunDay sun;
   sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
+  // With a sky, `--time-of-day`'s offset on the one clock, set once the scene is loaded.
+  f64 sky_offset = 0.0;
   const auto sun_at = [&](u64 frame_index) {
-    return sun.rate * static_cast<f64>(frame_index) / static_cast<f64>(view::k_frame_index_hz);
+    return sky_offset +
+           sun.rate * static_cast<f64>(frame_index) / static_cast<f64>(view::k_frame_index_hz);
   };
   do {
     renderer::SceneDesc desc;
@@ -2242,6 +2296,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       exit_code = fail("mesh", error);
       break;
     }
+    sky_offset = sky_offset_s(options, scene_data);
     if (options.page_budget_pct > 0 && !scene_data.pages.pages.empty()) {
       u64 total = 0;
       for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
@@ -2500,7 +2555,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       flight_options.warmup = options.warmup;
       flight_options.warmup_seconds = static_cast<f64>(options.warmup_seconds);
       flight_options.frames_in_flight = k_frames_in_flight;
-      flight_options.sun_rate = sun.rate;  // path frame f at sun_rate * f / 60, as below
+      flight_options.sun_rate = sun.rate;      // path frame f at sun_rate * f / 60, as below
+      flight_options.sun_time_s = sky_offset;  // and a sky's `--time-of-day` under it
       // A streamed world updates between frames from each frame's own camera, and starts every
       // repeat over (its first warm-up frame, or its first frame with no warm-up), so the repeats
       // fly the same world.
@@ -2878,7 +2934,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // The day where the last frame drew it: the path's last frame, or where the replay ended —
     // the frame the final --capture draws too.
     sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
-    summary.sun = sun_summary(resolved.settings, sun);
+    summary.sun = sun_summary(resolved.settings, sun, view_renderer.stats());
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -3264,6 +3320,29 @@ int main(int argc, char** argv) {
         return k_exit_usage;
       }
       options.sun_rate = v;
+    } else if (a == "--time-of-day") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= 0.0 && v < 24.0)) {
+        std::fprintf(stderr,
+                     "engine-view: --time-of-day expects an hour, 0 to 24 (17.5 is 17:30)\n");
+        return k_exit_usage;
+      }
+      options.time_of_day = v;
+    } else if (a == "--exposure" || a == "--exposure-ev100") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= -30.0 && v <= 30.0)) {
+        std::fprintf(stderr, "engine-view: %s expects stops, -30 to 30\n", std::string(a).c_str());
+        return k_exit_usage;
+      }
+      if (a == "--exposure") {
+        options.settings.exposure_ev = static_cast<f32>(v);
+      } else {
+        options.settings.exposure_ev100 = static_cast<f32>(v);
+      }
     } else if (a == "--validation") {
       options.validation = true;
     } else if (a == "--camera-path") {
@@ -3809,6 +3888,10 @@ int main(int argc, char** argv) {
   // frame's simulated seconds at a rate `[` and `]` change in an interactive window.
   view::SunDay sun;
   std::string sun_text = "null";
+  // A sky's clock and exposure (renderer.md, "One clock", "Exposure"): `--time-of-day`'s offset,
+  // and what `-`, `=` and `0` asked of the exposure on top of the run's.
+  f64 sky_offset = 0.0;
+  renderer::ExposureRequest exposure_keys;
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
   std::string clip_text;
@@ -3906,6 +3989,7 @@ int main(int argc, char** argv) {
       exit_code = fail("mesh", error);
       break;
     }
+    sky_offset = sky_offset_s(options, scene_data);
     // A budget as a fraction of what this scene's pages come to, which cannot be known until the
     // page table has been built. `ClusterPageDesc::bytes` is the same number the residency manager
     // counts against, so 25 here and 25 in a report mean the same thing.
@@ -4194,6 +4278,40 @@ int main(int argc, char** argv) {
     // when that changed a rate. The dunes' rate goes through `TerrainMotion::set_rate`, whose rules
     // are what keeps the sand from stepping. True when a rate changed.
     const auto step_rate = [&](view::ViewControl control) -> bool {
+      // A sky's exposure (renderer.md, "Exposure"): `-` and `=` half a stop darker and brighter
+      // — on the rule's compensation, or on the fixed value when it is held — and `0` holds the
+      // exposure at the value the last frame was drawn at, or lets the rule have it back.
+      if (control == view::ViewControl::exposure_darker ||
+          control == view::ViewControl::exposure_brighter ||
+          control == view::ViewControl::exposure_hold) {
+        if (!view_renderer.sky().active()) {
+          std::fprintf(stderr, "engine-view: the exposure keys need a scene with a sky\n");
+          return false;
+        }
+        if (control == view::ViewControl::exposure_hold) {
+          exposure_keys.fixed = !exposure_keys.fixed;
+          exposure_keys.ev100 = view_renderer.stats().sky.ev100;
+          if (exposure_keys.fixed) {
+            std::fprintf(stderr, "engine-view: exposure held at EV100 %.2f\n",
+                         static_cast<f64>(exposure_keys.ev100));
+          } else {
+            std::fprintf(stderr, "engine-view: exposure follows the sky again (%+.1f stops)\n",
+                         static_cast<f64>(exposure_keys.compensation_ev));
+          }
+          return true;
+        }
+        const f32 stops = control == view::ViewControl::exposure_brighter ? 0.5f : -0.5f;
+        if (exposure_keys.fixed) {
+          exposure_keys.ev100 -= stops;
+          std::fprintf(stderr, "engine-view: exposure held at EV100 %.2f\n",
+                       static_cast<f64>(exposure_keys.ev100));
+        } else {
+          exposure_keys.compensation_ev += stops;
+          std::fprintf(stderr, "engine-view: exposure %+.1f stops on the sky's rule\n",
+                       static_cast<f64>(exposure_keys.compensation_ev));
+        }
+        return true;
+      }
       const bool up =
           control == view::ViewControl::sun_faster || control == view::ViewControl::dunes_faster;
       char was_text[32];
@@ -4546,7 +4664,8 @@ int main(int argc, char** argv) {
         sun.time_s =
             sun.rate * static_cast<f64>(rendered) / static_cast<f64>(view::k_frame_index_hz);
       }
-      frame.sun_time_s = sun.time_s;
+      frame.sun_time_s = sky_offset + sun.time_s;
+      frame.exposure = exposure_keys;
       terrain_camera = frame.camera;  // the next frame's rings follow this one
 #if ENGINE_VIEW_WORLD
       world_camera = frame.camera;  // the next frame's world follows this one
@@ -4741,7 +4860,8 @@ int main(int argc, char** argv) {
       time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats(), scene),
                                    JsonWriteOptions{.pretty = false});
     }
-    sun_text = write_json(sun_summary(resolved.settings, sun), JsonWriteOptions{.pretty = false});
+    sun_text = write_json(sun_summary(resolved.settings, sun, view_renderer.stats()),
+                          JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_ANIMATION
     if (animated)
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
@@ -4790,7 +4910,7 @@ int main(int argc, char** argv) {
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
       summary.interactive = interactive_summary(interactive, session, options);
       summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
-      summary.sun = sun_summary(resolved.settings, sun);
+      summary.sun = sun_summary(resolved.settings, sun, view_renderer.stats());
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif

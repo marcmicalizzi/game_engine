@@ -194,10 +194,19 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   view::FlyActions actions;
   std::string error;
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);
-  // The camera's eight, the time-lapse's four keys appended after them (revision 2), and the walk
-  // mode's two after those (revision 3): `walk` on F and `jump` on Space.
-  CHECK(map.action_count() == 14);
+  // The camera's eight, the time-lapse's four keys appended after them (revision 2), the walk
+  // mode's two after those (revision 3): `walk` on F and `jump` on Space, and a sky's exposure
+  // keys after those (revision 4): `-`, `=` and `0`.
+  CHECK(map.action_count() == 17);
+  CHECK(view::default_fly_map(3).action_count() == 14);
   CHECK(view::default_fly_map(2).action_count() == 12);
+  for (u32 c = 0; c < view::k_view_controls; ++c)
+    CHECK(actions.controls[c] != input::k_invalid_action);
+  view::FlyActions third;
+  REQUIRE(view::resolve_fly_actions(view::default_fly_map(3), third, &error));
+  CHECK(third.walk != input::k_invalid_action);
+  CHECK(third.controls[static_cast<u32>(view::ViewControl::exposure_hold)] ==
+        input::k_invalid_action);  // a revision 3 session has no exposure keys
   CHECK(view::default_fly_map(1).action_count() == 8);
   CHECK(actions.walk != input::k_invalid_action);
   CHECK(actions.jump != input::k_invalid_action);

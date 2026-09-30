@@ -148,8 +148,9 @@ TEST_CASE("time controls: the fly session counts the keys, with the second revis
   view::FlyActions actions;
   std::string error;
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);
-  for (const input::ActionId id : actions.controls)
-    CHECK(id != input::k_invalid_action);
+  // The four rates are the second revision's; the exposure's three came with the fourth.
+  for (u32 c = 0; c < view::k_view_controls; ++c)
+    CHECK((actions.controls[c] != input::k_invalid_action) == (c < view::k_rate_controls));
   view::SessionHeader header;
   header.params.tick_hz = 240;
   header.params.speed = 1.0f;
