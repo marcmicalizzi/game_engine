@@ -62,6 +62,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/terrain_tiles.h>
 #include <systems/renderer/terrain_time.h>
 
 #include <engine_build_stamp.h>
