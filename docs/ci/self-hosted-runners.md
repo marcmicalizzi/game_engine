@@ -667,15 +667,20 @@ not raise its concurrency — because the GPU tests measure the device and a sec
 makes the timings meaningless even when the results stay green.
 
 The runner's concurrency setting only covers the runner's own jobs, so on a machine whose GPU is
-shared with anything else **`tools/ci/gpu-smoke.ps1` takes the machine-wide GPU lock** around its
-three GPU steps — the adapter report, the suite and the captures — after the build and before the
-report is written ([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lock";
-the file and its rules are `D:\workspace\GPU-LOCK.md`'s). It waits while somebody else holds the
-card, prints whom it is waiting for, refreshes its ten-minute lease while the suite runs, and
-releases it however the run ends; the tests and `engine-view` it starts inherit
-`ENGINE_GPU_LOCK_HOLDER`, so their machine-state readings count the lock as theirs. A dedicated
-runner has no lock directory (`D:\workspace`, or wherever `ENGINE_GPU_LOCK` points) and the step
-says so and runs unlocked — create the directory on a runner that should take part.
+shared with anything else the GPU work waits for the **machine-wide GPU lock**
+([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lock"; the file and its
+rules are `D:\workspace\GPU-LOCK.md`'s). The suite takes it itself: every test process holds it
+for as long as it has a GPU device open, and no longer ([gpu_lock](../subsystems/gpu_lock.md),
+[ADR-0050](../adr/0050-tests-take-the-gpu-lock-per-device.md)), so the adapter report and the
+suite run unwrapped — until 2026-09-30 the script held the lock around all three GPU steps, which
+held the card for the suite's CPU-only tests too. **`tools/ci/gpu-smoke.ps1` takes the lock around
+the captures**, its own `engine-view` runs, just before the first and until the report is written:
+it waits while somebody else holds the card, prints whom it is waiting for, refreshes its
+ten-minute lease while the captures run, and releases it however the run ends; `engine-view`
+inherits `ENGINE_GPU_LOCK_HOLDER`, so its machine-state readings count the lock as its own. A test
+that waited half an hour and gave up is skipped (exit 75), not failed. A dedicated runner has no
+lock directory (`D:\workspace`, or wherever `ENGINE_GPU_LOCK` points), so nothing waits there and
+the capture step says it runs unlocked — create the directory on a runner that should take part.
 `tools/ci/gpu-smoke.sh`, the Linux runner's step, does not take it: the protocol has a PowerShell
 and a C++ implementation and no bash one, and the lock is this desktop's arrangement with the
 agents that share its card. Note also that two `ctest` runs drift

@@ -30,11 +30,13 @@
        before it did: each has its own time budget and its own result, so one
        that crashes or hangs cannot hide the rest.
 
-  Steps 2 to 4 run under the machine-wide GPU lock (tools/lib/MachineLock.psm1,
-  docs/subsystems/bench.md "The GPU lock"): on a machine whose GPU other agents
-  share, the suite and the captures wait for the card rather than run beside a
-  render, and the log says whom they waited for. A machine without the lock's
-  directory (D:\workspace, or wherever ENGINE_GPU_LOCK points) runs without it.
+  On a machine whose GPU other agents share, the suite and the captures wait for
+  the card rather than run beside a render, and the log says whom they waited
+  for: the tests take the machine-wide GPU lock themselves, per GPU device
+  (docs/subsystems/gpu_lock.md), and step 4 runs under the lock this script takes
+  (tools/lib/MachineLock.psm1, docs/subsystems/bench.md "The GPU lock"). A machine
+  without the lock's directory (D:\workspace, or wherever ENGINE_GPU_LOCK points)
+  runs without it.
 
   Default preset: msvc-release on Windows, linux-clang-debug elsewhere (the
   Linux runner uses tools/ci/gpu-smoke.sh, which does the same four steps).
@@ -100,16 +102,19 @@ Write-Section 'build'
 
 # ---- the GPU lock ----------------------------------------------------------
 #
-# Everything from here to the captures is heavy GPU work on a machine that may
-# share its card with other agents (docs/subsystems/bench.md, "The GPU lock"),
-# so it runs under the machine-wide lock: taken after the build, which needs no
-# GPU, and released before the report is written, whatever happened in
-# between. A runner that does not use the lock (no D:\workspace, or
-# ENGINE_GPU_LOCK naming a directory that does not exist) warns and runs
-# without it. Test executables and engine-view inherit ENGINE_GPU_LOCK_HOLDER,
-# so their machine-state samples know the lock is held on their behalf.
-Write-Section 'gpu lock'
-$gpuLock = Open-MachineLockSession -Kind gpu -Purpose "gpu-smoke $Preset on $([Environment]::MachineName)"
+# On a machine that may share its card with other agents (docs/subsystems/bench.md,
+# "The GPU lock") the heavy GPU work runs under the machine-wide lock. The adapter
+# report opens no device and needs none. The suite takes it itself: every test
+# process holds it for as long as it has a GPU device open and no longer
+# (docs/subsystems/gpu_lock.md, ADR-0050), so wrapping ctest would only hold the
+# card through the suite's CPU-only hour. The captures are this script's own
+# engine-view runs, which take nothing by themselves, so the script takes the
+# lock around them — just before the first, released before the report is
+# written, whatever happened in between. A runner that does not use the lock (no
+# D:\workspace, or ENGINE_GPU_LOCK naming a directory that does not exist) warns
+# and runs without it. engine-view inherits ENGINE_GPU_LOCK_HOLDER, so its
+# machine-state samples know the lock is held on its behalf.
+$gpuLock = $null
 try {
   Write-Section 'gpu.adapters'
   $cliName = if ($IsWin) { 'engine-cli.exe' } else { 'engine-cli' }
@@ -195,6 +200,8 @@ try {
     }
     else {
       New-Item -ItemType Directory -Force -Path $capturesDir | Out-Null
+      Write-Section 'gpu lock'
+      $gpuLock = Open-MachineLockSession -Kind gpu -Purpose "gpu-smoke $Preset captures on $([Environment]::MachineName)"
       foreach ($r in $resolutions) {
         $name = "$($r.Width)x$($r.Height)"
         $capture = Join-Path $capturesDir "$name.png"
