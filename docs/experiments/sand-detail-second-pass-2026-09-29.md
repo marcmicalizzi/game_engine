@@ -124,6 +124,29 @@ The detail adds 0.001 and 0.003, held to 0.01. What it adds on the lee is the up
 
 **The first run was on the flat case's 4 m grid, and it found a defect of the resolve's that is not the detail's.** There the lee read 0.0691 against 0.0510, most of it in the lower half (0.0745 against 0.0470 there), and 0.015 of it the streaks'. With the streaks alone at full contrast the two pictures showed why: the path tracer drew each tongue as the ellipse it is, and the resolve drew the same tongues at the top of the picture and then ran them on as straight stripes to its bottom edge, at the feet. Looking some 60° down from 1.65 m, the camera's plane meets the ground about 3 m behind the walker, and the 4 m triangles under the feet reach past it; `reconstruct_screen` divides the corners by w before it takes the pixel's barycentrics, which is meaningless for a corner behind the camera, so the resolve shades a point the pixel does not see. The ripples and the grain hide it — drawn at the wrong point they still look like ripples and grain — and 2 m tongues do not. On a metre grid the two pictures draw the same tongues. The fix is the resolve's, not this pass's, and is not made here ([gfx](../subsystems/gfx.md), "What `reconstruct_screen` cannot rebuild").
 
+### Seams across the rings
+
+`systems/renderer/tests/ground_detail_rings_tests.cpp`, "the second pass on both sides of every ring and chunk border": the rings' own test view (the terrain shrunk to 128 m, an inner ring at 25 cm and a middle one at 50 cm, five metres over the dunes looking down across the inner ring's border and a chunk border inside both rings, 256×192) drawn in the detail view with the ergs' block read from their scene file (which the test also holds `ground_ref::erg_numbers` to). Each covered pixel's world point comes back through its depth.
+
+| | Inside a chunk | At the ring's border | At a chunk's border |
+|---|---|---|---|
+| pixels | 46,867 | 512 | 881 |
+| grain against the CPU, worst (over 3) | 23 (52) | 9 (2) | 1 (0) |
+| the share of the ripples drawn, largest step between neighbours | 19 | 19 | 7 |
+| ripple height against the CPU at the height function's normal, worst | 236 | 24 | 96 |
+
+The first pass on the same view measures what it did (the grain 11, 4 and 1; the ripple 13, 1 and 1). The grain holds as a function of position: 23 inside a chunk against the first pass's 11, since the gradient grain's coarse octave changes faster with position than the value noise did and a float depth is a few millimetres along the ground at a grazing angle; held to 32, and each border to no worse than the inside. The ripple height is not a function of position any more: the spacing scales its wavelength by the normal the level interpolated there, and against the height function's normal the two are up to 0.05 of scale apart inside a chunk, near a brink — a fifth of a wavelength, any height at all.
+
+**The step at a border, read back.** The instrument is the same view with the ergs' numbers but a metre-long plain sinusoid and no defects: a pixel's ripple height is then a smooth function of the scale the GPU drew it at, and solving the CPU's ripple at the pixel's world point for it (Newton's method, from the height function's scale, trusted where a level of the channel is 0.002 of scale or less and the solution is within 0.75 of a level) reads back the GPU's scale less the height function's at 25,764 pixels. The height function's scale is continuous, so that difference's step between neighbours is the step the level's normal takes, as the spacing reads it:
+
+| | Pixels with a step read | Largest step | 99.9th percentile | 99th percentile |
+|---|---|---|---|---|
+| inside a chunk | 25,743 | 0.081 | 0.050 | 0.020 |
+| at the ring's border | 125 | 0.009 | 0.006 | 0.005 |
+| at a chunk's border | 549 | 0.028 | 0.028 | 0.017 |
+
+A step of Δs in scale slides a crest by `(6 - 4.5 defects) Δs / s` wavelengths — the kernels' reach in wavelengths, the same at a metre as at 12 cm — so at the ergs' own scale of 1 the ring's border moves their crests by at most 0.04 of a wavelength, **5 mm**, and a chunk's border by at most an eighth (15 mm), where a chunk's own simplification meets a brink; the normal steps by at most 0.004 and 0.011 radians. Inside a chunk the normal moves by more than either between one pixel and the next, one pixel in a hundred, round the brinks the levels' triangles cannot follow. Held: the ring's border to 0.015, and both borders' 99th percentile to the inside's.
+
 ## The cost on the GPU, measured at the merge (2026-09-30)
 
 **What was run.** `engine-view` from `msvc-release` at `a4b3550`, offscreen, the erg flown along **`walk-path.json`**: a walker's eyes 1.65 m over the western floor, so the lower half of every frame is sand close enough to draw ripples. Three scenes that differ only in the `detail` block: none, the first pass's nine numbers, the ergs' second pass. The resolve pass's GPU milliseconds a frame, from `gfx::GpuTimer`, the median over 1,201 frames and three repeats, with cascaded shadows:
