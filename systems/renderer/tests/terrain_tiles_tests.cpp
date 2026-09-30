@@ -1,5 +1,5 @@
 // The ground from the world's tiles, on the CPU (docs/subsystems/renderer.md, "The ground from the
-// world's tiles"; ADR-0049): the ring's first-fill rule; a tile's mesh — watertight inside, its
+// world's tiles"; ADR-0050): the ring's first-fill rule; a tile's mesh — watertight inside, its
 // border locked and on the world's lattice, and along a coarser tile collapsed onto that tile's
 // lattice so the two tiles have the same edge and no T-junction, with every shared vertex naming
 // the level that draws it; and the set — a tile's key from its neighbours, a rebuild that keeps

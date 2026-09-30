@@ -1,5 +1,5 @@
 // The ground from the world's tiles, on a GPU (docs/subsystems/renderer.md, "The ground from the
-// world's tiles"; ADR-0049), held by the visibility buffer and not by eye:
+// world's tiles"; ADR-0050), held by the visibility buffer and not by eye:
 //
 //   - the erg drawn from tiles at the grid's spacing is the fixed grid's picture inside the grid's
 //     extent, pixel for pixel, at the finest cut — colour and depth — and has ground past it;

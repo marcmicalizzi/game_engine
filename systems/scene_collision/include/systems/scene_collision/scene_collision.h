@@ -175,7 +175,7 @@ class SceneCollision {
   // with no tiles, with the registry's sentence); for a scene read whole it bins the instances by
   // the tiles their bounds reach. False, with `error`, when it cannot.
   //
-  // **The ground's heights come from a tile source** (scene_gen/tile_source.h; ADR-0049): `tiles`
+  // **The ground's heights come from a tile source** (scene_gen/tile_source.h; ADR-0050): `tiles`
   // when given — the one the renderer draws the world's tiles from, so what is walked on is what is
   // drawn — or `ground` seen as tiles (`GroundProvider::tiles()`), which is its own heights to the
   // bit. `ground` still stands the placements: a generator is handed its floor.

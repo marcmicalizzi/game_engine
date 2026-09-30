@@ -167,7 +167,7 @@ struct RenderSettings {
   // their slots on the device whether the camera is near the ground or not.
   bool terrain_rings = false;
   // The ground drawn from the world's tiles (terrain_tiles.h; docs/subsystems/renderer.md, "The
-  // ground from the world's tiles"; ADR-0049): the dune generator's terrain as the world's tile
+  // ground from the world's tiles"; ADR-0050): the dune generator's terrain as the world's tile
   // grid, streamed round the camera with no end, in place of the scene's grid. A scene asks for it
   // with its `world` block's `ground`; this asks for it on any dune terrain (engine-view's
   // `--terrain-tiles`), with the world's default rings where the scene has none. It takes the place

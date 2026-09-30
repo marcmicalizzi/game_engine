@@ -281,7 +281,7 @@ constexpr scene_gen::TileSourceOps k_other_ops{.heights = &other_heights};
 TEST_CASE("scene_collision: the ground walked on is the tile source's the renderer draws from") {
   // Handed a tile source — the renderer's, when it draws the world's tiles — the collision's ground
   // is that source's heights, and not the provider's: what is walked on is what is drawn
-  // (ADR-0049). Without one it is the provider seen as tiles, its own heights (the case above).
+  // (ADR-0050). Without one it is the provider seen as tiles, its own heights (the case above).
   TestGround g;
   scene_gen::GroundProvider ground(&k_still_ops, &g);
   const scene_gen::TileSource other{&k_other_ops, nullptr};

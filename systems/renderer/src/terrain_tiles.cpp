@@ -1,5 +1,5 @@
 // The ground from the world's tiles (terrain_tiles.h; docs/subsystems/renderer.md, "The ground from
-// the world's tiles"; ADR-0049).
+// the world's tiles"; ADR-0050).
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>

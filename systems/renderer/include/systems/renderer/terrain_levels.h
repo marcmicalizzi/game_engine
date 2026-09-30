@@ -1,7 +1,7 @@
 #pragma once
 
 // **Terrain levels of chunks, and who lays them out** (docs/subsystems/renderer.md, "The rings in
-// the scene", "The ground from the world's tiles"; ADR-0049). A moving terrain is drawn as terrain
+// the scene", "The ground from the world's tiles"; ADR-0050). A moving terrain is drawn as terrain
 // levels: level 0 is the scene's own grid, and every other level is a set of **chunks** — cluster
 // meshes on the world's lattice at the level's spacing, each in a slot of the GPU scene's, moved by
 // the pool's terrain stage from the level's two fields at the one surface time every level shares.

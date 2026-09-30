@@ -1,6 +1,6 @@
 # desert-endless
 
-The erg of [`desert-erg`](../desert-erg/README.md) — its five bands, its wind, its twelve storms a year and its sand close up, three years into the world — **with no edge**: the ground is drawn from the world's tiles streamed round the camera instead of from one grid ([renderer](../../../docs/subsystems/renderer.md#the-ground-from-the-worlds-tiles), [ADR-0049](../../../docs/adr/0049-the-ground-is-drawn-from-the-worlds-tiles.md), proposed), so the desert goes on in every direction for as far as anyone flies, and what is resident is what the rings hold, not how far the camera has come.
+The erg of [`desert-erg`](../desert-erg/README.md) — its five bands, its wind, its twelve storms a year and its sand close up, three years into the world — **with no edge**: the ground is drawn from the world's tiles streamed round the camera instead of from one grid ([renderer](../../../docs/subsystems/renderer.md#the-ground-from-the-worlds-tiles), [ADR-0050](../../../docs/adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md), proposed), so the desert goes on in every direction for as far as anyone flies, and what is resident is what the rings hold, not how far the camera has come.
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-endless/scene.json --interactive --time-of-day 10

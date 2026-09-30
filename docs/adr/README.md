@@ -53,4 +53,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0047](0047-reference-games-are-licensed-apart-from-the-engine.md) | The reference games are licensed apart from the engine — Desert Survival's code under GPL-3.0, its assets non-commercial, its title a trademark, in its own repository | Proposed |
 | [0048](0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md) | The sky is a provider's model drawn by the renderer, and a scene that names none draws what it drew | Proposed |
 | [0049](0049-tests-take-the-gpu-lock-per-device.md) | Tests take the GPU lock per device, at device creation | Proposed |
-| [0049](0049-the-ground-is-drawn-from-the-worlds-tiles.md) | The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source | Proposed |
+| [0050](0050-the-ground-is-drawn-from-the-worlds-tiles.md) | The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source | Proposed |

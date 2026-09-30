@@ -736,7 +736,7 @@ struct WorldRings @version(2) {
   /// How many of the rings, innermost first, the simulation runs in: the document is materialized
   /// and the store reconciled there, and nowhere else.
   simulated: u32 = 2
-  /// Draw the terrain from the world's tiles (ADR-0049; docs/subsystems/renderer.md, "The ground
+  /// Draw the terrain from the world's tiles (ADR-0050; docs/subsystems/renderer.md, "The ground
   /// from the world's tiles"): the ground streamed round the camera a tile at a time, at each
   /// ring's `ground_cells`, with no end, in place of the terrain's one grid (which then only carries
   /// its material). Needs a terrain whose ground moves (the dunes), and is refused beside streamed
