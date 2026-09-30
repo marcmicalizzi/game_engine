@@ -145,6 +145,8 @@ The first pass on the same view measures what it did (the grain 11, 4 and 1; the
 | at the ring's border | 125 | 0.009 | 0.006 | 0.005 |
 | at a chunk's border | 549 | 0.028 | 0.028 | 0.017 |
 
+A step of Δs in scale slides a crest by `(6 - 4.5 defects) Δs / s` wavelengths — the kernels' reach in wavelengths, the same at a metre as at 12 cm — so at the ergs' own scale of 1 the ring's border moves their crests by at most 0.04 of a wavelength, **5 mm**, and a chunk's border by at most an eighth (15 mm), where a chunk's own simplification meets a brink; the normal steps by at most 0.004 and 0.011 radians. Inside a chunk one pixel in a hundred sees the scale move by 0.020 or more to a neighbour, round the brinks the levels' triangles cannot follow: more than the ring's border steps it anywhere, and more than a chunk's border does at its 99th percentile (its worst, 0.028, is above it). Held: the ring's border to 0.015, and both borders' 99th percentile to the inside's.
+
 A step of Δs in scale slides a crest by `(6 - 4.5 defects) Δs / s` wavelengths — the kernels' reach in wavelengths, the same at a metre as at 12 cm — so at the ergs' own scale of 1 the ring's border moves their crests by at most 0.04 of a wavelength, **5 mm**, and a chunk's border by at most an eighth (15 mm), where a chunk's own simplification meets a brink; the normal steps by at most 0.004 and 0.011 radians. Inside a chunk the normal moves by more than either between one pixel and the next, one pixel in a hundred, round the brinks the levels' triangles cannot follow. Held: the ring's border to 0.015, and both borders' 99th percentile to the inside's.
 
 ## The cost on the GPU, measured at the merge (2026-09-30)

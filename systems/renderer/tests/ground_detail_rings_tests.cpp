@@ -559,8 +559,9 @@ TEST_CASE("sand detail: the second pass on both sides of every ring and chunk bo
   // most 0.028 (0.017 at the 99th percentile, 549 pixels), where a chunk's cut is simplified on its
   // own; and between neighbours inside a chunk by 0.020 at the 99th percentile over 25,743 pixels,
   // near the brinks, where the levels' interpolated normal cannot follow the height function's (RTX
-  // 5090, 2026-09-30). So a border steps the normal by less than the inside of a chunk moves it
-  // between one pixel and the next, one pixel in a hundred.
+  // 5090, 2026-09-30). So at the 99th percentile both borders step the normal by less than the
+  // inside of a chunk moves it between one pixel and the next, and the ring's border does at its
+  // worst too.
   const f64 inside = top(steps[interior].scale_steps, 0.01);
   CHECK(steps[level_border].scale_steps.size() >= 60u);
   CHECK(steps[chunk_border].scale_steps.size() >= 60u);
