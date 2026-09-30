@@ -129,11 +129,16 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
   }
 }
 
-TEST_CASE("world drawn ground: a budgeted ring behind a fast camera keeps the tile set whole") {
-  // engine-view's frame, with the renderer's half on the CPU: the world's ring updated under its
-  // default budget from a camera flying 1.67 m a frame, and then what the time-lapse does with the
-  // tile set — the layout for the camera, the tiles taken, the rebuild. The set must never draw
-  // fewer tiles than the ring is about to hold minus what its budget defers, and never lose a level.
+TEST_CASE(
+    "world drawn ground: an unbudgeted ring keeps up with a fast camera, a budgeted one not") {
+  // engine-view's frame with the renderer's half on the CPU, over desert-endless's rings: the
+  // world's ring updated from a camera flying 1.67 m a frame (100 m/s at 60 Hz), and then what the
+  // time-lapse does with the tile set — the layout for the camera, the tiles taken, the rebuild.
+  // Under the world's default budget (eight promotions an update) the ring falls behind by the
+  // promotions it defers, about two a frame here, and the outer level ends hundreds of tiles short;
+  // with no budget — what engine-view's drawn ground takes (world_view.cpp) — every level keeps at
+  // least what its first fill held, within the few tiles a ring's boundary crosses in a frame.
+  // Neither ever empties a level.
   renderer::TerrainDesc grid;
   grid.enabled = true;
   grid.size = 3;
@@ -150,40 +155,71 @@ TEST_CASE("world drawn ground: a budgeted ring behind a fast camera keeps the ti
   t.cells[2] = 2;
   t.cells[3] = 1;
   const Vec3 start{-2000.0f, 100.0f, 0.0f};
-  renderer::TerrainTileSet set;
-  std::string error;
-  REQUIRE_MESSAGE(set.build(grid, t, k_flat, start.x, start.z, nullptr, &error), error);
-  World world;
-  RingParams params = DrawnTiles::ring_params(t);
-  REQUIRE(world.configure(params));
-  DrawnTiles drawn;
-  drawn.create(set);
-  world.add_consumer(drawn.consumer());
-  sim::ObserverSet observers;
-  renderer::TerrainRingLayout shown = set.layout();
-  u32 fewest[renderer::k_max_terrain_levels];
-  for (u32 l = 0; l < renderer::k_max_terrain_levels; ++l)
-    fewest[l] = ~0u;
-  u32 worst_withheld = 0;
-  for (u32 f = 0; f < 120; ++f) {
-    const Vec3 p{start.x + 1.6667f * static_cast<f32>(f), start.y, start.z};
-    observers.clear();
-    observers.add(p, 1.0f);
-    if (f == 0) world.clear(0);
-    world.update(observers, f, f == 0);
-    const renderer::TerrainRingLayout next = set.next_layout(p.x, p.z, shown);
-    if (next == shown) continue;
-    set.prepare(next);
-    u32 moved = 0;
-    REQUIRE_MESSAGE(set.update(p.x, p.z, 0.0, next, {}, nullptr, moved, &error), error);
-    shown = set.layout();
-    worst_withheld = std::max(worst_withheld, set.withheld());
+  struct Flight {
+    u32 first[renderer::k_max_terrain_levels] = {};
+    u32 fewest[renderer::k_max_terrain_levels] = {};
+    u32 last[renderer::k_max_terrain_levels] = {};
+    u32 withheld = 0;
+  };
+  const auto fly = [&](bool budgeted, Flight& out) {
+    renderer::TerrainTileSet set;
+    std::string error;
+    REQUIRE_MESSAGE(set.build(grid, t, k_flat, start.x, start.z, nullptr, &error), error);
+    World world;
+    RingParams params = DrawnTiles::ring_params(t);
+    if (!budgeted) {
+      params.max_activations = 0;
+      params.max_deactivations = 0;
+    }
+    REQUIRE(world.configure(params));
+    DrawnTiles drawn;
+    drawn.create(set);
+    world.add_consumer(drawn.consumer());
+    sim::ObserverSet observers;
+    renderer::TerrainRingLayout shown = set.layout();
+    for (u32 l = 1; l < set.level_count(); ++l) {
+      out.first[l] = set.chunks(l).size();
+      out.fewest[l] = out.first[l];
+    }
+    for (u32 f = 0; f < 360; ++f) {
+      const Vec3 p{start.x + 1.6667f * static_cast<f32>(f), start.y, start.z};
+      observers.clear();
+      observers.add(p, 1.0f);
+      if (f == 0) world.clear(0);
+      world.update(observers, f, f == 0);
+      const renderer::TerrainRingLayout next = set.next_layout(p.x, p.z, shown);
+      if (next == shown) continue;
+      set.prepare(next);
+      u32 moved = 0;
+      REQUIRE_MESSAGE(set.update(p.x, p.z, 0.0, next, {}, nullptr, moved, &error), error);
+      shown = set.layout();
+      out.withheld = std::max(out.withheld, set.withheld());
+      for (u32 l = 1; l < set.level_count(); ++l)
+        out.fewest[l] = std::min<u32>(out.fewest[l], set.chunks(l).size());
+    }
     for (u32 l = 1; l < set.level_count(); ++l)
-      fewest[l] = std::min<u32>(fewest[l], set.chunks(l).size());
+      out.last[l] = set.chunks(l).size();
+  };
+  Flight budgeted;
+  Flight free;
+  fly(true, budgeted);
+  fly(false, free);
+  MESSAGE("600 m at 100 m/s, the outer level's tiles, first fill / fewest / last: budgeted "
+          << budgeted.first[1] << " / " << budgeted.fewest[1] << " / " << budgeted.last[1]
+          << ", unbudgeted " << free.first[1] << " / " << free.fewest[1] << " / " << free.last[1]
+          << "; the finest level's " << free.first[4] << " / " << free.fewest[4]);
+  for (u32 l = 1; l < 5; ++l) {
+    CHECK(budgeted.fewest[l] > 0);
+    CHECK(free.fewest[l] > 0);
   }
-  MESSAGE("fewest tiles a level drew: " << fewest[1] << ", " << fewest[2] << ", " << fewest[3]
-                                        << ", " << fewest[4] << "; most withheld "
-                                        << worst_withheld);
-  for (u32 l = 1; l < set.level_count(); ++l)
-    CHECK(fewest[l] > 0);
+  // Unbudgeted, the two outer levels (thousands of tiles) never hold fewer than their first fill
+  // but for what a boundary crosses in a frame; the inner two are a handful, and step by whole
+  // tiles as the camera crosses one.
+  for (u32 l = 1; l < 3; ++l)
+    CHECK(free.fewest[l] * 100 >= free.first[l] * 97);
+  CHECK(free.withheld == 0);
+  // The budget's deficit shows: the outer level ends well short of the unbudgeted ring's. (Both
+  // end above their first fill: a moving ring also holds the band its tiles leave by, past the
+  // radius behind the camera, which a first fill from standing does not.)
+  CHECK(budgeted.last[1] * 100 < free.last[1] * 97);
 }

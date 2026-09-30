@@ -40,8 +40,19 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   params.max_activations = world::max_activations_tunable();
   params.max_deactivations = world::max_deactivations_tunable();
   // The world's tiles drawn: the ring the tile set was built for — the scene's block, or the
-  // world's defaults for `--terrain-tiles` on a scene with none.
-  if (tiles != nullptr) params = world::DrawnTiles::ring_params(tiles->tiles_desc());
+  // world's defaults for `--terrain-tiles` on a scene with none. **With no streamed placements the
+  // ring takes no budget**: the drawn ground's events are a hash map's writes, and what they cost
+  // is the renderer's rebuild, which runs on its own worker and takes whatever changed since the
+  // last one in one go. The default budget of eight activations an update fell behind the flow of
+  // desert-endless's rings at 100 m/s (about ten a frame, counting the tiles moving inwards), and
+  // its horizon thinned: 8,971 of 12,900 tiles held after 12 km (renderer.md, "Which tiles").
+  if (tiles != nullptr) {
+    params = world::DrawnTiles::ring_params(tiles->tiles_desc());
+    if (data.streamed.empty()) {
+      params.max_activations = 0;
+      params.max_deactivations = 0;
+    }
+  }
   const char* why = nullptr;
   if (!world_.configure(params, &why)) {
     if (error != nullptr) *error = std::string("the scene's world rings: ") + why;
