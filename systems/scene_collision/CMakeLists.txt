@@ -39,6 +39,10 @@ if(TARGET engine_scene_collision_tests)
   if(TARGET engine::terrain)
     target_link_libraries(engine_scene_collision_tests PRIVATE engine::terrain)
   endif()
+  # The committed erg names a sky (ADR-0048), which the scene reader finds through the registry too.
+  if(TARGET engine::sky)
+    target_link_libraries(engine_scene_collision_tests PRIVATE engine::sky)
+  endif()
 endif()
 
 # A tile's activation (a heightfield and a compound of 100 pieces), and a character step among them.

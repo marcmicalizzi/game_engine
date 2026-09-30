@@ -743,8 +743,59 @@ struct PlacementEntry @version(1) {
   params: json
 }
 
-/// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`.
-struct Scene @version(5) {
+/// How a sky's exposure is chosen (docs/subsystems/renderer.md, "Exposure").
+enum SkyExposure : u8 {
+  /// Metered from the light at the eye by the renderer's declared rule (incident-light metering at
+  /// ISO 100 of the sun and the moon on a level surface and the sky's mean, compensating less below
+  /// a knee), plus `exposure_compensation_ev`.
+  Auto = 0
+  /// A fixed exposure value, `exposure_ev100`, whatever the light.
+  Fixed = 1
+}
+
+/// A scene's sky (docs/subsystems/sky.md, ADR-0048): a physical atmosphere lit by a sun and a moon
+/// that a sky provider places on the world's calendar at the scene's latitude, from the one clock the
+/// ground's wind reads (game time since the world's epoch, which is midnight), with stars over it.
+/// **Absent, the scene draws exactly what it drew before**: the renderer's stand-in, a flat sky colour
+/// and a sun that is a direction. Append-only: a field added later has a default that draws what the
+/// block drew before it.
+struct Sky @version(1) {
+  /// The sky provider that draws it, by the name it registered under (docs/subsystems/scene_gen.md):
+  /// "earth", the sky capability's. Empty: "earth". A name the executable does not carry is refused
+  /// with a sentence naming it.
+  provider: string
+  /// Degrees north of the equator (negative south): the celestial pole's elevation over the
+  /// northern (-z) horizon. [-90, 90].
+  latitude_deg: f32 = 30 @unit(deg)
+  /// The day of the year the world's epoch (game time 0, midnight) begins, [1, 366]: 80 is the March
+  /// equinox, 172 the June solstice, 355 the December one. Game time runs on from it, a day every
+  /// 86,400 s.
+  day_of_year: f32 = 80
+  /// The moon's age at the epoch, days since new moon, [0, 29.53): 7.4 is first quarter, 14.8 full,
+  /// 22.1 last quarter. It keeps a synodic month from there.
+  moon_age_days: f32 = 0
+  /// The air's haze, a Linke-style turbidity, [1, 10]: how many clean atmospheres of extinction the
+  /// air has. 2 is very clear, 3 clear, 5 hazy; a desert is usually 2.5 to 4.
+  turbidity: f32 = 2
+  /// The region's albedo as the air sees it, [0, 1]: the ground for hundreds of kilometres round,
+  /// which the sky's multiple scattering and the sky below the horizon take, in the scene ground's
+  /// colour. Earth's mean is 0.3, a sand sea's broadband 0.35 to 0.4. Not the ground round the
+  /// point, which lights a surface's ambient term and is the scene's own (a terrain's sand).
+  ground_albedo: f32 = 0.3
+  /// Whether the moon lights the sky and the ground and is drawn.
+  moon: bool = true
+  /// Whether the stars are drawn.
+  stars: bool = true
+  exposure: SkyExposure = Auto
+  /// Auto: stops added to the rule's exposure, positive brighter.
+  exposure_compensation_ev: f32 = 0
+  /// Fixed: the exposure value at ISO 100. 15 is a sunlit scene, -3 a moonlit one.
+  exposure_ev100: f32 = 15
+}
+
+/// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
+/// version 6 `sky`.
+struct Scene @version(6) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -771,6 +822,8 @@ struct Scene @version(5) {
   /// Placement generators by name, with their parameters (ADR-0046): expanded in this order after
   /// the `ruins` entries, each standing on the terrain, or streamed a tile at a time in a world.
   placements: PlacementEntry[] @since(5)
+  /// The sky (ADR-0048). Null: the renderer's stand-in sky and sun, as before the field existed.
+  sky: Sky? @since(6)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.
@@ -838,7 +891,8 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-struct PassMs @version(4) {
+/// Version 5 added `sky`.
+struct PassMs @version(5) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -863,6 +917,10 @@ struct PassMs @version(4) {
   /// the changed instance slots copied in and their pairs expanded (pair_expand.slang). Zero on
   /// every other frame and for a scene read whole.
   tables: f64 = 0 @since(4)
+  /// A sky's passes (docs/subsystems/renderer.md, "The sky"): its tables when a scene is made, and
+  /// every frame the sky from the eye, the air to a surface and the frame's sums. What the sky adds
+  /// to the resolve is in `resolve`, where it runs. Zero for a scene with no sky.
+  sky: f64 = 0 @since(5)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -1017,7 +1075,7 @@ struct Percentiles @version(1) {
   mean: f64 = 0
 }
 
-struct PassPercentiles @version(4) {
+struct PassPercentiles @version(5) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -1034,6 +1092,8 @@ struct PassPercentiles @version(4) {
   /// A streamed world's table updates, over every frame (most are zero; FrameRecord.table_slots
   /// says which were not).
   tables: Percentiles @since(4)
+  /// A sky's tables and sums (PassMs.sky); zero for a scene with no sky.
+  sky: Percentiles @since(5)
 }
 
 /// One mesh as a run loaded it: what a number was measured on.

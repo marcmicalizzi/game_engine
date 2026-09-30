@@ -11,6 +11,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
+#include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
 
 #include <type_traits>
@@ -164,7 +165,17 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // the ground below"). Three floats with no pad word left to take them, so the block grew a row.
 // 336, not 320: `ground_detail`, the address of the ground's detail block below (2026-09-29), and a
 // pad word to keep the block a whole number of float4 rows. Zero for every frame that draws none.
+// Still 336 with the sky (2026-09-30): `sky_params` took that pad word and `sky_view` the one
+// beside `coverage_pitch`.
 ENGINE_EXPECT_SIZE(336, 8, gfx::ResolveParams);
+
+// The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
+// frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
+// each of up to eight views — one block a frame, read by the tables' passes, the resolve and the
+// reference. The frame's sums the sky pass writes are nine ambient coefficients and four rows.
+ENGINE_EXPECT_SIZE(80, 4, gfx::SkyView);
+ENGINE_EXPECT_SIZE(1008, 8, gfx::SkyParams);
+ENGINE_EXPECT_SIZE(208, 4, gfx::SkyFrame);
 
 // The ground's detail (ground_detail.h, docs/subsystems/gfx.md "The ground's detail"): the wind,
 // the ripples' shape and the kernels' lattice, the filter's slope variance, the slope fade and the
@@ -186,7 +197,7 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // 272, not 256: `ground`, the same albedo `ResolveParams::ground` carries, so an escaped ray below
 // the horizon sees the ground the resolve's hemisphere term puts there (2026-09-25).
 // 288, not 272: `ground_detail`, the resolve's block, which the reference draws unfiltered, and a
-// pad (2026-09-29).
+// pad (2026-09-29). Still 288 with the sky: `sky_params` took the pad (2026-09-30).
 ENGINE_EXPECT_SIZE(288, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each

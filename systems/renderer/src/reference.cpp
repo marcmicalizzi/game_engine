@@ -219,8 +219,15 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
 
   const RenderSettings& resolved = renderer_->settings().settings;
   FrameLighting lighting;
-  frame_lighting(scene_->data(), settings.frame_index,
-                 lighting_options(resolved, settings.sun_time_s), lighting);
+  // With a sky, the frame's own: its lights, and its block and tables, which the frame just built
+  // and nothing touches until the renderer draws again (sky.h).
+  const bool sky = renderer_->sky().active() && !settings.uniform_sky;
+  if (sky) {
+    frame_lighting(scene_->data(), renderer_->frame_sky(), lighting);
+  } else {
+    frame_lighting(scene_->data(), settings.frame_index,
+                   lighting_options(resolved, settings.sun_time_s), lighting);
+  }
   std::memcpy(lights_.mapped, lighting.lights, sizeof(lighting.lights));
 
   const View& view = renderer_->views()[0];
@@ -256,6 +263,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.ray_bias_steps = lighting.shadow_bias_steps;
   params.flags = (settings.uniform_sky ? gfx::k_pt_uniform_sky : 0u) |
                  (settings.pixel_center ? gfx::k_pt_pixel_center : 0u);
+  params.sky_params = sky ? renderer_->sky_params_address() : 0;
   // A furnace is a closed environment and *nothing else*: a furnace with a sun in it does not
   // test energy conservation, it tests the sun. So the flag that makes the environment uniform
   // also puts the sun and the analytic lights out.

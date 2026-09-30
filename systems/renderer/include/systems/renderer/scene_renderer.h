@@ -41,6 +41,7 @@
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/shadow_cascades.h>
+#include <systems/renderer/sky.h>
 #include <systems/renderer/streaming.h>
 #include <systems/renderer/view_set.h>
 
@@ -169,8 +170,32 @@ struct FrameStats {
   // of evaluated heights this frame copied onto the device, and what the copy cost.
   u64 terrain_upload_bytes = 0;
   f64 gpu_terrain_upload = 0.0;
+  // A sky's passes (renderer.md, "The sky"): its tables, the sky from the eye, the air, the sums.
+  f64 gpu_sky = 0.0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
+};
+
+// What the sky was (renderer.md, "The sky"; "Exposure"). The calendar and the lights are the last
+// frame submitted's, from the CPU; the exposure and the light it was metered from are the GPU's
+// sums
+// (`gfx::SkyFrame`), read one frame late out of the statistics block like every other count.
+struct SkyStats {
+  bool active = false;
+  f64 time_s = 0.0;            // the game time the sky stood at
+  f64 day_of_year = 0.0;       // fractional, 1 at January 1
+  f64 hour = 0.0;              // local apparent solar time
+  f32 sun_azimuth_deg = 0.0f;  // from +x towards +z, as `--sun` says it
+  f32 sun_elevation_deg = 0.0f;
+  f32 moon_azimuth_deg = 0.0f;
+  f32 moon_elevation_deg = 0.0f;
+  f32 moon_lit = 0.0f;          // the illuminated fraction
+  f32 moon_illuminance = 0.0f;  // outside the air, sun units
+  bool moon_key = false;        // the moon's is the shadow the cascaded maps draw
+  f32 ev100 = 0.0f;             // the exposure value the frame was exposed at
+  f32 lux = 0.0f;               // the light it was metered from (gfx::SkyFrame::exposure)
+  f32 sky_lux = 0.0f;           // the sky's share of it
+  f32 exposure = 0.0f;          // display per sun unit of radiance
 };
 
 // What a streamed world's changes cost the renderer over a run (docs/subsystems/renderer.md,
@@ -278,6 +303,10 @@ struct Stats {
   // A moving terrain's field uploads (`FrameStats::gpu_terrain_upload`), summed, and their bytes.
   f64 gpu_terrain_upload = 0.0;
   u64 terrain_upload_bytes = 0;
+  // A sky's passes (`FrameStats::gpu_sky`), summed: the frame's cost and no view's. What the sky
+  // adds to the resolve is in `gpu_resolve`.
+  f64 gpu_sky = 0.0;
+  SkyStats sky;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
@@ -314,6 +343,7 @@ struct Stats {
   f64 trace_ms() const noexcept { return gpu_trace / timed(); }
   f64 shadow_ms() const noexcept { return gpu_shadow / timed(); }
   f64 shadow_cull_ms() const noexcept { return gpu_shadow_cull / timed(); }
+  f64 sky_ms() const noexcept { return gpu_sky / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
   f64 view_ms(u32 view) const noexcept {
@@ -346,7 +376,16 @@ struct FrameDesc {
   // stands on its daily arc there. 0, the default, is the start — the sun every frame had before
   // the sun had a day, to the bit. The caller's clock and not the frame index's, because the rate
   // the day runs at can change while it runs (engine-view's `[` and `]`).
+  //
+  // **With a sky** (sky.h) it is the host's offset on the world's one clock: the sky stands at the
+  // time the ground's surface stands at (`GpuScene::ground_time_s`: the scene's `Terrain.time`, or
+  // a moving terrain's surface time) plus this, so a host that runs no day of its own draws the sky
+  // of the ground's hour and the wind's, and one that runs a day (`--sun-rate`, `--time-of-day`)
+  // moves the sky, the moon and the stars on from there (renderer.md, "One clock").
   f64 sun_time_s = 0.0;
+  // What the frame asks of a sky's exposure beyond the scene's rule (sky.h): stops added to it, or
+  // a fixed exposure value. Nothing without a sky.
+  ExposureRequest exposure;
   u32 view_mode = ~u32{0};  // override the settings' view mode; ~0 uses it
   // Override the settings' LOD pixel threshold for this frame; negative uses it. The reference
   // renderer passes 0 to make the frame's cut the *finest* clusters, so the acceleration
@@ -452,6 +491,13 @@ class SceneRenderer {
   // maps. The fit is the CPU's (`fit_shadow_cascades`), so this is what the frame used, not a
   // readback.
   const ShadowCascades& shadow_cascades() const noexcept { return cascades_; }
+  // The scene's sky (sky.h): inactive for a scene that names none. Its buffers are what the
+  // reference path tracer reads after a frame has built them.
+  const SkyPass& sky() const noexcept { return sky_; }
+  // The last frame's sky on the CPU, and the address of the `gfx::SkyParams` block it was drawn
+  // with (0 without a sky): valid until that frame's slot is recorded again.
+  const FrameSky& frame_sky() const noexcept { return frame_sky_; }
+  u64 sky_params_address() const noexcept { return sky_params_address_; }
 
   // Screen-sized resources for a new size. The GPU must be idle (the renderer waits).
   bool resize(u32 width, u32 height, std::string* error = nullptr);
@@ -582,6 +628,7 @@ class SceneRenderer {
   bool record_frame(const FrameDesc& frame, gfx::RgImage color_handle, std::string* error);
   void collect_slot(u32 slot);
   void fold_visible(u32 slot);
+  void fold_sky(u32 slot);
   void fill_view_layout() noexcept;
   bool read_visibility(CapturedFrame& out, const CaptureChannels& channels, std::string* error);
   u32 view_count() const noexcept { return views_.size(); }
@@ -608,6 +655,10 @@ class SceneRenderer {
   u32 shadow_texture_slot_ = gfx::BindlessSet::k_invalid_slot;
   u32 shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
   ShadowCascades cascades_;
+  // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
+  SkyPass sky_;
+  FrameSky frame_sky_;
+  u64 sky_params_address_ = 0;
   Vector<gfx::BufferResource> params_;       // two CullParams per view, per slot
   Vector<gfx::BufferResource> resolves_;     // one ResolveParams per view plus the lights, a slot
   Vector<gfx::BufferResource> stat_blocks_;  // host-visible copies of the argument blocks

@@ -39,6 +39,7 @@
 #include "material.slang"
 #include "sampling.slang"
 #include "scene.slang"
+#include "sky.slang"
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
@@ -74,7 +75,7 @@ struct PathTraceParams {
   uint background;    // packed RGBA8 of the sky, quantized on the CPU
   float ray_bias_steps;  // plus this many steps of the hit surface's own grid (ray_offset)
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
-  uint64_t pad;
+  uint64_t sky_params;     // SkyParams* (sky.slang): the frame's physical sky; 0: the stand-in
 };
 
 struct PathTracePush {
@@ -108,8 +109,18 @@ SceneGeometry geometry_of(PathTraceParams* params) {
 // resolve's, and the furnace flag collapses them into one. An escaped secondary ray sees the
 // resolve's two halves: the sky above the horizon, and below it the ground the resolve's
 // hemisphere term puts there — the scene's ground albedo under this frame's sun and sky.
+//
+// **With a sky** (`sky_params`) the two roles are the sky's: a primary miss sees what the resolve
+// draws for an uncovered pixel (`sky_background`: the sky, the discs and the stars through the air),
+// and an escaped secondary ray the sky's scattered light above the horizon and its ground below it
+// (`sky_environment`), never the discs, which next-event estimation reaches.
 float3 environment(PathTraceParams* params, float3 direction, bool primary) {
   if ((params->flags & k_pt_uniform_sky) != 0) return params->sky.rgb;
+  if (params->sky_params != 0) {
+    SkyParams* sky = (SkyParams*)params->sky_params;
+    if (primary) return sky_background(sky, direction, sky->views[0].pixel.x);
+    return sky_environment(sky, (SkyFrame*)sky->frame, direction);
+  }
   if (primary) return pow(max(params->sky.rgb, 0.0), 2.2);
   const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
   return environment_radiance(params->sky.rgb, ground, direction);
@@ -138,9 +149,13 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
 float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
                   float3 shadow_origin, float bias) {
   float3 direct = float3(0.0);
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
   if (params->sun.w > 0.0 && dot(surface.normal, params->sun.xyz) > 0.0 &&
       !occluded(params, shadow_origin, params->sun.xyz, 1e30)) {
-    direct += brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
+    float3 sun = float3(params->sun.w);
+    if (has_sky) sun = sky_light_at(sky, position, params->sun.xyz, sky->sun_illuminance.rgb);
+    direct += brdf_direct(surface, params->sun.xyz, sun);
   }
   ResolveLight* lights = (ResolveLight*)params->lights;
   for (uint i = 0; i < params->light_count; ++i) {
@@ -150,6 +165,9 @@ float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
     if (!light_sample(lights[i], position, light_dir, radiance, light_distance)) continue;
     if (dot(surface.normal, light_dir) <= 0.0) continue;
     if (occluded(params, shadow_origin, light_dir, light_distance - bias)) continue;
+    if (has_sky && lights[i].direction_type.w >= 1.5) {
+      radiance = sky_light_at(sky, position, light_dir, radiance);
+    }
     direct += brdf_direct(surface, light_dir, radiance);
   }
   return direct;
@@ -165,6 +183,10 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   float3 radiance = float3(0.0);
   float3 throughput = float3(1.0);
+  // With a sky, the air between the eye and the first hit: everything the path gathers from the hit
+  // on crosses it, so it is applied once, at the end, as the resolve applies it to its pixel.
+  float3 air_inscatter = float3(0.0);
+  float air_transmittance = 1.0;
   for (uint bounce = 0;; ++bounce) {
     RayDesc ray;
     ray.Origin = origin;
@@ -185,7 +207,13 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
       radiance += throughput * environment(params, direction, bounce == 0);
       break;
     }
-    if (bounce == 0) hit_primary = true;
+    if (bounce == 0) {
+      hit_primary = true;
+      if (params->sky_params != 0) {
+        const float t = query.CommittedRayT();
+        sky_aerial((SkyParams*)params->sky_params, direction, t, air_inscatter, air_transmittance);
+      }
+    }
 
     // The hit, decoded exactly as ray_visibility.slang decodes one: the CLAS record's base
     // geometry index is the visible entry, the primitive index the triangle within the cluster.
@@ -288,6 +316,9 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     origin = s.position + (dot(next, front) >= 0.0 ? front : -front) * bias;
     direction = next;
   }
+  if (hit_primary && params->sky_params != 0) {
+    radiance = radiance * air_transmittance + air_inscatter;
+  }
   return radiance;
 }
 
@@ -348,12 +379,19 @@ void tonemap_main(uint3 id : SV_DispatchThreadID) {
   uint* coverage = (uint*)params->coverage;
   uint* output = (uint*)params->output;
   const float4 value = accum[pixel];
-  const float3 mean = value.w > 0.0 ? value.rgb / value.w : float3(0.0);
+  float3 mean = value.w > 0.0 ? value.rgb / value.w : float3(0.0);
+  // With a sky there is no flat background to hand over, and every pixel goes through the frame's
+  // exposure and the transfer curve, as the resolve's do.
+  const bool has_sky = params->sky_params != 0 && (params->flags & k_pt_uniform_sky) == 0;
   const bool background =
-      coverage[pixel] == 0 && (params->flags & k_pt_uniform_sky) == 0;
+      coverage[pixel] == 0 && (params->flags & k_pt_uniform_sky) == 0 && !has_sky;
   if (background) {
     output[pixel] = params->background;
     return;
+  }
+  if (has_sky) {
+    SkyParams* sky = (SkyParams*)params->sky_params;
+    mean = sky_tone(sky, mean * sky_exposure((SkyFrame*)sky->frame));
   }
   const float3 encoded = saturate(display_encode(mean));
   const uint r = uint(encoded.x * 255.0 + 0.5);

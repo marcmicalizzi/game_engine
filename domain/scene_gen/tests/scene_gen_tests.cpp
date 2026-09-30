@@ -5,6 +5,7 @@
 // ground with no grid of its own is sampled a point at a time, the same heights as its point
 // function, and the view a placement generator stands on is that function.
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/scene_gen/sky.h>
 
 #include <doctest/doctest.h>
 
@@ -182,4 +183,76 @@ TEST_CASE("scene_gen: a ground with no grid of its own is its point function on 
   GroundProvider moved = std::move(ground);
   CHECK(moved.valid());
   CHECK_FALSE(ground.valid());
+}
+
+namespace {
+
+// A sky of this test's own (sky.h): the sun overhead whatever the time, Earth's air and two stars.
+struct Still {
+  Atmosphere air;
+  Star stars[2];
+};
+void still_destroy(void* state) noexcept { delete static_cast<Still*>(state); }
+void still_state(const void*, f64 time_s, SkyState& out) noexcept {
+  out = SkyState{};
+  out.sun = Vec3{0.0f, 1.0f, 0.0f};
+  out.hour = time_s / 3600.0;
+}
+const Atmosphere* still_air(const void* state) noexcept {
+  return &static_cast<const Still*>(state)->air;
+}
+std::span<const Star> still_stars(const void* state) noexcept {
+  return std::span<const Star>(static_cast<const Still*>(state)->stars, 2);
+}
+constexpr SkyOps k_still_ops{.destroy = &still_destroy,
+                             .state = &still_state,
+                             .atmosphere = &still_air,
+                             .stars = &still_stars};
+bool still_make(const scene::Sky&, SkyProvider& out, std::string*) {
+  out = SkyProvider(&k_still_ops, new Still{});
+  return true;
+}
+constexpr SkyProviderDesc k_still{.name = "scene-gen-test-still", .make = &still_make};
+const Registrar k_still_registrar{k_still};
+
+}  // namespace
+
+TEST_CASE("scene_gen: a sky provider is the third kind, found by its name and made from an entry") {
+  const GeneratorRegistry& registry = GeneratorRegistry::global();
+  CHECK(registry.find_sky("scene-gen-test-still") == &k_still);
+  // A table of its own: a sky's name is not a ground's, nor a ground's a sky's.
+  CHECK(registry.find_ground("scene-gen-test-still") == nullptr);
+  CHECK(registry.find_sky("scene-gen-test-tilt") == nullptr);
+  bool listed = false;
+  for (const std::string_view name : registry.sky_names())
+    listed = listed || name == "scene-gen-test-still";
+  CHECK(listed);
+  scene::Sky entry;
+  entry.provider = "scene-gen-test-still";
+  CHECK(sky_provider_name(entry) == "scene-gen-test-still");
+  entry.provider.clear();
+  CHECK(sky_provider_name(entry) == k_default_sky);  // "earth", the capability's, when empty
+  SkyProvider sky;
+  std::string error;
+  REQUIRE(registry.find_sky("scene-gen-test-still")->make(entry, sky, &error));
+  SkyState state;
+  sky.state(7200.0, state);
+  CHECK(state.hour == 2.0);
+  CHECK(sky.stars().size() == 2);
+  CHECK(sky.atmosphere().bottom_radius_km == 6360.0f);
+  SkyProvider moved = std::move(sky);
+  CHECK(moved.valid());
+  CHECK_FALSE(sky.valid());
+  // Refused by name, with the sentence the other kinds have; one name, one descriptor.
+  CHECK(registry.unknown_sky("mars").find("names the sky provider \"mars\"") == 0);
+  GeneratorRegistry local;
+  constexpr SkyProviderDesc again{.name = "scene-gen-test-still", .make = &still_make};
+  constexpr SkyProviderDesc unmade{.name = "unmade", .make = nullptr};
+  CHECK(local.add(k_still));
+  CHECK(local.add(k_still));
+  CHECK_FALSE(local.add(again));
+  CHECK_FALSE(local.add(unmade));
+  CHECK(local.unknown_sky("earth") ==
+        "names the sky provider \"earth\", which this build does not have: its capability is "
+        "switched off or not linked into this executable (it has scene-gen-test-still)");
 }

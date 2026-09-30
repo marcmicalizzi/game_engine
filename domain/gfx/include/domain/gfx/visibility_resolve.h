@@ -40,10 +40,11 @@ inline constexpr u32 k_no_scene = 0xFFFFFFFFu;
 // ResolveParams::shadow_flags. The first two say **which** lights are shadowed, the third **how**:
 // the resolve's shadow query is one function with two implementations, a ray query against the
 // top-level structure in `scene`, and a filtered lookup in the cascaded shadow maps behind
-// `shadow_maps` when `k_shadow_cascades` is set. The maps shadow the sun alone; with the bit set
-// `k_shadow_lights` is ignored, so the point and spot lights are unshadowed under the maps.
+// `shadow_maps` when `k_shadow_cascades` is set. The maps shadow one light, `ShadowMapParams::
+// light`: the sun, or on a sky's night the moon (a directional light of the array, which is when
+// the renderer sets `k_shadow_lights` beside the maps); every other light is unshadowed under them.
 inline constexpr u32 k_shadow_sun = 1u;       // the directional sun casts
-inline constexpr u32 k_shadow_lights = 2u;    // the analytic point and spot lights cast
+inline constexpr u32 k_shadow_lights = 2u;    // the lights of the array cast
 inline constexpr u32 k_shadow_cascades = 4u;  // the sun's shadow comes from the cascaded maps
 
 // ---- cascaded shadow maps (docs/plan/04-renderer.md §4.4, docs/subsystems/renderer.md) --------
@@ -161,7 +162,11 @@ struct ShadowMapParams {
   // How far the lookup point leaves the surface along its geometric normal, in texels of the
   // cascade it is read from, at a grazing or back-facing surface; `(1 - n.l)` of it elsewhere.
   f32 normal_offset = 0.0f;
-  u32 pad = 0;
+  // **Whose shadow the maps are**: 0 the sun (`ResolveParams::sun`), and i + 1 the directional
+  // light i of the light array. It took the pad word, and its zero is the sun every map before it
+  // was drawn from. A sky's night draws the maps from the moon, which is a directional light of the
+  // array (docs/subsystems/renderer.md, "The moon"), so the moon is shadowed as the sun is.
+  u32 light = 0;
 };
 static_assert(sizeof(ShadowMapParams) == 400);
 static_assert(sizeof(ShadowMapParams) % 16 == 0, "the block is read as float4 rows on the GPU");
@@ -262,10 +267,15 @@ inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotatio
 
 inline constexpr f32 k_light_point = 0.0f;  // ResolveLight::direction_type.w
 inline constexpr f32 k_light_spot = 1.0f;
+// A light at infinity: `position_radius.xyz` is the direction **towards** it, and it arrives at
+// every point with `color_intensity` and no falloff — the moon under a sky (renderer.md, "The
+// moon"), which also dims it by the air along that direction. Its shadow ray runs to infinity.
+inline constexpr f32 k_light_directional = 2.0f;
 
 // One analytic light. Mirrors ResolveLight in visibility_resolve.slang. 64 bytes.
 // The falloff is inverse square windowed to zero at the radius of influence (Karis), so a light
-// contributes nothing beyond it and culling by radius cannot change the picture.
+// contributes nothing beyond it and culling by radius cannot change the picture; a directional
+// light (`k_light_directional`) has none.
 struct ResolveLight {
   Vec4 position_radius{};  // xyz world position, w radius of influence
   Vec4 color_intensity{};  // rgb linear color, w radiant intensity scale
@@ -397,7 +407,9 @@ struct ResolveParams {
   // empty pixel was the resolve's whole fixed cost.
   u64 coverage = 0;
   u32 coverage_pitch = 0;  // tiles per row: gfx::hiz_coverage_pitch(width)
-  u32 pad2 = 0;            // keeps the block 16-byte aligned
+  // Which of the sky's views this one is (`SkyParams::views`): how an uncovered pixel finds the
+  // direction it looks along. Read only with `sky_params`; it took the pad word.
+  u32 sky_view = 0;
   // The **deformed normal pool**: one octahedral `u32` per vertex of the frame's deformed-vertex
   // pool, parallel to it and written by the same pass, in exactly the packing
   // `geometry::VertexAttributes::normal_oct` uses — so the shader decodes it with the function it
@@ -426,7 +438,14 @@ struct ResolveParams {
   // filtered by its footprint. Zero for every caller that does not draw it, and then no material
   // reads anything it did not read before.
   u64 ground_detail = 0;
-  u64 pad3 = 0;
+  // **The sky** (`SkyParams`, sky.h; docs/subsystems/gfx.md, "The sky"): a physical atmosphere, a
+  // sun and a moon placed by the scene's sky provider, and stars. With it an uncovered pixel draws
+  // the sky along its direction, a surface takes the sun and the directional lights through the
+  // air, its ambient from the sky's own hemisphere and the air between it and the eye, and the
+  // whole is exposed by the frame's rule; `sky` and `sky_is_clear` are not read. Zero — every scene
+  // that names no sky — reads exactly what the resolve read before. It took the last pad word, so
+  // the block's size is unchanged.
+  u64 sky_params = 0;
 };
 static_assert(sizeof(ResolveParams) == 336);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");

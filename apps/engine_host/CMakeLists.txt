@@ -30,7 +30,7 @@ endforeach()
 # their registrars alone, which is what makes `render.load` read a scene whose terrain names the
 # dunes or whose entries name the ruins or the city. Nothing here calls one: the scene reader finds
 # each by the name a scene gives.
-foreach(_gen city ruins terrain)
+foreach(_gen city ruins sky terrain)
   if(TARGET engine::${_gen})
     list(APPEND _host_deps ${_gen})
   endif()

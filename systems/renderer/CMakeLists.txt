@@ -35,7 +35,7 @@ engine_module(NAME renderer LAYER systems
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
-          src/terrain_rings.cpp)
+          src/terrain_rings.cpp src/sky.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -63,7 +63,16 @@ if(TARGET engine::terrain)
        # The sand's detail across the rings' and their chunks' borders, and the dunes' wind.
        tests/ground_detail_rings_tests.cpp)
 endif()
+if(TARGET engine::sky)
+  # A scene naming a sky: the entry read and checked through the registry, the lights, the sky the
+  # resolve and the reference draw against the CPU mirror, the stand-in kept without one, and — where
+  # the terrain capability is too — the one clock over a terrain's time.
+  list(APPEND _renderer_tests tests/sky_scene_tests.cpp)
+endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
+if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)
+  target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_SKY_TESTS_TERRAIN=1)
+endif()
 # The sand's detail is held to its CPU mirror in double precision, which lives beside the BSDF's
 # in domain/gfx's tests (ground_detail_reference.h, brdf_reference.h): one mirror for both modules.
 if(TARGET engine_renderer_tests)
@@ -71,7 +80,7 @@ if(TARGET engine_renderer_tests)
 endif()
 # The generators reach the scene reader through the registry, so the tests that read a scene naming
 # one link its capability as a host does: its registrar is what makes the name one the reader knows.
-foreach(_gen ruins terrain)
+foreach(_gen ruins sky terrain)
   if(TARGET engine_renderer_tests AND TARGET engine::${_gen})
     target_link_libraries(engine_renderer_tests PRIVATE engine::${_gen})
   endif()

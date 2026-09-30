@@ -61,6 +61,7 @@ One page per module, created in the same change that creates the module. Templat
 | scene_gen | domain | [scene_gen.md](scene_gen.md) |
 | ruins (capability) | domain | [ruins.md](ruins.md) |
 | terrain (capability) | domain | [terrain.md](terrain.md) |
+| sky (capability) | domain | [sky.md](sky.md) |
 | city (capability) | domain | [city.md](city.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |

@@ -24,6 +24,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/terrain.h>
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -203,6 +204,10 @@ struct SceneDesc {
   // instances in `instances`.
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // The scene's sky (`engine.scene.Sky`; sky.h, ADR-0048): the entry as the file gave it, its
+  // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
+  // as before the field existed.
+  std::optional<scene::Sky> sky;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -325,6 +330,8 @@ struct SceneData {
   bool dynamic = false;
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
+  std::optional<scene::Sky> sky;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

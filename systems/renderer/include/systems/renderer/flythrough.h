@@ -79,6 +79,10 @@ struct FlightOptions {
   // seconds into the day — the numbers engine-view's plain offscreen run lights frame f with — and
   // every repeat, and every warm-up frame (at the path's first camera), is lit alike.
   f64 sun_rate = 0.0;
+  // Where the day stands at path frame 0, game seconds (`FrameDesc::sun_time_s`): path frame f is
+  // lit `sun_time_s + sun_rate * f / 60` into it. A sky's hour (engine-view's `--time-of-day`,
+  // renderer.md "One clock"); 0 is the ground's own time.
+  f64 sun_time_s = 0.0;
 };
 
 struct Flight {

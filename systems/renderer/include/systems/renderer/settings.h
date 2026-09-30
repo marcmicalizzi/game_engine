@@ -104,8 +104,14 @@ struct RenderSettings {
   // stand where frame 0 puts them, so a time-lapse's sand is lit the same from frame to frame.
   bool orbit_lights = false;
   // The sun, degrees (lighting.h, `sun_direction`); unset takes the `renderer.sun.*` tunables.
+  // Not read with a sky, whose sun its provider places (sky.h).
   std::optional<f32> sun_azimuth_deg;
   std::optional<f32> sun_elevation_deg;
+  // A sky's exposure for the whole run (renderer.md, "Exposure"; engine-view's `--exposure` and
+  // `--exposure-ev100`): stops added to the rule's, and a fixed exposure value that overrides it.
+  // A frame's `ExposureRequest` adds to both. Nothing without a sky.
+  f32 exposure_ev = 0.0f;
+  std::optional<f32> exposure_ev100;
   bool deform = false;  // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;

@@ -84,7 +84,8 @@ float2 material_duv(ResolveMaterial material, float2 duv) {
 struct ResolveLight {
   float4 position_radius;  // xyz world position, w radius of influence
   float4 color_intensity;  // rgb linear color, w radiant intensity scale
-  float4 direction_type;   // xyz spot direction (towards the lit surface), w 0 point, 1 spot
+  float4 direction_type;   // xyz spot direction (towards the lit surface), w 0 point, 1 spot,
+                           // 2 directional (position_radius.xyz then points towards the light)
   float4 spot;             // x cos inner, y cos outer, zw unused
 };
 
@@ -578,6 +579,15 @@ float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
 // skip it before they trace a shadow ray.
 bool light_sample(ResolveLight light, float3 position, out float3 direction, out float3 radiance,
                   out float distance) {
+  // A light at infinity (gfx::k_light_directional): its direction is `position_radius.xyz`, and it
+  // arrives everywhere with its colour and no falloff; its shadow ray runs to infinity. What a sky
+  // does to it on the way — the air's transmittance — is the caller's (sky.slang, `sky_light_at`).
+  if (light.direction_type.w >= 1.5) {
+    direction = normalize(light.position_radius.xyz);
+    radiance = light.color_intensity.rgb * light.color_intensity.w;
+    distance = 1e30;
+    return true;
+  }
   const float3 to_light = light.position_radius.xyz - position;
   const float distance_sq = dot(to_light, to_light);
   float attenuation = brdf_distance_attenuation(distance_sq, light.position_radius.w);

@@ -159,4 +159,17 @@ struct FrameLighting {
 void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
                     FrameLighting& out);
 
+// **With a sky** (sky.h; renderer.md, "The sky"): the sky's lights in place of the stand-in's. The
+// sun is the provider's at the frame's time and shines at 1 — the resolve and the reference take
+// its illuminance and colour from the sky through the air, and a sun under the planet's horizon is
+// dark because the air says so, not by a fade. The moon, when the scene's is on, is **a directional
+// light of the array** (`gfx::k_light_directional`), its illuminance outside the air, which the
+// resolve also dims by the air along it and shadows like the sun: a ray in `--shadows rt`, and the
+// cascaded maps when it is the key light of a night (`FrameSky::moon_key`). The stand-in's two
+// point lights are left out, whatever `lights` says: they stand for a scene's authored lights, of
+// which a sky's scene has none, and a light four radii wide at the brightness of the stand-in sun
+// would be noon at midnight. The ground and the rays' offsets are the stand-in's.
+struct FrameSky;
+void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out);
+
 }  // namespace engine::renderer

@@ -8,6 +8,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
+#include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -923,6 +924,25 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   }
   out.name = file.name;
   out.file_hash = hash_bytes(text.data(), text.size());
+  // The sky (sky.h, ADR-0048): its provider is found and made here, as a terrain's ground provider
+  // is below, so a name this executable does not carry, or an entry the provider refuses, refuses
+  // the file with a sentence rather than drawing the stand-in the scene did not ask for.
+  if (file.sky.has_value()) {
+    const std::string_view sky_name = scene_gen::sky_provider_name(*file.sky);
+    const scene_gen::SkyProviderDesc* sky_desc =
+        scene_gen::GeneratorRegistry::global().find_sky(sky_name);
+    if (sky_desc == nullptr) {
+      error = path + ": the sky " + scene_gen::GeneratorRegistry::global().unknown_sky(sky_name);
+      return false;
+    }
+    scene_gen::SkyProvider check;
+    std::string why;
+    if (!sky_desc->make(*file.sky, check, &why)) {
+      error = path + ": " + why;
+      return false;
+    }
+    out.sky = *file.sky;
+  }
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -1439,6 +1459,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.world = resolved.world;
   out.streamed = resolved.streamed;
   out.dynamic = resolved.world.enabled;
+  out.sky = resolved.sky;
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;

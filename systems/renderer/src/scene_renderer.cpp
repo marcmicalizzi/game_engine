@@ -48,6 +48,17 @@ constexpr u32 k_shadow_stat_words = 5;
 constexpr u64 shadow_stat_base(u32 views) noexcept {
   return u64{k_stat_words} * views + k_alloc_words + k_rt_words;
 }
+// Where the sky's sums start, in bytes: behind every cascade's block, on a 16-byte boundary.
+constexpr u64 sky_stat_offset(u32 views, u32 cascades) noexcept {
+  return (sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades) + 15) &
+         ~u64{15};
+}
+// Where a slot's `gfx::SkyParams` is in its resolve buffer: behind the views' blocks, the lights,
+// the shadow maps' block and the ground's detail.
+constexpr u64 sky_params_offset(u32 views) noexcept {
+  return sizeof(gfx::ResolveParams) * views + k_view_lights * sizeof(gfx::ResolveLight) +
+         sizeof(gfx::ShadowMapParams) + sizeof(gfx::GroundDetailParams);
+}
 // The depth atlas's format: 32-bit float, because a cascade's depth range is the scene's extent
 // along the light — kilometres on the desert overlook — and 16 bits of that is 8 cm.
 constexpr gfx::Format k_shadow_format = gfx::Format::D32Sfloat;
@@ -305,8 +316,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // pool passes and the three allocations, the software raster, the six acceleration
       // structure zones, the trace and the resolve, with room to spare. The shadow cascades add
       // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
-      // allocation, the depth raster), twelve; a streamed world's table update two more.
-      !timer_.create(device, desc.frames_in_flight, 43 + 16 * (views - 1), error)) {
+      // allocation, the depth raster), twelve; a streamed world's table update two more; a sky's
+      // tables, sky-view, air and sums four more.
+      !timer_.create(device, desc.frames_in_flight, 47 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -325,20 +337,18 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
-  const u64 stat_bytes =
-      sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades);
+  // The statistics block ends with the sky's sums (`gfx::SkyFrame`), copied there after the
+  // frame, for a scene with a sky.
+  const u64 stat_bytes = sky_stat_offset(views, cascades) + sizeof(gfx::SkyFrame);
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
-    // with the frame's lights behind the last, the shadow maps' block behind those and the ground's
-    // detail behind that, and one statistics block per view.
+    // with the frame's lights behind the last, the shadow maps' block behind those, the ground's
+    // detail behind that and the sky's block last, and one statistics block per view.
     ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * (2 * views + cascades), k_address,
                             true, params_[slot], error) &&
-         gfx::create_buffer(device,
-                            sizeof(gfx::ResolveParams) * views +
-                                k_view_lights * sizeof(gfx::ResolveLight) +
-                                sizeof(gfx::ShadowMapParams) + sizeof(gfx::GroundDetailParams),
-                            k_address, true, resolves_[slot], error) &&
+         gfx::create_buffer(device, sky_params_offset(views) + sizeof(gfx::SkyParams), k_address,
+                            true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
                             stat_blocks_[slot], error);
     if (ok) std::memset(stat_blocks_[slot].mapped, 0, stat_bytes);
@@ -397,6 +407,19 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       return false;
     }
     ENGINE_LOG_INFO(log_renderer, "shader manifest", log::field("path", manifest));
+  }
+  // The scene's sky, when it names one (sky.h): its provider made through the registry, its tables'
+  // buffers and pipelines, its stars. Nothing for a scene that names none.
+  if (!sky_.create(device, scene.data(), shaders_, error)) {
+    destroy();
+    return false;
+  }
+  // The world's one clock (renderer.md, "One clock"): the sky stands at the time the ground's
+  // surface does, which the GPU scene keeps for a terrain with a detail block and a moving
+  // terrain's motion updates every frame. A terrain with neither starts it here, at the scene's own
+  // time.
+  if (sky_.active() && scene.data().terrain.enabled && !scene.ground_detail()) {
+    scene.set_ground_time(scene.data().terrain.time_s);
   }
 
   graph_ = new gfx::RenderGraph(device);
@@ -691,6 +714,9 @@ void SceneRenderer::destroy() noexcept {
   }
   targets_.destroy(device);
   pipelines_.destroy(device);
+  sky_.destroy();
+  frame_sky_ = FrameSky{};
+  sky_params_address_ = 0;
   destroy_shadow_maps();
   shaders_.destroy();
   if (color_.image.valid()) gfx::destroy_image(device, color_);
@@ -997,6 +1023,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_pair_expand = timer_.ms("pair expand");
     last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
+    last.gpu_sky = timer_.ms("sky");
     last.gpu_total = timer_.total_ms();
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
@@ -1035,12 +1062,34 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_shadow_cull += timer_.ms("shadow cull");
     stats_.gpu_shadow += timer_.ms("shadow cull") + timer_.ms("shadow");
     stats_.gpu_terrain_upload += timer_.ms("terrain upload");
+    // The sky's passes are drawn once for every view: the frame's cost.
+    stats_.gpu_sky += timer_.ms("sky");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
+  fold_sky(slot);
 }
 
-void SceneRenderer::collect_visible() { fold_visible(frames_.slot()); }
+// The sky's sums of the frame that last used this slot (gfx::SkyFrame): the exposure it was drawn
+// at and what it was metered from.
+void SceneRenderer::fold_sky(u32 slot) {
+  if (!sky_.active() || resolved_.direct) return;
+  const u32 cascades = resolved_.csm ? scene_->shadow_cascades() : 0u;
+  gfx::SkyFrame sums;
+  std::memcpy(
+      &sums,
+      static_cast<const u8*>(stat_blocks_[slot].mapped) + sky_stat_offset(view_count(), cascades),
+      sizeof(sums));
+  stats_.sky.exposure = sums.exposure.x;
+  stats_.sky.ev100 = sums.exposure.y;
+  stats_.sky.lux = sums.exposure.z;
+  stats_.sky.sky_lux = sums.exposure.w;
+}
+
+void SceneRenderer::collect_visible() {
+  fold_visible(frames_.slot());
+  fold_sky(frames_.slot());
+}
 
 void SceneRenderer::begin_frame() {
   commands_ = frames_.begin_frame();
@@ -1405,8 +1454,47 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // reference path tracer has to light the same scene with the same numbers at the same frame
   // index or a comparison between the two measures the lights (04 §4.8, lighting.h). The sun is
   // where the caller's day has put it (`FrameDesc::sun_time_s`; 0 is the sun it always had).
+  //
+  // **With a sky** the lights are the sky's (lighting.h, sky.h): its provider's sun and moon at the
+  // world's one clock — the time the ground's surface stands at, plus the frame's own offset — and
+  // the frame's `gfx::SkyParams` behind the ground's detail in the same buffer.
+  const bool sky_on = sky_.active();
+  frame_sky_ = FrameSky{};
+  u64 sky_address = 0;
   FrameLighting lighting;
-  frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting);
+  if (sky_on) {
+    sky_.evaluate(scene.ground_time_s() + frame.sun_time_s, frame_sky_);
+    frame_lighting(data, frame_sky_, lighting);
+    // The run's exposure (settings) under the frame's own (keys): a frame's fixed value wins, then
+    // the run's, and the compensations add.
+    ExposureRequest exposure = frame.exposure;
+    exposure.compensation_ev += settings.exposure_ev;
+    if (!exposure.fixed && settings.exposure_ev100.has_value()) {
+      exposure.fixed = true;
+      exposure.ev100 = *settings.exposure_ev100;
+    }
+    gfx::SkyParams block;
+    sky_.fill(frame_sky_, views_, frame.camera, exposure, block);
+    std::memcpy(resolve_bytes + sky_params_offset(views), &block, sizeof(block));
+    sky_address = resolves_[slot].address + sky_params_offset(views);
+    SkyStats& s = stats_.sky;
+    s.active = true;
+    s.time_s = frame_sky_.time_s;
+    s.day_of_year = frame_sky_.state.day_of_year;
+    s.hour = frame_sky_.state.hour;
+    const Vec3 sun = normalize(frame_sky_.state.sun);
+    const Vec3 moon = normalize(frame_sky_.state.moon);
+    s.sun_elevation_deg = degrees(std::asin(std::clamp(sun.y, -1.0f, 1.0f)));
+    s.sun_azimuth_deg = degrees(std::atan2(sun.z, sun.x));
+    s.moon_elevation_deg = degrees(std::asin(std::clamp(moon.y, -1.0f, 1.0f)));
+    s.moon_azimuth_deg = degrees(std::atan2(moon.z, moon.x));
+    s.moon_lit = frame_sky_.state.moon_lit;
+    s.moon_illuminance = frame_sky_.moon ? frame_sky_.state.moon_illuminance : 0.0f;
+    s.moon_key = frame_sky_.moon_key;
+  } else {
+    frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting);
+  }
+  sky_params_address_ = sky_address;
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
 
@@ -1441,11 +1529,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     fit.cascades = cascade_runs;
     fit.resolution = settings.shadow_map;
     fit.distance = settings.shadow_distance;
-    fit_shadow_cascades(views_, frame.camera, lighting.sun.xyz(), data.center, data.radius, fit,
-                        cascades_);
+    // The maps follow the key light: the sun, or on a sky's night the moon, the array's light 0
+    // (`gfx::ShadowMapParams::light` is its index plus one).
+    const Vec3 key =
+        frame_sky_.moon_key ? lighting.lights[0].position_radius.xyz() : lighting.sun.xyz();
+    fit_shadow_cascades(views_, frame.camera, key, data.center, data.radius, fit, cascades_);
     gfx::ShadowMapParams maps;
     shadow_map_params(cascades_, shadow_texture_slot_, cascade_runs, shadow_sampler_slot_, maps);
     if (settings.shadow_normal_offset >= 0.0f) maps.normal_offset = settings.shadow_normal_offset;
+    maps.light = frame_sky_.moon_key ? 1u : 0u;
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights), &maps,
                 sizeof(maps));
     // The view whose cut is finest: the largest projection scale over threshold.
@@ -1584,7 +1676,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.sky = lighting.sky;
     // Both raster paths clear the colour target to exactly this before they draw, so an empty
     // pixel is a fragment whose value is already in the target: the shader discards it instead.
-    resolve.sky_is_clear = 1;
+    // With a sky no clear is the sky, and every uncovered pixel is written (sky_pixel).
+    resolve.sky_is_clear = sky_on ? 0u : 1u;
+    resolve.sky_params = sky_address;
+    resolve.sky_view = v;
     // Skip the visibility read for a 32 x 32 tile with nothing in it. The mask is exact **only**
     // when the last write to the visibility buffer happened before the last Hi-Z build, and that
     // is exactly when two-pass occlusion culling is on: `resolve_settings` allows it only under
@@ -1646,6 +1741,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
     if (csm) {
       resolve.shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_cascades;
+      // On a sky's night the maps are the moon's, a light of the array, which the query then asks.
+      if (frame_sky_.moon_key) resolve.shadow_flags |= gfx::k_shadow_lights;
       resolve.shadow_maps = shadow_maps_address;
     }
     resolve.ground_detail = ground_detail_address;
@@ -2069,6 +2166,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   sky.float32[1] = k_sky.y;
   sky.float32[2] = k_sky.z;
   sky.float32[3] = k_sky.w;
+  // The sky's tables and sums (sky.h). The star table is written once at create and read here only.
+  struct SkyBuffers {
+    gfx::RgBuffer transmittance, multiscatter, view, aerial, frame;
+  } sb_sky{};
+  if (sky_on) {
+    sb_sky.transmittance = graph.import_buffer("sky transmittance", sky_.transmittance);
+    sb_sky.multiscatter = graph.import_buffer("sky multiscatter", sky_.multiscatter);
+    sb_sky.view = graph.import_buffer("sky view", sky_.sky_view);
+    sb_sky.aerial = graph.import_buffer("sky aerial", sky_.aerial);
+    sb_sky.frame = graph.import_buffer("sky frame", sky_.frame);
+  }
   const bool fill_hiz = occlusion && targets.hiz_dirty;
   const bool fill_flags = occlusion && flags_dirty_;
   const bool cull_on = settings.cull;
@@ -2913,6 +3021,47 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           });
     }
     if (csm) add_shadow_maps();
+    // The sky (sky.h, sky_luts.slang): the scene's two tables on its first frame, then every frame
+    // the sky from the eye and the air to a surface, and the frame's sums from the first — all four
+    // under one zone, "sky", which is the frame's and no view's. One small compute dispatch each.
+    if (sky_on) {
+      const u64* sky_push = &sky_address;
+      auto add_sky = [&](const char* name, const gfx::ComputePipeline& pipeline, u32 gx, u32 gy,
+                         gfx::RgBuffer write, gfx::RgBuffer read_a, gfx::RgBuffer read_b) {
+        graph.add_pass(
+            name, gfx::PassKind::Compute,
+            [&, write, read_a, read_b](gfx::PassBuilder& b) {
+              if (read_a.valid()) b.read(read_a, gfx::Access::ComputeRead);
+              if (read_b.valid()) b.read(read_b, gfx::Access::ComputeRead);
+              b.write(write, gfx::Access::ComputeWrite);
+            },
+            [&, gx, gy, sky_push, p = &pipeline](gfx::CommandList cb, gfx::RenderGraph&) {
+              timer.begin(cb, "sky");
+              cb.bind_pipeline(gfx::BindPoint::Compute, p->pipeline);
+              cb.push_constants(p->layout, gfx::ShaderStage::Compute, 0, sizeof(u64), sky_push);
+              cb.dispatch(gx, gy, 1);
+              timer.end(cb);
+            });
+      };
+      auto groups = [](u32 extent) { return (extent + 7) / 8; };
+      if (!sky_.tables_built()) {
+        add_sky("sky transmittance", sky_.transmittance_pipeline,
+                groups(gfx::k_sky_transmittance_width), groups(gfx::k_sky_transmittance_height),
+                sb_sky.transmittance, {}, {});
+        add_sky("sky multiscatter", sky_.multiscatter_pipeline,
+                groups(gfx::k_sky_multiscatter_size), groups(gfx::k_sky_multiscatter_size),
+                sb_sky.multiscatter, sb_sky.transmittance, {});
+        sky_.set_tables_built();
+      }
+      add_sky("sky view", sky_.view_pipeline, groups(gfx::k_sky_view_width),
+              groups(gfx::k_sky_view_height), sb_sky.view, sb_sky.transmittance,
+              sb_sky.multiscatter);
+      add_sky("sky aerial", sky_.aerial_pipeline, groups(gfx::k_sky_aerial_width),
+              groups(gfx::k_sky_aerial_height), sb_sky.aerial, sb_sky.transmittance,
+              sb_sky.multiscatter);
+      add_sky("sky frame", sky_.frame_pipeline, 1, 1, sb_sky.frame, sb_sky.view,
+              sb_sky.transmittance);
+    }
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
     // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
@@ -2920,6 +3069,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.color_attachment(color, gfx::LoadOp::Clear, sky);
           b.read(rg_vis, gfx::Access::FragmentRead);
+          if (sky_on) {
+            b.read(sb_sky.transmittance, gfx::Access::FragmentRead);
+            b.read(sb_sky.view, gfx::Access::FragmentRead);
+            b.read(sb_sky.aerial, gfx::Access::FragmentRead);
+            b.read(sb_sky.frame, gfx::Access::FragmentRead);
+          }
           if (csm && cascades_drawn > 0) b.read(rg_atlas, gfx::Access::SampledRead);
           // A pixel's pair decodes through the scene's pair table, which no pass writes; the entry
           // it was drawn as is read only for a deformed instance's pool block.
@@ -3015,6 +3170,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
           }
+        });
+  }
+  // The sky's sums into this slot's statistics block, behind everything else there: the exposure
+  // the frame was drawn at and the light it was metered from, read one frame late (SkyStats).
+  if (sky_on && !direct) {
+    const gfx::BufferResource* stat_target = &stat_blocks_[slot];
+    const u64 at = sky_stat_offset(views, cascade_runs);
+    graph.add_pass(
+        "sky stats", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(sb_sky.frame, gfx::Access::TransferRead);
+          b.write(rg_stats, gfx::Access::TransferWrite);
+        },
+        [&, stat_target, at](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy copy{0, at, sizeof(gfx::SkyFrame)};
+          cb.copy_buffer(sky_.frame.buffer, stat_target->buffer, copy);
         });
   }
   // The page feedback into this slot's host-visible buffer, read when the slot comes around again.

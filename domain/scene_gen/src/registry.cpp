@@ -1,6 +1,7 @@
-// The scene-generator registry and the handles over a generator's state (scene_gen.h).
+// The scene-generator registry and the handles over a generator's state (scene_gen.h, sky.h).
 #include <core/base/assert.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/scene_gen/sky.h>
 
 #include <algorithm>
 
@@ -146,6 +147,23 @@ Ground GroundProvider::view() const noexcept {
   return Ground{&surface_of, &floor_of, this};
 }
 
+SkyProvider& SkyProvider::operator=(SkyProvider&& other) noexcept {
+  if (this != &other) {
+    reset();
+    ops_ = other.ops_;
+    state_ = other.state_;
+    other.ops_ = nullptr;
+    other.state_ = nullptr;
+  }
+  return *this;
+}
+
+void SkyProvider::reset() noexcept {
+  if (ops_ != nullptr && ops_->destroy != nullptr) ops_->destroy(state_);
+  ops_ = nullptr;
+  state_ = nullptr;
+}
+
 // ---- the registry -------------------------------------------------------------------------------
 
 GeneratorRegistry& GeneratorRegistry::global() {
@@ -224,11 +242,22 @@ const PlacementGeneratorDesc* GeneratorRegistry::find_placement(
   return find_in(placements_, name);
 }
 
+bool GeneratorRegistry::add(const SkyProviderDesc& desc) noexcept {
+  if (desc.make == nullptr) return false;
+  return add_to(skies_, desc);
+}
+
+const SkyProviderDesc* GeneratorRegistry::find_sky(std::string_view name) const noexcept {
+  return find_in(skies_, name);
+}
+
 Vector<std::string_view> GeneratorRegistry::ground_names() const { return names_of(grounds_); }
 
 Vector<std::string_view> GeneratorRegistry::placement_names() const {
   return names_of(placements_);
 }
+
+Vector<std::string_view> GeneratorRegistry::sky_names() const { return names_of(skies_); }
 
 std::string GeneratorRegistry::unknown_ground(std::string_view name) const {
   return unknown("ground provider", name, ground_names());
@@ -236,6 +265,10 @@ std::string GeneratorRegistry::unknown_ground(std::string_view name) const {
 
 std::string GeneratorRegistry::unknown_placement(std::string_view name) const {
   return unknown("placement generator", name, placement_names());
+}
+
+std::string GeneratorRegistry::unknown_sky(std::string_view name) const {
+  return unknown("sky provider", name, sky_names());
 }
 
 Registrar::Registrar(const GroundProviderDesc& desc) noexcept {
@@ -248,6 +281,12 @@ Registrar::Registrar(const PlacementGeneratorDesc& desc) noexcept {
   ENGINE_VERIFY(GeneratorRegistry::global().add(desc),
                 "scene_gen: a placement generator with no name, open, close or expand, or a second "
                 "one under a name another holds");
+}
+
+Registrar::Registrar(const SkyProviderDesc& desc) noexcept {
+  ENGINE_VERIFY(GeneratorRegistry::global().add(desc),
+                "scene_gen: a sky provider with no name or no make, or a second one under a name "
+                "another holds");
 }
 
 }  // namespace engine::scene_gen

@@ -55,6 +55,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.shadow_cull = stats.gpu_shadow_cull;
   out.gpu_ms.total = stats.gpu_total;
   out.gpu_ms.tables = stats.gpu_tables;
+  out.gpu_ms.sky = stats.gpu_sky;
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
   out.evictions = stats.evictions;
@@ -155,7 +156,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     FrameDesc frame;
     frame.camera = camera_path_frame(path, f, frames);
     frame.frame_index = f;
-    frame.sun_time_s = options.sun_rate * static_cast<f64>(f) / 60.0;
+    frame.sun_time_s = options.sun_time_s + options.sun_rate * static_cast<f64>(f) / 60.0;
     submissions.push_back(Submission{repeat, f, recorded});
     const bool ok = renderer.submit_frame(frame, error) != 0;
     Submission& mine = submissions[submissions.size() - 1];
@@ -240,6 +241,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     cpu,
     wall,
     tables,
+    sky,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -299,7 +301,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     static_cast<f64>(r->shadow_pairs),
                                     r->cpu_ms,
                                     r->frame_ms,
-                                    ms.tables};
+                                    ms.tables,
+                                    ms.sky};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -328,6 +331,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.cpu_ms = over(cpu);
   out.frame_ms = over(wall);
   out.gpu_ms.tables = over(tables);
+  out.gpu_ms.sky = over(sky);
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

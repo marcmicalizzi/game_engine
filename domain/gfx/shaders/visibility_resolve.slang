@@ -43,6 +43,7 @@
 #include "ground_detail.slang"
 #include "material.slang"
 #include "scene.slang"
+#include "sky.slang"
 
 #ifdef RESOLVE_RAY_SHADOWS
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
@@ -91,13 +92,13 @@ struct ResolveParams {
   float shadow_bias_steps;  // plus this many steps of the receiver's own grid (ray_offset)
   uint64_t coverage;    // uint[] per 32x32 tile of this view's region; 0: no mask, read every word
   uint coverage_pitch;  // tiles per row of that mask
-  uint pad2;
+  uint sky_view;        // this view's index into SkyParams::views
   uint64_t normal_pool;  // deformed normals, parallel to the deformed-vertex pool; 0 for none
   uint64_t pair_entries;  // uint[pair_count]: this view's pair -> visible entry; 0: the pair is it
   uint64_t pairs;         // uint2[pair_count]: the scene's {instance, cluster} per pair; 0: none
   uint64_t shadow_maps;   // ShadowMapParams*, read with k_shadow_cascades; 0: none
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
-  uint64_t pad3;
+  uint64_t sky_params;     // SkyParams* (sky.slang): the physical sky; 0: the stand-in
 };
 
 // Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
@@ -122,7 +123,7 @@ struct ShadowMapParams {
   float max_slope;  // the receiver plane's |depth slope| is clamped to this
   uint tiles;       // the atlas's width in cascades, as allocated (>= cascade_count)
   float normal_offset;  // texels along the geometric normal at grazing; (1 - n.l) of it elsewhere
-  uint pad2;
+  uint light;           // whose shadow: 0 the sun, i + 1 the directional light i of the array
 };
 
 struct ResolvePush {
@@ -147,9 +148,25 @@ struct FullscreenOut {
 // the shader would write are already there. `sky_is_clear` is the caller saying it cleared to
 // exactly this value; the fragment is then killed and the ROP does nothing. A caller that
 // cleared to something else leaves the flag at zero and the sky is written as it always was.
-float4 sky_pixel(ResolveParams* params) {
-  if (params->sky_is_clear != 0) discard;
-  return params->sky;
+//
+// **With a physical sky** (`sky_params`, sky.slang) the pixel is written, since no clear value is
+// the sky along every direction: the direction through the pixel's centre in the view's own source
+// — `source`, which for a Panini view is where the resample sends the output pixel — is looked up in
+// the frame's sky-view table, and the sun's disc, the moon's and the stars are added through the air
+// (`sky_background`), exposed by the frame's rule. The ray path's uncovered pixels are this too, and
+// the reference tracer's primary misses the same function.
+float4 sky_pixel(ResolveParams* params, float2 source) {
+  if (params->sky_params == 0) {
+    if (params->sky_is_clear != 0) discard;
+    return params->sky;
+  }
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const float2 ndc = float2(source.x / float(params->width) * 2.0 - 1.0,
+                            1.0 - source.y / float(params->height) * 2.0);
+  const float3 dir = sky_pixel_direction(sky, params->sky_view, ndc);
+  const float3 radiance = sky_background(sky, dir, sky->views[params->sky_view].pixel.x);
+  return float4(display_encode(sky_tone(sky, radiance * sky_exposure((SkyFrame*)sky->frame))),
+                1.0);
 }
 
 [shader("vertex")]
@@ -336,12 +353,18 @@ float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometri
 // exactly what it was. `position` and `geometric` are the reconstructed surface: the ray leaves
 // it offset along the geometric normal by `offset` — `ray_offset`'s, `shadow_bias` plus
 // `shadow_bias_steps` of the receiver's own grid — and the map is looked up at it unmoved.
-float shadow_visibility(ResolveParams* params, uint bit, float3 position, float3 geometric,
-                        float offset, float3 direction, float t_max) {
+//
+// The maps are drawn from one light, `ShadowMapParams::light`: the sun (0) — every map before a sky
+// was, and the only one the lights array ever had — or, on a sky's night, the moon, a directional
+// light of the array (`owner` is the light's index plus one, 0 for the sun).
+float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 position,
+                        float3 geometric, float offset, float3 direction, float t_max) {
   if ((params->shadow_flags & bit) == 0) return 1.0;
   if ((params->shadow_flags & k_shadow_cascades) != 0) {
-    if (bit != k_shadow_sun || params->shadow_maps == 0) return 1.0;
-    return cascade_visibility((ShadowMapParams*)params->shadow_maps, position, geometric);
+    if (params->shadow_maps == 0) return 1.0;
+    ShadowMapParams* maps = (ShadowMapParams*)params->shadow_maps;
+    if (maps->light != owner) return 1.0;
+    return cascade_visibility(maps, position, geometric);
   }
   const float3 origin = position + geometric * offset;
   return shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
@@ -358,7 +381,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const bool resample = params->panini_x > 0.0;
   const uint out_width = resample ? params->out_width : params->width;
   const uint out_height = resample ? params->out_height : params->height;
-  if (out_pixel.x >= out_width || out_pixel.y >= out_height) return sky_pixel(params);
+  if (out_pixel.x >= out_width || out_pixel.y >= out_height) {
+    return sky_pixel(params, float2(out_pixel) + 0.5);
+  }
   // Where in this view's visibility region the output pixel reads. Without a resample that is the
   // pixel's own centre; with one it is wherever the Panini map sends it, which is also the point
   // the barycentrics below are taken at, so the reconstruction stays sub-pixel accurate.
@@ -369,10 +394,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const float2 src_ndc = panini_source_ndc(params, ndc);
     source = float2((src_ndc.x * 0.5 + 0.5) * float(params->width),
                     (0.5 - src_ndc.y * 0.5) * float(params->height));
-    if (source.x < 0.0 || source.y < 0.0) return sky_pixel(params);
+    if (source.x < 0.0 || source.y < 0.0) return sky_pixel(params, source);
   }
   const uint2 pixel = uint2(source);
-  if (pixel.x >= params->width || pixel.y >= params->height) return sky_pixel(params);
+  if (pixel.x >= params->width || pixel.y >= params->height) return sky_pixel(params, source);
   // A whole 32x32 tile with nothing in it: the visibility word is not read at all, which is the
   // fixed cost the discard above could not touch. The mask is the Hi-Z build's by-product and is
   // exact — the pass that wrote it read every word of the tile — so a tile it calls empty holds
@@ -380,12 +405,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (params->coverage != 0) {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
-      return sky_pixel(params);
+      return sky_pixel(params, source);
     }
   }
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
-  if (value == 0) return sky_pixel(params);
+  if (value == 0) return sky_pixel(params, source);
   const uint id = uint(value & 0xffffffffu);
   const float depth = asfloat(uint(value >> 32));
   // The id's pair is the scene's, and the scene's pair table gives its {instance, cluster} in one
@@ -510,34 +535,51 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // the cascaded maps answer the filtered fraction, so their penumbra is grey between the two.
   if (params->mode == 6) {
     if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
-    const float v = shadow_visibility(params, k_shadow_sun, s.position, s.geometric, ray_bias,
+    const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
                                       params->sun.xyz, 1e30);
     return float4(v, v, v, 1.0);
   }
+
+  // With a sky, the sun and every directional light arrive through the air above the point — its
+  // transmittance towards them, nothing below the planet's horizon — and the sun with its own
+  // illuminance rather than the stand-in's intensity (sky.slang, `sky_light_at`).
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
 
   // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it,
   // and a filtered map removes the fraction it covers. A visibility of 1 multiplies nothing, so a
   // ray-traced or unshadowed pixel is the bytes it always was.
   float3 color = float3(0.0);
   if (dot(surface.normal, params->sun.xyz) > 0.0) {
-    const float v = shadow_visibility(params, k_shadow_sun, s.position, s.geometric, ray_bias,
+    const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
                                       params->sun.xyz, 1e30);
-    if (v > 0.0) color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w) * v);
+    if (v > 0.0) {
+      float3 sun = float3(params->sun.w);
+      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+      color = brdf_direct(surface, params->sun.xyz, sun * v);
+    }
   }
   // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
-  // a shadow ray that stops short of the light itself. The cascaded maps do not shadow them.
+  // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
+  // falloff nor end. The cascaded maps shadow only the light they were drawn from.
   ResolveLight* lights = (ResolveLight*)params->lights;
   for (uint i = 0; i < params->light_count; ++i) {
     float3 light_dir;
     float3 radiance;
     float light_distance;
     if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
-    if (dot(surface.normal, light_dir) > 0.0 &&
-        shadow_visibility(params, k_shadow_lights, s.position, s.geometric, ray_bias, light_dir,
-                          light_distance - ray_bias) <= 0.0) {
-      continue;
+    float v = 1.0;
+    if (dot(surface.normal, light_dir) > 0.0) {
+      v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric, ray_bias,
+                            light_dir, light_distance - ray_bias);
+      if (v <= 0.0) continue;
     }
-    color += brdf_direct(surface, light_dir, radiance);
+    if (has_sky && lights[i].direction_type.w >= 1.5) {
+      radiance = sky_light_at(sky, s.position, light_dir, radiance);
+    }
+    // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
+    // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
+    color += brdf_direct(surface, light_dir, v < 1.0 ? radiance * v : radiance);
   }
   // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
   // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
@@ -554,8 +596,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // point lights, not the emission — because it stands in for the part of the hemisphere the
   // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
   // map multiplies nothing.
-  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-  const float3 ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
+  //
+  // **With a sky** the hemisphere is the sky's own: the environment of the frame's sky-view table
+  // above the horizon and the ground it lights below, projected on nine spherical harmonics once a
+  // frame and convolved with the cosine lobe (`sky_ambient`), so a face towards the low sun's side
+  // of the sky takes its glow and one towards the ground the sand the sun and the sky light.
+  float3 ambient;
+  if (has_sky) {
+    ambient = sky_ambient((SkyFrame*)sky->frame, surface.normal);
+  } else {
+    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+    ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
+  }
   const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
   float3 indirect =
       ambient * (albedo * (1.0 - surface.metallic) +
@@ -567,5 +619,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // Emission — the factor times the emissive texture — is radiance the surface gives off, added
   // after the lighting and touched by no shadow and no occlusion.
   color += sampled.emissive;
+  if (has_sky) {
+    // The air between the eye and the surface: what it takes out of the surface's light on the way
+    // and what it scatters in, out of the frame's aerial table, which is the sky-view table's
+    // parameterization with a distance, so a surface at the table's far end is the sky beyond it.
+    // Then the frame's exposure.
+    const float3 to_surface = s.position - params->camera.xyz;
+    const float distance = length(to_surface);
+    float3 inscatter = float3(0.0);
+    float transmittance = 1.0;
+    if (distance > 0.0) sky_aerial(sky, to_surface / distance, distance, inscatter, transmittance);
+    color = color * transmittance + inscatter;
+    color = sky_tone(sky, color * sky_exposure((SkyFrame*)sky->frame));
+  }
   return float4(display_encode(color), 1.0);  // linear to display on a UNORM swapchain
 }

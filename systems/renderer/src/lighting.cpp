@@ -2,6 +2,7 @@
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/sky.h>
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +136,21 @@ void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptio
            4.0f * radius};
   out.lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * orbit * orbit};
   out.light_count = k_frame_lights;
+}
+
+void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out) {
+  out = FrameLighting{};
+  out.sky = k_sky;
+  out.sun = Vec4{normalize(sky.state.sun), 1.0f};
+  out.ground = Vec4{scene.ground_albedo, 0.0f};
+  out.shadow_bias = k_shadow_bias_relative * (length(scene.center) + scene.radius);
+  out.shadow_bias_steps = k_shadow_bias_steps;
+  if (!sky.moon) return;
+  gfx::ResolveLight& moon = out.lights[0];
+  moon.position_radius = Vec4{normalize(sky.state.moon), 0.0f};
+  moon.color_intensity = Vec4{1.0f, 1.0f, 1.0f, sky.state.moon_illuminance};
+  moon.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_directional};
+  out.light_count = 1;
 }
 
 }  // namespace engine::renderer

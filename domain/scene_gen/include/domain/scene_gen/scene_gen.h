@@ -481,6 +481,10 @@ inline constexpr u32 k_ground_tiles = 1u << 2;  // `open_tiles`
 
 // ---- the registry -------------------------------------------------------------------------------
 
+// The third kind, a sky provider (sky.h; ADR-0048): what a scene's sky is made of and where its
+// lights are at a game time. Declared there, registered here like the other two.
+struct SkyProviderDesc;
+
 // Every generator this executable carries, by kind and name: the descriptors themselves, which are
 // constant-initialized in their capabilities' sources and never copied. Filled before `main` by
 // `Registrar`s; read from `main` on.
@@ -498,20 +502,25 @@ class GeneratorRegistry {
   // true: a library linked into two images of one process registers once per image.
   bool add(const GroundProviderDesc& desc) noexcept;
   bool add(const PlacementGeneratorDesc& desc) noexcept;
+  bool add(const SkyProviderDesc& desc) noexcept;
   const GroundProviderDesc* find_ground(std::string_view name) const noexcept;
   const PlacementGeneratorDesc* find_placement(std::string_view name) const noexcept;
+  const SkyProviderDesc* find_sky(std::string_view name) const noexcept;
   // The names of a kind, sorted: the same list whatever order the registrars ran in.
   Vector<std::string_view> ground_names() const;
   Vector<std::string_view> placement_names() const;
+  Vector<std::string_view> sky_names() const;
 
   // The sentences a reader refuses a name this executable does not carry with, naming it and the
   // ones it does carry.
   std::string unknown_ground(std::string_view name) const;
   std::string unknown_placement(std::string_view name) const;
+  std::string unknown_sky(std::string_view name) const;
 
  private:
   Vector<const GroundProviderDesc*> grounds_;
   Vector<const PlacementGeneratorDesc*> placements_;
+  Vector<const SkyProviderDesc*> skies_;
 };
 
 // A capability's registration, at namespace scope in its own source beside the descriptor it adds:
@@ -527,6 +536,7 @@ class GeneratorRegistry {
 struct Registrar {
   explicit Registrar(const GroundProviderDesc& desc) noexcept;
   explicit Registrar(const PlacementGeneratorDesc& desc) noexcept;
+  explicit Registrar(const SkyProviderDesc& desc) noexcept;
 };
 
 }  // namespace engine::scene_gen

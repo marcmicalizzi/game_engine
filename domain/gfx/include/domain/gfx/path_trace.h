@@ -92,7 +92,14 @@ struct PathTraceParams {
   // evaluates the same function of position **unfiltered**, since its jittered samples are the
   // pixel's filter. Zero draws none.
   u64 ground_detail = 0;
-  u64 pad = 0;
+  // **The sky** (`SkyParams`, sky.h), the frame's own block, the resolve's `sky_params`: a primary
+  // miss sees the sky the resolve draws for an uncovered pixel (`sky_background`), an escaped
+  // secondary ray the sky's scattered light above the horizon and its ground below it
+  // (`sky_environment`), the sun and the directional lights arrive through the air, the air between
+  // the eye and the first hit is added as the resolve adds it, and the tonemap exposes by the
+  // frame's rule. `sky`, `ground` and `background` are not read. Zero, the stand-in as before. It
+  // took the pad word.
+  u64 sky_params = 0;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the

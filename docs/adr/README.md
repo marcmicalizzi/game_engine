@@ -51,3 +51,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0045](0045-routines-are-data-with-a-closed-form.md) | Resident routines are data with a closed form, and their tiers are the capability's own pass | Proposed |
 | [0046](0046-scene-generators-register-themselves.md) | Scene generators register themselves; the scene reader and the world ring look them up by name (supersedes 0037; built 2026-09-27, [scene_gen](../subsystems/scene_gen.md), accepted 2026-09-29) | Accepted |
 | [0047](0047-reference-games-are-licensed-apart-from-the-engine.md) | The reference games are licensed apart from the engine — Desert Survival's code under GPL-3.0, its assets non-commercial, its title a trademark, in its own repository | Proposed |
+| [0048](0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md) | The sky is a provider's model drawn by the renderer, and a scene that names none draws what it drew | Proposed |
