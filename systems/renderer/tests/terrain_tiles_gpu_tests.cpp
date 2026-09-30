@@ -306,7 +306,7 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const Te
       f32 hi = 0.0f;
       model->bounds(world[p].x, world[p].z, lo, hi);
       const f32 y = world[p].y;
-      const f64 off = y < lo ? lo - y : y > hi ? y - hi : 0.0;
+      const f64 off = y < lo ? static_cast<f64>(lo - y) : y > hi ? static_cast<f64>(y - hi) : 0.0;
       if (off > 0.005) ++c.off_surface;
       c.worst_off_m = std::max(c.worst_off_m, off);
     }

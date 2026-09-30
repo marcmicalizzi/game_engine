@@ -26,7 +26,6 @@ i64 floor_div(i64 a, i64 b) noexcept {
   const i64 q = a / b;
   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
 }
-i64 ceil_div(i64 a, i64 b) noexcept { return -floor_div(-a, b); }
 
 // The world's tile order: x, then z, signed (world.md, "Why this shape").
 bool tile_before(const TerrainTile& a, const TerrainTile& b) noexcept {
@@ -111,10 +110,10 @@ void terrain_tiles_round(const TerrainTilesDesc& desc, f32 x, f32 z, Vector<Terr
   if (desc.ring_count == 0) return;
   const f32 t = desc.tile_size;
   const f32 reach = desc.radius[desc.ring_count - 1] * t;
-  const i32 x0 = static_cast<i32>(std::floor(static_cast<f64>(x - reach) / t)) - 1;
-  const i32 x1 = static_cast<i32>(std::floor(static_cast<f64>(x + reach) / t)) + 1;
-  const i32 z0 = static_cast<i32>(std::floor(static_cast<f64>(z - reach) / t)) - 1;
-  const i32 z1 = static_cast<i32>(std::floor(static_cast<f64>(z + reach) / t)) + 1;
+  const i32 x0 = static_cast<i32>(std::floor(static_cast<f64>(x - reach) / static_cast<f64>(t))) - 1;
+  const i32 x1 = static_cast<i32>(std::floor(static_cast<f64>(x + reach) / static_cast<f64>(t))) + 1;
+  const i32 z0 = static_cast<i32>(std::floor(static_cast<f64>(z - reach) / static_cast<f64>(t))) - 1;
+  const i32 z1 = static_cast<i32>(std::floor(static_cast<f64>(z + reach) / static_cast<f64>(t))) + 1;
   const Vec3 eye{x, 0.0f, z};
   // The world ring's arithmetic, as it scores a tile: its centre on the ground, the distance in
   // floats, and the first ring whose boundary it is strictly inside (`TierAssignment::tier_of`).
