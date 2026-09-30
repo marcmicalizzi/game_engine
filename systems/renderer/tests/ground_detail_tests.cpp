@@ -14,11 +14,14 @@
 //   pull-back, and next to nothing to the error against a supersampled picture of the same frame —
 //   and distant sand is as bright as the supersampled ripples it stands for, not a mirror.
 // - The reference path tracer draws the same sand: at a pixel's centre, close up, it agrees with
-// the
-//   resolve with the detail on about as well as with it off.
+//   the resolve with the detail on about as well as with it off — the first pass on the waves as
+//   they are, and the second pass's terms (the ergs' numbers) at the feet on steeper waves, on a
+//   windward slope and on a lee in the streaks' band.
 //
 // The seams across the rings and their chunks are in ground_detail_rings_tests.cpp, which needs the
 // terrain capability's rings.
+#include "ground_detail_reference.h"
+
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/ground_detail.h>
@@ -401,6 +404,134 @@ TEST_CASE("sand detail: pulling back from the eye to 350 m, no moiré and no pop
   CHECK(worst_bias < 1.5);
 }
 
+namespace {
+
+// The resolve against the reference path tracer at `camera`, traced shadows, 64 samples a pixel
+// at the pixel's centre (the resolve's point, so the detail is the same function evaluated), one
+// bounce: FLIP's pooled mean between the two pictures, and in `halves` its mean over the picture's
+// lower half (the ground nearest the feet) and its upper half. False, with the reason in `why`,
+// where the device cannot trace or has no reference.
+bool flip_against_reference(const gfx::Device& device, const SceneDesc& desc, const Camera& camera,
+                            f32& flip, std::string& why, f32* halves = nullptr) {
+  constexpr u32 k_width = 160;
+  constexpr u32 k_height = 120;
+  RenderSettings settings = sand_settings();
+  settings.shadows = ShadowMode::RayTraced;
+  ReferenceSettings rs;
+  rs.spp = 64;
+  rs.max_bounces = 1;
+  rs.pixel_center = true;
+  Rig rig;
+  if (!rig.build(device, desc, settings, k_width, k_height)) {
+    why = "no ray tracing here: " + rig.error;
+    return false;
+  }
+  if (!reference_available(rig.resolved, device, &why)) {
+    why = "no reference here: " + why;
+    return false;
+  }
+  ReferenceRenderer reference;
+  REQUIRE_MESSAGE(reference.create(device, rig.scene, rig.renderer, {}, &rig.error), rig.error);
+  ReferenceFrame traced;
+  REQUIRE_MESSAGE(reference.render(camera, rs, traced, &rig.error), rig.error);
+  CapturedFrame shot;
+  REQUIRE_MESSAGE(rig.shoot(camera, 0, shot), rig.error);
+  image::Image a;
+  image::Image b;
+  a.width = b.width = k_width;
+  a.height = b.height = k_height;
+  a.channels = b.channels = 4;
+  a.pixels = traced.color;
+  b.pixels = shot.color;
+  image::FloatImage map;
+  REQUIRE(image::flip(a, b, map, image::FlipOptions{}, &rig.error));
+  flip = image::pool_mean(map);
+  if (halves != nullptr) {
+    f64 sum[2] = {};
+    for (u32 y = 0; y < k_height; ++y) {
+      for (u32 x = 0; x < k_width; ++x)
+        sum[y < k_height / 2 ? 1 : 0] += static_cast<f64>(map.values[y * k_width + x]);
+    }
+    for (u32 h = 0; h < 2; ++h)
+      halves[h] = static_cast<f32>(sum[h] / static_cast<f64>(k_width * (k_height / 2)));
+  }
+  return true;
+}
+
+// The ergs' numbers (`ground_ref::erg_numbers`, the desert-erg scene's `terrain.detail`) as a
+// scene's block: every second-pass term on. The rings' test holds the copy to the scene file.
+scene::TerrainDetail erg_detail() {
+  const gfx::GroundDetailDesc d = ground_ref::erg_numbers();
+  scene::TerrainDetail t;
+  t.ripple_wavelength = d.ripple_wavelength;
+  t.ripple_height = d.ripple_height;
+  t.ripple_asymmetry = d.ripple_asymmetry;
+  t.ripple_defects = d.ripple_defects;
+  t.ripple_slope_start_deg = d.slope_start_deg;
+  t.ripple_slope_end_deg = d.slope_end_deg;
+  t.grain_size = d.grain_size;
+  t.grain_albedo = d.grain_albedo;
+  t.grain_roughness = d.grain_roughness;
+  t.lee_start_deg = d.lee_start_deg;
+  t.lee_end_deg = d.lee_end_deg;
+  t.grain_finest = d.grain_finest;
+  t.grain_normal = d.grain_normal;
+  t.streak_start_deg = d.streak_start_deg;
+  t.streak_full_deg = d.streak_full_deg;
+  t.streak_width = d.streak_width;
+  t.streak_length = d.streak_length;
+  t.streak_albedo = d.streak_albedo;
+  t.streak_roughness = d.streak_roughness;
+  t.streak_normal = d.streak_normal;
+  t.spacing_gain = d.spacing_gain;
+  t.spacing_min = d.spacing_min;
+  t.spacing_max = d.spacing_max;
+  return t;
+}
+
+// Where on `terrain` the ground falls along `wind` nearest `fall_deg` (negative: it climbs into
+// the wind) — the fall ground_detail.slang reads, `dot(n.xz, w) / n.y`, as an angle — on a 2 m
+// grid within 100 m of the origin, among the points whose fall a metre either way along and across
+// the wind stays within a degree of their own: a patch a walker's feet see as one slope. Returns
+// the fall found there, degrees.
+f64 find_slope(const TerrainDesc& terrain, Vec2 wind, f64 fall_deg, f32& x_out, f32& z_out) {
+  const TerrainSampler sampler(terrain);
+  const f64 wx = static_cast<f64>(wind.x);
+  const f64 wz = static_cast<f64>(wind.y);
+  const auto fall = [&](f64 x, f64 z) {
+    constexpr f64 e = 0.25;
+    const auto h = [&](f64 px, f64 pz) {
+      return static_cast<f64>(sampler.height(static_cast<f32>(px), static_cast<f32>(pz)));
+    };
+    const f64 hx = (h(x + e, z) - h(x - e, z)) / (2.0 * e);
+    const f64 hz = (h(x, z + e) - h(x, z - e)) / (2.0 * e);
+    return std::atan(-(hx * wx + hz * wz)) * 180.0 / 3.14159265358979323846;
+  };
+  f64 best = 1e9;
+  f64 found = 0.0;
+  for (i32 j = -50; j <= 50; ++j) {
+    for (i32 i = -50; i <= 50; ++i) {
+      const f64 x = 2.0 * i;
+      const f64 z = 2.0 * j;
+      const f64 here = fall(x, z);
+      if (std::abs(here - fall_deg) >= best) continue;
+      bool uniform = true;
+      for (const f64 s : {-1.0, 1.0}) {
+        uniform = uniform && std::abs(fall(x + s * wx, z + s * wz) - here) < 1.0 &&
+                  std::abs(fall(x - s * wz, z + s * wx) - here) < 1.0;
+      }
+      if (!uniform) continue;
+      best = std::abs(here - fall_deg);
+      found = here;
+      x_out = static_cast<f32>(x);
+      z_out = static_cast<f32>(z);
+    }
+  }
+  return found;
+}
+
+}  // namespace
+
 TEST_CASE("sand detail: the reference path tracer shades the same sand") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -409,51 +540,83 @@ TEST_CASE("sand detail: the reference path tracer shades the same sand") {
   }
   test::TempDir tmp{"engine_renderer_sand_reference"};
   const std::string ddc = slashes(tmp.native() / "ddc");
-  constexpr u32 k_width = 160;
-  constexpr u32 k_height = 120;
-  RenderSettings settings = sand_settings();
-  settings.shadows = ShadowMode::RayTraced;
-  ReferenceSettings rs;
-  rs.spp = 64;
-  rs.max_bounces = 1;
-  rs.pixel_center = true;  // the resolve's point, so the detail is the same function evaluated
   f32 flip_mean[2] = {};
   for (u32 detail = 0; detail < 2; ++detail) {
     const SceneDesc desc = sand_scene(ddc, detail == 1);
     // At the feet: every ripple a dozen pixels wide, where the resolve's fade is 1 and the two
     // integrators evaluate one function at one point.
     const Camera camera = walker(desc.terrain, -20.0f, 15.0f, 1.1f, 1.2f);
-    Rig rig;
-    if (!rig.build(gpu.device, desc, settings, k_width, k_height)) {
-      MESSAGE("no ray tracing here: " << rig.error);
-      return;
-    }
     std::string why;
-    if (!reference_available(rig.resolved, gpu.device, &why)) {
-      MESSAGE("no reference here: " << why);
+    if (!flip_against_reference(gpu.device, desc, camera, flip_mean[detail], why)) {
+      MESSAGE(why);
       return;
     }
-    ReferenceRenderer reference;
-    REQUIRE_MESSAGE(reference.create(gpu.device, rig.scene, rig.renderer, {}, &rig.error),
-                    rig.error);
-    ReferenceFrame traced;
-    REQUIRE_MESSAGE(reference.render(camera, rs, traced, &rig.error), rig.error);
-    CapturedFrame shot;
-    REQUIRE_MESSAGE(rig.shoot(camera, 0, shot), rig.error);
-    image::Image a;
-    image::Image b;
-    a.width = b.width = k_width;
-    a.height = b.height = k_height;
-    a.channels = b.channels = 4;
-    a.pixels = traced.color;
-    b.pixels = shot.color;
-    image::FloatImage map;
-    REQUIRE(image::flip(a, b, map, image::FlipOptions{}, &rig.error));
-    flip_mean[detail] = image::pool_mean(map);
   }
   MESSAGE("resolve against the reference at 64 spp, one bounce, pixel centres, at the feet: FLIP "
           << flip_mean[0] << " without the detail, " << flip_mean[1] << " with it");
   // The same sand in both: the detail adds no more than a small share of what the transport
   // already differs by (a sampled ripple under a jittered bounce is noise the resolve has not).
   CHECK(flip_mean[1] < flip_mean[0] + 0.02f);
+}
+
+TEST_CASE("sand detail: the reference path tracer shades the second pass's sand on a slope") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  test::TempDir tmp{"engine_renderer_sand_reference_slope"};
+  const std::string ddc = slashes(tmp.native() / "ddc");
+  // The waves steeper than the flat case's — 16 m over 60 m, whose flanks reach a slip face's
+  // slopes — with the ergs' numbers, every second-pass term on. Two walkers' feet: on ground
+  // climbing into the wind at about 12 degrees (the spacing, the ripples and the grain's normal)
+  // and on ground falling away from it at about 26 (no ripples, which the exposure takes, and the
+  // streaks' band), each against the same place without the detail.
+  //
+  // **On a grid of a metre, not the flat case's four.** Looking down at the feet, the camera's
+  // plane meets the ground two or three metres behind the walker, and a 4 m triangle under the
+  // feet reaches past it. The rasterizer clips such a triangle and draws it rightly, but the
+  // resolve rebuilds a pixel's point from the corners divided by w (`reconstruct_screen`), which
+  // is meaningless for a corner behind the camera, so it shades a point the pixel does not see —
+  // the limit gfx's own case builds its sand in metre cells to stay clear of. The tongues showed
+  // it: 2 m long, on the 4 m grid they ran on as stripes to the bottom of the resolved picture,
+  // where the path tracer drew them ending, and FLIP rose by 0.018 with the detail, 0.015 of it
+  // theirs; on the metre grid the two pictures draw the same tongues (renderer.md, "The sand
+  // close up").
+  SceneDesc on = sand_scene(ddc, true, erg_detail());
+  on.terrain.dune_height = 16.0f;
+  on.terrain.dune_wavelength = 60.0f;
+  on.terrain.extent = 128.0f;  // 257 vertices a side: a metre
+  SceneDesc off = on;
+  off.terrain.has_detail = false;
+  const Vec2 wind = TerrainSampler(on.terrain).wind(on.terrain.time_s);
+  const f32 heading = std::atan2(wind.y, wind.x);  // down the wind
+  for (const f64 target : {-12.0, 26.0}) {
+    f32 x = 0.0f;
+    f32 z = 0.0f;
+    const f64 fall = find_slope(on.terrain, wind, target, x, z);
+    REQUIRE_MESSAGE(std::abs(fall - target) < 1.5, "no ground falling " << target << " degrees");
+    const Camera camera = walker(on.terrain, x, z, heading, 1.2f);
+    f32 flip_off = 0.0f;
+    f32 flip_on = 0.0f;
+    f32 halves_off[2] = {};
+    f32 halves_on[2] = {};
+    std::string why;
+    if (!flip_against_reference(gpu.device, off, camera, flip_off, why, halves_off) ||
+        !flip_against_reference(gpu.device, on, camera, flip_on, why, halves_on)) {
+      MESSAGE(why);
+      return;
+    }
+    MESSAGE("the ergs' numbers at the feet at ("
+            << x << ", " << z << "), falling " << fall << " degrees along the wind: FLIP "
+            << flip_off << " without the detail, " << flip_on << " with it (the lower half "
+            << halves_off[0] << " and " << halves_on[0] << ", the upper " << halves_off[1]
+            << " and " << halves_on[1] << ")");
+    // The same sand in both: the detail adds 0.001 climbing into the wind and 0.003 on the lee
+    // (RTX 5090, 2026-09-30) — on the lee nearly all of it in the picture's upper half (0.006
+    // there, under 0.001 in the lower), ten metres down the slope, where the resolve fades a
+    // tongue by its footprint and a reference at the pixel's centre does not. Held to half the
+    // flat case's allowance.
+    CHECK(flip_on < flip_off + 0.01f);
+  }
 }
