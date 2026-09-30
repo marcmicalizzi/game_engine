@@ -2,6 +2,13 @@
   "format": "engine.scene.v1",
   "name": "desert-erg-storm",
   "camera_path": "../desert-erg/camera-path.json",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "moon_age_days": 12.39,
+    "turbidity": 3.5,
+    "ground_albedo": 0.38
+  },
   "description": "The erg (desert-erg) with the wind's day on and every storm's transport multiplied by 1,000, starting at 12:50 in the ten-hour storm that blows from 09:00 on the erg's own day, three years in, ten minutes before its two strongest hours: fly it at the game's own rate and the barchans walk while the storm blows and stand between storms. A stylization, not physics; README.md says what to look at.",
   "terrain": {
     "size": 4097,

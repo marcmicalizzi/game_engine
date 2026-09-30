@@ -2,6 +2,13 @@
   "format": "engine.scene.v1",
   "name": "desert-erg",
   "camera_path": "camera-path.json",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "moon_age_days": 12.39,
+    "turbidity": 1.6,
+    "ground_albedo": 0.38
+  },
   "description": "An erg, the owner's reference (Erg Chebbi): mega-draa 80-200 m tall about 2.4 km apart with long sinuous crests, draa and crest segments on their flanks, barchans on the interdune floors, waves on every surface and ripples below them, and open floors between, drawn by the terrain capability's dune generator three years into the world. No meshes, no ridges; README.md says what to look at.",
   "terrain": {
     "size": 4097,

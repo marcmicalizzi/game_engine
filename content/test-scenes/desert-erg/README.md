@@ -52,6 +52,28 @@ What to look at (the first two lines; `walk-path.json` is a 20 s walk at eye hei
 
 What does not look right yet: the ripples stand still (real ones migrate a centimetre a minute) and do not flatten in a storm; at a grazing sun they read less strongly than on real sand, because nothing shadows a ripple's lee from the next crest's; and there are no glints. The captures the change was judged by, and what they cost, are in [the experiment](../../../docs/experiments/sand-detail-2026-09-29.md).
 
+## The sky
+
+Since 2026-09-30 the erg names a **sky** (`"sky"` in `scene.json`, `engine.scene.Sky`; [renderer](../../../docs/subsystems/renderer.md#the-sky), [the experiment](../../../docs/experiments/sky-2026-09-30.md)): Earth's, at **31.1° N** (the Sahara's northern edge, Erg Chebbi's latitude), the world's epoch on **day 100** (10 April), air of **turbidity 1.6** (very clear), the region seen past the terrain's edge at an albedo of **0.38**, and the moon **12.39 days** old at the epoch — which is a full moon **three years in**, where the scene's `time` stands, since a thousand and ninety-five days is 37.08 months. The sun, the moon, the stars and the exposure are all functions of that one clock ([renderer](../../../docs/subsystems/renderer.md#one-clock)): the scene's `time` is **midnight**, so a plain run opens **under the full moon**, 57° up just west of south. `--time-of-day <h>` looks at another hour of the same day; `-`, `=` and `0` in a window step and hold the exposure.
+
+```powershell
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --camera-path content/test-scenes/desert-erg/walk-path.json --offscreen --frames 1 --time-of-day 16.5 --capture afternoon.png
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start -1380,2,0 82,3 --time-of-day 18.2
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start -1380,2,0 171,35
+```
+
+What to look at, from a walker's eyes at (−1380, 0):
+
+- **Noon, and the afternoon**: a blue sky over the sand, deepest overhead and paling to a haze at the horizon; looking west towards the sun at 16:30, the white aureole round it; east, away from it, a deep, even blue. The far dunes fade into the air's blue with distance.
+- **Sunset, looking at the sun** (`--time-of-day 18.2`, 8° north of west, the sun a degree up; the second line): a yellow-orange band on the horizon under a pink and then violet sky, the sand in the sun's last light warm and in shade mauve, and the air between you and the far dunes glowing.
+- **Sunset, looking away** (east): **alpenglow** on the far mega-draa, a warm band low on the horizon, a blue-grey sky above it.
+- **Civil twilight** (18.72, the sun 5° down): the orange band under a violet sky, the sand dim and purple-grey, no shadows.
+- **The full moon** (the scene's own midnight, looking south 35° up; the third line): the moon's disc, lit whole, with its own aureole in a dark blue-grey sky, the brighter stars round it; turn north and the sand is lit dimly by moonlight, with the cascaded maps' shadows the moon's.
+- **A half moon** (the scene with `moon_age_days` 5.03, at 21:00, looking west 35° up): half a disc, lit on the side facing where the sun set.
+- **A moonless night** (`moon_age_days` 27.16, at midnight, looking north 20° up): a starfield of about 8,500 stars down to magnitude 6.5, a band of them denser where the Milky Way is, the brightest few coloured orange and blue-white; the sand is a dark silhouette.
+
+What does not look right yet: noon's sky is slate rather than a desert's deep blue, because the exposure meters the sand (twice a real desert's albedo) to white; a moonlit scene is the moon's sunlight colour, not the blue an eye sees; the dark gradients band in 8 bits; the constellations are not the real ones.
+
 ## What to look at
 
 The camera path (`camera-path.json`, 60 s at 60 fps, west to east, which is upwind here) and its markers:

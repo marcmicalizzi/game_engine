@@ -19,14 +19,16 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg-storm/
 | `diurnal_peak_hour` | 15 | — | mid-afternoon, after the day's heat |
 | `diurnal_veer_deg` | 30 | 0 | the wind veers 30° either side of the day's direction, through it at noon |
 | `storm_gain` | 1,000 | 1 | every storm's hours move a thousand times the sand their wind does |
+| `sky.turbidity` | 3.5 | 1.6 | a storm's dust haze: the air carries two and a half clean atmospheres more extinction |
 
-Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux, and the sand's ripples and grain with their exposure to the wind (`detail`, [the erg's README](../desert-erg/README.md#the-sand-close-up)) — is the erg's, so the storms are the erg's storms, at the same hours.
+Everything else — the band table, the storms' days, hours, directions and strengths (twelve a year), the sand flux, the sand's ripples and grain with their exposure to the wind (`detail`, [the erg's README](../desert-erg/README.md#the-sand-close-up)), and the sky's calendar (31.1° N, day 100, the moon full three years in, [the erg's README](../desert-erg/README.md#the-sky)) — is the erg's, so the storms are the erg's storms, at the same hours, under the same sun.
 
 ## What to look at
 
 - **The barchans walking** (the crescents on the interdune floors, 1.5–5 m): at 13:00–15:00 they move **12.9 mm a second**, about 0.8 m a minute, downwind (the storm moves the sand towards 189°, about −x). The storm's hours, from 09:00: 0.04, 1.25, 4.72, 9.45, 12.87, 12.87, 9.45, 4.72, 1.25, 0.05 mm/s — a half-sine of wind, cubed.
 - **The crests** (2.5–6 m) at three quarters of that, **the draa** (10–25 m) at a fifth, **the mega-draa** at a fortieth: 0.3 mm/s at the peak, a still horizon.
 - **The storm's end, and the evening**: from 19:00 the barchans stand — the ten hours after the storm move them 2 cm — and the night's wind falls calm by the day's own profile.
+- **The sky in the storm** (the scene's own 12:50 and on; [renderer](../../../docs/subsystems/renderer.md#the-sky)): the sun high in the south behind a wide white glare, the sky paler and greyer than the erg's and the far dunes lost sooner in the haze; at `--time-of-day 18.2` a yellow sunset band redder at its foot and a pinker sky. The sky's clock is the storm's: the sun at 12:50 is where the scene's time puts it, and `--time-rate` moves it with the storm. The haze is the sky's turbidity only — no dust blows, and the storm's wind does not change the air.
 - **The ripples under your feet** (`--walk`): they lie across the **day's** wind, the ripple term's rule, and so do not turn with the storm or the day's veer; they stand while the barchans walk over them and do not flatten in the storm's wind. Since the third pass they migrate with the transport and **flatten in the storm's strongest hours** (above 1.6 times the mean wind, gone at 2.2; storm 42 peaks at 2.31), coming back as it dies. Before that they were a function of position that turned with the wind but did not migrate ([renderer](../../../docs/subsystems/renderer.md#the-sand-close-up), "What does not reach it yet") — and a storm is where it shows most.
 
 ## The numbers
