@@ -164,7 +164,7 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
 
 bool SceneCollision::create(physics::World& physics, const renderer::SceneData& scene,
                             const scene_gen::GroundProvider* ground, const Config& config,
-                            std::string* error) {
+                            std::string* error, const scene_gen::TileSource* tiles) {
   auto fail = [&](const std::string& why) {
     if (error != nullptr) *error = why;
     return false;
@@ -176,6 +176,11 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   physics_ = &physics;
   scene_ = &scene;
   ground_ = ground != nullptr && ground->valid() ? ground : nullptr;
+  explicit_source_ = tiles != nullptr && tiles->valid();
+  source_ = explicit_source_     ? *tiles
+            : ground_ != nullptr ? ground_->tiles()
+                                 : scene_gen::TileSource{};
+  own_time_s_ = scene.terrain.time_s;
   config_ = config;
   spacing_mm_ = static_cast<i64>(std::llround(static_cast<f64>(config.spacing_m) * 1000.0));
   if (spacing_mm_ < 1) spacing_mm_ = 1;
@@ -312,11 +317,9 @@ void SceneCollision::note_bodies() noexcept {
 
 bool SceneCollision::evaluate_field(const Tile& tile, f64 time, Vector<f32>& out) {
   out.resize(tile.n * tile.n);
-  const scene_gen::Lattice lattice = scene_gen::ring_lattice(spacing_mm_);
   ++stats_.field_evaluations;
-  return ground_->evaluate(time, lattice, tile.i0, tile.j0, tile.n, tile.n, 0,
-                           scene_gen::window_blocks(tile.n, tile.n),
-                           std::span<f32>(out.data(), out.size()));
+  return source_.heights(time, spacing_mm_, tile.i0, tile.j0, tile.n, tile.n,
+                         std::span<f32>(out.data(), out.size()));
 }
 
 // `a (1 - t) + b t`, as the renderer's pool pass blends a terrain level: exactly a at 0 and b at 1.
@@ -378,11 +381,18 @@ bool SceneCollision::build_ground(Tile& tile) {
   u32 n = static_cast<u32>(std::max(xi - tile.i0, zj - tile.j0)) + 1u;
   n = n < 4 ? 4 : n + (n & 1u);
   tile.n = n;
-  tile.moving = time_.moving && ground_->moves();
+  tile.moving = time_.moving && source_.moves();
   if (!tile.moving) {
     tile.heights.resize(n * n);
-    ground_->grid(scene_gen::ring_lattice(spacing_mm_), tile.i0, tile.j0, n, n,
-                  std::span<f32>(tile.heights.data(), tile.heights.size()));
+    // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
+    // time (a still source's one surface), which for the scene's own ground is the same bits.
+    if (explicit_source_) {
+      (void)source_.heights(own_time_s_, spacing_mm_, tile.i0, tile.j0, n, n,
+                            std::span<f32>(tile.heights.data(), tile.heights.size()));
+    } else {
+      ground_->grid(scene_gen::ring_lattice(spacing_mm_), tile.i0, tile.j0, n, n,
+                    std::span<f32>(tile.heights.data(), tile.heights.size()));
+    }
     tile.field_a.clear();
     tile.field_b.clear();
     return make_ground_body(tile);
@@ -429,7 +439,7 @@ f64 SceneCollision::stale_of(const Tile& tile) const noexcept {
 }
 
 u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
-  if (ground_ == nullptr || !time_.moving || !ground_->moves() || tiles_.empty()) return 0;
+  if (ground_ == nullptr || !time_.moving || !source_.moves() || tiles_.empty()) return 0;
   // The tiles under the walker: every tile the square `reach` either side of (x, z) touches, which
   // is the one holding the point unless a capsule of that radius stands near a tile's edge.
   const f64 r = reach > 0.0f ? static_cast<f64>(reach) : 0.0;
@@ -561,7 +571,7 @@ bool SceneCollision::ground_body(physics::BodyId body) const noexcept {
 // and at a day a second went over its head (tests/time_lapse_tests.cpp has both, before and after).
 u32 SceneCollision::follow(physics::CharacterBody& walker) {
   const Vec3 feet = walker.feet();
-  if (ground_ == nullptr || !time_.moving || !ground_->moves()) {
+  if (ground_ == nullptr || !time_.moving || !source_.moves()) {
     return refresh(feet.x, feet.z, walker.config().radius);
   }
   // Standing on the ground, not on a placement: what is straight under the capsule's centre, from

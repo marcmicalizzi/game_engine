@@ -36,7 +36,7 @@ set(_world_deps base containers math hash log time ids jobs tunables json io inp
 set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_store.cpp
                    src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
                    src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp
-                   src/ground_tiles.cpp src/scene_consumers.cpp)
+                   src/ground_tiles.cpp src/scene_consumers.cpp src/drawn_tiles.cpp)
 
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
@@ -45,7 +45,7 @@ engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
 # scene_order_tests.cpp registers a ground and a placement generator of its own, so it needs no
 # capability and runs in every configuration that has the world.
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
-                 tests/save_tests.cpp tests/scene_order_tests.cpp
+                 tests/save_tests.cpp tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
                  tests/size_table.cpp)
 if(TARGET engine::ruins)
   # The placements consumer over a streamed ruins entry: the ruins reach it through the registry,

@@ -326,6 +326,9 @@ class TerrainMotion {
     u32 swaps = 0;            // and the frames that swapped them in
     u32 chunks_built = 0;     // chunks rebuilt over all re-centres
     u32 chunks_kept = 0;      // chunks a re-centre kept
+    u32 chunks_dropped = 0;   // chunks a re-centre let go: held before it and not kept
+    u32 chunks_resident = 0;  // chunks the last re-centre left the levels holding
+    u32 most_chunks = 0;      // and the most any did
     u32 chunks_uploaded = 0;  // chunks copied onto the device after the first frame
     u64 upload_bytes = 0;
     u32 upload_frames = 0;      // frames that uploaded chunks
@@ -342,6 +345,8 @@ class TerrainMotion {
   };
   const RingStats& ring_stats() const noexcept { return ring_stats_; }
   bool has_rings() const noexcept { return rings_ != nullptr; }
+  // The level set the rebuilds run on: the rings, or the world's tiles.
+  const TerrainLevelSet* level_set() const noexcept { return rings_; }
   // The layout the frames draw: the last re-centre swapped in.
   const TerrainRingLayout& ring_layout() const noexcept { return shown_layout_; }
 
@@ -445,6 +450,7 @@ class TerrainMotion {
     f64 eval_ms_ema = 0.0;
     LevelStats stats;
     Vector<u32> shown_slots;  // a ring level's chunks drawn: their slots
+    Vector<u8> shown_mask;    // and the same, one byte a slot (sized for the level's slots)
     // The worker's alone once the motion has started (the frame never reads them): the heights
     // the scene's grid was built from (level 0), and the level's recent fields.
     Vector<f32> rest;
@@ -499,6 +505,7 @@ class TerrainMotion {
     u32 moved = 0;
     u32 built = 0;
     u32 kept = 0;
+    u32 dropped = 0;  // chunks the levels held before and did not keep
     f64 ms = 0.0;
     bool ok = true;
     std::string error;
@@ -594,6 +601,10 @@ class TerrainMotion {
     u32 chunk = 0;
   };
   Vector<Upload> uploads_;
+  // The swap's scratch, sized at `start` for the most slots a level has, so a swap allocates
+  // nothing: the slots a level draws from the swap on, and one byte a slot marking them.
+  Vector<u32> swap_slots_;
+  Vector<u8> swap_mark_;
   u32 upload_next_ = 0;
   u32 upload_frames_ = 0;  // of the re-centre being uploaded
   u64 upload_bytes_ = 0;

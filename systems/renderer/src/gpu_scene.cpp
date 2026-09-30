@@ -1469,9 +1469,12 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   u64 budget = terrain_upload_budget_ == 0 ? ~u64{0} : terrain_upload_budget_;
   for (u32 k = 0; k < terrain_.size(); ++k) {
     TerrainLevel& l = terrain_[k];
-    Vector<TerrainLevel::Pending> left;
+    // What is left for later frames is compacted to the list's front in place (`left` never passes
+    // `c`, and the look ahead reads only past it), so the list keeps what it grew to and a frame
+    // allocates nothing.
+    u32 left = 0;
     for (u32 c = 0; c < l.pending.size(); ++c) {
-      TerrainLevel::Pending& p = l.pending[c];
+      TerrainLevel::Pending p = l.pending[c];
       bool superseded = false;
       for (u32 d = c + 1; d < l.pending.size(); ++d)
         superseded = superseded || l.pending[d].field.buffer == p.field.buffer;
@@ -1481,7 +1484,7 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
       }
       const u64 room = p.urgent ? p.bytes - p.done : std::min(budget, p.bytes - p.done);
       if (room == 0) {
-        left.push_back(p);
+        l.pending[left++] = p;
         continue;
       }
       TerrainUpdate::Copy copy;
@@ -1493,9 +1496,9 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
       out.copies.push_back(copy);
       if (!p.urgent) budget -= room;
       p.done += room;
-      if (!copy.last) left.push_back(p);
+      if (!copy.last) l.pending[left++] = p;
     }
-    l.pending = std::move(left);
+    l.pending.resize(left);
     gfx::TerrainLevelDesc desc{};
     desc.origin = Vec2{static_cast<f32>(l.lattice.origin_x), static_cast<f32>(l.lattice.origin_z)};
     desc.spacing = static_cast<f32>(l.lattice.spacing);
@@ -1545,11 +1548,13 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
     }
     pending_mesh_writes_.clear();
   }
-  out.geometry = std::move(pending_geometry_);
-  pending_geometry_ = Vector<TerrainUpdate::GeometryCopy>{};
+  // Swapped and cleared rather than moved from, so both lists keep what they grew to and a frame
+  // of chunk uploads allocates nothing once they have (the long-flight test counts it).
+  std::swap(out.geometry, pending_geometry_);
+  pending_geometry_.clear();
   for (const gfx::BufferResource& staging : pending_staging_)
     out.retire.push_back(staging);
-  pending_staging_ = Vector<gfx::BufferResource>{};
+  pending_staging_.clear();
   out.geometry_bytes = pending_geometry_bytes_;
   pending_geometry_bytes_ = 0;
 }

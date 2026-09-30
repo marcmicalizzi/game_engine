@@ -506,6 +506,21 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
   frozen_frame_ = 0;
   ring_stats_ = RingStats{};
   uploads_.clear();
+  swap_slots_.clear();
+  swap_mark_.clear();
+  if (rings_ != nullptr) {
+    u32 most_slots = 0;
+    u32 all_slots = 0;
+    for (u32 k = 1; k < rings_->level_count(); ++k) {
+      ring_stats_.chunks_resident += rings_->chunks(k).size();
+      most_slots = std::max(most_slots, scene.terrain_slots(k));
+      all_slots += scene.terrain_slots(k);
+    }
+    ring_stats_.most_chunks = ring_stats_.chunks_resident;
+    uploads_.reserve(all_slots);
+    swap_slots_.reserve(most_slots);
+    swap_mark_.assign(most_slots, u8{0});
+  }
   upload_next_ = 0;
   upload_frames_ = 0;
   upload_bytes_ = 0;
@@ -571,9 +586,16 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
     level.stats.last_eval_ms = level.eval_ms_ema;
     level.stats.last_hash = hash_bytes(heights.data(), heights.size() * sizeof(f32));
     level.shown_slots.clear();
-    if (k > 0) {
-      for (const TerrainChunk& chunk : rings_->chunks(k))
-        if (chunk.slot != ~0u) level.shown_slots.push_back(chunk.slot);
+    level.shown_mask.clear();
+    if (k > 0 && rings_ != nullptr) {
+      const u32 slots = scene.terrain_slots(k);
+      level.shown_slots.reserve(slots);
+      level.shown_mask.assign(slots, u8{0});
+      for (const TerrainChunk& chunk : rings_->chunks(k)) {
+        if (chunk.slot == ~0u) continue;
+        level.shown_slots.push_back(chunk.slot);
+        level.shown_mask[chunk.slot] = 1;
+      }
     }
     level.cache.clear();
     level.cache.push_back(Cached{start_s_, level.window, std::move(heights)});
@@ -871,6 +893,10 @@ void TerrainMotion::run_rings(RingTask& task) {
   const i64 started = time::monotonic_ns();
   std::string error;
   u32 moved = 0;
+  // What the levels held before: what a re-centre did not keep, it dropped.
+  u32 before = 0;
+  for (u32 k = 1; k < rings_->level_count(); ++k)
+    before += rings_->chunks(k).size();
   // The chunks' rest heights are the field at the surface's time when the camera asked, which a
   // drawn field differs from by what the sand moved since: the padding measures it.
   if (!rings_->update(task.camera_x, task.camera_z, task.time_s, task.layout,
@@ -884,6 +910,7 @@ void TerrainMotion::run_rings(RingTask& task) {
   task.moved = moved;
   task.built = rings_->last_built();
   task.kept = rings_->last_kept();
+  task.dropped = before > task.kept ? before - task.kept : 0;
   task.ms = ms_since(started);
 }
 
@@ -1127,6 +1154,7 @@ bool TerrainMotion::take_rings(bool block) {
   ++ring_stats_.rebuilds;
   ring_stats_.chunks_built += finished.built;
   ring_stats_.chunks_kept += finished.kept;
+  ring_stats_.chunks_dropped += finished.dropped;
   ring_stats_.last_rebuild_ms = finished.ms;
   ring_stats_.max_rebuild_ms = std::max(ring_stats_.max_rebuild_ms, finished.ms);
   if (!finished.ok) {
@@ -1134,6 +1162,10 @@ bool TerrainMotion::take_rings(bool block) {
     return true;
   }
   pending_moved_ = finished.moved;
+  ring_stats_.chunks_resident = 0;
+  for (u32 k = 1; k < levels_.size(); ++k)
+    ring_stats_.chunks_resident += rings_->chunks(k).size();
+  ring_stats_.most_chunks = std::max(ring_stats_.most_chunks, ring_stats_.chunks_resident);
   uploads_.clear();
   upload_next_ = 0;
   upload_frames_ = 0;
@@ -1296,19 +1328,29 @@ void TerrainMotion::swap_rings() {
     Level& level = levels_[k];
     Pair& p = pending_[k];
     if (p.moved) {
-      Vector<u32> slots;
-      for (const TerrainChunk& chunk : rings_->chunks(k))
-        if (chunk.slot != ~0u) slots.push_back(chunk.slot);
+      // The slots drawn from now on, marked; the ones drawn until now and not marked go off, the
+      // marked ones not drawn until now come on. Linear in the level's chunks and allocating
+      // nothing (every list was sized for the level's slots at `start`): a tile level holds
+      // thousands of chunks, and the search this replaced was quadratic and made a list a swap.
+      swap_slots_.clear();
+      for (const TerrainChunk& chunk : rings_->chunks(k)) {
+        if (chunk.slot == ~0u) continue;
+        swap_slots_.push_back(chunk.slot);
+        swap_mark_[chunk.slot] = 1;
+      }
       for (const u32 s : level.shown_slots) {
-        if (std::find(slots.begin(), slots.end(), s) == slots.end())
-          scene_->terrain_chunk_show(k, s, false);
+        if (swap_mark_[s] != 0) continue;
+        scene_->terrain_chunk_show(k, s, false);
+        level.shown_mask[s] = 0;
       }
-      for (const u32 s : slots) {
-        if (std::find(level.shown_slots.begin(), level.shown_slots.end(), s) ==
-            level.shown_slots.end())
-          scene_->terrain_chunk_show(k, s, true);
+      level.shown_slots.clear();
+      for (const u32 s : swap_slots_) {
+        swap_mark_[s] = 0;
+        level.shown_slots.push_back(s);
+        if (level.shown_mask[s] != 0) continue;
+        scene_->terrain_chunk_show(k, s, true);
+        level.shown_mask[s] = 1;
       }
-      level.shown_slots = std::move(slots);
     }
     if (p.window_changed) {
       level.a = p.a;

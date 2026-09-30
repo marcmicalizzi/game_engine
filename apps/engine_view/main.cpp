@@ -293,6 +293,11 @@ constexpr const char* k_usage =
     "                   one frame; with --time-rate they move with the rest of the sand. Built at\n"
     "                   load, round the camera's first position; the summary's \"time_lapse\"\n"
     "                   block counts the re-centres\n"
+    "  --terrain-tiles  draw a dune terrain's ground from the world's tiles instead: 32 m tiles\n"
+    "                   by default, at a grid a ring of the world's tile ring (its \"ground_cells\"),\n"
+    "                   handed over as the ring moves, so the desert never ends. A scene's world\n"
+    "                   block asks for it with \"ground\": true; it replaces --terrain-rings, and\n"
+    "                   the walker's collision stands on the same tiles\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -1261,11 +1266,17 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
   if (lapse.has_rings()) {
     const renderer::TerrainMotion::RingStats& r = lapse.ring_stats();
     JsonValue rings = JsonValue::object();
+    // Which layout the levels had (renderer.md, "The ground from the world's tiles"): the rings
+    // beside the scene's grid, or the world's tiles in its place; and the chunks they hold now.
+    rings.set("layout", lapse.level_set()->grid_drawn() ? "rings" : "tiles");
+    rings.set("chunks", r.chunks_resident);
+    rings.set("most_chunks", r.most_chunks);
     rings.set("rebuilds", r.rebuilds);
     rings.set("swaps", r.swaps);
     rings.set("failed", r.failed);
     rings.set("chunks_built", r.chunks_built);
     rings.set("chunks_kept", r.chunks_kept);
+    rings.set("chunks_dropped", r.chunks_dropped);
     rings.set("chunks_uploaded", r.chunks_uploaded);
     rings.set("upload_bytes", r.upload_bytes);
     rings.set("upload_frames", r.upload_frames);
@@ -1710,15 +1721,23 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
 
 // The ground as the frames draw it, for the walker (walk.h): the scene's grid and, with a moving
 // terrain, the finest level's pair of fields and blend — what is drawn round the walker. A terrain
-// at its rest pose is still, whatever the motion's rate.
+// at its rest pose is still, whatever the motion's rate. Drawn from the world's tiles, the grid is
+// not drawn: the finest tile level's lattice and the tiles' source instead.
 view::DrawnGround drawn_ground(const renderer::TerrainMotion& lapse,
                                const renderer::SceneData& scene) {
   view::DrawnGround d;
   if (scene.terrain.enabled) d.lattice = renderer::terrain_scene_lattice(scene.terrain);
   if (!lapse.active() || lapse.level_count() == 0) return d;
-  u32 finest = 0;
-  for (u32 k = 1; k < lapse.level_count(); ++k) {
+  const renderer::TerrainLevelSet* set = lapse.level_set();
+  const bool tiled =
+      set != nullptr && !set->grid_drawn() && set->source() != nullptr && lapse.level_count() > 1;
+  u32 finest = tiled ? 1u : 0u;  // an undrawn grid is not a candidate
+  for (u32 k = finest + 1; k < lapse.level_count(); ++k) {
     if (lapse.level_stats(k).spacing_m < lapse.level_stats(finest).spacing_m) finest = k;
+  }
+  if (tiled) {
+    d.tiles = set->source();
+    d.lattice = set->lattice(finest);
   }
   const renderer::TerrainMotion::LevelStats s = lapse.level_stats(finest);
   d.time_a = s.time_a;
@@ -1727,6 +1746,34 @@ view::DrawnGround drawn_ground(const renderer::TerrainMotion& lapse,
   d.moving = d.time_b != d.time_a || d.time_a != scene.terrain.time_s;
   return d;
 }
+
+// **The world's tiles** (`--terrain-tiles`, or a scene's world block's `ground`; renderer.md, "The
+// ground from the world's tiles"): the tile set round the first camera, built before the GPU scene
+// reserves its slots and handed to the time-lapse, which rebuilds it; its heights the scene's
+// ground seen as tiles. The world's ring hands it the tiles it holds (world_view.h); a build
+// without the world capability follows the camera by the ring's first-fill rule instead, with no
+// hysteresis and no budget.
+struct ViewTiles {
+  std::unique_ptr<renderer::TerrainSampler> ground;
+  std::unique_ptr<renderer::TerrainTileSet> set;
+  Vector<renderer::TerrainTile> round;  // the fallback's, kept between frames
+
+  bool build(const renderer::SceneData& data, Vec3 camera, jobs::JobSystem* jobs,
+             std::string* error) {
+    ground = std::make_unique<renderer::TerrainSampler>(data.terrain);
+    set = std::make_unique<renderer::TerrainTileSet>();
+    return set->build(data.terrain, renderer::terrain_tiles_desc(data.world),
+                      ground->provider().tiles(), camera.x, camera.z, jobs, error);
+  }
+  const scene_gen::TileSource* source() const noexcept {
+    return set != nullptr ? set->source() : nullptr;
+  }
+  void follow(Vec3 camera) {
+    if (set == nullptr) return;
+    renderer::terrain_tiles_round(set->tiles_desc(), camera.x, camera.z, round);
+    set->set_tiles(std::span<const renderer::TerrainTile>(round.data(), round.size()));
+  }
+};
 
 // The session's walk block, beside the walker's own (apps.md, "Walking"): how it started, where it
 // is now, and how often F switched it.
@@ -2231,6 +2278,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // The terrain rings (`--terrain-rings`), built before the GPU scene reserves their slots, and
   // rebuilt by the time-lapse's worker, so they outlive both.
   std::unique_ptr<renderer::TerrainRingSet> terrain_rings;
+  ViewTiles view_tiles;  // the world's tiles (`--terrain-tiles`), which outlive both too
   renderer::TerrainMotion time_lapse;
   std::string summary_line;  // printed after the teardown, so it is the last thing out
   bench::MachineState machine_start;
@@ -2354,7 +2402,20 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
     }
-    if (!scene.create(device, scene_data, resolved, &error, terrain_rings.get())) {
+    if (resolved.terrain_tiles) {
+      const renderer::Camera first =
+          have_path
+              ? renderer::camera_path_frame(path, 0, frames)
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+      if (!view_tiles.build(scene_data, first.position, time_jobs.get(), &error)) {
+        exit_code = fail("terrain-tiles", error);
+        break;
+      }
+    }
+    renderer::TerrainLevelSet* const terrain_levels =
+        terrain_rings != nullptr ? static_cast<renderer::TerrainLevelSet*>(terrain_rings.get())
+                                 : view_tiles.set.get();
+    if (!scene.create(device, scene_data, resolved, &error, terrain_levels)) {
       exit_code = fail("scene", error);
       break;
     }
@@ -2409,17 +2470,17 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer::TimeLapseConfig lapse =
           renderer::time_lapse_config_from_tunables(resolved.settings.time_rate);
       lapse.wait = true;
-      if (!time_lapse.start(scene, terrain_rings.get(), lapse, time_jobs.get(), &error)) {
+      if (!time_lapse.start(scene, terrain_levels, lapse, time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
         break;
       }
     }
     // A streamed world (world_view.h): its ring round the camera, updated before every frame from
     // that frame's camera. Everything that draws below calls `world_before` first; so does the
-    // time-lapse's tick.
+    // time-lapse's tick. The world's ring also decides the world's tiles the ground is drawn from.
 #if ENGINE_VIEW_WORLD
-    if (scene_data.world.enabled) {
-      if (!view_world.create(scene_data, view_renderer, &error)) {
+    if (scene_data.world.enabled || view_tiles.set != nullptr) {
+      if (!view_world.create(scene_data, view_renderer, &error, view_tiles.set.get())) {
         exit_code = fail("world", error);
         break;
       }
@@ -2440,12 +2501,17 @@ int run_offscreen(Options& options, Interactive& interactive) {
                                          : step == WorldStep::complete
                                              ? view::ViewWorld::Mode::Complete
                                              : view::ViewWorld::Mode::Budgeted;
+      // The world first: its ring hands the tile set the tiles it holds, which the time-lapse's
+      // frame then asks to rebuild (a world without tiles has no terrain levels, and a terrain
+      // with levels and no world has no ring, so the order changes nothing else).
+      const bool ok = !view_world.valid() ||
+                      view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
       time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
-      return !view_world.valid() ||
-             view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
+      return ok;
     };
 #else
     auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
+      view_tiles.follow(camera.position);
       time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
       return true;
     };
@@ -2455,7 +2521,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // ---- a recorded session, flown again ----------------------------------------------------
       // With the recording's walk numbers, on the scene as loaded (walk.h): a recorded walk
       // replays bit for bit over the scene it was recorded on.
-      if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error)) {
+      if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error,
+                        view_tiles.source())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -3043,6 +3110,8 @@ int main(int argc, char** argv) {
       options.settings.time_rate = v;
     } else if (a == "--terrain-rings") {
       options.settings.terrain_rings = true;
+    } else if (a == "--terrain-tiles") {
+      options.settings.terrain_tiles = true;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -3881,6 +3950,7 @@ int main(int argc, char** argv) {
   // a frame, so the window and a `--frames` run evaluate the same boundaries.
   std::unique_ptr<jobs::JobSystem> time_jobs;
   std::unique_ptr<renderer::TerrainRingSet> terrain_rings;  // `--terrain-rings`: outlives both
+  ViewTiles view_tiles;             // the world's tiles (`--terrain-tiles`): outlives both too
   renderer::Camera terrain_camera;  // the camera the rings follow: the last frame's
   renderer::TerrainMotion time_lapse;
   std::string time_lapse_text = "null";
@@ -4076,7 +4146,15 @@ int main(int argc, char** argv) {
         break;
       }
     }
-    if (!scene.create(device, scene_data, resolved, &error, terrain_rings.get())) {
+    if (resolved.terrain_tiles &&
+        !view_tiles.build(scene_data, terrain_camera.position, time_jobs.get(), &error)) {
+      exit_code = fail("terrain-tiles", error);
+      break;
+    }
+    renderer::TerrainLevelSet* const terrain_levels =
+        terrain_rings != nullptr ? static_cast<renderer::TerrainLevelSet*>(terrain_rings.get())
+                                 : view_tiles.set.get();
+    if (!scene.create(device, scene_data, resolved, &error, terrain_levels)) {
       exit_code = fail("scene", error);
       break;
     }
@@ -4172,7 +4250,7 @@ int main(int argc, char** argv) {
     // In a window the fields are never waited for: a late one holds the surface where it is, and
     // a re-centre's chunks are uploaded a few a frame and swapped in when they are all there.
     if (resolved.terrain_levels) {
-      if (!time_lapse.start(scene, terrain_rings.get(),
+      if (!time_lapse.start(scene, terrain_levels,
                             renderer::time_lapse_config_from_tunables(resolved.settings.time_rate),
                             time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
@@ -4180,8 +4258,8 @@ int main(int argc, char** argv) {
       }
     }
 #if ENGINE_VIEW_WORLD
-    if (scene_data.world.enabled) {
-      if (!view_world.create(scene_data, view_renderer, &error)) {
+    if (scene_data.world.enabled || view_tiles.set != nullptr) {
+      if (!view_world.create(scene_data, view_renderer, &error, view_tiles.set.get())) {
         exit_code = fail("world", error);
         break;
       }
@@ -4235,7 +4313,7 @@ int main(int argc, char** argv) {
       // The walker, on the scene as loaded and the ground as the first frame draws it; with the
       // header's numbers, so a replay walks with the recording's (walk.h).
       if (!walker.start(interactive.header.walk, interactive.header.params.tick_hz, scene_data,
-                        &error)) {
+                        &error, view_tiles.source())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -4520,6 +4598,8 @@ int main(int argc, char** argv) {
         exit_code = fail("world", error);
         break;
       }
+#else
+      view_tiles.follow(terrain_camera.position);
 #endif
       // The CPU's share of the frame is everything but the waits: for a free frame slot (the GPU),
       // for a swapchain image and in the present (the display), and the pacer's own. Each is

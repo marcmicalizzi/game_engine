@@ -271,15 +271,18 @@ struct Walker::Impl {
   }
 
   // The ground as drawn at (x, z): the scene's grid cell under it, as the renderer triangulates a
-  // quad (the (x + 1, z)-(x, z + 1) diagonal), at the drawn time. NaN off the grid.
+  // quad (the (x + 1, z)-(x, z + 1) diagonal), at the drawn time. NaN off the grid. On the world's
+  // tiles, the finest tile level's cell, which has no edge, from the tiles' own source (a tile is
+  // triangulated with the grid's diagonal).
   f32 drawn_at(f32 x, f32 z) {
     const scene_gen::Lattice& l = drawn.lattice;
-    if (l.size < 2) return std::numeric_limits<f32>::quiet_NaN();
+    const bool tiled = drawn.tiles != nullptr && l.spacing_mm > 0;
+    if (!tiled && l.size < 2) return std::numeric_limits<f32>::quiet_NaN();
     const f64 fx = (static_cast<f64>(x) - l.origin_x) / l.spacing;
     const f64 fz = (static_cast<f64>(z) - l.origin_z) / l.spacing;
     const i64 i = static_cast<i64>(std::floor(fx));
     const i64 j = static_cast<i64>(std::floor(fz));
-    if (i < 0 || j < 0 || i + 1 >= l.size || j + 1 >= l.size) {
+    if (!tiled && (i < 0 || j < 0 || i + 1 >= l.size || j + 1 >= l.size)) {
       return std::numeric_limits<f32>::quiet_NaN();
     }
     const bool moving = drawn.moving && ground->moves();
@@ -287,7 +290,15 @@ struct Walker::Impl {
         (moving && (cell.time_a != drawn.time_a || cell.time_b != drawn.time_b))) {
       const i32 ci = static_cast<i32>(i);
       const i32 cj = static_cast<i32>(j);
-      if (moving) {
+      if (tiled) {
+        const f64 still = scene->terrain.time_s;
+        const std::span<f32> a(cell.a, 4);
+        const std::span<f32> b(cell.b, 4);
+        if (!drawn.tiles->heights(moving ? drawn.time_a : still, l.spacing_mm, ci, cj, 2, 2, a) ||
+            !drawn.tiles->heights(moving ? drawn.time_b : still, l.spacing_mm, ci, cj, 2, 2, b)) {
+          return std::numeric_limits<f32>::quiet_NaN();
+        }
+      } else if (moving) {
         (void)ground->evaluate(drawn.time_a, l, ci, cj, 2, 2, 0, 1, std::span<f32>(cell.a, 4));
         (void)ground->evaluate(drawn.time_b, l, ci, cj, 2, 2, 0, 1, std::span<f32>(cell.b, 4));
       } else {
@@ -330,8 +341,9 @@ Walker::Walker() : impl_(std::make_unique<Impl>()) {}
 Walker::~Walker() = default;
 
 bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneData& scene,
-                   std::string* error) {
+                   std::string* error, const scene_gen::TileSource* tiles) {
   (void)error;
+  (void)tiles;  // the collision's, where the build has it
   Impl& w = *impl_;
   w.params = params;
   w.tick_hz = tick_hz > 0 ? tick_hz : 240u;
@@ -379,7 +391,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     why = "the physics world could not be made";
   } else if (!w.ring.configure(ring, &ring_error)) {
     why = std::string("the collision ring: ") + ring_error;
-  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why)) {
+  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles)) {
     // `why` says what
   } else {
     w.ring.add_consumer(w.consumer.consumer());
@@ -411,7 +423,8 @@ const WalkStats& Walker::stats() const noexcept { return impl_->stats; }
 void Walker::set_drawn(const DrawnGround& drawn) noexcept {
   const scene_gen::Lattice lattice = impl_->drawn.lattice;
   impl_->drawn = drawn;
-  if (drawn.lattice.size < 2) impl_->drawn.lattice = lattice;  // the caller's may be empty
+  // The caller's may be empty; a tile level's has no edge, so no size.
+  if (drawn.tiles == nullptr && drawn.lattice.size < 2) impl_->drawn.lattice = lattice;
 }
 
 Vec3 Walker::eye() const noexcept {

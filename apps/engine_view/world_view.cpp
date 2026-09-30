@@ -26,7 +26,7 @@ ENGINE_LOG_CATEGORY_DEFINE(log_view_world, "view.world");
 ViewWorld::~ViewWorld() { close_log(); }
 
 bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer& renderer,
-                       std::string* error) {
+                       std::string* error, renderer::TerrainTileSet* tiles) {
   data_ = &data;
   renderer_ = &renderer;
   world::RingParams params;
@@ -39,6 +39,9 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   params.hysteresis = data.world.hysteresis;
   params.max_activations = world::max_activations_tunable();
   params.max_deactivations = world::max_deactivations_tunable();
+  // The world's tiles drawn: the ring the tile set was built for — the scene's block, or the
+  // world's defaults for `--terrain-tiles` on a scene with none.
+  if (tiles != nullptr) params = world::DrawnTiles::ring_params(tiles->tiles_desc());
   const char* why = nullptr;
   if (!world_.configure(params, &why)) {
     if (error != nullptr) *error = std::string("the scene's world rings: ") + why;
@@ -49,6 +52,12 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   if (data.world.ring_count > 0) {
     for (u32 r = 0; r < data.world.ring_count; ++r)
       placements_config_.ruins[r] = static_cast<world::RingRuins>(data.world.ruins[r]);
+  }
+  // The drawn ground first: a tile is drawn before anything is placed on it (world.md, "The
+  // order"). The reader refuses ground tiles beside streamed placements, so today it is alone.
+  if (tiles != nullptr) {
+    drawn_.create(*tiles);
+    world_.add_consumer(drawn_.consumer());
   }
   // The scene's streamed placement entries, whatever generators they name: the reader has already
   // refused a name this executable does not carry, and the consumer finds each by it again.

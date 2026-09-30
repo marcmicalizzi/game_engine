@@ -256,6 +256,58 @@ TEST_CASE("scene_collision: the ground is a heightfield a tile, on the provider'
   CHECK_FALSE(collision.ground_height(500.0f, 500.0f, unused));  // no tile held there
 }
 
+namespace {
+
+// A tile source of the test's own that is not the provider: a steeper plane, as a tile set built
+// ahead of time would be something other than the scene's generator (renderer.md, "The ground from
+// the world's tiles").
+bool other_heights(const void*, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz, u32, u32,
+                   std::span<f32> out) noexcept {
+  for (u32 j = 0; j < nz; ++j) {
+    for (u32 i = 0; i < nx; ++i) {
+      const f32 x =
+          static_cast<f32>(static_cast<f64>((i0 + static_cast<i64>(i)) * spacing_mm) / 1000.0);
+      const f32 z =
+          static_cast<f32>(static_cast<f64>((j0 + static_cast<i64>(j)) * spacing_mm) / 1000.0);
+      out[static_cast<usize>(j) * nx + i] = 3.0f + 0.25f * x - 0.125f * z;
+    }
+  }
+  return true;
+}
+constexpr scene_gen::TileSourceOps k_other_ops{.heights = &other_heights};
+
+}  // namespace
+
+TEST_CASE("scene_collision: the ground walked on is the tile source's the renderer draws from") {
+  // Handed a tile source — the renderer's, when it draws the world's tiles — the collision's ground
+  // is that source's heights, and not the provider's: what is walked on is what is drawn
+  // (ADR-0048). Without one it is the provider seen as tiles, its own heights (the case above).
+  TestGround g;
+  scene_gen::GroundProvider ground(&k_still_ops, &g);
+  const scene_gen::TileSource other{&k_other_ops, nullptr};
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error, &other), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(16.0f, 16.0f), 0, true);
+  REQUIRE(collision.stats().tiles == 9);
+  u32 off = 0;
+  for (i32 i = -30; i <= 60; i += 7) {
+    for (i32 j = -30; j <= 60; j += 9) {
+      const f32 x = static_cast<f32>(i);
+      const f32 z = static_cast<f32>(j);
+      f32 held = 0.0f;
+      REQUIRE(collision.ground_height(x, z, held));
+      off += held == 3.0f + 0.25f * x - 0.125f * z ? 0u : 1u;
+    }
+  }
+  CHECK(off == 0);
+}
+
 TEST_CASE("scene_collision: bodies come and go with the walker's ring, within its budget") {
   TestGround g;
   scene_gen::GroundProvider ground(&k_still_ops, &g);

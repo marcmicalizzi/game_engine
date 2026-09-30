@@ -82,9 +82,13 @@ struct WalkInput {
 
 // The ground as the frames draw it (renderer.md, "The dunes in time-lapse"): the lattice of the
 // scene's terrain grid, and a still ground or the pair of fields and the blend the frames draw.
-// Set once a frame, before its ticks.
+// Set once a frame, before its ticks. Where the frames draw the world's tiles (renderer.md, "The
+// ground from the world's tiles"), `tiles` is their source and `lattice` the finest tile level's —
+// the world's lattice at that level's spacing, without an edge — and the ground as drawn is read
+// from the tiles.
 struct DrawnGround {
   scene_gen::Lattice lattice;
+  const scene_gen::TileSource* tiles = nullptr;
   bool moving = false;
   f64 time_a = 0.0;
   f64 time_b = 0.0;
@@ -98,7 +102,8 @@ struct WalkStats {
   u32 drops = 0;         // times put on the ground (a switch to walking)
   // The largest distance, at the walker's feet, between the ground it stands on — the collision
   // heightfield, or the provider's height when it follows the ground — and the ground as drawn (the
-  // scene's grid, as the renderer triangulates it, at the drawn time), metres.
+  // scene's grid, or the finest level of the world's tiles, as the renderer triangulates it, at the
+  // drawn time), metres.
   f32 max_ground_error_m = 0.0f;
   u64 hash = 0;  // the walker's own state chain: the character's, or the ground-follow's
 };
@@ -113,9 +118,12 @@ class Walker {
   // Over `scene`'s terrain, and its placements where the build collides with them, stepping at
   // `tick_hz`. `scene` must outlive the walker. A scene with no terrain cannot be walked:
   // `available()` is false and says why, and nothing else here is called. False with `error` only
-  // for a collision that cannot be made (a generator the build does not carry).
+  // for a collision that cannot be made (a generator the build does not carry). `tiles`: the tile
+  // source the renderer draws the world's tiles from, when it does, which the collision's ground is
+  // then made of (renderer.md, "The ground from the world's tiles"): what is walked on is what is
+  // drawn. It must outlive the walker.
   bool start(const WalkParams& params, u32 tick_hz, const renderer::SceneData& scene,
-             std::string* error);
+             std::string* error, const scene_gen::TileSource* tiles = nullptr);
   bool available() const noexcept;
   // "physics" or "ground-follow" (or "none" before `start` or without a terrain), and the sentence
   // saying why a walker is not the physical one.

@@ -19,7 +19,9 @@
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
+#include <systems/renderer/terrain_tiles.h>
 #include <systems/renderer/view_set.h>
+#include <systems/world/drawn_tiles.h>
 #include <systems/world/placement_tiles.h>
 #include <systems/world/world.h>
 #include <systems/world/world_log.h>
@@ -39,9 +41,12 @@ class ViewWorld {
   // The ring from the scene's world block (its defaults where it gave none), the budget from the
   // tunables, and the placements consumer over the scene's streamed entries (its ruins, its
   // placements: whatever generators the scene names, found in the scene-generator registry) with
-  // the renderer as its sink. `data` and `renderer` must outlive this.
+  // the renderer as its sink. With `tiles` — the renderer draws the ground from the world's tiles
+  // (renderer.md, "The ground from the world's tiles") — the drawn ground's consumer too, before
+  // the placements, handing the tile set the tiles the ring holds; the ring is the one the tile set
+  // was built for. `data`, `renderer` and `tiles` must outlive this.
   bool create(const renderer::SceneData& data, renderer::SceneRenderer& renderer,
-              std::string* error);
+              std::string* error, renderer::TerrainTileSet* tiles = nullptr);
   bool valid() const noexcept { return renderer_ != nullptr; }
   // A world log: one `engine.world.TileFrame` a line, and the summary last (`close_log`).
   bool open_log(const std::string& path, std::string* error);
@@ -64,6 +69,7 @@ class ViewWorld {
 
   world::World& world() noexcept { return world_; }
   world::PlacementTiles& placements() noexcept { return placements_; }
+  const world::DrawnTiles& drawn() const noexcept { return drawn_; }
   // Whether a ring change of `tile` changes what its placements are drawn as (and it has any).
   bool is_handover(const world::TileEvent& event) const noexcept;
   const char* drawn_as(u8 ring) const noexcept;
@@ -83,6 +89,7 @@ class ViewWorld {
   std::string log_text_;
   world::PlacementTiles placements_;
   world::PlacementTilesConfig placements_config_;
+  world::DrawnTiles drawn_;  // the drawn ground, when the renderer draws the world's tiles
   Vector<world::PlacementTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
   Vector<renderer::DynamicBlock> blocks_;            // and the blocks they are
   bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)

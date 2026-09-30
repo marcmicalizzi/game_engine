@@ -174,9 +174,14 @@ class SceneCollision {
   // opens each streamed entry's generator (and refuses one this executable does not carry, or one
   // with no tiles, with the registry's sentence); for a scene read whole it bins the instances by
   // the tiles their bounds reach. False, with `error`, when it cannot.
+  //
+  // **The ground's heights come from a tile source** (scene_gen/tile_source.h; ADR-0048): `tiles`
+  // when given — the one the renderer draws the world's tiles from, so what is walked on is what is
+  // drawn — or `ground` seen as tiles (`GroundProvider::tiles()`), which is its own heights to the
+  // bit. `ground` still stands the placements: a generator is handed its floor.
   bool create(physics::World& physics, const renderer::SceneData& scene,
               const scene_gen::GroundProvider* ground, const Config& config,
-              std::string* error = nullptr);
+              std::string* error = nullptr, const scene_gen::TileSource* tiles = nullptr);
   // The row to register: after the scene's ground and placements consumers where the world has
   // them (world.md, "The order"), acting in ring 0.
   world::TileConsumer consumer() noexcept;
@@ -265,6 +270,10 @@ class SceneCollision {
   physics::World* physics_ = nullptr;
   const renderer::SceneData* scene_ = nullptr;
   const scene_gen::GroundProvider* ground_ = nullptr;
+  // Where the ground's heights come from (`create`), and the time a still one stands at.
+  scene_gen::TileSource source_;
+  bool explicit_source_ = false;  // a host's source, rather than the ground seen as tiles
+  f64 own_time_s_ = 0.0;
   Config config_;
   i64 spacing_mm_ = 1000;
   i64 tile_mm_ = 32000;

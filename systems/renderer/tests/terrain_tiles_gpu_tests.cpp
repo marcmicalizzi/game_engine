@@ -18,6 +18,7 @@
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
+#include <core/memory/memory.h>
 #include <domain/gfx/device.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
@@ -142,10 +143,11 @@ struct TileRig {
     return motion.start(scene, tiles.get(), lapse, jobs, &error);
   }
 
+  Vector<TerrainTile> held;  // `follow`'s, kept, as a host's ring keeps its tiles
+
   // A frame's world update, as a host's ring hands it over: the tiles round the camera.
   void follow(const Camera& camera, f64 dt = 1.0 / 60.0) {
     if (tiles != nullptr) {
-      Vector<TerrainTile> held;
       terrain_tiles_round(tiles->tiles_desc(), camera.position.x, camera.position.z, held);
       tiles->set_tiles(std::span<const TerrainTile>(held.data(), held.size()));
     }
@@ -837,12 +839,28 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
       rig.error);
   const u64 device_bytes = rig.scene.terrain_ring_bytes();
   u32 most_chunks[k_max_terrain_levels] = {};
+  // **The frame loop allocates nothing in steady state**: the host's half of a frame — the tiles
+  // handed over, the motion's frame with its re-centres asked for, taken, uploaded and swapped — is
+  // counted on this thread alone (a tag is the calling thread's, so the workers' builds are not),
+  // over the flight's second half, once every list has reached the size the flight needs.
+  static const mem::TagId k_frames_tag = mem::register_tag("tile-flight-frames");
+  u64 frame_allocations = 0;
+  u32 swaps_counted = 0;
   // 60 tiles east and 20 north, two metres a frame: every tile the flight passes comes and goes.
   constexpr u32 k_frames = 260;
   for (u32 f = 0; f < k_frames; ++f) {
     const f32 x = 2.0f * static_cast<f32>(f);
     const f32 z = 0.6f * static_cast<f32>(f);
-    rig.follow(looking_down_at(Vec3{x, 0.0f, z}, 30.0f));
+    const u64 allocations_before = mem::stats(k_frames_tag).allocation_count;
+    const u32 swaps_before = rig.motion.ring_stats().swaps;
+    {
+      const mem::TagScope scope(k_frames_tag);
+      rig.follow(looking_down_at(Vec3{x, 0.0f, z}, 30.0f));
+    }
+    if (f >= k_frames / 2) {
+      frame_allocations += mem::stats(k_frames_tag).allocation_count - allocations_before;
+      swaps_counted += rig.motion.ring_stats().swaps - swaps_before;
+    }
     for (u32 l = 1; l < rig.tiles->level_count(); ++l) {
       most_chunks[l] = std::max<u32>(most_chunks[l], rig.tiles->chunks(l).size());
       CHECK(rig.tiles->chunks(l).size() * 2 <= rig.scene.terrain_slots(l));
@@ -867,4 +885,13 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   CHECK(r.swaps > 20);
   CHECK(rig.scene.terrain_ring_bytes() == device_bytes);
   CHECK(rig.tiles->withheld() == 0);
+  CHECK(r.chunks_dropped > 0);
+  CHECK(r.chunks_resident <= r.most_chunks);
+  if (mem::tracking_enabled()) {
+    MESSAGE("the flight's second half: " << frame_allocations << " allocations on the frame's "
+                                         << "thread over " << k_frames - k_frames / 2
+                                         << " frames and " << swaps_counted << " swaps");
+    CHECK(swaps_counted > 10);
+    CHECK(frame_allocations == 0);
+  }
 }

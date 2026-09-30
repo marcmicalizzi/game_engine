@@ -306,3 +306,141 @@ TEST_CASE(
   CHECK(second.y < 30.0f);  // on the ground, not where the camera started
   CHECK(number(walk, "distance_m") > 2.5);
 }
+
+TEST_CASE("engine-view: a walk on the world's tiles stands on the ground they draw") {
+  // The erg's window again, drawn once from its grid and once from the world's tiles (a world
+  // block's `ground`; renderer.md, "The ground from the world's tiles"), and one session — built
+  // here, walking from the first tick: the sprint up the slip face and back — replayed offscreen
+  // over both. **What is walked on is what is drawn**: the walker's collision is made from the
+  // tiles' own source (scene_collision.md), which is the ground's heights on the world's lattice,
+  // so on still sand the two walks are the same walk to the bit; and on the tiles the feet are
+  // held to the finest tile level as the renderer triangulates it, off the grid's edge as on it.
+  // At a day a second the sand moves under the walker, and the collision follows the pair the
+  // finest tile level draws. Needs a device; skips without, and where the build has no dunes.
+  const test::TempDir tmp("engine_view_walk_tiles");
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(committed)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  std::string source;
+  REQUIRE(io::read_file(committed, source) == io::Status::Ok);
+  JsonValue erg;
+  REQUIRE(parse_json(source, erg).ok);
+  // A 256 m window at 2 m, x and z from -128 to 128: the walk starts 12 m past its east edge.
+  JsonValue terrain = *erg.find("terrain");
+  terrain.set("size", static_cast<u64>(129));
+  terrain.set("extent", JsonValue(128.0));
+  erg.set("terrain", std::move(terrain));
+  const std::string grid_scene = tmp.file("erg-grid.json");
+  REQUIRE(io::write_file(grid_scene, write_json(erg)) == io::Status::Ok);
+  std::string path_text;
+  REQUIRE(io::read_file(committed.substr(0, committed.size() - std::string("scene.json").size()) +
+                            "camera-path.json",
+                        path_text) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("camera-path.json"), path_text) == io::Status::Ok);
+  // Two rings of 32 m tiles: 50 cm a cell within a tile and a half of the walker, a metre to four.
+  REQUIRE(parse_json(R"({"ground":true,"rings":[{"radius":1.5,"ground_cells":64},
+                                                {"radius":4,"ground_cells":32}]})",
+                     terrain)
+              .ok);
+  erg.set("world", std::move(terrain));
+  const std::string tile_scene = tmp.file("erg-tiles.json");
+  REQUIRE(io::write_file(tile_scene, write_json(erg)) == io::Status::Ok);
+
+  constexpr u32 k_w = 26;
+  constexpr u32 k_s = 22;
+  constexpr u32 k_m = 16;
+  constexpr u32 k_shift = 225;
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  const auto key = [&](u64 tick, u32 code, bool down) {
+    keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, code, down ? 1.0f : 0.0f, 0});
+  };
+  key(5, k_m, true);
+  key(6, k_m, false);
+  key(10, k_shift, true);
+  key(10, k_w, true);
+  key(970, k_w, false);
+  key(980, k_m, true);
+  key(981, k_m, false);
+  key(990, k_s, true);
+  key(1950, k_s, false);
+  key(1950, k_shift, false);
+  key(1960, k_m, true);
+  key(1961, k_m, false);
+  view::SessionHeader header;
+  header.ticks = 1980;
+  header.scene = grid_scene;
+  // At x = 140, off the window's grid, looking east (yaw -90°) up the slip face.
+  header.start.position = Vec3{140.0f, 300.0f, 0.0f};
+  header.start.yaw = -1.5707963f;
+  header.start.pitch = -0.17453292f;
+  header.has_walk = true;
+  header.walking = true;
+  keys.set_session(view::session_to_json(header));
+  const std::string session = tmp.file("walk.jsonl");
+  REQUIRE(keys.save(session) == io::Status::Ok);
+
+  const std::string ddc = tmp.file("ddc");
+  const auto walk_over = [&](const std::string& scene, std::initializer_list<const char*> more) {
+    std::vector<std::string> args = {
+        "--replay-input", session, "--scene", scene, "--offscreen", "--width", "96",
+        "--height",       "64",    "--ddc",   ddc};
+    for (const char* a : more)
+      args.push_back(a);
+    return run_view(args);
+  };
+  const Run grid = walk_over(grid_scene, {});
+  if (grid.exit_code == 3 || refused_without_dunes(grid)) {
+    MESSAGE("engine-view unavailable here: " << grid.output);
+    return;
+  }
+  REQUIRE_MESSAGE(grid.exit_code == 0, grid.output);
+  const Run tiles = walk_over(tile_scene, {});
+  REQUIRE_MESSAGE(tiles.exit_code == 0, tiles.output);
+  JsonValue grid_summary;
+  JsonValue tile_summary;
+  REQUIRE_MESSAGE(summary_of(grid, grid_summary), grid.output);
+  REQUIRE_MESSAGE(summary_of(tiles, tile_summary), tiles.output);
+  const JsonValue* grid_walk = grid_summary.find("interactive")->find("walk");
+  const JsonValue* tile_walk = tile_summary.find("interactive")->find("walk");
+  REQUIRE(grid_walk != nullptr);
+  REQUIRE(tile_walk != nullptr);
+  // The tiles drew it: the levels were the world's tiles, not the rings.
+  const JsonValue* lapse = tile_summary.find("time_lapse");
+  REQUIRE_MESSAGE((lapse != nullptr && lapse->is_object()), tiles.output);
+  CHECK(text(lapse->find("rings"), "layout") == "tiles");
+  Vec3 start{};
+  Vec3 top{};
+  const JsonValue* trajectory = tile_summary.find("interactive")->find("trajectory");
+  REQUIRE(marker_at(trajectory, 0, start));
+  REQUIRE(marker_at(trajectory, 1, top));
+  MESSAGE("walked the erg's tiles ("
+          << text(tile_walk, "collision") << "): " << start.y << " m up to " << top.y << " m, "
+          << number(tile_walk, "distance_m") << " m walked, the feet at most "
+          << number(tile_walk, "max_ground_error_m") << " m off the drawn tiles (off the grid: "
+          << number(grid_walk, "max_ground_error_m") << ")");
+  CHECK(top.y > start.y + 4.0f);  // up the face, on the tiles
+  // Still sand: the same walk, tick for tick and to the walker's own state.
+  CHECK(text(tile_walk, "hash") == text(grid_walk, "hash"));
+  CHECK(write_json(*trajectory) ==
+        write_json(*grid_summary.find("interactive")->find("trajectory")));
+  CHECK(number(tile_walk, "max_ground_error_m") >= 0.0);
+  CHECK(number(tile_walk, "max_ground_error_m") < 0.25);
+
+  // Moving sand: the collision's ground is the finest tile level's pair at its blend.
+  const Run moving = walk_over(tile_scene, {"--time-rate", "86400"});
+  REQUIRE_MESSAGE(moving.exit_code == 0, moving.output);
+  JsonValue moving_summary;
+  REQUIRE_MESSAGE(summary_of(moving, moving_summary), moving.output);
+  const JsonValue* moving_walk = moving_summary.find("interactive")->find("walk");
+  REQUIRE(moving_walk != nullptr);
+  MESSAGE("at a day a second: the feet at most " << number(moving_walk, "max_ground_error_m")
+                                                 << " m off the drawn tiles");
+  CHECK(number(moving_walk, "distance_m") > 25.0);
+  CHECK(number(moving_walk, "max_ground_error_m") >= 0.0);
+  CHECK(number(moving_walk, "max_ground_error_m") < 0.25);
+}
