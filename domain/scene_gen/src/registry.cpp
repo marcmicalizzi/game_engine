@@ -164,6 +164,61 @@ void SkyProvider::reset() noexcept {
   state_ = nullptr;
 }
 
+// ---- a ground as a tile source (tile_source.h) --------------------------------------------------
+
+bool TileSource::heights(f64 time_s, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
+                         std::span<f32> out) const noexcept {
+  return heights(time_s, spacing_mm, i0, j0, nx, nz, 0, window_blocks(nx, nz), out);
+}
+
+namespace {
+
+// A moving ground: its re-evaluation at the time asked for, on the world's lattice.
+bool moving_heights(const void* state, f64 time_s, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
+                    u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
+  const auto& ground = *static_cast<const GroundProvider*>(state);
+  return ground.evaluate(time_s, ring_lattice(spacing_mm), i0, j0, nx, nz, block_begin, block_end,
+                         out);
+}
+
+// A still ground: its grid at its own time, whatever the time, a block at a time — the grid is the
+// ground's `height` at each point, so a block's sub-window is the same heights as the whole.
+bool still_heights(const void* state, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
+                   u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
+  const auto& ground = *static_cast<const GroundProvider*>(state);
+  if (out.size() != static_cast<usize>(nx) * nz) return false;
+  const Lattice lattice = ring_lattice(spacing_mm);
+  const u32 per_side = (nx + k_height_block - 1) / k_height_block;
+  f32 block[k_height_block * k_height_block];
+  for (u32 b = block_begin; b < block_end; ++b) {
+    const u32 bx = (b % per_side) * k_height_block;
+    const u32 bz = (b / per_side) * k_height_block;
+    const u32 w = std::min(nx - bx, k_height_block);
+    const u32 h = std::min(nz - bz, k_height_block);
+    ground.grid(lattice, i0 + static_cast<i32>(bx), j0 + static_cast<i32>(bz), w, h,
+                std::span<f32>(block, static_cast<usize>(w) * h));
+    for (u32 z = 0; z < h; ++z) {
+      for (u32 x = 0; x < w; ++x)
+        out[static_cast<usize>(bz + z) * nx + bx + x] = block[z * w + x];
+    }
+  }
+  return true;
+}
+
+f64 ground_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
+  return static_cast<const GroundProvider*>(state)->travel_m(from_s, to_s);
+}
+
+constexpr TileSourceOps k_moving_tiles{.heights = &moving_heights, .travel_m = &ground_travel_m};
+constexpr TileSourceOps k_still_tiles{.heights = &still_heights, .travel_m = nullptr};
+
+}  // namespace
+
+TileSource GroundProvider::tiles() const noexcept {
+  if (!valid()) return TileSource{};
+  return TileSource{moves() ? &k_moving_tiles : &k_still_tiles, this};
+}
+
 // ---- the registry -------------------------------------------------------------------------------
 
 GeneratorRegistry& GeneratorRegistry::global() {

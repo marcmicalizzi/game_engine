@@ -36,6 +36,7 @@
 #include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/scene_gen/tile_source.h>
 
 #include <schemas/scene.h>
 #include <span>
@@ -456,6 +457,11 @@ class GroundProvider {
   const char* record() const noexcept { return ops_ != nullptr ? ops_->record : nullptr; }
   // The view a placement generator stands on (`Context::ground`), valid while this lives.
   Ground view() const noexcept;
+  // **This ground as a tile source** (tile_source.h; scene_gen.md, "The tile source"): the heights
+  // of a window of the world's lattice through `evaluate` at the time asked for, or, for a ground
+  // that does not move, through `grid` at its own time whatever the time; and `travel_m` when it
+  // moves. The provider's heights to the bit. Valid while this lives and is not moved.
+  TileSource tiles() const noexcept;
   // For the capability that made it, which alone knows what the state is (its typed accessor).
   const GroundOps* ops() const noexcept { return ops_; }
   const void* state() const noexcept { return state_; }

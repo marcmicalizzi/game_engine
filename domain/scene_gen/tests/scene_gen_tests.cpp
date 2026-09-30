@@ -9,6 +9,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <string>
 
 using namespace engine;
@@ -255,4 +256,80 @@ TEST_CASE("scene_gen: a sky provider is the third kind, found by its name and ma
   CHECK(local.unknown_sky("earth") ==
         "names the sky provider \"earth\", which this build does not have: its capability is "
         "switched off or not linked into this executable (it has scene-gen-test-still)");
+}
+
+namespace {
+
+// A ground of this test's own that moves: a ramp along x that slides a metre a game second.
+f32 slide_at(f64 time_s, f32 x) noexcept { return 0.5f * x - static_cast<f32>(0.5 * time_s); }
+f32 slide_height(const void*, f32 x, f32) noexcept { return slide_at(0.0, x); }
+bool slide_evaluate(const void*, f64 time_s, const Lattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
+                    u32 begin, u32 end, std::span<f32> out) noexcept {
+  if (out.size() != static_cast<usize>(nx) * nz) return false;
+  const u32 per_side = (nx + k_height_block - 1) / k_height_block;
+  for (u32 b = begin; b < end; ++b) {
+    const u32 bx = (b % per_side) * k_height_block;
+    const u32 bz = (b / per_side) * k_height_block;
+    for (u32 z = bz; z < std::min(nz, bz + k_height_block); ++z) {
+      for (u32 x = bx; x < std::min(nx, bx + k_height_block); ++x)
+        out[static_cast<usize>(z) * nx + x] = slide_at(time_s, lattice.x(i0 + static_cast<i32>(x)));
+    }
+  }
+  (void)j0;  // a ramp along x: the same along z
+  return true;
+}
+f64 slide_travel(const void*, f64 from_s, f64 to_s) noexcept { return to_s - from_s; }
+constexpr GroundOps k_slide_ops{
+    .height = &slide_height, .evaluate = &slide_evaluate, .travel_m = &slide_travel};
+
+}  // namespace
+
+TEST_CASE("scene_gen: a ground seen as tiles is its heights on the world's lattice") {
+  // A still ground (the tilt): its grid at its own time, whatever time is asked for, and the same
+  // bytes whether the window is asked for whole or a block at a time.
+  scene::Terrain entry;
+  entry.dune_height = 0.25f;
+  GroundProvider tilt;
+  REQUIRE(k_tilt.make(entry, Context{}, tilt, nullptr));
+  const TileSource still = tilt.tiles();
+  REQUIRE(still.valid());
+  CHECK_FALSE(still.moves());
+  CHECK(still.travel_m(0.0, 1.0e6) == 0.0);
+  constexpr u32 nx = 130;
+  constexpr u32 nz = 70;
+  Vector<f32> whole(nx * nz);
+  Vector<f32> later(nx * nz);
+  Vector<f32> blocks(nx * nz, -1.0f);
+  REQUIRE(still.heights(0.0, 250, -65, 12, nx, nz, std::span<f32>(whole.data(), whole.size())));
+  REQUIRE(still.heights(1.0e7, 250, -65, 12, nx, nz, std::span<f32>(later.data(), later.size())));
+  const u32 count = window_blocks(nx, nz);
+  CHECK(count == 6);
+  for (u32 b = count; b-- > 0;) {
+    REQUIRE(still.heights(0.0, 250, -65, 12, nx, nz, b, b + 1,
+                          std::span<f32>(blocks.data(), blocks.size())));
+  }
+  const Lattice lattice = ring_lattice(250);
+  u32 off = 0;
+  for (u32 j = 0; j < nz; ++j) {
+    for (u32 i = 0; i < nx; ++i) {
+      const f32 want = tilt.height(lattice.x(-65 + static_cast<i32>(i)), lattice.z(12 + static_cast<i32>(j)));
+      off += whole[j * nx + i] != want || later[j * nx + i] != want || blocks[j * nx + i] != want;
+    }
+  }
+  CHECK(off == 0);
+  CHECK(whole[0] == 0.25f * -16.25f);  // lattice point -65 at 25 cm is -16.25 m, exactly
+
+  // A moving ground: its `evaluate` at the time asked for, and its travel.
+  const GroundProvider slide(&k_slide_ops, nullptr);
+  const TileSource moving = slide.tiles();
+  REQUIRE(moving.valid());
+  CHECK(moving.moves());
+  CHECK(moving.travel_m(10.0, 13.5) == 3.5);
+  Vector<f32> at(4 * 3);
+  REQUIRE(moving.heights(4.0, 1000, 7, -2, 4, 3, std::span<f32>(at.data(), at.size())));
+  CHECK(at[0] == slide_at(4.0, 7.0f));
+  CHECK(at[11] == slide_at(4.0, 10.0f));
+  // The source is the provider's: two views of one provider are one source.
+  CHECK(slide.tiles() == moving);
+  CHECK_FALSE(GroundProvider{}.tiles().valid());
 }
