@@ -184,10 +184,11 @@ struct GroundDetailParams {
   f32 patch_mid = 1.0f;
   f32 patch_half_log2 = 0.0f;
   f32 patch_defects = 0.0f;
-  // Steering (k_ground_steering): the share of the wind's component along the ground's fall that
-  // the slope turns aside, and the turn's clamp as its cosine and sine. Motion (k_ground_motion):
-  // the ripples' height kept (1, falling to 0 in a storm), their travel along the wind, metres
-  // reduced modulo `k_ground_travel_period` wavelengths, and their travel in one frame.
+  // Steering (k_ground_steering): the share of the wind's component along the fall line the slope
+  // turns aside per unit of its tangent, and the turn's clamp as its cosine and sine. Motion
+  // (k_ground_motion): the ripples' height kept (1, falling to 0 in a storm), their travel along
+  // the wind, metres reduced modulo `k_ground_travel_period` wavelengths, and their travel in one
+  // frame.
   f32 steer_gain = 0.0f;
   f32 steer_cos_max = 1.0f;
   f32 steer_sin_max = 0.0f;
@@ -265,10 +266,10 @@ struct GroundDetailDesc {
   f32 patch_min = 0.7f;
   f32 patch_max = 1.4f;
   f32 patch_defects = 0.5f;
-  // Steering: the ripples' direction is the wind with `steer_gain` of its component along the
-  // ground's fall taken out, turned at most `steer_max_deg` (0: none).
+  // Steering: the ripples' direction is the wind with `min(steer_gain tan(slope), 1/2)` of its
+  // component along the ground's fall line taken out, turned at most `steer_max_deg` (0: none).
   f32 steer_max_deg = 0.0f;
-  f32 steer_gain = 1.0f;
+  f32 steer_gain = 2.0f;
   // Motion (the renderer fills the travel; `ground_detail_motion`): the ripples travel
   // `ripple_celerity` metres for every square metre of sand the ground's wind moves across a metre
   // of width (0: they stand), and flatten between `flatten_start` and `flatten_end` of the wind

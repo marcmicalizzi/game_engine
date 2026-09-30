@@ -367,16 +367,19 @@ GroundStreak ground_streaks(GroundDetail d, float2 p, float2 fall) {
 }
 
 // Steering: the ripples' direction on a slope oblique to the wind turns along the contours, since
-// the flow climbing it is slowed and deflected. The wind loses `steer_gain` of its component along
-// the ground's fall `g = n.xz / n.y` (scaled down where that would reverse it, so it never does),
+// the flow climbing it is slowed and deflected. The wind loses `min(steer_gain tan(slope), 1/2)` of
+// its component along the ground's fall line — at most half, so where the wind runs nearly along
+// the fall line the turn grows no faster than the normal turns (a degree a degree) —
 // and the turn is clamped to the scene's largest. Straight up or down a slope it does not turn; on
 // the flat, nothing. Arithmetic only, and a function of the normal: only offsets from a kernel's
 // centre are ever projected on the result.
 float2 ground_steer(GroundDetail d, float2 w, float3 normal) {
   const float2 g = normal.xz / max(normal.y, 1e-4);
-  const float g2 = dot(g, g);
-  const float r = d.steer_gain / max(1.0, d.steer_gain * g2);
-  const float2 bent = w - g * (dot(w, g) * r);
+  const float gl = length(g);
+  if (!(gl > 1e-6)) return w;
+  const float2 fall = g / gl;
+  const float r = min(d.steer_gain * gl, 0.5);
+  const float2 bent = w - fall * (dot(w, fall) * r);
   const float len = length(bent);
   if (!(len > 1e-6)) return w;
   const float2 b = bent / len;

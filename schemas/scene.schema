@@ -601,10 +601,10 @@ struct TerrainDetail @version(3) {
   patch_max: f32 = 1.4 @since(3)
   patch_defects: f32 = 0.5 @since(3)
   /// Steering: on a slope oblique to the wind the ripples turn along its contours, by at most
-  /// `steer_max_deg` ([0, 45]; 0, the default, is none), taking `steer_gain` ([0, 4]) of the wind's
-  /// component along the slope's fall out of their direction.
+  /// `steer_max_deg` ([0, 45]; 0, the default, is none), taking `min(steer_gain × tan(slope), 1/2)`
+  /// ([0, 4]) of the wind's component along the slope's fall line out of their direction.
   steer_max_deg: f32 = 0 @since(3)
-  steer_gain: f32 = 1 @since(3)
+  steer_gain: f32 = 2 @since(3)
   /// The ripples move: `ripple_celerity` metres of travel per square metre of the wind's sand
   /// transport across a metre of width ([0, 1000]; 0, the default, stands them still), and they
   /// flatten as the wind's strength over the record's mean passes from `flatten_start` to

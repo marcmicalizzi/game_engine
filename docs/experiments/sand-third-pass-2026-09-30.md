@@ -28,3 +28,19 @@ Measured on the mirror (`ground_detail_tests.cpp`, "grainflow lanes …"):
 | A thousandth of a radian of normal, 3 km out | moves the lanes by 5.9% of their rms |
 | 32° face against 8×8 supersampling, pixels of 5, 15 and 40 cm | mean within 0.01%, 0.002% and 0.13% |
 | Cost | eight lattice hashes a pixel, only where the lanes' weight is above 0, never where ripples are drawn; the streaks were twenty-seven kernels |
+
+## Ripples that are not all alike
+
+Measured on the mirror (`ground_detail_tests.cpp`, "ripples in patches, steered by the ground …"):
+
+| Measure | Result |
+|---|---|
+| Patches' wavelength scale over a kilometre of samples | 0.70 to 1.40, mean 1.00 |
+| Steering on a 25° slope, round the compass | at most 19.5°, at most 0.1° per 0.1° of azimuth |
+| A tenth of a degree of steering | moves the crests at most 0.009 wavelengths |
+| Half-millimetre steps along lines crossing patches, slope swinging across the wind | no jump |
+| Cost | patches: eight lattice hashes a rippled pixel; steering: arithmetic |
+
+The first steering rule took `steer_gain` of the component along `g = n.xz / n.y`, which grows with the slope's square: 7° at most on a 25° slope. Taking `min(gain tan θ, 1)` of the component along the unit fall line reached the clamp. But where the wind runs nearly along the fall line, it swung 1.4° per 0.1° of azimuth, which would slide the crests by an eighth of a wavelength. Capping the share at a half bounds the swing at a degree a degree.
+
+In `after_eye_dune_*`, the floor's ripples bend along the dune's flank and their spacing visibly changes across the view; the author reads that as less uniform, and the owner's eye decides whether it is enough.

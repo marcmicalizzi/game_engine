@@ -1365,3 +1365,97 @@ TEST_CASE("ground detail: grainflow lanes are long, run down the fall line, and 
     CHECK(std::fabs(sum_f / sum_s - 1.0) < 0.01);
   }
 }
+
+TEST_CASE("ground detail: ripples in patches, steered by the ground, without a jump or a slide") {
+  gfx::GroundDetailDesc desc;
+  desc.patch_size = 30.0f;
+  desc.steer_max_deg = 20.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((d.flags & gfx::k_ground_patches) != 0u);
+  REQUIRE((d.flags & gfx::k_ground_steering) != 0u);
+  // The patches span their range: over a kilometre of samples the wavelength's scale reaches near
+  // both ends of [0.7, 1.4], and its mean sits near the middle.
+  double lo = 10.0, hi = 0.0, sum = 0.0;
+  for (u32 i = 0; i < 20000; ++i) {
+    double v0 = 0.0, v1 = 0.0;
+    gref::patch(d, 0.37 * i - 3000.0, 0.113 * i + 11.0, v0, v1);
+    const double scale =
+        static_cast<double>(d.patch_mid) * std::exp2(v0 * static_cast<double>(d.patch_half_log2));
+    lo = std::min(lo, scale);
+    hi = std::max(hi, scale);
+    sum += scale;
+  }
+  MESSAGE("patches: the wavelength's scale from " << lo << " to " << hi << ", mean "
+                                                  << sum / 20000.0);
+  CHECK(lo < 0.8);
+  CHECK(hi > 1.25);
+  CHECK(std::fabs(sum / 20000.0 - 1.0) < 0.1);
+
+  // Steering: nothing on the flat or straight up the wind's own slope; along the contours on a
+  // slope across it, at most the clamp.
+  const double deg = 3.14159265358979323846 / 180.0;
+  const auto normal = [deg](double slope, double azimuth) {
+    return ref::Dvec3{std::sin(slope * deg) * std::cos(azimuth * deg), std::cos(slope * deg),
+                      std::sin(slope * deg) * std::sin(azimuth * deg)};
+  };
+  const auto turn = [&](ref::Dvec3 n) {
+    double wx = 1.0, wz = 0.0;
+    gref::steer(d, wx, wz, n);
+    return std::atan2(wz, wx) / deg;
+  };
+  CHECK(turn(normal(0.0, 0.0)) == 0.0);
+  CHECK(std::fabs(turn(normal(15.0, 180.0))) < 1e-9);
+  CHECK(std::fabs(turn(normal(15.0, 135.0))) > 3.0);
+  double largest = 0.0, previous = turn(normal(25.0, 0.0)), step = 0.0;
+  for (u32 i = 1; i <= 3600; ++i) {
+    const double t = turn(normal(25.0, i * 0.1));
+    largest = std::max(largest, std::fabs(t));
+    step = std::max(step, std::fabs(t - previous));
+    previous = t;
+  }
+  MESSAGE("steering at 25 degrees round the compass: at most " << largest << " degrees, " << step
+                                                               << " per 0.1 degree");
+  CHECK(largest <= 20.0 + 1e-6);
+  CHECK(step < 1.0);
+
+  // No jump: the shaded ripple's height along lines crossing patches, over ground whose slope
+  // swings across the wind, never changes between half-millimetre steps by more than its slope
+  // allows.
+  const ref::Dvec3 none{};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  u32 jumps = 0;
+  for (u32 line = 0; line < 3; ++line) {
+    double previous_h = 0.0;
+    for (u32 i = 0; i <= 40000; ++i) {
+      const double x = -5.0 + 0.0005 * i;
+      const double az = 90.0 + 60.0 * std::sin(x * 0.3);
+      const gref::Shading g = gref::shade(d, ref::Dvec3{x, 0.0, 17.0 * line + 0.4},
+                                          normal(12.0, az), none, none, 1.0, albedo, 0.85, true);
+      const double h = g.ripple * static_cast<double>(d.amplitude) * 1.4;
+      const double bound = 2.0 * 3.14159265358979323846 * static_cast<double>(d.amplitude) * 1.4 /
+                           (0.25 * static_cast<double>(d.wavelength) * 0.7) * 0.0005;
+      if (i > 0 && std::fabs(h - previous_h) > 2.0 * bound + 1e-6) ++jumps;
+      previous_h = h;
+    }
+  }
+  CHECK(jumps == 0);
+
+  // The slide steering costs: a tenth of a degree of turn moves each kernel's phase at its edge by
+  // R k dtheta; measured as the crests' shift where the sum stands clear of its taper.
+  double worst = 0.0;
+  const double dtheta = 0.1 * deg;
+  for (u32 i = 0; i < 4000; ++i) {
+    const double x = 0.0371 * i;
+    const double z = 0.0213 * i - 3.0;
+    const gref::Ripple a =
+        gref::ripple(d, x, z, 0.5, 1.0, 1.0, 0.0, static_cast<double>(d.wind.z), 0.0);
+    const gref::Ripple b = gref::ripple(d, x, z, 0.5, 1.0, std::cos(dtheta), std::sin(dtheta),
+                                        static_cast<double>(d.wind.z), 0.0);
+    if (a.taper < 0.5 || b.taper < 0.5) continue;
+    double shift = std::fabs(b.turn - a.turn);
+    if (shift > 0.5) shift = 1.0 - shift;
+    worst = std::max(worst, shift);
+  }
+  MESSAGE("a tenth of a degree of steering moves the crests at most " << worst << " wavelengths");
+  CHECK(worst < 0.05);
+}

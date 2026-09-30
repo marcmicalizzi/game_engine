@@ -146,12 +146,15 @@ inline void steer(const gfx::GroundDetailParams& d, double& wx, double& wz, Dvec
   const double ny = normal.y > 1e-4 ? normal.y : 1e-4;
   const double gx = normal.x / ny;
   const double gz = normal.z / ny;
-  const double g2 = gx * gx + gz * gz;
-  const double gain = static_cast<double>(d.steer_gain);
-  const double r = gain / (gain * g2 > 1.0 ? gain * g2 : 1.0);
-  const double along = (wx * gx + wz * gz) * r;
-  const double bx = wx - gx * along;
-  const double bz = wz - gz * along;
+  const double gl = std::sqrt(gx * gx + gz * gz);
+  if (!(gl > 1e-6)) return;
+  const double fx = gx / gl;
+  const double fz = gz / gl;
+  const double sr = static_cast<double>(d.steer_gain) * gl;
+  const double r = sr < 0.5 ? sr : 0.5;
+  const double along = (wx * fx + wz * fz) * r;
+  const double bx = wx - fx * along;
+  const double bz = wz - fz * along;
   const double len = std::sqrt(bx * bx + bz * bz);
   if (!(len > 1e-6)) return;
   const double ux = bx / len;
@@ -676,6 +679,12 @@ inline gfx::GroundDetailDesc erg_numbers() {
   d.flow_normal = 0.05f;
   d.flow_albedo = 0.015f;
   d.flow_widening = 0.3f;
+  d.patch_size = 30.0f;
+  d.patch_min = 0.7f;
+  d.patch_max = 1.4f;
+  d.patch_defects = 0.5f;
+  d.steer_max_deg = 20.0f;
+  d.steer_gain = 2.0f;
   return d;
 }
 

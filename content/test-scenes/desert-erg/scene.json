@@ -121,7 +121,13 @@
       "flow_width": 0.6,
       "flow_normal": 0.05,
       "flow_albedo": 0.015,
-      "flow_widening": 0.3
+      "flow_widening": 0.3,
+      "patch_size": 30,
+      "patch_min": 0.7,
+      "patch_max": 1.4,
+      "patch_defects": 0.5,
+      "steer_max_deg": 20,
+      "steer_gain": 2
     }
   }
 }
