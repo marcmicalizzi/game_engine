@@ -684,7 +684,10 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
   // nothing on screen. Found on 2026-09-30, when two test engine-views sat "Not responding" on
   // the owner's desktop for a quarter of an hour behind a merge gate's hold, having opened their
   // windows and then waited in Device::create, which pumps no messages.
-  if (desc.vulkan) (void)gpu_hold_.acquire();
+  // A hidden one takes it when it is shown (show()): it is not on screen until then, and a test
+  // that only needs a window's events should not queue behind somebody else's GPU work.
+  vulkan_ = desc.vulkan;
+  if (desc.vulkan && !desc.hidden) (void)gpu_hold_.acquire();
   SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
   if (desc.resizable) flags |= SDL_WINDOW_RESIZABLE;
   if (desc.vulkan) flags |= SDL_WINDOW_VULKAN;
@@ -718,6 +721,7 @@ void Window::destroy() noexcept {
   handle_ = nullptr;
   id_ = 0;
   gpu_hold_.release();  // the last of the process's holds (a device's, a window's) lets it go
+  vulkan_ = false;
 }
 
 void Window::refresh_pixel_size() noexcept {
@@ -894,7 +898,9 @@ void Window::set_title(const char* title) noexcept {
 }
 
 void Window::show() noexcept {
-  if (handle_ != nullptr) SDL_ShowWindow(static_cast<SDL_Window*>(handle_));
+  if (handle_ == nullptr) return;
+  if (vulkan_ && !gpu_hold_.counted()) (void)gpu_hold_.acquire();  // before it appears (create)
+  SDL_ShowWindow(static_cast<SDL_Window*>(handle_));
 }
 
 bool Window::set_relative_mouse(bool enabled) noexcept {

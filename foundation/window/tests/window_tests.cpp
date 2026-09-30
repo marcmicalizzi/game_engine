@@ -477,6 +477,17 @@ TEST_CASE("window: a Vulkan window is not on screen while its process waits for 
   window.destroy();
   std::error_code ec;
   CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path), ec));  // released with it
+
+  // A hidden one is not on screen, so it takes nothing until it is shown — a test that only needs
+  // a window's events does not queue behind somebody else's GPU work — and takes it then, first.
+  desc.hidden = true;
+  window::Window later;
+  REQUIRE(later.create(desc, &error));
+  CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path), ec));
+  later.show();
+  CHECK(gpu_lock::read(path, self, time::wall_unix_ms() / 1000).pid == self.pid);
+  later.destroy();
+  CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path), ec));
   window::shutdown();
 #else
   MESSAGE("counts the process's windows through the Win32 API; checked on Windows");

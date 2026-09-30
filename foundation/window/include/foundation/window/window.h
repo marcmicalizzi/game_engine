@@ -348,11 +348,12 @@ struct WindowDesc {
   bool resizable = true;
   // Create able to carry a Vulkan surface (backend/vulkan/surface.h). Such a window is for a GPU
   // device, so when the test environment's GPU-lock switch is on its process takes its hold on
-  // the machine-wide GPU lock *before* the window appears, and keeps it until the window goes
-  // (foundation/gpu_lock/device_hold.h): a process that has to wait for the lock waits with
-  // nothing on screen, instead of showing a window that answers nothing ("Not responding") for as
-  // long as somebody else has the GPU. With the switch off — every session a person starts — it
-  // takes nothing.
+  // the machine-wide GPU lock *before* the window appears — in create(), or in show() for one
+  // created hidden — and keeps it until the window goes (foundation/gpu_lock/device_hold.h): a
+  // process that has to wait for the lock waits with nothing on screen, instead of showing a
+  // window that answers nothing ("Not responding") for as long as somebody else has the GPU. A
+  // hidden window that is never shown takes nothing. With the switch off — every session a
+  // person starts — nothing is taken either way.
   bool vulkan = true;
   bool hidden = false;
   // No title bar and no border, placed at the top-left corner of the primary display: a window
@@ -412,6 +413,7 @@ class Window {
   u32 pixel_width_ = 0;
   u32 pixel_height_ = 0;
   gpu_lock::DeviceHold gpu_hold_;  // a Vulkan window's share of the GPU lock (WindowDesc::vulkan)
+  bool vulkan_ = false;            // created with WindowDesc::vulkan: show() takes the hold
 };
 
 }  // namespace engine::window

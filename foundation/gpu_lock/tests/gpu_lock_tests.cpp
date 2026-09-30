@@ -90,7 +90,9 @@ TEST_CASE("gpu lock: another tool's lock, or another engine agent's, is somebody
   const std::string path = dir.file("gpu.lock");
   const gpu_lock::Identity self = gpu_lock::current_identity();
 
-  write_file(path, lock_json("astra-blender", 4321, now_s() + 1800, self.host, "bake: desert"));
+  // One reading of the clock for the file and the expectation: two can straddle a second.
+  const i64 expires = now_s() + 1800;
+  write_file(path, lock_json("astra-blender", 4321, expires, self.host, "bake: desert"));
   gpu_lock::State s = gpu_lock::read(path, self, now_s());
   CHECK(s.present);
   CHECK(s.readable);
@@ -100,7 +102,7 @@ TEST_CASE("gpu lock: another tool's lock, or another engine agent's, is somebody
   CHECK(s.owner == "astra-blender");
   CHECK(s.purpose == "bake: desert");
   CHECK(s.pid == 4321);
-  CHECK(s.started == gpu_lock::format_iso8601_utc(now_s() + 1800 - 600));
+  CHECK(s.started == gpu_lock::format_iso8601_utc(expires - 600));  // lock_json's start
 
   // Another *engine* agent: the same owner label, a different process. An owner match alone
   // would call this ours, and one agent's measurement would run straight through another's render.
