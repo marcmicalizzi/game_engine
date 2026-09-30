@@ -118,11 +118,13 @@ struct TerrainRingSet::State {
   geometry::ClusterLodOptions options;
 };
 
+TerrainLevelSet::~TerrainLevelSet() = default;
+
 TerrainRingSet::TerrainRingSet() = default;
 TerrainRingSet::~TerrainRingSet() = default;
 
-f64 TerrainRingSet::padding_of(std::span<const TerrainChunk> chunks, std::span<const f32> field,
-                               const gfx::TerrainField& window) {
+f64 TerrainLevelSet::padding_of(std::span<const TerrainChunk> chunks, std::span<const f32> field,
+                                const gfx::TerrainField& window) {
   f64 most = 0.0;
   for (const TerrainChunk& chunk : chunks) {
     const gfx::TerrainField& r = chunk.rest_window;

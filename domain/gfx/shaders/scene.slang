@@ -86,10 +86,13 @@ struct TerrainLevelDesc {
   float blend;    // 0 draws a, 1 draws b
   float padding;  // replaces InstanceDesc::bounds_padding for the level's clusters
   float skirt;    // a skirt vertex (its rest normal points down) hangs this far under the field
-  uint pad1;
+  // k_terrain_level_named: a vertex whose rest normal is horizontal is drawn from the level it
+  // names (a world tile's border along a coarser tile; gfx::TerrainLevelDesc::flags).
+  uint flags;
   uint pad2;
   float4 hole;    // x0, z0, x1, z1; none when x1 <= x0
 };
+static const uint k_terrain_level_named = 1u;
 
 // Mirrors gfx::DeformDesc (48 bytes): one per deformed instance, read by the pool pass alone.
 // `stages` is a **mask** of the chain's stages plus the procedural kind, not an exclusive mode.

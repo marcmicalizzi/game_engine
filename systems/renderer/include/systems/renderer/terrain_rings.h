@@ -43,6 +43,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/cluster_cull.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_levels.h>
 
 #include <memory>
 #include <mutex>
@@ -55,40 +56,11 @@ class JobSystem;
 
 namespace engine::renderer {
 
-// The most levels a terrain has: the scene's grid and up to three rings (`terrain::k_max_rings`
-// counts the scene's grid as its outer ring).
-inline constexpr u32 k_max_terrain_levels = 4;
-
-// One chunk of one ring, as the renderer keeps it: where it is, what decides its mesh, its slot
-// in the GPU scene once it has one, its DAG until it is uploaded, and its **rest heights** — the
-// heights its DAG was built from, what its bounds and LOD errors were fit to and what a moving
-// field's padding is measured against.
-struct TerrainChunk {
-  i32 i = 0;
-  i32 j = 0;
-  u64 key = 0;
-  u32 slot = ~0u;
-  u32 grid_vertices = 0;         // a DAG vertex whose source is at or past this is a skirt's
-  geometry::ClusterLodMesh lod;  // emptied once the GPU scene has it
-  f64 rest_time_s = 0.0;
-  // The rest heights at the chunk's lattice points, rows of x in order of z over `rest_window` (NaN
-  // where the chunk has no vertex: its share of the ring's hole). 66 KB a chunk.
-  gfx::TerrainField rest_window;
-  Vector<f32> rest;
-};
-
-// Where the rings are, per level (0 unused): centre and half-side in millimetres.
-struct TerrainRingLayout {
-  i64 cx[k_max_terrain_levels] = {};
-  i64 cz[k_max_terrain_levels] = {};
-  i64 half[k_max_terrain_levels] = {};
-  bool operator==(const TerrainRingLayout&) const = default;
-};
-
-class TerrainRingSet {
+// A ring's `TerrainRingLayout` entry is its square: centre and half-side in millimetres.
+class TerrainRingSet final : public TerrainLevelSet {
  public:
   TerrainRingSet();
-  ~TerrainRingSet();
+  ~TerrainRingSet() override;
   TerrainRingSet(const TerrainRingSet&) = delete;
   TerrainRingSet& operator=(const TerrainRingSet&) = delete;
 
@@ -100,27 +72,33 @@ class TerrainRingSet {
   // millimetres, or tunables that leave no moving ring. `desc` must outlive the set.
   bool build(const TerrainDesc& desc, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
              std::string* error = nullptr);
-  bool valid() const noexcept { return levels_ > 1; }
+  bool valid() const noexcept override { return levels_ > 1; }
   // Levels including the scene's grid: 1 + the moving rings.
-  u32 level_count() const noexcept { return levels_; }
+  u32 level_count() const noexcept override { return levels_; }
   // The layout's ring index of level k > 0 (the terrain capability counts rings innermost first).
   u32 ring_of_level(u32 level) const noexcept { return levels_ - 1 - level; }
 
-  const TerrainDesc& desc() const noexcept { return *desc_; }
-  const TerrainLattice& lattice(u32 level) const noexcept { return lattice_[level]; }
-  f32 skirt_m(u32 level) const noexcept { return skirt_m_[level]; }
+  const TerrainDesc& desc() const noexcept override { return *desc_; }
+  const TerrainLattice& lattice(u32 level) const noexcept override { return lattice_[level]; }
+  f32 skirt_m(u32 level) const noexcept override { return skirt_m_[level]; }
+  // The scene's grid is the outer ring, drawn round the middle ring's square.
+  bool grid_drawn() const noexcept override { return true; }
+  Vec4 grid_hole(const TerrainRingLayout& layout) const noexcept override {
+    return square(1, layout);
+  }
 
   // The layout as built last. What the frame draws may be an older one, which its holder keeps.
-  TerrainRingLayout layout() const noexcept;
+  TerrainRingLayout layout() const noexcept override;
   // A ring level's square in metres (x0, z0, x1, z1): what the level round it leaves out.
   Vec4 square(u32 level, const TerrainRingLayout& layout) const noexcept;
   // The lattice window a level's fields cover for a layout: the ring's square, rounded out to the
   // lattice, and a sample of apron either side for the normals. The scene grid's is the whole
   // grid. A re-centre evaluates its moved levels' fields over the new layout's windows, so nothing
   // is evaluated ahead for where a ring may go next.
-  gfx::TerrainField field_window(u32 level, const TerrainRingLayout& layout) const noexcept;
+  gfx::TerrainField field_window(u32 level,
+                                 const TerrainRingLayout& layout) const noexcept override;
   // The most samples `field_window(level, ...)` has for any layout: what a field slot holds.
-  u64 field_capacity(u32 level) const noexcept;
+  u64 field_capacity(u32 level) const noexcept override;
   // Whether `window` covers level's ring under `layout`, apron and all: what a field must do to be
   // drawn under that layout.
   bool covers(u32 level, const TerrainRingLayout& layout,
@@ -129,51 +107,42 @@ class TerrainRingSet {
   // camera at (x, z) when they stand at `from`: `from` itself when nothing moves. It reads only the
   // ring parameters, so the frame may ask while the worker runs an `update`.
   TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
-                                const TerrainRingLayout& from) const noexcept;
+                                const TerrainRingLayout& from) const noexcept override;
   // Whether `next_layout` moves anything.
   bool wants_update(f32 camera_x, f32 camera_z, const TerrainRingLayout& layout) const noexcept;
 
-  // What the GPU scene reserves for a ring level: slots, clusters a slot holds, and the vertex and
-  // triangle arenas — room for two rings the size of the largest this layout rule can make, from
-  // the chunks built at load, with `renderer.terrain.ring_slack` on top.
-  struct Capacity {
-    u32 slots = 0;
-    u32 clusters_per_slot = 0;
-    u64 vertices = 0;
-    u64 triangles = 0;
-  };
-  Capacity capacity(u32 level) const noexcept { return capacity_[level]; }
+  // What the GPU scene reserves for a ring level: room for two rings the size of the largest this
+  // layout rule can make, from the chunks built at load, with `renderer.terrain.ring_slack` on top.
+  Capacity capacity(u32 level) const noexcept override { return capacity_[level]; }
 
   // Every chunk of a ring level as built last, in chunk order.
-  Vector<TerrainChunk>& chunks(u32 level) noexcept { return chunks_[level]; }
+  Vector<TerrainChunk>& chunks(u32 level) noexcept override { return chunks_[level]; }
   const Vector<TerrainChunk>& chunks(u32 level) const noexcept { return chunks_[level]; }
 
-  // **A re-centre**, one at a time and with nothing else touching the chunk lists but `padding`
-  // (which may run on another thread meanwhile): the rule for a camera now at (x, z), metres; the
+  // **A re-centre** (`TerrainLevelSet::update`): the rule for a camera now at (x, z), metres; the
   // rings it moves are rebuilt from the field at `time_s` — read from `fields[level]` where it
-  // covers a chunk, evaluated otherwise — keeping every chunk whose key is unchanged, with its
-  // slot, its rest and no DAG. `moved` is a mask of the levels whose chunk lists changed;
-  // `chunks(level)` is then the new list, new chunks with no slot.
-  struct Heights {
-    const f32* heights = nullptr;
-    gfx::TerrainField window;
-  };
+  // covers a chunk, evaluated otherwise. The rule decides where the rings go; `target`, which the
+  // frame worked out with the same rule, is the motion's to check against `layout()` after.
   bool update(f32 camera_x, f32 camera_z, f64 time_s, std::span<const Heights> fields,
               jobs::JobSystem* jobs, u32& moved, std::string* error = nullptr);
+  bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+              std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
+              std::string* error) override {
+    (void)target;
+    return update(camera_x, camera_z, time_s, fields, jobs, moved, error);
+  }
 
-  // **The padding a level's spheres take while `field` is drawn**: the largest |field - rest| over
-  // the level's chunks as built last *and* as they were before the last `update` that moved them —
-  // a field is drawn over the one set until the frame that swaps it for the other, and over the
-  // other after. `field` covers `window` of the level's lattice; rest heights outside it are not
-  // measured (a ring's field window covers its chunks, apron and all).
-  f64 padding(u32 level, std::span<const f32> field, const gfx::TerrainField& window) const;
-  static f64 padding_of(std::span<const TerrainChunk> chunks, std::span<const f32> field,
-                        const gfx::TerrainField& window);
+  // **The padding a level's spheres take while `field` is drawn** (`TerrainLevelSet::padding`): a
+  // field is drawn over the chunks built last until the frame that swaps them for the ones before,
+  // and over the others after. `field` covers `window` of the level's lattice; rest heights outside
+  // it are not measured (a ring's field window covers its chunks, apron and all).
+  f64 padding(u32 level, std::span<const f32> field,
+              const gfx::TerrainField& window) const override;
 
   // Milliseconds the last `build` or `update` took, and how many chunks it built and kept.
-  f64 last_build_ms() const noexcept { return last_build_ms_; }
-  u32 last_built() const noexcept { return last_built_; }
-  u32 last_kept() const noexcept { return last_kept_; }
+  f64 last_build_ms() const noexcept override { return last_build_ms_; }
+  u32 last_built() const noexcept override { return last_built_; }
+  u32 last_kept() const noexcept override { return last_kept_; }
 
  private:
   struct State;

@@ -312,7 +312,8 @@ TEST_CASE("scene_gen: a ground seen as tiles is its heights on the world's latti
   u32 off = 0;
   for (u32 j = 0; j < nz; ++j) {
     for (u32 i = 0; i < nx; ++i) {
-      const f32 want = tilt.height(lattice.x(-65 + static_cast<i32>(i)), lattice.z(12 + static_cast<i32>(j)));
+      const f32 want =
+          tilt.height(lattice.x(-65 + static_cast<i32>(i)), lattice.z(12 + static_cast<i32>(j)));
       off += whole[j * nx + i] != want || later[j * nx + i] != want || blocks[j * nx + i] != want;
     }
   }

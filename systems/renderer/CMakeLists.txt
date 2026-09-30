@@ -35,7 +35,7 @@ engine_module(NAME renderer LAYER systems
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
-          src/terrain_rings.cpp src/sky.cpp)
+          src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -49,7 +49,10 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # configuration: with no capability linked, the minimal one included.
                     tests/scene_gen_scene_tests.cpp
                     # The sand's detail on the renderer's own ground, the waves.
-                    tests/ground_detail_tests.cpp)
+                    tests/ground_detail_tests.cpp
+                    # The world's tiles on the CPU: the first fill, a tile's mesh and its seams,
+                    # the set's keys, rebuilds and windows, from a tile source of the test's own.
+                    tests/terrain_tiles_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.
@@ -61,7 +64,10 @@ if(TARGET engine::terrain)
   list(APPEND _renderer_tests tests/terrain_generator_tests.cpp tests/terrain_motion_tests.cpp
        tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp
        # The sand's detail across the rings' and their chunks' borders, and the dunes' wind.
-       tests/ground_detail_rings_tests.cpp)
+       tests/ground_detail_rings_tests.cpp
+       # The world's tiles on a GPU: the grid's picture, the seams by the visibility buffer, the
+       # time-lapse across tiles, a tile set built ahead, and a long flight.
+       tests/terrain_tiles_gpu_tests.cpp)
 endif()
 if(TARGET engine::sky)
   # A scene naming a sky: the entry read and checked through the registry, the lights, the sky the

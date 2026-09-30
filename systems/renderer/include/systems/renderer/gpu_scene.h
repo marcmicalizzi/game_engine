@@ -36,6 +36,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
 #include <systems/renderer/tile_layout.h>
 
@@ -114,12 +115,13 @@ class GpuScene {
   // Uploads `data` with the buffers `resolved` calls for. The device must outlive the scene.
   // Under `resolved.stream` the vertex, attribute, triangle and float-position streams are a
   // **page pool** of fixed-size slots instead of the whole scene, and `GeometryStreamer` fills it.
-  // With terrain levels, `rings` — built round the camera before the scene is (TerrainRingSet) —
-  // adds each moving ring's slots and arenas beside the scene's own meshes and uploads the chunks
-  // it holds into the first of them (renderer.md, "The rings in the scene"); its chunks then know
-  // their slots and give their DAGs up.
+  // With terrain levels, `rings` — the rings round the camera (TerrainRingSet) or the world's tiles
+  // (TerrainTileSet), built before the scene is — adds each chunk level's slots and arenas beside
+  // the scene's own meshes and uploads the chunks it holds into the first of them (renderer.md,
+  // "The rings in the scene", "The ground from the world's tiles"); its chunks then know their
+  // slots and give their DAGs up.
   bool create(const gfx::Device& device, const SceneData& data, const ResolvedSettings& resolved,
-              std::string* error = nullptr, TerrainRingSet* rings = nullptr);
+              std::string* error = nullptr, TerrainLevelSet* rings = nullptr);
   void destroy() noexcept;
   bool valid() const noexcept { return device_ != nullptr; }
 
@@ -820,6 +822,7 @@ class GpuScene {
     f32 padding = 0.0f;
     Vec4 hole{};
     f32 skirt = 0.0f;  // metres a ring's skirt hangs below its border
+    u32 flags = 0;     // gfx::TerrainLevelDesc::flags
     // Copies handed over and not yet wholly recorded, in order: `done` bytes of each went already.
     struct Pending {
       gfx::BufferResource staging;
@@ -864,7 +867,7 @@ class GpuScene {
   };
   // The part of mesh `mesh`: the scene's, or a ring slot's (capacity, not its chunk).
   const geometry::ClusterMeshPart& part_of(u32 mesh) const noexcept;
-  bool lay_out_rings(const ResolvedSettings& resolved, TerrainRingSet& rings, std::string* error);
+  bool lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& rings, std::string* error);
   // Stages a chunk into slot `s` of `ring` (arena ranges already taken) as copies for the next
   // frame, or for `create`'s one-shot upload.
   bool stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::string* error);
@@ -885,7 +888,7 @@ class GpuScene {
   u64 pending_geometry_bytes_ = 0;
   Vector<u32> pending_mesh_writes_;   // mesh indices whose MeshDesc the next frame writes
   Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
-  TerrainRingSet* rings_ = nullptr;   // during `create` only
+  TerrainLevelSet* rings_ = nullptr;  // during `create` only
   // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.
   std::unique_ptr<TerrainSampler> ground_;
   f64 ground_time_s_ = 0.0;

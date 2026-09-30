@@ -596,6 +596,7 @@ The summary line (the window's and the offscreen one's) gains a `time_lapse` blo
 | `renderer.terrain.pool_mib` | 768 | the pool's budget at least, for a scene whose terrain moves: an entry the pool cannot place draws its rest pose, which for a terrain is a jump |
 | `renderer.terrain.upload_mib` | 8 | in a window, the megabytes of evaluated fields copied onto the device a frame; a field is taken only once all of it is there (offscreen, everything the next frame) |
 | `renderer.terrain.ring_slack` | 1.15 | with `--terrain-rings`, the room a ring's slots and arenas keep above the largest ring the layout rule can make, from the chunks built at load |
+| `renderer.terrain.tile_slack` | 1.5 | with the world's tiles, the room each tile's slot and its level's arenas keep above the largest tile the first layout built ([renderer](renderer.md#the-ground-from-the-worlds-tiles)) |
 | `renderer.sun.azimuth_deg` | 48.37 | where the stand-in sun stands without `--sun`: degrees in the ground plane from +x towards +z |
 | `renderer.sun.elevation_deg` | 53.03 | and degrees above the horizon (the two defaults are the sun every frame has always had) |
 | `renderer.sun.rate` | 0 | game seconds per real second the sun's day runs at without `--sun-rate`; 0 is a still sun, exactly the one above |

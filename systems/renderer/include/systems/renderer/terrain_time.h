@@ -46,7 +46,9 @@
 #include <core/jobs/job_system.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/resources.h>
+#include <domain/scene_gen/tile_source.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
 
 #include <condition_variable>
@@ -88,6 +90,10 @@ TimeLapseConfig time_lapse_config_from_tunables(f64 rate);
 // [from + min_step, from + max_step]. Found by bisection on the closed form, whose cost does not
 // depend on the time. Without a generator, `from_s + max_step_s`.
 f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, f64 fraction,
+                      f64 min_step_s, f64 max_step_s) noexcept;
+// The same rule over a tile source's travel (scene_gen/tile_source.h): what a tile level's fields
+// are timed by. A source that does not move is `from_s + max_step_s`.
+f64 terrain_next_time(const scene_gen::TileSource& source, f64 from_s, f64 spacing_m, f64 fraction,
                       f64 min_step_s, f64 max_step_s) noexcept;
 
 // **The blend of one level** (above), as plain numbers the tests drive a frame at a time.
@@ -269,12 +275,15 @@ class TerrainMotion {
   TerrainMotion& operator=(const TerrainMotion&) = delete;
 
   // False, with a sentence, for a scene with no terrain levels (`ResolvedSettings::terrain_levels`)
-  // or a negative rate. `rings` is the set the GPU scene was made with, or null; the motion owns it
-  // from here (its worker rebuilds it). Evaluates every level's field at the scene's own time on
-  // the calling thread (through `jobs` when given) and hands it over, so the first frame draws it:
-  // the rest pose, to the bit on the scene's grid. A rate of zero is a still field whose rings
-  // follow the camera. The scene and the rings must outlive the motion.
-  bool start(GpuScene& scene, TerrainRingSet* rings, const TimeLapseConfig& config,
+  // or a negative rate. `rings` is the set the GPU scene was made with — the rings round the camera
+  // or the world's tiles — or null; the motion owns it from here (its worker rebuilds it).
+  // Evaluates every level's field at the scene's own time on the calling thread (through `jobs`
+  // when given) and hands it over, so the first frame draws it: the rest pose, to the bit on the
+  // scene's grid. A tile level's heights come from the set's tile source, and the scene's grid,
+  // which draws nothing under tiles, is evaluated not at all and takes no part in the surface's
+  // time. A rate of zero is a still field whose rings follow the camera. The scene and the rings
+  // must outlive the motion.
+  bool start(GpuScene& scene, TerrainLevelSet* rings, const TimeLapseConfig& config,
              jobs::JobSystem* jobs, std::string* error = nullptr);
   // Before a frame: game time moves on by `real_dt_s * rate`, each level's surface towards it, a
   // finished field goes to the GPU scene and the next is asked for; with rings, a camera that has
@@ -401,6 +410,11 @@ class TerrainMotion {
   };
   struct Level {
     f64 spacing_m = 0.0;
+    // The scene's grid under the world's tiles: drawn by nothing, evaluated never, and no part of
+    // the surface's time (it would hold it at a field it never gets).
+    bool hidden = false;
+    // Where a tile level's heights come from (the set's tile source); null: the scene's sampler.
+    const scene_gen::TileSource* source = nullptr;
     u32 slots = 0;             // field slots the GPU scene gave it
     TerrainLattice lattice;    // the level's (GpuScene::terrain_lattice)
     gfx::TerrainField window;  // what the level's fields cover under the layout drawn
@@ -484,6 +498,13 @@ class TerrainMotion {
   };
   void worker_main();
   void ring_worker_main();
+  // A level's heights over a window at a time: from its tile source, or the scene's sampler.
+  void evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
+                      Vector<f32>& out);
+  // When a level's next field after `from_s` is due by the cadence rule.
+  f64 next_time_of(const Level& level, f64 from_s) const noexcept;
+  // The one surface time every level shares: the first drawn level's.
+  f64 surface_s() const noexcept;
   void run_field(Task& task);
   void run_pairs(Task& task);
   void run_rings(RingTask& task);
@@ -514,7 +535,7 @@ class TerrainMotion {
   void show(u32 level);
 
   GpuScene* scene_ = nullptr;
-  TerrainRingSet* rings_ = nullptr;
+  TerrainLevelSet* rings_ = nullptr;
   TimeLapseConfig config_;
   jobs::JobSystem* jobs_ = nullptr;
   std::unique_ptr<TerrainDesc> desc_;

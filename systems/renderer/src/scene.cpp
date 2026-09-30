@@ -1205,9 +1205,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.world.ring_count = rings.rings.size();
+    out.world.ground = rings.ground;
     for (u32 r = 0; r < rings.rings.size(); ++r) {
       out.world.radius[r] = rings.rings[r].radius;
       out.world.ruins[r] = static_cast<u8>(rings.rings[r].ruins);
+      out.world.ground_cells[r] = rings.rings[r].ground_cells;
     }
     if (!(out.world.tile_size > 0.0f)) {
       error = path + ": the world's tile_size must be positive";
@@ -1218,6 +1220,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // registry, after the ground they stand on: expanded here, or in a streamed world left for the
   // world to expand tile by tile.
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  // Ground tiles are terrain levels, drawn through the deformed-vertex pool, which a scene whose
+  // instances come and go does not have yet (ADR-0048): the two are refused together.
+  if (out.world.enabled && out.world.ground && !out.streamed.empty()) {
+    error = path +
+            ": a world drawing its ground from tiles cannot stream placements yet (its ruins or "
+            "placements entries): a scene whose instances come and go has no deformed-vertex pool, "
+            "which the tiles are drawn through";
+    return false;
+  }
   if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
       file.placements.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)
@@ -1458,7 +1469,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.mesh_fit = std::move(fit_of_mesh);
   out.world = resolved.world;
   out.streamed = resolved.streamed;
-  out.dynamic = resolved.world.enabled;
+  // A streamed world's instances come and go — unless all it streams is its ground (the world's
+  // tiles, which are terrain levels in fixed slots, not instances of the tail).
+  out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
   out.sky = resolved.sky;
 
   update_scene_bounds(out);

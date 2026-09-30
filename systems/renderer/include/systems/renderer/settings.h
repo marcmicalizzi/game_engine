@@ -166,6 +166,13 @@ struct RenderSettings {
   // camera as it moves. Off by default: they are built at load, a few seconds on the erg, and hold
   // their slots on the device whether the camera is near the ground or not.
   bool terrain_rings = false;
+  // The ground drawn from the world's tiles (terrain_tiles.h; docs/subsystems/renderer.md, "The
+  // ground from the world's tiles"; ADR-0048): the dune generator's terrain as the world's tile
+  // grid, streamed round the camera with no end, in place of the scene's grid. A scene asks for it
+  // with its `world` block's `ground`; this asks for it on any dune terrain (engine-view's
+  // `--terrain-tiles`), with the world's default rings where the scene has none. It takes the place
+  // of the rings.
+  bool terrain_tiles = false;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is
@@ -239,6 +246,11 @@ struct ResolvedSettings {
   // on a scene with terrain levels, read whole): the host builds a `TerrainRingSet` and hands it
   // to `GpuScene::create` and `TerrainMotion::start`.
   bool terrain_rings = false;
+  // The terrain is drawn from the world's tiles (`RenderSettings::terrain_tiles`, or the scene's
+  // `world.ground`, on a scene with terrain levels, read whole): the host builds a `TerrainTileSet`
+  // and hands it to `GpuScene::create` and `TerrainMotion::start`, and the world's ring hands it
+  // the tiles it holds. Never together with `terrain_rings`.
+  bool terrain_tiles = false;
   // Geometry pages stream on demand. True only when the caller asked *and* the scene carries a
   // page table *and* nothing else in the frame contradicts it — see `resolve_settings` for the
   // three things that do and why each one is a refusal rather than a silent half-measure.

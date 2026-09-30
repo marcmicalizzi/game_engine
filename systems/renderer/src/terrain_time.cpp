@@ -44,14 +44,18 @@ TimeLapseConfig time_lapse_config_from_tunables(f64 rate) {
   return c;
 }
 
-f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, f64 fraction,
-                      f64 min_step, f64 max_step) noexcept {
+namespace {
+
+// The cadence rule over any travel (`terrain_next_time`, both overloads).
+template <class Travel>
+f64 next_time(bool moves, const Travel& travel, f64 from_s, f64 spacing_m, f64 fraction,
+              f64 min_step, f64 max_step) noexcept {
   const f64 lo_step = std::max(min_step, 1.0);
   const f64 hi_step = std::max(max_step, lo_step);
   const f64 target = fraction * spacing_m;
-  if (!sampler.moves() || !(target > 0.0)) return from_s + hi_step;
-  if (terrain_band_travel_m(sampler, from_s, from_s + lo_step) >= target) return from_s + lo_step;
-  if (terrain_band_travel_m(sampler, from_s, from_s + hi_step) <= target) return from_s + hi_step;
+  if (!moves || !(target > 0.0)) return from_s + hi_step;
+  if (travel(from_s, from_s + lo_step) >= target) return from_s + lo_step;
+  if (travel(from_s, from_s + hi_step) <= target) return from_s + hi_step;
   // The travel only grows with the step (it is a path length), so the largest step within the
   // bound is found by bisection; forty-eight halvings of at most a year are well under a
   // millisecond, and the answer is rounded down to one, which keeps it under the bound.
@@ -59,13 +63,29 @@ f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, 
   f64 hi = hi_step;
   for (u32 i = 0; i < 48 && hi - lo > 1.0e-3; ++i) {
     const f64 mid = 0.5 * (lo + hi);
-    if (terrain_band_travel_m(sampler, from_s, from_s + mid) <= target) {
+    if (travel(from_s, from_s + mid) <= target) {
       lo = mid;
     } else {
       hi = mid;
     }
   }
   return from_s + std::max(lo_step, std::floor(lo * 1000.0) / 1000.0);
+}
+
+}  // namespace
+
+f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, f64 fraction,
+                      f64 min_step, f64 max_step) noexcept {
+  return next_time(
+      sampler.moves(), [&](f64 a, f64 b) { return terrain_band_travel_m(sampler, a, b); }, from_s,
+      spacing_m, fraction, min_step, max_step);
+}
+
+f64 terrain_next_time(const scene_gen::TileSource& source, f64 from_s, f64 spacing_m, f64 fraction,
+                      f64 min_step, f64 max_step) noexcept {
+  return next_time(
+      source.moves(), [&](f64 a, f64 b) { return source.travel_m(a, b); }, from_s, spacing_m,
+      fraction, min_step, max_step);
 }
 
 f64 TerrainBlend::blend() const noexcept {
@@ -374,6 +394,29 @@ void evaluate_window(const TerrainSampler& sampler, jobs::JobSystem* jobs, f64 t
                      });
 }
 
+// The same from a tile source, on the world's lattice at the level's spacing: a tile level's
+// fields (renderer.md, "The ground from the world's tiles"). A block the source has nothing for is
+// left at zero, which no tile of the level reads.
+void evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs, f64 time_s,
+                     const TerrainLattice& lattice, const gfx::TerrainField& window,
+                     Vector<f32>& out) {
+  out.assign(static_cast<usize>(window.nx) * window.nz, 0.0f);
+  const u32 blocks = terrain_window_blocks(window.nx, window.nz);
+  const std::span<f32> heights(out.data(), out.size());
+  const i64 spacing_mm = lattice.spacing_mm;
+  if (jobs == nullptr) {
+    (void)source.heights(time_s, spacing_mm, window.i0, window.j0, window.nx, window.nz, 0, blocks,
+                         heights);
+    return;
+  }
+  jobs->parallel_for(jobs::Pool::Performance, (blocks + k_blocks_per_job - 1) / k_blocks_per_job, 1,
+                     [&](u32 begin, u32 end) {
+                       (void)source.heights(time_s, spacing_mm, window.i0, window.j0, window.nx,
+                                            window.nz, begin * k_blocks_per_job,
+                                            std::min(blocks, end * k_blocks_per_job), heights);
+                     });
+}
+
 bool same_window(const gfx::TerrainField& a, const gfx::TerrainField& b) noexcept {
   return a.i0 == b.i0 && a.j0 == b.j0 && a.nx == b.nx && a.nz == b.nz;
 }
@@ -386,7 +429,32 @@ f64 ms_since(i64 started) noexcept {
 
 }  // namespace
 
-bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLapseConfig& config,
+void TerrainMotion::evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
+                                   Vector<f32>& out) {
+  if (level.source != nullptr) {
+    evaluate_window(*level.source, jobs_, time_s, level.lattice, window, out);
+  } else {
+    evaluate_window(*sampler_, jobs_, time_s, level.lattice, window, out);
+  }
+}
+
+f64 TerrainMotion::next_time_of(const Level& level, f64 from_s) const noexcept {
+  if (level.source != nullptr) {
+    return terrain_next_time(*level.source, from_s, level.spacing_m, config_.fraction,
+                             config_.min_step_s, config_.max_step_s);
+  }
+  return terrain_next_time(*sampler_, from_s, level.spacing_m, config_.fraction, config_.min_step_s,
+                           config_.max_step_s);
+}
+
+f64 TerrainMotion::surface_s() const noexcept {
+  for (const Level& level : levels_) {
+    if (!level.hidden) return level.blend.surface_s;
+  }
+  return levels_.empty() ? 0.0 : levels_[0].blend.surface_s;
+}
+
+bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLapseConfig& config,
                           jobs::JobSystem* jobs, std::string* error) {
   finish();
   levels_.clear();
@@ -453,10 +521,12 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
     level.lattice = scene.terrain_lattice(k);
     level.spacing_m = level.lattice.spacing;
     level.slots = scene.terrain_field_slots(k);
+    level.hidden = k == 0 && rings_ != nullptr && !rings_->grid_drawn();
+    level.source = k > 0 && rings_ != nullptr ? rings_->source() : nullptr;
     if (k == 0) {
       level.window = gfx::TerrainField{};
-      level.window.nx = level.lattice.size;
-      level.window.nz = level.lattice.size;
+      level.window.nx = level.hidden ? 1u : level.lattice.size;
+      level.window.nz = level.hidden ? 1u : level.lattice.size;
     } else {
       level.window = rings_->field_window(k, shown_layout_);
     }
@@ -464,10 +534,11 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
       return fail("time-lapse: a terrain level's window is larger than its field slots");
     // The rest pose: the heights at the scene's own time, which on the scene's grid are the mesh's
     // to the bit (`evaluate_terrain_heights`) and on a ring its chunks' to the micrometre they
-    // were built at. The first frame draws them; nothing jumps when the time-lapse starts.
+    // were built at. The first frame draws them; nothing jumps when the time-lapse starts. The
+    // grid under the world's tiles draws nothing and is given nothing.
     const i64 started = time::monotonic_ns();
     Vector<f32> heights;
-    evaluate_window(*sampler_, jobs_, start_s_, level.lattice, level.window, heights);
+    if (!level.hidden) evaluate_level(level, start_s_, level.window, heights);
     f64 padding = 0.0;
     if (k == 0) {
       level.rest = heights;
@@ -475,11 +546,13 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
       padding =
           rings_->padding(k, std::span<const f32>(heights.data(), heights.size()), level.window);
     }
-    gfx::BufferResource staging;
-    if (!scene.terrain_staging(heights.size(), staging, error)) return false;
-    std::memcpy(staging.mapped, heights.data(), heights.size() * sizeof(f32));
-    // The first frame shows it: copied whole by that frame, whatever the budget.
-    if (!scene.terrain_upload(k, 0, level.window, staging, error, true)) return false;
+    if (!level.hidden) {
+      gfx::BufferResource staging;
+      if (!scene.terrain_staging(heights.size(), staging, error)) return false;
+      std::memcpy(staging.mapped, heights.data(), heights.size() * sizeof(f32));
+      // The first frame shows it: copied whole by that frame, whatever the budget.
+      if (!scene.terrain_upload(k, 0, level.window, staging, error, true)) return false;
+    }
     level.a = Field{0, start_s_, padding, 0.0, level.window};
     level.b = Field{};
     level.has_b = false;
@@ -667,7 +740,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
     oj1 = std::min(wj1, from->window.j0 + static_cast<i32>(from->window.nz));
   }
   if (from == nullptr || oi0 >= oi1 || oj0 >= oj1) {
-    evaluate_window(*sampler_, jobs_, time_s, level.lattice, window, out);
+    evaluate_level(level, time_s, window, out);
     return;
   }
   for (i32 j = oj0; j < oj1; ++j) {
@@ -686,7 +759,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
     rect.j0 = j0;
     rect.nx = static_cast<u32>(i1 - i0);
     rect.nz = static_cast<u32>(j1 - j0);
-    evaluate_window(*sampler_, jobs_, time_s, level.lattice, rect, part);
+    evaluate_level(level, time_s, rect, part);
     for (i32 j = j0; j < j1; ++j) {
       std::memcpy(out.data() + static_cast<usize>(j - window.j0) * window.nx +
                       static_cast<usize>(i0 - window.i0),
@@ -718,7 +791,7 @@ void TerrainMotion::run_field(Task& task) {
   Level& level = levels_[task.level];
   const i64 started = time::monotonic_ns();
   Vector<f32> heights;
-  evaluate_window(*sampler_, jobs_, task.time_s, level.lattice, task.window, heights);
+  evaluate_level(level, task.time_s, task.window, heights);
   const usize n = heights.size();
   const std::span<const f32> field(heights.data(), n);
   Vector<f32> scratch;
@@ -785,8 +858,8 @@ void TerrainMotion::run_rings(RingTask& task) {
   u32 moved = 0;
   // The chunks' rest heights are the field at the surface's time when the camera asked, which a
   // drawn field differs from by what the sand moved since: the padding measures it.
-  if (!rings_->update(task.camera_x, task.camera_z, task.time_s,
-                      std::span<const TerrainRingSet::Heights>(), jobs_, moved, &error)) {
+  if (!rings_->update(task.camera_x, task.camera_z, task.time_s, task.layout,
+                      std::span<const TerrainLevelSet::Heights>(), jobs_, moved, &error)) {
     task.ok = false;
     task.error = error;
   } else if (!(rings_->layout() == task.layout)) {
@@ -844,14 +917,14 @@ u32 TerrainMotion::free_slot(const Level& level, u32 besides) const noexcept {
 // no slot.
 bool TerrainMotion::schedule(u32 k) {
   Level& level = levels_[k];
-  if (frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way() || !(config_.rate > 0.0))
+  if (level.hidden || frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way() ||
+      !(config_.rate > 0.0))
     return false;
   if (worker_busy()) return false;
   const u32 slot = free_slot(level);
   if (slot == ~0u) return false;
   const f64 from = level.newest_s();
-  f64 at = terrain_next_time(*sampler_, from, level.spacing_m, config_.fraction, config_.min_step_s,
-                             config_.max_step_s);
+  f64 at = next_time_of(level, from);
   if (!config_.wait) {
     TerrainKeepUp keep;
     keep.rate = config_.rate;
@@ -904,7 +977,8 @@ void TerrainMotion::schedule_next() {
   f64 best_from = 0.0;
   for (u32 k = 0; k < levels_.size(); ++k) {
     const Level& level = levels_[k];
-    if (frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way()) continue;
+    if (level.hidden || frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way())
+      continue;
     const f64 from = level.newest_s();
     if (best == ~0u || from < best_from) {
       best = k;
@@ -1005,10 +1079,13 @@ void TerrainMotion::ask_recentre(f32 camera_x, f32 camera_z) {
   if (next == shown_layout_) return;
   pending_layout_ = next;
   asked_frame_ = frames_;
+  // What the rebuild is to be of, taken on this thread before the worker has it: a tile set's
+  // tiles as the world last handed them over, which the frame may change again meanwhile.
+  rings_->prepare(next);
   RingTask task;
   task.camera_x = camera_x;
   task.camera_z = camera_z;
-  task.time_s = levels_[0].blend.surface_s;
+  task.time_s = surface_s();
   task.layout = next;
   {
     std::unique_lock<std::mutex> lock(ring_mutex_);
@@ -1341,7 +1418,15 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     advance_recentre(config_.wait);
   }
   const u32 n = levels_.size();
-  const f64 before = levels_[0].blend.surface_s;
+  const f64 before = surface_s();
+  // The levels the surface's time is shared by: all of them, but the scene's grid under the world's
+  // tiles, which is given no field and would hold the surface at the one it has. `drawn[d]` is the
+  // level of the surface frame's d-th entry.
+  u32 drawn[k_max_terrain_levels];
+  u32 m = 0;
+  for (u32 k = 0; k < n && m < k_max_terrain_levels; ++k) {
+    if (!levels_[k].hidden) drawn[m++] = k;
+  }
   // Where the surface goes this frame. Offscreen (`wait`), to game time, waiting below for a field
   // it has caught up with; in a window, where the clock says — game time minus L, at a speed that
   // changes a little a frame and brakes for the newest field every level has. At a rate of zero
@@ -1351,7 +1436,8 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   u32 horizon_level = ~0u;
   if (!config_.wait) {
     f64 horizon = target;
-    for (u32 k = 0; k < n; ++k) {
+    for (u32 d = 0; d < m; ++d) {
+      const u32 k = drawn[d];
       const Level& level = levels_[k];
       f64 frontier = level.has_b ? level.blend.time_b : level.blend.time_a;
       if (!frozen(k)) {
@@ -1368,31 +1454,35 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   f64 budget[k_max_terrain_levels];
   f64 moved[k_max_terrain_levels] = {};
   bool waited[k_max_terrain_levels] = {};
-  for (u32 k = 0; k < n; ++k)
-    budget[k] = config_.fraction * levels_[k].spacing_m;
+  for (u32 d = 0; d < m; ++d)
+    budget[d] = config_.fraction * levels_[drawn[d]].spacing_m;
   TerrainSurfaceResult result;
+  u32 limiting = ~0u;  // the level `result.limiting` names
   for (u32 guard = 0; guard < 256; ++guard) {
     TerrainBlend blends[k_max_terrain_levels];
     TerrainNextField next[k_max_terrain_levels];
     f64 step[k_max_terrain_levels];
     u32 installed[k_max_terrain_levels];
-    for (u32 k = 0; k < n; ++k) {
+    for (u32 d = 0; d < m; ++d) {
+      const u32 k = drawn[d];
       const Level& level = levels_[k];
-      blends[k] = level.blend;
-      next[k].ready = level.ahead > 0 && level.next_state[0] == Level::Next::ready && !frozen(k);
-      next[k].time_s = level.next[0].time_s;
-      next[k].delta_m = level.next[0].delta_m;
+      blends[d] = level.blend;
+      next[d].ready = level.ahead > 0 && level.next_state[0] == Level::Next::ready && !frozen(k);
+      next[d].time_s = level.next[0].time_s;
+      next[d].delta_m = level.next[0].delta_m;
     }
     result =
-        terrain_surface_frame(std::span<TerrainBlend>(blends, n), goal,
-                              std::span<const f64>(budget, n), std::span<TerrainNextField>(next, n),
-                              std::span<f64>(step, n), std::span<u32>(installed, n));
-    for (u32 k = 0; k < n; ++k) {
+        terrain_surface_frame(std::span<TerrainBlend>(blends, m), goal,
+                              std::span<const f64>(budget, m), std::span<TerrainNextField>(next, m),
+                              std::span<f64>(step, m), std::span<u32>(installed, m));
+    limiting = result.limiting < m ? drawn[result.limiting] : ~0u;
+    for (u32 d = 0; d < m; ++d) {
+      const u32 k = drawn[d];
       Level& level = levels_[k];
-      level.blend = blends[k];
-      moved[k] += step[k];
-      budget[k] = std::max(budget[k] - step[k], 0.0);
-      if (installed[k] > 0) {
+      level.blend = blends[d];
+      moved[k] += step[d];
+      budget[d] = std::max(budget[d] - step[d], 0.0);
+      if (installed[d] > 0) {
         // The field slots follow the pair: b's slot is a's now, the next field's is b's, and the
         // one after it moves up.
         if (level.has_b) level.a = level.b;
@@ -1410,11 +1500,11 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
         ++level.stats.installed;
       }
     }
-    if (!result.held || !config_.wait || result.limiting >= n) break;
+    if (!result.held || !config_.wait || limiting >= n) break;
     // Offscreen: a field the surface has caught up with is waited for, so the picture of a frame
     // is a function of the frame. The worker may be busy with another level's field; that one is
     // taken, and this one asked for.
-    const u32 h = result.limiting;
+    const u32 h = limiting;
     Level& level = levels_[h];
     if (frozen(h)) {
       advance_recentre(true);
@@ -1431,7 +1521,15 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     }
     waited[h] = true;
   }
-  const f64 after = levels_[0].blend.surface_s;
+  // The grid under the world's tiles stands where the surface does, for what a summary reads of it.
+  for (u32 k = 0; k < n; ++k) {
+    if (levels_[k].hidden) {
+      levels_[k].blend.surface_s = surface_s();
+      levels_[k].blend.time_a = levels_[k].blend.surface_s;
+      levels_[k].a.time_s = levels_[k].blend.surface_s;
+    }
+  }
+  const f64 after = surface_s();
   if (!config_.wait) {
     clock_.settle(real_dt_s, before, after);
     max_latency_s_ = std::max(max_latency_s_, clock_.latency_s());
@@ -1446,13 +1544,13 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   for (u32 k = 0; k < n; ++k) {
     Level& level = levels_[k];
     LevelStats& stats = level.stats;
-    if (result.held && result.limiting == k) ++stats.held;
-    if (result.capped && result.limiting == k) ++stats.capped;
+    if (result.held && limiting == k) ++stats.held;
+    if (result.capped && limiting == k) ++stats.capped;
     if (waited[k]) ++stats.waited;
     stats.max_move_m = std::max(stats.max_move_m, moved[k]);
     stats.max_lag_s = std::max(stats.max_lag_s, target - level.blend.surface_s);
     stats.frame_move_m = moved[k];
-    stats.frame_held = result.held && result.limiting == k;
+    stats.frame_held = result.held && limiting == k;
     stats.frame_late = braked && horizon_level == k;
     last_move_m_ = std::max(last_move_m_, moved[k]);
     show(k);
@@ -1464,15 +1562,31 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
 }
 
 f64 TerrainMotion::lag_s() const noexcept {
-  return levels_.empty() ? 0.0 : game_time_s() - levels_[0].blend.surface_s;
+  return levels_.empty() ? 0.0 : game_time_s() - surface_s();
 }
 
 void TerrainMotion::show(u32 k) {
   const Level& level = levels_[k];
-  const f64 padding = std::max(level.a.padding_m, level.has_b ? level.b.padding_m : 0.0);
+  f64 padding = std::max(level.a.padding_m, level.has_b ? level.b.padding_m : 0.0);
+  // A tile draws the vertices it shares with a coarser tile from that tile's level (renderer.md,
+  // "The ground from the world's tiles"), so its clusters' spheres have to cover how far those
+  // levels' fields stand off its rest heights too: the largest padding of any chunk level, and the
+  // largest difference between two fields of a pair, which bounds how far two levels' blends of
+  // the same ground at one surface time can stand apart.
+  if (k > 0 && rings_ != nullptr && rings_->shares_vertices()) {
+    f64 most = 0.0;
+    f64 apart = 0.0;
+    for (u32 o = 1; o < levels_.size(); ++o) {
+      const Level& other = levels_[o];
+      most = std::max(most, std::max(other.a.padding_m, other.has_b ? other.b.padding_m : 0.0));
+      if (other.has_b) apart = std::max(apart, other.b.delta_m);
+    }
+    padding = most + apart;
+  }
   // The scene's grid leaves out the square the middle ring draws: its clusters wholly inside are
-  // culled and its vertices inside are moved onto the square's edge (deform.slang).
-  const Vec4 hole = k == 0 && rings_ != nullptr ? rings_->square(1, shown_layout_) : Vec4{};
+  // culled and its vertices inside are moved onto the square's edge (deform.slang). Under the
+  // world's tiles it leaves out the whole world.
+  const Vec4 hole = k == 0 && rings_ != nullptr ? rings_->grid_hole(shown_layout_) : Vec4{};
   scene_->terrain_show(k, level.a.slot, level.has_b ? level.b.slot : ~0u,
                        static_cast<f32>(level.blend.blend()), static_cast<f32>(padding) + 0.01f,
                        hole);

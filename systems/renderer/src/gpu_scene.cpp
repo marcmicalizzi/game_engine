@@ -287,7 +287,8 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
 GpuScene::~GpuScene() { destroy(); }
 
 bool GpuScene::create(const gfx::Device& device, const SceneData& data,
-                      const ResolvedSettings& resolved, std::string* error, TerrainRingSet* rings) {
+                      const ResolvedSettings& resolved, std::string* error,
+                      TerrainLevelSet* rings) {
   destroy();
   device_ = &device;
   data_ = &data;
@@ -1345,8 +1346,12 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
     if (k == 0) {
       level.lattice = terrain_scene_lattice(data_->terrain);
       level.instance = instance;
-      level.capacity = u64{level.lattice.size} * level.lattice.size;
-      level.slots = 3;
+      // Under the world's tiles the grid draws nothing (its hole covers the world) and nothing
+      // evaluates a field for it: a slot of one sample stands for its fields (renderer.md, "The
+      // ground from the world's tiles").
+      const bool drawn = ring_slots_.empty() || rings_->grid_drawn();
+      level.capacity = drawn ? u64{level.lattice.size} * level.lattice.size : 1u;
+      level.slots = drawn ? 3u : 1u;
     } else {
       level.lattice = rings_->lattice(k);
       level.capacity = rings_->field_capacity(k);
@@ -1362,6 +1367,9 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
       }
     }
     level.skirt = k == 0 ? 0.0f : rings_->skirt_m(k);
+    // A world tile's border along a coarser tile is drawn from that tile's level, which its
+    // vertices name (renderer.md, "The ground from the world's tiles").
+    level.flags = k > 0 && rings_->shares_vertices() ? gfx::k_terrain_level_named : 0u;
     terrain_.push_back(std::move(level));
   }
   // The per-frame tables, one region per frame slot like the joint matrices: the frame writes its
@@ -1495,6 +1503,7 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
     desc.padding = l.padding;
     desc.hole = l.hole;
     desc.skirt = l.skirt;
+    desc.flags = l.flags;
     if (l.shown_a != ~0u) {
       desc.a = l.windows[l.shown_a];
       out.fields.push_back(l.fields[l.shown_a]);
@@ -1588,14 +1597,14 @@ void GpuScene::give_range(Vector<Range>& free, Range range) noexcept {
   }
 }
 
-bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainRingSet& rings,
+bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& rings,
                              std::string* error) {
   (void)resolved;
   ring_slots_.clear();
   slot_parts_.clear();
   u64 bytes = 0;
   for (u32 level = 1; level < rings.level_count(); ++level) {
-    const TerrainRingSet::Capacity c = rings.capacity(level);
+    const TerrainLevelSet::Capacity c = rings.capacity(level);
     if (c.slots == 0 || c.clusters_per_slot == 0) continue;
     RingSlots ring;
     ring.level = level;

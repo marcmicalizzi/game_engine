@@ -408,6 +408,20 @@ int2 terrain_window(TerrainLevelDesc level, bool along_z) {
 
 void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out float3 position,
                     out float3 normal) {
+  // A vertex another level draws: a world tile's border along a coarser tile names that tile's
+  // level in its rest normal (horizontal, at the level's number of eighths of a turn), and is
+  // placed, raised and lit from that level's description, as the coarser tile's own copy is — so
+  // the two tiles draw one vertex whatever pair and blend each level is at (renderer.md, "The ground
+  // from the world's tiles"). No other level sets the flag, and a heightfield normal or a skirt's
+  // is never horizontal.
+  if ((level.flags & k_terrain_level_named) != 0 && g_params.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    const float3 named = decode_oct(attributes[vertex].normal_oct);
+    if (abs(named.y) < 0.25) {
+      const int eighths = int(round(atan2(named.z, named.x) * (4.0 / 3.14159265358979)));
+      level = ((TerrainLevelDesc*)g_params.terrain)[uint((eighths + 8) % 8)];
+    }
+  }
   const float3 rest = load_quantized_position(mesh, vertex);
   const float inv = 1.0 / level.spacing;
   int i = int(round((rest.x - level.origin.x) * inv));

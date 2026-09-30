@@ -707,19 +707,25 @@ enum RingRuins : u8 {
   Walls = 2
 }
 
-/// One ring of a streamed world: a radius, and what the ruins are drawn as inside it.
-struct WorldRing @version(1) {
+/// One ring of a streamed world: a radius, and what the ruins are drawn as inside it. Version 2
+/// added `ground_cells`, the drawn ground's resolution in the ring.
+struct WorldRing @version(2) {
   /// Tiles, from an observer to a tile's centre; each ring's is larger than the one inside it.
   radius: f32 = 0
   ruins: RingRuins = Sections
+  /// With `ground` (below): the cells a side a tile of the drawn ground has in this ring, which
+  /// must cut the tile into whole millimetres and divide the ring inside it's. 0 is the rule: 64 in
+  /// the inner ring, halving outwards to 8 (docs/subsystems/renderer.md, "The ground from the
+  /// world's tiles").
+  ground_cells: u32 = 0 @since(2)
 }
 
 /// A scene streamed tile by tile around its observers (the world capability, docs/subsystems/
 /// world.md): its `ruins` and `placements` entries are not expanded when the scene is read but a
 /// tile at a time as the ring around the camera activates it, and dropped when it deactivates.
 /// Every field has the capability's default, so `"world": {}` is a streamed scene with the default
-/// rings.
-struct WorldRings @version(1) {
+/// rings. Version 2 added `ground`.
+struct WorldRings @version(2) {
   /// A tile's edge, metres; the ruins entries' own `tile_size`, and every placement entry's grid,
   /// must be the same.
   tile_size: f32 = 32
@@ -730,6 +736,12 @@ struct WorldRings @version(1) {
   /// How many of the rings, innermost first, the simulation runs in: the document is materialized
   /// and the store reconciled there, and nowhere else.
   simulated: u32 = 2
+  /// Draw the terrain from the world's tiles (ADR-0048; docs/subsystems/renderer.md, "The ground
+  /// from the world's tiles"): the ground streamed round the camera a tile at a time, at each
+  /// ring's `ground_cells`, with no end, in place of the terrain's one grid (which then only carries
+  /// its material). Needs a terrain whose ground moves (the dunes), and is refused beside streamed
+  /// `ruins` or `placements`, which have no deformed-vertex pool yet.
+  ground: bool = false @since(2)
 }
 
 /// One entry of a scene's placement generators (docs/subsystems/scene_gen.md, ADR-0046): the name

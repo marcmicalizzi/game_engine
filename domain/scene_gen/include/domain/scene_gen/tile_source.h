@@ -26,7 +26,8 @@ struct TileSourceOps {
   // `window_blocks(nx, nz)` (a caller spreads the blocks over as many jobs as it likes and gets the
   // same bytes). A source that does not move answers every time with its one surface. False,
   // writing nothing, when the source has nothing there: a spacing a tile set was not built at, a
-  // window outside it.
+  // window outside it. **Thread-safe**: a renderer's field is asked for from several jobs at once,
+  // and its tiles are built on a worker while the frame asks for a field.
   bool (*heights)(const void* state, f64 time_s, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
                   u32 block_begin, u32 block_end, std::span<f32> out) noexcept = nullptr;
   // How far its fastest feature travels between two game times, metres, along the way rather than

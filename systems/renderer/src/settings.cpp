@@ -332,22 +332,42 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // Not for a scene whose instances come and go, which has no pool. A rate that may change while
   // it runs (`time_rate_live`) needs the levels at zero too; a scene that cannot have them is only
   // warned about when something asked for motion now.
-  out.terrain_levels =
-      scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live) && !dynamic &&
-      scene->terrain.enabled && scene->terrain_mesh != ~0u && terrain_moves(scene->terrain);
+  // **The world's tiles** (renderer.md, "The ground from the world's tiles") are terrain levels
+  // too: asked for by the settings or by the scene's `world` block, they need the levels at any
+  // rate, and they take the rings' place.
+  const bool tiles_asked =
+      s.terrain_tiles || (scene != nullptr && scene->world.enabled && scene->world.ground);
+  out.terrain_levels = scene != nullptr &&
+                       (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live || tiles_asked) &&
+                       !dynamic && scene->terrain.enabled && scene->terrain_mesh != ~0u &&
+                       terrain_moves(scene->terrain);
   if (scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !out.terrain_levels &&
       dynamic) {
     ENGINE_LOG_WARN(log_renderer, "the terrain does not move",
                     log::field("reason", "a scene whose instances come and go has no pool"));
   }
-  // The rings are more meshes in the scene, laid out once beside its own: not for a streamed scene,
-  // whose clusters live in pages, and not with cluster templates, which are built once per mesh
-  // from a rest pose a ring's slot does not have.
-  out.terrain_rings =
-      out.terrain_levels && s.terrain_rings && !(s.stream && scene != nullptr && scene->paged());
-  if (out.terrain_rings && s.rt_templates) {
+  // The rings and the tiles are more meshes in the scene, laid out once beside its own: not for a
+  // streamed scene, whose clusters live in pages, and not with cluster templates, which are built
+  // once per mesh from a rest pose a slot does not have.
+  const bool paged = s.stream && scene != nullptr && scene->paged();
+  out.terrain_tiles = out.terrain_levels && tiles_asked && !paged;
+  if (tiles_asked && !out.terrain_tiles && scene != nullptr) {
+    ENGINE_LOG_WARN(log_renderer, "the ground is not drawn from the world's tiles",
+                    log::field("reason", dynamic ? "a scene whose instances come and go has no pool"
+                                         : paged ? "a scene streamed in pages"
+                                                 : "its terrain's ground does not move"));
+  }
+  out.terrain_rings = out.terrain_levels && s.terrain_rings && !paged && !out.terrain_tiles;
+  if (s.terrain_rings && out.terrain_tiles) {
+    s.terrain_rings = false;
+    ENGINE_LOG_WARN(log_renderer, "terrain rings ignored",
+                    log::field("reason", "the ground is drawn from the world's tiles"));
+  }
+  if ((out.terrain_rings || out.terrain_tiles) && s.rt_templates) {
     s.rt_templates = false;
-    ENGINE_LOG_WARN(log_renderer, "cluster templates ignored with terrain rings");
+    ENGINE_LOG_WARN(log_renderer, out.terrain_tiles
+                                      ? "cluster templates ignored with world tiles"
+                                      : "cluster templates ignored with terrain rings");
   }
   out.deform_pass = s.deform || out.terrain_levels ||
                     (scene != nullptr && (scene->skinned() || scene->morphed()));

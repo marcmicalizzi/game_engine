@@ -123,6 +123,11 @@ struct WorldDesc {
   u8 ruins[7] = {};    // per ring: 0 blocks, 1 sections, 2 walls (`engine.scene.RingRuins`)
   f32 hysteresis = 0.15f;
   u32 simulated = 2;  // rings, innermost first, the simulation runs in
+  // The terrain drawn from the world's tiles (`engine.scene.WorldRings.ground`; renderer.md, "The
+  // ground from the world's tiles"), and each ring's cells a side (0: the rule). A scene asking for
+  // it with no streamed placement entry is not dynamic: its instances do not come and go.
+  bool ground = false;
+  u32 ground_cells[7] = {};
 };
 
 // One placement entry of a streamed scene (a `ruins` entry, or one of `placements`), as the reader
