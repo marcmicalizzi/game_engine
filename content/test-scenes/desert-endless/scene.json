@@ -2,6 +2,13 @@
   "format": "engine.scene.v1",
   "name": "desert-endless",
   "camera_path": "camera-path.json",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "moon_age_days": 12.39,
+    "turbidity": 1.6,
+    "ground_albedo": 0.38
+  },
   "description": "The erg of desert-erg with no edge: the same five bands, wind, storms and sand, drawn from the world's tiles streamed round the camera (ADR-0049) instead of one grid, so it goes on in every direction for as far as anyone flies. 32 m tiles at 50 cm within a tile and a half of the camera, 1 m to 8 tiles, 2 m to 24 and 4 m to 64 (2 km); the grid is 3 samples and draws nothing. A 12 km flight at 100 m/s along its camera path, out of the erg's old 6 km square and on; README.md says what to look at and how it was measured.",
   "world": {
     "ground": true,
