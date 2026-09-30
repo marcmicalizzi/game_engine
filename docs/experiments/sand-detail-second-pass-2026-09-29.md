@@ -8,7 +8,7 @@
 
 This page holds what the second pass measured and what it could not ([renderer](../subsystems/renderer.md#the-sand-close-up), [gfx](../subsystems/gfx.md)).
 
-**Where.** Everything was measured on a 4-vCPU Linux container with no GPU. The shader compiles there and does not run, so every number below comes from the CPU mirror, `domain/gfx/tests/ground_detail_reference.h`, in double precision. The mirror is the function the GPU test holds the shader to on the owner's machine. The tests are in `domain/gfx/tests/ground_detail_tests.cpp`. The pictures come from `ground_detail_preview_tests.cpp`, which is skipped unless run with `--no-skip`.
+**Where.** Everything was measured on a 4-vCPU Linux container with no GPU. The shader compiles there and does not run, so every number below comes from the CPU mirror, `domain/gfx/tests/ground_detail_reference.h`, in double precision. The mirror is the function the GPU test holds the shader to on the owner's machine. The tests are in `domain/gfx/tests/ground_detail_tests.cpp`. The pictures come from `ground_detail_preview_tests.cpp`, which is skipped unless run with `--no-skip`. What the GPU measured afterwards, on the owner's machine, is [the last section](#on-the-gpu).
 
 ## The instrument
 
@@ -75,12 +75,41 @@ So a rippled pixel pays about half again what it paid, and a slip-face pixel pay
 
 ## What could not be measured here
 
-- **Anything on a GPU.**
-- **The tolerance.** `domain/gfx/tests/ground_detail_tests.cpp`'s GPU case and the renderer's two detail tests build their blocks from the defaults, which draw exactly the first pass. Their tolerances should therefore not move: 2 of 255 by the origin, and 4 shaded and 16 in the detail view at 3.7 km. A case with every v2 term on is worth adding at the merge. The author expects:
-  - within 3 of 255 near the origin;
-  - about 6 at 3.7 km, shaded, where the 2.5 mm octave's normal is the term most exposed to the reconstruction's millimetre.
+- **Anything on a GPU**, and so **the tolerance**. The author expected within 3 of 255 near the origin and about 6 at 3.7 km, shaded, the 2.5 mm octave's normal being the term most exposed to the reconstruction's millimetre. [On the GPU](#on-the-gpu), below, has what was measured instead: 1 and 4.
 - **How the streaks and the grain's normal look at 11520×2160 in motion.** The CPU filter tests hold the mean and the variation; crawl under a moving camera is the owner's eye's.
 - **The shelter the normal cannot see** (a brink's separation bubble, a ruin's lee). It is a design note in [renderer](../subsystems/renderer.md#the-sand-close-up), [terrain](../subsystems/terrain.md#what-the-effect-needs) and [scene_gen](../subsystems/scene_gen.md#the-two-kinds), not built.
+
+## On the GPU
+
+Measured on 2026-09-30 on the RTX 5090, through the mesh path, `msvc-debug`, under the machine-wide GPU lock with the GPU idle before each run (0–1% busy, 7.1–7.4 GB held by other processes). These are differences between two computations of one picture, not timings, so the machine's load cannot move them; the runs were repeated and gave the same numbers.
+
+### The resolve against the mirror
+
+`domain/gfx/tests/ground_detail_tests.cpp`, "the resolve draws the second pass's function on sloped sand" ([gfx](../subsystems/gfx.md), "The second pass on the GPU"): the ergs' numbers, every term on, with the test's wind, on five planes tilted along it, each by the origin and 3.7 km out, from a walker's eyes looking along the sand (a pixel up to a metre long), down at the feet (a centimetre) and down at the feet at a millimetre (6° over 160 pixels). The worst difference of any covered pixel from the CPU, of 255: shaded (and how many pixels are over 1), then the detail view's ripple height, drawn share and grain.
+
+| Plane | Look | By the origin | 3.7 km out |
+|---|---|---|---|
+| level | along | 1; 1, 1, 1 | 1; 12, 1, 11 |
+| | feet | 1; 1, 0, 1 | 3 (467 over 1); 14, 0, 16 |
+| | millimetre | 1; 1, 0, 1 | 4 (701); 13, 0, 12 |
+| climbing 12° | along | 1; 1, 1, 1 | 1; 8, 1, 10 |
+| | feet | 1; 1, 0, 1 | 3 (189); 10, 0, 20 |
+| | millimetre | 1; 1, 0, 1 | 4 (898); 6, 0, 15 |
+| falling 14° | along | 1; 1, 1, 1 | 1; 17, 1, 13 |
+| | feet | 1; 1, 1, 1 | 1; 11, 1, 13 |
+| | millimetre | 1; 1, 0, 1 | 4 (70); 13, 0, 12 |
+| falling 26° | along | 1; 1, 0, 1 | 1; 16, 0, 14 |
+| | feet | 1; 1, 0, 1 | 1; 11, 0, 17 |
+| | millimetre | 1; 1, 0, 1 | 2 (4); 18, 0, 11 |
+| falling 32° | along | 1; 1, 0, 2 | 1; 13, 0, 13 |
+| | feet | 1; 1, 0, 1 | 1; 24, 0, 25 |
+| | millimetre | 1; 1, 0, 1 | 2 (5); 11, 0, 11 |
+
+The first pass on the same helper (the defaults, level sand) measures what it always did: 1 by the origin on everything; 3.7 km out 1 and 3 shaded (469 over 1) and 12 and 14 on the ripple height. The ripples are drawn on the level plane and the two gentler slopes and nowhere on the 26° and 32° lees, where the exposure has taken them; the streaks are weighted in on every pixel of those two and none of the other three.
+
+**No term of the shader differs from the mirror**, and the author's expectation was pessimistic: **1 of 255 by the origin, 4 at 3.7 km**, where the millimetre look resolves the reconstruction's millimetre in the grain's 5 and 2.5 mm octaves and its normal. The tolerances set from this: 2 by the origin everywhere; 5 shaded at 3.7 km, and 28 on the detail view's ripple and grain there, whose 24 and 25 are the look down the 32° lee, which runs down the slope to grazing pixels 20 cm long (the first pass's 16 stays for the first pass).
+
+**What the first run found was the reference, not the shader.** On the sloped planes the first comparison put the grain's channel 10 off by the origin (the windward slope's long look), 3 on the 14° lee and 2 on the 32° one, every one of them at a pixel whose centre the reference found just outside the triangle the visibility buffer named. The rasterizer snaps corners to a fraction of a pixel, so a centre that close to an edge can be drawn by the triangle across it, and the resolve's `reconstruct_screen` then clamps the barycentrics into that triangle and shades the point on the edge — under a grazing footprint a metre long, up to a millimetre from where the ray meets the surface. With the reference clamping the same way, every one of them is within 1. (Level sand has such pixels too — four in the long look by the origin — and they happened to be within 1 already.) The reference also shades the pixel's own triangle rather than the plane the mesh was cut from, since the 16-bit grid turns a triangle of a sloped plane by up to half a milliradian, which the spacing reads.
 
 ## The cost on the GPU, measured at the merge (2026-09-30)
 

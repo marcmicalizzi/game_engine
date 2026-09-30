@@ -462,11 +462,45 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
   return out;
 }
 
-// The world point at screen position (sx, sy) — pixels, fractional — on the horizontal plane
-// `plane_y`: `brdf_ref::pixel_on_plane` at any point of the pixel, which a footprint is the
-// derivative of.
+// The ergs' numbers, field for field: content/test-scenes/desert-erg/scene.json, `terrain.detail`,
+// which turns every second-pass term on. The GPU cases in both modules draw them; the renderer's
+// rings test, which can read that scene (it names the dune generator), holds this copy to the file.
+inline gfx::GroundDetailDesc erg_numbers() {
+  gfx::GroundDetailDesc d;
+  d.ripple_wavelength = 0.12f;
+  d.ripple_height = 0.008f;
+  d.ripple_asymmetry = 0.75f;
+  d.ripple_defects = 0.35f;
+  d.slope_start_deg = 22.0f;
+  d.slope_end_deg = 30.0f;
+  d.grain_size = 0.02f;
+  d.grain_albedo = 0.08f;
+  d.grain_roughness = 0.05f;
+  d.lee_start_deg = 10.0f;
+  d.lee_end_deg = 18.0f;
+  d.grain_finest = 0.001f;
+  d.grain_normal = 0.06f;
+  d.streak_start_deg = 22.0f;
+  d.streak_full_deg = 30.0f;
+  d.streak_width = 0.4f;
+  d.streak_length = 2.0f;
+  d.streak_albedo = 0.06f;
+  d.streak_roughness = 0.04f;
+  d.streak_normal = 0.012f;
+  d.spacing_gain = 2.5f;
+  d.spacing_min = 0.8f;
+  d.spacing_max = 1.6f;
+  return d;
+}
+
+// The world point at screen position (sx, sy) — pixels, fractional — on the plane through
+// `plane_point` with normal `plane_normal` (any length): the camera ray through that point of the
+// pixel, which a footprint is the derivative of. The ground's detail reads the normal as much as
+// the point (the exposure, the spacing and the streaks are functions of it), so a sloped ground is
+// a plane of its own and not a height over a level one.
 inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, double sx, double sy, double plane_y) {
+                            u32 width, u32 height, double sx, double sy, Dvec3 plane_point,
+                            Dvec3 plane_normal) {
   const double t = 1.0 / std::tan(fov_y * 0.5);
   const Dvec3 f = brdf_ref::normalize(target - eye);
   const Dvec3 right = brdf_ref::normalize(brdf_ref::cross(f, up));
@@ -474,23 +508,39 @@ inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, dou
   const double ndc_x = 2.0 * sx / static_cast<double>(width) - 1.0;
   const double ndc_y = 1.0 - 2.0 * sy / static_cast<double>(height);
   const Dvec3 dir = f + right * (ndc_x * aspect / t) + camera_up * (ndc_y / t);
-  return eye + dir * ((plane_y - eye.y) / dir.y);
+  return eye +
+         dir * (brdf_ref::dot(plane_point - eye, plane_normal) / brdf_ref::dot(dir, plane_normal));
+}
+
+// The horizontal plane `plane_y`, which is `brdf_ref::pixel_on_plane` at any point of the pixel:
+// the same arithmetic as the general form's with a normal straight up, term for term.
+inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
+                            u32 width, u32 height, double sx, double sy, double plane_y) {
+  return point_on_plane(eye, target, up, fov_y, aspect, width, height, sx, sy,
+                        Dvec3{0.0, plane_y, 0.0}, Dvec3{0.0, 1.0, 0.0});
 }
 
 // The footprint the resolve measures at pixel (px, py) of that plane: the point's change per pixel
 // along the screen's two axes, by central differences a hundredth of a pixel wide.
 inline void plane_footprint(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, u32 px, u32 py, double plane_y, Dvec3& dpdx,
-                            Dvec3& dpdy) {
+                            u32 width, u32 height, u32 px, u32 py, Dvec3 plane_point,
+                            Dvec3 plane_normal, Dvec3& dpdx, Dvec3& dpdy) {
   const double cx = static_cast<double>(px) + 0.5;
   const double cy = static_cast<double>(py) + 0.5;
   constexpr double h = 0.005;
-  dpdx = (point_on_plane(eye, target, up, fov_y, aspect, width, height, cx + h, cy, plane_y) -
-          point_on_plane(eye, target, up, fov_y, aspect, width, height, cx - h, cy, plane_y)) *
-         (1.0 / (2.0 * h));
-  dpdy = (point_on_plane(eye, target, up, fov_y, aspect, width, height, cx, cy + h, plane_y) -
-          point_on_plane(eye, target, up, fov_y, aspect, width, height, cx, cy - h, plane_y)) *
-         (1.0 / (2.0 * h));
+  const auto at = [&](double sx, double sy) {
+    return point_on_plane(eye, target, up, fov_y, aspect, width, height, sx, sy, plane_point,
+                          plane_normal);
+  };
+  dpdx = (at(cx + h, cy) - at(cx - h, cy)) * (1.0 / (2.0 * h));
+  dpdy = (at(cx, cy + h) - at(cx, cy - h)) * (1.0 / (2.0 * h));
+}
+
+inline void plane_footprint(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
+                            u32 width, u32 height, u32 px, u32 py, double plane_y, Dvec3& dpdx,
+                            Dvec3& dpdy) {
+  plane_footprint(eye, target, up, fov_y, aspect, width, height, px, py, Dvec3{0.0, plane_y, 0.0},
+                  Dvec3{0.0, 1.0, 0.0}, dpdx, dpdy);
 }
 
 }  // namespace engine::ground_ref

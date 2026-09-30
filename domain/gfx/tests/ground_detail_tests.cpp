@@ -1,13 +1,17 @@
 // The ground's detail on the GPU against its CPU mirror (ground_detail.slang against
-// ground_detail_reference.h, docs/subsystems/gfx.md "The ground's detail"): a horizontal quad of
-// sand with `k_material_ground_detail`, seen from a walker's eye height looking along it and
-// looking down at the feet, at two places — by the origin, and 3.7 km out, where a float has a
-// quarter of a millimetre under the point and the ripples a phase error to show for it — each drawn
-// shaded and in the detail view. Every covered pixel is held to the reference: the point the pixel
-// sees on the plane, its footprint by central differences, the detail by `ground_ref::shade`, and
-// the shading by `brdf_ref::shade`. So the function the resolve draws is the function the CPU
+// ground_detail_reference.h, docs/subsystems/gfx.md "The ground's detail"): sixty metres of sand
+// with `k_material_ground_detail`, seen from a walker's eye height looking along it and looking
+// down at the feet, at two places — by the origin, and 3.7 km out, where a float has a quarter of
+// a millimetre under the point and the ripples a phase error to show for it — each drawn shaded
+// and in the detail view. Every covered pixel is held to the reference: the point the pixel sees
+// on its own triangle, its footprint by central differences, the detail by `ground_ref::shade`,
+// and the shading by `brdf_ref::shade`. So the function the resolve draws is the function the CPU
 // computes, the fades are the same functions of the same footprint, and the tolerance says by how
-// much float and double disagree about all of it.
+// much float and double disagree about all of it. Twice: the first pass (the defaults) on level
+// sand, which is the proof the defaults did not move; and the second pass (the ergs' numbers,
+// every term on) on level sand, on a windward slope and on three lees — the grain and its normal,
+// the spacing, the exposure's band, the streaks' band and a slip face — with a third look at the
+// feet at a millimetre a pixel, where the gradient grain's octaves draw.
 //
 // Also, without a device: the block the scene's numbers make, and the rule the filter moves
 // variance by — that the slope variance it carries is the pattern's own, measured over the CPU
@@ -257,35 +261,108 @@ TEST_CASE("ground detail: the ripples go by which way the ground faces the wind"
   CHECK(windward.roughness > 0.85);
 }
 
-TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
-  gfx::Device device;
-  std::string error;
-  if (!gfx_test::open_device(device)) return;
-  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+namespace {
 
-  // Two places and two looks at each: a walker's eyes 1.6 m over the sand looking along it, and
-  // looking down at the feet. Each is drawn shaded and in the detail view.
+// What the GPU case draws: sixty metres of sand round each of two sites — by the origin, and 3.7 km
+// out — on a plane through the site's point at y = 0 that climbs along the wind by `climb_deg`: a
+// windward slope when positive, a lee when negative, level at 0. Its normal lies in the wind's
+// vertical plane, so the shading normal the resolve hands the detail tilts the way the exposure,
+// the spacing and the streaks read it.
+struct GroundCase {
+  const char* name = "";
+  gfx::GroundDetailParams block;
+  double climb_deg = 0.0;
+  // A third look at each site: the feet at a millimetre a pixel (6 degrees over 160 pixels from
+  // 1.6 m), the owner's pixel at his feet at 11520 x 2160. At the other two looks a pixel is a
+  // centimetre or more, where the gradient grain's coarsest octave, 2 cm, has faded into the
+  // roughness; at a millimetre its octaves draw down to 2.5 mm, and its normal with them.
+  bool millimetre = false;
+  // Tolerances, of 255, by the origin [0] and 3.7 km out [1]: on the shaded picture, and on the
+  // detail view's ripple height (red), the ripples' drawn share (green) and the grain (blue).
+  int shaded[2] = {2, 4};
+  int ripple[2] = {2, 16};
+  int share[2] = {2, 16};
+  int grain[2] = {2, 16};
+};
+
+// What one view of a case measured: the worst difference from the reference, of 255, on the shaded
+// picture and on each channel of the detail view, and what the view holds.
+struct GroundView {
+  std::string name;
+  u32 compared = 0;  // covered pixels held to the reference
+  u32 missing = 0;   // pixels the reference sees the sand at and the GPU drew nothing at
+  u32 rippled = 0;   // with ripples drawn: their share times their fade above 0
+  u32 streaked = 0;  // with the streaks weighted in
+  u32 over_one = 0;  // shaded pixels more than 1 of 255 off
+  int shaded = 0;
+  int ripple = 0;
+  int share = 0;
+  int grain = 0;
+  int green_lo = 255;  // the shaded picture's green channel over its middle half
+  int green_hi = 0;
+  u32 clamped = 0;  // pixels whose point the resolve moves onto its triangle's edge
+};
+
+// The plane's unit normal for a climb of `climb_deg` along the wind: `-dot(n.xz, w) / n.y`, the
+// climb as ground_detail.slang reads it, is its tangent.
+ref::Dvec3 climb_normal(const gfx::GroundDetailParams& d, double climb_deg) {
+  const double t = climb_deg * 3.14159265358979323846 / 180.0;
+  const double s = std::sin(t);
+  return ref::Dvec3{-s * static_cast<double>(d.wind.x), std::cos(t),
+                    -s * static_cast<double>(d.wind.y)};
+}
+
+// Draws the case on `device` from a walker's eyes 1.6 m over the sand looking along it and looking
+// down at the feet (and at a millimetre, with `millimetre`), each shaded and in the detail view,
+// and holds every covered pixel to the reference: the pixel's own triangle as the resolve fetched
+// it — the visibility buffer names it, and its corners are read off the mesh's 16-bit grid as the
+// shader reads them — the point the pixel's centre sees on it, the footprint by central
+// differences there, and the triangle's normal turned to the camera, which is the shading normal a
+// mesh with no attributes has; then the detail by `ground_ref::shade` and the shading by
+// `brdf_ref::shade`. On a level plane every triangle is the plane; on a sloped one the grid moves a
+// corner off it by up to half a step (0.46 mm on 60 m), which turns a triangle by half a
+// milliradian — enough, through the spacing, to slide a ripple's lee by several levels of the
+// detail view — so the reference takes the triangle and not the plane it was cut from.
+void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundView>& out) {
+  std::string error;
   constexpr u32 k_size = 160;
-  constexpr u32 k_views = 4;
+  constexpr u32 k_max_views = 6;
+  const u32 looks = c.millimetre ? 3u : 2u;
+  const u32 views = 2 * looks;
   struct Site {
     f32 x, z;
   };
   const Site sites[2] = {{0.0f, 0.0f}, {2917.37f, -2403.71f}};
+  const ref::Dvec3 normal = climb_normal(c.block, c.climb_deg);
+  const bool level = c.climb_deg == 0.0;
+  // The plane's height at (x, z) over its point at site `s`.
+  const auto height = [&](u32 s, f32 x, f32 z) {
+    if (level) return 0.0f;
+    const double dx = static_cast<double>(x) - static_cast<double>(sites[s].x);
+    const double dz = static_cast<double>(z) - static_cast<double>(sites[s].z);
+    return static_cast<f32>(-(normal.x * dx + normal.z * dz) / normal.y);
+  };
   struct Look {
     Vec3 eye, target;
+    f32 fov_y;
   };
-  auto look = [&](u32 v) {
-    const Site s = sites[v / 2];
-    if (v % 2 == 0) return Look{Vec3{s.x, 1.6f, s.z + 6.0f}, Vec3{s.x + 2.0f, 0.0f, s.z - 20.0f}};
-    return Look{Vec3{s.x, 1.6f, s.z + 0.4f}, Vec3{s.x + 0.1f, 0.0f, s.z - 0.1f}};
+  const auto look = [&](u32 v) {
+    const u32 s = v / looks;
+    const Site site = sites[s];
+    const auto on = [&](f32 x, f32 z, f32 above) { return Vec3{x, height(s, x, z) + above, z}; };
+    if (v % looks == 0) {
+      return Look{on(site.x, site.z + 6.0f, 1.6f), on(site.x + 2.0f, site.z - 20.0f, 0.0f),
+                  radians(60.0f)};
+    }
+    return Look{on(site.x, site.z + 0.4f, 1.6f), on(site.x + 0.1f, site.z - 0.1f, 0.0f),
+                radians(v % looks == 1 ? 60.0f : 6.0f)};
   };
+  const char* look_names[3] = {"along the sand", "at the feet", "at the feet at a millimetre"};
   const Vec3 up{0.0f, 1.0f, 0.0f};
-  const f32 fov_y = radians(60.0f);
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
-  const gfx::GroundDetailParams detail = test_block();
   gfx::BufferResource detail_buffer;
-  REQUIRE(gfx::upload_buffer(device, &detail, sizeof(detail), k_storage, detail_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, &c.block, sizeof(c.block), k_storage, detail_buffer, &error));
 
   gfx::ResolveMaterial material;
   material.albedo = Vec4{0.84f, 0.69f, 0.47f, 0.92f};
@@ -293,10 +370,10 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   gfx::BufferResource materials;
   REQUIRE(gfx::upload_buffer(device, &material, sizeof(material), k_storage, materials, &error));
 
-  // Sixty metres of sand round each site at y = 0, in cells of a metre. Not one quad: the resolve
-  // rebuilds a pixel's point from its triangle's corners projected to the screen, which is exact
-  // for a triangle in front of the camera and meaningless for one reaching behind it, and a quad
-  // under a walker's feet reaches behind the walker.
+  // Sixty metres of sand round each site, in cells of a metre. Not one quad: the resolve rebuilds
+  // a pixel's point from its triangle's corners projected to the screen, which is exact for a
+  // triangle in front of the camera and meaningless for one reaching behind it, and a quad under a
+  // walker's feet reaches behind the walker.
   constexpr u32 k_cells = 60;
   geometry::ClusterMesh meshes[2];
   gfx_test::SingleInstance scenes[2];
@@ -309,8 +386,9 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
     Vector<u32> indices;
     for (u32 j = 0; j <= k_cells; ++j) {
       for (u32 i = 0; i <= k_cells; ++i) {
-        positions.push_back(Vec3{sites[s].x - 30.0f + static_cast<f32>(i), 0.0f,
-                                 sites[s].z - 30.0f + static_cast<f32>(j)});
+        const f32 x = sites[s].x - 30.0f + static_cast<f32>(i);
+        const f32 z = sites[s].z - 30.0f + static_cast<f32>(j);
+        positions.push_back(Vec3{x, height(s, x, z), z});
       }
     }
     for (u32 j = 0; j < k_cells; ++j) {
@@ -340,21 +418,24 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   }
 
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
-  gfx::BufferResource vis[k_views];
-  for (u32 v = 0; v < k_views; ++v) {
-    REQUIRE(gfx::create_buffer(
-        device, vis_bytes,
-        k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false,
-        vis[v], &error));
+  gfx::BufferResource vis[k_max_views];
+  for (u32 v = 0; v < views; ++v) {
+    REQUIRE(gfx::create_buffer(device, vis_bytes,
+                               k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                   gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                               false, vis[v], &error));
   }
-  constexpr u32 k_blocks = k_views * 2;  // shaded, and the detail view
+  const u32 blocks_count = views * 2;  // shaded, and the detail view
   gfx::BufferResource params;
   gfx::BufferResource host_color;
-  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
+  gfx::BufferResource host_vis;
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * blocks_count,
                              k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * blocks_count,
                              gfx::BufferUsage::TransferDst, true, host_color, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes * views, gfx::BufferUsage::TransferDst, true,
+                             host_vis, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -383,16 +464,16 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   // 21 degrees up, from down the wind: across the crests, where the ripples show.
   const Vec3 sun_dir = normalize(Vec3{0.6f, 0.38f, -0.8f});
   const Vec4 ground{0.84f, 0.69f, 0.47f, 0.0f};
-  Mat4 view_proj[k_views];
-  gfx::ClusterDrawParams draws[k_views];
+  gfx::ClusterDrawParams draws[k_max_views];
   auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
-  for (u32 v = 0; v < k_views; ++v) {
+  for (u32 v = 0; v < views; ++v) {
     const Look l = look(v);
-    const u32 s = v / 2;
-    view_proj[v] = perspective_reversed_z(fov_y, 1.0f, 0.05f) * look_at(l.eye, l.target, up);
+    const u32 s = v / looks;
+    const Mat4 view_proj =
+        perspective_reversed_z(l.fov_y, 1.0f, 0.05f) * look_at(l.eye, l.target, up);
     gfx::ClusterDrawParams& draw = draws[v];
     draw = gfx::ClusterDrawParams{};
-    draw.view_proj = view_proj[v];
+    draw.view_proj = view_proj;
     draw.clusters = clusters[s].address;
     draw.mesh = scenes[s].meshes.address;
     draw.instances = scenes[s].instances.address;
@@ -407,7 +488,7 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
       b.sun = Vec4{sun_dir, 1.0f};
       b.ground = ground;
       b.camera = Vec4{l.eye, 0.0f};
-      b.view_proj = view_proj[v];
+      b.view_proj = view_proj;
       b.visibility = vis[v].address;
       b.clusters = clusters[s].address;
       b.mesh = scenes[s].meshes.address;
@@ -422,17 +503,18 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
           static_cast<u32>(mode == 0 ? gfx::ResolveMode::Shaded : gfx::ResolveMode::GroundDetail);
     }
   }
-  u64 block_address[k_blocks];
-  for (u32 i = 0; i < k_blocks; ++i)
+  u64 block_address[k_max_views * 2];
+  for (u32 i = 0; i < blocks_count; ++i)
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
 
   gfx::RenderGraph graph(device);
-  gfx::RgBuffer rg_vis[k_views];
-  for (u32 v = 0; v < k_views; ++v)
+  gfx::RgBuffer rg_vis[k_max_views];
+  for (u32 v = 0; v < views; ++v)
     rg_vis[v] = graph.import_buffer("vis", vis[v]);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
-  gfx::RgImage targets[k_blocks];
-  for (u32 i = 0; i < k_blocks; ++i) {
+  const gfx::RgBuffer rg_host_vis = graph.import_buffer("host vis", host_vis);
+  gfx::RgImage targets[k_max_views * 2];
+  for (u32 i = 0; i < blocks_count; ++i) {
     targets[i] = graph.create_image(
         "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
                      gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
@@ -440,14 +522,14 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) {
-        for (u32 v = 0; v < k_views; ++v)
+        for (u32 v = 0; v < views; ++v)
           b.write(rg_vis[v], gfx::Access::TransferWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph&) {
-        for (u32 v = 0; v < k_views; ++v)
+        for (u32 v = 0; v < views; ++v)
           cb.fill_buffer(vis[v].buffer, 0, gfx::k_whole_size, 0);
       });
-  for (u32 v = 0; v < k_views; ++v) {
+  for (u32 v = 0; v < views; ++v) {
     graph.add_pass(
         "visibility", gfx::PassKind::Raster,
         [&, v](gfx::PassBuilder& b) {
@@ -455,10 +537,10 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
           b.write(rg_vis[v], gfx::Access::FragmentReadWrite);
         },
         [&, v](gfx::CommandList cb, gfx::RenderGraph&) {
-          raster.draw(cb, bindless, draws[v], cluster_count[v / 2]);
+          raster.draw(cb, bindless, draws[v], cluster_count[v / looks]);
         });
   }
-  for (u32 i = 0; i < k_blocks; ++i) {
+  for (u32 i = 0; i < blocks_count; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
@@ -476,12 +558,15 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) {
-        for (u32 i = 0; i < k_blocks; ++i)
+        for (u32 i = 0; i < blocks_count; ++i)
           b.read(targets[i], gfx::Access::TransferRead);
+        for (u32 v = 0; v < views; ++v)
+          b.read(rg_vis[v], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
+        b.write(rg_host_vis, gfx::Access::TransferWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph& g) {
-        for (u32 i = 0; i < k_blocks; ++i) {
+        for (u32 i = 0; i < blocks_count; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -490,61 +575,116 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
                                  gfx::vk::native(g.image_layout(targets[i])),
                                  gfx::vk::native(host_color.buffer), 1, &region);
         }
+        for (u32 v = 0; v < views; ++v) {
+          cb.copy_buffer(vis[v].buffer, host_vis.buffer,
+                         gfx::BufferCopy{0, vis_bytes * v, vis_bytes});
+        }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
-  auto pixel = [&](u32 image, u32 x, u32 y) {
+  const auto pixel = [&](u32 image, u32 x, u32 y) {
     return static_cast<const u8*>(host_color.mapped) +
            (u64{k_size} * k_size * image + y * k_size + x) * 4;
   };
-  auto unorm = [](double v) { return static_cast<int>(std::lround(ref::clamp01(v) * 255.0)); };
+  const auto* words = static_cast<const u64*>(host_vis.mapped);
+  const auto unorm = [](double v) {
+    return static_cast<int>(std::lround(ref::clamp01(v) * 255.0));
+  };
 
-  // Every covered pixel of every view against the reference. A pixel is covered where the
-  // reference's ray meets the quad in front of the camera; the ones within a pixel of the quad's
-  // edge or the horizon are left out, since a point sample there may be either side.
+  // Every covered pixel of every view against the reference. A pixel is covered where the camera
+  // ray through its centre meets the plane in front of the camera; the ones within half a metre of
+  // the quad's edge or a pixel of the horizon are left out, since a point sample there may be
+  // either side.
   const ref::Dvec3 sky_ref = ref::dvec3(sky);
   const ref::Dvec3 sun_ref = ref::dvec3(sun_dir);
   const ref::Dvec3 ground_ref = ref::dvec3(ground);
+  const ref::Dvec3 up_ref = ref::dvec3(up);
   const ref::Dvec3 sand{0.84, 0.69, 0.47};
-  int worst_shaded[k_views] = {};
-  int worst_data[k_views] = {};
-  u32 over_one[k_views] = {};
-  u32 compared[k_views] = {};
-  u32 rippled[k_views] = {};
-  for (u32 v = 0; v < k_views; ++v) {
+  out.clear();
+  for (u32 v = 0; v < views; ++v) {
     const Look l = look(v);
-    const Site s = sites[v / 2];
+    const u32 s = v / looks;
+    const Site site = sites[s];
+    const u32 far = s;
+    const ref::Dvec3 eye = ref::dvec3(l.eye);
+    const ref::Dvec3 target = ref::dvec3(l.target);
+    const double fov = static_cast<double>(l.fov_y);
+    const ref::Dvec3 plane_point{static_cast<double>(site.x), 0.0, static_cast<double>(site.z)};
+    const geometry::ClusterMesh& mesh = meshes[s];
+    GroundView r;
+    r.name = std::string(far == 0 ? "by the origin, " : "3.7 km out, ") + look_names[v % looks];
     for (u32 y = 0; y < k_size; ++y) {
       for (u32 x = 0; x < k_size; ++x) {
-        const ref::Dvec3 p =
-            ref::pixel_on_plane(ref::dvec3(l.eye), ref::dvec3(l.target), ref::dvec3(up),
-                                static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+        const double cx = static_cast<double>(x) + 0.5;
+        const double cy = static_cast<double>(y) + 0.5;
+        const ref::Dvec3 seen = gref::point_on_plane(eye, target, up_ref, fov, 1.0, k_size, k_size,
+                                                     cx, cy, plane_point, normal);
         // At or above the horizon, the ray meets the plane behind the eye.
-        const ref::Dvec3 to_p = p - ref::dvec3(l.eye);
-        if (ref::dot(to_p, ref::dvec3(l.target) - ref::dvec3(l.eye)) <= 0.0) continue;
-        if (std::fabs(p.x - static_cast<double>(s.x)) > 29.5 ||
-            std::fabs(p.z - static_cast<double>(s.z)) > 29.5) {
+        if (ref::dot(seen - eye, target - eye) <= 0.0) continue;
+        if (std::fabs(seen.x - static_cast<double>(site.x)) > 29.5 ||
+            std::fabs(seen.z - static_cast<double>(site.z)) > 29.5) {
           continue;
         }
         ref::Dvec3 dpdx;
         ref::Dvec3 dpdy;
-        gref::plane_footprint(ref::dvec3(l.eye), ref::dvec3(l.target), ref::dvec3(up),
-                              static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0, dpdx,
-                              dpdy);
+        gref::plane_footprint(eye, target, up_ref, fov, 1.0, k_size, k_size, x, y, plane_point,
+                              normal, dpdx, dpdy);
         const double reach =
             std::max(std::sqrt(ref::dot(dpdx, dpdx)), std::sqrt(ref::dot(dpdy, dpdy)));
         if (reach > 1.0) continue;  // a pixel a metre long: the horizon's own rounding
-        const gref::Shading g =
-            gref::shade(detail, p, ref::Dvec3{0.0, 1.0, 0.0}, dpdx, dpdy, 1.0, sand, 0.92, false);
-        const gref::Shading data =
-            gref::shade(detail, p, ref::Dvec3{0.0, 1.0, 0.0}, dpdx, dpdy, 1.0, sand, 0.92, true);
+        const u64 word = words[u64{k_size} * k_size * v + y * k_size + x];
+        if (word == 0) {
+          ++r.missing;
+          continue;
+        }
+        // The pixel's own triangle, its corners where the shader reads them.
+        const u32 id = static_cast<u32>(word & 0xffffffffu);
+        const geometry::ClusterDesc& cluster = mesh.clusters[id >> 8];
+        const u32 packed = mesh.triangles[cluster.triangle_offset + (id & 0xffu)];
+        ref::Dvec3 corner[3];
+        for (u32 k = 0; k < 3; ++k) {
+          corner[k] = ref::dvec3(geometry::dequantize_position(
+              mesh, cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, k)));
+        }
+        ref::Dvec3 n = ref::normalize(ref::cross(corner[1] - corner[0], corner[2] - corner[0]));
+        if (ref::dot(n, eye - corner[0]) < 0.0) n = -n;
+        // The point the resolve shades: where the pixel centre's ray meets the triangle's plane,
+        // with its barycentrics clamped into the triangle as `reconstruct_screen` clamps them. A
+        // centre within the rasterizer's sub-pixel snap of an edge can be drawn by the triangle
+        // across it, and the resolve then shades the point on the edge — up to a millimetre from
+        // where the ray meets the surface under a grazing footprint a metre long, which is ten
+        // levels of the grain's channel by the origin on the windward slope until the reference
+        // clamped too. (Clamping the world barycentrics is clamping the screen ones: the
+        // perspective correction scales each by its own w and zero stays zero.)
+        ref::Dvec3 p = gref::point_on_plane(eye, target, up_ref, fov, 1.0, k_size, k_size, cx, cy,
+                                            corner[0], n);
+        {
+          const double area = ref::dot(ref::cross(corner[1] - corner[0], corner[2] - corner[0]), n);
+          double b[3];
+          b[0] = ref::dot(ref::cross(corner[1] - p, corner[2] - p), n) / area;
+          b[1] = ref::dot(ref::cross(corner[2] - p, corner[0] - p), n) / area;
+          b[2] = 1.0 - b[0] - b[1];
+          if (b[0] < 0.0 || b[1] < 0.0 || b[2] < 0.0) {
+            ++r.clamped;
+            double sum = 0.0;
+            for (double& w : b) {
+              w = std::clamp(w, 0.0, 1.0);
+              sum += w;
+            }
+            p = (corner[0] * b[0] + corner[1] * b[1] + corner[2] * b[2]) * (1.0 / sum);
+          }
+        }
+        gref::plane_footprint(eye, target, up_ref, fov, 1.0, k_size, k_size, x, y, corner[0], n,
+                              dpdx, dpdy);
+        const gref::Shading g = gref::shade(c.block, p, n, dpdx, dpdy, 1.0, sand, 0.92, false);
+        const gref::Shading data = gref::shade(c.block, p, n, dpdx, dpdy, 1.0, sand, 0.92, true);
         ref::Surface surface;
         surface.position = p;
         surface.normal = g.normal;
-        surface.view = ref::normalize(ref::dvec3(l.eye) - p);
+        surface.view = ref::normalize(eye - p);
         surface.albedo = g.albedo;
         surface.roughness = g.roughness;
         surface.metallic = 0.0;
@@ -557,64 +697,54 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
         const u8* got = pixel(v * 2, x, y);
         const u8* got_data = pixel(v * 2 + 1, x, y);
         int here = 0;
-        int here_data = 0;
-        for (u32 c = 0; c < 3; ++c) {
-          here = std::max(here, std::abs(int{got[c]} - expect[c]));
-          here_data = std::max(here_data, std::abs(int{got_data[c]} - expect_data[c]));
+        for (u32 k = 0; k < 3; ++k)
+          here = std::max(here, std::abs(int{got[k]} - expect[k]));
+        const int ripple = std::abs(int{got_data[0]} - expect_data[0]);
+        const int share = std::abs(int{got_data[1]} - expect_data[1]);
+        const int grain = std::abs(int{got_data[2]} - expect_data[2]);
+        // The first pixel of the view past a tolerance, whole, to start from.
+        if ((here > c.shaded[far] && r.shaded <= c.shaded[far]) ||
+            (ripple > c.ripple[far] && r.ripple <= c.ripple[far]) ||
+            (share > c.share[far] && r.share <= c.share[far]) ||
+            (grain > c.grain[far] && r.grain <= c.grain[far])) {
+          MESSAGE(std::string(c.name)
+                  << ", " << r.name << ", pixel " << x << "," << y << " at " << p.x << "," << p.y
+                  << "," << p.z << ": gpu data " << int{got_data[0]} << "," << int{got_data[1]}
+                  << "," << int{got_data[2]} << " cpu " << expect_data[0] << "," << expect_data[1]
+                  << "," << expect_data[2] << "; gpu shaded " << int{got[0]} << "," << int{got[1]}
+                  << "," << int{got[2]} << " cpu " << expect[0] << "," << expect[1] << ","
+                  << expect[2]);
         }
-        const int data_tolerance = v < 2 ? 2 : 16;
-        const int shaded_tolerance = v < 2 ? 2 : 4;
-        if ((here > shaded_tolerance && worst_shaded[v] <= shaded_tolerance) ||
-            (here_data > data_tolerance && worst_data[v] <= data_tolerance)) {
-          MESSAGE("view " << v << " pixel " << x << "," << y << " at " << p.x << "," << p.z
-                          << ": gpu data " << int{got_data[0]} << "," << int{got_data[1]} << ","
-                          << int{got_data[2]} << " cpu " << expect_data[0] << "," << expect_data[1]
-                          << "," << expect_data[2] << "; gpu shaded " << int{got[0]} << ","
-                          << int{got[1]} << "," << int{got[2]} << " cpu " << expect[0] << ","
-                          << expect[1] << "," << expect[2]);
-        }
-        worst_shaded[v] = std::max(worst_shaded[v], here);
-        worst_data[v] = std::max(worst_data[v], here_data);
-        if (here > 1) ++over_one[v];
-        if (data.fade > 0.0) ++rippled[v];
-        ++compared[v];
+        r.shaded = std::max(r.shaded, here);
+        r.ripple = std::max(r.ripple, ripple);
+        r.share = std::max(r.share, share);
+        r.grain = std::max(r.grain, grain);
+        if (here > 1) ++r.over_one;
+        if (data.weight * data.fade > 0.0) ++r.rippled;
+        if (g.streak > 0.0) ++r.streaked;
+        ++r.compared;
       }
     }
-  }
-  const char* names[k_views] = {"by the origin, along the sand", "by the origin, at the feet",
-                                "3.7 km out, along the sand", "3.7 km out, at the feet"};
-  for (u32 v = 0; v < k_views; ++v) {
-    MESSAGE(std::string(names[v]) << ": " << compared[v] << " pixels compared, " << rippled[v]
-                                  << " with ripples drawn; shaded worst " << worst_shaded[v]
-                                  << " of 255 (" << over_one[v] << " over 1), detail view worst "
-                                  << worst_data[v]);
-    CHECK(compared[v] > k_size * k_size / 4);
-    CHECK(rippled[v] > 0u);
-    // The tolerance. By the origin, 2 of 255 on the shaded picture and on the detail view — the
-    // shading tests' own, and where both land (1, RTX 5090, 2026-09-29). 3.7 km out, 4 on the
-    // shaded picture and 16 on the detail view: a float there has a quarter of a millimetre under
-    // the point, the reconstruction interpolates corners that far out and is off by about a
-    // millimetre, and a millimetre is a thirtieth of a ripple's steep lee — which the raw height
-    // channel shows at full contrast (12–14 measured) and the shaded picture at a few levels
-    // where the sun falls straight across the crests (3 measured, on 485 of 25,600 pixels).
-    CHECK(worst_shaded[v] <= (v < 2 ? 2 : 4));
-    CHECK(worst_data[v] <= (v < 2 ? 2 : 16));
-  }
-
-  // The ripples are in the picture: at the feet, with the sun low along the wind, the shaded sand
-  // varies by more than the grain alone could make it (the grain moves the albedo by 8% either way
-  // at most, a handful of levels here).
-  {
-    int lo = 255;
-    int hi = 0;
     for (u32 y = k_size / 4; y < 3 * k_size / 4; ++y) {
       for (u32 x = k_size / 4; x < 3 * k_size / 4; ++x) {
-        lo = std::min(lo, int{pixel(2, x, y)[1]});
-        hi = std::max(hi, int{pixel(2, x, y)[1]});
+        r.green_lo = std::min(r.green_lo, int{pixel(v * 2, x, y)[1]});
+        r.green_hi = std::max(r.green_hi, int{pixel(v * 2, x, y)[1]});
       }
     }
-    MESSAGE("at the feet the green channel spans " << lo << " to " << hi);
-    CHECK(hi - lo > 20);
+    MESSAGE(std::string(c.name) << ", " << r.name << ": " << r.compared << " pixels compared, "
+                                << r.rippled << " with ripples drawn, " << r.streaked
+                                << " with streaks; shaded worst " << r.shaded << " of 255 ("
+                                << r.over_one << " over 1); detail view worst " << r.ripple
+                                << " on the ripple, " << r.share << " on its share, " << r.grain
+                                << " on the grain; " << r.clamped
+                                << " points clamped onto their triangle");
+    CHECK(r.compared > k_size * k_size / 4);
+    CHECK(r.missing == 0u);
+    CHECK(r.shaded <= c.shaded[far]);
+    CHECK(r.ripple <= c.ripple[far]);
+    CHECK(r.share <= c.share[far]);
+    CHECK(r.grain <= c.grain[far]);
+    out.push_back(r);
   }
 
   graph.reset();
@@ -628,11 +758,109 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
     gfx::destroy_buffer(device, triangles[s]);
     gfx::destroy_buffer(device, cluster_materials[s]);
   }
-  for (u32 v = 0; v < k_views; ++v)
+  for (u32 v = 0; v < views; ++v)
     gfx::destroy_buffer(device, vis[v]);
-  for (gfx::BufferResource* b : {&host_color, &params, &detail_buffer, &materials})
+  for (gfx::BufferResource* b : {&host_color, &host_vis, &params, &detail_buffer, &materials})
     gfx::destroy_buffer(device, *b);
   frames.destroy();
+}
+
+}  // namespace
+
+TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The first pass: the defaults, on level sand. The tolerance — by the origin, 2 of 255 on the
+  // shaded picture and on the detail view, the shading tests' own, and where both land (1, RTX
+  // 5090, 2026-09-29); 3.7 km out, 4 on the shaded picture and 16 on the detail view: a float
+  // there has a quarter of a millimetre under the point, the reconstruction interpolates corners
+  // that far out and is off by about a millimetre, and a millimetre is a thirtieth of a ripple's
+  // steep lee — which the raw height channel shows at full contrast (12–14 measured) and the
+  // shaded picture at a few levels where the sun falls straight across the crests (3 measured, on
+  // 485 of 25,600 pixels). It is the proof the defaults did not move with the second pass.
+  GroundCase first;
+  first.name = "the first pass";
+  first.block = test_block();
+  Vector<GroundView> views;
+  draw_ground_case(device, first, views);
+  for (const GroundView& v : views)
+    CHECK(v.rippled > 0u);
+
+  // The ripples are in the picture: at the feet, with the sun low along the wind, the shaded sand
+  // varies by more than the grain alone could make it (the grain moves the albedo by 8% either way
+  // at most, a handful of levels here).
+  REQUIRE(views.size() == 4u);
+  MESSAGE("at the feet the green channel spans " << views[1].green_lo << " to "
+                                                 << views[1].green_hi);
+  CHECK(views[1].green_hi - views[1].green_lo > 20);
+  device.destroy();
+}
+
+TEST_CASE("ground detail: the resolve draws the second pass's function on sloped sand") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The ergs' numbers with the test's wind: every second-pass term on, on ground that exercises
+  // each — level (the grain and its normal), climbing into the wind at 12 degrees (the spacing,
+  // 1.53), falling away from it at 14 (inside the exposure's band, 10 to 18), and at 26 and 32
+  // (the streaks' band, 22 to 30, and a whole slip face, where there are no ripples).
+  const gfx::GroundDetailParams erg =
+      gfx::ground_detail_block(gref::erg_numbers(), Vec2{0.6f, -0.8f}, 7u);
+  REQUIRE(erg.flags ==
+          (gfx::k_ground_ripples | gfx::k_ground_grain | gfx::k_ground_exposure |
+           gfx::k_ground_gradient_grain | gfx::k_ground_streaks | gfx::k_ground_spacing));
+  REQUIRE(erg.grain_octaves == 5u);
+  struct Slope {
+    const char* name;
+    double climb_deg;
+    bool ripples;
+    bool streaks;
+  };
+  const Slope slopes[5] = {{"level", 0.0, true, false},
+                           {"climbing into the wind at 12 degrees", 12.0, true, false},
+                           {"falling away from the wind at 14 degrees", -14.0, true, false},
+                           {"falling away from the wind at 26 degrees", -26.0, false, true},
+                           {"falling away from the wind at 32 degrees", -32.0, false, true}};
+  for (const Slope& slope : slopes) {
+    GroundCase c;
+    c.name = slope.name;
+    c.block = erg;
+    c.climb_deg = slope.climb_deg;
+    c.millimetre = true;
+    // The tolerance, from what the RTX 5090 drew (2026-09-30), the same on every slope. By the
+    // origin, 2 of 255 on the shaded picture and on each channel of the detail view: 1 measured
+    // everywhere, at every look, once the reference clamps its point into the pixel's triangle as
+    // the resolve does. 3.7 km out, 5 on the shaded picture, where a millimetre pixel resolves
+    // the reconstruction's millimetre in the 5 mm and 2.5 mm octaves of the grain and its normal
+    // (4 measured, on up to 898 of 25,600 pixels at the millimetre look, climbing into the wind;
+    // the first pass's 3 at the feet is 3 here too). And 28 on the ripple height and the grain,
+    // which the detail view shows raw at full contrast: 24 and 25 measured looking down the
+    // 32-degree lee, whose upper part runs down the slope to grazing pixels 20 cm long, against the
+    // first pass's 14 and 12 on level sand (the gradient grain's coarse octave, which the view
+    // shows scaled to three of its root-mean-squares, changes faster with position than the first
+    // pass's value noise did). The share is smooth: 1 measured.
+    c.shaded[0] = 2;
+    c.shaded[1] = 5;
+    c.ripple[0] = 2;
+    c.ripple[1] = 28;
+    c.share[0] = 2;
+    c.share[1] = 2;
+    c.grain[0] = 2;
+    c.grain[1] = 28;
+    Vector<GroundView> views;
+    draw_ground_case(device, c, views);
+    u32 rippled = 0;
+    u32 streaked = 0;
+    for (const GroundView& v : views) {
+      rippled += v.rippled;
+      streaked += v.streaked;
+    }
+    // Each slope draws the terms it is there for, and not the ones it is not: the exposure takes
+    // every ripple off the two steep lees, and the streaks start at 22 degrees.
+    CHECK_MESSAGE((rippled > 0u) == slope.ripples, std::string(slope.name));
+    CHECK_MESSAGE((streaked > 0u) == slope.streaks, std::string(slope.name));
+  }
   device.destroy();
 }
 
