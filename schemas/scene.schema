@@ -606,7 +606,8 @@ struct TerrainDetail @version(3) {
   steer_max_deg: f32 = 0 @since(3)
   steer_gain: f32 = 2 @since(3)
   /// The ripples move: `ripple_celerity` metres of travel per square metre of the wind's sand
-  /// transport across a metre of width ([0, 1000]; 0, the default, stands them still), and they
+  /// transport across a metre of width ([0, 100000]; 0, the default, stands them still; the ergs,
+  /// whose calm day moves 36 cm^2, take 2,000: about 7 m a day), and they
   /// flatten as the wind's strength over the record's mean passes from `flatten_start` to
   /// `flatten_end` (both 0: never; else 0 < start < end <= 20).
   ripple_celerity: f32 = 0 @since(3)

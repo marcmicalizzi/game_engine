@@ -138,7 +138,12 @@ class GpuScene {
   // dune field is too dear to make per frame; the renderer links no provider.
   bool ground_detail() const noexcept { return ground_ != nullptr; }
   gfx::GroundDetailParams ground_detail_params() const noexcept;
-  void set_ground_time(f64 time_s) noexcept { ground_time_s_ = time_s; }
+  // The surface's time this frame; the last frame's is kept, since the ripples fade by how far
+  // they travelled between the two (`ground_detail_params`).
+  void set_ground_time(f64 time_s) noexcept {
+    ground_previous_s_ = ground_time_s_;
+    ground_time_s_ = time_s;
+  }
   f64 ground_time_s() const noexcept { return ground_time_s_; }
 
   u32 cluster_count() const noexcept { return cluster_count_; }
@@ -884,6 +889,7 @@ class GpuScene {
   // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.
   std::unique_ptr<TerrainSampler> ground_;
   f64 ground_time_s_ = 0.0;
+  f64 ground_previous_s_ = 0.0;
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;

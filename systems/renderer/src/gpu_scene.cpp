@@ -375,6 +375,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   if (data.terrain.enabled && data.terrain.has_detail && data.terrain_mesh < data.parts.size()) {
     ground_ = std::make_unique<TerrainSampler>(data.terrain);
     ground_time_s_ = data.terrain.time_s;
+    ground_previous_s_ = data.terrain.time_s;
   }
 
   // The rings' chunks built round the camera before the scene was, each into a slot of its ring,
@@ -2647,13 +2648,27 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
 gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   if (ground_ == nullptr) return gfx::GroundDetailParams{};
   const TerrainDesc& terrain = data_->terrain;
-  return gfx::ground_detail_block(terrain_detail_desc(terrain), ground_->wind(ground_time_s_),
-                                  terrain.seed);
+  const gfx::GroundDetailDesc desc = terrain_detail_desc(terrain);
+  gfx::GroundDetailParams block =
+      gfx::ground_detail_block(desc, ground_->wind(ground_time_s_), terrain.seed);
+  // The ripples' motion (renderer.md, "Ripples that move"): their travel along the wind at the
+  // surface's time, and in the step since the last frame's, from the ground's transport.
+  f64 moved = 0.0;
+  f64 before = 0.0;
+  f32 strength = 1.0f;
+  f32 unused = 1.0f;
+  if (ground_->transport(ground_time_s_, moved, strength) &&
+      ground_->transport(ground_previous_s_, before, unused)) {
+    const f64 celerity = static_cast<f64>(desc.ripple_celerity);
+    gfx::ground_detail_motion(block, desc, moved * celerity, (moved - before) * celerity, strength);
+  }
+  return block;
 }
 
 void GpuScene::destroy() noexcept {
   ground_.reset();
   ground_time_s_ = 0.0;
+  ground_previous_s_ = 0.0;
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
   // A dynamic scene's `instances` and `pair_table` name one of its table sets, which own them.

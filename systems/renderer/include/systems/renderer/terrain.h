@@ -196,6 +196,10 @@ class TerrainSampler {
   // The wind the ground's surface detail lies across at game time `time_s`, a unit vector over
   // (x, z) (`scene_gen::GroundOps::wind`): the dunes' ripple rule, the waves' prevailing wind.
   // +x for a ground that says none.
+  // The ripples' transport at `time_s` (`scene_gen::GroundOps::transport`): the sand moved across a
+  // metre of width since the ground's epoch, m^2, and the wind's strength over its mean; false for
+  // a ground that says none.
+  bool transport(f64 time_s, f64& moved_m2, f32& strength) const noexcept;
   Vec2 wind(f64 time_s) const noexcept;
   // False, with the sentence, when the named provider could not be made (above).
   bool ok() const noexcept { return error_.empty(); }

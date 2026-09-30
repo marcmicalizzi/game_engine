@@ -230,6 +230,29 @@ The owner wants sparse volumetric sand blowing off the dune crests: renderer wor
 
 - **Design, not built (2026-09-29): the sand's shelter.** The renderer fades the ripples by the ground's exposure to the wind, a function of the normal ([renderer](renderer.md#the-sand-close-up)), which cannot see the level floor downwind of a brink, inside the separation bubble, where the air is still. This module knows it from its own primitives: for each brink the distance downwind of it along the ripples' wind in that primitive's heights, sheltered below about four heights and open again past six, taken as the minimum over the gathered primitives the way the surface takes the maximum. It would go to the renderer as a channel of the terrain's maps beside the sand share (`TerrainSurface`), baked where the maps are, and multiply the exposure.
 
+## How real ripples behave, and what the picture takes from it
+
+Written 2026-09-30 for the owner's question from a fast time-lapse: the sand rises while "the ripples stay on top", so what should they do? From the literature, cited from the author's knowledge and not re-read here, so the numbers are orders of magnitude:
+
+- **They are a bedform of saltation.** Aeolian ripples exist where grains are hopping and creeping, formed by the splash of saltating grains, not by the flow's own instability (Bagnold 1941; Anderson 1987). Their wavelength is set by the saltation hop and **grows with the wind's shear velocity**: stronger winds make longer ripples (Andreotti, Claudin and Pouliquen 2006). That is one reason a real field is not uniform, and it is what the renderer's patches and spacing stand in for.
+- **They migrate downwind while sand moves**, at speeds of order a centimetre a minute in ordinary wind and several times that in strong wind (Sharp 1963 measured some tenths of a centimetre to a few centimetres a minute on Coachella Valley sand). Their speed is roughly the reptation flux over their height, so it scales with the transport the dunes already integrate. They **stand frozen when the wind drops** below the threshold of motion.
+- **Slow net deposition does not erase them.** They climb, each ripple advancing over the one downwind as the bed rises, and leave **climbing translatent strata** (Hunter 1977). So a rising dune keeps its ripples, and the brief's premise holds: "the ripples vanish where sand accumulates" is not the rule.
+- **They are absent where sand arrives without saltation.** That means the grainfall apron and the slip face in the lee, which grainflow and grainfall build (Hunter 1977; Kocurek and Dott 1981). The renderer's exposure already handles this.
+- **In very strong wind the bed flattens.** At high shear velocities the ripples grow long and low, and then the bed goes to a plane (the "upper plane bed" of the literature; Kok et al. 2012 review it). The threshold is a few times the threshold of motion.
+- **After the wind turns they re-form across the new direction** over the time it takes to move about a ripple's own volume of sand: minutes in a strong wind, hours in a light one. The ripple wind's two-hour turn-in (`DuneField::ripple_wind`) is of that order.
+
+**What the picture takes from it** ([renderer](renderer.md#the-sand-close-up), "Ripples that move"):
+
+- The ripples travel along the wind by the ground's transport path length times a scene's celerity (`scene_gen::GroundOps::transport`, which this module answers from the wind record's integral).
+- They flatten as the wind's strength passes a band the scene names.
+- A time-lapse fades them by their travel per frame. At a week a second no camera could see a crest, so a rising dune under time-lapse shows smooth, slightly rougher sand, and the ripples return as the rate comes down. That answers what the owner saw without pretending the ripples vanish.
+
+**What it does not do:**
+
+- Change the wavelength with the wind's strength.
+- Re-form the pattern after a turn. The kernels turn with the ripple wind, and the phase is not reset.
+- Climb. There are no strata to see on a surface.
+
 ## Where it attaches
 
 - **The scene-generator registry** ([scene_gen](scene_gen.md), [ADR-0046](../adr/0046-scene-generators-register-themselves.md)). The field is the ground provider **`dunes`** (`scene_ground.h`, `scene_ground.cpp`), registered from this module's own source by a `scene_gen::Registrar` — the module is `WHOLE_ARCHIVE`, which keeps it — and made from a scene's terrain entry (`engine.scene.Terrain`: its seed, dune height and wavelength, ridges, basins, `time`, `sand_flux`, storms and band table, converted by `field_desc_of`). It checks the entry as the scene reader used to (a time within [0, 3·10¹¹) s, a flux within [0, 100,000] m² a year, storms 0..31 at (0, 3] times the mean, a band table the field can be built from) and answers the provider's table: `height` (the sand at the entry's time plus the scene's ridges and basins, `scene_gen::terrain_features`, the waves' own arithmetic), `floor` (the interdune floor plus them, what ruins stand on), `grid` (a block of vertices a gather), `evaluate` (the same at another time: the time-lapse), `travel_m` (the fastest band's travel: the cadence), `wind` (the ripples' wind at a time, above) and `make_rings` (the rings round a camera, below). `dune_field(ground)` hands a caller that links the capability the field itself. These were the renderer's `terrain.cpp` and `terrain_rings.cpp` under `ENGINE_RENDERER_TERRAIN` until 2026-09-27, expression for expression, and the renderer no longer links this module.

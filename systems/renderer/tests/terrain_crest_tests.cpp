@@ -387,3 +387,48 @@ TEST_CASE("renderer: the storm erg's barchans walk through its storm and stand a
   CHECK(storm > 150.0);
   CHECK(after < 1.0);
 }
+
+TEST_CASE("renderer: the storm erg's ripples creep, and flatten in its storm") {
+  // The ground's transport (`TerrainSampler::transport`, `scene_gen::GroundOps::transport`) is what
+  // moves the sand's ripples: renderer.md, "Ripples that move".
+  const std::string path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg-storm/scene.json",
+                      "content/test-scenes/desert-erg-storm/scene.json");
+  if (!test::path_exists(path)) {
+    MESSAGE("the desert-erg-storm scene is not here; skipped");
+    return;
+  }
+  SceneDesc scene;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, scene, error), error);
+  const TerrainSampler sampler(scene.terrain);
+  const f64 celerity = static_cast<f64>(scene.terrain.detail.ripple_celerity);
+  REQUIRE(celerity > 0.0);
+  const f64 t0 = scene.terrain.time_s;  // 12:50, inside the storm
+  f64 moved = 0.0, later = 0.0;
+  f32 strength = 0.0f, unused = 0.0f;
+  // At the storm's peak (14:00) the wind is past the flattening's end: no ripples.
+  f32 peak = 0.0f;
+  for (u32 m = 0; m < 600; ++m) {
+    REQUIRE(sampler.transport(t0 - 14'000.0 + 60.0 * m, moved, strength));
+    peak = std::max(peak, strength);
+  }
+  f64 a = 0.0, b = 0.0;
+  REQUIRE(sampler.transport(t0, a, unused));
+  REQUIRE(sampler.transport(t0 + 365.0 * 86'400.0, b, unused));
+  MESSAGE("storm 42's peak strength " << peak << "; a year's mean day moves " << (b - a) / 365.0
+                                      << " m^2");
+  CHECK(peak > scene.terrain.detail.flatten_end);
+  // A calm evening after it (22:00): the ripples stand, and creep at the day's wind.
+  REQUIRE(sampler.transport(t0 + 33'000.0, moved, strength));
+  CHECK(strength < scene.terrain.detail.flatten_start);
+  // The path length only grows, and in the day after the storm the ripples move metres, not
+  // kilometres.
+  REQUIRE(sampler.transport(t0 + 33'000.0 + 86'400.0, later, unused));
+  CHECK(later >= moved);
+  const f64 metres_a_day = (later - moved) * celerity;
+  MESSAGE("the day after the storm the ripples travel "
+          << metres_a_day << " m, " << metres_a_day * 100.0 / 1440.0 << " cm a minute on average");
+  CHECK(metres_a_day > 1.0);
+  CHECK(metres_a_day < 50.0);
+}

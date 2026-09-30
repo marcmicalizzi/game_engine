@@ -390,6 +390,12 @@ struct GroundOps {
   // draws by (docs/subsystems/renderer.md, "The sand close up"). False, and nothing written, for a
   // ground with no wind to say. Thread-safe.
   bool (*wind)(const void* state, f64 time_s, f32& x, f32& z) noexcept = nullptr;
+  // What moves the ripples at game time `time_s`: `moved_m2`, the sand the ground's wind has
+  // carried across a metre of width since its epoch, m^2 (a path length, so it only grows), and
+  // `strength`, the wind's strength over its record's mean. The renderer turns the first into the
+  // ripples' travel and flattens them by the second (renderer.md, "Ripples that move"). Null, or
+  // false, for a ground with no transport to say. Thread-safe.
+  bool (*transport)(const void* state, f64 time_s, f64& moved_m2, f32& strength) noexcept = nullptr;
   // The rings round a camera over a scene grid `extent_mm` either side at `spacing_mm` (terrain.md,
   // "Rings"). Null: this ground has none.
   bool (*make_rings)(const void* state, i64 extent_mm, i64 spacing_mm, GroundRings& out,
@@ -436,6 +442,11 @@ class GroundProvider {
   // that says none.
   bool wind(f64 time_s, f32& x, f32& z) const noexcept {
     return ops_ != nullptr && ops_->wind != nullptr && ops_->wind(state_, time_s, x, z);
+  }
+  // The ripples' transport at `time_s` (`GroundOps::transport`).
+  bool transport(f64 time_s, f64& moved_m2, f32& strength) const noexcept {
+    return ops_ != nullptr && ops_->transport != nullptr &&
+           ops_->transport(state_, time_s, moved_m2, strength);
   }
   bool has_rings() const noexcept { return ops_ != nullptr && ops_->make_rings != nullptr; }
   bool make_rings(i64 extent_mm, i64 spacing_mm, GroundRings& out, std::string* error) const;

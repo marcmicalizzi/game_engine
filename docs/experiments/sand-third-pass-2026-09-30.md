@@ -44,3 +44,31 @@ Measured on the mirror (`ground_detail_tests.cpp`, "ripples in patches, steered 
 The first steering rule took `steer_gain` of the component along `g = n.xz / n.y`, which grows with the slope's square: 7° at most on a 25° slope. Taking `min(gain tan θ, 1)` of the component along the unit fall line reached the clamp. But where the wind runs nearly along the fall line, it swung 1.4° per 0.1° of azimuth, which would slide the crests by an eighth of a wavelength. Capping the share at a half bounds the swing at a degree a degree.
 
 In `after_eye_dune_*`, the floor's ripples bend along the dune's flank and their spacing visibly changes across the view; the author reads that as less uniform, and the owner's eye decides whether it is enough.
+
+## Ripples that move
+
+| Measure | Result |
+|---|---|
+| A travel of 3.7 cm on the mirror | moves the phase by 3.7 cm to within 3e-16 wavelengths |
+| The erg's record: a calm day's transport | 0.0036 m² (36 cm²) across a metre; a year's mean day on the storm erg, with gain 1,000, 24.9 m² |
+| Storm 42's peak wind over the record's mean | 2.31 |
+| The day after storm 42, celerity 2,000 | 7.2 m, 0.5 cm a minute on average |
+| At a day a second (60 frames a second) | 12 cm a frame, a wavelength: the ripples are gone, and return below about 4,300× (a quarter of a wavelength a frame) |
+
+The first celerity tried, 10, was chosen from a guess at the record's flux: it gave 3.6 cm a day. The record's calm day is far below a real saltation flux (of order a square metre a day in an 8 m/s wind), because it is tuned to the dunes' migration and not to grain physics. So the ripples' celerity is a stylization, like the storm gain.
+
+## What could not be measured here
+
+- **Anything on a GPU.** The GPU cases at the merge run on tilted planes. The author expects each new term to hold the existing tolerance (1 of 255 by the origin, 4 at 3.7 km) with these looks:
+  - grainflow, on a 32° plane falling with the wind (the lanes' normal is smooth and eight hashes a pixel, all integer);
+  - patches and steering, on a 12° plane across the wind (they change only the wavenumber and the direction the kernels already take);
+  - motion, on the flat with a travel of a few centimetres (one multiply a kernel).
+
+  At 3.7 km the lanes' `s = offset / width` is taken from an offset under a cell, so it keeps its precision.
+- **The cost.** It is counted, not timed:
+  - grainflow: eight hashes, only on a slip face;
+  - patches: eight hashes a rippled pixel;
+  - steering: arithmetic;
+  - motion: one multiply a kernel.
+
+  The ripples' eighteen kernels are unchanged. The owner measured that the detail costs 0.63 ms with cascaded maps; the patches will add to that, and their share needs the owner's GPU.

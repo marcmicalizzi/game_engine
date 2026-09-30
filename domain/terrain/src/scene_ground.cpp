@@ -109,6 +109,17 @@ f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
   return std::abs(most);
 }
 
+// The ripples' transport at a game time: the wind record's flux path length since its epoch, cm^2
+// to m^2 — the integral the dunes migrate by, storms' gains included — and the hour's strength over
+// the record's mean (a storm's peak is 2.5).
+bool dunes_transport(const void* state, f64 time_s, f64& moved_m2, f32& strength) noexcept {
+  const auto& g = *static_cast<const DunesGround*>(state);
+  const i64 t = time_us_of(time_s);
+  moved_m2 = static_cast<f64>(g.field.wind().integral(t).magnitude) * 1e-4;
+  strength = static_cast<f32>(static_cast<f64>(g.field.wind().wind_at(t).speed_q16) / 65536.0);
+  return true;
+}
+
 // The ripples' wind at a game time: the field's own rule (`DuneField::ripple_wind`), which the
 // renderer lays the ripples it draws across (renderer.md, "The sand close up").
 bool dunes_wind(const void* state, f64 time_s, f32& x, f32& z) noexcept {
@@ -268,6 +279,7 @@ constexpr scene_gen::GroundOps k_dunes_ops{
     .evaluate = &dunes_evaluate,
     .travel_m = &dunes_travel_m,
     .wind = &dunes_wind,
+    .transport = &dunes_transport,
     .make_rings = &dunes_make_rings,
     .open_tiles = &dunes_open_tiles,
     .record = k_overlay_record,

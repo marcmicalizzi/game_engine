@@ -1459,3 +1459,67 @@ TEST_CASE("ground detail: ripples in patches, steered by the ground, without a j
   MESSAGE("a tenth of a degree of steering moves the crests at most " << worst << " wavelengths");
   CHECK(worst < 0.05);
 }
+
+TEST_CASE("ground detail: ripples travel, blur under a time-lapse and flatten in a storm") {
+  gfx::GroundDetailDesc desc;
+  desc.ripple_defects = 0.0f;
+  desc.ripple_celerity = 10.0f;
+  desc.flatten_start = 1.8f;
+  desc.flatten_end = 2.4f;
+  gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  d.wind.z = 0.0f;  // kernels exactly along the wind, so a travel is exactly a shift
+  const double wavelength = static_cast<double>(d.wavelength);
+  // Travel: the pattern at travel s is the pattern at rest moved s along the wind.
+  double worst = 0.0;
+  for (u32 i = 0; i < 2000; ++i) {
+    const double x = 0.0137 * i - 5.0;
+    const double z = 0.0071 * i + 1.0;
+    const gref::Ripple a = gref::ripple(d, x, z, 0.75, 1.0, 1.0, 0.0, 0.0, 0.037);
+    // The kernels stay where the lattice put them, so only their phases move: compare phases.
+    const gref::Ripple c = gref::ripple(d, x, z, 0.75, 1.0, 1.0, 0.0, 0.0, 0.0);
+    double shift = a.turn - c.turn;
+    shift -= std::floor(shift + 0.5);
+    if (a.taper > 0.5) worst = std::max(worst, std::fabs(std::fabs(shift) - 0.037 / wavelength));
+  }
+  MESSAGE("a travel of 3.7 cm moves the phase by 3.7 cm to within " << worst << " wavelengths");
+  CHECK(worst < 1e-9);
+
+  // The block: the travel reduced modulo 256 wavelengths in double, and the per-frame step.
+  gfx::GroundDetailParams m = d;
+  gfx::ground_detail_motion(m, desc, 1.0e6 + 0.05, 0.01, 1.0f);
+  CHECK((m.flags & gfx::k_ground_motion) != 0u);
+  const double period = gfx::k_ground_travel_period * wavelength;
+  CHECK(static_cast<double>(m.travel) ==
+        doctest::Approx(std::fmod(1.0e6 + 0.05, period)).epsilon(1e-6));
+  CHECK(m.ripple_live == 1.0f);
+  gfx::GroundDetailParams storm = d;
+  gfx::ground_detail_motion(storm, desc, 0.0, 0.0, 2.5f);
+  CHECK(storm.ripple_live == 0.0f);
+  gfx::GroundDetailParams gust = d;
+  gfx::ground_detail_motion(gust, desc, 0.0, 0.0, 2.1f);
+  CHECK(gust.ripple_live > 0.0f);
+  CHECK(gust.ripple_live < 1.0f);
+
+  // A time-lapse blurs them: at a quarter of a wavelength a frame whole, at a half gone, the lost
+  // slope variance into the roughness; a storm flattens them, and adds no roughness.
+  gfx::GroundDetailParams r = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  r.flags &= ~gfx::k_ground_grain;
+  const ref::Dvec3 up{0.0, 1.0, 0.0};
+  const ref::Dvec3 none{};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  const ref::Dvec3 p{1.3, 0.0, 2.1};
+  gfx::GroundDetailParams slow = r, fast = r, flat = r;
+  gfx::ground_detail_motion(slow, desc, 3.0, 0.2 * wavelength, 1.0f);
+  gfx::ground_detail_motion(fast, desc, 3.0, 0.6 * wavelength, 1.0f);
+  gfx::ground_detail_motion(flat, desc, 3.0, 0.0, 3.0f);
+  const gref::Shading a = gref::shade(slow, p, up, none, none, 1.0, albedo, 0.85);
+  const gref::Shading b = gref::shade(fast, p, up, none, none, 1.0, albedo, 0.85);
+  const gref::Shading c = gref::shade(flat, p, up, none, none, 1.0, albedo, 0.85);
+  CHECK(a.fade == 1.0);
+  CHECK(b.fade == 0.0);
+  CHECK(b.roughness > 0.85);
+  CHECK(b.normal.y == 1.0);
+  CHECK(c.weight == 0.0);
+  CHECK(c.roughness == 0.85);
+  CHECK(c.normal.y == 1.0);
+}

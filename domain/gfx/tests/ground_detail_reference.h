@@ -685,6 +685,9 @@ inline gfx::GroundDetailDesc erg_numbers() {
   d.patch_defects = 0.5f;
   d.steer_max_deg = 20.0f;
   d.steer_gain = 2.0f;
+  d.ripple_celerity = 2000.0f;
+  d.flatten_start = 1.6f;
+  d.flatten_end = 2.2f;
   return d;
 }
 

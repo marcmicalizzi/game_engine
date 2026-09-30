@@ -281,6 +281,10 @@ Vec2 TerrainSampler::wind(f64 time_s) const noexcept {
   return Vec2{x, z};
 }
 
+bool TerrainSampler::transport(f64 time_s, f64& moved_m2, f32& strength) const noexcept {
+  return provider_.transport(time_s, moved_m2, strength);
+}
+
 f32 TerrainSampler::ridge_weight(f32 x, f32 z) const noexcept {
   return scene_gen::ridge_weight(ridges_of(desc_->ridges), x, z);
 }
@@ -610,8 +614,8 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
         d.steer_gain <= 4.0f)) {
     return fail("steer_max_deg must be within [0, 45] and steer_gain within [0, 4]");
   }
-  if (!(d.ripple_celerity >= 0.0f && d.ripple_celerity <= 1000.0f))
-    return fail("ripple_celerity must be within [0, 1000]");
+  if (!(d.ripple_celerity >= 0.0f && d.ripple_celerity <= 100000.0f))
+    return fail("ripple_celerity must be within [0, 100000]");
   if (!((d.flatten_start == 0.0f && d.flatten_end == 0.0f) ||
         (d.flatten_start > 0.0f && d.flatten_start < d.flatten_end && d.flatten_end <= 20.0f))) {
     return fail(
