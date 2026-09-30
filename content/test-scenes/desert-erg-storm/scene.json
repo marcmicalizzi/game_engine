@@ -127,6 +127,8 @@
       "flow_normal": 0.05,
       "flow_albedo": 0.015,
       "flow_widening": 0.3,
+      "flow_share": 0.25,
+      "flow_turnover": 800,
       "patch_size": 30,
       "patch_min": 0.7,
       "patch_max": 1.4,

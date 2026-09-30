@@ -346,6 +346,15 @@ struct Flow {
   double gz = 0.0;
 };
 
+// `ground_episode`.
+inline double episode(double phase, double share) {
+  const double t = phase / share;
+  if (!(t < 1.0)) return 0.0;
+  const double up = brdf_ref::clamp01(t / 0.05);
+  const double down = brdf_ref::clamp01((t - 0.3) / 0.7);
+  return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
+}
+
 inline Flow grainflow(const gfx::GroundDetailParams& d, double x, double z, double fx, double fz) {
   const double ax = -fz;
   const double az = fx;
@@ -383,6 +392,11 @@ inline Flow grainflow(const gfx::GroundDetailParams& d, double x, double z, doub
       for (u32 e = 0; e < 2; ++e) {
         u32 h = pcg(hc ^ static_cast<u32>(static_cast<i32>(m) + static_cast<i32>(e)));
         g[e] = unit(h) * 2.0 - 1.0;
+        if (d.flow_share < 1.0f) {
+          h = pcg(h ^ 0x68E31DA4u);
+          const double phase = static_cast<double>(d.flow_clock) + unit(h);
+          g[e] *= episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
+        }
         h = pcg(h);
         const double start = (unit(h) - 0.9) * cell;
         h = pcg(h);
@@ -619,7 +633,10 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
       const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
       const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
       const double footprint = lx > ly ? lx : ly;
-      const double f = fade(footprint / static_cast<double>(d.flow_width));
+      const double share = static_cast<double>(d.flow_share);
+      const double f =
+          fade(footprint / static_cast<double>(d.flow_width)) *
+          (d.flow_share < 1.0f ? fade(static_cast<double>(d.flow_clock_step) / share) : 1.0);
       if (f > 0.0) {
         const double len = std::sqrt(normal.x * normal.x + normal.z * normal.z);
         const double fx = len > 1e-6 ? normal.x / len : static_cast<double>(d.wind.x);
@@ -634,7 +651,7 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
         out.normal = brdf_ref::normalize(Dvec3{n.x - lanes.gx * s, n.y, n.z - lanes.gz * s});
       }
       const double fn = static_cast<double>(d.flow_normal);
-      const double lost = weight * weight * fn * fn * (1.0 - f * f);
+      const double lost = weight * weight * fn * fn * (1.0 - f * f) * (share < 1.0 ? share : 1.0);
       if (lost > 0.0) {
         const double alpha = out.roughness * out.roughness;
         out.roughness = std::sqrt(std::sqrt(alpha * alpha + lost));
@@ -679,6 +696,8 @@ inline gfx::GroundDetailDesc erg_numbers() {
   d.flow_normal = 0.05f;
   d.flow_albedo = 0.015f;
   d.flow_widening = 0.3f;
+  d.flow_share = 0.25f;
+  d.flow_turnover = 800.0f;
   d.patch_size = 30.0f;
   d.patch_min = 0.7f;
   d.patch_max = 1.4f;

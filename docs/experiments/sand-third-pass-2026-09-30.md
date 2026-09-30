@@ -29,6 +29,21 @@ Measured on the mirror (`ground_detail_tests.cpp`, "grainflow lanes …"):
 | 32° face against 8×8 supersampling, pixels of 5, 15 and 40 cm | mean within 0.01%, 0.002% and 0.13% |
 | Cost | eight lattice hashes a pixel, only where the lanes' weight is above 0, never where ripples are drawn; the streaks were twenty-seven kernels |
 
+### The lanes as episodes
+
+The owner on `after_slip_20m_raking`, as first drawn: "I don't think the entire lee needs to be covered in streaks, just there should be some that appear and disappear over time depending on wind activity."
+
+Each lane now comes and goes on a clock driven by the sand the wind moves (`flow_share` 0.25, `flow_turnover` 800 on the ergs).
+
+| Measure | Result |
+|---|---|
+| Share of the face in a lane at a time | 18.6% |
+| Share of the face that changes half a cycle on | 28.3% |
+| A lane's presence over a cycle | 25%, and no step at the cycle's wrap |
+| Clock advancing half the share a frame (a storm at game rate, a time-lapse) | no lane drawn |
+
+`after_slip_20m_raking`, `after_slip_20m_clock33_raking` and `after_slip_20m_clock67_raking` show one face at three readings of the clock. Each is mostly smooth sand with a scattering of lanes, and the set differs from reading to reading.
+
 ## Ripples that are not all alike
 
 Measured on the mirror (`ground_detail_tests.cpp`, "ripples in patches, steered by the ground …"):

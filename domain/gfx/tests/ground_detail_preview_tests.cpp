@@ -398,6 +398,20 @@ void draw_all(const test::TempDir& dir, const std::string& tag, DetailFn detail,
     dune_view(dir, tag, detail, d, big, "slip_" + std::to_string(static_cast<int>(distance)) + "m",
               eye, target - eye, Dvec3{0.0, s20, c20}, "raking", Dvec3{c20, s20, 0.0}, "front");
   }
+  // The grainflow's episodes: the same face from 20 m under the raking sun at later readings of
+  // the avalanche clock — a third and two thirds of a cycle on, a day or so of ordinary wind — so
+  // the lanes that are there, and the ones that have come and gone, can be compared.
+  if (d.flow_share < 1.0f) {
+    for (const double later : {0.33, 0.67}) {
+      gfx::GroundDetailParams e = d;
+      e.flow_clock = static_cast<f32>(later);
+      const Dvec3 eye{55.0, 1.65, -7.0};
+      dune_view(dir, tag, detail, e, big,
+                "slip_20m_clock" + std::to_string(static_cast<int>(later * 100.0)), eye,
+                Dvec3{17.0, 9.0, 0.0} - eye, Dvec3{0.0, s20, c20}, "raking", Dvec3{c20, s20, 0.0},
+                "front");
+    }
+  }
 }
 
 }  // namespace

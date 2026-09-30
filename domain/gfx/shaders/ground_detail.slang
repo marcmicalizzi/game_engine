@@ -56,7 +56,7 @@ static const float k_ground_grain_rms = 0.28;
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
 
-// Mirrors gfx::GroundDetailParams (208 bytes).
+// Mirrors gfx::GroundDetailParams (224 bytes).
 struct GroundDetail {
   float4 wind;            // xy the direction the sand moves (x, z), unit; z sin(spread)
   float wavelength;       // metres crest to crest
@@ -107,6 +107,10 @@ struct GroundDetail {
   float travel_per_frame; // metres this frame
   uint pad6;
   uint pad7;
+  float flow_share;       // the grainflow's episodes: the share of lanes present (1: all, always)
+  float flow_clock;       // the avalanche clock, a fraction of a cycle
+  float flow_clock_step;  // its advance this frame
+  uint pad8;
 };
 
 // PCG, as sampling.slang's `pcg_hash`: one multiply-add and a permutation, the same bits on every
@@ -415,6 +419,17 @@ struct GroundFlow {
   float2 gradient;
 };
 
+// A lane's presence at phase `phase` of its cycle, present for `share` of it: up over the first
+// twentieth of that (an avalanche is sudden), down over the last seven tenths (grainfall buries it
+// slowly), and 0 for the rest, so the wrap of the phase is no step.
+float ground_episode(float phase, float share) {
+  const float t = phase / share;
+  if (!(t < 1.0)) return 0.0;
+  const float up = saturate(t / 0.05);
+  const float down = saturate((t - 0.3) / 0.7);
+  return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
+}
+
 GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
   const float2 across = float2(-fall.y, fall.x);
   const float cell = d.flow_cell;
@@ -447,6 +462,12 @@ GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
       for (uint e = 0u; e < 2u; ++e) {
         uint h = ground_pcg(hc ^ uint(int(m) + int(e)));
         g[e] = ground_unit(h) * 2.0 - 1.0;
+        // An episode: the lane is present for `flow_share` of each cycle of the clock, at a phase
+        // of its own — appearing fast (an avalanche) and fading slowly (grainfall burying it).
+        if (d.flow_share < 1.0) {
+          h = ground_pcg(h ^ 0x68E31DA4u);
+          g[e] *= ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
+        }
         h = ground_pcg(h);
         const float start = (ground_unit(h) - 0.9) * cell;
         h = ground_pcg(h);
@@ -681,7 +702,10 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     out.flow = weight;
     if (weight > 0.0 && !full) {
       const float footprint = max(length(dpdx.xz), length(dpdy.xz));
-      const float fade = ground_fade(footprint / d.flow_width);
+      // A face avalanching faster than a frame can show (a storm, a time-lapse) is smooth: the lanes
+      // fade by the episodes' advance a frame over the share, as the ripples do by their travel.
+      const float fade = ground_fade(footprint / d.flow_width) *
+                         (d.flow_share < 1.0 ? ground_fade(d.flow_clock_step / d.flow_share) : 1.0);
       if (fade > 0.0) {
         const float len = length(normal.xz);
         const float2 fall = len > 1e-6 ? normal.xz / len : d.wind.xy;
@@ -692,7 +716,9 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
         out.normal = normalize(n - float3(lanes.gradient.x, 0.0, lanes.gradient.y) *
                                        (d.flow_slope * d.flow_width * strength * n.y));
       }
-      const float lost = weight * weight * d.flow_normal * d.flow_normal * (1.0 - fade * fade);
+      // With episodes, only about `flow_share` of the lanes carry that variance at once.
+      const float lost = weight * weight * d.flow_normal * d.flow_normal * (1.0 - fade * fade) *
+                         min(d.flow_share, 1.0);
       if (lost > 0.0) {
         const float alpha = out.roughness * out.roughness;
         out.roughness = sqrt(sqrt(alpha * alpha + lost));

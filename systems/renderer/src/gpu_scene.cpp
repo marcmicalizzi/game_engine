@@ -2660,7 +2660,8 @@ gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   if (ground_->transport(ground_time_s_, moved, strength) &&
       ground_->transport(ground_previous_s_, before, unused)) {
     const f64 celerity = static_cast<f64>(desc.ripple_celerity);
-    gfx::ground_detail_motion(block, desc, moved * celerity, (moved - before) * celerity, strength);
+    gfx::ground_detail_motion(block, desc, moved * celerity, (moved - before) * celerity, strength,
+                              moved, moved - before);
   }
   return block;
 }

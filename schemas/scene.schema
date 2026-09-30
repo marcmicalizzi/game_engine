@@ -592,6 +592,13 @@ struct TerrainDetail @version(3) {
   flow_albedo: f32 = 0.015 @since(3)
   /// How much a lane widens, as a share of its width, down one cell, [0, 1].
   flow_widening: f32 = 0.3 @since(3)
+  /// The lanes are episodes: a lane appears when sand piled at the brink avalanches and fades as
+  /// grainfall buries it, so only `flow_share` of them are present at once ((0, 1]; 1, the default,
+  /// is every lane, always), and each runs `flow_turnover` cycles for every square metre of sand
+  /// the ground's wind carries across a metre of width ([0, 100000]; 0: they never change). With
+  /// no wind the face stands; faster than a frame can show, the lanes fade.
+  flow_share: f32 = 1 @since(3)
+  flow_turnover: f32 = 0 @since(3)
   /// The ripples in patches: a slow noise of position, its coarse octave `patch_size` metres
   /// ([5, 500]; 0, the default, is none), scaling the wavelength and height within
   /// [patch_min, patch_max] (0.5 <= min <= 1 <= max <= 2) and the defects by up to

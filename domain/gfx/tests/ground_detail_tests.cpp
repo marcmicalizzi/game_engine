@@ -1523,3 +1523,72 @@ TEST_CASE("ground detail: ripples travel, blur under a time-lapse and flatten in
   CHECK(c.roughness == 0.85);
   CHECK(c.normal.y == 1.0);
 }
+
+TEST_CASE("ground detail: grainflow lanes come and go with the wind") {
+  // An episode's shape: present for the share of its cycle, sudden up and slow down, no step at
+  // the cycle's wrap; over every phase a lane is present for the share of the time.
+  CHECK(gref::episode(0.0, 0.25) == 0.0);
+  CHECK(gref::episode(0.999999, 0.25) == 0.0);
+  CHECK(gref::episode(0.25 * 0.2, 0.25) == 1.0);
+  u32 present = 0;
+  double largest_step = 0.0, previous = gref::episode(0.0, 0.25);
+  for (u32 i = 1; i <= 100000; ++i) {
+    const double e = gref::episode(i * 1e-5, 0.25);
+    if (e > 0.0) ++present;
+    largest_step = std::max(largest_step, std::fabs(e - previous));
+    previous = e;
+  }
+  CHECK(present / 100000.0 == doctest::Approx(0.25).epsilon(0.01));
+  CHECK(largest_step < 0.005);
+
+  gfx::GroundDetailDesc desc;
+  desc.ripple_height = 0.0f;
+  desc.grain_albedo = 0.0f;
+  desc.grain_roughness = 0.0f;
+  desc.flow_start_deg = 24.0f;
+  desc.flow_full_deg = 30.0f;
+  desc.flow_share = 0.25f;
+  desc.flow_turnover = 800.0f;
+  const gfx::GroundDetailParams base = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  // The clock is the transport times the turnover, a fraction of a cycle; no wind, no change.
+  gfx::GroundDetailParams a = base, b = base;
+  gfx::ground_detail_motion(a, desc, 0.0, 0.0, 1.0f, 12.3456, 0.0);
+  gfx::ground_detail_motion(b, desc, 0.0, 0.0, 1.0f, 12.3456, 0.0);
+  CHECK(a.flow_clock == b.flow_clock);
+  CHECK(static_cast<double>(a.flow_clock) ==
+        doctest::Approx(12.3456 * 800.0 - std::floor(12.3456 * 800.0)).epsilon(1e-5));
+
+  // Sparse: on a slip face, with a quarter of the lanes present, most of the face is smooth; and
+  // the lanes present at one reading are not those at a reading half a cycle on.
+  const double slope = 32.0 * 3.14159265358979323846 / 180.0;
+  u32 lit = 0, changed = 0;
+  gfx::GroundDetailParams later = base;
+  later.flow_clock = 0.5f;
+  for (u32 i = 0; i < 4000; ++i) {
+    const double x = 0.047 * i - 90.0;
+    const double z = 0.031 * i + 3.0;
+    const gref::Flow f = gref::grainflow(base, x, z, 1.0, 0.0);
+    const gref::Flow g = gref::grainflow(later, x, z, 1.0, 0.0);
+    if (std::fabs(f.gx) + std::fabs(f.gz) > 0.3) ++lit;
+    if ((std::fabs(f.gx) + std::fabs(f.gz) > 0.3) != (std::fabs(g.gx) + std::fabs(g.gz) > 0.3))
+      ++changed;
+  }
+  MESSAGE("grainflow episodes: " << lit / 40.0 << "% of a face in a lane, " << changed / 40.0
+                                 << "% changed half a cycle on");
+  CHECK(lit < 4000u / 2u);
+  CHECK(changed > 4000u / 10u);
+
+  // Faster than a frame can show, the lanes fade: at half the share a frame there are none.
+  const ref::Dvec3 n{std::sin(slope), std::cos(slope), 0.0};
+  const ref::Dvec3 none{};
+  const ref::Dvec3 albedo{0.6, 0.5, 0.4};
+  gfx::GroundDetailParams storm = base;
+  storm.flow_clock_step = 0.125f;
+  u32 drawn = 0;
+  for (u32 i = 0; i < 200; ++i) {
+    const gref::Shading g =
+        gref::shade(storm, ref::Dvec3{0.37 * i, 0.0, 1.0}, n, none, none, 1.0, albedo, 0.85);
+    if (g.normal.x != n.x || g.albedo.x != albedo.x) ++drawn;
+  }
+  CHECK(drawn == 0);
+}

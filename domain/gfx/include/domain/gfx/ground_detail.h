@@ -112,8 +112,9 @@ inline constexpr f32 k_ground_taper = 0.35f;
 // much, so the rule moves the variance the pattern has, not the variance a perfect ripple would.
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
-// Mirrors GroundDetail in shaders/ground_detail.slang. 208 bytes: the first pass's 80, the second's
-// grain, streaks and spacing (128), and the third's grainflow, patches, steering and motion.
+// Mirrors GroundDetail in shaders/ground_detail.slang. 224 bytes: the first pass's 80, the second's
+// grain, streaks and spacing (128), and the third's grainflow and its episodes, patches, steering
+// and motion.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -197,8 +198,15 @@ struct GroundDetailParams {
   f32 travel_per_frame = 0.0f;
   u32 pad6 = 0;
   u32 pad7 = 0;
+  // The grainflow's episodes: the share of lanes present at once (1: every lane, always), the
+  // avalanche clock — the ground's transport path length times the scene's turnover, reduced to a
+  // fraction of a cycle in double — and its advance in one frame.
+  f32 flow_share = 1.0f;
+  f32 flow_clock = 0.0f;
+  f32 flow_clock_step = 0.0f;
+  u32 pad8 = 0;
 };
-static_assert(sizeof(GroundDetailParams) == 208);
+static_assert(sizeof(GroundDetailParams) == 224);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // The scene's numbers (the renderer's `engine.scene.TerrainDetail`): what a scene says, in metres
@@ -259,6 +267,13 @@ struct GroundDetailDesc {
   f32 flow_normal = 0.05f;
   f32 flow_albedo = 0.015f;
   f32 flow_widening = 0.3f;
+  // The lanes are episodes, not a pattern: a lane avalanches when sand has piled at the brink and
+  // is buried again by grainfall, so only `flow_share` of them are present at once (1, the
+  // default: all, always), and each runs through `flow_turnover` cycles for every square metre of
+  // sand the ground's wind carries across a metre of width (0: they never change). With no wind
+  // the face stands as it is.
+  f32 flow_share = 1.0f;
+  f32 flow_turnover = 0.0f;
   // Patches: a slow noise of position in two octaves, the coarse one `patch_size` metres (0: none),
   // scaling the ripples' wavelength and height together within [patch_min, patch_max] and their
   // kernels' spread about the wind by up to `patch_defects` of it either way.
@@ -382,6 +397,7 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.flow_normal = desc.flow_normal;
     out.flow_albedo = desc.flow_albedo / k_ground_flow_rms;
     out.flow_widening = desc.flow_widening / desc.flow_cell;
+    out.flow_share = std::clamp(desc.flow_share, 0.0f, 1.0f);
   }
   if (desc.patch_size > 0.0f && desc.patch_max >= desc.patch_min && desc.patch_min > 0.0f) {
     out.flags |= k_ground_patches;
@@ -415,8 +431,17 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
 // wind's strength over the record's mean, which flattens them between the scene's two numbers.
 // Sets k_ground_motion; the travel is reduced modulo `k_ground_travel_period` base wavelengths
 // here, in double, so the float the shader reads keeps a ten-thousandth of a wavelength.
+// `moved_m2` and `moved_per_frame_m2` are the ground's transport path length and its step this
+// frame, which drive the grainflow's episodes (reduced to a fraction of a cycle here, in double).
 inline void ground_detail_motion(GroundDetailParams& d, const GroundDetailDesc& desc, f64 travel_m,
-                                 f64 per_frame_m, f32 strength) noexcept {
+                                 f64 per_frame_m, f32 strength, f64 moved_m2 = 0.0,
+                                 f64 moved_per_frame_m2 = 0.0) noexcept {
+  if (desc.flow_turnover > 0.0f) {
+    const f64 cycles = moved_m2 * static_cast<f64>(desc.flow_turnover);
+    d.flow_clock = static_cast<f32>(cycles - std::floor(cycles));
+    d.flow_clock_step =
+        static_cast<f32>(std::fabs(moved_per_frame_m2 * static_cast<f64>(desc.flow_turnover)));
+  }
   if (!(desc.ripple_celerity > 0.0f) && !(desc.flatten_end > desc.flatten_start)) return;
   d.flags |= k_ground_motion;
   const f64 period = k_ground_travel_period * static_cast<f64>(d.wavelength);
