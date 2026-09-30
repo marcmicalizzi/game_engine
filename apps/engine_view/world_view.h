@@ -84,6 +84,7 @@ class ViewWorld {
   const renderer::SceneData* data_ = nullptr;
   renderer::SceneRenderer* renderer_ = nullptr;
   world::World world_;
+  sim::ObserverSet observers_;  // the camera, one observer, kept between updates
   world::WorldLog log_;
   std::string log_path_;  // empty: no log
   std::string log_text_;

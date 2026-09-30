@@ -130,10 +130,10 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     world_.clear(tick);
     compact_next_ = true;
   }
-  sim::ObserverSet observers;
-  observers.add(camera.position, 1.0f);
+  observers_.clear();  // kept, so a frame's update allocates nothing for it
+  observers_.add(camera.position, 1.0f);
   log_.before(world_);
-  world_.update(observers, tick, mode != Mode::Budgeted);
+  world_.update(observers_, tick, mode != Mode::Budgeted);
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
   // draws what the scene has, so nothing here fails the run. `error` is for the hook's contract.
   (void)error;

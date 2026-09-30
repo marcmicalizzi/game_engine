@@ -128,3 +128,62 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
     CHECK(allocations == 0);
   }
 }
+
+TEST_CASE("world drawn ground: a budgeted ring behind a fast camera keeps the tile set whole") {
+  // engine-view's frame, with the renderer's half on the CPU: the world's ring updated under its
+  // default budget from a camera flying 1.67 m a frame, and then what the time-lapse does with the
+  // tile set — the layout for the camera, the tiles taken, the rebuild. The set must never draw
+  // fewer tiles than the ring is about to hold minus what its budget defers, and never lose a level.
+  renderer::TerrainDesc grid;
+  grid.enabled = true;
+  grid.size = 3;
+  grid.extent = 3072.0f;
+  renderer::TerrainTilesDesc t;
+  t.tile_size = 32.0f;
+  t.ring_count = 4;
+  t.radius[0] = 1.5f;
+  t.radius[1] = 8.0f;
+  t.radius[2] = 24.0f;
+  t.radius[3] = 64.0f;
+  t.cells[0] = 8;
+  t.cells[1] = 4;
+  t.cells[2] = 2;
+  t.cells[3] = 1;
+  const Vec3 start{-2000.0f, 100.0f, 0.0f};
+  renderer::TerrainTileSet set;
+  std::string error;
+  REQUIRE_MESSAGE(set.build(grid, t, k_flat, start.x, start.z, nullptr, &error), error);
+  World world;
+  RingParams params = DrawnTiles::ring_params(t);
+  REQUIRE(world.configure(params));
+  DrawnTiles drawn;
+  drawn.create(set);
+  world.add_consumer(drawn.consumer());
+  sim::ObserverSet observers;
+  renderer::TerrainRingLayout shown = set.layout();
+  u32 fewest[renderer::k_max_terrain_levels];
+  for (u32 l = 0; l < renderer::k_max_terrain_levels; ++l)
+    fewest[l] = ~0u;
+  u32 worst_withheld = 0;
+  for (u32 f = 0; f < 120; ++f) {
+    const Vec3 p{start.x + 1.6667f * static_cast<f32>(f), start.y, start.z};
+    observers.clear();
+    observers.add(p, 1.0f);
+    if (f == 0) world.clear(0);
+    world.update(observers, f, f == 0);
+    const renderer::TerrainRingLayout next = set.next_layout(p.x, p.z, shown);
+    if (next == shown) continue;
+    set.prepare(next);
+    u32 moved = 0;
+    REQUIRE_MESSAGE(set.update(p.x, p.z, 0.0, next, {}, nullptr, moved, &error), error);
+    shown = set.layout();
+    worst_withheld = std::max(worst_withheld, set.withheld());
+    for (u32 l = 1; l < set.level_count(); ++l)
+      fewest[l] = std::min<u32>(fewest[l], set.chunks(l).size());
+  }
+  MESSAGE("fewest tiles a level drew: " << fewest[1] << ", " << fewest[2] << ", " << fewest[3]
+                                        << ", " << fewest[4] << "; most withheld "
+                                        << worst_withheld);
+  for (u32 l = 1; l < set.level_count(); ++l)
+    CHECK(fewest[l] > 0);
+}

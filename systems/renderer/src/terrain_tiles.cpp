@@ -370,7 +370,9 @@ TerrainRingLayout TerrainTileSet::next_layout(f32 camera_x, f32 camera_z,
 
 bool TerrainTileSet::set_tiles(std::span<const TerrainTile> tiles) {
   incoming_.assign(tiles.begin(), tiles.end());
-  std::stable_sort(incoming_.begin(), incoming_.end(), tile_before);
+  // Sorted in place: a stable sort takes a buffer from the heap every frame, and the world never
+  // hands the same tile twice.
+  std::sort(incoming_.begin(), incoming_.end(), tile_before);
   incoming_.erase(std::unique(incoming_.begin(), incoming_.end(),
                               [](const TerrainTile& a, const TerrainTile& b) {
                                 return a.x == b.x && a.z == b.z;
@@ -542,13 +544,16 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
     // A slot holds the largest tile built here with the slack on top, and never fewer clusters than
     // a tile that did not simplify at all could have (its grid's triangles in clusters of at least
     // 64, doubled for the DAG's levels above its leaves): a tile over rougher sand than any the
-    // first layout held must not find its slot too small.
+    // first layout held must not find its slot too small. Rounded to four, not to the sixteen it
+    // was: a slot's run is pairs the cull pass visits every frame whether the tile fills it or
+    // not, and a coarse ring's tile is one or two clusters, so sixteen was eight times its pairs
+    // over the ring with the most slots.
     const u32 grid_triangles = 2 * level_cells_[level] * level_cells_[level];
     const u32 unsimplified = 2 * ((grid_triangles + 63) / 64);
     c.clusters_per_slot =
         (std::max(static_cast<u32>(std::ceil(static_cast<f64>(clusters) * slack)), unsimplified) +
-         15u) /
-        16u * 16u;
+         3u) /
+        4u * 4u;
     c.vertices = static_cast<u64>(static_cast<f64>(vertices) * slack) * c.slots + 1024;
     c.triangles = static_cast<u64>(static_cast<f64>(triangles) * slack) * c.slots + 1024;
     ENGINE_LOG_INFO(log_renderer, "world tile level", log::field("level", level),
