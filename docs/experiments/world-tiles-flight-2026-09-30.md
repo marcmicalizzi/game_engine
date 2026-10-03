@@ -63,6 +63,8 @@ tools/gpu-lock.ps1 run -Purpose "..." -Exec "& '<scratch>\measure.ps1' -Label fu
 
 That the tiles can carry an endless desert with the device's memory fixed at load and the host's flat, and that the renderer's GPU cost of the ground is small. It does not decide that 100 m/s is sustainable in a window: the offscreen wall says the tiles cost more than a frame at that speed, and a windowed flight — how far behind the rings fall, and whether the swap's frame hitches — is the next measurement.
 
+**Since** (2026-10-03, [the windowed measurement](world-tiles-window-2026-10-03.md)): the windowed flight is measured — the finest ring 22 m behind the camera at the median at 100 m/s, no frame waiting for a tile; the rebuild costs what changed; the renderer's long frames come back at the surround size and are named by part; the time-lapse's window drop is still open.
+
 ## Caveats
 
 One machine, a shared one; still sand (a time-lapse adds the fields' evaluation on the field worker, and a frozen level's pair carried over at every window move); traced shadows only (the maps would replace the 0.72 ms chain with a cascade pass); one path, flown once.

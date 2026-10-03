@@ -307,6 +307,75 @@ TEST_CASE(
   CHECK(number(walk, "distance_m") > 2.5);
 }
 
+TEST_CASE("engine-view: a flight started high over the world's tiles has them where it starts") {
+  // The owner's first flight of desert-endless (2026-10-02): `--start` 2 km from the old erg's
+  // centre and 350 m up, in flight, and the tiles did not stream until he walked. The first layout
+  // was built round the orbit camera — the scene's bounds — and not round where the session
+  // starts, so its first frame asked for a whole ring, which a window rebuilds behind the frames
+  // while the camera flies on at 100 m/s. Here: the erg's window with world tiles, a session
+  // started in flight 1.5 km off it and 350 m up, hovering for 15 frames, replayed offscreen. The
+  // tiles drawn from the first frame must be the ones the world holds round the start: nothing to
+  // rebuild, nothing re-centred, every tile resident.
+  const test::TempDir tmp("engine_view_fly_tiles_start");
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(committed)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  std::string source;
+  REQUIRE(io::read_file(committed, source) == io::Status::Ok);
+  JsonValue erg;
+  REQUIRE(parse_json(source, erg).ok);
+  JsonValue terrain = *erg.find("terrain");
+  terrain.set("size", static_cast<u64>(129));
+  terrain.set("extent", JsonValue(128.0));
+  erg.set("terrain", std::move(terrain));
+  REQUIRE(parse_json(R"({"ground":true,"rings":[{"radius":1.5,"ground_cells":16},
+                                                {"radius":4,"ground_cells":8}]})",
+                     terrain)
+              .ok);
+  erg.set("world", std::move(terrain));
+  const std::string scene = tmp.file("erg-tiles.json");
+  REQUIRE(io::write_file(scene, write_json(erg)) == io::Status::Ok);
+
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  view::SessionHeader header;
+  header.ticks = 60;
+  header.scene = scene;
+  header.start.position = Vec3{1500.0f, 350.0f, 0.0f};
+  header.start.yaw = -1.5707963f;
+  header.start.pitch = -0.17453292f;
+  header.has_walk = true;
+  header.walking = false;  // in flight
+  keys.set_session(view::session_to_json(header));
+  const std::string session = tmp.file("hover.jsonl");
+  REQUIRE(keys.save(session) == io::Status::Ok);
+  const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                            "64", "--height", "48", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3 || refused_without_dunes(run)) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* rings =
+      summary.find("time_lapse") != nullptr ? summary.find("time_lapse")->find("rings") : nullptr;
+  REQUIRE_MESSAGE(rings != nullptr, run.output);
+  CHECK(text(rings, "layout") == "tiles");
+  MESSAGE("started 1.5 km out: " << number(rings, "chunks") << " tiles drawn, "
+                                 << number(rings, "rebuilds") << " rebuilds, "
+                                 << number(rings, "chunks_built")
+                                 << " tiles built after the first");
+  CHECK(number(rings, "chunks") > 0.0);
+  // The first layout was the start's: the world's first update asked for nothing else.
+  CHECK(number(rings, "rebuilds") == 0.0);
+  CHECK(number(rings, "chunks_built") == 0.0);
+}
+
 TEST_CASE("engine-view: a walk on the world's tiles stands on the ground they draw") {
   // The erg's window again, drawn once from its grid and once from the world's tiles (a world
   // block's `ground`; renderer.md, "The ground from the world's tiles"), and one session — built

@@ -9,6 +9,7 @@
 #include <systems/renderer/terrain_tiles.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <renderer_log.h>
@@ -34,6 +35,11 @@ bool tile_before(const TerrainTile& a, const TerrainTile& b) noexcept {
 
 u64 packed(i32 x, i32 z) noexcept {
   return (static_cast<u64>(static_cast<u32>(x)) << 32) | static_cast<u64>(static_cast<u32>(z));
+}
+
+TerrainTile tile_of(u64 key, u8 ring) noexcept {
+  return TerrainTile{static_cast<i32>(static_cast<u32>(key >> 32)),
+                     static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFFu)), ring};
 }
 
 // Every tile's level, by its packed coordinates.
@@ -354,12 +360,19 @@ TerrainRingLayout TerrainTileSet::next_layout(f32 camera_x, f32 camera_z,
     // at this level is outside it: the window moves to the camera.
     bool move =
         std::max(std::abs(cx - from.cx[level]), std::abs(cz - from.cz[level])) > margin_mm_[level];
-    if (!move) {
-      for (const TerrainTile& t : wanted_) {
-        if (level_of_ring(t.ring) == level && !covers(level, from, t.x, t.z)) {
-          move = true;
-          break;
-        }
+    // What the world holds outside it: the tiles the last rebuild withheld for its window, and the
+    // changes since — not every tile held, which this asked every frame until 2026-10-03.
+    if (!move && from == layout_ && window_withheld_[level] > 0) move = true;
+    for (u32 k = 0; !move && k < changes_.size(); ++k) {
+      const TerrainTile& t = changes_[k];
+      move =
+          t.ring != k_tile_gone && level_of_ring(t.ring) == level && !covers(level, from, t.x, t.z);
+    }
+    if (!move && !(from == layout_)) {
+      // Asked of another layout than the one built last (a test's): every tile held.
+      for (u32 k = 0; !move && k < held_.size(); ++k) {
+        const TerrainTile t = tile_of(held_.key_at(k), held_.value_at(k));
+        move = level_of_ring(t.ring) == level && !covers(level, from, t.x, t.z);
       }
     }
     if (move) {
@@ -372,37 +385,108 @@ TerrainRingLayout TerrainTileSet::next_layout(f32 camera_x, f32 camera_z,
 }
 
 bool TerrainTileSet::set_tiles(std::span<const TerrainTile> tiles) {
-  incoming_.assign(tiles.begin(), tiles.end());
-  // Sorted in place: a stable sort takes a buffer from the heap every frame, and the world never
-  // hands the same tile twice.
-  std::sort(incoming_.begin(), incoming_.end(), tile_before);
-  incoming_.erase(std::unique(incoming_.begin(), incoming_.end(),
-                              [](const TerrainTile& a, const TerrainTile& b) {
-                                return a.x == b.x && a.z == b.z;
-                              }),
-                  incoming_.end());
-  if (incoming_ == wanted_) return false;
-  std::swap(incoming_, wanted_);
+  // The whole set: what differs from the tiles held becomes changes (a tile named twice keeps its
+  // first ring), and a tile held and not named is let go. Linear in the set; a world's ring hands
+  // its changes instead (`change_tiles`), which cost what changed.
+  incoming_.clear();
+  incoming_.reserve(static_cast<u32>(tiles.size()));
+  const usize before = changes_.size();
+  for (const TerrainTile& t : tiles) {
+    const u64 key = packed(t.x, t.z);
+    if (incoming_.find_value(key) != nullptr) continue;
+    incoming_.insert(key, t.ring);
+    const u8* held = held_.find_value(key);
+    if (held != nullptr && *held == t.ring) continue;
+    held_.insert_or_assign(key, t.ring);
+    changes_.push_back(t);
+  }
+  for (u32 k = 0; k < held_.size();) {
+    const u64 key = held_.key_at(k);
+    if (incoming_.find_value(key) != nullptr) {
+      ++k;
+      continue;
+    }
+    changes_.push_back(tile_of(key, k_tile_gone));
+    held_.erase(key);  // the map compacts: the next key is at k
+  }
+  if (changes_.size() == before) return false;
   ++generation_;
   return true;
 }
 
+bool TerrainTileSet::change_tiles(std::span<const TerrainTile> changes) {
+  bool changed = false;
+  for (const TerrainTile& t : changes) {
+    const u64 key = packed(t.x, t.z);
+    const u8* held = held_.find_value(key);
+    if (t.ring == k_tile_gone) {
+      if (held == nullptr) continue;
+      held_.erase(key);
+    } else {
+      if (held != nullptr && *held == t.ring) continue;
+      held_.insert_or_assign(key, t.ring);
+    }
+    changes_.push_back(t);
+    changed = true;
+  }
+  if (changed) ++generation_;
+  return changed;
+}
+
 void TerrainTileSet::prepare(const TerrainRingLayout& target) {
   (void)target;
-  building_.assign(wanted_.begin(), wanted_.end());
+  // The changes since the last rebuild are the worker's from here; both lists keep their room.
+  std::swap(taken_, changes_);
+  changes_.clear();
 }
 
 bool TerrainTileSet::find(i32 x, i32 z, u32& level, u32& index) const noexcept {
-  for (u32 l = 1; l < levels_; ++l) {
-    for (u32 c = 0; c < chunks_[l].size(); ++c) {
-      if (chunks_[l][c].i == x && chunks_[l][c].j == z) {
-        level = l;
-        index = c;
-        return true;
-      }
+  const u32* at = chunk_at_.find_value(packed(x, z));
+  if (at == nullptr) return false;
+  level = *at >> 24;
+  index = *at & 0xFFFFFFu;
+  return true;
+}
+
+std::span<const u32> TerrainTileSet::added(u32 level) const noexcept {
+  if (level >= k_max_terrain_levels) return {};
+  return std::span<const u32>(added_[level].data(), added_[level].size());
+}
+
+std::span<const u32> TerrainTileSet::released(u32 level) const noexcept {
+  if (level >= k_max_terrain_levels) return {};
+  return std::span<const u32>(released_[level].data(), released_[level].size());
+}
+
+f64 TerrainTileSet::padding_added(u32 level, std::span<const f32> field,
+                                  const gfx::TerrainField& window) const {
+  if (level == 0 || level >= levels_) return 0.0;
+  std::lock_guard<std::mutex> lock(mutex_);
+  f64 most = 0.0;
+  for (const u32 c : added_[level]) {
+    if (c >= chunks_[level].size()) continue;
+    most = std::max(
+        most, padding_of(std::span<const TerrainChunk>(&chunks_[level][c], 1), field, window));
+  }
+  return most;
+}
+
+// The incremental model from the chunk lists as they stand (after the first fill or a whole
+// rebuild): every drawn tile's level and place, every held tile's ring, the window's withholdings.
+void TerrainTileSet::index_chunks() {
+  level_of_.clear();
+  chunk_at_.clear();
+  for (u32 level = 1; level < levels_; ++level) {
+    count_[level] = chunks_[level].size();
+    for (u32 c = 0; c < chunks_[level].size(); ++c) {
+      const u64 key = packed(chunks_[level][c].i, chunks_[level][c].j);
+      level_of_.insert(key, static_cast<u8>(level));
+      chunk_at_.insert(key, (level << 24) | c);
     }
   }
-  return false;
+  built_ring_.clear();
+  for (u32 k = 0; k < building_.size(); ++k)
+    built_ring_.insert(packed(building_[k].x, building_[k].z), building_[k].ring);
 }
 
 f64 TerrainTileSet::padding(u32 level, std::span<const f32> field,
@@ -474,16 +558,20 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   }
   Vector<TerrainTile> first;
   terrain_tiles_round(tiles, camera_x, camera_z, first);
-  wanted_.clear();
+  held_.clear();
+  changes_.clear();
+  taken_.clear();
   generation_ = 0;
   set_tiles(std::span<const TerrainTile>(first.data(), first.size()));
+  changes_.clear();  // the first fill is built whole, below
   layout_.generation = generation_;
-  building_.assign(wanted_.begin(), wanted_.end());
+  building_.assign(first.begin(), first.end());
   u32 moved = 0;
   if (!rebuild(layout_, terrain.time_s, jobs, moved, error)) {
     levels_ = 0;
     return false;
   }
+  index_chunks();
   for (u32 level = 1; level < levels_; ++level)
     previous_[level].clear();
   // What the GPU scene reserves a level: two slots for every tile its ring can hold (one drawn and
@@ -580,8 +668,288 @@ bool TerrainTileSet::update(f32 camera_x, f32 camera_z, f64 time_s, const Terrai
   moved = 0;
   if (!valid()) return true;
   const i64 started = time::monotonic_ns();
-  if (!rebuild(target, time_s, jobs, moved, error)) return false;
+  if (!rebuild_changes(target, time_s, jobs, moved, error)) return false;
   last_build_ms_ = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
+  return true;
+}
+
+TerrainTileMeshSpec TerrainTileSet::spec_of(i32 x, i32 z, u8 level,
+                                            const HashMap<u64, u8>& level_of) const noexcept {
+  TerrainTileMeshSpec spec;
+  spec.x = x;
+  spec.z = z;
+  spec.level = level;
+  spec.cells = level_cells_[level];
+  spec.spacing_mm = lattice_[level].spacing_mm;
+  for (u32 l = 0; l < levels_; ++l)
+    spec.level_cells[l] = level_cells_[l];
+  spec.uv_x0_mm = uv_x0_mm_;
+  spec.uv_z0_mm = uv_x0_mm_;
+  spec.uv_size_mm = uv_size_mm_;
+  spec.neighbours.edge[0] = level_at(level_of, x - 1, z);
+  spec.neighbours.edge[1] = level_at(level_of, x + 1, z);
+  spec.neighbours.edge[2] = level_at(level_of, x, z - 1);
+  spec.neighbours.edge[3] = level_at(level_of, x, z + 1);
+  const i32 dx[4] = {-1, 1, -1, 1};
+  const i32 dz[4] = {-1, -1, 1, 1};
+  for (u32 c = 0; c < 4; ++c) {
+    spec.neighbours.corner[c] =
+        coarsest(coarsest(level_at(level_of, x + dx[c], z), level_at(level_of, x, z + dz[c])),
+                 level_at(level_of, x + dx[c], z + dz[c]));
+  }
+  return spec;
+}
+
+// **A rebuild that costs what changed** (renderer.md, "What a frame waits for"): the world's
+// changes since the last one, and the tiles of each level whose window moved, are the tiles whose
+// drawn level may change; those that did change, and their eight neighbours (whose keys name their
+// levels), are the only tiles whose keys are asked again, and of those only the ones whose key
+// changed are built. A level that would hold more than half its slots — a world whose budget
+// deferred deactivations — falls back to the whole rebuild, which withholds its farthest tiles.
+// Until 2026-10-03 every rebuild derived every held tile's key and searched every level's chunk
+// list twice: 7.5 ms of the 27 a rebuild took at 100 m/s, and 3.8 ms more to put the lists back.
+bool TerrainTileSet::rebuild_changes(const TerrainRingLayout& target, f64 time_s,
+                                     jobs::JobSystem* jobs, u32& moved, std::string* error) {
+  const i64 rebuild_started = time::monotonic_ns();
+  moved = 0;
+  for (u32 level = 0; level < k_max_terrain_levels; ++level) {
+    added_[level].clear();
+    released_[level].clear();
+  }
+  // Every tile whose drawn level may change, with its ring before this rebuild.
+  touched_.clear();
+  const auto touch = [&](u64 key) {
+    if (touched_.find_value(key) != nullptr) return;
+    const u8* ring = built_ring_.find_value(key);
+    touched_.insert(key, ring != nullptr ? *ring : k_tile_gone);
+  };
+  for (const TerrainTile& t : taken_) {
+    const u64 key = packed(t.x, t.z);
+    touch(key);
+    if (t.ring == k_tile_gone) {
+      built_ring_.erase(key);
+    } else {
+      built_ring_.insert_or_assign(key, t.ring);
+    }
+  }
+  taken_.clear();
+  for (u32 level = 1; level < levels_; ++level) {
+    if (target.cx[level] == layout_.cx[level] && target.cz[level] == layout_.cz[level] &&
+        target.half[level] == layout_.half[level])
+      continue;
+    for (u32 k = 0; k < built_ring_.size(); ++k) {
+      if (level_of_ring(built_ring_.value_at(k)) == level) touch(built_ring_.key_at(k));
+    }
+  }
+  // Each touched tile's level now; the ones that changed.
+  changed_keys_.clear();
+  for (u32 k = 0; k < touched_.size(); ++k) {
+    const u64 key = touched_.key_at(k);
+    const u8 old_ring = touched_.value_at(k);
+    const TerrainTile t = tile_of(key, 0);
+    const u8* drawn = level_of_.find_value(key);
+    const u8 old_level = drawn != nullptr ? *drawn : u8{0};
+    if (old_ring != k_tile_gone && old_level == 0) {
+      const u32 l = level_of_ring(old_ring);
+      if (!covers(l, layout_, t.x, t.z) && window_withheld_[l] > 0) --window_withheld_[l];
+    }
+    const u8* ring = built_ring_.find_value(key);
+    u8 new_level = 0;
+    if (ring != nullptr) {
+      const u32 l = level_of_ring(*ring);
+      if (covers(l, target, t.x, t.z)) {
+        new_level = static_cast<u8>(l);
+      } else {
+        ++window_withheld_[l];
+      }
+    }
+    if (new_level == old_level) continue;
+    if (old_level != 0) {
+      level_of_.erase(key);
+      --count_[old_level];
+    }
+    if (new_level != 0) {
+      level_of_.insert(key, new_level);
+      ++count_[new_level];
+    }
+    changed_keys_.push_back(key);
+  }
+  for (u32 level = 1; level < levels_; ++level) {
+    if (capacity_[level].slots != 0 && count_[level] > capacity_[level].slots / 2) {
+      // Past half a level's slots: the whole rebuild decides which to withhold.
+      building_.clear();
+      for (u32 k = 0; k < built_ring_.size(); ++k)
+        building_.push_back(tile_of(built_ring_.key_at(k), built_ring_.value_at(k)));
+      std::sort(building_.begin(), building_.end(), tile_before);
+      whole_last_ = true;
+      if (!rebuild(target, time_s, jobs, moved, error)) return false;
+      index_chunks();
+      return true;
+    }
+  }
+  whole_last_ = false;
+  // The tiles whose key may have changed: those whose level did, and their neighbours.
+  dirty_.clear();
+  for (const u64 key : changed_keys_) {
+    const TerrainTile t = tile_of(key, 0);
+    for (i32 dz = -1; dz <= 1; ++dz) {
+      for (i32 dx = -1; dx <= 1; ++dx)
+        dirty_.push_back(packed(t.x + dx, t.z + dz));
+    }
+  }
+  std::sort(dirty_.begin(), dirty_.end());
+  dirty_.erase(std::unique(dirty_.begin(), dirty_.end()), dirty_.end());
+  struct Want {
+    TerrainTileMeshSpec spec;
+    u64 key = 0;
+  };
+  Vector<Want> todo;
+  drops_.clear();  // (level << 24 | index) of every chunk let go
+  for (const u64 key : dirty_) {
+    const TerrainTile t = tile_of(key, 0);
+    const u8* level = level_of_.find_value(key);
+    const u32* at = chunk_at_.find_value(key);
+    if (level == nullptr) {
+      if (at != nullptr) drops_.push_back(*at);
+      continue;
+    }
+    Want w;
+    w.spec = spec_of(t.x, t.z, *level, level_of_);
+    w.key = terrain_tile_key(w.spec);
+    if (at != nullptr && (*at >> 24) == *level && chunks_[*level][*at & 0xFFFFFFu].key == w.key)
+      continue;
+    if (at != nullptr) drops_.push_back(*at);
+    todo.push_back(w);
+  }
+  const i64 scanned = time::monotonic_ns();
+  Vector<TerrainChunk> built(todo.size());
+  Vector<u8> failed(todo.size(), u8{0});
+  std::atomic<i64> heights_ns{0};
+  std::atomic<i64> mesh_ns{0};
+  const auto run = [&](u32 begin, u32 end) {
+    TerrainTileMesh mesh;
+    Vector<f32> h;
+    for (u32 t = begin; t < end; ++t) {
+      if (!build_tile(todo[t].spec, todo[t].key, time_s, built[t], h, mesh, heights_ns, mesh_ns))
+        failed[t] = 1;
+    }
+  };
+  if (jobs == nullptr || todo.size() < 2) {
+    run(0, todo.size());
+  } else {
+    jobs->parallel_for(jobs::Pool::Performance, todo.size(), 1,
+                       [&](u32 begin, u32 end) { run(begin, end); });
+  }
+  for (const u8 f : failed) {
+    if (f != 0) {
+      if (error != nullptr)
+        *error = "world tiles: a tile's heights or its cluster LOD could not be made";
+      return false;
+    }
+  }
+  const i64 built_at = time::monotonic_ns();
+  // Under the lock `padding` takes: the drops (by swap with each level's last chunk, the largest
+  // index first so no index still to drop moves), then the new chunks at the ends.
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::sort(drops_.begin(), drops_.end(), [](u32 a, u32 b) { return a > b; });
+  u32 touched_levels = 0;
+  for (const u32 d : drops_)
+    touched_levels |= 1u << (d >> 24);
+  for (const Want& w : todo)
+    touched_levels |= 1u << w.spec.level;
+  for (u32 level = 1; level < levels_; ++level) {
+    if ((touched_levels & (1u << level)) != 0) previous_[level].clear();
+  }
+  for (const u32 d : drops_) {
+    const u32 level = d >> 24;
+    const u32 index = d & 0xFFFFFFu;
+    Vector<TerrainChunk>& list = chunks_[level];
+    TerrainChunk& gone = list[index];
+    chunk_at_.erase(packed(gone.i, gone.j));
+    if (gone.slot != ~0u) released_[level].push_back(gone.slot);
+    previous_[level].push_back(std::move(gone));
+    const u32 last = list.size() - 1;
+    if (index != last) {
+      list[index] = std::move(list[last]);
+      chunk_at_.insert_or_assign(packed(list[index].i, list[index].j), (level << 24) | index);
+    }
+    list.pop_back();
+  }
+  for (u32 t = 0; t < todo.size(); ++t) {
+    const u32 level = todo[t].spec.level;
+    Vector<TerrainChunk>& list = chunks_[level];
+    const u32 index = list.size();
+    chunk_at_.insert_or_assign(packed(todo[t].spec.x, todo[t].spec.z), (level << 24) | index);
+    list.push_back(std::move(built[t]));
+    added_[level].push_back(index);
+  }
+  moved = touched_levels & ~1u;
+  layout_ = target;
+  withheld_ = 0;
+  for (u32 level = 1; level < levels_; ++level)
+    withheld_ += window_withheld_[level];
+  last_built_ = todo.size();
+  last_kept_ = 0;
+  for (u32 level = 1; level < levels_; ++level)
+    last_kept_ += chunks_[level].size();
+  last_kept_ -= std::min<u32>(last_kept_, todo.size());
+  last_phases_.scan_ms = static_cast<f64>(scanned - rebuild_started) / 1.0e6;
+  last_phases_.build_ms = static_cast<f64>(built_at - scanned) / 1.0e6;
+  last_phases_.heights_cpu_ms = static_cast<f64>(heights_ns.load()) / 1.0e6;
+  last_phases_.mesh_cpu_ms = static_cast<f64>(mesh_ns.load()) / 1.0e6;
+  last_phases_.swap_ms = static_cast<f64>(time::monotonic_ns() - built_at) / 1.0e6;
+  ENGINE_LOG_DEBUG(log_renderer, "world tiles rebuilt", log::field("built", last_built_),
+                   log::field("kept", last_kept_), log::field("scan_ms", last_phases_.scan_ms),
+                   log::field("build_ms", last_phases_.build_ms),
+                   log::field("heights_cpu_ms", last_phases_.heights_cpu_ms),
+                   log::field("mesh_cpu_ms", last_phases_.mesh_cpu_ms),
+                   log::field("swap_ms", last_phases_.swap_ms));
+  return true;
+}
+
+bool TerrainTileSet::build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 time_s,
+                                TerrainChunk& chunk, Vector<f32>& h, TerrainTileMesh& mesh,
+                                std::atomic<i64>& heights_ns, std::atomic<i64>& mesh_ns) const {
+  const u32 a = spec.cells + 3;
+  h.assign(static_cast<usize>(a) * a, 0.0f);
+  const i32 i0 = spec.x * static_cast<i32>(spec.cells) - 1;
+  const i32 j0 = spec.z * static_cast<i32>(spec.cells) - 1;
+  const i64 t0 = time::monotonic_ns();
+  if (!source_.heights(time_s, spec.spacing_mm, i0, j0, a, a, std::span<f32>(h.data(), h.size())))
+    return false;
+  const i64 t1 = time::monotonic_ns();
+  heights_ns.fetch_add(t1 - t0, std::memory_order_relaxed);
+  build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), mesh);
+  chunk.i = spec.x;
+  chunk.j = spec.z;
+  chunk.key = key;
+  chunk.slot = ~0u;
+  chunk.grid_vertices = mesh.positions.size();  // no skirts
+  chunk.rest_time_s = time_s;
+  geometry::AttributeSource attributes;
+  attributes.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
+  attributes.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
+  attributes.locked = std::span<const u8>(mesh.locked.data(), mesh.locked.size());
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(mesh.positions.data(), mesh.positions.size()),
+          std::span<const u32>(mesh.indices.data(), mesh.indices.size()), options_, chunk.lod,
+          nullptr, attributes)) {
+    return false;
+  }
+  // The rest heights: the tile's lattice points at the level's spacing, which every vertex of every
+  // level of its DAG is one of (a vertex drawn from a coarser level too: that lattice is part of
+  // this one).
+  chunk.rest_window = gfx::TerrainField{};
+  chunk.rest_window.i0 = i0 + 1;
+  chunk.rest_window.j0 = j0 + 1;
+  chunk.rest_window.nx = spec.cells + 1;
+  chunk.rest_window.nz = spec.cells + 1;
+  chunk.rest.resize(static_cast<usize>(spec.cells + 1) * (spec.cells + 1));
+  for (u32 j = 0; j <= spec.cells; ++j) {
+    for (u32 i = 0; i <= spec.cells; ++i)
+      chunk.rest[j * (spec.cells + 1) + i] = h[(j + 1) * a + i + 1];
+  }
+  mesh_ns.fetch_add(time::monotonic_ns() - t1, std::memory_order_relaxed);
   return true;
 }
 
@@ -591,17 +959,21 @@ bool TerrainTileSet::update(f32 camera_x, f32 camera_z, f64 time_s, const Terrai
 // they replace kept as `previous_` until the next rebuild.
 bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs,
                              u32& moved, std::string* error) {
+  const i64 rebuild_started = time::monotonic_ns();
   moved = 0;
   LevelMap level_of;
   level_of.reserve(building_.size());
   u32 withheld = 0;
   // A tile its level's window does not cover is withheld: nothing could draw it right.
   Vector<u8> tile_level(building_.size(), u8{0});
+  for (u32& w : window_withheld_)
+    w = 0;
   for (u32 k = 0; k < building_.size(); ++k) {
     const TerrainTile& tile = building_[k];
     const u32 level = level_of_ring(tile.ring);
     if (!covers(level, target, tile.x, tile.z)) {
       ++withheld;
+      ++window_withheld_[level];
       continue;
     }
     tile_level[k] = static_cast<u8>(level);
@@ -704,53 +1076,18 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
     }
   }
   Vector<u8> failed(todo.size(), u8{0});
+  const i64 scanned = time::monotonic_ns();
+  std::atomic<i64> heights_ns{0};
+  std::atomic<i64> mesh_ns{0};
   const auto run = [&](u32 begin, u32 end) {
     TerrainTileMesh mesh;
     Vector<f32> h;
     for (u32 t = begin; t < end; ++t) {
       const Job& job = todo[t];
-      const TerrainTileMeshSpec& spec = want[job.level][job.index].spec;
-      const u32 a = spec.cells + 3;
-      h.assign(static_cast<usize>(a) * a, 0.0f);
-      const i32 i0 = spec.x * static_cast<i32>(spec.cells) - 1;
-      const i32 j0 = spec.z * static_cast<i32>(spec.cells) - 1;
-      if (!source_.heights(time_s, spec.spacing_mm, i0, j0, a, a,
-                           std::span<f32>(h.data(), h.size()))) {
+      const auto& wanted = want[job.level][job.index];
+      if (!build_tile(wanted.spec, wanted.key, time_s, next[job.level][job.index], h, mesh,
+                      heights_ns, mesh_ns))
         failed[t] = 1;
-        continue;
-      }
-      build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), mesh);
-      TerrainChunk& chunk = next[job.level][job.index];
-      chunk.i = spec.x;
-      chunk.j = spec.z;
-      chunk.key = want[job.level][job.index].key;
-      chunk.slot = ~0u;
-      chunk.grid_vertices = mesh.positions.size();  // no skirts
-      chunk.rest_time_s = time_s;
-      geometry::AttributeSource attributes;
-      attributes.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
-      attributes.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
-      attributes.locked = std::span<const u8>(mesh.locked.data(), mesh.locked.size());
-      if (!geometry::build_cluster_lod(
-              std::span<const Vec3>(mesh.positions.data(), mesh.positions.size()),
-              std::span<const u32>(mesh.indices.data(), mesh.indices.size()), options_, chunk.lod,
-              nullptr, attributes)) {
-        failed[t] = 1;
-        continue;
-      }
-      // The rest heights: the tile's lattice points at the level's spacing, which every vertex of
-      // every level of its DAG is one of (a vertex drawn from a coarser level too: that lattice is
-      // part of this one).
-      chunk.rest_window = gfx::TerrainField{};
-      chunk.rest_window.i0 = i0 + 1;
-      chunk.rest_window.j0 = j0 + 1;
-      chunk.rest_window.nx = spec.cells + 1;
-      chunk.rest_window.nz = spec.cells + 1;
-      chunk.rest.resize(static_cast<usize>(spec.cells + 1) * (spec.cells + 1));
-      for (u32 j = 0; j <= spec.cells; ++j) {
-        for (u32 i = 0; i <= spec.cells; ++i)
-          chunk.rest[j * (spec.cells + 1) + i] = h[(j + 1) * a + i + 1];
-      }
     }
   };
   if (jobs == nullptr || todo.size() < 2) {
@@ -759,6 +1096,11 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
     jobs->parallel_for(jobs::Pool::Performance, todo.size(), 1,
                        [&](u32 begin, u32 end) { run(begin, end); });
   }
+  const i64 built_at = time::monotonic_ns();
+  last_phases_.scan_ms = static_cast<f64>(scanned - rebuild_started) / 1.0e6;
+  last_phases_.build_ms = static_cast<f64>(built_at - scanned) / 1.0e6;
+  last_phases_.heights_cpu_ms = static_cast<f64>(heights_ns.load()) / 1.0e6;
+  last_phases_.mesh_cpu_ms = static_cast<f64>(mesh_ns.load()) / 1.0e6;
   for (const u8 f : failed) {
     if (f != 0) {
       if (error != nullptr)
@@ -801,6 +1143,13 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
   withheld_ = withheld;
   last_built_ = todo.size();
   last_kept_ = kept;
+  last_phases_.swap_ms = static_cast<f64>(time::monotonic_ns() - built_at) / 1.0e6;
+  ENGINE_LOG_DEBUG(log_renderer, "world tiles rebuilt", log::field("built", last_built_),
+                   log::field("kept", last_kept_), log::field("scan_ms", last_phases_.scan_ms),
+                   log::field("build_ms", last_phases_.build_ms),
+                   log::field("heights_cpu_ms", last_phases_.heights_cpu_ms),
+                   log::field("mesh_cpu_ms", last_phases_.mesh_cpu_ms),
+                   log::field("swap_ms", last_phases_.swap_ms));
   return true;
 }
 

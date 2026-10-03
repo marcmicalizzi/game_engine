@@ -142,6 +142,27 @@ class TerrainLevelSet {
   static f64 padding_of(std::span<const TerrainChunk> chunks, std::span<const f32> field,
                         const gfx::TerrainField& window);
 
+  // **What the last `update` changed**, for a set that knows (`changed_only`: the world's tiles,
+  // after any rebuild but a whole one): each level's chunks it added, by index into
+  // `chunks(level)`, and the slots of the chunks it let go. The motion then uploads, swaps and
+  // measures those and nothing else, so a rebuild's frame-thread work costs what changed; a set
+  // that does not know (the rings, which rebuild whole squares) is read whole. `padding_added` is
+  // `padding` over the added chunks alone: a field's padding measured before the rebuild already
+  // covers every chunk it kept and let go, so the larger of the two is the padding over everything.
+  virtual bool changed_only() const noexcept { return false; }
+  virtual std::span<const u32> added(u32 level) const noexcept {
+    (void)level;
+    return {};
+  }
+  virtual std::span<const u32> released(u32 level) const noexcept {
+    (void)level;
+    return {};
+  }
+  virtual f64 padding_added(u32 level, std::span<const f32> field,
+                            const gfx::TerrainField& window) const {
+    return padding(level, field, window);
+  }
+
   // Milliseconds the last `build` or `update` took, and how many chunks it built and kept.
   virtual f64 last_build_ms() const noexcept = 0;
   virtual u32 last_built() const noexcept = 0;

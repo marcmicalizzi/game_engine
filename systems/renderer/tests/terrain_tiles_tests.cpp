@@ -321,6 +321,85 @@ TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its v
   CHECK(named == 5 + 9 - 1);
 }
 
+TEST_CASE("world tiles: a rebuild of what changed draws what a whole build draws") {
+  // renderer.md, "What a frame waits for": a rebuild touches the tiles that entered, left or
+  // changed level and their neighbours, and nothing else — and must land on exactly the chunks a
+  // set built whole round the same camera has, tile for tile, level for level and key for key.
+  // A camera flies a curve across 30 tiles in steps of a third of a tile, handing the set the
+  // first-fill rule's tiles as changes; at every step the set is compared with one built afresh.
+  const TerrainDesc grid = grid_desc();
+  const TerrainTilesDesc t = small_tiles();
+  TerrainTileSet set;
+  std::string error;
+  REQUIRE_MESSAGE(set.build(grid, t, k_waves, 1.0f, 2.0f, nullptr, &error), error);
+  Vector<TerrainTile> held;
+  terrain_tiles_round(t, 1.0f, 2.0f, held);
+  u32 most_built = 0;
+  u32 rebuilds = 0;
+  for (u32 step = 1; step <= 90; ++step) {
+    const f32 x = 1.0f + static_cast<f32>(step) * t.tile_size / 3.0f;
+    const f32 z = 2.0f + 40.0f * std::sin(static_cast<f32>(step) * 0.05f);
+    Vector<TerrainTile> next;
+    terrain_tiles_round(t, x, z, next);
+    // The world's events: what entered or changed ring, and what left.
+    Vector<TerrainTile> changes;
+    for (const TerrainTile& n : next) {
+      bool same = false;
+      for (const TerrainTile& h : held)
+        same = same || (h.x == n.x && h.z == n.z && h.ring == n.ring);
+      if (!same) changes.push_back(n);
+    }
+    for (const TerrainTile& h : held) {
+      bool still = false;
+      for (const TerrainTile& n : next)
+        still = still || (h.x == n.x && h.z == n.z);
+      if (!still) changes.push_back(TerrainTile{h.x, h.z, k_tile_gone});
+    }
+    held = next;
+    const bool changed =
+        set.change_tiles(std::span<const TerrainTile>(changes.data(), changes.size()));
+    CHECK(changed == !changes.empty());
+    const TerrainRingLayout target = set.next_layout(x, z, set.layout());
+    if (target == set.layout()) continue;
+    set.prepare(target);
+    u32 moved = 0;
+    REQUIRE_MESSAGE(set.update(x, z, 0.0, target, {}, nullptr, moved, &error), error);
+    CHECK(set.changed_only());
+    ++rebuilds;
+    most_built = std::max(most_built, set.last_built());
+    // What it changed is what it says it changed: every added index names a chunk with no slot.
+    for (u32 l = 1; l < set.level_count(); ++l) {
+      for (const u32 c : set.added(l)) {
+        REQUIRE(c < set.chunks(l).size());
+        CHECK(set.chunks(l)[c].slot == ~0u);
+      }
+    }
+    TerrainTileSet whole;
+    REQUIRE_MESSAGE(whole.build(grid, t, k_waves, x, z, nullptr, &error), error);
+    u32 drawn = 0;
+    u32 differ = 0;
+    for (u32 l = 1; l < set.level_count(); ++l) {
+      drawn += set.chunks(l).size();
+      for (const TerrainChunk& c : whole.chunks(l)) {
+        u32 level = 0;
+        u32 index = 0;
+        if (!set.find(c.i, c.j, level, index) || level != l || set.chunks(l)[index].key != c.key)
+          ++differ;
+      }
+    }
+    u32 whole_drawn = 0;
+    for (u32 l = 1; l < whole.level_count(); ++l)
+      whole_drawn += whole.chunks(l).size();
+    CHECK(differ == 0);
+    CHECK(drawn == whole_drawn);
+    CHECK(set.withheld() == 0);
+  }
+  MESSAGE(rebuilds << " rebuilds of changes, at most " << most_built << " tiles built in one");
+  CHECK(rebuilds > 30);
+  // A third of a tile's step changes a band of tiles, never the whole set.
+  CHECK(most_built < held.size() / 2);
+}
+
 TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") {
   const TerrainDesc grid = grid_desc();
   const TerrainTilesDesc t = small_tiles();

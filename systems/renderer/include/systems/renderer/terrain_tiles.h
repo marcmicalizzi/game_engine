@@ -32,6 +32,7 @@
 // ground provider seen as tiles, or a tile set built ahead; the set does not know which.
 
 #include <core/base/types.h>
+#include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
@@ -39,6 +40,7 @@
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_levels.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -52,6 +54,9 @@ namespace engine::renderer {
 
 // The most world rings a tile set draws: a level each, beside the scene's grid.
 inline constexpr u32 k_max_tile_rings = k_max_terrain_levels - 1;
+
+// A change's ring for a tile the world let go (`TerrainTileSet::change_tiles`).
+inline constexpr u8 k_tile_gone = 0xFF;
 
 // One tile the world holds: tile (x, z) covers [x, x + 1) × [z, z + 1) tiles of the world's grid,
 // and `ring` is its world ring, innermost 0.
@@ -148,14 +153,23 @@ class TerrainTileSet final : public TerrainLevelSet {
 
   // **The tiles the world holds**, and their rings, as its ring hands them over after an update:
   // what the next rebuild draws. Any order; a tile named twice keeps its first ring. True when it
-  // differs from the set handed over last (and the next frame asks for a rebuild). Allocates only
-  // when the set grows past every set before it.
+  // differs from the set handed over before (and the next frame asks for a rebuild). Linear in the
+  // set: what differs becomes changes, as `change_tiles` takes them.
   bool set_tiles(std::span<const TerrainTile> tiles);
-  // The set handed over last, in tile order, and how many sets have been.
-  std::span<const TerrainTile> wanted() const noexcept {
-    return std::span<const TerrainTile>(wanted_.data(), wanted_.size());
-  }
+  // **What changed in the tiles the world holds** since the last hand-over: a tile now held in
+  // `ring` (it entered, or changed ring), or let go (`ring == k_tile_gone`), in the order it
+  // happened. Costs what changed — the world's drawn-ground consumer hands its events through it
+  // (world.md, "The consumers") — and so does the rebuild it asks for. True when anything did.
+  bool change_tiles(std::span<const TerrainTile> changes);
+  // How many hand-overs changed the set.
   u64 generation() const noexcept { return generation_; }
+  // The tiles the world holds as handed over last, in no particular order.
+  u32 held_count() const noexcept { return held_.size(); }
+  TerrainTile held_at(u32 i) const noexcept {
+    const u64 key = held_.key_at(i);
+    return TerrainTile{static_cast<i32>(static_cast<u32>(key >> 32)),
+                       static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFFu)), held_.value_at(i)};
+  }
   const TerrainTilesDesc& tiles_desc() const noexcept { return tiles_; }
   // The level a world ring is drawn at, and back.
   u32 level_of_ring(u32 ring) const noexcept {
@@ -169,6 +183,17 @@ class TerrainTileSet final : public TerrainLevelSet {
   bool find(i32 x, i32 z, u32& level, u32& index) const noexcept;
   // Tiles the last rebuild left out because their level's window does not cover them.
   u32 withheld() const noexcept { return withheld_; }
+  // Where the last rebuild's time went: deciding what to build (the keys, on the worker's thread),
+  // building it (wall, on the pool) and the CPU milliseconds its jobs spent on the source's heights
+  // and on the meshes and DAGs, and putting the lists in place under the lock.
+  struct Phases {
+    f64 scan_ms = 0.0;
+    f64 build_ms = 0.0;
+    f64 heights_cpu_ms = 0.0;
+    f64 mesh_cpu_ms = 0.0;
+    f64 swap_ms = 0.0;
+  };
+  const Phases& last_phases() const noexcept { return last_phases_; }
 
   // ---- TerrainLevelSet ----
   bool valid() const noexcept override { return levels_ > 1; }
@@ -195,6 +220,11 @@ class TerrainTileSet final : public TerrainLevelSet {
               std::string* error) override;
   f64 padding(u32 level, std::span<const f32> field,
               const gfx::TerrainField& window) const override;
+  bool changed_only() const noexcept override { return !whole_last_; }
+  std::span<const u32> added(u32 level) const noexcept override;
+  std::span<const u32> released(u32 level) const noexcept override;
+  f64 padding_added(u32 level, std::span<const f32> field,
+                    const gfx::TerrainField& window) const override;
   f64 last_build_ms() const noexcept override { return last_build_ms_; }
   u32 last_built() const noexcept override { return last_built_; }
   u32 last_kept() const noexcept override { return last_kept_; }
@@ -206,8 +236,18 @@ class TerrainTileSet final : public TerrainLevelSet {
  private:
   // Whether `layout`'s window of `level` covers tile (x, z), apron and all.
   bool covers(u32 level, const TerrainRingLayout& layout, i32 x, i32 z) const noexcept;
+  // The whole rebuild (the first fill, and a level past half its slots), and the one that costs
+  // what changed (every other).
   bool rebuild(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs, u32& moved,
                std::string* error);
+  bool rebuild_changes(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs,
+                       u32& moved, std::string* error);
+  void index_chunks();
+  TerrainTileMeshSpec spec_of(i32 x, i32 z, u8 level,
+                              const HashMap<u64, u8>& level_of) const noexcept;
+  bool build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 time_s, TerrainChunk& chunk,
+                  Vector<f32>& h, TerrainTileMesh& mesh, std::atomic<i64>& heights_ns,
+                  std::atomic<i64>& mesh_ns) const;
 
   // `padding` may be asked from another thread while `update` runs: it takes this, and `update`
   // takes it only to swap the chunk lists.
@@ -228,16 +268,35 @@ class TerrainTileSet final : public TerrainLevelSet {
   Vector<TerrainChunk> chunks_[k_max_terrain_levels];
   Vector<TerrainChunk> previous_[k_max_terrain_levels];
   TerrainRingLayout layout_;
-  // The tiles the world holds: handed over by the frame (`wanted_`), and taken for a rebuild
-  // (`building_`) on the frame's thread before the worker reads it.
-  Vector<TerrainTile> wanted_;
-  Vector<TerrainTile> incoming_;
+  // The frame's: the tiles the world holds (tile → ring) and what changed since the last rebuild
+  // was asked for, which `prepare` hands to the worker (`taken_`).
+  HashMap<u64, u8> held_;
+  HashMap<u64, u8> incoming_;  // set_tiles' scratch
+  Vector<TerrainTile> changes_;
+  Vector<TerrainTile> taken_;
+  // The worker's: the held tiles as of the last rebuild, every drawn tile's level and place in
+  // its level's list (level << 24 | index), each level's count and the tiles its window leaves
+  // out; and its scratch. `building_` is the whole rebuild's list.
+  HashMap<u64, u8> built_ring_;
+  HashMap<u64, u8> level_of_;
+  HashMap<u64, u32> chunk_at_;
+  u32 count_[k_max_terrain_levels] = {};
+  u32 window_withheld_[k_max_terrain_levels] = {};
+  HashMap<u64, u8> touched_;
+  Vector<u64> changed_keys_;
+  Vector<u64> dirty_;
+  Vector<u32> drops_;
+  // What the last rebuild changed (`added`, `released`), unless it was a whole one.
+  Vector<u32> added_[k_max_terrain_levels];
+  Vector<u32> released_[k_max_terrain_levels];
+  bool whole_last_ = true;
   Vector<TerrainTile> building_;
   u64 generation_ = 0;
   u32 withheld_ = 0;
   f64 last_build_ms_ = 0.0;
   u32 last_built_ = 0;
   u32 last_kept_ = 0;
+  Phases last_phases_;
 };
 
 }  // namespace engine::renderer

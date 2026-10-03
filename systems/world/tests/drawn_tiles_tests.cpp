@@ -75,26 +75,28 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
   Vector<renderer::TerrainTile> round;
   renderer::terrain_tiles_round(t, camera.x, camera.z, round);
   CHECK(drawn.held().size() == round.size());
-  CHECK(set.wanted().size() == round.size());
+  CHECK(set.held_count() == round.size());
 
   // Nothing moves: no commit.
   world.update(at(camera), 1);
   CHECK(drawn.stats().commits == 1);
 
-  // The observer walks two tiles east: the ring's events reach the set as one change, and what the
-  // set wants is what the ring holds, tile for tile, ring for ring.
+  // The observer walks two tiles east: the ring's events reach the set as one change — the tiles
+  // that entered, changed ring or left, not the whole set — and what the set holds is what the
+  // ring holds, tile for tile, ring for ring.
   const Vec3 east{camera.x + 16.0f, camera.y, camera.z};
   world.update(at(east), 2);
   CHECK(drawn.stats().commits == 2);
   CHECK(drawn.stats().changed == 1);
   CHECK(set.generation() == first_generation + 1);
   u32 mismatched = 0;
-  for (const renderer::TerrainTile& tile : set.wanted()) {
+  for (u32 i = 0; i < set.held_count(); ++i) {
+    const renderer::TerrainTile tile = set.held_at(i);
     const u8* ring = drawn.held().find_value(tile_key(TileCoord{tile.x, tile.z}));
     mismatched += ring == nullptr || *ring != tile.ring ? 1u : 0u;
   }
   CHECK(mismatched == 0);
-  CHECK(set.wanted().size() == drawn.held().size());
+  CHECK(set.held_count() == drawn.held().size());
   // With hysteresis a tile the ring still holds past its radius is in the set too, at the ring it
   // is in: the set is the world's, not a band round the camera.
   CHECK(drawn.stats().deactivated > 0);
@@ -102,8 +104,9 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
 
   // **A frame's hand-over allocates nothing in steady state**: the observer flies on east, and over
   // the second half of the flight the ring's update, this consumer's events and commit and the tile
-  // set's `set_tiles` make no allocation on this thread (a tag is the calling thread's). Counted
-  // where the build tracks tags (Debug).
+  // set's `change_tiles` make no allocation on this thread (a tag is the calling thread's) — with
+  // the set's changes taken after each, as the renderer's next rebuild takes them (`prepare`).
+  // Counted where the build tracks tags (Debug).
   static const mem::TagId k_tag = mem::register_tag("drawn-tiles-frames");
   u64 allocations = 0;
   const u64 commits_before = drawn.stats().commits;
@@ -118,6 +121,7 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
     {
       const mem::TagScope scope(k_tag);
       world.update(observers, 3 + u);
+      set.prepare(set.layout());
     }
     if (u >= k_updates / 2) allocations += mem::stats(k_tag).allocation_count - before;
   }

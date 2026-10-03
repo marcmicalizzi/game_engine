@@ -373,6 +373,36 @@ tunables::Float ring_upload_mib{
     "renderer.terrain.ring_upload_mib", 16.0, 0.0, 4096.0,
     "Megabytes of a terrain ring's rebuilt chunks copied onto the device a frame, at most (one "
     "chunk a frame whatever it weighs)"};
+// **The world tiles' budget a frame on the frame's thread** (renderer.md, "What a frame waits
+// for"): what a window's frame stages of a rebuild's tiles — the host copy into staging is the
+// frame thread's whole share of a tile, about 0.55 ms a MiB on the owner's desktop. At 100 m/s the
+// endless desert's tiles come to 1.2 MiB a frame at the mean and 6 MiB after a window's move, so 4
+// MiB keeps every frame's share under about 2.5 ms and a rebuild's tiles reach the device within a
+// frame or two of the rebuild; the old ring budget of 16 let one frame stage 6 MiB, 3.1 ms.
+tunables::Float tile_upload_mib{
+    "renderer.terrain.tile_upload_mib", 4.0, 0.0, 4096.0,
+    "Megabytes of the world tiles' rebuilt chunks a window's frame stages for upload, at most (one "
+    "tile a frame whatever it weighs)"};
+// **The threads a window's tile work may take** (renderer.md, "What a frame waits for"): read by
+// a host when it makes the terrain's job pool. A rebuild at 100 m/s and a level's window move
+// each fill every worker they are given for tens of milliseconds, and with a worker on every
+// logical CPU the frame's own thread lost its time slices to them: 50–65 ms frames every 2.2 s in
+// the first windowed flight (2026-10-03). 0 is half the machine's logical CPUs.
+tunables::Int terrain_workers{
+    "renderer.terrain.workers", 0, 0, 1024,
+    "Worker threads of the pool a window's terrain fields and world tiles are built on (0: half "
+    "the logical CPUs)"};
+
+}  // namespace
+
+u32 terrain_window_workers() noexcept {
+  const i64 asked = terrain_workers.get();
+  if (asked > 0) return static_cast<u32>(asked);
+  const u32 logical = std::thread::hardware_concurrency();
+  return std::max<u32>(2u, logical / 2u);
+}
+
+namespace {
 
 // The heights of a window, a job per `k_blocks_per_job` blocks, or on the calling thread.
 void evaluate_window(const TerrainSampler& sampler, jobs::JobSystem* jobs, f64 time_s,
@@ -527,7 +557,11 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
   pending_moved_ = 0;
   for (Pair& p : pending_)
     p = Pair{};
-  upload_budget_bytes_ = static_cast<u64>(ring_upload_mib.get() * 1024.0 * 1024.0);
+  // The world's tiles have their own budget: their rebuilds come every few frames, a ring's every
+  // few seconds.
+  const bool tiles = rings_ != nullptr && rings_->shares_vertices();
+  upload_budget_bytes_ =
+      static_cast<u64>((tiles ? tile_upload_mib.get() : ring_upload_mib.get()) * 1024.0 * 1024.0);
   shown_layout_ = rings_ != nullptr ? rings_->layout() : TerrainRingLayout{};
   pending_layout_ = shown_layout_;
   levels_.resize(scene.terrain_level_count());
@@ -850,8 +884,12 @@ void TerrainMotion::run_pairs(Task& task) {
         if (p.measured >= std::size(p.measured_time) || !same_window(c.window, p.a.window))
           continue;
         p.measured_time[p.measured] = c.time_s;
-        p.measured_padding[p.measured] =
-            rings_->padding(k, std::span<const f32>(c.heights.data(), c.heights.size()), c.window);
+        // Against the chunks the rebuild added, where the set knows them: the swap keeps the
+        // larger of this and what the field had, which covers every chunk kept and let go.
+        const std::span<const f32> heights(c.heights.data(), c.heights.size());
+        p.measured_padding[p.measured] = rings_->changed_only()
+                                             ? rings_->padding_added(k, heights, c.window)
+                                             : rings_->padding(k, heights, c.window);
         ++p.measured;
       }
       continue;
@@ -875,8 +913,19 @@ void TerrainMotion::run_pairs(Task& task) {
       pa = field_heights(level, p.a.time_s, w, ha);
       if (p.has_b) pb = field_heights(level, p.b.time_s, w, hb);
     }
-    p.a.padding_m = rings_->padding(k, std::span<const f32>(pa, count), w);
-    if (p.has_b) p.b.padding_m = rings_->padding(k, std::span<const f32>(pb, count), w);
+    // A field over a moved window is the same heights at every point the old one had (a function
+    // of the point and the time), so what it measured over the chunks kept still holds and only
+    // the chunks the rebuild added are new to it — where the set knows which those are.
+    if (rings_->changed_only()) {
+      p.a.padding_m =
+          std::max(p.a.padding_m, rings_->padding_added(k, std::span<const f32>(pa, count), w));
+      if (p.has_b)
+        p.b.padding_m =
+            std::max(p.b.padding_m, rings_->padding_added(k, std::span<const f32>(pb, count), w));
+    } else {
+      p.a.padding_m = rings_->padding(k, std::span<const f32>(pa, count), w);
+      if (p.has_b) p.b.padding_m = rings_->padding(k, std::span<const f32>(pb, count), w);
+    }
     if (p.window_changed) {
       std::memcpy(p.staging_a.mapped, pa, count * sizeof(f32));
       if (p.has_b) std::memcpy(p.staging_b.mapped, pb, count * sizeof(f32));
@@ -1118,9 +1167,17 @@ void TerrainMotion::drop_ahead(u32 k) {
 // field at the surface's time, while the sand goes on moving.
 void TerrainMotion::ask_recentre(f32 camera_x, f32 camera_z) {
   const TerrainRingLayout next = rings_->next_layout(camera_x, camera_z, shown_layout_);
-  if (next == shown_layout_) return;
+  if (next == shown_layout_) {
+    // What is drawn is what this camera asks for: no lag.
+    shown_camera_x_ = camera_x;
+    shown_camera_z_ = camera_z;
+    shown_asked_frame_ = frames_;
+    return;
+  }
   pending_layout_ = next;
   asked_frame_ = frames_;
+  pending_camera_x_ = camera_x;
+  pending_camera_z_ = camera_z;
   // What the rebuild is to be of, taken on this thread before the worker has it: a tile set's
   // tiles as the world last handed them over, which the frame may change again meanwhile.
   rings_->prepare(next);
@@ -1157,6 +1214,9 @@ bool TerrainMotion::take_rings(bool block) {
   ring_stats_.chunks_dropped += finished.dropped;
   ring_stats_.last_rebuild_ms = finished.ms;
   ring_stats_.max_rebuild_ms = std::max(ring_stats_.max_rebuild_ms, finished.ms);
+  pending_built_ = finished.built;
+  pending_dropped_ = finished.dropped;
+  pending_rebuild_ms_ = finished.ms;
   if (!finished.ok) {
     abandon_recentre(finished.error);
     return true;
@@ -1173,6 +1233,14 @@ bool TerrainMotion::take_rings(bool block) {
   for (u32 k = 1; k < levels_.size(); ++k) {
     if ((pending_moved_ & (1u << k)) == 0) continue;
     const Vector<TerrainChunk>& chunks = rings_->chunks(k);
+    if (rings_->changed_only()) {
+      // The chunks the rebuild added, and nothing else to look at (terrain_levels.h).
+      for (const u32 c : rings_->added(k)) {
+        if (c < chunks.size() && chunks[c].slot == ~0u && !chunks[c].lod.mesh.clusters.empty())
+          uploads_.push_back(Upload{k, c});
+      }
+      continue;
+    }
     for (u32 c = 0; c < chunks.size(); ++c) {
       if (chunks[c].slot == ~0u && !chunks[c].lod.mesh.clusters.empty())
         uploads_.push_back(Upload{k, c});
@@ -1201,6 +1269,7 @@ bool TerrainMotion::upload_chunks(bool all) {
     ++done;
   }
   const u64 bytes = scene_->terrain_chunk_upload_bytes() - before;
+  frame_layout_.upload_bytes += bytes;
   if (done > 0) {
     ++upload_frames_;
     upload_bytes_ += bytes;
@@ -1327,7 +1396,32 @@ void TerrainMotion::swap_rings() {
   for (u32 k = 1; k < levels_.size(); ++k) {
     Level& level = levels_[k];
     Pair& p = pending_[k];
-    if (p.moved) {
+    if (p.moved && rings_->changed_only()) {
+      // What the rebuild let go goes off and what it added comes on, and nothing else is looked
+      // at: a tile level's swap costs the tiles that changed (renderer.md, "What a frame waits
+      // for"). The list of slots shown is the full swap's, and is made again from the marks
+      // should one ever follow.
+      for (const u32 s : rings_->released(k)) {
+        if (s >= level.shown_mask.size() || level.shown_mask[s] == 0) continue;
+        scene_->terrain_chunk_show(k, s, false);
+        level.shown_mask[s] = 0;
+      }
+      const Vector<TerrainChunk>& chunks = rings_->chunks(k);
+      for (const u32 c : rings_->added(k)) {
+        const u32 s = c < chunks.size() ? chunks[c].slot : ~0u;
+        if (s >= level.shown_mask.size() || level.shown_mask[s] != 0) continue;
+        scene_->terrain_chunk_show(k, s, true);
+        level.shown_mask[s] = 1;
+      }
+      level.shown_stale = true;
+    } else if (p.moved) {
+      if (level.shown_stale) {
+        level.shown_slots.clear();
+        for (u32 s = 0; s < level.shown_mask.size(); ++s) {
+          if (level.shown_mask[s] != 0) level.shown_slots.push_back(s);
+        }
+        level.shown_stale = false;
+      }
       // The slots drawn from now on, marked; the ones drawn until now and not marked go off, the
       // marked ones not drawn until now come on. Linear in the level's chunks and allocating
       // nothing (every list was sized for the level's slots at `start`): a tile level holds
@@ -1377,6 +1471,12 @@ void TerrainMotion::swap_rings() {
   }
   shown_layout_ = pending_layout_;
   recentre_ = Recentre::none;
+  shown_camera_x_ = pending_camera_x_;
+  shown_camera_z_ = pending_camera_z_;
+  shown_asked_frame_ = asked_frame_;
+  frame_layout_.built = pending_built_;
+  frame_layout_.dropped = pending_dropped_;
+  frame_layout_.rebuild_ms = pending_rebuild_ms_;
   // The frozen levels want their next fields again from here: a freeze is not a field's
   // turnaround.
   for (u32 k = 1; k < levels_.size(); ++k) {
@@ -1479,7 +1579,16 @@ void TerrainMotion::advance_recentre(bool complete) {
 
 void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   if (!active()) return;
+  const i64 frame_started = time::monotonic_ns();
   ++frames_;
+  frame_layout_ = FrameLayout{};
+  if (!shown_camera_set_) {
+    // The first layout was built round the first frame's camera.
+    shown_camera_x_ = camera_x;
+    shown_camera_z_ = camera_z;
+    shown_asked_frame_ = frames_;
+    shown_camera_set_ = true;
+  }
   game_s_ += real_dt_s * config_.rate;
   real_s_ += real_dt_s;
   if (real_dt_s > 0.0) frame_s_ema_ = 0.9 * frame_s_ema_ + 0.1 * real_dt_s;
@@ -1641,6 +1750,17 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   // shares (renderer.md, "The sand close up").
   scene_->set_ground_time(after);
   schedule_next();
+  // How far behind the camera the layout this frame draws is: the camera now against where it was
+  // when that layout was asked for.
+  if (rings_ != nullptr) {
+    const f64 dx = static_cast<f64>(camera_x) - static_cast<f64>(shown_camera_x_);
+    const f64 dz = static_cast<f64>(camera_z) - static_cast<f64>(shown_camera_z_);
+    frame_layout_.lag_m = std::sqrt(dx * dx + dz * dz);
+    frame_layout_.lag_frames = static_cast<u32>(frames_ - shown_asked_frame_);
+    max_lag_m_ = std::max(max_lag_m_, frame_layout_.lag_m);
+    max_lag_frames_ = std::max(max_lag_frames_, frame_layout_.lag_frames);
+  }
+  frame_layout_.host_ms = ms_since(frame_started);
 }
 
 f64 TerrainMotion::lag_s() const noexcept {

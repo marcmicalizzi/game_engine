@@ -682,6 +682,10 @@ class SceneRenderer {
   u32 width_ = 0;
   u32 height_ = 0;
   u64 submitted_ = 0;  // frames submitted; also the slot-warmup counter
+  // When the frame being recorded passed its tables, its terrain, its passes' setup and its
+  // graph: what a slow frame's line names (submit_frame).
+  static constexpr i64 k_slow_frame_ns = 25'000'000;
+  i64 phase_ns_[4] = {};
   // Frames recorded since create, never reset: the occlusion flags' ping-pong parity, which has
   // to alternate every frame whatever frame number the caller passes and whatever reset_stats did.
   u64 recorded_ = 0;

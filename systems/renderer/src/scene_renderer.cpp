@@ -1119,8 +1119,16 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   const u32 before = scene.rt_capacity();
   if (capacity == before) return true;
   // Every frame in flight imports the chain's buffers by handle; none may still be reading them.
+  const i64 started = time::monotonic_ns();
   frames_.wait_idle();
   if (!scene.resize_ray_tracing(capacity, error, beyond_budget)) return false;
+  // A resize waits for the device and makes the chain's buffers again: a hitch in a window, named
+  // when it is one (the slow frames' line, submit_frame).
+  if (time::monotonic_ns() - started > k_slow_frame_ns) {
+    ENGINE_LOG_WARN(log_renderer, "the ray tracing chain's resize was slow",
+                    log::field("from", before), log::field("to", scene.rt_capacity()),
+                    log::field("ms", static_cast<f64>(time::monotonic_ns() - started) / 1.0e6));
+  }
   rt_capacity_.resized(scene.rt_capacity());
   RtStats& chain = stats_.rt;
   if (scene.rt_capacity() > before) {
@@ -1188,7 +1196,23 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   ++stats_.frames;
   targets_.hiz_dirty = false;
   flags_dirty_ = false;
-  stats_.cpu_ns += static_cast<f64>(time::monotonic_ns() - started);
+  const i64 finished = time::monotonic_ns();
+  stats_.cpu_ns += static_cast<f64>(finished - started);
+  // **A frame whose recording took long says where** (renderer.md, "What a frame waits for"): the
+  // tables, the terrain's copies and slot records, the passes' setup, the graph's compile and
+  // record, and the submission. The flight of 2026-09-30 had 46–457 ms frames and no way to name
+  // the part; this line is how the next one is named.
+  if (finished - started > k_slow_frame_ns) {
+    const auto ms = [](i64 a, i64 b) { return static_cast<f64>(b - a) / 1.0e6; };
+    ENGINE_LOG_WARN(log_renderer, "a frame's recording was slow",
+                    log::field("frame", frame.frame_index),
+                    log::field("total_ms", ms(started, finished)),
+                    log::field("tables_ms", ms(started, phase_ns_[0])),
+                    log::field("terrain_ms", ms(phase_ns_[0], phase_ns_[1])),
+                    log::field("passes_ms", ms(phase_ns_[1], phase_ns_[2])),
+                    log::field("graph_ms", ms(phase_ns_[2], phase_ns_[3])),
+                    log::field("submit_ms", ms(phase_ns_[3], finished)));
+  }
   return value;
 }
 
@@ -1268,12 +1292,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // and expand (GpuScene::prepare_tables). Nothing for a scene read whole or a frame with no
   // change.
   if (!scene.prepare_tables(slot, tables_, error)) return false;
+  phase_ns_[0] = time::monotonic_ns();
   const bool write_tables = tables_.write;
   // A moving terrain's levels (docs/subsystems/renderer.md, "The dunes in time-lapse"): this frame
   // slot's table of what each level draws, which the cull pass and the pool pass read, and the
   // fields the host handed over since the last frame, which this frame copies onto the device
   // before either pass runs. Nothing for a scene whose terrain does not move.
   scene.terrain_prepare(slot, terrain_frame_);
+  phase_ns_[1] = time::monotonic_ns();
   const u64 terrain_table = terrain_frame_.table;
   // The pairs there are, which is what the cull dispatches over and bounds-checks against, and the
   // run length every per-pair buffer is laid out by, which is what every offset into one uses. The
@@ -3214,8 +3240,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         });
   }
   graph.set_final_layout(color, frame.final_layout);
+  phase_ns_[2] = time::monotonic_ns();
   const bool compiled = graph.compile(error);
   if (compiled) graph.execute(commands_);
+  phase_ns_[3] = time::monotonic_ns();
   // A terrain field's staging is the frame's that records its last piece to free once it is done
   // (the frame context holds it until the slot comes round), recorded or not: nothing else will.
   u64 terrain_bytes = terrain_frame_.geometry_bytes;

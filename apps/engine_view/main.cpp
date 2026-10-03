@@ -420,7 +420,10 @@ constexpr const char* k_usage =
     "                   against another action map or another camera integration version\n"
     "  --windowed       --replay-input: fly the replay in the window at its recorded pace even\n"
     "                   with --benchmark, which then writes a record per presented frame like a\n"
-    "                   live session's: the fair before and after of a presentation change\n"
+    "                   live session's: the fair before and after of a presentation change;\n"
+    "                   --camera-path: fly the path in the window at its own speed in real time\n"
+    "                   (a slow frame skips path frames rather than slowing the camera), with\n"
+    "                   --benchmark's records per presented frame\n"
     "  --present <m>    the window's present mode: fifo (the default, with vsync), fifo-relaxed,\n"
     "                   mailbox, immediate or fifo-latest-ready, FIFO where the surface lacks it;\n"
     "                   --no-vsync is mailbox, else immediate\n"
@@ -1291,6 +1294,10 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
     rings.set("last_frozen_frames", r.last_frozen_frames);
     rings.set("arena_peak_share", r.arena_peak_share);
     rings.set("device_bytes", scene.terrain_ring_bytes());
+    // How far behind the camera the drawn layout fell, at most (renderer.md, "What a frame waits
+    // for"): metres on the ground and frames. Zero offscreen, where every frame waits for it.
+    rings.set("max_lag_m", lapse.max_layout_lag_m());
+    rings.set("max_lag_frames", lapse.max_layout_lag_frames());
     out.set("rings", std::move(rings));
   }
   return out;
@@ -1308,6 +1315,14 @@ std::optional<scene::FrameTerrain> frame_terrain(const renderer::TerrainMotion& 
   out.lag_s = lapse.lag_s();
   out.speed = lapse.speed_ratio();
   out.rate = lapse.config().rate;
+  const renderer::TerrainMotion::FrameLayout& layout = lapse.frame_layout();
+  out.layout_lag_m = layout.lag_m;
+  out.layout_lag_frames = layout.lag_frames;
+  out.chunks_built = layout.built;
+  out.chunks_dropped = layout.dropped;
+  out.rebuild_ms = layout.rebuild_ms;
+  out.chunk_upload_bytes = layout.upload_bytes;
+  out.host_ms = layout.host_ms;
   for (u32 k = 0; k < lapse.level_count(); ++k) {
     const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
     scene::TerrainLevelFrame level;
@@ -2391,11 +2406,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (resolved.terrain_levels) {
       time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
     }
+    // A recorded session starts where its header says, not at the path's or the orbit's first
+    // camera (the windowed loop says why).
+    renderer::Camera first =
+        have_path ? renderer::camera_path_frame(path, 0, frames)
+                  : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+    if (interactive.on) first.position = interactive.header.start.position;
     if (resolved.terrain_rings) {
-      const renderer::Camera first =
-          have_path
-              ? renderer::camera_path_frame(path, 0, frames)
-              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
       terrain_rings = std::make_unique<renderer::TerrainRingSet>();
       if (!terrain_rings->build(scene_data.terrain, first.position.x, first.position.z,
                                 time_jobs.get(), &error)) {
@@ -2404,10 +2421,6 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
     }
     if (resolved.terrain_tiles) {
-      const renderer::Camera first =
-          have_path
-              ? renderer::camera_path_frame(path, 0, frames)
-              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
       if (!view_tiles.build(scene_data, first.position, time_jobs.get(), &error)) {
         exit_code = fail("terrain-tiles", error);
         break;
@@ -3674,11 +3687,14 @@ int main(int argc, char** argv) {
   // `--windowed` keeps a replay's `--benchmark` in the window: a presentation change is measured
   // on the recorded input at the recorded pace, which is the only fair before and after of one
   // (docs/subsystems/apps.md, "Pacing"). A marker capture and `--offscreen` are offscreen things.
-  if (options.windowed &&
-      (options.replay_input.empty() || options.offscreen || !options.marker_captures.empty())) {
+  // It also flies a camera path there at the path's own speed in real time, which is how the
+  // ground's tiles are measured keeping up with a player's clock rather than waiting for each frame
+  // (docs/experiments/world-tiles-window-2026-10-03.md).
+  if (options.windowed && ((options.replay_input.empty() && options.camera_path.empty()) ||
+                           options.offscreen || !options.marker_captures.empty() || live)) {
     std::fprintf(stderr,
-                 "engine-view: --windowed flies a --replay-input in the window; it cannot be "
-                 "--offscreen or take --marker-captures\n");
+                 "engine-view: --windowed flies a --replay-input or a --camera-path in the window; "
+                 "it cannot be --offscreen, --interactive or take --marker-captures\n");
     return k_exit_usage;
   }
   if (!live && !options.windowed &&
@@ -4006,8 +4022,8 @@ int main(int argc, char** argv) {
     // `--no-present-timing` says not to (on this project's driver a chain with them paces FIFO
     // differently, which a before-and-after has to be able to leave out).
     swapchain_desc.present_wait = options.pace != "off";
-    swapchain_desc.timing =
-        options.interactive && !options.benchmark.empty() && options.present_timing;
+    swapchain_desc.timing = (options.interactive || options.windowed) &&
+                            !options.benchmark.empty() && options.present_timing;
     if (!swapchain.create(device, swapchain_desc, &error)) {
       exit_code = fail("swapchain", error);
       break;
@@ -4133,9 +4149,11 @@ int main(int argc, char** argv) {
     }
     // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
     // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
-    // their slots. A camera that starts elsewhere re-centres them in its first frames.
+    // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
+    // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`).
     if (resolved.terrain_levels) {
-      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
+      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{
+          .performance_workers = renderer::terrain_window_workers(), .pin_threads = false});
     }
     terrain_camera =
         !window_path.keys.empty()
@@ -4143,6 +4161,21 @@ int main(int argc, char** argv) {
         : !scene_path.keys.empty()
             ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
             : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+    // An interactive session starts where its header says — `--start`, a replay's recorded start —
+    // and the first layout is built round that, not round the orbit: on the endless desert the
+    // orbit is the old erg's centre, and a session started 2 km from it began with a whole ring to
+    // rebuild behind its frames, the camera at 100 m/s outrunning each catch-up for its first tens
+    // of seconds (the owner's first flight, 2026-10-02). A live header is built here for that
+    // reason, where the scene's bounds and the paths are known.
+    if (interactive.on) {
+      if (!interactive.replay) {
+        const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
+                                                 : !scene_path.keys.empty() ? &scene_path
+                                                                            : nullptr;
+        interactive.header = live_header(options, scene_data, start_path);
+      }
+      terrain_camera.position = interactive.header.start.position;
+    }
     if (resolved.terrain_rings) {
       terrain_rings = std::make_unique<renderer::TerrainRingSet>();
       if (!terrain_rings->build(scene_data.terrain, terrain_camera.position.x,
@@ -4300,8 +4333,11 @@ int main(int argc, char** argv) {
     // read as a measurement, and on this project's development box it is often taken beside a
     // GPU job and several parallel builds (docs/subsystems/bench.md). The sampler sleeps for its
     // CPU window and spawns a process for the GPU reading, so both samples sit outside the timed
-    // region and cost the run nothing.
-    machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
+    // region and cost the run nothing. `--wait-quiet` waits for a quiet machine first, as a
+    // flythrough's timed pass does.
+    machine_start = options.wait_quiet_s > 0
+                        ? wait_for_quiet(options.wait_quiet_s)
+                        : bench::sample_machine_state(bench::k_sample_window_ms);
 
     // ---- the interactive camera: its header, its clock, and where it ends ----------------------
     // A live session's header is built here, where the scene's bounds and the camera path are
@@ -4309,12 +4345,7 @@ int main(int argc, char** argv) {
     // session stops at, and 0 for somebody at the window, whose session ends when they close it.
     u64 session_end = 0;
     if (interactive.on) {
-      if (!interactive.replay) {
-        const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
-                                                 : !scene_path.keys.empty() ? &scene_path
-                                                                            : nullptr;
-        interactive.header = live_header(options, scene_data, start_path);
-      }
+      // (A live session's header was built above, before the terrain's first layout.)
       // The walker, on the scene as loaded and the ground as the first frame draws it; with the
       // header's numbers, so a replay walks with the recording's (walk.h).
       if (!walker.start(interactive.header.walk, interactive.header.params.tick_hz, scene_data,
@@ -4430,12 +4461,19 @@ int main(int argc, char** argv) {
     // When the presented frames reached the display (a measured session with present timing): the
     // sample times are kept for the run, and the display times read once, at its end, because
     // reading them blocks for a refresh on this project's driver (gfx::Swapchain::poll_timings).
-    const bool timed_display =
-        interactive.on && !options.benchmark.empty() && swapchain.present_timing();
+    // A measured window: an interactive session's or a replay's, or `--windowed --camera-path`'s
+    // flight, which draws the path at its own speed in real time — the frame it shows is the path's
+    // frame at the wall time since its first, so a slow frame skips path frames instead of slowing
+    // the camera, and what the ground's tiles do in it is what a player's clock gets.
+    const bool path_in_window = options.windowed && !interactive.on && !window_path.keys.empty();
+    const bool window_records = !options.benchmark.empty() && (interactive.on || path_in_window);
+    if (path_in_window && !options.benchmark.empty()) records.reserve(1u << 15);
+    i64 path_started_ns = 0;
+    const bool timed_display = window_records && swapchain.present_timing();
     view::DisplayTimes display;
     Vector<u64> record_present_ids;
     if (timed_display) display.reserve(1u << 16);
-    if (interactive.on && !options.benchmark.empty()) record_present_ids.reserve(1u << 14);
+    if (window_records) record_present_ids.reserve(1u << 15);
     // `--pace auto` (the default) paces a FIFO-family chain — the modes that show every frame at
     // the display's rate — and leaves mailbox and immediate, which were asked for to run
     // unthrottled, as they are; `display` paces whatever the mode.
@@ -4618,7 +4656,7 @@ int main(int argc, char** argv) {
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
-      if (interactive.on && !options.benchmark.empty()) {
+      if (window_records) {
         take_folded(view_renderer, folded, pending, records, &record_present_ids);
       }
       u32 image_index = 0;
@@ -4741,10 +4779,21 @@ int main(int argc, char** argv) {
                                          static_cast<f64>(session_hz)
                                    : 0.0;
       } else {
+        const u32 path_frames = options.frames != 0 ? options.frames : window_path.frame_count();
+        u32 path_frame = static_cast<u32>(rendered);
+        if (path_in_window) {
+          // The path's own speed in real time (`--windowed`): the frame its clock has reached
+          // since the first frame began, and the run ends on its last frame.
+          if (path_started_ns == 0) path_started_ns = frame_start;
+          const f64 at = static_cast<f64>(frame_start - path_started_ns) / 1.0e9 *
+                         static_cast<f64>(window_path.fps);
+          path_frame = static_cast<u32>(std::min(
+              std::floor(at + 0.5), static_cast<f64>(path_frames > 0 ? path_frames - 1 : 0)));
+          session_done = path_frame + 1 >= path_frames;
+          drawn_time = renderer::camera_path_frame_time(window_path, path_frame, path_frames);
+        }
         frame.camera = !window_path.keys.empty()
-                           ? renderer::camera_path_frame(
-                                 window_path, static_cast<u32>(rendered),
-                                 options.frames != 0 ? options.frames : window_path.frame_count())
+                           ? renderer::camera_path_frame(window_path, path_frame, path_frames)
                        : options.fly_frames > 0
                            ? renderer::fly_camera(scene_data.center, scene_data.radius,
                                                   options.fly_from, options.fly_to,
@@ -4808,7 +4857,7 @@ int main(int argc, char** argv) {
         exit_code = fail("frame", error);
         break;
       }
-      if (interactive.on) {
+      if (interactive.on || path_in_window) {
         // ---- pacing: what the title says, and what a --benchmark record carries --------------
         const i64 submitted_ns = time::monotonic_ns();
         const f64 frame_ms = previous_frame_ns != 0
@@ -4816,13 +4865,16 @@ int main(int argc, char** argv) {
                                  : 0.0;
         previous_frame_ns = frame_start;
         if (frame_ms > 0.0) pacing.add(frame_start, static_cast<f32>(frame_ms));
-        if (!options.benchmark.empty()) {
+        if (window_records) {
           PendingFrame& p = pending[submissions % k_pending_frames];
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
           p.terrain = frame_terrain(time_lapse);
           p.ticks = ticks_this_frame;
-          p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(session_hz);
+          // A session's simulated time, or the path time a windowed flight drew.
+          p.time = path_in_window
+                       ? drawn_time
+                       : static_cast<f64>(session.tick().value) / static_cast<f64>(session_hz);
           p.cpu_ms = static_cast<f64>((before_waits - frame_start) + (before_acquire - slot_free) +
                                       (submitted_ns - after_waits)) /
                      1.0e6;
@@ -4882,7 +4934,9 @@ int main(int argc, char** argv) {
       ++submissions;
       ++rendered;
 
-      const bool last = (options.frames != 0 && rendered >= options.frames) || session_done;
+      // A windowed path flight ends on the path's last frame by its own clock, not on a count.
+      const bool last =
+          (options.frames != 0 && rendered >= options.frames && !path_in_window) || session_done;
       if (last && !options.capture.empty()) {
         view_renderer.wait(value);
         view_renderer.collect_visible();
@@ -4906,7 +4960,7 @@ int main(int argc, char** argv) {
       const gfx::PresentStatus presented =
           swapchain.present(image_index, swapchain.render_finished(image_index));
       const i64 after_present = time::monotonic_ns();
-      if (interactive.on && !options.benchmark.empty()) {
+      if (window_records) {
         PendingFrame& p = pending[(submissions - 1) % k_pending_frames];
         p.present_ms = static_cast<f64>(after_present - before_present) / 1.0e6;
         p.present_id = swapchain.last_present_id();
@@ -4920,7 +4974,7 @@ int main(int argc, char** argv) {
       if (last || exit_code != 0 || exit_requested) running = false;
     }
     finished_ns = time::monotonic_ns();
-    if (interactive.on && !options.benchmark.empty() && view_renderer.valid() && exit_code == 0) {
+    if (window_records && view_renderer.valid() && exit_code == 0) {
       // The last frames' GPU numbers fold in when their slots come around again: bring those
       // around with nothing drawn and nothing presented, and the session's last frames have
       // records too.
@@ -4977,11 +5031,13 @@ int main(int argc, char** argv) {
     // One record per frame the window presented (the GPU's passes, the CPU's milliseconds, the
     // frame time, the ticks it consumed, visible pairs, streaming), then the same summary line a
     // flythrough ends with, so tools/flythrough.ps1's readers read a session without a new case.
-    if (interactive.on && !options.benchmark.empty() && exit_code == 0) {
+    if (window_records && exit_code == 0) {
       scene::FlythroughSummary summary;
       summary.format = "engine.flythrough.v1";
       describe_run(scene_data, options,
-                   interactive.replay ? options.replay_input : std::string("interactive"),
+                   interactive.replay ? options.replay_input
+                   : path_in_window   ? options.camera_path
+                                      : std::string("interactive"),
                    interactive.replay ? interactive.log_hash : 0, resolved, view_renderer, scene,
                    summary);
       const u32 frames = static_cast<u32>(rendered);

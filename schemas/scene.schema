@@ -963,7 +963,10 @@ struct TerrainLevelFrame @version(1) {
 
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
 /// and how far behind game time the surface stood, its speed over the true one, and each level's.
-struct FrameTerrain @version(2) {
+/// Version 3 added the ground's layout: how far behind the camera the rings or the world's tiles
+/// drawn this frame were, what a rebuild swapped in on this frame cost, and the frame thread's
+/// share of the ground (docs/subsystems/renderer.md, "What a frame waits for").
+struct FrameTerrain @version(3) {
   game_s: f64 = 0
   latency_s: f64 = 0
   lag_s: f64 = 0
@@ -973,6 +976,22 @@ struct FrameTerrain @version(2) {
   /// interactive window changes it with `,` and `.` (docs/subsystems/renderer.md, "Changing the
   /// rate while it runs"); 0 in a record written before version 2.
   rate: f64 = 0 @since(2)
+  /// The layout this frame drew (the rings round the camera, or the world's tiles) was asked for
+  /// `layout_lag_frames` frames ago with the camera `layout_lag_m` metres from where it is now,
+  /// on the ground: how far the finest ring is behind the camera. Zero offscreen, where a frame
+  /// waits for its layout, and with neither rings nor tiles.
+  layout_lag_m: f64 = 0 @since(3)
+  layout_lag_frames: u32 = 0 @since(3)
+  /// A rebuild swapped in on this frame: the chunks (tiles) it built and let go, and its worker's
+  /// wall milliseconds. Zero on every other frame.
+  chunks_built: u32 = 0 @since(3)
+  chunks_dropped: u32 = 0 @since(3)
+  rebuild_ms: f64 = 0 @since(3)
+  /// The chunks' bytes the frame staged for upload, and the milliseconds the frame's own thread
+  /// spent on the ground before recording it (`TerrainMotion::frame`: fields taken, a rebuild asked
+  /// for, chunks staged, slots swapped — and offscreen the waits for all of it).
+  chunk_upload_bytes: u64 = 0 @since(3)
+  host_ms: f64 = 0 @since(3)
 }
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with

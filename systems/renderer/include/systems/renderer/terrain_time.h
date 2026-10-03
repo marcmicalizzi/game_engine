@@ -84,6 +84,11 @@ struct TimeLapseConfig {
 
 // The rate asked for, with the rest from their tunables.
 TimeLapseConfig time_lapse_config_from_tunables(f64 rate);
+// The worker threads a host gives the pool a window's terrain is built on
+// (`renderer.terrain.workers`; 0 is half the logical CPUs, at least two): fewer than the machine
+// has, because a rebuild or a window's move fills every worker for tens of milliseconds and a
+// worker on every CPU took the frame thread's time slices (renderer.md, "What a frame waits for").
+u32 terrain_window_workers() noexcept;
 
 // **The cadence rule**: the game time after `from_s` at which the generator's fastest band will
 // have travelled `fraction * spacing_m` along the wind's path (`terrain_band_travel_m`), clamped to
@@ -344,6 +349,26 @@ class TerrainMotion {
     f64 arena_peak_share = 0.0;  // the fullest a ring's arenas were, at a swap: old and new chunks
   };
   const RingStats& ring_stats() const noexcept { return ring_stats_; }
+  // **The last frame's layout** (the `--benchmark` records' `terrain`; renderer.md, "What a frame
+  // waits for"): how far behind the camera the drawn rings or tiles were — the layout drawn was
+  // asked for `lag_frames` frames ago, with the camera `lag_m` metres on the ground from where it
+  // is now (0 offscreen, where a frame waits for its layout) — what a rebuild swapped in this frame
+  // built and let go and how long its worker took, the chunk bytes this frame staged, and the
+  // milliseconds `frame` spent on the frame's own thread.
+  struct FrameLayout {
+    f64 lag_m = 0.0;
+    u32 lag_frames = 0;
+    u32 built = 0;
+    u32 dropped = 0;
+    f64 rebuild_ms = 0.0;
+    u64 upload_bytes = 0;
+    f64 host_ms = 0.0;
+  };
+  const FrameLayout& frame_layout() const noexcept { return frame_layout_; }
+  // The most the layout fell behind over the run, metres and frames (RingStats-like, for a
+  // summary).
+  f64 max_layout_lag_m() const noexcept { return max_lag_m_; }
+  u32 max_layout_lag_frames() const noexcept { return max_lag_frames_; }
   bool has_rings() const noexcept { return rings_ != nullptr; }
   // The level set the rebuilds run on: the rings, or the world's tiles.
   const TerrainLevelSet* level_set() const noexcept { return rings_; }
@@ -449,8 +474,9 @@ class TerrainMotion {
     TerrainBlend blend;
     f64 eval_ms_ema = 0.0;
     LevelStats stats;
-    Vector<u32> shown_slots;  // a ring level's chunks drawn: their slots
-    Vector<u8> shown_mask;    // and the same, one byte a slot (sized for the level's slots)
+    Vector<u32> shown_slots;   // a ring level's chunks drawn: their slots
+    Vector<u8> shown_mask;     // and the same, one byte a slot (sized for the level's slots)
+    bool shown_stale = false;  // a swap of changes moved the marks and not the list
     // The worker's alone once the motion has started (the frame never reads them): the heights
     // the scene's grid was built from (level 0), and the level's recent fields.
     Vector<f32> rest;
@@ -614,6 +640,20 @@ class TerrainMotion {
   u64 asked_frame_ = 0;
   u64 frozen_frame_ = 0;
   RingStats ring_stats_;
+  // Where the camera was when the layout drawn, and the one being made, were asked for, and the
+  // frame each was asked on: what a frame's lag is measured from (`FrameLayout`).
+  f32 shown_camera_x_ = 0.0f;
+  f32 shown_camera_z_ = 0.0f;
+  u64 shown_asked_frame_ = 0;
+  bool shown_camera_set_ = false;
+  f32 pending_camera_x_ = 0.0f;
+  f32 pending_camera_z_ = 0.0f;
+  FrameLayout frame_layout_;
+  f64 max_lag_m_ = 0.0;
+  u32 max_lag_frames_ = 0;
+  u32 pending_built_ = 0;  // the rebuild on its way to a swap: what it built and let go
+  u32 pending_dropped_ = 0;
+  f64 pending_rebuild_ms_ = 0.0;
   // The field worker: one task at a time, in the order asked.
   std::thread worker_;
   std::mutex mutex_;

@@ -3,10 +3,12 @@
 // **The drawn ground** (docs/subsystems/world.md, "The consumers"; renderer.md, "The ground from
 // the world's tiles"; ADR-0050): the tiles the renderer draws the ground from, as the world's ring
 // holds them. For every tile the ring holds it keeps the tile's ring, and at `commit` — once an
-// update in which any changed — it hands the whole set to the renderer's tile set
-// (`renderer::TerrainTileSet::set_tiles`), which rebuilds only the tiles whose key changed and
-// swaps them in at once. It builds nothing and holds nothing but the set: the heights come from the
-// renderer's tile source, the same one the walker's collision reads.
+// update in which any changed — it hands **what changed** to the renderer's tile set
+// (`renderer::TerrainTileSet::change_tiles`: tiles that entered or changed ring, and tiles let go),
+// which rebuilds only the tiles whose key changed and swaps them in at once. Until 2026-10-03 it
+// handed the whole set, 14,000 tiles a commit on the endless desert, which the renderer sorted and
+// compared every frame of a flight. It builds nothing and holds nothing but the set: the heights
+// come from the renderer's tile source, the same one the walker's collision reads.
 //
 // **Where in the order.** After the ground consumer where a world has one (a tile's record is read
 // before the tile is drawn) and before the placements (a tile is drawn before anything is placed on
@@ -65,6 +67,8 @@ class DrawnTiles {
 
   renderer::TerrainTileSet* tiles_ = nullptr;
   HashMap<u64, u8> held_;  // tile_key -> ring
+  // The changes since the last commit, in the order the ring made them (`k_tile_gone` for a tile
+  // let go); kept between updates.
   Vector<renderer::TerrainTile> handed_;
   DrawnTilesStats stats_;
 };

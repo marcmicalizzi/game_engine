@@ -40,6 +40,7 @@ RingParams DrawnTiles::ring_params(const renderer::TerrainTilesDesc& tiles) noex
 bool DrawnTiles::on_activate(void* context, const TileEvent& event) {
   auto& self = *static_cast<DrawnTiles*>(context);
   self.held_.insert_or_assign(tile_key(event.tile), event.to);
+  self.handed_.push_back(renderer::TerrainTile{event.tile.x, event.tile.z, event.to});
   ++self.stats_.activated;
   return true;
 }
@@ -47,6 +48,7 @@ bool DrawnTiles::on_activate(void* context, const TileEvent& event) {
 bool DrawnTiles::on_change(void* context, const TileEvent& event) {
   auto& self = *static_cast<DrawnTiles*>(context);
   self.held_.insert_or_assign(tile_key(event.tile), event.to);
+  self.handed_.push_back(renderer::TerrainTile{event.tile.x, event.tile.z, event.to});
   ++self.stats_.moved;
   return true;
 }
@@ -54,6 +56,7 @@ bool DrawnTiles::on_change(void* context, const TileEvent& event) {
 void DrawnTiles::on_deactivate(void* context, const TileEvent& event) {
   auto& self = *static_cast<DrawnTiles*>(context);
   self.held_.erase(tile_key(event.tile));
+  self.handed_.push_back(renderer::TerrainTile{event.tile.x, event.tile.z, renderer::k_tile_gone});
   ++self.stats_.deactivated;
 }
 
@@ -61,15 +64,12 @@ void DrawnTiles::on_commit(void* context) {
   auto& self = *static_cast<DrawnTiles*>(context);
   if (self.tiles_ == nullptr) return;
   const i64 started = time::monotonic_ns();
-  self.handed_.clear();
-  for (u32 i = 0; i < self.held_.size(); ++i) {
-    const TileCoord tile = tile_of_key(self.held_.key_at(i));
-    self.handed_.push_back(renderer::TerrainTile{tile.x, tile.z, self.held_.value_at(i)});
-  }
   ++self.stats_.commits;
-  if (self.tiles_->set_tiles(
+  // What changed, not the whole set: the renderer's rebuild then costs what changed too.
+  if (self.tiles_->change_tiles(
           std::span<const renderer::TerrainTile>(self.handed_.data(), self.handed_.size())))
     ++self.stats_.changed;
+  self.handed_.clear();
   self.stats_.held = self.held_.size();
   const i64 took = time::monotonic_ns() - started;
   self.stats_.commit_ns += took;
