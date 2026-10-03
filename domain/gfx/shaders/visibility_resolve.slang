@@ -439,9 +439,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const InstanceDesc instance = instances[entry.x];
   const uint visible_index =
       instance.deform == k_invalid_deform ? 0u : entry_of_pair(params->pair_entries, pair);
+  // The point less the eye, from corners less the eye: what the view vector and the air's distance
+  // are taken from, where a world position less the eye would carry the world's rounding.
+  float3 from_eye;
   const Surface s = reconstruct_screen(geo, instance, visible_index, entry.y, id & 0xff, source,
                                        params->view_proj, params->camera.xyz, params->width,
-                                       params->height);
+                                       params->height, from_eye);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
   if (params->mode == 5) return float4(frac(s.uv), 0.0, 1.0);
 
@@ -455,7 +458,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float2 duv_dy = float2(0.0, 0.0);
   if ((material.flags & k_material_mipped) != 0) {
     screen_uv_gradients(geo, fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff),
-                        source, params->view_proj, params->width, params->height, duv_dx, duv_dy);
+                        source, params->view_proj, params->camera.xyz, params->width,
+                        params->height, duv_dx, duv_dy);
     duv_dx = material_duv(material, duv_dx * material.uv_scale);
     duv_dy = material_duv(material, duv_dy * material.uv_scale);
   }
@@ -497,8 +501,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
     float3 dp_dx;
     float3 dp_dy;
-    screen_position_gradients(tri, source, params->view_proj, params->width, params->height, dp_dx,
-                              dp_dy);
+    screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
+                              params->height, dp_dx, dp_dy);
     const GroundShading ground =
         ground_detail_shade(((GroundDetail*)params->ground_detail)[0], s.position, shading_normal,
                             dp_dx, dp_dy, sampled.detail_mask, albedo, roughness,
@@ -518,7 +522,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   BrdfSurface surface;
   surface.albedo = albedo;
   surface.normal = shading_normal;
-  surface.view = normalize(params->camera.xyz - s.position);
+  surface.view = normalize(-from_eye);
   surface.roughness = roughness;
   surface.metallic = sampled.metallic;
 
@@ -627,7 +631,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // and what it scatters in, out of the frame's aerial table, which is the sky-view table's
     // parameterization with a distance, so a surface at the table's far end is the sky beyond it.
     // Then the frame's exposure.
-    const float3 to_surface = s.position - params->camera.xyz;
+    const float3 to_surface = from_eye;
     const float distance = length(to_surface);
     float3 inscatter = float3(0.0);
     float transmittance = 1.0;

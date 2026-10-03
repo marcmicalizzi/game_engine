@@ -261,6 +261,17 @@ float ray_offset(SceneGeometry geo, InstanceDesc instance, float floor, float st
 // Their change per pixel is exact too: e and E are linear in p, so db_i/dp = (n_i - b_i N) / E with
 // n_i = c_j x c_k and N = sum n_i, and p moves by (2 / width, -2 / height) a pixel — the viewport
 // the rasterizer drew with, flipped in y.
+//
+// **Measured from the eye.** The corners go in as their differences from the eye, through the
+// matrix's linear part alone (a w of zero drops its translation column): that column is the eye's
+// world position through the matrix, a number the size of the camera's distance from the origin,
+// and a corner put through the whole matrix carries its rounding — millimetres of the corner fifty
+// kilometres out, and different at every step the camera takes. The difference of two floats that
+// close together is exact, and everything after it is on numbers the size of the triangle's
+// distance from the eye. The point comes out the same way, as `from_eye`, which the view vector and
+// the air's distance read as it is; the world position is `eye + from_eye`, one rounding at the
+// end, which only a reader that needs the world (the lights, the shadows, the ground's detail) pays.
+// `eye` must be the point the matrix's translation was made from (`ResolveParams::camera`).
 
 // What the resolve takes at a pixel of a fetched triangle.
 struct ScreenBarycentrics {
@@ -279,11 +290,13 @@ struct ScreenBarycentrics {
 };
 
 ScreenBarycentrics screen_barycentrics(TriangleFetch tri, float2 pixel_center,
-                                       column_major float4x4 view_proj, uint width, uint height) {
+                                       column_major float4x4 view_proj, float3 eye, uint width,
+                                       uint height) {
   // x, y and w: a pixel's ray is fixed by x / w and y / w, and z says nothing about where it goes.
+  // Each corner from the eye, through the linear part: the clip-space position less the eye's.
   float3 c[3];
   for (uint i = 0; i < 3; ++i)
-    c[i] = mul(view_proj, float4(tri.p[i], 1.0)).xyw;
+    c[i] = mul(view_proj, float4(tri.p[i] - eye, 0.0)).xyw;
   const float2 ndc_per_pixel = float2(2.0 / float(width), -2.0 / float(height));
   const float3 p = float3(pixel_center * ndc_per_pixel + float2(-1.0, 1.0), 1.0);
   const float3 n0 = cross(c[1], c[2]);
@@ -310,14 +323,21 @@ ScreenBarycentrics screen_barycentrics(TriangleFetch tri, float2 pixel_center,
 }
 
 // The surface a pixel shows: its triangle fetched, its barycentrics (`screen_barycentrics`), and
-// everything interpolated at them (`surface_at`).
+// everything interpolated at them (`surface_at`). `from_eye` is the point less `camera`, made from
+// the corners less `camera`, which is what the view vector and the air's distance are taken from;
+// the surface's world position is `camera + from_eye`.
 Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
                           uint cluster_index, uint triangle, float2 pixel_center,
                           column_major float4x4 view_proj, float3 camera, uint width,
-                          uint height) {
+                          uint height, out float3 from_eye) {
   const TriangleFetch tri = fetch_triangle(geo, instance, entry, cluster_index, triangle);
-  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
-  return surface_at(geo, instance, tri, s.b, camera);
+  const ScreenBarycentrics s =
+      screen_barycentrics(tri, pixel_center, view_proj, camera, width, height);
+  Surface surface = surface_at(geo, instance, tri, s.b, camera);
+  from_eye = s.b.x * (tri.p[0] - camera) + s.b.y * (tri.p[1] - camera) +
+             s.b.z * (tri.p[2] - camera);
+  surface.position = camera + from_eye;
+  return surface;
 }
 
 // The UV's derivatives across the screen at `pixel_center`, taken from the triangle itself rather
@@ -331,12 +351,13 @@ Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
 // Zero for a triangle with no attributes or one seen exactly edge-on, which SampleGrad reads as
 // level 0.
 void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_center,
-                         column_major float4x4 view_proj, uint width, uint height,
+                         column_major float4x4 view_proj, float3 eye, uint width, uint height,
                          out float2 duv_dx, out float2 duv_dy) {
   duv_dx = float2(0.0, 0.0);
   duv_dy = float2(0.0, 0.0);
   if (geo.attributes == 0) return;
-  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
+  const ScreenBarycentrics s =
+      screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
   const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
   const float2 e1 = decode_half2(attributes[tri.local[1]].uv_half2) - uv0;
@@ -353,9 +374,10 @@ void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_cent
 // Zero for a triangle seen exactly edge-on, which reads as a footprint of nothing: the unfiltered
 // detail.
 void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
-                               column_major float4x4 view_proj, uint width, uint height,
-                               out float3 dp_dx, out float3 dp_dy) {
-  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
+                               column_major float4x4 view_proj, float3 eye, uint width,
+                               uint height, out float3 dp_dx, out float3 dp_dy) {
+  const ScreenBarycentrics s =
+      screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
   // The derivatives sum to zero, so the corners enter as edges from the first: a terrain's corners
   // are thousands of metres from the origin and their differences are what the answer is made of.
   const float3 e1 = tri.p[1] - tri.p[0];

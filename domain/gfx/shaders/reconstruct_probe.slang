@@ -1,7 +1,7 @@
 // A test-only window on material.slang's reconstruction (domain/gfx/tests/reconstruct_tests.cpp):
 // for every covered pixel of a visibility buffer, what the resolve takes for it — the barycentrics
 // `screen_barycentrics` gives, the point and the UV `reconstruct_screen` interpolates at them, and
-// the UV's and the point's change per pixel (`screen_uv_gradients`, `screen_position_gradients`) —
+// the UV's and the point's change per pixel (`screen_uv_gradients`, `screen_position_gradients`),
 // called the way fs_resolve calls them, and written out as floats, so each can be held to a CPU ray
 // against the triangle one pixel at a time. The resolve's picture is eight bits a channel, which is
 // a millimetre's worth of nothing; these are the numbers the picture is made of.
@@ -19,7 +19,7 @@ struct ProbeParams {
   uint64_t triangles;   // uint[]: packed local indices
   uint64_t instances;   // InstanceDesc[]: one, the scene's
   uint64_t attributes;  // VertexAttributes[]
-  uint64_t out;         // float4[6 * width * height]
+  uint64_t out;         // float4[10 * width * height]
   uint width;
   uint height;
 };
@@ -36,10 +36,10 @@ void probe_main(uint3 id : SV_DispatchThreadID) {
   ProbeParams* params = (ProbeParams*)g_push.params;
   if (id.x >= params->width || id.y >= params->height) return;
   const uint pixel = id.y * params->width + id.x;
-  float4* out = (float4*)params->out + 6u * pixel;
+  float4* out = (float4*)params->out + 10u * pixel;
   const uint64_t word = ((uint64_t*)params->visibility)[pixel];
   if (word == 0) {
-    for (uint k = 0; k < 6; ++k)
+    for (uint k = 0; k < 10; ++k)
       out[k] = float4(0.0, 0.0, 0.0, 0.0);
     return;
   }
@@ -62,22 +62,30 @@ void probe_main(uint3 id : SV_DispatchThreadID) {
   const float2 center = float2(id.xy) + 0.5;
   const TriangleFetch tri = fetch_triangle(geo, instance, 0u, cluster, triangle);
   const ScreenBarycentrics sb =
-      screen_barycentrics(tri, center, params->view_proj, params->width, params->height);
+      screen_barycentrics(tri, center, params->view_proj, params->camera.xyz, params->width,
+                          params->height);
+  float3 from_eye;
   const Surface s = reconstruct_screen(geo, instance, 0u, cluster, triangle, center,
                                        params->view_proj, params->camera.xyz, params->width,
-                                       params->height);
+                                       params->height, from_eye);
   float2 duv_dx;
   float2 duv_dy;
-  screen_uv_gradients(geo, tri, center, params->view_proj, params->width, params->height, duv_dx,
-                      duv_dy);
+  screen_uv_gradients(geo, tri, center, params->view_proj, params->camera.xyz, params->width,
+                      params->height, duv_dx, duv_dy);
   float3 dp_dx;
   float3 dp_dy;
-  screen_position_gradients(tri, center, params->view_proj, params->width, params->height, dp_dx,
-                            dp_dy);
+  screen_position_gradients(tri, center, params->view_proj, params->camera.xyz, params->width,
+                            params->height, dp_dx, dp_dy);
   out[0] = float4(sb.b, 1.0);
   out[1] = float4(s.position, float(triangle));
   out[2] = float4(s.uv, duv_dx);
   out[3] = float4(duv_dy, 0.0, 0.0);
   out[4] = float4(dp_dx, 0.0);
   out[5] = float4(dp_dy, 0.0);
+  // The view vector fs_resolve shades with, from the point less the eye.
+  out[6] = float4(normalize(-from_eye), 0.0);
+  // The corners as the shader fetched them, which the test's reference is made from, so that a
+  // corner a float's step from where the CPU would have put it is not counted against the rest.
+  for (uint k = 0; k < 3; ++k)
+    out[7 + k] = float4(tri.p[k], 0.0);
 }

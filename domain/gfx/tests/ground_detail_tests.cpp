@@ -793,7 +793,10 @@ TEST_CASE("ground detail: the resolve draws the CPU's function of position") {
   // that far out and is off by about a millimetre, and a millimetre is a thirtieth of a ripple's
   // steep lee — which the raw height channel shows at full contrast (12–14 measured) and the
   // shaded picture at a few levels where the sun falls straight across the crests (3 measured, on
-  // 485 of 25,600 pixels). It is the proof the defaults did not move with the second pass.
+  // 485 of 25,600 pixels). It is the proof the defaults did not move with the second pass. Since
+  // 2026-10-03 the reconstruction measures the corners from the eye and is off by the world
+  // position's one rounding, an eighth of a millimetre: 6 on the detail view and 2 on the shaded
+  // picture. The tolerances are the millimetre's still (gfx.md, "Measured from the eye").
   GroundCase first;
   first.name = "the first pass";
   first.block = test_block();
