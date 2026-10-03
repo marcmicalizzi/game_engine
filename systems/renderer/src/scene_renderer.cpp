@@ -1780,7 +1780,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (ray_path) {
       gfx::RayVisibilityParams ray{};
       ray.view_proj = view.view_proj;
-      ray.inv_view_proj = inverse(view.view_proj);
+      ray.clip_to_ray = view.clip_to_ray;
       ray.camera = Vec4{eye, 0.0f};
       ray.output = vf.vis_address;
       ray.instance_base = 0;  // a CLAS record's base geometry index is the visible entry

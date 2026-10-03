@@ -24,13 +24,17 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/view_ray.h>
 
 namespace engine::gfx {
 
 // Mirrors RayVisibilityParams in ray_visibility.slang. 208 bytes.
 struct RayVisibilityParams {
   Mat4 view_proj;
-  Mat4 inv_view_proj;
+  // Clip space to the world direction of the eye's ray, `clip_to_ray(projection, view)`: the
+  // rotation and projection without the eye's position, so a ray's direction does not depend on
+  // where the camera stands (view_ray.h).
+  Mat4 clip_to_ray;
   Vec4 camera;            // xyz position
   u64 output = 0;         // u64[width * height]
   u64 instance_base = 0;  // u32[instance_count]: the visible index of each instance's first

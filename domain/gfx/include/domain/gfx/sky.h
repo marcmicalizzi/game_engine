@@ -115,7 +115,9 @@ inline constexpr f32 k_sky_shoulder = 0.6f;
 // One view the frame's sky is seen through: what turns a pixel into the direction it looks along.
 // Mirrors SkyView in sky.slang. 80 bytes.
 struct SkyView {
-  Mat4 inv_view_proj;  // clip to world
+  // Clip space to the world direction of the eye's ray: the inverse of the projection times the
+  // view's rotation, with no translation (view_ray.h says why not the inverse view-projection).
+  Mat4 clip_to_ray;
   // x: radians one pixel spans at the view's centre (a star's spot is that wide); yzw unused.
   Vec4 pixel{};
 };
@@ -145,7 +147,10 @@ struct SkyParams {
   Vec4 moon_illuminance{};  // rgb outside the atmosphere (lights the sky and the ground), w its
                             // albedo
   // ---- the eye and the heavens ----
-  Vec4 camera{};  // xyz the eye in the world, metres; w its altitude in the tables, km
+  // xyz the eye in the world, metres; w its altitude in the tables, km. The shaders read only w:
+  // the sky is a function of the eye's height, and no direction is made from where it stands
+  // (view_ray.h).
+  Vec4 camera{};
   // The world directions of the celestial frame's axes (x towards the vernal equinox, z the north
   // celestial pole): a star's world direction is `x * d.x + y * d.y + z * d.z`.
   Vec4 celestial_x{};

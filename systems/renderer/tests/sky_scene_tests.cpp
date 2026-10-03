@@ -5,9 +5,11 @@
 // the sun's disc and its limb darkening, the moon's lit disc, the stars — is the CPU mirror's
 // (domain/gfx/tests/sky_reference.h) at the block the frame was drawn with, through the display's
 // shoulder and transfer curve, at noon-ish and on a moonlit night; the reference path tracer's
-// primary misses are the same bytes; a scene without a sky draws the stand-in's clear and hands the
-// resolve no sky block; and the sky stands at the world's one clock, the ground's time plus the
-// frame's offset.
+// primary misses are the same bytes; the sky through a pixel is a function of the camera's rotation
+// and not of where it stands, so 50 km from the origin a move across the ground changes no byte of
+// it (gfx.md, "The sky", the fifth lesson); a scene without a sky draws the stand-in's clear and
+// hands the resolve no sky block; and the sky stands at the world's one clock, the ground's time
+// plus the frame's offset.
 //
 // Compiled where the sky capability is (its "earth" provider); each GPU case skips with a message
 // where there is no device, and the reference's half where the device cannot trace.
@@ -172,8 +174,7 @@ SkyCompare compare_sky(const gfx::SkyParams& params, const CapturedFrame& shot,
   tables.sky_view = sref::build_sky_view(sky, tables);
   const sref::Frame frame = sref::frame(sky, tables);
   const f64 pixel = static_cast<f64>(params.views[0].pixel.x);
-  const Mat4& inverse_view_proj = params.views[0].inv_view_proj;
-  const Vec3 eye{params.camera.x, params.camera.y, params.camera.z};
+  const Mat4& clip_to_ray = params.views[0].clip_to_ray;
   const sref::Dvec3 sun = brdf_ref::dvec3(Vec3{params.sun.x, params.sun.y, params.sun.z});
   const sref::Dvec3 moon = brdf_ref::dvec3(Vec3{params.moon.x, params.moon.y, params.moon.z});
   SkyCompare out;
@@ -186,12 +187,11 @@ SkyCompare compare_sky(const gfx::SkyParams& params, const CapturedFrame& shot,
   for (u32 y = 0; y < shot.height; ++y) {
     for (u32 x = 0; x < shot.width; ++x) {
       if (covered(x, y)) continue;
-      // The resolve's direction: the pixel centre's ndc through the inverse view-projection.
+      // The resolve's direction: the pixel centre's ndc through the view's clip-to-ray matrix.
       const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(shot.width) * 2.0f - 1.0f;
       const f32 ny = 1.0f - (static_cast<f32>(y) + 0.5f) / static_cast<f32>(shot.height) * 2.0f;
-      const Vec4 ahead = inverse_view_proj * Vec4{nx, ny, 0.5f, 1.0f};
-      const Vec3 d = normalize(Vec3{ahead.x / ahead.w, ahead.y / ahead.w, ahead.z / ahead.w} - eye);
-      const sref::Dvec3 dir = brdf_ref::dvec3(d);
+      const sref::Dvec3 dir =
+          sref::pixel_direction(clip_to_ray, static_cast<f64>(nx), static_cast<f64>(ny));
       // A pixel whose centre is within a pixel and a half of a disc's edge is left out: float and
       // double can put that direction on either side of the limb, and a disc is thousands of times
       // brighter than the sky beside it.
@@ -442,6 +442,178 @@ TEST_CASE("sky scene: the resolve draws the mirror's sky, and the reference the 
     if (s.pitch > 0.0f) CHECK(c.disc > 0);                        // the disc is drawn, not lost
     if (s.time_s == night && s.pitch > 0.0f) CHECK(c.stars > 0);  // and the stars round the moon
   }
+}
+
+namespace {
+
+// A camera looking along `towards`, its target 100 m out with the offset rounded to 1/64 m: every
+// eye this test uses and every eye plus that offset is a float exactly, so `target - position` is
+// the same bits for every eye and the cameras below differ in where they are and in nothing else.
+Camera placed(Vec3 eye, Vec3 towards, f32 fov_deg) {
+  const auto q = [](f32 v) { return std::round(v * 100.0f * 64.0f) / 64.0f; };
+  Camera camera;
+  camera.position = eye;
+  camera.target = eye + Vec3{q(towards.x), q(towards.y), q(towards.z)};
+  camera.fov_y = fov_deg * 3.14159265f / 180.0f;
+  camera.znear = 0.05f;
+  return camera;
+}
+
+struct SkyShot {
+  CapturedFrame shot;
+  gfx::SkyParams params;
+};
+
+SkyShot sky_shot(Rig& rig, const Camera& camera, f64 time_s) {
+  FrameDesc frame;
+  frame.camera = camera;
+  frame.sun_time_s = time_s;
+  CaptureChannels channels;
+  channels.depth = true;
+  SkyShot out;
+  REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, out.shot, &rig.error), rig.error);
+  rig.renderer.sky().fill(rig.renderer.frame_sky(), rig.renderer.views(), camera, ExposureRequest{},
+                          out.params);
+  return out;
+}
+
+// Two pictures' pixels that neither covers: how many, how many differ, and by how much at most.
+struct SkyDiff {
+  u32 pixels = 0;
+  u32 differ = 0;
+  int worst = 0;
+};
+
+SkyDiff diff_sky(const CapturedFrame& a, const CapturedFrame& b) {
+  SkyDiff out;
+  for (u32 i = 0; i < a.width * a.height; ++i) {
+    if (a.depth[i] > 0.0f || b.depth[i] > 0.0f) continue;
+    ++out.pixels;
+    int worst = 0;
+    for (u32 c = 0; c < 3; ++c) {
+      worst = std::max(worst, std::abs(static_cast<int>(a.color[4 * i + c]) -
+                                       static_cast<int>(b.color[4 * i + c])));
+    }
+    if (worst > 0) ++out.differ;
+    out.worst = std::max(out.worst, worst);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("sky scene: the sky does not move with the camera 50 km from the origin") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const scene::Sky entry = erg_sky();
+  const scene_gen::SkyProvider provider = make_earth(entry);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  constexpr u32 k_width = 192;
+  constexpr u32 k_height = 108;
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, hills(entry), settings, k_width, k_height, false),
+                  rig.error);
+  REQUIRE(rig.renderer.sky().active());
+
+  // The afternoon, looking half way up to the sun: its disc near the top of the frame, the horizon
+  // and the planet's ground below it near the bottom — the two sharpest edges the sky has, where a
+  // direction that is wrong by a fraction of a degree moves bytes first.
+  const f64 afternoon = 15.5 * 3600.0;
+  scene_gen::SkyState state;
+  provider.state(afternoon, state);
+  const Vec3 level = normalize(Vec3{state.sun.x, 0.0f, state.sun.z});
+  const Vec3 towards = normalize(normalize(state.sun) + level);
+  constexpr f32 k_fov = 60.0f;
+
+  // 50 km out along x, 20 m up: a float there holds 4 mm. A millimetre (2^-10 m) along z, a metre
+  // along x, and a metre up, each with the same rotation to the bit.
+  const Vec3 far{50000.0f, 20.0f, 0.0f};
+  const SkyShot base = sky_shot(rig, placed(far, towards, k_fov), afternoon);
+  struct Move {
+    const char* name;
+    Vec3 by;
+    int tolerance;  // of 255
+  };
+  // A move across the ground changes nothing the sky depends on: identical bytes. A move up
+  // changes the eye's altitude, which every table of the sky is a function of (20 m to 21 m above
+  // the planet's ground), so a pixel may move by a level there and no further.
+  const Move moves[] = {
+      {"a millimetre across", Vec3{0.0f, 0.0f, 0.0009765625f}, 0},
+      {"a metre across", Vec3{1.0f, 0.0f, 0.0f}, 0},
+      {"a metre up", Vec3{0.0f, 1.0f, 0.0f}, 1},
+  };
+  for (const Move& m : moves) {
+    const std::string name = m.name;
+    CAPTURE(name);
+    const SkyShot moved = sky_shot(rig, placed(far + m.by, towards, k_fov), afternoon);
+    const SkyDiff d = diff_sky(base.shot, moved.shot);
+    MESSAGE("50 km out, " << name << ": " << d.pixels << " sky pixels, " << d.differ
+                          << " differ, worst " << d.worst << " of 255");
+    CHECK(d.pixels > k_width * k_height / 2);
+    CHECK(d.worst <= m.tolerance);
+  }
+
+  // At the origin the picture is the one the old direction drew: a point at depth 0.5 through the
+  // inverse of the whole view-projection, less the eye, in float as the shader computed it. There
+  // the eye's coordinates are small and that difference was nearly exact, so the two directions
+  // agree to a small fraction of a pixel and the mirror's bytes along them to a level. The GPU's
+  // picture is held to the mirror along the new direction by the case above, at 2 levels.
+  const Camera home = placed(Vec3{0.0f, 20.0f, 0.0f}, towards, k_fov);
+  const SkyShot origin = sky_shot(rig, home, afternoon);
+  const SkyCompare against_mirror =
+      compare_sky(origin.params, origin.shot, mirror_stars(provider), nullptr);
+  CHECK(against_mirror.over == 0);
+  const sref::Sky sky = sref::from_params(origin.params);
+  sref::Tables tables;
+  tables.transmittance = sref::build_transmittance(sky);
+  tables.multiscatter = sref::build_multiscatter(sky, tables);
+  tables.sky_view = sref::build_sky_view(sky, tables);
+  const sref::Frame frame = sref::frame(sky, tables);
+  const View& view = rig.renderer.views()[0];
+  const Mat4 old_inverse = inverse(view.view_proj);
+  const f64 pixel = static_cast<f64>(origin.params.views[0].pixel.x);
+  const sref::Dvec3 sun = brdf_ref::dvec3(state.sun);
+  f64 widest = 0.0;  // radians between the old direction and the new
+  int worst = 0;     // of 255, between the mirror's bytes along the two
+  u32 compared = 0;
+  for (u32 y = 0; y < k_height; ++y) {
+    for (u32 x = 0; x < k_width; ++x) {
+      if (origin.shot.depth[y * k_width + x] > 0.0f) continue;
+      const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(k_width) * 2.0f - 1.0f;
+      const f32 ny = 1.0f - (static_cast<f32>(y) + 0.5f) / static_cast<f32>(k_height) * 2.0f;
+      const Vec4 ahead = old_inverse * Vec4{nx, ny, 0.5f, 1.0f};
+      const Vec3 old_f =
+          normalize(Vec3{ahead.x / ahead.w, ahead.y / ahead.w, ahead.z / ahead.w} - home.position);
+      const sref::Dvec3 was = brdf_ref::dvec3(old_f);
+      const sref::Dvec3 now =
+          sref::pixel_direction(view.clip_to_ray, static_cast<f64>(nx), static_cast<f64>(ny));
+      widest = std::max(widest, angle(was, now));
+      // A disc's limb is a step of thousands: a direction a hair to either side of it is a
+      // different byte however close the two are, so the limb's pixels are left out as above.
+      if (std::fabs(angle(now, sun) - static_cast<f64>(origin.params.sun.w)) < 1.5 * pixel)
+        continue;
+      const sref::Dvec3 a = sref::background(sky, tables, nullptr, was, pixel);
+      const sref::Dvec3 b = sref::background(sky, tables, nullptr, now, pixel);
+      const f64 ea[3] = {a.x, a.y, a.z};
+      const f64 eb[3] = {b.x, b.y, b.z};
+      for (u32 c = 0; c < 3; ++c) {
+        worst = std::max(worst, std::abs(shown(ea[c], frame.exposure, sky.shoulder) -
+                                         shown(eb[c], frame.exposure, sky.shoulder)));
+      }
+      ++compared;
+    }
+  }
+  MESSAGE("at the origin: " << compared << " sky pixels, the old direction and the new "
+                            << widest / pixel << " of a pixel apart at most, the mirror's bytes "
+                            << worst << " of 255 at most");
+  CHECK(compared > k_width * k_height / 2);
+  CHECK(widest < 0.05 * pixel);
+  CHECK(worst <= 1);
 }
 
 TEST_CASE("sky scene: a scene without a sky draws the stand-in and hands the resolve no sky") {

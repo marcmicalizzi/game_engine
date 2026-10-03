@@ -4,10 +4,11 @@
 // air (Rayleigh, Mie, the ozone tent), the same rays by radius and zenith cosine with the same
 // height-along-a-ray formula, the same four tables in the same parameterizations with the same
 // bilinear reads, the same frame's sums (nine harmonics, the ground, the lights at the eye, the
-// exposure), and the same discs and star spots. `sky_tests.cpp` builds the tables on the GPU and
-// here and holds each texel, each sum and each pixel of a resolve to this; the renderer's sky tests
-// hold the reference path tracer's background to it. Changing sky.slang means changing this file in
-// the same commit; the tests then say by how much the two disagree.
+// exposure), the same discs and star spots, and the same direction through a pixel
+// (view_ray.slang). `sky_tests.cpp` builds the tables on the GPU and here and holds each texel,
+// each sum and each pixel of a resolve to this; the renderer's sky tests hold the reference path
+// tracer's background to it. Changing sky.slang means changing this file in the same commit; the
+// tests then say by how much the two disagree.
 //
 // Like brdf_reference.h it is a second implementation, not the first one compiled twice: what it
 // shares with the shader is the formulas and their order, never code.
@@ -741,6 +742,20 @@ inline Dvec3 background(const Sky& s, const Tables& tables, const Stars* table, 
   if (light.x > 0.0 || light.y > 0.0 || light.z > 0.0)
     radiance = radiance + light * transmittance(s, tables, r, h, dir.y);
   return radiance;
+}
+
+// view_ray.slang's `view_ray_direction`, which sky.slang's `sky_pixel_direction` is: a pixel's
+// clip-space (x, y) at depth 0 — the point at infinity — through the view's clip-to-ray matrix,
+// whose xyz is the direction itself. The matrix's own floats, widened; no eye anywhere in it.
+inline Dvec3 pixel_direction(const Mat4& clip_to_ray, double ndc_x, double ndc_y) {
+  Dvec3 d;
+  double* out[3] = {&d.x, &d.y, &d.z};
+  for (usize row = 0; row < 3; ++row) {
+    *out[row] = static_cast<double>(clip_to_ray.at(row, 0)) * ndc_x +
+                static_cast<double>(clip_to_ray.at(row, 1)) * ndc_y +
+                static_cast<double>(clip_to_ray.at(row, 3));
+  }
+  return normalize(d);
 }
 
 inline Tables build_tables(const Sky& s) {

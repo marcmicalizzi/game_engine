@@ -305,7 +305,10 @@ void SkyPass::fill(const FrameSky& sky, const ViewSet& views, const Camera& came
   out.view_count = std::min(views.size(), gfx::k_sky_max_views);
   for (u32 v = 0; v < out.view_count; ++v) {
     const View& view = views[v];
-    out.views[v].inv_view_proj = inverse(view.view_proj);
+    // The view's rotation and projection, not the inverse of its view-projection: that one carries
+    // the eye's world position, and a direction made from it jittered with every move kilometres
+    // from the origin (view_ray.h).
+    out.views[v].clip_to_ray = view.clip_to_ray;
     // Radians a pixel spans at the view's centre: the reciprocal of the projection's scale in
     // pixels, cot(fov / 2) * height / 2.
     out.views[v].pixel =

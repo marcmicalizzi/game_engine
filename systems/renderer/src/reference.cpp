@@ -232,7 +232,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
 
   const View& view = renderer_->views()[0];
   gfx::PathTraceParams params{};
-  params.inv_view_proj = inverse(view.view_proj);
+  params.clip_to_ray = view.clip_to_ray;
   params.camera = Vec4{camera.position, 0.0f};
   params.sky = lighting.sky;
   params.sun = lighting.sun;

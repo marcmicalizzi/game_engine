@@ -232,8 +232,9 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
   const Vec3 eye{0.0f, 6.0f, 22.0f};
   const f32 znear = 0.1f;
   const f32 fov_y = radians(60.0f);
-  const Mat4 view_proj = perspective_reversed_z(fov_y, static_cast<f32>(k_w) / k_h, znear) *
-                         look_at(eye, Vec3{0.0f, 0.5f, 0.0f}, Vec3{0, 1, 0});
+  const Mat4 projection = perspective_reversed_z(fov_y, static_cast<f32>(k_w) / k_h, znear);
+  const Mat4 eye_view = look_at(eye, Vec3{0.0f, 0.5f, 0.0f}, Vec3{0, 1, 0});
+  const Mat4 view_proj = projection * eye_view;
   const Frustum frustum = frustum_from_view_proj(view_proj);
   geometry::LodView view;
   view.camera = eye;
@@ -795,7 +796,7 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
                                k_storage, geometry_list, &error));
     gfx::RayVisibilityParams ray{};
     ray.view_proj = view_proj;
-    ray.inv_view_proj = inverse(view_proj);
+    ray.clip_to_ray = gfx::clip_to_ray(projection, eye_view);
     ray.camera = Vec4{eye, 0.0f};
     ray.output = vis[2].address;
     ray.instance_base = base_buffer.address;

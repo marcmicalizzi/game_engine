@@ -30,13 +30,14 @@
 // where the second look's cost is bounded by one descent to one point.
 
 #include "scene.slang"
+#include "view_ray.slang"
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
 // Read through a device address; mirrors gfx::RayVisibilityParams (208 bytes).
 struct RayVisibilityParams {
   column_major float4x4 view_proj;
-  column_major float4x4 inv_view_proj;
+  column_major float4x4 clip_to_ray;  // clip to the world direction of the eye's ray (view_ray.slang)
   float4 camera;    // xyz position
   uint64_t output;         // uint64_t[width * height]
   uint64_t instance_base;  // uint[instance_count]: the visible index of each instance's first
@@ -81,9 +82,10 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
   // Pixel center to clip space: row 0 is the top of the image, clip y points up.
   const float2 ndc = float2((float(id.x) + 0.5) / float(params->width) * 2.0 - 1.0,
                             1.0 - (float(id.y) + 0.5) / float(params->height) * 2.0);
-  const float4 ahead = mul(params->inv_view_proj, float4(ndc, 0.5, 1.0));  // any depth in front
+  // The direction from the camera's rotation and projection alone, never a world point less the
+  // eye, which far from the origin turned every ray by a pixel or more (view_ray.slang).
   const float3 origin = params->camera.xyz;
-  const float3 direction = normalize(ahead.xyz / ahead.w - origin);
+  const float3 direction = view_ray_direction(params->clip_to_ray, ndc);
 
   RayDesc ray;
   ray.Origin = origin;

@@ -22,6 +22,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/view_ray.h>
 #include <domain/gfx/visibility_resolve.h>
 
 namespace engine::gfx {
@@ -39,10 +40,12 @@ inline constexpr u32 k_pt_pixel_center = 2u;
 
 // Mirrors PathTraceParams in path_trace.slang. 288 bytes.
 struct PathTraceParams {
-  Mat4 inv_view_proj;  // clip to world, for the primary rays
-  Vec4 camera{};       // xyz eye position
-  Vec4 sky{};          // rgb, the same value ResolveParams::sky carries
-  Vec4 sun{};          // xyz normalized direction towards the light, w intensity
+  // Clip space to the world direction of a primary ray, `clip_to_ray(projection, view)`
+  // (view_ray.h): the camera's rotation and projection, never its position.
+  Mat4 clip_to_ray;
+  Vec4 camera{};  // xyz eye position
+  Vec4 sky{};     // rgb, the same value ResolveParams::sky carries
+  Vec4 sun{};     // xyz normalized direction towards the light, w intensity
   // rgb: the ground's albedo, the same value ResolveParams::ground carries. An escaped ray below
   // the horizon returns this ground lit by `sun` and `sky`, the lower half of the environment the
   // resolve's hemisphere term stands for, so the two integrators see one ground. w is unused.

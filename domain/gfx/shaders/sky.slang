@@ -17,6 +17,8 @@
 #ifndef ENGINE_SKY_SLANG
 #define ENGINE_SKY_SLANG
 
+#include "view_ray.slang"
+
 static const float k_sky_pi = 3.14159265358979323846;
 
 // Mirrors gfx::k_sky_* in sky.h.
@@ -39,7 +41,7 @@ static const uint k_sky_max_views = 8;
 
 // Mirrors gfx::SkyView (80 bytes).
 struct SkyView {
-  column_major float4x4 inv_view_proj;
+  column_major float4x4 clip_to_ray;  // clip to the world direction of the eye's ray (view_ray.slang)
   float4 pixel;  // x radians a pixel spans at the view's centre
 };
 
@@ -595,10 +597,11 @@ float3 sky_environment(SkyParams* sky, SkyFrame* frame, float3 dir) {
 }
 
 // A world ray's direction through a view's pixel, in the view's own clip space: the pixel centre's
-// ndc through the inverse view-projection, from the eye.
+// ndc through the view's clip-to-ray matrix (view_ray.slang), which holds the camera's rotation and
+// projection and not where it stands — so the sky behind the ground does not move when the camera
+// does. Never a world point less the eye: that was the sky's jitter two kilometres out.
 float3 sky_pixel_direction(SkyParams* sky, uint view, float2 ndc) {
-  const float4 ahead = mul(sky->views[view].inv_view_proj, float4(ndc, 0.5, 1.0));
-  return normalize(ahead.xyz / ahead.w - sky->camera.xyz);
+  return view_ray_direction(sky->views[view].clip_to_ray, ndc);
 }
 
 // Radiance to the display, before the transfer curve.

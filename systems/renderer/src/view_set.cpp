@@ -1,3 +1,4 @@
+#include <domain/gfx/view_ray.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/view_set.h>
 
@@ -251,6 +252,7 @@ void ViewSet::update(const Camera& camera) noexcept {
                                                view.bottom * camera.znear, view.top * camera.znear,
                                                camera.znear);
     view.view_proj = projection * view_matrix;
+    view.clip_to_ray = gfx::clip_to_ray(projection, view_matrix);
     view.proj_scale = projection.at(1, 1) * static_cast<f32>(view.source_height) * 0.5f;
   }
 }

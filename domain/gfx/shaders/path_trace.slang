@@ -40,12 +40,13 @@
 #include "sampling.slang"
 #include "scene.slang"
 #include "sky.slang"
+#include "view_ray.slang"
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
 // Mirrors gfx::PathTraceParams (288 bytes).
 struct PathTraceParams {
-  column_major float4x4 inv_view_proj;
+  column_major float4x4 clip_to_ray;  // clip to the world direction of a primary ray (view_ray.slang)
   float4 camera;  // xyz eye position
   float4 sky;
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -338,12 +339,13 @@ void path_trace_main(uint3 id : SV_DispatchThreadID) {
     uint rng = rng_seed(id.xy, params->sample_base + s, params->seed);
     const float2 jitter = centered ? float2(0.5, 0.5) : rng_next2(rng);
     // Pixel to clip space: row 0 is the top of the image, clip y points up — the same map
-    // ray_visibility.slang uses, so a reference ray and a real-time ray start together.
+    // ray_visibility.slang uses, so a reference ray and a real-time ray start together — and to a
+    // direction by the one function every reader of a pixel's direction calls, the resolve's
+    // uncovered pixels included, so a primary miss looks where the resolve's sky does.
     const float2 ndc = float2((float(id.x) + jitter.x) / size.x * 2.0 - 1.0,
                               1.0 - (float(id.y) + jitter.y) / size.y * 2.0);
-    const float4 ahead = mul(params->inv_view_proj, float4(ndc, 0.5, 1.0));
     const float3 origin = params->camera.xyz;
-    const float3 direction = normalize(ahead.xyz / ahead.w - origin);
+    const float3 direction = view_ray_direction(params->clip_to_ray, ndc);
     bool hit_primary = false;
     sum += trace_path(params, origin, direction, rng, hit_primary);
     covered = covered || hit_primary;

@@ -144,6 +144,12 @@ struct View {
 
   // ---- filled by ViewSet::update() ------------------------------------------------------------
   Mat4 view_proj;
+  // Clip space to the world direction of the eye's ray through a pixel: the inverse of the
+  // projection times the view's rotation, with the eye at the origin (gfx::clip_to_ray). What the
+  // sky, the ray path's primary rays and the reference's camera rays read a pixel's direction
+  // from, because the inverse of `view_proj` carries the camera's world position and, kilometres
+  // from the origin, a direction made from it is wrong by pixels (gfx.md, "The sky").
+  Mat4 clip_to_ray;
   // The cull pass's LOD scale, cot(fov_y / 2) * source_height / 2 for a centred projection and
   // the same expression through the projection's own vertical scale for an off-axis one. In
   // *source* pixels, because that is where the error the threshold bounds is measured.
