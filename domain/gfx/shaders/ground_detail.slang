@@ -44,8 +44,8 @@ static const uint k_ground_patches = 128u;
 static const uint k_ground_steering = 256u;
 static const uint k_ground_motion = 512u;
 // gfx::k_ground_flow_rms, k_ground_flow_slope_rms.
-static const float k_ground_flow_rms = 0.142;
-static const float k_ground_flow_slope_rms = 0.515;
+static const float k_ground_flow_rms = 0.212;
+static const float k_ground_flow_slope_rms = 0.953;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -89,12 +89,12 @@ struct GroundDetail {
   float spacing_max;
   float flow_tan_start;   // grainflow (k_ground_grainflow): where the lanes start and are whole
   float flow_tan_full;
-  float flow_cell;        // metres, the world lattice's cell
+  float flow_length;      // metres, a lane's segment: the longest a tongue runs
   float flow_width;       // metres, a lane
   float flow_slope;       // the normal's lean per unit of the lanes' derivative
   float flow_normal;      // the root-mean-square slope that is, for the roughness transfer
   float flow_albedo;      // the albedo's share per unit of the lanes' value
-  float flow_widening;    // per metre down the fall line
+  float flow_retired;     // the third pass's widening, retired
   float patch_size;       // patches (k_ground_patches): the coarse cell, metres
   float patch_mid;        // the wavelength's scale 2^(v half_log2) about the mid
   float patch_half_log2;
@@ -435,29 +435,88 @@ float ground_episode(float phase, float share) {
   return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
 }
 
-// One direction's lanes at `p`: the noise of `dot(p, across) / width`, its value and gradient.
+// A smoothstep and its derivative over x.
+float2 ground_smooth_d(float e0, float e1, float x) {
+  const float t = saturate((x - e0) / (e1 - e0));
+  return float2(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / (e1 - e0));
+}
+
+// One direction's grainflow at `p`: lanes `2 flow_width` apart across direction k, each a chain of
+// **tongues** along it, one to a segment of `flow_length` (staggered per lane by the golden
+// ratio), each running 45 to 95% of the segment with its own start, width (0.7 to 1.3 of
+// `flow_width`), lateral jitter and episode. A tongue is what an avalanche leaves on a slip face
+// (Hunter 1977; Kocurek and Dott 1981): a narrow **chute** with **levees** at its head where the
+// flow scoured, easing over its upper half into a **lobe** of deposited sand that widens down the
+// face (from 0.6 to 1.4 of its width) and ends in a **rounded toe**, the toe's edges ending before
+// its middle; soft at the head over a tenth of its length and at the toe over a fifth — metres on
+// a face, never a lane width. Everything is a function of position alone (the lane's coordinate
+// across and along a fixed direction), so the normal never moves it. Height (dimensionless, 1 at a
+// lobe's crest) and its gradient over (x, z), per metre; three lanes, three lattice hashes.
 GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
   const float angle = float(k) * (k_ground_two_pi / float(k_ground_flow_directions));
-  const float2 across = float2(-sin(angle), cos(angle));
-  const float s = dot(p, across) / d.flow_width;
-  const float m = floor(s);
-  const float f = s - m;
-  const float u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  const float du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  float g[2];
-  [unroll]
-  for (uint e = 0u; e < 2u; ++e) {
-    uint h = ground_hash(int(m) + int(e), int(k), d.seed, 48u);
-    g[e] = ground_unit(h) * 2.0 - 1.0;
+  const float2 dir = float2(cos(angle), sin(angle));
+  const float2 across = float2(-dir.y, dir.x);
+  const float spacing = 2.0 * d.flow_width;
+  const float seg = d.flow_length;
+  const float sa = dot(p, across);
+  const float t = dot(p, dir);
+  const float mc = floor(sa / spacing + 0.5);
+  GroundFlow out;
+  out.value = 0.0;
+  out.gradient = float2(0.0, 0.0);
+  for (int i = -1; i <= 1; ++i) {
+    const float m = mc + float(i);
+    const float stagger = frac(m * 0.6180339887) * seg;
+    const float j = floor((t - stagger) / seg);
+    uint h = ground_hash(int(m), int(j), d.seed, 48u + k);
+    const float jitter = (ground_unit(h) - 0.5) * 0.5 * spacing;
+    h = ground_pcg(h);
+    const float wscale = 0.7 + 0.6 * ground_unit(h);
+    h = ground_pcg(h);
+    const float lenf = 0.45 + 0.5 * ground_unit(h);
+    h = ground_pcg(h);
+    const float startf = ground_unit(h) * (1.0 - lenf);
+    float amp = 1.0;
     if (d.flow_share < 1.0) {
       h = ground_pcg(h ^ 0x68E31DA4u);
-      g[e] *= ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
+      amp = ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
     }
+    if (!(amp > 0.0)) continue;
+    const float len = lenf * seg;
+    const float tau = (t - (j * seg + stagger + startf * seg)) / len;
+    if (!(tau > 0.0 && tau < 1.0)) continue;
+    // Across: the half-width widens down the tongue; r is the offset over it.
+    const float half_w = 0.5 * d.flow_width * wscale * (0.6 + 0.8 * tau);
+    const float dhalf_dt = 0.5 * d.flow_width * wscale * 0.8 / len;
+    const float x = sa - (m * spacing + jitter);
+    const float r = x / half_w;
+    const float r2 = r * r;
+    if (!(r2 < 1.0)) continue;
+    const float q = 1.0 - r2;
+    const float lobe = q * q;
+    const float dlobe = -4.0 * r * q;
+    const float chute = q * q * (2.4 * r2 - 0.6);  // a scour in the middle, levees at r = 0.7
+    const float dchute = dlobe * (2.4 * r2 - 0.6) + q * q * 4.8 * r;
+    const float2 lw = ground_smooth_d(0.35, 0.8, tau);
+    const float2 cw = ground_smooth_d(0.2, 0.55, tau);
+    const float shape = lw.x * lobe + (1.0 - cw.x) * chute;
+    const float dshape_dr = lw.x * dlobe + (1.0 - cw.x) * dchute;
+    const float dshape_dtau = lw.y * lobe - cw.y * chute;
+    const float2 head = ground_smooth_d(0.0, 0.1, tau);
+    // The toe is rounded in plan: its edges end before its middle.
+    const float2 toe = ground_smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2);
+    const float ends = head.x * (1.0 - toe.x);
+    const float dends_dtau = head.y * (1.0 - toe.x) - head.x * toe.y * (1.0 / 0.2);
+    const float dends_dr = -head.x * toe.y * (0.24 * r / 0.2);
+    const float height = shape * ends;
+    const float dh_dr = dshape_dr * ends + shape * dends_dr;
+    const float dh_dtau = dshape_dtau * ends + shape * dends_dtau;
+    // r = x / half_w(tau): across, 1 / half_w; along, -r / half_w dhalf/dt, plus tau's own 1 / len.
+    const float dh_dx = dh_dr / half_w;
+    const float dh_dt = dh_dr * (-r / half_w * dhalf_dt) + dh_dtau / len;
+    out.value += amp * height;
+    out.gradient += (across * dh_dx + dir * dh_dt) * amp;
   }
-  GroundFlow out;
-  out.value = g[0] * f * (1.0 - u) + g[1] * (f - 1.0) * u;
-  out.gradient = across * ((g[0] * ((1.0 - u) - f * du) + g[1] * (u + (f - 1.0) * du)) /
-                           d.flow_width);
   return out;
 }
 

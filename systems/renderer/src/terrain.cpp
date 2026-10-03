@@ -519,6 +519,7 @@ gfx::GroundDetailDesc terrain_detail_desc(const TerrainDesc& desc) noexcept {
   out.flow_widening = d.flow_widening;
   out.flow_share = d.flow_share;
   out.flow_turnover = d.flow_turnover;
+  out.flow_length = d.flow_length;
   out.patch_size = d.patch_size;
   out.patch_min = d.patch_min;
   out.patch_max = d.patch_max;
@@ -610,6 +611,8 @@ bool validate_terrain_detail(const scene::TerrainDetail& d, std::string* error) 
         d.flow_turnover <= 100000.0f)) {
     return fail("flow_share must be within (0, 1] and flow_turnover within [0, 100000]");
   }
+  if (!(d.flow_length >= 2.0f && d.flow_length <= 200.0f))
+    return fail("flow_length must be within [2, 200] m");
   if (!(d.patch_size == 0.0f || (d.patch_size >= 5.0f && d.patch_size <= 500.0f)))
     return fail("patch_size must be 0 or within [5, 500] m");
   if (!(d.patch_min >= 0.5f && d.patch_min <= 1.0f && d.patch_max >= 1.0f && d.patch_max <= 2.0f &&

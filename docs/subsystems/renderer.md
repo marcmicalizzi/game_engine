@@ -1123,6 +1123,7 @@ The owner walked the erg for the first time on 2026-09-28 (`engine-view --walk`)
 | `flow_start_deg`, `flow_full_deg` | 0°, 0° (none) | version 3: **grainflow lanes** on a slip face, starting at this lee slope along the wind and whole at that one (the ergs: 24° and 30°, with the streaks off) |
 | `flow_cell`, `flow_width`, `flow_widening` | 10 m, 0.6 m, 0.3 | `flow_width` is a lane's width; `flow_cell` and `flow_widening` are **retired** by the fourth pass (read, checked, not drawn). Third pass: the world lattice's cell (about a lane's length), a lane's width, how much it widens down a cell |
 | `flow_normal`, `flow_albedo` | 0.05, 0.015 | the lanes' relief as a root-mean-square slope, and their colour as a share of the albedo |
+| `flow_length` | 24 m | version 4: a lane's segment, the longest a grainflow **tongue** runs (each 45–95% of it, so some stop part-way) |
 | `flow_share`, `flow_turnover` | 1 (every lane, always), 0 (never changes) | the lanes are **episodes**: this share present at once, each cycling this many times per m² of the ground's transport (the ergs: a quarter, and 800, about three cycles a calm day) |
 | `patch_size`, `patch_min`, `patch_max`, `patch_defects` | 0 (none), 0.7, 1.4, 0.5 | version 3: **patches** — a slow noise of position (octaves at `patch_size` and half it; the ergs 30 m) scaling the ripples' wavelength and height within [min, max] and their defects (the kernels' spread) by up to `patch_defects` either way |
 | `steer_max_deg`, `steer_gain` | 0 (none), 2 | version 3: **steering** — on a slope oblique to the wind the ripples turn along its contours, at most this far (the ergs 20°) |
@@ -1163,6 +1164,17 @@ Along lines crossing patches over ground whose slope swings across the wind, the
 - **A storm flattens them.** Between `flatten_start` and `flatten_end` of the wind's strength over its record's mean (the ergs: 1.6 and 2.2; storm 42 peaks at 2.31), their weight falls to 0, taken from the weight so a flat bed is smooth and not rough.
 - **Cost.** One multiply a kernel for the travel, and a max for the frame's fade.
 - **Tests.** On the mirror, a travel of 3.7 cm moves the phase by exactly that, to 3e-16 wavelengths.
+
+**Grainflow tongues, with soft ends** (2026-10-03, version 4; the owner on the straight lanes: "let's do the soft cutoff in a way that makes sense, we're wanting to end up with a AAA near photorealistic implementation"). A real grainflow is a tongue, not a line (Hunter 1977; Kocurek and Dott 1981): an avalanche released below the brink scours a narrow **chute** with **levees** either side, deposits a **lobe** further down that widens and thickens, and stops in a **rounded toe**, part-way down the face or at its foot. So each lane of the fixed-direction field is now a chain of tongues along its direction:
+
+- **One tongue a segment.** Each lane has one tongue per segment of `flow_length` (24 m on the ergs), staggered from lane to lane by the golden ratio.
+- **Its own measurements.** Each tongue has its own length (45 to 95% of the segment), start, width (0.7 to 1.3 of `flow_width`), lateral jitter and episode. Lanes are `2 flow_width` apart.
+- **Its shape.** Its profile across eases from a chute with levees (`(1-r²)² (2.4 r² - 0.6)`) over the upper half into a lobe (`(1-r²)²`). Its half-width widens from 0.6 to 1.4 of its width toward the toe.
+- **Soft ends, over metres.** The head comes in over a tenth of its length and the toe goes out over a fifth, and the toe's edges end before its middle, so it is round in plan. Those are metres on a face, never a lane width.
+- **No swim.** The height and its gradient are analytic, and everything is a function of position, so the fixed directions' guarantee holds.
+- **Cost.** Three lanes a direction, six lattice hashes a slip-face pixel (four for the straight lanes, eight for the third pass's cells).
+
+On the mirror the tongues run a median 15.6 m along their lanes' centres (10th percentile 10.3 m, 90th 21.2 m). Nine points in ten lean along the fall line by less than 0.3; the heads, the chute-to-lobe transitions and the toes are the rest, and lanes of one direction stay parallel. The ergs keep half the tongues present (`flow_share` 0.5, from a quarter: with the gaps between tongues a quarter left a face nearly bare from the brink).
 
 **The slip face, fourth pass: lanes that are lanes** (2026-10-03). **The owner's report**, from the brink of a face looking along and down it: "Close up (and especially looking down) the lee side streaking still looks very elliptical dottish."
 

@@ -52,6 +52,30 @@ The instrument sees what the owner saw. The ovals at his feet are the same beats
 
 **Why the blend is narrow.** A full-sector blend (the brief's first form) crosses two families 22.5° apart over every fall line except the sixteen exact directions. On the mirror that scored 0.97 at the 99th percentile everywhere off a direction, and the along-fall-line correlation was zero at 5 m. Over the middle fifth only, most fall lines see one family. The price is that the weight turns five times as fast with the normal, hence 11.6% where it was 5.9%. In shading that is a change in slope of under 0.006, under a level of 255. Sixteen directions were enough. Thirty-two would bring the lanes within 4.5° of the fall line but not change the crossing in the blend.
 
+## Tongues with soft ends (the owner's follow-up)
+
+**The owner** asked for a soft cutoff "in a way that makes sense", aiming at a near-photorealistic result. So each lane is now a chain of grainflow tongues (renderer.md, "Grainflow tongues, with soft ends"):
+
+- a chute with levees easing into a lobe that widens to a rounded toe;
+- each tongue 45–95% of a 24 m segment;
+- the head soft over a tenth of the tongue and the toe over a fifth.
+
+| Measure | Result |
+|---|---|
+| Value rms, slope rms per lane width | 0.212, 0.953 (the block's constants) |
+| Tongue length along lane centres | median 15.6 m; 10th percentile 10.3 m, 90th 21.2 m |
+| Gradient's share along the fall line, on a direction / 8° off | 90th percentile 0.22 / 0.27; 99th 0.74 / 0.78 (heads, chute-to-lobe, toes) |
+| A milliradian of normal 3 km out, worst point | 24% of rms at the blend's steepest, where one direction's tongue meets the other's gap; nothing outside a blend |
+| Filter's mean against 8×8 supersampling at 5, 15 and 40 cm | within 0.06%, 0.9% and 0.56% |
+| Lattice hashes on a slip-face pixel | 6 |
+
+**Pictures** (`all_face_plan`, `ergs_face_plan`, `ergs_face_feet`):
+
+- **In plan:** tongues as brush strokes down the face. Each is a thin dark scour at the head, opening into a lighter lobe that fades out, at varied lengths with smooth sand between.
+- **At the feet:** a single tongue with its chute, levees and rounded toe.
+- **The ergs' share.** At a quarter, a face from the brink was nearly bare, so the ergs now keep half.
+- **Still not right:** the tongues are straight; real ones meander a little and sometimes branch.
+
 ## At the merge
 
 The GPU case "the resolve draws the third pass's function on sloped sand" draws `ground_ref::erg_numbers()` falling with the wind at 27° and 32°, and its mirror is the new function, so it needs no code change. The author expects the same tolerance, 1 of 255 by the origin and 4 at 3.7 km:

@@ -355,29 +355,82 @@ inline double episode(double phase, double share) {
   return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
 }
 
-// One direction's lanes (`ground_lane_set`).
+// `ground_smooth_d`: a smoothstep and its derivative.
+inline void smooth_d(double e0, double e1, double x, double& v, double& dv) {
+  const double t = brdf_ref::clamp01((x - e0) / (e1 - e0));
+  v = t * t * (3.0 - 2.0 * t);
+  dv = 6.0 * t * (1.0 - t) / (e1 - e0);
+}
+
+// One direction's tongues (`ground_lane_set`).
 inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k) {
   const double angle = static_cast<double>(k) * (k_two_pi / 16.0);
-  const double ax = -std::sin(angle);
-  const double az = std::cos(angle);
+  const double dx = std::cos(angle);
+  const double dz = std::sin(angle);
+  const double ax = -dz;
+  const double az = dx;
   const double width = static_cast<double>(d.flow_width);
-  const double s = (x * ax + z * az) / width;
-  const double m = std::floor(s);
-  const double f = s - m;
-  const double u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  const double du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  double g[2];
-  for (u32 e = 0; e < 2; ++e) {
-    u32 h = hash(static_cast<i32>(m) + static_cast<i32>(e), static_cast<i32>(k), d.seed, 48u);
-    g[e] = unit(h) * 2.0 - 1.0;
+  const double spacing = 2.0 * width;
+  const double seg = static_cast<double>(d.flow_length);
+  const double sa = x * ax + z * az;
+  const double t = x * dx + z * dz;
+  const double mc = std::floor(sa / spacing + 0.5);
+  Flow out;
+  for (i32 i = -1; i <= 1; ++i) {
+    const double m = mc + i;
+    const double golden = m * 0.6180339887;
+    const double stagger = (golden - std::floor(golden)) * seg;
+    const double j = std::floor((t - stagger) / seg);
+    u32 h = hash(static_cast<i32>(m), static_cast<i32>(j), d.seed, 48u + k);
+    const double jitter = (unit(h) - 0.5) * 0.5 * spacing;
+    h = pcg(h);
+    const double wscale = 0.7 + 0.6 * unit(h);
+    h = pcg(h);
+    const double lenf = 0.45 + 0.5 * unit(h);
+    h = pcg(h);
+    const double startf = unit(h) * (1.0 - lenf);
+    double amp = 1.0;
     if (d.flow_share < 1.0f) {
       h = pcg(h ^ 0x68E31DA4u);
       const double phase = static_cast<double>(d.flow_clock) + unit(h);
-      g[e] *= episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
+      amp = episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
     }
+    if (!(amp > 0.0)) continue;
+    const double len = lenf * seg;
+    const double tau = (t - (j * seg + stagger + startf * seg)) / len;
+    if (!(tau > 0.0 && tau < 1.0)) continue;
+    const double half_w = 0.5 * width * wscale * (0.6 + 0.8 * tau);
+    const double dhalf_dt = 0.5 * width * wscale * 0.8 / len;
+    const double off = sa - (m * spacing + jitter);
+    const double r = off / half_w;
+    const double r2 = r * r;
+    if (!(r2 < 1.0)) continue;
+    const double q = 1.0 - r2;
+    const double lobe = q * q;
+    const double dlobe = -4.0 * r * q;
+    const double chute = q * q * (2.4 * r2 - 0.6);
+    const double dchute = dlobe * (2.4 * r2 - 0.6) + q * q * 4.8 * r;
+    double lw, dlw, cw, dcw, head, dhead, toe, dtoe;
+    smooth_d(0.35, 0.8, tau, lw, dlw);
+    smooth_d(0.2, 0.55, tau, cw, dcw);
+    const double shape = lw * lobe + (1.0 - cw) * chute;
+    const double dshape_dr = lw * dlobe + (1.0 - cw) * dchute;
+    const double dshape_dtau = dlw * lobe - dcw * chute;
+    smooth_d(0.0, 0.1, tau, head, dhead);
+    smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2, toe, dtoe);
+    const double ends = head * (1.0 - toe);
+    const double dends_dtau = dhead * (1.0 - toe) - head * dtoe * (1.0 / 0.2);
+    const double dends_dr = -head * dtoe * (0.24 * r / 0.2);
+    const double height = shape * ends;
+    const double dh_dr = dshape_dr * ends + shape * dends_dr;
+    const double dh_dtau = dshape_dtau * ends + shape * dends_dtau;
+    const double dh_dx = dh_dr / half_w;
+    const double dh_dt = dh_dr * (-r / half_w * dhalf_dt) + dh_dtau / len;
+    out.value += amp * height;
+    out.gx += amp * (ax * dh_dx + dx * dh_dt);
+    out.gz += amp * (az * dh_dx + dz * dh_dt);
   }
-  const double dn = (g[0] * ((1.0 - u) - f * du) + g[1] * (u + (f - 1.0) * du)) / width;
-  return {g[0] * f * (1.0 - u) + g[1] * (f - 1.0) * u, ax * dn, az * dn};
+  return out;
 }
 
 // `ground_grainflow`: the two directions nearest the fall line (fx, fz), blended by the angle.
@@ -662,7 +715,8 @@ inline gfx::GroundDetailDesc erg_numbers() {
   d.flow_normal = 0.05f;
   d.flow_albedo = 0.015f;
   d.flow_widening = 0.3f;
-  d.flow_share = 0.25f;
+  d.flow_length = 24.0f;
+  d.flow_share = 0.5f;
   d.flow_turnover = 800.0f;
   d.patch_size = 30.0f;
   d.patch_min = 0.7f;

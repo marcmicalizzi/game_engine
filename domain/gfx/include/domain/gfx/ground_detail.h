@@ -69,8 +69,8 @@ inline constexpr u32 k_ground_motion = 512u;
 // own start and length) has a value of root-mean-square `k_ground_flow_rms` and a derivative of
 // `k_ground_flow_slope_rms` per lane width, after the four cells' blend: measured over the mirror
 // (ground_detail_tests.cpp, "grainflow lanes …"), and the block scales by them.
-inline constexpr f32 k_ground_flow_rms = 0.142f;
-inline constexpr f32 k_ground_flow_slope_rms = 0.515f;
+inline constexpr f32 k_ground_flow_rms = 0.212f;
+inline constexpr f32 k_ground_flow_slope_rms = 0.953f;
 // The ripples' travel reaches the shader reduced modulo this many base wavelengths, in double
 // precision on the CPU, so a float carries it to a ten-thousandth of a wavelength; where the
 // spacing or the patches scale the wavelength, the phase steps once as the reduction wraps, which
@@ -167,17 +167,18 @@ struct GroundDetailParams {
   f32 spacing_min = 1.0f;
   f32 spacing_max = 1.0f;
   // Third pass. Grainflow (k_ground_grainflow): the fall along the wind where the lanes start and
-  // are whole (as the streaks'), the world lattice's cell and a lane's width, metres, the normal's
-  // lean per unit of the lanes' derivative (to a root-mean-square slope of `flow_normal`), the
-  // albedo's share per unit of their value, and how much a lane widens down a cell.
+  // are whole (as the streaks'), a lane's segment (the longest a tongue runs) and a tongue's mean
+  // width, metres, the normal's lean per unit of the tongues' gradient (to a root-mean-square
+  // slope of `flow_normal`), and the albedo's share per unit of their height. (The word after
+  // `flow_albedo` was the third pass's widening, retired by the fourth.)
   f32 flow_tan_start = 0.0f;
   f32 flow_tan_full = 0.0f;
-  f32 flow_cell = 10.0f;
+  f32 flow_length = 24.0f;
   f32 flow_width = 0.6f;
   f32 flow_slope = 0.0f;
   f32 flow_normal = 0.0f;
   f32 flow_albedo = 0.0f;
-  f32 flow_widening = 0.0f;
+  f32 flow_retired = 0.0f;
   // Patches (k_ground_patches): the noise's coarse cell, metres; the wavelength's scale is
   // `patch_mid × 2^(v patch_half_log2)` for v in [-1, 1], and the kernels' spread `1 + v'
   // patch_defects` of the scene's.
@@ -267,6 +268,10 @@ struct GroundDetailDesc {
   f32 flow_normal = 0.05f;
   f32 flow_albedo = 0.015f;
   f32 flow_widening = 0.3f;
+  // The tongues (version 4): each lane is a chain of grainflow tongues along its direction, each
+  // running up to `flow_length` metres — a chute with levees at its head, a lobe widening to a
+  // rounded toe — with gaps between, so some reach the toe of a face and some stop part-way.
+  f32 flow_length = 24.0f;
   // The lanes are episodes, not a pattern: a lane avalanches when sand has piled at the brink and
   // is buried again by grainfall, so only `flow_share` of them are present at once (1, the
   // default: all, always), and each runs through `flow_turnover` cycles for every square metre of
@@ -387,16 +392,16 @@ inline GroundDetailParams ground_detail_block(const GroundDetailDesc& desc, Vec2
     out.streak_slope = static_cast<f32>(static_cast<f64>(desc.streak_normal) / slope_rms);
     out.streak_normal = desc.streak_normal;
   }
-  if (desc.flow_full_deg > desc.flow_start_deg && desc.flow_width > 0.0f && desc.flow_cell > 0.0f) {
+  if (desc.flow_full_deg > desc.flow_start_deg && desc.flow_width > 0.0f &&
+      desc.flow_length > 0.0f) {
     out.flags |= k_ground_grainflow;
     out.flow_tan_start = std::tan(radians(desc.flow_start_deg));
     out.flow_tan_full = std::tan(radians(desc.flow_full_deg));
-    out.flow_cell = desc.flow_cell;
+    out.flow_length = desc.flow_length;
     out.flow_width = desc.flow_width;
     out.flow_slope = desc.flow_normal / k_ground_flow_slope_rms;
     out.flow_normal = desc.flow_normal;
     out.flow_albedo = desc.flow_albedo / k_ground_flow_rms;
-    out.flow_widening = desc.flow_widening / desc.flow_cell;
     out.flow_share = std::clamp(desc.flow_share, 0.0f, 1.0f);
   }
   if (desc.patch_size > 0.0f && desc.patch_max >= desc.patch_min && desc.patch_min > 0.0f) {

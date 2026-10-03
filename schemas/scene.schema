@@ -520,7 +520,7 @@ struct StormGain @version(1) {
 /// terrain's seed and the ground's wind, with no texture and nothing to meet at an edge. The
 /// mechanism is the engine's; these numbers are the scene's. Metres and degrees. Append-only: a
 /// field added later has a default that draws what the block drew before it.
-struct TerrainDetail @version(3) {
+struct TerrainDetail @version(4) {
   /// Crest to crest, metres: real wind ripples are 8 to 15 cm apart.
   ripple_wavelength: f32 = 0.12
   /// Crest to trough, metres: about a centimetre on real sand. 0 draws no ripples.
@@ -601,6 +601,11 @@ struct TerrainDetail @version(3) {
   /// no wind the face stands; faster than a frame can show, the lanes fade.
   flow_share: f32 = 1 @since(3)
   flow_turnover: f32 = 0 @since(3)
+  /// The grainflow tongues' segment, metres, [2, 200] (version 4): each lane is a chain of tongues,
+  /// each running 45 to 95% of this down its direction — a chute with levees at its head, a lobe
+  /// widening to a rounded toe, soft at both ends over metres — so some reach the face's toe and
+  /// some stop part-way, as real avalanches do.
+  flow_length: f32 = 24 @since(4)
   /// The ripples in patches: a slow noise of position, its coarse octave `patch_size` metres
   /// ([5, 500]; 0, the default, is none), scaling the wavelength and height within
   /// [patch_min, patch_max] (0.5 <= min <= 1 <= max <= 2) and the defects by up to
