@@ -17,6 +17,7 @@
 #include <domain/protocol/rpc.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
+#include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 
@@ -42,10 +43,19 @@ class RenderHost {
     std::string kind;
     std::string source;
     renderer::SceneData data;
+    // What `render.load` was asked, in the renderer's one description of a request (request.h),
+    // and the settings it came to against the loaded scene: a call with no `settings` of its own
+    // draws with these.
+    renderer::RenderRequest request;
     renderer::RenderSettings requested;
     renderer::ResolvedSettings resolved;
     std::unique_ptr<renderer::GpuScene> gpu;
     std::unique_ptr<renderer::SceneRenderer> view;
+    // The terrain levels a call moves — the time-lapse, the rings, the world's tiles — built with
+    // the GPU scene, which reserves their slots, round the call's first camera. A scene that has
+    // them is rebuilt for every call that draws, so a call's picture is a function of the call and
+    // not of how far the calls before it moved the sand.
+    std::unique_ptr<renderer::MovingGround> ground;
     // The reference path tracer over the same scene and the same renderer, created on the first
     // call that asks for one and kept afterwards: it owns a shader library, two pipelines and two
     // screen-sized buffers, and an optimization loop calls it once per proposal.
@@ -84,11 +94,15 @@ class RenderHost {
   const gfx::Device* open_device() const noexcept { return device_ready_ ? &device_ : nullptr; }
 
   // Rebuilds `scene.gpu` and `scene.view` when the settings or the frame size differ from what
-  // they were built with, and leaves them alone when they do not. `unavailable` tells the two
-  // kinds of failure apart: this machine cannot render these settings at all (protocol error
-  // 1007, which a test skips on), against anything else, which is an internal error.
+  // they were built with, and leaves them alone when they do not — except for a scene whose ground
+  // is drawn as terrain levels, which is rebuilt every time, its rings or tiles laid out round
+  // `first` (the call's first camera) and its motion started from the scene's own time.
+  // `unavailable` tells the two kinds of failure apart: this machine cannot render these settings
+  // at all (protocol error 1007, which a test skips on), against anything else, which is an
+  // internal error.
   bool ensure_renderer(Scene& scene, const renderer::RenderSettings& settings, u32 width,
-                       u32 height, std::string& error, bool& unavailable);
+                       u32 height, const renderer::Camera& first, std::string& error,
+                       bool& unavailable);
 
   // The same for the reference renderer, which has to come after `ensure_renderer` because it is
   // built against the `SceneRenderer` that call left in place and reads its extent. `unavailable`

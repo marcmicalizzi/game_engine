@@ -10,14 +10,23 @@
 // suite skips on exit 3. That is what the distinct code is for.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <foundation/image/decode.h>
+#if ENGINE_CLI_TESTS_SKY
+#include <domain/sky/ephemeris.h>
+#endif
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -704,4 +713,413 @@ TEST_CASE("render: compare through engine-cli, on a machine with or without a GP
   CHECK(p.wait() == 1);
   CHECK_MESSAGE(output.find("error 1005") != std::string::npos, output);
   CHECK_MESSAGE(output.find("no-such-file.png") != std::string::npos, output);
+}
+
+// ---- one request, two hosts (docs/subsystems/renderer.md, "One request, two hosts") ------------
+//
+// The sky's hour, the ground's time and the ground's layout reached engine-view with flags and
+// render.* not at all until 2026-10-03. These three cases hold the protocol to them: a capture of
+// the erg at two hours whose sky differs and whose reported sun stands where the sky capability's
+// ephemeris puts it; a capture of the dunes three years on that differs from the scene's own and is
+// engine-view's picture with the same flags, byte for byte; and a benchmark along the endless
+// desert's path with its ground on the world's tiles, reporting the tile and sky columns
+// engine-view's `--benchmark` reports.
+
+namespace {
+
+// A path as a JSON string: forward slashes, which every platform's file API takes.
+std::string json_path(std::string path) {
+  for (char& c : path)
+    if (c == '\\') c = '/';
+  return "\"" + path + "\"";
+}
+
+bool read_bytes(const std::string& path, std::string& out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  return true;
+}
+
+bool read_json_file(const std::string& path, JsonValue& out) {
+  std::string text;
+  return read_bytes(path, text) && parse_json(text, out).ok;
+}
+
+bool write_text(const std::string& path, const std::string& text) {
+  std::ofstream out(path, std::ios::binary);
+  out << text;
+  return static_cast<bool>(out);
+}
+
+// A committed scene the build cannot draw — one naming a generator this configuration does not
+// link — is refused at load with the registry's sentence; such a build skips, as one with no GPU
+// does.
+bool skipped(const JsonValue& loaded) {
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(loaded));
+    return true;
+  }
+  if (error_message(loaded).find("this build does not have") != std::string::npos) {
+    MESSAGE("this build cannot draw the scene: " << error_message(loaded));
+    return true;
+  }
+  return false;
+}
+
+// The committed erg (content/test-scenes/desert-erg) with its terrain shrunk to 257 samples over
+// 256 m, so a debug build loads it in seconds: its bands, its wind, its sky and its time are the
+// scene's own. The calendar is read back for the ephemeris.
+struct SmallErg {
+  std::string path;
+  f64 time_s = 0.0;
+  f64 latitude_deg = 30.0;
+  f64 day_of_year = 80.0;
+  f64 moon_age_days = 0.0;
+};
+
+bool small_erg(const test::TempDir& tmp, SmallErg& out) {
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  JsonValue erg;
+  if (!read_json_file(committed, erg)) return false;
+  JsonValue terrain = *erg.find("terrain");
+  terrain.set("size", JsonValue(static_cast<u64>(257)));
+  terrain.set("extent", JsonValue(256.0));
+  REQUIRE(terrain.find("time")->get_f64(out.time_s));
+  erg.set("terrain", std::move(terrain));
+  const JsonValue* sky = erg.find("sky");
+  REQUIRE(sky != nullptr);
+  (void)sky->find("latitude_deg")->get_f64(out.latitude_deg);
+  (void)sky->find("day_of_year")->get_f64(out.day_of_year);
+  (void)sky->find("moon_age_days")->get_f64(out.moon_age_days);
+  // The scene names its camera path beside it.
+  std::string path_text;
+  REQUIRE(read_bytes(
+      committed.substr(0, committed.size() - std::string("scene.json").size()) + "camera-path.json",
+      path_text));
+  REQUIRE(write_text(tmp.file("camera-path.json"), path_text));
+  out.path = tmp.file("erg.json");
+  return write_text(out.path, write_json(erg));
+}
+
+f64 coordinate(const JsonValue& object, std::string_view key, usize i) {
+  const JsonValue* value = object.find(key);
+  f64 out = 0.0;
+  REQUIRE((value != nullptr && value->is_array() && value->size() > i));
+  REQUIRE((*value)[i].get_f64(out));
+  return out;
+}
+
+const JsonValue& member(const JsonValue& object, std::string_view key) {
+  const JsonValue* value = object.find(key);
+  REQUIRE_MESSAGE(value != nullptr, key);
+  return *value;
+}
+
+}  // namespace
+
+TEST_CASE("render: the erg at two hours, its sun where the ephemeris puts it") {
+  const test::TempDir tmp("engine_render_sky_hours");
+  SmallErg erg;
+  if (!small_erg(tmp, erg)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue loaded =
+      host.call("render.load", "{\"scene\":" + json_path(erg.path) +
+                                   ",\"ddc\":" + json_path(tmp.file("ddc")) + "}");
+  if (skipped(loaded)) return;
+  const JsonValue& scene = result_of(loaded);
+  CHECK(member(scene, "sky").as_bool());
+  CHECK(real(scene, "ground_time_s") == erg.time_s);
+  CHECK(text(scene, "ground") == "mesh");
+  const std::string id = text(scene, "scene");
+  // From a radius above the bounding sphere's centre, looking up and east: everything above the
+  // horizon line is sky, and nothing of the terrain can be above the camera.
+  const f64 cx = coordinate(scene, "center", 0);
+  const f64 cy = coordinate(scene, "center", 1);
+  const f64 cz = coordinate(scene, "center", 2);
+  const f64 r = real(scene, "radius");
+  char camera[256];
+  std::snprintf(camera, sizeof(camera),
+                R"({"position":[%.3f,%.3f,%.3f],"target":[%.3f,%.3f,%.3f],"fov_deg":60})", cx,
+                cy + r, cz, cx + 2.0 * r, cy + 1.25 * r, cz);
+  struct Shot {
+    f64 hour = 0.0;
+    image::Image color;
+    std::vector<u32> ids;
+    JsonValue sky;
+  };
+  Shot shots[2];
+  shots[0].hour = 12.0;
+  shots[1].hour = 18.5;
+  for (Shot& shot : shots) {
+    const std::string name = shot.hour < 13.0 ? "noon" : "evening";
+    const JsonValue captured = host.call(
+        "render.capture", "{\"scene\":\"" + id + "\",\"camera\":" + camera +
+                              ",\"width\":160,\"height\":96,\"channels\":[\"color\",\"ids\"],"
+                              "\"out_dir\":" +
+                              json_path(tmp.path()) + ",\"name\":\"" + name +
+                              "\",\"clock\":{\"time_of_day\":" + std::to_string(shot.hour) + "}}");
+    const JsonValue& result = result_of(captured);
+    const JsonValue& files = member(result, "files");
+    std::string message;
+    REQUIRE_MESSAGE(
+        image::read_image(uri_at(files, "color"), shot.color, 4, &message) == io::Status::Ok,
+        message);
+    std::string bytes;
+    REQUIRE(read_bytes(uri_at(files, "ids"), bytes));
+    REQUIRE(bytes.size() == usize{160} * 96 * 3 * 4);
+    shot.ids.resize(bytes.size() / 4);
+    std::memcpy(shot.ids.data(), bytes.data(), bytes.size());
+    const JsonValue* sky = member(result, "stats").find("sky");
+    REQUIRE_MESSAGE((sky != nullptr && sky->is_object()), "a scene with a sky reports it");
+    shot.sky = *sky;
+    // The hour the frame stood at is the hour asked for: the offset on the one clock, applied by
+    // the renderer's `frame_clock`, as engine-view's `--time-of-day` applies it.
+    CHECK(std::abs(real(shot.sky, "hour") - shot.hour) < 1.0e-6);
+#if ENGINE_CLI_TESTS_SKY
+    // And the sun stands where the sky capability's ephemeris puts it at the game time reported.
+    sky::Calendar calendar;
+    calendar.latitude_deg = erg.latitude_deg;
+    calendar.day_of_year = erg.day_of_year;
+    calendar.moon_age_days = erg.moon_age_days;
+    sky::Ephemeris e;
+    sky::ephemeris(calendar, real(shot.sky, "time_s"), e);
+    const f64 elevation = std::asin(e.sun.y) * 180.0 / 3.14159265358979323846;
+    INFO("hour " << shot.hour << ": reported " << real(shot.sky, "sun_elevation_deg")
+                 << ", ephemeris " << elevation);
+    CHECK(std::abs(real(shot.sky, "sun_elevation_deg") - elevation) < 0.01);
+#endif
+  }
+  CHECK(real(shots[0].sky, "sun_elevation_deg") > real(shots[1].sky, "sun_elevation_deg"));
+  // The sky pixels — the ones no surface covers, the same in both, since the camera is — differ.
+  u32 uncovered = 0;
+  u32 differ = 0;
+  const u32 pixels = 160 * 96;
+  for (u32 p = 0; p < pixels; ++p) {
+    if (shots[0].ids[p * 3] != 0xFFFFFFFFu) continue;
+    CHECK(shots[1].ids[p * 3] == 0xFFFFFFFFu);
+    ++uncovered;
+    if (std::memcmp(&shots[0].color.pixels[p * 4], &shots[1].color.pixels[p * 4], 3) != 0) {
+      ++differ;
+    }
+  }
+  MESSAGE("sky pixels " << uncovered << " of " << pixels << ", " << differ << " differ");
+  CHECK(uncovered > pixels / 4);
+  CHECK(differ * 10 > uncovered * 9);
+}
+
+TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for byte") {
+  const test::TempDir tmp("engine_render_ground_time");
+  SmallErg erg;
+  if (!small_erg(tmp, erg)) {
+    MESSAGE("the erg is not in this bundle");
+    return;
+  }
+  const f64 later = erg.time_s + 94'608'000.0;  // three years on
+  char later_text[64];
+  std::snprintf(later_text, sizeof(later_text), "%.1f", later);
+  const std::string ddc = tmp.file("ddc");
+  const std::string out_dir = tmp.file("out");
+  std::string own;
+  std::string own_explicit;
+  std::string moved;
+  {
+    // The host's own scope: it holds the machine's GPU lock for as long as it has a device open,
+    // and engine-view below takes it too.
+    Host host;
+    REQUIRE(host.ok);
+    const std::string capture_tail =
+        ",\"orbit\":{\"distance\":22},\"width\":160,\"height\":96,"
+        "\"out_dir\":" +
+        json_path(out_dir);
+    const JsonValue loaded = host.call(
+        "render.load", "{\"scene\":" + json_path(erg.path) + ",\"ddc\":" + json_path(ddc) + "}");
+    if (skipped(loaded)) return;
+    const std::string id = text(result_of(loaded), "scene");
+    const JsonValue a = host.call(
+        "render.capture", "{\"scene\":\"" + id + "\"" + capture_tail + ",\"name\":\"own\"}");
+    REQUIRE(read_bytes(uri_at(member(result_of(a), "files"), "color"), own));
+    // Every field this change added, spelled at its default, draws the same bytes as naming none:
+    // what keeps every caller from before it drawing what it drew.
+    const JsonValue b = host.call(
+        "render.capture",
+        "{\"scene\":\"" + id + "\"" + capture_tail +
+            ",\"name\":\"own_explicit\",\"clock\":{\"time_of_day\":null,\"sun_rate\":null},"
+            "\"settings\":{\"exposure_ev\":0,\"exposure_ev100\":null,\"terrain_rings\":false,"
+            "\"terrain_tiles\":false,\"deform_pool_mib\":0,\"static_shape_kib\":0,\"morph\":[],"
+            "\"page_budget_pct\":0}}");
+    REQUIRE(read_bytes(uri_at(member(result_of(b), "files"), "color"), own_explicit));
+    const JsonValue loaded_later = host.call(
+        "render.load", "{\"scene\":" + json_path(erg.path) + ",\"ddc\":" + json_path(ddc) +
+                           ",\"ground_time_s\":" + later_text + "}");
+    const JsonValue& later_scene = result_of(loaded_later);
+    CHECK(real(later_scene, "ground_time_s") == later);
+    const JsonValue c =
+        host.call("render.capture", "{\"scene\":\"" + text(later_scene, "scene") + "\"" +
+                                        capture_tail + ",\"name\":\"later\"}");
+    REQUIRE(read_bytes(uri_at(member(result_of(c), "files"), "color"), moved));
+    // A scene with no terrain has no ground time to set.
+    const JsonValue refused = host.call("render.load", R"({"grid":17,"ground_time_s":1})");
+    CHECK(error_code(refused) == k_invalid_argument);
+  }
+  CHECK(own == own_explicit);
+  CHECK(own != moved);
+
+  // engine-view with the same flags: the scene, the orbit, the size, and --ground-time.
+  const auto view = [&](bool with_time, const std::string& png, std::string& out) {
+    std::vector<std::string> args = {test::app_path(ENGINE_VIEW_PATH),
+                                     "--scene",
+                                     erg.path,
+                                     "--ddc",
+                                     ddc,
+                                     "--offscreen",
+                                     "--frames",
+                                     "1",
+                                     "--width",
+                                     "160",
+                                     "--height",
+                                     "96",
+                                     "--orbit",
+                                     "22",
+                                     "--capture",
+                                     png};
+    if (with_time) {
+      args.push_back("--ground-time");
+      args.push_back(later_text);
+    }
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    platform::Process p;
+    std::string error;
+    REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                            /*merge_stderr=*/true),
+                    error);
+    p.close_stdin();
+    std::string output;
+    p.read_all(output);
+    const i32 code = p.wait();
+    if (code == 3) {
+      MESSAGE("engine-view cannot render here: " << output);
+      return false;
+    }
+    REQUIRE_MESSAGE(code == 0, output);
+    REQUIRE(read_bytes(png, out));
+    return true;
+  };
+  std::string view_own;
+  std::string view_later;
+  if (!view(false, tmp.file("view-own.png"), view_own)) return;
+  REQUIRE(view(true, tmp.file("view-later.png"), view_later));
+  // The scene's own time: engine-view's picture, byte for byte.
+  CHECK(view_own == own);
+  // Three years on, the same picture to within a step of 255 at a handful of pixels: at that night
+  // the sky's GPU sums (`stats.sky.sky_lux`) come out a few parts in ten million apart between the
+  // two processes — the same in each process run to run, and the same with shadows off — which
+  // moves an exposed channel by one at a pixel or two. The request is not the cause: every number
+  // the two report of the sky but that sum is the same to the last digit. Held to the bytes it can
+  // be held to, and the rest written down (renderer.md, "One request, two hosts").
+  if (view_later != moved) {
+    image::Image a;
+    image::Image b;
+    std::string message;
+    REQUIRE(image::read_image(tmp.file("view-later.png"), a, 4, &message) == io::Status::Ok);
+    REQUIRE(image::read_image(out_dir + "/later.png", b, 4, &message) == io::Status::Ok);
+    REQUIRE(a.pixels.size() == b.pixels.size());
+    u32 differ = 0;
+    u32 largest = 0;
+    for (u32 i = 0; i < a.pixels.size(); ++i) {
+      const u32 d =
+          a.pixels[i] > b.pixels[i] ? a.pixels[i] - b.pixels[i] : b.pixels[i] - a.pixels[i];
+      if (d != 0) ++differ;
+      largest = d > largest ? d : largest;
+    }
+    MESSAGE("three years on: " << differ << " channel bytes differ, by at most " << largest);
+    CHECK(largest <= 1);
+    CHECK(differ * 1000 < a.pixels.size());
+  }
+}
+
+TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
+  const test::TempDir tmp("engine_render_endless");
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-endless/scene.json",
+                      "content/test-scenes/desert-endless/scene.json");
+  JsonValue endless;
+  JsonValue path;
+  if (!read_json_file(committed, endless) ||
+      !read_json_file(committed.substr(0, committed.size() - std::string("scene.json").size()) +
+                          "camera-path.json",
+                      path)) {
+    MESSAGE("the endless desert is not in this bundle");
+    return;
+  }
+  // Its world's rings brought in to six tiles, so a debug build lays the first ring out in
+  // seconds; the tiles, their cells, the bands, the sky and the time are the scene's own.
+  JsonValue world = *endless.find("world");
+  JsonValue rings = JsonValue::array();
+  const f64 radii[3] = {1.5, 3.0, 6.0};
+  const u64 cells[3] = {32, 16, 8};
+  for (u32 k = 0; k < 3; ++k) {
+    JsonValue ring = JsonValue::object();
+    ring.set("radius", JsonValue(radii[k]));
+    ring.set("ground_cells", JsonValue(cells[k]));
+    rings.push_back(std::move(ring));
+  }
+  world.set("rings", std::move(rings));
+  endless.set("world", std::move(world));
+  const std::string scene_file = tmp.file("endless.json");
+  REQUIRE(write_text(scene_file, write_json(endless)));
+  REQUIRE(write_text(tmp.file("camera-path.json"), write_json(path)));
+  // A prefix of the committed path: its first two keys, two seconds and 200 m of the flight.
+  JsonValue keys = JsonValue::array();
+  keys.push_back(member(path, "keys")[0]);
+  keys.push_back(member(path, "keys")[1]);
+  path.set("keys", std::move(keys));
+  path.set("markers", JsonValue::array());
+  const std::string prefix = tmp.file("prefix.json");
+  REQUIRE(write_text(prefix, write_json(path)));
+
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue loaded = host.call("render.load", "{\"scene\":" + json_path(scene_file) +
+                                                        ",\"ddc\":" + json_path(tmp.file("ddc")) +
+                                                        ",\"settings\":{\"terrain_tiles\":true}}");
+  if (skipped(loaded)) return;
+  const JsonValue& scene = result_of(loaded);
+  CHECK(text(scene, "ground") == "tiles");
+  CHECK(member(scene, "sky").as_bool());
+  const JsonValue flown =
+      host.call("render.benchmark",
+                "{\"scene\":\"" + text(scene, "scene") +
+                    "\",\"width\":160,\"height\":96,\"camera_path\":" + json_path(prefix) +
+                    ",\"path_frames\":12,\"repeats\":1,\"warmup\":0,"
+                    "\"clock\":{\"time_of_day\":16}}");
+  const JsonValue& bench = result_of(flown);
+  const JsonValue& stats = member(bench, "stats");
+  // The tile columns: the ground drawn from the world's tiles, levels and chunks and rebuilds.
+  const JsonValue& ground = member(stats, "ground");
+  CHECK(text(ground, "layout") == "tiles");
+  CHECK(number(ground, "levels") >= 2);
+  CHECK(number(ground, "chunks") > 0);
+  CHECK(number(ground, "device_bytes") > 0);
+  // The sky columns: the hour the clock asked for, and what the sky's passes cost a frame.
+  const JsonValue& sky = member(stats, "sky");
+  CHECK(std::abs(real(sky, "hour") - 16.0) < 1.0e-6);
+  CHECK(real(member(stats, "gpu_ms"), "sky") > 0.0);
+  // And the flythrough summary carries the blocks engine-view's `--benchmark` ends with.
+  const JsonValue& summary = member(bench, "flythrough");
+  CHECK(number(summary, "frames") == 12);
+  const JsonValue& lapse = member(summary, "time_lapse");
+  REQUIRE(lapse.is_object());
+  CHECK(text(member(lapse, "rings"), "layout") == "tiles");
+  CHECK(member(lapse, "levels").size() >= 2);
+  const JsonValue& sun = member(summary, "sun");
+  REQUIRE(sun.is_object());
+  CHECK(std::abs(real(member(sun, "sky"), "hour") - 16.0) < 1.0e-6);
+  CHECK(real(member(member(summary, "gpu_ms"), "sky"), "median") > 0.0);
 }

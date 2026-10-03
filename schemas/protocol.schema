@@ -401,8 +401,11 @@ struct AdaptersResult @version(1) {
 // string here is spelled the way engine-view's flags spell it, because both hosts parse them
 // with the same functions in systems/renderer/settings.h.
 
-/// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(9) {
+/// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's. Field for
+/// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
+/// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
+/// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
+struct RenderSettings @version(10) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -492,8 +495,112 @@ struct RenderSettings @version(9) {
   /// generator is re-evaluated on the job pool at each step of game time (a game day by default,
   /// `renderer.terrain.time_step_s`), at most once per `renderer.terrain.time_min_frames` frames
   /// (docs/subsystems/renderer.md, "The dunes in time-lapse"). 0 is the scene's own `time`. It is
-  /// `engine-view --time-rate`.
-  time_rate: f64 = 0 @since(8)
+  /// `engine-view --time-rate`. Above zero, every `render.*` call that draws runs the motion from
+  /// its start, a sixtieth of a second of real time a frame, and waits for its fields as an
+  /// offscreen engine-view does, so a call's picture is a function of the call.
+  time_rate: f64 = 0 @since(8) @unit(ratio)
+  /// A sky's exposure for the whole run (docs/subsystems/renderer.md, "Exposure"): **stops** added
+  /// to the sky's rule, positive brighter, within -30..30. `engine-view --exposure`. Nothing
+  /// without a sky.
+  exposure_ev: f32 = 0 @since(10)
+  /// A fixed exposure value (EV100, -30..30: 15 a sunlit scene, -3 a moonlit one) in place of the
+  /// rule. `engine-view --exposure-ev100`. Null: the rule's. Nothing without a sky.
+  exposure_ev100: f32? = null @since(10)
+  /// The dune terrain's ground near the camera at the terrain rings' finer grids, beside the
+  /// scene's own grid and rebuilt round the camera as it moves (docs/subsystems/renderer.md, "The
+  /// rings in the scene"). Built round the call's first camera. `engine-view --terrain-rings`.
+  terrain_rings: bool = false @since(10)
+  /// The dune terrain's ground drawn from the world's tiles, with no end, in place of the scene's
+  /// grid (docs/subsystems/renderer.md, "The ground from the world's tiles"; ADR-0050). A scene's
+  /// `world` block with `"ground": true` asks for it too. The tiles follow the camera by the
+  /// world ring's first-fill rule. `engine-view --terrain-tiles`.
+  terrain_tiles: bool = false @since(10)
+  /// The deformed-vertex pool's budget in **mebibytes**; 0 is the renderer's default (8 MiB).
+  /// `engine-view --deform-pool-mib`.
+  deform_pool_mib: u32 = 0 @since(10)
+  /// Kibibytes of the static shape stage's per-instance caches; 0 is the default (4096).
+  /// `engine-view --static-shape-kib`.
+  static_shape_kib: u32 = 0 @since(10)
+  /// The static shape stage's weights, each `<name|index>=<weight>`, over a mesh's morph
+  /// channels; every channel takes its authored default weight unless one of these names it.
+  /// `engine-view --morph`, once per entry. A scene with no morph channels refuses a non-empty list.
+  morph: string[] @since(10)
+  /// The residency budget as a **percentage** (1..100) of the loaded scene's page bytes, in place
+  /// of `page_budget_mib`; 0 is `page_budget_mib`'s. `engine-view --page-budget-pct`.
+  page_budget_pct: u32 = 0 @since(10)
+}
+
+/// What a frame is drawn at beyond its camera and its number: the world's one clock
+/// (docs/subsystems/renderer.md, "One clock"). Absent fields are the clock every call drew before
+/// this block: the ground's own hour, standing still. Both hosts turn it into the frame's
+/// `FrameDesc::sun_time_s` through one function (`renderer::frame_clock`).
+struct RenderClock @version(1) {
+  /// A sky's hour, local apparent solar time, within 0..24 (17.5 is 17:30): the offset on the one
+  /// clock that puts the ground's day at this hour. The sky, the sun and the moon move; the
+  /// ground stays at its own time. `engine-view --time-of-day`. Null: the ground's own hour.
+  /// Nothing without a sky.
+  time_of_day: f64?
+  /// The sun's day in game seconds per real second, within 0..1e7: frame f stands
+  /// `sun_rate * f / 60` game seconds after the hour. `engine-view --sun-rate`. Null: the
+  /// `renderer.sun.rate` tunable (0, a still sun).
+  sun_rate: f64?
+}
+
+/// A sky's frame as the renderer drew it (`renderer::SkyStats`; docs/subsystems/renderer.md, "The
+/// sky" and "Exposure"): the last frame drawn's calendar, where the sun and the moon stood, and the
+/// exposure. Under the same keys as engine-view's summary `sun.sky` block.
+struct RenderSkyStats @version(1) {
+  /// The game time the sky stood at: the ground's time plus the frame's clock.
+  time_s: f64 = 0 @unit(s)
+  /// The scene's calendar day it fell on, fractional (1 is January 1), and the local hour.
+  day_of_year: f64 = 0
+  hour: f64 = 0 @unit(h)
+  /// Azimuth from +x towards +z and elevation above the horizon, as `--sun` says them.
+  sun_azimuth_deg: f32 = 0 @unit(deg)
+  sun_elevation_deg: f32 = 0 @unit(deg)
+  moon_azimuth_deg: f32 = 0 @unit(deg)
+  moon_elevation_deg: f32 = 0 @unit(deg)
+  /// The moon's illuminated fraction, and whether the cascaded maps were drawn from it.
+  moon_lit: f32 = 0 @unit(ratio)
+  moon_key: bool = false
+  /// The exposure value the frame was exposed at, the illuminance in lux it was metered from and
+  /// the sky's share of that, and the display value per sun unit of radiance.
+  ev100: f32 = 0
+  lux: f32 = 0
+  sky_lux: f32 = 0
+  exposure: f32 = 0
+}
+
+/// The ground as terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse", "The
+/// rings in the scene", "The ground from the world's tiles"): what the run's motion did, under the
+/// keys of engine-view's summary `time_lapse` block where it has them.
+struct RenderGroundStats @version(1) {
+  /// "grid" (the scene's grid alone), "rings" or "tiles".
+  layout: string
+  /// The time-lapse's rate, and the game time it reached.
+  rate: f64 = 0 @unit(ratio)
+  game_time_s: f64 = 0 @unit(s)
+  /// The game time the ground's surface stood at when the last frame was drawn, which the sky's
+  /// one clock and the sand's wind read (`GpuScene::ground_time_s`).
+  ground_time_s: f64 = 0 @unit(s)
+  /// The terrain levels: the scene's grid and one per ring or tile ring.
+  levels: u32 = 0
+  /// The rings' or tiles' chunks the levels hold now, and the rebuilds the worker built, swapped
+  /// in and dropped for want of room. Zero for the grid alone.
+  chunks: u32 = 0
+  rebuilds: u32 = 0
+  swaps: u32 = 0
+  failed: u32 = 0
+  /// The evaluated fields' bytes copied onto the device over the run; their GPU time a frame is
+  /// `gpu_ms.terrain_upload`.
+  upload_bytes: u64 = 0
+  /// The chunks' and tiles' device bytes: their slots and arenas.
+  device_bytes: u64 = 0
+  /// How far behind the camera the drawn layout fell at most, in metres on the ground and in
+  /// frames (engine-view's `time_lapse.rings.max_lag_m` and `max_lag_frames`). Zero for a call,
+  /// whose frames wait for their layout as every offscreen run's do.
+  max_lag_m: f64 = 0 @unit(m)
+  max_lag_frames: u32 = 0
 }
 
 /// The ray tracing chain's memory over a run, mirroring `renderer::RtStats`: the capacity of the
@@ -610,7 +717,7 @@ struct RenderViewStats @version(2) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(4) {
+struct RenderLoadParams @version(5) {
   /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads a **procedural**
   /// scene, which is what needs no content at all; `procedural` says which one.
   mesh: string
@@ -647,10 +754,17 @@ struct RenderLoadParams @version(4) {
   /// A landmark overlay manifest (`engine.scene.Overlay`) for a `scene` file: its entries replace
   /// the scene's meshes that name their content hashes. Empty: none.
   overlay: string @since(4)
+  /// The game time the `scene` file's ground stands at, in **game seconds** since the world's
+  /// epoch, in place of its terrain's `time`: the dunes three years on are `time + 94608000`. The terrain mesh is built at it, whatever stands
+  /// on the ground stands on it there, and a sky's one clock starts from it. A **load** parameter
+  /// rather than a call's, because it changes what loading produces — the mesh, its LOD graph and
+  /// its derived-data cache entry — as `page_bytes` does. `engine-view --ground-time`. Null: the
+  /// file's own `time`; a scene with no terrain refuses one.
+  ground_time_s: f64? @since(5)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
-struct RenderSceneInfo @version(1) {
+struct RenderSceneInfo @version(2) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -677,6 +791,14 @@ struct RenderSceneInfo @version(1) {
   occlusion: bool = false
   deform: string
   rt_templates: bool = false
+  /// Whether the scene names a sky (a `render.*` call's `clock` and the settings' exposure then
+  /// mean something), and the game time its ground stands at: the terrain's `time`, or
+  /// `ground_time_s`. Null without a terrain.
+  sky: bool = false @since(2)
+  ground_time_s: f64? @since(2)
+  /// How the resolved settings draw the ground: "none" (no terrain), "mesh" (the scene's grid,
+  /// still), "levels" (the grid as a terrain level), "rings" or "tiles".
+  ground: string = "none" @since(2)
 }
 
 /// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.
@@ -719,7 +841,7 @@ struct RenderReference @version(1) {
 
 /// Parameters of `render.capture`. With neither `camera` nor `orbit` the default orbit frames
 /// the scene.
-struct RenderCaptureParams @version(2) {
+struct RenderCaptureParams @version(3) {
   scene: string
   camera: RenderCamera?
   orbit: RenderOrbit?
@@ -732,7 +854,10 @@ struct RenderCaptureParams @version(2) {
   out_dir: string
   /// Base name; the color channel is <name>.png and the others <name>.<channel>.<ext>.
   name: string = "capture"
-  /// Frame number, which drives the orbiting lights and the deformation phase.
+  /// Frame number, which drives the orbiting lights, the deformation phase and the clock's day.
+  /// With a time-lapse (`settings.time_rate` above zero) the frames before it are drawn first,
+  /// each a sixtieth of a second of the motion, so a capture at frame f is `engine-view --frames
+  /// f+1 --capture` with the same flags.
   frame: u64 = 0
   /// "realtime" (the default, and what every caller before this field got) or "reference": the
   /// converged path trace of the same frame, written to the same files. A reference capture has
@@ -741,13 +866,19 @@ struct RenderCaptureParams @version(2) {
   integrator: string = "realtime" @since(2)
   /// The reference settings, read only when `integrator` is "reference".
   reference: RenderReference @since(2)
+  /// Draw with these instead of the settings the scene was loaded with, as `render.benchmark`
+  /// and `render.evaluate` may: the scene is not reloaded, only its GPU buffers and pipelines are
+  /// rebuilt.
+  settings: RenderSettings? @since(3)
+  /// The frame's clock: a sky's hour and the sun's day (see `RenderClock`).
+  clock: RenderClock @since(3)
 }
 
 /// GPU milliseconds per pass, averaged over the frames whose timestamps came back (`frames`,
 /// which is short of the frames rendered by the frames in flight, because a timestamp pool is
 /// read when its slot is reused). `rt` is the whole acceleration structure chain and `clas` the
 /// cluster structure build inside it.
-struct RenderGpuMs @version(2) {
+struct RenderGpuMs @version(3) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -763,6 +894,11 @@ struct RenderGpuMs @version(2) {
   shadow_cull: f64 = 0 @since(2)
   total: f64 = 0
   frames: u64 = 0
+  /// A sky's passes (its tables, the sky from the eye, the air, the sums), the frame's and no
+  /// view's; what the sky adds to the resolve is in `resolve`. 0 for a scene with no sky.
+  sky: f64 = 0 @since(3)
+  /// A moving terrain's field copies onto the device. 0 without terrain levels.
+  terrain_upload: f64 = 0 @since(3)
 }
 
 /// Device-local memory around a measurement (`gfx::MemoryBudget`, VK_EXT_memory_budget).
@@ -797,7 +933,7 @@ struct MachineStateSpan @version(1) {
   end: MachineState
 }
 
-struct RenderStats @version(8) {
+struct RenderStats @version(9) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -837,6 +973,10 @@ struct RenderStats @version(8) {
   /// survivors its index budget sent to the capacity draw. Not in `visible_pairs`.
   shadow_pairs: u32 = 0 @since(8)
   shadow_fallback: u32 = 0 @since(8)
+  /// The sky as the last frame drew it (see `RenderSkyStats`); null for a scene with no sky.
+  sky: RenderSkyStats? @since(9)
+  /// The ground as terrain levels (see `RenderGroundStats`); null when it is not drawn as levels.
+  ground: RenderGroundStats? @since(9)
 }
 
 struct RenderCaptureResult @version(2) {
@@ -870,7 +1010,7 @@ struct RenderCaptureResult @version(2) {
 /// frames at its first camera, `frames` is ignored, and the result's `flythrough` carries the
 /// median, p95 and p99 per pass over the path's frames — the same summary `engine-view
 /// --benchmark` ends its `.jsonl` with, minus the per-frame lines.
-struct RenderBenchmarkParams @version(2) {
+struct RenderBenchmarkParams @version(3) {
   scene: string
   width: u32 = 1280
   height: u32 = 720
@@ -889,6 +1029,9 @@ struct RenderBenchmarkParams @version(2) {
   /// And at least this many seconds of warm-up frames: a fast card needs time, not frames, to
   /// bring its clocks up.
   warmup_seconds: f64 = 0 @since(2)
+  /// The frames' clock (see `RenderClock`): frame f, or path frame f, stands at the hour plus
+  /// `sun_rate * f / 60`, every repeat and warm-up alike, as engine-view's `--benchmark` lights it.
+  clock: RenderClock @since(3)
 }
 
 struct RenderBenchmarkResult @version(3) {
@@ -959,14 +1102,16 @@ struct RenderMetrics @version(1) {
   flip_weighted_mean: f64 = 0
 }
 
-struct RenderEvaluateParams @version(1) {
+struct RenderEvaluateParams @version(2) {
   scene: string
   camera: RenderCamera?
   orbit: RenderOrbit?
   width: u32 = 1280
   height: u32 = 720
-  /// Frame number: both pictures use it, so both get the same lights.
+  /// Frame number: both pictures use it, so both get the same lights and the same clock.
   frame: u64 = 0
+  /// The frame's clock (see `RenderClock`); the reference is drawn at the same time.
+  clock: RenderClock @since(2)
   /// Render the real-time picture with these instead of the ones the scene was loaded with.
   settings: RenderSettings?
   reference: RenderReference

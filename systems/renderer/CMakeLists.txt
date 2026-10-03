@@ -35,7 +35,7 @@ engine_module(NAME renderer LAYER systems
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
-          src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp)
+          src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -45,6 +45,10 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
+                    # One request, two hosts: every RenderSettings and FrameDesc field named with
+                    # the protocol field that reaches it or the reason none does, by a structured
+                    # binding that stops compiling when a field is added; no device.
+                    tests/request_tests.cpp
                     # The reader through the registry with generators of the test's own, in every
                     # configuration: with no capability linked, the minimal one included.
                     tests/scene_gen_scene_tests.cpp

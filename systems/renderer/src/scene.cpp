@@ -1026,6 +1026,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     out.meshes.push_back(std::move(resolved));
     out.mesh_info.push_back(std::move(info));
   }
+  // A ground time asked of a file with no terrain is a question with nothing to answer it, and
+  // reading the scene anyway would hand back a picture that silently ignored it.
+  if (options.ground_time_s.has_value() && !file.terrain.has_value()) {
+    error = path + ": a ground time was asked for, and the scene has no terrain";
+    return false;
+  }
   if (file.terrain.has_value()) {
     const scene::Terrain& t = *file.terrain;
     out.terrain.enabled = true;
@@ -1050,7 +1056,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes || t.provider == "dunes"
                                 ? TerrainGenerator::dunes
                                 : TerrainGenerator::waves;
-    out.terrain.time_s = t.time;
+    // The caller's ground time replaces the file's here, before anything below reads it: the
+    // placement entries stand on the ground at this time, the mesh is built at it, and the sky's
+    // one clock starts from it (renderer.md, "One clock").
+    out.terrain.time_s = options.ground_time_s.has_value() ? *options.ground_time_s : t.time;
     out.terrain.sand_flux = t.sand_flux;
     out.terrain.storms_per_year = t.storms_per_year;
     out.terrain.storm_strength = t.storm_strength;

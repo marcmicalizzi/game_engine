@@ -14,6 +14,20 @@ if(TARGET engine_engine_cli_tests)
   # The engine-host these tests start opens a GPU device for render.*, and so can wait for the
   # machine-wide GPU lock (ADR-0049).
   engine_test_waits_for_gpu(engine_cli)
+  # render_tests.cpp holds `render.capture` to engine-view's capture with the same flags, byte for
+  # byte (docs/subsystems/renderer.md, "One request, two hosts"), so it runs engine-view too — after
+  # the host it started has exited, since each takes the GPU lock for as long as it has a device. It
+  # reads the pictures and the id buffer back with the image module, and checks a sky's reported sun
+  # against the sky capability's own ephemeris where the build has it. engine-view is declared after
+  # this file, which a generator expression and a dependency may name.
+  target_compile_definitions(engine_engine_cli_tests PRIVATE
+    ENGINE_VIEW_PATH="$<TARGET_FILE:engine_engine_view>")
+  add_dependencies(engine_engine_cli_tests engine_engine_view)
+  target_link_libraries(engine_engine_cli_tests PRIVATE engine::image)
+  if(TARGET engine::sky)
+    target_link_libraries(engine_engine_cli_tests PRIVATE engine::sky)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_SKY=1)
+  endif()
   # save_tests.cpp writes the player's action map and input log with the input module itself
   # (docs/subsystems/world.md, "The player"), and reads the save corpus under content/.
   target_link_libraries(engine_engine_cli_tests PRIVATE engine::input)

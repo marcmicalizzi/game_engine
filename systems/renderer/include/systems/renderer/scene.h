@@ -225,6 +225,11 @@ struct SceneFileOptions {
   // block's defaults then): engine-view `--world`. The same scene read without it is today's
   // whole read, which is what E35 compares a streamed world against.
   bool world = false;
+  // The game time the ground stands at, in place of the file's `Terrain.time`: engine-view
+  // `--ground-time`, `render.load`'s `ground_time_s` (request.h). The terrain mesh is built at it,
+  // anything placed on the ground stands on it there, and a sky's one clock starts from it. A
+  // file with no terrain is refused. Unset: the file's own time.
+  std::optional<f64> ground_time_s;
 };
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,

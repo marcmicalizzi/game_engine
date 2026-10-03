@@ -83,105 +83,85 @@ std::string file_uri(std::string_view path) {
   return out;
 }
 
-// The schema's strings into the renderer's settings, reporting the first one that is not a
-// spelling either host knows. The parsers are the renderer's, so a flag and a protocol field
-// can never drift apart.
-bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings& out,
-                   protocol::RpcError& error) {
-  out = renderer::RenderSettings{};
-  if (!renderer::parse_raster_mode(in.raster, out.raster)) {
-    error = invalid("raster must be direct, hw, vertex, sw, auto, or rt; got '" + in.raster + "'");
+// A call's request: the scene's own (what `render.load` was asked), or the call's `settings` in its
+// place, with the call's clock, and the settings it comes to against the loaded scene. Every word
+// of the translation is the renderer's (`renderer::read_protocol_settings`, `settings_for`,
+// systems/renderer/request.h), which engine-view's flags go through too, so the two hosts cannot
+// read one request two ways.
+bool call_request(const RenderHost::Scene& scene,
+                  const std::optional<protocol::RenderSettings>& settings,
+                  const protocol::RenderClock& clock, renderer::RenderRequest& request,
+                  renderer::RenderSettings& for_scene, protocol::RpcError& error) {
+  request = scene.request;
+  std::string message;
+  if (settings.has_value() && !renderer::read_protocol_settings(*settings, request, message)) {
+    error = invalid(std::move(message));
     return false;
   }
-  if (!renderer::parse_shadow_mode(in.shadows, out.shadows)) {
-    error = invalid("shadows must be off, rt, csm, or auto; got '" + in.shadows + "'");
+  if (!renderer::read_protocol_clock(clock, request.clock, message)) {
+    error = invalid(std::move(message));
     return false;
   }
-  if (!renderer::parse_view_mode(in.view, out.view_mode)) {
-    error = invalid("view must be id, tri, depth, shaded, normals, or uv; got '" + in.view + "'");
+  if (!settings.has_value()) {
+    for_scene = scene.requested;
+    return true;
+  }
+  if (!renderer::settings_for(request, scene.data, for_scene, &message)) {
+    error = invalid("settings.morph: " + message);
     return false;
   }
-  if (!renderer::parse_deform_mode(in.deform, out.deform, out.deform_kind)) {
-    error = invalid("deform must be none, identity, wave, or lattice; got '" + in.deform + "'");
-    return false;
-  }
-  if (!renderer::parse_view_layout(in.views, out.views)) {
-    error = invalid("views must be single, surround3, or panini; got '" + in.views + "'");
-    return false;
-  }
-  if (in.side_yaw_deg < 0.0f || in.side_yaw_deg > 80.0f) {
-    error = invalid("side_yaw_deg must be within 0..80");
-    return false;
-  }
-  if (in.peripheral_lod < 1.0f) {
-    error = invalid("peripheral_lod must be at least 1");
-    return false;
-  }
-  if (in.panini_d < 0.0f) {
-    error = invalid("panini_d must not be negative");
-    return false;
-  }
-  if (in.shadow_cascades < 1 || in.shadow_cascades > 4) {
-    error = invalid("shadow_cascades must be within 1..4");
-    return false;
-  }
-  if (in.shadow_map < 64 || in.shadow_map > renderer::k_max_shadow_map) {
-    error = invalid("shadow_map must be within 64..4096 texels");
-    return false;
-  }
-  if (!(in.shadow_distance >= 0.0f)) {
-    error = invalid("shadow_distance must not be negative");
-    return false;
-  }
-  // The two streaming budgets are MiB and KiB on the wire and bytes in the renderer, which is the
-  // same split engine-view's `--page-budget` and `--upload-budget` have: a budget is chosen at the
-  // scale of a scene and an upload at the scale of a frame, while the renderer sizes buffers and
-  // so counts bytes. The conversion lives here, in the one place the wire meets the module, rather
-  // than in `RenderSettings`, so `settings.h` never has to say what unit a caller was thinking in.
-  // The bound keeps the kibibyte product inside the u32 the renderer's field is.
-  if (in.upload_budget_kib > 1024u * 1024u) {
-    error = invalid("upload_budget_kib must be at most 1048576 (1 GiB)");
-    return false;
-  }
-  out.stream = in.stream;
-  out.page_budget_bytes = u64{in.page_budget_mib} * 1024u * 1024u;
-  out.upload_budget_bytes = in.upload_budget_kib * 1024u;
-  out.lod_px = in.lod_px;
-  out.sw_px = in.sw_px;
-  out.cull = in.cull;
-  out.occlusion = in.occlusion;
-  out.cone = in.cone;
-  out.shadow_casters = in.shadow_casters;
-  out.shadow_cascades = in.shadow_cascades;
-  out.shadow_map = in.shadow_map;
-  out.shadow_distance = in.shadow_distance;
-  out.lights = in.lights;
-  out.orbit_lights = in.orbit_lights;
-  if (in.sun_azimuth_deg.has_value() != in.sun_elevation_deg.has_value()) {
-    error = invalid("sun_azimuth_deg and sun_elevation_deg go together");
-    return false;
-  }
-  if (in.sun_elevation_deg.has_value() &&
-      (!(*in.sun_elevation_deg >= -90.0f && *in.sun_elevation_deg <= 90.0f) ||
-       !std::isfinite(*in.sun_azimuth_deg))) {
-    error = invalid("the sun's elevation must be within -90..90 degrees, its azimuth finite");
-    return false;
-  }
-  out.sun_azimuth_deg = in.sun_azimuth_deg;
-  out.sun_elevation_deg = in.sun_elevation_deg;
-  out.deform_amplitude = in.deform_amplitude;
-  out.rt_templates = in.rt_templates;
-  out.rt_budget_mib = in.rt_budget_mib;
-  out.share_textures = in.share_textures;
-  if (!(in.time_rate >= 0.0) || in.time_rate > 1e9) {
-    error = invalid("time_rate must be within 0..1e9 game seconds per real second");
-    return false;
-  }
-  out.time_rate = in.time_rate;
-  out.side_yaw = radians(in.side_yaw_deg);
-  out.panini_d = in.panini_d;
-  out.peripheral_lod = in.peripheral_lod;
   return true;
+}
+
+// Before a frame of a call: the world's tiles follow the camera by the ring's first-fill rule (this
+// host has no world ring), and the motion moves a sixtieth of a second on — what engine-view does
+// before every frame of an offscreen run.
+void step_ground(RenderHost::Scene& scene, const renderer::Camera& camera) {
+  if (scene.ground == nullptr) return;
+  scene.ground->follow_tiles(camera.position);
+  scene.ground->frame(camera);
+}
+
+// A flight's hook for the same step (`FlightOptions::before_frame`).
+bool ground_before_frame(void* context, const renderer::FlightStep& step, std::string*) {
+  step_ground(*static_cast<RenderHost::Scene*>(context), step.camera);
+  return true;
+}
+
+// "none", "mesh", "levels", "rings" or "tiles": how the resolved settings draw the scene's ground.
+const char* ground_name(const renderer::SceneData& data, const renderer::ResolvedSettings& r) {
+  if (!data.terrain.enabled) return "none";
+  return r.terrain_tiles    ? "tiles"
+         : r.terrain_rings  ? "rings"
+         : r.terrain_levels ? "levels"
+                            : "mesh";
+}
+
+// The moving ground's block of the statistics, under the keys engine-view's `time_lapse` has.
+void fill_ground(const RenderHost::Scene& scene, protocol::RenderStats& out) {
+  if (scene.ground == nullptr || !scene.ground->active() || scene.gpu == nullptr ||
+      scene.view == nullptr) {
+    return;
+  }
+  const renderer::TerrainMotion& motion = scene.ground->motion();
+  protocol::RenderGroundStats ground;
+  ground.layout = renderer::ground_layout(motion);
+  ground.rate = motion.config().rate;
+  ground.game_time_s = motion.game_time_s();
+  ground.ground_time_s = scene.gpu->ground_time_s();
+  ground.levels = motion.level_count();
+  if (motion.has_rings()) {
+    const renderer::TerrainMotion::RingStats& r = motion.ring_stats();
+    ground.chunks = r.chunks_resident;
+    ground.rebuilds = r.rebuilds;
+    ground.swaps = r.swaps;
+    ground.failed = r.failed;
+    ground.device_bytes = scene.gpu->terrain_ring_bytes();
+    ground.max_lag_m = motion.max_layout_lag_m();
+    ground.max_lag_frames = motion.max_layout_lag_frames();
+  }
+  ground.upload_bytes = scene.view->stats().terrain_upload_bytes;
+  out.ground = std::move(ground);
 }
 
 // The statistics of a run, including the per-view breakdown. The view set is passed beside them
@@ -214,6 +194,26 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.gpu_ms.shadow_cull = in.shadow_cull_ms();
   out.gpu_ms.total = in.total_ms();
   out.gpu_ms.frames = in.timed_frames;
+  out.gpu_ms.sky = in.sky_ms();
+  out.gpu_ms.terrain_upload = in.gpu_terrain_upload / in.timed();
+  // A sky's frame, under engine-view's `sun.sky` keys (renderer::SkyStats).
+  if (in.sky.active) {
+    protocol::RenderSkyStats sky;
+    sky.time_s = in.sky.time_s;
+    sky.day_of_year = in.sky.day_of_year;
+    sky.hour = in.sky.hour;
+    sky.sun_azimuth_deg = in.sky.sun_azimuth_deg;
+    sky.sun_elevation_deg = in.sky.sun_elevation_deg;
+    sky.moon_azimuth_deg = in.sky.moon_azimuth_deg;
+    sky.moon_elevation_deg = in.sky.moon_elevation_deg;
+    sky.moon_lit = in.sky.moon_lit;
+    sky.moon_key = in.sky.moon_key;
+    sky.ev100 = in.sky.ev100;
+    sky.lux = in.sky.lux;
+    sky.sky_lux = in.sky.sky_lux;
+    sky.exposure = in.sky.exposure;
+    out.sky = std::move(sky);
+  }
   out.gpu_memory.budget_mib = in.gpu_memory.budget_mib;
   out.gpu_memory.used_mib = in.gpu_memory.used_mib;
   out.gpu_memory.device_local_total_mib = in.gpu_memory.device_local_total_mib;
@@ -406,8 +406,28 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     error = invalid("page_bytes must be 0 (the default target) or within 4096..67108864");
     return false;
   }
-  renderer::RenderSettings settings;
-  if (!read_settings(params.settings, settings, error)) return false;
+  renderer::RenderRequest request;
+  {
+    std::string message;
+    if (!renderer::read_protocol_settings(params.settings, request, message)) {
+      error = invalid(std::move(message));
+      return false;
+    }
+  }
+  if (params.ground_time_s.has_value()) {
+    if (params.scene.empty()) {
+      error = invalid("ground_time_s is a scene file's terrain's; name the scene");
+      return false;
+    }
+    if (!std::isfinite(*params.ground_time_s)) {
+      error = invalid("ground_time_s must be a finite number of game seconds");
+      return false;
+    }
+  }
+  request.ground_time_s = params.ground_time_s;
+  // The streaming switch is the load's question as well as the frame's (below), so it is read off
+  // the request before the scene is.
+  const renderer::RenderSettings& asked = request.settings;
 
   std::string device_error;
   gfx::Device* device = host->device(params.adapter, device_error);
@@ -440,7 +460,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   // scene's *requested* settings answer both, because a `SceneData` outlives a settings change
   // here and a later call that asks to stream a scene loaded without a table gets streaming
   // turned off with a log line instead of a page table it cannot have.
-  desc.stream = settings.stream;
+  desc.stream = asked.stream;
   desc.page_bytes = params.page_bytes;
   std::string load_error;
   if (!params.overlay.empty() && params.scene.empty()) {
@@ -450,6 +470,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   if (!params.scene.empty()) {
     renderer::SceneFileOptions file_options;
     file_options.overlay = params.overlay;
+    renderer::scene_file_options(request, file_options);
     if (!renderer::read_scene_file(params.scene, file_options, desc, load_error)) {
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
@@ -465,6 +486,11 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
     return false;
   }
+  renderer::RenderSettings settings;
+  if (std::string message; !renderer::settings_for(request, data, settings, &message)) {
+    error = invalid("settings.morph: " + message);
+    return false;
+  }
   renderer::ResolvedSettings resolved;
   renderer::resolve_settings(settings, device->features(), &data, resolved);
   const renderer::RenderAvailability availability =
@@ -474,6 +500,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     return false;
   }
   RenderHost::Scene* scene = host->add_scene();
+  scene->request = request;
   scene->requested = settings;
   scene->resolved = resolved;
   scene->data = std::move(data);
@@ -514,6 +541,9 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   out.occlusion = scene->resolved.occlusion;
   out.deform = renderer::deform_name(scene->resolved.settings);
   out.rt_templates = scene->resolved.settings.rt_templates;
+  out.sky = scene->data.sky.has_value();
+  if (scene->data.terrain.enabled) out.ground_time_s = scene->data.terrain.time_s;
+  out.ground = ground_name(scene->data, scene->resolved);
   ENGINE_LOG_INFO(log_render, "scene loaded", log::field("scene", scene->id),
                   log::field("clusters", out.clusters), log::field("instances", out.instances),
                   log::field("pairs", out.pairs), log::field("cache", out.mesh_cache));
@@ -572,20 +602,37 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
       }
     }
   }
+  renderer::RenderRequest request;
+  renderer::RenderSettings settings;
+  if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
+  const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
   std::string message;
   bool no_device = false;
-  if (!host->ensure_renderer(*scene, scene->requested, params.width, params.height, message,
+  if (!host->ensure_renderer(*scene, settings, params.width, params.height, camera, message,
                              no_device)) {
     error = no_device ? unavailable(std::move(message))
                       : protocol::make_error(protocol::codes::k_internal_error, std::move(message));
     return false;
   }
 
-  renderer::FrameDesc frame;
-  frame.camera = camera_of(*scene, params.camera, params.orbit);
-  frame.frame_index = params.frame;
+  const renderer::FrameClock clock = renderer::frame_clock(request.clock, scene->data);
+  const renderer::FrameDesc frame = renderer::frame_at(clock, camera, params.frame);
+  reference_settings.sun_time_s = frame.sun_time_s;
   renderer::CapturedFrame shot;
   scene->view->reset_stats();
+  // A time-lapse is drawn up to the frame asked for, a sixtieth of a second of its motion a frame,
+  // as engine-view's `--frames <frame + 1> --capture` draws it: the frames before the capture, and
+  // then one more step of the ground for the capture's own frame.
+  if (scene->ground != nullptr && scene->ground->moving()) {
+    for (u64 k = 0; k <= params.frame; ++k) {
+      step_ground(*scene, camera);
+      if (!scene->view->render_offscreen(renderer::frame_at(clock, camera, k), &message)) {
+        error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+        return false;
+      }
+    }
+  }
+  step_ground(*scene, camera);
   if (reference) {
     if (!host->ensure_reference(*scene, message, no_device)) {
       error = no_device
@@ -630,6 +677,7 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   if (!files.depth.empty()) out.files.insert_or_assign("depth", file_uri(files.depth));
   if (!files.normals.empty()) out.files.insert_or_assign("normals", file_uri(files.normals));
   fill_stats(scene->view->stats(), scene->view->views(), out.stats);
+  fill_ground(*scene, out.stats);
   return true;
 }
 
@@ -669,16 +717,23 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
       return false;
     }
   }
-  renderer::RenderSettings settings = scene->requested;
-  if (params.settings.has_value() && !read_settings(*params.settings, settings, error))
-    return false;
+  renderer::RenderRequest request;
+  renderer::RenderSettings settings;
+  if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
+  // The camera the moving ground is laid out round: the path's first frame, or the still one.
+  const u32 path_frames =
+      flythrough ? (params.path_frames != 0 ? params.path_frames : path.frame_count()) : 0u;
+  const renderer::Camera first = flythrough ? renderer::camera_path_frame(path, 0, path_frames)
+                                            : camera_of(*scene, params.camera, params.orbit);
   std::string message;
   bool no_device = false;
-  if (!host->ensure_renderer(*scene, settings, params.width, params.height, message, no_device)) {
+  if (!host->ensure_renderer(*scene, settings, params.width, params.height, first, message,
+                             no_device)) {
     error = no_device ? unavailable(std::move(message))
                       : protocol::make_error(protocol::codes::k_internal_error, std::move(message));
     return false;
   }
+  const renderer::FrameClock clock = renderer::frame_clock(request.clock, scene->data);
 
   // The same loop engine-view runs, minus the present: the frames stay in flight, because a
   // benchmark that waited for each one would measure the wait. The camera is held still so the
@@ -699,6 +754,11 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     options.warmup = params.warmup;
     options.warmup_seconds = params.warmup_seconds;
     options.frames_in_flight = 2;  // SceneRenderer::Desc's default, which ensure_renderer keeps
+    renderer::flight_clock(clock, options);
+    if (scene->ground != nullptr) {
+      options.before_frame = &ground_before_frame;
+      options.before_frame_context = scene;
+    }
     if (!renderer::fly_camera_path(*scene->view, path, options, flight, &message)) {
       error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
       return false;
@@ -709,9 +769,8 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     scene->view->reset_stats();
     u64 last = 0;
     for (u32 i = 0; i < params.frames; ++i) {
-      renderer::FrameDesc frame;
-      frame.camera = camera;
-      frame.frame_index = i;
+      step_ground(*scene, camera);
+      const renderer::FrameDesc frame = renderer::frame_at(clock, camera, i);
       scene->view->begin_frame();
       last = scene->view->submit_frame(frame, &message);
       if (last == 0) {
@@ -730,6 +789,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
   out.shadows = renderer::resolved_shadow_name(scene->resolved);
   fill_stats(scene->view->stats(), scene->view->views(), out.stats);
+  fill_ground(*scene, out.stats);
   out.machine_state.start = machine_state_of(machine_start);
   out.machine_state.end = machine_state_of(machine_end);
   if (flythrough) {
@@ -778,6 +838,18 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     summary.machine_state = std::move(machine);
     summary.quiet =
         bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
+    // The blocks engine-view's flythrough summary ends with, from the same functions: the moving
+    // ground's `time_lapse` (null without one) and the `sun`, at the path's last frame — a sky's
+    // `sky` block inside it, with the hour and the exposure the last frame was drawn at.
+    if (scene->ground != nullptr) {
+      summary.time_lapse =
+          renderer::time_lapse_summary(scene->ground->motion(), scene->view->stats(), *scene->gpu);
+    }
+    const u32 last = flight.frames > 0 ? flight.frames - 1 : 0u;
+    summary.sun = renderer::sun_summary(
+        scene->resolved.settings,
+        renderer::SunDayState{clock.sun_rate, clock.sun_rate, 0, clock.at(last)},
+        scene->view->stats());
     out.flythrough = std::move(summary);
   }
   // stdout belongs to the protocol, so the caveat goes to stderr — the same line and the same
@@ -884,15 +956,17 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
     error = invalid("ppd must be a positive number of pixels per degree");
     return false;
   }
-  renderer::RenderSettings settings = scene->requested;
-  if (params.settings.has_value() && !read_settings(*params.settings, settings, error))
-    return false;
+  renderer::RenderRequest request;
+  renderer::RenderSettings settings;
+  if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
   renderer::ReferenceSettings reference_settings;
   if (!read_reference(params.reference, params.frame, reference_settings, error)) return false;
+  const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
 
   std::string message;
   bool no_device = false;
-  if (!host->ensure_renderer(*scene, settings, params.width, params.height, message, no_device) ||
+  if (!host->ensure_renderer(*scene, settings, params.width, params.height, camera, message,
+                             no_device) ||
       !host->ensure_reference(*scene, message, no_device)) {
     error = no_device ? unavailable(std::move(message))
                       : protocol::make_error(protocol::codes::k_internal_error, std::move(message));
@@ -900,9 +974,11 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   }
 
   const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
-  renderer::FrameDesc frame;
-  frame.camera = camera_of(*scene, params.camera, params.orbit);
-  frame.frame_index = params.frame;
+  // One frame on the clock the call asked for, and the reference at the same time.
+  const renderer::FrameDesc frame =
+      renderer::frame_at(renderer::frame_clock(request.clock, scene->data), camera, params.frame);
+  reference_settings.sun_time_s = frame.sun_time_s;
+  step_ground(*scene, camera);
 
   // The real-time picture first. `reset_stats` before it, so the statistics returned are this
   // frame's and not the ones a previous call left in the slot.
@@ -1030,6 +1106,7 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   out.reference_trace_ms = reference.trace_ms;
   out.reference_seconds = reference.seconds + direct.seconds;
   fill_stats(scene->view->stats(), scene->view->views(), out.stats);
+  fill_ground(*scene, out.stats);
   out.machine_state.start = machine_state_of(machine_start);
   out.machine_state.end = machine_state_of(machine_end);
   (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
@@ -1139,8 +1216,12 @@ RenderHost::~RenderHost() {
 
 void RenderHost::release(Scene& scene) noexcept {
   scene.reference.reset();  // it holds the renderer and the scene, so it goes first
-  scene.view.reset();       // waits for the device, then its pipelines and screen targets go
-  scene.gpu.reset();        // the scene's buffers, textures and acceleration structures
+  // The moving ground's workers stop before anything they hand fields and chunks to goes; the
+  // motion holds the GPU scene, so it goes before it, and the sets it holds with it.
+  if (scene.ground != nullptr) scene.ground->finish();
+  scene.view.reset();  // waits for the device, then its pipelines and screen targets go
+  scene.ground.reset();
+  scene.gpu.reset();  // the scene's buffers, textures and acceleration structures
 }
 
 std::unique_ptr<RenderHost::Scene> RenderHost::take(std::string_view id) noexcept {
@@ -1204,19 +1285,26 @@ RenderHost::Scene* RenderHost::find(std::string_view id) noexcept {
 }
 
 bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& settings, u32 width,
-                                 u32 height, std::string& error, bool& unavailable) {
+                                 u32 height, const renderer::Camera& first, std::string& error,
+                                 bool& unavailable) {
   unavailable = false;
   gfx::Device* dev = device(0, error);
   if (dev == nullptr) {
     unavailable = true;
     return false;
   }
-  if (scene.view != nullptr && scene.built == settings) {
+  // A ground drawn as terrain levels carries the calls before this one in its motion and its
+  // layout, so it is never reused: a call's picture is a function of the call.
+  const bool ground_state = scene.ground != nullptr && scene.ground->active();
+  if (scene.view != nullptr && scene.built == settings && !ground_state) {
     // Only the frame size changed: the screen-sized targets are the renderer's to recreate, and
     // the scene-sized buffers and the pipelines stay.
     return scene.view->resize(width, height, &error);
   }
+  scene.reference.reset();
+  if (scene.ground != nullptr) scene.ground->finish();
   scene.view.reset();
+  scene.ground.reset();
   scene.gpu.reset();
   renderer::resolve_settings(settings, dev->features(), &scene.data, scene.resolved);
   const renderer::RenderAvailability availability =
@@ -1226,8 +1314,15 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
     unavailable = true;  // a machine that cannot, not a caller that asked wrongly
     return false;
   }
+  // The rings or the world's tiles round the call's first camera, before the GPU scene, which
+  // reserves their slots beside its own meshes.
+  auto ground = std::make_unique<renderer::MovingGround>();
+  if (!ground->prepare(scene.data, scene.resolved, first, &error)) {
+    error = std::string(ground->stage()) + ": " + error;
+    return false;
+  }
   auto gpu = std::make_unique<renderer::GpuScene>();
-  if (!gpu->create(*dev, scene.data, scene.resolved, &error)) return false;
+  if (!gpu->create(*dev, scene.data, scene.resolved, &error, ground->level_set())) return false;
   auto view = std::make_unique<renderer::SceneRenderer>();
   // `SceneRenderer::Desc::page_source` is left null, so a streamed scene's pages are copied out of
   // the `SceneData` this host keeps rather than read back out of the meshes' containers. That is
@@ -1248,13 +1343,17 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   // The layout the settings asked for, over the offscreen target. It must be the one
   // `resolve_settings` saw just above, because the scene's per-frame working set is sized by the
   // view count; both come from the same `RenderSettings`, which is what keeps them in step.
-  desc.views.layout = scene.resolved.settings.views;
-  desc.views.surround.side_yaw = scene.resolved.settings.side_yaw;
-  desc.views.panini_d = scene.resolved.settings.panini_d;
-  desc.views.peripheral_lod = scene.resolved.settings.peripheral_lod;
+  desc.views = renderer::view_set_desc(scene.resolved.settings);
   if (!view->create(*dev, *gpu, scene.resolved, desc, &error)) return false;
+  // The motion from the scene's own time, waiting for its fields as an offscreen engine-view run
+  // does, so the frames of a call draw the same pictures however fast the machine evaluates.
+  if (!ground->start(*gpu, scene.resolved, true, &error)) {
+    error = std::string(ground->stage()) + ": " + error;
+    return false;
+  }
   scene.gpu = std::move(gpu);
   scene.view = std::move(view);
+  scene.ground = std::move(ground);
   scene.reference.reset();  // it holds the renderer that was just replaced
   scene.built = settings;
   return true;

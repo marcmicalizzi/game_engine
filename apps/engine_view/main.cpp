@@ -59,6 +59,7 @@
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/page_source.h>
 #include <systems/renderer/reference.h>
+#include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -136,7 +137,7 @@ constexpr const char* k_usage =
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
     "                   [--time-of-day <hours>] [--exposure <stops>] [--exposure-ev100 <ev>]\n"
-    "                   [--no-texture-sharing]\n"
+    "                   [--ground-time <game s>] [--no-texture-sharing]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
@@ -205,6 +206,10 @@ constexpr const char* k_usage =
     "                   (17.5 is 17:30) of the day its ground stands at, rather than the ground's\n"
     "                   own hour; --sun-rate runs the day on from there. The summary's \"sun\"\n"
     "                   block has a \"sky\" block: the hour, the day, the sun, the moon, the EV\n"
+    "  --ground-time <s>  a --scene file's ground at game time s, in place of its terrain's own\n"
+    "                   `time` (94608000 is three years): the mesh is built there, whatever stands\n"
+    "                   on the ground stands on it, and a sky's clock starts from it.\n"
+    "                   render.load's ground_time_s\n"
     "  --exposure <s>   a sky's exposure s stops brighter than its rule (renderer.md,\n"
     "                   \"Exposure\"); --exposure-ev100 <ev> holds it at that exposure value\n"
     "                   instead (15 a sunlit scene, -3 a moonlit one). - = and 0 in a window\n"
@@ -597,17 +602,34 @@ struct Options {
   // `--time-of-day`: a sky scene's hour to start at, on the day its ground stands at (renderer.md,
   // "One clock"); unset, the ground's own hour.
   std::optional<f64> time_of_day;
+  // `--ground-time`: the game time a scene file's ground stands at, in place of its terrain's own
+  // (renderer.md, "One request, two hosts"; `render.load`'s `ground_time_s`).
+  std::optional<f64> ground_time_s;
   renderer::RenderSettings settings;
 };
 
-// The offset `--time-of-day` puts on the world's one clock (FrameDesc::sun_time_s): the hours asked
-// for, less how far into its day the scene's ground already stands (renderer.md, "One clock"). Zero
-// without the flag or without a sky, whose stand-in sun has no hour.
+// The flags as the renderer's one description of a request (systems/renderer/request.h), which
+// engine-host's `render.*` fields become too: everything below that turns them into a scene, the
+// settings, a frame's clock and the moving ground goes through the renderer's functions, so the
+// two hosts read one request one way.
+renderer::RenderRequest request_of(const Options& options) {
+  renderer::RenderRequest r;
+  r.settings = options.settings;
+  r.clock.time_of_day_h = options.time_of_day;
+  r.clock.sun_rate = options.sun_rate;
+  r.ground_time_s = options.ground_time_s;
+  r.page_budget_pct = options.page_budget_pct;
+  for (const std::string& entry : options.morph_requests)
+    r.morph.push_back(entry);
+  // The pose stage starts from the authored defaults itself (`--morph-animate`).
+  r.morph_defaults = !options.morph_animate;
+  return r;
+}
+
+// The offset `--time-of-day` puts on the world's one clock (FrameDesc::sun_time_s): the renderer's
+// `frame_clock`, which `render.*`'s `clock` goes through too.
 f64 sky_offset_s(const Options& options, const renderer::SceneData& scene) {
-  if (!options.time_of_day.has_value() || !scene.sky.has_value()) return 0.0;
-  const f64 start = scene.terrain.enabled ? scene.terrain.time_s : 0.0;
-  const f64 into_day = start - std::floor(start / 86400.0) * 86400.0;
-  return *options.time_of_day * 3600.0 - into_day;
+  return renderer::frame_clock(request_of(options).clock, scene).offset_s;
 }
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
@@ -662,18 +684,6 @@ bool parse_numbers(const std::string& text, f32* out, u32 count, f64 limit) {
       return false;
     }
   }
-  return true;
-}
-
-// A morph weight: any finite number, **zero and negatives included**. `--morph` used to go through
-// `parse_f32`, which is for sizes and speeds and refuses both — so `--morph smile=0` could not turn
-// off a channel the asset authors at a non-zero default, and a negative weight, which glTF allows
-// and a corrective rig uses, was "not a number".
-bool parse_weight(const std::string& text, f32& out) {
-  char* end = nullptr;
-  const double v = std::strtod(text.c_str(), &end);
-  if (end == text.c_str() || *end != '\0' || !(v >= -1.0e6 && v <= 1.0e6)) return false;
-  out = static_cast<f32>(v);
   return true;
 }
 
@@ -826,70 +836,6 @@ u32 find_morph_clip(const animation::Library& library, std::string_view request)
   return animation::Library::k_not_found;
 }
 #endif  // ENGINE_VIEW_ANIMATION
-
-// Outside the animation guard: static morph weights are a renderer setting, not the animation
-// capability, and both frame paths call this whether or not the build has that capability.
-//
-// `--morph <name|index>=<weight>` against the loaded mesh's channel names. A name is a property of
-// the asset, so it cannot be resolved until the scene exists; an index is accepted too, because a
-// generated rig may have none worth typing. An unknown name is a **usage error** rather than a
-// silently ignored weight: a misspelt expression that quietly does nothing is the kind of thing
-// that gets debugged in the picture instead of on the command line. Returns false with `error`.
-//
-// **The asset's own weights are where the static stage starts.** glTF's `weights` on a mesh or a
-// node are the weights it is drawn with when nothing animates them, and a file can author a
-// half-applied target as its rest shape — MorphPrimitivesTest does, at 0.5. So the static half
-// starts from each channel's `default_weight` and `--morph` overrides the channels it names.
-// With `--morph-animate` the defaults are the **pose** stage's starting point instead (the frame
-// loop refills it from them before the clip writes the channels it drives), so here they stay at
-// zero and are counted once. Until the Khronos samples went through it, defaults were used only
-// with `--morph-animate`, and a mesh authored half-morphed drew unmorphed. When every default is
-// zero the array stays empty, which is what it always was for such a mesh.
-bool resolve_morph_weights(const renderer::SceneData& data, const Options& options,
-                           Vector<f32>& out, std::string& error) {
-  const geometry::ClusterMesh& mesh = data.lod.mesh;
-  out.clear();
-  if (!options.morph_animate) {
-    bool authored = false;
-    for (const geometry::MorphChannel& channel : mesh.morph_channels)
-      authored = authored || channel.default_weight != 0.0f;
-    if (authored) {
-      out.resize(mesh.morph_channels.size(), 0.0f);
-      for (u32 c = 0; c < mesh.morph_channels.size(); ++c)
-        out[c] = mesh.morph_channels[c].default_weight;
-    }
-  }
-  if (options.morph_requests.empty()) return true;
-  if (mesh.morph_channels.empty()) {
-    error = "--morph: this mesh has no morph channels";
-    return false;
-  }
-  out.resize(mesh.morph_channels.size(), 0.0f);
-  for (const std::string& request : options.morph_requests) {
-    const usize split = request.find('=');
-    const std::string name = request.substr(0, split);
-    f32 weight = 0.0f;
-    if (!parse_weight(request.substr(split + 1), weight)) {
-      error = "--morph: '" + request.substr(split + 1) + "' is not a number";
-      return false;
-    }
-    u32 channel = ~0u;
-    for (u32 c = 0; c < mesh.morph_names.size(); ++c) {
-      if (mesh.morph_names[c] == name) channel = c;
-    }
-    if (channel == ~0u) {
-      u32 index = 0;
-      if (parse_u32(name, index) && index < mesh.morph_channels.size()) channel = index;
-    }
-    if (channel == ~0u) {
-      error = "--morph: this mesh has no channel named '" + name + "'";
-      return false;
-    }
-    out[channel] = weight;
-  }
-  return true;
-}
-
 #if ENGINE_VIEW_ANIMATION
 // Part one of the glue: does this run animate, and which instances play a clip? It runs **before**
 // the scene loads, because `SceneInstance::joints` is what makes an instance skinned and the GPU
@@ -1205,198 +1151,11 @@ JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
 }
 #endif
 
-// The time-lapse block of the summary line (terrain_time.h; docs/subsystems/apps.md,
-// "--time-rate"): the rate and the rules it ran under, the game time reached, and per terrain level
-// what its surface stood for, how its fields were timed and how long they took, how far any vertex
-// moved in one frame at most, and the hash of the last field's bytes — the number two runs of the
-// same `--frames --time-rate` compare. The fields' uploads are the renderer's to count. With
-// `--terrain-rings`, a "rings" block counts the re-centres: what they built, kept and uploaded,
-// what the last one took on the worker and in frames, and what the rings' slots hold on the device.
-JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const renderer::Stats& stats,
-                             const renderer::GpuScene& scene) {
-  if (!lapse.active()) return JsonValue();
-  JsonValue out = JsonValue::object();
-  // The rate the run ended at, the one it started at, and how often `,` and `.` changed it.
-  out.set("rate", lapse.config().rate);
-  out.set("start_rate", lapse.start_rate());
-  out.set("rate_changes", lapse.rate_changes());
-  out.set("fraction", lapse.config().fraction);
-  out.set("min_step_s", lapse.config().min_step_s);
-  out.set("max_step_s", lapse.config().max_step_s);
-  out.set("lead", lapse.config().lead);
-  out.set("wait", lapse.config().wait);
-  out.set("game_time_s", lapse.game_time_s());
-  // The surface clock (renderer.md, "A clock that never stops"): L now and at most, the lag the
-  // run ended on, and the frames the sand stood still or was braked for a late field.
-  out.set("latency_s", lapse.latency_s());
-  out.set("max_latency_s", lapse.max_latency_s());
-  out.set("latency_frames",
-          lapse.config().rate > 0.0 ? lapse.latency_s() / lapse.config().rate * 60.0 : 0.0);
-  out.set("lag_s", lapse.lag_s());
-  out.set("stopped_frames", lapse.stopped_frames());
-  out.set("braked_frames", lapse.braked_frames());
-  out.set("upload_bytes", stats.terrain_upload_bytes);
-  out.set("upload_ms", stats.gpu_terrain_upload);
-  JsonValue levels = JsonValue::array();
-  for (u32 k = 0; k < lapse.level_count(); ++k) {
-    const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
-    JsonValue level = JsonValue::object();
-    level.set("spacing_m", s.spacing_m);
-    level.set("surface_s", s.surface_s);
-    level.set("time_a", s.time_a);
-    level.set("time_b", s.time_b);
-    level.set("blend", s.blend);
-    level.set("padding_m", s.padding_m);
-    level.set("evaluated", s.evaluated);
-    level.set("installed", s.installed);
-    level.set("held", s.held);
-    level.set("capped", s.capped);
-    level.set("waited", s.waited);
-    level.set("late", s.late);
-    level.set("max_move_m", s.max_move_m);
-    level.set("max_delta_m", s.max_delta_m);
-    level.set("max_step_s", s.max_step_s);
-    level.set("max_lag_s", s.max_lag_s);
-    level.set("last_eval_ms", s.last_eval_ms);
-    level.set("mean_eval_ms", s.evaluated > 0 ? s.total_eval_ms / s.evaluated : 0.0);
-    level.set("last_turnaround_s", s.last_turnaround_s);
-    level.set("max_turnaround_s", s.max_turnaround_s);
-    char hash[17];
-    std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(s.last_hash));
-    level.set("last_hash", std::string(hash));
-    levels.push_back(std::move(level));
-  }
-  out.set("levels", std::move(levels));
-  if (lapse.has_rings()) {
-    const renderer::TerrainMotion::RingStats& r = lapse.ring_stats();
-    JsonValue rings = JsonValue::object();
-    // Which layout the levels had (renderer.md, "The ground from the world's tiles"): the rings
-    // beside the scene's grid, or the world's tiles in its place; and the chunks they hold now.
-    rings.set("layout", lapse.level_set()->grid_drawn() ? "rings" : "tiles");
-    rings.set("chunks", r.chunks_resident);
-    rings.set("most_chunks", r.most_chunks);
-    rings.set("rebuilds", r.rebuilds);
-    rings.set("swaps", r.swaps);
-    rings.set("failed", r.failed);
-    rings.set("chunks_built", r.chunks_built);
-    rings.set("chunks_kept", r.chunks_kept);
-    rings.set("chunks_dropped", r.chunks_dropped);
-    rings.set("chunks_uploaded", r.chunks_uploaded);
-    rings.set("upload_bytes", r.upload_bytes);
-    rings.set("upload_frames", r.upload_frames);
-    rings.set("last_rebuild_ms", r.last_rebuild_ms);
-    rings.set("max_rebuild_ms", r.max_rebuild_ms);
-    rings.set("last_pairs_ms", r.last_pairs_ms);
-    rings.set("max_pairs_ms", r.max_pairs_ms);
-    rings.set("last_upload_frames", r.last_upload_frames);
-    rings.set("last_upload_bytes", r.last_upload_bytes);
-    rings.set("last_swap_frames", r.last_swap_frames);
-    rings.set("last_frozen_frames", r.last_frozen_frames);
-    rings.set("arena_peak_share", r.arena_peak_share);
-    rings.set("device_bytes", scene.terrain_ring_bytes());
-    // How far behind the camera the drawn layout fell, at most (renderer.md, "What a frame waits
-    // for"): metres on the ground and frames. Zero offscreen, where every frame waits for it.
-    rings.set("max_lag_m", lapse.max_layout_lag_m());
-    rings.set("max_lag_frames", lapse.max_layout_lag_frames());
-    out.set("rings", std::move(rings));
-  }
-  return out;
-}
-
-// A `--benchmark` record's `terrain` object (scene::FrameTerrain): the time-lapse as the frame
-// drew it — game time, the surface clock's latency, how far behind game time the surface stood and
-// how fast it went, and per level the pair and the blend the pool pass drew, the most any vertex
-// moved, and whether a late field held or braked it. Null without a time-lapse.
-std::optional<scene::FrameTerrain> frame_terrain(const renderer::TerrainMotion& lapse) {
-  if (!lapse.active()) return std::nullopt;
-  scene::FrameTerrain out;
-  out.game_s = lapse.game_time_s();
-  out.latency_s = lapse.latency_s();
-  out.lag_s = lapse.lag_s();
-  out.speed = lapse.speed_ratio();
-  out.rate = lapse.config().rate;
-  const renderer::TerrainMotion::FrameLayout& layout = lapse.frame_layout();
-  out.layout_lag_m = layout.lag_m;
-  out.layout_lag_frames = layout.lag_frames;
-  out.chunks_built = layout.built;
-  out.chunks_dropped = layout.dropped;
-  out.rebuild_ms = layout.rebuild_ms;
-  out.chunk_upload_bytes = layout.upload_bytes;
-  out.host_ms = layout.host_ms;
-  for (u32 k = 0; k < lapse.level_count(); ++k) {
-    const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
-    scene::TerrainLevelFrame level;
-    level.surface_s = s.surface_s;
-    level.time_a = s.time_a;
-    level.time_b = s.time_b;
-    level.blend = s.blend;
-    level.move_m = s.frame_move_m;
-    level.held = s.frame_held;
-    level.late = s.frame_late;
-    level.ahead = s.ahead;
-    out.levels.push_back(level);
-  }
-  return out;
-}
-
-// The summary's `sun` block (apps.md, "--sun-rate"; renderer.md, "The sun's day"): the rate its
-// day ran at when the run ended, the one it started with and how often `[` and `]` changed it, how
-// far into the day the last frame was (game seconds), where it started and the arc's tilt, and
-// where it stood at the end — direction, azimuth from +x towards +z and elevation, degrees — and
-// how strongly it shone. The renderer's own model, asked the same question the frame asked it.
-JsonValue sun_summary(const renderer::RenderSettings& settings, const view::SunDay& day) {
-  const renderer::SunArc arc = renderer::sun_arc(settings);
-  const renderer::LightingOptions lit = renderer::lighting_options(settings, day.time_s);
-  constexpr f64 k_deg = 180.0 / 3.14159265358979323846;
-  const Vec3 d = lit.sun;
-  f64 azimuth = std::atan2(static_cast<f64>(d.z), static_cast<f64>(d.x)) * k_deg;
-  if (azimuth < 0.0) azimuth += 360.0;
-  const f64 y = static_cast<f64>(d.y);
-  JsonValue out = JsonValue::object();
-  out.set("rate", day.rate);
-  out.set("start_rate", day.start_rate);
-  out.set("rate_changes", day.changes);
-  out.set("time_s", day.time_s);
-  out.set("start_azimuth_deg", arc.azimuth_deg);
-  out.set("start_elevation_deg", arc.elevation_deg);
-  out.set("tilt_deg", arc.tilt_deg);
-  out.set("azimuth_deg", azimuth);
-  out.set("elevation_deg", std::asin(y < -1.0 ? -1.0 : (y > 1.0 ? 1.0 : y)) * k_deg);
-  out.set("intensity", static_cast<f64>(lit.sun_intensity));
-  JsonValue direction = JsonValue::array();
-  direction.push_back(JsonValue(d.x));
-  direction.push_back(JsonValue(d.y));
-  direction.push_back(JsonValue(d.z));
-  out.set("direction", std::move(direction));
-  return out;
-}
-
-// The same block with a scene's sky (renderer.md, "The sky"): the stand-in's arc is not what drew
-// the frame, so a `sky` block beside it says what did — the game time the sky stood at, the day of
-// the year and the local hour, the sun and the moon (azimuth from +x towards +z and elevation,
-// degrees), the moon's lit fraction, whether the cascaded maps followed it, and the exposure value
-// the last frame was drawn at and the light it was metered from.
-JsonValue sun_summary(const renderer::RenderSettings& settings, const view::SunDay& day,
-                      const renderer::Stats& stats) {
-  JsonValue out = sun_summary(settings, day);
-  const renderer::SkyStats& s = stats.sky;
-  if (!s.active) return out;
-  JsonValue sky = JsonValue::object();
-  sky.set("time_s", s.time_s);
-  sky.set("day_of_year", s.day_of_year);
-  sky.set("hour", s.hour);
-  sky.set("sun_azimuth_deg", static_cast<f64>(s.sun_azimuth_deg));
-  sky.set("sun_elevation_deg", static_cast<f64>(s.sun_elevation_deg));
-  sky.set("moon_azimuth_deg", static_cast<f64>(s.moon_azimuth_deg));
-  sky.set("moon_elevation_deg", static_cast<f64>(s.moon_elevation_deg));
-  sky.set("moon_lit", static_cast<f64>(s.moon_lit));
-  sky.set("moon_key", s.moon_key);
-  sky.set("ev100", static_cast<f64>(s.ev100));
-  sky.set("lux", static_cast<f64>(s.lux));
-  sky.set("sky_lux", static_cast<f64>(s.sky_lux));
-  sky.set("gpu_ms", stats.sky_ms());
-  out.set("sky", std::move(sky));
-  return out;
+// The summaries' `sun`, `time_lapse` and a flight record's `terrain` blocks are the renderer's
+// (request.h), which engine-host's `render.benchmark` reports from too; the day as the host keeps
+// it, for them.
+renderer::SunDayState day_state(const view::SunDay& day) {
+  return renderer::SunDayState{day.rate, day.start_rate, day.changes, day.time_s};
 }
 
 // The ray tracing chain's block of the summary line (renderer::RtStats): what the per-frame
@@ -1763,34 +1522,6 @@ view::DrawnGround drawn_ground(const renderer::TerrainMotion& lapse,
   return d;
 }
 
-// **The world's tiles** (`--terrain-tiles`, or a scene's world block's `ground`; renderer.md, "The
-// ground from the world's tiles"): the tile set round the first camera, built before the GPU scene
-// reserves its slots and handed to the time-lapse, which rebuilds it; its heights the scene's
-// ground seen as tiles. The world's ring hands it the tiles it holds (world_view.h); a build
-// without the world capability follows the camera by the ring's first-fill rule instead, with no
-// hysteresis and no budget.
-struct ViewTiles {
-  std::unique_ptr<renderer::TerrainSampler> ground;
-  std::unique_ptr<renderer::TerrainTileSet> set;
-  Vector<renderer::TerrainTile> round;  // the fallback's, kept between frames
-
-  bool build(const renderer::SceneData& data, Vec3 camera, jobs::JobSystem* jobs,
-             std::string* error) {
-    ground = std::make_unique<renderer::TerrainSampler>(data.terrain);
-    set = std::make_unique<renderer::TerrainTileSet>();
-    return set->build(data.terrain, renderer::terrain_tiles_desc(data.world),
-                      ground->provider().tiles(), camera.x, camera.z, jobs, error);
-  }
-  const scene_gen::TileSource* source() const noexcept {
-    return set != nullptr ? set->source() : nullptr;
-  }
-  void follow(Vec3 camera) {
-    if (set == nullptr) return;
-    renderer::terrain_tiles_round(set->tiles_desc(), camera.x, camera.z, round);
-    set->set_tiles(std::span<const renderer::TerrainTile>(round.data(), round.size()));
-  }
-};
-
 // The session's walk block, beside the walker's own (apps.md, "Walking"): how it started, where it
 // is now, and how often F switched it.
 JsonValue walk_summary(const view::FlySession& session, const view::Walker& walker) {
@@ -2022,8 +1753,10 @@ int run_reference(Options& options) {
     // is what the derived-data cache key promises and runs either way.
     desc.stream = options.settings.stream;
     if (!options.scene.empty()) {
-      if (!renderer::read_scene_file(options.scene, renderer::SceneFileOptions{options.overlay},
-                                     desc, error)) {
+      renderer::SceneFileOptions file_options;
+      file_options.overlay = options.overlay;
+      renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
+      if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
@@ -2055,7 +1788,9 @@ int run_reference(Options& options) {
       step_animation(*animated);
     }
 #endif
-    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+    // The settings against the loaded scene — the page budget's percentage and the morph weights
+    // — through the renderer's function, which `render.*` calls too.
+    if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
       exit_code = fail("morph", error);
       break;
     }
@@ -2288,14 +2023,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
   Vector<scene::FrameRecord> records;
   scene::FlythroughSummary summary;
   summary.format = "engine.flythrough.v1";
-  // The dune field's time-lapse, when `--time-rate` asks for one (started below, once the scene is
-  // read; its pool is its own, so it never competes with the page reads for a worker).
-  std::unique_ptr<jobs::JobSystem> time_jobs;
-  // The terrain rings (`--terrain-rings`), built before the GPU scene reserves their slots, and
-  // rebuilt by the time-lapse's worker, so they outlive both.
-  std::unique_ptr<renderer::TerrainRingSet> terrain_rings;
-  ViewTiles view_tiles;  // the world's tiles (`--terrain-tiles`), which outlive both too
-  renderer::TerrainMotion time_lapse;
+  // The moving ground (renderer::MovingGround, request.h): the dune field's time-lapse when
+  // `--time-rate` asks for one, and the rings (`--terrain-rings`) or the world's tiles
+  // (`--terrain-tiles`) built round the first camera before the GPU scene reserves their slots —
+  // the same object engine-host's `render.*` drives. Its pool is its own, so it never competes with
+  // the page reads for a worker.
+  renderer::MovingGround ground;
+  renderer::TerrainMotion& time_lapse = ground.motion();
   std::string summary_line;  // printed after the teardown, so it is the last thing out
   bench::MachineState machine_start;
   bench::MachineState machine_end;
@@ -2314,14 +2048,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // The sun's day (renderer.md, "The sun's day"): offscreen the rate is the flag's for the whole
   // run — the keys are a window's — so a frame's place in the day is a function of its frame index
   // at the frame index's own sixty a second, and two runs light the same frames alike.
+  // The clock is the renderer's (`frame_clock`), set once the scene is loaded: a sky's
+  // `--time-of-day` offset and the day's rate, frame f at `clock.at(f)`.
   view::SunDay sun;
-  sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
-  // With a sky, `--time-of-day`'s offset on the one clock, set once the scene is loaded.
-  f64 sky_offset = 0.0;
-  const auto sun_at = [&](u64 frame_index) {
-    return sky_offset +
-           sun.rate * static_cast<f64>(frame_index) / static_cast<f64>(view::k_frame_index_hz);
-  };
+  renderer::FrameClock clock;
+  static_assert(view::k_frame_index_hz == renderer::k_frame_hz);
+  const auto sun_at = [&](u64 frame_index) { return clock.at(frame_index); };
   do {
     renderer::SceneDesc desc;
     desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
@@ -2336,6 +2068,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer::SceneFileOptions file_options;
       file_options.overlay = options.overlay;
       file_options.world = options.world;
+      renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
@@ -2360,14 +2093,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
       exit_code = fail("mesh", error);
       break;
     }
-    sky_offset = sky_offset_s(options, scene_data);
-    if (options.page_budget_pct > 0 && !scene_data.pages.pages.empty()) {
-      u64 total = 0;
-      for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
-        total += page.bytes;
-      options.settings.page_budget_bytes = total * options.page_budget_pct / 100;
-    }
-    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+    // The frames' clock: `--time-of-day`'s offset and `--sun-rate`, through the renderer's
+    // `frame_clock`, which `render.*`'s `clock` goes through too.
+    clock = renderer::frame_clock(request_of(options).clock, scene_data);
+    sun.start(clock.sun_rate);
+    // The settings against the loaded scene — the page budget's percentage and the morph weights
+    // — through the renderer's function, which `render.*` calls too.
+    if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
       exit_code = fail("morph", error);
       break;
     }
@@ -2401,35 +2133,22 @@ int run_offscreen(Options& options, Interactive& interactive) {
       frames =
           options.frames != 0 && options.frames < whole ? options.frames : static_cast<u32>(whole);
     }
-    // The time-lapse's pool, and the terrain rings round the first frame's camera: built before
-    // the GPU scene, which reserves their slots beside its own meshes and uploads their chunks.
-    if (resolved.terrain_levels) {
-      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
-    }
-    // A recorded session starts where its header says, not at the path's or the orbit's first
-    // camera (the windowed loop says why).
-    renderer::Camera first =
-        have_path ? renderer::camera_path_frame(path, 0, frames)
-                  : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
-    if (interactive.on) first.position = interactive.header.start.position;
-    if (resolved.terrain_rings) {
-      terrain_rings = std::make_unique<renderer::TerrainRingSet>();
-      if (!terrain_rings->build(scene_data.terrain, first.position.x, first.position.z,
-                                time_jobs.get(), &error)) {
-        exit_code = fail("terrain-rings", error);
+    // The time-lapse's pool, and the terrain rings or the world's tiles round the first frame's
+    // camera: built before the GPU scene, which reserves their slots beside its own meshes and
+    // uploads their chunks. A recorded session starts where its header says, not at the path's or
+    // the orbit's first camera (the windowed loop says why).
+    {
+      renderer::Camera first =
+          have_path
+              ? renderer::camera_path_frame(path, 0, frames)
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+      if (interactive.on) first.position = interactive.header.start.position;
+      if (!ground.prepare(scene_data, resolved, first, &error)) {
+        exit_code = fail(ground.stage(), error);
         break;
       }
     }
-    if (resolved.terrain_tiles) {
-      if (!view_tiles.build(scene_data, first.position, time_jobs.get(), &error)) {
-        exit_code = fail("terrain-tiles", error);
-        break;
-      }
-    }
-    renderer::TerrainLevelSet* const terrain_levels =
-        terrain_rings != nullptr ? static_cast<renderer::TerrainLevelSet*>(terrain_rings.get())
-                                 : view_tiles.set.get();
-    if (!scene.create(device, scene_data, resolved, &error, terrain_levels)) {
+    if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
       exit_code = fail("scene", error);
       break;
     }
@@ -2462,10 +2181,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     renderer_desc.frames_in_flight = k_frames_in_flight;
     renderer_desc.offscreen = true;
     renderer_desc.shader_manifest = options.shaders;
-    renderer_desc.views.layout = resolved.settings.views;
-    renderer_desc.views.surround.side_yaw = resolved.settings.side_yaw;
-    renderer_desc.views.panini_d = resolved.settings.panini_d;
-    renderer_desc.views.peripheral_lod = resolved.settings.peripheral_lod;
+    renderer_desc.views = renderer::view_set_desc(resolved.settings);
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
@@ -2480,21 +2196,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // two evaluated fields every frame. Offscreen, a field the surface has caught up with is waited
     // for, and fields are timed by the dunes' motion alone, so two runs of `--frames N` draw the
     // same pictures on the same frames however fast the machine evaluates.
-    if (resolved.terrain_levels) {
-      renderer::TimeLapseConfig lapse =
-          renderer::time_lapse_config_from_tunables(resolved.settings.time_rate);
-      lapse.wait = true;
-      if (!time_lapse.start(scene, terrain_levels, lapse, time_jobs.get(), &error)) {
-        exit_code = fail("time-rate", error);
-        break;
-      }
+    if (!ground.start(scene, resolved, true, &error)) {
+      exit_code = fail(ground.stage(), error);
+      break;
     }
     // A streamed world (world_view.h): its ring round the camera, updated before every frame from
     // that frame's camera. Everything that draws below calls `world_before` first; so does the
     // time-lapse's tick. The world's ring also decides the world's tiles the ground is drawn from.
 #if ENGINE_VIEW_WORLD
-    if (scene_data.world.enabled || view_tiles.set != nullptr) {
-      if (!view_world.create(scene_data, view_renderer, &error, view_tiles.set.get())) {
+    if (scene_data.world.enabled || ground.tiles() != nullptr) {
+      if (!view_world.create(scene_data, view_renderer, &error, ground.tiles())) {
         exit_code = fail("world", error);
         break;
       }
@@ -2525,7 +2236,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     };
 #else
     auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
-      view_tiles.follow(camera.position);
+      ground.follow_tiles(camera.position);
       time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
       return true;
     };
@@ -2536,7 +2247,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // With the recording's walk numbers, on the scene as loaded (walk.h): a recorded walk
       // replays bit for bit over the scene it was recorded on.
       if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error,
-                        view_tiles.source())) {
+                        ground.tile_source())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -2593,7 +2304,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         PendingFrame& p = pending[submissions % k_pending_frames];
         p.submission = submissions;
         p.frame = f;
-        p.terrain = frame_terrain(time_lapse);
+        p.terrain = renderer::frame_terrain(time_lapse);
         p.ticks = static_cast<u32>(session.tick().value - before_tick);
         p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(tick_hz);
         p.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
@@ -2636,8 +2347,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       flight_options.warmup = options.warmup;
       flight_options.warmup_seconds = static_cast<f64>(options.warmup_seconds);
       flight_options.frames_in_flight = k_frames_in_flight;
-      flight_options.sun_rate = sun.rate;      // path frame f at sun_rate * f / 60, as below
-      flight_options.sun_time_s = sky_offset;  // and a sky's `--time-of-day` under it
+      // Path frame f at the clock's `at(f)`: a sky's `--time-of-day` and `--sun-rate`, as below.
+      renderer::flight_clock(clock, flight_options);
       // A streamed world updates between frames from each frame's own camera, and starts every
       // repeat over (its first warm-up frame, or its first frame with no warm-up), so the repeats
       // fly the same world.
@@ -2662,7 +2373,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
                             step.repeat, step.frame, step.recorded);
         const u32 at = step.repeat * hook->frames + step.frame;
         if (step.recorded && at < hook->terrain->size())
-          (*hook->terrain)[at] = frame_terrain(*hook->lapse);
+          (*hook->terrain)[at] = renderer::frame_terrain(*hook->lapse);
         return ok;
       };
       flight_options.before_frame_context = &world_hook;
@@ -3011,11 +2722,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
     time_lapse.finish();
-    summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
+    summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
     // The day where the last frame drew it: the path's last frame, or where the replay ended —
     // the frame the final --capture draws too.
     sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
-    summary.sun = sun_summary(resolved.settings, sun, view_renderer.stats());
+    summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -3413,6 +3124,16 @@ int main(int argc, char** argv) {
         return k_exit_usage;
       }
       options.time_of_day = v;
+    } else if (a == "--ground-time") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !std::isfinite(v)) {
+        std::fprintf(stderr,
+                     "engine-view: --ground-time expects game seconds (94608000 is three years)\n");
+        return k_exit_usage;
+      }
+      options.ground_time_s = v;
     } else if (a == "--exposure" || a == "--exposure-ev100") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       char* end = nullptr;
@@ -3573,6 +3294,10 @@ int main(int argc, char** argv) {
   }
   if (!options.scene.empty() && (!options.mesh.empty() || options.grid_instances != 0)) {
     std::fprintf(stderr, "engine-view: --scene names its own meshes and instances\n");
+    return k_exit_usage;
+  }
+  if (options.ground_time_s.has_value() && options.scene.empty()) {
+    std::fprintf(stderr, "engine-view: --ground-time is a scene file's terrain's; name --scene\n");
     return k_exit_usage;
   }
   if (options.animate && options.mesh.empty() && options.scene.empty()) {
@@ -3964,12 +3689,12 @@ int main(int argc, char** argv) {
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
   std::string anim_text = "null";
   // The dune field's time-lapse (`--time-rate`): as offscreen, a sixtieth of a second of real time
-  // a frame, so the window and a `--frames` run evaluate the same boundaries.
-  std::unique_ptr<jobs::JobSystem> time_jobs;
-  std::unique_ptr<renderer::TerrainRingSet> terrain_rings;  // `--terrain-rings`: outlives both
-  ViewTiles view_tiles;             // the world's tiles (`--terrain-tiles`): outlives both too
+  // a frame, so the window and a `--frames` run evaluate the same boundaries. The rings
+  // (`--terrain-rings`) or the world's tiles (`--terrain-tiles`) with it, in the renderer's
+  // `MovingGround` (request.h), which outlives the GPU scene's use of them.
+  renderer::MovingGround ground;
   renderer::Camera terrain_camera;  // the camera the rings follow: the last frame's
-  renderer::TerrainMotion time_lapse;
+  renderer::TerrainMotion& time_lapse = ground.motion();
   std::string time_lapse_text = "null";
   // The sun's day (renderer.md, "The sun's day"): its clock is this loop's, advanced by each
   // frame's simulated seconds at a rate `[` and `]` change in an interactive window.
@@ -4047,6 +3772,7 @@ int main(int argc, char** argv) {
       renderer::SceneFileOptions file_options;
       file_options.overlay = options.overlay;
       file_options.world = options.world;
+      renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
@@ -4082,14 +3808,7 @@ int main(int argc, char** argv) {
     }
     sky_offset = sky_offset_s(options, scene_data);
     // A budget as a fraction of what this scene's pages come to, which cannot be known until the
-    // page table has been built. `ClusterPageDesc::bytes` is the same number the residency manager
-    // counts against, so 25 here and 25 in a report mean the same thing.
-    if (options.page_budget_pct > 0 && !scene_data.pages.pages.empty()) {
-      u64 total = 0;
-      for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
-        total += page.bytes;
-      options.settings.page_budget_bytes = total * options.page_budget_pct / 100;
-    }
+    // page table has been built, is `renderer::settings_for`'s, below, with the morph weights.
     // A camera path, read against the scene it flies over: a key may hold a height above its
     // terrain. With no `--frames` the window flies the path once at its own rate and closes.
     if (!options.camera_path.empty()) {
@@ -4135,7 +3854,9 @@ int main(int argc, char** argv) {
           log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
     }
 #endif
-    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+    // The settings against the loaded scene — the page budget's percentage and the morph weights
+    // — through the renderer's function, which `render.*` calls too.
+    if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
       exit_code = fail("morph", error);
       break;
     }
@@ -4150,11 +3871,8 @@ int main(int argc, char** argv) {
     // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
     // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
     // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
-    // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`).
-    if (resolved.terrain_levels) {
-      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{
-          .performance_workers = renderer::terrain_window_workers(), .pin_threads = false});
-    }
+    // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`, which
+    // `MovingGround::prepare` reads for a window).
     terrain_camera =
         !window_path.keys.empty()
             ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
@@ -4176,23 +3894,11 @@ int main(int argc, char** argv) {
       }
       terrain_camera.position = interactive.header.start.position;
     }
-    if (resolved.terrain_rings) {
-      terrain_rings = std::make_unique<renderer::TerrainRingSet>();
-      if (!terrain_rings->build(scene_data.terrain, terrain_camera.position.x,
-                                terrain_camera.position.z, time_jobs.get(), &error)) {
-        exit_code = fail("terrain-rings", error);
-        break;
-      }
-    }
-    if (resolved.terrain_tiles &&
-        !view_tiles.build(scene_data, terrain_camera.position, time_jobs.get(), &error)) {
-      exit_code = fail("terrain-tiles", error);
+    if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
+      exit_code = fail(ground.stage(), error);
       break;
     }
-    renderer::TerrainLevelSet* const terrain_levels =
-        terrain_rings != nullptr ? static_cast<renderer::TerrainLevelSet*>(terrain_rings.get())
-                                 : view_tiles.set.get();
-    if (!scene.create(device, scene_data, resolved, &error, terrain_levels)) {
+    if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
       exit_code = fail("scene", error);
       break;
     }
@@ -4277,27 +3983,20 @@ int main(int argc, char** argv) {
     // derived from the target (a third of its width each, no bezel correction) unless a caller of
     // the module fills `Surround3` in; engine-view exposes the yaw, which is the parameter a
     // player actually has to set.
-    renderer_desc.views.layout = resolved.settings.views;
-    renderer_desc.views.surround.side_yaw = resolved.settings.side_yaw;
-    renderer_desc.views.panini_d = resolved.settings.panini_d;
-    renderer_desc.views.peripheral_lod = resolved.settings.peripheral_lod;
+    renderer_desc.views = renderer::view_set_desc(resolved.settings);
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
     }
     // In a window the fields are never waited for: a late one holds the surface where it is, and
     // a re-centre's chunks are uploaded a few a frame and swapped in when they are all there.
-    if (resolved.terrain_levels) {
-      if (!time_lapse.start(scene, terrain_levels,
-                            renderer::time_lapse_config_from_tunables(resolved.settings.time_rate),
-                            time_jobs.get(), &error)) {
-        exit_code = fail("time-rate", error);
-        break;
-      }
+    if (!ground.start(scene, resolved, false, &error)) {
+      exit_code = fail(ground.stage(), error);
+      break;
     }
 #if ENGINE_VIEW_WORLD
-    if (scene_data.world.enabled || view_tiles.set != nullptr) {
-      if (!view_world.create(scene_data, view_renderer, &error, view_tiles.set.get())) {
+    if (scene_data.world.enabled || ground.tiles() != nullptr) {
+      if (!view_world.create(scene_data, view_renderer, &error, ground.tiles())) {
         exit_code = fail("world", error);
         break;
       }
@@ -4349,7 +4048,7 @@ int main(int argc, char** argv) {
       // The walker, on the scene as loaded and the ground as the first frame draws it; with the
       // header's numbers, so a replay walks with the recording's (walk.h).
       if (!walker.start(interactive.header.walk, interactive.header.params.tick_hz, scene_data,
-                        &error, view_tiles.source())) {
+                        &error, ground.tile_source())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -4644,7 +4343,7 @@ int main(int argc, char** argv) {
         break;
       }
 #else
-      view_tiles.follow(terrain_camera.position);
+      ground.follow_tiles(terrain_camera.position);
 #endif
       // The CPU's share of the frame is everything but the waits: for a free frame slot (the GPU),
       // for a swapchain image and in the present (the display), and the pacer's own. Each is
@@ -4869,7 +4568,7 @@ int main(int argc, char** argv) {
           PendingFrame& p = pending[submissions % k_pending_frames];
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
-          p.terrain = frame_terrain(time_lapse);
+          p.terrain = renderer::frame_terrain(time_lapse);
           p.ticks = ticks_this_frame;
           // A session's simulated time, or the path time a windowed flight drew.
           p.time = path_in_window
@@ -5003,11 +4702,13 @@ int main(int argc, char** argv) {
     }
     time_lapse.finish();
     if (time_lapse.active()) {
-      time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats(), scene),
-                                   JsonWriteOptions{.pretty = false});
+      time_lapse_text =
+          write_json(renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene),
+                     JsonWriteOptions{.pretty = false});
     }
-    sun_text = write_json(sun_summary(resolved.settings, sun, view_renderer.stats()),
-                          JsonWriteOptions{.pretty = false});
+    sun_text =
+        write_json(renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats()),
+                   JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_ANIMATION
     if (animated)
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
@@ -5057,8 +4758,8 @@ int main(int argc, char** argv) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
       summary.interactive = interactive_summary(interactive, session, options);
-      summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
-      summary.sun = sun_summary(resolved.settings, sun, view_renderer.stats());
+      summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
+      summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
