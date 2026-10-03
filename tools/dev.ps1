@@ -4,7 +4,7 @@
   Single entry point for building, testing, and linting the engine.
 
 .DESCRIPTION
-  tools/dev.ps1 <command> [-Preset <name>] [-Filter <regex>] [-Verbose]
+  tools/dev.ps1 <command> [-Preset <name>] [-Filter <regex>] [-Affected [-Base <ref>]] [-Verbose]
 
   Commands:
     configure   Run CMake with the preset (default: msvc-debug on Windows, linux-clang-debug on Linux).
@@ -14,6 +14,14 @@
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
                 run again (docs/subsystems/gpu_lock.md). Exits 75 when a test gave up
                 waiting for the lock and so did not run; 1 when one failed.
+                -Affected runs the tests the change can reach and no others: the modules
+                holding a file that differs from -Base (default main; committed, staged,
+                unstaged and untracked all count), every module that depends on one, and
+                for a changed capability every module above its layer; a change to the
+                build system, the test support, vendored code or committed content runs
+                everything and says why (tools/lib/Affected.psm1). It is what a change is
+                tested with before it is handed over; the whole suites run at the merge.
+    affected    Print what `test -Affected` would run, without building or running it.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
                 -GpuLock passes --gpu-lock to each: every executable waits for the
@@ -32,10 +40,12 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('configure', 'build', 'test', 'bench', 'lint', 'docs', 'format', 'modules', 'clean')]
+  [ValidateSet('configure', 'build', 'test', 'affected', 'bench', 'lint', 'docs', 'format', 'modules', 'clean')]
   [string]$Command = 'build',
   [string]$Preset,
   [string]$Filter,
+  [switch]$Affected,
+  [string]$Base = 'main',
   [switch]$Fresh,
   [switch]$GpuLock
 )
@@ -91,10 +101,43 @@ function Invoke-Build {
   finally { Pop-Location }
 }
 
+# What the change against -Base can reach, from the preset's module graph (tools/lib/Affected.psm1).
+function Get-Affected {
+  $graph = Join-Path $BuildDir 'modules.json'
+  if (-not (Test-Path -LiteralPath $graph)) { throw "no $graph; run: tools/dev.ps1 configure -Preset $Preset" }
+  Import-Module (Join-Path $PSScriptRoot 'lib/Affected.psm1') -Force
+  $json = Get-Content -LiteralPath $graph -Raw | ConvertFrom-Json
+  $changed = @(Get-ChangedPaths -Root $Root -Base $Base)
+  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed
+  Write-Host ("affected: {0} path(s) differ from {1}" -f $changed.Count, $Base) -ForegroundColor Cyan
+  if ($result.All) {
+    Write-Host "  everything: $($result.Reason)" -ForegroundColor Cyan
+  } else {
+    $touched = if ($result.Changed.Count -gt 0) { $result.Changed -join ', ' } else { 'no module' }
+    Write-Host ("  changed: {0}" -f $touched) -ForegroundColor Cyan
+    Write-Host ("  tests of {0} of {1} modules{2}: {3}" -f $result.Modules.Count, $json.modules.Count,
+                $(if ($result.Tools) { ", and the tools' own" } else { '' }),
+                $(if ($result.Modules.Count -gt 0) { $result.Modules -join ' ' } else { 'only the lint and the documentation check' })) -ForegroundColor Cyan
+  }
+  foreach ($note in $result.Notes) { Write-Host "  $note" -ForegroundColor Cyan }
+  return $result
+}
+
+function Show-Affected {
+  $result = Get-Affected
+  if (-not $result.All) { Write-Host "  ctest -R '$($result.Filter)'" }
+}
+
 function Invoke-Test {
+  if ($Affected -and $Filter) { throw '-Affected chooses the tests; it cannot be combined with -Filter.' }
   Invoke-Build
   Ensure-Tool ctest
   $args = @('--preset', $Preset)
+  if ($Affected) {
+    # After the build, so the module graph is the one this tree configures.
+    $result = Get-Affected
+    if (-not $result.All) { $args += @('-R', $result.Filter) }
+  }
   if ($Filter) { $args += @('-R', $Filter) }
   Push-Location $Root
   # Streamed and kept: CTest lists the tests that did not run at the end, and a test whose
@@ -174,6 +217,7 @@ switch ($Command) {
   'configure' { Invoke-Configure }
   'build'     { Invoke-Build }
   'test'      { Invoke-Test }
+  'affected'  { Show-Affected }
   'bench'     { Invoke-Bench }
   'lint'      { Invoke-Lint }
   'docs'      { Invoke-Docs }
