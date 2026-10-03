@@ -2655,10 +2655,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);
-        const bool first =
+        const bool first_step =
             step.warmup == 0 || (hook->no_warmup && step.recorded && step.frame == 0);
         const bool ok =
-            (*hook->before)(step.camera, first ? WorldStep::restart : WorldStep::budgeted,
+            (*hook->before)(step.camera, first_step ? WorldStep::restart : WorldStep::budgeted,
                             step.repeat, step.frame, step.recorded);
         const u32 at = step.repeat * hook->frames + step.frame;
         if (step.recorded && at < hook->terrain->size())
