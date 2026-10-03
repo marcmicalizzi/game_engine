@@ -256,8 +256,8 @@ struct GroundDetailDesc {
   // Third pass; every term is off by default, which draws the second pass to the bit.
   // Grainflow on a slip face, in place of the streaks: on ground falling away from the wind the
   // lanes start at a lee slope of `flow_start_deg` and are whole at `flow_full_deg` (both 0: none).
-  // A world lattice of `flow_cell` metres, each cell a set of lanes `flow_width` across running the
-  // cell's length down the fall line and widening by `flow_widening` of their width across a cell;
+  // Lanes `flow_width` across in sixteen fixed directions, the fall line choosing between them
+  // (fourth pass; `flow_cell` and `flow_widening` are retired, kept so a scene naming them reads);
   // seen by their relief, a root-mean-square slope of `flow_normal`, and barely by colour,
   // `flow_albedo` of the albedo.
   f32 flow_start_deg = 0.0f;

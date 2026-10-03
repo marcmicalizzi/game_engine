@@ -582,15 +582,17 @@ struct TerrainDetail @version(3) {
   /// whole at `flow_full_deg`; both 0 (the default) is none, else 0 <= start < full <= 60.
   flow_start_deg: f32 = 0 @since(3)
   flow_full_deg: f32 = 0 @since(3)
-  /// The world lattice's cell, metres, [2, 50]: a lane runs about a cell down the fall line.
+  /// Retired by the fourth pass (2026-10-03), read and checked and no longer drawn: it was the
+  /// third pass's lattice of cells, whose lanes crossed and beat into ovals. [2, 50].
   flow_cell: f32 = 10 @since(3)
-  /// A lane's width across the fall line, metres, [0.1, 3] and at most a fifth of the cell.
+  /// A lane's width across the fall line, metres, [0.1, 3] and at most a fifth of `flow_cell`.
   flow_width: f32 = 0.6 @since(3)
   /// The lanes' relief as a root-mean-square slope, [0, 0.3], and their colour as a share of the
   /// albedo, [0, 0.1]: a real slip face shows its grainflows by relief, barely by colour.
   flow_normal: f32 = 0.05 @since(3)
   flow_albedo: f32 = 0.015 @since(3)
-  /// How much a lane widens, as a share of its width, down one cell, [0, 1].
+  /// Retired by the fourth pass, read and checked and no longer drawn: the widening was a fan of
+  /// lanes from each cell's centre line, which is what made them cross. [0, 1].
   flow_widening: f32 = 0.3 @since(3)
   /// The lanes are episodes: a lane appears when sand piled at the brink avalanches and fades as
   /// grainfall buries it, so only `flow_share` of them are present at once ((0, 1]; 1, the default,
