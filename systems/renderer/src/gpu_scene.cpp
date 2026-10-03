@@ -1624,6 +1624,15 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
     ring.slots.resize(c.slots);
     for (u32 s = c.slots; s-- > 0;)
       ring.free_slots.push_back(s);  // slot 0 is taken first
+    // The arenas' free lists at the most they can hold, so a swap that frees ranges allocates
+    // nothing on the frame's thread (renderer.md, "Ground to the horizon"): free ranges are kept
+    // apart and merged with a range they touch, so two of them always have a slot's range between
+    // them, and there are at most a range more than the slots — and one more while `give_range`
+    // inserts before it merges. Until 2026-10-03 they grew as they fragmented, and a far square's
+    // move, which frees a whole strip of tiles at once, took them to a new length: the 5
+    // allocations the long flight counted with far levels.
+    ring.free_vertices.reserve(c.slots + 2);
+    ring.free_triangles.reserve(c.slots + 2);
     ring.free_vertices.push_back(Range{vertex_capacity_, c.vertices});
     ring.free_triangles.push_back(Range{triangle_capacity_, c.triangles});
     for (u32 s = 0; s < c.slots; ++s) {
@@ -1662,6 +1671,11 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
         c.triangles * (sizeof(u32) + (ray_tracing_ ? 3 : 0));
     ring_slots_.push_back(std::move(ring));
   }
+  // A frame's slot records: a swap turns at most every slot off and every slot on.
+  u32 all_slots = 0;
+  for (const RingSlots& ring : ring_slots_)
+    all_slots += ring.slots.size();
+  pending_mesh_writes_.reserve(2 * all_slots);
   terrain_ring_bytes_ = bytes;
   ENGINE_LOG_INFO(log_renderer, "terrain ring slots", log::field("rings", ring_slots_.size()),
                   log::field("instances", instance_count_), log::field("pairs", pair_count_),
@@ -1737,10 +1751,16 @@ bool GpuScene::stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::str
   std::memcpy(base + at_triangles, mesh.triangles.data(), nt * sizeof(u32));
   if (ray_tracing_) {
     std::memcpy(base + at_vertices, mesh.vertices.data(), nv * sizeof(Vec3));
-    Vector<u8> packed;
-    gfx::pack_cluster_indices(std::span<const u32>(mesh.triangles.data(), mesh.triangles.size()),
-                              packed);
-    std::memcpy(base + at_indices, packed.data(), packed.size());
+    // `gfx::pack_cluster_indices`' bytes, written straight into the staging buffer: that function
+    // fills a list, which was an allocation on the frame's thread for every chunk staged with the
+    // ray tracing chain on.
+    u8* indices = base + at_indices;
+    for (u64 t = 0; t < nt; ++t) {
+      const u32 triangle = mesh.triangles[static_cast<u32>(t)];
+      indices[t * 3 + 0] = static_cast<u8>(triangle & 0xffu);
+      indices[t * 3 + 1] = static_cast<u8>((triangle >> 8) & 0xffu);
+      indices[t * 3 + 2] = static_cast<u8>((triangle >> 16) & 0xffu);
+    }
   }
   const u64 cluster_at = u64{ring.first_cluster} + u64{s} * ring.clusters_per_slot;
   const auto copy = [&](const gfx::BufferResource& dst, u64 src, u64 dst_offset, u64 size) {

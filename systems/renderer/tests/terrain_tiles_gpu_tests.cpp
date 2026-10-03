@@ -1182,11 +1182,12 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   }
   test::TempDir tmp{"engine_renderer_tiles_flight"};
   const SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
-  // The rings alone. With the far levels (small_far_tiles(), whose squares move seven times in the
-  // second half) the frame thread made 5 allocations there on 2026-10-03, 4 of them on the frames a
-  // far square moved — its level's new tiles uploaded at once, a new high of the upload lists — and
-  // 1 on another: open (renderer.md, "Ground to the horizon"), and not held here until it is fixed.
-  const TerrainTilesDesc t = small_tiles();
+  // With the far levels (renderer.md, "Ground to the horizon"), whose squares move seven times in
+  // the second half, so that their rebuilds and swaps are counted too. They made 5 allocations
+  // there until 2026-10-03, every one the arenas' free lists reaching a new length as a far
+  // square's move freed a strip of tiles at once (`GpuScene::give_range`), 4 of them on the frames
+  // a far square moved; the lists are sized for the most they can hold since.
+  const TerrainTilesDesc t = small_far_tiles();
   RenderSettings settings;
   settings.shadows = ShadowMode::Off;
   jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
@@ -1199,7 +1200,7 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   const u64 device_bytes = rig.scene.terrain_ring_bytes();
   u32 most_chunks[k_max_terrain_levels] = {};
   u32 far_moves = 0;  // in the counted half
-  // Counted apart for a flight with far levels (above): the frames a far square moved.
+  // Of the frame's allocations, the ones on the frames a far square moved: said apart.
   u64 far_move_allocations = 0;
   TerrainRingLayout last_layout = rig.tiles->layout();
   // **The frame loop allocates nothing in steady state**: the host's half of a frame — the tiles
@@ -1230,7 +1231,8 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
         far_moves += m ? 1u : 0u;
         far_moved = far_moved || m;
       }
-      (far_moved ? far_move_allocations : frame_allocations) += made;
+      frame_allocations += made;
+      if (far_moved) far_move_allocations += made;
     }
     last_layout = rig.tiles->layout();
     for (u32 l = 1; l < rig.tiles->level_count(); ++l) {
@@ -1265,9 +1267,10 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
     MESSAGE("the flight's second half: "
             << frame_allocations << " allocations on the frame's "
             << "thread over " << k_frames - k_frames / 2 << " frames, " << swaps_counted
-            << " swaps and " << far_moves << " moves of a far level's square, and "
-            << far_move_allocations << " more on the frames a far square moved");
+            << " swaps and " << far_moves << " moves of a far level's square, "
+            << far_move_allocations << " of them on the frames a far square moved");
     CHECK(swaps_counted > 10);
+    CHECK(far_moves > 0);
     CHECK(frame_allocations == 0);
   }
 }
