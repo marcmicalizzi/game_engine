@@ -440,3 +440,46 @@ TEST_CASE("ground detail preview: the sand from the mirror, before and after" * 
            gfx::ground_detail_block(ground_ref::erg_numbers(), Vec2{1.0f, 0.0f}, 7u));
   MESSAGE("ground detail preview written to " << dir.path());
 }
+
+TEST_CASE("ground detail preview: the slip face's lanes, in plan and on the face" *
+          doctest::skip()) {
+  // The fourth pass's instrument (docs/experiments/sand-fourth-pass-2026-10-03.md): the owner saw
+  // the grainflow lanes as ovals and crossing dashes from the brink and at his feet, where the
+  // third pass's views (all from the foot) never looked. The live mirror with the ergs' numbers,
+  // every lane present (`flow_share` 1) so the function itself is seen, and again as the ergs draw
+  // it, with the episodes:
+  // - `face_plan`: 30 m x 30 m of a 32-degree face from straight above at 2 cm a pixel;
+  // - `face_brink`: from 1.7 m over the brink of a slip face 20 m tall, looking down the face and
+  //   along it, 30 degrees off the fall line;
+  // - `face_feet`: from 1.7 m over a point half-way down it, looking down at 60 degrees.
+  test::TempDir dir("ground-detail-preview-face");
+  REQUIRE(dir.ok());
+  dir.keep();
+  gfx::GroundDetailDesc all = ground_ref::erg_numbers();
+  all.flow_share = 1.0f;
+  static const Dune big = [] {
+    Dune b;
+    b.scale = 8.3;
+    return b;
+  }();
+  const double c20 = std::cos(20.0 * k_deg);
+  const double s20 = std::sin(20.0 * k_deg);
+  for (u32 variant = 0; variant < 2; ++variant) {
+    const gfx::GroundDetailDesc desc = variant == 0 ? all : ground_ref::erg_numbers();
+    const std::string tag = variant == 0 ? "all" : "ergs";
+    gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+    top_view(dir, tag, "face_plan", live, d, plane_normal(32.0, 1.0), -15.0, -15.0, 0.02, 1500,
+             true);
+    Dvec3 n;
+    const double brink_x = 0.6 * big.scale;
+    const Dvec3 brink{brink_x, big.height(brink_x, 0.0, &n) + 1.7, 0.0};
+    dune_view(dir, tag, live, d, big, "face_brink", brink,
+              Dvec3{std::cos(30.0 * k_deg), -0.55, std::sin(30.0 * k_deg)}, Dvec3{0.0, s20, c20},
+              "raking", Dvec3{c20, s20, 0.0}, "front");
+    const double mid_x = 1.9 * big.scale;
+    const Dvec3 feet{mid_x, big.height(mid_x, 0.0, &n) + 1.7, 0.0};
+    dune_view(dir, tag, live, d, big, "face_feet", feet, Dvec3{0.5, -0.866, 0.1},
+              Dvec3{0.0, s20, c20}, "raking", Dvec3{c20, s20, 0.0}, "front");
+  }
+  MESSAGE("slip face preview written to " << dir.path());
+}

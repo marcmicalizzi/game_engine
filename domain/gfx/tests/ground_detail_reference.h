@@ -355,80 +355,46 @@ inline double episode(double phase, double share) {
   return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
 }
 
-inline Flow grainflow(const gfx::GroundDetailParams& d, double x, double z, double fx, double fz) {
-  const double ax = -fz;
-  const double az = fx;
-  const double cell = static_cast<double>(d.flow_cell);
+// One direction's lanes (`ground_lane_set`).
+inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k) {
+  const double angle = static_cast<double>(k) * (k_two_pi / 16.0);
+  const double ax = -std::sin(angle);
+  const double az = std::cos(angle);
   const double width = static_cast<double>(d.flow_width);
-  const double widening = static_cast<double>(d.flow_widening);
-  const double qx = x / cell - 0.5;
-  const double qz = z / cell - 0.5;
-  const i32 bx = static_cast<i32>(std::floor(qx));
-  const i32 bz = static_cast<i32>(std::floor(qz));
-  const double fqx = qx - bx;
-  const double fqz = qz - bz;
-  const auto quintic = [](double t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); };
-  const double wqx = quintic(fqx);
-  const double wqz = quintic(fqz);
-  double sum = 0.0, gx = 0.0, gz = 0.0, w2 = 0.0;
-  for (i32 j = 0; j <= 1; ++j) {
-    for (i32 i = 0; i <= 1; ++i) {
-      const i32 cx = bx + i;
-      const i32 cz = bz + j;
-      const double w = (i == 0 ? 1.0 - wqx : wqx) * (j == 0 ? 1.0 - wqz : wqz);
-      const double ox = (qx - cx) * cell;
-      const double oz = (qz - cz) * cell;
-      const double t = ox * fx + oz * fz;
-      const double s0 = ox * ax + oz * az;
-      const double wd = 1.0 + widening * t;
-      const double widen = wd > 0.25 ? wd : 0.25;
-      const double s = s0 / (width * widen);
-      const double m = std::floor(s);
-      const double f = s - m;
-      const double u = quintic(f);
-      const double du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-      const u32 hc = hash(cx, cz, d.seed, 48u);
-      double g[2], win[2], dwin[2];
-      for (u32 e = 0; e < 2; ++e) {
-        u32 h = pcg(hc ^ static_cast<u32>(static_cast<i32>(m) + static_cast<i32>(e)));
-        g[e] = unit(h) * 2.0 - 1.0;
-        if (d.flow_share < 1.0f) {
-          h = pcg(h ^ 0x68E31DA4u);
-          const double phase = static_cast<double>(d.flow_clock) + unit(h);
-          g[e] *= episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
-        }
-        h = pcg(h);
-        const double start = (unit(h) - 0.9) * cell;
-        h = pcg(h);
-        const double end = start + (0.8 + 0.9 * unit(h)) * cell;
-        const double rise = 2.0 * width;
-        const double toe = 3.0 * width;
-        const double a = brdf_ref::clamp01((t - start) / rise);
-        const double b = brdf_ref::clamp01((t - (end - toe)) / toe);
-        const double sa = a * a * (3.0 - 2.0 * a);
-        const double sb = 1.0 - b * b * (3.0 - 2.0 * b);
-        win[e] = sa * sb;
-        const double dsa = (a > 0.0 && a < 1.0) ? 6.0 * a * (1.0 - a) / rise : 0.0;
-        const double dsb = (b > 0.0 && b < 1.0) ? -6.0 * b * (1.0 - b) / toe : 0.0;
-        dwin[e] = dsa * sb + sa * dsb;
-      }
-      const double n0 = g[0] * f * (1.0 - u);
-      const double n1 = g[1] * (f - 1.0) * u;
-      const double n = win[0] * n0 + win[1] * n1;
-      const double dn_ds =
-          win[0] * g[0] * ((1.0 - u) - f * du) + win[1] * g[1] * (u + (f - 1.0) * du);
-      const double dn_dt = dwin[0] * n0 + dwin[1] * n1;
-      const double k = s0 * widening / widen;
-      const double dsx = (ax - fx * k) / (width * widen);
-      const double dsz = (az - fz * k) / (width * widen);
-      sum += w * n;
-      gx += (dsx * dn_ds + fx * dn_dt) * w;
-      gz += (dsz * dn_ds + fz * dn_dt) * w;
-      w2 += w * w;
+  const double s = (x * ax + z * az) / width;
+  const double m = std::floor(s);
+  const double f = s - m;
+  const double u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  const double du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  double g[2];
+  for (u32 e = 0; e < 2; ++e) {
+    u32 h = hash(static_cast<i32>(m) + static_cast<i32>(e), static_cast<i32>(k), d.seed, 48u);
+    g[e] = unit(h) * 2.0 - 1.0;
+    if (d.flow_share < 1.0f) {
+      h = pcg(h ^ 0x68E31DA4u);
+      const double phase = static_cast<double>(d.flow_clock) + unit(h);
+      g[e] *= episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
     }
   }
-  const double norm = 1.0 / std::sqrt(w2 > 1e-6 ? w2 : 1e-6);
-  return {sum * norm, gx * norm, gz * norm};
+  const double dn = (g[0] * ((1.0 - u) - f * du) + g[1] * (u + (f - 1.0) * du)) / width;
+  return {g[0] * f * (1.0 - u) + g[1] * (f - 1.0) * u, ax * dn, az * dn};
+}
+
+// `ground_grainflow`: the two directions nearest the fall line (fx, fz), blended by the angle.
+inline Flow grainflow(const gfx::GroundDetailParams& d, double x, double z, double fx, double fz) {
+  const double sector = k_two_pi / 16.0;
+  double turn = std::atan2(fz, fx) / sector;
+  if (turn < 0.0) turn += 16.0;
+  const double k0 = std::min(std::floor(turn), 15.0);
+  const double t = brdf_ref::clamp01((turn - k0 - 0.4) / 0.2);
+  const double w = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+  const u32 i0 = static_cast<u32>(k0);
+  const u32 i1 = (i0 + 1u) % 16u;
+  const Flow a = lane_set(d, x, z, i0);
+  const Flow b = lane_set(d, x, z, i1);
+  const double norm = 1.0 / std::sqrt((1.0 - w) * (1.0 - w) + w * w);
+  return {(a.value * (1.0 - w) + b.value * w) * norm, (a.gx * (1.0 - w) + b.gx * w) * norm,
+          (a.gz * (1.0 - w) + b.gz * w) * norm};
 }
 
 struct Shading {

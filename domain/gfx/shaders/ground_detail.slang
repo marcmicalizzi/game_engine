@@ -44,8 +44,8 @@ static const uint k_ground_patches = 128u;
 static const uint k_ground_steering = 256u;
 static const uint k_ground_motion = 512u;
 // gfx::k_ground_flow_rms, k_ground_flow_slope_rms.
-static const float k_ground_flow_rms = 0.119;
-static const float k_ground_flow_slope_rms = 0.429;
+static const float k_ground_flow_rms = 0.142;
+static const float k_ground_flow_slope_rms = 0.515;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -403,21 +403,26 @@ float2 ground_patch(GroundDetail d, float2 p) {
   return clamp(v, -1.0, 1.0);
 }
 
-// Grainflow: lanes of avalanched sand down a slip face, long, and seen by their relief. A lattice
-// of `flow_cell` fixed in the world; in each cell a one-dimensional gradient noise of the
-// coordinate **across** the fall line measured from the cell's centre, so it is constant along
-// the fall line and a lane runs the cell's length; each lattice point's gradient windowed along the
-// fall line by a start and a length of its own, so a lane begins near the brink and ends in a
-// rounded toe; the across coordinate shrunk down the fall line, so a lane widens. The four nearest
-// cells blend by quintic weights, divided by the root of their squares so the blend keeps the
-// lanes' contrast. **Only offsets from a cell's centre are projected on the fall line**, so a
-// thousandth of a radian of normal moves a lane by a thousandth of a cell and never by metres 3 km
-// out. The value and its gradient over (x, z); the weights' own gradient is left out, the cell
-// being tens of lanes across. Two lattice hashes a cell, eight a pixel.
+// Grainflow: lanes of avalanched sand down a slip face, long, and seen by their relief. **Lanes in
+// sixteen fixed directions** 22.5 degrees apart: for each, a one-dimensional gradient noise of the
+// position's own coordinate across that direction, `flow_width` a lane, so a lane is a function of
+// position alone, constant along its direction and running without end — the slip face's weight is
+// what ends it, at the brink and the toe, as a real one ends. A pixel evaluates the two directions
+// nearest its fall line and blends them by the angle between, each normalised so the blend keeps
+// the lanes' contrast: **the normal moves only the blend's weights**, never a lane, so a thousandth
+// of a radian of it moves nothing by metres however far from the origin; a lane is at most 11.25
+// degrees off the true fall line; where two directions blend they cross coarsely at half strength
+// each rather than beating. Each lattice point's gradient is an episode of its own (`ground_episode`),
+// so a present lane beside absent ones is one chute with its levee, the height of the face. The
+// value and its gradient over (x, z); two lattice hashes a direction, four a pixel. (The third
+// pass's cells and the widening fan made neighbouring cells' lanes cross at up to 17 degrees and
+// beat into ovals: docs/experiments/sand-fourth-pass-2026-10-03.md.)
 struct GroundFlow {
   float value;
   float2 gradient;
 };
+
+static const uint k_ground_flow_directions = 16u;
 
 // A lane's presence at phase `phase` of its cycle, present for `share` of it: up over the first
 // twentieth of that (an avalanche is sudden), down over the last seven tenths (grainfall buries it
@@ -430,75 +435,51 @@ float ground_episode(float phase, float share) {
   return up * up * (3.0 - 2.0 * up) * (1.0 - down * down * (3.0 - 2.0 * down));
 }
 
-GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
-  const float2 across = float2(-fall.y, fall.x);
-  const float cell = d.flow_cell;
-  const float2 q = p / cell - 0.5;
-  const int2 base = int2(floor(q));
-  const float2 fq = q - float2(base);
-  const float2 wq = fq * fq * fq * (fq * (fq * 6.0 - 15.0) + 10.0);
-  const float width = d.flow_width;
-  float sum = 0.0;
-  float2 grad = float2(0.0, 0.0);
-  float w2 = 0.0;
-  for (int j = 0; j <= 1; ++j) {
-    for (int i = 0; i <= 1; ++i) {
-      const int2 c = base + int2(i, j);
-      const float w = (i == 0 ? 1.0 - wq.x : wq.x) * (j == 0 ? 1.0 - wq.y : wq.y);
-      const float2 offset = (q - float2(c)) * cell;
-      const float t = dot(offset, fall);
-      const float s0 = dot(offset, across);
-      const float widen = max(1.0 + d.flow_widening * t, 0.25);
-      const float s = s0 / (width * widen);
-      const float m = floor(s);
-      const float f = s - m;
-      const float u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-      const float du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-      const uint hc = ground_hash(c.x, c.y, d.seed, 48u);
-      float g[2];
-      float win[2];
-      float dwin[2];
-      [unroll]
-      for (uint e = 0u; e < 2u; ++e) {
-        uint h = ground_pcg(hc ^ uint(int(m) + int(e)));
-        g[e] = ground_unit(h) * 2.0 - 1.0;
-        // An episode: the lane is present for `flow_share` of each cycle of the clock, at a phase
-        // of its own — appearing fast (an avalanche) and fading slowly (grainfall burying it).
-        if (d.flow_share < 1.0) {
-          h = ground_pcg(h ^ 0x68E31DA4u);
-          g[e] *= ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
-        }
-        h = ground_pcg(h);
-        const float start = (ground_unit(h) - 0.9) * cell;
-        h = ground_pcg(h);
-        const float end = start + (0.8 + 0.9 * ground_unit(h)) * cell;
-        const float rise = 2.0 * width;
-        const float toe = 3.0 * width;
-        const float a = saturate((t - start) / rise);
-        const float b = saturate((t - (end - toe)) / toe);
-        const float sa = a * a * (3.0 - 2.0 * a);
-        const float sb = 1.0 - b * b * (3.0 - 2.0 * b);
-        win[e] = sa * sb;
-        const float dsa = (a > 0.0 && a < 1.0) ? 6.0 * a * (1.0 - a) / rise : 0.0;
-        const float dsb = (b > 0.0 && b < 1.0) ? -6.0 * b * (1.0 - b) / toe : 0.0;
-        dwin[e] = dsa * sb + sa * dsb;
-      }
-      const float n0 = g[0] * f * (1.0 - u);
-      const float n1 = g[1] * (f - 1.0) * u;
-      const float n = win[0] * n0 + win[1] * n1;
-      const float dn_ds = win[0] * g[0] * ((1.0 - u) - f * du) + win[1] * g[1] * (u + (f - 1.0) * du);
-      const float dn_dt = dwin[0] * n0 + dwin[1] * n1;
-      // ds/dp: across over the lane's width, and the widening's share along the fall line.
-      const float2 ds = (across - fall * (s0 * d.flow_widening / widen)) / (width * widen);
-      sum += w * n;
-      grad += (ds * dn_ds + fall * dn_dt) * w;
-      w2 += w * w;
+// One direction's lanes at `p`: the noise of `dot(p, across) / width`, its value and gradient.
+GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
+  const float angle = float(k) * (k_ground_two_pi / float(k_ground_flow_directions));
+  const float2 across = float2(-sin(angle), cos(angle));
+  const float s = dot(p, across) / d.flow_width;
+  const float m = floor(s);
+  const float f = s - m;
+  const float u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  const float du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  float g[2];
+  [unroll]
+  for (uint e = 0u; e < 2u; ++e) {
+    uint h = ground_hash(int(m) + int(e), int(k), d.seed, 48u);
+    g[e] = ground_unit(h) * 2.0 - 1.0;
+    if (d.flow_share < 1.0) {
+      h = ground_pcg(h ^ 0x68E31DA4u);
+      g[e] *= ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
     }
   }
-  const float norm = rsqrt(max(w2, 1e-6));
   GroundFlow out;
-  out.value = sum * norm;
-  out.gradient = grad * norm;
+  out.value = g[0] * f * (1.0 - u) + g[1] * (f - 1.0) * u;
+  out.gradient = across * ((g[0] * ((1.0 - u) - f * du) + g[1] * (u + (f - 1.0) * du)) /
+                           d.flow_width);
+  return out;
+}
+
+GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
+  const float sector = k_ground_two_pi / float(k_ground_flow_directions);
+  float turn = atan2(fall.y, fall.x) / sector;
+  if (turn < 0.0) turn += float(k_ground_flow_directions);
+  const float k0 = min(floor(turn), float(k_ground_flow_directions - 1u));
+  // Blended only over the middle fifth of the sector: everywhere else one family of straight lanes,
+  // at most 9 degrees off the fall line, and two families cross only within 2.25 degrees of a
+  // sector's middle (the normal then turns the weight five times as fast, still 3% of the lanes'
+  // rms a milliradian).
+  const float t = saturate((turn - k0 - 0.4) / 0.2);
+  const float w = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+  const uint i0 = uint(k0);
+  const uint i1 = (i0 + 1u) % k_ground_flow_directions;
+  const GroundFlow a = ground_lane_set(d, p, i0);
+  const GroundFlow b = ground_lane_set(d, p, i1);
+  const float norm = rsqrt((1.0 - w) * (1.0 - w) + w * w);
+  GroundFlow out;
+  out.value = (a.value * (1.0 - w) + b.value * w) * norm;
+  out.gradient = (a.gradient * (1.0 - w) + b.gradient * w) * norm;
   return out;
 }
 

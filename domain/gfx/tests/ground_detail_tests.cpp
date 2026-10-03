@@ -41,6 +41,7 @@
 #include <cstring>
 #include <shaders/visibility_resolve.spv.h>
 #include <string>
+#include <vector>
 
 using namespace engine;
 namespace ref = engine::brdf_ref;
@@ -1441,8 +1442,10 @@ TEST_CASE("ground detail: grainflow lanes are long, run down the fall line, and 
   for (u32 i = 0; i < 2000; ++i) {
     const double x = 3000.0 + 0.0137 * i;
     const double z = -1500.0 + 0.0091 * i;
-    const gref::Flow a = gref::grainflow(d, x, z, 1.0, 0.0);
-    const gref::Flow b = gref::grainflow(d, x, z, std::cos(turn), std::sin(turn));
+    // Mid-sector (11.25 degrees), where the blend's weight turns fastest with the normal.
+    const double mid = 11.25 * 3.14159265358979323846 / 180.0;
+    const gref::Flow a = gref::grainflow(d, x, z, std::cos(mid), std::sin(mid));
+    const gref::Flow b = gref::grainflow(d, x, z, std::cos(mid + turn), std::sin(mid + turn));
     moved = std::max(moved, std::fabs(a.value - b.value));
   }
   MESSAGE("a thousandth of a radian of normal 3 km out moves the lanes by at most "
@@ -1719,4 +1722,77 @@ TEST_CASE("ground detail: grainflow lanes come and go with the wind") {
     if (g.normal.x != n.x || g.albedo.x != albedo.x) ++drawn;
   }
   CHECK(drawn == 0);
+}
+
+TEST_CASE("ground detail: grainflow lanes run the face's length and never cross") {
+  // The fourth pass (docs/experiments/sand-fourth-pass-2026-10-03.md): the lanes are lines in
+  // sixteen fixed directions, a function of position alone, one family for most fall lines and two
+  // blended only within 2.25 degrees of a sector's middle.
+  gfx::GroundDetailDesc desc;
+  desc.flow_start_deg = 24.0f;
+  desc.flow_full_deg = 30.0f;
+  const gfx::GroundDetailParams d = gfx::ground_detail_block(desc, Vec2{1.0f, 0.0f}, 7u);
+  const double deg = 3.14159265358979323846 / 180.0;
+  // Coherence: the autocorrelation of the value along a lane's own direction, and along the fall
+  // line itself when it is 7 degrees off that direction (the most it is outside a blend is 9).
+  struct Probe {
+    double fall_deg;
+    double along_deg;
+    const char* what;
+  };
+  for (const Probe pr : {Probe{4.0, 0.0, "along the lane"},
+                         Probe{7.0, 7.0, "along the fall line 7 degrees off it"}}) {
+    const double fx = std::cos(pr.fall_deg * deg), fz = std::sin(pr.fall_deg * deg);
+    const double ax = std::cos(pr.along_deg * deg), az = std::sin(pr.along_deg * deg);
+    for (const double lag : {5.0, 20.0, 40.0}) {
+      double sab = 0.0, saa = 0.0, sbb = 0.0;
+      for (u32 i = 0; i < 4000; ++i) {
+        const double x = 0.37 * i - 700.0;
+        const double z = 0.113 * i + 5.0;
+        const double a = gref::grainflow(d, x, z, fx, fz).value;
+        const double b = gref::grainflow(d, x + ax * lag, z + az * lag, fx, fz).value;
+        sab += a * b;
+        saa += a * a;
+        sbb += b * b;
+      }
+      const double r = sab / std::sqrt(saa * sbb);
+      MESSAGE("autocorrelation " << std::string(pr.what) << ": " << r << " at " << lag << " m");
+      if (pr.along_deg == 0.0) CHECK(r > 0.99);
+    }
+  }
+  // No crossing: the gradient's share along the fall line at the 99th percentile of points where
+  // the lanes stand clear of zero, outside the blend (one family: at most sin 9 degrees = 0.156)
+  // and at the blend's middle, where two families cross (reported, the price of the blend).
+  for (const double angle : {0.0, 8.0, 11.25}) {
+    const double fx = std::cos(angle * deg);
+    const double fz = std::sin(angle * deg);
+    std::vector<double> ratio;
+    for (u32 i = 0; i < 20000; ++i) {
+      const gref::Flow f = gref::grainflow(d, 0.0731 * i - 600.0, 0.0517 * i + 9.0, fx, fz);
+      const double along = std::fabs(f.gx * fx + f.gz * fz);
+      const double across = std::fabs(-f.gx * fz + f.gz * fx);
+      const double total = std::hypot(along, across);
+      if (total > 0.2 / static_cast<double>(d.flow_width)) ratio.push_back(along / total);
+    }
+    std::sort(ratio.begin(), ratio.end());
+    const double p99 = ratio[ratio.size() * 99 / 100];
+    MESSAGE("fall line " << angle << " degrees: the gradient's share along it, 99th percentile "
+                         << p99);
+    if (angle < 11.0) CHECK(p99 < std::sin(9.0 * deg) + 1e-6);
+  }
+  // Seams: across the angle where the blend starts and where it ends, a micro-degree either side
+  // gives the same value; and across a direction's own angle, where one family hands to the next.
+  double jump = 0.0;
+  for (const double edge : {9.0, 13.5, 22.5}) {
+    for (u32 i = 0; i < 2000; ++i) {
+      const double x = 0.413 * i - 300.0;
+      const double z = 0.271 * i + 2.0;
+      const double lo = (edge - 1e-6) * deg;
+      const double hi = (edge + 1e-6) * deg;
+      const double a = gref::grainflow(d, x, z, std::cos(lo), std::sin(lo)).value;
+      const double b = gref::grainflow(d, x, z, std::cos(hi), std::sin(hi)).value;
+      jump = std::max(jump, std::fabs(a - b));
+    }
+  }
+  CHECK(jump < 1e-4);
 }
