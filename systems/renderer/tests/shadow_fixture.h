@@ -172,8 +172,8 @@ inline MeshSource caster_mesh(Caster c) {
 // one the acceleration structures hold, as a terrain's heights sit anywhere between its rows —
 // without it a flat ground at y = 0 lands on a row exactly and has no gap to measure. Scaling the
 // ground's instance instead would make the grid as coarse, but would also make a triangle of it
-// reach behind the camera, which the resolve reconstructs wrongly (renderer.md, "Shadows"): a
-// different defect, and not this fixture's to measure.
+// reach behind the camera, which the resolve rebuilt wrongly until 2026-10-03 (gfx.md, "Where a
+// pixel meets its triangle"); the specks keep the fixture's measurement the grid's gap alone.
 inline MeshSource ground_mesh(f32 reach = 0.0f) {
   MeshSource m;
   add_face(m, Vec3{-4.0f, 0.0f, -3.0f}, Vec3{0.0f, 0.0f, 6.0f}, Vec3{7.0f, 0.0f, 0.0f});  // +y

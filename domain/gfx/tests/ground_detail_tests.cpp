@@ -333,7 +333,7 @@ ref::Dvec3 climb_normal(const gfx::GroundDetailParams& d, double climb_deg, doub
 // differences there, and the triangle's normal turned to the camera, which is the shading normal a
 // mesh with no attributes has; then the detail by `ground_ref::shade` and the shading by
 // `brdf_ref::shade`. On a level plane every triangle is the plane; on a sloped one the grid moves a
-// corner off it by up to half a step (0.46 mm on 60 m), which turns a triangle by half a
+// corner off it by up to half a step (0.46 mm on 60 m), which turns a metre's triangle by half a
 // milliradian — enough, through the spacing, to slide a ripple's lee by several levels of the
 // detail view — so the reference takes the triangle and not the plane it was cut from.
 void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundView>& out) {
@@ -383,11 +383,13 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   gfx::BufferResource materials;
   REQUIRE(gfx::upload_buffer(device, &material, sizeof(material), k_storage, materials, &error));
 
-  // Sixty metres of sand round each site, in cells of a metre. Not one quad: the resolve rebuilds
-  // a pixel's point from its triangle's corners projected to the screen, which is exact for a
-  // triangle in front of the camera and meaningless for one reaching behind it, and a quad under a
-  // walker's feet reaches behind the walker.
-  constexpr u32 k_cells = 60;
+  // Sixty metres of sand round each site, as one quad: two triangles that reach behind the walker
+  // in every look, which the resolve rebuilds as rightly as the ones in front of him (gfx.md,
+  // "Where a pixel meets its triangle"). Until 2026-10-03 this was sixty cells of a metre a side,
+  // to stay clear of the resolve's old clamp of screen barycentrics, which put a pixel of a
+  // triangle reaching behind the camera on an edge.
+  constexpr u32 k_cells = 1;
+  constexpr f32 k_cell = 60.0f / static_cast<f32>(k_cells);
   geometry::ClusterMesh meshes[2];
   gfx_test::SingleInstance scenes[2];
   gfx::BufferResource clusters[2];
@@ -399,8 +401,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     Vector<u32> indices;
     for (u32 j = 0; j <= k_cells; ++j) {
       for (u32 i = 0; i <= k_cells; ++i) {
-        const f32 x = sites[s].x - 30.0f + static_cast<f32>(i);
-        const f32 z = sites[s].z - 30.0f + static_cast<f32>(j);
+        const f32 x = sites[s].x - 30.0f + k_cell * static_cast<f32>(i);
+        const f32 z = sites[s].z - 30.0f + k_cell * static_cast<f32>(j);
         positions.push_back(Vec3{x, height(s, x, z), z});
       }
     }
@@ -664,32 +666,17 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         }
         ref::Dvec3 n = ref::normalize(ref::cross(corner[1] - corner[0], corner[2] - corner[0]));
         if (ref::dot(n, eye - corner[0]) < 0.0) n = -n;
-        // The point the resolve shades: where the pixel centre's ray meets the triangle's plane,
-        // with its barycentrics clamped into the triangle as `reconstruct_screen` clamps them. A
-        // centre within the rasterizer's sub-pixel snap of an edge can be drawn by the triangle
-        // across it, and the resolve then shades the point on the edge — up to a millimetre from
-        // where the ray meets the surface under a grazing footprint a metre long, which is ten
-        // levels of the grain's channel by the origin on the windward slope until the reference
-        // clamped too. (Clamping the world barycentrics is clamping the screen ones: the
-        // perspective correction scales each by its own w and zero stays zero.)
-        ref::Dvec3 p = gref::point_on_plane(eye, target, up_ref, fov, 1.0, k_size, k_size, cx, cy,
-                                            corner[0], n);
-        {
-          const double area = ref::dot(ref::cross(corner[1] - corner[0], corner[2] - corner[0]), n);
-          double b[3];
-          b[0] = ref::dot(ref::cross(corner[1] - p, corner[2] - p), n) / area;
-          b[1] = ref::dot(ref::cross(corner[2] - p, corner[0] - p), n) / area;
-          b[2] = 1.0 - b[0] - b[1];
-          if (b[0] < 0.0 || b[1] < 0.0 || b[2] < 0.0) {
-            ++r.clamped;
-            double sum = 0.0;
-            for (double& w : b) {
-              w = std::clamp(w, 0.0, 1.0);
-              sum += w;
-            }
-            p = (corner[0] * b[0] + corner[1] * b[1] + corner[2] * b[2]) * (1.0 / sum);
-          }
-        }
+        // The point the resolve shades: where the pixel centre's ray meets the triangle, as the
+        // resolve takes it (`ref::pixel_on_triangle`). A centre within the rasterizer's sub-pixel
+        // snap of an edge can be drawn by the triangle across it, and the resolve then shades the
+        // point on the edge — up to a millimetre from where the ray meets the surface under a
+        // grazing footprint a metre long, ten levels of the grain's channel by the origin on the
+        // windward slope — so the reference does too.
+        const ref::TriangleHit hit = ref::pixel_on_triangle(
+            eye, ref::pixel_direction(eye, target, up_ref, fov, 1.0, k_size, k_size, cx, cy),
+            corner);
+        if (hit.clamped) ++r.clamped;
+        const ref::Dvec3 p = hit.position;
         gref::plane_footprint(eye, target, up_ref, fov, 1.0, k_size, k_size, x, y, corner[0], n,
                               dpdx, dpdy);
         const gref::Shading g = gref::shade(c.block, p, n, dpdx, dpdy, 1.0, sand, 0.92, false);

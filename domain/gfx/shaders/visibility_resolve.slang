@@ -6,10 +6,12 @@
 // to the three vertices, whose positions come off the 16-bit grid of that instance's mesh — or,
 // for a deformed instance, out of the frame's deformed-vertex pool (MeshDesc, load_position) —
 // and go through the instance's world matrix, exactly as the
-// rasterizer moved them. Screen-space barycentrics against the pixel center, made
-// perspective-correct with the vertices' clip-space w, reconstruct the surface position and
-// interpolate the per-vertex normal and UV (octahedral snorm16 normals, half-float UVs, from
-// geometry::VertexAttributes; without attributes the triangle plane gives a flat normal), and
+// rasterizer moved them. The barycentrics of the point where the ray through the pixel center
+// meets that triangle (material.slang, `screen_barycentrics`: homogeneous, no divide by w, so a
+// triangle reaching behind the camera is rebuilt as rightly as one in front of it) reconstruct
+// the surface position and interpolate the per-vertex normal and UV (octahedral snorm16 normals,
+// half-float UVs, from geometry::VertexAttributes; without attributes the triangle plane gives a
+// flat normal), and
 // normals go through the instance's cofactor matrix so a non-uniform scale stays perpendicular.
 // The cluster's material index plus the instance's `material_base` selects albedo, roughness,
 // metallic, and emissive, and up to three optional textures from the bindless set: albedo, a
@@ -25,9 +27,10 @@
 // **The material layer is shared, not copied** (docs/plan/04-renderer.md §4.8): the structs, the
 // triangle fetch and the attribute interpolation, the tangent frame, the texture reads, the light
 // falloffs, the sky and the display transform all live in `material.slang`, which the reference
-// path tracer includes too. What is left in this file is the part that is the *resolve's*: the
-// visibility-buffer decode, the screen-space reconstruction it needs because a rasterized pixel
-// carries no barycentrics, the debug view modes, the Panini resample, and the shadow rays.
+// path tracer includes too, and so does the reconstruction a rasterized pixel needs because it
+// carries no barycentrics (`reconstruct_screen`), which the path tracer does not call. What is
+// left in this file is the part that is the *resolve's*: the visibility-buffer decode, the calls
+// into that reconstruction, the debug view modes, the Panini resample, and the shadow rays.
 //
 // Ray-traced shadows (docs/plan/04-renderer.md §4.4, "Shadows: RT for the sun and hero lights"):
 // with RESOLVE_RAY_SHADOWS the fragment stage traces one terminate-on-first-hit ray per shadowing

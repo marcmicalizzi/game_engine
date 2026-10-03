@@ -141,10 +141,6 @@ float3 decode_normal_oct(uint packed) {
 
 float2 decode_half2(uint packed) { return float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16)); }
 
-float material_edge(float2 a, float2 b, float2 c) {
-  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
-
 // The three vertices of triangle `triangle` of cluster `cluster` under `instance`, in world
 // space: positions come off the mesh's 16-bit grid, or out of the frame's deformed-vertex pool
 // for a deformed instance (load_position), and go through the instance's world matrix, exactly
@@ -235,37 +231,93 @@ float ray_offset(SceneGeometry geo, InstanceDesc instance, float floor, float st
   return floor + steps * meshes[instance.mesh].quant.w * instance.scale_max;
 }
 
-// The resolve's reconstruction: screen-space barycentrics against `pixel_center`, made
-// perspective-correct through the vertices' clip-space w. A rasterized pixel has no barycentrics
-// of its own — the visibility buffer holds an id and a depth — so they are recovered by putting
-// the triangle back through the same view-projection the rasterizer used.
+// ---- where a pixel meets its triangle ------------------------------------------------------------
+//
+// **The resolve's reconstruction** (docs/subsystems/gfx.md, "Where a pixel meets its triangle"). A
+// rasterized pixel has no barycentrics of its own — the visibility buffer holds an id and a depth —
+// so they are recovered by putting the triangle back through the view-projection the rasterizer
+// drew it with and asking where the ray through the pixel's centre meets its plane.
+//
+// In clip space, and **without a divide by w** (2D homogeneous rasterization, Olano and Greer 1997).
+// The corners' clip-space (x, y, w) are three vectors from the eye, and the pixel's centre is the
+// direction p = (ndc.x, ndc.y, 1) in the same space; the point of the triangle's plane on that line
+// is sum b_i c_i with
+//
+//   b_i = e_i / E,   e_i = dot(c_j x c_k, p)   (i, j, k in turn),   E = e_0 + e_1 + e_2,
+//
+// because sum e_i c_i = det(c_0, c_1, c_2) p. Clip space is an affine image of the world, so these
+// are the barycentrics of the triangle's own corners: the ray against the plane, exactly, for every
+// triangle the rasterizer can draw — one with a corner behind the camera, or on its plane, included.
+//
+// Until 2026-10-03 the corners were divided by w and the barycentrics taken in screen space, then
+// **clamped into [0, 1] there** and only then made perspective-correct. The divide is not wrong by
+// itself — a screen barycentric times 1/w_i is e_i up to a factor all three share, for any w that
+// is not zero — but the clamp was: on a triangle whose corners have w of both signs, a pixel the
+// triangle covers has screen barycentrics outside [0, 1], so the clamp moved its point onto an edge
+// metres from where it looks. And the divide loses everything as w goes to zero, where a corner
+// lands at infinity. The derivatives below never clamped, which is why they were right where the
+// point was not.
+//
+// Their change per pixel is exact too: e and E are linear in p, so db_i/dp = (n_i - b_i N) / E with
+// n_i = c_j x c_k and N = sum n_i, and p moves by (2 / width, -2 / height) a pixel — the viewport
+// the rasterizer drew with, flipped in y.
+
+// What the resolve takes at a pixel of a fetched triangle.
+struct ScreenBarycentrics {
+  // Where the pixel centre's ray meets the triangle — **moved onto it** when the ray lands outside:
+  // a negative barycentric is zeroed and the rest renormalized. That happens where the rasterizer
+  // drew a centre within its sub-pixel snap of an edge from the triangle across it, and the point
+  // is then on that edge, a snap's worth of the footprint from where the ray meets the plane (past
+  // a corner, the corner). A ray parallel to the plane — a triangle exactly edge-on, which only the
+  // snap draws — is the same rule on the edge functions themselves, and with nothing on either side
+  // of zero the centroid.
+  float3 b;
+  // The unclamped barycentrics' change per pixel along the picture's x and y (y down). Zero where
+  // the ray is parallel to the plane.
+  float3 db_dx;
+  float3 db_dy;
+};
+
+ScreenBarycentrics screen_barycentrics(TriangleFetch tri, float2 pixel_center,
+                                       column_major float4x4 view_proj, uint width, uint height) {
+  // x, y and w: a pixel's ray is fixed by x / w and y / w, and z says nothing about where it goes.
+  float3 c[3];
+  for (uint i = 0; i < 3; ++i)
+    c[i] = mul(view_proj, float4(tri.p[i], 1.0)).xyw;
+  const float2 ndc_per_pixel = float2(2.0 / float(width), -2.0 / float(height));
+  const float3 p = float3(pixel_center * ndc_per_pixel + float2(-1.0, 1.0), 1.0);
+  const float3 n0 = cross(c[1], c[2]);
+  const float3 n1 = cross(c[2], c[0]);
+  const float3 n2 = cross(c[0], c[1]);
+  const float3 e = float3(dot(n0, p), dot(n1, p), dot(n2, p));
+  const float plane = e.x + e.y + e.z;
+  ScreenBarycentrics s;
+  // e / E, clamped, without dividing by E: the edge functions on E's side of zero, the others
+  // zeroed, over their sum.
+  const float3 inside = max(plane < 0.0 ? -e : e, 0.0);
+  const float total = inside.x + inside.y + inside.z;
+  s.b = total > 0.0 ? inside / total : float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+  s.db_dx = float3(0.0, 0.0, 0.0);
+  s.db_dy = float3(0.0, 0.0, 0.0);
+  if (plane != 0.0) {
+    const float3 b = e / plane;
+    const float3 nx = float3(n0.x, n1.x, n2.x);
+    const float3 ny = float3(n0.y, n1.y, n2.y);
+    s.db_dx = (nx - b * (nx.x + nx.y + nx.z)) * (ndc_per_pixel.x / plane);
+    s.db_dy = (ny - b * (ny.x + ny.y + ny.z)) * (ndc_per_pixel.y / plane);
+  }
+  return s;
+}
+
+// The surface a pixel shows: its triangle fetched, its barycentrics (`screen_barycentrics`), and
+// everything interpolated at them (`surface_at`).
 Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
                           uint cluster_index, uint triangle, float2 pixel_center,
                           column_major float4x4 view_proj, float3 camera, uint width,
                           uint height) {
   const TriangleFetch tri = fetch_triangle(geo, instance, entry, cluster_index, triangle);
-  float4 clip[3];
-  float2 screen[3];
-  const float2 size = float2(float(width), float(height));
-  for (uint i = 0; i < 3; ++i) {
-    clip[i] = mul(view_proj, float4(tri.p[i], 1.0));
-    const float2 ndc = clip[i].xy / clip[i].w;
-    screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
-  }
-  const float area = material_edge(screen[0], screen[1], screen[2]);
-  float3 b;
-  if (abs(area) > 1e-12) {
-    b.x = material_edge(screen[1], screen[2], pixel_center) / area;
-    b.y = material_edge(screen[2], screen[0], pixel_center) / area;
-    b.z = 1.0 - b.x - b.y;
-    b = clamp(b, 0.0, 1.0);
-    b /= max(b.x + b.y + b.z, 1e-6);
-    const float3 bw = b / float3(clip[0].w, clip[1].w, clip[2].w);
-    b = bw / max(bw.x + bw.y + bw.z, 1e-12);
-  } else {
-    b = float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
-  }
-  return surface_at(geo, instance, tri, b, camera);
+  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
+  return surface_at(geo, instance, tri, s.b, camera);
 }
 
 // The UV's derivatives across the screen at `pixel_center`, taken from the triangle itself rather
@@ -273,106 +325,43 @@ Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
 // A visibility-buffer resolve is a fullscreen pass: the 2x2 quad a derivative instruction would
 // difference holds pixels of *other* triangles wherever an edge crosses it — often other meshes,
 // other UV islands — so ddx(uv) there is garbage and a texture fetch picks a level from it. The
-// triangle's own derivatives are exact and cost one more pass over its three vertices:
-//
-//   screen barycentrics are affine in the pixel, l_i = edge(s_j, s_k, p) / area, so
-//     dl_i/dx = -(s_k.y - s_j.y) / area   and   dl_i/dy = (s_k.x - s_j.x) / area;
-//   the perspective-correct ones are b_i = q_i / Q with q_i = l_i / w_i and Q = sum q_j, so
-//     db_i = (dq_i - b_i dQ) / Q   with dq_i = dl_i / w_i;
-//   and uv = sum b_i uv_i, so duv = sum db_i uv_i.
-//
-// Zero for a triangle with no attributes, a degenerate screen area, or w that has collapsed,
-// which SampleGrad reads as level 0.
+// triangle's own derivatives are exact: uv = sum b_i uv_i, so duv = sum db_i uv_i, with the
+// barycentrics' derivatives `screen_barycentrics` gives. They sum to zero, so the UVs enter as
+// edges from the first, which keeps a UV a thousand tiles out as sharp as one at the origin.
+// Zero for a triangle with no attributes or one seen exactly edge-on, which SampleGrad reads as
+// level 0.
 void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_center,
                          column_major float4x4 view_proj, uint width, uint height,
                          out float2 duv_dx, out float2 duv_dy) {
   duv_dx = float2(0.0, 0.0);
   duv_dy = float2(0.0, 0.0);
   if (geo.attributes == 0) return;
-  float4 clip[3];
-  float2 screen[3];
-  const float2 size = float2(float(width), float(height));
-  for (uint i = 0; i < 3; ++i) {
-    clip[i] = mul(view_proj, float4(tri.p[i], 1.0));
-    const float2 ndc = clip[i].xy / clip[i].w;
-    screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
-  }
-  const float area = material_edge(screen[0], screen[1], screen[2]);
-  if (abs(area) <= 1e-12) return;
-  float3 l;
-  l.x = material_edge(screen[1], screen[2], pixel_center) / area;
-  l.y = material_edge(screen[2], screen[0], pixel_center) / area;
-  l.z = 1.0 - l.x - l.y;
-  const float3 dl_dx =
-      float3(screen[1].y - screen[2].y, screen[2].y - screen[0].y, screen[0].y - screen[1].y) /
-      area;
-  const float3 dl_dy =
-      float3(screen[2].x - screen[1].x, screen[0].x - screen[2].x, screen[1].x - screen[0].x) /
-      area;
-  const float3 inv_w = 1.0 / float3(clip[0].w, clip[1].w, clip[2].w);
-  const float3 q = l * inv_w;
-  const float q_sum = q.x + q.y + q.z;
-  if (abs(q_sum) <= 1e-20) return;
-  const float3 b = q / q_sum;
-  const float3 dq_dx = dl_dx * inv_w;
-  const float3 dq_dy = dl_dy * inv_w;
-  const float3 db_dx = (dq_dx - b * (dq_dx.x + dq_dx.y + dq_dx.z)) / q_sum;
-  const float3 db_dy = (dq_dy - b * (dq_dy.x + dq_dy.y + dq_dy.z)) / q_sum;
+  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
   const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
-  const float2 uv1 = decode_half2(attributes[tri.local[1]].uv_half2);
-  const float2 uv2 = decode_half2(attributes[tri.local[2]].uv_half2);
-  duv_dx = db_dx.x * uv0 + db_dx.y * uv1 + db_dx.z * uv2;
-  duv_dy = db_dy.x * uv0 + db_dy.y * uv1 + db_dy.z * uv2;
+  const float2 e1 = decode_half2(attributes[tri.local[1]].uv_half2) - uv0;
+  const float2 e2 = decode_half2(attributes[tri.local[2]].uv_half2) - uv0;
+  duv_dx = s.db_dx.y * e1 + s.db_dx.z * e2;
+  duv_dy = s.db_dy.y * e1 + s.db_dy.z * e2;
 }
 
 // The surface point's world-space change per pixel along the screen's two axes at `pixel_center`:
-// `screen_uv_gradients`' arithmetic, with the triangle's positions in place of its UVs — the
-// perspective-correct barycentrics' derivatives times the three corners. It is the footprint the
-// ground's detail is filtered by (ground_detail.slang), from the triangle alone for the reason the
-// UV derivatives are: the 2x2 quad a derivative instruction would difference straddles other
-// triangles in a fullscreen pass. Zero for a degenerate screen area or a collapsed w, which reads
-// as a footprint of nothing: the unfiltered detail.
+// `screen_uv_gradients` with the triangle's positions in place of its UVs — the barycentrics'
+// derivatives times the three corners. It is the footprint the ground's detail is filtered by
+// (ground_detail.slang), from the triangle alone for the reason the UV derivatives are: the 2x2
+// quad a derivative instruction would difference straddles other triangles in a fullscreen pass.
+// Zero for a triangle seen exactly edge-on, which reads as a footprint of nothing: the unfiltered
+// detail.
 void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
                                column_major float4x4 view_proj, uint width, uint height,
                                out float3 dp_dx, out float3 dp_dy) {
-  dp_dx = float3(0.0, 0.0, 0.0);
-  dp_dy = float3(0.0, 0.0, 0.0);
-  float4 clip[3];
-  float2 screen[3];
-  const float2 size = float2(float(width), float(height));
-  for (uint i = 0; i < 3; ++i) {
-    clip[i] = mul(view_proj, float4(tri.p[i], 1.0));
-    const float2 ndc = clip[i].xy / clip[i].w;
-    screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
-  }
-  const float area = material_edge(screen[0], screen[1], screen[2]);
-  if (abs(area) <= 1e-12) return;
-  float3 l;
-  l.x = material_edge(screen[1], screen[2], pixel_center) / area;
-  l.y = material_edge(screen[2], screen[0], pixel_center) / area;
-  l.z = 1.0 - l.x - l.y;
-  const float3 dl_dx =
-      float3(screen[1].y - screen[2].y, screen[2].y - screen[0].y, screen[0].y - screen[1].y) /
-      area;
-  const float3 dl_dy =
-      float3(screen[2].x - screen[1].x, screen[0].x - screen[2].x, screen[1].x - screen[0].x) /
-      area;
-  const float3 inv_w = 1.0 / float3(clip[0].w, clip[1].w, clip[2].w);
-  const float3 q = l * inv_w;
-  const float q_sum = q.x + q.y + q.z;
-  if (abs(q_sum) <= 1e-20) return;
-  const float3 b = q / q_sum;
-  const float3 dq_dx = dl_dx * inv_w;
-  const float3 dq_dy = dl_dy * inv_w;
-  const float3 db_dx = (dq_dx - b * (dq_dx.x + dq_dx.y + dq_dx.z)) / q_sum;
-  const float3 db_dy = (dq_dy - b * (dq_dy.x + dq_dy.y + dq_dy.z)) / q_sum;
+  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, width, height);
   // The derivatives sum to zero, so the corners enter as edges from the first: a terrain's corners
   // are thousands of metres from the origin and their differences are what the answer is made of.
   const float3 e1 = tri.p[1] - tri.p[0];
   const float3 e2 = tri.p[2] - tri.p[0];
-  dp_dx = db_dx.y * e1 + db_dx.z * e2;
-  dp_dy = db_dy.y * e1 + db_dy.z * e2;
+  dp_dx = s.db_dx.y * e1 + s.db_dx.z * e2;
+  dp_dy = s.db_dy.y * e1 + s.db_dy.z * e2;
 }
 
 // The hit triangle's tangent frame, from its own positions and UVs: with dp1 = T du1 + B dv1 and

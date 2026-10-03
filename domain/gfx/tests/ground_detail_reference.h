@@ -784,13 +784,8 @@ inline gfx::GroundDetailDesc erg_numbers() {
 inline Dvec3 point_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
                             u32 width, u32 height, double sx, double sy, Dvec3 plane_point,
                             Dvec3 plane_normal) {
-  const double t = 1.0 / std::tan(fov_y * 0.5);
-  const Dvec3 f = brdf_ref::normalize(target - eye);
-  const Dvec3 right = brdf_ref::normalize(brdf_ref::cross(f, up));
-  const Dvec3 camera_up = brdf_ref::cross(right, f);
-  const double ndc_x = 2.0 * sx / static_cast<double>(width) - 1.0;
-  const double ndc_y = 1.0 - 2.0 * sy / static_cast<double>(height);
-  const Dvec3 dir = f + right * (ndc_x * aspect / t) + camera_up * (ndc_y / t);
+  const Dvec3 dir =
+      brdf_ref::pixel_direction(eye, target, up, fov_y, aspect, width, height, sx, sy);
   return eye +
          dir * (brdf_ref::dot(plane_point - eye, plane_normal) / brdf_ref::dot(dir, plane_normal));
 }

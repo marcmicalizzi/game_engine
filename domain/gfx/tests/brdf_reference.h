@@ -426,20 +426,74 @@ inline bool sample_bsdf(const Surface& s, Dvec3 v_local, double u_lobe, double u
   return true;
 }
 
-// The world point the resolve reconstructs at the center of pixel (px, py) on a horizontal plane:
-// the camera ray through that pixel, intersected with the plane. For a planar surface this is
-// exactly what perspective-correct barycentric interpolation of the triangle's vertices gives,
-// which is what reconstruct() computes, so the reference shades the point the GPU shaded.
-inline Dvec3 pixel_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
-                            u32 width, u32 height, u32 px, u32 py, double plane_y) {
+// The direction from `eye` through the point (sx, sy) of a `width` x `height` picture — in
+// pixels, a pixel's centre at +0.5 — under `look_at(eye, target, up)` and a vertical field of
+// view `fov_y`; not normalized. Where every reference below starts asking what a pixel sees.
+inline Dvec3 pixel_direction(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
+                             u32 width, u32 height, double sx, double sy) {
   const double t = 1.0 / std::tan(fov_y * 0.5);
   const Dvec3 f = normalize(target - eye);
   const Dvec3 right = normalize(cross(f, up));
   const Dvec3 camera_up = cross(right, f);
-  const double ndc_x = 2.0 * (static_cast<double>(px) + 0.5) / static_cast<double>(width) - 1.0;
-  const double ndc_y = 1.0 - 2.0 * (static_cast<double>(py) + 0.5) / static_cast<double>(height);
-  const Dvec3 dir = f + right * (ndc_x * aspect / t) + camera_up * (ndc_y / t);
+  const double ndc_x = 2.0 * sx / static_cast<double>(width) - 1.0;
+  const double ndc_y = 1.0 - 2.0 * sy / static_cast<double>(height);
+  return f + right * (ndc_x * aspect / t) + camera_up * (ndc_y / t);
+}
+
+// The world point the resolve reconstructs at the center of pixel (px, py) on a horizontal plane:
+// the camera ray through that pixel, intersected with the plane. That is what the resolve itself
+// computes for a pixel of any triangle (`screen_barycentrics` in material.slang: the pixel's ray
+// against the triangle's plane), so the reference shades the point the GPU shaded.
+inline Dvec3 pixel_on_plane(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y, double aspect,
+                            u32 width, u32 height, u32 px, u32 py, double plane_y) {
+  const Dvec3 dir = pixel_direction(eye, target, up, fov_y, aspect, width, height,
+                                    static_cast<double>(px) + 0.5, static_cast<double>(py) + 0.5);
   return eye + dir * ((plane_y - eye.y) / dir.y);
+}
+
+// Where the resolve shades a pixel of a triangle (gfx.md, "Where a pixel meets its triangle"):
+// the ray from `eye` along `direction` against the triangle's plane, as barycentrics of
+// `corner[0..2]`. `ray` is the hit's own, which is outside the triangle for a centre the
+// rasterizer's sub-pixel snap drew from across an edge; `b` is the resolve's rule for that — a
+// negative barycentric is zeroed and the rest renormalized, which puts the point on the crossed
+// edge — and `position` is the point at `b`. The ray must meet the plane.
+struct TriangleHit {
+  Dvec3 ray;
+  Dvec3 b;
+  Dvec3 position;
+  bool clamped = false;
+};
+
+inline TriangleHit pixel_on_triangle(Dvec3 eye, Dvec3 direction, const Dvec3 corner[3]) {
+  const Dvec3 normal = cross(corner[1] - corner[0], corner[2] - corner[0]);
+  const Dvec3 p = eye + direction * (dot(corner[0] - eye, normal) / dot(direction, normal));
+  const double area = dot(normal, normal);
+  TriangleHit hit;
+  hit.ray.x = dot(cross(corner[1] - p, corner[2] - p), normal) / area;
+  hit.ray.y = dot(cross(corner[2] - p, corner[0] - p), normal) / area;
+  hit.ray.z = 1.0 - hit.ray.x - hit.ray.y;
+  hit.clamped = hit.ray.x < 0.0 || hit.ray.y < 0.0 || hit.ray.z < 0.0;
+  hit.b = Dvec3{hit.ray.x < 0.0 ? 0.0 : hit.ray.x, hit.ray.y < 0.0 ? 0.0 : hit.ray.y,
+                hit.ray.z < 0.0 ? 0.0 : hit.ray.z};
+  hit.b = hit.b * (1.0 / (hit.b.x + hit.b.y + hit.b.z));
+  hit.position = corner[0] * hit.b.x + corner[1] * hit.b.y + corner[2] * hit.b.z;
+  return hit;
+}
+
+// The ray's barycentrics' change per pixel at the point (sx, sy) of the picture, by central
+// differences a hundredth of a pixel wide: what the resolve's derivatives are, and through the
+// corners or the UVs the footprint and the UV's derivatives.
+inline void pixel_barycentric_gradients(Dvec3 eye, Dvec3 target, Dvec3 up, double fov_y,
+                                        double aspect, u32 width, u32 height, double sx, double sy,
+                                        const Dvec3 corner[3], Dvec3& db_dx, Dvec3& db_dy) {
+  constexpr double h = 0.005;
+  const auto at = [&](double x, double y) {
+    return pixel_on_triangle(
+               eye, pixel_direction(eye, target, up, fov_y, aspect, width, height, x, y), corner)
+        .ray;
+  };
+  db_dx = (at(sx + h, sy) - at(sx - h, sy)) * (1.0 / (2.0 * h));
+  db_dy = (at(sx, sy + h) - at(sx, sy - h)) * (1.0 / (2.0 * h));
 }
 
 }  // namespace engine::brdf_ref

@@ -592,20 +592,18 @@ TEST_CASE("sand detail: the reference path tracer shades the ergs' sand on a slo
   // and the grainflow's band, 24 to 30; the second pass's streaks, which the ergs drew here until
   // the third pass, have gfx's own case), each against the same place without the detail.
   //
-  // **On a grid of a metre, not the flat case's four.** Looking down at the feet, the camera's
-  // plane meets the ground two or three metres behind the walker, and a 4 m triangle under the
-  // feet reaches past it. The rasterizer clips such a triangle and draws it rightly, but the
-  // resolve rebuilds a pixel's point from the corners divided by w (`reconstruct_screen`), which
-  // is meaningless for a corner behind the camera, so it shades a point the pixel does not see —
-  // the limit gfx's own case builds its sand in metre cells to stay clear of. The second pass's
-  // tongues showed it: 2 m long, on the 4 m grid they ran on as stripes to the bottom of the
-  // resolved picture, where the path tracer drew them ending, and FLIP rose by 0.018 with the
-  // detail, 0.015 of it theirs; on the metre grid the two pictures drew the same tongues
-  // (renderer.md, "The sand close up").
+  // **On the flat case's 4 m grid.** Looking down at the feet, the camera's plane meets the ground
+  // two or three metres behind the walker, and a 4 m triangle under the feet reaches past it. The
+  // rasterizer clips such a triangle and the resolve takes each pixel's point where its ray meets
+  // the triangle (gfx.md, "Where a pixel meets its triangle"), so the two integrators shade the
+  // same sand on it. Until 2026-10-03 the resolve clamped the screen barycentrics of the corners
+  // divided by w, which moves such a pixel's point onto an edge, and this case ran on a grid of a
+  // metre: on the 4 m grid
+  // the second pass's 2 m tongues ran on as stripes to the bottom of the resolved picture where the
+  // path tracer drew them ending (renderer.md, "The sand close up").
   SceneDesc on = sand_scene(ddc, true, erg_detail());
   on.terrain.dune_height = 16.0f;
   on.terrain.dune_wavelength = 60.0f;
-  on.terrain.extent = 128.0f;  // 257 vertices a side: a metre
   SceneDesc off = on;
   off.terrain.has_detail = false;
   const Vec2 wind = TerrainSampler(on.terrain).wind(on.terrain.time_s);
@@ -631,11 +629,14 @@ TEST_CASE("sand detail: the reference path tracer shades the ergs' sand on a slo
             << flip_off << " without the detail, " << flip_on << " with it (the lower half "
             << halves_off[0] << " and " << halves_on[0] << ", the upper " << halves_off[1]
             << " and " << halves_on[1] << ")");
-    // The same sand in both: with the third pass the detail adds 0.002 climbing into the wind and
-    // 0.001 on the lee (RTX 5090, 2026-09-30) — on the lee nearly all of it in the picture's upper
-    // half (0.003 there, under 0.001 in the lower), ten metres down the slope, where the resolve
-    // fades a lane by its footprint and a reference at the pixel's centre does not. The second
-    // pass's streaks added 0.003 there. Held to half the flat case's allowance.
+    // The same sand in both: on the 4 m grid the detail adds 0.005 climbing into the wind and
+    // 0.003 on the lee (RTX 5090, 2026-10-03), spread over both halves of the picture rather than
+    // gathered at its bottom, where the old reconstruction's error was: the second pass's lee read
+    // 0.018 more here before the fix. It is more than the metre grid's 0.002 and 0.001
+    // (2026-09-30), most likely because a terrain four times the size has a 16-bit position grid
+    // four times as coarse (1.6 cm a step), and the resolve's point sits on that grid where the
+    // reference's hit sits on the floats, which moves the millimetre grain between them. Held to
+    // half the flat case's allowance.
     CHECK(flip_on < flip_off + 0.01f);
   }
 }

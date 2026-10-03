@@ -280,11 +280,14 @@ slots, as it already was.
 A visibility-buffer resolve is a fullscreen pass, so the 2x2 quad a derivative instruction
 differences holds pixels of **other** triangles wherever an edge crosses it — other meshes, other UV
 islands — and `ddx(uv)` there is garbage. The resolve instead computes the UV's derivatives from the
-hit triangle itself (`screen_uv_gradients`, `material.slang`): screen-space barycentrics are affine
-in the pixel, `l_i = edge(s_j, s_k, p) / area`, so their derivatives are the constant
-`dl_i/dx = -(s_k.y - s_j.y) / area` and `dl_i/dy = (s_k.x - s_j.x) / area`; the perspective-correct
-ones are `b_i = q_i / Q` with `q_i = l_i / w_i`, so `db_i = (dq_i - b_i dQ) / Q`; and
-`duv = Σ db_i uv_i`. That is one more pass over three vertices the resolve has just read, only for a
+hit triangle itself (`screen_uv_gradients`, `material.slang`). The pixel's barycentrics are where
+its ray meets the triangle, `b_i = e_i / E` with the homogeneous edge functions
+`e_i = (c_j × c_k) · p` of the corners' clip-space (x, y, w) and the pixel's direction
+`p = (ndc.x, ndc.y, 1)`, and `E = Σ e_j` ([gfx](gfx.md), "Where a pixel meets its triangle"); `e` and
+`E` are linear in `p`, so `db_i = (n_i - b_i N) · dp / E` with `n_i = c_j × c_k` and `N = Σ n_j`;
+and `duv = Σ db_i uv_i`, taken as `db_1 (uv_1 - uv_0) + db_2 (uv_2 - uv_0)` because the derivatives
+sum to zero. No w is divided by, so a triangle reaching behind the camera filters as rightly as one
+in front of it. That is one more pass over three vertices the resolve has just read, only for a
 mipmapped material, and `SampleGrad` then chooses the level and the anisotropy. Derivatives are per
 pixel of the visibility buffer: a Panini view's output pixels are not those, and its textures are
 filtered for the source it is resampled from.
