@@ -98,8 +98,10 @@ f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, 
                       f64 min_step_s, f64 max_step_s) noexcept;
 // The same rule over a tile source's travel (scene_gen/tile_source.h): what a tile level's fields
 // are timed by. A source that does not move is `from_s + max_step_s`.
+// A far level's lattice is filtered (`filter_mm`, renderer.md "Ground to the horizon"), and its
+// cadence is the fastest band it carries: the mean it stands in for the rest with does not move.
 f64 terrain_next_time(const scene_gen::TileSource& source, f64 from_s, f64 spacing_m, f64 fraction,
-                      f64 min_step_s, f64 max_step_s) noexcept;
+                      f64 min_step_s, f64 max_step_s, i64 filter_mm = 0) noexcept;
 
 // **The blend of one level** (above), as plain numbers the tests drive a frame at a time.
 struct TerrainBlend {
@@ -145,8 +147,13 @@ TerrainFrameResult terrain_blend_frame(TerrainBlend& blend, f64 target_s, f64 bu
 // moves towards `target_s`, never past any level's b, never by more than `budgets_m[k]` of height
 // on level k; a level standing at its b takes its `next[k]` when it is ready (cleared when taken)
 // and the surface moves on. `moved_m[k]` is what level k's vertices moved at most, `installed[k]`
-// the fields it took. At most `k_max_surface_levels` levels.
-inline constexpr u32 k_max_surface_levels = 8;
+// the fields it took. At most `k_max_surface_levels` levels, which is every level a level set can
+// have: when the far levels raised that to sixteen (renderer.md, "Ground to the horizon") this
+// stayed at eight, and the endless desert's ninth drawn level — its finest ring — was left out of
+// the surface's frame, its `installed` never written, and its count of fields after b wrapped
+// below zero on the uninitialized word; the next frame walked off the end of that level's two
+// fields and engine-view stopped with an access violation and nothing on its output (2026-10-03).
+inline constexpr u32 k_max_surface_levels = k_max_terrain_levels;
 struct TerrainSurfaceResult {
   f64 surface_s = 0.0;
   bool held = false;    // it stood at a level's b with game time still to reach and no next field

@@ -431,7 +431,7 @@ struct TerrainLevelDesc {
   // is a skirt's (renderer::GpuScene marks them so), and is written that far under the field.
   f32 skirt = 0.0f;
   // `k_terrain_level_named`: a vertex of this level whose rest normal is horizontal is **drawn
-  // from the level it names** — the level at `round(atan2(n.z, n.x) / (pi / 4)) mod 8`, its
+  // from the level it names** — the level at `round(atan2(n.z, n.x) / (pi / 8)) mod 16`, its
   // lattice point, height and normal — rather than from this one: a world tile's border along a
   // coarser tile, which both tiles then draw from one description (renderer.md, "The ground from
   // the world's tiles"; `terrain_level_normal`). A heightfield vertex's rest normal is free for it,
@@ -441,12 +441,14 @@ struct TerrainLevelDesc {
   Vec4 hole{};  // x0, z0, x1, z1, metres; none when x1 <= x0
 };
 inline constexpr u32 k_terrain_level_named = 1u << 0;
-// The rest normal that names terrain level `level` (0..7) for `k_terrain_level_named`: horizontal,
-// at `level` eighths of a turn from +x towards +z. Far from any heightfield normal, whose y is
+// The rest normal that names terrain level `level` (0..15) for `k_terrain_level_named`:
+// horizontal, at `level` sixteenths of a turn from +x towards +z — eighths until the far levels
+// (renderer.md, "Ground to the horizon") took the tile levels past eight; 22.5 degrees apart is
+// still a hundred times the octahedral encoding's step. Far from any heightfield normal, whose y is
 // above cos 60 degrees on any sand, and from a skirt's, which points down.
 inline Vec3 terrain_level_normal(u32 level) noexcept {
-  constexpr f32 k_eighth = 0.78539816339744830962f;
-  const f32 a = static_cast<f32>(level & 7u) * k_eighth;
+  constexpr f32 k_sixteenth = 0.39269908169872415481f;
+  const f32 a = static_cast<f32>(level & 15u) * k_sixteenth;
   return Vec3{std::cos(a), 0.0f, std::sin(a)};
 }
 

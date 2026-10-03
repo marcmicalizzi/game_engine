@@ -648,8 +648,8 @@ TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept {
   return scene_gen::scene_lattice(desc.extent, desc.size);
 }
 
-TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept {
-  return scene_gen::ring_lattice(spacing_mm);
+TerrainLattice terrain_ring_lattice(i64 spacing_mm, i64 filter_mm) noexcept {
+  return scene_gen::ring_lattice(spacing_mm, filter_mm);
 }
 
 u32 terrain_window_blocks(u32 nx, u32 nz) noexcept { return scene_gen::window_blocks(nx, nz); }

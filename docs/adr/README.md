@@ -54,3 +54,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0048](0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md) | The sky is a provider's model drawn by the renderer, and a scene that names none draws what it drew | Proposed |
 | [0049](0049-tests-take-the-gpu-lock-per-device.md) | Tests take the GPU lock per device, at device creation | Proposed |
 | [0050](0050-the-ground-is-drawn-from-the-worlds-tiles.md) | The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source | Proposed |
+| [0051](0051-the-far-ground-is-the-renderers.md) | The far ground is the renderer's: coarser tile levels past the world's rings, fed by filtered lattices | Proposed |

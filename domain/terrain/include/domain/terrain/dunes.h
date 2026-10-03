@@ -257,6 +257,10 @@ struct Gather {
   u32 grid_begin[k_max_bands] = {};
   Vector<i32> grid;
   const LagField* lag = nullptr;
+  // The width a point of the lattice this gather serves stands for, mm (0: the point itself;
+  // `DuneField::carries`). A band it does not carry has no primitives here, and every point reads
+  // its mean instead.
+  i64 filter_mm = 0;
   // The ripples' direction today and yesterday, Q14, their drift, and today's blend.
   i32 ripple_x = 0, ripple_z = 0, ripple_prev_x = 0, ripple_prev_z = 0;
   i64 ripple_shift = 0, ripple_prev_shift = 0;  // mm
@@ -287,7 +291,24 @@ class DuneField {
 
   // Every primitive that can reach a point of [x0, x1] x [z0, z1] (world mm) at `time_us`.
   void gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagField* lag, Gather& out) const;
-  // The surface at a world point, against a gather that covers it.
+  // **The same for a lattice filtered to `filter_mm`** (renderer.md, "Ground to the horizon"): the
+  // primitives of the bands it carries, and none of the rest, which a point of it reads as their
+  // mean. A far level's gather over kilometres then holds no ten-metre waves.
+  void gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagField* lag, i64 filter_mm,
+              Gather& out) const;
+  // Whether a lattice whose points stand for `filter_mm` each carries band `b`: its cell is at
+  // least `k_carried_cells` of them (every band at 0). A band it does not carry is drawn as its
+  // mean height (`band_mean_um`), at the share the bands before it leave it, flat and still — the
+  // box-filtered band to within its own variation over a cell, where a point sample of it would
+  // be any height between its floor and its crest, and change as the band moves.
+  bool carries(u32 b, i64 filter_mm) const noexcept {
+    return filter_mm <= 0 || cell_[b] >= k_carried_cells * filter_mm;
+  }
+  static constexpr i64 k_carried_cells = 2;
+  // A band's mean height over the plane, µm: the maximum of its primitives averaged over eight
+  // cells either way of the origin at time 0, a quarter of a cell apart.
+  i64 band_mean_um(u32 b) const noexcept { return mean_um_[b]; }
+  // The surface at a world point, against a gather that covers it (filtered as the gather is).
   Sample sample(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept;
   i64 height_um(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept;
   // How much of band `b` its coupling lets stand at a point, Q16: 1 for an uncoupled band, and
@@ -376,6 +397,7 @@ class DuneField {
   i64 reach_[k_max_bands] = {};            // mm
   i64 celerity_height_[k_max_bands] = {};  // mm
   i64 absorb_[k_max_bands] = {};           // mm: the lee zone's fade width
+  i64 mean_um_[k_max_bands] = {};          // a band's mean height (`band_mean_um`)
   i64 drift_q16_[k_max_bands] = {};
   i64 cap_reach_ = 0;  // mm: where a feature's cap passes the tallest sand the bands can stack //
                        // the most a crest line drifts per unit along it

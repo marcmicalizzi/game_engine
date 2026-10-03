@@ -273,6 +273,8 @@ Written 2026-09-30 for the owner's question from a fast time-lapse: the sand ris
 
 A tile's cells a side is the host's choice: 128 (the overlay's 25 cm grid) near, 64 and 32 farther out — 2.5, 0.74 and 0.27 ms a tile (below).
 
+**A lattice filtered to its spacing** (2026-10-03; [renderer](renderer.md#ground-to-the-horizon), [scene_gen](scene_gen.md#the-tile-source)). Beside `Detail`, a gather may be made for a lattice whose points stand for `filter_mm` each (`DuneField::gather(..., filter_mm, out)`, `Gather::filter_mm`; the provider takes it from `scene_gen::Lattice::filter_mm`): a band the lattice carries — its cell at least `k_carried_cells` (2) of the filter, the sampling theorem's — is gathered and evaluated as ever, and one it does not carry has no primitives in the gather and stands in at every point as **its mean height** (`band_mean_um`, the maximum of its primitives averaged over eight cells either way of the origin at time 0, computed when the field is made) **at the share the bands before it leave it**, flat and still: it adds no slope to the bands after it, no footprint for them to couple to, and moves with nothing. So a far level 128 m apart gathers no waves, crests or barchans over its kilometres and reads them as the sand they average to, and its heights move only as the mega-draa and the draa do; the provider's `travel_m` at a filter is the fastest band kept. At 0 nothing changes: the same gather and the same heights to the bit, which every existing golden holds. What it buys and what it costs against a box filter is in [the experiment](../experiments/far-ground-2026-10-03.md#heights-filtered-to-the-spacing); `terrain_tests.cpp` holds it.
+
 ## Invariants
 
 Each is a test in `tests/terrain_tests.cpp` or `tests/overlay_tests.cpp`.

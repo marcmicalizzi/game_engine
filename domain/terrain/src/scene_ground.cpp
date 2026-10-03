@@ -68,10 +68,13 @@ bool dunes_evaluate(const void* state, f64 time_s, const scene_gen::Lattice& lat
     const u32 bz = (block / per_side) * k_block;
     const u32 ez = std::min(nz, bz + k_block);
     const u32 ex = std::min(nx, bx + k_block);
+    // A lattice that stands for more than its points (`Lattice::filter_mm`, a far level's) gathers
+    // only the bands it carries and reads the rest as their means.
     g.field.gather(to_mm(lattice.x(i0 + static_cast<i32>(bx))),
                    to_mm(lattice.z(j0 + static_cast<i32>(bz))),
                    to_mm(lattice.x(i0 + static_cast<i32>(ex - 1))),
-                   to_mm(lattice.z(j0 + static_cast<i32>(ez - 1))), time_us, nullptr, gather);
+                   to_mm(lattice.z(j0 + static_cast<i32>(ez - 1))), time_us, nullptr,
+                   lattice.filter_mm, gather);
     for (u32 zi = bz; zi < ez; ++zi) {
       const f32 z = lattice.z(j0 + static_cast<i32>(zi));
       for (u32 xi = bx; xi < ex; ++xi) {
@@ -93,15 +96,17 @@ void dunes_grid(const void* state, const scene_gen::Lattice& lattice, i32 i0, i3
                  heights);
 }
 
-f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
+f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s, i64 filter_mm) noexcept {
   const auto& g = *static_cast<const DunesGround*>(state);
   const auto us = [](f64 s) { return static_cast<i64>(std::floor(s * 1'000'000.0 + 0.5)); };
   // The flux path length over the interval, cm^2, and each band's travel along it: cm^2 over the
   // band's celerity height in mm, times 100 for mm^2, which is Bagnold's rule as
-  // `DuneField::displacement` takes it, applied to |flux| rather than to the vector.
+  // `DuneField::displacement` takes it, applied to |flux| rather than to the vector. Of the bands
+  // the lattice carries: the mean the rest stand in with does not move.
   const i64 magnitude = g.field.wind().between(us(from_s), us(to_s)).magnitude;
   f64 most = 0.0;
   for (u32 b = 0; b < g.field.band_count(); ++b) {
+    if (!g.field.carries(b, filter_mm)) continue;
     const f64 mm = static_cast<f64>(magnitude) * 100.0 /
                    static_cast<f64>(std::max<i64>(1, g.field.band_height(b)));
     most = std::max(most, mm / 1000.0);

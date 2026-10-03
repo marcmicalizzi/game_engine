@@ -278,7 +278,7 @@ bool slide_evaluate(const void*, f64 time_s, const Lattice& lattice, i32 i0, i32
   (void)j0;  // a ramp along x: the same along z
   return true;
 }
-f64 slide_travel(const void*, f64 from_s, f64 to_s) noexcept { return to_s - from_s; }
+f64 slide_travel(const void*, f64 from_s, f64 to_s, i64) noexcept { return to_s - from_s; }
 constexpr GroundOps k_slide_ops{
     .height = &slide_height, .evaluate = &slide_evaluate, .travel_m = &slide_travel};
 

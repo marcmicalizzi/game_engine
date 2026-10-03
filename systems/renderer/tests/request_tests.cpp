@@ -87,6 +87,7 @@ const Row k_settings_rows[] = {
                "has no keys, and its rate is time_rate"),
     ENGINE_ROW(terrain_rings, "terrain_rings", ""),
     ENGINE_ROW(terrain_tiles, "terrain_tiles", ""),
+    ENGINE_ROW(terrain_far_levels, "terrain_far_levels", ""),
     ENGINE_ROW(stream, "stream", ""),
     ENGINE_ROW(page_budget_bytes, "page_budget_mib", ""),
     ENGINE_ROW(upload_budget_bytes, "upload_budget_kib", ""),
@@ -145,6 +146,7 @@ const WireValue k_wire_values[] = {
     {"exposure_ev100", R"({"exposure_ev100":12})"},
     {"terrain_rings", R"({"terrain_rings":true})"},
     {"terrain_tiles", R"({"terrain_tiles":true})"},
+    {"terrain_far_levels", R"({"terrain_far_levels":2})"},
     {"deform_pool_mib", R"({"deform_pool_mib":16})"},
     {"static_shape_kib", R"({"static_shape_kib":1024})"},
     {"morph", R"({"morph":["0=0.5"]})"},
@@ -195,8 +197,8 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   renderer::RenderSettings settings;
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
-                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40] = settings;
-  static_assert(std::size(k_settings_rows) == 41, "one row per RenderSettings field");
+                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41] = settings;
+  static_assert(std::size(k_settings_rows) == 42, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;
@@ -289,6 +291,8 @@ TEST_CASE("request: the wire's refusals") {
   CHECK(refused(R"({"deform_pool_mib":70000})"));
   CHECK(refused(R"({"morph":["smile"]})"));
   CHECK(refused(R"({"sun_azimuth_deg":10})"));
+  CHECK(refused(R"({"terrain_far_levels":9})"));
+  CHECK(!refused(R"({"terrain_far_levels":0})"));
   CHECK(!refused(R"({"exposure_ev":-2.5,"exposure_ev100":-3})"));
 
   const auto clock_refused = [](std::optional<f64> hour, std::optional<f64> rate) {

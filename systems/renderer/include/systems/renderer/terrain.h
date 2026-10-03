@@ -311,7 +311,7 @@ bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 blo
 // lattice is the registry's (`scene_gen::Lattice`), since a provider samples on it.
 using TerrainLattice = scene_gen::Lattice;
 TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept;
-TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept;
+TerrainLattice terrain_ring_lattice(i64 spacing_mm, i64 filter_mm = 0) noexcept;
 
 // The moving ground's heights on a window of a lattice at `time_s`: `nx * nz` of them, rows of x
 // in order of z, sample (i, j) at lattice point (i0 + i, j0 + j) — the ridges and basins added as

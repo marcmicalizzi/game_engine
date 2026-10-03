@@ -818,6 +818,57 @@ const JsonValue& member(const JsonValue& object, std::string_view key) {
   return *value;
 }
 
+// engine-view with `args` after its own path, offscreen: its exit code and everything it printed
+// (the summary line last). 3 is a machine it cannot render on.
+i32 run_engine_view(const std::vector<std::string>& args, std::string& output) {
+  std::vector<std::string> all = {test::app_path(ENGINE_VIEW_PATH)};
+  all.insert(all.end(), args.begin(), args.end());
+  std::vector<std::string_view> argv(all.begin(), all.end());
+  platform::Process p;
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                          /*merge_stderr=*/true),
+                  error);
+  p.close_stdin();
+  p.read_all(output);
+  return p.wait();
+}
+
+// engine-view's picture against the host's of the same request: the same bytes, or within one step
+// of 255 at under a thousandth of them. The one thing the two processes do not reproduce is the
+// sky's metered sum (`stats.sky.sky_lux`), which comes out a few parts in ten million apart
+// between them — the same in each process run to run, and the same with shadows off — and moves
+// an exposed channel by one at a pixel or two. The request is not the cause: every other number
+// the two report of the sky is the same to the last digit. On the RTX 5090 the erg's own time is
+// byte-identical and three years on differs at one byte; on the Titan Xp the erg's own time
+// differs too. Held to the bytes it can be held to, and the rest written down (renderer.md, "One
+// request, two hosts"); the sum's reproducibility is an open defect of the sky's metering, not of
+// the request.
+void same_within_a_step(const std::string& what, const std::string& view_png,
+                        const std::string& host_png, const std::string& view_bytes,
+                        const std::string& host_bytes) {
+  if (view_bytes == host_bytes) {
+    MESSAGE(what << ": byte for byte");
+    return;
+  }
+  image::Image a;
+  image::Image b;
+  std::string message;
+  REQUIRE(image::read_image(view_png, a, 4, &message) == io::Status::Ok);
+  REQUIRE(image::read_image(host_png, b, 4, &message) == io::Status::Ok);
+  REQUIRE(a.pixels.size() == b.pixels.size());
+  u32 differ = 0;
+  u32 largest = 0;
+  for (u32 i = 0; i < a.pixels.size(); ++i) {
+    const u32 d = a.pixels[i] > b.pixels[i] ? a.pixels[i] - b.pixels[i] : b.pixels[i] - a.pixels[i];
+    if (d != 0) ++differ;
+    largest = d > largest ? d : largest;
+  }
+  MESSAGE(what << ": " << differ << " channel bytes differ, by at most " << largest);
+  CHECK(largest <= 1);
+  CHECK(differ * 1000 < a.pixels.size());
+}
+
 }  // namespace
 
 TEST_CASE("render: the erg at two hours, its sun where the ephemeris puts it") {
@@ -973,36 +1024,15 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
 
   // engine-view with the same flags: the scene, the orbit, the size, and --ground-time.
   const auto view = [&](bool with_time, const std::string& png, std::string& out) {
-    std::vector<std::string> args = {test::app_path(ENGINE_VIEW_PATH),
-                                     "--scene",
-                                     erg.path,
-                                     "--ddc",
-                                     ddc,
-                                     "--offscreen",
-                                     "--frames",
-                                     "1",
-                                     "--width",
-                                     "160",
-                                     "--height",
-                                     "96",
-                                     "--orbit",
-                                     "22",
-                                     "--capture",
-                                     png};
+    std::vector<std::string> args = {"--scene",  erg.path,  "--ddc",   ddc,         "--offscreen",
+                                     "--frames", "1",       "--width", "160",       "--height",
+                                     "96",       "--orbit", "22",      "--capture", png};
     if (with_time) {
       args.push_back("--ground-time");
       args.push_back(later_text);
     }
-    std::vector<std::string_view> argv(args.begin(), args.end());
-    platform::Process p;
-    std::string error;
-    REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-                            /*merge_stderr=*/true),
-                    error);
-    p.close_stdin();
     std::string output;
-    p.read_all(output);
-    const i32 code = p.wait();
+    const i32 code = run_engine_view(args, output);
     if (code == 3) {
       MESSAGE("engine-view cannot render here: " << output);
       return false;
@@ -1016,40 +1046,7 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
   if (!view(false, tmp.file("view-own.png"), view_own)) return;
   REQUIRE(view(true, tmp.file("view-later.png"), view_later));
   // engine-view's picture is the host's, to within a step of 255 at a handful of pixels, and byte
-  // for byte where the device lets it be. The one thing the two processes do not reproduce is the
-  // sky's metered sum (`stats.sky.sky_lux`), which comes out a few parts in ten million apart
-  // between them — the same in each process run to run, and the same with shadows off — and moves
-  // an exposed channel by one at a pixel or two. The request is not the cause: every other number
-  // the two report of the sky is the same to the last digit. On the RTX 5090 the scene's own time
-  // is byte-identical and three years on differs at one byte; on the Titan Xp the scene's own
-  // time differs too. Held to the bytes it can be held to, and the rest written down
-  // (renderer.md, "One request, two hosts"); the sum's reproducibility is an open defect of the
-  // sky's metering, not of the request.
-  const auto same_within_a_step = [&](const char* what, const std::string& view_png,
-                                      const std::string& host_png, const std::string& view_bytes,
-                                      const std::string& host_bytes) {
-    if (view_bytes == host_bytes) {
-      MESSAGE(what << ": byte for byte");
-      return;
-    }
-    image::Image a;
-    image::Image b;
-    std::string message;
-    REQUIRE(image::read_image(view_png, a, 4, &message) == io::Status::Ok);
-    REQUIRE(image::read_image(host_png, b, 4, &message) == io::Status::Ok);
-    REQUIRE(a.pixels.size() == b.pixels.size());
-    u32 differ = 0;
-    u32 largest = 0;
-    for (u32 i = 0; i < a.pixels.size(); ++i) {
-      const u32 d =
-          a.pixels[i] > b.pixels[i] ? a.pixels[i] - b.pixels[i] : b.pixels[i] - a.pixels[i];
-      if (d != 0) ++differ;
-      largest = d > largest ? d : largest;
-    }
-    MESSAGE(what << ": " << differ << " channel bytes differ, by at most " << largest);
-    CHECK(largest <= 1);
-    CHECK(differ * 1000 < a.pixels.size());
-  };
+  // for byte where the device lets it be (`same_within_a_step` says why not always).
   same_within_a_step("the scene's own time", tmp.file("view-own.png"), out_dir + "/own.png",
                      view_own, own);
   same_within_a_step("three years on", tmp.file("view-later.png"), out_dir + "/later.png",
@@ -1096,42 +1093,100 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
   const std::string prefix = tmp.file("prefix.json");
   REQUIRE(write_text(prefix, write_json(path)));
 
-  Host host;
-  REQUIRE(host.ok);
-  const JsonValue loaded = host.call("render.load", "{\"scene\":" + json_path(scene_file) +
-                                                        ",\"ddc\":" + json_path(tmp.file("ddc")) +
-                                                        ",\"settings\":{\"terrain_tiles\":true}}");
-  if (skipped(loaded)) return;
-  const JsonValue& scene = result_of(loaded);
-  CHECK(text(scene, "ground") == "tiles");
-  CHECK(member(scene, "sky").as_bool());
-  const JsonValue flown =
-      host.call("render.benchmark",
-                "{\"scene\":\"" + text(scene, "scene") +
-                    "\",\"width\":160,\"height\":96,\"camera_path\":" + json_path(prefix) +
-                    ",\"path_frames\":12,\"repeats\":1,\"warmup\":0,"
-                    "\"clock\":{\"time_of_day\":16}}");
-  const JsonValue& bench = result_of(flown);
-  const JsonValue& stats = member(bench, "stats");
-  // The tile columns: the ground drawn from the world's tiles, levels and chunks and rebuilds.
-  const JsonValue& ground = member(stats, "ground");
-  CHECK(text(ground, "layout") == "tiles");
-  CHECK(number(ground, "levels") >= 2);
-  CHECK(number(ground, "chunks") > 0);
-  CHECK(number(ground, "device_bytes") > 0);
-  // The sky columns: the hour the clock asked for, and what the sky's passes cost a frame.
-  const JsonValue& sky = member(stats, "sky");
-  CHECK(std::abs(real(sky, "hour") - 16.0) < 1.0e-6);
-  CHECK(real(member(stats, "gpu_ms"), "sky") > 0.0);
-  // And the flythrough summary carries the blocks engine-view's `--benchmark` ends with.
-  const JsonValue& summary = member(bench, "flythrough");
-  CHECK(number(summary, "frames") == 12);
-  const JsonValue& lapse = member(summary, "time_lapse");
-  REQUIRE(lapse.is_object());
-  CHECK(text(member(lapse, "rings"), "layout") == "tiles");
-  CHECK(member(lapse, "levels").size() >= 2);
-  const JsonValue& sun = member(summary, "sun");
-  REQUIRE(sun.is_object());
-  CHECK(std::abs(real(member(sun, "sky"), "hour") - 16.0) < 1.0e-6);
-  CHECK(real(member(member(summary, "gpu_ms"), "sky"), "median") > 0.0);
+  const std::string ddc = tmp.file("ddc");
+  const std::string out_dir = tmp.file("captures");
+  std::string host_png;
+  u64 host_far = 0;
+  {
+    // The host's own scope: it holds the machine's GPU lock for as long as it has a device open,
+    // and engine-view below takes it too.
+    Host host;
+    REQUIRE(host.ok);
+    // Two far levels past the rings (renderer.md, "Ground to the horizon"; ADR-0051): the 4.9 km a
+    // second level reaches, where the default's six would cost a debug build seconds more.
+    const JsonValue loaded = host.call(
+        "render.load", "{\"scene\":" + json_path(scene_file) + ",\"ddc\":" + json_path(ddc) +
+                           ",\"settings\":{\"terrain_tiles\":true,\"terrain_far_levels\":2}}");
+    if (skipped(loaded)) return;
+    const JsonValue& scene = result_of(loaded);
+    CHECK(text(scene, "ground") == "tiles");
+    CHECK(member(scene, "sky").as_bool());
+    const JsonValue flown =
+        host.call("render.benchmark",
+                  "{\"scene\":\"" + text(scene, "scene") +
+                      "\",\"width\":160,\"height\":96,\"camera_path\":" + json_path(prefix) +
+                      ",\"path_frames\":12,\"repeats\":1,\"warmup\":0,"
+                      "\"clock\":{\"time_of_day\":16}}");
+    const JsonValue& bench = result_of(flown);
+    const JsonValue& stats = member(bench, "stats");
+    // The tile columns: the ground drawn from the world's tiles — the scene's grid, the far
+    // levels and the three rings — and its chunks and rebuilds.
+    const JsonValue& ground = member(stats, "ground");
+    CHECK(text(ground, "layout") == "tiles");
+    CHECK(number(ground, "far_levels") == 2);
+    CHECK(number(ground, "levels") == 1 + 2 + 3);
+    CHECK(number(ground, "chunks") > 0);
+    CHECK(number(ground, "device_bytes") > 0);
+    // The sky columns: the hour the clock asked for, and what the sky's passes cost a frame.
+    const JsonValue& sky = member(stats, "sky");
+    CHECK(std::abs(real(sky, "hour") - 16.0) < 1.0e-6);
+    CHECK(real(member(stats, "gpu_ms"), "sky") > 0.0);
+    // And the flythrough summary carries the blocks engine-view's `--benchmark` ends with.
+    const JsonValue& summary = member(bench, "flythrough");
+    CHECK(number(summary, "frames") == 12);
+    const JsonValue& lapse = member(summary, "time_lapse");
+    REQUIRE(lapse.is_object());
+    CHECK(text(member(lapse, "rings"), "layout") == "tiles");
+    CHECK(number(member(lapse, "rings"), "far_levels") == 2);
+    CHECK(member(lapse, "levels").size() == 1 + 2 + 3);
+    const JsonValue& sun = member(summary, "sun");
+    REQUIRE(sun.is_object());
+    CHECK(std::abs(real(member(sun, "sky"), "hour") - 16.0) < 1.0e-6);
+    CHECK(real(member(member(summary, "gpu_ms"), "sky"), "median") > 0.0);
+
+    // **A request that names no far levels draws what engine-view draws**: both take the
+    // `renderer.terrain.far_levels` tunable's count. From the orbit's 2 km up the ground runs past
+    // the rings to the far levels' reach, so a count that differed would be a different picture.
+    const JsonValue plain = host.call("render.load", "{\"scene\":" + json_path(scene_file) +
+                                                         ",\"ddc\":" + json_path(ddc) +
+                                                         ",\"settings\":{\"terrain_tiles\":true}}");
+    const JsonValue shot = host.call(
+        "render.capture", "{\"scene\":\"" + text(result_of(plain), "scene") +
+                              "\",\"orbit\":{\"distance\":22},\"width\":160,\"height\":96,"
+                              "\"out_dir\":" +
+                              json_path(out_dir) + ",\"name\":\"far\"}");
+    host_far = number(member(member(result_of(shot), "stats"), "ground"), "far_levels");
+    host_png = uri_at(member(result_of(shot), "files"), "color");
+  }
+  std::string host_bytes;
+  REQUIRE(read_bytes(host_png, host_bytes));
+  const std::string view_png = tmp.file("view-far.png");
+  std::string output;
+  const i32 code =
+      run_engine_view({"--scene", scene_file, "--ddc", ddc, "--offscreen", "--frames", "1",
+                       "--width", "160", "--height", "96", "--orbit", "22", "--capture", view_png},
+                      output);
+  if (code == 3) {
+    MESSAGE("engine-view cannot render here: " << output);
+    return;
+  }
+  REQUIRE_MESSAGE(code == 0, output);
+  // The summary is the last line that is a JSON object; the log is interleaved before it.
+  JsonValue view_summary;
+  bool found = false;
+  for (usize end = output.size(); !found && end > 0;) {
+    const usize start = output.rfind('\n', end - 1);
+    const usize from = start == std::string::npos ? 0 : start + 1;
+    const std::string_view line = std::string_view(output).substr(from, end - from);
+    found = !line.empty() && line.front() == '{' && parse_json(line, view_summary).ok;
+    end = start == std::string::npos ? 0 : start;
+  }
+  REQUIRE_MESSAGE(found, output);
+  const u64 view_far = number(member(member(view_summary, "time_lapse"), "rings"), "far_levels");
+  MESSAGE("far levels with none named: the host " << host_far << ", engine-view " << view_far);
+  CHECK(host_far > 0);
+  CHECK(host_far == view_far);
+  std::string view_bytes;
+  REQUIRE(read_bytes(view_png, view_bytes));
+  same_within_a_step("the endless desert's far levels", view_png, host_png, view_bytes, host_bytes);
 }

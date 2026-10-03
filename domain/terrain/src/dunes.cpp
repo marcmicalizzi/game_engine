@@ -475,6 +475,27 @@ DuneField::DuneField(const FieldDesc& desc)
   roll_phase_ = static_cast<u32>(roll >> 48);
   for (const RidgeFeature& r : desc.ridges)
     max_ridge_lag_ = max_i64(max_ridge_lag_, (r.width * desc.ridge_lag_q16) >> 16);
+  // Each band's mean height (`band_mean_um`), what a lattice too coarse to carry it reads: the
+  // maximum of its primitives over 32 x 32 points a quarter of a cell apart, eight cells either way
+  // of the origin, at time 0. A band's primitives are a function of their cell, so any eight cells
+  // are as good as these; sixty-four of them put the mean within a few percent of the band's. The
+  // gather is filtered to the band's own cell, so it holds no band finer than this one: the
+  // mega-draa's 19 km would otherwise gather millions of waves.
+  for (u32 b = 0; b < bands_.size(); ++b) {
+    const i64 cell = cell_[b];
+    Gather g;
+    gather(-4 * cell, -4 * cell, 4 * cell, 4 * cell, 0, nullptr, cell / k_carried_cells, g);
+    i64 sum = 0;
+    constexpr i64 k_side = 32;
+    for (i64 j = 0; j < k_side; ++j) {
+      for (i64 i = 0; i < k_side; ++i) {
+        const i64 x = -4 * cell + (i * 8 * cell) / k_side + cell / 8;
+        const i64 z = -4 * cell + (j * 8 * cell) / k_side + cell / 8;
+        sum += band_value<false>(g, b, x - g.dx[b], z - g.dz[b]).height;
+      }
+    }
+    mean_um_[b] = sum / (k_side * k_side);
+  }
 }
 
 void DuneField::displacement(u32 band, i64 time_us, i64& dx, i64& dz) const noexcept {
@@ -614,17 +635,32 @@ bool DuneField::primitive(u32 band, i64 cell_i, i64 cell_j, i64 time_us,
 
 void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagField* lag,
                        Gather& out) const {
+  gather(x0, z0, x1, z1, time_us, lag, 0, out);
+}
+
+void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagField* lag,
+                       i64 filter_mm, Gather& out) const {
   out.time_us = time_us;
   out.lag = lag;
+  out.filter_mm = filter_mm > 0 ? filter_mm : 0;
   out.primitives.clear();
   out.grid.clear();
   const i64 lag_max = max_lag_mm(lag);
   const u32 bands = bands_.size();
   out.bands = bands;
   for (u32 b = 0; b < bands; ++b) {
-    const TimeShape shape = time_shape(b, time_us);
     displacement(b, time_us, out.dx[b], out.dz[b]);
     out.band_begin[b] = out.primitives.size();
+    if (!carries(b, out.filter_mm)) {
+      // Read as its mean: nothing to gather, whatever the region.
+      out.grid_i0[b] = 0;
+      out.grid_j0[b] = 0;
+      out.grid_ni[b] = 0;
+      out.grid_nj[b] = 0;
+      out.grid_begin[b] = out.grid.size();
+      continue;
+    }
+    const TimeShape shape = time_shape(b, time_us);
     const i64 margin = reach_[b] + lag_max;
     const i64 cell = cell_[b];
     const i64 i0 = floor_div(x0 - out.dx[b] - margin, cell);
@@ -1043,6 +1079,13 @@ Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) cons
   for (u32 b = 0; b < gather.bands; ++b) {
     const BandDesc& band = bands_[b];
     if (detail == Detail::coarse && !band.far) continue;
+    if (!carries(b, gather.filter_mm)) {
+      // A band the lattice cannot carry (renderer.md, "Ground to the horizon"): its mean, at the
+      // share the bands before it leave it — on a coupled band's flanks or floors as it would
+      // stand there — and flat, so it adds no slope to the bands after it and no footprint.
+      sand += (mean_um_[b] * stack_band(band, 0, inside, base_slope)) >> 16;
+      continue;
+    }
     const i64 lag = ridge_lag + (gather.lag != nullptr ? gather.lag->lag_mm(lag_slot(b), x, z) : 0);
     const i64 qx = x - gather.dx[b] + ((wx * lag) >> 14);
     const i64 qz = z - gather.dz[b] + ((wz * lag) >> 14);

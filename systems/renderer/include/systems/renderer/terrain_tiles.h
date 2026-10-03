@@ -53,7 +53,10 @@ class JobSystem;
 namespace engine::renderer {
 
 // The most world rings a tile set draws: a level each, beside the scene's grid.
-inline constexpr u32 k_max_tile_rings = k_max_terrain_levels - 1;
+inline constexpr u32 k_max_tile_rings = 7;
+// The most far levels past them (renderer.md, "Ground to the horizon"), so that the grid, the
+// rings and the far levels fit `k_max_terrain_levels`.
+inline constexpr u32 k_max_far_levels = k_max_terrain_levels - 1 - k_max_tile_rings;
 
 // A change's ring for a tile the world let go (`TerrainTileSet::change_tiles`).
 inline constexpr u8 k_tile_gone = 0xFF;
@@ -75,20 +78,55 @@ struct TerrainTilesDesc {
   f32 radius[k_max_tile_rings] = {1.5f, 8.0f, 24.0f};  // tiles, innermost first
   u32 cells[k_max_tile_rings] = {};                    // 0: `terrain_tile_cells`'s rule
   f32 hysteresis = 0.15f;
+  // **The far levels** (renderer.md, "Ground to the horizon"): the renderer's own ground past the
+  // outermost ring, out to where the air takes it — `far_levels` square rings of larger tiles round
+  // the camera, each twice the spacing and twice the reach of the one inside it, the first
+  // `far_ratio` times the outermost ring's spacing, every tile `far_cells` cells a side, their
+  // heights filtered to their spacing (`scene_gen::Lattice::filter_mm`). None by default here; a
+  // host takes the count from `RenderSettings::terrain_far_levels`.
+  u32 far_levels = 0;
+  u32 far_cells = 16;
+  u32 far_ratio = 4;
 };
 
 // A tile's cells a side in `ring`: the description's, or 64 in the inner ring halving outwards to
 // 8 (50 cm, 1 m, 2 m and then 4 m on 32 m tiles).
 u32 terrain_tile_cells(const TerrainTilesDesc& desc, u32 ring) noexcept;
 // A scene's tiles from its `world` block (its rings and each ring's `ground_cells`; the world's
-// default rings, 1.5, 8 and 24 tiles of 32 m, where it names none or has no block).
+// default rings, 1.5, 8 and 24 tiles of 32 m, where it names none or has no block), and
+// `far_levels` far levels past them (negative: `renderer.terrain.far_levels`).
 struct WorldDesc;
-TerrainTilesDesc terrain_tiles_desc(const WorldDesc& world) noexcept;
+TerrainTilesDesc terrain_tiles_desc(const WorldDesc& world, i32 far_levels = 0) noexcept;
+// The far levels a host draws when its settings say -1: `renderer.terrain.far_levels`.
+u32 terrain_far_levels_default() noexcept;
 // False, with a sentence naming what is wrong: a tile that is not a whole number of millimetres, no
 // ring or more than `k_max_tile_rings`, radii that are not positive and increasing, cells that do
 // not cut the tile into whole millimetres, a ring finer than the one inside it, or two neighbouring
-// rings whose cells do not divide (a coarser tile's lattice must be a subset of a finer one's).
+// rings whose cells do not divide (a coarser tile's lattice must be a subset of a finer one's);
+// more than `k_max_far_levels`, a far ratio under two, or far cells that do not make a far tile a
+// whole number of world tiles cut on the first far level's lattice.
 bool validate_terrain_tiles(const TerrainTilesDesc& desc, std::string* error = nullptr);
+
+// **Where the far levels stand** (renderer.md, "Ground to the horizon"), millimetres, for a
+// description: far level k (1 the finest, past the outermost ring) has its lattice `spacing`
+// apart, tiles `tile` wide, a square window `half` either side of a centre on a multiple of
+// `snap` (the next coarser level's tile), which moves when the camera is more than `margin` from
+// it. Each level's square holds the one inside it whatever the camera does (the first holds every
+// tile the world's rings can hold), so a level is its square less the square inside it — the first
+// less the world's tiles — and every level's border is on the next one's lattice.
+struct TerrainFarLevel {
+  i64 spacing = 0;
+  i64 tile = 0;
+  i64 half = 0;
+  i64 snap = 0;
+  i64 margin = 0;
+};
+// The far level `k` (1..desc.far_levels) of a valid description.
+TerrainFarLevel terrain_far_level(const TerrainTilesDesc& desc, u32 k) noexcept;
+// How far the ground reaches from a camera at the worst place its windows let it stand, metres: the
+// last far level's half-side less how far its centre can be from the camera (the outermost ring's
+// reach with no far level).
+f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept;
 
 // **The ring's first-fill rule**: every tile whose centre is within the outermost radius of (x, z)
 // on the ground, in the first ring whose radius its centre's distance is within, in tile order (x,
@@ -118,14 +156,23 @@ struct TerrainTileMesh {
   Vector<u8> drawn_from;
 };
 struct TerrainTileMeshSpec {
-  i32 x = 0;
+  i32 x = 0;  // in tiles of this level's own size (a far level's are larger than the world's)
   i32 z = 0;
   u8 level = 1;
   u32 cells = 32;
   i64 spacing_mm = 1000;
   TerrainTileNeighbours neighbours;
-  // Cells a side of each level (index = level), for the ratio a coarser edge is collapsed by.
+  // Cells a side of each level (index = level), for the ratio a coarser edge is collapsed by, when
+  // every level's tile is the same size; or each level's spacing, which says it whatever their
+  // tiles are (a far level's), and wins where it is set.
   u32 level_cells[k_max_terrain_levels] = {};
+  i64 level_spacing_mm[k_max_terrain_levels] = {};
+  // **A far tile's hole** (the first far level's, over the world's tiles a ring draws): bit
+  // `b * hole_side + a` set leaves out the square of `hole_cells` cells a side at (a, b), whose
+  // border is then locked and drawn from this level — the finer tile beside it collapses onto it.
+  u64 hole_mask = 0;
+  u32 hole_side = 0;
+  u32 hole_cells = 0;
   i64 uv_x0_mm = 0;
   i64 uv_z0_mm = 0;
   i64 uv_size_mm = 1;
@@ -171,12 +218,28 @@ class TerrainTileSet final : public TerrainLevelSet {
                        static_cast<i32>(static_cast<u32>(key & 0xFFFFFFFFu)), held_.value_at(i)};
   }
   const TerrainTilesDesc& tiles_desc() const noexcept { return tiles_; }
-  // The level a world ring is drawn at, and back.
+  // The level a world ring is drawn at, and back. Levels count coarsest first: the grid is 0, the
+  // far levels 1..`far_count()` (the coarsest first), then the rings, the outermost first.
   u32 level_of_ring(u32 ring) const noexcept {
-    return ring < tiles_.ring_count ? tiles_.ring_count - ring : 1u;
+    return ring < tiles_.ring_count ? far_ + tiles_.ring_count - ring : far_ + 1u;
   }
-  u32 ring_of_level(u32 level) const noexcept { return tiles_.ring_count - level; }
+  u32 ring_of_level(u32 level) const noexcept { return far_ + tiles_.ring_count - level; }
   u32 cells(u32 level) const noexcept { return level_cells_[level]; }
+  // **The far levels** (renderer.md, "Ground to the horizon"): how many, whether a level is one,
+  // and which of them (1 the finest) it is.
+  u32 far_count() const noexcept { return far_; }
+  bool is_far(u32 level) const noexcept { return level >= 1 && level <= far_; }
+  u32 far_index(u32 level) const noexcept { return far_ + 1 - level; }
+  // A far level's tile size, mm, and the far tiles it draws: their coordinates in its own tiles and
+  // their hole masks (the finest far level's; 0 elsewhere).
+  i64 far_tile_mm(u32 level) const noexcept { return far_tile_mm_[level]; }
+  // The far level whose square holds world tile (x, z) under `layout`, the finest that does; 0 for
+  // none.
+  u8 far_level_at(const TerrainRingLayout& layout, i32 x, i32 z) const noexcept;
+  // The spec a drawn chunk's mesh is a function of under the layout built last, derived again
+  // from what the set holds: what its key must be, and what a test builds its mesh from. False for
+  // no such chunk.
+  bool chunk_spec(u32 level, u32 index, TerrainTileMeshSpec& out) const;
 
   // Where each drawn tile's chunk is: its level, and its place in `chunks(level)`. False for a tile
   // the set does not draw (not held, or withheld: its level's window does not cover it).
@@ -205,6 +268,7 @@ class TerrainTileSet final : public TerrainLevelSet {
   Vec4 grid_hole(const TerrainRingLayout& layout) const noexcept override;
   bool shares_vertices() const noexcept override { return true; }
   const scene_gen::TileSource* source() const noexcept override { return &source_; }
+  u32 far_levels() const noexcept override { return far_; }
   TerrainRingLayout layout() const noexcept override;
   gfx::TerrainField field_window(u32 level,
                                  const TerrainRingLayout& layout) const noexcept override;
@@ -236,6 +300,20 @@ class TerrainTileSet final : public TerrainLevelSet {
  private:
   // Whether `layout`'s window of `level` covers tile (x, z), apron and all.
   bool covers(u32 level, const TerrainRingLayout& layout, i32 x, i32 z) const noexcept;
+  // With far levels, whether the finest far level's square holds world tile (x, z) a tile in, so
+  // every tile round it is drawn: a ring's tile is drawn only where both hold.
+  bool inside_far(const TerrainRingLayout& layout, i32 x, i32 z) const noexcept;
+  // A far level's tiles under `layout`: the spec and key of every tile it draws, given what the
+  // rings draw (`level_of`); and one of them, false when the level draws nothing there (outside its
+  // square, inside the next finer one's, or — the finest — wholly under the rings' tiles).
+  struct FarWant {
+    TerrainTileMeshSpec spec;
+    u64 key = 0;
+  };
+  void far_tiles(u32 level, const TerrainRingLayout& layout, const HashMap<u64, u8>& level_of,
+                 Vector<FarWant>& out) const;
+  bool far_tile(u32 level, const TerrainRingLayout& layout, const HashMap<u64, u8>& level_of, i32 x,
+                i32 z, FarWant& out) const;
   // The whole rebuild (the first fill, and a level past half its slots), and the one that costs
   // what changed (every other).
   bool rebuild(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs, u32& moved,
@@ -243,8 +321,8 @@ class TerrainTileSet final : public TerrainLevelSet {
   bool rebuild_changes(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs,
                        u32& moved, std::string* error);
   void index_chunks();
-  TerrainTileMeshSpec spec_of(i32 x, i32 z, u8 level,
-                              const HashMap<u64, u8>& level_of) const noexcept;
+  TerrainTileMeshSpec spec_of(i32 x, i32 z, u8 level, const HashMap<u64, u8>& level_of,
+                              const TerrainRingLayout& layout) const noexcept;
   bool build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 time_s, TerrainChunk& chunk,
                   Vector<f32>& h, TerrainTileMesh& mesh, std::atomic<i64>& heights_ns,
                   std::atomic<i64>& mesh_ns) const;
@@ -262,8 +340,17 @@ class TerrainTileSet final : public TerrainLevelSet {
   i64 uv_size_mm_ = 1;
   TerrainLattice lattice_[k_max_terrain_levels];
   u32 level_cells_[k_max_terrain_levels] = {};
-  i64 half_mm_[k_max_terrain_levels] = {};    // a level's window: half its side
-  i64 margin_mm_[k_max_terrain_levels] = {};  // how far the camera goes before it moves
+  i64 half_mm_[k_max_terrain_levels] = {};      // a level's window: half its side
+  i64 margin_mm_[k_max_terrain_levels] = {};    // how far the camera goes before it moves
+  u32 far_ = 0;                                 // far levels, 1..far_
+  i64 far_tile_mm_[k_max_terrain_levels] = {};  // a far level's tile
+  i64 far_snap_mm_[k_max_terrain_levels] = {};  // where its window's centre may stand
+  // Each far level's drawn tiles, by their coordinates in its tiles, to their place in its list;
+  // and the worker's scratch for laying them out.
+  HashMap<u64, u32> far_at_[k_max_terrain_levels];
+  Vector<FarWant> far_want_;
+  HashMap<u64, u8> far_seen_;
+  Vector<u64> far_keys_;
   Capacity capacity_[k_max_terrain_levels];
   Vector<TerrainChunk> chunks_[k_max_terrain_levels];
   Vector<TerrainChunk> previous_[k_max_terrain_levels];

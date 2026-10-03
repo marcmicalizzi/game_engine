@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <core/hash/hash.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
@@ -82,10 +83,10 @@ f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, 
 }
 
 f64 terrain_next_time(const scene_gen::TileSource& source, f64 from_s, f64 spacing_m, f64 fraction,
-                      f64 min_step, f64 max_step) noexcept {
+                      f64 min_step, f64 max_step, i64 filter_mm) noexcept {
   return next_time(
-      source.moves(), [&](f64 a, f64 b) { return source.travel_m(a, b); }, from_s, spacing_m,
-      fraction, min_step, max_step);
+      source.moves(), [&](f64 a, f64 b) { return source.travel_m(a, b, filter_mm); }, from_s,
+      spacing_m, fraction, min_step, max_step);
 }
 
 f64 TerrainBlend::blend() const noexcept {
@@ -174,14 +175,18 @@ TerrainSurfaceResult terrain_surface_frame(std::span<TerrainBlend> blends, f64 t
                                            std::span<TerrainNextField> next, std::span<f64> moved_m,
                                            std::span<u32> installed) noexcept {
   TerrainSurfaceResult result;
+  // Every level a set can have (terrain_time.h); one past that is a caller's error, and its
+  // outputs are written as nothing taken and nothing moved rather than left as they were.
+  ENGINE_ASSERT(blends.size() <= k_max_surface_levels, "more levels than the surface can share");
+  for (usize k = 0; k < moved_m.size(); ++k)
+    moved_m[k] = 0.0;
+  for (usize k = 0; k < installed.size(); ++k)
+    installed[k] = 0;
   const u32 n = std::min<u32>(static_cast<u32>(blends.size()), k_max_surface_levels);
   if (n == 0) return result;
   f64 budget[k_max_surface_levels];
-  for (u32 k = 0; k < n; ++k) {
+  for (u32 k = 0; k < n; ++k)
     budget[k] = std::max(budgets_m[k], 0.0);
-    moved_m[k] = 0.0;
-    installed[k] = 0;
-  }
   f64 s = blends[0].surface_s;
   // A pass per b the surface reaches: each pass either reaches the game's time, stops on a level's
   // bound or on a late field, or stops on a level's b, which the next pass replaces.
@@ -434,16 +439,17 @@ void evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs,
   const u32 blocks = terrain_window_blocks(window.nx, window.nz);
   const std::span<f32> heights(out.data(), out.size());
   const i64 spacing_mm = lattice.spacing_mm;
+  const i64 filter_mm = lattice.filter_mm;
   if (jobs == nullptr) {
-    (void)source.heights(time_s, spacing_mm, window.i0, window.j0, window.nx, window.nz, 0, blocks,
-                         heights);
+    (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx, window.nz,
+                          0, blocks, heights);
     return;
   }
   jobs->parallel_for(jobs::Pool::Performance, (blocks + k_blocks_per_job - 1) / k_blocks_per_job, 1,
                      [&](u32 begin, u32 end) {
-                       (void)source.heights(time_s, spacing_mm, window.i0, window.j0, window.nx,
-                                            window.nz, begin * k_blocks_per_job,
-                                            std::min(blocks, end * k_blocks_per_job), heights);
+                       (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0,
+                                             window.nx, window.nz, begin * k_blocks_per_job,
+                                             std::min(blocks, end * k_blocks_per_job), heights);
                      });
 }
 
@@ -471,7 +477,7 @@ void TerrainMotion::evaluate_level(const Level& level, f64 time_s, const gfx::Te
 f64 TerrainMotion::next_time_of(const Level& level, f64 from_s) const noexcept {
   if (level.source != nullptr) {
     return terrain_next_time(*level.source, from_s, level.spacing_m, config_.fraction,
-                             config_.min_step_s, config_.max_step_s);
+                             config_.min_step_s, config_.max_step_s, level.lattice.filter_mm);
   }
   return terrain_next_time(*sampler_, from_s, level.spacing_m, config_.fraction, config_.min_step_s,
                            config_.max_step_s);
@@ -1652,8 +1658,8 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   for (u32 guard = 0; guard < 256; ++guard) {
     TerrainBlend blends[k_max_terrain_levels];
     TerrainNextField next[k_max_terrain_levels];
-    f64 step[k_max_terrain_levels];
-    u32 installed[k_max_terrain_levels];
+    f64 step[k_max_terrain_levels] = {};
+    u32 installed[k_max_terrain_levels] = {};
     for (u32 d = 0; d < m; ++d) {
       const u32 k = drawn[d];
       const Level& level = levels_[k];

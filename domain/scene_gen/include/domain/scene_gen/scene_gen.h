@@ -195,11 +195,17 @@ struct Lattice {
   f32 extent = 0.0f;
   u32 size = 0;
   i64 spacing_mm = 0;
+  // **The width a point stands for**, mm (renderer.md, "Ground to the horizon"): 0, the ground at
+  // the point; otherwise the ground as a lattice this coarse can carry it — what of it varies over
+  // much more than this width at the point, and what varies faster than that as its mean, so a
+  // coarse lattice neither aliases nor shimmers as the ground moves under it. A provider with
+  // nothing finer than its lattices can carry answers the point either way.
+  i64 filter_mm = 0;
   f32 x(i32 i) const noexcept;
   f32 z(i32 j) const noexcept;
 };
 Lattice scene_lattice(f32 extent, u32 size) noexcept;
-Lattice ring_lattice(i64 spacing_mm) noexcept;
+Lattice ring_lattice(i64 spacing_mm, i64 filter_mm = 0) noexcept;
 
 // A grid is cut into 64 x 64 blocks of lattice points, and a provider evaluates a range of them per
 // call, so a caller hands the blocks to as many jobs as it likes and gets the same bytes: blocks
@@ -384,8 +390,10 @@ struct GroundOps {
                    u32 nz, u32 block_begin, u32 block_end,
                    std::span<f32> heights) noexcept = nullptr;
   // How far the ground's fastest feature travels between two game times, metres: what a moving
-  // ground's cadence is timed by. Null: 0.
-  f64 (*travel_m)(const void* state, f64 from_s, f64 to_s) noexcept = nullptr;
+  // ground's cadence is timed by — of the features a lattice of `filter_mm` carries (`Lattice::
+  // filter_mm`; 0: every feature), since the mean a coarser one stands in for the rest with does
+  // not move. Null: 0.
+  f64 (*travel_m)(const void* state, f64 from_s, f64 to_s, i64 filter_mm) noexcept = nullptr;
   // The wind the ground's surface detail lies across at game time `time_s`: the direction the sand
   // moves over (x, z), a unit vector, continuous in time — what a renderer turns the ripples it
   // draws by (docs/subsystems/renderer.md, "The sand close up"). False, and nothing written, for a
@@ -436,8 +444,8 @@ class GroundProvider {
     return ops_->evaluate != nullptr &&
            ops_->evaluate(state_, time_s, lattice, i0, j0, nx, nz, block_begin, block_end, heights);
   }
-  f64 travel_m(f64 from_s, f64 to_s) const noexcept {
-    return ops_->travel_m != nullptr ? ops_->travel_m(state_, from_s, to_s) : 0.0;
+  f64 travel_m(f64 from_s, f64 to_s, i64 filter_mm = 0) const noexcept {
+    return ops_->travel_m != nullptr ? ops_->travel_m(state_, from_s, to_s, filter_mm) : 0.0;
   }
   // The wind the surface detail lies across at `time_s` (`GroundOps::wind`); false for a ground
   // that says none.

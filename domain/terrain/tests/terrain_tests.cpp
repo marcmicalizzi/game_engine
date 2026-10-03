@@ -1040,3 +1040,187 @@ TEST_CASE("terrain: a season of storms moves the erg further, the small forms mo
   // Nothing about the storm-free field moved: its goldens stand (the golden test holds them).
   CHECK(DuneField(erg_desc()).hash() == calm.hash());
 }
+
+// ---- a lattice filtered to its spacing (renderer.md, "Ground to the horizon") ------------------
+
+namespace {
+
+// The erg's heights, metres, at the points of a lattice `s` mm apart, `n` a side from (x0, z0), at
+// `time_us`: each point's own (`filter` 0) or what a lattice of points standing for `filter` each
+// carries.
+std::vector<f64> lattice_heights(const DuneField& field, i64 x0, i64 z0, i64 s, u32 n, i64 time_us,
+                                 i64 filter) {
+  Gather g;
+  const i64 last = static_cast<i64>(n - 1) * s;
+  field.gather(x0, z0, x0 + last, z0 + last, time_us, nullptr, filter, g);
+  std::vector<f64> out(static_cast<usize>(n) * n);
+  for (u32 j = 0; j < n; ++j) {
+    for (u32 i = 0; i < n; ++i) {
+      out[static_cast<usize>(j) * n + i] =
+          static_cast<f64>(field.height_um(g, x0 + i * s, z0 + j * s, Detail::dunes)) * 1e-6;
+    }
+  }
+  return out;
+}
+
+// The box filter of the field round each of those points: the mean of its own heights over the
+// square `s` wide centred on the point, sampled every two metres — five samples a wave.
+std::vector<f64> box_filtered(const DuneField& field, i64 x0, i64 z0, i64 s, u32 n, i64 time_us) {
+  constexpr i64 k_step = 2'000;
+  const i64 k = s / k_step;
+  Gather g;
+  const i64 lo_x = x0 - s / 2;
+  const i64 lo_z = z0 - s / 2;
+  field.gather(lo_x, lo_z, lo_x + static_cast<i64>(n) * s, lo_z + static_cast<i64>(n) * s, time_us,
+               nullptr, g);
+  std::vector<f64> out(static_cast<usize>(n) * n);
+  for (u32 j = 0; j < n; ++j) {
+    for (u32 i = 0; i < n; ++i) {
+      f64 sum = 0.0;
+      for (i64 b = 0; b < k; ++b) {
+        for (i64 a = 0; a < k; ++a) {
+          const i64 x = x0 + i * s - s / 2 + k_step / 2 + a * k_step;
+          const i64 z = z0 + j * s - s / 2 + k_step / 2 + b * k_step;
+          sum += static_cast<f64>(field.height_um(g, x, z, Detail::dunes)) * 1e-6;
+        }
+      }
+      out[static_cast<usize>(j) * n + i] = sum / static_cast<f64>(k * k);
+    }
+  }
+  return out;
+}
+
+f64 rms_between(const std::vector<f64>& a, const std::vector<f64>& b) {
+  f64 sum = 0.0;
+  for (usize k = 0; k < a.size(); ++k)
+    sum += (a[k] - b[k]) * (a[k] - b[k]);
+  return std::sqrt(sum / static_cast<f64>(a.size()));
+}
+
+f64 most_between(const std::vector<f64>& a, const std::vector<f64>& b) {
+  f64 most = 0.0;
+  for (usize k = 0; k < a.size(); ++k)
+    most = std::max(most, std::abs(a[k] - b[k]));
+  return most;
+}
+
+}  // namespace
+
+TEST_CASE("terrain: a lattice filtered to its spacing carries the bands it can and their means") {
+  const DuneField field(erg_desc());
+  // The bands each far spacing carries: a cell of at least two of its points, the sampling
+  // theorem's (four dropped bands a box of the spacing keeps four fifths of, and measured worse).
+  CHECK(field.carries(4, 0));      // every band at a point
+  CHECK(field.carries(4, 5'000));  // the waves' 10 m at 5 m
+  CHECK_FALSE(field.carries(4, 5'100));
+  CHECK(field.carries(2, 32'000));  // the crests' 110 m at 32 m, not at 64
+  CHECK_FALSE(field.carries(2, 64'000));
+  CHECK(field.carries(1, 128'000));  // the draa's 360 m at 128 m, not at 256
+  CHECK_FALSE(field.carries(1, 256'000));
+  CHECK(field.carries(0, 1'024'000));  // the mega-draa's 2.4 km to 1.2 km
+  // A band's mean is inside its range: above nothing, below its tallest.
+  for (u32 b = 0; b < field.band_count(); ++b) {
+    CHECK(field.band_mean_um(b) > 0);
+    CHECK(field.band_mean_um(b) < field.band(b).height_hi_cm * 10'000);
+  }
+  // At 0 a filtered gather is the gather: the same heights to the bit.
+  const i64 t = 3 * k_year + 17 * k_day;
+  {
+    Gather a;
+    Gather b;
+    field.gather(0, 0, 50'000, 50'000, t, nullptr, a);
+    field.gather(0, 0, 50'000, 50'000, t, nullptr, 0, b);
+    CHECK(a.primitives.size() == b.primitives.size());
+    CHECK(field.height_um(a, 12'345, 23'456, Detail::dunes) ==
+          field.height_um(b, 12'345, 23'456, Detail::dunes));
+    // And a far level's gather holds none of the bands it does not carry.
+    Gather c;
+    field.gather(0, 0, 50'000, 50'000, t, nullptr, 128'000, c);
+    CHECK(c.band_begin[2] == c.band_begin[field.band_count()]);
+  }
+
+  // **Against the box filter.** Over ten points a side at each far spacing, the lattice's own
+  // answer and its points' own heights against the field box-filtered over each point's cell: as
+  // close as its points' own (within 5%: a band it keeps is still a point sample of itself, and a
+  // crest's brink is a kink the box rounds off, which is most of either error) and within the
+  // stated bound. Measured 0.23, 0.45, 0.84 and 1.61 m RMS at 16, 32, 64 and 128 m against the
+  // points' 0.23, 0.45, 0.82 and 1.68 (2026-10-03). The filter is for what moves, below.
+  struct Row {
+    i64 spacing;
+    f64 rms_bound;
+  };
+  for (const Row row : {Row{16'000, 0.3}, Row{32'000, 0.6}, Row{64'000, 1.1}, Row{128'000, 2.2}}) {
+    CAPTURE(row.spacing);
+    constexpr u32 k_n = 10;
+    const i64 x0 = 1'230'000;
+    const i64 z0 = -770'000;
+    const std::vector<f64> box = box_filtered(field, x0, z0, row.spacing, k_n, t);
+    const std::vector<f64> point = lattice_heights(field, x0, z0, row.spacing, k_n, t, 0);
+    const std::vector<f64> filtered =
+        lattice_heights(field, x0, z0, row.spacing, k_n, t, row.spacing);
+    const f64 rms_point = rms_between(point, box);
+    const f64 rms_filtered = rms_between(filtered, box);
+    f64 bias_f = 0.0;
+    f64 bias_p = 0.0;
+    for (usize k = 0; k < box.size(); ++k) {
+      bias_f += (filtered[k] - box[k]) / static_cast<f64>(box.size());
+      bias_p += (point[k] - box[k]) / static_cast<f64>(box.size());
+    }
+    MESSAGE("spacing " << row.spacing / 1000 << " m: rms against the box " << rms_filtered
+                       << " m filtered, " << rms_point << " m point samples; largest "
+                       << most_between(filtered, box) << " and " << most_between(point, box)
+                       << "; mean " << bias_f << " and " << bias_p);
+    CHECK(rms_filtered < 1.05 * rms_point);
+    CHECK(rms_filtered < row.rms_bound);
+  }
+
+  // **No shimmer under a metre's move.** From t to the time the waves — the fastest band — have
+  // travelled a metre: a far level's lattice moves by what its kept bands do (they travel a sixth
+  // of a metre and less, and their shapes turn with the wind's windows) and its dropped bands'
+  // means not at all, where its points' own heights move by every band crossing them. Measured
+  // (2026-10-03): at most 1.3, 4.7, 1.7 and 1.5 cm at 16, 32, 64 and 128 m, against 8, 24, 27 and
+  // 28 cm.
+  const u32 wave = 4;
+  i64 wx0 = 0;
+  i64 wz0 = 0;
+  field.displacement(wave, t, wx0, wz0);
+  i64 lo = t;
+  i64 hi = t + 60 * k_day;
+  for (u32 k = 0; k < 60; ++k) {
+    const i64 mid = lo + (hi - lo) / 2;
+    i64 dx = 0;
+    i64 dz = 0;
+    field.displacement(wave, mid, dx, dz);
+    const f64 moved = std::hypot(static_cast<f64>(dx - wx0), static_cast<f64>(dz - wz0));
+    if (moved < 1000.0) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  const i64 t2 = hi;
+  for (const i64 s : {16'000, 32'000, 64'000, 128'000}) {
+    CAPTURE(s);
+    f64 carried = 0.0;  // the farthest any band the lattice carries went, metres
+    for (u32 b = 0; b < field.band_count(); ++b) {
+      if (!field.carries(b, s)) continue;
+      i64 ax = 0, az = 0, bx = 0, bz = 0;
+      field.displacement(b, t, ax, az);
+      field.displacement(b, t2, bx, bz);
+      carried = std::max(carried,
+                         std::hypot(static_cast<f64>(bx - ax), static_cast<f64>(bz - az)) / 1000.0);
+    }
+    constexpr u32 k_n = 24;
+    const f64 filtered_moved =
+        most_between(lattice_heights(field, -2'000'000, 900'000, s, k_n, t, s),
+                     lattice_heights(field, -2'000'000, 900'000, s, k_n, t2, s));
+    const f64 point_moved =
+        most_between(lattice_heights(field, -2'000'000, 900'000, s, k_n, t, 0),
+                     lattice_heights(field, -2'000'000, 900'000, s, k_n, t2, 0));
+    MESSAGE("spacing " << s / 1000 << " m, the waves a metre on: the lattice moved "
+                       << filtered_moved << " m at most (its bands " << carried
+                       << " m), its points " << point_moved);
+    CHECK(filtered_moved < 0.06);
+    CHECK(filtered_moved < 0.25 * point_moved);
+  }
+}

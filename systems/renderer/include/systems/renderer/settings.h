@@ -173,6 +173,13 @@ struct RenderSettings {
   // `--terrain-tiles`), with the world's default rings where the scene has none. It takes the place
   // of the rings.
   bool terrain_tiles = false;
+  // The far levels past the world tiles' outermost ring (terrain_tiles.h, renderer.md "Ground to
+  // the horizon"): coarser ground out to where the air takes it, each level twice the spacing and
+  // the reach of the one inside it. -1 takes `renderer.terrain.far_levels` (6: 78 km on the endless
+  // desert, past the planet's horizon line from up to 1.9 km), 0 draws none — the ground ends at
+  // the outermost ring, as it did. A host reads
+  // it when it builds its tile set (engine-view's `--terrain-far`).
+  i32 terrain_far_levels = -1;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is

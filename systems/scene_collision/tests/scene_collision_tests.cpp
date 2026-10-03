@@ -63,7 +63,7 @@ bool ground_evaluate(const void* s, f64 time, const scene_gen::Lattice& lattice,
                                       lattice.z(j0 + static_cast<i32>(j)), time);
   return true;
 }
-f64 ground_travel(const void* s, f64 from, f64 to) noexcept {
+f64 ground_travel(const void* s, f64 from, f64 to, i64) noexcept {
   return std::fabs(static_cast<f64>(static_cast<const TestGround*>(s)->speed) * (to - from));
 }
 constexpr scene_gen::GroundOps k_still_ops{.destroy = &ground_destroy, .height = &ground_height};
@@ -261,7 +261,7 @@ namespace {
 // A tile source of the test's own that is not the provider: a steeper plane, as a tile set built
 // ahead of time would be something other than the scene's generator (renderer.md, "The ground from
 // the world's tiles").
-bool other_heights(const void*, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz, u32, u32,
+bool other_heights(const void*, f64, i64 spacing_mm, i64, i32 i0, i32 j0, u32 nx, u32 nz, u32, u32,
                    std::span<f32> out) noexcept {
   for (u32 j = 0; j < nz; ++j) {
     for (u32 i = 0; i < nx; ++i) {

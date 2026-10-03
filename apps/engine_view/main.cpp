@@ -304,6 +304,9 @@ constexpr const char* k_usage =
     "                   handed over as the ring moves, so the desert never ends. A scene's world\n"
     "                   block asks for it with \"ground\": true; it replaces --terrain-rings, and\n"
     "                   the walker's collision stands on the same tiles\n"
+    "  --terrain-far <n>  far levels of ground past the world tiles' outermost ring, each twice\n"
+    "                   the spacing and reach of the one inside it, out to where the air takes\n"
+    "                   the ground (0 to 8; default renderer.terrain.far_levels, 6)\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -2837,6 +2840,15 @@ int main(int argc, char** argv) {
       options.settings.terrain_rings = true;
     } else if (a == "--terrain-tiles") {
       options.settings.terrain_tiles = true;
+    } else if (a == "--terrain-far") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n) || n > renderer::k_max_far_levels) {
+        std::fprintf(stderr, "engine-view: --terrain-far expects 0 to %u far levels\n",
+                     renderer::k_max_far_levels);
+        return k_exit_usage;
+      }
+      options.settings.terrain_far_levels = static_cast<i32>(n);
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;

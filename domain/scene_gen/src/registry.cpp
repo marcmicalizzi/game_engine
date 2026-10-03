@@ -28,10 +28,11 @@ Lattice scene_lattice(f32 extent, u32 size) noexcept {
   return l;
 }
 
-Lattice ring_lattice(i64 spacing_mm) noexcept {
+Lattice ring_lattice(i64 spacing_mm, i64 filter_mm) noexcept {
   Lattice l;
   l.spacing_mm = spacing_mm > 0 ? spacing_mm : 1;
   l.spacing = static_cast<f64>(l.spacing_mm) / 1000.0;
+  l.filter_mm = filter_mm > 0 ? filter_mm : 0;
   return l;
 }
 
@@ -171,23 +172,28 @@ bool TileSource::heights(f64 time_s, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32
   return heights(time_s, spacing_mm, i0, j0, nx, nz, 0, window_blocks(nx, nz), out);
 }
 
+bool TileSource::filtered(f64 time_s, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32 nz,
+                          std::span<f32> out) const noexcept {
+  return filtered(time_s, spacing_mm, filter_mm, i0, j0, nx, nz, 0, window_blocks(nx, nz), out);
+}
+
 namespace {
 
 // A moving ground: its re-evaluation at the time asked for, on the world's lattice.
-bool moving_heights(const void* state, f64 time_s, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
-                    u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
+bool moving_heights(const void* state, f64 time_s, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0,
+                    u32 nx, u32 nz, u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
   const auto& ground = *static_cast<const GroundProvider*>(state);
-  return ground.evaluate(time_s, ring_lattice(spacing_mm), i0, j0, nx, nz, block_begin, block_end,
-                         out);
+  return ground.evaluate(time_s, ring_lattice(spacing_mm, filter_mm), i0, j0, nx, nz, block_begin,
+                         block_end, out);
 }
 
 // A still ground: its grid at its own time, whatever the time, a block at a time — the grid is the
 // ground's `height` at each point, so a block's sub-window is the same heights as the whole.
-bool still_heights(const void* state, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
-                   u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
+bool still_heights(const void* state, f64, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx,
+                   u32 nz, u32 block_begin, u32 block_end, std::span<f32> out) noexcept {
   const auto& ground = *static_cast<const GroundProvider*>(state);
   if (out.size() != static_cast<usize>(nx) * nz) return false;
-  const Lattice lattice = ring_lattice(spacing_mm);
+  const Lattice lattice = ring_lattice(spacing_mm, filter_mm);
   const u32 per_side = (nx + k_height_block - 1) / k_height_block;
   f32 block[k_height_block * k_height_block];
   for (u32 b = block_begin; b < block_end; ++b) {
@@ -205,8 +211,8 @@ bool still_heights(const void* state, f64, i64 spacing_mm, i32 i0, i32 j0, u32 n
   return true;
 }
 
-f64 ground_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
-  return static_cast<const GroundProvider*>(state)->travel_m(from_s, to_s);
+f64 ground_travel_m(const void* state, f64 from_s, f64 to_s, i64 filter_mm) noexcept {
+  return static_cast<const GroundProvider*>(state)->travel_m(from_s, to_s, filter_mm);
 }
 
 constexpr TileSourceOps k_moving_tiles{.heights = &moving_heights, .travel_m = &ground_travel_m};

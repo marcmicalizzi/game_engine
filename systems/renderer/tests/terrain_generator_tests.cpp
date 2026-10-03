@@ -707,3 +707,41 @@ TEST_CASE("renderer: the terrain's levels share one surface time, each within it
   CHECK(moved == doctest::Approx(one.moved_m));
   CHECK(many.capped == one.capped);
 }
+
+TEST_CASE("renderer: every level a set can have shares the surface, the far levels' too") {
+  // The endless desert with its five far levels is nine drawn levels; the bound is sixteen. Until
+  // 2026-10-03 the surface's frame took eight and left the rest as they were — their blends
+  // unmoved and their `installed` unwritten — and engine-view's finest ring, the ninth, took a
+  // field it never had on the uninitialized word and crashed a frame later. Every level here
+  // stands at its b with its next field ready: each must take it, and all move on together.
+  constexpr u32 n = k_max_terrain_levels;
+  TerrainBlend blends[n];
+  TerrainNextField next[n];
+  f64 budgets[n];
+  f64 moved[n];
+  u32 installed[n];
+  for (u32 k = 0; k < n; ++k) {
+    blends[k].time_a = 10.0;
+    blends[k].time_b = 20.0;
+    blends[k].has_b = true;
+    blends[k].delta_m = 1.0;
+    blends[k].surface_s = 20.0;
+    next[k] = TerrainNextField{true, 30.0, 1.0};
+    budgets[k] = 10.0;
+    moved[k] = -1.0;
+    installed[k] = 0xCCCCCCCCu;  // what a debug build's stack holds
+  }
+  const TerrainSurfaceResult result = terrain_surface_frame(
+      std::span<TerrainBlend>(blends, n), 25.0, std::span<const f64>(budgets, n),
+      std::span<TerrainNextField>(next, n), std::span<f64>(moved, n), std::span<u32>(installed, n));
+  CHECK(result.surface_s == 25.0);
+  for (u32 k = 0; k < n; ++k) {
+    CAPTURE(k);
+    CHECK(installed[k] == 1u);
+    CHECK_FALSE(next[k].ready);
+    CHECK(blends[k].time_a == 20.0);
+    CHECK(blends[k].time_b == 30.0);
+    CHECK(blends[k].surface_s == 25.0);
+    CHECK(moved[k] == doctest::Approx(0.5));
+  }
+}

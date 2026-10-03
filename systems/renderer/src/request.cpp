@@ -171,8 +171,11 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
   if (resolved.terrain_tiles) {
     ground_ = std::make_unique<TerrainSampler>(data.terrain);
     tiles_ = std::make_unique<TerrainTileSet>();
-    if (!tiles_->build(data.terrain, terrain_tiles_desc(data.world), ground_->provider().tiles(),
-                       first.position.x, first.position.z, jobs_.get(), error)) {
+    // The far levels past the world's rings are the renderer's own (ADR-0051): the request's
+    // `terrain_far_levels` lays them out, -1 the tunable's count.
+    if (!tiles_->build(
+            data.terrain, terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels),
+            ground_->provider().tiles(), first.position.x, first.position.z, jobs_.get(), error)) {
       stage_ = "terrain-tiles";
       return false;
     }
@@ -341,6 +344,8 @@ JsonValue time_lapse_summary(const TerrainMotion& lapse, const Stats& stats,
     const TerrainMotion::RingStats& r = lapse.ring_stats();
     JsonValue rings = JsonValue::object();
     rings.set("layout", ground_layout(lapse));
+    // The far levels past the outermost ring (renderer.md, "Ground to the horizon"): 0 for rings.
+    rings.set("far_levels", lapse.level_set() != nullptr ? lapse.level_set()->far_levels() : 0u);
     rings.set("chunks", r.chunks_resident);
     rings.set("most_chunks", r.most_chunks);
     rings.set("rebuilds", r.rebuilds);
@@ -498,6 +503,10 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
     error = "exposure_ev and exposure_ev100 are stops within -30..30";
     return false;
   }
+  if (in.terrain_far_levels.has_value() && *in.terrain_far_levels > k_max_far_levels) {
+    error = "terrain_far_levels must be within 0.." + std::to_string(k_max_far_levels);
+    return false;
+  }
   for (const std::string& entry : in.morph) {
     if (entry.find('=') == std::string::npos) {
       error = "a morph entry is <name|index>=<weight>; got '" + entry + "'";
@@ -531,6 +540,9 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   s.time_rate = in.time_rate;
   s.terrain_rings = in.terrain_rings;
   s.terrain_tiles = in.terrain_tiles;
+  // Null is the tunable's count, as engine-view without `--terrain-far` (-1 in the settings).
+  s.terrain_far_levels =
+      in.terrain_far_levels.has_value() ? static_cast<i32>(*in.terrain_far_levels) : -1;
   s.side_yaw = radians(in.side_yaw_deg);
   s.panini_d = in.panini_d;
   s.peripheral_lod = in.peripheral_lod;

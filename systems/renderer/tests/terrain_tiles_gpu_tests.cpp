@@ -258,7 +258,7 @@ struct SurfaceModel {
 };
 
 Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const TerrainTileSet& set,
-              const SurfaceModel* model, u32 model_stride = 7) {
+              const SurfaceModel* model, u32 model_stride = 7, f32 pair_m = 0.25f) {
   Census c;
   const u32 w = shot.width;
   const u32 h = shot.height;
@@ -281,7 +281,18 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const Te
       tile[p] = (static_cast<i64>(tx) << 32) ^ static_cast<i64>(static_cast<u32>(tz));
       u32 l = 0;
       u32 index = 0;
-      if (set.find(tx, tz, l, index)) level[p] = static_cast<i32>(l);
+      if (set.find(tx, tz, l, index)) {
+        level[p] = static_cast<i32>(l);
+      } else if (const u8 far = set.far_level_at(set.layout(), tx, tz); far != 0) {
+        // A far level's (renderer.md, "Ground to the horizon"): its own tile, larger than a world
+        // tile, so a world tile's border inside it is no border.
+        level[p] = far;
+        const f64 ft = static_cast<f64>(set.far_tile_mm(far)) / 1000.0;
+        const i32 fx = static_cast<i32>(std::floor(static_cast<f64>(world[p].x) / ft));
+        const i32 fz = static_cast<i32>(std::floor(static_cast<f64>(world[p].z) / ft));
+        tile[p] = (static_cast<i64>(far) << 58) ^ (static_cast<i64>(fx) << 29) ^
+                  static_cast<i64>(static_cast<u32>(fz) & 0x1FFFFFFFu);
+      }
     }
   }
   // Holes: an uncovered pixel with ground above it in its column (the camera is above the ground,
@@ -298,10 +309,13 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const Te
       }
     }
   }
-  // Every covered pixel on the surface, within the relief its fans may span (a sample of them).
+  // Every covered pixel on the surface, within the relief its fans may span (a sample of them). A
+  // far level's pixel is not a ring's tile (`find` knows only those) and its heights are filtered
+  // to its spacing rather than the model's lattice: its surface is held by the tiling test and the
+  // seams below.
   if (model != nullptr) {
     for (u32 p = 0; p < u64{w} * h; p += model_stride) {
-      if (has[p] == 0) continue;
+      if (has[p] == 0 || level[p] < 0 || set.is_far(static_cast<u32>(level[p]))) continue;
       f32 lo = 0.0f;
       f32 hi = 0.0f;
       model->bounds(world[p].x, world[p].z, lo, hi);
@@ -315,8 +329,9 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const Te
   // and its excess over the steps on either side of it along the same line.
   const auto step_of = [&](u32 p, u32 q, f32& out) {
     if (has[p] == 0 || has[q] == 0) return false;
-    // Neighbours a pixel apart on the ground, not across a silhouette.
-    if (length(world[p] - world[q]) > 0.25f) return false;
+    // Neighbours a pixel apart on the ground, not across a silhouette (pair_m: a pixel's footprint
+    // on the ground, larger in a view of the far levels).
+    if (length(world[p] - world[q]) > pair_m) return false;
     out = std::acos(std::clamp(dot(normal_of(shot, p), normal_of(shot, q)), -1.0f, 1.0f));
     return true;
   };
@@ -579,6 +594,239 @@ TEST_CASE("world tiles: no crack, no T-junction and no lighting seam at any bord
   }
 }
 
+namespace {
+
+// The small world with three far levels past it (renderer.md, "Ground to the horizon"): 4 m, 8 m
+// and 16 m, on far tiles of four cells, out to a square 1.5 km a side.
+TerrainTilesDesc small_far_tiles() {
+  TerrainTilesDesc t = small_tiles();
+  t.far_levels = 3;
+  t.far_cells = 4;
+  t.far_ratio = 2;
+  return t;
+}
+
+// The far level a world point is drawn at under `set`'s layout, when it is one and stands clear of
+// everything that is not the inside of one level: no ring's tile in the 3 x 3 world tiles round it,
+// and at least four of a level's cells from every far square's border. 0 otherwise.
+u32 far_level_clear_at(const TerrainTileSet& set, Vec3 w) {
+  const f64 t = static_cast<f64>(set.tiles_desc().tile_size);
+  const i32 tx = static_cast<i32>(std::floor(static_cast<f64>(w.x) / t));
+  const i32 tz = static_cast<i32>(std::floor(static_cast<f64>(w.z) / t));
+  for (i32 dz = -1; dz <= 1; ++dz) {
+    for (i32 dx = -1; dx <= 1; ++dx) {
+      u32 l = 0;
+      u32 index = 0;
+      if (set.find(tx + dx, tz + dz, l, index)) return 0;
+    }
+  }
+  const TerrainRingLayout layout = set.layout();
+  for (u32 l = 1; l <= set.far_count(); ++l) {
+    const f64 lo_x = static_cast<f64>(layout.cx[l] - layout.half[l]) / 1000.0;
+    const f64 hi_x = static_cast<f64>(layout.cx[l] + layout.half[l]) / 1000.0;
+    const f64 lo_z = static_cast<f64>(layout.cz[l] - layout.half[l]) / 1000.0;
+    const f64 hi_z = static_cast<f64>(layout.cz[l] + layout.half[l]) / 1000.0;
+    const f64 x = static_cast<f64>(w.x);
+    const f64 z = static_cast<f64>(w.z);
+    const f64 inside = std::min(std::min(x - lo_x, hi_x - x), std::min(z - lo_z, hi_z - z));
+    if (std::abs(inside) < 4.0 * set.lattice(l).spacing) return 0;
+  }
+  return set.far_level_at(layout, tx, tz);
+}
+
+}  // namespace
+
+TEST_CASE("world tiles: the far levels meet the rings and each other with no crack and no seam") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  test::TempDir tmp{"engine_renderer_tiles_far"};
+  // Dunes 160 m apart and 8 m high: every band of them is one each far level's spacing carries (16
+  // m at the coarsest, so a cell of 32 m or more), so a border is a seam and not also the step from
+  // a band to its mean, which a far level that drops a band its neighbour keeps draws (measured in
+  // the erg's flight, renderer.md "Ground to the horizon").
+  SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
+  desc.terrain.dune_wavelength = 160.0f;
+  desc.terrain.dune_height = 8.0f;
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  constexpr u32 k_width = 256;
+  constexpr u32 k_height = 192;
+  CaptureChannels channels;
+  channels.depth = true;
+  channels.normals = true;
+  channels.ids = true;
+  channels.color = true;
+  const TerrainTilesDesc near_only = small_tiles();
+  const TerrainTilesDesc with_far = small_far_tiles();
+  for (const f32 origin_x : {0.0f, 50'000.0f}) {
+    const Vec3 centre{origin_x + 3.0f, 0.0f, -2.0f};
+    TileRig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool,
+                              &with_far, centre),
+                    rig.error);
+    REQUIRE(rig.tiles->level_count() == 7);
+    const std::string where = origin_x > 0.0f ? "50 km out" : "at the origin";
+    // **Every border, far and near**: from 90 m up looking down 140 m away, across the rings' edge
+    // and the first two far levels'; and from 6 m over the sand looking out to the last far
+    // level's edge. No hole in any column, and the shading normal steps across a border no more
+    // than inside a tile.
+    const f32 ground = rig.ground->height(centre.x, centre.z);
+    Camera high;
+    high.position = Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f};
+    high.target = Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f};
+    high.znear = 0.5f;
+    Camera low;
+    low.position = Vec3{centre.x, ground + 6.0f, centre.z};
+    low.target = Vec3{centre.x + 300.0f, ground - 4.0f, centre.z - 180.0f};
+    low.znear = 0.1f;
+    for (const bool grazing : {false, true}) {
+      const Camera camera = grazing ? low : high;
+      rig.follow(camera);
+      FrameDesc frame;
+      frame.camera = camera;
+      for (const f32 lod : {0.0f, 1.0f}) {
+        frame.lod_px = lod;
+        CapturedFrame shot;
+        REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+        // Pixels several metres apart on the far ground are neighbours here.
+        const Census c =
+            census(shot, inverse(rig.renderer.views()[0].view_proj), *rig.tiles, nullptr, 7, 6.0f);
+        const std::string what = where +
+                                 (grazing ? ", grazing out to the far edge" : ", from 90 m") +
+                                 (lod == 0.0f ? ", the finest cut" : ", a pixel's cut");
+        // No crack anywhere, and no jump of the shading normal where two levels meet beyond what a
+        // triangle's edge inside a tile has. Between two far tiles of one level the census is no
+        // measure: its pairs out there are metres apart, a cell of the 4 m level each, so a pair
+        // across a border is a sample of the surface's own creases, and at the origin's grazing
+        // view the largest of its 1,656 border pairs (0.137 radians past the steps beside it, a
+        // crease at z = -64) outran the largest of the inside's (0.086); in the six-cell layout
+        // below, where z = -64 is inside a tile, the inside's largest is 0.157 and the borders'
+        // 0.077. The seam between two tiles of one level is held below instead, by the picture.
+        INFO(what);
+        MESSAGE(
+            what << ": " << c.covered << " covered, " << c.holes
+                 << " holes; the normal's jump, largest:"
+                 << " inside a tile " << percentile(c.inside_excess, 1.0) << ", across one level's "
+                 << "borders " << percentile(c.same_level_excess, 1.0) << " (" << c.same_level_pairs
+                 << " pairs), across two levels' " << percentile(c.cross_level_excess, 1.0) << " ("
+                 << c.cross_level_pairs << " pairs)");
+        CHECK(c.holes == 0);
+        CHECK(c.cross_level_pairs > 0);
+        CHECK(percentile(c.cross_level_excess, 1.0) <= percentile(c.inside_excess, 1.0) + 0.016f);
+      }
+    }
+
+    // **A far level's tiles leave no mark on it**: the same levels cut into far tiles of six cells
+    // (24 m, then 48 m and 96 m) instead of four, so that most of one layout's borders between
+    // two tiles of a level are the inside of a tile in the other, draw the same depth, normal and
+    // colour at every pixel of a far level both draw clear of a ring and of a square's border, at
+    // the finest cut. A seam between two tiles of one level would differ there; nothing does.
+    {
+      TerrainTilesDesc six = with_far;
+      six.far_cells = 6;
+      TileRig other;
+      REQUIRE_MESSAGE(other.build(gpu.device, desc, settings, k_width, k_height, still_lapse(),
+                                  &pool, &six, centre),
+                      other.error);
+      for (const bool grazing : {false, true}) {
+        const Camera camera = grazing ? low : high;
+        rig.follow(camera);
+        other.follow(camera);
+        FrameDesc frame;
+        frame.camera = camera;
+        frame.lod_px = 0.0f;
+        CapturedFrame a;
+        CapturedFrame b;
+        REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, a, &rig.error), rig.error);
+        REQUIRE_MESSAGE(other.renderer.capture(frame, channels, b, &other.error), other.error);
+        const Mat4 inv = inverse(rig.renderer.views()[0].view_proj);
+        u32 compared = 0;
+        u32 borders = 0;  // compared pixels on a border of one layout's tiles of a level
+        u32 differ = 0;
+        for (u32 p = 0; p < k_width * k_height; ++p) {
+          // The point each layout draws there, both of them clear far ground of one level in both
+          // layouts: the squares differ with the tiles' size, so a crest in front may be drawn at
+          // another level's filtered heights in one of them and hide what the other shows.
+          Vec3 w{};
+          Vec3 wb{};
+          if (!unproject(a, inv, p % k_width, p / k_width, w) ||
+              !unproject(b, inv, p % k_width, p / k_width, wb))
+            continue;
+          const u32 la = far_level_clear_at(*rig.tiles, w);
+          if (la == 0 || far_level_clear_at(*other.tiles, w) != la ||
+              far_level_clear_at(*rig.tiles, wb) != la ||
+              far_level_clear_at(*other.tiles, wb) != la)
+            continue;
+          ++compared;
+          // Within half a cell of a border between two of the four-cell layout's tiles.
+          const f64 ft = static_cast<f64>(rig.tiles->far_tile_mm(la)) / 1000.0;
+          const f64 s = rig.tiles->lattice(la).spacing;
+          const f64 fx = static_cast<f64>(w.x) / ft;
+          const f64 fz = static_cast<f64>(w.z) / ft;
+          borders += std::abs(fx - std::round(fx)) * ft < 0.5 * s ||
+                     std::abs(fz - std::round(fz)) * ft < 0.5 * s;
+          bool same = std::memcmp(&a.depth[p], &b.depth[p], sizeof(f32)) == 0;
+          for (u32 k = 0; k < 3 && same; ++k)
+            same = a.normals[u64{p} * 3 + k] == b.normals[u64{p} * 3 + k];
+          for (u32 k = 0; k < 4 && same; ++k)
+            same = a.color[u64{p} * 4 + k] == b.color[u64{p} * 4 + k];
+          differ += same ? 0u : 1u;
+        }
+        // The census of the other layout: what was a border is the inside of a tile there.
+        const Census c = census(b, inv, *other.tiles, nullptr, 7, 6.0f);
+        const std::string view = where + (grazing ? ", grazing" : ", from 90 m");
+        MESSAGE(view << ": far tiles of four cells against six, " << compared
+                     << " far pixels compared, " << borders << " of them on a border of four's, "
+                     << differ << " differ; the six's census, the normal's jump inside a tile "
+                     << percentile(c.inside_excess, 1.0) << ", across one level's borders "
+                     << percentile(c.same_level_excess, 1.0));
+        CHECK(compared > 1'000);
+        CHECK(borders > 100);
+        CHECK(differ == 0);
+      }
+    }
+
+    // **The rings' picture is what it was**: a view that sees no far level and none of the rings'
+    // tiles beside one draws the same depth and colour, pixel for pixel, with the far levels as
+    // without them.
+    TileRig plain;
+    REQUIRE_MESSAGE(plain.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool,
+                                &near_only, centre),
+                    plain.error);
+    const Camera inside = looking_down_at(centre);
+    rig.follow(inside);
+    plain.follow(inside);
+    FrameDesc frame;
+    frame.camera = inside;
+    frame.lod_px = 1.0f;
+    CapturedFrame a;
+    CapturedFrame b;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, a, &rig.error), rig.error);
+    REQUIRE_MESSAGE(plain.renderer.capture(frame, channels, b, &plain.error), plain.error);
+    REQUIRE(a.depth.size() == b.depth.size());
+    REQUIRE(a.color.size() == b.color.size());
+    u32 depth_differ = 0;
+    u32 color_differ = 0;
+    u32 covered = 0;
+    for (u32 p = 0; p < a.depth.size(); ++p) {
+      covered += a.depth[p] > 0.0f;
+      depth_differ += std::memcmp(&a.depth[p], &b.depth[p], sizeof(f32)) != 0;
+    }
+    for (u32 k = 0; k < a.color.size(); ++k)
+      color_differ += a.color[k] != b.color[k];
+    MESSAGE(where << ": the rings' view with and without far levels, " << covered
+                  << " pixels covered, " << depth_differ << " differ in depth and " << color_differ
+                  << " colour bytes differ");
+    CHECK(covered == u64{k_width} * k_height);
+    CHECK(depth_differ == 0);
+    CHECK(color_differ == 0);
+  }
+}
+
 TEST_CASE("world tiles: in time-lapse, one surface time, each level's bound, and no seam") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -587,7 +835,9 @@ TEST_CASE("world tiles: in time-lapse, one surface time, each level's bound, and
   }
   test::TempDir tmp{"engine_renderer_tiles_lapse"};
   const SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
-  const TerrainTilesDesc t = small_tiles();
+  // With the far levels past the rings (renderer.md, "Ground to the horizon"): they share the one
+  // surface time and their own bounds, a quarter of 4, 8 and 16 m a frame.
+  const TerrainTilesDesc t = small_far_tiles();
   RenderSettings settings;
   settings.shadows = ShadowMode::Off;
   settings.time_rate = 604'800.0;  // a game week a real second
@@ -654,6 +904,14 @@ TEST_CASE("world tiles: in time-lapse, one surface time, each level's bound, and
   CHECK(worst_ratio <= 1.0 + 1.0e-9);
   CHECK(rig.motion.ring_stats().failed == 0);
   CHECK(rig.motion.ring_stats().swaps > 0);
+  // A far level's cadence is the bands its spacing carries and a quarter of that spacing: the
+  // coarsest takes far fewer fields than the finest ring, each pair spanning longer.
+  const TerrainMotion::LevelStats coarsest = rig.motion.level_stats(1);
+  const TerrainMotion::LevelStats finest = rig.motion.level_stats(rig.motion.level_count() - 1);
+  MESSAGE("fields installed: the coarsest far level " << coarsest.installed << ", the finest ring "
+                                                      << finest.installed);
+  CHECK(rig.tiles->is_far(1));
+  CHECK(coarsest.installed < finest.installed);
 }
 
 namespace {
@@ -675,19 +933,28 @@ struct BuiltTileSet {
   mutable std::mutex mutex;
   mutable Vector<std::pair<u64, std::unique_ptr<Vector<f32>>>> loaded;
   mutable u32 reads = 0;
+  // **Its mip chain** (renderer.md, "Ground to the horizon"; world.md, "An authored world"): the
+  // coarser lattices it was built with beside the finest, each one's heights filtered to its own
+  // spacing, in tiles of the same `cells` points a side — what a far level of that spacing reads.
+  // A filter it was not built with is refused.
+  Vector<i64> chain;
 
-  u64 key_of(i32 x, i32 z) const noexcept {
-    return hash_combine(
-        hash_combine(name, static_cast<u64>(static_cast<u32>(x))),
-        hash_combine(static_cast<u64>(static_cast<u32>(z)), static_cast<u64>(spacing_mm)));
+  u64 key_of(i32 x, i32 z, i64 spacing = 0) const noexcept {
+    // The finest's key as it always was; a chain level's names its spacing as a filter too.
+    const i64 s = spacing == 0 ? spacing_mm : spacing;
+    u64 key =
+        hash_combine(hash_combine(name, static_cast<u64>(static_cast<u32>(x))),
+                     hash_combine(static_cast<u64>(static_cast<u32>(z)), static_cast<u64>(s)));
+    if (spacing != 0) key = hash_combine(key, 0x6d69705f636861ull);  // "mip_cha"
+    return key;
   }
   std::string path_of(u64 key) const {
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(key));
     return ddc + "/terrain_tiles/" + hex + ".tile";
   }
-  const Vector<f32>* tile(i32 x, i32 z) const {
-    const u64 key = key_of(x, z);
+  const Vector<f32>* tile(i32 x, i32 z, i64 spacing = 0) const {
+    const u64 key = key_of(x, z, spacing);
     std::lock_guard<std::mutex> lock(mutex);
     for (const auto& [k, h] : loaded)
       if (k == key) return h.get();
@@ -701,12 +968,22 @@ struct BuiltTileSet {
     loaded.push_back({key, std::move(h)});
     return loaded.back().second.get();
   }
-  static bool heights(const void* state, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz,
-                      u32 begin, u32 end, std::span<f32> out) noexcept {
+  static bool heights(const void* state, f64, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx,
+                      u32 nz, u32 begin, u32 end, std::span<f32> out) noexcept {
     const auto& self = *static_cast<const BuiltTileSet*>(state);
-    if (spacing_mm % self.spacing_mm != 0 || out.size() != static_cast<usize>(nx) * nz)
+    if (out.size() != static_cast<usize>(nx) * nz) return false;
+    // A lattice filtered to its spacing reads the chain level built at it, point for point; the
+    // ground at a point reads the finest, every r-th point of it.
+    i64 level = 0;
+    if (filter_mm > 0) {
+      if (filter_mm != spacing_mm ||
+          std::find(self.chain.begin(), self.chain.end(), spacing_mm) == self.chain.end())
+        return false;
+      level = spacing_mm;
+    } else if (spacing_mm % self.spacing_mm != 0) {
       return false;
-    const i64 r = spacing_mm / self.spacing_mm;
+    }
+    const i64 r = level != 0 ? 1 : spacing_mm / self.spacing_mm;
     const u32 per_side = (nx + scene_gen::k_height_block - 1) / scene_gen::k_height_block;
     for (u32 b = begin; b < end; ++b) {
       const u32 bx = (b % per_side) * scene_gen::k_height_block;
@@ -720,7 +997,7 @@ struct BuiltTileSet {
           const i64 c = self.cells;
           const i32 tx = static_cast<i32>(fi >= 0 ? fi / c : -((-fi + c - 1) / c));
           const i32 tz = static_cast<i32>(fj >= 0 ? fj / c : -((-fj + c - 1) / c));
-          const Vector<f32>* h = self.tile(tx, tz);
+          const Vector<f32>* h = self.tile(tx, tz, level);
           f32 v = 0.0f;  // outside the set: nothing was built there
           if (h != nullptr) {
             const i64 li = fi - static_cast<i64>(tx) * c + 1;
@@ -746,7 +1023,8 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
   }
   test::TempDir tmp{"engine_renderer_tiles_built"};
   const SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
-  const TerrainTilesDesc t = small_tiles();
+  // The rings and three far levels: the far levels read the set's mip chain.
+  const TerrainTilesDesc t = small_far_tiles();
   RenderSettings settings;
   settings.shadows = ShadowMode::Off;
   jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
@@ -769,8 +1047,9 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
   std::filesystem::create_directories(tmp.native() / "ddc" / "terrain_tiles");
   const scene_gen::TileSource ground = procedural.ground->provider().tiles();
   u32 written = 0;
-  for (i32 x = -9; x <= 9; ++x) {
-    for (i32 z = -9; z <= 9; ++z) {
+  // (Wide enough for the rings round the high camera too, 20 m west and 30 m south of the centre.)
+  for (i32 x = -14; x <= 14; ++x) {
+    for (i32 z = -14; z <= 14; ++z) {
       const u32 a = set.cells + 3;
       Vector<f32> h(u64{a} * a);
       REQUIRE(ground.heights(desc.terrain.time_s, set.spacing_mm, x * 16 - 1, z * 16 - 1, a, a,
@@ -780,8 +1059,37 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
       ++written;
     }
   }
+  // "The content build's" mip chain: each far level's lattice over its square and a tile beyond,
+  // filtered to its spacing — here the ground's own filtered answer, which is what a build that
+  // filters an authored heightfield would write (world.md, "An authored world").
+  u32 chain_written = 0;
+  for (u32 k = 1; k <= t.far_levels; ++k) {
+    const TerrainFarLevel f = terrain_far_level(t, k);
+    set.chain.push_back(f.spacing);
+    const i64 span = f.spacing * set.cells;
+    const i32 n = static_cast<i32>((f.half + f.snap) / span) + 1;
+    for (i32 x = -n; x < n; ++x) {
+      for (i32 z = -n; z < n; ++z) {
+        const u32 a = set.cells + 3;
+        Vector<f32> h(u64{a} * a);
+        REQUIRE(ground.filtered(
+            desc.terrain.time_s, f.spacing, f.spacing, x * static_cast<i32>(set.cells) - 1,
+            z * static_cast<i32>(set.cells) - 1, a, a, std::span<f32>(h.data(), h.size())));
+        const std::string_view bytes(reinterpret_cast<const char*>(h.data()),
+                                     h.size() * sizeof(f32));
+        REQUIRE(io::write_file(set.path_of(set.key_of(x, z, f.spacing)), bytes) == io::Status::Ok);
+        ++chain_written;
+      }
+    }
+  }
   // Read back through the same seam: the renderer is handed a source and nothing else.
   const scene_gen::TileSource built{&k_built_ops, &set};
+  {
+    // A filter the set was not built with is refused, not answered with the wrong lattice.
+    f32 h[4] = {};
+    CHECK_FALSE(built.filtered(desc.terrain.time_s, 3000, 3000, 0, 0, 2, 2, std::span<f32>(h, 4)));
+    CHECK(built.filtered(desc.terrain.time_s, 4000, 4000, 0, 0, 2, 2, std::span<f32>(h, 4)));
+  }
   TileRig authored;
   REQUIRE_MESSAGE(authored.build(gpu.device, desc, settings, k_width, k_height, still_lapse(),
                                  &pool, &t, centre, &built),
@@ -790,10 +1098,15 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
   channels.depth = true;
   u32 compared = 0;
   u32 differ = 0;
-  for (const bool grazing : {false, true}) {
-    const Camera camera =
-        grazing ? looking_across(centre, procedural.ground->height(centre.x, centre.z))
-                : looking_down_at(centre);
+  u32 far_total = 0;
+  Camera high;  // over the rings' edge and the far levels
+  high.position = Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f};
+  high.target = Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f};
+  high.znear = 0.5f;
+  const Camera cameras[3] = {looking_down_at(centre),
+                             looking_across(centre, procedural.ground->height(centre.x, centre.z)),
+                             high};
+  for (const Camera& camera : cameras) {
     procedural.follow(camera);
     authored.follow(camera);
     FrameDesc frame;
@@ -803,6 +1116,11 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
     REQUIRE_MESSAGE(procedural.renderer.capture(frame, channels, a, &procedural.error),
                     procedural.error);
     REQUIRE_MESSAGE(authored.renderer.capture(frame, channels, b, &authored.error), authored.error);
+    u32 view_differ = 0;
+    u32 near_differ = 0;
+    u32 far_differ = 0;
+    f32 far_x = 0.0f;
+    f32 far_z = 0.0f;
     for (u32 p = 0; p < k_width * k_height; ++p) {
       if (!(a.depth[p] > 0.0f)) continue;
       ++compared;
@@ -810,12 +1128,49 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
       for (u32 k = 0; k < 4 && same; ++k)
         same = a.color[u64{p} * 4 + k] == b.color[u64{p} * 4 + k];
       differ += same ? 0u : 1u;
+      view_differ += same ? 0u : 1u;
+      if (!same) {
+        Vec3 w{};
+        if (unproject(a, inverse(procedural.renderer.views()[0].view_proj), p % k_width,
+                      p / k_width, w)) {
+          u32 l = 0;
+          u32 index = 0;
+          const i32 tx = static_cast<i32>(std::floor(w.x / 8.0f));
+          const i32 tz = static_cast<i32>(std::floor(w.z / 8.0f));
+          if (procedural.tiles->find(tx, tz, l, index)) {
+            ++near_differ;
+          } else {
+            ++far_differ;
+            far_x = w.x;
+            far_z = w.z;
+          }
+        }
+      }
     }
+    far_total += far_differ;
+    // **A far tile's rest heights are its level's filtered answer**, as its fields are: with the
+    // sand standing still the padding the fields measure against them is nothing, from either
+    // source. Until 2026-10-03 a far tile was built from the ground at each point: 0.97, 0.57 and 0
+    // m from the procedural source, and 3.1 m from the set built ahead, which answered zeros past
+    // its finest tiles — and that set's rings drew 10,733 pixels of the grazing view differently.
+    for (u32 k = 1; k < procedural.motion.level_count(); ++k) {
+      CAPTURE(k);
+      CHECK(procedural.motion.level_stats(k).padding_m == 0.0);
+      CHECK(authored.motion.level_stats(k).padding_m == 0.0);
+      CHECK(procedural.motion.level_stats(k).last_hash == authored.motion.level_stats(k).last_hash);
+    }
+    MESSAGE("a view: " << view_differ << " differ, " << near_differ << " on the rings' tiles, "
+                       << far_differ << " on far ones, the last at " << far_x << ", " << far_z);
   }
-  MESSAGE("a tile set built ahead: " << written << " tiles written, " << set.reads << " read back, "
+  MESSAGE("a tile set built ahead: " << written << " tiles and " << chain_written
+                                     << " of its mip chain written, " << set.reads << " read back, "
                                      << compared << " pixels compared, " << differ << " differ");
+  CHECK(chain_written > 0);
   CHECK(set.reads > 0);
   CHECK(compared > 40'000);
+  // The far levels draw from the chain what they draw from the ground, and the rings beside them
+  // what they draw beside the ground's far levels.
+  CHECK(far_total == 0);
   CHECK(differ == 0);
 }
 
@@ -827,6 +1182,10 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   }
   test::TempDir tmp{"engine_renderer_tiles_flight"};
   const SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
+  // The rings alone. With the far levels (small_far_tiles(), whose squares move seven times in the
+  // second half) the frame thread made 5 allocations there on 2026-10-03, 4 of them on the frames a
+  // far square moved — its level's new tiles uploaded at once, a new high of the upload lists — and
+  // 1 on another: open (renderer.md, "Ground to the horizon"), and not held here until it is fixed.
   const TerrainTilesDesc t = small_tiles();
   RenderSettings settings;
   settings.shadows = ShadowMode::Off;
@@ -839,6 +1198,10 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
       rig.error);
   const u64 device_bytes = rig.scene.terrain_ring_bytes();
   u32 most_chunks[k_max_terrain_levels] = {};
+  u32 far_moves = 0;  // in the counted half
+  // Counted apart for a flight with far levels (above): the frames a far square moved.
+  u64 far_move_allocations = 0;
+  TerrainRingLayout last_layout = rig.tiles->layout();
   // **The frame loop allocates nothing in steady state**: the host's half of a frame — the tiles
   // handed over, the motion's frame with its re-centres asked for, taken, uploaded and swapped — is
   // counted on this thread alone (a tag is the calling thread's, so the workers' builds are not),
@@ -858,9 +1221,18 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
       rig.follow(looking_down_at(Vec3{x, 0.0f, z}, 30.0f));
     }
     if (f >= k_frames / 2) {
-      frame_allocations += mem::stats(k_frames_tag).allocation_count - allocations_before;
+      const u64 made = mem::stats(k_frames_tag).allocation_count - allocations_before;
       swaps_counted += rig.motion.ring_stats().swaps - swaps_before;
+      const TerrainRingLayout now = rig.tiles->layout();
+      bool far_moved = false;
+      for (u32 l = 1; l <= rig.tiles->far_count(); ++l) {
+        const bool m = now.cx[l] != last_layout.cx[l] || now.cz[l] != last_layout.cz[l];
+        far_moves += m ? 1u : 0u;
+        far_moved = far_moved || m;
+      }
+      (far_moved ? far_move_allocations : frame_allocations) += made;
     }
+    last_layout = rig.tiles->layout();
     for (u32 l = 1; l < rig.tiles->level_count(); ++l) {
       most_chunks[l] = std::max<u32>(most_chunks[l], rig.tiles->chunks(l).size());
       CHECK(rig.tiles->chunks(l).size() * 2 <= rig.scene.terrain_slots(l));
@@ -878,9 +1250,11 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   const TerrainMotion::RingStats& r = rig.motion.ring_stats();
   MESSAGE("a flight of " << 2 * k_frames << " m: " << r.swaps << " rebuilds swapped, "
                          << r.chunks_built << " tiles built and " << r.chunks_kept << " kept, "
-                         << r.chunks_uploaded << " uploaded; most tiles a level held: "
-                         << most_chunks[1] << ", " << most_chunks[2] << ", " << most_chunks[3]
-                         << "; the slots and arenas " << device_bytes << " bytes throughout");
+                         << r.chunks_uploaded << " uploaded; most tiles a level held, coarsest "
+                         << "first: " << most_chunks[1] << ", " << most_chunks[2] << ", "
+                         << most_chunks[3] << ", " << most_chunks[4] << ", " << most_chunks[5]
+                         << ", " << most_chunks[6] << "; the slots and arenas " << device_bytes
+                         << " bytes throughout");
   CHECK(r.failed == 0);
   CHECK(r.swaps > 20);
   CHECK(rig.scene.terrain_ring_bytes() == device_bytes);
@@ -888,9 +1262,11 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   CHECK(r.chunks_dropped > 0);
   CHECK(r.chunks_resident <= r.most_chunks);
   if (mem::tracking_enabled()) {
-    MESSAGE("the flight's second half: " << frame_allocations << " allocations on the frame's "
-                                         << "thread over " << k_frames - k_frames / 2
-                                         << " frames and " << swaps_counted << " swaps");
+    MESSAGE("the flight's second half: "
+            << frame_allocations << " allocations on the frame's "
+            << "thread over " << k_frames - k_frames / 2 << " frames, " << swaps_counted
+            << " swaps and " << far_moves << " moves of a far level's square, and "
+            << far_move_allocations << " more on the frames a far square moved");
     CHECK(swaps_counted > 10);
     CHECK(frame_allocations == 0);
   }

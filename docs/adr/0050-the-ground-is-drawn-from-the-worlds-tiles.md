@@ -63,5 +63,5 @@ The questions that decide the shape:
 - A scene of tiles wants streamed placements beside it: the tail learns the pool (or tiles leave it), and this ADR's refusal goes.
 - A tile set built ahead brings maps: the tile source grows maps and the slots a material each.
 - The overlay (footprints) is drawn: the tile source's heights take the world's ground consumer's overlays, or the pool reads a deformation map (05 §5.13).
-- The far tier: a level coarser than a tile is wide (a tile of several of the world's tiles) needs the world's ring to hold tiles at more than one size.
+- The far tier: a level coarser than a tile is wide (a tile of several of the world's tiles) needs the world's ring to hold tiles at more than one size. *Answered otherwise on 2026-10-03 by [ADR-0051](0051-the-far-ground-is-the-renderers.md): the far levels are the renderer's own, laid out past the world's rings with the same mechanism, and the world's ring keeps one tile size.*
 - The rings are dropped: when a scene of tiles draws everything a scene with rings does and none of the committed scenes asks for rings.

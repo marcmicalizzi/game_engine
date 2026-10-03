@@ -39,10 +39,12 @@ class JobSystem;
 
 namespace engine::renderer {
 
-// The most levels a terrain has: the scene's grid and up to seven more (a ring set has at most
+// The most levels a terrain has: the scene's grid and up to fifteen more (a ring set has at most
 // three rings, `terrain::k_max_rings` counting the scene's grid; a tile set one level per world
-// ring).
-inline constexpr u32 k_max_terrain_levels = 8;
+// ring and its far levels past them, renderer.md "Ground to the horizon"). A vertex names the level
+// it is drawn from in sixteenths of a turn (`gfx::terrain_level_normal`), which is the bound; the
+// level masks are 32 bits.
+inline constexpr u32 k_max_terrain_levels = 16;
 
 // One chunk of one level, as the renderer keeps it: where it is, what decides its mesh, its slot
 // in the GPU scene once it has one, its DAG until it is uploaded, and its **rest heights** — the
@@ -94,6 +96,8 @@ class TerrainLevelSet {
   virtual bool shares_vertices() const noexcept { return false; }
   // The source a level's heights come from, or null for the scene's own ground (the rings).
   virtual const scene_gen::TileSource* source() const noexcept { return nullptr; }
+  // The far levels drawn past the outermost ring (ADR-0051): the tiles' own, none for the rings.
+  virtual u32 far_levels() const noexcept { return 0; }
 
   // The layout as built last. What the frame draws may be an older one, which its holder keeps.
   virtual TerrainRingLayout layout() const noexcept = 0;

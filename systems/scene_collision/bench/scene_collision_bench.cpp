@@ -38,7 +38,7 @@ bool rising_evaluate(const void*, f64 time, const scene_gen::Lattice& lattice, i
           rising_at(lattice.x(i0 + static_cast<i32>(i)), lattice.z(j0 + static_cast<i32>(j)), time);
   return true;
 }
-f64 rising_travel(const void*, f64 from, f64 to) noexcept { return 0.01 * (to - from); }
+f64 rising_travel(const void*, f64 from, f64 to, i64) noexcept { return 0.01 * (to - from); }
 constexpr scene_gen::GroundOps k_rising{.destroy = &still_destroy,
                                         .height = &rising_height,
                                         .evaluate = &rising_evaluate,

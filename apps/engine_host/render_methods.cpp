@@ -146,6 +146,7 @@ void fill_ground(const RenderHost::Scene& scene, protocol::RenderStats& out) {
   const renderer::TerrainMotion& motion = scene.ground->motion();
   protocol::RenderGroundStats ground;
   ground.layout = renderer::ground_layout(motion);
+  ground.far_levels = motion.level_set() != nullptr ? motion.level_set()->far_levels() : 0u;
   ground.rate = motion.config().rate;
   ground.game_time_s = motion.game_time_s();
   ground.ground_time_s = scene.gpu->ground_time_s();

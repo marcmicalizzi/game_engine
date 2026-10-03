@@ -1,0 +1,116 @@
+# Ground to the horizon: far levels past the world's tiles (2026-10-03)
+
+- **Question.** From a few hundred metres up the endless desert ended at the world's outermost ring, 2 km out, in a straight edge against the sky model's planet. How far must the ground reach at 2 m, 100 m, 350 m and 2,000 m over the erg's sky, how many coarser levels does that take, what do heights filtered to a level's spacing buy over point samples, and what do the levels cost? ([renderer](../subsystems/renderer.md#ground-to-the-horizon), [ADR-0051](../adr/0051-the-far-ground-is-the-renderers.md), proposed.)
+- **Date:** 2026-10-03. **Machine:** the owner's desktop (RTX 5090, 36 logical CPUs). The arithmetic, the filter and the tests on `msvc-debug`; the captures and the cost on `msvc-release`, each run alone under the GPU lock with `--wait-quiet 60`. **Machine state** (the harness's `machine_state`): other agents' CPU at 1.7–10.8% at the start and end of each measured run, the GPU idle (0–1%) at each start, 9.3–10.0 GB of device memory held by other processes, and the owner's session **locked** throughout; the two runs with six far levels did not reach the quiet threshold in 60 s and ran anyway (`quiet: false`), the others did.
+- **Status:** the arithmetic, the filter, the tests, the captures from 2 m to 2,000 m at 10:00 and 18:00, the hand-over at the far edge (one more far level: six by default) and the offscreen cost are here. **The windowed lag is not**: the owner's session was locked, and a locked session presents at 4 Hz (below, "In a window").
+
+## How far the ground has to reach
+
+The erg's sky is turbidity 1.6: aerosol of vertical depth 0.065 at 550 nm over a 1.2 km scale height (`sky::earth_atmosphere`) and Rayleigh's 0.0136 /km over 8 km. Along a ray from height *h* down to the ground *d* away (a flat path), the green transmittance is `exp(-d (β_R f(h, 8) + β_M f(h, 1.2)))` with `f(h, H) = (H / h)(1 - e^{-h/H})`:
+
+| eye height | extinction along the way, /km | air down to 10% | the drawn table's 32 km leaves | true horizon √(2Rh) | where flat ground meets the planet's horizon line √(Rh/2) |
+|---|---|---|---|---|---|
+| 2 m | 0.0678 | 34 km | 11% | 5.0 km | 2.5 km |
+| 100 m | 0.0655 | 35 km | 12% | 35.7 km | 17.9 km |
+| 350 m | 0.0603 | 38 km | 15% | 66.8 km | 33.4 km |
+| 2,000 m | 0.0384 | 60 km | 29% | 160 km | 79.8 km |
+
+- **The reach the brief asks for** — the nearer of the haze and the horizon — is about 34 km at 2 m (the horizon of the eye is 5 km, but the mega-draa's 80–200 m crests stand above it to 45 km, so the haze decides), 35 km at 100 m, 38 km at 350 m and 60 km at 2,000 m.
+- **The drawn air ends at 32 km** (`k_sky_aerial_distance_km`): ground past it keeps the 32 km transmittance in the third column, so from high up nothing past 32 km is taken any further into the haze, however far the ground goes. That is `sky.slang`'s, which this change does not touch.
+- **Levels.** With the defaults (the first far level at 16 m, four times the outermost ring's 4 m; 16 cells a far tile), far level *k* is 16·2^(k−1) m apart in a square 7.2·2^(k−1) km across, and the ground reaches, from a camera at the worst place the windows let it stand (`terrain_far_reach_m`: three quarters of the last half-side less half its snap): 2.0–2.4 km with no far level (the rings' radius and its hysteresis), then 2.4, 4.9, 9.7, 19.5 and **38.9 km with five** (57 km to the last square's sides from its centre, 81 to its corners), 77.8 km with six. Five reach the haze from up to 350 m; 2,000 m wants six, and its last 28 km would be drawn at the 32 km table's transmittance. The default was five (`renderer.terrain.far_levels`) and is six since the captures below ("The hand-over at the far edge"): what decides the edge from high up is not the haze but whether the ground reaches the planet's horizon line.
+
+| far level | spacing | tile | square | slots (two a tile) | field |
+|---|---|---|---|---|---|
+| 5 (finest, level 5) | 16 m | 256 m | 7.2 km | 1,568 | 451² |
+| 4 | 32 m | 512 m | 14.3 km | 1,176 | 451² |
+| 3 | 64 m | 1,024 m | 28.7 km | 1,176 | 451² |
+| 2 | 128 m | 2,048 m | 57.3 km | 1,176 | 451² |
+| 1 (coarsest) | 256 m | 4,096 m | 114.7 km | 1,176 | 451² |
+
+6,272 slots against the rings' 41,000; a far slot holds at least sixteen clusters (a 16-cell tile's 512 triangles unsimplified), so about 100,000 pairs.
+
+## Heights filtered to the spacing
+
+`domain/terrain`'s `terrain_tests.cpp`, on the erg's five bands three years and 17 days in, ten points a side at each spacing against the field box-filtered over each point's cell (sampled every 2 m), and 24 points a side from the time the waves have moved a metre:
+
+| spacing | bands kept | RMS against the box, filtered / points | largest | moved, waves a metre on: filtered / points |
+|---|---|---|---|---|
+| 16 m | mega, draa, crest, barchan | 0.23 / 0.23 m | 1.03 m | 1.3 / 8.4 cm |
+| 32 m | the same | 0.45 / 0.45 m | 1.76 m | 4.7 / 23.5 cm |
+| 64 m | mega, draa, barchan | 0.84 / 0.82 m | 3.25 m | 1.7 / 27.3 cm |
+| 128 m | mega, draa | 1.61 / 1.68 m | 7.57 m | 1.5 / 28.5 cm |
+
+- **Against the box the filter is no closer than point samples, and was not meant to be**: what a point sample gets wrong against the box is mostly the bands it keeps — a crest's brink is a kink the box rounds off — and the largest error is the same pixel either way. What it changes is what moves: a far lattice's points move by the slow bands they keep (the dropped bands' means do not move at all), a fifth to a twentieth of what the ground at those points does as the waves cross them. That is the shimmer, and it is gone.
+- **Four points a cell was tried first** and dropped: it dropped bands a box of the spacing keeps four fifths of (the draa at 128 m, the barchans at 64 m), and the filtered lattice was then *further* from the box than its points (2.09 against 1.68 m at 128 m). Two points a cell — the sampling theorem's — is the rule (`DuneField::carries`).
+- **What a far level costs the cadence**: its fastest kept band. At 256 m only the mega-draa, a metre and a half a year: the next field would be decades away and the thirty-day ceiling times it. In the time-lapse test (a week a second, the small world's far levels at 4, 8 and 16 m over dunes 20 m apart) the coarsest far level took 2 fields in 90 frames where the finest ring took 143, every level at the one surface time and none past its own bound.
+
+## What the tests found
+
+- **engine-view's silent stop after the first marker was an access violation**, not an exit 1 (the code was 0xC0000005; the lock's wrapper reported it as 1, and a fault prints nothing). Under `cdb`: `TerrainMotion::frame` read past the end of the finest ring's two fields after b, whose count stood at 0xFFFFFFFF. The surface's frame (`terrain_surface_frame`) shared the surface among at most `k_max_surface_levels` levels, still eight when the far levels raised the level bound to sixteen; the endless desert draws nine (five far levels and four rings), so its finest ring was left out, its `installed` word was never written, the debug stack's 0xCCCCCCCC took a field it did not have, and the count wrapped. The bound is now the level bound itself, and every output of the frame is written whatever the count (`terrain_generator_tests.cpp`, "every level a set can have shares the surface": sixteen levels at their b with a field ready, each must take it — without the fix the last eight keep the stack's word and stand where they were). The small world of the GPU tests has six drawn levels, under the old eight, which is why nothing there found it. In a release build the ninth level's word is whatever the stack held, so the finest ring's sand could stand still or take fields it did not have.
+- **A T-junction at the corner of two collapsed edges**, older than the far levels: a tile with coarser neighbours on two adjacent sides drew its corner cell as a triangle of no area plus one whose long edge had the cell's corner vertex on it. The far levels' tiling test found it at every far square's corners (9–11 such triangles a layout); a ring's tile at a corner of coarser rings had it too. Fixed by taking the cell's other diagonal ([renderer](../subsystems/renderer.md#ground-to-the-horizon)).
+- **The rings' picture does not move**: 49,152 of 49,152 pixels covered, 0 differ in depth, 0 colour bytes differ, with and without the far levels, at the origin and 50 km out.
+- **No hole** in any column of the far views (from 90 m up across the far borders, from 6 m out to the last level's edge, finest cut and a pixel's, origin and 50 km). The normal's largest jump across two levels' borders: 0.008–0.14 radians against 0.09–0.24 inside a tile. Across two far tiles of one level, 0.06–0.22 against the same, except one grazing view at the origin: 0.137 against 0.086 — **the census, not a seam**: its pairs out there are a 4 m cell apart, so a border pair samples the surface's own creases (this one at z = −64, x = 35). Held by the picture instead: the same far levels cut into six-cell tiles (24, 48, 96 m) draw the same depth, normal and colour as the four-cell ones on 31,536 and 4,850 pixels of far ground at the origin (from 90 m and grazing; 30,762 and 1,871 at 50 km), 40% of them on a border of the four-cell tiles, and in the six-cell layout, where z = −64 is inside a tile, the inside's largest jump is 0.157 and the borders' 0.077. The first comparison counted 1 and 6 pixels different, every one a pixel where a crest in front was drawn at another level in the other layout (their squares differ with their tiles), so both visible points are now required to be clear far ground of one level in both layouts.
+- **A far tile was built from the ground at each point, not its level's filtered answer**, while its fields were filtered: its padding was the gap between the two (0.97, 0.57 and 0 m on the test's three far levels) and its DAG simplified heights it never draws. A set built ahead answered zeros past its finest tiles, so its far tiles were flat at rest with 3.1 m of padding, and the grazing view's rings drew 10,733 of 31,000 pixels differently from the procedural source's; with no far levels, the same three cameras and the same wider set matched exactly, which is what pointed at the far levels. Both sources match on every pixel since (125,963 compared), with every level's padding zero while the sand stands still. How the far tiles' rest meshes reached the rings' pixels was not traced once the cause was gone.
+
+
+## The captures, 2 m to 2,000 m
+
+Offscreen, 1920×1080, `msvc-release`, the scene's own sky and shadows (traced on this card), a path of held views east from x = 1,000, z = 2,000 at 2, 100, 350 and 2,000 m over the sand looking at the ground 5, 8, 15 and 40 km ahead, each view twice a metre apart along x (`--marker-captures`, `--time-of-day 10` and `18`). Read by eye, and the edge and the pairs by numbers:
+
+- **2 m.** The near dune and its ripples, the next dunes behind it, and to the right the ground going on in ridges of haze to the horizon, where it meets the sky with nothing to see between them. At 18:00 the near slope is lit low across its ripples and the far ridges are bands of lit crest and shadow into the haze.
+- **100 m and 350 m.** Draa and mega-draa in rows to the horizon; the ground's last row stands above the planet's horizon line (flat ground from 100 m meets it 17.9 km out, from 350 m 33.4 km; the last level reaches further), so the ground meets the sky, and the step there is a horizon's (10:00, 350 m: the sky's row above the ground 161 against the ground's 167 of 255). No edge, no band.
+- **2,000 m.** With five far levels a band of the planet's flat colour lay between the ground's last row (row 522, about 60 km out along the view) and the planet's horizon (row 514): at 10:00 the band was 162 and the ground under it 176, a ruled line across the picture; at 18:00 the band's flat yellow over the ground's shadowed peach. That is the hand-over below; with six far levels the ground runs to the horizon line and the band is gone.
+- **No crack**: no column of any of the eight pictures has an uncovered pixel under covered ground (the ids, counted per column), the endless desert's own configuration — far tiles of sixteen cells at four times the outermost ring's spacing — which the tests do not draw.
+- **No shimmer between two frames a metre apart.** Over the rows of far ground (rows 528–640 at 100 m, 511–640 at 350 m, 520–700 at 2,000 m) the mean luma difference between the two pictures is 0.02–0.10 of 255 and 0.01–0.13% of pixels differ by more than 8; at 2 m, whose rows hold the near dune's crest, 0.35 and 1.33 with 0.8% and 3%, which is the crest's parallax. The filtered far lattices do not move under a metre's move, as the CPU test said.
+- **The dark specks** of one to three pixels on distant ridges (the first look saw them at 2 m; at 350 m they run in dotted rows along tile borders, every few pixels) **are traced shadows**, not holes: a speck's pixel is covered by the same triangle as its neighbours (the ids), with the same normal (the normal channel), and is lit by the sky alone; with `--shadows csm` they are gone. A shadow ray leaves a point reconstructed on a far triangle's plane, lifted by `ray_offset`'s bias and a few steps of the receiver's 16-bit grid — millimetres — while a pixel out there is metres across: at a crease (a far tile's border fan, a crest) the neighbouring triangle stands above the plane the ray left from and shadows it. The offset belongs to the resolve (`material.slang`, another agent's this week); one that grows with the pixel's footprint would remove them. Not changed here.
+- **A low sun on the far dunes.** With traced shadows (this card's default) every far dune casts its own shadow, however far: at 18:00 from 2,000 m the mega-draa throw long shadows across the interdune floors to the horizon, their edges stepped by the far levels' 128–512 m triangles. With `--shadows csm` (a card with no ray queries) the cascades end within a few kilometres and past them the far dunes are lit by their own slopes alone — sunlit stoss faces and sky-lit lee faces, no cast shadow across the floors — so from 350 m and 2,000 m the evening desert loses its long shadows a few kilometres out. The horizon-angle term (renderer.md, "Ground to the horizon") is still the cheap option and is still not built.
+
+## The hand-over at the far edge
+
+The two cheap options, tried from 2,000 m at both hours (rows of the picture averaged over every column, 0–255):
+
+| | the sky's band above the ground | the ground's first rows | what shows |
+|---|---|---|---|
+| five far levels, the planet at the scene's albedo 0.38 (as built) | 10:00: 162 / 18:00: 205,185,163 | 176 / 209,183,167 | a ruled line at 10:00, the band's flat yellow over shadowed ground at 18:00 |
+| the planet at the sand's albedo, 0.71 (`sky.ground_albedo` in the scene) | 191,183,176 / 208,185,163 | 187,185,184 / 211,184,167 | the luminance step gone at 10:00 but the band warm over a neutral ground: still a line; the whole sky lifted by the brighter ground's bounce (row 500: 164 → 190) |
+| the far levels ending where the aerial table does (32 km) | not drawn | | from 2,000 m a band of flat planet 2° tall instead of 0.4°; from 350 m the ground's edge would drop under the horizon line (33.4 km) and show a band where none shows now |
+| **six far levels** (chosen) | 10:00: 164 / 18:00: 199,180,169 (sky) | 183 / 201,180,167 | **no band**: the ground's last row is above the planet's horizon line and meets the sky as a horizon |
+
+Neither cheap option removes the edge, because the edge is not the albedo: past the aerial table's 32 km the ground keeps the 32 km transmittance (29% from 2,000 m) while the planet beyond it is drawn at its own distance (10% or less), so the ground is clearer than the planet next to it whatever its albedo. What removes it is the ground reaching the planet's horizon line, so that no planet shows below the horizon at all: flat ground meets it at √(Rh/2) — 79.8 km from 2,000 m — and six far levels reach 77.8 km from the worst place the windows let the camera stand (115 km along the last square's axes), which covers every height up to 1.9 km and leaves at most a pixel's sliver at 2,000 m in the worst direction. **`renderer.terrain.far_levels` is six** since. What remains is the horizon itself: the ground at 60–115 km is drawn at the table's 32 km haze, so it meets the sky a little brighter than real air would leave it (183 against the sky's 164 at 10:00). Removing that is the sky's: an aerial table that reaches the last level's distance, or past its end the sky's own ground-distance transmittance (`sky.slang`, untouched here).
+
+## The cost
+
+The scene's own 12 km path at 100 m/s, offscreen, 7,201 frames, `--shadows csm` (the baseline's shadows; the traced ones cost the same with far levels or without, as the chain is sized by the frame), median / p99 GPU milliseconds by pass:
+
+| | 1080p, none | 1080p, five | 1080p, six | 11520×2160 surround3, none | surround3, six |
+|---|---|---|---|---|---|
+| cull | 0.229 / 0.484 | 0.287 / 0.368 | 0.306 / 0.377 | 0.138 / 0.145 | 0.152 / 0.164 |
+| raster (hw) | 0.040 / 0.094 | 0.048 / 0.060 | 0.051 / 0.070 | 0.342 / 0.405 | 0.339 / 0.486 |
+| deform (the terrain stage) | 0.074 / 0.190 | 0.094 / 0.139 | 0.099 / 0.140 | 0.053 / 0.058 | 0.053 / 0.065 |
+| shadow maps | 0.917 / 2.522 | 0.823 / 2.385 | 0.831 / 2.390 | 0.407 / 0.597 | 0.473 / 0.719 |
+| resolve | 0.442 / 0.988 | 0.485 / 0.662 | 0.488 / 0.656 | 1.491 / 1.737 | 1.578 / 1.917 |
+| **total** | **2.544 / 5.542** | **2.937 / 5.046** | **2.980 / 5.103** | **3.544 / 4.286** | **4.015 / 4.930** |
+| pairs drawn (visible), median / p99 | 3,491 / 3,703 | 4,727 / 5,011 | 5,061 / 5,343 | 5,678 / 6,173 | 8,861 / 9,805 |
+| shadow-map pairs, median / p99 | 21,059 / 67,372 | 22,984 / 75,777 | 22,984 / 75,777 | 35,448 / 58,445 | 38,363 / 65,789 |
+| terrain chunks resident (most) | 14,475 (14,729) | 17,414 (17,663) | 18,002 (18,251) | 14,475 | 18,002 |
+| terrain slots and arenas on the device | 339.6 MiB | 477.6 MiB | 503.4 MiB | 339.6 MiB | 503.4 MiB |
+| tiles built over the flight | 235,731 | 597,044 | 597,044 | 235,731 | 597,044 |
+| a rebuild's worker wall, ms median / p99 / max | 11.5 / 55.6 / 560 | 12.9 / 42.3 / 62.3 | 12.8 / 49.8 / 77.8 | 12.6 / 55.9 / 85.8 | 13.0 / 51.4 / 71.3 |
+| the frame thread's terrain time offscreen (waits included), median / p99 | 12.2 / 64.9 | 13.8 / 55.8 | 13.9 / 60.1 | 13.4 / 59.4 | 14.1 / 59.2 |
+
+- **The far levels cost about 0.4 ms of GPU at 1080p and 0.5 ms at the surround size** at the median, mostly the cull (it visits every far slot's pairs every frame), the resolve's and the shadow maps' extra ground, and 138–164 MiB of device memory (two slots for every tile each square can hold, reserved at load; the sixth level adds 26 MiB). The p99 does not grow: without far levels the p99 frames are the ones whose view runs out of ground past the outermost ring, which the cull and resolve then pay for in other ways (0.48 against 0.37 ms of cull).
+- **The rebuilds**: the far levels add little to a rebuild's median (11.5 → 12.8 ms) and nothing to its tail, but they build two and a half times the tiles over the flight — 361,000 far tiles, 50 a rebuild — because every far tile holding a world tile that entered or left the rings is rebuilt for its hole, and a far square's move lays its level out again whole. The frame thread's time offscreen is the wait for that rebuild; in a window it is the staging and the swap (renderer.md, "What a frame waits for").
+- **Allocations in steady state: not none with far levels.** `terrain_tiles_gpu_tests.cpp`'s long flight (520 m, 260 frames) carried three far levels for this: over its second half, with seven moves of a far square, the frame thread made 5 allocations — 4 on the frames a far square moved, whose level's new tiles are uploaded at once and take the frame thread's upload lists to a new high, and 1 on another frame, not found. The rings alone make none (the test holds that, as it did). Open: reserve the upload lists for the most a far square's move brings, or spread its uploads over frames offscreen as a window does.
+
+## In a window
+
+One 1920×1080 windowed flight of the path at 100 m/s, as [the window's page](world-tiles-window-2026-10-03.md) flew it, could not be measured: **the owner's session was locked**, and a locked session presents at about 4 Hz (`present_ms` 245 ms at the median, 471 frames in 120 s, with far levels and without alike). At 25 m a frame the rebuilds took what changed in seconds of travel: with six far levels 12 rebuilds, 3.4 s of worker wall at the median and 6.6 s at most, the finest ring 1.6 km behind the camera at the median; with none 19 rebuilds, 0.9 and 3.0 s, 1.0 km behind. So **a rebuild that covers kilometres costs about four times as much with the far levels** — every far tile whose hole the rings' band swept over, and every far tile a moved square brings in, is built, each 16 × 16 cells and its DAG where an outer ring's tile is 8 × 8 — and a window whose frames come that slowly falls further behind. At 52 frames a second each rebuild covers one or two metres of travel, as offscreen, and costs what the table above says; that is still to be measured with the session unlocked, with the same command (`engine-view --windowed --camera-path ... --benchmark`).
+
+## What is open
+
+- The windowed lag with the session unlocked (above).
+- The frame thread's 5 allocations in 130 frames of a flight with far levels (above, "The cost").
+- Most of the far levels' building is far tiles rebuilt for their holes (50 a rebuild offscreen, hundreds in a slow window's): a far tile whose mesh did not depend on its hole — the cull dropping the cells the rings draw, say — would be built once per square's move instead (above, "In a window").
+- The traced shadows' specks on distant ridges: an offset that grows with the pixel's footprint, in the resolve.
+- The far ground's haze past 32 km: the sky's aerial table.
+- Far dunes past the cascades at a low sun: the horizon-angle term.

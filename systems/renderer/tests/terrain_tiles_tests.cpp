@@ -30,7 +30,7 @@ namespace {
 f32 wave_at(f64 x, f64 z) noexcept {
   return static_cast<f32>(3.0 * std::sin(0.11 * x) * std::cos(0.07 * z) + 0.02 * x);
 }
-bool wave_heights(const void*, f64, i64 spacing_mm, i32 i0, i32 j0, u32 nx, u32 nz, u32 begin,
+bool wave_heights(const void*, f64, i64 spacing_mm, i64, i32 i0, i32 j0, u32 nx, u32 nz, u32 begin,
                   u32 end, std::span<f32> out) noexcept {
   if (out.size() != static_cast<usize>(nx) * nz) return false;
   const u32 per_side = (nx + scene_gen::k_height_block - 1) / scene_gen::k_height_block;
@@ -306,10 +306,10 @@ TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its v
     if (want != 3) {
       ++named;
       const Vec3 nrm = fine.normals[v];
-      const i32 eighths = static_cast<i32>(
-          std::lround(static_cast<f64>(std::atan2(nrm.z, nrm.x)) * 4.0 / 3.14159265358979));
+      const i32 sixteenths = static_cast<i32>(
+          std::lround(static_cast<f64>(std::atan2(nrm.z, nrm.x)) * 8.0 / 3.14159265358979));
       bad += !(std::abs(nrm.y) < 0.25f);
-      bad += static_cast<u32>((eighths + 8) % 8) != want;
+      bad += static_cast<u32>((sixteenths + 16) % 16) != want;
       // A vertex drawn from a coarser level is on that level's lattice.
       const i64 coarse = want == 1 ? 2000 : 1000;
       bad += (static_cast<i64>(i) * 500) % coarse != 0 || (static_cast<i64>(j) * 500) % coarse != 0;
@@ -484,4 +484,192 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   CHECK_FALSE(set.find(400, 400, level, index));
   const TerrainRingLayout moved_on = set.next_layout(1.0f + 5.0f * 8.0f, 2.0f, set.layout());
   CHECK(moved_on.cx[3] != set.layout().cx[3]);
+}
+
+// ---- the far levels (renderer.md, "Ground to the horizon") -------------------------------------
+
+namespace {
+
+// The small world with three far levels past it: the first at twice the outermost ring's 2 m, four
+// cells a far tile — 16 m tiles of two world tiles a side, 32 m and 64 m after it.
+TerrainTilesDesc small_far_tiles() {
+  TerrainTilesDesc t = small_tiles();
+  t.far_levels = 3;
+  t.far_cells = 4;
+  t.far_ratio = 2;
+  return t;
+}
+
+// What every drawn chunk's mesh makes together, rings' and far levels' alike, each built from the
+// spec the set derives for it: the keys that differ from the ones its chunks were built with,
+// twice the area its triangles cover and those that face down, and its boundary — every edge a
+// mesh's triangles use once — counted over all the meshes. An edge inside the ground is two meshes'
+// (a seam with no T-junction: both sides have the same vertices along it), the outermost square's
+// border one mesh's.
+struct Tiling {
+  u32 chunks = 0;
+  u32 bad_keys = 0;
+  i64 area2 = 0;
+  i64 flipped = 0;
+  u32 inner_edges = 0;
+  u32 unmatched = 0;  // an inner edge not exactly two meshes'
+  u32 border_bad = 0;
+  i64 lo_x = 0, hi_x = 0, lo_z = 0, hi_z = 0;
+};
+
+Tiling tiling(const TerrainTileSet& set) {
+  Tiling out;
+  std::map<Segment, i32> count;
+  for (u32 l = 1; l < set.level_count(); ++l) {
+    for (u32 c = 0; c < set.chunks(l).size(); ++c) {
+      TerrainTileMeshSpec spec;
+      REQUIRE(set.chunk_spec(l, c, spec));
+      ++out.chunks;
+      out.bad_keys += terrain_tile_key(spec) != set.chunks(l)[c].key;
+      const u32 a = spec.cells + 3;
+      Vector<f32> h(static_cast<usize>(a) * a);
+      REQUIRE(k_waves.filtered(
+          0.0, spec.spacing_mm, set.lattice(l).filter_mm, spec.x * static_cast<i32>(spec.cells) - 1,
+          spec.z * static_cast<i32>(spec.cells) - 1, a, a, std::span<f32>(h.data(), h.size())));
+      TerrainTileMesh mesh;
+      build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), mesh);
+      i64 flipped = 0;
+      out.area2 += twice_area(mesh, spec.spacing_mm, flipped);
+      out.flipped += flipped;
+      if (flipped != 0 && out.flipped == flipped) {
+        MESSAGE("flipped: level " << l << " tile " << spec.x << "," << spec.z << " cells "
+                                  << spec.cells << " hole " << spec.hole_mask << " edges "
+                                  << int{spec.neighbours.edge[0]} << int{spec.neighbours.edge[1]}
+                                  << int{spec.neighbours.edge[2]} << int{spec.neighbours.edge[3]}
+                                  << " corners " << int{spec.neighbours.corner[0]}
+                                  << int{spec.neighbours.corner[1]}
+                                  << int{spec.neighbours.corner[2]}
+                                  << int{spec.neighbours.corner[3]} << " count " << flipped);
+      }
+      for (const Segment& s : boundary_of(mesh, spec.spacing_mm))
+        ++count[s];
+    }
+  }
+  const TerrainRingLayout layout = set.layout();
+  const u32 coarsest = set.far_count() > 0 ? 1u : set.level_count() - 1;
+  out.lo_x = layout.cx[coarsest] - layout.half[coarsest];
+  out.hi_x = layout.cx[coarsest] + layout.half[coarsest];
+  out.lo_z = layout.cz[coarsest] - layout.half[coarsest];
+  out.hi_z = layout.cz[coarsest] + layout.half[coarsest];
+  for (const auto& [seg, n] : count) {
+    const auto on_x = [&](i64 v) { return seg.first.first == v && seg.second.first == v; };
+    const auto on_z = [&](i64 v) { return seg.first.second == v && seg.second.second == v; };
+    const bool border = on_x(out.lo_x) || on_x(out.hi_x) || on_z(out.lo_z) || on_z(out.hi_z);
+    if (border) {
+      out.border_bad += n != 1;
+    } else {
+      ++out.inner_edges;
+      out.unmatched += n != 2;
+    }
+  }
+  return out;
+}
+
+void check_tiling(const TerrainTileSet& set, const char* where) {
+  const Tiling t = tiling(set);
+  CAPTURE(where);
+  CHECK(t.chunks > 0);
+  CHECK(t.bad_keys == 0);
+  CHECK(t.flipped == 0);
+  CHECK(t.unmatched == 0);
+  CHECK(t.border_bad == 0);
+  // The coarsest far level's square, covered once: every tile the rings draw and every far tile.
+  const i64 side = t.hi_x - t.lo_x;
+  CHECK(t.area2 == 2 * side * side);
+}
+
+}  // namespace
+
+TEST_CASE("world tiles: the far levels tile the ground to their outermost square, seamed") {
+  const TerrainDesc grid = grid_desc();
+  const TerrainTilesDesc t = small_far_tiles();
+  std::string error;
+  REQUIRE_MESSAGE(validate_terrain_tiles(t, &error), error);
+  // The far levels' arithmetic: twice the spacing, the tile and the reach each, the first square
+  // holding every tile the rings can hold from wherever its centre may be.
+  const TerrainFarLevel f1 = terrain_far_level(t, 1);
+  const TerrainFarLevel f2 = terrain_far_level(t, 2);
+  const TerrainFarLevel f3 = terrain_far_level(t, 3);
+  CHECK(f1.spacing == 4000);
+  CHECK(f1.tile == 16000);
+  CHECK(f1.snap == 32000);
+  CHECK(f2.spacing == 8000);
+  CHECK(f3.tile == 64000);
+  CHECK(f2.half == 2 * f1.half);
+  CHECK(f3.half == 4 * f1.half);
+  CHECK(f1.half % f1.snap == 0);
+  CHECK(f1.half >= 6 * f1.snap);
+  const f64 rings_reach = (6.0 * 1.15 + 1.75) * 8.0;
+  CHECK(static_cast<f64>(f1.half - f1.margin - f1.snap / 2) / 1000.0 >= rings_reach);
+  CHECK(terrain_far_reach_m(t) ==
+        doctest::Approx(static_cast<f64>(f3.half - f3.margin - f3.snap / 2) / 1000.0));
+  {
+    TerrainTilesDesc bad = t;
+    bad.far_ratio = 1;
+    CHECK_FALSE(validate_terrain_tiles(bad, &error));
+    bad = t;
+    bad.far_cells = 3;  // a 12 m far tile is not whole 8 m world tiles
+    CHECK_FALSE(validate_terrain_tiles(bad, &error));
+    bad = t;
+    bad.far_levels = k_max_far_levels + 1;
+    CHECK_FALSE(validate_terrain_tiles(bad, &error));
+  }
+
+  TerrainTileSet set;
+  REQUIRE_MESSAGE(set.build(grid, t, k_waves, 1.0f, 2.0f, nullptr, &error), error);
+  CHECK(set.level_count() == 7);
+  CHECK(set.far_count() == 3);
+  CHECK(set.is_far(1));
+  CHECK(set.is_far(3));
+  CHECK_FALSE(set.is_far(4));
+  CHECK(set.level_of_ring(2) == 4);  // the outermost ring, past the far levels
+  CHECK(set.level_of_ring(0) == 6);
+  CHECK(set.lattice(3).spacing_mm == 4000);
+  CHECK(set.lattice(3).filter_mm == 4000);  // a far level's heights are filtered to its spacing
+  CHECK(set.lattice(4).filter_mm == 0);     // a ring's are the ground's own
+  CHECK(set.withheld() == 0);
+  for (u32 l = 1; l <= 3; ++l) {
+    CHECK(set.capacity(l).slots >= 2 * set.chunks(l).size());
+    CHECK(set.field_capacity(l) >=
+          u64{set.field_window(l, set.layout()).nx} * set.field_window(l, set.layout()).nz);
+  }
+  check_tiling(set, "the first layout");
+  // A ring's tile beside the first far level collapses its edge onto that level's lattice and
+  // names it: the ring tiles keep every vertex they had along each other.
+  const Tiling first = tiling(set);
+  MESSAGE(first.chunks << " chunks, " << first.inner_edges << " inner edges");
+
+  // **Flying 300 m east and 120 m north**, the rings handed over by the first-fill rule a step at
+  // a time and every far square following by its margin: after every rebuild the ground is
+  // still covered once and seamed, and the far levels' windows moved.
+  Vector<TerrainTile> round;
+  f32 x = 1.0f;
+  f32 z = 2.0f;
+  u32 far_moves = 0;
+  for (u32 k = 0; k < 110; ++k) {
+    x += 2.7f;
+    z += 1.1f;
+    terrain_tiles_round(t, x, z, round);
+    set.set_tiles(std::span<const TerrainTile>(round.data(), round.size()));
+    const TerrainRingLayout target = set.next_layout(x, z, set.layout());
+    for (u32 l = 1; l <= 3; ++l)
+      far_moves += target.cx[l] != set.layout().cx[l] || target.cz[l] != set.layout().cz[l];
+    set.prepare(target);
+    u32 moved = 0;
+    REQUIRE_MESSAGE(set.update(x, z, 0.0, target, {}, nullptr, moved, &error), error);
+    if (k % 11 == 10) check_tiling(set, "in flight");
+  }
+  CHECK(far_moves >= 4);
+  CHECK(set.withheld() == 0);
+  check_tiling(set, "after the flight");
+
+  // **Fifty kilometres out**: the same arithmetic, the same seams.
+  TerrainTileSet out;
+  REQUIRE_MESSAGE(out.build(grid, t, k_waves, 50'000.0f, -50'000.0f, nullptr, &error), error);
+  check_tiling(out, "50 km out");
 }

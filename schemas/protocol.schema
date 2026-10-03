@@ -405,7 +405,7 @@ struct AdaptersResult @version(1) {
 /// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
 /// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
 /// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
-struct RenderSettings @version(10) {
+struct RenderSettings @version(11) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -528,6 +528,13 @@ struct RenderSettings @version(10) {
   /// The residency budget as a **percentage** (1..100) of the loaded scene's page bytes, in place
   /// of `page_budget_mib`; 0 is `page_budget_mib`'s. `engine-view --page-budget-pct`.
   page_budget_pct: u32 = 0 @since(10)
+  /// With `terrain_tiles`: how many **far levels** of coarser ground the renderer draws past the
+  /// world tiles' outermost ring, each twice the spacing and the reach of the one inside it, 0..8
+  /// (docs/subsystems/renderer.md, "Ground to the horizon"; ADR-0051). 0 draws none, and the
+  /// ground ends at the outermost ring. Null takes the `renderer.terrain.far_levels` tunable (6:
+  /// 78 km on the endless desert, past the planet's horizon line from up to 1.9 km), which is what
+  /// engine-view draws without `--terrain-far`. Nothing without tiles. `engine-view --terrain-far`.
+  terrain_far_levels: u32? = null @since(11)
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock
@@ -574,9 +581,12 @@ struct RenderSkyStats @version(1) {
 /// The ground as terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse", "The
 /// rings in the scene", "The ground from the world's tiles"): what the run's motion did, under the
 /// keys of engine-view's summary `time_lapse` block where it has them.
-struct RenderGroundStats @version(1) {
+struct RenderGroundStats @version(2) {
   /// "grid" (the scene's grid alone), "rings" or "tiles".
   layout: string
+  /// With tiles, the far levels drawn past their outermost ring (`RenderSettings.terrain_far_levels`
+  /// as resolved: the tunable's count when the call named none); 0 otherwise.
+  far_levels: u32 = 0 @since(2)
   /// The time-lapse's rate, and the game time it reached.
   rate: f64 = 0 @unit(ratio)
   game_time_s: f64 = 0 @unit(s)

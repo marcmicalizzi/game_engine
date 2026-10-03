@@ -20,7 +20,7 @@ using namespace engine::world;
 
 namespace {
 
-bool flat_heights(const void*, f64, i64, i32, i32, u32 nx, u32 nz, u32, u32,
+bool flat_heights(const void*, f64, i64, i64, i32, i32, u32 nx, u32 nz, u32, u32,
                   std::span<f32> out) noexcept {
   if (out.size() != static_cast<usize>(nx) * nz) return false;
   std::fill(out.begin(), out.end(), 0.0f);
