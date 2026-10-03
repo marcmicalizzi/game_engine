@@ -524,6 +524,7 @@ class TerrainMotion {
     f64 padding_m = 0.0;
     f64 eval_ms = 0.0;
     u64 hash = 0;
+    u64 evaluated = 0;  // the samples the source was asked for (the rest were copied)
     // A re-centre's pairs: per ring level, the pair to carry over to the new layout.
     Pair pairs[k_max_terrain_levels];
     bool done = false;
@@ -558,7 +559,8 @@ class TerrainMotion {
   void run_rings(RingTask& task);
   const f32* field_heights(Level& level, f64 time_s, const gfx::TerrainField& window,
                            Vector<f32>& scratch);
-  void field_over(Level& level, f64 time_s, const gfx::TerrainField& window, Vector<f32>& out);
+  // Returns the samples it asked the source for.
+  u64 field_over(Level& level, f64 time_s, const gfx::TerrainField& window, Vector<f32>& out);
   void keep_field(Level& level, f64 time_s, const gfx::TerrainField& window, Vector<f32>&& heights,
                   f64 keep_from_s);
   bool worker_busy();
@@ -641,6 +643,8 @@ class TerrainMotion {
   u32 upload_next_ = 0;
   u32 upload_frames_ = 0;  // of the re-centre being uploaded
   u64 upload_bytes_ = 0;
+  f64 stage_ms_ = 0.0;     // the frame's thread staging its chunks, over every frame it took
+  u64 pairs_samples_ = 0;  // the samples its pairs asked the source for
   u64 upload_budget_bytes_ = 0;
   bool rings_stopped_ = false;  // a re-centre failed: the rings stay where they are
   u64 frames_ = 0;

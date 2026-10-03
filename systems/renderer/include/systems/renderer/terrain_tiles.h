@@ -248,13 +248,17 @@ class TerrainTileSet final : public TerrainLevelSet {
   u32 withheld() const noexcept { return withheld_; }
   // Where the last rebuild's time went: deciding what to build (the keys, on the worker's thread),
   // building it (wall, on the pool) and the CPU milliseconds its jobs spent on the source's heights
-  // and on the meshes and DAGs, and putting the lists in place under the lock.
+  // and on the meshes and DAGs, and putting the lists in place under the lock. And what of it was
+  // the far levels': the far tiles built, and the far levels whose square moved (bit k for level
+  // k).
   struct Phases {
     f64 scan_ms = 0.0;
     f64 build_ms = 0.0;
     f64 heights_cpu_ms = 0.0;
     f64 mesh_cpu_ms = 0.0;
     f64 swap_ms = 0.0;
+    u32 far_built = 0;
+    u32 far_moved = 0;
   };
   const Phases& last_phases() const noexcept { return last_phases_; }
 
@@ -377,6 +381,8 @@ class TerrainTileSet final : public TerrainLevelSet {
   Vector<u32> added_[k_max_terrain_levels];
   Vector<u32> released_[k_max_terrain_levels];
   bool whole_last_ = true;
+  // Held tiles the last whole rebuild held back for a level's slots, not yet asked again.
+  u32 budget_withheld_ = 0;
   Vector<TerrainTile> building_;
   u64 generation_ = 0;
   u32 withheld_ = 0;

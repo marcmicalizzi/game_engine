@@ -33,6 +33,16 @@ tunables::Float lead{"renderer.terrain.lead", 1.5, 0.0, 100.0,
 // (docs/experiments/time-lapse-smoothness-2026-09-27.md, "Evaluation").
 constexpr u32 k_blocks_per_job = 4;
 
+// ...and one a job where a window has fewer blocks than four for each worker: a moved window's
+// new strip is a handful of blocks a side, which four to a job left to two or three of the pool's
+// workers. A far square's move carried its pair over a strip of 28,864 samples (8 blocks, 2 jobs)
+// in 13 ms, and a ring's window move 197,472 samples in 23 (2026-10-03, far-ground's "A far
+// square's move"). The heights are a function of the lattice point, so the split changes no byte.
+u32 blocks_per_job(const jobs::JobSystem& jobs, u32 blocks) noexcept {
+  const u32 workers = std::max<u32>(1u, jobs.worker_count(jobs::Pool::Performance));
+  return blocks >= k_blocks_per_job * workers ? k_blocks_per_job : 1u;
+}
+
 }  // namespace
 
 TimeLapseConfig time_lapse_config_from_tunables(f64 rate) {
@@ -409,7 +419,7 @@ u32 terrain_window_workers() noexcept {
 
 namespace {
 
-// The heights of a window, a job per `k_blocks_per_job` blocks, or on the calling thread.
+// The heights of a window, a job per `blocks_per_job` blocks, or on the calling thread.
 void evaluate_window(const TerrainSampler& sampler, jobs::JobSystem* jobs, f64 time_s,
                      const TerrainLattice& lattice, const gfx::TerrainField& window,
                      Vector<f32>& out) {
@@ -421,12 +431,11 @@ void evaluate_window(const TerrainSampler& sampler, jobs::JobSystem* jobs, f64 t
                             blocks, heights);
     return;
   }
-  jobs->parallel_for(jobs::Pool::Performance, (blocks + k_blocks_per_job - 1) / k_blocks_per_job, 1,
-                     [&](u32 begin, u32 end) {
-                       evaluate_terrain_window(sampler, time_s, lattice, window.i0, window.j0,
-                                               window.nx, window.nz, begin * k_blocks_per_job,
-                                               std::min(blocks, end * k_blocks_per_job), heights);
-                     });
+  const u32 per = blocks_per_job(*jobs, blocks);
+  jobs->parallel_for(jobs::Pool::Performance, (blocks + per - 1) / per, 1, [&](u32 begin, u32 end) {
+    evaluate_terrain_window(sampler, time_s, lattice, window.i0, window.j0, window.nx, window.nz,
+                            begin * per, std::min(blocks, end * per), heights);
+  });
 }
 
 // The same from a tile source, on the world's lattice at the level's spacing: a tile level's
@@ -445,12 +454,11 @@ void evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs,
                           0, blocks, heights);
     return;
   }
-  jobs->parallel_for(jobs::Pool::Performance, (blocks + k_blocks_per_job - 1) / k_blocks_per_job, 1,
-                     [&](u32 begin, u32 end) {
-                       (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0,
-                                             window.nx, window.nz, begin * k_blocks_per_job,
-                                             std::min(blocks, end * k_blocks_per_job), heights);
-                     });
+  const u32 per = blocks_per_job(*jobs, blocks);
+  jobs->parallel_for(jobs::Pool::Performance, (blocks + per - 1) / per, 1, [&](u32 begin, u32 end) {
+    (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx, window.nz,
+                          begin * per, std::min(blocks, end * per), heights);
+  });
 }
 
 bool same_window(const gfx::TerrainField& a, const gfx::TerrainField& b) noexcept {
@@ -782,8 +790,8 @@ const f32* TerrainMotion::field_heights(Level& level, f64 time_s, const gfx::Ter
 // the lattice point and the time (`evaluate_terrain_window`, which terrain_generator_tests.cpp
 // holds to the point function), so the copy is the same bytes an evaluation would be — and a ring
 // re-centred by a snap step has most of its new window in its old one.
-void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField& window,
-                               Vector<f32>& out) {
+u64 TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField& window,
+                              Vector<f32>& out) {
   out.resize(static_cast<usize>(window.nx) * window.nz);
   const Cached* from = nullptr;
   for (const Cached& c : level.cache) {
@@ -803,7 +811,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
   }
   if (from == nullptr || oi0 >= oi1 || oj0 >= oj1) {
     evaluate_level(level, time_s, window, out);
-    return;
+    return samples_of(window);
   }
   for (i32 j = oj0; j < oj1; ++j) {
     const f32* src = from->heights.data() +
@@ -814,6 +822,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
     std::memcpy(dst, src, static_cast<usize>(oi1 - oi0) * sizeof(f32));
   }
   Vector<f32> part;
+  u64 evaluated = 0;
   const auto evaluate_rect = [&](i32 i0, i32 j0, i32 i1, i32 j1) {
     if (i0 >= i1 || j0 >= j1) return;
     gfx::TerrainField rect{};
@@ -821,6 +830,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
     rect.j0 = j0;
     rect.nx = static_cast<u32>(i1 - i0);
     rect.nz = static_cast<u32>(j1 - j0);
+    evaluated += samples_of(rect);
     evaluate_level(level, time_s, rect, part);
     for (i32 j = j0; j < j1; ++j) {
       std::memcpy(out.data() + static_cast<usize>(j - window.j0) * window.nx +
@@ -832,6 +842,7 @@ void TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField
   evaluate_rect(window.i0, oj1, wi1, wj1);        // and after it
   evaluate_rect(window.i0, oj0, oi0, oj1);        // the overlap's rows, to its left
   evaluate_rect(oi1, oj0, wi1, oj1);              // and to its right
+  return evaluated;
 }
 
 void TerrainMotion::keep_field(Level& level, f64 time_s, const gfx::TerrainField& window,
@@ -907,10 +918,10 @@ void TerrainMotion::run_pairs(Task& task) {
     const f32* pa = nullptr;
     const f32* pb = nullptr;
     if (p.window_changed) {
-      field_over(level, p.a.time_s, w, ha);
+      task.evaluated += field_over(level, p.a.time_s, w, ha);
       pa = ha.data();
       if (p.has_b) {
-        field_over(level, p.b.time_s, w, hb);
+        task.evaluated += field_over(level, p.b.time_s, w, hb);
         pb = hb.data();
         p.b.delta_m = terrain_field_delta(std::span<const f32>(pa, count), w,
                                           std::span<const f32>(pb, count), w);
@@ -1236,6 +1247,7 @@ bool TerrainMotion::take_rings(bool block) {
   upload_next_ = 0;
   upload_frames_ = 0;
   upload_bytes_ = 0;
+  stage_ms_ = 0.0;
   for (u32 k = 1; k < levels_.size(); ++k) {
     if ((pending_moved_ & (1u << k)) == 0) continue;
     const Vector<TerrainChunk>& chunks = rings_->chunks(k);
@@ -1259,6 +1271,7 @@ bool TerrainMotion::take_rings(bool block) {
 // The queued chunks into free slots, `renderer.terrain.ring_upload_mib` a frame (at least one
 // chunk), or all of them. False when one does not fit, which abandons the re-centre.
 bool TerrainMotion::upload_chunks(bool all) {
+  const i64 started = time::monotonic_ns();
   const u64 before = scene_->terrain_chunk_upload_bytes();
   u32 done = 0;
   while (upload_next_ < uploads_.size()) {
@@ -1283,6 +1296,7 @@ bool TerrainMotion::upload_chunks(bool all) {
     ring_stats_.chunks_uploaded += done;
     ring_stats_.upload_bytes += bytes;
   }
+  stage_ms_ += ms_since(started);
   return true;
 }
 
@@ -1357,6 +1371,7 @@ bool TerrainMotion::schedule_pairs() {
 
 // The carried pairs go to their slots; the swap waits for their copies to reach a frame.
 void TerrainMotion::take_pairs(Task& finished) {
+  pairs_samples_ = finished.evaluated;
   ring_stats_.last_pairs_ms = finished.eval_ms;
   ring_stats_.max_pairs_ms = std::max(ring_stats_.max_pairs_ms, finished.eval_ms);
   if (recentre_ != Recentre::pairing) {
@@ -1390,6 +1405,7 @@ void TerrainMotion::take_pairs(Task& finished) {
 // rings' pairs over their new windows (the same times, the same blend: the same sand), the scene
 // grid's hole where the middle ring now is.
 void TerrainMotion::swap_rings() {
+  const i64 swap_started = time::monotonic_ns();
   // The arenas are fullest now, the new chunks in beside the old: what a ring's room is sized for.
   for (u32 k = 1; k < levels_.size(); ++k) {
     const GpuScene::ArenaFree a = scene_->terrain_arena_free(k);
@@ -1501,7 +1517,9 @@ void TerrainMotion::swap_rings() {
       log::field("frozen_frames", frames_ - frozen_frame_),
       log::field("rebuild_ms", ring_stats_.last_rebuild_ms),
       log::field("pairs_ms", ring_stats_.last_pairs_ms), log::field("upload_bytes", upload_bytes_),
-      log::field("upload_frames", upload_frames_));
+      log::field("upload_frames", upload_frames_), log::field("stage_ms", stage_ms_),
+      log::field("swap_ms", ms_since(swap_started)), log::field("pairs_samples", pairs_samples_));
+  pairs_samples_ = 0;
 }
 
 // A re-centre that cannot be drawn: whatever it uploaded is freed, the rings stay where they are

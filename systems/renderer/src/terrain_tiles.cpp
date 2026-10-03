@@ -1029,14 +1029,33 @@ bool TerrainTileSet::rebuild_changes(const TerrainRingLayout& target, f64 time_s
     return target.cx[level] != layout_.cx[level] || target.cz[level] != layout_.cz[level] ||
            target.half[level] != layout_.half[level];
   };
-  // The finest far level's square moving can let a ring's tile be drawn or hold it back
-  // (`inside_far`): every held tile is asked again, which happens a few times a kilometre.
+  // A level's window moving, or the finest far level's square (which lets a ring's tile be drawn
+  // or holds it back, `inside_far`), changes a held tile's drawn level only where it changes
+  // whether the window covers the tile or the square holds it: those tiles are asked again, and no
+  // others. One pass of arithmetic over the held tiles; until 2026-10-03 every held tile of a moved
+  // level, and with the finest far square every held tile, was asked again — the 13,000 of the
+  // endless desert's rings a few times a kilometre, most of a far square's 2.5 ms scan.
   const bool finest_far_moved = far_ > 0 && moved_level(far_);
-  for (u32 level = far_ + 1; level < levels_; ++level) {
-    if (!moved_level(level) && !finest_far_moved) continue;
+  u32 far_moved = 0;  // the far levels whose square moved, for the phases
+  for (u32 level = 1; level <= far_; ++level)
+    far_moved |= moved_level(level) ? 1u << level : 0u;
+  u32 ring_moved = 0;
+  for (u32 level = far_ + 1; level < levels_; ++level)
+    ring_moved |= moved_level(level) ? 1u << level : 0u;
+  // Tiles the last whole rebuild held back for a level's slots (a world whose budget deferred its
+  // deactivations) are drawn by neither predicate's change, so while there are any, every held tile
+  // of a moved level is asked again, as before.
+  if (ring_moved != 0 || finest_far_moved) {
+    const bool ask_all = budget_withheld_ > 0;
     for (u32 k = 0; k < built_ring_.size(); ++k) {
-      if (level_of_ring(built_ring_.value_at(k)) == level) touch(built_ring_.key_at(k));
+      const u32 level = level_of_ring(built_ring_.value_at(k));
+      if ((ring_moved & (1u << level)) == 0 && !finest_far_moved) continue;
+      const TerrainTile t = tile_of(built_ring_.key_at(k), 0);
+      if (ask_all || covers(level, layout_, t.x, t.z) != covers(level, target, t.x, t.z) ||
+          inside_far(layout_, t.x, t.z) != inside_far(target, t.x, t.z))
+        touch(built_ring_.key_at(k));
     }
+    budget_withheld_ = 0;  // asked again; a whole rebuild below counts them afresh
   }
   // Each touched tile's level now; the ones that changed.
   changed_keys_.clear();
@@ -1253,12 +1272,18 @@ bool TerrainTileSet::rebuild_changes(const TerrainRingLayout& target, f64 time_s
   last_phases_.heights_cpu_ms = static_cast<f64>(heights_ns.load()) / 1.0e6;
   last_phases_.mesh_cpu_ms = static_cast<f64>(mesh_ns.load()) / 1.0e6;
   last_phases_.swap_ms = static_cast<f64>(time::monotonic_ns() - built_at) / 1.0e6;
+  last_phases_.far_built = 0;
+  for (const Want& w : todo)
+    last_phases_.far_built += is_far(w.spec.level) ? 1u : 0u;
+  last_phases_.far_moved = far_moved;
   ENGINE_LOG_DEBUG(log_renderer, "world tiles rebuilt", log::field("built", last_built_),
                    log::field("kept", last_kept_), log::field("scan_ms", last_phases_.scan_ms),
                    log::field("build_ms", last_phases_.build_ms),
                    log::field("heights_cpu_ms", last_phases_.heights_cpu_ms),
                    log::field("mesh_cpu_ms", last_phases_.mesh_cpu_ms),
-                   log::field("swap_ms", last_phases_.swap_ms));
+                   log::field("swap_ms", last_phases_.swap_ms),
+                   log::field("far_built", last_phases_.far_built),
+                   log::field("far_moved", last_phases_.far_moved));
   return true;
 }
 
@@ -1362,6 +1387,7 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
   // A level draws at most half its slots' worth of tiles, so a rebuild's new tiles always find
   // free slots beside the ones drawn: past it — a world whose budget deferred the deactivations
   // behind a fast camera — the tiles farthest from the level's window centre are withheld.
+  budget_withheld_ = 0;
   for (u32 level = 1; level < levels_; ++level) {
     const u32 most = capacity_[level].slots / 2;
     Vector<Want>& list = want[level];
@@ -1386,6 +1412,7 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
         kept_list.push_back(list[w]);
       } else {
         ++withheld;
+        ++budget_withheld_;
         level_of.erase(packed(list[w].spec.x, list[w].spec.z));  // the far level draws it
       }
     }
@@ -1452,6 +1479,14 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
   last_phases_.build_ms = static_cast<f64>(built_at - scanned) / 1.0e6;
   last_phases_.heights_cpu_ms = static_cast<f64>(heights_ns.load()) / 1.0e6;
   last_phases_.mesh_cpu_ms = static_cast<f64>(mesh_ns.load()) / 1.0e6;
+  last_phases_.far_built = 0;
+  last_phases_.far_moved = 0;
+  for (const Job& job : todo)
+    last_phases_.far_built += is_far(job.level) ? 1u : 0u;
+  for (u32 level = 1; level <= far_; ++level) {
+    const bool m = target.cx[level] != layout_.cx[level] || target.cz[level] != layout_.cz[level];
+    last_phases_.far_moved |= m ? 1u << level : 0u;
+  }
   for (const u8 f : failed) {
     if (f != 0) {
       if (error != nullptr)
