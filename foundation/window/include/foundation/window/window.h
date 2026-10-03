@@ -231,6 +231,10 @@ struct Event {
   u8 index = 0;     // JoystickAxis/JoystickButton*/JoystickHat: the axis, button, or hat index
   HatDirection hat = HatDirection::Centered;  // JoystickHat
   f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1
+  // When the platform reported it, nanoseconds on SDL's clock (`SDL_GetTicksNS`), which is also the
+  // clock of `Window::relative_mouse_since_ns`: what tells motion reported before relative mode
+  // came on from motion after it. Zero for an event nothing stamped.
+  u64 timestamp_ns = 0;
 };
 
 // --- device names ---------------------------------------------------------------------------
@@ -395,6 +399,11 @@ class Window {
   // refused; `relative_mouse()` reads back what SDL says is in effect for this window.
   bool set_relative_mouse(bool enabled) noexcept;
   bool relative_mouse() const noexcept;
+  // When relative mode last came on (`set_relative_mouse(true)` returning true), on the events'
+  // clock (`Event::timestamp_ns`); 0 while it is off. Motion queued before it is the absolute
+  // pointer's, whose `dx`/`dy` run from wherever the cursor last was and can be a screen's width in
+  // one event.
+  u64 relative_mouse_since_ns() const noexcept { return relative_since_ns_; }
 
   // Puts an event on this window's queue as if the platform had delivered it, so the next
   // `poll()` returns it through exactly the path a real one takes. Keys (`scancode`), mouse
@@ -414,6 +423,7 @@ class Window {
   u32 pixel_height_ = 0;
   gpu_lock::DeviceHold gpu_hold_;  // a Vulkan window's share of the GPU lock (WindowDesc::vulkan)
   bool vulkan_ = false;            // created with WindowDesc::vulkan: show() takes the hold
+  u64 relative_since_ns_ = 0;      // set_relative_mouse(true)'s moment, SDL_GetTicksNS
 };
 
 }  // namespace engine::window

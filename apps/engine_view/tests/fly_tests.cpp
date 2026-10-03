@@ -620,6 +620,56 @@ TEST_CASE("fly camera: window events become input once, at the edge") {
       input::RawEvent{SimTick{3}, input::Source::GamepadButton, 1, 1.0f, 0}, back));
 }
 
+TEST_CASE("fly camera: motion the window reported before relative mode came on is not looking") {
+  // The owner's walk (2026-10-02): the window takes the focus, the session takes the pointer, and
+  // the first motion polled is the absolute pointer's run from wherever the cursor last was — here
+  // 900 px, a turn of two radians at the default look rate — before the frame turns relative mode
+  // on. The walk started facing somewhere else. Fed through the edge with the gate in front of it,
+  // the session turns by the motion reported after the mode came on and by nothing before it.
+  const view::SessionHeader header = synthetic_header();
+  const input::ActionMap map = view::default_fly_map();
+  view::PointerGate gate;  // a live window: it takes the real pointer
+  view::EdgeEvents edge(8);
+  const auto feed = [&](f32 dx, u64 at_ns, u64 tick) {
+    window::Event motion;
+    motion.kind = window::EventKind::MouseMove;
+    motion.dx = dx;
+    motion.timestamp_ns = at_ns;
+    edge.add(motion, SimTick{tick}, gate.looking(motion));
+  };
+  feed(40.0f, 500, 1);  // not held: pointing
+  gate.captured = true;
+  feed(900.0f, 1'000, 1);  // held, the mode not on yet: the jump
+  gate.relative = true;
+  gate.relative_since_ns = 2'000;
+  feed(120.0f, 1'500, 2);  // queued before the mode came on, polled after: still the jump's
+  feed(3.0f, 2'500, 2);    // looking
+  REQUIRE(edge.events().size() == 1);
+  CHECK(edge.events()[0].value == 3.0f);
+  CHECK(edge.events()[0].tick.value == 2);
+
+  // What a session — and so a recording, which holds exactly what was fed — makes of it.
+  input::InputLog log;
+  for (const input::RawEvent& e : edge.events())
+    log.record(e);
+  view::FlySession session;
+  std::string error;
+  REQUIRE_MESSAGE(session.start(map, header, &error), error);
+  (void)session.run(log.events(), 0, SimTick{3});
+  const f32 turned = std::abs(session.state().yaw - header.start.yaw);
+  CHECK(turned < 0.05f);  // three pixels' worth, not two radians
+
+  // An injected run never takes the real pointer: its capture alone decides, as before.
+  view::PointerGate injected;
+  injected.takes_pointer = false;
+  window::Event motion;
+  motion.kind = window::EventKind::MouseMove;
+  motion.dx = 900.0f;
+  CHECK_FALSE(injected.looking(motion));
+  injected.captured = true;
+  CHECK(injected.looking(motion));
+}
+
 TEST_CASE("fly camera: the title's pacing numbers") {
   view::FramePacing pacing;
   CHECK(pacing.percentile(0, 1'000'000'000, 0.99) == 0.0f);

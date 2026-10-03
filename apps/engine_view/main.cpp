@@ -3984,6 +3984,10 @@ int main(int argc, char** argv) {
   // back ends the session).
   bool pointer_captured = live && !grab_pointer;
   bool pointer_grabbed = false;  // what the window was last asked for
+  // Which motion is looking (window_input.h): the capture, and in a window that takes the pointer,
+  // only motion reported after relative mode came on.
+  view::PointerGate pointer_gate;
+  pointer_gate.takes_pointer = grab_pointer;
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -4552,8 +4556,10 @@ int main(int argc, char** argv) {
             break;
           default: break;
         }
-        // The one conversion (window_input.h): stamped with the tick it will be fed at.
-        if (live) edge.add(event, session.next(), pointer_captured);
+        // The one conversion (window_input.h): stamped with the tick it will be fed at. Motion
+        // the platform reported before relative mode came on is dropped (`PointerGate`).
+        pointer_gate.captured = pointer_captured;
+        if (live) edge.add(event, session.next(), pointer_gate.looking(event));
       }
       if (!running) break;
 
@@ -4680,9 +4686,14 @@ int main(int argc, char** argv) {
             }
           }
           if (grab_pointer && pointer_grabbed != pointer_captured) {
-            (void)window.set_relative_mouse(pointer_captured);
+            const bool taken = window.set_relative_mouse(pointer_captured);
             pointer_grabbed = pointer_captured;
+            // A platform that refuses the mode leaves the absolute pointer looking, as before.
+            pointer_gate.takes_pointer = !pointer_captured || taken;
           }
+          // What the next frame's motion is judged by: the mode as SDL has it, and since when.
+          pointer_gate.relative = window.relative_mouse();
+          pointer_gate.relative_since_ns = window.relative_mouse_since_ns();
         }
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
         // The time-lapse keys at the ticks they were pressed on — live, and in a replay in the

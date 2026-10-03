@@ -736,6 +736,7 @@ bool Window::poll(Event& out) {
   SDL_Event e;
   while (SDL_PollEvent(&e)) {
     out = Event{};
+    out.timestamp_ns = e.common.timestamp;
     switch (e.type) {
       case SDL_EVENT_QUIT: out.kind = EventKind::Quit; return true;
       // Gamepad events carry no window id, so they are reported to whichever window polls.
@@ -910,6 +911,8 @@ bool Window::set_relative_mouse(bool enabled) noexcept {
                     log::field("reason", SDL_GetError()));
     return false;
   }
+  // Every event SDL stamps from here on was reported with the mode on (Event::timestamp_ns).
+  relative_since_ns_ = enabled ? SDL_GetTicksNS() : 0;
   return true;
 }
 

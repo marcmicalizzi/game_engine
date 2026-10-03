@@ -34,6 +34,27 @@
 
 namespace engine::view {
 
+// **Whether a pointer motion is looking.** The session decides the pointer is held (a click, the
+// window gaining focus; Escape gives it back), and a live window then asks for relative mouse mode
+// at the end of that frame. Until the mode is on, the platform reports the *absolute* pointer, whose
+// motion runs from wherever the cursor last was — the first event after a capture could be a
+// screen's width, and the owner's walk started facing somewhere else (2026-10-02). So in a window
+// that takes the pointer, motion is looking only once the window reads relative mode back on, and
+// only motion the platform reported after the moment it came on (`Window::relative_mouse_since_ns`,
+// `Event::timestamp_ns`); everything before it is dropped here and never recorded. An injected run
+// (`--inject-input`) never takes the real pointer, so its capture alone decides, as before.
+struct PointerGate {
+  bool captured = false;        // the session's decision
+  bool takes_pointer = true;    // a live window grabs the real pointer; an injected run does not
+  bool relative = false;        // what the window read back last
+  u64 relative_since_ns = 0;    // when the mode came on, on the events' clock
+  bool looking(const window::Event& event) const noexcept {
+    if (!captured) return false;
+    if (!takes_pointer) return true;
+    return relative && event.timestamp_ns >= relative_since_ns;
+  }
+};
+
 // One `window::Event` as `RawEvent`s stamped with `tick`, into `out` (room for four: a hat is four
 // signals, one per direction). Returns how many. `pointer_captured` false drops pointer motion.
 // Connections, focus, resizes and the rest mean nothing to input and give zero.
