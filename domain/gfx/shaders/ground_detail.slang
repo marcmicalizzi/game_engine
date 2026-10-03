@@ -44,8 +44,8 @@ static const uint k_ground_patches = 128u;
 static const uint k_ground_steering = 256u;
 static const uint k_ground_motion = 512u;
 // gfx::k_ground_flow_rms, k_ground_flow_slope_rms.
-static const float k_ground_flow_rms = 0.212;
-static const float k_ground_flow_slope_rms = 0.953;
+static const float k_ground_flow_rms = 0.222;
+static const float k_ground_flow_slope_rms = 1.008;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -441,17 +441,76 @@ float2 ground_smooth_d(float e0, float e1, float x) {
   return float2(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / (e1 - e0));
 }
 
+// One grainflow tongue, drawn from its lane's hash: its length and base half-width, metres; the
+// meander of its centreline (two harmonics, amplitude and wavenumber, phases); and, for about three
+// tongues in ten, where down its length it splits into two lobes.
+struct GroundTongue {
+  float len;
+  float half0;
+  float a1;
+  float k1;
+  float p1;
+  float a2;
+  float k2;
+  float p2;
+  float split;  // 1 for a tongue that branches, else 0
+  float split_at;
+};
+
+// A lobe's bump at offset v from its centre over half-width hw, rounded at the toe: the toe's
+// edges end before its middle, so a lobe is round in plan.
+float ground_lobe(float v, float hw, float tau) {
+  const float r = v / hw;
+  const float r2 = r * r;
+  if (!(r2 < 1.0)) return 0.0;
+  const float q = 1.0 - r2;
+  return q * q * (1.0 - ground_smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2).x);
+}
+
+// The tongue's height (1 at a lobe's crest) at `x` metres across its lane's centre and `tl` metres
+// down from its head. A real grainflow (Hunter 1977; Kocurek and Dott 1981): a chute with levees
+// scoured under the brink, easing into a lobe of deposit that widens down the face; its centreline
+// wanders, more toward the toe, and its width swells and pinches; some lobes split in two, each
+// half ending in its own rounded toe. Soft at the head over a tenth of its length and at the toe
+// over a fifth. Local coordinates only, so it is exact in float anywhere in the world.
+float ground_tongue(GroundTongue g, float x, float tl) {
+  const float tau = tl / g.len;
+  if (!(tau > 0.0 && tau < 1.0)) return 0.0;
+  const float grow = 0.3 + 0.7 * tau;
+  const float centre = grow * (g.a1 * sin(g.k1 * tl + g.p1) + g.a2 * sin(g.k2 * tl + g.p2));
+  const float pinch = 1.0 + 0.12 * sin(1.7 * g.k2 * tl + g.p1);
+  const float half_w = g.half0 * (0.6 + 0.8 * tau) * pinch;
+  const float u = x - centre;
+  // The head's chute with its levees, on the tongue's own centreline.
+  const float r = u / half_w;
+  const float r2 = r * r;
+  float chute = 0.0;
+  if (r2 < 1.0) {
+    const float q = 1.0 - r2;
+    chute = q * q * (2.4 * r2 - 0.6);
+  }
+  // The lobe, or two: apart by up to 0.55 half-widths each side, each 0.7 as wide, normalised so
+  // the pair is one lobe's height where they have not yet parted.
+  const float s = g.split * ground_smooth_d(g.split_at, g.split_at + 0.25, tau).x;
+  const float d = s * 0.55 * half_w;
+  const float hw = half_w * (1.0 - 0.3 * s);
+  const float pair = ground_lobe(u - d, hw, tau) + ground_lobe(u + d, hw, tau);
+  const float ro = 2.0 * d / hw;
+  const float overlap = ro * ro < 1.0 ? (1.0 - ro * ro) * (1.0 - ro * ro) : 0.0;
+  const float lobe = pair / (1.0 + overlap);
+  const float lw = ground_smooth_d(0.35, 0.8, tau).x;
+  const float cw = 1.0 - ground_smooth_d(0.2, 0.55, tau).x;
+  return ground_smooth_d(0.0, 0.1, tau).x * (lw * lobe + cw * chute);
+}
+
 // One direction's grainflow at `p`: lanes `2 flow_width` apart across direction k, each a chain of
-// **tongues** along it, one to a segment of `flow_length` (staggered per lane by the golden
-// ratio), each running 45 to 95% of the segment with its own start, width (0.7 to 1.3 of
-// `flow_width`), lateral jitter and episode. A tongue is what an avalanche leaves on a slip face
-// (Hunter 1977; Kocurek and Dott 1981): a narrow **chute** with **levees** at its head where the
-// flow scoured, easing over its upper half into a **lobe** of deposited sand that widens down the
-// face (from 0.6 to 1.4 of its width) and ends in a **rounded toe**, the toe's edges ending before
-// its middle; soft at the head over a tenth of its length and at the toe over a fifth — metres on
-// a face, never a lane width. Everything is a function of position alone (the lane's coordinate
-// across and along a fixed direction), so the normal never moves it. Height (dimensionless, 1 at a
-// lobe's crest) and its gradient over (x, z), per metre; three lanes, three lattice hashes.
+// tongues along it, one to a segment of `flow_length` (staggered per lane by the golden ratio),
+// each running 45 to 95% of the segment with its own start, width (0.7 to 1.3 of `flow_width`),
+// lateral jitter, meander, branching and episode. Everything is a function of position alone (the
+// lane's coordinate across and along a fixed direction), so the normal never moves it. The height
+// and its gradient over (x, z), per metre, the gradient by forward differences of 2 mm in the
+// tongue's own local coordinates (the shape is arithmetic; its hashes are drawn once); three lanes,
+// three lattice hashes.
 GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
   const float angle = float(k) * (k_ground_two_pi / float(k_ground_flow_directions));
   const float2 dir = float2(cos(angle), sin(angle));
@@ -461,6 +520,7 @@ GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
   const float sa = dot(p, across);
   const float t = dot(p, dir);
   const float mc = floor(sa / spacing + 0.5);
+  const float e = 0.002;
   GroundFlow out;
   out.value = 0.0;
   out.gradient = float2(0.0, 0.0);
@@ -482,38 +542,34 @@ GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
       amp = ground_episode(frac(d.flow_clock + ground_unit(h)), d.flow_share);
     }
     if (!(amp > 0.0)) continue;
-    const float len = lenf * seg;
-    const float tau = (t - (j * seg + stagger + startf * seg)) / len;
-    if (!(tau > 0.0 && tau < 1.0)) continue;
-    // Across: the half-width widens down the tongue; r is the offset over it.
-    const float half_w = 0.5 * d.flow_width * wscale * (0.6 + 0.8 * tau);
-    const float dhalf_dt = 0.5 * d.flow_width * wscale * 0.8 / len;
+    GroundTongue g;
+    g.len = lenf * seg;
+    const float tl = t - (j * seg + stagger + startf * seg);
+    if (!(tl > 0.0 && tl < g.len)) continue;
     const float x = sa - (m * spacing + jitter);
-    const float r = x / half_w;
-    const float r2 = r * r;
-    if (!(r2 < 1.0)) continue;
-    const float q = 1.0 - r2;
-    const float lobe = q * q;
-    const float dlobe = -4.0 * r * q;
-    const float chute = q * q * (2.4 * r2 - 0.6);  // a scour in the middle, levees at r = 0.7
-    const float dchute = dlobe * (2.4 * r2 - 0.6) + q * q * 4.8 * r;
-    const float2 lw = ground_smooth_d(0.35, 0.8, tau);
-    const float2 cw = ground_smooth_d(0.2, 0.55, tau);
-    const float shape = lw.x * lobe + (1.0 - cw.x) * chute;
-    const float dshape_dr = lw.x * dlobe + (1.0 - cw.x) * dchute;
-    const float dshape_dtau = lw.y * lobe - cw.y * chute;
-    const float2 head = ground_smooth_d(0.0, 0.1, tau);
-    // The toe is rounded in plan: its edges end before its middle.
-    const float2 toe = ground_smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2);
-    const float ends = head.x * (1.0 - toe.x);
-    const float dends_dtau = head.y * (1.0 - toe.x) - head.x * toe.y * (1.0 / 0.2);
-    const float dends_dr = -head.x * toe.y * (0.24 * r / 0.2);
-    const float height = shape * ends;
-    const float dh_dr = dshape_dr * ends + shape * dends_dr;
-    const float dh_dtau = dshape_dtau * ends + shape * dends_dtau;
-    // r = x / half_w(tau): across, 1 / half_w; along, -r / half_w dhalf/dt, plus tau's own 1 / len.
-    const float dh_dx = dh_dr / half_w;
-    const float dh_dt = dh_dr * (-r / half_w * dhalf_dt) + dh_dtau / len;
+    g.half0 = 0.5 * d.flow_width * wscale;
+    // Meander: a long harmonic of 8 to 16 m and a short one of 2 to 4 m at 0.3 of its amplitude;
+    // the centreline's slope stays under about 0.2 (11 degrees).
+    h = ground_pcg(h);
+    g.a1 = d.flow_width * (0.13 + 0.29 * ground_unit(h));
+    h = ground_pcg(h);
+    g.k1 = k_ground_two_pi / (8.0 + 8.0 * ground_unit(h));
+    h = ground_pcg(h);
+    g.p1 = k_ground_two_pi * ground_unit(h);
+    g.a2 = 0.3 * g.a1;
+    h = ground_pcg(h);
+    g.k2 = k_ground_two_pi / (2.0 + 2.0 * ground_unit(h));
+    h = ground_pcg(h);
+    g.p2 = k_ground_two_pi * ground_unit(h);
+    h = ground_pcg(h);
+    g.split = ground_unit(h) < 0.3 ? 1.0 : 0.0;
+    h = ground_pcg(h);
+    g.split_at = 0.45 + 0.2 * ground_unit(h);
+    // Out of reach: the farthest a tongue's sand gets from its lane's centre.
+    if (abs(x) > 1.6 * spacing) continue;
+    const float height = ground_tongue(g, x, tl);
+    const float dh_dx = (ground_tongue(g, x + e, tl) - height) / e;
+    const float dh_dt = (ground_tongue(g, x, tl + e) - height) / e;
     out.value += amp * height;
     out.gradient += (across * dh_dx + dir * dh_dt) * amp;
   }

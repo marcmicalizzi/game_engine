@@ -1423,13 +1423,15 @@ TEST_CASE("ground detail: grainflow lanes are long, run down the fall line, and 
   // millimetre steps by more than its gradient allows.
   u32 jumps = 0;
   for (u32 line = 0; line < 4; ++line) {
-    double previous = gref::grainflow(d, -30.0, 1.7 + 3.1 * line, 0.6, 0.8).value;
+    gref::Flow before = gref::grainflow(d, -30.0, 1.7 + 3.1 * line, 0.6, 0.8);
     for (u32 i = 1; i <= 60000; ++i) {
       const double x = -30.0 + 0.001 * i;
       const gref::Flow f = gref::grainflow(d, x, 1.7 + 3.1 * line + 0.0003 * i, 0.6, 0.8);
-      const double slope = std::hypot(f.gx, f.gz);
-      if (std::fabs(f.value - previous) > 2.0 * slope * 0.0011 + 1e-4) ++jumps;
-      previous = f.value;
+      // A step's change is its mean slope over it: twice the larger end's slope bounds it, as the
+      // ripples' continuity test has it.
+      const double slope = std::max(std::hypot(f.gx, f.gz), std::hypot(before.gx, before.gz));
+      if (std::fabs(f.value - before.value) > 2.0 * slope * 0.0011 + 1e-4) ++jumps;
+      before = f;
     }
   }
   CHECK(jumps == 0);
@@ -1746,7 +1748,7 @@ TEST_CASE("ground detail: grainflow lanes run the face's length and never cross"
         // Direction 0 is +x; its lanes lie along x at z = m spacing + jitter, so look across the
         // lane's width for its crest.
         double best = 0.0;
-        for (const double dz : {-0.3, -0.15, 0.0, 0.15, 0.3})
+        for (const double dz : {-0.6, -0.45, -0.3, -0.15, 0.0, 0.15, 0.3, 0.45, 0.6})
           best = std::max(best, std::fabs(gref::lane_set(d, 0.05 * i, z + dz * spacing, 0u).value));
         if (best > 1e-6) {
           run += 0.05;
@@ -1784,10 +1786,10 @@ TEST_CASE("ground detail: grainflow lanes run the face's length and never cross"
     const double p99 = ratio[ratio.size() * 99 / 100];
     MESSAGE("fall line " << angle << " degrees: the gradient's share along it, 90th percentile "
                          << p90 << ", 99th " << p99 << " (the tongues' heads and toes)");
-    // A tongue's head, its chute easing into its lobe and its rounded toe slope along the fall
-    // line by design; lanes of one direction are parallel and never cross. Outside a blend nine
-    // points in ten lean less than 0.3 along it (sin 9 degrees, a lane's most, is 0.156).
-    if (angle < 11.0) CHECK(p90 < 0.3);
+    // A tongue's head, its chute easing into its lobe, its rounded toes and its meander (a
+    // centreline leaning up to about 11 degrees) slope along the fall line by design; lanes of one
+    // direction never cross. Outside a blend nine points in ten lean less than 0.4 along it.
+    if (angle < 11.0) CHECK(p90 < 0.4);
   }
   // Seams: across the angle where the blend starts and where it ends, a micro-degree either side
   // gives the same value; and across a direction's own angle, where one family hands to the next.

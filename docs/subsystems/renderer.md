@@ -1165,6 +1165,16 @@ Along lines crossing patches over ground whose slope swings across the wind, the
 - **Cost.** One multiply a kernel for the travel, and a max for the frame's fade.
 - **Tests.** On the mirror, a travel of 3.7 cm moves the phase by exactly that, to 3e-16 wavelengths.
 
+**Tongues that meander and branch** (2026-10-03, the owner: "let's do that next step too"). A real tongue is not straight. Its centreline wanders as the flow finds its way down, more toward the toe; its width swells and pinches; and a lobe sometimes splits into two, each half ending in its own toe. Each tongue's shape (`ground_tongue`) now has:
+
+- **Meander.** The centreline wanders by two harmonics: a long one of 8–16 m, with amplitude 0.13–0.42 of `flow_width`, and a short one of 2–4 m at 0.3 of that. It grows from 0.3 at the head to 1 at the toe, so it leans at most about 11° off the lane.
+- **Pinch.** The half-width swells and pinches by 12% along the tongue.
+- **Branching.** About three tongues in ten split part-way down, between 45% and 65% of their length. Over a quarter of the length the lobe becomes two, each 0.7 as wide and 0.55 half-widths either side, normalised so the pair is one lobe's height where it has not yet parted. Each half has its own rounded toe (`ground_lobe`).
+- **Drawn once a tongue.** All of it comes from the tongue's own hash: eight more draws of the generator, no more lattice hashes.
+- **Gradient by forward difference.** The shape is local arithmetic in the tongue's own coordinates (metres across its lane and down from its head), so it is exact in float anywhere in the world. Its gradient is a forward difference of 2 mm in those coordinates: hand-deriving every term would cost more errors than it saves, and three evaluations of a few dozen operations on a slip-face pixel cost little next to its hashes.
+- **Still a function of position.** The normal still never moves a tongue.
+- **Measured.** On the mirror, nine points in ten lean along the fall line by less than 0.29 on a direction; the meander adds about 0.07. No millimetre step jumps.
+
 **Grainflow tongues, with soft ends** (2026-10-03, version 4; the owner on the straight lanes: "let's do the soft cutoff in a way that makes sense, we're wanting to end up with a AAA near photorealistic implementation"). A real grainflow is a tongue, not a line (Hunter 1977; Kocurek and Dott 1981): an avalanche released below the brink scours a narrow **chute** with **levees** either side, deposits a **lobe** further down that widens and thickens, and stops in a **rounded toe**, part-way down the face or at its foot. So each lane of the fixed-direction field is now a chain of tongues along its direction:
 
 - **One tongue a segment.** Each lane has one tongue per segment of `flow_length` (24 m on the ergs), staggered from lane to lane by the golden ratio.

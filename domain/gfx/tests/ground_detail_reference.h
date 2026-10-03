@@ -362,6 +362,56 @@ inline void smooth_d(double e0, double e1, double x, double& v, double& dv) {
   dv = 6.0 * t * (1.0 - t) / (e1 - e0);
 }
 
+// `GroundTongue`.
+struct Tongue {
+  double len = 0.0, half0 = 0.0, a1 = 0.0, k1 = 0.0, p1 = 0.0, a2 = 0.0, k2 = 0.0, p2 = 0.0;
+  double split = 0.0, split_at = 0.0;
+};
+
+// `ground_lobe`.
+inline double lobe(double v, double hw, double tau) {
+  const double r = v / hw;
+  const double r2 = r * r;
+  if (!(r2 < 1.0)) return 0.0;
+  const double q = 1.0 - r2;
+  double toe = 0.0, unused = 0.0;
+  smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2, toe, unused);
+  return q * q * (1.0 - toe);
+}
+
+// `ground_tongue`.
+inline double tongue(const Tongue& g, double x, double tl) {
+  const double tau = tl / g.len;
+  if (!(tau > 0.0 && tau < 1.0)) return 0.0;
+  const double grow = 0.3 + 0.7 * tau;
+  const double centre =
+      grow * (g.a1 * std::sin(g.k1 * tl + g.p1) + g.a2 * std::sin(g.k2 * tl + g.p2));
+  const double pinch = 1.0 + 0.12 * std::sin(1.7 * g.k2 * tl + g.p1);
+  const double half_w = g.half0 * (0.6 + 0.8 * tau) * pinch;
+  const double u = x - centre;
+  const double r = u / half_w;
+  const double r2 = r * r;
+  double chute = 0.0;
+  if (r2 < 1.0) {
+    const double q = 1.0 - r2;
+    chute = q * q * (2.4 * r2 - 0.6);
+  }
+  double v = 0.0, dv = 0.0;
+  smooth_d(g.split_at, g.split_at + 0.25, tau, v, dv);
+  const double s = g.split * v;
+  const double d = s * 0.55 * half_w;
+  const double hw = half_w * (1.0 - 0.3 * s);
+  const double pair = lobe(u - d, hw, tau) + lobe(u + d, hw, tau);
+  const double ro = 2.0 * d / hw;
+  const double overlap = ro * ro < 1.0 ? (1.0 - ro * ro) * (1.0 - ro * ro) : 0.0;
+  const double lobes = pair / (1.0 + overlap);
+  double lw = 0.0, cw = 0.0, head = 0.0;
+  smooth_d(0.35, 0.8, tau, lw, dv);
+  smooth_d(0.2, 0.55, tau, cw, dv);
+  smooth_d(0.0, 0.1, tau, head, dv);
+  return head * (lw * lobes + (1.0 - cw) * chute);
+}
+
 // One direction's tongues (`ground_lane_set`).
 inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k) {
   const double angle = static_cast<double>(k) * (k_two_pi / 16.0);
@@ -375,6 +425,7 @@ inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k
   const double sa = x * ax + z * az;
   const double t = x * dx + z * dz;
   const double mc = std::floor(sa / spacing + 0.5);
+  const double e = 0.002;
   Flow out;
   for (i32 i = -1; i <= 1; ++i) {
     const double m = mc + i;
@@ -396,36 +447,31 @@ inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k
       amp = episode(phase - std::floor(phase), static_cast<double>(d.flow_share));
     }
     if (!(amp > 0.0)) continue;
-    const double len = lenf * seg;
-    const double tau = (t - (j * seg + stagger + startf * seg)) / len;
-    if (!(tau > 0.0 && tau < 1.0)) continue;
-    const double half_w = 0.5 * width * wscale * (0.6 + 0.8 * tau);
-    const double dhalf_dt = 0.5 * width * wscale * 0.8 / len;
+    Tongue g;
+    g.len = lenf * seg;
+    const double tl = t - (j * seg + stagger + startf * seg);
+    if (!(tl > 0.0 && tl < g.len)) continue;
     const double off = sa - (m * spacing + jitter);
-    const double r = off / half_w;
-    const double r2 = r * r;
-    if (!(r2 < 1.0)) continue;
-    const double q = 1.0 - r2;
-    const double lobe = q * q;
-    const double dlobe = -4.0 * r * q;
-    const double chute = q * q * (2.4 * r2 - 0.6);
-    const double dchute = dlobe * (2.4 * r2 - 0.6) + q * q * 4.8 * r;
-    double lw, dlw, cw, dcw, head, dhead, toe, dtoe;
-    smooth_d(0.35, 0.8, tau, lw, dlw);
-    smooth_d(0.2, 0.55, tau, cw, dcw);
-    const double shape = lw * lobe + (1.0 - cw) * chute;
-    const double dshape_dr = lw * dlobe + (1.0 - cw) * dchute;
-    const double dshape_dtau = dlw * lobe - dcw * chute;
-    smooth_d(0.0, 0.1, tau, head, dhead);
-    smooth_d(0.0, 1.0, (tau - 0.8 + 0.12 * r2) / 0.2, toe, dtoe);
-    const double ends = head * (1.0 - toe);
-    const double dends_dtau = dhead * (1.0 - toe) - head * dtoe * (1.0 / 0.2);
-    const double dends_dr = -head * dtoe * (0.24 * r / 0.2);
-    const double height = shape * ends;
-    const double dh_dr = dshape_dr * ends + shape * dends_dr;
-    const double dh_dtau = dshape_dtau * ends + shape * dends_dtau;
-    const double dh_dx = dh_dr / half_w;
-    const double dh_dt = dh_dr * (-r / half_w * dhalf_dt) + dh_dtau / len;
+    g.half0 = 0.5 * width * wscale;
+    h = pcg(h);
+    g.a1 = width * (0.13 + 0.29 * unit(h));
+    h = pcg(h);
+    g.k1 = k_two_pi / (8.0 + 8.0 * unit(h));
+    h = pcg(h);
+    g.p1 = k_two_pi * unit(h);
+    g.a2 = 0.3 * g.a1;
+    h = pcg(h);
+    g.k2 = k_two_pi / (2.0 + 2.0 * unit(h));
+    h = pcg(h);
+    g.p2 = k_two_pi * unit(h);
+    h = pcg(h);
+    g.split = unit(h) < 0.3 ? 1.0 : 0.0;
+    h = pcg(h);
+    g.split_at = 0.45 + 0.2 * unit(h);
+    if (std::fabs(off) > 1.6 * spacing) continue;
+    const double height = tongue(g, off, tl);
+    const double dh_dx = (tongue(g, off + e, tl) - height) / e;
+    const double dh_dt = (tongue(g, off, tl + e) - height) / e;
     out.value += amp * height;
     out.gx += amp * (ax * dh_dx + dx * dh_dt);
     out.gz += amp * (az * dh_dx + dz * dh_dt);

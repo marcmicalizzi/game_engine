@@ -76,6 +76,26 @@ The instrument sees what the owner saw. The ovals at his feet are the same beats
 - **The ergs' share.** At a quarter, a face from the brink was nearly bare, so the ergs now keep half.
 - **Still not right:** the tongues are straight; real ones meander a little and sometimes branch.
 
+## Meander and branching (the owner's next step)
+
+Each tongue's centreline now wanders by two harmonics (8–16 m and 2–4 m), growing toward the toe. Its width pinches by 12%, and three tongues in ten split into two lobes part-way down. The gradient is a forward difference of 2 mm in local coordinates.
+
+| Measure | Result |
+|---|---|
+| Value rms, slope rms per lane width | 0.222, 1.008 (the block's constants) |
+| Gradient's share along the fall line, on a direction / 8° off | 90th percentile 0.29 / 0.36; 99th 0.77 / 0.81 |
+| Runs along lane centres (a probe 0.6 lane spacings wide) | median 12.2 m; 90th percentile 22.2 m. The 10th percentile, 0.5 m, is fragments where a meander swings out of the probe's band |
+| Millimetre steps along lines crossing tongues, bounded by the larger end's slope | no jump |
+| A milliradian of normal 3 km out, worst point | 24% of rms at the blend's steepest; nothing outside a blend |
+| Filter's mean against 8×8 supersampling at 5, 15 and 40 cm | within 0.03%, 0.85% and 0.59% |
+
+**Pictures.**
+
+- **`all_face_plan`:** tongues that wander gently and run at varied lengths. A few split into two lobes that diverge and end side by side.
+- **`ergs_face_feet`:** a tongue snaking down the face from the brink, its chute and levees giving way to a lobe.
+
+The author reads these as far closer to real grainflow than the straight lanes. What still separates them from a photograph: no grain-scale texture differs between a fresh flow and the older apron, and the tongues do not overlap and bury one another as successive avalanches do.
+
 ## At the merge
 
 The GPU case "the resolve draws the third pass's function on sloped sand" draws `ground_ref::erg_numbers()` falling with the wind at 27° and 32°, and its mirror is the new function, so it needs no code change. The author expects the same tolerance, 1 of 255 by the origin and 4 at 3.7 km:

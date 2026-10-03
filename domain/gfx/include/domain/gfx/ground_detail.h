@@ -69,8 +69,8 @@ inline constexpr u32 k_ground_motion = 512u;
 // own start and length) has a value of root-mean-square `k_ground_flow_rms` and a derivative of
 // `k_ground_flow_slope_rms` per lane width, after the four cells' blend: measured over the mirror
 // (ground_detail_tests.cpp, "grainflow lanes …"), and the block scales by them.
-inline constexpr f32 k_ground_flow_rms = 0.212f;
-inline constexpr f32 k_ground_flow_slope_rms = 0.953f;
+inline constexpr f32 k_ground_flow_rms = 0.222f;
+inline constexpr f32 k_ground_flow_slope_rms = 1.008f;
 // The ripples' travel reaches the shader reduced modulo this many base wavelengths, in double
 // precision on the CPU, so a float carries it to a ten-thousandth of a wavelength; where the
 // spacing or the patches scale the wavelength, the phase steps once as the reduction wraps, which
