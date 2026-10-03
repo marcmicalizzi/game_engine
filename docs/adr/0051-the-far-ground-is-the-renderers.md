@@ -27,7 +27,8 @@ The world's tiles (ADR-0050) end at the world's outermost ring, 2 km on the endl
 - The world's ring and its consumers are untouched; a host with no world (the renderer's tests) gets far levels from the same set.
 - The far levels draw the source's filtered heights, which the collision never reads: nothing walks there.
 - Every level, near or far, shares the one surface time and its own per-frame bound; a far level's pairs span weeks of game time (its kept bands are slow), so it blends rather than steps.
-- A far level re-centres every quarter of its half-side the camera travels; the first does so every ~900 m on the endless desert and costs a few hundred far tiles built on the worker.
+- A far level re-centres every quarter of its half-side the camera travels; the finest does so about every 1.1 km on the endless desert and builds about 210 far tiles (its new strip, the row whose border flag it cleared, the coarser level's tiles the strip uncovered): 33 ms of worker wall offscreen against 13 for an ordinary rebuild, 17 ms to carry its pair over the strip, and 2.4 ms of the frame thread's staging ([the experiment](../experiments/far-ground-2026-10-03.md#a-far-squares-move)).
+- The rings build about twice the tiles with far levels beside them (71 a rebuild at 100 m/s against 32): an outer ring's tile collapses its edges and corners onto the far level, so the boundary's motion re-keys the outer tiles round it, diagonally too. That is decision 4's seam rule at work, and the larger share of what a far level costs a rebuild.
 - The edge that remains is where the last level ends; past it the sky model's planet. The aerial-perspective table ends at 32 km, so ground beyond it is drawn no hazier than at 32 km (renderer.md, "Ground to the horizon").
 
 ## Alternatives rejected
