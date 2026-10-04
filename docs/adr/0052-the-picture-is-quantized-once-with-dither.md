@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-04
 - **Plan references:** docs/plan/04-renderer.md §4.1 (step 8, "Post and upscale") and §4.6 ("Presentation")
-- **Docs touched:** `docs/subsystems/renderer.md` ("The output encode"), `docs/subsystems/gfx.md` ("The output encode"), `docs/subsystems/apps.md` (`--dither`, `--present-bits`, the summary's `output` block), `docs/subsystems/protocol.md`, `docs/experiments/sky-banding-2026-10-04.md`
+- **Docs touched:** `docs/subsystems/renderer.md` ("The output encode"), `docs/subsystems/gfx.md` ("The output encode"), `docs/subsystems/apps.md` (`--dither`, `--present-bits`, the summary's `output` block), `docs/subsystems/protocol.md`, `docs/plan/04-renderer.md` (status note), `docs/experiments/sky-banding-2026-10-04.md`, `docs/experiments/hdr-output-proposal.md`
 
 ## Context
 
@@ -27,10 +27,10 @@ The alternatives were: a deeper target alone (10 bits removes three bands in fou
 - Every shaded picture of every scene moves by up to one code where the dither is on; with it off, and for every data view (ids, depth, normals, the shadow and detail views, the albedo view), nothing moved. The stand-in sky's flat clear is not dithered (it has no gradient, and it is the clear the pass already wrote). `ResolveParams` grew from 336 to 352 bytes.
 - A capture is now a picture with grain in it; a test that compares a picture to a number within a code turns the dither off or allows the code.
 - The owner's display gets the picture at 10 bits with a quarter-code grain; an 8-bit display or PNG gets it at 8 bits with a half-code grain. Neither bands.
-- HDR output is not decided by this: it needs a tone curve parameterized by the display and a target past [0, 1]. When it is built, its encode is a second branch of `display_output`, not a second function.
+- HDR output is not decided by this: it needs a tone curve parameterized by the display and a target past [0, 1]. What would decide it is written down as a proposal, E39 ([HDR output](../experiments/hdr-output-proposal.md)), and when it is built, its encode is a second branch of `display_output`, not a second function.
 
 ## Revisit when
 
 - A temporal dither is wanted (it would cost every byte-for-byte equality, so it would be an option, not the default).
-- HDR output is built: the encode's curve and its steps change, and the 10-bit PQ target's noise is one code of PQ, not of the 1/2.2 curve.
+- HDR output is built (E39, the proposal above): the encode's curve and its steps change, and the 10-bit PQ target's noise is one code of PQ, not of the 1/2.2 curve.
 - A display or capture path needs an `_SRGB` target, which would mean scaling the noise through that curve's slope.

@@ -124,7 +124,7 @@ The renderer drew into the swapchain's own format (the summary's `output.format`
 
 ## What it decides
 
-That the bands are the final quantizer's, and that the encode dithers (IGN, triangular, one code step, a function of the pixel alone) at the depth of the target, which is 10 bits in a window that offers them ([ADR-0052](../adr/0052-the-picture-is-quantized-once-with-dither.md)). It does not decide HDR output, and it does not judge the result by eye: that is the owner's, on his panels.
+That the bands are the final quantizer's, and that the encode dithers (IGN, triangular, one code step, a function of the pixel alone) at the depth of the target, which is 10 bits in a window that offers them ([ADR-0052](../adr/0052-the-picture-is-quantized-once-with-dither.md)). It does not decide HDR output ([the proposal](hdr-output-proposal.md), E39), and it does not judge the result by eye: that is the owner's, on his panels.
 
 ## Caveats
 

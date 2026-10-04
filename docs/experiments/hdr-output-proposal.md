@@ -1,0 +1,42 @@
+# HDR output: a proposal, not a measurement
+
+- **Question ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing), E39; [04 §4.6](../plan/04-renderer.md#46-extreme-displays), "HDR metadata per output"):** should the engine present an HDR signal on the owner's panels, and by which route — HDR10 (PQ on a 10-bit target, BT.2020 primaries) or scRGB (linear on a 16-bit float target)?
+- **Date:** proposed 2026-10-04. **Machine:** the owner's: an RTX 5090 driving three 4K panels as one 11520 × 2160 NVIDIA Surround display at 10 bits a channel.
+- **Machine state:** nothing measured yet.
+- **Decision:** none. This page proposes the experiment that would produce one; there is no ADR for HDR until it has run. What is decided is the SDR output it would extend ([ADR-0052](../adr/0052-the-picture-is-quantized-once-with-dither.md)).
+
+## What the engine has
+
+- **Scene-referred radiance.** With a sky ([ADR-0048](../adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md)) the resolve and the reference compute radiance in the sky's physical scale, up to the sun's disc and down to a moonless night, before anything is done to show it.
+- **An exposure rule** (incident-light metering at ISO 100 with a knee below which darkness is only partly compensated; [renderer](../subsystems/renderer.md#exposure)), the frame's own light with no history.
+- **A display-referred SDR tail**: the sky's per-channel shoulder (`sky_tone`, linear to 0.6 then rolling off towards 1), the transfer curve (a 1/2.2 power) and the dither, in one output encode (`display_output`, `display.slang`) that every writer of the picture calls ([renderer](../subsystems/renderer.md#the-output-encode)).
+- **A 10-bit swapchain** in the sRGB non-linear colour space where the surface offers one (`--present-bits`), so the SDR picture already reaches the panels at 10 bits.
+
+## What it lacks
+
+- **A tone curve parameterized by the display.** The shoulder maps exposed radiance onto [0, 1] of an SDR signal whose white is wherever the desktop puts it. HDR needs the display's **peak luminance** (and its full-frame peak) and a **paper-white level** — the luminance a diffuse white is shown at, where UI and SDR content sit — and a curve that holds everything below paper white as the SDR picture shows it and spends the range above it on highlights (the sun's aureole, a sunset's horizon, the moon's disc), rolling off at the peak.
+- **A place where UI composites.** There is no UI yet ([04 §4.7](../plan/04-renderer.md#47-ui-coordinate-architecture)). In HDR it has to be composited at paper white, in the output's own space, after the tone curve and before the encode — so the output encode becomes the frame's last pass rather than the end of the resolve.
+- **The extensions.** `VK_EXT_swapchain_colorspace` on the instance, which the colour spaces past sRGB non-linear need even to be listed, and `VK_EXT_hdr_metadata` on the device for the mastering display's primaries and luminance and the content's MaxCLL and MaxFALL. Neither is enabled.
+- **16-bit or float captures.** Every capture is an 8-bit PNG. An HDR picture cannot be inspected through one; it needs a half-float EXR (or a 16-bit PNG with a `cICP` chunk naming PQ and BT.2020) and a viewer that tone-maps it, and the tests' references would compare in the scene's radiance or in PQ codes rather than in 8-bit bytes.
+
+## The two routes
+
+**HDR10.** `A2B10G10R10Unorm` (or `A2R10G10B10Unorm`) in `VK_COLOR_SPACE_HDR10_ST2084_EXT`. The engine converts its linear Rec. 709 radiance to BT.2020 primaries (one 3 × 3 matrix), scales it to nits by the exposure and paper white, applies the display's tone curve, encodes with SMPTE ST 2084 (PQ), and dithers by one 10-bit PQ code — the existing encode with a different curve and the same noise. The swapchain is the size of today's 10-bit one, and the signal is what the panel takes, so the desktop compositor has nothing to convert. PQ's 10-bit steps are close to the threshold of visibility across its range, so the dither matters as much here as in SDR; out-of-gamut colours and the mastering metadata are the engine's to get right.
+
+**scRGB.** `R16G16B16A16Sfloat` in `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`: linear, Rec. 709 primaries, 1.0 at 80 nits, values above 1 for highlights and below 0 for colours outside Rec. 709. The engine writes linear radiance scaled to that convention after its tone curve; the compositor converts to the signal. No PQ in the engine and no quantization worth dithering, and UI composites linearly. It costs twice the bytes a pixel: 199 MB a swapchain image at 11520 × 2160 against 100 MB, and the resolve's colour write is the bandwidth-bound part of the frame there ([renderer](../subsystems/renderer.md#the-sky), "What it costs"). The compositor does not fit the picture to the display's peak; the engine still needs the peak to tone-map.
+
+## What Windows and NVIDIA Surround do — to be checked, not assumed
+
+- With Windows' "Use HDR" on for a display, the desktop compositor works in scRGB and sends the panel an HDR10 signal; an SDR swapchain is shown at the "SDR content brightness" level as paper white. What a **10-bit SDR** swapchain's precision survives through that composition, and with HDR off whether the 10 bits reach the panels (the NVIDIA control panel's output colour depth at 10 bpc), is the first thing to measure — it is also what today's `--present-bits 10` relies on.
+- Whether the HDR toggle is available for an **NVIDIA Surround** display group, whether all three panels then receive HDR10, and what peak luminance the system reports for the group (DXGI's `MaxLuminance`, `MaxFullFrameLuminance` and `MinLuminance` per output) are unknown here. Vulkan reports none of those numbers; the engine would read them from DXGI on Windows or take them from the player.
+- Which surface formats and colour spaces NVIDIA's driver offers with HDR off and on once `VK_EXT_swapchain_colorspace` is enabled, and whether presenting an HDR chain changes the FIFO pacing the display pacer was tuned to ([apps](../subsystems/apps.md#pacing)).
+
+## What to measure on the owner's hardware
+
+1. **The offers.** With the extension enabled, every surface format and colour space the Surround display offers with HDR off and with it on (a probe beside `engine-cli gpu.adapters`), and the luminances DXGI reports for it.
+2. **The SDR 10-bit path, by eye and by instrument.** A 10-bit ramp and the erg's sky at the banding test's hours ([sky-banding](sky-banding-2026-10-04.md)) through `--present-bits 10` with the dither on and off, HDR off and on: whether the panels show what the 10-bit picture holds.
+3. **HDR10.** The same scenes through a PQ encode at a few paper whites (100, 200, 300 nits) and the reported peak: banding by the instrument in PQ codes and by eye, highlight detail round the sun and the moon, and the encode's cost at 11520 × 2160 (expected small beside the resolve; to be measured with `--wait-quiet`).
+4. **scRGB.** The same scenes through a half-float chain: the resolve's and the present's cost at 11520 × 2160 against the 10-bit chain, the compositor's added latency (present timing), and whether its conversion matches the HDR10 picture.
+5. **Captures.** A half-float EXR capture of either route, and what a test would compare in.
+
+The ADR it would produce names the route (or both, chosen by what the surface offers), the tone curve's parameters and where they come from, where UI composites, and what a capture is.
