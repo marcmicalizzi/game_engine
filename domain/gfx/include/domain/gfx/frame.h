@@ -64,6 +64,13 @@ class FrameContext {
   u64 frame_index() const noexcept { return frame_index_; }
   bool recording() const noexcept { return recording_; }
 
+  // The timeline value the next begin_frame() waits for: the frame that last used the slot it will
+  // take, 0 when that slot was never submitted. A caller that times its frames waits for it first,
+  // so the wait — the GPU's time — is told from begin_frame's own work.
+  u64 next_slot_value() const noexcept {
+    return slots_.empty() ? 0
+                          : slots_[static_cast<u32>(frame_index_ % slots_.size())].submitted_value;
+  }
   // Timeline value the GPU has reached.
   u64 completed() const noexcept;
   // Host wait for the timeline to reach `value`; false on timeout or device loss.

@@ -1209,6 +1209,14 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   // over the flight's second half, once every list has reached the size the flight needs.
   static const mem::TagId k_frames_tag = mem::register_tag("tile-flight-frames");
   u64 frame_allocations = 0;
+  // **And it makes no buffer** (renderer.md, "What a frame waits for"): the renderer's half too —
+  // each step is drawn, begun and submitted in flight as a host's frame is — counting the device
+  // buffers the frame's thread makes, which the memory tags never see. Until 2026-10-04 every
+  // staged tile made a staging buffer of its own and every frame that turned a slot on or off made
+  // one for the records (`GpuScene::terrain_prepare`); they go through the staging ring now. The
+  // memory tag stays on the host's half, as it was: the renderer's half made one engine allocation
+  // a frame here, with this test's debug logging on, which is not traced yet.
+  u64 frame_buffers = 0;
   u32 swaps_counted = 0;
   // 60 tiles east and 20 north, two metres a frame: every tile the flight passes comes and goes.
   constexpr u32 k_frames = 260;
@@ -1216,12 +1224,20 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
     const f32 x = 2.0f * static_cast<f32>(f);
     const f32 z = 0.6f * static_cast<f32>(f);
     const u64 allocations_before = mem::stats(k_frames_tag).allocation_count;
+    const u64 buffers_before = gfx::buffers_created_on_thread();
     const u32 swaps_before = rig.motion.ring_stats().swaps;
+    const Camera camera = looking_down_at(Vec3{x, 0.0f, z}, 30.0f);
     {
       const mem::TagScope scope(k_frames_tag);
-      rig.follow(looking_down_at(Vec3{x, 0.0f, z}, 30.0f));
+      rig.follow(camera);
     }
+    FrameDesc frame;
+    frame.camera = camera;
+    frame.frame_index = f;
+    rig.renderer.begin_frame();
+    REQUIRE_MESSAGE(rig.renderer.submit_frame(frame, &rig.error) != 0, rig.error);
     if (f >= k_frames / 2) {
+      frame_buffers += gfx::buffers_created_on_thread() - buffers_before;
       const u64 made = mem::stats(k_frames_tag).allocation_count - allocations_before;
       swaps_counted += rig.motion.ring_stats().swaps - swaps_before;
       const TerrainRingLayout now = rig.tiles->layout();
@@ -1240,8 +1256,6 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
       CHECK(rig.tiles->chunks(l).size() * 2 <= rig.scene.terrain_slots(l));
     }
     if (f % 65 == 64) {
-      FrameDesc frame;
-      frame.camera = looking_down_at(Vec3{x, 0.0f, z}, 30.0f);
       CaptureChannels channels;
       channels.depth = true;
       CapturedFrame shot;
@@ -1263,6 +1277,13 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   CHECK(rig.tiles->withheld() == 0);
   CHECK(r.chunks_dropped > 0);
   CHECK(r.chunks_resident <= r.most_chunks);
+  MESSAGE("the flight's second half: " << frame_buffers << " device buffers made on the frame's "
+                                       << "thread; the staging ring held at most "
+                                       << rig.scene.terrain_staging_peak() << " of its "
+                                       << rig.scene.terrain_staging_bytes() << " bytes, "
+                                       << rig.scene.terrain_staging_overflows() << " overflows");
+  CHECK(frame_buffers == 0);
+  CHECK(rig.scene.terrain_staging_overflows() == 0);
   if (mem::tracking_enabled()) {
     MESSAGE("the flight's second half: "
             << frame_allocations << " allocations on the frame's "

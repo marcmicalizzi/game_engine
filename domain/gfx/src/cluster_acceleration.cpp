@@ -84,7 +84,8 @@ constexpr BufferUsage k_structure_usage =
     BufferUsage::AccelerationStorage | BufferUsage::ShaderDeviceAddress | BufferUsage::Storage;
 constexpr BufferUsage k_output_usage =
     BufferUsage::Storage | BufferUsage::ShaderDeviceAddress | BufferUsage::AccelerationBuildInput;
-// A bottom-level set's addresses are copied into the top-level instance records on the GPU.
+// A bottom-level set's addresses are written into the top-level instance records on the GPU by a
+// dispatch (tlas_references.slang), and stay a transfer source for a readback.
 constexpr BufferUsage k_blas_address_usage = k_output_usage | BufferUsage::TransferSrc;
 
 // The limits every set is checked against, in one place: a set the device cannot build is refused

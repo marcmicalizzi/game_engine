@@ -179,6 +179,16 @@ class RenderGraph {
   Extent2D render_area() const noexcept { return render_area_; }
   // After execute(): the layout an imported image was left in.
   ImageLayout final_layout(RgImage handle) const noexcept;
+  // After execute(): the passes in order, and the CPU's wall nanoseconds each took to record — its
+  // barriers, its rendering scope and its body. What a frame whose recording was slow is named by
+  // (docs/subsystems/gfx.md, "Render graph v0"; renderer.md, "What a frame waits for").
+  u32 pass_count() const noexcept { return passes_.size(); }
+  const char* pass_name(u32 pass) const noexcept {
+    return pass < passes_.size() ? passes_[pass].name : "";
+  }
+  i64 pass_cpu_ns(u32 pass) const noexcept {
+    return pass < passes_.size() ? passes_[pass].cpu_ns : 0;
+  }
 
   struct Stats {
     u32 passes = 0;
@@ -249,6 +259,7 @@ class RenderGraph {
     u32 first_image_barrier = 0;
     u32 image_barrier_count = 0;
     u32 first_layout = 0;  // into image_layouts_: layout per image use, in use order
+    i64 cpu_ns = 0;        // what execute() took to record it
   };
   // The barriers compile() derives, in the backend's own records so execute() hands them over as
   // they are: defined in src/render_graph.cpp, allocated once with the graph and reused by every

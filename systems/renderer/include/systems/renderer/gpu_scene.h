@@ -470,12 +470,22 @@ class GpuScene {
   u64 terrain_field_capacity(u32 level) const noexcept { return terrain_[level].capacity; }
   // The scene instance that draws `level`.
   u32 terrain_instance(u32 level) const noexcept { return terrain_[level].instance; }
-  // A host-visible, persistently mapped buffer for `samples` heights, which the caller fills from
-  // any thread and hands to `terrain_upload`.
-  bool terrain_staging(u64 samples, gfx::BufferResource& out, std::string* error = nullptr) const;
+  // A host-visible, persistently mapped buffer for `samples` heights of `level`, which the caller
+  // fills from any thread and hands to `terrain_upload` (or back, `terrain_retire`). **Kept and
+  // handed out again**: a staging buffer comes back to the scene once the frame that copied its
+  // last piece is done, and the next field takes the smallest one it fits in; a new one is made,
+  // `level`'s field capacity long, only when none is free — a time-lapse's first fields and a
+  // re-centre's first pairs — so the frames that follow make none (renderer.md, "What a frame waits
+  // for"). Until 2026-10-04 every field made a buffer and the frame freed it.
+  bool terrain_staging(u32 level, u64 samples, gfx::BufferResource& out,
+                       std::string* error = nullptr);
+  // How many field staging buffers the scene has made, and holds free now.
+  u32 terrain_field_stagings() const noexcept { return field_staging_made_; }
+  u32 terrain_field_stagings_free() const noexcept { return field_pool_.size(); }
   // Queues `staging` to be copied into field slot `slot` of `level`, in pieces over as many frames
   // as the upload budget takes (`set_terrain_upload_budget`), before anything in those frames reads
-  // a field; the frame that records the last piece retires the staging buffer. An `urgent` field —
+  // a field; the staging buffer comes back once the frame that records its last piece is done
+  // (`terrain_staging`). An `urgent` field —
   // one the next frame shows — goes over whole in that frame. `window` says which lattice window
   // the heights cover (its `heights` is ignored). A slot may be shown from the frame that records
   // its last piece (`terrain_slot_uploaded`); a second copy into the same slot replaces the first.
@@ -491,9 +501,9 @@ class GpuScene {
   void set_terrain_upload_budget(u64 bytes) noexcept { terrain_upload_budget_ = bytes; }
   u64 terrain_upload_budget() const noexcept { return terrain_upload_budget_; }
   // A staging buffer from `terrain_staging` that nothing will copy after all (a field a re-centre
-  // made stale): the next frame retires it with its own.
+  // made stale): it comes back with the next frame's.
   void terrain_retire(const gfx::BufferResource& staging) {
-    if (staging.buffer.valid()) pending_staging_.push_back(staging);
+    if (staging.buffer.valid()) field_retired_.push_back(staging);
   }
   // What `level` draws from the next frame on: field slot `slot_a`, and `slot_b` blended in by
   // `blend` (`~0u` for none), its spheres padded by `padding` metres, and nothing of it inside
@@ -521,6 +531,19 @@ class GpuScene {
   };
   ArenaFree terrain_arena_free(u32 level) const noexcept;
   bool terrain_chunk_upload(u32 level, TerrainChunk& chunk, std::string* error = nullptr);
+  // **The terrain's staging ring** (renderer.md, "What a frame waits for"): one host-visible,
+  // persistently mapped buffer, made and touched once when the scene is, that every chunk staged
+  // for upload and every frame's slot records are written into, a frame's share released when its
+  // slot comes round again. Until 2026-10-04 each chunk and each frame's records made a buffer of
+  // their own — an allocation on the frame's thread, and first-touch page faults on every byte
+  // staged. A staging that does not fit (an offscreen frame that uploads a whole rebuild, or the
+  // first fill) gets a buffer of its own, counted in `terrain_staging_overflows`; a window's frame
+  // stages no more than fits (`terrain_chunk_fits`) and leaves the rest for the next.
+  bool terrain_chunk_fits(const TerrainChunk& chunk) const noexcept;
+  u64 terrain_staging_bytes() const noexcept { return staging_ring_.size; }
+  u64 terrain_staging_peak() const noexcept { return ring_peak_; }
+  u64 terrain_staging_overflows() const noexcept { return ring_overflows_; }
+  u64 terrain_staging_overflow_bytes() const noexcept { return ring_overflow_bytes_; }
   // On: the slot draws its chunk from the next frame. Off: it draws nothing, and its slot and arena
   // ranges are free for the next upload (whose copy the frame orders after every frame in flight).
   void terrain_chunk_show(u32 level, u32 slot, bool on) noexcept;
@@ -538,7 +561,7 @@ class GpuScene {
       gfx::BufferResource field;
       u64 bytes = 0;     // this piece's
       u64 offset = 0;    // into the staging buffer and the field alike
-      bool last = true;  // the field's last piece: the frame retires the staging buffer after it
+      bool last = true;  // the field's last piece: the scene takes the staging back once it is done
     };
     Vector<Copy> copies;
     Vector<gfx::BufferResource> fields;  // every field buffer the table names
@@ -551,7 +574,9 @@ class GpuScene {
     };
     Vector<GeometryCopy> geometry;
     u64 geometry_bytes = 0;
-    Vector<gfx::BufferResource> retire;  // staging the frame frees once it is done
+    // Buffers of their own that stagings the ring had no room for made: the frame frees them once
+    // it is done (the ring's own share, and the fields' staging, come back to the scene instead).
+    Vector<gfx::BufferResource> retire;
   };
   void terrain_prepare(u32 slot, TerrainUpdate& out);
   // The bytes the static shape caches actually hold, and how many instances got one. An instance
@@ -754,9 +779,9 @@ class GpuScene {
   gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
   // One top-level instance record per instance, device-local and written once: the transforms
   // never change, and the one field that does — the bottom-level address, which the implicit
-  // build of `blas_set` decides each frame — is copied in on the GPU (`rt_instance_copies`).
+  // build of `blas_set` decides each frame — is written in on the GPU, a thread an instance
+  // (`gfx::TlasReferenceParams`, tlas_references.slang).
   gfx::BufferResource rt_instances;
-  Vector<gfx::BufferCopy> rt_instance_copies;  // blas_set.addresses[i] -> rt_instances[i].reference
   gfx::AccelerationStructure tlas;
   gfx::ClusterTemplateSet clas_templates;  // --rt-templates: one per cluster, packed to size
   // Sized by the frame (`rt_capacity()` clusters), and replaced by `resize_ray_tracing`:
@@ -871,6 +896,16 @@ class GpuScene {
   // Stages a chunk into slot `s` of `ring` (arena ranges already taken) as copies for the next
   // frame, or for `create`'s one-shot upload.
   bool stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::string* error);
+  // The staging ring (above): `bytes` of it for the next frame to copy from, 16-byte aligned, at
+  // `offset`; false when it has no room (or is not made yet), and the caller makes a buffer of its
+  // own. `ring_release` is the frame recorded in `region`'s: what the frame that last had it took
+  // is free again, and what was staged since the last frame is this frame's.
+  bool create_staging_ring(std::string* error);
+  bool ring_take(u64 bytes, u64& offset) noexcept;
+  bool ring_fits(u64 bytes) const noexcept;
+  void ring_release(u32 region) noexcept;
+  // A chunk's staged bytes: its streams one after another at 16-byte offsets (`stage_chunk`).
+  u64 chunk_staging_bytes(const TerrainChunk& chunk) const noexcept;
   static bool take_range(Vector<Range>& free, u64 count, Range& out) noexcept;
   static void give_range(Vector<Range>& free, Range range) noexcept;
   Vector<RingSlots> ring_slots_;                  // index level - 1
@@ -886,6 +921,20 @@ class GpuScene {
   Vector<TerrainUpdate::GeometryCopy> pending_geometry_;
   Vector<gfx::BufferResource> pending_staging_;
   u64 pending_geometry_bytes_ = 0;
+  gfx::BufferResource staging_ring_;       // the terrain's staging ring (`terrain_chunk_fits`)
+  u64 ring_head_ = 0;                      // bytes ever taken from it, a running count
+  u64 ring_tail_ = 0;                      // bytes ever released
+  u64 ring_slot_end_[k_joint_slots] = {};  // where each frame slot's share ends, as a running count
+  u64 ring_peak_ = 0;                      // the most it held at once
+  u64 ring_overflows_ = 0;                 // stagings that did not fit and made a buffer
+  u64 ring_overflow_bytes_ = 0;
+  // The fields' staging buffers (`terrain_staging`): free ones, the ones each frame slot's last
+  // frame copied the last piece of (free once that slot comes round), and the ones handed back
+  // uncopied since the last frame.
+  Vector<gfx::BufferResource> field_pool_;
+  Vector<gfx::BufferResource> field_returning_[k_joint_slots];
+  Vector<gfx::BufferResource> field_retired_;
+  u32 field_staging_made_ = 0;
   Vector<u32> pending_mesh_writes_;   // mesh indices whose MeshDesc the next frame writes
   Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
   TerrainLevelSet* rings_ = nullptr;  // during `create` only

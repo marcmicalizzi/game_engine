@@ -53,6 +53,11 @@ struct ImageLevelData {
 bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_visible,
                    BufferResource& out, std::string* error = nullptr);
 void destroy_buffer(const Device& device, BufferResource& buffer) noexcept;
+// The buffers the calling thread has made with `create_buffer` (and the uploads that call it)
+// since it started. A buffer is an allocation the engine's memory tags never see — the driver's
+// and the device allocator's — so a frame loop's test counts these to show the loop makes none in
+// steady state (docs/subsystems/renderer.md, "What a frame waits for").
+u64 buffers_created_on_thread() noexcept;
 // Creates a device-local buffer with `usage` plus TransferDst and ShaderDeviceAddress, fills it
 // from `data` through a staging buffer, and waits for the copy. For setup-time uploads.
 bool upload_buffer(const Device& device, const void* data, u64 bytes, BufferUsage usage,

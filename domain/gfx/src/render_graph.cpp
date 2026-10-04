@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
+#include <core/time/time.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/render_graph.h>
@@ -520,8 +521,11 @@ bool RenderGraph::compile(std::string* error) {
 void RenderGraph::execute(CommandList commands) {
   ENGINE_VERIFY(compiled_, "RenderGraph::execute: compile first");
   const VkCommandBuffer cb = vk::native(commands);
+  // Each pass's recording is timed, two clock reads a pass: a frame whose recording is slow says
+  // which pass it was in (`pass_cpu_ns`), which a total cannot.
+  i64 mark = time::monotonic_ns();
   for (u32 p = 0; p < passes_.size(); ++p) {
-    const Pass& pass = passes_[p];
+    Pass& pass = passes_[p];
     if (pass.buffer_barrier_count > 0 || pass.image_barrier_count > 0) {
       VkDependencyInfo dependency{};
       dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -537,6 +541,9 @@ void RenderGraph::execute(CommandList commands) {
     if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
     if (raster) vkCmdEndRendering(cb);
+    const i64 now = time::monotonic_ns();
+    pass.cpu_ns = now - mark;
+    mark = now;
   }
   if (!barriers_->final.empty()) {
     VkDependencyInfo dependency{};

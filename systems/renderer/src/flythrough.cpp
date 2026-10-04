@@ -72,6 +72,16 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.table_slots = stats.table_slots;
   out.table_pairs = stats.table_pairs;
   out.hole_pairs = stats.hole_pairs;
+  out.cpu.wait = stats.cpu.wait_ms;
+  out.cpu.begin = stats.cpu.begin_ms;
+  out.cpu.tables = stats.cpu.tables_ms;
+  out.cpu.terrain = stats.cpu.terrain_ms;
+  out.cpu.passes = stats.cpu.passes_ms;
+  out.cpu.compile = stats.cpu.compile_ms;
+  out.cpu.record = stats.cpu.record_ms;
+  out.cpu.submit = stats.cpu.submit_ms;
+  out.cpu.slowest_pass = stats.cpu.slowest_pass != nullptr ? stats.cpu.slowest_pass : "";
+  out.cpu.slowest_pass_ms = stats.cpu.slowest_pass_ms;
   return out;
 }
 
@@ -242,6 +252,14 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     wall,
     tables,
     sky,
+    cpu_wait,
+    cpu_begin,
+    cpu_tables,
+    cpu_terrain,
+    cpu_passes,
+    cpu_compile,
+    cpu_record,
+    cpu_submit,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -302,7 +320,15 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     r->cpu_ms,
                                     r->frame_ms,
                                     ms.tables,
-                                    ms.sky};
+                                    ms.sky,
+                                    r->cpu.wait,
+                                    r->cpu.begin,
+                                    r->cpu.tables,
+                                    r->cpu.terrain,
+                                    r->cpu.passes,
+                                    r->cpu.compile,
+                                    r->cpu.record,
+                                    r->cpu.submit};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -332,6 +358,20 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.frame_ms = over(wall);
   out.gpu_ms.tables = over(tables);
   out.gpu_ms.sky = over(sky);
+  out.cpu.wait = over(cpu_wait);
+  out.cpu.begin = over(cpu_begin);
+  out.cpu.tables = over(cpu_tables);
+  out.cpu.terrain = over(cpu_terrain);
+  out.cpu.passes = over(cpu_passes);
+  out.cpu.compile = over(cpu_compile);
+  out.cpu.record = over(cpu_record);
+  out.cpu.submit = over(cpu_submit);
+  out.cpu.over_8ms = 0;
+  out.cpu.over_16ms = 0;
+  for (const f64 ms : per_frame[cpu]) {
+    if (ms > 8.0) ++out.cpu.over_8ms;
+    if (ms > 16.0) ++out.cpu.over_16ms;
+  }
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

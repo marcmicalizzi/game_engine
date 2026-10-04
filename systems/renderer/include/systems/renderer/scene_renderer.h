@@ -98,6 +98,28 @@ struct GpuMemory {
   u64 device_local_total_mib = 0;
 };
 
+// **Where one frame's CPU time went on the frame's thread**, wall milliseconds by stage
+// (docs/subsystems/renderer.md, "What a frame waits for"): `begin_frame` past its wait for the slot
+// (the fold of the slot's last frame, its deferred frees, a step of the ray tracing chain's
+// capacity), and inside `submit_frame` the streamed world's tables, the terrain's copies and slot
+// records (`GpuScene::terrain_prepare`), declaring the passes and writing their parameter blocks,
+// the graph's compile, its recording, and the submission (`vkEndCommandBuffer` and the queue
+// submit). `slowest_pass` names the pass whose recording took longest (`RenderGraph::pass_cpu_ns`),
+// a string literal of the renderer's. A spike in a host's `cpu_ms` is one of these, or the host's
+// own work around the frame.
+struct FrameCpu {
+  f64 wait_ms = 0.0;  // begin_frame's wait for the slot: the GPU's time, not the CPU's
+  f64 begin_ms = 0.0;
+  f64 tables_ms = 0.0;
+  f64 terrain_ms = 0.0;
+  f64 passes_ms = 0.0;
+  f64 compile_ms = 0.0;
+  f64 record_ms = 0.0;
+  f64 submit_ms = 0.0;
+  const char* slowest_pass = "";
+  f64 slowest_pass_ms = 0.0;
+};
+
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
 // asks "what did frame 1,412 cost", which a sum cannot answer and a CPU clock must not
@@ -172,6 +194,8 @@ struct FrameStats {
   f64 gpu_terrain_upload = 0.0;
   // A sky's passes (renderer.md, "The sky"): its tables, the sky from the eye, the air, the sums.
   f64 gpu_sky = 0.0;
+  // Where the frame thread's time went while this frame was begun, recorded and submitted.
+  FrameCpu cpu;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
 };
@@ -588,6 +612,7 @@ class SceneRenderer {
     gfx::ComputePipeline records;
     gfx::ComputePipeline record_ranges;
     gfx::ComputePipeline record_emit;
+    gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in
     gfx::ComputePipeline trace;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
     gfx::ComputePipeline pair_expand;
@@ -679,6 +704,8 @@ class SceneRenderer {
   Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
   Vector<u32> slot_table_pairs_;
   Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
+  Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
+  FrameCpu frame_cpu_;              // the frame being begun and recorded's, until submit_frame
   GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
   GpuScene::TerrainUpdate terrain_frame_;
@@ -691,7 +718,7 @@ class SceneRenderer {
   // When the frame being recorded passed its tables, its terrain, its passes' setup and its
   // graph: what a slow frame's line names (submit_frame).
   static constexpr i64 k_slow_frame_ns = 25'000'000;
-  i64 phase_ns_[4] = {};
+  i64 phase_ns_[5] = {};
   // Frames recorded since create, never reset: the occlusion flags' ping-pong parity, which has
   // to alternate every frame whatever frame number the caller passes and whatever reset_stats did.
   u64 recorded_ = 0;

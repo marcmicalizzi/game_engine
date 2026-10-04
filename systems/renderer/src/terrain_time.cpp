@@ -611,7 +611,7 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
     }
     if (!level.hidden) {
       gfx::BufferResource staging;
-      if (!scene.terrain_staging(heights.size(), staging, error)) return false;
+      if (!scene.terrain_staging(k, heights.size(), staging, error)) return false;
       std::memcpy(staging.mapped, heights.data(), heights.size() * sizeof(f32));
       // The first frame shows it: copied whole by that frame, whatever the budget.
       if (!scene.terrain_upload(k, 0, level.window, staging, error, true)) return false;
@@ -1050,7 +1050,7 @@ bool TerrainMotion::schedule(u32 k) {
   level.stats.max_step_s = std::max(level.stats.max_step_s, at - from);
   gfx::BufferResource staging;
   std::string error;
-  if (!scene_->terrain_staging(samples_of(level.window), staging, &error)) {
+  if (!scene_->terrain_staging(k, samples_of(level.window), staging, &error)) {
     ENGINE_LOG_ERROR(log_renderer, "a terrain field's staging could not be made",
                      log::field("error", error));
     return false;
@@ -1279,6 +1279,10 @@ bool TerrainMotion::upload_chunks(bool all) {
       break;
     const Upload u = uploads_[upload_next_];
     TerrainChunk& chunk = rings_->chunks(u.level)[u.chunk];
+    // A window's frame stages what the staging ring has room for and leaves the rest to the next,
+    // whose slot's release makes room (GpuScene::terrain_chunk_fits); one that waits for its
+    // rebuild stages it all, and what does not fit goes through a buffer of its own.
+    if (!all && done > 0 && !scene_->terrain_chunk_fits(chunk)) break;
     std::string error;
     if (!scene_->terrain_chunk_upload(u.level, chunk, &error)) {
       abandon_recentre(error);
@@ -1347,8 +1351,8 @@ bool TerrainMotion::schedule_pairs() {
       error = "a ring's new window is larger than its field slots";
     } else if (sa == ~0u || (p.has_b && sb == ~0u)) {
       error = "a ring has no free field slot for its pair over the new window";
-    } else if (!scene_->terrain_staging(samples_of(w), p.staging_a, &error) ||
-               (p.has_b && !scene_->terrain_staging(samples_of(w), p.staging_b, &error))) {
+    } else if (!scene_->terrain_staging(k, samples_of(w), p.staging_a, &error) ||
+               (p.has_b && !scene_->terrain_staging(k, samples_of(w), p.staging_b, &error))) {
       if (error.empty()) error = "a ring's field staging could not be made";
     }
     if (!error.empty()) {

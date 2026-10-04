@@ -687,8 +687,15 @@ void Device::destroy() noexcept {
 
 // ---- resources -------------------------------------------------------------------------------
 
+namespace {
+thread_local u64 t_buffers_created = 0;
+}  // namespace
+
+u64 buffers_created_on_thread() noexcept { return t_buffers_created; }
+
 bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_visible,
                    BufferResource& out, std::string* error) {
+  ++t_buffers_created;
   const Handles& h = device.handles();
   VkBufferCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;

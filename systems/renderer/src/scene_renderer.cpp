@@ -24,6 +24,7 @@
 #include <shaders/hiz_build.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
+#include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <shaders/visibility_resolve_rt.spv.h>
@@ -154,6 +155,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, records);
   gfx::destroy_compute_pipeline(device, record_ranges);
   gfx::destroy_compute_pipeline(device, record_emit);
+  gfx::destroy_compute_pipeline(device, tlas_references);
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, pair_expand);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
@@ -336,6 +338,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_table_slots_.assign(desc.frames_in_flight, 0);
   slot_table_pairs_.assign(desc.frames_in_flight, 0);
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
+  slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   // The statistics block ends with the sky's sums (`gfx::SkyFrame`), copied there after the
@@ -390,6 +393,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_visibility_resolve_rt_spirv_size);
   shaders_.add_embedded("clas_records", shaders::k_clas_records_spirv,
                         shaders::k_clas_records_spirv_size);
+  shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
+                        shaders::k_tlas_references_spirv_size);
   shaders_.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
@@ -552,8 +557,13 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   }
   if (resolved_.rt_chain) {
     const gfx::Shader* records = shaders_.get("clas_records", error);
-    if (records == nullptr) return false;
-    if (!gfx::create_compute_pipeline(device, records->module, "records_main", {},
+    const gfx::Shader* references =
+        records != nullptr ? shaders_.get("tlas_references", error) : nullptr;
+    if (references == nullptr) return false;
+    if (!gfx::create_compute_pipeline(device, references->module, "tlas_references_main", {},
+                                      sizeof(gfx::TlasReferenceParams), pipelines_.tlas_references,
+                                      error) ||
+        !gfx::create_compute_pipeline(device, records->module, "records_main", {},
                                       sizeof(gfx::ClusterRecordParams), pipelines_.records,
                                       error) ||
         !gfx::create_compute_pipeline(device, records->module, "ranges_main", {},
@@ -1030,6 +1040,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
   last.terrain_upload_bytes = slot < slot_terrain_bytes_.size() ? slot_terrain_bytes_[slot] : 0;
+  last.cpu = slot < slot_cpu_.size() ? slot_cpu_[slot] : FrameCpu{};
   stats_.terrain_upload_bytes += last.terrain_upload_bytes;
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
@@ -1093,6 +1104,14 @@ void SceneRenderer::collect_visible() {
 }
 
 void SceneRenderer::begin_frame() {
+  // The wait for the slot first, on its own clock: it is the GPU's time, and what follows it — the
+  // slot's deferred frees, its timestamps, the fold, a step of the chain's capacity — is the CPU's
+  // (`FrameCpu`).
+  const i64 wait_started = time::monotonic_ns();
+  if (const u64 value = frames_.next_slot_value(); value != 0) (void)frames_.wait(value);
+  const i64 begin_started = time::monotonic_ns();
+  frame_cpu_ = FrameCpu{};
+  frame_cpu_.wait_ms = static_cast<f64>(begin_started - wait_started) / 1.0e6;
   commands_ = frames_.begin_frame();
   timer_.begin_frame(commands_, frames_.slot());
   // The frame that last used this slot has completed: its statistics are readable.
@@ -1112,6 +1131,7 @@ void SceneRenderer::begin_frame() {
       }
     }
   }
+  frame_cpu_.begin_ms = static_cast<f64>(time::monotonic_ns() - begin_started) / 1.0e6;
   recording_ = true;
 }
 
@@ -1199,20 +1219,40 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   flags_dirty_ = false;
   const i64 finished = time::monotonic_ns();
   stats_.cpu_ns += static_cast<f64>(finished - started);
+  // **Where the frame's time went** (`FrameCpu`), kept with the slot and folded into
+  // `Stats::last` with the rest of the frame's numbers when the slot comes around: the tables, the
+  // terrain's copies and slot records, the passes' setup, the graph's compile and its recording —
+  // with the pass whose recording took longest — and the submission.
+  const auto ms = [](i64 a, i64 b) { return static_cast<f64>(b - a) / 1.0e6; };
+  frame_cpu_.tables_ms = ms(started, phase_ns_[0]);
+  frame_cpu_.terrain_ms = ms(phase_ns_[0], phase_ns_[1]);
+  frame_cpu_.passes_ms = ms(phase_ns_[1], phase_ns_[2]);
+  frame_cpu_.compile_ms = ms(phase_ns_[2], phase_ns_[3]);
+  frame_cpu_.record_ms = ms(phase_ns_[3], phase_ns_[4]);
+  frame_cpu_.submit_ms = ms(phase_ns_[4], finished);
+  i64 slowest = 0;
+  for (u32 p = 0; p < graph_->pass_count(); ++p) {
+    if (graph_->pass_cpu_ns(p) <= slowest) continue;
+    slowest = graph_->pass_cpu_ns(p);
+    frame_cpu_.slowest_pass = graph_->pass_name(p);
+  }
+  frame_cpu_.slowest_pass_ms = static_cast<f64>(slowest) / 1.0e6;
+  if (slot < slot_cpu_.size()) slot_cpu_[slot] = frame_cpu_;
   // **A frame whose recording took long says where** (renderer.md, "What a frame waits for"): the
-  // tables, the terrain's copies and slot records, the passes' setup, the graph's compile and
-  // record, and the submission. The flight of 2026-09-30 had 46–457 ms frames and no way to name
-  // the part; this line is how the next one is named.
+  // same parts, in the log, for a host that keeps no frame records. The flight of 2026-09-30 had
+  // 46–457 ms frames and no way to name the part; this line is how the next one is named.
   if (finished - started > k_slow_frame_ns) {
-    const auto ms = [](i64 a, i64 b) { return static_cast<f64>(b - a) / 1.0e6; };
     ENGINE_LOG_WARN(log_renderer, "a frame's recording was slow",
                     log::field("frame", frame.frame_index),
                     log::field("total_ms", ms(started, finished)),
-                    log::field("tables_ms", ms(started, phase_ns_[0])),
-                    log::field("terrain_ms", ms(phase_ns_[0], phase_ns_[1])),
-                    log::field("passes_ms", ms(phase_ns_[1], phase_ns_[2])),
-                    log::field("graph_ms", ms(phase_ns_[2], phase_ns_[3])),
-                    log::field("submit_ms", ms(phase_ns_[3], finished)));
+                    log::field("tables_ms", frame_cpu_.tables_ms),
+                    log::field("terrain_ms", frame_cpu_.terrain_ms),
+                    log::field("passes_ms", frame_cpu_.passes_ms),
+                    log::field("compile_ms", frame_cpu_.compile_ms),
+                    log::field("record_ms", frame_cpu_.record_ms),
+                    log::field("slowest_pass", frame_cpu_.slowest_pass),
+                    log::field("slowest_pass_ms", frame_cpu_.slowest_pass_ms),
+                    log::field("submit_ms", frame_cpu_.submit_ms));
   }
   return value;
 }
@@ -1961,7 +2001,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // one view the geometry is the **union** of the views' cuts: the visible list is run-major, so
   // every view's first run is one contiguous range at the front and one dispatch covers them all.
   gfx::ClusterRecordParams record_params{};
+  gfx::TlasReferenceParams tlas_references{};  // the BLAS addresses into the top-level records
   if (rt_chain) {
+    tlas_references.addresses = scene.blas_set.addresses.address;
+    tlas_references.records = scene.rt_instances.address;
+    tlas_references.count = instance_count;
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;
@@ -3000,18 +3044,24 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             timer.end(cb);
           });
       // Each instance's bottom-level address, which the build just decided, into the reference
-      // field of its top-level record. One copy of `instance_count` eight-byte regions, built once
-      // with the scene (`GpuScene::rt_instance_copies`), so the frame allocates nothing for it.
+      // field of its top-level record: one dispatch, a thread an instance (tlas_references.slang).
+      // Until 2026-10-04 it was one copy of `instance_count` eight-byte regions, which the driver
+      // encodes region by region on this thread — 47,849 of them on the endless desert, 3 ms of a
+      // 3.5 ms frame and every spike past 8 ms
+      // (docs/experiments/frame-thread-spikes-2026-10-04.md).
       graph.add_pass(
-          "tlas instances", gfx::PassKind::Transfer,
+          "tlas instances", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
-            b.read(rt.blas_addresses, gfx::Access::TransferRead);
-            b.write(rt.instances, gfx::Access::TransferWrite);
+            b.read(rt.blas_addresses, gfx::Access::ComputeRead);
+            b.write(rt.instances, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
-            cb.copy_buffer(scene.blas_set.addresses.buffer, scene.rt_instances.buffer,
-                           std::span<const gfx::BufferCopy>(scene.rt_instance_copies.data(),
-                                                            scene.rt_instance_copies.size()));
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.tlas_references.pipeline);
+            cb.push_constants(pipelines.tlas_references.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::TlasReferenceParams), &tlas_references);
+            cb.dispatch((instance_count + gfx::k_tlas_references_workgroup - 1) /
+                            gfx::k_tlas_references_workgroup,
+                        1, 1);
           });
       graph.add_pass(
           "tlas", gfx::PassKind::Compute,
@@ -3247,15 +3297,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   graph.set_final_layout(color, frame.final_layout);
   phase_ns_[2] = time::monotonic_ns();
   const bool compiled = graph.compile(error);
-  if (compiled) graph.execute(commands_);
   phase_ns_[3] = time::monotonic_ns();
-  // A terrain field's staging is the frame's that records its last piece to free once it is done
-  // (the frame context holds it until the slot comes round), recorded or not: nothing else will.
+  if (compiled) graph.execute(commands_);
+  phase_ns_[4] = time::monotonic_ns();
+  // A field's staging comes back to the scene once this frame is done (GpuScene::terrain_staging),
+  // and the staging ring's share with it; what the frame frees is the buffers a staging the ring
+  // had no room for made, recorded or not: nothing else will.
   u64 terrain_bytes = terrain_frame_.geometry_bytes;
-  for (u32 c = 0; c < terrain_copies; ++c) {
+  for (u32 c = 0; c < terrain_copies; ++c)
     terrain_bytes += terrain_frame_.copies[c].bytes;
-    if (terrain_frame_.copies[c].last) frames_.defer_destroy(terrain_frame_.copies[c].staging);
-  }
   for (const gfx::BufferResource& staging : terrain_frame_.retire)
     frames_.defer_destroy(staging);
   terrain_frame_.retire.clear();

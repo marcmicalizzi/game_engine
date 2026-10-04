@@ -961,6 +961,26 @@ struct TerrainLevelFrame @version(1) {
   ahead: u32 = 0
 }
 
+/// Where one frame's CPU time went on the frame's thread, wall milliseconds by stage
+/// (`renderer::FrameCpu`; docs/subsystems/renderer.md, "What a frame waits for"): the renderer's
+/// `begin_frame` past its wait for the frame slot (`wait`, the GPU's time and not in `cpu_ms`),
+/// and inside its `submit_frame` the streamed world's tables, the terrain's copies and slot
+/// records, declaring the passes, the render graph's compile and recording, and the submission.
+/// `slowest_pass` names the pass whose recording took longest and `slowest_pass_ms` says how long.
+/// What `cpu_ms` holds beyond the stages is the host's own (a window's input and camera ticks).
+struct CpuMs @version(1) {
+  wait: f64 = 0
+  begin: f64 = 0
+  tables: f64 = 0
+  terrain: f64 = 0
+  passes: f64 = 0
+  compile: f64 = 0
+  record: f64 = 0
+  submit: f64 = 0
+  slowest_pass: string
+  slowest_pass_ms: f64 = 0
+}
+
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
 /// and how far behind game time the surface stood, its speed over the true one, and each level's.
 /// Version 3 added the ground's layout: how far behind the camera the rings or the world's tiles
@@ -996,7 +1016,7 @@ struct FrameTerrain @version(3) {
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(7) {
+struct FrameRecord @version(8) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1102,6 +1122,8 @@ struct FrameRecord @version(7) {
   pixels: u32[]
   /// With `--time-rate`: the dune field's time-lapse in this frame; null without one.
   terrain: FrameTerrain? = null @since(7)
+  /// Where the frame's CPU time went on the frame's thread (see `CpuMs`).
+  cpu: CpuMs @since(8)
 }
 
 /// A distribution over a path's frames.
@@ -1132,6 +1154,22 @@ struct PassPercentiles @version(5) {
   tables: Percentiles @since(4)
   /// A sky's tables and sums (PassMs.sky); zero for a scene with no sky.
   sky: Percentiles @since(5)
+}
+
+/// The frames' CPU stages over a path (`FrameRecord.cpu`, each frame's median across the repeats,
+/// as `cpu_ms` is taken), and the frames whose `cpu_ms` passed 8 ms and 16 ms: the counts a
+/// frame-thread spike is judged by (docs/experiments/frame-thread-spikes-2026-10-04.md).
+struct CpuPercentiles @version(1) {
+  wait: Percentiles
+  begin: Percentiles
+  tables: Percentiles
+  terrain: Percentiles
+  passes: Percentiles
+  compile: Percentiles
+  record: Percentiles
+  submit: Percentiles
+  over_8ms: u32 = 0
+  over_16ms: u32 = 0
 }
 
 /// One mesh as a run loaded it: what a number was measured on.
@@ -1320,7 +1358,7 @@ struct FlythroughOutput @version(1) {
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(10) {
+struct FlythroughSummary @version(11) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1405,4 +1443,7 @@ struct FlythroughSummary @version(10) {
   sun: json @since(9)
   /// The target the picture was quantized into, its bits and the dither (see `FlythroughOutput`).
   output: FlythroughOutput @since(10)
+  /// Where the frames' CPU time went, stage by stage (`FrameRecord.cpu`), and how many frames'
+  /// `cpu_ms` passed 8 and 16 ms (see `CpuPercentiles`).
+  cpu: CpuPercentiles @since(11)
 }

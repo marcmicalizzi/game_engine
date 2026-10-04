@@ -90,6 +90,8 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // took over the word that held the CLAS set's capacity, because a visible run's count is bounded
 // by `pair_count` anyway (docs/plan/04-renderer.md §4.6).
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
+// tlas_references.slang's push block: two addresses and the count (2026-10-04).
+ENGINE_EXPECT_SIZE(24, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity

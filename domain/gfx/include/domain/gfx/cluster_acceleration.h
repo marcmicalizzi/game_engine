@@ -292,6 +292,21 @@ struct ClusterRecordParams {
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
 };
 static_assert(sizeof(ClusterRecordParams) == 128);
+// `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
+// implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
+// into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level
+// record, one thread an instance. A dispatch rather than a copy of `count` eight-byte regions,
+// which the driver encodes region by region on the CPU: 47,849 of them a frame took 3 ms to record
+// on the endless desert, and every frame-thread spike past 8 ms with them
+// (docs/experiments/frame-thread-spikes-2026-10-04.md).
+struct TlasReferenceParams {
+  u64 addresses = 0;  // u64[count]
+  u64 records = 0;    // top-level instance records, k_instance_record_bytes each
+  u32 count = 0;
+  u32 pad = 0;
+};
+static_assert(sizeof(TlasReferenceParams) == 24);
+inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
 inline constexpr u32 k_cluster_record_count_words = 4;
@@ -313,7 +328,7 @@ constexpr u32 cluster_records_mode(u32 views, bool instantiate) noexcept {
 // `addresses` by a copy on the GPU rather than being written once on the host.
 struct ClusterBlasSet {
   BufferResource data;       // every structure, packed by the driver
-  BufferResource addresses;  // u64[max_structures], written by the build; a transfer source
+  BufferResource addresses;  // u64[max_structures], written by the build; storage, transfer source
   u64 build_scratch_bytes = 0;
   u32 max_structures = 0;  // bottom-level structures per build (one per scene instance)
   u32 max_clusters = 0;    // CLAS references over all of them
