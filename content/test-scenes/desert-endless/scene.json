@@ -122,8 +122,8 @@
       "lee_end_deg": 18,
       "grain_finest": 0.001,
       "grain_normal": 0.06,
-      "streak_start_deg": 22,
-      "streak_full_deg": 30,
+      "streak_start_deg": 0,
+      "streak_full_deg": 0,
       "streak_width": 0.4,
       "streak_length": 2,
       "streak_albedo": 0.06,
@@ -131,7 +131,26 @@
       "streak_normal": 0.012,
       "spacing_gain": 2.5,
       "spacing_min": 0.8,
-      "spacing_max": 1.6
+      "spacing_max": 1.6,
+      "flow_start_deg": 24,
+      "flow_full_deg": 30,
+      "flow_cell": 10,
+      "flow_width": 0.6,
+      "flow_normal": 0.05,
+      "flow_albedo": 0.015,
+      "flow_widening": 0.3,
+      "flow_share": 0.5,
+      "flow_turnover": 800,
+      "flow_length": 24,
+      "patch_size": 30,
+      "patch_min": 0.7,
+      "patch_max": 1.4,
+      "patch_defects": 0.5,
+      "steer_max_deg": 20,
+      "steer_gain": 2,
+      "ripple_celerity": 2000,
+      "flatten_start": 1.6,
+      "flatten_end": 2.2
     }
   }
 }

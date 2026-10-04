@@ -495,6 +495,38 @@ TEST_CASE("sand detail: the same function on both sides of every ring and chunk 
   CHECK(kinds[chunk_border].share_step <= kinds[interior].share_step + 4);
 }
 
+TEST_CASE("sand detail: the endless desert draws the erg's sand") {
+  // The endless desert is the erg with no edge, and its detail block is the erg's, field for field
+  // (docs/experiments/sand-fifth-pass-2026-10-04.md). It was copied from the erg on 2026-09-30, a
+  // day before the third pass changed the erg's, and nothing held the two together: for four
+  // days and two passes the owner flew it with the second pass's streaks, short light and dark
+  // dashes edge to edge down every slip face, while every test and picture judged the erg's
+  // tongues. No device needed: the two files, read as the renderer reads them.
+  const std::string erg_path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  const std::string endless_path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-endless/scene.json",
+                      "content/test-scenes/desert-endless/scene.json");
+  if (!test::path_exists(erg_path) || !test::path_exists(endless_path)) {
+    MESSAGE("the desert scenes are not here; skipped");
+    return;
+  }
+  SceneDesc erg, endless;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(erg_path, erg, error), error);
+  REQUIRE_MESSAGE(read_scene_file(endless_path, endless, error), error);
+  REQUIRE(erg.terrain.has_detail);
+  REQUIRE(endless.terrain.has_detail);
+  const gfx::GroundDetailDesc a = terrain_detail_desc(erg.terrain);
+  const gfx::GroundDetailDesc b = terrain_detail_desc(endless.terrain);
+  CHECK(std::memcmp(&a, &b, sizeof(a)) == 0);
+  // And so the slip face is the grainflow's, not the streaks'.
+  const gfx::GroundDetailParams block = gfx::ground_detail_block(b, Vec2{1.0f, 0.0f}, 7u);
+  CHECK((block.flags & gfx::k_ground_grainflow) != 0u);
+  CHECK((block.flags & gfx::k_ground_streaks) == 0u);
+}
+
 TEST_CASE("sand detail: the second pass on both sides of every ring and chunk border") {
   Gpu gpu;
   if (!gpu.ok) {
