@@ -63,7 +63,7 @@ The widest band at 8 and at 10 bits, every quarter hour, towards the sun and tow
 | 19:30 | −14.7° | 63 / 25 | 178 / 88 |
 | 20:45 | −29.2° | 71 / 32 | **190 / 131** |
 
-There is no hour without bands at 8 bits: the narrowest widest band of the day is 16 px (the sun's glow at dusk and dawn, where the gradient is steepest). The slowest gradients are the night's (130–190 px at 8 bits) and the sky away from a low sun (150–180 px). By day the widest bands are just under white round the sun (code 254 of 255, 1017–1022 of 1023), where the display's shoulder compresses the glow — the "gradient round the sun".
+There is no hour without bands at 8 bits: the narrowest widest band of the day is 16 px (the sun's glow at dusk and dawn, where the gradient is steepest). The slowest gradients are the night's towards the moon (128–190 px at 8 bits from 20:00 to 01:30) and the sky away from a low sun (146 px straight away from it at 18:45, 150–178 towards the moon at 18:45–19:30). By day the widest bands are just under white round the sun (code 254 of 255, 1017–1022 of 1023), where the display's shoulder compresses the glow — the "gradient round the sun".
 
 ### The noise: interleaved gradient noise against white noise
 
