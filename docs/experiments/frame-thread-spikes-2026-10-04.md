@@ -1,7 +1,7 @@
 # The frame thread's spikes on the endless flight (2026-10-04)
 
 - **Question.** On the endless desert at 11520×2160 (`surround3`, six far levels) the GPU's frame is about 4 ms and the frame thread's CPU time is 4 ms at the median, but it spikes: the owner's last flight read `cpu_ms` median 4.1, p95 11.8, p99 14.0, max 93.0, and `submit_ms` 3.4 at the median. Where does each spike's time go, and what removes it? The suspects named on 2026-10-03 were the render graph's recording (26–97 ms on some frames) and a staging buffer made every frame in `GpuScene::terrain_prepare` ([world tiles in a window](world-tiles-window-2026-10-03.md), [ground to the horizon](far-ground-2026-10-03.md)).
-- **Date:** 2026-10-04. **Machine:** the owner's desktop, i9-10980XE (36 logical CPUs), RTX 5090. **Build:** `msvc-release` of `main` at `70f88d15` with the per-stage timing below added and nothing else changed ("before"), and this branch ("after").
+- **Date:** 2026-10-04. **Machine:** the owner's desktop, i9-10980XE (36 logical CPUs), RTX 5090. **Build:** `msvc-release` of `main` at `70f88d15` with the per-stage timing below added and nothing else changed ("before"), this branch ("after"), and this branch with temporary switches back to the old copy and the old staging for an A/B in one binary ("After", the second table).
 - **Machine state:** shared throughout — other agents building and testing, and for part of the time another process holding most of the GPU's memory. Every run waited up to 120 s for a quiet machine (`--wait-quiet 120`) under the GPU lock and none was quiet at both ends; each run's `machine_state` is quoted with it. Every number is an upper bound; the attribution rests on where the time went, which no run disagreed on.
 - **Decision:** no ADR. The fixes are the renderer's and `gfx`'s ([renderer](../subsystems/renderer.md#what-a-frame-waits-for), [gfx](../subsystems/gfx.md)).
 
@@ -68,10 +68,24 @@ The same flight, frame-thread `cpu_ms` (ms), and the frames over 8, 16 and 25 ms
 | maps, before | 0.48 | 0.64 | 0.81 | 2.96 | 0 / 0 / 0 | 8.7% → 16%, 8% → 30% |
 | maps, after, kept fields | 0.48 | 0.77 | 1.09 | 35.9 | 3 / 2 / 1 | 9.1% → 33%, 4% → 7% (30.7 of 32.6 GB of the GPU's memory held by others at the end) |
 
+**The same comparison in one build, interleaved** (A, B, A, B, then the staging pair): the measuring build had temporary switches, removed before the commit, that put the 47,849-region copy back in place of the dispatch (`ENGINE_DIAG_TLAS_COPY`) and made a buffer for every staging again instead of the ring and the kept fields (`ENGINE_DIAG_NO_RING`, `ENGINE_DIAG_NO_POOL`), so each pair ran minutes apart on the same binary and the same machine.
+
+| run | `cpu_ms` median / p95 / p99 / max | recording, median | slowest pass, median | over 8 / 16 ms | others' CPU, GPU busy, start → end |
+|---|---|---|---|---|---|
+| traced, the copy (1) | 3.42 / 3.75 / 4.96 / 10.2 | 3.29 | 2.96 ("tlas instances") | 4 / 0 | 7.2% → 21%, 5% → 69% |
+| traced, the dispatch (1) | 0.42 / 0.52 / 0.67 / 2.36 | 0.30 | 0.12 | 0 / 0 | 7.1% → 12%, 4% → 5% |
+| traced, the copy (2) | 3.42 / 3.75 / 6.00 / 11.3 | 3.29 | 2.96 ("tlas instances") | 16 / 0 | 6.2% → 18%, 5% → 5% |
+| traced, the dispatch (2) | 0.42 / 0.53 / 0.66 / 2.37 | 0.30 | 0.12 | 0 / 0 | 7.8% → 6%, 4% → 4% |
+| maps, a buffer a staging | 0.46 / 0.64 / 1.07 / 2.48 | 0.25 | 0.10 | 0 / 0 | 6.8% → 3%, 4% → 3% |
+| maps, the ring and kept fields | 0.44 / 0.58 / 1.04 / 2.33 | 0.24 | 0.10 | 0 / 0 | 1.9% → 8%, 1% → 17% |
+
+- On a quieter machine the copy's frames over 8 ms are fewer and shorter (4 and 16, at most 11.3 ms, against 163 and 288 ms in the busy "before" run) — and **every one of them is still in "tlas instances"**; the dispatch's runs have none, and their longest frame is 2.4 ms.
+- The staging change moves nothing in an offscreen frame's `cpu_ms`: offscreen, the tiles are staged in the host's turn before the frame (`terrain.host_ms`, which waits for the rebuild too), and `terrain_prepare` was 0.01 ms either way. What it removes is the device buffers (the long flight, below) and, in a window, the buffers a frame's staging made.
+
 - **With traced shadows the recording went from 3.38 to 0.30 ms at the median** and the slowest pass from 3.02 ms ("tlas instances") to 0.12 ms (whichever pass that frame was slowest in); no frame of either after run passed 4.4 ms, including the one that ran beside a build with 88% of the CPU busy.
 - **With the maps nothing changed but the load**: the three long frames of the after run (35.9 ms in the submission, 21.3 in `reset`, 14.4 in `sky frame`) fell within 400 frames of each other while another process took the GPU's memory to 30.7 of 32.6 GB — passes that cost 0.1–0.2 ms in every other frame. They are the machine's (cause 4 above).
 - **The cut is the same**: visible pairs, structures built and wanted, and shadow casters agree frame by frame over all 7,201 frames between the before and after traced-shadow runs.
-- **Staging allocates nothing**: the long flight of `terrain_tiles_gpu_tests.cpp` (three far levels, 260 frames, each drawn) makes **0 device buffers** on the frame's thread over its second half, the ring holding at most 492,064 of its 33,554,432 bytes and never overflowing, and **0 engine allocations** on the host's half, as before.
+- **Staging allocates nothing**: the long flight of `terrain_tiles_gpu_tests.cpp` (three far levels, 260 frames, each drawn) makes **0 device buffers** on the frame's thread over its second half, the ring holding at most 492,064 of its 33,554,432 bytes and never overflowing, and **0 engine allocations** on the host's half, as before. With the ring and the kept fields switched off (a temporary switch in the measuring build, below) the same half made **6,397** device buffers in its 130 frames, and the test fails on them.
 
 ## The owner's sessions replayed offscreen (after)
 
