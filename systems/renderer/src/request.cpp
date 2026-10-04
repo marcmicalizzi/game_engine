@@ -531,6 +531,7 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   s.sun_elevation_deg = in.sun_elevation_deg;
   s.exposure_ev = in.exposure_ev;
   s.exposure_ev100 = in.exposure_ev100;
+  s.dither = in.dither;
   s.deform_amplitude = in.deform_amplitude;
   s.deform_pool_kib = in.deform_pool_mib * 1024u;
   s.static_shape_kib = in.static_shape_kib;

@@ -52,6 +52,13 @@ struct SwapchainDesc {
   // Request ImageUsage::TransferSrc so captures can read the presented image; granted when the
   // surface supports it (transfer_src() reports the outcome).
   bool transfer_src = true;
+  // **The colour's depth** (display.h; ADR-0052). Every format is taken in the sRGB non-linear
+  // colour space and as UNORM, never `_SRGB`: the picture arrives encoded by the renderer's own
+  // output encode, which an `_SRGB` store would encode a second time. 10 takes A2B10G10R10, then
+  // A2R10G10B10, where the surface offers one, and the 8-bit choice where it offers neither; 8
+  // takes `preferred_format`, then B8G8R8A8 and R8G8B8A8. A surface that offers none of them gets
+  // its first format, as before. format() and offers_ten_bit() say what happened.
+  u32 color_bits = 8;
   Format preferred_format = Format::B8G8R8A8Unorm;
   // Clamped to the surface's range; image_count() is what the driver created, which may be more.
   u32 min_image_count = 3;
@@ -135,6 +142,10 @@ class Swapchain {
     return render_finished_[image_index];
   }
   Format format() const noexcept { return format_; }
+  VkColorSpaceKHR color_space() const noexcept { return color_space_; }
+  // The surface offers a 10-bit UNORM format in the sRGB non-linear colour space: what `auto`
+  // would have taken, whatever `color_bits` asked for.
+  bool offers_ten_bit() const noexcept { return ten_bit_offered_; }
   Extent2D extent() const noexcept { return extent_; }
   VkPresentModeKHR present_mode() const noexcept { return mode_; }
   bool transfer_src() const noexcept { return transfer_src_; }
@@ -160,6 +171,7 @@ class Swapchain {
   Vector<SemaphoreHandle> render_finished_;
   Format format_ = Format::Undefined;
   VkColorSpaceKHR color_space_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+  bool ten_bit_offered_ = false;
   Extent2D extent_{};
   VkPresentModeKHR mode_ = VK_PRESENT_MODE_FIFO_KHR;
   bool transfer_src_ = false;

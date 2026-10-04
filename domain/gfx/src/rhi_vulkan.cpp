@@ -24,6 +24,8 @@ static_assert(bits(Format::R8G8B8A8Unorm) == VK_FORMAT_R8G8B8A8_UNORM);
 static_assert(bits(Format::R8G8B8A8Srgb) == VK_FORMAT_R8G8B8A8_SRGB);
 static_assert(bits(Format::B8G8R8A8Unorm) == VK_FORMAT_B8G8R8A8_UNORM);
 static_assert(bits(Format::B8G8R8A8Srgb) == VK_FORMAT_B8G8R8A8_SRGB);
+static_assert(bits(Format::A2R10G10B10Unorm) == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+static_assert(bits(Format::A2B10G10R10Unorm) == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
 static_assert(bits(Format::R16G16B16A16Sfloat) == VK_FORMAT_R16G16B16A16_SFLOAT);
 static_assert(bits(Format::R32Uint) == VK_FORMAT_R32_UINT);
 static_assert(bits(Format::R32Sfloat) == VK_FORMAT_R32_SFLOAT);

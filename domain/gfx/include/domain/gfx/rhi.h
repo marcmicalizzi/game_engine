@@ -239,6 +239,10 @@ enum class Format : u32 {
   R8G8B8A8Srgb = 43,
   B8G8R8A8Unorm = 44,
   B8G8R8A8Srgb = 50,
+  // Ten bits a colour channel and two of alpha in one 32-bit word: what a 10-bit display's
+  // swapchain offers (display.h). A2B10G10R10 is red in the low bits, A2R10G10B10 blue.
+  A2R10G10B10Unorm = 58,
+  A2B10G10R10Unorm = 64,
   R16G16B16A16Sfloat = 97,
   R32Uint = 98,
   R32Sfloat = 100,

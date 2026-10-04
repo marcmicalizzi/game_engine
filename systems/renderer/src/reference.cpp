@@ -261,8 +261,11 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.seed = settings.seed;
   params.ray_bias = lighting.shadow_bias;
   params.ray_bias_steps = lighting.shadow_bias_steps;
+  // The frame's own dither (RenderSettings::dither), at the reference's 8-bit output: the noise the
+  // resolve put on the same pixel, so the two pictures differ by what was drawn and not by it.
   params.flags = (settings.uniform_sky ? gfx::k_pt_uniform_sky : 0u) |
-                 (settings.pixel_center ? gfx::k_pt_pixel_center : 0u);
+                 (settings.pixel_center ? gfx::k_pt_pixel_center : 0u) |
+                 (resolved.dither ? gfx::k_pt_dither : 0u);
   params.sky_params = sky ? renderer_->sky_params_address() : 0;
   // A furnace is a closed environment and *nothing else*: a furnace with a sun in it does not
   // test energy conservation, it tests the sun. So the flag that makes the environment uniform

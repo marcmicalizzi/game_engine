@@ -26,8 +26,9 @@
 //
 // **The material layer is shared, not copied** (docs/plan/04-renderer.md §4.8): the structs, the
 // triangle fetch and the attribute interpolation, the tangent frame, the texture reads, the light
-// falloffs, the sky and the display transform all live in `material.slang`, which the reference
-// path tracer includes too, and so does the reconstruction a rasterized pixel needs because it
+// falloffs and the sky all live in `material.slang`, and the output encode — the display transform
+// and its dither — in `display.slang`, which the reference path tracer includes too, and so does
+// the reconstruction a rasterized pixel needs because it
 // carries no barycentrics (`reconstruct_screen`), which the path tracer does not call. What is
 // left in this file is the part that is the *resolve's*: the visibility-buffer decode, the calls
 // into that reconstruction, the debug view modes, the Panini resample, and the shadow rays.
@@ -43,6 +44,7 @@
 // plain module is what every other device draws with.
 
 #include "brdf.slang"
+#include "display.slang"
 #include "ground_detail.slang"
 #include "material.slang"
 #include "scene.slang"
@@ -58,7 +60,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (336 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (352 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -102,6 +104,10 @@ struct ResolveParams {
   uint64_t shadow_maps;   // ShadowMapParams*, read with k_shadow_cascades; 0: none
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
   uint64_t sky_params;     // SkyParams* (sky.slang): the physical sky; 0: the stand-in
+  uint dither_steps;       // the target's code steps the output encode dithers by; 0: none
+  uint dither_pad0;
+  uint dither_pad1;
+  uint dither_pad2;
 };
 
 // Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
@@ -157,8 +163,10 @@ struct FullscreenOut {
 // — `source`, which for a Panini view is where the resample sends the output pixel — is looked up in
 // the frame's sky-view table, and the sun's disc, the moon's and the stars are added through the air
 // (`sky_background`), exposed by the frame's rule. The ray path's uncovered pixels are this too, and
-// the reference tracer's primary misses the same function.
-float4 sky_pixel(ResolveParams* params, float2 source) {
+// the reference tracer's primary misses the same function. Its output encode is the shaded pixels'
+// (display.slang, `display_output`), dithered at the view's `pixel` — the stand-in's flat colour
+// is not: it has no gradient to band, and it is the clear the pass already wrote.
+float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
   if (params->sky_params == 0) {
     if (params->sky_is_clear != 0) discard;
     return params->sky;
@@ -168,7 +176,8 @@ float4 sky_pixel(ResolveParams* params, float2 source) {
                             1.0 - source.y / float(params->height) * 2.0);
   const float3 dir = sky_pixel_direction(sky, params->sky_view, ndc);
   const float3 radiance = sky_background(sky, dir, sky->views[params->sky_view].pixel.x);
-  return float4(display_encode(sky_tone(sky, radiance * sky_exposure((SkyFrame*)sky->frame))),
+  return float4(display_output(sky_tone(sky, radiance * sky_exposure((SkyFrame*)sky->frame)), pixel,
+                               params->dither_steps),
                 1.0);
 }
 
@@ -381,11 +390,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // read only where they can differ — which is why a caller that draws one rectilinear view fills
   // neither and gets what it always did.
   const uint2 out_pixel = uint2(in.position.xy) - uint2(params->view_x, params->view_y);
+  // The output encode's dither is a function of the pixel's place in its view (display.slang): a
+  // surround's centre view draws the noise a single view of the same monitor draws, and the
+  // reference tracer, whose image is one view, the noise the resolve put there.
+  const uint2 noise_pixel = out_pixel;
   const bool resample = params->panini_x > 0.0;
   const uint out_width = resample ? params->out_width : params->width;
   const uint out_height = resample ? params->out_height : params->height;
   if (out_pixel.x >= out_width || out_pixel.y >= out_height) {
-    return sky_pixel(params, float2(out_pixel) + 0.5);
+    return sky_pixel(params, float2(out_pixel) + 0.5, noise_pixel);
   }
   // Where in this view's visibility region the output pixel reads. Without a resample that is the
   // pixel's own centre; with one it is wherever the Panini map sends it, which is also the point
@@ -397,10 +410,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const float2 src_ndc = panini_source_ndc(params, ndc);
     source = float2((src_ndc.x * 0.5 + 0.5) * float(params->width),
                     (0.5 - src_ndc.y * 0.5) * float(params->height));
-    if (source.x < 0.0 || source.y < 0.0) return sky_pixel(params, source);
+    if (source.x < 0.0 || source.y < 0.0) return sky_pixel(params, source, noise_pixel);
   }
   const uint2 pixel = uint2(source);
-  if (pixel.x >= params->width || pixel.y >= params->height) return sky_pixel(params, source);
+  if (pixel.x >= params->width || pixel.y >= params->height) {
+    return sky_pixel(params, source, noise_pixel);
+  }
   // A whole 32x32 tile with nothing in it: the visibility word is not read at all, which is the
   // fixed cost the discard above could not touch. The mask is the Hi-Z build's by-product and is
   // exact — the pass that wrote it read every word of the tile — so a tile it calls empty holds
@@ -408,12 +423,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (params->coverage != 0) {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
-      return sky_pixel(params, source);
+      return sky_pixel(params, source, noise_pixel);
     }
   }
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
-  if (value == 0) return sky_pixel(params, source);
+  if (value == 0) return sky_pixel(params, source, noise_pixel);
   const uint id = uint(value & 0xffffffffu);
   const float depth = asfloat(uint(value >> 32));
   // The id's pair is the scene's, and the scene's pair table gives its {instance, cluster} in one
@@ -639,5 +654,6 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     color = color * transmittance + inscatter;
     color = sky_tone(sky, color * sky_exposure((SkyFrame*)sky->frame));
   }
-  return float4(display_encode(color), 1.0);  // linear to display on a UNORM swapchain
+  // Linear to the target's code values, dithered by its steps: the one output encode.
+  return float4(display_output(color, noise_pixel, params->dither_steps), 1.0);
 }

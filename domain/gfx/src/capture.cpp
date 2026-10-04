@@ -1,10 +1,25 @@
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/display.h>
 
 #include <cstring>
 
 namespace engine::gfx {
+
+const char* format_name(Format format) noexcept {
+  switch (format) {
+    case Format::R8G8B8A8Unorm: return "R8G8B8A8Unorm";
+    case Format::R8G8B8A8Srgb: return "R8G8B8A8Srgb";
+    case Format::B8G8R8A8Unorm: return "B8G8R8A8Unorm";
+    case Format::B8G8R8A8Srgb: return "B8G8R8A8Srgb";
+    case Format::A2R10G10B10Unorm: return "A2R10G10B10Unorm";
+    case Format::A2B10G10R10Unorm: return "A2B10G10R10Unorm";
+    case Format::R16G16B16A16Sfloat: return "R16G16B16A16Sfloat";
+    case Format::R32G32B32A32Sfloat: return "R32G32B32A32Sfloat";
+    default: return "other";
+  }
+}
 
 u32 capture_bytes_per_pixel(Format format) noexcept {
   switch (format) {
@@ -12,6 +27,8 @@ u32 capture_bytes_per_pixel(Format format) noexcept {
     case Format::R8G8B8A8Srgb:
     case Format::B8G8R8A8Unorm:
     case Format::B8G8R8A8Srgb:
+    case Format::A2R10G10B10Unorm:
+    case Format::A2B10G10R10Unorm:
     case Format::R32Uint:
     case Format::R32Sfloat:
     case Format::D32Sfloat: return 4;
@@ -74,16 +91,54 @@ bool capture_image(const Device& device, const ImageResource& image, ImageLayout
   return ok;
 }
 
-bool capture_to_rgba8(const Capture& capture, Vector<u8>& rgba, bool opaque) {
+namespace {
+
+// A 10-bit capture to 8 bits a channel: each code onto the nearest of 255 steps, or — with
+// `dither` — through the output encode's own noise at 8 bits (display.h), which is how a picture
+// quantized once at 10 bits with dither becomes an 8-bit PNG without the bands a plain rounding
+// would put back. `red_low` is A2B10G10R10's order, red in the low ten bits.
+void ten_bit_to_rgba8(const Capture& capture, bool red_low, bool opaque, bool dither, u8* dst) {
+  const u8* src = capture.bytes.data();
+  for (u32 y = 0; y < capture.height; ++y) {
+    for (u32 x = 0; x < capture.width; ++x) {
+      u32 word = 0;
+      std::memcpy(&word, src, sizeof(word));
+      const u32 low = word & 1023u;
+      const u32 mid = (word >> 10) & 1023u;
+      const u32 high = (word >> 20) & 1023u;
+      const u32 codes[3] = {red_low ? low : high, mid, red_low ? high : low};
+      for (u32 c = 0; c < 3; ++c) {
+        f32 v = static_cast<f32>(codes[c]) / 1023.0f;
+        if (dither) v = display_dithered(v, x, y, 255);
+        const f32 clamped = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        dst[c] = static_cast<u8>(clamped * 255.0f + 0.5f);
+      }
+      dst[3] = opaque ? 255 : static_cast<u8>((word >> 30) * 85u);
+      src += 4;
+      dst += 4;
+    }
+  }
+}
+
+}  // namespace
+
+bool capture_to_rgba8(const Capture& capture, Vector<u8>& rgba, bool opaque, bool dither) {
   bool bgra = false;
+  const u32 pixels = capture.width * capture.height;
   switch (capture.format) {
     case Format::R8G8B8A8Unorm:
     case Format::R8G8B8A8Srgb: break;
     case Format::B8G8R8A8Unorm:
     case Format::B8G8R8A8Srgb: bgra = true; break;
+    case Format::A2R10G10B10Unorm:
+    case Format::A2B10G10R10Unorm:
+      if (capture.bytes.size() != pixels * 4) return false;
+      rgba.resize(pixels * 4);
+      ten_bit_to_rgba8(capture, capture.format == Format::A2B10G10R10Unorm, opaque, dither,
+                       rgba.data());
+      return true;
     default: return false;
   }
-  const u32 pixels = capture.width * capture.height;
   if (capture.bytes.size() != pixels * 4) return false;
   rgba.resize(pixels * 4);
   const u8* src = capture.bytes.data();

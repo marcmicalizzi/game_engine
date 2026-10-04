@@ -44,6 +44,7 @@
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/display.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
@@ -137,7 +138,7 @@ constexpr const char* k_usage =
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
     "                   [--time-of-day <hours>] [--exposure <stops>] [--exposure-ev100 <ev>]\n"
-    "                   [--ground-time <game s>] [--no-texture-sharing]\n"
+    "                   [--ground-time <game s>] [--no-texture-sharing] [--dither on|off]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
@@ -162,6 +163,7 @@ constexpr const char* k_usage =
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
+    "                   [--present-bits auto|8|10]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
@@ -213,6 +215,10 @@ constexpr const char* k_usage =
     "  --exposure <s>   a sky's exposure s stops brighter than its rule (renderer.md,\n"
     "                   \"Exposure\"); --exposure-ev100 <ev> holds it at that exposure value\n"
     "                   instead (15 a sunlit scene, -3 a moonlit one). - = and 0 in a window\n"
+    "  --dither on|off  triangular noise of one code step of the colour target added to the picture\n"
+    "                   at its output encode, a function of the pixel alone, so a slow gradient (a\n"
+    "                   dusk sky) is a fine grain instead of bands (default on; renderer.md, \"The\n"
+    "                   output encode\"). render.*'s settings.dither\n"
     "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
     "                   they stand where frame 0 puts them)\n"
     "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
@@ -438,6 +444,13 @@ constexpr const char* k_usage =
     "  --present-max-hz <n>  the most presents a second a window makes when its display does\n"
     "                   not pace it (default view.present.max_hz, 120); 0 removes the ceiling,\n"
     "                   and a small window without one stops the whole desktop repainting\n"
+    "  --present-bits <b>  a window's bits a colour channel: auto (the default) takes A2B10G10R10\n"
+    "                   in the sRGB colour space where the surface offers it, else 8; 10 asks for\n"
+    "                   it and says so when it is not offered; 8 takes 8. The renderer draws into\n"
+    "                   the swapchain's own format, so the picture is quantized once, dithered at\n"
+    "                   that depth; the summary's \"output\" block says what it got. A --capture of\n"
+    "                   a 10-bit window is reduced to the 8-bit PNG through the same dither.\n"
+    "                   Offscreen runs draw into 8 bits, as their PNGs are\n"
     "  --swapchain-images <n>  images to ask the window's swapchain for, 2..8 (default 3)\n"
     "  --frames-in-flight <n>  frames the window's loop records ahead of the GPU, 1..3 (default 2)\n"
     "  --borderless     a window with no title bar or border at the primary display's top-left\n"
@@ -500,6 +513,10 @@ struct Options {
   bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
   bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
   bool borderless = false;     // --borderless: no decorations, at the primary display's corner
+  // --present-bits: the bits a channel the window's swapchain asks for. 0 is `auto`, 10 where the
+  // surface offers A2B10G10R10 in the sRGB non-linear colour space and 8 otherwise; the renderer's
+  // colour target follows the swapchain (docs/subsystems/apps.md, "--present-bits").
+  u32 present_bits = 0;
   u32 adapter = 0;
   bool validation = false;
   u32 grid = 257;
@@ -1554,6 +1571,59 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   return out;
 }
 
+// The most distinct codes of one colour channel down any one column of a captured image, at the
+// image's own depth (`FlythroughOutput::capture_levels`): what says a 10-bit window holds more than
+// 8 bits, read back before the PNG's reduction. 0 for a format it does not read.
+u32 capture_levels(const gfx::Capture& shot) {
+  const u32 steps = gfx::display_steps(shot.format);
+  if (steps == 0 || shot.bytes_per_pixel != 4) return 0;
+  const bool ten = steps == 1023;
+  Vector<u8> seen(steps + 1);
+  u32 best = 0;
+  for (u32 c = 0; c < 3; ++c) {
+    for (u32 x = 0; x < shot.width; ++x) {
+      for (u8& s : seen)
+        s = 0;
+      u32 n = 0;
+      for (u32 y = 0; y < shot.height; ++y) {
+        u32 word = 0;
+        std::memcpy(&word, shot.bytes.data() + 4 * (u64{y} * shot.width + x), sizeof(word));
+        const u32 code = ten ? (word >> (10 * c)) & 1023u : (word >> (8 * c)) & 255u;
+        if (seen[code] == 0) {
+          seen[code] = 1;
+          ++n;
+        }
+      }
+      if (n > best) best = n;
+    }
+  }
+  return best;
+}
+
+// The summary's `output` block (scene::FlythroughOutput, renderer.md "The output encode"): the
+// target the picture was quantized into — the swapchain's image in a window, the renderer's own
+// 8-bit target offscreen — its bits a channel and the dither; a window adds the swapchain's colour
+// space, what `--present-bits` asked for and whether the surface offers 10 bits at all.
+scene::FlythroughOutput output_summary(const renderer::SceneRenderer& view,
+                                       const renderer::ResolvedSettings& resolved,
+                                       const Options& options, const gfx::Swapchain* swapchain,
+                                       u32 levels = 0) {
+  scene::FlythroughOutput out;
+  out.capture_levels = levels;
+  out.format = gfx::format_name(view.color_format());
+  out.bits = gfx::display_bits(view.color_format());
+  out.dither = resolved.settings.dither;
+  if (swapchain != nullptr) {
+    out.color_space =
+        swapchain->color_space() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ? "srgb_nonlinear" : "other";
+    out.requested_bits = options.present_bits == 0   ? "auto"
+                         : options.present_bits == 8 ? "8"
+                                                     : "10";
+    out.ten_bit_offered = swapchain->offers_ten_bit();
+  }
+  return out;
+}
+
 // What a run drew and on what, into a flythrough summary: the scene, the path (a camera path, or
 // a replayed session's log), every mesh's identity and one hash over all of them, and the
 // renderer's settings. Shared by the flythrough, the offscreen replay and a live session's
@@ -1599,6 +1669,8 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.clusters = scene_data.cluster_count();
   if (view.valid()) renderer::summarize_rt(view.stats().rt, summary.rt);
   renderer::summarize_textures(gpu_scene, summary.textures);
+  // Offscreen's target; a window's run puts its swapchain's in after this.
+  summary.output = output_summary(view, resolved, options, nullptr);
 }
 
 // The `.jsonl` a benchmark writes: one record per line, then the summary line.
@@ -3277,6 +3349,23 @@ int main(int argc, char** argv) {
       }
     } else if (a == "--windowed") {
       options.windowed = true;
+    } else if (a == "--present-bits") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value == "auto") {
+        options.present_bits = 0;
+      } else if (value == "8" || value == "10") {
+        options.present_bits = value == "8" ? 8u : 10u;
+      } else {
+        std::fprintf(stderr, "engine-view: --present-bits expects auto, 8 or 10\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--dither") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value != "on" && value != "off") {
+        std::fprintf(stderr, "engine-view: --dither expects on or off\n");
+        return k_exit_usage;
+      }
+      options.settings.dither = value == "on";
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);
@@ -3444,14 +3533,17 @@ int main(int argc, char** argv) {
   // set going (RenderSettings::time_rate_live). Offscreen the keys do nothing and the rate is the
   // flag's.
   if (options.interactive && !options.offscreen) options.settings.time_rate_live = true;
+  // An offscreen run's target is the renderer's own 8-bit one, whatever `--present-bits` says: its
+  // capture is an 8-bit PNG, and a picture quantized once at 8 bits with the dither is a better
+  // 8-bit picture than a 10-bit one rounded again (renderer.md, "The output encode").
   if (options.offscreen &&
       (!options.present.empty() || options.pace != "auto" || options.swapchain_images != 3 ||
        options.frames_in_flight != k_frames_in_flight || options.borderless ||
-       !options.present_timing)) {
+       !options.present_timing || options.present_bits != 0)) {
     std::fprintf(stderr,
-                 "engine-view: --present, --swapchain-images, --frames-in-flight, --pace, "
-                 "--borderless and --no-present-timing are the window's; an offscreen run has "
-                 "none\n");
+                 "engine-view: --present, --present-bits, --swapchain-images, --frames-in-flight, "
+                 "--pace, --borderless and --no-present-timing are the window's; an offscreen run "
+                 "has none (its target is 8 bits, as its PNG is)\n");
     return k_exit_usage;
   }
   const renderer::CaptureChannels& channels = options.capture_channels;
@@ -3667,6 +3759,7 @@ int main(int argc, char** argv) {
   bench::MachineState machine_start;
   bench::MachineState machine_end;
   bool captured = false;
+  u32 window_capture_levels = 0;  // the summary's output.capture_levels
   u32 extent_width = options.width;
   u32 extent_height = options.height;
   // Read out of the GPU scene while it is alive, because the summary prints after it is gone.
@@ -3755,6 +3848,10 @@ int main(int argc, char** argv) {
     swapchain_desc.vsync = options.vsync;
     swapchain_desc.present_mode = vk_present_mode(options.present);
     swapchain_desc.min_image_count = options.swapchain_images;
+    // `--present-bits`: 10 bits a channel where the surface offers them (auto, or 10), else 8; the
+    // renderer's colour target follows the swapchain below, so the picture is quantized once, at
+    // the depth the display takes (renderer.md, "The output encode").
+    swapchain_desc.color_bits = options.present_bits == 8 ? 8u : 10u;
     // The pacer waits on present ids; a measured session asks for display times as well, unless
     // `--no-present-timing` says not to (on this project's driver a chain with them paces FIFO
     // differently, which a before-and-after has to be able to leave out).
@@ -3765,6 +3862,15 @@ int main(int argc, char** argv) {
       exit_code = fail("swapchain", error);
       break;
     }
+    if (options.present_bits == 10 && gfx::display_bits(swapchain.format()) != 10) {
+      ENGINE_LOG_WARN(log_view, "--present-bits 10: the surface offers no 10-bit format; 8 bits",
+                      log::field("format", gfx::format_name(swapchain.format())));
+    }
+    ENGINE_LOG_INFO(log_view, "presenting",
+                    log::field("format", gfx::format_name(swapchain.format())),
+                    log::field("bits", gfx::display_bits(swapchain.format())),
+                    log::field("ten_bit_offered", swapchain.offers_ten_bit()),
+                    log::field("dither", options.settings.dither));
     if (!options.capture.empty() && !swapchain.transfer_src()) {
       exit_code = fail("capture", "the surface does not allow reading presented images back");
       break;
@@ -4653,9 +4759,12 @@ int main(int argc, char** argv) {
         view_renderer.collect_visible();
         gfx::Capture shot;
         Vector<u8> rgba;
+        // A 10-bit window's picture reaches the 8-bit PNG through the output encode's own noise at
+        // 8 bits when the frame dithers (gfx/capture.h), so the PNG carries no bands the window
+        // did not; rounded plainly when it does not.
         if (!gfx::capture_image(device, swapchain.image(image_index), gfx::ImageLayout::Present,
                                 shot, &error) ||
-            !gfx::capture_to_rgba8(shot, rgba)) {
+            !gfx::capture_to_rgba8(shot, rgba, true, resolved.settings.dither)) {
           exit_code = fail("capture", error.empty() ? "unsupported swapchain format" : error);
         } else if (const io::Status status =
                        image::write_png(options.capture, shot.width, shot.height, 4,
@@ -4665,6 +4774,7 @@ int main(int argc, char** argv) {
                                           io::status_name(status));
         } else {
           captured = true;
+          window_capture_levels = capture_levels(shot);  // at the image's own depth
         }
       }
       const i64 before_present = time::monotonic_ns();
@@ -4779,6 +4889,8 @@ int main(int argc, char** argv) {
           options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
           swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0,
           pace_display ? &pacer : nullptr, static_cast<u32>(ceiling_hz), ceiling_waits);
+      summary.output =
+          output_summary(view_renderer, resolved, options, &swapchain, window_capture_levels);
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
@@ -4798,6 +4910,11 @@ int main(int argc, char** argv) {
   // something. The peak beside it says whether the load ever *materialized* what it then freed.
   const u64 host_memory = platform::process_memory_bytes();
   const u64 host_memory_peak = platform::peak_process_memory_bytes();
+  // What the picture was quantized into, read while the swapchain still says.
+  const std::string output_text =
+      write_json(schema::to_json(output_summary(view_renderer, resolved, options, &swapchain,
+                                                window_capture_levels)),
+                 JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_WORLD
   view_world.close_log();  // the world log's summary line, while the world is still whole
 #endif
@@ -4855,7 +4972,8 @@ int main(int argc, char** argv) {
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
-        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s}\n",
+        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
+        "\"output\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -4896,7 +5014,7 @@ int main(int argc, char** argv) {
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str());
+        sun_text.c_str(), output_text.c_str());
     std::fflush(stdout);
   }
   log::remove_sink(&stderr_sink);

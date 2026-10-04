@@ -339,7 +339,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 336 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 352 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -446,8 +446,17 @@ struct ResolveParams {
   // that names no sky — reads exactly what the resolve read before. It took the last pad word, so
   // the block's size is unchanged.
   u64 sky_params = 0;
+  // **The output encode's dither** (display.h, display.slang; ADR-0052): the colour target's code
+  // steps, `display_steps(format)` — 255 at 8 bits, 1023 at 10 — by which the shaded pixels and the
+  // sky's are dithered before the store, at the pixel's place in its view (so a surround's centre
+  // view and a single view of that monitor draw the same noise). Zero is no dither: the encode
+  // exactly as it was, which is what `domain/gfx`'s own tests and a data view draw with. The debug
+  // and data modes (everything but Shaded, and the sky's stand-in clear) are never dithered. Three
+  // pad words keep the block a whole number of float4 rows.
+  u32 dither_steps = 0;
+  u32 dither_pad[3] = {};
 };
-static_assert(sizeof(ResolveParams) == 336);
+static_assert(sizeof(ResolveParams) == 352);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

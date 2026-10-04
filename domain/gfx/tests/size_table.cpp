@@ -167,7 +167,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // pad word to keep the block a whole number of float4 rows. Zero for every frame that draws none.
 // Still 336 with the sky (2026-09-30): `sky_params` took that pad word and `sky_view` the one
 // beside `coverage_pitch`.
-ENGINE_EXPECT_SIZE(336, 8, gfx::ResolveParams);
+// 352, not 336: `dither_steps`, the colour target's code steps the output encode dithers by
+// (2026-10-04, display.h, ADR-0052), with no pad word left to take it, and three pad words to keep
+// the block a whole number of float4 rows. Zero is no dither, the encode as it was.
+ENGINE_EXPECT_SIZE(352, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

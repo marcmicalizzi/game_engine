@@ -37,6 +37,9 @@ inline constexpr u32 k_pt_uniform_sky = 1u;
 // pixel and the rasterizer point-samples it, which is a real difference at every silhouette; a
 // comparison that is about shading rather than about antialiasing turns the jitter off.
 inline constexpr u32 k_pt_pixel_center = 2u;
+// Dither the tonemap's output encode by the 8-bit output's 255 steps (display.h): the resolve's
+// noise at the same pixel, so a reference of a dithered frame carries the noise the frame does.
+inline constexpr u32 k_pt_dither = 4u;
 
 // Mirrors PathTraceParams in path_trace.slang. 288 bytes.
 struct PathTraceParams {

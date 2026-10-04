@@ -83,7 +83,9 @@ bool Swapchain::create_chain(std::string* error) {
     return false;
   }
 
-  // Format: the preferred one when offered, otherwise the first the surface lists.
+  // Format (SwapchainDesc::color_bits): a UNORM format in the sRGB non-linear colour space, 10 bits
+  // a channel where asked for and offered, the preferred 8-bit one otherwise, and the surface's
+  // first format only when it offers none of them.
   u32 format_count = 0;
   vkGetPhysicalDeviceSurfaceFormatsKHR(h.physical, desc_.surface, &format_count, nullptr);
   Vector<VkSurfaceFormatKHR> formats(format_count);
@@ -92,14 +94,20 @@ bool Swapchain::create_chain(std::string* error) {
     if (error != nullptr) *error = "Swapchain: the surface offers no formats";
     return false;
   }
-  VkSurfaceFormatKHR chosen = formats[0];
-  for (const VkSurfaceFormatKHR& f : formats) {
-    if (f.format == vk::native(desc_.preferred_format) &&
-        f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      chosen = f;
-      break;
+  const auto offered = [&](VkFormat format) -> const VkSurfaceFormatKHR* {
+    for (const VkSurfaceFormatKHR& f : formats) {
+      if (f.format == format && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return &f;
     }
-  }
+    return nullptr;
+  };
+  const VkSurfaceFormatKHR* ten = offered(VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+  if (ten == nullptr) ten = offered(VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+  ten_bit_offered_ = ten != nullptr;
+  const VkSurfaceFormatKHR* pick = desc_.color_bits >= 10 ? ten : nullptr;
+  if (pick == nullptr) pick = offered(vk::native(desc_.preferred_format));
+  if (pick == nullptr) pick = offered(VK_FORMAT_B8G8R8A8_UNORM);
+  if (pick == nullptr) pick = offered(VK_FORMAT_R8G8B8A8_UNORM);
+  const VkSurfaceFormatKHR chosen = pick != nullptr ? *pick : formats[0];
   format_ = vk::wrap(chosen.format);
   color_space_ = chosen.colorSpace;
 

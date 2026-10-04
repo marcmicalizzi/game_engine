@@ -3,6 +3,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
+#include <domain/gfx/display.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
@@ -1706,6 +1707,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.sky_is_clear = sky_on ? 0u : 1u;
     resolve.sky_params = sky_address;
     resolve.sky_view = v;
+    // The output encode's dither (gfx/display.h, ADR-0052): one code step of the target the
+    // pipelines draw into — 255 at 8 bits, 1023 at 10, none for a float target — so the picture is
+    // quantized once, at the depth the target holds.
+    resolve.dither_steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
     // Skip the visibility read for a 32 x 32 tile with nothing in it. The mask is exact **only**
     // when the last write to the visibility buffer happened before the last Hi-Z build, and that
     // is exactly when two-pass occlusion culling is on: `resolve_settings` allows it only under

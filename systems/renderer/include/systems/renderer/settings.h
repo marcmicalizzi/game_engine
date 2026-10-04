@@ -112,6 +112,13 @@ struct RenderSettings {
   // A frame's `ExposureRequest` adds to both. Nothing without a sky.
   f32 exposure_ev = 0.0f;
   std::optional<f32> exposure_ev100;
+  // **The dither at the output encode** (gfx/display.h, renderer.md "The output encode", ADR-0052):
+  // triangular noise of one code step of the colour target — 1/255 at 8 bits, 1/1023 at 10 —
+  // added to the encoded picture before its store, a function of the pixel alone, so a sky's
+  // gradient is a grain instead of bands and the same frame is the same bytes. Off draws the
+  // picture rounded, which is what a test that holds the lighting model to a CPU reference within
+  // a code or two measures; nothing else turns it off. A float target is never dithered.
+  bool dither = true;
   bool deform = false;  // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;

@@ -405,7 +405,7 @@ struct AdaptersResult @version(1) {
 /// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
 /// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
 /// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
-struct RenderSettings @version(11) {
+struct RenderSettings @version(12) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -535,6 +535,11 @@ struct RenderSettings @version(11) {
   /// 78 km on the endless desert, past the planet's horizon line from up to 1.9 km), which is what
   /// engine-view draws without `--terrain-far`. Nothing without tiles. `engine-view --terrain-far`.
   terrain_far_levels: u32? = null @since(11)
+  /// Triangular noise of one code step of the colour target added to the picture at its one output
+  /// encode, a function of the pixel alone, so a slow gradient (a dusk sky) is a fine grain rather
+  /// than bands and the same frame is the same bytes (docs/subsystems/renderer.md, "The output
+  /// encode"; ADR-0052). False draws the picture rounded. `engine-view --dither on|off`.
+  dither: bool = true @since(12)
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock

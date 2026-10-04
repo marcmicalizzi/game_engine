@@ -71,6 +71,7 @@ const Row k_settings_rows[] = {
     ENGINE_ROW(sun_elevation_deg, "sun_elevation_deg", ""),
     ENGINE_ROW(exposure_ev, "exposure_ev", ""),
     ENGINE_ROW(exposure_ev100, "exposure_ev100", ""),
+    ENGINE_ROW(dither, "dither", ""),
     ENGINE_ROW(deform, "deform", ""),
     ENGINE_ROW(deform_kind, "deform", ""),
     ENGINE_ROW(deform_amplitude, "deform_amplitude", ""),
@@ -145,6 +146,7 @@ const WireValue k_wire_values[] = {
     {"time_rate", R"({"time_rate":86400})"},
     {"exposure_ev", R"({"exposure_ev":1.5})"},
     {"exposure_ev100", R"({"exposure_ev100":12})"},
+    {"dither", R"({"dither":false})"},
     {"terrain_rings", R"({"terrain_rings":true})"},
     {"terrain_tiles", R"({"terrain_tiles":true})"},
     {"terrain_far_levels", R"({"terrain_far_levels":2})"},
@@ -198,8 +200,9 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   renderer::RenderSettings settings;
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
-                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41] = settings;
-  static_assert(std::size(k_settings_rows) == 42, "one row per RenderSettings field");
+                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42] =
+      settings;
+  static_assert(std::size(k_settings_rows) == 43, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;

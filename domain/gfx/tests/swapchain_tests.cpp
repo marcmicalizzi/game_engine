@@ -1,12 +1,14 @@
 // Presentation end to end: a real window, a surface, a swapchain, frames acquired and
-// presented through the frame context and the render graph, a resize, and a capture of the
-// presented image. Skips on machines without a display or a Vulkan driver.
+// presented through the frame context and the render graph, a resize, a capture of the
+// presented image, and a 10-bit chain where the surface offers one. Skips on machines without a
+// display or a Vulkan driver.
 #include "raster_path.h"
 
 #include <domain/gfx/backend/vulkan/swapchain.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/display.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
 #include <foundation/window/backend/vulkan/surface.h>
@@ -67,9 +69,14 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   CHECK(swapchain.extent().width >= 160);
   CHECK(swapchain.extent().height >= 120);
   CHECK(swapchain.format() != gfx::Format::Undefined);
+  // An 8-bit UNORM format in the sRGB non-linear colour space, never `_SRGB`: the picture arrives
+  // encoded by the renderer's output encode (display.h).
+  CHECK(gfx::display_steps(swapchain.format()) == 255);
+  CHECK(swapchain.color_space() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
   MESSAGE("swapchain: " << swapchain.image_count() << " images, format " << swapchain.format()
                         << ", present mode " << swapchain.present_mode() << ", transfer_src "
-                        << swapchain.transfer_src());
+                        << swapchain.transfer_src() << ", offers 10 bits "
+                        << swapchain.offers_ten_bit());
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -140,6 +147,43 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
       // Frame 7 clears to (7/8, 0.25, 1/8): red-dominant.
       const u8* p = rgba.data() + (capture.width * capture.height / 2) * 4;
       CHECK(p[0] > 200);
+      CHECK(p[2] < 60);
+    }
+  }
+
+  // A 10-bit chain (SwapchainDesc::color_bits; display.h, ADR-0052): where the surface offers one
+  // it is A2B10G10R10 or A2R10G10B10 in the sRGB non-linear colour space, a frame presents on it,
+  // and a capture of it reads back and reduces to 8 bits; where it offers none, the 8-bit choice.
+  frames.wait_idle();
+  graph.reset();
+  swapchain.destroy();
+  gfx::SwapchainDesc ten = desc;
+  ten.color_bits = 10;
+  REQUIRE_MESSAGE(swapchain.create(device, ten, &error), error);
+  CHECK(swapchain.color_space() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+  MESSAGE("10-bit swapchain: format " << std::string(gfx::format_name(swapchain.format())));
+  if (!swapchain.offers_ten_bit()) {
+    MESSAGE("the surface offers no 10-bit format; the chain is 8 bits");
+    CHECK(gfx::display_bits(swapchain.format()) == 8);
+  } else {
+    CHECK(gfx::display_steps(swapchain.format()) == 1023);
+    gfx::PresentStatus status = render_frame(7, image_index);
+    if (status == gfx::PresentStatus::OutOfDate) {
+      REQUIRE(swapchain.resize(window.pixel_width(), window.pixel_height(), &error));
+      status = render_frame(7, image_index);
+    }
+    CHECK(status != gfx::PresentStatus::Error);
+    if (status == gfx::PresentStatus::Ok && swapchain.transfer_src()) {
+      frames.wait_idle();
+      gfx::Capture capture;
+      REQUIRE_MESSAGE(gfx::capture_image(device, swapchain.image(image_index),
+                                         gfx::ImageLayout::Present, capture, &error),
+                      error);
+      CHECK(capture.bytes_per_pixel == 4);
+      Vector<u8> rgba;
+      REQUIRE(gfx::capture_to_rgba8(capture, rgba));
+      const u8* p = rgba.data() + (capture.width * capture.height / 2) * 4;
+      CHECK(p[0] > 200);  // the same red-dominant clear, through the 10-bit store
       CHECK(p[2] < 60);
     }
   }

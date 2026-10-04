@@ -44,7 +44,10 @@ target_link_libraries(engine_gfx PRIVATE engine_gfx_vulkan)
 
 engine_module_tests(NAME gfx
   SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/requirements_tests.cpp
-          tests/size_table.cpp)
+          tests/size_table.cpp
+          # The output encode's CPU side (display.h): steps, the noise, the dither's ends, and a
+          # 10-bit capture's reduction to 8 bits; no device.
+          tests/display_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

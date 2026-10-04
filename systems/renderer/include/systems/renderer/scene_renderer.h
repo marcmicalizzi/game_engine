@@ -422,8 +422,11 @@ class SceneRenderer {
     u32 width = 1280;
     u32 height = 720;
     // The pipelines' color format. engine-view passes the swapchain's so that the picture is
-    // produced exactly as it is presented; offscreen it is the default, which differs from a
-    // typical swapchain's only in channel order and so reads back byte for byte the same.
+    // produced exactly as it is presented — 10 bits a channel where its window took a 10-bit
+    // swapchain — and the output encode dithers by the format's own code steps (gfx/display.h,
+    // ADR-0052), so the picture is quantized once, at the depth the display takes. Offscreen it is
+    // the default, which differs from an 8-bit swapchain's only in channel order and so reads back
+    // byte for byte the same, and which an 8-bit PNG holds without a second quantization.
     gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
     u32 frames_in_flight = 2;
     // Create an offscreen color target the renderer owns, for frames that name no image.
@@ -487,6 +490,9 @@ class SceneRenderer {
   gfx::ShaderLibrary& shaders() noexcept { return shaders_; }
   // The renderer's own color target; null when it was created without one.
   const gfx::ImageResource& color_target() const noexcept { return color_; }
+  // The format the pipelines draw into (`Desc::color_format`): what the output encode quantizes to
+  // and dithers by (gfx/display.h), and what a summary reports as the picture's depth.
+  gfx::Format color_format() const noexcept { return desc_.color_format; }
   // The sun's cascades the last frame was drawn with (`ResolvedSettings::csm`); `count` 0 without
   // maps. The fit is the CPU's (`fit_shadow_cascades`), so this is what the frame used, not a
   // readback.

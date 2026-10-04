@@ -77,7 +77,10 @@ if(TARGET engine::sky)
   # A scene naming a sky: the entry read and checked through the registry, the lights, the sky the
   # resolve and the reference draw against the CPU mirror, the stand-in kept without one, and — where
   # the terrain capability is too — the one clock over a terrain's time.
-  list(APPEND _renderer_tests tests/sky_scene_tests.cpp)
+  list(APPEND _renderer_tests tests/sky_scene_tests.cpp
+       # Where the sky's bands come from and what the output encode's dither leaves of them: the
+       # erg's sky at its slowest hours in float, 8- and 10-bit targets, measured along its lines.
+       tests/banding_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
 if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)

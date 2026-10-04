@@ -21,6 +21,7 @@
 #define ENGINE_MATERIAL_SLANG
 
 #include "brdf.slang"
+#include "display.slang"
 #include "scene.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
@@ -656,8 +657,8 @@ float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
   return brdf_hemisphere_ambient(sky_radiance(sky), ground, normal.y);
 }
 
-// Linear to what a UNORM target holds. Both integrators end on this, so a reference image and a
+// Linear to what a UNORM target holds is `display_encode` in display.slang, included above: both
+// integrators end on it (through `display_output`, with the dither), so a reference image and a
 // real-time image are in the same space and FLIP compares pictures rather than transfer curves.
-float3 display_encode(float3 linear_color) { return pow(max(linear_color, 0.0), 1.0 / 2.2); }
 
 #endif  // ENGINE_MATERIAL_SLANG

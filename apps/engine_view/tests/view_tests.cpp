@@ -57,6 +57,10 @@ TEST_CASE("engine-view: usage errors exit 2") {
   CHECK(view({"--deform"}).exit_code == 2);
   CHECK(view({"--deform", "bogus"}).exit_code == 2);
   CHECK(view({"--deform-amplitude", "abc"}).exit_code == 2);
+  // The output encode's flags: their spellings, and the window's depth refused offscreen.
+  CHECK(view({"--dither", "maybe"}).exit_code == 2);
+  CHECK(view({"--present-bits", "12"}).exit_code == 2);
+  CHECK(view({"--offscreen", "--present-bits", "10"}).exit_code == 2);
   const Run help = view({"--help"});
   CHECK(help.exit_code == 0);
   CHECK(help.output.find("usage: engine-view") != std::string::npos);
@@ -86,6 +90,33 @@ TEST_CASE("engine-view: renders frames and captures the last one") {
   CHECK(number("triangles") == 32 * 32 * 2);
   REQUIRE(summary.find("captured") != nullptr);
   CHECK(summary.find("captured")->as_bool());
+  // What the picture was quantized into (renderer.md, "The output encode"): `--present-bits auto`
+  // takes 10 bits where the surface offers them, in the sRGB non-linear colour space, dithered.
+  const JsonValue* output = summary.find("output");
+  REQUIRE(output != nullptr);
+  const auto text = [&](const char* key) {
+    const JsonValue* value = output->find(key);
+    return value != nullptr && value->is_string() ? std::string(value->as_string()) : std::string();
+  };
+  u64 bits = 0;
+  REQUIRE(output->find("bits") != nullptr);
+  REQUIRE(output->find("bits")->get_u64(bits));
+  const bool offered =
+      output->find("ten_bit_offered") != nullptr && output->find("ten_bit_offered")->as_bool();
+  MESSAGE("the window presented " << text("format") << ", " << bits
+                                  << " bits; 10 bits offered: " << offered);
+  CHECK(bits == (offered ? 10u : 8u));
+  CHECK((!offered || text("format") == "A2B10G10R10Unorm" || text("format") == "A2R10G10B10Unorm"));
+  CHECK(text("color_space") == "srgb_nonlinear");
+  CHECK(text("requested_bits") == "auto");
+  REQUIRE(output->find("dither") != nullptr);
+  CHECK(output->find("dither")->as_bool());
+  // The capture was read back at the window's own depth before the PNG's 8 bits.
+  u64 levels = 0;
+  REQUIRE(output->find("capture_levels") != nullptr);
+  REQUIRE(output->find("capture_levels")->get_u64(levels));
+  CHECK(levels > 1);
+  CHECK(levels <= (bits == 10 ? 1024u : 256u));
 
   REQUIRE(std::filesystem::exists(capture));
   unsigned char head[24] = {};
@@ -203,6 +234,13 @@ TEST_CASE("engine-view: --benchmark flies a camera path and writes a frame per l
   CHECK(number_of(*check, "frames") == 6);
   CHECK(number_of(*check, "frames_differing") == 0);
   CHECK(number_of(*check, "frames_culled_visible") == 0);
+  // An offscreen run's target is the renderer's own 8-bit one, dithered, and no window's.
+  const JsonValue* output = summary.find("output");
+  REQUIRE(output != nullptr);
+  CHECK(output->find("format")->as_string() == "R8G8B8A8Unorm");
+  CHECK(number_of(*output, "bits") == 8);
+  CHECK(output->find("dither")->as_bool());
+  CHECK(output->find("requested_bits")->as_string().empty());
   const JsonValue* meshes = summary.find("meshes");
   REQUIRE(meshes != nullptr);
   REQUIRE(meshes->size() == 1);

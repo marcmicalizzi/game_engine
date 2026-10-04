@@ -35,6 +35,7 @@
 // constant, which is the white furnace the integrator is checked with.
 
 #include "brdf.slang"
+#include "display.slang"
 #include "ground_detail.slang"
 #include "material.slang"
 #include "sampling.slang"
@@ -87,6 +88,7 @@ struct PathTracePush {
 
 static const uint k_pt_uniform_sky = 1u;
 static const uint k_pt_pixel_center = 2u;
+static const uint k_pt_dither = 4u;  // the output encode dithers by the 8-bit output's 255 steps
 static const uint k_pt_roulette_depth = 3u;
 
 SceneGeometry geometry_of(PathTraceParams* params) {
@@ -395,7 +397,10 @@ void tonemap_main(uint3 id : SV_DispatchThreadID) {
     SkyParams* sky = (SkyParams*)params->sky_params;
     mean = sky_tone(sky, mean * sky_exposure((SkyFrame*)sky->frame));
   }
-  const float3 encoded = saturate(display_encode(mean));
+  // The resolve's output encode (display.slang), dithered at this pixel by the 8-bit output's steps
+  // when the frame dithers, so a reference and a real-time picture carry the same noise.
+  const uint steps = (params->flags & k_pt_dither) != 0 ? 255u : 0u;
+  const float3 encoded = saturate(display_output(mean, id.xy, steps));
   const uint r = uint(encoded.x * 255.0 + 0.5);
   const uint g = uint(encoded.y * 255.0 + 0.5);
   const uint b = uint(encoded.z * 255.0 + 0.5);

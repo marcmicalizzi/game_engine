@@ -368,6 +368,11 @@ TEST_CASE("sky scene: the resolve draws the mirror's sky, and the reference the 
 
   RenderSettings settings;
   settings.shadows = gpu.trace ? ShadowMode::RayTraced : ShadowMode::Off;
+  // The model against its mirror, not the quantizer: the output encode's dither would put up to a
+  // code of noise on every byte (measured with it on: worst 2, mean 0.33, against 1 and 0.03 off)
+  // and the mirror would have to carry the noise to stay within 2. The banding test measures the
+  // dither, where it is the subject (renderer.md, "The output encode").
+  settings.dither = false;
   constexpr u32 k_width = 192;
   constexpr u32 k_height = 108;
   Rig rig;

@@ -1295,9 +1295,32 @@ struct FlythroughPresentation @version(2) {
   submit_ms: Percentiles
 }
 
+/// What the picture was quantized into (docs/subsystems/renderer.md, "The output encode"; ADR-0052):
+/// the colour target — a window's swapchain image, or offscreen the renderer's own 8-bit target —
+/// its bits a channel, and whether the output encode dithered by them.
+struct FlythroughOutput @version(1) {
+  /// The target's format: "B8G8R8A8Unorm", "R8G8B8A8Unorm", "A2B10G10R10Unorm", ...
+  format: string
+  /// Bits a colour channel: 8 or 10.
+  bits: u32 = 0
+  /// The output encode's dither (`RenderSettings::dither`, `--dither`).
+  dither: bool = true
+  /// A window's: the swapchain's colour space ("srgb_nonlinear"), what `--present-bits` asked for
+  /// ("auto", "8" or "10"), and whether the surface offers a 10-bit format at all. Empty and false
+  /// offscreen.
+  color_space: string
+  requested_bits: string
+  ten_bit_offered: bool = false
+  /// A window's `--capture`: the most distinct codes of one colour channel down any one column of
+  /// the presented image as it was read back, at its own depth, before the PNG's reduction to 8
+  /// bits. More than 256 is the readback's proof that the window holds more than 8 bits. 0 without
+  /// a windowed capture.
+  capture_levels: u32 = 0
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(9) {
+struct FlythroughSummary @version(10) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1380,4 +1403,6 @@ struct FlythroughSummary @version(9) {
   /// last frame was, and where the sun stood then and how strongly it shone. Null in a summary
   /// written before version 9.
   sun: json @since(9)
+  /// The target the picture was quantized into, its bits and the dither (see `FlythroughOutput`).
+  output: FlythroughOutput @since(10)
 }
