@@ -834,19 +834,18 @@ i32 run_engine_view(const std::vector<std::string>& args, std::string& output) {
   return p.wait();
 }
 
-// engine-view's picture against the host's of the same request: the same bytes, or within one step
-// of 255 at under a thousandth of them. The one thing the two processes do not reproduce is the
-// sky's metered sum (`stats.sky.sky_lux`), which comes out a few parts in ten million apart
-// between them — the same in each process run to run, and the same with shadows off — and moves
-// an exposed channel by one at a pixel or two. The request is not the cause: every other number
-// the two report of the sky is the same to the last digit. On the RTX 5090 the erg's own time is
-// byte-identical and three years on differs at one byte; on the Titan Xp the erg's own time
-// differs too. Held to the bytes it can be held to, and the rest written down (renderer.md, "One
-// request, two hosts"); the sum's reproducibility is an open defect of the sky's metering, not of
-// the request.
-void same_within_a_step(const std::string& what, const std::string& view_png,
-                        const std::string& host_png, const std::string& view_bytes,
-                        const std::string& host_bytes) {
+// engine-view's picture against the host's of the same request: **the same bytes**, because the
+// picture is a function of the scene, the camera and the clock, and the same device gives the same
+// bytes in any process. Until 2026-10-04 this was "within one step of 255 on under a thousandth
+// of the bytes": the sky's metered sum (`stats.sky.sky_lux`) came out a few parts in ten million
+// apart between the two hosts and moved a channel by one at a pixel or two — on the RTX 5090 three
+// years on, on the Titan Xp at the erg's own time too. The meter was not the cause: the protocol's
+// orbit stood 32 float steps lower than engine-view's `--orbit` (0.8 mm here), and the sky is
+// metered from the eye's altitude. Both now place the orbit with one function from one pitch
+// (renderer.md, "One request, two hosts"; request_tests.cpp holds the camera to the bit). When the
+// bytes differ, how many and by how much is printed before the check fails.
+void same_bytes(const std::string& what, const std::string& view_png, const std::string& host_png,
+                const std::string& view_bytes, const std::string& host_bytes) {
   if (view_bytes == host_bytes) {
     MESSAGE(what << ": byte for byte");
     return;
@@ -865,8 +864,7 @@ void same_within_a_step(const std::string& what, const std::string& view_png,
     largest = d > largest ? d : largest;
   }
   MESSAGE(what << ": " << differ << " channel bytes differ, by at most " << largest);
-  CHECK(largest <= 1);
-  CHECK(differ * 1000 < a.pixels.size());
+  CHECK(view_bytes == host_bytes);
 }
 
 }  // namespace
@@ -1045,12 +1043,10 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
   std::string view_later;
   if (!view(false, tmp.file("view-own.png"), view_own)) return;
   REQUIRE(view(true, tmp.file("view-later.png"), view_later));
-  // engine-view's picture is the host's, to within a step of 255 at a handful of pixels, and byte
-  // for byte where the device lets it be (`same_within_a_step` says why not always).
-  same_within_a_step("the scene's own time", tmp.file("view-own.png"), out_dir + "/own.png",
-                     view_own, own);
-  same_within_a_step("three years on", tmp.file("view-later.png"), out_dir + "/later.png",
-                     view_later, moved);
+  // engine-view's picture is the host's, byte for byte, at both times (`same_bytes`).
+  same_bytes("the scene's own time", tmp.file("view-own.png"), out_dir + "/own.png", view_own, own);
+  same_bytes("three years on", tmp.file("view-later.png"), out_dir + "/later.png", view_later,
+             moved);
 }
 
 TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
@@ -1188,5 +1184,5 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
   CHECK(host_far == view_far);
   std::string view_bytes;
   REQUIRE(read_bytes(view_png, view_bytes));
-  same_within_a_step("the endless desert's far levels", view_png, host_png, view_bytes, host_bytes);
+  same_bytes("the endless desert's far levels", view_png, host_png, view_bytes, host_bytes);
 }

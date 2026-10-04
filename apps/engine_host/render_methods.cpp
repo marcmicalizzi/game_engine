@@ -365,18 +365,10 @@ image::Image image_of(u32 width, u32 height, const Vector<u8>& rgba) {
 renderer::Camera camera_of(const RenderHost::Scene& scene,
                            const std::optional<protocol::RenderCamera>& explicit_camera,
                            const std::optional<protocol::RenderOrbit>& orbit) {
-  if (explicit_camera.has_value()) {
-    renderer::Camera camera;
-    camera.position = explicit_camera->position;
-    camera.target = explicit_camera->target;
-    camera.fov_y = radians(explicit_camera->fov_deg);
-    camera.znear =
-        explicit_camera->znear > 0.0f ? explicit_camera->znear : 0.01f * scene.data.radius;
-    return camera;
-  }
-  const protocol::RenderOrbit o = orbit.has_value() ? *orbit : protocol::RenderOrbit{};
-  return renderer::orbit_camera_at(scene.data.center, scene.data.radius, o.distance,
-                                   radians(o.yaw_deg), radians(o.pitch_deg));
+  // The shared request's reader (request.h): the orbit is engine-view's to the bit.
+  return renderer::read_protocol_camera(scene.data,
+                                        explicit_camera.has_value() ? &*explicit_camera : nullptr,
+                                        orbit.has_value() ? &*orbit : nullptr);
 }
 
 // ---- render.load -------------------------------------------------------------------------------

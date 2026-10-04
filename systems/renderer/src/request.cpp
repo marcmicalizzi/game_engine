@@ -568,4 +568,19 @@ bool read_protocol_clock(const protocol::RenderClock& in, ClockRequest& out, std
   return true;
 }
 
+Camera read_protocol_camera(const SceneData& scene, const protocol::RenderCamera* camera,
+                            const protocol::RenderOrbit* orbit) {
+  if (camera != nullptr) {
+    Camera out;
+    out.position = camera->position;
+    out.target = camera->target;
+    out.fov_y = radians(camera->fov_deg);
+    out.znear = camera->znear > 0.0f ? camera->znear : 0.01f * scene.radius;
+    return out;
+  }
+  const protocol::RenderOrbit o = orbit != nullptr ? *orbit : protocol::RenderOrbit{};
+  return orbit_camera_at(scene.center, scene.radius, o.distance, radians(o.yaw_deg),
+                         radians(o.pitch_deg));
+}
+
 }  // namespace engine::renderer

@@ -7,13 +7,37 @@
 
 namespace engine::renderer {
 
+f32 orbit_rise(f32 pitch) noexcept {
+  // sin and cos by their Taylor series, eleven terms each: at 85 degrees (1.48 rad) the first term
+  // left out is under 1e-17 of the sum, so the quotient is tan to double precision and the one
+  // rounding to float is the only one that shows. Every operation is a plain IEEE one, which is
+  // the point (view_set.h).
+  const f64 x = static_cast<f64>(pitch);
+  const f64 x2 = x * x;
+  f64 sin_term = x;
+  f64 cos_term = 1.0;
+  f64 sine = 0.0;
+  f64 cosine = 0.0;
+  for (u32 k = 0; k < 11; ++k) {
+    sine += sin_term;
+    cosine += cos_term;
+    const f64 n = static_cast<f64>(2 * k + 1);
+    sin_term *= -x2 / ((n + 1.0) * (n + 2.0));
+    cos_term *= -x2 / (n * (n + 1.0));
+  }
+  return static_cast<f32>(sine / cosine);
+}
+
 Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept {
   const f32 angle = static_cast<f32>(frame) * 0.006f;
   const f32 d =
       (distance > 0.0f ? distance : 22.0f + 14.0f * std::sin(static_cast<f32>(frame) * 0.004f)) *
       (radius / 10.0f);
   Camera camera;
-  camera.position = center + Vec3{std::cos(angle) * d, 0.45f * d, std::sin(angle) * d};
+  // The rise of the protocol's default pitch, as `orbit_camera_at` works it out: what makes
+  // `--orbit 22` and `orbit {distance: 22}` one camera (view_set.h, `k_orbit_pitch`).
+  camera.position =
+      center + Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;  // reversed-Z: 0.1 for the heightfield, 0.2 mm for a 2 cm mesh
@@ -22,14 +46,13 @@ Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noe
 
 Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept {
   const f32 d = (distance > 0.0f ? distance : 22.0f) * (radius / 10.0f);
-  // `pitch` is the elevation above the orbit circle of radius d, so the default (atan(0.45))
-  // reproduces engine-view's fixed 0.45 height factor exactly and `--orbit 22` and
-  // `orbit {distance: 22}` are the same camera. Clamped short of the pole, where the tangent and
+  // `pitch` is the elevation above the orbit circle of radius d; at the default, `k_orbit_pitch`,
+  // this is `orbit_camera`'s camera to the bit. Clamped short of the pole, where the tangent and
   // the up vector both stop meaning anything.
   const f32 limit = radians(85.0f);
   const f32 clamped = pitch < -limit ? -limit : (pitch > limit ? limit : pitch);
   Camera camera;
-  camera.position = center + Vec3{std::cos(yaw) * d, std::tan(clamped) * d, std::sin(yaw) * d};
+  camera.position = center + Vec3{std::cos(yaw) * d, orbit_rise(clamped) * d, std::sin(yaw) * d};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;
@@ -50,7 +73,8 @@ Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u3
   const f32 angle = static_cast<f32>(step) * 0.006f;
   const f32 d = radii * radius;
   Camera camera;
-  camera.position = center + Vec3{std::cos(angle) * d, 0.45f * d, std::sin(angle) * d};
+  camera.position =
+      center + Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;

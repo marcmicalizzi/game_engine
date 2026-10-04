@@ -43,15 +43,36 @@ struct Camera {
   f32 znear = 0.1f;           // reversed-Z: there is no far plane
 };
 
-// The elevation `orbit_camera` holds above its orbit circle: atan(0.45), engine-view's fixed
-// height factor. It is the default pitch of an explicit orbit, so `orbit {distance: 22}` and
-// `--orbit 22` are the same camera and the two hosts' captures of a scene compare.
-inline constexpr f32 k_orbit_pitch = 0.4228539f;
+// **The elevation every orbit holds above its circle unless told otherwise**, in degrees and in
+// radians: the protocol's default `RenderOrbit.pitch_deg` (schemas/protocol.schema), which
+// `request_tests.cpp` holds to this constant, and so the pitch of `orbit {distance: 22}` and of
+// engine-view's `--orbit 22` alike. It is atan(0.45) to four places — engine-view's orbit rose
+// 0.45 of its distance before the two hosts shared it.
+//
+// **Why one constant and one function, to the bit** (renderer.md, "One request, two hosts"):
+// until 2026-10-04 engine-view placed its orbit at `0.45 * d` and the protocol's at
+// `tan(radians(24.2277)) * d`, 32 float steps lower — 0.8 mm on the erg's orbit. Nothing in the
+// picture showed it but the sky's exposure, which is metered from the eye's altitude and came out
+// a few parts in ten million apart between the two hosts, and that moved a channel byte by one
+// at a pixel or two. The camera was the cause, not the meter; both hosts now compute every orbit
+// through `orbit_camera_at`'s arithmetic from the same pitch.
+inline constexpr f32 k_orbit_pitch_deg = 24.2277f;
+inline constexpr f32 k_orbit_pitch = radians(k_orbit_pitch_deg);
+
+// How far an orbit at `pitch` (radians, within 85 degrees of level) rises per unit of its
+// distance: tan(pitch), worked out from additions, multiplications and one division in double,
+// and rounded once to float. Not `std::tan`, because a compiler is free to fold a call on a
+// constant at build time — GCC does, correctly rounded — while the same call on a pitch read off
+// the wire goes to the C library at run time, and the two need not round alike; with nothing but
+// the four operations (and contraction off, ADR-0035) every compiler, every machine and both
+// times give the same bits. Within a float step of `std::tan` (`request_tests.cpp`).
+f32 orbit_rise(f32 pitch) noexcept;
 
 // The camera engine-view has always orbited with, so a capture of a scene from engine-host and
 // a capture of the same scene from engine-view are the same picture. `distance` of zero
 // breathes between 8 and 36 units instead of holding still, and every distance scales with the
-// scene's radius, so a 2 cm mesh and a 20 m one are framed alike.
+// scene's radius, so a 2 cm mesh and a 20 m one are framed alike. At frame 0 it is
+// `orbit_camera_at(center, radius, distance, 0, k_orbit_pitch)` to the bit.
 Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept;
 // The same orbit at explicit angles, which is what a caller that wants one picture asks for.
 // `distance` of zero is the breathing orbit's rest distance (22 radius-tenths).

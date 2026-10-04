@@ -16,6 +16,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <schemas/protocol.h>
@@ -344,6 +345,68 @@ TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and
   const renderer::FrameClock still = renderer::frame_clock(renderer::ClockRequest{}, scene);
   CHECK(still.offset_s == 0.0);
   CHECK(still.at(1000) == 0.0);
+}
+
+namespace {
+
+bool same_bits(f32 a, f32 b) { return std::memcmp(&a, &b, sizeof(f32)) == 0; }
+
+bool same_camera(const renderer::Camera& a, const renderer::Camera& b) {
+  return same_bits(a.position.x, b.position.x) && same_bits(a.position.y, b.position.y) &&
+         same_bits(a.position.z, b.position.z) && same_bits(a.target.x, b.target.x) &&
+         same_bits(a.target.y, b.target.y) && same_bits(a.target.z, b.target.z) &&
+         same_bits(a.fov_y, b.fov_y) && same_bits(a.znear, b.znear);
+}
+
+}  // namespace
+
+TEST_CASE("request: an orbit on the wire is engine-view's --orbit camera, to the bit") {
+  // The erg as the end-to-end comparison shrinks it (apps/engine_cli/tests/render_tests.cpp): the
+  // centre and radius `render.load` reported for it. Until the two hosts shared one orbit, the
+  // protocol's rose tan(radians(24.2277)) of its distance and engine-view's 0.45: 32 float steps,
+  // 0.8 mm here, which the sky's exposure — metered from the eye's altitude — turned into a
+  // different seventh digit and a channel byte at a pixel or two (renderer.md, "One request, two
+  // hosts").
+  renderer::SceneData scene;
+  scene.center = Vec3{1.692535400390625f, 36.8192138671875f, 4.50701904296875f};
+  scene.radius = 368.3621520996094f;
+  CHECK(protocol::RenderOrbit{}.pitch_deg == renderer::k_orbit_pitch_deg);
+  CHECK(same_bits(radians(protocol::RenderOrbit{}.pitch_deg), renderer::k_orbit_pitch));
+  for (const f32 distance : {22.0f, 0.0f, 40.0f, 3.5f}) {
+    CAPTURE(distance);
+    protocol::RenderOrbit orbit;
+    orbit.distance = distance;
+    const renderer::Camera view = renderer::orbit_camera(scene.center, scene.radius, distance, 0);
+    const renderer::Camera host = renderer::read_protocol_camera(scene, nullptr, &orbit);
+    INFO("engine-view y " << view.position.y << ", the protocol's " << host.position.y);
+    CHECK(same_camera(view, host));
+  }
+  // A call that names neither a camera nor an orbit is the orbit's defaults: the rest distance.
+  CHECK(same_camera(renderer::read_protocol_camera(scene, nullptr, nullptr),
+                    renderer::orbit_camera(scene.center, scene.radius, 22.0f, 0)));
+  // An explicit camera is taken as it is, its near plane the scene's when it names none.
+  protocol::RenderCamera explicit_camera;
+  explicit_camera.position = Vec3{812.08923f, 401.49774f, 4.507019f};
+  explicit_camera.target = scene.center;
+  const renderer::Camera taken = renderer::read_protocol_camera(scene, &explicit_camera, nullptr);
+  CHECK(same_bits(taken.position.y, 401.49774f));
+  CHECK(same_bits(taken.fov_y, radians(55.0f)));
+  CHECK(same_bits(taken.znear, 0.01f * scene.radius));
+
+  // The rise is tan to within a float step of the C library's over every pitch an orbit takes
+  // (it is plain arithmetic rather than `std::tan`, so a folded constant and a pitch off the wire
+  // round alike, view_set.h), and it is odd, as tan is.
+  for (i32 tenth = -850; tenth <= 850; tenth += 5) {
+    const f32 pitch = radians(static_cast<f32>(tenth) * 0.1f);
+    const f32 rise = renderer::orbit_rise(pitch);
+    const f32 libm = std::tan(pitch);
+    const f32 step = std::nextafter(std::fabs(libm), 1.0e30f) - std::fabs(libm);
+    CAPTURE(tenth);
+    CHECK(std::fabs(rise - libm) <= step);
+  }
+  CHECK(renderer::orbit_rise(0.0f) == 0.0f);
+  CHECK(renderer::orbit_rise(-renderer::k_orbit_pitch) ==
+        -renderer::orbit_rise(renderer::k_orbit_pitch));
 }
 
 TEST_CASE("request: settings_for resolves the page budget's share and the morph weights") {

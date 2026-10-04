@@ -45,6 +45,8 @@ class JobSystem;
 namespace engine::protocol {
 struct RenderSettings;
 struct RenderClock;
+struct RenderCamera;
+struct RenderOrbit;
 }  // namespace engine::protocol
 
 namespace engine::renderer {
@@ -194,5 +196,12 @@ std::optional<scene::FrameTerrain> frame_terrain(const TerrainMotion& lapse);
 bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& out,
                             std::string& error);
 bool read_protocol_clock(const protocol::RenderClock& in, ClockRequest& out, std::string& error);
+// The camera a `render.*` call names (`RenderCamera`, `RenderOrbit`): the explicit one when it is
+// given, else the orbit, else the orbit's defaults. The orbit is `orbit_camera_at` from the scene's
+// centre and radius, so `{distance: 22}` is engine-view's `--orbit 22` at frame 0 to the bit
+// (view_set.h, `k_orbit_pitch`) — and that is what the sky's exposure, metered from the eye's
+// altitude, needs before two hosts' pictures can be the same bytes.
+Camera read_protocol_camera(const SceneData& scene, const protocol::RenderCamera* camera,
+                            const protocol::RenderOrbit* orbit);
 
 }  // namespace engine::renderer

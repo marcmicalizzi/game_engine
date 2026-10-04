@@ -8,7 +8,8 @@
 // primary misses are the same bytes; the sky through a pixel is a function of the camera's rotation
 // and not of where it stands, so 50 km from the origin a move across the ground changes no byte of
 // it (gfx.md, "The sky", the fifth lesson); a scene without a sky draws the stand-in's clear and
-// hands the resolve no sky block; and the sky stands at the world's one clock, the ground's time
+// hands the resolve no sky block; the same frame meters the same exposure to the bit in fresh
+// renderers and after other frames; and the sky stands at the world's one clock, the ground's time
 // plus the frame's offset.
 //
 // Compiled where the sky capability is (its "earth" provider); each GPU case skips with a message
@@ -33,6 +34,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -655,6 +657,86 @@ TEST_CASE("sky scene: a scene without a sky draws the stand-in and hands the res
   }
   CHECK(uncovered > 0);
   CHECK(other == 0);
+}
+
+namespace {
+
+bool same_bits(f32 a, f32 b) { return std::memcmp(&a, &b, sizeof(f32)) == 0; }
+
+}  // namespace
+
+// **The metered exposure is a function of the frame** (renderer.md, "Exposure"): the same frame in
+// two fresh renderers, and again in the first after other frames, meters the same sums to the bit
+// and draws the same bytes. The sky's frame pass sums its 2,048 directions in a fixed order — a
+// strided loop per thread, then a tree over one workgroup's shared memory — and keeps no history,
+// so nothing about a run but the frame can reach the number. On 2026-10-03 engine-view and
+// engine-host metered the erg's sky a few parts in ten million apart; the cause was the two hosts'
+// cameras, 0.8 mm apart in height (request_tests.cpp holds that), and this case is the other half:
+// the meter itself, given one frame, gives one answer.
+TEST_CASE("sky scene: the same frame meters the same exposure in fresh renderers, to the bit") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const scene::Sky entry = erg_sky();
+  const scene_gen::SkyProvider provider = make_earth(entry);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  constexpr u32 k_width = 96;
+  constexpr u32 k_height = 54;
+  Rig first;
+  REQUIRE_MESSAGE(first.build(gpu.device, hills(entry), settings, k_width, k_height, false),
+                  first.error);
+  Rig second;
+  REQUIRE_MESSAGE(second.build(gpu.device, hills(entry), settings, k_width, k_height, false),
+                  second.error);
+  REQUIRE(first.renderer.sky().active());
+
+  struct Metered {
+    SkyStats sky;
+    CapturedFrame shot;
+  };
+  const auto meter = [&](Rig& rig, const FrameDesc& frame) {
+    Metered out;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, CaptureChannels{}, out.shot, &rig.error),
+                    rig.error);
+    out.sky = rig.renderer.stats().sky;
+    return out;
+  };
+  // The afternoon, and the full moon's midnight the erg's own time stands at (the case the two
+  // hosts disagreed on), each from 20 m up looking half way to the light that keys it.
+  const f64 hours[2] = {15.5, 24.0};
+  for (const f64 hour : hours) {
+    CAPTURE(hour);
+    scene_gen::SkyState state;
+    provider.state(hour * 3600.0, state);
+    const Vec3 light = state.sun.y > 0.0f ? state.sun : state.moon;
+    const Vec3 level = normalize(Vec3{light.x, 0.0f, light.z});
+    FrameDesc frame;
+    frame.camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(normalize(light) + level), 60.0f);
+    frame.sun_time_s = hour * 3600.0;
+    const Metered a = meter(first, frame);
+    const Metered b = meter(second, frame);
+    // Other frames in between — another hour and another eye — and then the same frame again.
+    FrameDesc other = frame;
+    other.camera.position.y += 7.0f;
+    other.sun_time_s += 5400.0;
+    (void)meter(first, other);
+    const Metered again = meter(first, frame);
+    MESSAGE("hour " << hour << ": EV100 " << a.sky.ev100 << ", " << a.sky.lux << " lux, the sky's "
+                    << a.sky.sky_lux);
+    REQUIRE(a.sky.active);
+    CHECK(a.sky.sky_lux > 0.0f);
+    for (const Metered* m : {&b, &again}) {
+      CHECK(same_bits(m->sky.exposure, a.sky.exposure));
+      CHECK(same_bits(m->sky.ev100, a.sky.ev100));
+      CHECK(same_bits(m->sky.lux, a.sky.lux));
+      CHECK(same_bits(m->sky.sky_lux, a.sky.sky_lux));
+      REQUIRE(m->shot.color.size() == a.shot.color.size());
+      CHECK(std::memcmp(m->shot.color.data(), a.shot.color.data(), a.shot.color.size()) == 0);
+    }
+  }
 }
 
 #if defined(ENGINE_SKY_TESTS_TERRAIN)
