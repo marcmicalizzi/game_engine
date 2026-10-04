@@ -186,7 +186,15 @@ ENGINE_EXPECT_SIZE(208, 4, gfx::SkyFrame);
 // the ripples' shape and the kernels' lattice, the filter's slope variance, the slope fade and the
 // grain, read through an address once per shaded pixel of a material that carries it. One block a
 // frame, shared by every view and by the reference.
-ENGINE_EXPECT_SIZE(224, 4, gfx::GroundDetailParams);
+// 560, not 224 (2026-10-04, gfx.md "Far from the origin"): the frame the pattern is evaluated in —
+// its origin near the eye, and where the ripples', the grain's, the patches' and the streaks'
+// lattices stand at it (16 bytes each), then the grainflow's sixteen lane directions (16 each) —
+// so no lattice, hash or phase is ever taken of a float32 world coordinate, which has a 3.1 cm step
+// 420 km out. The shader's struct is the first 304; it reads the one lane a pixel needs from the
+// table behind it. Still one block a frame, and a pixel reads the 80 new head bytes and one lane.
+ENGINE_EXPECT_SIZE(16, 4, gfx::GroundLattice);
+ENGINE_EXPECT_SIZE(16, 4, gfx::GroundLane);
+ENGINE_EXPECT_SIZE(560, 4, gfx::GroundDetailParams);
 
 // The cascaded shadow maps (docs/subsystems/renderer.md, "Shadows"): per cascade its world-to-tile
 // matrix and three numbers the filter and the bias need; per frame four cascades, the light's

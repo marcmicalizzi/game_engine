@@ -1584,7 +1584,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // scene without a terrain detail block: the resolve then reads exactly what it read before.
   u64 ground_detail_address = 0;
   if (scene.ground_detail()) {
-    const gfx::GroundDetailParams detail = scene.ground_detail_params();
+    gfx::GroundDetailParams detail = scene.ground_detail_params();
+    // Its frame at this frame's eye, which is every view's `camera` (gfx.md, "Far from the
+    // origin"): the pattern's lattices are counted from a corner near it, in double.
+    gfx::ground_detail_frame(detail, static_cast<f64>(eye.x), static_cast<f64>(eye.z));
     const u64 offset =
         sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights) + sizeof(gfx::ShadowMapParams);
     std::memcpy(resolve_bytes + offset, &detail, sizeof(detail));

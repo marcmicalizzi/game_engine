@@ -28,6 +28,11 @@
 //   stages, because their steep lee is a quarter of a wavelength and aliases an octave earlier than
 //   the ripple: first the profile eases to a plain sinusoid, then the sinusoid fades. They also fade
 //   by the ground's slope, towards the angle of repose, and everything by the sand share.
+//
+// **No absolute coordinate is ever a float here** (2026-10-04, gfx.md "Far from the origin"): a
+// point is its offset from the block's frame origin, a corner of a 1,024 m grid near the eye, and
+// every lattice, hash and lane is counted from where the CPU found the origin stands on it, in
+// double, so the pattern is the world's own function to 10,000 km and further.
 
 #ifndef ENGINE_GROUND_DETAIL_SLANG
 #define ENGINE_GROUND_DETAIL_SLANG
@@ -58,7 +63,8 @@ static const float k_ground_grain_rms = 0.28;
 static const uint k_ground_impulses = 2u;
 static const float k_ground_two_pi = 6.28318530717958647692;
 
-// Mirrors gfx::GroundDetailParams (224 bytes).
+// Mirrors gfx::GroundDetailParams up to its lane table (304 of its 560 bytes; the table is read
+// through the block's address, `ground_lanes`).
 struct GroundDetail {
   float4 wind;            // xy the direction the sand moves (x, z), unit; z sin(spread)
   float wavelength;       // metres crest to crest
@@ -113,7 +119,33 @@ struct GroundDetail {
   float flow_clock;       // the avalanche clock, a fraction of a cycle
   float flow_clock_step;  // its advance this frame
   uint pad8;
+  // The frame (gfx::ground_detail_frame; gfx.md, "Far from the origin"): the point arrives as its
+  // offset from `origin`, and each lattice as the cell `origin` falls in (`*_base`, the world's own
+  // integers, wrapped to 32 bits) and `origin`'s offset into it (`*_rem`).
+  float2 origin;          // metres (x, z), a multiple of gfx::k_ground_frame_cell near the eye
+  uint pad9;
+  uint pad10;
+  int2 ripple_base;       // the kernels' lattice, `cell`
+  float2 ripple_rem;
+  int2 grain_base;        // the grain's, `grain_size`; its finer octaves by doubling
+  float2 grain_rem;
+  int2 patch_base;        // the patches', `patch_size`
+  float2 patch_rem;
+  int2 streak_base;       // the streaks', `streak_length`
+  float2 streak_rem;
 };
+
+// One grainflow direction at the frame's origin (gfx::GroundLane): the lane line at or before it
+// and its distance past it, the segment it is in and its distance into it.
+struct GroundLane {
+  int lane;
+  int segment;
+  float across;
+  float along;
+};
+// gfx::k_ground_lanes_offset: the sixteen lanes behind the block.
+static const uint64_t k_ground_lanes_offset = 304;
+GroundLane* ground_lanes(uint64_t block) { return (GroundLane*)(block + k_ground_lanes_offset); }
 
 // PCG, as sampling.slang's `pcg_hash`: one multiply-add and a permutation, the same bits on every
 // device and in the CPU mirror.
@@ -153,10 +185,13 @@ struct GroundRipple {
 // block's own wind and spread, or the steering's and the patches'), and `travel` how far they have
 // moved along it: every kernel's phase is taken back by k travel, so the crests move and the
 // kernels stay where the lattice put them.
+// `p` is the point's offset from the frame's origin: the lattice cell `c` it falls in is counted
+// from the origin's (`ripple_base`), so the hash draws the world's kernel `ripple_base + c`, and
+// the offset from a kernel's centre is the difference of two numbers the size of the frame.
 GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scale, float2 w,
                            float spread, float travel) {
   const float inv_cell = 1.0 / d.cell;
-  const float2 q = p * inv_cell;
+  const float2 q = (p + d.ripple_rem) * inv_cell;
   const int2 base = int2(floor(q));
   const float2 across = float2(-w.y, w.x);
   const float k = k_ground_two_pi / (d.wavelength * scale);
@@ -169,14 +204,15 @@ GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scal
   for (int j = -1; j <= 1; ++j) {
     for (int i = -1; i <= 1; ++i) {
       const int2 c = base + int2(i, j);
+      const int2 world = d.ripple_base + c;
       for (uint n = 0u; n < k_ground_impulses; ++n) {
-        uint h = ground_hash(c.x, c.y, d.seed, n);
+        uint h = ground_hash(world.x, world.y, d.seed, n);
         const float ux = ground_unit(h);
         h = ground_pcg(h);
         const float uz = ground_unit(h);
         // The point relative to the kernel's centre, in cells and then in metres: the cell's index
-        // and the point's are both near the world's coordinates over the cell, so they are
-        // subtracted before anything is scaled.
+        // and the point's are both counted from the frame's origin, so they are subtracted before
+        // anything is scaled.
         const float2 offset = (q - (float2(c) + float2(ux, uz))) * d.cell;
         const float r2 = dot(offset, offset) * inv_r2;
         if (r2 >= 1.0) continue;
@@ -247,22 +283,39 @@ float ground_exposure(GroundDetail d, float3 normal) {
   return 1.0 - smoothstep(d.lee_tan_start, d.lee_tan_end, fall);
 }
 
-// Two channels of value noise at `p`, on a lattice of `size`, each in [-1, 1]. The lattice is
-// counted in tiles of 4,096 cells so that the fraction inside a cell keeps its precision thousands
-// of metres from the origin (a 5 mm cell 3 km out is 600,000 cells, where a float has four bits
-// left under the point).
+// Where `p`, an offset from the frame's origin, falls on a lattice of side `size` whose cell at the
+// origin is `base` and which the origin is `rem` into: the world's cell, as 32-bit integers, and
+// the fraction inside it. A lattice of a side halved n times from the one `base` and `rem` were made
+// for takes `base` times 2^n and the same `rem` (gfx::GroundLattice). The local coordinate is
+// counted in tiles of 4,096 cells, which kept the fraction's precision when `p` was the world's
+// coordinate and leaves the arithmetic the same bytes it was for a frame at the world's origin.
+struct GroundCell {
+  int2 i;
+  float2 f;
+};
+
+GroundCell ground_cell_at(float2 p, float size, int2 base, float2 rem) {
+  const float2 x = p + rem;
+  const float tile = size * 4096.0;
+  const float2 t = floor(x / tile);
+  const float2 q = (x - t * tile) / size;
+  const float2 f0 = floor(q);
+  GroundCell c;
+  c.f = q - f0;
+  c.i = base + int2(t) * 4096 + int2(f0);
+  return c;
+}
+
+// Two channels of value noise at `p`, on a lattice of `size`, each in [-1, 1].
 float2 ground_lattice2(int2 i, uint seed, uint stream) {
   const uint h = ground_hash(i.x, i.y, seed, stream);
   return float2(float(h & 0xffffu), float(h >> 16u)) * (2.0 / 65535.0) - 1.0;
 }
 
-float2 ground_value_noise2(float2 p, float size, uint seed, uint stream) {
-  const float tile = size * 4096.0;
-  const float2 t = floor(p / tile);
-  const float2 q = (p - t * tile) / size;
-  const float2 f0 = floor(q);
-  const float2 f = q - f0;
-  const int2 i = int2(t) * 4096 + int2(f0);
+float2 ground_value_noise2(float2 p, float size, int2 base, float2 rem, uint seed, uint stream) {
+  const GroundCell cell = ground_cell_at(p, size, base, rem);
+  const float2 f = cell.f;
+  const int2 i = cell.i;
   const float2 u = f * f * (3.0 - 2.0 * f);
   const float2 v00 = ground_lattice2(i, seed, stream);
   const float2 v10 = ground_lattice2(i + int2(1, 0), seed, stream);
@@ -276,8 +329,8 @@ float2 ground_value_noise2(float2 p, float size, uint seed, uint stream) {
 // corner's three gradients come from one hash, five bits a component in [-1, 1], so an octave is
 // four lattice hashes; the quintic fade makes the value's second derivative continuous, so the
 // normal the height leans has no crease. Gradient noise rather than value noise because it has no
-// lattice to see: it is zero at every lattice point and its extremes fall between them. The
-// lattice is counted in tiles of 4,096 cells as the value noise's is.
+// lattice to see: it is zero at every lattice point and its extremes fall between them. The cell
+// is `ground_cell_at`'s, as the value noise's is.
 struct GroundGrain {
   float3 value;
   float2 gradient;
@@ -288,13 +341,11 @@ float2 ground_grain_gradient(uint h, uint channel) {
   return (float2(float(bits & 31u), float((bits >> 5u) & 31u)) - 15.5) * (1.0 / 15.5);
 }
 
-GroundGrain ground_gradient_noise3(float2 p, float size, uint seed, uint stream) {
-  const float tile = size * 4096.0;
-  const float2 t = floor(p / tile);
-  const float2 q = (p - t * tile) / size;
-  const float2 f0 = floor(q);
-  const float2 f = q - f0;
-  const int2 i = int2(t) * 4096 + int2(f0);
+GroundGrain ground_gradient_noise3(float2 p, float size, int2 base, float2 rem, uint seed,
+                                   uint stream) {
+  const GroundCell cell = ground_cell_at(p, size, base, rem);
+  const float2 f = cell.f;
+  const int2 i = cell.i;
   const float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   const float2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
   const uint h00 = ground_hash(i.x, i.y, seed, stream);
@@ -340,7 +391,7 @@ struct GroundStreak {
 
 GroundStreak ground_streaks(GroundDetail d, float2 p, float2 fall) {
   const float inv_cell = 1.0 / d.streak_length;
-  const float2 q = p * inv_cell;
+  const float2 q = (p + d.streak_rem) * inv_cell;
   const int2 base = int2(floor(q));
   const float2 across = float2(-fall.y, fall.x);
   const float inv_a2 = 4.0 / (d.streak_length * d.streak_length);
@@ -351,8 +402,9 @@ GroundStreak ground_streaks(GroundDetail d, float2 p, float2 fall) {
   for (int j = -1; j <= 1; ++j) {
     for (int i = -1; i <= 1; ++i) {
       const int2 c = base + int2(i, j);
+      const int2 world = d.streak_base + c;
       for (uint n = 0u; n < k_ground_streak_impulses; ++n) {
-        uint h = ground_hash(c.x, c.y, d.seed, 32u + n);
+        uint h = ground_hash(world.x, world.y, d.seed, 32u + n);
         const float ux = ground_unit(h);
         h = ground_pcg(h);
         const float uz = ground_unit(h);
@@ -399,8 +451,10 @@ float2 ground_steer(GroundDetail d, float2 w, float3 normal) {
 // the wavelength's and the defects' — each scaled to about [-1, 1] and clamped. A function of the
 // position alone, so it does not slide when the normal changes, and eight lattice hashes.
 float2 ground_patch(GroundDetail d, float2 p) {
-  const GroundGrain a = ground_gradient_noise3(p, d.patch_size, d.seed, 64u);
-  const GroundGrain b = ground_gradient_noise3(p, d.patch_size * 0.5, d.seed, 65u);
+  const GroundGrain a =
+      ground_gradient_noise3(p, d.patch_size, d.patch_base, d.patch_rem, d.seed, 64u);
+  const GroundGrain b =
+      ground_gradient_noise3(p, d.patch_size * 0.5, d.patch_base * 2, d.patch_rem, d.seed, 65u);
   const float2 v = (a.value.xy + b.value.xy * 0.5) * (0.5 / (k_ground_noise_rms * 1.118034));
   return clamp(v, -1.0, 1.0);
 }
@@ -515,15 +569,21 @@ float ground_tongue(GroundTongue g, float x, float tl) {
 // lane's coordinate across and along a fixed direction), so the normal never moves it. The height
 // and its gradient over (x, z), per metre, the gradient by forward differences of 2 mm in the
 // tongue's own local coordinates (the shape is arithmetic; its hashes are drawn once); three lanes,
-// three lattice hashes.
-GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
+// three lattice hashes. `p` is the point's offset from the frame's origin, and `lanes[k]` where the
+// origin stands across and along direction k, so `sa` and `t` are measured from the origin's lane
+// line and segment start, and the world's lane and segment are those integers plus the local ones.
+// The stagger is the golden ratio's fraction of the world's lane index in 32-bit fixed point
+// (`0x9E3779B9`), exact for every lane; until the frame it was `frac(m * 0.618…)` in float, which
+// 420 km out (lane 350,000) rounded a lane's tongues up to 0.2 m along it.
+GroundFlow ground_lane_set(GroundDetail d, GroundLane* lanes, float2 p, uint k) {
   const float angle = float(k) * (k_ground_two_pi / float(k_ground_flow_directions));
   const float2 dir = float2(cos(angle), sin(angle));
   const float2 across = float2(-dir.y, dir.x);
   const float spacing = 2.0 * d.flow_width;
   const float seg = d.flow_length;
-  const float sa = dot(p, across);
-  const float t = dot(p, dir);
+  const GroundLane lane = lanes[k];
+  const float sa = lane.across + dot(p, across);
+  const float t = lane.along + dot(p, dir);
   const float mc = floor(sa / spacing + 0.5);
   const float e = 0.002;
   GroundFlow out;
@@ -531,9 +591,10 @@ GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
   out.gradient = float2(0.0, 0.0);
   for (int i = -1; i <= 1; ++i) {
     const float m = mc + float(i);
-    const float stagger = frac(m * 0.6180339887) * seg;
+    const int world_lane = lane.lane + int(m);
+    const float stagger = ground_unit(uint(world_lane) * 0x9E3779B9u) * seg;
     const float j = floor((t - stagger) / seg);
-    uint h = ground_hash(int(m), int(j), d.seed, 48u + k);
+    uint h = ground_hash(world_lane, lane.segment + int(j), d.seed, 48u + k);
     const float jitter = (ground_unit(h) - 0.5) * 0.5 * spacing;
     h = ground_pcg(h);
     const float wscale = 0.7 + 0.6 * ground_unit(h);
@@ -581,7 +642,7 @@ GroundFlow ground_lane_set(GroundDetail d, float2 p, uint k) {
   return out;
 }
 
-GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
+GroundFlow ground_grainflow(GroundDetail d, GroundLane* lanes, float2 p, float2 fall) {
   const float sector = k_ground_two_pi / float(k_ground_flow_directions);
   float turn = atan2(fall.y, fall.x) / sector;
   if (turn < 0.0) turn += float(k_ground_flow_directions);
@@ -594,8 +655,8 @@ GroundFlow ground_grainflow(GroundDetail d, float2 p, float2 fall) {
   const float w = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
   const uint i0 = uint(k0);
   const uint i1 = (i0 + 1u) % k_ground_flow_directions;
-  const GroundFlow a = ground_lane_set(d, p, i0);
-  const GroundFlow b = ground_lane_set(d, p, i1);
+  const GroundFlow a = ground_lane_set(d, lanes, p, i0);
+  const GroundFlow b = ground_lane_set(d, lanes, p, i1);
   const float norm = rsqrt((1.0 - w) * (1.0 - w) + w * w);
   GroundFlow out;
   out.value = (a.value * (1.0 - w) + b.value * w) * norm;
@@ -617,15 +678,23 @@ struct GroundShading {
   float grain;       // the albedo grain's coarse octave, before any fade
 };
 
-// The detail at a surface point: `position` in world space, `normal` the shading normal it
-// perturbs (unit; its y is the ground's slope the ripples fade by), `dpdx` and `dpdy` the point's
-// world-space change per pixel along the screen's two axes (zero for a caller with no footprint,
-// which then draws the unfiltered function), `mask` the material's sand share. `full` is the debug
-// view's: the ripple height at the scene's own asymmetry and the grain's coarse octave even where
-// the fades leave nothing, and no normal (the view draws none).
-GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal, float3 dpdx,
-                                  float3 dpdy, float mask, float3 albedo, float roughness,
-                                  bool full) {
+// The detail at a surface point, read from the block at address `block` (gfx::GroundDetailParams).
+// The point is `eye + from_eye` in the world, given as the two halves the resolve has (gfx.md,
+// "Where a pixel meets its triangle"): `eye` a world position — the camera, or any point the caller
+// measured `from_eye` from — and `from_eye` the point less it. **It is never added up in world
+// coordinates**: the pattern takes `(eye - origin) + from_eye`, the point's offset from the frame's
+// origin, where `eye - origin` is exact (two floats within a frame of each other) and the sum is on
+// numbers the size of the frame, a float step of 61 µm 512 m out; a world coordinate 420 km out
+// has 3.1 cm (gfx.md, "Far from the origin"). `normal` the shading normal it perturbs (unit; its y
+// is the ground's slope the ripples fade by), `dpdx` and `dpdy` the point's world-space change per
+// pixel along the screen's two axes (zero for a caller with no footprint, which then draws the
+// unfiltered function), `mask` the material's sand share. `full` is the debug view's: the ripple
+// height at the scene's own asymmetry and the grain's coarse octave even where the fades leave
+// nothing, and no normal (the view draws none).
+GroundShading ground_detail_shade(uint64_t block, float3 eye, float3 from_eye, float3 normal,
+                                  float3 dpdx, float3 dpdy, float mask, float3 albedo,
+                                  float roughness, bool full) {
+  const GroundDetail d = ((GroundDetail*)block)[0];
   GroundShading out;
   out.normal = normal;
   out.albedo = albedo;
@@ -638,7 +707,9 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   out.ripple = 0.0;
   out.grain = 0.0;
   if (!(mask > 0.0) && !full) return out;
-  const float2 p = position.xz;
+  // The point's offset from the frame's origin. For a frame at the world's origin this is
+  // `eye + from_eye`, the world position, to the bit.
+  const float2 p = (eye.xz - d.origin) + from_eye.xz;
   if ((d.flags & k_ground_ripples) != 0u) {
     const float slope = smoothstep(d.slope_cos_end, d.slope_cos_start, normal.y);
     // Sand sheltered from the wind is smooth, not unresolved: what the exposure takes is taken
@@ -710,9 +781,13 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
   if ((d.flags & k_ground_gradient_grain) != 0u) {
     // Octaves from `grain_size` halving, each faded by the footprint as the ripples are and by the
     // position's own precision: a float's step `m` metres out is the power of two under m times
-    // 2^-23 (its exponent's bits, exactly), the resolve's reconstruction is off by a few such steps,
-    // so four of them count as footprint and an octave is gone where its cell is under eight
+    // 2^-23 (its exponent's bits, exactly), the reconstruction is off by a few such steps, so four
+    // of them count as footprint and an octave is gone where its cell is under eight
     // (docs/experiments/sand-detail-second-pass-2026-09-29.md measures what an octave loses there).
+    // `p` is the offset from the frame's origin, within 512 m of the eye's, so near the eye the
+    // step is at most 61 µm and no octave of a millimetre or more is taken by it: what takes them
+    // is the footprint. Until the frame it was the world coordinate, and 420 km out (3.1 cm) it
+    // took every octave of the grain (gfx.md, "Far from the origin").
     const float footprint = max(length(dpdx.xz), length(dpdy.xz));
     const float far = max(max(abs(p.x), abs(p.y)), 1.0);
     const float step = asfloat(asuint(far) & 0x7f800000u) * (1.0 / 8388608.0);
@@ -722,16 +797,18 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     float2 slope = float2(0.0, 0.0);
     float kept = 0.0;
     float size = d.grain_size;
+    int2 base = d.grain_base;
     for (uint o = 0u; o < d.grain_octaves; ++o) {
       const float f = ground_fade(reach / size);
       if (f > 0.0 || (full && o == 0u)) {
-        const GroundGrain n = ground_gradient_noise3(p, size, d.seed, 16u + o);
+        const GroundGrain n = ground_gradient_noise3(p, size, base, d.grain_rem, d.seed, 16u + o);
         if (o == 0u) out.grain = n.value.x * (1.0 / (3.0 * k_ground_noise_rms));
         g += n.value * f;
         slope += n.gradient * f;
       }
       kept += f * f;
       size *= 0.5;
+      base *= 2;
     }
     // The albedo and roughness channels to k_ground_grain_rms over all the octaves, the height's
     // slope to `grain_normal`: each octave the same share, so the sand is as rough at a millimetre
@@ -757,11 +834,14 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     const float fine = ground_fade(4.0 * footprint / d.grain_size);
     float2 g = float2(0.0, 0.0);
     if (coarse > 0.0 || full) {
-      const float2 v = ground_value_noise2(p, d.grain_size, d.seed, 16u);
+      const float2 v = ground_value_noise2(p, d.grain_size, d.grain_base, d.grain_rem, d.seed, 16u);
       out.grain = v.x;
       g += v * (0.65 * coarse);
     }
-    if (fine > 0.0) g += ground_value_noise2(p, d.grain_size * 0.25, d.seed, 17u) * (0.35 * fine);
+    if (fine > 0.0) {
+      g += ground_value_noise2(p, d.grain_size * 0.25, d.grain_base * 4, d.grain_rem, d.seed, 17u) *
+           (0.35 * fine);
+    }
     out.albedo = albedo * (1.0 + d.grain_albedo * mask * g.x);
     out.roughness = saturate(out.roughness + d.grain_roughness * mask * g.y);
   }
@@ -814,7 +894,7 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
       if (fade > 0.0) {
         const float len = length(normal.xz);
         const float2 fall = len > 1e-6 ? normal.xz / len : d.wind.xy;
-        const GroundFlow lanes = ground_grainflow(d, p, fall);
+        const GroundFlow lanes = ground_grainflow(d, ground_lanes(block), p, fall);
         const float strength = weight * fade;
         out.albedo *= 1.0 + d.flow_albedo * strength * lanes.value;
         const float3 n = out.normal;

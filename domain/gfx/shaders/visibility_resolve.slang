@@ -518,8 +518,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float3 dp_dy;
     screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
                               params->height, dp_dx, dp_dy);
+    // The point as the eye and the point less it, never their float sum: the detail takes it from
+    // its frame's origin (gfx.md, "Far from the origin"), and 420 km out the sum has a 3.1 cm step.
     const GroundShading ground =
-        ground_detail_shade(((GroundDetail*)params->ground_detail)[0], s.position, shading_normal,
+        ground_detail_shade(params->ground_detail, params->camera.xyz, from_eye, shading_normal,
                             dp_dx, dp_dy, sampled.detail_mask, albedo, roughness,
                             params->mode == 9);
     // The detail view (ResolveMode::GroundDetail): data, not colour — the ripples' height over

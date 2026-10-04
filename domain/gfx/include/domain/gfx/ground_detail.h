@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 namespace engine::gfx {
 
@@ -122,9 +123,52 @@ inline constexpr f32 k_ground_taper = 0.35f;
 // much, so the rule moves the variance the pattern has, not the variance a perfect ripple would.
 inline constexpr f32 k_ground_slope_share = 0.65f;
 
-// Mirrors GroundDetail in shaders/ground_detail.slang. 224 bytes: the first pass's 80, the second's
-// grain, streaks and spacing (128), and the third's grainflow and its episodes, patches, steering
-// and motion.
+// **The frame the pattern is evaluated in** (2026-10-04; docs/subsystems/gfx.md, "Far from the
+// origin"). The detail is a function of the world's (x, z), but a float32 world coordinate 420 km
+// out has a step of 3.1 cm — four to a 12 cm ripple — and every term's lattice, hash and phase
+// would be taken there. So the shader never sees an absolute coordinate: a point reaches it as its
+// offset from the frame's **origin**, a corner of a `k_ground_frame_cell` grid near the eye that
+// a float holds exactly, and every lattice the pattern draws from comes with where it stands at
+// that origin — the cell the origin falls in, as the integers the hashes take, and the origin's
+// offset into it — worked out here in double, where 10,000 km is still a nanometre. The shader adds
+// the integers to the cell its small local coordinate falls in, so a lattice point is the world's
+// own whichever origin the frame has, and the offset from a kernel's centre (all a phase is ever
+// taken of) is a difference of two small numbers.
+inline constexpr f64 k_ground_frame_cell = 1024.0;
+// The grainflow's sixteen fixed lane directions (`ground_lane_set`).
+inline constexpr u32 k_ground_flow_directions = 16;
+
+// Where a lattice of side `size` stands at the frame's origin A: the cell A falls in,
+// `floor(A / size)` as 32-bit integers (wrapped, as the shader's integers and the hashes take
+// them), and A's offset into it, in [0, size). A lattice whose side is this one's halved n times
+// stands at the same offset, in the cell the integers times 2^n, which is how the grain's octaves,
+// the value grain's quarter and the patches' half share one.
+struct GroundLattice {
+  i32 base_x = 0;
+  i32 base_z = 0;
+  f32 rem_x = 0.0f;
+  f32 rem_z = 0.0f;
+};
+static_assert(sizeof(GroundLattice) == 16);
+
+// Where one of the grainflow's directions stands at the frame's origin A: `lane`, the lane whose
+// line is at or before A across the direction (`floor(dot(A, across) / spacing)`), and `across`,
+// A's distance past that line; `segment`, the segment A falls in along the direction
+// (`floor(dot(A, dir) / flow_length)`), and `along`, A's distance into it. The directions are
+// irrational, so these are not a lattice's integers times anything; each is its own.
+struct GroundLane {
+  i32 lane = 0;
+  i32 segment = 0;
+  f32 across = 0.0f;
+  f32 along = 0.0f;
+};
+static_assert(sizeof(GroundLane) == 16);
+
+// Mirrors GroundDetail in shaders/ground_detail.slang, with the lane table behind it. 560 bytes:
+// the first pass's 80, the second's grain, streaks and spacing (128), the third's grainflow and its
+// episodes, patches, steering and motion (224), and the frame (304, then the sixteen lanes' 256).
+// The shader's struct ends at `lanes`; it reads the table through the block's address
+// (`k_ground_lanes_offset`), where the one lane a pixel needs is one load.
 struct GroundDetailParams {
   // xy: the direction the sand moves, (x, z), unit: the ripples' phase grows along it, so a crest's
   // gentle side faces up the wind and its lee down it. z: sin of the kernels' orientation spread.
@@ -216,9 +260,27 @@ struct GroundDetailParams {
   f32 flow_clock = 0.0f;
   f32 flow_clock_step = 0.0f;
   u32 pad8 = 0;
+  // Fourth: the frame (`ground_detail_frame`; above). `origin_x`, `origin_z`: its origin, metres, a
+  // multiple of `k_ground_frame_cell` (exact in a float to 2^34 m). The lattices of the ripples'
+  // kernels (`cell`), the grain (`grain_size`), the patches (`patch_size`) and the streaks
+  // (`streak_length`) at it, and the grainflow's sixteen directions. All zero is the frame at the
+  // world's origin, which is right for any eye and exact for one near the origin.
+  f32 origin_x = 0.0f;
+  f32 origin_z = 0.0f;
+  u32 pad9 = 0;
+  u32 pad10 = 0;
+  GroundLattice ripple_lattice;
+  GroundLattice grain_lattice;
+  GroundLattice patch_lattice;
+  GroundLattice streak_lattice;
+  GroundLane lanes[k_ground_flow_directions];
 };
-static_assert(sizeof(GroundDetailParams) == 224);
+static_assert(sizeof(GroundDetailParams) == 560);
 static_assert(sizeof(GroundDetailParams) % 16 == 0, "the block is read as float4 rows on the GPU");
+// Where the shader finds the lane table behind its `GroundDetail` (shaders/ground_detail.slang's
+// `k_ground_lanes_offset`).
+inline constexpr u64 k_ground_lanes_offset = 304;
+static_assert(offsetof(GroundDetailParams, lanes) == k_ground_lanes_offset);
 
 // The scene's numbers (the renderer's `engine.scene.TerrainDetail`): what a scene says, in metres
 // and degrees, before the mechanism's own constants are derived from them.
@@ -469,6 +531,91 @@ inline void ground_detail_motion(GroundDetailParams& d, const GroundDetailDesc& 
     const f32 x = std::clamp(
         (strength - desc.flatten_start) / (desc.flatten_end - desc.flatten_start), 0.0f, 1.0f);
     d.ripple_live = 1.0f - x * x * (3.0f - 2.0f * x);
+  }
+}
+
+// `floor(v / step)` and `v` less that many steps, in [0, step), for a `v` up to 2^53 steps: the
+// remainder by a fused multiply-add, which is `v - n step` rounded once — exact here, since the two
+// agree in their leading bits (std::fma, ADR-0035: the one rounding is the point) — and moved into
+// the range where a quotient rounded across an integer would leave it outside.
+inline void ground_reduce(f64 v, f64 step, f64& n, f64& rem) noexcept {
+  n = std::floor(v / step);
+  rem = std::fma(-n, step, v);
+  if (rem < 0.0) {
+    n -= 1.0;
+    rem += step;
+  } else if (rem >= step) {
+    n += 1.0;
+    rem -= step;
+  }
+}
+
+// A cell's index as the shader's 32-bit integers carry it: the low 32 bits of the integer, which is
+// what a hash of it reads (two's complement, as the GPU's integer arithmetic wraps).
+inline i32 ground_wrap(f64 n) noexcept {
+  return static_cast<i32>(static_cast<u32>(static_cast<u64>(static_cast<i64>(n))));
+}
+
+// A lattice of side `size` at the frame's origin (ax, az); all zero for a lattice of no size.
+inline GroundLattice ground_lattice_at(f64 ax, f64 az, f32 size) noexcept {
+  GroundLattice out;
+  if (!(size > 0.0f)) return out;
+  const f64 s = static_cast<f64>(size);
+  f64 nx = 0.0, nz = 0.0, rx = 0.0, rz = 0.0;
+  ground_reduce(ax, s, nx, rx);
+  ground_reduce(az, s, nz, rz);
+  out.base_x = ground_wrap(nx);
+  out.base_z = ground_wrap(nz);
+  // A remainder that rounds up to the side itself is the next cell's zero.
+  out.rem_x = static_cast<f32>(rx);
+  out.rem_z = static_cast<f32>(rz);
+  if (!(out.rem_x < size)) {
+    out.rem_x = 0.0f;
+    out.base_x = ground_wrap(nx + 1.0);
+  }
+  if (!(out.rem_z < size)) {
+    out.rem_z = 0.0f;
+    out.base_z = ground_wrap(nz + 1.0);
+  }
+  return out;
+}
+
+// The frame for an eye at world (eye_x, eye_z): its origin, the corner of the `k_ground_frame_cell`
+// grid nearest the eye — so a point near the eye is within 512 m of it, where a float's step is
+// 61 µm — and every lattice and lane direction at that origin, in double. A function of the
+// origin alone, so it changes only when the eye crosses into another cell, and then the pattern
+// does not move: the integers and offsets name the same world lattice from the new corner (the
+// renderer's "no seam where the frame's cell changes" test). Called once a frame with the eye the
+// resolve's `camera` is, after the block is made; the reference path tracer's likewise. The eye is
+// the camera's own float position, so it is exact in double and so is everything here.
+inline void ground_detail_frame(GroundDetailParams& d, f64 eye_x, f64 eye_z) noexcept {
+  const f64 g = k_ground_frame_cell;
+  const f64 ax = std::floor(eye_x / g + 0.5) * g;
+  const f64 az = std::floor(eye_z / g + 0.5) * g;
+  d.origin_x = static_cast<f32>(ax);
+  d.origin_z = static_cast<f32>(az);
+  d.ripple_lattice = ground_lattice_at(ax, az, d.cell);
+  d.grain_lattice = ground_lattice_at(ax, az, d.grain_size);
+  d.patch_lattice = ground_lattice_at(ax, az, d.patch_size);
+  d.streak_lattice = ground_lattice_at(ax, az, d.streak_length);
+  const f64 spacing = 2.0 * static_cast<f64>(d.flow_width);
+  const f64 seg = static_cast<f64>(d.flow_length);
+  for (u32 k = 0; k < k_ground_flow_directions; ++k) {
+    GroundLane& lane = d.lanes[k];
+    lane = GroundLane{};
+    if (!(spacing > 0.0) || !(seg > 0.0)) continue;
+    // The direction as the mirror takes it, in double (the shader's float one differs by 1e-8,
+    // which it only ever multiplies by a local coordinate).
+    const f64 angle = static_cast<f64>(k) * (6.28318530717958647692 / 16.0);
+    const f64 dx = std::cos(angle);
+    const f64 dz = std::sin(angle);
+    f64 m = 0.0, j = 0.0, across = 0.0, along = 0.0;
+    ground_reduce(ax * -dz + az * dx, spacing, m, across);
+    ground_reduce(ax * dx + az * dz, seg, j, along);
+    lane.lane = ground_wrap(m);
+    lane.segment = ground_wrap(j);
+    lane.across = static_cast<f32>(across);
+    lane.along = static_cast<f32>(along);
   }
 }
 

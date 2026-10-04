@@ -277,7 +277,10 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   // The sand's detail: the block the frame's resolve read, the same numbers and the same wind at
   // the same surface time, which the path tracer draws unfiltered (path_trace.slang says why).
   if (scene_->ground_detail()) {
-    const gfx::GroundDetailParams detail = scene_->ground_detail_params();
+    gfx::GroundDetailParams detail = scene_->ground_detail_params();
+    // And the resolve's frame, at the same eye (gfx.md, "Far from the origin").
+    gfx::ground_detail_frame(detail, static_cast<f64>(camera.position.x),
+                             static_cast<f64>(camera.position.z));
     std::memcpy(static_cast<u8*>(params_.mapped) + sizeof(gfx::PathTraceParams), &detail,
                 sizeof(detail));
     params.ground_detail = params_.address + sizeof(gfx::PathTraceParams);

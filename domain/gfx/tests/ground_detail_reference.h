@@ -35,6 +35,14 @@ inline u32 hash(i32 x, i32 z, u32 seed, u32 stream) {
 
 inline double unit(u32 h) { return static_cast<double>(h >> 8u) * (1.0 / 16777216.0); }
 
+// A lattice index as the shader's 32-bit integers carry it: the integer `n` (a whole number in a
+// double, as large as 10,000 km in millimetre cells makes it) wrapped to its low 32 bits, which is
+// what the hash reads. The mirror takes every lattice from the world position itself, in double,
+// and never from the block's frame: it is the function the frame has to reproduce, so it does not
+// get to use it (gfx.md, "Far from the origin").
+inline i32 index(double n) { return gfx::ground_wrap(n); }
+inline i32 index(double n, i32 plus) { return gfx::ground_wrap(n + static_cast<double>(plus)); }
+
 inline double smoothstep(double edge0, double edge1, double x) {
   const double t = brdf_ref::clamp01((x - edge0) / (edge1 - edge0));
   return t * t * (3.0 - 2.0 * t);
@@ -59,8 +67,8 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   const double cell = static_cast<double>(d.cell);
   const double qx = x / cell;
   const double qz = z / cell;
-  const i32 bx = static_cast<i32>(std::floor(qx));
-  const i32 bz = static_cast<i32>(std::floor(qz));
+  const double bx = std::floor(qx);
+  const double bz = std::floor(qz);
   const double k = k_two_pi / (static_cast<double>(d.wavelength) * scale);
   const double shift = k * travel;
   const double inv_r2 = 1.0 / (cell * cell);
@@ -69,15 +77,15 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   double zr = 0.0, zi = 0.0;  // dS/dz
   for (i32 j = -1; j <= 1; ++j) {
     for (i32 i = -1; i <= 1; ++i) {
-      const i32 cx = bx + i;
-      const i32 cz = bz + j;
+      const double cx = bx + i;
+      const double cz = bz + j;
       for (u32 n = 0; n < gfx::k_ground_impulses; ++n) {
-        u32 h = hash(cx, cz, d.seed, n);
+        u32 h = hash(index(cx), index(cz), d.seed, n);
         const double ux = unit(h);
         h = pcg(h);
         const double uz = unit(h);
-        const double ox = (qx - (static_cast<double>(cx) + ux)) * cell;
-        const double oz = (qz - (static_cast<double>(cz) + uz)) * cell;
+        const double ox = (qx - (cx + ux)) * cell;
+        const double oz = (qz - (cz + uz)) * cell;
         const double r2 = (ox * ox + oz * oz) * inv_r2;
         if (r2 >= 1.0) continue;
         h = pcg(h);
@@ -194,14 +202,16 @@ inline Noise2 value_noise2(double x, double z, double size, u32 seed, u32 stream
   const double fz0 = std::floor(qz);
   const double fx = qx - fx0;
   const double fz = qz - fz0;
-  const i32 ix = static_cast<i32>(fx0);
-  const i32 iz = static_cast<i32>(fz0);
+  const i32 ix = index(fx0);
+  const i32 iz = index(fz0);
+  const i32 ix1 = index(fx0, 1);
+  const i32 iz1 = index(fz0, 1);
   const double ux = fx * fx * (3.0 - 2.0 * fx);
   const double uz = fz * fz * (3.0 - 2.0 * fz);
   const Noise2 v00 = lattice2(ix, iz, seed, stream);
-  const Noise2 v10 = lattice2(ix + 1, iz, seed, stream);
-  const Noise2 v01 = lattice2(ix, iz + 1, seed, stream);
-  const Noise2 v11 = lattice2(ix + 1, iz + 1, seed, stream);
+  const Noise2 v10 = lattice2(ix1, iz, seed, stream);
+  const Noise2 v01 = lattice2(ix, iz1, seed, stream);
+  const Noise2 v11 = lattice2(ix1, iz1, seed, stream);
   auto mix = [](double p, double q, double t) { return p + (q - p) * t; };
   return {mix(mix(v00.a, v10.a, ux), mix(v01.a, v11.a, ux), uz),
           mix(mix(v00.b, v10.b, ux), mix(v01.b, v11.b, ux), uz)};
@@ -239,16 +249,18 @@ inline Grain3 gradient_noise3(double x, double z, double size, u32 seed, u32 str
   const double fz0 = std::floor(qz);
   const double fx = qx - fx0;
   const double fz = qz - fz0;
-  const i32 ix = static_cast<i32>(fx0);
-  const i32 iz = static_cast<i32>(fz0);
+  const i32 ix = index(fx0);
+  const i32 iz = index(fz0);
+  const i32 ix1 = index(fx0, 1);
+  const i32 iz1 = index(fz0, 1);
   const double ux = fx * fx * fx * (fx * (fx * 6.0 - 15.0) + 10.0);
   const double uz = fz * fz * fz * (fz * (fz * 6.0 - 15.0) + 10.0);
   const double dux = 30.0 * fx * fx * (fx * (fx - 2.0) + 1.0);
   const double duz = 30.0 * fz * fz * (fz * (fz - 2.0) + 1.0);
   const u32 h00 = hash(ix, iz, seed, stream);
-  const u32 h10 = hash(ix + 1, iz, seed, stream);
-  const u32 h01 = hash(ix, iz + 1, seed, stream);
-  const u32 h11 = hash(ix + 1, iz + 1, seed, stream);
+  const u32 h10 = hash(ix1, iz, seed, stream);
+  const u32 h01 = hash(ix, iz1, seed, stream);
+  const u32 h11 = hash(ix1, iz1, seed, stream);
   Grain3 out;
   for (u32 c = 0; c < 3; ++c) {
     double ax, az, bx, bz, cx, cz, dx, dz;
@@ -292,8 +304,8 @@ inline Streak streaks(const gfx::GroundDetailParams& d, double x, double z, doub
   const double cell = static_cast<double>(d.streak_length);
   const double qx = x / cell;
   const double qz = z / cell;
-  const i32 bx = static_cast<i32>(std::floor(qx));
-  const i32 bz = static_cast<i32>(std::floor(qz));
+  const double bx = std::floor(qx);
+  const double bz = std::floor(qz);
   const double ax = -fz;
   const double az = fx;
   const double inv_a2 = 4.0 / (cell * cell);
@@ -302,15 +314,15 @@ inline Streak streaks(const gfx::GroundDetailParams& d, double x, double z, doub
   Streak out;
   for (i32 j = -1; j <= 1; ++j) {
     for (i32 i = -1; i <= 1; ++i) {
-      const i32 cx = bx + i;
-      const i32 cz = bz + j;
+      const double cx = bx + i;
+      const double cz = bz + j;
       for (u32 n = 0; n < gfx::k_ground_streak_impulses; ++n) {
-        u32 h = hash(cx, cz, d.seed, 32u + n);
+        u32 h = hash(index(cx), index(cz), d.seed, 32u + n);
         const double ux = unit(h);
         h = pcg(h);
         const double uz = unit(h);
-        const double ox = (qx - (static_cast<double>(cx) + ux)) * cell;
-        const double oz = (qz - (static_cast<double>(cz) + uz)) * cell;
+        const double ox = (qx - (cx + ux)) * cell;
+        const double oz = (qz - (cz + uz)) * cell;
         const double u = ox * fx + oz * fz;
         const double w = ox * ax + oz * az;
         const double r2 = u * u * inv_a2 + w * w * inv_b2;
@@ -429,10 +441,11 @@ inline Flow lane_set(const gfx::GroundDetailParams& d, double x, double z, u32 k
   Flow out;
   for (i32 i = -1; i <= 1; ++i) {
     const double m = mc + i;
-    const double golden = m * 0.6180339887;
-    const double stagger = (golden - std::floor(golden)) * seg;
+    // The golden ratio's fraction of the lane's index in 32-bit fixed point, as the shader takes
+    // it: exact for every lane, so the two agree to the bit 10,000 km out.
+    const double stagger = unit(static_cast<u32>(index(m)) * 0x9E3779B9u) * seg;
     const double j = std::floor((t - stagger) / seg);
-    u32 h = hash(static_cast<i32>(m), static_cast<i32>(j), d.seed, 48u + k);
+    u32 h = hash(index(m), index(j), d.seed, 48u + k);
     const double jitter = (unit(h) - 0.5) * 0.5 * spacing;
     h = pcg(h);
     const double wscale = 0.7 + 0.6 * unit(h);
@@ -587,8 +600,10 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
     const double lx = std::sqrt(dpdx.x * dpdx.x + dpdx.z * dpdx.z);
     const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
     const double footprint = lx > ly ? lx : ly;
-    const double ax = std::fabs(position.x);
-    const double az = std::fabs(position.z);
+    // The shader's own precision, which is its local coordinate's: the point less the block's
+    // frame origin (zero for a block no frame was set on, where it is the world position).
+    const double ax = std::fabs(position.x - static_cast<double>(d.origin_x));
+    const double az = std::fabs(position.z - static_cast<double>(d.origin_z));
     const double step = float_step(ax > az ? ax : az);
     const double reach = footprint > 4.0 * step ? footprint : 4.0 * step;
     const double octaves = static_cast<double>(d.grain_octaves);

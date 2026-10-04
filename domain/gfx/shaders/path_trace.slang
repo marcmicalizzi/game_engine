@@ -253,10 +253,12 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     float3 albedo = sampled.albedo;
     float roughness = sampled.roughness;
     if ((material.flags & k_material_ground_detail) != 0 && params->ground_detail != 0) {
+      // The hit as its triangle's first corner and the rest from it, so the detail takes it from
+      // its frame's origin without a world coordinate's rounding (gfx.md, "Far from the origin").
+      const float3 from_corner = b.y * (tri.p[1] - tri.p[0]) + b.z * (tri.p[2] - tri.p[0]);
       const GroundShading ground = ground_detail_shade(
-          ((GroundDetail*)params->ground_detail)[0], s.position, shading_normal,
-          float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), sampled.detail_mask, albedo, roughness,
-          false);
+          params->ground_detail, tri.p[0], from_corner, shading_normal, float3(0.0, 0.0, 0.0),
+          float3(0.0, 0.0, 0.0), sampled.detail_mask, albedo, roughness, false);
       shading_normal = ground.normal;
       albedo = ground.albedo;
       roughness = ground.roughness;

@@ -288,6 +288,27 @@ struct GroundCase {
   int ripple[2] = {2, 16};
   int share[2] = {2, 16};
   int grain[2] = {2, 16};
+  // Where it is drawn: by the origin and 3.7 km out unless a case names other places, each with the
+  // tolerances it holds (0 the origin's, 1 the 3.7 km ones).
+  struct Site {
+    f32 x, z;
+    const char* name;
+    u32 tolerance;
+  };
+  u32 site_count = 2;
+  Site sites[3] = {{0.0f, 0.0f, "by the origin", 0}, {2917.37f, -2403.71f, "3.7 km out", 1}, {}};
+  // Each view's block carries the frame at its own eye (`gfx::ground_detail_frame`), as the
+  // renderer's does; false leaves it at the world's origin, which is the arithmetic before the
+  // frame — the point's world coordinate as a float — and is how the far case measures what that
+  // drew (gfx.md, "Far from the origin").
+  bool framed = true;
+  // The detail view with the neighbouring cell's frame against the eye's own, of 255: the raw
+  // channels at full contrast, where the neighbour's frame puts the point up to 1.5 km from its
+  // origin and a float's step there is 0.12 mm against the eye's 0.06 (4 measured, RTX 5090).
+  int neighbour = 4;
+  // false: measure and report, and hold no tolerance (the far case's frameless run, which is there
+  // to show what the instrument reads when the pattern is taken at a float32 world coordinate).
+  bool hold = true;
 };
 
 // What one view of a case measured: the worst difference from the reference, of 255, on the shaded
@@ -308,6 +329,20 @@ struct GroundView {
   int green_lo = 255;  // the shaded picture's green channel over its middle half
   int green_hi = 0;
   u32 clamped = 0;  // pixels whose point the resolve moves onto its triangle's edge
+  // The detail view drawn again with the frame of the cell beside the eye's — what it draws after
+  // the eye crosses into that cell — and its worst difference from the view with the eye's own
+  // frame, of 255 on any channel (framed cases only).
+  int neighbour = 0;
+  // The instrument (gfx.md, "Far from the origin"): along the view's middle row, how many times the
+  // ripple height the GPU drew changes between neighbouring covered pixels, how many times the
+  // reference's changes, and the metres of sand the row spans. Where the pattern is evaluated at a
+  // float32 world coordinate, the GPU's changes are capped at one a float step.
+  u32 gpu_changes = 0;
+  u32 ref_changes = 0;
+  // And how many times the point's float32 world coordinate (x, z), rounded from the reference's
+  // point, changes along it: the most the GPU's can when the pattern is taken there.
+  u32 coordinate_changes = 0;
+  double row_metres = 0.0;
 };
 
 // The plane's unit normal for a climb of `climb_deg` along the wind: `-dot(n.xz, w) / n.y`, the
@@ -339,13 +374,15 @@ ref::Dvec3 climb_normal(const gfx::GroundDetailParams& d, double climb_deg, doub
 void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundView>& out) {
   std::string error;
   constexpr u32 k_size = 160;
-  constexpr u32 k_max_views = 6;
+  constexpr u32 k_max_sites = 3;
+  constexpr u32 k_max_views = 3 * k_max_sites;
   const u32 looks = c.millimetre ? 3u : 2u;
-  const u32 views = 2 * looks;
-  struct Site {
-    f32 x, z;
-  };
-  const Site sites[2] = {{0.0f, 0.0f}, {2917.37f, -2403.71f}};
+  const u32 site_count = c.site_count;
+  REQUIRE(site_count >= 1u);
+  REQUIRE(site_count <= k_max_sites);
+  const u32 views = site_count * looks;
+  using Site = GroundCase::Site;
+  const Site* sites = c.sites;
   const ref::Dvec3 normal = climb_normal(c.block, c.climb_deg, c.turn_deg);
   const bool level = c.climb_deg == 0.0;
   // The plane's height at (x, z) over its point at site `s`.
@@ -374,8 +411,23 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   const Vec3 up{0.0f, 1.0f, 0.0f};
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  // Two blocks a view: the frame at its own eye (or none, for a case that is not framed), and the
+  // frame of the cell beside it, a frame corner further along both axes — what the renderer hands
+  // over once the eye has crossed into that cell — for the seam test.
+  std::vector<gfx::GroundDetailParams> detail_blocks(2u * views, c.block);
+  for (u32 v = 0; v < views; ++v) {
+    if (!c.framed) continue;
+    const Vec3 eye = look(v).eye;
+    const double g = gfx::k_ground_frame_cell;
+    gfx::ground_detail_frame(detail_blocks[2 * v], static_cast<double>(eye.x),
+                             static_cast<double>(eye.z));
+    gfx::ground_detail_frame(detail_blocks[2 * v + 1], static_cast<double>(eye.x) + g,
+                             static_cast<double>(eye.z) + g);
+  }
   gfx::BufferResource detail_buffer;
-  REQUIRE(gfx::upload_buffer(device, &c.block, sizeof(c.block), k_storage, detail_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, detail_blocks.data(),
+                             detail_blocks.size() * sizeof(gfx::GroundDetailParams), k_storage,
+                             detail_buffer, &error));
 
   gfx::ResolveMaterial material;
   material.albedo = Vec4{0.84f, 0.69f, 0.47f, 0.92f};
@@ -390,13 +442,13 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   // triangle reaching behind the camera on an edge.
   constexpr u32 k_cells = 1;
   constexpr f32 k_cell = 60.0f / static_cast<f32>(k_cells);
-  geometry::ClusterMesh meshes[2];
-  gfx_test::SingleInstance scenes[2];
-  gfx::BufferResource clusters[2];
-  gfx::BufferResource triangles[2];
-  gfx::BufferResource cluster_materials[2];
-  u32 cluster_count[2] = {};
-  for (u32 s = 0; s < 2; ++s) {
+  geometry::ClusterMesh meshes[k_max_sites];
+  gfx_test::SingleInstance scenes[k_max_sites];
+  gfx::BufferResource clusters[k_max_sites];
+  gfx::BufferResource triangles[k_max_sites];
+  gfx::BufferResource cluster_materials[k_max_sites];
+  u32 cluster_count[k_max_sites] = {};
+  for (u32 s = 0; s < site_count; ++s) {
     Vector<Vec3> positions;
     Vector<u32> indices;
     for (u32 j = 0; j <= k_cells; ++j) {
@@ -440,7 +492,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                    gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
                                false, vis[v], &error));
   }
-  const u32 blocks_count = views * 2;  // shaded, and the detail view
+  // Shaded, the detail view, and the detail view with the neighbouring cell's frame.
+  const u32 blocks_count = views * 3;
   gfx::BufferResource params;
   gfx::BufferResource host_color;
   gfx::BufferResource host_vis;
@@ -496,8 +549,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     draw.visibility = vis[v].address;
     draw.width = k_size;
     draw.height = k_size;
-    for (u32 mode = 0; mode < 2; ++mode) {
-      gfx::ResolveParams& b = blocks[v * 2 + mode];
+    for (u32 mode = 0; mode < 3; ++mode) {
+      gfx::ResolveParams& b = blocks[v * 3 + mode];
       b = gfx::ResolveParams{};
       b.sky = sky;
       b.sun = Vec4{sun_dir, 1.0f};
@@ -513,7 +566,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
       b.cluster_materials = cluster_materials[s].address;
       b.width = k_size;
       b.height = k_size;
-      b.ground_detail = detail_buffer.address;
+      b.ground_detail =
+          detail_buffer.address + (2 * v + (mode == 2 ? 1 : 0)) * sizeof(gfx::GroundDetailParams);
       b.mode =
           static_cast<u32>(mode == 0 ? gfx::ResolveMode::Shaded : gfx::ResolveMode::GroundDetail);
     }
@@ -560,7 +614,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
           b.color_attachment(targets[i], gfx::LoadOp::Clear, gfx::ClearColor{});
-          b.read(rg_vis[i / 2], gfx::Access::FragmentRead);
+          b.read(rg_vis[i / 3], gfx::Access::FragmentRead);
         },
         [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
@@ -623,14 +677,26 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     const Look l = look(v);
     const u32 s = v / looks;
     const Site site = sites[s];
-    const u32 far = s;
+    const u32 far = site.tolerance;
+    const gfx::GroundDetailParams& block = detail_blocks[2 * v];
     const ref::Dvec3 eye = ref::dvec3(l.eye);
     const ref::Dvec3 target = ref::dvec3(l.target);
     const double fov = static_cast<double>(l.fov_y);
     const ref::Dvec3 plane_point{static_cast<double>(site.x), 0.0, static_cast<double>(site.z)};
     const geometry::ClusterMesh& mesh = meshes[s];
     GroundView r;
-    r.name = std::string(far == 0 ? "by the origin, " : "3.7 km out, ") + look_names[v % looks];
+    r.name = std::string(site.name) + ", " + look_names[v % looks];
+    // Pixels within this of the quad's edge are left out: half a metre, or four float steps of the
+    // site's coordinates where those are coarser — 10,000 km out a step is a metre, and the
+    // rasterizer, which still puts world coordinates through the whole matrix, draws an edge that
+    // far off (gfx.md, "Measured from the eye").
+    const double site_far =
+        std::max(std::fabs(static_cast<double>(site.x)), std::fabs(static_cast<double>(site.z)));
+    const double edge = 29.5 - std::max(0.0, 4.0 * gref::float_step(site_far) - 0.5);
+    // The instrument's row: the previous covered pixel's two ripple heights and where it was.
+    int row_gpu = -1;
+    int row_ref = -1;
+    ref::Dvec3 row_at{};
     for (u32 y = 0; y < k_size; ++y) {
       for (u32 x = 0; x < k_size; ++x) {
         const double cx = static_cast<double>(x) + 0.5;
@@ -639,8 +705,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                                      cx, cy, plane_point, normal);
         // At or above the horizon, the ray meets the plane behind the eye.
         if (ref::dot(seen - eye, target - eye) <= 0.0) continue;
-        if (std::fabs(seen.x - static_cast<double>(site.x)) > 29.5 ||
-            std::fabs(seen.z - static_cast<double>(site.z)) > 29.5) {
+        if (std::fabs(seen.x - static_cast<double>(site.x)) > edge ||
+            std::fabs(seen.z - static_cast<double>(site.z)) > edge) {
           continue;
         }
         ref::Dvec3 dpdx;
@@ -679,8 +745,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         const ref::Dvec3 p = hit.position;
         gref::plane_footprint(eye, target, up_ref, fov, 1.0, k_size, k_size, x, y, corner[0], n,
                               dpdx, dpdy);
-        const gref::Shading g = gref::shade(c.block, p, n, dpdx, dpdy, 1.0, sand, 0.92, false);
-        const gref::Shading data = gref::shade(c.block, p, n, dpdx, dpdy, 1.0, sand, 0.92, true);
+        const gref::Shading g = gref::shade(block, p, n, dpdx, dpdy, 1.0, sand, 0.92, false);
+        const gref::Shading data = gref::shade(block, p, n, dpdx, dpdy, 1.0, sand, 0.92, true);
         ref::Surface surface;
         surface.position = p;
         surface.normal = g.normal;
@@ -694,11 +760,28 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                ref::display(linear.z)};
         const int expect_data[3] = {unorm(data.ripple * 0.5 + 0.5), unorm(data.weight * data.fade),
                                     unorm(data.grain * 0.5 + 0.5)};
-        const u8* got = pixel(v * 2, x, y);
-        const u8* got_data = pixel(v * 2 + 1, x, y);
+        const u8* got = pixel(v * 3, x, y);
+        const u8* got_data = pixel(v * 3 + 1, x, y);
+        const u8* got_neighbour = pixel(v * 3 + 2, x, y);
         int here = 0;
-        for (u32 k = 0; k < 3; ++k)
+        for (u32 k = 0; k < 3; ++k) {
           here = std::max(here, std::abs(int{got[k]} - expect[k]));
+          r.neighbour = std::max(r.neighbour, std::abs(int{got_neighbour[k]} - int{got_data[k]}));
+        }
+        if (y == k_size / 2) {
+          if (row_gpu >= 0) {
+            if (int{got_data[0]} != row_gpu) ++r.gpu_changes;
+            if (expect_data[0] != row_ref) ++r.ref_changes;
+            if (static_cast<f32>(p.x) != static_cast<f32>(row_at.x) ||
+                static_cast<f32>(p.z) != static_cast<f32>(row_at.z)) {
+              ++r.coordinate_changes;
+            }
+            r.row_metres += std::sqrt(ref::dot(p - row_at, p - row_at));
+          }
+          row_gpu = got_data[0];
+          row_ref = expect_data[0];
+          row_at = p;
+        }
         const int ripple = std::abs(int{got_data[0]} - expect_data[0]);
         const int share = std::abs(int{got_data[1]} - expect_data[1]);
         const int grain = std::abs(int{got_data[2]} - expect_data[2]);
@@ -729,8 +812,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     }
     for (u32 y = k_size / 4; y < 3 * k_size / 4; ++y) {
       for (u32 x = k_size / 4; x < 3 * k_size / 4; ++x) {
-        r.green_lo = std::min(r.green_lo, int{pixel(v * 2, x, y)[1]});
-        r.green_hi = std::max(r.green_hi, int{pixel(v * 2, x, y)[1]});
+        r.green_lo = std::min(r.green_lo, int{pixel(v * 3, x, y)[1]});
+        r.green_hi = std::max(r.green_hi, int{pixel(v * 3, x, y)[1]});
       }
     }
     MESSAGE(std::string(c.name) << ", " << r.name << ": " << r.compared << " pixels compared, "
@@ -740,9 +823,20 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                 << r.over_shaded << " past the tolerance); detail view worst "
                                 << r.ripple << " on the ripple, " << r.share << " on its share, "
                                 << r.grain << " on the grain; " << r.clamped
-                                << " points clamped onto their triangle");
+                                << " points clamped onto their triangle; the neighbouring cell's "
+                                << "frame " << r.neighbour << " of 255 from the eye's; along the "
+                                << "middle row the ripple height changes " << r.gpu_changes
+                                << " times on the GPU and " << r.ref_changes << " in the reference "
+                                << "over " << r.row_metres << " m, where the float32 world "
+                                << "coordinate changes " << r.coordinate_changes << " times");
+    out.push_back(r);
+    if (!c.hold) continue;
     CHECK(r.compared > k_size * k_size / 4);
     CHECK(r.missing == 0u);
+    // The frame the eye crosses into draws what the eye's own did: every lattice, hash and lane is
+    // the world's from either corner, and the two differ by where they round, a few hundredths of
+    // a millimetre (gfx.md, "Far from the origin").
+    if (c.framed) CHECK(r.neighbour <= c.neighbour);
     // By the origin every pixel holds the tolerance. 3.7 km out the shaded picture's worst pixel
     // is the tail of the float's reach — the reconstruction's millimetre in the grain's finest
     // octaves and at a ripple's crest — and the tail is the GPU's own arithmetic: the third pass's
@@ -759,7 +853,6 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     CHECK(r.ripple <= c.ripple[far]);
     CHECK(r.share <= c.share[far]);
     CHECK(r.grain <= c.grain[far]);
-    out.push_back(r);
   }
 
   graph.reset();
@@ -767,7 +860,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   raster.destroy(device);
   gfx::destroy_shader_module(device, resolve_module);
   bindless.destroy();
-  for (u32 s = 0; s < 2; ++s) {
+  for (u32 s = 0; s < site_count; ++s) {
     scenes[s].destroy(device);
     gfx::destroy_buffer(device, clusters[s]);
     gfx::destroy_buffer(device, triangles[s]);
@@ -982,6 +1075,165 @@ TEST_CASE("ground detail: the resolve draws the third pass's function on sloped 
     CHECK_MESSAGE(streaked == 0u, std::string(slope.name));
   }
   device.destroy();
+}
+
+TEST_CASE("ground detail: 420 km and 10,000 km out the resolve draws the origin's function") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The owner flew the endless desert out to 420 km and found the ripples "very low resolution"
+  // (gfx.md, "Far from the origin"): the pattern was taken at the point's float32 world coordinate,
+  // whose step there is 3.1 cm, four to a ripple. Two places far out, both held to **the origin's
+  // tolerances**, with the ergs' numbers as the third pass draws them (every term, a frame's
+  // motion), level and on a 32-degree slip face for the lanes, at the three looks:
+  //   - 420 km out, by the owner's spot, astride a boundary of the frame's grid (z = -66,048): the
+  //     quad runs across it, and the walker's two eyes, at z + 0.4 and z + 6, are in the cells on
+  //     either side of it, so two eyes in different frames look at the same sand;
+  //   - 10,000 km out along x, where a float's step is a metre: the frame's origin and the eye are
+  //     whole metres there, and the walker's "at the feet" targets round onto the metre too.
+  // Each view is also drawn with the frame of the next cell along both axes, and held to its own.
+  const gfx::GroundDetailDesc numbers = gref::erg_numbers();
+  gfx::GroundDetailParams erg = gfx::ground_detail_block(numbers, Vec2{0.6f, -0.8f}, 7u);
+  gfx::ground_detail_motion(
+      erg, numbers, 0.037, 0.002, 1.0f,
+      (17.0 + 1.0 / 3.0) / static_cast<double>(numbers.flow_turnover),
+      0.01 * static_cast<double>(numbers.flow_share) / static_cast<double>(numbers.flow_turnover));
+  const GroundCase::Site far_sites[2] = {
+      {-419070.0f, -66051.0f, "420 km out, astride a frame boundary", 0},
+      {10000000.0f, -2403.71f, "10,000 km out", 0}};
+  // The frame's boundary lies between the two eyes of the 420 km site (frame corners are 1,024 m
+  // apart, so their boundaries at odd multiples of 512 m).
+  REQUIRE(std::floor((-66051.0 + 0.4) / 1024.0 + 0.5) !=
+          std::floor((-66051.0 + 6.0) / 1024.0 + 0.5));
+  struct Slope {
+    const char* name;
+    double climb_deg;
+    bool ripples;
+    bool lanes;
+  };
+  const Slope slopes[2] = {
+      {"far out, level", 0.0, true, false},
+      {"far out, falling away from the wind at 32 degrees", -32.0, false, true}};
+  for (const Slope& slope : slopes) {
+    GroundCase c;
+    c.name = slope.name;
+    c.block = erg;
+    c.climb_deg = slope.climb_deg;
+    c.millimetre = true;
+    c.site_count = 2;
+    c.sites[0] = far_sites[0];
+    c.sites[1] = far_sites[1];
+    c.shaded[0] = 2;
+    c.ripple[0] = 2;
+    c.share[0] = 2;
+    c.grain[0] = 2;
+    Vector<GroundView> views;
+    draw_ground_case(device, c, views);
+    u32 rippled = 0;
+    u32 flowed = 0;
+    for (const GroundView& v : views) {
+      rippled += v.rippled;
+      flowed += v.flowed;
+    }
+    CHECK_MESSAGE((rippled > 0u) == slope.ripples, std::string(slope.name));
+    CHECK_MESSAGE((flowed > 0u) == slope.lanes, std::string(slope.name));
+  }
+
+  // The instrument, on what the resolve drew before the frame: the same level sand 420 km out with
+  // every block left at the world's origin, which is the pattern at the point's float32 world
+  // coordinate. Along the millimetre look's middle row (about 17 cm of sand at a millimetre a
+  // pixel) the ripple height can change only where the coordinate does, once every 3.1 cm; the
+  // reference's changes at almost every pixel. With the frame the two agree.
+  GroundCase framed;
+  framed.name = "420 km out with the frame";
+  framed.block = erg;
+  framed.millimetre = true;
+  framed.site_count = 1;
+  framed.sites[0] = far_sites[0];
+  GroundCase bare = framed;
+  bare.name = "420 km out without the frame (the pattern at float32 world coordinates)";
+  bare.framed = false;
+  bare.hold = false;
+  Vector<GroundView> with;
+  Vector<GroundView> without;
+  draw_ground_case(device, framed, with);
+  draw_ground_case(device, bare, without);
+  REQUIRE(with.size() == 3u);
+  REQUIRE(without.size() == 3u);
+  const GroundView& a = with[2];
+  const GroundView& b = without[2];
+  MESSAGE("the millimetre look's middle row, "
+          << a.row_metres << " m of sand: the reference's "
+          << "ripple height changes " << a.ref_changes << " times; the GPU's " << a.gpu_changes
+          << " with the frame and " << b.gpu_changes << " without it, where the float32 world "
+          << "coordinate (x 3.1 cm a step, z 7.8 mm) changes " << b.coordinate_changes
+          << " times; worst ripple height " << a.ripple << " of 255 with and " << b.ripple
+          << " without");
+  CHECK(gref::float_step(419070.0) == 0.03125);
+  CHECK(gref::float_step(66051.0) == 0.0078125);
+  // Without the frame the GPU's changes are bounded by the coordinate's.
+  CHECK(b.gpu_changes <= b.coordinate_changes);
+  CHECK(b.ref_changes > 4u * b.gpu_changes);
+  // With it the GPU changes where the reference does, to the pixels where the two round apart.
+  CHECK(a.gpu_changes * 10u >= a.ref_changes * 9u);
+  device.destroy();
+}
+
+TEST_CASE("ground detail: the frame names the world's own lattices from any corner") {
+  // `ground_detail_frame` without a device: for origins from the world's to 10,000 km and back,
+  // each lattice's integers and offset put back together are the origin (to a nanometre), the
+  // offset is inside its cell, and each lane direction's are the origin's own coordinates across
+  // and along it. And the frame is a function of the cell the eye is in: two eyes in one cell get
+  // the same block, and an eye half a cell over gets the next corner.
+  gfx::GroundDetailParams d = gfx::ground_detail_block(gref::erg_numbers(), Vec2{0.6f, -0.8f}, 7u);
+  const double eyes[][2] = {{0.0, 0.0},          {511.9, -511.9},     {512.1, -512.1},
+                            {-1380.0, 0.0},      {2917.37, -2403.71}, {-419070.0, -66781.109375},
+                            {-419070.0, -66051}, {1.0e7, -2403.71},   {-1.0e7, 1.0e7}};
+  for (const auto& eye : eyes) {
+    gfx::ground_detail_frame(d, eye[0], eye[1]);
+    const double ox = static_cast<double>(d.origin_x);
+    const double oz = static_cast<double>(d.origin_z);
+    CHECK(std::fabs(ox - eye[0]) <= 512.0);
+    CHECK(std::fabs(oz - eye[1]) <= 512.0);
+    CHECK(std::fmod(ox, gfx::k_ground_frame_cell) == 0.0);
+    CHECK(std::fmod(oz, gfx::k_ground_frame_cell) == 0.0);
+    const auto lattice = [&](const gfx::GroundLattice& l, f32 size, const char* name) {
+      const double s = static_cast<double>(size);
+      // The integers are the low 32 bits of floor(origin / size); every lattice here has fewer
+      // than 2^31 cells to 10,000 km, so they are the integer itself.
+      const double x = static_cast<double>(l.base_x) * s + static_cast<double>(l.rem_x);
+      const double z = static_cast<double>(l.base_z) * s + static_cast<double>(l.rem_z);
+      CHECK_MESSAGE(std::fabs(x - ox) < 1e-6, name);
+      CHECK_MESSAGE(std::fabs(z - oz) < 1e-6, name);
+      CHECK_MESSAGE((l.rem_x >= 0.0f && l.rem_x < size), name);
+      CHECK_MESSAGE((l.rem_z >= 0.0f && l.rem_z < size), name);
+    };
+    lattice(d.ripple_lattice, d.cell, "ripples");
+    lattice(d.grain_lattice, d.grain_size, "grain");
+    lattice(d.patch_lattice, d.patch_size, "patches");
+    lattice(d.streak_lattice, d.streak_length, "streaks");
+    for (u32 k = 0; k < gfx::k_ground_flow_directions; ++k) {
+      const double angle = static_cast<double>(k) * (gref::k_two_pi / 16.0);
+      const double across = ox * -std::sin(angle) + oz * std::cos(angle);
+      const double along = ox * std::cos(angle) + oz * std::sin(angle);
+      const double spacing = 2.0 * static_cast<double>(d.flow_width);
+      const double seg = static_cast<double>(d.flow_length);
+      const gfx::GroundLane& lane = d.lanes[k];
+      CHECK(std::fabs(lane.lane * spacing + static_cast<double>(lane.across) - across) < 1e-6);
+      CHECK(std::fabs(lane.segment * seg + static_cast<double>(lane.along) - along) < 1e-6);
+    }
+    // Every eye in the cell has this frame.
+    gfx::GroundDetailParams same = d;
+    gfx::ground_detail_frame(same, ox + 511.0, oz - 511.0);
+    CHECK(std::memcmp(&same, &d, sizeof(d)) == 0);
+  }
+  // The world's origin, and every eye within half a cell of it, is the frame that changes nothing:
+  // all zero, as a block nobody set a frame on.
+  gfx::GroundDetailParams zero = d;
+  gfx::ground_detail_frame(zero, -300.0, 200.0);
+  const gfx::GroundDetailParams none =
+      gfx::ground_detail_block(gref::erg_numbers(), Vec2{0.6f, -0.8f}, 7u);
+  CHECK(std::memcmp(&zero, &none, sizeof(none)) == 0);
 }
 
 TEST_CASE("ground detail: the grain reads as sand") {
