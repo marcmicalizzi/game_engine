@@ -2828,18 +2828,8 @@ gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   const gfx::GroundDetailDesc desc = terrain_detail_desc(terrain);
   gfx::GroundDetailParams block =
       gfx::ground_detail_block(desc, ground_->wind(ground_time_s_), terrain.seed);
-  // The ripples' motion (renderer.md, "Ripples that move"): their travel along the wind at the
-  // surface's time, and in the step since the last frame's, from the ground's transport.
-  f64 moved = 0.0;
-  f64 before = 0.0;
-  f32 strength = 1.0f;
-  f32 unused = 1.0f;
-  if (ground_->transport(ground_time_s_, moved, strength) &&
-      ground_->transport(ground_previous_s_, before, unused)) {
-    const f64 celerity = static_cast<f64>(desc.ripple_celerity);
-    gfx::ground_detail_motion(block, desc, moved * celerity, (moved - before) * celerity, strength,
-                              moved, moved - before);
-  }
+  // The ripples' motion (renderer.md, "Ripples that move"), from the two times alone.
+  terrain_detail_motion(*ground_, desc, ground_time_s_, ground_previous_s_, block);
   return block;
 }
 

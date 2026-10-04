@@ -70,7 +70,9 @@ inline Ripple ripple(const gfx::GroundDetailParams& d, double x, double z, doubl
   const double bx = std::floor(qx);
   const double bz = std::floor(qz);
   const double k = k_two_pi / (static_cast<double>(d.wavelength) * scale);
-  const double shift = k * travel;
+  // The base wavelength's phase whatever the scale (ground_ripple: a ripple s times as long moves
+  // 1/s as far, and a whole number of base wavelengths of travel moves nothing).
+  const double shift = k_two_pi * travel / static_cast<double>(d.wavelength);
   const double inv_r2 = 1.0 / (cell * cell);
   double sr = 0.0, si = 0.0;  // S
   double xr = 0.0, xi = 0.0;  // dS/dx

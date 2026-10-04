@@ -1858,6 +1858,34 @@ TEST_CASE("ground detail: ripples travel, blur under a time-lapse and flatten in
   }
   MESSAGE("a travel of 3.7 cm moves the phase by 3.7 cm to within " << worst << " wavelengths");
   CHECK(worst < 1e-9);
+  // At any scale the travel takes back the base wavelength's phase: a ripple s times as long and as
+  // high moves 1/s as far, so the phase is one function of the clock everywhere, and the block's
+  // reduction — a whole number of base wavelengths of travel — moves no crest at any scale. (Until
+  // 2026-10-04 it took back its own wavenumber's, and the reduction's wrap stepped every scaled
+  // ripple's phase by `256 / s` cycles.)
+  double worst_scaled = 0.0;
+  double worst_wrap = 0.0;
+  const double reduced = gfx::k_ground_travel_period * wavelength;
+  for (const double s : {0.7, 1.13, 1.6}) {
+    for (u32 i = 0; i < 500; ++i) {
+      const double x = 0.0291 * i - 7.0;
+      const double z = 0.0113 * i + 2.0;
+      const gref::Ripple a = gref::ripple(d, x, z, 0.75, s, 1.0, 0.0, 0.0, 0.037);
+      const gref::Ripple c = gref::ripple(d, x, z, 0.75, s, 1.0, 0.0, 0.0, 0.0);
+      const gref::Ripple w = gref::ripple(d, x, z, 0.75, s, 1.0, 0.0, 0.0, 0.037 + reduced);
+      if (!(a.taper > 0.5)) continue;
+      double shift = a.turn - c.turn;
+      shift -= std::floor(shift + 0.5);
+      worst_scaled = std::max(worst_scaled, std::fabs(std::fabs(shift) - 0.037 / wavelength));
+      double wrap = w.turn - a.turn;
+      wrap -= std::floor(wrap + 0.5);
+      worst_wrap = std::max(worst_wrap, std::fabs(wrap));
+    }
+  }
+  MESSAGE("at scales 0.7 to 1.6 the same travel moves the phase by the base wavelength's share to "
+          << worst_scaled << ", and the reduction's period moves it by " << worst_wrap);
+  CHECK(worst_scaled < 1e-9);
+  CHECK(worst_wrap < 1e-9);
 
   // The block: the travel reduced modulo 256 wavelengths in double, and the per-frame step.
   gfx::GroundDetailParams m = d;

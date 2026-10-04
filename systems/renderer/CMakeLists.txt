@@ -69,6 +69,9 @@ if(TARGET engine::terrain)
        tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp
        # The sand's detail across the rings' and their chunks' borders, and the dunes' wind.
        tests/ground_detail_rings_tests.cpp
+       # The ripples' motion against the clock: the block on the CPU at four rates, and on a
+       # GPU the displacement between two pictures read back by correlation.
+       tests/ground_motion_tests.cpp
        # The world's tiles on a GPU: the grid's picture, the seams by the visibility buffer, the
        # time-lapse across tiles, a tile set built ahead, and a long flight.
        tests/terrain_tiles_gpu_tests.cpp)

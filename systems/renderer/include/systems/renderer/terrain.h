@@ -213,6 +213,16 @@ class TerrainSampler {
   std::string error_;
 };
 
+// The ripples' motion a frame hands the shader (renderer.md, "Ripples that move"): `ground`'s
+// transport at the surface's time `time_s` and at the last frame's `previous_s`, turned into the
+// block's travel, its step this frame, the storm's flattening and the grainflow's clock
+// (`gfx::ground_detail_motion`). A function of the two times alone, so a frame at time T draws the
+// same bytes however T was reached; nothing is carried from frame to frame. A ground with no
+// transport leaves the block as it was. What `GpuScene::ground_detail_params` does every frame, and
+// what the motion's own test sweeps without a device.
+void terrain_detail_motion(const TerrainSampler& ground, const gfx::GroundDetailDesc& desc,
+                           f64 time_s, f64 previous_s, gfx::GroundDetailParams& block) noexcept;
+
 // How much of each feature is under (x, z), in [0, 1]: the largest ridge profile and the largest
 // basin weight. The terrain's surface (`terrain_surface`) is chosen from these.
 f32 terrain_ridge_weight(const TerrainDesc& desc, f32 x, f32 z) noexcept;

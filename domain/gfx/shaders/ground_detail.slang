@@ -195,7 +195,12 @@ GroundRipple ground_ripple(GroundDetail d, float2 p, float asymmetry, float scal
   const int2 base = int2(floor(q));
   const float2 across = float2(-w.y, w.x);
   const float k = k_ground_two_pi / (d.wavelength * scale);
-  const float shift = k * travel;
+  // The travel takes back the base wavelength's phase whatever the scale here, so a ripple s times
+  // as long and as high moves 1/s as far (a bedform's celerity is the flux over its height): the
+  // phase is then one function of the clock everywhere, a whole number of base wavelengths of
+  // travel (the block's reduction) moves no crest at any scale, and nothing winds up where the
+  // scale varies (renderer.md, "Ripples that move").
+  const float shift = k_ground_two_pi * travel / d.wavelength;
   const float inv_r2 = inv_cell * inv_cell;
   // The complex sum S and its two partial derivatives, each a complex number (re, im).
   float2 s = float2(0.0, 0.0);

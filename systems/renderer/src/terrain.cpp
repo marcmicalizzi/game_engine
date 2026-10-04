@@ -285,6 +285,20 @@ bool TerrainSampler::transport(f64 time_s, f64& moved_m2, f32& strength) const n
   return provider_.transport(time_s, moved_m2, strength);
 }
 
+void terrain_detail_motion(const TerrainSampler& ground, const gfx::GroundDetailDesc& desc,
+                           f64 time_s, f64 previous_s, gfx::GroundDetailParams& block) noexcept {
+  // Their travel along the wind at the surface's time, and in the step since the last frame's.
+  f64 moved = 0.0;
+  f64 before = 0.0;
+  f32 strength = 1.0f;
+  f32 unused = 1.0f;
+  if (!ground.transport(time_s, moved, strength) || !ground.transport(previous_s, before, unused))
+    return;
+  const f64 celerity = static_cast<f64>(desc.ripple_celerity);
+  gfx::ground_detail_motion(block, desc, moved * celerity, (moved - before) * celerity, strength,
+                            moved, moved - before);
+}
+
 f32 TerrainSampler::ridge_weight(f32 x, f32 z) const noexcept {
   return scene_gen::ridge_weight(ridges_of(desc_->ridges), x, z);
 }
