@@ -62,6 +62,12 @@ experiment were still polling six hours later. None of that was work. So:
 - **Block on the command.** Run the build or the test in the foreground and let the call return
   when it does. If it will outlast a call, start it detached with its output in a log and make
   **one** wait that ends when the log does.
+- **Size the wait to the run.** A wait that gives up before the run ends is a poll with a long
+  period: on 2026-10-04 agents wrote "wait up to eight minutes" round `test -Affected` runs that
+  take half an hour, and were woken four times for one run. Give the one wait a time limit of
+  about twice the figure in the table below, not the tool's default. Where the harness can run a
+  command in the background and wake the agent when it exits, that is the wait: start the build or
+  the test that way with a limit of an hour or more, and write no loop at all.
 - **One wait at a time, a minute or more between looks, and none left behind.** Before handing
   back, nothing the agent started is still running.
 - **One line at the end.** A watch on a gate reports once, when every part of it has finished or
@@ -73,3 +79,24 @@ experiment were still polling six hours later. None of that was work. So:
 The GPU lock stopped being a reason to wait on 2026-10-01: a test holds it for the seconds it has
 a device open ([gpu_lock](../subsystems/gpu_lock.md), ADR-0049), so a suite queues behind another
 agent's test and not behind its hour.
+
+### How long things take
+
+So that a wait can be sized before it is written. Measured on the desktop on 2026-10-04, with one
+to four agents building and testing beside each run, so these are what an agent will actually
+meet and not quiet figures; CTest's own "Total Test time" in each case, builds not included.
+
+| Run | Time |
+|---|---|
+| `test -Affected` that reaches the renderer (36 tests: `gfx`, `renderer`, `engine_view`, the capabilities above them) | 29 min |
+| `test -Affected` that selects everything (a changed test scene, `cmake/`, a `core/` header): the `msvc-debug` suite, 91 tests | 36 min |
+| `test -Filter engine_cli` alone (the end-to-end host tests) | 7 min |
+| `msvc-minimal` suite, 59 tests | 13 min |
+| `msvc-no-ecs` suite, 81 tests | 29 min |
+| Linux container, warm, with a `-Filter` of a few modules | 1 to 7 min including the build |
+| Titan Xp (`remote-build.ps1 -Test`), `engine_cli` alone / `renderer` and `engine_cli` | 6 min / 24 min |
+| The whole merge gate (three Windows builds and suites, the GCC container, the server), in parallel | about 2 h |
+
+A first build in a fresh worktree comes on top of these, and a fresh worktree's first container
+run compiles every third-party dependency ([local Linux builds](local-linux.md) has those times).
+When a figure here is found wrong by more than a third, correct it in the change that found it.
