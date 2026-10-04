@@ -44,8 +44,10 @@ static const uint k_ground_patches = 128u;
 static const uint k_ground_steering = 256u;
 static const uint k_ground_motion = 512u;
 // gfx::k_ground_flow_rms, k_ground_flow_slope_rms.
-static const float k_ground_flow_rms = 0.222;
-static const float k_ground_flow_slope_rms = 1.008;
+static const float k_ground_flow_rms = 0.213;
+static const float k_ground_flow_slope_rms = 0.723;
+// gfx::k_ground_flow_body: the tongues' fade, in lane widths a period.
+static const float k_ground_flow_body = 0.75;
 // Streak kernels per lattice cell (gfx::k_ground_streak_impulses).
 static const uint k_ground_streak_impulses = 3u;
 // gfx::k_ground_noise_rms, k_ground_noise_slope_rms, k_ground_grain_rms.
@@ -468,8 +470,8 @@ float ground_lobe(float v, float hw, float tau) {
 }
 
 // The tongue's height (1 at a lobe's crest) at `x` metres across its lane's centre and `tl` metres
-// down from its head. A real grainflow (Hunter 1977; Kocurek and Dott 1981): a chute with levees
-// scoured under the brink, easing into a lobe of deposit that widens down the face; its centreline
+// down from its head. A real grainflow (Hunter 1977; Kocurek and Dott 1981): a chute scoured under
+// the brink, easing into a lobe of deposit that widens down the face; its centreline
 // wanders, more toward the toe, and its width swells and pinches; some lobes split in two, each
 // half ending in its own rounded toe. Soft at the head over a tenth of its length and at the toe
 // over a fifth. Local coordinates only, so it is exact in float anywhere in the world.
@@ -481,13 +483,16 @@ float ground_tongue(GroundTongue g, float x, float tl) {
   const float pinch = 1.0 + 0.12 * sin(1.7 * g.k2 * tl + g.p1);
   const float half_w = g.half0 * (0.6 + 0.8 * tau) * pinch;
   const float u = x - centre;
-  // The head's chute with its levees, on the tongue's own centreline.
+  // The head's chute, on the tongue's own centreline: a shallow scour with no levees. (The
+  // fourth pass drew levees, `q^2 (2.4 r^2 - 0.6)`; their steep sides, a few centimetres across,
+  // came and went along the tongue and under a low sun read as broken light and dark dashes a metre
+  // or two long, which is what the owner saw: docs/experiments/sand-fifth-pass-2026-10-04.md.)
   const float r = u / half_w;
   const float r2 = r * r;
   float chute = 0.0;
   if (r2 < 1.0) {
     const float q = 1.0 - r2;
-    chute = q * q * (2.4 * r2 - 0.6);
+    chute = -0.3 * q * q;
   }
   // The lobe, or two: apart by up to 0.55 half-widths each side, each 0.7 as wide, normalised so
   // the pair is one lobe's height where they have not yet parted.
@@ -798,9 +803,13 @@ GroundShading ground_detail_shade(GroundDetail d, float3 position, float3 normal
     out.flow = weight;
     if (weight > 0.0 && !full) {
       const float footprint = max(length(dpdx.xz), length(dpdy.xz));
-      // A face avalanching faster than a frame can show (a storm, a time-lapse) is smooth: the lanes
-      // fade by the episodes' advance a frame over the share, as the ripples do by their travel.
-      const float fade = ground_fade(footprint / d.flow_width) *
+      // By the footprint against `k_ground_flow_body` lane widths a period: whole at four pixels a
+      // period and gone at two (fifth pass; the fourth faded by a whole lane width, and around
+      // 15 cm pixels drew more variation than the pixels hold: ground_detail.h has the numbers). A
+      // face avalanching faster than a frame can show (a storm, a time-lapse) is smooth: the
+      // lanes fade by the episodes' advance a frame over the share, as the ripples do by their
+      // travel.
+      const float fade = ground_fade(footprint / (k_ground_flow_body * d.flow_width)) *
                          (d.flow_share < 1.0 ? ground_fade(d.flow_clock_step / d.flow_share) : 1.0);
       if (fade > 0.0) {
         const float len = length(normal.xz);

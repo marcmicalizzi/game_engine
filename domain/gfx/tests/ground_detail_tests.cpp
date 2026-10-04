@@ -1797,3 +1797,255 @@ TEST_CASE("ground detail: grainflow lanes run the face's length and never cross"
   }
   CHECK(jump < 1e-4);
 }
+
+// ---- fifth pass: what a slip face's lee term draws, read as an eye reads it
+// ----------------------
+//
+// docs/experiments/sand-fifth-pass-2026-10-04.md. The owner saw a slip face in the endless desert
+// covered edge to edge in short light and dark dashes; the fourth pass's numbers (variance, the
+// gradient's share along the fall line, the filter's mean) could not have caught it, because they
+// say nothing of what the picture is made of. Two readings do:
+//
+// - **Features.** A face 40 m down its fall line and 16 m across, in plan at 5 cm a sample (the
+//   owner's pixels were 1.3 to 3.3 cm), each sample shaded with that footprint and with every term
+//   of the block, lit by the sky alone (the face in its own shade, as he saw it at 10:00) and by a
+//   sun raking across the fall line 20 degrees up. Where the luminance stands more than 2% off the
+//   face's mean is a feature, light and dark apart, eight-connected; each is measured by its second
+//   moments along the surface (a uniform ellipse's full axes, `4 sqrt(lambda)`, each sample
+//   counting its own width). Speckle is many, short, crisp; grainflow is few, long, faint.
+// - **Speckle at a distance.** Pixels of 5 to 40 cm over the same face: the variation the pixels
+//   draw against the variation 8 x 8 samples of each pixel hold. A feature finer than its pixel
+//   that is still drawn shows as a pixel-wide line or dot, the supersampled picture averages it
+//   away, and the ratio says so.
+namespace {
+
+struct FaceReading {
+  u32 features = 0;
+  double per_100m2 = 0.0;      // features per 100 m^2 of the face's surface
+  double median_length = 0.0;  // metres along the surface
+  double median_aspect = 0.0;  // long axis over short
+  double p99_contrast = 0.0;   // |luminance / mean - 1|, 99th percentile
+  double covered = 0.0;        // the share of the face past the threshold
+};
+
+constexpr double k_face_slope = 32.0 * 3.14159265358979323846 / 180.0;
+
+double face_luma(const gfx::GroundDetailParams& d, double x, double z, double step, bool sun) {
+  const ref::Dvec3 n{std::sin(k_face_slope), std::cos(k_face_slope), 0.0};
+  const ref::Dvec3 albedo{0.62, 0.47, 0.32};
+  const ref::Dvec3 p{x, -(n.x * x) / n.y, z};
+  const ref::Dvec3 dx{step, -n.x / n.y * step, 0.0};
+  const ref::Dvec3 dz{0.0, 0.0, step};
+  const gref::Shading g = gref::shade(d, p, n, dx, dz, 1.0, albedo, 0.85);
+  ref::Surface sf;
+  sf.position = p;
+  sf.normal = g.normal;
+  sf.view = ref::normalize(ref::Dvec3{0.8, 0.6, 0.1});
+  sf.albedo = g.albedo;
+  sf.roughness = g.roughness;
+  const ref::Dvec3 light = ref::normalize(ref::Dvec3{0.1, 0.35, 0.93});
+  return ref::luminance(ref::shade(sf, light, 4.5, ref::Dvec3{0.45, 0.55, 0.75}, albedo, nullptr, 0,
+                                   ref::Dvec3{}, !sun));
+}
+
+FaceReading read_face(const std::vector<double>& luma, u32 w, u32 h, double pixel,
+                      double threshold) {
+  FaceReading out;
+  double mean = 0.0;
+  for (const double v : luma)
+    mean += v;
+  mean /= static_cast<double>(luma.size());
+  std::vector<double> contrast(luma.size());
+  for (size_t i = 0; i < luma.size(); ++i)
+    contrast[i] = luma[i] / mean - 1.0;
+  std::vector<double> sorted(contrast.size());
+  u32 over = 0;
+  for (size_t i = 0; i < contrast.size(); ++i) {
+    sorted[i] = std::fabs(contrast[i]);
+    if (sorted[i] > threshold) ++over;
+  }
+  std::sort(sorted.begin(), sorted.end());
+  out.p99_contrast = sorted[sorted.size() * 99 / 100];
+  out.covered = static_cast<double>(over) / static_cast<double>(contrast.size());
+  // Light and dark apart, eight-connected. Rows run down the fall line (x in plan), which the
+  // surface stretches by 1 / cos(slope).
+  const double along = pixel / std::cos(k_face_slope);
+  std::vector<u8> seen(contrast.size(), 0u);
+  std::vector<u32> stack;
+  std::vector<double> lengths, aspects;
+  for (u32 start = 0; start < w * h; ++start) {
+    if (seen[start] || std::fabs(contrast[start]) <= threshold) continue;
+    const bool light = contrast[start] > 0.0;
+    double n = 0.0, sx = 0.0, sz = 0.0, sxx = 0.0, szz = 0.0, sxz = 0.0;
+    stack.clear();
+    stack.push_back(start);
+    seen[start] = 1u;
+    while (!stack.empty()) {
+      const u32 at = stack.back();
+      stack.pop_back();
+      const u32 i = at % w;
+      const u32 j = at / w;
+      const double x = i * along;
+      const double z = j * pixel;
+      n += 1.0;
+      sx += x;
+      sz += z;
+      sxx += x * x;
+      szz += z * z;
+      sxz += x * z;
+      for (i32 b = -1; b <= 1; ++b) {
+        for (i32 a = -1; a <= 1; ++a) {
+          const i32 ni = static_cast<i32>(i) + a;
+          const i32 nj = static_cast<i32>(j) + b;
+          if (ni < 0 || nj < 0 || ni >= static_cast<i32>(w) || nj >= static_cast<i32>(h)) continue;
+          const u32 k = static_cast<u32>(nj) * w + static_cast<u32>(ni);
+          if (seen[k]) continue;
+          const double c = contrast[k];
+          if (light ? c > threshold : c < -threshold) {
+            seen[k] = 1u;
+            stack.push_back(k);
+          }
+        }
+      }
+    }
+    if (n < 3.0) continue;  // a speck of one or two samples is under any pixel that sees it
+    const double mx = sx / n, mz = sz / n;
+    const double cxx = sxx / n - mx * mx + along * along / 12.0;
+    const double czz = szz / n - mz * mz + pixel * pixel / 12.0;
+    const double cxz = sxz / n - mx * mz;
+    const double tr = 0.5 * (cxx + czz);
+    const double det = std::sqrt(std::max(0.0, 0.25 * (cxx - czz) * (cxx - czz) + cxz * cxz));
+    const double major = 4.0 * std::sqrt(tr + det);
+    const double minor = 4.0 * std::sqrt(std::max(tr - det, 1e-12));
+    lengths.push_back(major);
+    aspects.push_back(major / minor);
+  }
+  out.features = static_cast<u32>(lengths.size());
+  const double area = (w * along) * (h * pixel);
+  out.per_100m2 = 100.0 * static_cast<double>(lengths.size()) / area;
+  if (!lengths.empty()) {
+    std::sort(lengths.begin(), lengths.end());
+    std::sort(aspects.begin(), aspects.end());
+    out.median_length = lengths[lengths.size() / 2];
+    out.median_aspect = aspects[aspects.size() / 2];
+  }
+  return out;
+}
+
+// The face in plan, both lights from one evaluation of the detail per sample.
+void read_face_both(const gfx::GroundDetailParams& d, FaceReading& shade, FaceReading& sun,
+                    double pixel = 0.05, u32 w = 680, u32 h = 320) {
+  std::vector<double> sky(w * h), lit(w * h);
+  for (u32 j = 0; j < h; ++j) {
+    for (u32 i = 0; i < w; ++i) {
+      const double x = 40.0 + (i + 0.5) * pixel;
+      const double z = 7.0 + (j + 0.5) * pixel;
+      sky[j * w + i] = face_luma(d, x, z, pixel, false);
+      lit[j * w + i] = face_luma(d, x, z, pixel, true);
+    }
+  }
+  shade = read_face(sky, w, h, pixel, 0.02);
+  sun = read_face(lit, w, h, pixel, 0.02);
+}
+
+// Speckle: over 1,500 pixels of `pixel` metres scattered across the face, each drawn at its
+// footprint and held as the mean of 8 x 8 samples of it, the root-mean-square of the difference
+// (what a pixel draws that it cannot hold: a feature finer than it, drawn) and of the held picture
+// about its mean (what there is to see at that size), both as shares of the mean; under the raking
+// sun, which shows relief the most.
+void read_speckle(const gfx::GroundDetailParams& d, double pixel, double& error, double& held,
+                  double* drawn_rms = nullptr) {
+  const u32 count = 1500;
+  std::vector<double> drawn(count), kept(count);
+  double mean = 0.0;
+  for (u32 k = 0; k < count; ++k) {
+    // A low-discrepancy scatter over 34 m by 16 m (the golden ratio's sequence and its square).
+    const double a = k * 0.6180339887498949;
+    const double b = k * 0.7548776662466927;
+    const double x0 = 40.0 + 34.0 * (a - std::floor(a));
+    const double z0 = 7.0 + 16.0 * (b - std::floor(b));
+    drawn[k] = face_luma(d, x0 + 0.5 * pixel, z0 + 0.5 * pixel, pixel, true);
+    double u = 0.0;
+    for (u32 j = 0; j < 8; ++j)
+      for (u32 i = 0; i < 8; ++i)
+        u += face_luma(d, x0 + (i + 0.5) * pixel / 8.0, z0 + (j + 0.5) * pixel / 8.0, pixel / 8.0,
+                       true);
+    kept[k] = u / 64.0;
+    mean += kept[k];
+  }
+  mean /= count;
+  double e2 = 0.0, h2 = 0.0;
+  for (u32 k = 0; k < count; ++k) {
+    e2 += (drawn[k] - kept[k]) * (drawn[k] - kept[k]);
+    h2 += (kept[k] - mean) * (kept[k] - mean);
+  }
+  error = std::sqrt(e2 / count) / mean;
+  held = std::sqrt(h2 / count) / mean;
+  if (drawn_rms) {
+    double dm = 0.0, d2 = 0.0;
+    for (u32 k = 0; k < count; ++k)
+      dm += drawn[k];
+    dm /= count;
+    for (u32 k = 0; k < count; ++k)
+      d2 += (drawn[k] - dm) * (drawn[k] - dm);
+    *drawn_rms = std::sqrt(d2 / count) / mean;
+  }
+}
+}  // namespace
+
+TEST_CASE("ground detail: a slip face draws a few long faint tongues, not speckle") {
+  // The ergs' numbers, which both erg scenes now carry (the endless desert carried the second
+  // pass's streaks until the fifth pass), and those streaks, which are what the owner saw.
+  const gfx::GroundDetailParams ergs =
+      gfx::ground_detail_block(gref::erg_numbers(), Vec2{1.0f, 0.0f}, 7u);
+  gfx::GroundDetailDesc second = gref::erg_numbers();
+  second.streak_start_deg = 22.0f;
+  second.streak_full_deg = 30.0f;
+  second.flow_start_deg = 0.0f;
+  second.flow_full_deg = 0.0f;
+  const gfx::GroundDetailParams streaks = gfx::ground_detail_block(second, Vec2{1.0f, 0.0f}, 7u);
+  REQUIRE((ergs.flags & gfx::k_ground_grainflow) != 0u);
+  REQUIRE((streaks.flags & gfx::k_ground_streaks) != 0u);
+
+  FaceReading ergs_sky, ergs_sun, streaks_sky, streaks_sun;
+  read_face_both(ergs, ergs_sky, ergs_sun);
+  read_face_both(streaks, streaks_sky, streaks_sun);
+  const auto say = [](const std::string& what, const FaceReading& r) {
+    MESSAGE(what << ": " << r.features << " features, " << r.per_100m2 << " per 100 m^2, median "
+                 << r.median_length << " m long at an aspect of " << r.median_aspect
+                 << "; contrast " << r.p99_contrast << " at the 99th percentile, " << r.covered
+                 << " of the face past 2%");
+  };
+  say("tongues in shade", ergs_sky);
+  say("tongues under a raking sun", ergs_sun);
+  say("streaks in shade", streaks_sky);
+  say("streaks under a raking sun", streaks_sun);
+  // Few, long and faint where the owner looked, a face in its own shade: 2.0 features per 100 m^2,
+  // a median 3.9 m long at an aspect of 15, 3.9% of contrast at the 99th percentile (the fourth
+  // pass read 2.7, 3.8 m, 3.7%).
+  CHECK(ergs_sky.per_100m2 < 5.0);
+  CHECK(ergs_sky.median_length > 3.0);
+  CHECK(ergs_sky.median_aspect > 8.0);
+  CHECK(ergs_sky.p99_contrast < 0.05);
+  // Under a low raking sun the relief shows, and stays long: 7.2 per 100 m^2, a median 8.1 m. The
+  // fourth pass's levees read 19.2 per 100 m^2 a median 1.8 m long here — dashes.
+  CHECK(ergs_sun.per_100m2 < 12.0);
+  CHECK(ergs_sun.median_length > 5.0);
+  CHECK(ergs_sun.median_aspect > 12.0);
+  // The instrument sees the dashes the owner saw: the second pass's streaks are 49 features per
+  // 100 m^2 a median 1.7 m long at 26% of contrast.
+  CHECK(streaks_sky.per_100m2 > 25.0);
+  CHECK(streaks_sky.median_length < 2.5);
+  CHECK(streaks_sky.p99_contrast > 0.15);
+  for (const double pixel : {0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4}) {
+    double error = 0.0, held = 0.0, drawn = 0.0, serror = 0.0, sheld = 0.0, sdrawn = 0.0;
+    read_speckle(ergs, pixel, error, held, &drawn);
+    read_speckle(streaks, pixel, serror, sheld, &sdrawn);
+    MESSAGE("pixels of " << pixel * 100.0 << " cm: tongues vary by " << drawn << " drawn, " << held
+                         << " held, " << error << " apart; streaks " << sdrawn << ", " << sheld
+                         << ", " << serror);
+    // Never more variation drawn than the pixels hold, but for a tenth: at most 1.09 times, at
+    // 10 cm. The fourth pass drew 1.17 times at 10 cm, 1.36 at 15 and 1.19 at 20.
+    CHECK(drawn < 1.15 * held + 0.002);
+  }
+}

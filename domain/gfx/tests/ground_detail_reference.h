@@ -394,7 +394,7 @@ inline double tongue(const Tongue& g, double x, double tl) {
   double chute = 0.0;
   if (r2 < 1.0) {
     const double q = 1.0 - r2;
-    chute = q * q * (2.4 * r2 - 0.6);
+    chute = -0.3 * q * q;
   }
   double v = 0.0, dv = 0.0;
   smooth_d(g.split_at, g.split_at + 0.25, tau, v, dv);
@@ -699,8 +699,9 @@ inline Shading shade(const gfx::GroundDetailParams& d, Dvec3 position, Dvec3 nor
       const double ly = std::sqrt(dpdy.x * dpdy.x + dpdy.z * dpdy.z);
       const double footprint = lx > ly ? lx : ly;
       const double share = static_cast<double>(d.flow_share);
+      const double width = static_cast<double>(d.flow_width);
       const double f =
-          fade(footprint / static_cast<double>(d.flow_width)) *
+          fade(footprint / (static_cast<double>(gfx::k_ground_flow_body) * width)) *
           (d.flow_share < 1.0f ? fade(static_cast<double>(d.flow_clock_step) / share) : 1.0);
       if (f > 0.0) {
         const double len = std::sqrt(normal.x * normal.x + normal.z * normal.z);

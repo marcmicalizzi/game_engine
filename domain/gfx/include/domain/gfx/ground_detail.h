@@ -69,8 +69,18 @@ inline constexpr u32 k_ground_motion = 512u;
 // own start and length) has a value of root-mean-square `k_ground_flow_rms` and a derivative of
 // `k_ground_flow_slope_rms` per lane width, after the four cells' blend: measured over the mirror
 // (ground_detail_tests.cpp, "grainflow lanes …"), and the block scales by them.
-inline constexpr f32 k_ground_flow_rms = 0.222f;
-inline constexpr f32 k_ground_flow_slope_rms = 1.008f;
+inline constexpr f32 k_ground_flow_rms = 0.213f;
+inline constexpr f32 k_ground_flow_slope_rms = 0.723f;
+// The tongues fade by the pixel's footprint against `k_ground_flow_body` lane widths, whole at four
+// pixels a period and gone at two, as every term of the detail is (fifth pass,
+// docs/experiments/sand-fifth-pass-2026-10-04.md). A tongue's relief is its lobe's two flanks,
+// which span the lobe's width: 0.4 of a lane width for a split lobe, up to 1.3 at a wide toe. The
+// number is the instrument's (ground_detail_tests.cpp, "a slip face draws …"): at a whole lane
+// width (the fourth pass) the pixels drew up to a fifth more variation than 8 x 8 samples of each
+// hold, at 15 cm, and with the levees a third more; at half a lane width the tongues were gone at
+// 15 cm where the samples still held them at 3% of contrast; at 0.75 the drawn variation stays
+// within a tenth of the held at every size from 3 to 40 cm.
+inline constexpr f32 k_ground_flow_body = 0.75f;
 // The ripples' travel reaches the shader reduced modulo this many base wavelengths, in double
 // precision on the CPU, so a float carries it to a ten-thousandth of a wavelength; where the
 // spacing or the patches scale the wavelength, the phase steps once as the reduction wraps, which
