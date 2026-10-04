@@ -17,6 +17,8 @@
 // Nothing here calls into another engine module: a non-inline function in `core/containers`
 // or `core/memory` is compiled with the arch flag, so calling one would be the very thing the
 // check exists to prevent. `<cstdio>` and `<cstdlib>` only.
+#include "fault_report.h"
+
 #include <core/base/macros.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/error_dialogs.h>
@@ -118,7 +120,15 @@ void require_cpu_baseline() noexcept {
   // a function-local static would reach for the compiler's thread-safe-statics machinery at a
   // point in the CRT's start-up where it has no business being asked. Two CPUID sequences cost
   // nothing and the second caller is `main()` a moment later.
-  if (report_cpu_baseline(detect_cpu_features(), k_build_cpu_baseline)) return;
+  if (report_cpu_baseline(detect_cpu_features(), k_build_cpu_baseline)) {
+    // The handlers that turn a fatal fault into one line on stderr (fault_report.h; platform.md,
+    // "Every fatal fault prints one line"), with the same reach and as idempotent. After the
+    // check and not before it: they use std::atomic, whose out-of-line copy the linker may take
+    // from a translation unit compiled for the baseline, which a CPU that fails the check must
+    // never execute. A CPU that fails it gets the line above and exits.
+    detail::install_fault_report();
+    return;
+  }
   // _Exit rather than exit: this may run before main, so there is nothing constructed that
   // wants destroying and an atexit handler registered by a half-initialized module is the last
   // thing that should get a turn. The message is already flushed.

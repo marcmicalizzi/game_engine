@@ -1,3 +1,5 @@
+#include "fault_report.h"
+
 #include <core/base/macros.h>
 #include <core/platform/error_dialogs.h>
 
@@ -7,9 +9,35 @@
 #include <crtdbg.h>
 #include <stdlib.h>
 #include <windows.h>
+#else
+#include <stdlib.h>
 #endif
 
 namespace engine::platform {
+
+namespace detail {
+
+#if ENGINE_PLATFORM_WINDOWS
+
+// GetEnvironmentVariableA rather than getenv: this runs before main, and MSVC's getenv is both
+// deprecated (C4996) and a walk of a table the runtime may not have finished building.
+bool error_dialogs_wanted() noexcept {
+  char value[4] = {};
+  const DWORD length = ::GetEnvironmentVariableA("ENGINE_ERROR_DIALOGS", value, sizeof(value));
+  return length == 1 && value[0] == '1';
+}
+
+#else
+
+// The environment is in place before the first constructor runs.
+bool error_dialogs_wanted() noexcept {
+  const char* value = ::getenv("ENGINE_ERROR_DIALOGS");
+  return value != nullptr && value[0] == '1' && value[1] == '\0';
+}
+
+#endif
+
+}  // namespace detail
 
 #if ENGINE_PLATFORM_WINDOWS
 
@@ -18,18 +46,10 @@ namespace {
 constexpr UINT k_quiet_modes =
     SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
 
-// GetEnvironmentVariableA rather than getenv: this runs before main, and MSVC's getenv is both
-// deprecated (C4996) and a walk of a table the runtime may not have finished building.
-bool dialogs_wanted() noexcept {
-  char value[4] = {};
-  const DWORD length = ::GetEnvironmentVariableA("ENGINE_ERROR_DIALOGS", value, sizeof(value));
-  return length == 1 && value[0] == '1';
-}
-
 }  // namespace
 
 void quiet_error_dialogs() noexcept {
-  if (dialogs_wanted()) return;
+  if (detail::error_dialogs_wanted()) return;
 
   // The system's boxes: a critical error, a fault, a file that will not open.
   ::SetErrorMode(::GetErrorMode() | k_quiet_modes);

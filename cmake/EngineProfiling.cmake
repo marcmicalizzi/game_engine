@@ -13,6 +13,12 @@ if(ENGINE_TRACY)
   set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
   set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
   set(TRACY_STATIC ON CACHE BOOL "" FORCE)
+  # Tracy's client installs crash handlers of its own (a top-level exception filter on Windows,
+  # sigaction on Linux) over the engine's, which report to a connected profiler and otherwise end
+  # the process with nothing on stderr — on Linux by abort(), whatever the fault was. Every engine
+  # binary prints one line for a fatal fault instead (core/platform, docs/subsystems/platform.md,
+  # "Every fatal fault prints one line"), and a release build is where that line matters most.
+  set(TRACY_NO_CRASH_HANDLER ON CACHE BOOL "" FORCE)
   # The Tracy client opens a listening socket when the process starts. On every interface, that
   # makes Windows Firewall raise a prompt once per executable *path*, and every agent worktree
   # and preset has its own paths: on 2026-09-18 thirty-five pending prompts, each one a GPU

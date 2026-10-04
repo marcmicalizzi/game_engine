@@ -1,3 +1,5 @@
+#include "fault_report.h"
+
 #include <core/platform/thread.h>
 
 #include <atomic>
@@ -24,7 +26,19 @@ namespace engine::platform {
 namespace {
 std::atomic<u32> g_next_thread_index{0};
 thread_local u32 t_thread_index = 0xFFFFFFFFu;
+// The name this thread gave itself, for the fatal-fault line (fault_report.h): a plain array, so a
+// handler reading it runs no initializer and calls nothing that allocates.
+thread_local char t_thread_name[32] = {};
+
+void remember_thread_name(const char* name) noexcept {
+  usize n = 0;
+  for (; n + 1 < sizeof(t_thread_name) && name[n] != '\0'; ++n)
+    t_thread_name[n] = name[n];
+  t_thread_name[n] = '\0';
+}
 }  // namespace
+
+const char* detail::fault_thread_name() noexcept { return t_thread_name; }
 
 u32 current_thread_index() {
   if (t_thread_index == 0xFFFFFFFFu)
@@ -73,6 +87,7 @@ bool set_current_thread_priority(ThreadPriority priority) {
 }
 
 bool set_current_thread_name(const char* name) {
+  remember_thread_name(name);
   wchar_t wide[64];
   usize n = 0;
   for (; n < 63 && name[n] != '\0'; ++n)
@@ -127,6 +142,7 @@ bool set_current_thread_priority(ThreadPriority priority) {
 }
 
 bool set_current_thread_name(const char* name) {
+  remember_thread_name(name);
   char buf[16];
   usize n = 0;
   for (; n < 15 && name[n] != '\0'; ++n)
