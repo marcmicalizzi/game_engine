@@ -215,6 +215,17 @@ try {
   $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec "if (Test-Path -LiteralPath '$p') { exit 7 } else { exit 9 }"
   Test-That 'run holds the lock around the command and returns its exit code' { $LASTEXITCODE -eq 7 }
   Test-That 'and releases it after' { -not (Test-Path -LiteralPath $p) }
+  # A program's own exit code comes through, not PowerShell's "1 for anything that failed".
+  $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec "pwsh -NoProfile -Command 'exit 7'"
+  Test-That 'run returns the exit code of the program its command ran' { $LASTEXITCODE -eq 7 }
+  $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec "pwsh -NoProfile -Command 'exit 0'"
+  Test-That 'and 0 when the program succeeded' { $LASTEXITCODE -eq 0 }
+  $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec "Write-Output 'no program ran'"
+  Test-That 'and 0 for a command line that ran no program' { $LASTEXITCODE -eq 0 -and "$out" -match 'no program ran' }
+  if ($IsWindows) {
+    $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec 'cmd /c exit -1073741819'
+    Test-That 'an access violation''s code (0xC0000005) comes through whole' { $LASTEXITCODE -eq -1073741819 }
+  }
 } finally {
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }

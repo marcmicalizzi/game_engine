@@ -113,7 +113,12 @@ switch ($Action) {
     try {
       Invoke-WithMachineLock -Kind gpu -Path $Lock -Purpose $Purpose -Owner $Owner -LeaseMinutes $Minutes `
                              -TimeoutMinutes $TimeoutMinutes -ScriptBlock {
-        & pwsh -NoProfile -Command $Exec
+        # `pwsh -Command` reports 1 for any command that fails, whatever the program it ran
+        # exited with, so the trailer hands the program's own code on: an access violation is
+        # 0xC0000005 here and not "1", which is what hid one on 2026-10-03. A command line that
+        # ran no program keeps PowerShell's answer.
+        $trailer = '; $engine_ok = $?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if ($engine_ok) { exit 0 } else { exit 1 }'
+        & pwsh -NoProfile -Command ($Exec + $trailer)
         $script:code = $LASTEXITCODE
       }
     } catch {
