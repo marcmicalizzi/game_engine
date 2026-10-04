@@ -207,6 +207,16 @@ class WindRecord {
   FluxIntegral between(i64 from_us, i64 to_us) const noexcept {
     return integral(to_us) - integral(from_us);
   }
+  // **The magnitude integral without its truncation**: `integral(time_us).magnitude` in `whole`,
+  // and in `fraction`, within [0, 1), the share of the next cm^2 that the day's straight line (or
+  // the hour's) has reached by `time_us`, so `whole + fraction` is the integral as a continuous
+  // function of time — piecewise linear, the same line `integral` floors. `integral` is in whole
+  // cm^2, which is right for the sand a dune moves by and a staircase for anything drawn from the
+  // integral continuously: at the record's mean flux a cm^2 takes about sixteen game seconds to
+  // blow, so a ripple driven by the whole number held still for those seconds and then jumped
+  // (renderer.md, "Ripples that move"). The same integer arithmetic as `integral`, with the
+  // remainder of its one division kept.
+  void magnitude_at(i64 time_us, i64& whole, f64& fraction) const noexcept;
   // The period's totals: what one cycle of the record moves, storms included.
   const FluxIntegral& period_total() const noexcept { return prefix_[k_record_days]; }
   // The wind in the hour holding `time_us`.

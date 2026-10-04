@@ -116,11 +116,18 @@ f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s, i64 filter_mm) noexc
 
 // The ripples' transport at a game time: the wind record's flux path length since its epoch, cm^2
 // to m^2 — the integral the dunes migrate by, storms' gains included — and the hour's strength over
-// the record's mean (a storm's peak is 2.5).
+// the record's mean (a storm's peak is 2.5). The path length is the integral's whole cm^2 **and the
+// fraction the record's line has reached into the next** (`WindRecord::magnitude_at`): the whole
+// number alone is a staircase, a cm^2 every few game seconds, and at the ergs' celerity a cm^2 is
+// 20 cm of the ripples' travel, so they held still and then jumped 1.7 wavelengths (renderer.md,
+// "Ripples that move"; docs/experiments/ripple-motion-2026-10-04.md).
 bool dunes_transport(const void* state, f64 time_s, f64& moved_m2, f32& strength) noexcept {
   const auto& g = *static_cast<const DunesGround*>(state);
   const i64 t = time_us_of(time_s);
-  moved_m2 = static_cast<f64>(g.field.wind().integral(t).magnitude) * 1e-4;
+  i64 whole = 0;
+  f64 fraction = 0.0;
+  g.field.wind().magnitude_at(t, whole, fraction);
+  moved_m2 = (static_cast<f64>(whole) + fraction) * 1e-4;
   strength = static_cast<f32>(static_cast<f64>(g.field.wind().wind_at(t).speed_q16) / 65536.0);
   return true;
 }

@@ -400,7 +400,9 @@ struct GroundOps {
   // ground with no wind to say. Thread-safe.
   bool (*wind)(const void* state, f64 time_s, f32& x, f32& z) noexcept = nullptr;
   // What moves the ripples at game time `time_s`: `moved_m2`, the sand the ground's wind has
-  // carried across a metre of width since its epoch, m^2 (a path length, so it only grows), and
+  // carried across a metre of width since its epoch, m^2 (a path length, so it only grows; and
+  // continuous in time, never rounded to a unit, since the ripples are drawn from it every frame
+  // and a rounded one holds them still and then jumps them), and
   // `strength`, the wind's strength over its record's mean. The renderer turns the first into the
   // ripples' travel and flattens them by the second (renderer.md, "Ripples that move"). Null, or
   // false, for a ground with no transport to say. Thread-safe.

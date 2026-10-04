@@ -336,6 +336,40 @@ FluxIntegral WindRecord::integral(i64 time_us) const noexcept {
   return out;
 }
 
+void WindRecord::magnitude_at(i64 time_us, i64& whole, f64& fraction) const noexcept {
+  // `integral`'s magnitude term by term: the periods, the prefix to the day, the day's (or the
+  // hour's) start, and the one division along the line, `numerator / denominator`, whose remainder
+  // is the fraction. Every term is non-negative — the record's cumulative magnitudes never fall and
+  // the time into a day is floored — so C++'s truncating division is the floor here.
+  const i64 day = day_of(time_us);
+  const i64 into = time_us - day * k_us_per_day;
+  const i64 cycles = fx::floor_div(day, k_record_days);
+  const i32 r = static_cast<i32>(day - cycles * k_record_days);
+  const WindDay& today = days_[r];
+  i64 base = cycles * prefix_[k_record_days].magnitude + prefix_[r].magnitude;
+  i64 numerator = 0;
+  i64 denominator = k_us_per_hour;
+  if (today.storm != 0) {
+    const WindStorm& storm = storms_[today.storm - 1u];
+    const i64 hour = into / k_us_per_hour;
+    const i64 frac = into - hour * k_us_per_hour;
+    base += storm.hour[hour].magnitude;
+    numerator = (storm.hour[hour + 1].magnitude - storm.hour[hour].magnitude) * frac;
+  } else if (diurnal_) {
+    const i64 hour = into / k_us_per_hour;
+    const i64 frac = into - hour * k_us_per_hour;
+    const i64 a = profile_at(today, static_cast<i32>(hour)).magnitude;
+    const i64 b = profile_at(today, static_cast<i32>(hour) + 1).magnitude;
+    base += a;
+    numerator = (b - a) * frac;
+  } else {
+    numerator = today.magnitude * into;
+    denominator = k_us_per_day;
+  }
+  whole = base + numerator / denominator;
+  fraction = static_cast<f64>(numerator % denominator) / static_cast<f64>(denominator);
+}
+
 WindAt WindRecord::wind_at(i64 time_us) const noexcept {
   WindAt out;
   out.day = day_of(time_us);

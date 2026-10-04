@@ -13,6 +13,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -159,6 +160,65 @@ TEST_CASE("terrain wind: every integral is exact under any split, day and gain o
   for (const i64 v : far)
     far_sum += v;
   CHECK(far_sum == wind.integral(1000 * k_year + 17).magnitude);
+}
+
+TEST_CASE(
+    "terrain wind: the magnitude integral in full is continuous, and its whole is integral's") {
+  // `magnitude_at` keeps what `integral` truncates: its whole is `integral`'s magnitude to the
+  // unit, its fraction is in [0, 1), and whole + fraction is the record's straight line within
+  // every hour (every kind of day is a line within an hour: a plain day's over the day, a profiled
+  // day's and a storm day's over the hour), so it never steps — what the ripples' travel is drawn
+  // from (renderer.md, "Ripples that move"). Plain days, the day's profile, storms and a gain;
+  // across a period's end and before the epoch.
+  WindParams gained = stormy(5);
+  gained.storm_gain_q16 = 50 * 65536;
+  const WindRecord records[3] = {WindRecord(stormy(7)), WindRecord(with_day(stormy(7))),
+                                 WindRecord(gained)};
+  for (const WindRecord& wind : records) {
+    const auto full = [&](i64 t) {
+      i64 whole = 0;
+      f64 fraction = -1.0;
+      wind.magnitude_at(t, whole, fraction);
+      CHECK(whole == wind.integral(t).magnitude);
+      CHECK(fraction >= 0.0);
+      CHECK(fraction < 1.0);
+      return static_cast<f64>(whole) + fraction;
+    };
+    f64 worst_line = 0.0;
+    f64 worst_join = 0.0;
+    u32 storm_hours = 0;
+    // The epoch, three years in, a period's end, before the epoch, and the day before the period's
+    // first storm, whose hours are a table of their own.
+    REQUIRE_FALSE(wind.storms().empty());
+    const i64 storm_eve = (static_cast<i64>(wind.storms()[0].day) - 1) * k_day;
+    for (const i64 start :
+         {i64{0}, 1'095 * k_day, (k_record_days - 2) * k_day, -9 * k_day, storm_eve}) {
+      for (i64 h = 0; h < 72; ++h) {
+        const i64 a = start + h * k_hour;
+        const f64 va = full(a);
+        const f64 vb = full(a + k_hour);
+        if (wind.wind_at(a).storm) ++storm_hours;
+        // Within the hour, on its line, at odd microseconds.
+        for (i64 k = 1; k < 16; ++k) {
+          const i64 into = k * (k_hour / 16) + 4'321 * k;
+          const f64 line = va + (vb - va) * static_cast<f64>(into) / static_cast<f64>(k_hour);
+          worst_line = std::max(worst_line, std::abs(full(a + into) - line));
+        }
+        // And across its start, a microsecond either side: no step.
+        worst_join = std::max(worst_join, std::abs(full(a + 1) - full(a - 1)));
+        CHECK(vb >= va);
+      }
+    }
+    MESSAGE("the integral in full lies on each hour's line to "
+            << worst_line << " cm^2, and moves " << worst_join << " cm^2 in two "
+            << "microseconds across an hour's "
+            << "start (" << storm_hours << " storm hours)");
+    CHECK(storm_hours > 0u);
+    CHECK(worst_line < 1e-6);
+    // The strongest gained storm hour moves a few million cm^2 in an hour: well under one in two
+    // microseconds.
+    CHECK(worst_join < 0.01);
+  }
 }
 
 TEST_CASE("terrain wind: a storm's gain multiplies its hours' transport and nothing else") {
