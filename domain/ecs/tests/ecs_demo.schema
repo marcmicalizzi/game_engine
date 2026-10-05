@@ -67,3 +67,23 @@ materialize Market {
   Standing.position = position
   parent = ChildOf
 }
+
+// ---- far from the origin (ADR-0053) -------------------------------------------------------------
+
+/// Where a beacon is: two world positions in f64, one of them surveyed in kilometres.
+struct Beacon @version(1) @kind(component) {
+  at: worldpos @unit(m)
+  survey: worldpos @unit(m)
+}
+
+/// A post placed far out. `survey` is authored in km and held in m, so its row converts in f64.
+struct Post @version(1) @kind(record) {
+  name: string
+  at: worldpos @unit(m)
+  survey: worldpos @unit(km)
+}
+
+materialize Post {
+  Beacon.at = at @writeback
+  Beacon.survey = survey @writeback
+}

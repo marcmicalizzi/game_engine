@@ -278,3 +278,69 @@ TEST_CASE("ecs: what a system changes goes back to the document at Persist, attr
   CHECK(rig.driver.stats().hook_calls == calls);
   CHECK(rig.records.stats().writeback_changes == 12);
 }
+
+// ADR-0053: a `worldpos` row fills a `WorldPos` field with the record's double, exactly, at 420 km,
+// 10,000 km and 1e8 m; a km row converts in f64 (the values are chosen so that ×1000 is exact);
+// write-back writes nothing while nothing moved, and a 1/1024 m move comes back as the double it is.
+TEST_CASE("ecs far: world positions materialize and write back exactly far from the origin") {
+  constexpr f64 k_step = 1.0 / 1024.0;
+  struct Site {
+    WorldPos at;
+    WorldPos survey_km;
+  };
+  const Site sites[] = {
+      {{419072.0, 1.5, -419072.0 - k_step}, {419.0703125, 0.0, -0.25}},
+      {{10000000.0 - k_step, -3.0, 10000000.0}, {10000.0, 0.001953125, -10000.0}},
+      {{100000000.25, 0.0, -100000000.0}, {100000.25, 0.0, 1e8}},
+      {{419070.2, -10000000.4, 100000000.25}, {0.5, 0.5, 0.5}},
+  };
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  for (u64 i = 0; i < 4; ++i) {
+    JsonValue p = JsonValue::object();
+    p.set("at", vec3(sites[i].at.x, sites[i].at.y, sites[i].at.z));
+    p.set("survey", vec3(sites[i].survey_km.x, sites[i].survey_km.y, sites[i].survey_km.z));
+    create(d, 100 + i, "engine.ecs.demo.Post", 0, std::move(p));
+  }
+  Rig rig;
+  DocumentSink sink;
+  sink.document = &d;
+  rig.driver.set_writeback_sink(sim::WriteBackSink{&sink, &DocumentSink::commit});
+  rig.driver.install_writeback();
+  rig.driver.materialize(d);
+  for (u64 i = 0; i < 4; ++i) {
+    CAPTURE(i);
+    const demo::Beacon& b = rig.entity(100 + i).get<demo::Beacon>();
+    CHECK(b.at == sites[i].at);
+    CHECK(b.survey == WorldPos{sites[i].survey_km.x * 1000.0, sites[i].survey_km.y * 1000.0,
+                               sites[i].survey_km.z * 1000.0});
+  }
+
+  // Ticks with nothing moving: no write-back at all, so the document keeps the doubles it had.
+  const u32 journal = d.journal().size();
+  ScheduledTick tick(rig.world, rig.scheduler);
+  tick.step();
+  tick.step();
+  CHECK(sink.commits == 0);
+  CHECK(d.journal().size() == journal);
+
+  // Moved by 1/1024 m along x: the document receives the new position to the bit, and the survey,
+  // moved by 1 m, comes back in km as (m - 0) / 1000 in f64.
+  for (u64 i = 0; i < 4; ++i) {
+    demo::Beacon& b = rig.entity(100 + i).get_mut<demo::Beacon>();
+    b.at += DVec3{k_step, 0.0, 0.0};
+    b.survey += DVec3{0.0, 0.0, 1.0};
+    rig.entity(100 + i).modified<demo::Beacon>();
+  }
+  tick.step();
+  CHECK(sink.commits == 1);
+  for (u64 i = 0; i < 4; ++i) {
+    CAPTURE(i);
+    const JsonValue& at = *d.property(rid(100 + i), "at");
+    CHECK(at[0].as_float() == sites[i].at.x + k_step);
+    CHECK(at[1].as_float() == sites[i].at.y);
+    CHECK(at[2].as_float() == sites[i].at.z);
+    const JsonValue& survey = *d.property(rid(100 + i), "survey");
+    CHECK(survey[2].as_float() == (sites[i].survey_km.z * 1000.0 + 1.0) / 1000.0);
+  }
+}
