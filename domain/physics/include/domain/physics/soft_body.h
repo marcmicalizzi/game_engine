@@ -87,7 +87,11 @@ enum class AttachmentKind : u8 { Rigid, Spring };
 struct SoftAttachment {
   u32 vertex = 0;
   BodyId body{};
-  Vec3 local_point{};  // in the body's local space; the world point when `body` is null
+  // In the body's local space. With a null body, a fixed point given **in the soft body's own
+  // frame as it was placed** (`SoftBodyDesc::transform`, the frame its rest `vertices` are in), so
+  // pinning a particle where it starts is `vertices[i]` wherever in the world the cage is put; a
+  // float here never holds a world position (ADR-0053).
+  Vec3 local_point{};
   // Spring only, and required there: the rate at which the gap to the anchor is closed, in
   // inverse seconds. `follow_rate * dt` is the fraction of the remaining gap covered in one
   // step and is clamped to 1, so a rate at or above the step rate tracks the anchor as closely
@@ -106,7 +110,7 @@ struct SoftBodyDesc {
   std::span<const SoftAttachment> attachments;
   std::span<const u32> faces;  // optional triangle indices: the collision surface, and what a
                                // pressure constraint measures its volume over
-  Transform3 transform;        // where the rest shape is placed; scale is ignored
+  BodyTransform transform;     // where the rest shape is placed in the world
   f32 pressure = 0.0f;         // n*R*T of the enclosed gas; needs a closed `faces` surface
   f32 linear_damping = 0.1f;
   f32 friction = 0.2f;

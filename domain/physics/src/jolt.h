@@ -10,3 +10,12 @@
 // comment that the next `tools/dev.ps1 format` quietly undoes.
 
 #include <Jolt/Jolt.h>
+
+// The backend is built in double precision and only so (ADR-0053; cmake/EnginePhysics.cmake): a
+// body's position is an `RVec3` of doubles, and the conversions in backend.h are written for that.
+// A build that reached here without it would compile `RVec3` as floats and put every far position
+// back on a float's grid, which is the thing the decision exists to stop.
+#ifndef JPH_DOUBLE_PRECISION
+#error \
+    "domain/physics is built against Jolt in double precision (ADR-0053); JPH_DOUBLE_PRECISION is not defined"
+#endif

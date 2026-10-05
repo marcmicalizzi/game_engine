@@ -25,6 +25,12 @@ using namespace engine::scene_collision;
 
 namespace {
 
+// The cases below stand round the origin, whose frame is the world's (ADR-0053): a point (x, z) on
+// the ground, a point in the world from one in that frame, and back.
+WorldPos wp(f32 x, f32 z) { return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}; }
+WorldPos place(Vec3 local) { return absolute(WorldPos::origin(), local); }
+Vec3 local_of(WorldPos p) { return relative(p, WorldPos::origin()); }
+
 struct Erg {
   renderer::SceneDesc desc;
   std::unique_ptr<renderer::TerrainSampler> sampler;
@@ -146,10 +152,10 @@ void run(const Erg& erg, f64 rate, u32 frames, bool walker, Run& out) {
   physics::CharacterBody body;
   if (walker) {
     f32 y = 0.0f;
-    REQUIRE(collision.ground_height(wx, wz, y));
+    REQUIRE(collision.ground_height(wp(wx, wz), y));
     physics::CharacterConfig c;
     c.step_hz = 240;
-    REQUIRE(body.create(physics, c, Vec3{wx, y + 0.05f, wz}) == physics::Status::Ok);
+    REQUIRE(body.create(physics, c, place(Vec3{wx, y + 0.05f, wz})) == physics::Status::Ok);
   }
 
   Field fa;
@@ -170,7 +176,7 @@ void run(const Erg& erg, f64 rate, u32 frames, bool walker, Run& out) {
         collision.follow(body);
         REQUIRE(body.step(physics::CharacterInput{}) == physics::Status::Ok);
       } else {
-        collision.refresh(wx, wz);
+        collision.refresh(wp(wx, wz));
       }
     }
     // The walker's tile, sample by sample, against the drawn heights there.
@@ -182,8 +188,9 @@ void run(const Erg& erg, f64 rate, u32 frames, bool walker, Run& out) {
     for (u32 j = 0; j < 32; ++j) {
       for (u32 i = 0; i < 32; ++i) {
         f32 held = 0.0f;
-        REQUIRE(collision.ground_height(static_cast<f32>(k_i0 + static_cast<i32>(i)),
-                                        static_cast<f32>(k_j0 + static_cast<i32>(j)), held));
+        REQUIRE(collision.ground_height(wp(static_cast<f32>(k_i0 + static_cast<i32>(i)),
+                                           static_cast<f32>(k_j0 + static_cast<i32>(j))),
+                                        held));
         const f32 drawn = a[j * k_n + i] * (1.0f - w) + b[j * k_n + i] * w;
         out.worst = std::max(out.worst, std::fabs(held - drawn));
         // How far the drawn sand moved since the last frame: what a host a frame behind the
@@ -196,9 +203,8 @@ void run(const Erg& erg, f64 rate, u32 frames, bool walker, Run& out) {
     if (walker) {
       const physics::CharacterState st = body.state();
       f32 held = 0.0f;
-      if (st.ground == physics::Ground::OnGround &&
-          collision.ground_height(st.position.x, st.position.z, held)) {
-        out.worst_feet = std::max(out.worst_feet, std::fabs(st.position.y - held));
+      if (st.ground == physics::Ground::OnGround && collision.ground_height(st.position, held)) {
+        out.worst_feet = std::max(out.worst_feet, std::fabs(local_of(st.position).y - held));
         // The slope under it: a capsule's round bottom rests r (1 / cos - 1) above the point
         // under its centre, which on a slip face is centimetres.
         out.slope = std::max(out.slope, std::sqrt(st.ground_normal.x * st.ground_normal.x +
@@ -396,11 +402,11 @@ void stand(const Erg& erg, f64 rate, u32 frames, f32 wx, f32 wz, const Cadence& 
   at.add(Vec3{wx, 0.0f, wz}, 1.0f);
   ring.update(at, 0, true);
   f32 y = 0.0f;
-  REQUIRE(collision.ground_height(wx, wz, y));
+  REQUIRE(collision.ground_height(wp(wx, wz), y));
   physics::CharacterConfig c;
   c.step_hz = 240;
   physics::CharacterBody body;
-  REQUIRE(body.create(physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  REQUIRE(body.create(physics, c, place(Vec3{wx, y + 0.02f, wz})) == physics::Status::Ok);
   // Settled on the still ground first: half a second.
   for (u32 tick = 0; tick < 120; ++tick)
     REQUIRE(body.step(physics::CharacterInput{}) == physics::Status::Ok);
@@ -409,7 +415,7 @@ void stand(const Erg& erg, f64 rate, u32 frames, f32 wx, f32 wz, const Cadence& 
   f64 game = terrain.time_s;
   f32 first_drawn = 0.0f;
   f32 last_drawn = 0.0f;
-  f32 last_feet = body.feet().y;
+  f32 last_feet = local_of(body.feet()).y;
   f32 last_step = 0.0f;
   for (u32 frame = 0; frame < frames; ++frame) {
     game += rate / 60.0;
@@ -420,14 +426,14 @@ void stand(const Erg& erg, f64 rate, u32 frames, f32 wx, f32 wz, const Cadence& 
     collision.set_ground_time(ground_time());
     for (u32 tick = 0; tick < 4; ++tick) {
       collision.follow(body);
-      const Vec3 feet = body.feet();
+      const Vec3 feet = local_of(body.feet());
       f32 held = 0.0f;
-      if (collision.ground_height(feet.x, feet.z, held)) {
+      if (collision.ground_height(wp(feet.x, feet.z), held)) {
         out.max_below = std::max(out.max_below, held - feet.y);
       }
       REQUIRE(body.step(physics::CharacterInput{}) == physics::Status::Ok);
     }
-    const Vec3 feet = body.feet();
+    const Vec3 feet = local_of(body.feet());
     const f32 drawn = drawn_at(ground, ground_time(), feet.x, feet.z, cell);
     if (frame == 0) {
       first_drawn = drawn;

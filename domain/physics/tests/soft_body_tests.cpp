@@ -70,14 +70,15 @@ TEST_CASE("physics: a cloth pinned at two corners sags, settles, and stays finit
   const Vec3 origin(0.0f, 3.0f, 0.0f);
 
   // The two corners of one edge, pinned where they start. A null body in an attachment is a
-  // fixed point in the world, which is what a tarp nailed to a wall is.
+  // fixed point in the world, which is what a tarp nailed to a wall is, given in the frame the
+  // sheet was placed in.
   const u32 corner_a = sheet.index(0, 0);
   const u32 corner_b = sheet.index(k_side - 1, 0);
   SoftAttachment attachments[2];
   attachments[0].vertex = corner_a;
-  attachments[0].local_point = origin + sheet.vertices[corner_a];
+  attachments[0].local_point = sheet.vertices[corner_a];
   attachments[1].vertex = corner_b;
-  attachments[1].local_point = origin + sheet.vertices[corner_b];
+  attachments[1].local_point = sheet.vertices[corner_b];
 
   SoftBodyDesc desc;
   desc.vertices = std::span<const Vec3>(sheet.vertices);
@@ -85,7 +86,7 @@ TEST_CASE("physics: a cloth pinned at two corners sags, settles, and stays finit
   desc.edges = std::span<const SoftEdge>(sheet.edges);
   desc.attachments = std::span<const SoftAttachment>(attachments, 2);
   desc.faces = std::span<const u32>(sheet.faces);
-  desc.transform.position = origin;
+  desc.transform.position = place(origin);
   desc.iterations = 8;
   // A sheet pinned along one edge is a pendulum: it swings for a long time at the default
   // damping, and "settles" is the property being tested here, not "swings realistically".
@@ -105,9 +106,11 @@ TEST_CASE("physics: a cloth pinned at two corners sags, settles, and stays finit
   Vector<Vec3> points(k_side * k_side);
   Vector<Vec3> earlier(k_side * k_side);
   step_n(world, 1470);
-  REQUIRE(world.read_soft_body_vertices(cloth, std::span<Vec3>(earlier)) == k_side * k_side);
+  REQUIRE(world.read_soft_body_vertices(cloth, WorldPos::origin(), std::span<Vec3>(earlier)) ==
+          k_side * k_side);
   step_n(world, 30);
-  REQUIRE(world.read_soft_body_vertices(cloth, std::span<Vec3>(points)) == k_side * k_side);
+  REQUIRE(world.read_soft_body_vertices(cloth, WorldPos::origin(), std::span<Vec3>(points)) ==
+          k_side * k_side);
 
   CHECK(all_finite(std::span<const Vec3>(points)));
 
@@ -159,7 +162,7 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
   desc.edges = std::span<const SoftEdge>(lattice.edges);
   desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
   desc.faces = std::span<const u32>(lattice.faces);
-  desc.transform.position = Vec3(0.0f, 0.5f * k_side + 0.02f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, 0.5f * k_side + 0.02f, 0.0f));
   desc.iterations = 10;
   desc.friction = 0.6f;
   desc.allow_sleeping = false;
@@ -168,7 +171,8 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
 
   Vector<Vec3> points(k_n * k_n * k_n);
   const auto height = [&world, &cube, &points]() {
-    REQUIRE(world.read_soft_body_vertices(cube, std::span<Vec3>(points)) == points.size());
+    REQUIRE(world.read_soft_body_vertices(cube, WorldPos::origin(), std::span<Vec3>(points)) ==
+            points.size());
     return vertical_extent(std::span<const Vec3>(points)).size();
   };
 
@@ -188,7 +192,7 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
   REQUIRE(world.create_box(Vec3(1.0f, k_plate_half, 1.0f), plate_shape) == Status::Ok);
   BodyDesc plate_desc;
   plate_desc.shape = plate_shape;
-  plate_desc.transform.position = Vec3(0.0f, rest_height + k_plate_half + 0.25f, 0.0f);
+  plate_desc.transform.position = place(Vec3(0.0f, rest_height + k_plate_half + 0.25f, 0.0f));
   plate_desc.motion = MotionType::Kinematic;
   plate_desc.layer = Layer::Kinematic;
   BodyId plate;
@@ -197,11 +201,11 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
   const f32 dt = world.step_seconds();
   const f32 floor = vertical_extent(std::span<const Vec3>(points)).min;
   const f32 target_plate_y = floor + 0.70f * rest_height + k_plate_half;
-  f32 plate_y = plate_desc.transform.position.y;
+  f32 plate_y = local_of(plate_desc.transform.position).y;
   for (u32 i = 0; i < 240; ++i) {
     plate_y = plate_y > target_plate_y ? plate_y - 0.004f : target_plate_y;
-    Transform3 target;
-    target.position = Vec3(0.0f, plate_y, 0.0f);
+    BodyTransform target;
+    target.position = place(Vec3(0.0f, plate_y, 0.0f));
     REQUIRE(world.move_kinematic(plate, target, dt));
     REQUIRE(world.step() == Status::Ok);
   }
@@ -217,8 +221,8 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
   // edges alone let the cube fold and stay folded.
   for (u32 i = 0; i < 60; ++i) {
     plate_y += 0.02f;
-    Transform3 target;
-    target.position = Vec3(0.0f, plate_y, 0.0f);
+    BodyTransform target;
+    target.position = place(Vec3(0.0f, plate_y, 0.0f));
     REQUIRE(world.move_kinematic(plate, target, dt));
     REQUIRE(world.step() == Status::Ok);
   }
@@ -241,7 +245,7 @@ TEST_CASE("physics: a spring attachment lags its anchor and a rigid one does not
   REQUIRE(world.create_capsule(0.1f, 0.05f, capsule) == Status::Ok);
   BodyDesc anchor_desc;
   anchor_desc.shape = capsule;
-  anchor_desc.transform.position = Vec3(0.0f, 2.0f, 0.0f);
+  anchor_desc.transform.position = place(Vec3(0.0f, 2.0f, 0.0f));
   anchor_desc.motion = MotionType::Kinematic;
   anchor_desc.layer = Layer::Kinematic;
   BodyId anchor;
@@ -272,7 +276,7 @@ TEST_CASE("physics: a spring attachment lags its anchor and a rigid one does not
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
     desc.attachments = std::span<const SoftAttachment>(&attachment, 1);
-    desc.transform.position = Vec3(0.0f, 2.0f, 0.0f);
+    desc.transform.position = place(Vec3(0.0f, 2.0f, 0.0f));
     desc.iterations = 8;
     desc.gravity_factor = sweep ? 0.0f : 1.0f;
     desc.allow_sleeping = false;
@@ -284,15 +288,16 @@ TEST_CASE("physics: a spring attachment lags its anchor and a rigid one does not
     f32 x = 0.0f;
     for (u32 i = 0; i < 120; ++i) {
       if (sweep) x += k_sweep_per_step;
-      Transform3 target;
-      target.position = Vec3(x, 2.0f, 0.0f);
+      BodyTransform target;
+      target.position = place(Vec3(x, 2.0f, 0.0f));
       REQUIRE(world.move_kinematic(anchor, target, dt));
       REQUIRE(world.step() == Status::Ok);
     }
-    REQUIRE(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count);
-    Transform3 anchor_now;
+    REQUIRE(world.read_soft_body_vertices(cage, WorldPos::origin(), std::span<Vec3>(points)) ==
+            vertex_count);
+    BodyTransform anchor_now;
     REQUIRE(world.body_transform(anchor, anchor_now));
-    const f32 offset = length(anchor_now.position - points[0]);
+    const f32 offset = length(local_of(anchor_now.position) - points[0]);
     REQUIRE(world.destroy_soft_body(cage));
     // Put the anchor back for the next run.
     REQUIRE(world.set_body_transform(anchor, anchor_desc.transform));

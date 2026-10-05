@@ -29,7 +29,7 @@ engine_module(NAME terrain LAYER domain OPTIONAL WHOLE_ARCHIVE
           src/stats.cpp src/rings.cpp src/terrain.cpp src/scene_ground.cpp src/ground_tiles.cpp)
 
 engine_module_tests(NAME terrain
-  SOURCES tests/terrain_tests.cpp tests/overlay_tests.cpp tests/rings_tests.cpp
+  SOURCES tests/terrain_tests.cpp tests/far_tests.cpp tests/overlay_tests.cpp tests/rings_tests.cpp
           tests/size_table.cpp tests/wind_day_tests.cpp)
 
 # terrain.tile.eval: one 32 m tile at the overlay's 25 cm grid, heights, normals and crests.

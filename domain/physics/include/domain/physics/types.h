@@ -8,8 +8,21 @@
 
 #include <core/base/types.h>
 #include <core/containers/slot_map.h>
+#include <core/math/world.h>
 
 namespace engine::physics {
+
+// **Where a body is in the world** (ADR-0053): a point, f64, and a rotation. A body's position is a
+// world position and nothing narrower — the backend keeps it in double and does its collision
+// arithmetic in float relative to a base near the bodies involved — so it is a `WorldPos` and not
+// the `Vec3` of a `Transform3`, which is for local frames (a compound's child, a shape's points).
+// No scale: a shape carries its own size.
+struct BodyTransform {
+  WorldPos position{};
+  Quat rotation = Quat::identity();
+  constexpr bool operator==(const BodyTransform&) const = default;
+  static constexpr BodyTransform identity() noexcept { return {}; }
+};
 
 // How a call failed. Ok is the only success value; every creation function returns one of
 // these and leaves its out-parameter untouched on failure.

@@ -45,8 +45,8 @@ void build_scene(World& world, Vector<BodyId>& bodies) {
       BodyDesc desc;
       desc.shape = ((i + j) % 3 == 0) ? sphere_shape : box_shape;
       desc.transform.position =
-          Vec3(static_cast<f32>(i) * 0.9f - 3.5f, 1.0f + static_cast<f32>(i * 8 + j) * 0.35f,
-               static_cast<f32>(j) * 0.9f - 3.5f);
+          place(Vec3(static_cast<f32>(i) * 0.9f - 3.5f, 1.0f + static_cast<f32>(i * 8 + j) * 0.35f,
+                     static_cast<f32>(j) * 0.9f - 3.5f));
       desc.transform.rotation = quat_from_euler(next() * 3.0f, next() * 3.0f, next() * 3.0f);
       desc.linear_velocity = Vec3(next() - 0.5f, -next(), next() - 0.5f);
       desc.friction = 0.5f;
@@ -59,7 +59,7 @@ void build_scene(World& world, Vector<BodyId>& bodies) {
   world.optimize_broad_phase();
 }
 
-void run(jobs::JobSystem* job_system, u32 worker_count, u32 steps, Vector<Transform3>& out,
+void run(jobs::JobSystem* job_system, u32 worker_count, u32 steps, Vector<BodyTransform>& out,
          WorldStats& stats) {
   WorldOptions options = small_world_options();
   options.job_system = job_system;
@@ -73,7 +73,7 @@ void run(jobs::JobSystem* job_system, u32 worker_count, u32 steps, Vector<Transf
     REQUIRE(world.step() == Status::Ok);
 
   out.resize(bodies.size());
-  world.read_transforms(std::span<const BodyId>(bodies), std::span<Transform3>(out));
+  world.read_transforms(std::span<const BodyId>(bodies), std::span<BodyTransform>(out));
   stats = world.stats();
   CHECK(world.tick().value == steps);
 }
@@ -99,8 +99,8 @@ TEST_CASE("physics: 600 steps give bit-identical transforms with 1 and with 8 wo
   config.performance_workers = 8;
   jobs::JobSystem job_system(config);
 
-  Vector<Transform3> one;
-  Vector<Transform3> eight;
+  Vector<BodyTransform> one;
+  Vector<BodyTransform> eight;
   WorldStats one_stats;
   WorldStats eight_stats;
   run(&job_system, 1, 600, one, one_stats);
@@ -110,7 +110,7 @@ TEST_CASE("physics: 600 steps give bit-identical transforms with 1 and with 8 wo
   REQUIRE(one.size() == 64);
   // Bit-identical, not approximately equal: "close enough" is how a replay drifts apart over a
   // few thousand ticks.
-  const usize bytes = one.size() * sizeof(Transform3);
+  const usize bytes = one.size() * sizeof(BodyTransform);
   CHECK(std::memcmp(one.data(), eight.data(), bytes) == 0);
 
   // The worlds really did split their work differently, or the comparison proved nothing.
@@ -132,7 +132,7 @@ TEST_CASE("physics: the job adapter runs backend jobs on core/jobs workers") {
     return;
   }
 
-  Vector<Transform3> transforms;
+  Vector<BodyTransform> transforms;
   WorldStats stats;
   // 600 steps, not 60: the barrier wait executes ready jobs on the caller, so on a small scene a
   // worker only sees a job when it wakes before the stepping thread has drained the queue, and
@@ -148,8 +148,8 @@ TEST_CASE("physics: the job adapter runs backend jobs on core/jobs workers") {
 }
 
 TEST_CASE("physics: with no job system the backend still steps, on the calling thread") {
-  Vector<Transform3> with_jobs;
-  Vector<Transform3> inline_only;
+  Vector<BodyTransform> with_jobs;
+  Vector<BodyTransform> inline_only;
   WorldStats with_jobs_stats;
   WorldStats inline_stats;
 
@@ -164,7 +164,7 @@ TEST_CASE("physics: with no job system the backend still steps, on the calling t
   CHECK(inline_stats.backend_jobs_on_workers == 0);
   // And the answer is the same one, which is the property that lets a tool or a headless
   // replay run without standing up a thread pool.
-  const usize bytes = with_jobs.size() * sizeof(Transform3);
+  const usize bytes = with_jobs.size() * sizeof(BodyTransform);
   REQUIRE(with_jobs.size() == inline_only.size());
   CHECK(std::memcmp(with_jobs.data(), inline_only.data(), bytes) == 0);
 }
@@ -284,11 +284,11 @@ TEST_CASE("physics: the backend's job pool comes back whole after every step") {
 }
 
 TEST_CASE("physics: the same world stepped twice from the same start agrees with itself") {
-  Vector<Transform3> first;
-  Vector<Transform3> second;
+  Vector<BodyTransform> first;
+  Vector<BodyTransform> second;
   WorldStats stats;
   run(nullptr, 0, 240, first, stats);
   run(nullptr, 0, 240, second, stats);
   REQUIRE(first.size() == second.size());
-  CHECK(std::memcmp(first.data(), second.data(), first.size() * sizeof(Transform3)) == 0);
+  CHECK(std::memcmp(first.data(), second.data(), first.size() * sizeof(BodyTransform)) == 0);
 }

@@ -24,7 +24,7 @@ struct RawContact {
   u32 jph_b = 0;
   u32 sub_a = 0;
   u32 sub_b = 0;
-  Vec3 position{};
+  WorldPos position{};
   Vec3 normal{};  // from Jolt's body 2 towards its body 1
   f32 penetration = 0.0f;
   ContactPhase phase = ContactPhase::Begin;
@@ -85,6 +85,9 @@ struct World::Impl {
   struct SoftEntry {
     JPH::BodyID id;
     Vector<SoftAttachment> attachments;
+    // Where the body was placed (`SoftBodyDesc::transform`): the frame a null-body attachment's
+    // fixed point is given in (soft_body.h).
+    JPH::RMat44 placement = JPH::RMat44::sIdentity();
     u32 vertex_count = 0;
     // What the budget report needs to split the measured phase between the ambient set and the
     // hero, and what the strain clamp needs to run (ADR-0029). `iterations` is kept because a

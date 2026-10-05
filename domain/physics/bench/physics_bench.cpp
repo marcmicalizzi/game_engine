@@ -22,12 +22,22 @@ namespace {
 
 constexpr u32 k_box_count = 1000;
 
-void add_ground(World& world) {
+// The scenes are built round `site`: the origin, or a far site for the rows that say so, where
+// every position the backend holds is f64 far from zero and the collision arithmetic is floats
+// relative to the bodies (ADR-0053; docs/experiments/world-positions-physics-2026-10-05.md).
+WorldPos place(Vec3 local, WorldPos site = WorldPos::origin()) { return absolute(site, local); }
+// The far sites, as the tests have them: 419,072 m (the owner's), 10,000 km and 1e8 m, by number.
+constexpr WorldPos k_far_sites[] = {WorldPos{419072.0, 0.0, -419072.0},
+                                    WorldPos{10000000.0, 0.0, 10000000.0},
+                                    WorldPos{100000000.0, 0.0, -100000000.0}};
+WorldPos far_site(i64 n) { return k_far_sites[(n >= 1 && n <= 3 ? n : 2) - 1]; }
+
+void add_ground(World& world, WorldPos site = WorldPos::origin()) {
   ShapeId shape;
   world.create_box(Vec3(60.0f, 0.5f, 60.0f), shape);
   BodyDesc desc;
   desc.shape = shape;
-  desc.transform.position = Vec3(0.0f, -0.5f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, -0.5f, 0.0f), site);
   desc.motion = MotionType::Static;
   desc.layer = Layer::Static;
   desc.friction = 0.8f;
@@ -36,7 +46,7 @@ void add_ground(World& world) {
 }
 
 // A 10 x 10 x 10 grid of boxes that falls into a pile.
-void fill_boxes(World& world) {
+void fill_boxes(World& world, WorldPos site = WorldPos::origin()) {
   ShapeId shape;
   world.create_box(Vec3(0.5f, 0.5f, 0.5f), shape);
   for (u32 i = 0; i < k_box_count; ++i) {
@@ -46,8 +56,9 @@ void fill_boxes(World& world) {
     BodyDesc desc;
     desc.shape = shape;
     desc.transform.position =
-        Vec3(static_cast<f32>(x) * 1.2f - 6.0f, 0.6f + static_cast<f32>(y) * 1.3f,
-             static_cast<f32>(z) * 1.2f - 6.0f);
+        place(Vec3(static_cast<f32>(x) * 1.2f - 6.0f, 0.6f + static_cast<f32>(y) * 1.3f,
+                   static_cast<f32>(z) * 1.2f - 6.0f),
+              site);
     desc.friction = 0.5f;
     desc.allow_sleeping = false;
     BodyId body;
@@ -79,6 +90,29 @@ ENGINE_BENCH_ARGS(physics_step_boxes, "physics.step.boxes_1000", 1, 4, 8) {
   add_ground(world);
   fill_boxes(world);
   // Let the pile land and stack before anything is timed.
+  for (u32 i = 0; i < 180; ++i)
+    world.step();
+
+  while (state.keep_running())
+    world.step();
+  state.set_items(k_box_count);
+}
+
+// The same pile at the far sites (ADR-0053; 1: 419 km, 2: 10,000 km, 3: 1e8 m): the backend's
+// positions are f64 there as everywhere, so this row says whether being far costs anything beyond
+// what double precision costs by the origin, which is the row above.
+ENGINE_BENCH_ARGS(physics_step_boxes_far, "physics.step.boxes_1000_far", 101, 108, 201, 208, 301) {
+  // site * 100 + workers: a benchmark argument is one integer.
+  const WorldPos site = far_site(state.arg() / 100);
+  const u32 workers = static_cast<u32>(state.arg() % 100);
+  jobs::JobSystemConfig config;
+  config.performance_workers = workers;
+  jobs::JobSystem job_system(config);
+
+  World world;
+  world.init(pile_options(&job_system, workers));
+  add_ground(world, site);
+  fill_boxes(world, site);
   for (u32 i = 0; i < 180; ++i)
     world.step();
 
@@ -137,8 +171,8 @@ void fill_soft_cubes(World& world, const LatticeVolume& lattice, u32 count, u32 
     desc.edges = std::span<const SoftEdge>(lattice.edges);
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
-    desc.transform.position = Vec3(
-        (static_cast<f32>(i) - 0.5f * static_cast<f32>(count - 1)) * (side + 0.2f), 0.4f, 0.0f);
+    desc.transform.position = place(Vec3(
+        (static_cast<f32>(i) - 0.5f * static_cast<f32>(count - 1)) * (side + 0.2f), 0.4f, 0.0f));
     desc.iterations = iterations;
     desc.allow_sleeping = false;
     SoftBodyId cube;
@@ -206,7 +240,9 @@ ENGINE_BENCH_ARGS(physics_step_soft_cubes_8, "physics.step.soft_cubes_8", 1, 4, 
 // the ground and a ruin's pieces, which is what scene_collision puts round a walker. The sweep is
 // a few shape queries against what is within reach, so the number is per step and says what a
 // walker costs a tick.
-ENGINE_BENCH(physics_character_step, "physics.character.step") {
+namespace {
+
+void character_steps(bench::State& state, WorldPos site) {
   WorldOptions options;
   options.max_bodies = 1024;
   options.max_body_pairs = 4096;
@@ -225,11 +261,12 @@ ENGINE_BENCH(physics_character_step, "physics.character.step") {
   HeightfieldDesc field;
   field.heights = std::span<const f32>(heights.data(), heights.size());
   field.sample_count = k_side;
-  field.offset = Vec3(-32.0f, 0.0f, -32.0f);
+  field.local_offset = Vec3(-32.0f, 0.0f, -32.0f);
   ShapeId field_shape;
   world.create_heightfield(field, field_shape);
   BodyDesc ground;
   ground.shape = field_shape;
+  ground.transform.position = site;
   ground.motion = MotionType::Static;
   ground.layer = Layer::Static;
   BodyId ground_body;
@@ -243,7 +280,7 @@ ENGINE_BENCH(physics_character_step, "physics.character.step") {
     desc.layer = Layer::Static;
     const f32 x = static_cast<f32>(b % 20) * 1.1f - 11.0f;
     const f32 z = static_cast<f32>(b / 20) * 1.3f - 6.5f;
-    desc.transform.position = Vec3(x, 0.003f * x * x + 0.04f * z + 0.15f, z);
+    desc.transform.position = place(Vec3(x, 0.003f * x * x + 0.04f * z + 0.15f, z), site);
     BodyId body;
     world.create_body(desc, body);
   }
@@ -251,7 +288,7 @@ ENGINE_BENCH(physics_character_step, "physics.character.step") {
   CharacterConfig config;
   config.step_hz = 240;
   CharacterBody character;
-  character.create(world, config, Vec3(-15.0f, 1.5f, 0.3f));
+  character.create(world, config, place(Vec3(-15.0f, 1.5f, 0.3f), site));
   u32 step = 0;
   while (state.keep_running()) {
     CharacterInput input;
@@ -263,4 +300,16 @@ ENGINE_BENCH(physics_character_step, "physics.character.step") {
   }
   bench::keep(character.hash());
   state.set_items(1);
+}
+
+}  // namespace
+
+ENGINE_BENCH(physics_character_step, "physics.character.step") {
+  character_steps(state, WorldPos::origin());
+}
+
+// The same walk at the far sites (1: 419 km, 2: 10,000 km, 3: 1e8 m): the sweep's queries are
+// floats relative to the feet there too.
+ENGINE_BENCH_ARGS(physics_character_step_far, "physics.character.step_far", 1, 2, 3) {
+  character_steps(state, far_site(state.arg()));
 }

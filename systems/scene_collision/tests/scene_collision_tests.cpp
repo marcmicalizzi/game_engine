@@ -16,6 +16,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -23,6 +24,12 @@ using namespace engine;
 using namespace engine::scene_collision;
 
 namespace {
+
+// The world's frame round the origin, where the cases below author their scenes: a point (x, z)
+// on the ground, a point in the world from one in that frame, and back (ADR-0053).
+WorldPos wp(f32 x, f32 z) { return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}; }
+WorldPos place(Vec3 local) { return absolute(WorldPos::origin(), local); }
+Vec3 local_of(WorldPos p) { return relative(p, WorldPos::origin()); }
 
 // ---- a ground of the test's own
 // -------------------------------------------------------------------
@@ -192,8 +199,8 @@ physics::WorldOptions physics_options() {
 // Straight down onto whatever is at (x, z).
 bool hit_below(const physics::World& world, f32 x, f32 z, f32& y) {
   physics::RayHit hit;
-  if (!world.cast_ray(Vec3{x, 500.0f, z}, Vec3{0.0f, -1000.0f, 0.0f}, hit)) return false;
-  y = hit.position.y;
+  if (!world.cast_ray(place(Vec3{x, 500.0f, z}), Vec3{0.0f, -1000.0f, 0.0f}, hit)) return false;
+  y = local_of(hit.position).y;
   return true;
 }
 
@@ -237,13 +244,13 @@ TEST_CASE("scene_collision: the ground is a heightfield a tile, on the provider'
       f32 hit = 0.0f;
       f32 held = 0.0f;
       REQUIRE(hit_below(physics, x, z, hit));
-      REQUIRE(collision.ground_height(x, z, held));
+      REQUIRE(collision.ground_height(wp(x, z), held));
       worst_lattice = std::max(worst_lattice, std::fabs(hit - ground_at(g, x, z, 0.0)));
       CHECK(held == doctest::Approx(ground_at(g, x, z, 0.0)).epsilon(1.0e-6));
       const f32 xb = x + 0.37f;
       const f32 zb = z + 0.61f;
       REQUIRE(hit_below(physics, xb, zb, hit));
-      REQUIRE(collision.ground_height(xb, zb, held));
+      REQUIRE(collision.ground_height(wp(xb, zb), held));
       worst_between = std::max(worst_between, std::fabs(hit - held));
     }
   }
@@ -253,7 +260,7 @@ TEST_CASE("scene_collision: the ground is a heightfield a tile, on the provider'
   CHECK(worst_lattice < 0.01f);
   CHECK(worst_between < 0.01f);
   f32 unused = 0.0f;
-  CHECK_FALSE(collision.ground_height(500.0f, 500.0f, unused));  // no tile held there
+  CHECK_FALSE(collision.ground_height(wp(500.0f, 500.0f), unused));  // no tile held there
 }
 
 namespace {
@@ -301,11 +308,149 @@ TEST_CASE("scene_collision: the ground walked on is the tile source's the render
       const f32 x = static_cast<f32>(i);
       const f32 z = static_cast<f32>(j);
       f32 held = 0.0f;
-      REQUIRE(collision.ground_height(x, z, held));
+      REQUIRE(collision.ground_height(wp(x, z), held));
       off += held == 3.0f + 0.25f * x - 0.125f * z ? 0u : 1u;
     }
   }
   CHECK(off == 0);
+}
+
+namespace {
+
+// A tile source whose heights are a function of the lattice indices alone, periodic every 16
+// points: at a metre's spacing the same ground repeats every 16 m, so a site a whole number of
+// 16 m out stands on exactly the ground the origin does, and any difference is the collision's.
+bool periodic_heights(const void*, f64, i64, i64, i32 i0, i32 j0, u32 nx, u32 nz, u32, u32,
+                      std::span<f32> out) noexcept {
+  for (u32 j = 0; j < nz; ++j) {
+    for (u32 i = 0; i < nx; ++i) {
+      const i64 a = (i64{i0} + i) & 15;
+      const i64 b = (i64{j0} + j) & 15;
+      out[static_cast<usize>(j) * nx + i] = 2.0f +
+                                            0.015625f * static_cast<f32>((a * 7 + b * 3) % 11) +
+                                            0.0078125f * static_cast<f32>(a);
+    }
+  }
+  return true;
+}
+constexpr scene_gen::TileSourceOps k_periodic_ops{.heights = &periodic_heights};
+
+// The ADR-0053 far sites (physics_test_support.h's), each a whole number of 16 m.
+constexpr WorldPos k_far_sites[] = {
+    WorldPos{419072.0, 0.0, -419072.0},
+    WorldPos{10000000.0, 0.0, 10000000.0},
+    WorldPos{100000000.0, 0.0, -100000000.0},
+};
+constexpr const char* k_far_names[] = {"419 km", "10,000 km", "1e8 m"};
+
+// ADR-0053 seam: sim takes WorldPos after the merge. The collision ring's observer is a float32
+// position today; the sites and the offsets below are whole multiples of 8 m, which a float holds
+// exactly to 1e8 m.
+sim::ObserverSet observer_at(WorldPos p) {
+  sim::ObserverSet set;
+  set.add(relative(p, WorldPos::origin()), 1.0f);
+  return set;
+}
+
+struct FarGround {
+  Vector<f32> lattice;  // ground_height on the window's lattice points
+  Vector<f32> between;  // and between them
+  Vector<f32> hits;     // a ray straight down onto the heightfield there, from the site
+  Vector<DVec3> walk;   // a character's feet from the site, a step at a time
+};
+
+// The ring round `site` + (16, 16), the ground read on a 24 x 24 window of its lattice and between
+// its points, cast down onto, and walked across a tile's edge.
+FarGround far_ground(WorldPos site) {
+  TestGround g;
+  scene_gen::GroundProvider ground(&k_still_ops, &g);
+  const scene_gen::TileSource periodic{&k_periodic_ops, nullptr};
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error, &periodic), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(observer_at(site + DVec3{16.0, 0.0, 16.0}), 0, true);
+  REQUIRE(collision.stats().tiles == 9);
+  FarGround out;
+  for (i32 j = 0; j < 24; ++j) {
+    for (i32 i = 0; i < 24; ++i) {
+      const DVec3 p{static_cast<f64>(i), 0.0, static_cast<f64>(j)};
+      f32 h = 0.0f;
+      REQUIRE(collision.ground_height(site + p, h));
+      out.lattice.push_back(h);
+      // 0.375 and 0.6875 of a metre: whole 1024ths, so exact in f64 at every site.
+      REQUIRE(collision.ground_height(site + p + DVec3{0.375, 0.0, 0.6875}, h));
+      out.between.push_back(h);
+      physics::RayHit hit;
+      REQUIRE(
+          physics.cast_ray(site + p + DVec3{0.375, 50.0, 0.6875}, Vec3{0.0f, -100.0f, 0.0f}, hit));
+      out.hits.push_back(static_cast<f32>(hit.position.y - site.y));
+    }
+  }
+  // Across the edge between tiles (0, 0) and (1, 0), on the ground the ring holds.
+  physics::CharacterBody body;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  f32 y = 0.0f;
+  REQUIRE(collision.ground_height(site + DVec3{20.0, 0.0, 12.0}, y));
+  REQUIRE(body.create(physics, c, site + DVec3{20.0, static_cast<f64>(y) + 0.02, 12.0}) ==
+          physics::Status::Ok);
+  physics::CharacterInput east;
+  east.move = Vec3{1.0f, 0.0f, 0.25f};
+  for (u32 k = 0; k < 2400; ++k) {
+    REQUIRE(body.step(east) == physics::Status::Ok);
+    out.walk.push_back(body.feet() - site);
+  }
+  return out;
+}
+
+}  // namespace
+
+// **Far from the origin, the ground walked on is the tile source's to the bit** (ADR-0053;
+// scene_collision.md, "Far from the origin"). A tile's heightfield stands at its corner in f64 and
+// a height is asked for in millimetres from the tile's lattice window, so on a lattice point 1e8 m
+// out `ground_height` is the source's own float, between points it is the origin's interpolation to
+// the bit, a ray down onto the backend's field lands where it lands by the origin, and a character
+// walks across a tile's edge as it does by the origin. Until 2026-10-05 the field was offset by its
+// corner in float32 and asked for at float32 feet: 3.1 cm off at 419 km, metres at 1e8 m.
+//
+// The heights and the field are bit-identical at every site. The walk is held to a millimetre: it
+// measured 0 at 419 km, 1.4 um at 10,000 km and 85 um at 1e8 m (2026-10-05, MSVC), where f64 steps
+// by 15 nm and ten seconds of a capsule stepping up and down a field of 15-degree facets carry
+// those roundings through the backend's step-up and stick-to-floor decisions.
+TEST_CASE("scene_collision: the ground at 419 km, 10,000 km and 1e8 m is the tile source's") {
+  const FarGround home = far_ground(WorldPos::origin());
+  for (u32 s = 0; s < 3; ++s) {
+    const FarGround far = far_ground(k_far_sites[s]);
+    u32 off_lattice = 0;
+    u32 off_between = 0;
+    f32 worst_hit = 0.0f;
+    for (u32 k = 0; k < home.lattice.size(); ++k) {
+      off_lattice += far.lattice[k] == home.lattice[k] ? 0u : 1u;
+      off_between += far.between[k] == home.between[k] ? 0u : 1u;
+      worst_hit = std::max(worst_hit, std::fabs(far.hits[k] - home.hits[k]));
+    }
+    f64 worst_walk = 0.0;
+    for (u32 k = 0; k < home.walk.size(); ++k)
+      worst_walk = std::max(worst_walk, length(far.walk[k] - home.walk[k]));
+    MESSAGE(std::string(k_far_names[s])
+            << ": " << off_lattice << " lattice heights and " << off_between
+            << " between them off the origin's; the backend's field " << worst_hit
+            << " m off; a walk across a tile's edge " << worst_walk << " m off; it walked "
+            << length(far.walk.back() - far.walk.front()) << " m");
+    CHECK(off_lattice == 0);
+    CHECK(off_between == 0);
+    CHECK(worst_hit <= 1.0e-6f);
+    CHECK(worst_walk < 1.0e-3);
+  }
+  // And the lattice heights are the source's: the window's first point is (0, 0) of the period.
+  f32 expect[1] = {0.0f};
+  REQUIRE(periodic_heights(nullptr, 0.0, 1000, 0, 0, 0, 1, 1, 0, 1, std::span<f32>(expect, 1)));
+  CHECK(home.lattice[0] == expect[0]);
 }
 
 TEST_CASE("scene_collision: bodies come and go with the walker's ring, within its budget") {
@@ -343,7 +488,7 @@ TEST_CASE("scene_collision: bodies come and go with the walker's ring, within it
   world.update(at(16.0f, 16.0f), 0);
   CHECK(collision.stats().tiles == 2);
   f32 y = 0.0f;
-  CHECK(collision.ground_height(10.0f, 10.0f, y));
+  CHECK(collision.ground_height(wp(10.0f, 10.0f), y));
   for (u64 t = 1; t < 6; ++t)
     world.update(at(16.0f, 16.0f), t);
   CHECK(collision.stats().tiles == 9);
@@ -359,7 +504,7 @@ TEST_CASE("scene_collision: bodies come and go with the walker's ring, within it
     REQUIRE(physics.body_count() == collision.stats().bodies);
     REQUIRE(collision.stats().tiles == world.ring().active_count());
     // The walker's own tile is always held.
-    REQUIRE(collision.ground_height(x, 16.0f, y));
+    REQUIRE(collision.ground_height(wp(x, 16.0f), y));
     REQUIRE(y == doctest::Approx(ground_at(g, x, 16.0f, 0.0)).epsilon(1.0e-5));
   }
   const Stats& s = collision.stats();
@@ -383,7 +528,7 @@ TEST_CASE("scene_collision: bodies come and go with the walker's ring, within it
       const f32 cx = 16.0f + 32.0f * static_cast<f32>(leg);
       world.update(at(cx, 16.0f), tick++, true);
       REQUIRE(physics.body_count() == collision.stats().bodies);
-      REQUIRE(collision.ground_height(cx, 16.0f, y));
+      REQUIRE(collision.ground_height(wp(cx, 16.0f), y));
     }
   }
   MESSAGE("then " << collision.stats().bodies_created << " bodies made in all, "
@@ -418,7 +563,7 @@ TEST_CASE("scene_collision: a scene read whole collides as its instances, a prox
   REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
   physics::BodyDesc floor;
   floor.shape = floor_shape;
-  floor.transform.position = Vec3{0.0f, -0.5f, 0.0f};
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
   floor.motion = physics::MotionType::Static;
   floor.layer = physics::Layer::Static;
   physics::BodyId floor_body;
@@ -454,16 +599,16 @@ TEST_CASE("scene_collision: a scene read whole collides as its instances, a prox
   physics::CharacterBody walker;
   physics::CharacterConfig c;
   c.step_hz = 240;
-  REQUIRE(walker.create(physics, c, Vec3{0.3f, 0.02f, 12.0f}) == physics::Status::Ok);
+  REQUIRE(walker.create(physics, c, place(Vec3{0.3f, 0.02f, 12.0f})) == physics::Status::Ok);
   physics::CharacterInput north;
   north.move = Vec3{0.0f, 0.0f, 1.0f};
   for (u32 k = 0; k < 8 * 240; ++k)
     REQUIRE(walker.step(north) == physics::Status::Ok);
   const f32 face = 20.0f - 0.25f;
   MESSAGE("walked north into the wall's face at z " << face << ": stopped at z "
-                                                    << walker.state().position.z);
-  CHECK(walker.state().position.z < face - c.radius + 0.03f);
-  CHECK(walker.state().position.z > face - c.radius - 0.1f);
+                                                    << local_of(walker.state().position).z);
+  CHECK(local_of(walker.state().position).z < face - c.radius + 0.03f);
+  CHECK(local_of(walker.state().position).z > face - c.radius - 0.1f);
 }
 
 TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the error") {
@@ -520,8 +665,8 @@ TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the e
     physics::RayHit a;
     physics::RayHit b;
     const Vec3 from = centre + d * 10.0f;
-    REQUIRE(fine_physics.cast_ray(from, d * -10.0f, a));
-    REQUIRE(coarse_physics.cast_ray(from, d * -10.0f, b));
+    REQUIRE(fine_physics.cast_ray(place(from), d * -10.0f, a));
+    REQUIRE(coarse_physics.cast_ray(place(from), d * -10.0f, b));
     worst = std::max(worst, std::fabs(a.fraction - b.fraction) * 10.0f);
   }
   MESSAGE("the 5 cm proxy's surface stands at most " << worst << " m off the leaves'");
@@ -654,14 +799,14 @@ TEST_CASE("scene_collision: a moving ground stays within its error of the drawn 
     }
     time.blend = static_cast<f64>(step) / 20.0;
     collision.set_ground_time(time);
-    collision.refresh(wx, wz);
+    collision.refresh(wp(wx, wz));
     // The walker's tile, sample by sample, against the drawn heights there.
     for (i32 i = 0; i < 32; ++i) {
       for (i32 j = 0; j < 32; ++j) {
         const f32 x = static_cast<f32>(i);
         const f32 z = static_cast<f32>(j);
         f32 held = 0.0f;
-        REQUIRE(collision.ground_height(x, z, held));
+        REQUIRE(collision.ground_height(wp(x, z), held));
         const f32 a = ground_at(g, x, z, time.time_a);
         const f32 b = ground_at(g, x, z, time.time_b);
         const f32 t = static_cast<f32>(time.blend);
@@ -689,7 +834,7 @@ TEST_CASE("scene_collision: a moving ground stays within its error of the drawn 
   still_world.add_consumer(still_collision.consumer());
   still_world.update(at(wx, wz), 0, true);
   still_collision.set_ground_time(time);
-  CHECK(still_collision.refresh(wx, wz) == 0);
+  CHECK(still_collision.refresh(wp(wx, wz)) == 0);
   CHECK(still_collision.stats().refreshes == 0);
 }
 
@@ -724,18 +869,18 @@ TEST_CASE(
   const f32 wz = 10.0f;
   world.update(at(wx, wz), 0, true);
   f32 y = 0.0f;
-  REQUIRE(collision.ground_height(wx, wz, y));
+  REQUIRE(collision.ground_height(wp(wx, wz), y));
   physics::CharacterConfig c;
   c.step_hz = 240;
   physics::CharacterBody body;
-  REQUIRE(body.create(physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  REQUIRE(body.create(physics, c, place(Vec3{wx, y + 0.02f, wz})) == physics::Status::Ok);
   for (u32 tick = 0; tick < 120; ++tick)
     REQUIRE(body.step(physics::CharacterInput{}) == physics::Status::Ok);
 
   f32 worst_below = 0.0f;  // after a refresh, the feet under the collision ground
   f32 worst_off = 0.0f;    // after a frame, the feet off the drawn ground
   f32 worst_lag = 0.0f;    // a frame's move of the feet against the ground's, the difference
-  f32 last_feet = body.feet().y;
+  f32 last_feet = local_of(body.feet()).y;
   f32 last_drawn = ground_at(g, wx, wz, 0.0);
   f32 top = last_feet;
   bool fell = false;
@@ -746,16 +891,16 @@ TEST_CASE(
     collision.set_ground_time(time);
     for (u32 tick = 0; tick < 4; ++tick) {
       collision.follow(body);
-      const Vec3 feet = body.feet();
+      const Vec3 feet = local_of(body.feet());
       f32 held = 0.0f;
-      REQUIRE(collision.ground_height(feet.x, feet.z, held));
+      REQUIRE(collision.ground_height(wp(feet.x, feet.z), held));
       worst_below = std::max(worst_below, held - feet.y);
       // Jump on the second rising second's first tick: 4 m/s against sand rising at 22.5.
       physics::CharacterInput in;
       in.jump = frame == 21 && tick == 0;
       REQUIRE(body.step(in) == physics::Status::Ok);
     }
-    const Vec3 feet = body.feet();
+    const Vec3 feet = local_of(body.feet());
     const f32 a = ground_at(g, feet.x, feet.z, time.time_a);
     const f32 b = ground_at(g, feet.x, feet.z, time.time_b);
     const f32 t = static_cast<f32>(time.blend);
@@ -799,11 +944,11 @@ TEST_CASE(
   world::World still_world(ring());
   still_world.add_consumer(still_collision.consumer());
   still_world.update(at(wx, wz), 0, true);
-  REQUIRE(still_collision.ground_height(wx, wz, y));
+  REQUIRE(still_collision.ground_height(wp(wx, wz), y));
   physics::CharacterBody a;
   physics::CharacterBody b;
-  REQUIRE(a.create(still_physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
-  REQUIRE(b.create(still_physics, c, Vec3{wx, y + 0.02f, wz}) == physics::Status::Ok);
+  REQUIRE(a.create(still_physics, c, place(Vec3{wx, y + 0.02f, wz})) == physics::Status::Ok);
+  REQUIRE(b.create(still_physics, c, place(Vec3{wx, y + 0.02f, wz})) == physics::Status::Ok);
   for (u32 tick = 0; tick < 240; ++tick) {
     CHECK(still_collision.follow(a) == 0);
     REQUIRE(a.step(physics::CharacterInput{}) == physics::Status::Ok);

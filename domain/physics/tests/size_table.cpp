@@ -11,13 +11,20 @@ ENGINE_EXPECT_SIZE(8, 4, physics::BodyId);
 ENGINE_EXPECT_SIZE(8, 4, physics::ShapeId);
 ENGINE_EXPECT_SIZE(8, 4, physics::SoftBodyId);
 
-// One per reported contact per step. Sixty-four bytes is one cache line, which is the reason
-// the user data is carried inline instead of being looked up per event.
-ENGINE_EXPECT_SIZE(64, 8, physics::ContactEvent);
+// One per reported contact per step. 80, not 64, since the contact's point became a `WorldPos`
+// (ADR-0053): twelve more bytes for the position and four of alignment after the phase. The user
+// data still rides inline, because a lookup per event costs more than the second line a buffer of
+// them streams through; the event is drained once a step by the caller, not walked in a hot loop.
+ENGINE_EXPECT_SIZE(80, 8, physics::ContactEvent);
 
-// Query results are returned by value into a caller's stack slot.
-ENGINE_EXPECT_SIZE(36, 4, physics::RayHit);
-ENGINE_EXPECT_SIZE(40, 4, physics::ShapeHit);
+// Query results are returned by value into a caller's stack slot. A hit's point is a `WorldPos`
+// (ADR-0053), so both grew by its twelve bytes and their alignment is a double's.
+ENGINE_EXPECT_SIZE(48, 8, physics::RayHit);
+ENGINE_EXPECT_SIZE(56, 8, physics::ShapeHit);
+
+// Where a body is: a `WorldPos` and a quaternion, no scale. Returned per body by the renderer's
+// batch read (`World::read_transforms`).
+ENGINE_EXPECT_SIZE(40, 8, physics::BodyTransform);
 
 // Cage elements: ADR-0026 budgets about 32 bytes per element of simulation state, and these
 // are the description that feeds it.
@@ -29,5 +36,7 @@ ENGINE_EXPECT_SIZE(20, 4, physics::SoftVolumeConstraint);
 // per-element cost of the cage.
 ENGINE_EXPECT_SIZE(32, 4, physics::SoftAttachment);
 
-// A character between two steps: what a replay hashes and a host copies once a tick.
-ENGINE_EXPECT_SIZE(48, 8, physics::CharacterState);
+// A character between two steps: what a replay hashes and a host copies once a tick. 64, not 48,
+// since the feet became a `WorldPos` (ADR-0053): twelve bytes of position and four more of the
+// named padding before the tick.
+ENGINE_EXPECT_SIZE(64, 8, physics::CharacterState);

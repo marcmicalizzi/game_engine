@@ -43,7 +43,7 @@ SoftBodyId add_cube(World& world, const LatticeVolume& lattice, Vec3 position, u
   desc.edges = std::span<const SoftEdge>(lattice.edges);
   desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
   desc.faces = std::span<const u32>(lattice.faces);
-  desc.transform.position = position;
+  desc.transform.position = place(position);
   desc.iterations = iterations;
   desc.allow_sleeping = false;
   SoftBodyId body;
@@ -141,7 +141,8 @@ TEST_CASE("physics: a cage steps to the same positions with 1 and with 8 workers
         add_cube(world, lattice, Vec3(0.5f * side + 0.05f, 0.5f * side + 0.02f, 0.0f), 6);
     step_n(world, 120);
     out.resize(vertex_count);
-    REQUIRE(world.read_soft_body_vertices(second, std::span<Vec3>(out)) == vertex_count);
+    REQUIRE(world.read_soft_body_vertices(second, WorldPos::origin(), std::span<Vec3>(out)) ==
+            vertex_count);
   };
 
   Vector<Vec3> one;

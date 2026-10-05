@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace engine::scene_collision {
@@ -47,6 +48,25 @@ i64 floor_div(i64 a, i64 b) noexcept {
   return q;
 }
 i64 ceil_div(i64 a, i64 b) noexcept { return -floor_div(-a, b); }
+
+// The millimetre a world coordinate is in: the world's lattice and its tiles are integer
+// millimetres from the origin (ADR-0050), and a coordinate reaches them in f64, never through a
+// float32 metre (ADR-0053).
+i64 floor_mm(f64 metres) noexcept { return static_cast<i64>(std::floor(metres * 1000.0)); }
+
+// Whether a lattice index fits the tile source's i32 window (`scene_gen::TileSourceOps`).
+bool fits_i32(i64 v) noexcept {
+  return v >= static_cast<i64>(std::numeric_limits<i32>::min()) &&
+         v <= static_cast<i64>(std::numeric_limits<i32>::max());
+}
+
+// ADR-0053 seam: renderer (`gfx::InstanceDesc::world`) and scene_gen (`Placement::transform`) give
+// WorldPos after the merge. Until then a placement's translation arrives as an absolute float32,
+// already on a float's grid far from the origin; it is widened here and nowhere else, and from here
+// on the compound holds it relative to its tile's corner.
+WorldPos placement_position(Vec3 translation) noexcept {
+  return absolute(WorldPos::origin(), translation);
+}
 
 u32 bits(f32 v) noexcept {
   if (v == 0.0f) v = 0.0f;
@@ -238,11 +258,14 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
         local.expand(cluster.center + Vec3(cluster.radius));
       }
       if (local.is_empty()) continue;
+      // The instance's world matrix is the renderer's absolute float32 (the seam above
+      // `placement_position`); its bounds are taken to millimetres in f64, so the binning adds no
+      // rounding of its own to the float's.
       const Aabb3 bounds = transform_aabb(renderer::instance_world_matrix(instance), local);
-      const i64 x0 = floor_div(static_cast<i64>(std::floor(bounds.min.x * 1000.0f)), tile_mm_);
-      const i64 x1 = floor_div(static_cast<i64>(std::floor(bounds.max.x * 1000.0f)), tile_mm_);
-      const i64 z0 = floor_div(static_cast<i64>(std::floor(bounds.min.z * 1000.0f)), tile_mm_);
-      const i64 z1 = floor_div(static_cast<i64>(std::floor(bounds.max.z * 1000.0f)), tile_mm_);
+      const i64 x0 = floor_div(floor_mm(static_cast<f64>(bounds.min.x)), tile_mm_);
+      const i64 x1 = floor_div(floor_mm(static_cast<f64>(bounds.max.x)), tile_mm_);
+      const i64 z0 = floor_div(floor_mm(static_cast<f64>(bounds.min.z)), tile_mm_);
+      const i64 z1 = floor_div(floor_mm(static_cast<f64>(bounds.max.z)), tile_mm_);
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096)
         continue;  // a scene-sized mesh is ground, not a piece
       for (i64 z = z0; z <= z1; ++z) {
@@ -318,8 +341,9 @@ void SceneCollision::note_bodies() noexcept {
 bool SceneCollision::evaluate_field(const Tile& tile, f64 time, Vector<f32>& out) {
   out.resize(tile.n * tile.n);
   ++stats_.field_evaluations;
-  return source_.heights(time, spacing_mm_, tile.i0, tile.j0, tile.n, tile.n,
-                         std::span<f32>(out.data(), out.size()));
+  // `build_ground` refused a window whose index does not fit the source's i32.
+  return source_.heights(time, spacing_mm_, static_cast<i32>(tile.i0), static_cast<i32>(tile.j0),
+                         tile.n, tile.n, std::span<f32>(out.data(), out.size()));
 }
 
 // `a (1 - t) + b t`, as the renderer's pool pass blends a terrain level: exactly a at 0 and b at 1.
@@ -337,14 +361,17 @@ bool SceneCollision::make_ground_body(Tile& tile) {
   desc.heights = std::span<const f32>(tile.heights.data(), tile.heights.size());
   desc.sample_count = tile.n;
   const f32 spacing = static_cast<f32>(static_cast<f64>(spacing_mm_) / 1000.0);
-  desc.offset = Vec3{static_cast<f32>(static_cast<f64>(i64{tile.i0} * spacing_mm_) / 1000.0), 0.0f,
-                     static_cast<f32>(static_cast<f64>(i64{tile.j0} * spacing_mm_) / 1000.0)};
+  // The field in its own frame, from its first lattice point, and the body at that point in f64
+  // (ADR-0053): a field offset by its corner in floats would put a tile 420 km out on a 3 cm grid.
+  desc.local_offset = Vec3{};
   desc.scale = Vec3{spacing, 1.0f, spacing};
   if (physics_->create_heightfield(desc, tile.ground_shape) != physics::Status::Ok) return false;
   u32 triangles = 0;
   (void)physics_->shape_memory(tile.ground_shape, false, tile.ground_bytes, triangles);
   physics::BodyDesc body;
   body.shape = tile.ground_shape;
+  body.transform.position = WorldPos{static_cast<f64>(tile.i0 * spacing_mm_) / 1000.0, 0.0,
+                                     static_cast<f64>(tile.j0 * spacing_mm_) / 1000.0};
   body.motion = physics::MotionType::Static;
   body.layer = physics::Layer::Static;
   body.friction = 0.8f;
@@ -374,23 +401,35 @@ void SceneCollision::drop_ground_body(Tile& tile) {
 bool SceneCollision::build_ground(Tile& tile) {
   const i64 x0 = i64{tile.coord.x} * tile_mm_;
   const i64 z0 = i64{tile.coord.z} * tile_mm_;
-  tile.i0 = static_cast<i32>(floor_div(x0, spacing_mm_));
-  tile.j0 = static_cast<i32>(floor_div(z0, spacing_mm_));
+  tile.i0 = floor_div(x0, spacing_mm_);
+  tile.j0 = floor_div(z0, spacing_mm_);
   const i64 xi = ceil_div(x0 + tile_mm_, spacing_mm_);
   const i64 zj = ceil_div(z0 + tile_mm_, spacing_mm_);
   u32 n = static_cast<u32>(std::max(xi - tile.i0, zj - tile.j0)) + 1u;
   n = n < 4 ? 4 : n + (n & 1u);
   tile.n = n;
+  // The tile source's window is indexed in i32 (scene_gen/tile_source.h): past 2^31 lattice points
+  // from the origin — 2.1e9 m at a metre, 2.7e8 m at the tunable's finest 12.5 cm — a tile has no
+  // index to ask with, and is refused rather than asked for the heights of a wrapped one.
+  if (!fits_i32(tile.i0) || !fits_i32(tile.j0) || !fits_i32(tile.i0 + n) ||
+      !fits_i32(tile.j0 + n)) {
+    ENGINE_LOG_WARN(log_collision, "a tile is past the tile source's lattice index",
+                    log::field("x", tile.coord.x), log::field("z", tile.coord.z),
+                    log::field("spacing_mm", spacing_mm_));
+    return false;
+  }
+  const i32 i0 = static_cast<i32>(tile.i0);
+  const i32 j0 = static_cast<i32>(tile.j0);
   tile.moving = time_.moving && source_.moves();
   if (!tile.moving) {
     tile.heights.resize(n * n);
     // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
     // time (a still source's one surface), which for the scene's own ground is the same bits.
     if (explicit_source_) {
-      (void)source_.heights(own_time_s_, spacing_mm_, tile.i0, tile.j0, n, n,
+      (void)source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
                             std::span<f32>(tile.heights.data(), tile.heights.size()));
     } else {
-      ground_->grid(scene_gen::ring_lattice(spacing_mm_), tile.i0, tile.j0, n, n,
+      ground_->grid(scene_gen::ring_lattice(spacing_mm_), i0, j0, n, n,
                     std::span<f32>(tile.heights.data(), tile.heights.size()));
     }
     tile.field_a.clear();
@@ -438,19 +477,15 @@ f64 SceneCollision::stale_of(const Tile& tile) const noexcept {
   return static_cast<f64>(worst);
 }
 
-u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
+u32 SceneCollision::refresh(WorldPos at, f32 reach) {
   if (ground_ == nullptr || !time_.moving || !source_.moves() || tiles_.empty()) return 0;
   // The tiles under the walker: every tile the square `reach` either side of (x, z) touches, which
   // is the one holding the point unless a capsule of that radius stands near a tile's edge.
   const f64 r = reach > 0.0f ? static_cast<f64>(reach) : 0.0;
-  const i64 ux0 =
-      floor_div(static_cast<i64>(std::floor((static_cast<f64>(x) - r) * 1000.0)), tile_mm_);
-  const i64 ux1 =
-      floor_div(static_cast<i64>(std::floor((static_cast<f64>(x) + r) * 1000.0)), tile_mm_);
-  const i64 uz0 =
-      floor_div(static_cast<i64>(std::floor((static_cast<f64>(z) - r) * 1000.0)), tile_mm_);
-  const i64 uz1 =
-      floor_div(static_cast<i64>(std::floor((static_cast<f64>(z) + r) * 1000.0)), tile_mm_);
+  const i64 ux0 = floor_div(floor_mm(at.x - r), tile_mm_);
+  const i64 ux1 = floor_div(floor_mm(at.x + r), tile_mm_);
+  const i64 uz0 = floor_div(floor_mm(at.z - r), tile_mm_);
+  const i64 uz1 = floor_div(floor_mm(at.z + r), tile_mm_);
   const auto under_walker = [&](u64 key) {
     const world::TileCoord c = world::tile_of_key(key);
     return c.x >= ux0 && c.x <= ux1 && c.z >= uz0 && c.z <= uz1;
@@ -471,11 +506,13 @@ u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
     order_.push_back(tiles_.key_at(i));
   }
   if (order_.empty()) return 0;
-  const f32 tile = config_.tile_size;
+  // In f64 from the walker: a tile's centre and the feet are both far from the origin, and their
+  // difference is what orders the tiles.
+  const f64 tile = static_cast<f64>(tile_mm_) / 1000.0;
   auto distance2 = [&](u64 key) {
     const world::TileCoord c = world::tile_of_key(key);
-    const f32 dx = (static_cast<f32>(c.x) + 0.5f) * tile - x;
-    const f32 dz = (static_cast<f32>(c.z) + 0.5f) * tile - z;
+    const f64 dx = (static_cast<f64>(c.x) + 0.5) * tile - at.x;
+    const f64 dz = (static_cast<f64>(c.z) + 0.5) * tile - at.z;
     return dx * dx + dz * dz;
   };
   // The tiles under the walker first, then nearest first; the budget is the others'.
@@ -483,8 +520,8 @@ u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
     const bool ua = under_walker(a);
     const bool ub = under_walker(b);
     if (ua != ub) return ua;
-    const f32 da = distance2(a);
-    const f32 db = distance2(b);
+    const f64 da = distance2(a);
+    const f64 db = distance2(b);
     return da != db ? da < db : a < b;
   });
   u32 under_count = 0;
@@ -492,8 +529,8 @@ u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
     ++under_count;
   const u32 count = under_count + std::min<u32>(static_cast<u32>(order_.size()) - under_count,
                                                 config_.max_refreshes);
-  const i64 xm = static_cast<i64>(std::floor(static_cast<f64>(x) * 1000.0));
-  const i64 zm = static_cast<i64>(std::floor(static_cast<f64>(z) * 1000.0));
+  const i64 xm = floor_mm(at.x);
+  const i64 zm = floor_mm(at.z);
   const u64 underfoot_key = world::tile_key(world::TileCoord{
       static_cast<i32>(floor_div(xm, tile_mm_)), static_cast<i32>(floor_div(zm, tile_mm_))});
   u32 done = 0;
@@ -532,24 +569,31 @@ u32 SceneCollision::refresh(f32 x, f32 z, f32 reach) {
   return done;
 }
 
-bool SceneCollision::ground_height(f32 x, f32 z, f32& out) const noexcept {
-  const i64 xm = static_cast<i64>(std::floor(static_cast<f64>(x) * 1000.0));
-  const i64 zm = static_cast<i64>(std::floor(static_cast<f64>(z) * 1000.0));
-  const world::TileCoord coord{static_cast<i32>(floor_div(xm, tile_mm_)),
-                               static_cast<i32>(floor_div(zm, tile_mm_))};
+bool SceneCollision::ground_height(WorldPos at, f32& out) const noexcept {
+  const i64 xm = floor_mm(at.x);
+  const i64 zm = floor_mm(at.z);
+  const i64 tx = floor_div(xm, tile_mm_);
+  const i64 tz = floor_div(zm, tile_mm_);
+  if (!fits_i32(tx) || !fits_i32(tz)) return false;
+  const world::TileCoord coord{static_cast<i32>(tx), static_cast<i32>(tz)};
   const Tile* tile = tiles_.find_value(world::tile_key(coord));
   if (tile == nullptr || tile->heights.empty()) return false;
-  const f64 spacing = static_cast<f64>(spacing_mm_) / 1000.0;
-  const f64 fx = static_cast<f64>(x) / spacing - static_cast<f64>(tile->i0);
-  const f64 fz = static_cast<f64>(z) / spacing - static_cast<f64>(tile->j0);
+  // Where the point is in the tile's window, in lattice steps from its first point: the point's
+  // millimetres less the first point's, which are an integer — a difference of two numbers within a
+  // tile of each other, so f64 holds it to a nanometre anywhere, and a lattice point lands on a
+  // whole number exactly (ADR-0053). It was `x / spacing - i0` in f32 x until 2026-10-05, which at
+  // 420 km asked for the height 1.6 cm from the feet.
+  const f64 spacing = static_cast<f64>(spacing_mm_);
+  const f64 fx = (at.x * 1000.0 - static_cast<f64>(tile->i0 * spacing_mm_)) / spacing;
+  const f64 fz = (at.z * 1000.0 - static_cast<f64>(tile->j0 * spacing_mm_)) / spacing;
   const i64 i = static_cast<i64>(std::floor(fx));
   const i64 j = static_cast<i64>(std::floor(fz));
   if (i < 0 || j < 0 || i + 1 >= tile->n || j + 1 >= tile->n) return false;
   const u32 n = tile->n;
-  const auto at = [&](i64 a, i64 b) {
+  const auto sample = [&](i64 a, i64 b) {
     return tile->heights[static_cast<u32>(b) * n + static_cast<u32>(a)];
   };
-  out = cell_height(at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1),
+  out = cell_height(sample(i, j), sample(i + 1, j), sample(i, j + 1), sample(i + 1, j + 1),
                     static_cast<f32>(fx - static_cast<f64>(i)),
                     static_cast<f32>(fz - static_cast<f64>(j)));
   return true;
@@ -570,40 +614,41 @@ bool SceneCollision::ground_body(physics::BodyId body) const noexcept {
 // sand that rose closed over its feet, where a heightfield's one-sided contact never pushes back,
 // and at a day a second went over its head (tests/time_lapse_tests.cpp has both, before and after).
 u32 SceneCollision::follow(physics::CharacterBody& walker) {
-  const Vec3 feet = walker.feet();
+  const WorldPos feet = walker.feet();
   if (ground_ == nullptr || !time_.moving || !source_.moves()) {
-    return refresh(feet.x, feet.z, walker.config().radius);
+    return refresh(feet, walker.config().radius);
   }
   // Standing on the ground, not on a placement: what is straight under the capsule's centre, from
   // just above its feet down past the round bottom's rise on the steepest ground it stands on
   // (0.3 (1 / cos 40 - 1) = 9 cm, and the backend's padding), is a held tile's heightfield.
   f32 before = 0.0f;
   bool standing = false;
-  if (walker.state().ground == physics::Ground::OnGround && ground_height(feet.x, feet.z, before)) {
+  if (walker.state().ground == physics::Ground::OnGround && ground_height(feet, before)) {
     physics::RayHit hit;
     const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
     standing =
-        physics_->cast_ray(Vec3{feet.x, feet.y + 0.05f, feet.z},
+        physics_->cast_ray(feet + DVec3{0.0, 0.05, 0.0},
                            Vec3{0.0f, -(0.05f + walker.config().radius), 0.0f}, hit, statics) &&
         ground_body(hit.body);
   }
-  const u32 done = refresh(feet.x, feet.z, walker.config().radius);
-  f32 after = 0.0f;
-  if (!ground_height(feet.x, feet.z, after)) return done;
-  Vec3 to = feet;
-  if (standing && after != before) {
+  const u32 done = refresh(feet, walker.config().radius);
+  f32 after_f32 = 0.0f;
+  if (!ground_height(feet, after_f32)) return done;
+  const f64 after = static_cast<f64>(after_f32);
+  WorldPos to = feet;
+  if (standing && after_f32 != before) {
     // Carried: the offset it stood at over the ground (a slope's rise under its round bottom, the
     // backend's padding) is kept, so a standing walker neither hovers nor sinks. Added to the new
     // height rather than the change to the feet, so feet that stood at or over the ground are at
     // or over it after, to the bit.
-    to.y = after + (feet.y - before);
+    to.y = after + (feet.y - static_cast<f64>(before));
     ++stats_.carries;
-    stats_.max_carry_m = std::max(stats_.max_carry_m, std::fabs(static_cast<f64>(after - before)));
+    stats_.max_carry_m = std::max(stats_.max_carry_m, std::fabs(after - static_cast<f64>(before)));
   }
   if (to.y < after) {
     // Under the collision ground: lifted onto it. Counted from a tenth of a millimetre: below that
     // it is the character settling a step's worth of gravity into a surface it stands on.
-    const f64 lift = static_cast<f64>(after - to.y);
+    const f64 lift = after - to.y;
     if (lift > 1.0e-4) ++stats_.lifts;
     stats_.max_lift_m = std::max(stats_.max_lift_m, lift);
     to.y = after;
@@ -690,7 +735,12 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
   return static_cast<bool>(out);
 }
 
-bool SceneCollision::add_piece(u32 mesh, const Mat4& world,
+WorldPos SceneCollision::tile_corner(const Tile& tile) const noexcept {
+  return WorldPos{static_cast<f64>(i64{tile.coord.x} * tile_mm_) / 1000.0, 0.0,
+                  static_cast<f64>(i64{tile.coord.z} * tile_mm_) / 1000.0};
+}
+
+bool SceneCollision::add_piece(u32 mesh, const Mat4& world, WorldPos corner,
                                Vector<physics::CompoundChild>& children) {
   if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
   Placement placed;
@@ -699,7 +749,8 @@ bool SceneCollision::add_piece(u32 mesh, const Mat4& world,
   if (!proxy_for(mesh, placed.scale, shape)) return false;
   physics::CompoundChild child;
   child.shape = shape;
-  child.transform.position = placed.position;
+  // In the compound's frame, which is the tile's corner: a few tens of metres at most.
+  child.transform.position = relative(placement_position(placed.position), corner);
   child.transform.rotation = placed.rotation;
   children.push_back(child);
   return true;
@@ -712,6 +763,7 @@ bool SceneCollision::build_placements(Tile& tile) {
   children_.clear();
   bool ok = true;
   const u64 key = world::tile_key(tile.coord);
+  const WorldPos corner = tile_corner(tile);
   if (!entries_.empty()) {
     const scene_gen::TileCoord at{tile.coord.x, tile.coord.z};
     for (const std::unique_ptr<Entry>& entry_ptr : entries_) {
@@ -731,13 +783,13 @@ bool SceneCollision::build_placements(Tile& tile) {
         if (p.mesh >= entry.source->meshes.size()) continue;
         const u32 mesh = entry.source->meshes[p.mesh];
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
-        (void)add_piece(mesh, mat4_from_transform(p.transform) * fit, children_);
+        (void)add_piece(mesh, mat4_from_transform(p.transform) * fit, corner, children_);
       }
     }
   } else if (const Vector<u32>* bin = bins_.find_value(key)) {
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
-      (void)add_piece(instance.mesh, renderer::instance_world_matrix(instance), children_);
+      (void)add_piece(instance.mesh, renderer::instance_world_matrix(instance), corner, children_);
     }
   }
   tile.pieces = children_.size();
@@ -752,6 +804,7 @@ bool SceneCollision::build_placements(Tile& tile) {
   (void)physics_->shape_memory(tile.placements_shape, false, tile.compound_bytes, triangles);
   physics::BodyDesc body;
   body.shape = tile.placements_shape;
+  body.transform.position = corner;
   body.motion = physics::MotionType::Static;
   body.layer = physics::Layer::Static;
   body.friction = 0.8f;

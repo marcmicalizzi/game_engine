@@ -41,7 +41,9 @@ the only thing that advances it is `step()`.
   per step, unsmoothed, and wall clock rather than a sum of per-worker time
   ([ADR-0029](../adr/0029-deformable-volume-budgets.md)).
 
-**Public API.** `domain/physics/types.h`: `Status`/`status_name`, `Layer`/`layer_name`/
+**Public API.** Points in the world are `WorldPos` and everything else is `Vec3`
+([Far from the origin](#far-from-the-origin)). `domain/physics/types.h`: `BodyTransform` (a
+`WorldPos` and a rotation: where a body is), `Status`/`status_name`, `Layer`/`layer_name`/
 `layers_collide`/`LayerMask`, `MotionType`, and the three handle types.
 `domain/physics/soft_body.h`: `SoftEdge`, `SoftVolumeConstraint`, `AttachmentKind`,
 `SoftAttachment`, `SoftBodyDesc`, `k_soft_body_constraint_batch` and `soft_body_solve_width`,
@@ -55,8 +57,8 @@ constants and `cage_size_verdict`, `volume_compliance_for`, and `SoftBodyBudget`
 (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), what the backend holds
 for a shape (`shape_memory`: bytes and triangles, its own or with its children), body creation and
 destruction, transform and velocity access, `move_kinematic`, activation and sleep, the batch
-`read_transforms`, `spawn_debris`, soft-body creation and `read_soft_body_vertices`, `cast_ray`,
-`cast_shape`, `step`, `contact_events`, and `stats`. `domain/physics/character.h`
+`read_transforms`, `spawn_debris`, soft-body creation and `read_soft_body_vertices` (relative to
+an origin the caller names), `cast_ray`, `cast_shape`, `step`, `contact_events`, and `stats`. `domain/physics/character.h`
 ([The character](#the-character)): `Ground`/`ground_name`, `CharacterConfig`, `CharacterInput`,
 `CharacterState`, `hash_character_state`, and `CharacterBody` — `create`, `step`, `teleport`,
 `state`, `feet`, `eye`, `hash`.
@@ -82,8 +84,9 @@ version id that fails at startup. Keeping every `#include <Jolt/...>` inside thi
 means exactly one set of translation units has to agree, and `engine_physics` is the only target
 that links `Jolt`.
 
-The public surface is therefore core/math (`Vec3`, `Quat`, `Transform3`, `Aabb3`), core/time's
-`SimTick`, core/containers handles, `std::span`, and a `Status` enum.
+The public surface is therefore core/math (`Vec3`, `Quat`, `Transform3`, `Aabb3`, `WorldPos`,
+`DVec3`), core/time's `SimTick`, core/containers handles, `std::span`, a `Status` enum, and the
+module's own `BodyTransform`.
 
 ## The layer table
 
@@ -149,6 +152,61 @@ a concurrency of 1 and the other 8, steps both 600 times, and compares the trans
 `memcmp`. It also checks that the two worlds really did split their work differently, because
 otherwise the comparison would prove nothing.
 
+## Far from the origin
+
+**The backend is built in double precision, and a point in the world is a `WorldPos`**
+([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md), 2026-10-05). Until then
+Jolt was single-precision and every position here was a float32, so 420 km out a body, a ray's
+origin and a character's feet stood on a 3.1 cm grid: a 240 Hz walk's 6 mm step along x was lost
+outright, and the owner's sprint 22° off an axis went straight down the axis
+([far from the origin](../experiments/far-from-origin-2026-10-04.md), Part 2). Jolt's double mode
+keeps positions in double (`RVec3`) and does its collision arithmetic in floats relative to a base
+near the bodies involved, which is the engine's own rule: float32 for local frames. So:
+
+- **What is a point is `WorldPos`**: `BodyDesc::transform` and every body-transform read and write
+  (`BodyTransform`, a `WorldPos` and a quaternion, no scale), `cast_ray`'s origin, `cast_shape`'s
+  start, `RayHit`/`ShapeHit`/`ContactEvent::position`, `SoftBodyDesc::transform`, and the
+  character's feet (`create`, `teleport`, `feet`, `eye`, `CharacterState::position`). Conversions
+  to and from the backend copy doubles and never round (`src/backend.h`).
+- **What is a vector or local stays `Vec3`**: velocities, impulses, gravity, normals, extents, a
+  ray's direction and a sweep (which carry the query's length), a shape's own points (a mesh's
+  vertices, a hull's points), a compound child's `Transform3`, and a heightfield's
+  `local_offset` and scale — **a heightfield is placed by its body**, so a tile far out is a body
+  at its corner holding a field of small numbers ([scene_collision](scene_collision.md#far-from-the-origin)).
+- **A caller who wants world points as floats names the frame.** `read_soft_body_vertices` and
+  `soft_body_bounds` take an origin and answer relative to it, formed in double from the body's
+  position; a null-body `SoftAttachment::local_point` is given in the frame the soft body was
+  placed in (the frame its rest vertices are in), not in the world.
+- **The shape cast is asked relative to its own start** (the backend's base offset), and its hit is
+  added back in double: asked relative to the origin, its point would have been a float far out.
+
+**What a far test holds to.** Each runs the same scene by the origin and moved whole to 419,072 m
+(the owner's distance), 10,000 km and 1e8 m, every authored offset a whole 1024th of a metre so the
+site plus it is exact in f64, and compares positions from the site. f64 is not the same bits under
+translation — a sum rounds at the size of the result, 58 pm at 419 km, 1.9 nm at 10,000 km and
+15 nm at 1e8 m — so a simulation carries a rounding forward, and each bound below is what was
+measured on MSVC (2026-10-05) with a margin; a float32 build fails each by its whole step.
+
+| Case | 419 km | 10,000 km | 1e8 m | Held to |
+|---|---|---|---|---|
+| A ray onto a sloped heightfield: fraction and normal | same bits | same bits | same bits | equal |
+| The ray's point, from the site | 0 | 0 | 0 | one f64 step at the site per axis |
+| A sphere cast down onto it: fraction, point | same bits, 0 | same bits, 0 | same bits, 0 | equal, two f64 steps |
+| A sphere dropped on it, 150 steps rolling down | 0.14 nm | 0.31 µm | 3.8 µm | 0.1 mm |
+| The hundred-box stack, 600 steps to sleep | 2.1 µm | 2.1 µm | 2.1 µm | 0.1 mm, rotations to 1e-4 of a unit dot, the same sleeping count |
+| The scripted walk, 2,400 steps at 240 Hz | 78 pm | 0.88 µm | 6.6 µm | 0.1 mm, the same 963 steps in the air |
+
+The stack's 2.1 µm is the same at every site and is the solver's float arithmetic meeting a
+different last bit somewhere in 600 steps of a hundred contacts, not a function of the distance;
+the walk's grows with f64's step. (`tests/query_tests.cpp`, `rigid_body_tests.cpp`,
+`character_tests.cpp`.)
+
+**What it costs** is measured in
+[world-positions-physics-2026-10-05](../experiments/world-positions-physics-2026-10-05.md), and
+summarised in the performance notes at the end of this page: at most 7% of a step by the origin,
+and, far out, a broadphase cost that grows with the distance — nothing at 419 km, twice at
+10,000 km.
+
 ## Jolt's build flags, and what goes wrong without each
 
 Jolt's CMake is written to be the top-level project. Every option in [`cmake/EnginePhysics.cmake`](../../cmake/EnginePhysics.cmake)
@@ -170,6 +228,7 @@ is there because the default breaks something:
 | `USE_ASSERTS` | OFF | ON in Debug | Jolt ships with asserts off everywhere, including the configuration developers actually run. |
 | `JPH_USE_DX12`, `JPH_USE_VK`, `JPH_USE_MTL`, `JPH_USE_CPU_COMPUTE` | ON | OFF | Jolt 5.6 ships a GPU hair solver whose shaders are compiled with `dxc` at build time, and the Vulkan path adds `find_package(Vulkan)`. Requiring the Vulkan SDK to build physics would break every machine without one. |
 | `ENABLE_OBJECT_STREAM` | ON | OFF | Compiles Jolt's text/binary object stream for its own sample assets. The engine serializes through schemas ([ADR-0007](../adr/0007-schema-code-generation.md)). |
+| `DOUBLE_PRECISION` | OFF | **ON** | Keeps every body's position, a query's origin and a character's feet in float32: 3.1 cm steps at 420 km, where the owner's walker lost motion ([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md); [Far from the origin](#far-from-the-origin)). On for every preset and both baselines, with no option to turn it off, and `src/jolt.h` refuses to compile without `JPH_DOUBLE_PRECISION`. |
 
 Two things bit hard enough to be worth naming:
 
@@ -627,9 +686,9 @@ test holds:
 
 **Ground that moves under it is its host's to carry** (2026-09-29). Nothing here knows that a static body was rebuilt somewhere else: the sweep finds the new one where it is. So a heightfield rebuilt lower leaves a standing character on the contact it had until something snaps it down, and one rebuilt higher closes over its feet — a heightfield's contact is one-sided, and the slope hold (3, above) zeroes the velocity the backend's penetration recovery would have pushed it out with — until, past the round bottom's centre, it falls through. A host that moves the ground moves the character with it, before the step, by `teleport`: scene_collision's `follow` carries a standing walker by the change of the ground under its feet and lifts one the ground has risen past ([scene_collision](scene_collision.md#the-walker-goes-with-the-ground)). The character itself did not change, and neither did its pinned hash.
 
-**Its state is a plain struct that hashes.** `CharacterState` — feet, velocity, the ground's
-normal, where it stands (`Ground`: on ground, on steep ground, touching something that does not
-hold it up, in the air) and the step count — is 48 bytes, pinned in the size table, and
+**Its state is a plain struct that hashes.** `CharacterState` — feet (a `WorldPos`), velocity, the
+ground's normal, where it stands (`Ground`: on ground, on steep ground, touching something that
+does not hold it up, in the air) and the step count — is 64 bytes, pinned in the size table, and
 `hash()` chains every field's bits after `create`, every `step` and every `teleport`. The
 backend sorts a character's contacts by body id and sub-shape and, against other characters, by a
 character id whose default is a process-wide counter: a replay's result would then depend on how
@@ -641,11 +700,14 @@ walker has to do it at fixed ticks and in a fixed order, never on a frame's sche
 
 **Pinned.** The scripted walk in `tests/character_tests.cpp` — 2,400 steps at 240 Hz over a
 heightfield with two walls and a raised slab, turning, sprinting, jumping six times and running
-into things — hashes to **`4efdb83d1aa9a5c6`** on MSVC, and the Linux container reproduces it with
-Clang 18 and GCC 13; the heightfield and the input are products and sums only, so nothing but the
-backend's own arithmetic stands between the input and the hash, and that is cross-platform
-deterministic ([Determinism](#determinism)). A change that moves it changes every recorded walk,
-and says why in its commit.
+into things — hashes to **`6b70c6f467ae6192`** on MSVC; the heightfield and the input are products
+and sums only, so nothing but the backend's own arithmetic stands between the input and the hash,
+and that is cross-platform deterministic ([Determinism](#determinism)). A change that moves it
+changes every recorded walk, and says why in its commit. It was `4efdb83d1aa9a5c6` (reproduced by
+the Linux container with Clang 18 and GCC 13) until 2026-10-05, when the backend became double
+precision and the feet a `WorldPos` hashed as three doubles ([Far from the origin](#far-from-the-origin)):
+the hash covers different bits, computed by different arithmetic. The same walk moved to 419 km,
+10,000 km and 1e8 m is the far case above.
 
 **What a step costs** is `physics.character.step` in the bench (below): the sweep is a handful of
 shape queries against the bodies within reach. Over a 64 m heightfield among 200 static blocks,
@@ -751,8 +813,11 @@ less its radius and the backend's 2 cm padding, walking, sprinting and jumping i
 the face); **it slides down a slope past the limit and stands on one under it** — a second on a
 25° ramp with no input moves it 0 m, on a 55° ramp 3.1 m downhill, walking up the 55° one gains
 nothing and up the 25° one it climbs; a jump rises by v²/2g to within 1% and lands after 2v/g,
-and a jump held in the air starts no second one; and the scripted walk above hashes the same
-twice, byte for byte, and to the pinned number.
+and a jump held in the air starts no second one; the scripted walk above hashes the same
+twice, byte for byte, and to the pinned number; and the scripted walk moved to the three far sites
+is the origin's to 0.1 mm ([Far from the origin](#far-from-the-origin)), as the hundred-box stack
+and the ray, the shape cast and the rolling sphere are in `rigid_body_tests.cpp` and
+`query_tests.cpp`.
 
 A single 100-high tower is *not* in the suite, and not because it was awkward to write: it falls
 over inside two seconds. That is a property of sequential-impulse solvers rather than of this
@@ -761,12 +826,17 @@ base is amplified all the way up — and a test that asserted otherwise would be
 Ten towers of ten is the shape a game builds anyway, and it puts ten islands in front of the
 solver instead of one.
 
-The size table pins `BodyId`/`ShapeId`/`SoftBodyId` at 8 bytes, `ContactEvent` at 64 (one cache
-line, which is why the user data rides inline instead of being looked up per event), `RayHit`,
-`ShapeHit`, the three cage-element structs, and `CharacterState` at 48 bytes.
+The size table pins `BodyId`/`ShapeId`/`SoftBodyId` at 8 bytes, `ContactEvent` at 80 (64, one
+cache line, until its point became a `WorldPos` on 2026-10-05; the user data still rides inline,
+since the buffer is drained once a step and not walked in a hot loop), `RayHit` at 48 and
+`ShapeHit` at 56 (the same `WorldPos`), `BodyTransform` at 40, the three cage-element structs, and
+`CharacterState` at 64 bytes (48 before the feet became a `WorldPos`).
 
 **The bench.** `bench/physics_bench.cpp` is the step cost of the module's own fixtures (and, since
-2026-09-28, of one character step, `physics.character.step`: [The character](#the-character)); beside it,
+2026-09-28, of one character step, `physics.character.step`: [The character](#the-character); since
+2026-10-05 the pile and the walk at the far sites too, `physics.step.boxes_1000_far` — the argument
+is site × 100 + workers, the sites 1: 419 km, 2: 10,000 km, 3: 1e8 m — and
+`physics.character.step_far`, [Far from the origin](#far-from-the-origin)); beside it,
 `bench/e19_bench.cpp` is [experiment E19](../experiments/e19-lattice-cage.md) — a lattice cage
 around a rigid two-bone core pressed to 30% of its depth and released, and the same cage under a
 sustained load — which prints its own JSON lines so the whole experiment re-runs on another
@@ -853,6 +923,18 @@ at the same iteration and sub-step counts, and the budget is **1.5 ms ambient pl
 allowance**, wall clock, reported per step in `WorldStats::soft_body_budget`. The strain clamp is
 a further `edges × sweeps × 4.3 ns` — 17 µs on the default cage, 326 µs on a 512-element one. The
 full grid, what it decides, and what still fails is in [E19](../experiments/e19-lattice-cage.md).
+
+**Double precision** (2026-10-05, [ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md);
+[the measurement](../experiments/world-positions-physics-2026-10-05.md), before and after
+interleaved on one machine, quiet at the start and upper bounds by the end) costs the 1,000-box pile
+**+7.1% at one worker, +4.9% at four and nothing at eight**, and +15% with no job system at all;
+the soft cube, the eight cages, E19's default cage tick and the character step are within 1%. The
+rows above predate it. **Being far costs more than being double**: the same pile and walk 419 km out
+cost what they cost by the origin, 10,000 km out twice that, and 1e8 m out seven to fifteen times,
+which is the broadphase keeping every body's bounds as float boxes rounded outwards to a float's step
+(the likely cause; not confirmed by a pair count). That is past ADR-0053's tenth for a world played
+thousands of kilometres out, and its answer is the ADR's own — islands with local origins, under
+the same types — which nothing here needs at the owner's 420 km.
 
 Other hot-path decisions: contact recording is lock-free (a per-worker bucket, merged and sorted
 once per step); `read_transforms` takes one pass over the caller's id array against the no-lock

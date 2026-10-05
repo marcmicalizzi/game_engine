@@ -51,6 +51,10 @@ using namespace engine::physics;
 
 namespace {
 
+// The experiment's world is built round the origin: its frame is the world's (ADR-0053).
+WorldPos place(Vec3 local) { return absolute(WorldPos::origin(), local); }
+Vec3 local_of(WorldPos p) { return relative(p, WorldPos::origin()); }
+
 // --- the fixture's dimensions ----------------------------------------------------------------
 //
 // One geometry for every element count, so the sweep is about cage *resolution* and not about
@@ -237,7 +241,7 @@ struct Bone {
   Vec3 a{};
   Vec3 b{};
   BodyId body{};
-  Transform3 transform;
+  BodyTransform transform;
 };
 
 struct Scene {
@@ -291,7 +295,8 @@ struct Scene {
   }
 
   void read() {
-    ENGINE_VERIFY(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count,
+    ENGINE_VERIFY(world.read_soft_body_vertices(cage, WorldPos::origin(),
+                                                std::span<Vec3>(points)) == vertex_count,
                   "e19: short vertex read");
   }
 
@@ -315,8 +320,8 @@ struct Scene {
   // dynamic things instead of passing through them.
   void move_plate(f32 y) {
     plate_y = y;
-    Transform3 target;
-    target.position = Vec3(0.0f, plate_y, 0.0f);
+    BodyTransform target;
+    target.position = place(Vec3(0.0f, plate_y, 0.0f));
     ENGINE_VERIFY(world.move_kinematic(plate, target, dt), "e19: plate gone");
   }
 
@@ -324,8 +329,8 @@ struct Scene {
   // there instead would give it a metre per step of velocity and fire it through the cage.
   void place_plate(f32 y) {
     plate_y = y;
-    Transform3 target;
-    target.position = Vec3(0.0f, plate_y, 0.0f);
+    BodyTransform target;
+    target.position = place(Vec3(0.0f, plate_y, 0.0f));
     ENGINE_VERIFY(world.set_body_transform(plate, target), "e19: plate gone");
   }
 
@@ -358,7 +363,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
     ENGINE_VERIFY(world.create_box(Vec3(4.0f, 0.5f, 4.0f), shape) == Status::Ok, "e19: ground");
     BodyDesc desc;
     desc.shape = shape;
-    desc.transform.position = Vec3(0.0f, -0.5f, 0.0f);
+    desc.transform.position = place(Vec3(0.0f, -0.5f, 0.0f));
     desc.motion = MotionType::Static;
     desc.layer = Layer::Static;
     desc.friction = k_contact_friction;
@@ -382,7 +387,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
                   "e19: bone shape");
     BodyDesc desc;
     desc.shape = shape;
-    desc.transform.position = (bone.a + bone.b) * 0.5f;
+    desc.transform.position = place((bone.a + bone.b) * 0.5f);
     desc.transform.rotation = rotation_from_y(normalize(axis));
     desc.motion = MotionType::Kinematic;
     desc.layer = Layer::Kinematic;
@@ -423,8 +428,8 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
     attachment.vertex = i;
     attachment.body = bones[best_bone].body;
     // The anchor in the bone's local frame, which is where the particle rests.
-    const Transform3& bone_transform = bones[best_bone].transform;
-    const Vec3 offset = world_point - bone_transform.position;
+    const BodyTransform& bone_transform = bones[best_bone].transform;
+    const Vec3 offset = world_point - local_of(bone_transform.position);
     attachment.local_point = rotate(conjugate(bone_transform.rotation), offset);
     if (best < k_bone_radius) {
       attachment.kind = AttachmentKind::Rigid;
@@ -445,7 +450,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
   desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
   desc.faces = std::span<const u32>(lattice.faces);
   desc.attachments = std::span<const SoftAttachment>(attachments);
-  desc.transform.position = Vec3(0.0f, cage_origin_y, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, cage_origin_y, 0.0f));
   desc.iterations = config.iterations;
   desc.max_strain = max_strain;
   desc.friction = k_contact_friction;
@@ -465,12 +470,12 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
                   "e19: plate shape");
     BodyDesc plate_desc;
     plate_desc.shape = shape;
-    plate_desc.transform.position = Vec3(0.0f, 1.5f, 0.0f);
+    plate_desc.transform.position = place(Vec3(0.0f, 1.5f, 0.0f));
     plate_desc.motion = MotionType::Kinematic;
     plate_desc.layer = Layer::Kinematic;
     plate_desc.friction = k_contact_friction;
     ENGINE_VERIFY(world.create_body(plate_desc, plate) == Status::Ok, "e19: plate");
-    plate_y = plate_desc.transform.position.y;
+    plate_y = local_of(plate_desc.transform.position).y;
   }
 
   points.resize(vertex_count);
@@ -864,7 +869,7 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
   BodyDesc desc;
   desc.shape = shape;
   const Extent extent = vertical_extent(std::span<const Vec3>(scene.points));
-  desc.transform.position = Vec3(0.0f, extent.max + 0.10f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, extent.max + 0.10f, 0.0f));
   desc.motion = MotionType::Dynamic;
   desc.layer = Layer::Moving;
   desc.mass = load_ratio * scene.total_mass;

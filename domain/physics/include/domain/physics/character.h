@@ -79,13 +79,15 @@ struct CharacterInput {
 
 // A character between two steps. `position` is the feet: the bottom of the capsule, which on flat
 // ground is on the ground (a slope holds the capsule's round bottom a little above the point under
-// its centre, radius * (1 / cos(slope) - 1)). 48 bytes, compared and hashed bit for bit.
+// its centre, radius * (1 / cos(slope) - 1)), and a world position in f64 (ADR-0053): a 240 Hz
+// walk's step of 6 mm is lost on a float's 3 cm grid at 420 km. 64 bytes, compared and hashed bit
+// for bit.
 struct CharacterState {
-  Vec3 position{};
+  WorldPos position{};
   Vec3 velocity{};       // metres a second, what the last step moved at
   Vec3 ground_normal{};  // of what it stands on; zero in the air
   Ground ground = Ground::InAir;
-  u8 pad[3] = {};  // named and zeroed, so the struct has no byte nobody wrote
+  u8 pad[7] = {};  // named and zeroed, so the struct has no byte nobody wrote
   u64 tick = 0;    // steps since `create`
 };
 
@@ -102,7 +104,7 @@ class CharacterBody {
   // come first). InvalidArgument for a config that describes no capsule (a radius over half the
   // height, an eye above the crown, a step taller than the capsule, a speed or rate not above
   // zero), and for a second `create` without a `destroy`.
-  Status create(World& world, const CharacterConfig& config, Vec3 feet);
+  Status create(World& world, const CharacterConfig& config, WorldPos feet);
   void destroy() noexcept;
   bool valid() const noexcept { return impl_ != nullptr; }
   const CharacterConfig& config() const noexcept;
@@ -115,11 +117,11 @@ class CharacterBody {
 
   // Moves the feet to `feet` with no velocity and finds what it stands on there: a camera's
   // "walk from here", and a respawn. Not a step; the hash chain notes it.
-  Status teleport(Vec3 feet);
+  Status teleport(WorldPos feet);
 
   CharacterState state() const noexcept;
-  Vec3 feet() const noexcept;
-  Vec3 eye() const noexcept;  // the feet plus `eye_height` straight up
+  WorldPos feet() const noexcept;
+  WorldPos eye() const noexcept;  // the feet plus `eye_height` straight up
   // The chain over the state after `create`, every `step` and every `teleport`, in order.
   u64 hash() const noexcept;
 

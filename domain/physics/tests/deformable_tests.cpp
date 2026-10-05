@@ -134,7 +134,7 @@ TEST_CASE("physics: a cage recovers its volume at every cell size the conversion
     desc.edges = std::span<const SoftEdge>(lattice.edges);
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
-    desc.transform.position = Vec3(0.0f, 0.5f * k_cube_side + 0.02f, 0.0f);
+    desc.transform.position = place(Vec3(0.0f, 0.5f * k_cube_side + 0.02f, 0.0f));
     desc.iterations = k_cage_iterations_default;
     desc.max_strain = 0.5f;
     desc.friction = 0.6f;
@@ -150,7 +150,8 @@ TEST_CASE("physics: a cage recovers its volume at every cell size the conversion
 
     Vector<Vec3> points(vertex_count);
     const auto read_cage = [&world, &cage, &points, vertex_count]() {
-      REQUIRE(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count);
+      REQUIRE(world.read_soft_body_vertices(cage, WorldPos::origin(), std::span<Vec3>(points)) ==
+              vertex_count);
     };
 
     for (u32 i = 0; i < 90; ++i)
@@ -168,19 +169,19 @@ TEST_CASE("physics: a cage recovers its volume at every cell size the conversion
     BodyDesc plate_desc;
     plate_desc.shape = plate_shape;
     const Extent settled = vertical_extent(std::span<const Vec3>(points));
-    plate_desc.transform.position = Vec3(0.0f, settled.max + k_plate_half + 0.005f, 0.0f);
+    plate_desc.transform.position = place(Vec3(0.0f, settled.max + k_plate_half + 0.005f, 0.0f));
     plate_desc.motion = MotionType::Kinematic;
     plate_desc.layer = Layer::Kinematic;
     plate_desc.friction = 0.6f;
     BodyId plate;
     REQUIRE(world.create_body(plate_desc, plate) == Status::Ok);
 
-    f32 plate_y = plate_desc.transform.position.y;
+    f32 plate_y = local_of(plate_desc.transform.position).y;
     const f32 target = settled.min + 0.70f * rest_height + k_plate_half;
     const auto drive_plate = [&world, &plate, &plate_y, dt](f32 y) {
       plate_y = y;
-      Transform3 to;
-      to.position = Vec3(0.0f, plate_y, 0.0f);
+      BodyTransform to;
+      to.position = place(Vec3(0.0f, plate_y, 0.0f));
       REQUIRE(world.move_kinematic(plate, to, dt));
     };
 
@@ -236,14 +237,15 @@ TEST_CASE("physics: an authored strain limit is enforced, and nothing enforced i
     REQUIRE(world.init(small_world_options()) == Status::Ok);
 
     // The top face pinned to fixed world points: a null body in an attachment is a point in the
-    // world, and `Rigid` is the form that cannot be pulled off it.
+    // world, given in the frame the cage was placed in, and `Rigid` is the form that cannot be
+    // pulled off it.
     Vector<SoftAttachment> attachments;
     const Vec3 origin(0.0f, 5.0f, 0.0f);
     for (u32 z = 0; z < k_n; ++z) {
       for (u32 x = 0; x < k_n; ++x) {
         SoftAttachment attachment;
         attachment.vertex = lattice.index(x, k_n - 1, z);
-        attachment.local_point = origin + lattice.vertices[attachment.vertex];
+        attachment.local_point = lattice.vertices[attachment.vertex];
         attachments.push_back(attachment);
       }
     }
@@ -255,7 +257,7 @@ TEST_CASE("physics: an authored strain limit is enforced, and nothing enforced i
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
     desc.attachments = std::span<const SoftAttachment>(attachments);
-    desc.transform.position = origin;
+    desc.transform.position = place(origin);
     desc.iterations = k_cage_iterations_default;
     desc.gravity_factor = 30.0f;
     desc.max_strain = max_strain;
@@ -268,7 +270,8 @@ TEST_CASE("physics: an authored strain limit is enforced, and nothing enforced i
       REQUIRE(world.step(dt, k_cage_sub_steps_default) == Status::Ok);
 
     Vector<Vec3> points(vertex_count);
-    REQUIRE(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count);
+    REQUIRE(world.read_soft_body_vertices(cage, WorldPos::origin(), std::span<Vec3>(points)) ==
+            vertex_count);
     REQUIRE(all_finite(std::span<const Vec3>(points)));
     return max_stretch(lattice, std::span<const Vec3>(points));
   };
@@ -330,7 +333,7 @@ TEST_CASE("physics: the strain clamp stops the cell inversion the divergence com
     desc.edges = std::span<const SoftEdge>(lattice.edges);
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
-    desc.transform.position = Vec3(0.0f, 0.5f * side + 0.02f, 0.0f);
+    desc.transform.position = place(Vec3(0.0f, 0.5f * side + 0.02f, 0.0f));
     desc.iterations = 16;
     desc.max_strain = max_strain;
     desc.friction = 0.9f;
@@ -342,7 +345,7 @@ TEST_CASE("physics: the strain clamp stops the cell inversion the divergence com
     REQUIRE(world.create_box(Vec3(0.5f, 0.2f, 0.5f), plate_shape) == Status::Ok);
     BodyDesc plate_desc;
     plate_desc.shape = plate_shape;
-    plate_desc.transform.position = Vec3(0.0f, side + 0.25f, 0.0f);
+    plate_desc.transform.position = place(Vec3(0.0f, side + 0.25f, 0.0f));
     plate_desc.motion = MotionType::Kinematic;
     plate_desc.layer = Layer::Kinematic;
     plate_desc.friction = 0.9f;
@@ -350,19 +353,20 @@ TEST_CASE("physics: the strain clamp stops the cell inversion the divergence com
     REQUIRE(world.create_body(plate_desc, plate) == Status::Ok);
 
     const f32 dt = world.step_seconds();
-    f32 plate_y = plate_desc.transform.position.y;
+    f32 plate_y = local_of(plate_desc.transform.position).y;
     // Driven a long way past the cage's own depth: an inextensible cage cannot win this argument
     // and something has to give.
     const f32 target = height_fraction * side + 0.2f;
     Vector<Vec3> points(vertex_count);
     for (u32 i = 0; i < 200; ++i) {
       plate_y = plate_y - 0.01f > target ? plate_y - 0.01f : target;
-      Transform3 to;
-      to.position = Vec3(0.0f, plate_y, 0.0f);
+      BodyTransform to;
+      to.position = place(Vec3(0.0f, plate_y, 0.0f));
       REQUIRE(world.move_kinematic(plate, to, dt));
       REQUIRE(world.step(dt, 1) == Status::Ok);
     }
-    REQUIRE(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count);
+    REQUIRE(world.read_soft_body_vertices(cage, WorldPos::origin(), std::span<Vec3>(points)) ==
+            vertex_count);
     return points;
   };
 
@@ -402,7 +406,7 @@ TEST_CASE("physics: a tick reports what its deformable volumes cost it") {
     desc.edges = std::span<const SoftEdge>(lattice.edges);
     desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
     desc.faces = std::span<const u32>(lattice.faces);
-    desc.transform.position = at;
+    desc.transform.position = place(at);
     desc.iterations = k_cage_iterations_default;
     desc.hero = hero;
     desc.allow_sleeping = false;

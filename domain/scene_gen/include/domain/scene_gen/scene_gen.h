@@ -201,11 +201,27 @@ struct Lattice {
   // coarse lattice neither aliases nor shimmers as the ground moves under it. A provider with
   // nothing finer than its lattices can carry answers the point either way.
   i64 filter_mm = 0;
+  // A point's coordinate in metres, as float32: what a provider's float arithmetic (the fixed
+  // features, a height function of metres) is handed. Exact for the world's lattice only while a
+  // float holds the millimetre — to 16 km for any spacing, and to 2^24 spacings for a spacing that
+  // is a power-of-two fraction of a metre (4,000 km at 25 cm) — so it is never the way to a
+  // lattice point's place.
   f32 x(i32 i) const noexcept;
   f32 z(i32 j) const noexcept;
+  // **A point's place in whole millimetres from the world's origin** (ADR-0053): for the world's
+  // lattice `i * spacing_mm`, exact for every index; for a scene grid the nearest millimetre of
+  // its float coordinate, which is what that coordinate always meant. What a provider samples its
+  // field at, so a lattice index never reaches the field through a float32 metre.
+  i64 x_mm(i64 i) const noexcept;
+  i64 z_mm(i64 j) const noexcept;
 };
 Lattice scene_lattice(f32 extent, u32 size) noexcept;
 Lattice ring_lattice(i64 spacing_mm, i64 filter_mm = 0) noexcept;
+
+// The nearest whole millimetre to a coordinate in metres, halves up: the world's lattice is
+// integer millimetres, and a position reaches it in f64 (ADR-0053). The terrain's own `to_mm`
+// rounds a float32 metre the same way.
+i64 nearest_mm(f64 metres) noexcept;
 
 // A grid is cut into 64 x 64 blocks of lattice points, and a provider evaluates a range of them per
 // call, so a caller hands the blocks to as many jobs as it likes and gets the same bytes: blocks
@@ -417,6 +433,14 @@ struct GroundOps {
                      std::string* error) = nullptr;
   // What the store files a tile's record under (a schema type's name), with `open_tiles`.
   const char* record = nullptr;
+  // **The surface at a point given in whole millimetres** from the world's origin, at game time
+  // `time_s` — a ground that does not move answers its one surface whatever the time (ADR-0053;
+  // scene_gen.md, "Far from the origin"). What a walker asks between lattice points, anywhere: the
+  // place is integers, so it never passes through a float32 metre, and it is not a lattice index,
+  // so it does not overflow one (a 1 mm lattice's i32 index ends at 2,147 km). The same heights
+  // as `evaluate` on a 1 mm lattice at that point. Null: `GroundProvider::height_mm` falls back
+  // (below).
+  f32 (*height_mm)(const void* state, f64 time_s, i64 x_mm, i64 z_mm) noexcept = nullptr;
 };
 
 class GroundProvider {
@@ -435,6 +459,11 @@ class GroundProvider {
 
   bool valid() const noexcept { return ops_ != nullptr; }
   f32 height(f32 x, f32 z) const noexcept { return ops_->height(state_, x, z); }
+  // The surface at (x_mm, z_mm) at `time_s` (`GroundOps::height_mm`). A provider without the entry
+  // answers through `evaluate` on a 1 mm lattice where its i32 index reaches (2,147 km) and the
+  // ground moves, and through `height` at the point's float32 metres otherwise — exact only while a
+  // float holds the millimetre, which is why the dunes have the entry.
+  f32 height_mm(f64 time_s, i64 x_mm, i64 z_mm) const noexcept;
   f32 floor(f32 x, f32 z) const noexcept {
     return ops_->floor != nullptr ? ops_->floor(state_, x, z) : ops_->height(state_, x, z);
   }

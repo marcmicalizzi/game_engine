@@ -24,10 +24,21 @@ u32 bits(f32 v) noexcept {
   return std::bit_cast<u32>(v);
 }
 
+u64 bits(f64 v) noexcept {
+  if (v == 0.0) v = 0.0;  // -0 and +0 are the same state
+  return std::bit_cast<u64>(v);
+}
+
 u64 hash_vec3(u64 seed, Vec3 v) noexcept {
   u64 h = hash_combine(seed, bits(v.x));
   h = hash_combine(h, bits(v.y));
   return hash_combine(h, bits(v.z));
+}
+
+u64 hash_world(u64 seed, WorldPos p) noexcept {
+  u64 h = hash_combine(seed, bits(p.x));
+  h = hash_combine(h, bits(p.y));
+  return hash_combine(h, bits(p.z));
 }
 
 // The two decisions the backend leaves to its user, made the way its own character sample makes
@@ -94,7 +105,7 @@ const char* ground_name(Ground ground) noexcept {
 }
 
 u64 hash_character_state(u64 seed, const CharacterState& state) noexcept {
-  u64 h = hash_vec3(seed, state.position);
+  u64 h = hash_world(seed, state.position);
   h = hash_vec3(h, state.velocity);
   h = hash_vec3(h, state.ground_normal);
   h = hash_combine(h, static_cast<u64>(state.ground));
@@ -123,7 +134,7 @@ struct CharacterBody::Impl {
 
   CharacterState state() const noexcept {
     CharacterState out;
-    out.position = from_jph(JPH::Vec3(character->GetPosition()));
+    out.position = from_jph_world(character->GetPosition());
     out.velocity = from_jph(character->GetLinearVelocity());
     out.ground = ground_of(character->GetGroundState());
     out.ground_normal =
@@ -147,7 +158,7 @@ const CharacterConfig& CharacterBody::config() const noexcept {
   return impl_ != nullptr ? impl_->config : k_none;
 }
 
-Status CharacterBody::create(World& world, const CharacterConfig& config, Vec3 feet) {
+Status CharacterBody::create(World& world, const CharacterConfig& config, WorldPos feet) {
   if (impl_ != nullptr || world.impl_ == nullptr) return Status::InvalidArgument;
   if (!valid_config(config)) return Status::InvalidArgument;
 
@@ -179,8 +190,8 @@ Status CharacterBody::create(World& world, const CharacterConfig& config, Vec3 f
   impl->temp = world.impl_->temp_allocator;
   impl->config = config;
   impl->dt = 1.0f / static_cast<f32>(config.step_hz);
-  impl->character = new JPH::CharacterVirtual(settings, JPH::RVec3(to_jph(feet)),
-                                              JPH::Quat::sIdentity(), 0, impl->system);
+  impl->character =
+      new JPH::CharacterVirtual(settings, to_jph(feet), JPH::Quat::sIdentity(), 0, impl->system);
   impl->character->SetListener(&impl->listener);
   // Walking down a slope keeps the feet on it (the stick-to-floor sweep reaches at least a step
   // down, and half a metre, the backend's own default, on anything shallower), and walking into a
@@ -246,10 +257,10 @@ Status CharacterBody::step(const CharacterInput& input) {
   return Status::Ok;
 }
 
-Status CharacterBody::teleport(Vec3 feet) {
+Status CharacterBody::teleport(WorldPos feet) {
   if (impl_ == nullptr) return Status::InvalidArgument;
   Impl& impl = *impl_;
-  impl.character->SetPosition(JPH::RVec3(to_jph(feet)));
+  impl.character->SetPosition(to_jph(feet));
   impl.character->SetLinearVelocity(JPH::Vec3::sZero());
   impl.character->RefreshContacts(impl.broad_phase_filter(), impl.object_filter(), {}, {},
                                   *impl.temp);
@@ -261,13 +272,13 @@ CharacterState CharacterBody::state() const noexcept {
   return impl_ != nullptr ? impl_->state() : CharacterState{};
 }
 
-Vec3 CharacterBody::feet() const noexcept {
-  return impl_ != nullptr ? from_jph(JPH::Vec3(impl_->character->GetPosition())) : Vec3{};
+WorldPos CharacterBody::feet() const noexcept {
+  return impl_ != nullptr ? from_jph_world(impl_->character->GetPosition()) : WorldPos{};
 }
 
-Vec3 CharacterBody::eye() const noexcept {
-  const Vec3 f = feet();
-  return Vec3{f.x, f.y + (impl_ != nullptr ? impl_->config.eye_height : 0.0f), f.z};
+WorldPos CharacterBody::eye() const noexcept {
+  const f32 eye_height = impl_ != nullptr ? impl_->config.eye_height : 0.0f;
+  return feet() + DVec3{0.0, static_cast<f64>(eye_height), 0.0};
 }
 
 u64 CharacterBody::hash() const noexcept { return impl_ != nullptr ? impl_->hash : 0; }

@@ -7,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace engine;
@@ -22,7 +23,7 @@ TEST_CASE("physics: a sphere dropped on a static box comes to rest and falls asl
   REQUIRE(world.create_sphere(0.5f, sphere_shape) == Status::Ok);
   BodyDesc desc;
   desc.shape = sphere_shape;
-  desc.transform.position = Vec3(0.0f, 5.0f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, 5.0f, 0.0f));
   BodyId sphere;
   REQUIRE(world.create_body(desc, sphere) == Status::Ok);
   CHECK(world.body_active(sphere));
@@ -45,18 +46,29 @@ TEST_CASE("physics: a sphere dropped on a static box comes to rest and falls asl
 // amplified all the way up, and it falls over inside two seconds with any solver settings
 // worth shipping. Ten towers of ten is the shape a game actually builds, and it also puts ten
 // islands in front of the solver instead of one, which is what the drift bound is watching.
-TEST_CASE("physics: a 100-box stack is still standing after 600 steps") {
+namespace {
+
+constexpr u32 k_towers = 10;
+constexpr u32 k_height = 10;
+constexpr u32 k_count = k_towers * k_height;
+constexpr f32 k_half = 0.5f;
+// How far a settled box at a far site may stand off its place by the origin (the far case below).
+constexpr f64 k_far_stack_tolerance_m = 1.0e-4;
+
+struct Stack {
+  Vector<BodyTransform> transforms;  // after the steps, in the world
+  u32 active = 0;
+};
+
+// The ten towers on their ground, all of it at `site`, stepped `steps` times.
+Stack settle_stack(WorldPos site, u32 steps) {
   WorldOptions options = small_world_options();
   options.max_body_pairs = 16384;
   options.max_contact_constraints = 16384;
   World world;
   REQUIRE(world.init(options) == Status::Ok);
-  add_ground(world);
+  add_ground(world, Vec3(50.0f, 0.5f, 50.0f), site);
 
-  constexpr u32 k_towers = 10;
-  constexpr u32 k_height = 10;
-  constexpr u32 k_count = k_towers * k_height;
-  constexpr f32 k_half = 0.5f;
   ShapeId box_shape;
   REQUIRE(world.create_box(Vec3(k_half, k_half, k_half), box_shape) == Status::Ok);
 
@@ -66,8 +78,10 @@ TEST_CASE("physics: a 100-box stack is still standing after 600 steps") {
     for (u32 level = 0; level < k_height; ++level) {
       BodyDesc desc;
       desc.shape = box_shape;
-      desc.transform.position = Vec3(static_cast<f32>(tower) * 3.0f - 13.5f,
-                                     k_half + static_cast<f32>(level) * (2.0f * k_half), 0.0f);
+      desc.transform.position =
+          place(Vec3(static_cast<f32>(tower) * 3.0f - 13.5f,
+                     k_half + static_cast<f32>(level) * (2.0f * k_half), 0.0f),
+                site);
       desc.friction = 0.8f;
       BodyId body;
       REQUIRE(world.create_body(desc, body) == Status::Ok);
@@ -76,17 +90,27 @@ TEST_CASE("physics: a 100-box stack is still standing after 600 steps") {
   }
   world.optimize_broad_phase();
 
-  step_n(world, 600);
+  step_n(world, steps);
 
-  Vector<Transform3> transforms(k_count);
-  world.read_transforms(std::span<const BodyId>(boxes), std::span<Transform3>(transforms));
+  Stack out;
+  out.transforms.resize(k_count);
+  world.read_transforms(std::span<const BodyId>(boxes), std::span<BodyTransform>(out.transforms));
+  out.active = world.active_body_count();
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("physics: a 100-box stack is still standing after 600 steps") {
+  const Stack stack = settle_stack(WorldPos::origin(), 600);
+  const Vector<BodyTransform>& transforms = stack.transforms;
 
   f32 max_drift = 0.0f;
   f32 max_sink = 0.0f;
   for (u32 tower = 0; tower < k_towers; ++tower) {
     const f32 tower_x = static_cast<f32>(tower) * 3.0f - 13.5f;
     for (u32 level = 0; level < k_height; ++level) {
-      const Vec3 p = transforms[tower * k_height + level].position;
+      const Vec3 p = local_of(transforms[tower * k_height + level].position);
       const f32 dx = p.x - tower_x;
       const f32 drift = std::sqrt(dx * dx + p.z * p.z);
       if (drift > max_drift) max_drift = drift;
@@ -100,7 +124,37 @@ TEST_CASE("physics: a 100-box stack is still standing after 600 steps") {
   // And nothing has sunk into the stack: the contacts settle inside the penetration slop, not
   // through it.
   CHECK(max_sink < 0.2f);
-  CHECK(world.active_body_count() == 0);  // ten settled towers are asleep by now
+  CHECK(stack.active == 0);  // ten settled towers are asleep by now
+}
+
+// **Far from the origin, the stack settles where it settles by the origin** (ADR-0053; physics.md,
+// "Far from the origin"). The ground and the hundred boxes moved to each far site, stepped the
+// same 600 times, come to rest at the same places from the site and fall asleep the same way. What
+// can differ is only where f64 rounds an absolute position — a contact's arithmetic is floats
+// relative to the bodies, the same at every site — and a stack carries a rounding forward through
+// its contacts for 600 steps; the bound is what that measured, with a margin, and a float32 build
+// fails it by its whole step (3.1 cm at 419 km, a metre at 10,000 km).
+TEST_CASE("physics: the 100-box stack at 419 km, 10,000 km and 1e8 m settles as by the origin") {
+  const Stack home = settle_stack(WorldPos::origin(), 600);
+  for (u32 s = 1; s < 4; ++s) {
+    const Stack far = settle_stack(k_sites[s], 600);
+    f64 worst = 0.0;
+    f32 worst_turn = 0.0f;
+    for (u32 i = 0; i < k_count; ++i) {
+      const DVec3 d =
+          (far.transforms[i].position - k_sites[s]) - (home.transforms[i].position - WorldPos{});
+      worst = std::max(worst, length(d));
+      const Quat a = far.transforms[i].rotation;
+      const Quat b = home.transforms[i].rotation;
+      worst_turn = std::max(
+          worst_turn, std::abs(std::abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) - 1.0f));
+    }
+    MESSAGE(site_name(s) << ": a box stood off its place by the origin by at most " << worst
+                         << " m; rotations agreed to " << worst_turn << " of a unit dot");
+    CHECK(worst < k_far_stack_tolerance_m);
+    CHECK(worst_turn < 1.0e-4f);
+    CHECK(far.active == home.active);
+  }
 }
 
 TEST_CASE("physics: a kinematic box pushes a dynamic one") {
@@ -113,14 +167,14 @@ TEST_CASE("physics: a kinematic box pushes a dynamic one") {
 
   BodyDesc dynamic_desc;
   dynamic_desc.shape = box_shape;
-  dynamic_desc.transform.position = Vec3(0.0f, 0.5f, 0.0f);
+  dynamic_desc.transform.position = place(Vec3(0.0f, 0.5f, 0.0f));
   dynamic_desc.friction = 0.4f;
   BodyId crate;
   REQUIRE(world.create_body(dynamic_desc, crate) == Status::Ok);
 
   BodyDesc pusher_desc;
   pusher_desc.shape = box_shape;
-  pusher_desc.transform.position = Vec3(-3.0f, 0.5f, 0.0f);
+  pusher_desc.transform.position = place(Vec3(-3.0f, 0.5f, 0.0f));
   pusher_desc.motion = MotionType::Kinematic;
   pusher_desc.layer = Layer::Kinematic;
   BodyId pusher;
@@ -132,8 +186,8 @@ TEST_CASE("physics: a kinematic box pushes a dynamic one") {
   f32 x = -3.0f;
   for (u32 i = 0; i < 240; ++i) {
     x += 2.0f * dt;
-    Transform3 target;
-    target.position = Vec3(x, 0.5f, 0.0f);
+    BodyTransform target;
+    target.position = place(Vec3(x, 0.5f, 0.0f));
     REQUIRE(world.move_kinematic(pusher, target, dt));
     REQUIRE(world.step() == Status::Ok);
   }
@@ -155,7 +209,7 @@ TEST_CASE("physics: contact begin is reported once per pair") {
   REQUIRE(world.create_sphere(0.5f, sphere_shape) == Status::Ok);
   BodyDesc desc;
   desc.shape = sphere_shape;
-  desc.transform.position = Vec3(0.0f, 0.7f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, 0.7f, 0.0f));
   desc.user_data = 0xABCDu;
   // Sleeping would end the contact and start it again on the next touch; this test is about
   // the listener, not about sleep.
@@ -210,8 +264,8 @@ TEST_CASE("physics: the debris pool recycles the oldest piece") {
 
   Vector<BodyId> spawned;
   for (u32 i = 0; i < 4; ++i) {
-    Transform3 at;
-    at.position = Vec3(static_cast<f32>(i), 3.0f, 0.0f);
+    BodyTransform at;
+    at.position = place(Vec3(static_cast<f32>(i), 3.0f, 0.0f));
     BodyId piece;
     REQUIRE(world.spawn_debris(chip, at, Vec3(0.0f, 1.0f, 0.0f), piece) == Status::Ok);
     spawned.push_back(piece);
@@ -222,8 +276,8 @@ TEST_CASE("physics: the debris pool recycles the oldest piece") {
     CHECK(world.contains(piece));
 
   // One past the cap: the oldest goes, the newest arrives, the count does not move.
-  Transform3 at;
-  at.position = Vec3(9.0f, 3.0f, 0.0f);
+  BodyTransform at;
+  at.position = place(Vec3(9.0f, 3.0f, 0.0f));
   BodyId fifth;
   REQUIRE(world.spawn_debris(chip, at, Vec3::zero(), fifth) == Status::Ok);
   CHECK_FALSE(world.contains(spawned[0]));
@@ -254,7 +308,7 @@ TEST_CASE("physics: shapes are shared and outlive nothing that uses them") {
 
   BodyDesc desc;
   desc.shape = box_shape;
-  desc.transform.position = Vec3(0.0f, 10.0f, 0.0f);
+  desc.transform.position = place(Vec3(0.0f, 10.0f, 0.0f));
   BodyId first;
   BodyId second;
   REQUIRE(world.create_body(desc, first) == Status::Ok);

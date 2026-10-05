@@ -4,6 +4,9 @@
 #include <domain/scene_gen/sky.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <span>
 
 namespace engine::scene_gen {
 
@@ -16,6 +19,17 @@ f32 Lattice::x(i32 i) const noexcept {
 }
 
 f32 Lattice::z(i32 j) const noexcept { return x(j); }
+
+i64 nearest_mm(f64 metres) noexcept { return static_cast<i64>(std::floor(metres * 1000.0 + 0.5)); }
+
+i64 Lattice::x_mm(i64 i) const noexcept {
+  // A scene grid's points are its float coordinates (bounded by the scene's extent); the world's
+  // lattice's are integers, and their product is exact in i64 to 9.2e12 km at a millimetre.
+  if (scene_grid) return nearest_mm(static_cast<f64>(x(static_cast<i32>(i))));
+  return i * spacing_mm;
+}
+
+i64 Lattice::z_mm(i64 j) const noexcept { return x_mm(j); }
 
 Lattice scene_lattice(f32 extent, u32 size) noexcept {
   Lattice l;
@@ -109,6 +123,22 @@ void GroundProvider::grid(const Lattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz
       heights[static_cast<usize>(j) * nx + i] = ops_->height(state_, x, z);
     }
   }
+}
+
+f32 GroundProvider::height_mm(f64 time_s, i64 x_mm, i64 z_mm) const noexcept {
+  if (ops_->height_mm != nullptr) return ops_->height_mm(state_, time_s, x_mm, z_mm);
+  // A moving ground with no point entry: its re-evaluation on the 1 mm lattice, while the index
+  // fits the entry's i32 — the same heights the point entry would give.
+  const i64 limit = static_cast<i64>(std::numeric_limits<i32>::max());
+  f32 h = 0.0f;
+  if (moves() && x_mm >= -limit && x_mm <= limit && z_mm >= -limit && z_mm <= limit &&
+      evaluate(time_s, ring_lattice(1), static_cast<i32>(x_mm), static_cast<i32>(z_mm), 1, 1, 0, 1,
+               std::span<f32>(&h, 1))) {
+    return h;
+  }
+  // Otherwise the provider's own point function at its own time, which takes float32 metres.
+  return ops_->height(state_, static_cast<f32>(static_cast<f64>(x_mm) / 1000.0),
+                      static_cast<f32>(static_cast<f64>(z_mm) / 1000.0));
 }
 
 bool GroundProvider::make_rings(i64 extent_mm, i64 spacing_mm, GroundRings& out,

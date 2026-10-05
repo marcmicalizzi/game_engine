@@ -140,7 +140,7 @@ Status World::create_heightfield(const HeightfieldDesc& desc, ShapeId& out) {
   if (desc.heights.size() != needed) return Status::InvalidArgument;
   if (!(desc.scale.x > 0.0f) || !(desc.scale.z > 0.0f)) return Status::InvalidArgument;
 
-  JPH::HeightFieldShapeSettings settings(desc.heights.data(), to_jph(desc.offset),
+  JPH::HeightFieldShapeSettings settings(desc.heights.data(), to_jph(desc.local_offset),
                                          to_jph(desc.scale), desc.sample_count);
   settings.SetEmbedded();
   JPH::RefConst<JPH::Shape> shape;

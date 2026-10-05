@@ -105,7 +105,17 @@ function(engine_fetch_jolt)
   # through schemas (ADR-0007).
   set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
   set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-  set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+
+  # --- precision ------------------------------------------------------------------------------
+  # A body's position, a query's origin and a character's feet are f64 (ADR-0053): at 420 km a
+  # float steps by 3.1 cm and a walker built single-precision lost motion there
+  # (docs/experiments/far-from-origin-2026-10-04.md). Jolt's double mode keeps positions in double
+  # and does its collision arithmetic in float relative to a base near the bodies involved, which
+  # is the engine's own rule for local frames. It is ON for every preset and both baselines, and
+  # there is no option to turn it off: two precisions would be two simulations, and every hash a
+  # replay records would depend on which one a build chose. src/jolt.h refuses to compile without
+  # it. What it costs is measured in docs/experiments/world-positions-physics-2026-10-05.md.
+  set(DOUBLE_PRECISION ON CACHE BOOL "" FORCE)
   set(JPH_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
   set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)

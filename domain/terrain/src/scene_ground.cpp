@@ -46,6 +46,16 @@ f32 dunes_height(const void* state, f32 x, f32 z) noexcept {
   return sand + features(g, x, z);
 }
 
+// The surface at a point of the world's millimetre lattice at a game time (`GroundOps::height_mm`):
+// the same arithmetic as `dunes_evaluate` on a 1 mm lattice at that point — the field at the
+// integers, the features at their float metres — without an index to overflow.
+f32 dunes_height_mm(const void* state, f64 time_s, i64 x_mm, i64 z_mm) noexcept {
+  const auto& g = *static_cast<const DunesGround*>(state);
+  const f32 sand = height_m(g.field.height_um(x_mm, z_mm, time_us_of(time_s), Detail::dunes));
+  return sand + features(g, static_cast<f32>(static_cast<f64>(x_mm) / 1000.0),
+                         static_cast<f32>(static_cast<f64>(z_mm) / 1000.0));
+}
+
 f32 dunes_floor(const void* state, f32 x, f32 z) noexcept {
   const auto& g = *static_cast<const DunesGround*>(state);
   const f32 floor = height_m(g.field.floor_um(to_mm(x), to_mm(z)));
@@ -70,16 +80,25 @@ bool dunes_evaluate(const void* state, f64 time_s, const scene_gen::Lattice& lat
     const u32 ex = std::min(nx, bx + k_block);
     // A lattice that stands for more than its points (`Lattice::filter_mm`, a far level's) gathers
     // only the bands it carries and reads the rest as their means.
-    g.field.gather(to_mm(lattice.x(i0 + static_cast<i32>(bx))),
-                   to_mm(lattice.z(j0 + static_cast<i32>(bz))),
-                   to_mm(lattice.x(i0 + static_cast<i32>(ex - 1))),
-                   to_mm(lattice.z(j0 + static_cast<i32>(ez - 1))), time_us, nullptr,
+    //
+    // **The field is sampled at the point's millimetres, which are integers** (`Lattice::x_mm`;
+    // ADR-0053). Until 2026-10-05 the index went through the point's float32 metres and back
+    // (`to_mm(lattice.x(i))`), which is the same millimetre while a float holds it — to 16 km at
+    // any spacing, to 4,000 km at 25 cm — and a neighbour's height past that. The fixed features
+    // are float arithmetic of metres and are still handed them; they are the scene's hand-placed
+    // ridges and bowls, and zero away from them.
+    const i64 first_i = i64{i0};
+    const i64 first_j = i64{j0};
+    g.field.gather(lattice.x_mm(first_i + bx), lattice.z_mm(first_j + bz),
+                   lattice.x_mm(first_i + ex - 1), lattice.z_mm(first_j + ez - 1), time_us, nullptr,
                    lattice.filter_mm, gather);
     for (u32 zi = bz; zi < ez; ++zi) {
       const f32 z = lattice.z(j0 + static_cast<i32>(zi));
+      const i64 z_mm = lattice.z_mm(first_j + zi);
       for (u32 xi = bx; xi < ex; ++xi) {
         const f32 x = lattice.x(i0 + static_cast<i32>(xi));
-        const f32 sand = height_m(g.field.height_um(gather, to_mm(x), to_mm(z), Detail::dunes));
+        const f32 sand =
+            height_m(g.field.height_um(gather, lattice.x_mm(first_i + xi), z_mm, Detail::dunes));
         heights[static_cast<usize>(zi) * nx + xi] = sand + features(g, x, z);
       }
     }
@@ -295,6 +314,7 @@ constexpr scene_gen::GroundOps k_dunes_ops{
     .make_rings = &dunes_make_rings,
     .open_tiles = &dunes_open_tiles,
     .record = k_overlay_record,
+    .height_mm = &dunes_height_mm,
 };
 
 // The entry's generator fields checked as the scene reader always checked them, and the band table

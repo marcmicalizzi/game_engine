@@ -32,6 +32,13 @@
 // refreshed on the renderer's schedule (`set_ground_time`), which a live window's display drives,
 // and a walk over moving sand replays against the sand the replay draws.
 //
+// **Far from the origin** (ADR-0053; docs: "Far from the origin"). A tile's bodies stand at the
+// tile's corner, a `WorldPos`, and hold their shapes in the tile's own frame: the ground a field of
+// heights from the corner, the placements a compound of pieces placed from it. A height is asked
+// for at a `WorldPos` and found on the lattice in integer millimetres, so neither the walker's feet
+// nor a lattice point passes through a float32 metre, and a tile 10,000 km out collides as one by
+// the origin does.
+//
 //   [-] schema types      none: nothing here is persistent; the bodies are rebuilt from the scene
 //   [-] scheduler entry   none: the ring updates between ticks, as every world consumer's does
 //   [-] render passes     none: collision is not drawn
@@ -198,8 +205,9 @@ class SceneCollision {
   // than `k_underfoot_error_m` off, at every update and outside the budget, so the ground a walker
   // stands on follows the drawn sand a frame at a time; the others once they stand more than
   // `ground_error_m` off, at most `max_refreshes` of them an update, nearest first. Returns the
-  // tiles worked. Nothing moves on still ground, and this returns 0 there without looking.
-  u32 refresh(f32 x, f32 z, f32 reach = 0.0f);
+  // tiles worked. Nothing moves on still ground, and this returns 0 there without looking. The
+  // walker is at `at`, whose y is not read.
+  u32 refresh(WorldPos at, f32 reach = 0.0f);
   // **The walker goes with the ground** (docs: "The walker goes with the ground"): `refresh` round
   // the walker's feet, within its capsule's radius, and then the walker moved with what that did
   // under it, before its step. Standing on the ground — on a held tile's heightfield, not on a
@@ -212,10 +220,12 @@ class SceneCollision {
   // anew. On still ground this is `refresh` and nothing else. Returns the tiles worked.
   u32 follow(physics::CharacterBody& walker);
 
-  // The collision ground's height at (x, z), from the heights the tile holding it was built with,
-  // interpolated across the cell as the backend's heightfield triangulates it. False where no held
-  // tile covers the point.
-  bool ground_height(f32 x, f32 z, f32& out) const noexcept;
+  // The collision ground's height under `at` (its y is not read), from the heights the tile holding
+  // it was built with, interpolated across the cell as the backend's heightfield triangulates it.
+  // The cell and the fractions across it are found in millimetres from the tile's lattice window,
+  // so on a lattice point the answer is the tile source's height to the bit, anywhere. False where
+  // no held tile covers the point.
+  bool ground_height(WorldPos at, f32& out) const noexcept;
   const Stats& stats() const noexcept { return stats_; }
   // Whether a streamed scene's generators, rather than the scene's own instances, give the tiles
   // their placements.
@@ -237,9 +247,11 @@ class SceneCollision {
     u64 ground_bytes = 0;
     u64 compound_bytes = 0;
     // The ground's lattice window and its heights: what the body was built with (`heights`), and,
-    // under a time-lapse, the two fields it blends and the blend it was built at.
-    i32 i0 = 0;
-    i32 j0 = 0;
+    // under a time-lapse, the two fields it blends and the blend it was built at. The window's
+    // first point is i64: the tile source takes an i32 index, which at the collision's spacing s
+    // reaches 2^31 s (2.1e9 m at a metre), and a tile past that is refused rather than wrapped.
+    i64 i0 = 0;
+    i64 j0 = 0;
     u32 n = 0;
     Vector<f32> heights;
     Vector<f32> field_a;
@@ -262,7 +274,10 @@ class SceneCollision {
   bool make_ground_body(Tile& tile);
   void drop_ground_body(Tile& tile);
   bool build_placements(Tile& tile);
-  bool add_piece(u32 mesh, const Mat4& world, Vector<physics::CompoundChild>& children);
+  // Where the tile's bodies stand: its corner at y 0 (`Tile::coord` times the tile's millimetres).
+  WorldPos tile_corner(const Tile& tile) const noexcept;
+  bool add_piece(u32 mesh, const Mat4& world, WorldPos corner,
+                 Vector<physics::CompoundChild>& children);
   bool proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out);
   scene_gen::Context context_for(const Entry& entry) const noexcept;
   void note_bodies() noexcept;

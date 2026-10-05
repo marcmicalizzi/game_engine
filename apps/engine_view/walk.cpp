@@ -5,6 +5,7 @@
 
 #include <core/hash/hash.h>
 #include <core/log/log.h>
+#include <core/math/world.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
@@ -66,6 +67,18 @@ bool read_u32(const JsonValue& object, const char* key, u32& out) {
   if (v == nullptr || !v->get_u64(value) || value > 0xFFFFFFFFull) return false;
   out = static_cast<u32>(value);
   return true;
+}
+
+// The walker's feet are still float32 here while the character and the collision under them take
+// `WorldPos` (ADR-0053): these two cross between them, and go when the feet become `WorldPos`.
+[[maybe_unused]] WorldPos world_of(Vec3 p) noexcept { return absolute(WorldPos::origin(), p); }
+[[maybe_unused]] Vec3 feet_of(WorldPos p) noexcept { return relative(p, WorldPos::origin()); }
+
+// ADR-0053 seam: sim takes WorldPos after the merge. The collision ring's observer
+// (`sim::ObserverSet::add`) is a float32 position today; the ring only picks 32 m tiles by it, so a
+// float's step is harmless to 1e8 m (8 m there), and the walker's own feet stay f64 behind it.
+[[maybe_unused]] Vec3 observer_position(WorldPos p) noexcept {
+  return relative(p, WorldPos::origin());
 }
 
 std::string hex16(u64 value) {
@@ -238,29 +251,27 @@ struct Walker::Impl {
   // "Determinism"). The ground's time goes to the consumer first, so a tile the ring makes now is
   // made at the sand this frame draws; until 2026-09-29 it was made at the last tick's, which after
   // a flight over moving sand was wherever the sand had been when the walker last walked.
-  void move_ring(Vec3 at, bool unlimited) {
+  void move_ring(WorldPos at, bool unlimited) {
     observers.clear();  // kept, so a tick allocates nothing
-    observers.add(at, 1.0f);
+    observers.add(observer_position(at), 1.0f);
     consumer.set_ground_time(ground_time());
     ring.update(observers, ring_tick++, unlimited);
   }
 #endif
 
   // The provider's height where the walker follows the ground: its own time on still ground, the
-  // drawn pair blended as drawn on moving ground.
-  f32 ground_at(f32 x, f32 z) {
-    if (!drawn.moving || !ground->moves()) return ground->height(x, z);
-    const i64 i = static_cast<i64>(std::llround(static_cast<f64>(x) * 1000.0));
-    const i64 j = static_cast<i64>(std::llround(static_cast<f64>(z) * 1000.0));
+  // drawn pair blended as drawn on moving ground. Asked at the nearest millimetre of the f64 place,
+  // an i64 that is never a lattice index and never a float32 metre (ADR-0053;
+  // `scene_gen::GroundProvider::height_mm`): until 2026-10-05 it was an i32 index on a 1 mm
+  // lattice, which overflows past 2,147 km, and the provider's float32 `height` on still ground.
+  f32 ground_at(f64 x, f64 z) {
+    const i64 i = scene_gen::nearest_mm(x);
+    const i64 j = scene_gen::nearest_mm(z);
+    if (!drawn.moving || !ground->moves()) return ground->height_mm(scene->terrain.time_s, i, j);
     if (point.i != i || point.j != j || point.time_a != drawn.time_a ||
         point.time_b != drawn.time_b) {
-      const scene_gen::Lattice lattice = scene_gen::ring_lattice(1);
-      if (!ground->evaluate(drawn.time_a, lattice, static_cast<i32>(i), static_cast<i32>(j), 1, 1,
-                            0, 1, std::span<f32>(point.a, 1)) ||
-          !ground->evaluate(drawn.time_b, lattice, static_cast<i32>(i), static_cast<i32>(j), 1, 1,
-                            0, 1, std::span<f32>(point.b, 1))) {
-        return ground->height(x, z);
-      }
+      point.a[0] = ground->height_mm(drawn.time_a, i, j);
+      point.b[0] = ground->height_mm(drawn.time_b, i, j);
       point.i = i;
       point.j = j;
       point.time_a = drawn.time_a;
@@ -274,15 +285,25 @@ struct Walker::Impl {
   // quad (the (x + 1, z)-(x, z + 1) diagonal), at the drawn time. NaN off the grid. On the world's
   // tiles, the finest tile level's cell, which has no edge, from the tiles' own source (a tile is
   // triangulated with the grid's diagonal).
-  f32 drawn_at(f32 x, f32 z) {
+  f32 drawn_at(f64 x, f64 z) {
     const scene_gen::Lattice& l = drawn.lattice;
     const bool tiled = drawn.tiles != nullptr && l.spacing_mm > 0;
     if (!tiled && l.size < 2) return std::numeric_limits<f32>::quiet_NaN();
-    const f64 fx = (static_cast<f64>(x) - l.origin_x) / l.spacing;
-    const f64 fz = (static_cast<f64>(z) - l.origin_z) / l.spacing;
+    // On the world's tiles, the cell and the fractions from the point's millimetres and the
+    // lattice's integer spacing, so a lattice point is a whole number anywhere (ADR-0053).
+    const f64 fx =
+        tiled ? (x * 1000.0) / static_cast<f64>(l.spacing_mm) : (x - l.origin_x) / l.spacing;
+    const f64 fz =
+        tiled ? (z * 1000.0) / static_cast<f64>(l.spacing_mm) : (z - l.origin_z) / l.spacing;
     const i64 i = static_cast<i64>(std::floor(fx));
     const i64 j = static_cast<i64>(std::floor(fz));
     if (!tiled && (i < 0 || j < 0 || i + 1 >= l.size || j + 1 >= l.size)) {
+      return std::numeric_limits<f32>::quiet_NaN();
+    }
+    // The tile source's window is indexed in i32 (2.1e9 m at a metre, 5.4e8 m at 25 cm): past
+    // that the drawn ground has no cell to ask for.
+    constexpr i64 k_i32_max = static_cast<i64>(std::numeric_limits<i32>::max());
+    if (i < -k_i32_max || j < -k_i32_max || i >= k_i32_max || j >= k_i32_max) {
       return std::numeric_limits<f32>::quiet_NaN();
     }
     const bool moving = drawn.moving && ground->moves();
@@ -329,7 +350,7 @@ struct Walker::Impl {
     const f32 dz = after.z - before.z;
     stats.distance_m += static_cast<f64>(std::sqrt(dx * dx + dz * dz));
     if (after.y > before.y) stats.climb_m += static_cast<f64>(after.y - before.y);
-    const f32 drawn_h = drawn_at(after.x, after.z);
+    const f32 drawn_h = drawn_at(static_cast<f64>(after.x), static_cast<f64>(after.z));
     if (drawn_h == drawn_h && held == held) {
       const f32 e = std::fabs(held - drawn_h);
       stats.max_ground_error_m = e > stats.max_ground_error_m ? e : stats.max_ground_error_m;
@@ -438,25 +459,25 @@ Vec3 Walker::drop(Vec3 camera) {
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
     // Every tile round the camera, and its ground as drawn, before anything is looked for.
-    w.move_ring(camera, true);
-    while (w.consumer.refresh(camera.x, camera.z, w.params.radius) > 0) {
+    w.move_ring(world_of(camera), true);
+    while (w.consumer.refresh(world_of(camera), w.params.radius) > 0) {
     }
     // The highest surface below the camera; a camera under the ground (a flight below the sand)
     // comes up to the surface above it; nothing at all, the ground's own height.
     const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
     physics::RayHit hit;
     Vec3 feet{camera.x, 0.0f, camera.z};
-    if (w.world.cast_ray(Vec3{camera.x, camera.y + 0.01f, camera.z}, Vec3{0.0f, -20000.0f, 0.0f},
-                         hit, statics) ||
-        w.world.cast_ray(Vec3{camera.x, camera.y + 20000.0f, camera.z}, Vec3{0.0f, -40000.0f, 0.0f},
-                         hit, statics)) {
-      feet.y = hit.position.y;
+    if (w.world.cast_ray(world_of(Vec3{camera.x, camera.y + 0.01f, camera.z}),
+                         Vec3{0.0f, -20000.0f, 0.0f}, hit, statics) ||
+        w.world.cast_ray(world_of(Vec3{camera.x, camera.y + 20000.0f, camera.z}),
+                         Vec3{0.0f, -40000.0f, 0.0f}, hit, statics)) {
+      feet.y = static_cast<f32>(hit.position.y);
     } else {
-      feet.y = w.ground_at(camera.x, camera.z);
+      feet.y = w.ground_at(static_cast<f64>(camera.x), static_cast<f64>(camera.z));
     }
     feet.y = feet.y + 0.02f;
     if (!w.body.valid()) {
-      if (w.body.create(w.world, w.character_config(), feet) != physics::Status::Ok) {
+      if (w.body.create(w.world, w.character_config(), world_of(feet)) != physics::Status::Ok) {
         w.physical = false;
         w.collision = "ground-follow";
         w.why =
@@ -464,17 +485,18 @@ Vec3 Walker::drop(Vec3 camera) {
             "follows the ground";
       }
     } else {
-      (void)w.body.teleport(feet);
+      (void)w.body.teleport(world_of(feet));
     }
     if (w.physical) {
-      w.feet = w.body.feet();
+      w.feet = feet_of(w.body.feet());
       w.placed = true;
       w.stats.hash = hash_combine(w.stats.hash, w.body.hash());
       return eye();
     }
   }
 #endif
-  w.feet = Vec3{camera.x, w.ground_at(camera.x, camera.z), camera.z};
+  w.feet =
+      Vec3{camera.x, w.ground_at(static_cast<f64>(camera.x), static_cast<f64>(camera.z)), camera.z};
   w.vy = 0.0f;
   w.airborne = false;
   w.placed = true;
@@ -491,21 +513,21 @@ Vec3 Walker::step(const WalkInput& input) {
   if (w.physical) {
     // The ground round the feet as this frame draws it, and the walker with it: carried by what a
     // refresh changed under it, never left under it (scene_collision.h, `follow`).
-    w.move_ring(before, false);
+    w.move_ring(world_of(before), false);
     (void)w.consumer.follow(w.body);
     // What the step did, from where the sand left it: being carried up a rising dune is not
     // climbing it.
-    const Vec3 from = w.body.feet();
+    const Vec3 from = feet_of(w.body.feet());
     physics::CharacterInput in;
     in.move = direction;
     in.sprint = input.sprint;
     in.jump = input.jump;
     (void)w.body.step(in);
-    w.feet = w.body.feet();
+    w.feet = feet_of(w.body.feet());
     f32 held = std::numeric_limits<f32>::quiet_NaN();
     if (w.body.state().ground == physics::Ground::OnGround) {
       f32 h = 0.0f;
-      if (w.consumer.ground_height(w.feet.x, w.feet.z, h)) held = h;
+      if (w.consumer.ground_height(world_of(w.feet), h)) held = h;
     }
     w.note(from, w.feet, held);
     w.stats.hash = w.body.hash();
@@ -517,7 +539,7 @@ Vec3 Walker::step(const WalkInput& input) {
   const f32 speed = input.sprint ? w.params.sprint : w.params.speed;
   w.feet.x = w.feet.x + direction.x * speed * w.dt;
   w.feet.z = w.feet.z + direction.z * speed * w.dt;
-  const f32 ground = w.ground_at(w.feet.x, w.feet.z);
+  const f32 ground = w.ground_at(static_cast<f64>(w.feet.x), static_cast<f64>(w.feet.z));
   if (!w.airborne && input.jump) {
     w.airborne = true;
     w.vy = w.params.jump_speed;

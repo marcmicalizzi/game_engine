@@ -157,6 +157,8 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
 
   Impl::SoftEntry entry;
   entry.id = id;
+  entry.placement = JPH::RMat44::sRotationTranslation(to_jph(desc.transform.rotation),
+                                                      to_jph(desc.transform.position));
   entry.vertex_count = vertex_count;
   entry.iterations = desc.iterations;
   entry.max_strain = desc.max_strain;
@@ -300,7 +302,7 @@ u32 World::soft_body_vertex_count(SoftBodyId body) const {
   return entry != nullptr ? entry->vertex_count : 0;
 }
 
-u32 World::read_soft_body_vertices(SoftBodyId body, std::span<Vec3> out) const {
+u32 World::read_soft_body_vertices(SoftBodyId body, WorldPos origin, std::span<Vec3> out) const {
   if (impl_ == nullptr) return 0;
   const Impl::SoftEntry* entry = impl_->soft_bodies.get(body.handle);
   if (entry == nullptr) return 0;
@@ -309,26 +311,34 @@ u32 World::read_soft_body_vertices(SoftBodyId body, std::span<Vec3> out) const {
   const JPH::Body& jph_body = lock.GetBody();
   const auto* motion =
       static_cast<const JPH::SoftBodyMotionProperties*>(jph_body.GetMotionProperties());
-  // Particles live in the body's centre-of-mass frame; the world positions the renderer and
-  // the tests want are one transform away.
-  const JPH::RMat44 to_world = jph_body.GetCenterOfMassTransform();
+  // Particles live in the body's centre-of-mass frame. The frame the caller named is one
+  // transform away, and the transform is the body's in double with the caller's origin taken off
+  // it first, so the float that results is small wherever the body and the origin are (ADR-0053).
+  JPH::RMat44 to_frame = jph_body.GetCenterOfMassTransform();
+  to_frame.SetTranslation(to_frame.GetTranslation() - to_jph(origin));
   const u32 available = static_cast<u32>(motion->GetVertices().size());
   const u32 count =
       static_cast<u32>(out.size()) < available ? static_cast<u32>(out.size()) : available;
   for (u32 i = 0; i < count; ++i)
-    out[i] = from_jph(to_world * motion->GetVertex(i).mPosition);
+    out[i] = from_jph(JPH::Vec3(to_frame * motion->GetVertex(i).mPosition));
   return count;
 }
 
-bool World::soft_body_bounds(SoftBodyId body, Aabb3& out) const {
+bool World::soft_body_bounds(SoftBodyId body, WorldPos origin, Aabb3& out) const {
   if (impl_ == nullptr) return false;
   const Impl::SoftEntry* entry = impl_->soft_bodies.get(body.handle);
   if (entry == nullptr) return false;
   const JPH::BodyLockRead lock(impl_->system.GetBodyLockInterfaceNoLock(), entry->id);
   if (!lock.Succeeded()) return false;
-  const JPH::AABox box = lock.GetBody().GetWorldSpaceBounds();
-  out.min = from_jph(box.mMin);
-  out.max = from_jph(box.mMax);
+  // The backend's world bounds are floats rounded outwards at the body's distance from the
+  // origin; its local bounds and position in double are not, so the frame is formed from those.
+  const JPH::Body& jph_body = lock.GetBody();
+  const auto* motion =
+      static_cast<const JPH::SoftBodyMotionProperties*>(jph_body.GetMotionProperties());
+  const JPH::AABox local = motion->GetLocalBounds();
+  const JPH::Vec3 offset(jph_body.GetCenterOfMassPosition() - to_jph(origin));
+  out.min = from_jph(local.mMin + offset);
+  out.max = from_jph(local.mMax + offset);
   return true;
 }
 

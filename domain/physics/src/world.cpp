@@ -57,9 +57,12 @@ void ContactRecorder::record(const JPH::Body& body1, const JPH::Body& body2,
   // (a, b) is (body1, body2) here, so it is the other way round.
   contact.normal = from_jph(-manifold.mWorldSpaceNormal);
   contact.penetration = manifold.mPenetrationDepth;
-  contact.position = manifold.mRelativeContactPointsOn1.empty()
-                         ? from_jph(manifold.mBaseOffset)
-                         : from_jph(manifold.mBaseOffset + manifold.mRelativeContactPointsOn1[0]);
+  // The manifold's points are floats relative to its base offset, which is near the bodies; the
+  // sum is formed in double, so a contact 10,000 km out is where it is (ADR-0053).
+  contact.position =
+      manifold.mRelativeContactPointsOn1.empty()
+          ? from_jph_world(manifold.mBaseOffset)
+          : from_jph_world(manifold.mBaseOffset + manifold.mRelativeContactPointsOn1[0]);
   contact.phase = phase;
   bucket().push_back(contact);
 }
@@ -377,18 +380,17 @@ bool World::contains(BodyId body) const noexcept {
   return impl_ != nullptr && impl_->bodies.contains(body.handle);
 }
 
-bool World::body_transform(BodyId body, Transform3& out) const {
+bool World::body_transform(BodyId body, BodyTransform& out) const {
   if (impl_ == nullptr) return false;
   const Impl::BodyEntry* entry = impl_->body_entry(body);
   if (entry == nullptr) return false;
   const JPH::BodyInterface& bodies = impl_->system.GetBodyInterfaceNoLock();
-  out.position = from_jph(bodies.GetPosition(entry->id));
+  out.position = from_jph_world(bodies.GetPosition(entry->id));
   out.rotation = from_jph(bodies.GetRotation(entry->id));
-  out.scale = Vec3::one();
   return true;
 }
 
-bool World::set_body_transform(BodyId body, const Transform3& transform, bool activate) {
+bool World::set_body_transform(BodyId body, const BodyTransform& transform, bool activate) {
   if (impl_ == nullptr) return false;
   const Impl::BodyEntry* entry = impl_->body_entry(body);
   if (entry == nullptr) return false;
@@ -431,7 +433,7 @@ bool World::add_impulse(BodyId body, Vec3 impulse) {
   return true;
 }
 
-bool World::move_kinematic(BodyId body, const Transform3& target, f32 dt_seconds) {
+bool World::move_kinematic(BodyId body, const BodyTransform& target, f32 dt_seconds) {
   if (impl_ == nullptr || dt_seconds <= 0.0f) return false;
   const Impl::BodyEntry* entry = impl_->body_entry(body);
   if (entry == nullptr) return false;
@@ -479,7 +481,7 @@ bool World::deactivate_body(BodyId body) {
   return true;
 }
 
-void World::read_transforms(std::span<const BodyId> ids, std::span<Transform3> out) const {
+void World::read_transforms(std::span<const BodyId> ids, std::span<BodyTransform> out) const {
   if (impl_ == nullptr) return;
   ENGINE_ASSERT(out.size() >= ids.size(), "physics: read_transforms output is too short");
   const JPH::BodyInterface& bodies = impl_->system.GetBodyInterfaceNoLock();
@@ -487,12 +489,11 @@ void World::read_transforms(std::span<const BodyId> ids, std::span<Transform3> o
   for (usize i = 0; i < count; ++i) {
     const Impl::BodyEntry* entry = impl_->body_entry(ids[i]);
     if (entry == nullptr) {
-      out[i] = Transform3::identity();
+      out[i] = BodyTransform::identity();
       continue;
     }
-    out[i].position = from_jph(bodies.GetPosition(entry->id));
+    out[i].position = from_jph_world(bodies.GetPosition(entry->id));
     out[i].rotation = from_jph(bodies.GetRotation(entry->id));
-    out[i].scale = Vec3::one();
   }
 }
 
@@ -519,7 +520,7 @@ void World::clear_debris() {
   impl_->debris_size = 0;
 }
 
-Status World::spawn_debris(ShapeId shape, const Transform3& transform, Vec3 linear_velocity,
+Status World::spawn_debris(ShapeId shape, const BodyTransform& transform, Vec3 linear_velocity,
                            BodyId& out) {
   if (impl_ == nullptr) return Status::InvalidArgument;
   const u32 cap = impl_->debris_ring.size();
@@ -552,7 +553,7 @@ Status World::spawn_debris(ShapeId shape, const Transform3& transform, Vec3 line
 
 // --- queries -------------------------------------------------------------------------------
 
-bool World::cast_ray(Vec3 origin, Vec3 direction, RayHit& out, LayerMask mask) const {
+bool World::cast_ray(WorldPos origin, Vec3 direction, RayHit& out, LayerMask mask) const {
   if (impl_ == nullptr) return false;
   const JPH::RRayCast ray(to_jph(origin), to_jph(direction));
   JPH::RayCastResult result;
@@ -561,24 +562,26 @@ bool World::cast_ray(Vec3 origin, Vec3 direction, RayHit& out, LayerMask mask) c
   if (!impl_->system.GetNarrowPhaseQuery().CastRay(ray, result, bp_filter, object_filter))
     return false;
 
-  const JPH::Vec3 point = ray.GetPointOnRay(result.mFraction);
+  // origin + direction * fraction in double: the point is where the ray met the surface wherever
+  // in the world that is.
+  const JPH::RVec3 point = ray.GetPointOnRay(result.mFraction);
   const JPH::BodyLockRead lock(impl_->system.GetBodyLockInterfaceNoLock(), result.mBodyID);
   if (!lock.Succeeded()) return false;
   out.body = impl_->handle_of(result.mBodyID);
-  out.position = from_jph(point);
+  out.position = from_jph_world(point);
   out.normal = from_jph(lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point));
   out.fraction = result.mFraction;
   return true;
 }
 
-bool World::cast_shape(ShapeId shape, const Transform3& start, Vec3 sweep, ShapeHit& out,
+bool World::cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, ShapeHit& out,
                        LayerMask mask) const {
   if (impl_ == nullptr) return false;
   const JPH::Shape* jph_shape = impl_->shape_ptr(shape);
   if (jph_shape == nullptr) return false;
 
-  const JPH::RMat44 from =
-      JPH::RMat44::sRotationTranslation(to_jph(start.rotation), to_jph(start.position));
+  const JPH::RVec3 base = to_jph(start.position);
+  const JPH::RMat44 from = JPH::RMat44::sRotationTranslation(to_jph(start.rotation), base);
   const JPH::RShapeCast cast =
       JPH::RShapeCast::sFromWorldTransform(jph_shape, JPH::Vec3::sOne(), from, to_jph(sweep));
   JPH::ShapeCastSettings settings;
@@ -587,12 +590,15 @@ bool World::cast_shape(ShapeId shape, const Transform3& start, Vec3 sweep, Shape
   JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
   const MaskBroadPhaseLayerFilter bp_filter(mask);
   const MaskObjectLayerFilter object_filter(mask);
-  impl_->system.GetNarrowPhaseQuery().CastShape(cast, settings, JPH::RVec3::sZero(), collector,
-                                                bp_filter, object_filter);
+  // The hit comes back in floats relative to a base the caller of the backend chooses; the cast's
+  // own start is the one that keeps them small (the backend's own advice for far from the origin),
+  // and the base is added back in double.
+  impl_->system.GetNarrowPhaseQuery().CastShape(cast, settings, base, collector, bp_filter,
+                                                object_filter);
   if (!collector.HadHit()) return false;
 
   out.body = impl_->handle_of(collector.mHit.mBodyID2);
-  out.position = from_jph(collector.mHit.mContactPointOn2);
+  out.position = from_jph_world(base + collector.mHit.mContactPointOn2);
   // mPenetrationAxis moves the hit body out of the cast shape, so the outward surface normal
   // is the other way.
   const JPH::Vec3 axis = collector.mHit.mPenetrationAxis;
@@ -651,14 +657,18 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
     const JPH::RMat44 to_local = soft.GetCenterOfMassTransform().InversedRotationTranslation();
     for (const SoftAttachment& attachment : entry.attachments) {
       if (attachment.vertex >= motion->GetVertices().size()) continue;
-      JPH::Vec3 target = to_jph(attachment.local_point);
+      // The anchor in the world, in double: the anchoring body's frame, or for a null body the
+      // frame the soft body was placed in (soft_body.h). Brought into the particle's frame in
+      // double too, and only the result — a gap of centimetres — is a float.
+      const JPH::Vec3 local = to_jph(attachment.local_point);
+      JPH::RVec3 target = entry.placement * local;
       if (!attachment.body.is_null()) {
         const Impl::BodyEntry* anchor = impl_->body_entry(attachment.body);
         if (anchor == nullptr) continue;
-        target = anchors.GetWorldTransform(anchor->id) * target;
+        target = anchors.GetWorldTransform(anchor->id) * local;
       }
       JPH::SoftBodyVertex& vertex = motion->GetVertex(attachment.vertex);
-      const JPH::Vec3 gap_velocity = (to_local * target - vertex.mPosition) * inv_dt;
+      const JPH::Vec3 gap_velocity = (JPH::Vec3(to_local * target) - vertex.mPosition) * inv_dt;
       if (attachment.kind == AttachmentKind::Rigid) {
         vertex.mInvMass = 0.0f;
         vertex.mVelocity = gap_velocity;

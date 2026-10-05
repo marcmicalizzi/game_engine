@@ -35,6 +35,12 @@ void backend_release() noexcept;
 
 inline JPH::Vec3 to_jph(Vec3 v) noexcept { return JPH::Vec3(v.x, v.y, v.z); }
 inline Vec3 from_jph(JPH::Vec3Arg v) noexcept { return Vec3(v.GetX(), v.GetY(), v.GetZ()); }
+// A world position and the backend's: both three doubles (jolt.h refuses a float build), so these
+// copy and never round (ADR-0053).
+inline JPH::RVec3 to_jph(WorldPos p) noexcept { return JPH::RVec3(p.x, p.y, p.z); }
+inline WorldPos from_jph_world(JPH::RVec3Arg p) noexcept {
+  return WorldPos(p.GetX(), p.GetY(), p.GetZ());
+}
 inline JPH::Quat to_jph(Quat q) noexcept { return JPH::Quat(q.x, q.y, q.z, q.w); }
 inline Quat from_jph(JPH::QuatArg q) noexcept {
   return Quat(q.GetX(), q.GetY(), q.GetZ(), q.GetW());

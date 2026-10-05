@@ -18,6 +18,10 @@ using namespace engine;
 
 namespace {
 
+// The bench's scenes stand round the origin, whose frame is the world's (ADR-0053).
+WorldPos wp(f32 x, f32 z) { return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}; }
+WorldPos place(Vec3 local) { return absolute(WorldPos::origin(), local); }
+
 void still_destroy(void*) noexcept {}
 f32 still_height(const void*, f32 x, f32 z) noexcept {
   return 1.0f + 0.05f * x + 0.02f * z + 0.0005f * x * z;
@@ -149,7 +153,7 @@ ENGINE_BENCH(scene_collision_tick, "scene_collision.tick") {
     sim::ObserverSet o;
     o.add(Vec3{x, 0.0f, 16.0f}, 1.0f);
     ring.update(o, tick++, false);
-    bench::keep(collision.refresh(x, 16.0f));
+    bench::keep(collision.refresh(wp(x, 16.0f)));
   }
   bench::keep(collision.stats().bodies);
   state.set_items(1);
@@ -183,11 +187,11 @@ ENGINE_BENCH(scene_collision_follow, "scene_collision.follow") {
   at.add(Vec3{16.0f, 0.0f, 16.0f}, 1.0f);
   ring.update(at, 0, true);
   f32 y = 0.0f;
-  collision.ground_height(16.0f, 16.0f, y);
+  collision.ground_height(wp(16.0f, 16.0f), y);
   physics::CharacterConfig c;
   c.step_hz = 240;
   physics::CharacterBody body;
-  body.create(physics, c, Vec3{16.0f, y + 0.02f, 16.0f});
+  body.create(physics, c, place(Vec3{16.0f, y + 0.02f, 16.0f}));
   u32 frame = 0;
   while (state.keep_running()) {
     // Two millimetres a frame, the pair crossed in 5,000 frames and started again.

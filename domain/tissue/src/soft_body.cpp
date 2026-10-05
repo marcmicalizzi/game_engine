@@ -380,7 +380,8 @@ bool settle_soft_body(const TissueFile& file, const SoftBodyOptions& options, Se
     ++out.steps;
     out.strain_clamp_sweeps_max =
         std::max(out.strain_clamp_sweeps_max, world.stats().soft_body_budget.strain_clamp_sweeps);
-    world.read_soft_body_vertices(soft, now);
+    // The settle's world is its own, built round the origin, so its frame is the world's.
+    world.read_soft_body_vertices(soft, WorldPos::origin(), now);
     f64 fastest = 0.0;
     out.still_moving = 0;
     for (u32 i = 0; i < n; ++i) {

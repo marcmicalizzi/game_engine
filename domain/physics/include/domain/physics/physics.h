@@ -3,8 +3,8 @@
 // physics: the engine's simulated world (plan 05 §5.11, §5.13, ADR-0026).
 //
 // Jolt 5.6 is the backend and is invisible from here: the surface is core/math (Vec3, Quat,
-// Transform3, Aabb3), core/containers handles, core/time's fixed step, and `Status`. That is
-// not politeness. ADR-0026 requires that replacing the solver not touch the asset format, the
+// Transform3, Aabb3, WorldPos), core/containers handles, core/time's fixed step, and `Status`. That
+// is not politeness. ADR-0026 requires that replacing the solver not touch the asset format, the
 // LOD policy, or the renderer path, and a header that leaked JPH types would make every
 // consumer a Jolt consumer; it also keeps Jolt's build flags (which must match the ones its
 // library was compiled with, or it aborts at startup) inside one translation-unit group.
@@ -17,6 +17,15 @@
 //
 // The character controller plan 05 §5.11 asks for is `CharacterBody` (character.h), which sweeps
 // a capsule through this world's bodies at a fixed tick and is not a body of it.
+//
+// **Points in the world are `WorldPos`; everything else is `Vec3`** (ADR-0053; physics.md, "Far
+// from the origin"). A body's position, a ray's origin, a hit's or a contact's point, a cast
+// shape's start and a character's feet are f64, because the backend keeps them in double: a float
+// steps by 3.1 cm at 420 km. Velocities, forces, normals, extents, a ray's direction and a shape's
+// own points (a mesh's vertices, a heightfield's offset, a compound's children) are in a local
+// frame or are not positions at all, and stay float32. Where a caller wants world points as floats
+// — a soft body's particles for a renderer — it names the frame's origin and gets them relative to
+// it.
 //
 // Not wrapped yet, deliberately: constraints and motors, ragdolls, vehicles, sensors and
 // triggers, state save/restore for rollback (ADR-0016), and Jolt's GPU hair solver.
@@ -121,13 +130,15 @@ struct CompoundChild {
   Transform3 transform;
 };
 
-// A regular grid of heights. The surface is `offset + scale * (x, heights[z * sample_count +
-// x], z)` for integer x and z, which is the terrain layout engine-view builds.
+// A regular grid of heights. The surface is `local_offset + scale * (x, heights[z * sample_count +
+// x], z)` for integer x and z, **in the body's frame**: the body that carries the shape puts it in
+// the world (`BodyDesc::transform`), so a tile of ground far from the origin is a body at its
+// corner and a field of small numbers, never a field offset by the corner in floats (ADR-0053).
 // `sample_count` must be at least 4 and a multiple of 2; a power of two is cheapest.
 struct HeightfieldDesc {
   std::span<const f32> heights;
   u32 sample_count = 0;
-  Vec3 offset{};
+  Vec3 local_offset{};
   Vec3 scale{1.0f, 1.0f, 1.0f};
 };
 
@@ -135,7 +146,7 @@ struct HeightfieldDesc {
 
 struct BodyDesc {
   ShapeId shape{};
-  Transform3 transform;  // `scale` is ignored: shapes carry their own size
+  BodyTransform transform;  // where it is in the world; shapes carry their own size
   Vec3 linear_velocity{};
   Vec3 angular_velocity{};
   MotionType motion = MotionType::Dynamic;
@@ -155,14 +166,14 @@ struct BodyDesc {
 
 struct RayHit {
   BodyId body{};
-  Vec3 position{};      // world space
+  WorldPos position{};  // origin + direction * fraction, in f64
   Vec3 normal{};        // the surface normal at `position`, pointing out of the hit body
   f32 fraction = 0.0f;  // along the ray's direction vector, so position = origin + dir*fraction
 };
 
 struct ShapeHit {
   BodyId body{};
-  Vec3 position{};
+  WorldPos position{};  // the deepest point on the hit body
   Vec3 normal{};        // points from the hit body towards the cast shape
   f32 fraction = 0.0f;  // along `sweep`
   f32 penetration = 0.0f;
@@ -181,7 +192,7 @@ struct ContactEvent {
   BodyId b{};
   u64 user_data_a = 0;
   u64 user_data_b = 0;
-  Vec3 position{};
+  WorldPos position{};
   Vec3 normal{};  // points from b towards a
   f32 penetration = 0.0f;
   ContactPhase phase = ContactPhase::Begin;
@@ -227,15 +238,15 @@ class World {
   bool contains(BodyId body) const noexcept;
   u32 body_count() const noexcept;
 
-  bool body_transform(BodyId body, Transform3& out) const;
-  bool set_body_transform(BodyId body, const Transform3& transform, bool activate = true);
+  bool body_transform(BodyId body, BodyTransform& out) const;
+  bool set_body_transform(BodyId body, const BodyTransform& transform, bool activate = true);
   bool body_linear_velocity(BodyId body, Vec3& out) const;
   bool body_angular_velocity(BodyId body, Vec3& out) const;
   bool set_body_velocities(BodyId body, Vec3 linear, Vec3 angular);
   bool add_impulse(BodyId body, Vec3 impulse);
   // Sets the velocity that reaches `target` in one step of `dt_seconds`, which is how a
   // kinematic body pushes dynamic ones instead of teleporting through them.
-  bool move_kinematic(BodyId body, const Transform3& target, f32 dt_seconds);
+  bool move_kinematic(BodyId body, const BodyTransform& target, f32 dt_seconds);
   bool body_layer(BodyId body, Layer& out) const;
   bool body_user_data(BodyId body, u64& out) const;
 
@@ -246,12 +257,12 @@ class World {
 
   // The renderer's read path: one lock of the body table, `ids.size()` reads, no per-body
   // call. `out` must be at least as long as `ids`; a stale id leaves its slot at identity.
-  void read_transforms(std::span<const BodyId> ids, std::span<Transform3> out) const;
+  void read_transforms(std::span<const BodyId> ids, std::span<BodyTransform> out) const;
 
   // --- debris (plan 05 §5.11). A dynamic body from a dedicated pool with a hard cap: past the
   // cap the oldest piece is destroyed to make room, so destruction cannot grow without bound.
   // Debris is in Layer::Debris, so pieces never collide with each other.
-  Status spawn_debris(ShapeId shape, const Transform3& transform, Vec3 linear_velocity,
+  Status spawn_debris(ShapeId shape, const BodyTransform& transform, Vec3 linear_velocity,
                       BodyId& out);
   u32 debris_count() const noexcept;
   u32 debris_cap() const noexcept;
@@ -263,14 +274,19 @@ class World {
   bool contains(SoftBodyId body) const noexcept;
   u32 soft_body_count() const noexcept;
   u32 soft_body_vertex_count(SoftBodyId body) const;
-  // Writes world-space particle positions; returns how many were written (0 for a stale id).
-  u32 read_soft_body_vertices(SoftBodyId body, std::span<Vec3> out) const;
-  bool soft_body_bounds(SoftBodyId body, Aabb3& out) const;
+  // Writes the particles' positions **relative to `origin`**, a frame the caller names (ADR-0053:
+  // a float holds a position only near its frame's origin); returns how many were written (0 for
+  // a stale id). A renderer passes its eye or the volume's anchor; a world built round the origin
+  // passes `WorldPos::origin()`.
+  u32 read_soft_body_vertices(SoftBodyId body, WorldPos origin, std::span<Vec3> out) const;
+  // The body's bounds relative to `origin`, as `read_soft_body_vertices`.
+  bool soft_body_bounds(SoftBodyId body, WorldPos origin, Aabb3& out) const;
   bool soft_body_active(SoftBodyId body) const;
 
   // --- queries
-  bool cast_ray(Vec3 origin, Vec3 direction, RayHit& out, LayerMask mask = LayerMask::all()) const;
-  bool cast_shape(ShapeId shape, const Transform3& start, Vec3 sweep, ShapeHit& out,
+  bool cast_ray(WorldPos origin, Vec3 direction, RayHit& out,
+                LayerMask mask = LayerMask::all()) const;
+  bool cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, ShapeHit& out,
                   LayerMask mask = LayerMask::all()) const;
 
   // --- stepping
