@@ -9,9 +9,10 @@ namespace schemac {
 
 namespace {
 
-const char* const k_primitives[] = {"bool", "u8",   "u16",  "u32",  "u64",    "i8",    "i16",
-                                    "i32",  "i64",  "f32",  "f64",  "string", "bytes", "id128",
-                                    "vec2", "vec3", "vec4", "quat", "json"};
+const char* const k_primitives[] = {"bool",  "u8",   "u16",  "u32",  "u64",      "i8",
+                                    "i16",   "i32",  "i64",  "f32",  "f64",      "string",
+                                    "bytes", "id128", "vec2", "vec3", "vec4",    "quat",
+                                    "json",  "worldpos", "dvec3"};
 const char* const k_integers[] = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"};
 
 struct Token {
@@ -309,8 +310,26 @@ class Parser {
       f.default_text = advance().text;
     } else if (at_punct('[')) {
       advance();
-      if (!expect_punct(']', error)) return false;
-      f.default_kind = DefaultKind::EmptyArray;
+      if (at_punct(']')) {
+        advance();
+        f.default_kind = DefaultKind::EmptyArray;
+        return true;
+      }
+      // `[x, y, z]`: a vector literal, which resolve() allows on `worldpos` and `dvec3`. The
+      // components are kept as written, comma-separated, and emitted as double literals.
+      f.default_kind = DefaultKind::Vector;
+      while (true) {
+        if (!at(Token::Kind::Int) && !at(Token::Kind::Float))
+          return fail("expected a number in a vector default", error);
+        if (!f.default_text.empty()) f.default_text.push_back(',');
+        f.default_text += advance().text;
+        if (at_punct(',')) {
+          advance();
+          continue;
+        }
+        if (!expect_punct(']', error)) return false;
+        break;
+      }
     } else {
       return fail("expected a default value", error);
     }

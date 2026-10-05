@@ -316,3 +316,77 @@ TEST_CASE("schemac: usage errors exit 2") {
   CHECK(p.wait() == 2);
   CHECK(output.find("usage:") != std::string::npos);
 }
+
+// ADR-0053: `worldpos`, a point, and `dvec3`, a displacement, are three f64 each. The language
+// keeps the distinction the C++ types keep, so a row joins a worldpos only to a worldpos.
+TEST_CASE("schemac: worldpos and dvec3 compile to WorldPos and DVec3") {
+  TempDir tmp("schemac");
+  const Run run = compile(tmp, "far",
+                          "namespace t.far\n"
+                          "struct Spot @version(1) @kind(component) {\n"
+                          "  at: worldpos @unit(m)\n"
+                          "  drift: dvec3 @unit(\"m/s\")\n"
+                          "}\n"
+                          "struct Marker @version(1) @kind(record) {\n"
+                          "  at: worldpos = [419070.2, -10000000.4, 100000000.25] @unit(km)\n"
+                          "  goal: worldpos? @unit(m)\n"
+                          "  drift: dvec3 = [1, 0, -2] @unit(\"m/s\")\n"
+                          "}\n"
+                          "materialize Marker {\n"
+                          "  Spot.at = at @writeback\n"
+                          "  Spot.drift = drift\n"
+                          "}\n");
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  std::string header, source, json;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/include/schemas/far.h"), header) ==
+          io::Status::Ok);
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/src/far.cpp"), source) == io::Status::Ok);
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/json/far.schema.json"), json) ==
+          io::Status::Ok);
+  CHECK(header.find("#include <core/math/world.h>") != std::string::npos);
+  CHECK(header.find("engine::WorldPos at{};") != std::string::npos);
+  CHECK(header.find("engine::DVec3 drift{};") != std::string::npos);
+  CHECK(header.find("std::optional<engine::WorldPos> goal{};") != std::string::npos);
+  // A vector default is the double its text names.
+  CHECK(header.find("engine::WorldPos at = engine::WorldPos{419070.2, -10000000.4, "
+                    "100000000.25};") != std::string::npos);
+  CHECK(header.find("engine::DVec3 drift = engine::DVec3{1.0, 0.0, -2.0};") != std::string::npos);
+  CHECK(source.find("engine::schema::Kind::WorldPos") != std::string::npos);
+  CHECK(source.find("engine::schema::Kind::DVec3") != std::string::npos);
+  // km on the record, m on the component: a converted row, scale 1000.
+  CHECK(source.find("\"at\", \"at\", 1000.0, 0.0") != std::string::npos);
+  CHECK(json.find("\"exclusiveMaximum\": 137438953408") != std::string::npos);
+  CHECK(json.find("\"x-engine-type\": \"dvec3\"") != std::string::npos);
+}
+
+TEST_CASE("schemac: a point is not a displacement, and a vector default is checked") {
+  TempDir tmp("schemac");
+  const std::string both =
+      "struct Spot @version(1) @kind(component) {\n"  // 2
+      "  at: worldpos @unit(m)\n"                     // 3
+      "  local: vec3 @unit(m)\n"                      // 4
+      "}\n"                                           // 5
+      "struct Marker @version(1) @kind(record) {\n"   // 6
+      "  at: worldpos @unit(m)\n"                     // 7
+      "  step: dvec3 @unit(m)\n"                      // 8
+      "  near: vec3 @unit(m)\n"                       // 9
+      "}\n";                                          // 10
+  expect_rejected(tmp, "point_from_step",
+                  "namespace t.w1\n" + both + "materialize Marker {\n  Spot.at = step\n}\n", 12,
+                  "a row joins the same type");
+  expect_rejected(tmp, "point_from_local",
+                  "namespace t.w2\n" + both + "materialize Marker {\n  Spot.at = near\n}\n", 12,
+                  "a row joins the same type");
+  expect_rejected(tmp, "local_from_point",
+                  "namespace t.w3\n" + both + "materialize Marker {\n  Spot.local = at\n}\n", 12,
+                  "a row joins the same type");
+  expect_rejected(tmp, "short_default", "namespace t.w4\nstruct A { at: worldpos = [1, 2] }\n", 2,
+                  "a worldpos default has 3 components, not 2");
+  expect_rejected(tmp, "far_default", "namespace t.w5\nstruct A { at: worldpos = [2e11, 0, 0] }\n",
+                  2, "is not a worldpos");
+  expect_rejected(tmp, "vector_on_vec3", "namespace t.w6\nstruct A { at: vec3 = [1, 2, 3] }\n", 2,
+                  "only valid for worldpos and dvec3 fields");
+  expect_rejected(tmp, "scalar_default", "namespace t.w7\nstruct A { at: worldpos = 0 }\n", 2,
+                  "integer default on a field that is not a number");
+}

@@ -32,6 +32,8 @@ const char* kind_name(Kind kind) noexcept {
     case Kind::Array: return "array";
     case Kind::FixedArray: return "fixed array";
     case Kind::Map: return "map";
+    case Kind::WorldPos: return "worldpos";
+    case Kind::DVec3: return "dvec3";
   }
   return "?";
 }

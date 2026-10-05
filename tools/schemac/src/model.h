@@ -36,7 +36,14 @@ struct TypeExpr {
   bool resolved_is_enum = false;
 };
 
-enum class DefaultKind { None, Int, Float, Bool, String, Ident, EmptyArray, Null };
+// `Vector` is `[x, y, z]`, only on `worldpos` and `dvec3`; its text is the components as written,
+// joined by ','.
+enum class DefaultKind { None, Int, Float, Bool, String, Ident, EmptyArray, Null, Vector };
+
+// The two f64 vector primitives (ADR-0053): `worldpos` a point, `dvec3` a displacement.
+inline bool is_f64_vector_primitive(const std::string& name) {
+  return name == "worldpos" || name == "dvec3";
+}
 
 struct Field {
   std::string name;

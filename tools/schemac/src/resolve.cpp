@@ -1,5 +1,7 @@
 #include "model.h"
 
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -120,6 +122,41 @@ bool check_default(const Field& f, const std::map<std::string, DeclRef>& decls,
       if (t.kind == TypeExpr::Kind::Primitive && t.name == "string") return true;
       errors.push_back(err(f.loc, "string default on a non-string field"));
       return false;
+    case DefaultKind::Vector: {
+      if (!(t.kind == TypeExpr::Kind::Primitive && is_f64_vector_primitive(t.name))) {
+        errors.push_back(err(f.loc, "a vector default '[" + f.default_text +
+                                        "]' is only valid for worldpos and dvec3 fields"));
+        return false;
+      }
+      double v[3] = {};
+      size_t n = 0;
+      size_t start = 0;
+      while (start <= f.default_text.size()) {
+        const size_t comma = f.default_text.find(',', start);
+        const std::string part = f.default_text.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (n < 3) v[n] = std::strtod(part.c_str(), nullptr);
+        ++n;
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+      if (n != 3) {
+        errors.push_back(err(f.loc, "a " + t.name + " default has 3 components, not " +
+                                        std::to_string(n)));
+        return false;
+      }
+      // The same bound the runtime holds a read position to (core/math/world.h).
+      constexpr double k_extent = 2147483647.0 * 64.0;
+      for (const double c : v) {
+        if (!std::isfinite(c) || (t.name == "worldpos" && !(c >= -k_extent && c < k_extent))) {
+          errors.push_back(err(f.loc, "the default '[" + f.default_text + "]' is not a " + t.name +
+                                          " (finite, and for a world position inside +-" +
+                                          "137438953408 m)"));
+          return false;
+        }
+      }
+      return true;
+    }
     case DefaultKind::Ident: {
       if (!(t.kind == TypeExpr::Kind::Named && t.resolved_is_enum)) {
         errors.push_back(err(
@@ -177,10 +214,11 @@ const UnitInfo k_units[] = {
 // The kinds a `@unit` can sit on: a number, or a vector of them. A quaternion is not a quantity
 // with a unit, and a string or a struct has no number to convert.
 bool unit_bearing(const TypeExpr& t) {
-  if (t.kind == TypeExpr::Kind::FixedArray) return unit_bearing(*t.element);
+  if (t.kind == TypeExpr::Kind::FixedArray || t.kind == TypeExpr::Kind::Optional)
+    return unit_bearing(*t.element);
   if (t.kind != TypeExpr::Kind::Primitive) return false;
   return is_integer_primitive(t.name) || t.name == "f32" || t.name == "f64" || t.name == "vec2" ||
-         t.name == "vec3" || t.name == "vec4";
+         t.name == "vec3" || t.name == "vec4" || is_f64_vector_primitive(t.name);
 }
 
 // The kinds a converted row can write: floats and float vectors, where scaling is exact to the
@@ -188,7 +226,7 @@ bool unit_bearing(const TypeExpr& t) {
 bool float_based(const TypeExpr& t) {
   return t.kind == TypeExpr::Kind::Primitive &&
          (t.name == "f32" || t.name == "f64" || t.name == "vec2" || t.name == "vec3" ||
-          t.name == "vec4");
+          t.name == "vec4" || is_f64_vector_primitive(t.name));
 }
 
 // A field whose every byte is its value, which is what write-back's change test compares. Mirrors
@@ -562,6 +600,8 @@ std::string cpp_type(const TypeExpr& t) {
       if (t.name == "vec3") return "engine::Vec3";
       if (t.name == "vec4") return "engine::Vec4";
       if (t.name == "quat") return "engine::Quat";
+      if (t.name == "worldpos") return "engine::WorldPos";
+      if (t.name == "dvec3") return "engine::DVec3";
       if (t.name == "json") return "engine::JsonValue";
       return "engine::" + t.name;
     case TypeExpr::Kind::Named: return t.resolved_cpp;

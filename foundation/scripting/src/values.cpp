@@ -136,6 +136,21 @@ void push_value(lua_State* L, Impl& impl, const schema::TypeRef& type, const voi
     case Kind::Vec3: push_components(L, static_cast<const f32*>(p), 3); return;
     case Kind::Vec4:
     case Kind::Quat: push_components(L, static_cast<const f32*>(p), 4); return;
+    // A world position or an f64 displacement is a read-only table of three numbers: a Luau
+    // `vector` is float32, and a world position must not become one (ADR-0053).
+    case Kind::WorldPos:
+    case Kind::DVec3: {
+      const auto* d = static_cast<const f64*>(p);
+      lua_createtable(L, 0, 3);
+      lua_pushnumber(L, d[0]);
+      lua_setfield(L, -2, "x");
+      lua_pushnumber(L, d[1]);
+      lua_setfield(L, -2, "y");
+      lua_pushnumber(L, d[2]);
+      lua_setfield(L, -2, "z");
+      lua_setreadonly(L, -1, true);
+      return;
+    }
     case Kind::Json: push_json(L, *static_cast<const JsonValue*>(p)); return;
     case Kind::Enum: push_enum(L, *type.type, p); return;
     case Kind::Struct: {

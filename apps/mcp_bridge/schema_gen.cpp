@@ -118,6 +118,17 @@ bool primitive_schema(std::string_view t, JsonValue& out) {
     out = number_array(3);
   } else if (t == "vec4" || t == "quat") {
     out = number_array(4);
+  } else if (t == "worldpos") {
+    // A world position in metres (ADR-0053): three f64, each where a 64 m cell's i32 index
+    // reaches, which the host refuses past naming the field.
+    out = number_array(3);
+    JsonValue item = typed("number");
+    item.set("minimum", JsonValue(i64{-137438953408}));
+    item.set("exclusiveMaximum", JsonValue(i64{137438953408}));
+    out.set("items", std::move(item));
+    out.set("description", JsonValue("A world position [x, y, z] in metres, y up."));
+  } else if (t == "dvec3") {
+    out = number_array(3);
   } else if (t == "json") {
     // Any JSON value: the empty schema.
     out = JsonValue::object();

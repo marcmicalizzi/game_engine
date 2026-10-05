@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/ids/id128.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <core/schema/json_reflect.h>
 
 #include <cmath>
@@ -140,6 +141,50 @@ bool read_components(Kind kind, void* p, const JsonValue& in, ReadContext& ctx) 
     }
     f[i] = static_cast<f32>(d);
   }
+  return true;
+}
+
+// WorldPos and DVec3 are three f64 in memory (core/math/world.h), and three JSON numbers on the
+// wire. A JsonValue holds the f64 itself and the writer prints the shortest text that reads back to
+// it (`std::to_chars`, core/json), so the round trip is exact to the bit and the text is a function
+// of the double alone, the same from every toolchain.
+bool write_f64_vector(const void* p, JsonValue& out) {
+  f64 v[3];
+  std::memcpy(v, p, sizeof(v));
+  out = JsonValue::array();
+  for (const f64 c : v)
+    out.push_back(JsonValue(c));
+  return true;
+}
+
+// Read whole and checked before anything is stored, so a refused value leaves the field as it
+// was. A world position from outside — a file, the wire — must be one a cell can name
+// (`world_cell_valid`, ADR-0053): past ±1.37e11 m the GPU's form of it does not exist, and the
+// conversion to it does not check, so the check is here, at the door, with the field's path.
+bool read_f64_vector(Kind kind, void* p, const JsonValue& in, ReadContext& ctx) {
+  if (!in.is_array() || in.size() != 3) {
+    ctx.error(kind == Kind::WorldPos ? "expected a world position, an array of 3 numbers"
+                                     : "expected a displacement, an array of 3 numbers");
+    return false;
+  }
+  f64 v[3];
+  for (usize i = 0; i < 3; ++i) {
+    if (!in[i].get_f64(v[i])) {
+      ctx.error("expected numeric components");
+      return false;
+    }
+    if (!std::isfinite(v[i])) {
+      ctx.error("a component is not finite");
+      return false;
+    }
+  }
+  if (kind == Kind::WorldPos && !world_cell_valid(WorldPos{v[0], v[1], v[2]})) {
+    ctx.error(
+        "world position out of range: every axis must lie in [-137438953408, 137438953408) m, "
+        "where a 64 m cell's i32 index ends (ADR-0053)");
+    return false;
+  }
+  std::memcpy(p, v, sizeof(v));
   return true;
 }
 
@@ -312,6 +357,8 @@ bool to_json(const TypeRef& type, const void* object, JsonValue& out) {
     case Kind::Vec3:
     case Kind::Vec4:
     case Kind::Quat: return write_components(type.kind, object, out);
+    case Kind::WorldPos:
+    case Kind::DVec3: return write_f64_vector(object, out);
     case Kind::Json: out = *static_cast<const JsonValue*>(object); return true;
     case Kind::Enum: return write_enum(*type.type, object, out);
     case Kind::Struct: return write_struct(*type.type, object, out);
@@ -438,6 +485,8 @@ bool from_json(const TypeRef& type, void* object, const JsonValue& in, ReadConte
     case Kind::Vec3:
     case Kind::Vec4:
     case Kind::Quat: return read_components(type.kind, object, in, ctx);
+    case Kind::WorldPos:
+    case Kind::DVec3: return read_f64_vector(type.kind, object, in, ctx);
     case Kind::Json: *static_cast<JsonValue*>(object) = in; return true;
     case Kind::Enum: return read_enum(*type.type, object, in, ctx);
     case Kind::Struct: return read_struct(*type.type, object, in, ctx);

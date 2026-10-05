@@ -47,3 +47,12 @@ struct Spatial @version(1) {
   color: vec4
   extra: json
 }
+
+/// The f64 vector primitives (ADR-0053): a point in the world and a displacement.
+struct Far @version(1) @kind(record) {
+  at: worldpos @unit(m)
+  step: dvec3 @unit(m)
+  goal: worldpos? @unit(m)
+  home: worldpos = [419072, 0.5, -10000000.25] @unit(m)
+  route: worldpos[]
+}

@@ -56,6 +56,12 @@ bool meta_type_of(const schema::TypeRef& type, flecs::entity_t& out_type, i32& o
       out_type = flecs::F32;
       out_count = 4;
       return true;
+    // engine::WorldPos and engine::DVec3 are three f64 (core/math/world.h, ADR-0053).
+    case schema::Kind::WorldPos:
+    case schema::Kind::DVec3:
+      out_type = flecs::F64;
+      out_count = 3;
+      return true;
     // An enum's bytes are its underlying integer. flecs can hold a real enum type, but building
     // one means declaring every constant as an entity, and a schema enum's names already live in
     // the TypeInfo where the JSON path reads them. The integer is what the memory is.
@@ -116,6 +122,8 @@ bool is_flat(const schema::TypeRef& type) {
     case schema::Kind::Vec3:
     case schema::Kind::Vec4:
     case schema::Kind::Quat:
+    case schema::Kind::WorldPos:
+    case schema::Kind::DVec3:
     case schema::Kind::Enum: return true;
     case schema::Kind::FixedArray: return type.element != nullptr && is_flat(*type.element);
     case schema::Kind::Struct: return type.type != nullptr && is_flat(*type.type);

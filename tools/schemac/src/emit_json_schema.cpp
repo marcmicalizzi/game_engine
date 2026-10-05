@@ -36,6 +36,17 @@ std::string type_schema(const TypeExpr& t, const SchemaFile& file) {
         return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 4, "
                "\"maxItems\": 4}";
       }
+      // A world position is three numbers each inside the range a 64 m cell's i32 index reaches
+      // (core/math/world.h `world_cell_valid`); a reader refuses anything else, naming the field.
+      if (t.name == "worldpos") {
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\", \"minimum\": "
+               "-137438953408, \"exclusiveMaximum\": 137438953408}, \"minItems\": 3, "
+               "\"maxItems\": 3, \"x-engine-type\": \"worldpos\"}";
+      }
+      if (t.name == "dvec3") {
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 3, "
+               "\"maxItems\": 3, \"x-engine-type\": \"dvec3\"}";
+      }
       if (t.name == "json") return "{}";
       return "{\"type\": \"integer\", " + integer_bounds(t.name) + "}";
     case TypeExpr::Kind::Named: {

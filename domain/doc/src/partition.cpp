@@ -105,12 +105,31 @@ std::string_view position_property(std::string_view type, const LayerPartition& 
   return {};
 }
 
+namespace {
+
+// floor(v / size), in f64, from the f64 position the document holds (ADR-0053).
+//
+// For a power-of-two size — 32 m and 64 m, every size in use — the division is exact (it moves the
+// exponent and nothing else) and so is the floor: a record 1/1024 m either side of a tile's edge
+// 420 km or 1e8 m out is in the tile it is in (partition_tests.cpp, "far").
+//
+// For any other size the quotient is rounded once, correctly, by IEEE division, and then floored:
+// a function of the two doubles alone and the same on every toolchain, so the files a layer is
+// written as stay canonical. What it is not is the floor of the real quotient: a position within
+// one rounding of an edge can fall on the other side of it. 1.0 on a 0.1 grid is tile 10 here
+// where the real quotient, 1 / 0.1000000000000000055…, is 9.99…: here the answer matches what the
+// author of "0.1" meant and the "exact" one would not, which is why this stays a plain floor
+// rather than one corrected by an exact remainder.
+f64 tile_floor(f64 v, f64 size) { return std::floor(v / size); }
+
+}  // namespace
+
 bool tile_of_position(const JsonValue& value, f64 tile_size, TileCoord& out) {
-  if (!(tile_size > 0)) return false;
+  if (!(tile_size > 0) || !std::isfinite(tile_size)) return false;
   f64 x = 0, y = 0;
   if (!read_position(value, x, y)) return false;
-  const f64 tx = std::floor(x / tile_size);
-  const f64 ty = std::floor(y / tile_size);
+  const f64 tx = tile_floor(x, tile_size);
+  const f64 ty = tile_floor(y, tile_size);
   const f64 low = static_cast<f64>(std::numeric_limits<i32>::min());
   const f64 high = static_cast<f64>(std::numeric_limits<i32>::max());
   if (tx < low || tx > high || ty < low || ty > high) return false;

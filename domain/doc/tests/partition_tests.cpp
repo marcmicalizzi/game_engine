@@ -8,7 +8,9 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <filesystem>
+#include <map>
 #include <schemas/doc_test_types.h>
 #include <string>
 
@@ -619,4 +621,178 @@ TEST_CASE("doc partition: a partitioned layer merges like any other") {
   CHECK(index.untiled.empty());
   CHECK(index.min_x == 0);
   CHECK(index.max_x == 14);
+}
+
+// ---- far from the origin (ADR-0053) -------------------------------------------------------------
+
+namespace {
+
+// The three sites every agent of ADR-0053 tests at — 419,072 m (cell 6,548 of 64 m, the owner's
+// distance), 10,000,000 m and 100,000,000 m — and the brief's values f32 cannot hold.
+constexpr f64 k_step = 1.0 / 1024.0;  // finer than f32 holds anywhere here, exact in f64 to 1e8 m
+
+JsonValue point3(f64 x, f64 y, f64 z) {
+  JsonValue::Array a;
+  a.push_back(JsonValue(x));
+  a.push_back(JsonValue(y));
+  a.push_back(JsonValue(z));
+  return JsonValue(std::move(a));
+}
+
+ObjectRecord far_placed(u32 n, f64 x, f64 y, f64 z) {
+  ObjectRecord r;
+  r.id = id_of(n);
+  r.type = k_placement;
+  r.properties.insert_or_assign("position", point3(x, y, z));
+  r.properties.insert_or_assign("name", JsonValue("far" + std::to_string(n)));
+  return r;
+}
+
+void build_far(Layer& layer) {
+  u32 n = 0;
+  for (const f64 site : {419072.0, 10000000.0, 100000000.0}) {
+    // Either side of the tile edge at the site, and on it, along both horizontal axes.
+    layer.set(far_placed(n++, site - k_step, 1.5, -site));
+    layer.set(far_placed(n++, site, 1.5, -site - k_step));
+    layer.set(far_placed(n++, site + k_step, -0.25, -site + k_step));
+  }
+  layer.set(far_placed(n++, 419070.2, 80.0, -10000000.4));
+  layer.set(far_placed(n++, 100000000.25, 0.0, 1e11));
+}
+
+// Every file under `root`, by relative path: what "the same files with the same bytes" compares.
+std::map<std::string, std::string> files_under(const std::string& root) {
+  std::map<std::string, std::string> out;  // tests may use std containers
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (!entry.is_regular_file()) continue;
+    std::string text;
+    REQUIRE(io::read_file(entry.path().string(), text) == io::Status::Ok);
+    out[std::filesystem::relative(entry.path(), root).generic_string()] = std::move(text);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("doc partition far: a record's tile either side of an edge, 420 km to 1e8 m out") {
+  const LayerPartition grid = partition_of("position", 64);
+  struct Case {
+    f64 x, z;
+    i32 tx, tz;
+  };
+  // 419,072 = 6,548 × 64; 1e7 = 156,250 × 64; 1e8 = 1,562,500 × 64. The floor is exact for a
+  // power-of-two tile (partition.cpp, `tile_floor`), so 1/1024 m decides the side.
+  const Case cases[] = {
+      {419072.0 - k_step, -419072.0 - k_step, 6547, -6549},
+      {419072.0, -419072.0, 6548, -6548},
+      {419072.0 + k_step, -419072.0 + k_step, 6548, -6548},
+      {10000000.0 - k_step, -10000000.0 - k_step, 156249, -156251},
+      {10000000.0, -10000000.0, 156250, -156250},
+      {100000000.0 - k_step, -100000000.0 - k_step, 1562499, -1562501},
+      {100000000.0 + k_step, -100000000.0, 1562500, -1562500},
+      // The brief's values: not on the grid, and not float32 numbers.
+      {419070.2, -10000000.4, 6547, -156251},
+      {100000000.25, 1e11, 1562500, 1562500000},
+  };
+  for (const Case& c : cases) {
+    CAPTURE(c.x);
+    CAPTURE(c.z);
+    TileCoord tile;
+    REQUIRE(tile_of_position(point3(c.x, 2.0, c.z), grid.tile_size, tile));
+    CHECK(tile.x == c.tx);
+    CHECK(tile.y == c.tz);
+  }
+  // In f32 the two sides of each of these edges are one number, so a float32 position could not
+  // have put the records in different tiles: the reason a document's position is f64.
+  for (const f64 site : {419072.0, 10000000.0, 100000000.0})
+    CHECK(static_cast<f32>(site - k_step) == static_cast<f32>(site + k_step));
+  // Past i32 tiles the record is untiled, not wrapped: 2^31 × 64 m.
+  TileCoord out;
+  CHECK_FALSE(tile_of_position(point3(137438953472.0, 0.0, 0.0), 64, out));
+}
+
+TEST_CASE("doc partition far: saved, loaded, merged and saved again, the same bytes") {
+  TempDir tmp("engine_doc_partition_far");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  std::string error;
+
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE(DocumentStore::create(vfs, "docs://far", "Far", doc, manifest, &error));
+  doc.set_layer_partition(0, partition_of("position", 64));
+  build_far(doc.layer(0));
+  doc.rebuild_index();
+  doc.mark_all_dirty();
+  Vector<Diagnostic> diagnostics;
+  CHECK(doc.validate(diagnostics));
+  REQUIRE(DocumentStore::save(vfs, "docs://far", doc, manifest, &error));
+  const auto saved = files_under(tmp.file("far/layers"));
+
+  // The text a far position is written as: the shortest decimal that reads back to the double,
+  // which std::to_chars fixes for every toolchain.
+  const std::string& tile = saved.at("base/tiles/6547_-156251.json");
+  CHECK(tile.find("419070.2,\n          80.0,\n          -10000000.4") != std::string::npos);
+  CHECK(saved.count("base/tiles/1562500_1562500000.json") == 1);
+  CHECK(saved.count("base/tiles/6547_-6548.json") == 1);  // 419,072 − 1/1024 on x
+  CHECK(saved.count("base/tiles/6548_-6549.json") == 1);  // and on z
+
+  // Loaded, every position is the double that was saved, to the bit.
+  Document loaded;
+  DocumentManifest loaded_manifest;
+  REQUIRE(DocumentStore::load(vfs, "docs://far", loaded, loaded_manifest, &error));
+  CHECK(loaded.layer(0) == doc.layer(0));
+  const JsonValue* at = loaded.property(id_of(9), "position");
+  REQUIRE(at != nullptr);
+  CHECK((*at)[0].as_float() == 419070.2);
+  CHECK((*at)[2].as_float() == -10000000.4);
+  CHECK(loaded.validate(diagnostics));
+  CHECK(loaded.validate_index());
+
+  // Saved again unchanged, from what was loaded: the same files, the same bytes.
+  loaded.mark_all_dirty();
+  REQUIRE(DocumentStore::save(vfs, "docs://far", loaded, loaded_manifest, &error));
+  CHECK(files_under(tmp.file("far/layers")) == saved);
+
+  // Merged: ours renames one far record, theirs moves another by 1/1024 m across its tile's edge
+  // and adds one 1e8 m out. Both survive, in either order, and the result saves to the files the
+  // same edits made directly save to.
+  const Layer& base = loaded.layer(0);
+  Layer ours = base;
+  ours.ensure(id_of(0)).properties.insert_or_assign("name", JsonValue("renamed"));
+  Layer theirs = base;
+  theirs.ensure(id_of(1)).properties.insert_or_assign(
+      "position", point3(419072.0 - k_step, 1.5, -419072.0 - k_step));
+  theirs.set(far_placed(20, 100000000.0 - k_step, 3.0, 100000000.0 + k_step));
+  MergeResult merged, swapped;
+  REQUIRE(merge_layers(base, ours, theirs, merged, &error));
+  REQUIRE(merge_layers(base, theirs, ours, swapped, &error));
+  CHECK(merged.conflicts.empty());
+  CHECK(merged.merged.to_json_text() == swapped.merged.to_json_text());
+
+  Document direct;
+  DocumentManifest direct_manifest;
+  REQUIRE(DocumentStore::create(vfs, "docs://direct", "Far", direct, direct_manifest, &error));
+  direct.set_layer_partition(0, partition_of("position", 64));
+  build_far(direct.layer(0));
+  direct.layer(0).ensure(id_of(0)).properties.insert_or_assign("name", JsonValue("renamed"));
+  direct.layer(0).ensure(id_of(1)).properties.insert_or_assign(
+      "position", point3(419072.0 - k_step, 1.5, -419072.0 - k_step));
+  direct.layer(0).set(far_placed(20, 100000000.0 - k_step, 3.0, 100000000.0 + k_step));
+  direct.rebuild_index();
+  direct.mark_all_dirty();
+  REQUIRE(DocumentStore::save(vfs, "docs://direct", direct, direct_manifest, &error));
+
+  Document merged_doc;
+  DocumentManifest merged_manifest;
+  REQUIRE(DocumentStore::create(vfs, "docs://merged", "Far", merged_doc, merged_manifest, &error));
+  merged_doc.layer(0) = merged.merged;
+  merged_doc.rebuild_index();
+  merged_doc.mark_all_dirty();
+  REQUIRE(DocumentStore::save(vfs, "docs://merged", merged_doc, merged_manifest, &error));
+  const auto merged_files = files_under(tmp.file("merged/layers"));
+  CHECK(merged_files == files_under(tmp.file("direct/layers")));
+  // The moved record left its tile for the one across the edge.
+  CHECK(merged_files.count("base/tiles/6547_-6549.json") == 1);
+  CHECK(merged_files.count("base/tiles/1562499_1562500.json") == 1);
 }

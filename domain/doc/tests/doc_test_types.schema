@@ -7,8 +7,9 @@ namespace engine.doc.test
 /// Something standing somewhere in the world.
 struct Placement @version(1) @kind(record) {
   name: string
-  /// World position. Its presence is what opts the type into tile partitioning.
-  position: vec3
+  /// World position. Its presence is what opts the type into tile partitioning. A `worldpos`, so
+  /// validation holds it to f64 and to the cells' range (ADR-0053).
+  position: worldpos @unit(m)
 }
 
 /// The same, opting in through a transform: a whole placement matrix or a

@@ -54,6 +54,7 @@ A schema object reaches a script as a **view**: a 24-byte tagged userdata (`View
 | `id128` | 32 lowercase hex characters |
 | `vec2`, `vec3` | `vector` (vec2 has z = 0) |
 | `vec4`, `quat` | a read-only `{x, y, z, w}` table |
+| `worldpos`, `dvec3` | a read-only `{x, y, z}` table of numbers (f64), never a `vector`: a Luau vector is float32, and a world position must not become one (ADR-0053) |
 | `json` | read-only tables |
 | enum | the enumerator's name; a value with no name reads as its number, as schema JSON does |
 | struct | a nested view |

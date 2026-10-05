@@ -33,11 +33,25 @@ struct AssetProvenance @version(1) @kind(record) {
 }
 ```
 
-**Primitives**: `bool`, `u8 u16 u32 u64`, `i8 i16 i32 i64`, `f32 f64`, `string` (UTF-8, `std::string`), `bytes` (`Vector<u8>`, hex in JSON), `id128` (`engine::Id128`, 32 hex characters in JSON), `vec2 vec3 vec4 quat` (`engine::Vec2` etc., JSON arrays of numbers), `json` (`engine::JsonValue`, any JSON value; for schema-free payloads such as document property bags).
+**Primitives**: `bool`, `u8 u16 u32 u64`, `i8 i16 i32 i64`, `f32 f64`, `string` (UTF-8, `std::string`), `bytes` (`Vector<u8>`, hex in JSON), `id128` (`engine::Id128`, 32 hex characters in JSON), `vec2 vec3 vec4 quat` (`engine::Vec2` etc., float32, JSON arrays of numbers), `worldpos dvec3` (`engine::WorldPos`, `engine::DVec3`: three f64, below), `json` (`engine::JsonValue`, any JSON value; for schema-free payloads such as document property bags).
 
 **Type modifiers** (postfix, composable): `T?` optional, `T[]` array, `T[N]` fixed array, `map<K, V>` where `K` is a string, integer, `id128`, or enum.
 
-**Defaults**: integer, float, `true`/`false`, `"string"`, an enumerator name (enum fields), `[]` (arrays, maps), `null` (optionals). A field without a default is value-initialized.
+**Defaults**: integer, float, `true`/`false`, `"string"`, an enumerator name (enum fields), `[]` (arrays, maps), `null` (optionals), and `[x, y, z]` on a `worldpos` or a `dvec3` (`home: worldpos = [419072, 0, -10000000.25]`; three finite numbers, a world position's inside the range below). A field without a default is value-initialized, which for the two vectors is the origin and zero.
+
+### `worldpos`, `dvec3` and `vec3`: which one a position is
+
+**A position in the world is a `worldpos`; a displacement that may be large is a `dvec3`; anything in a local frame is a `vec3`** ([ADR-0053](../docs/adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md), `core/math/world.h`). At 420 km a float32 steps by 3.1 cm and at 10,000 km by a metre, so a placed thing written as a `vec3` far out moves when the document is saved; three f64 step by 2 nm at 10,000 km.
+
+- **`worldpos`** — a point, metres, y up: where an entity or a record *is* (`engine.world.Transform.position`, `Node.position`, a mover's, a resident's, a place's). Reaches C++ as `engine::WorldPos`, which does not add to another point and does not narrow to a float except through `relative(point, origin)`.
+- **`dvec3`** — a displacement in f64: the difference of two world positions, an offset between far things, a route's step before it is known to be small. `engine::DVec3`.
+- **`vec3`** — float32, for a frame of its own: a velocity, a direction, a mesh-, body- or bone-local offset (the tissue schema's), a position relative to an emitter or a listener. If the field's documentation would have to say "world position", it is not a `vec3`.
+
+The language keeps the distinction the types keep: a `materialize` row joins a `worldpos` only to a `worldpos` and a `dvec3` only to a `dvec3`; joining either to a `vec3` is refused. All three take `@unit` (a length, or a velocity for a `dvec3` of one), on an optional too (`worldpos? @unit(m)`), and a row between two length units converts in f64.
+
+**On the wire** each is `[x, y, z]`: JSON numbers, each the shortest decimal that reads back to the same double (`std::to_chars`, whose output the C++ standard fixes, so a saved document is the same bytes from MSVC, GCC and Clang, as the content build's containers are). A float32 `vec3` was always written as its exact widened double, so **a document written with a `vec3` position reads the same position as a `worldpos`** and a field can change from one to the other under a version bump without a migration of its JSON. **A `worldpos` read from outside is validated**: three finite numbers, each in [−137,438,953,408, 137,438,953,408) m (`world_cell_valid`: where a 64 m cell's i32 index ends); anything else is refused, naming the field. In memory and in the flat (binary) form each is 24 bytes; the JSON Schema says `"items": {"type": "number", "minimum": -137438953408, "exclusiveMaximum": 137438953408}` for a `worldpos`, and `schema.describe` names them `worldpos` and `dvec3`.
+
+**A reader older than these types** must not meet them silently, so a type that changes a field from `vec3` to `worldpos` bumps its `@version` although its JSON is unchanged: an older build then refuses a save naming the type ("newer than this build's") rather than reading the positions as floats. A build older than the kinds themselves never sees one in a table, since generated tables are compiled with the build that reads them.
 
 **An optional array (`T[]?`) is how a field says "absent" apart from "empty"** — `std::optional<Vector<T>>`, `null` or missing in JSON for absent. Use it when the two mean different things: `engine.scene.Terrain.bands` is the first, where absent is the default band table and an empty table is refused as a mistake rather than read as "no dunes". A plain `T[]` cannot tell them apart, since `[]` is its default.
 
@@ -45,7 +59,7 @@ struct AssetProvenance @version(1) @kind(record) {
 
 **Attributes**: on structs `@version(n)` (default 1), `@kind(tag)` and `@transient`; on fields `@since(n)`, `@transient`, `@deprecated`, `@unit(symbol)`; `@doc("...")` anywhere as an alternative to `///`.
 
-**`@unit(symbol)`** says what physical unit a number field is in: `@unit(m)`, `@unit(deg)`, `@unit("km/h")` (quoted when it has a `/`). The symbols are a small closed table in `tools/schemac/src/resolve.cpp` — length, angle, time, mass, velocity, angular velocity, temperature, ratio — and an unknown one, or one on a field that holds no number, is an error. A unit changes no C++ type; it is read by `materialize` rows, which convert between two units of one dimension (below), and it appears in the generated Markdown.
+**`@unit(symbol)`** says what physical unit a number field is in: `@unit(m)`, `@unit(deg)`, `@unit("km/h")` (quoted when it has a `/`). The symbols are a small closed table in `tools/schemac/src/resolve.cpp` — length, angle, time, mass, velocity, angular velocity, temperature, ratio — and an unknown one, or one on a field that holds no number, is an error. A number, a vector of them (`vec2` to `vec4`, `worldpos`, `dvec3`), a fixed array of them, or an optional of any of those can carry one. A unit changes no C++ type; it is read by `materialize` rows, which convert between two units of one dimension (below), and it appears in the generated Markdown.
 
 **`@transient` on a struct is not the same thing as `@transient` on a field.** A transient *field* is one column of a type that is otherwise persisted and transmitted. A transient *struct* is a whole type that exists only in the runtime world and is never written to the persistent store ([03 §3.4](../docs/plan/03-data-model.md#34-the-runtime-world)) — a per-tick cache, a perception result, anything the simulation can recompute. Only a component can be transient as a whole, because a component is the only thing the persistence layer writes whole, so `@transient` on a struct without `@kind(component)` is an error rather than a no-op. It reaches C++ as `TypeInfo::flags & schema::TypeFlag::transient`, which is how the store, the protocol and migrations read it without linking an ECS, and as the `ecs::Transient` tag on the flecs component (see below).
 

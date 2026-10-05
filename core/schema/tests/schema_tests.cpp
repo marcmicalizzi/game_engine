@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cstring>
 #include <schemas/features.h>
 #include <string>
 
@@ -305,6 +306,90 @@ TEST_CASE("schema: math and json primitives round-trip") {
   ReadContext bad_ctx;
   CHECK_FALSE(from_json(back, bad, bad_ctx));
   CHECK(bad_ctx.diagnostics[0].path == "position");
+}
+
+// ADR-0053. The far values of the brief: 420 km, 10,000 km, 1e8 m and 1e11 m, each one that f32
+// cannot hold (419070.2 rounds to 419070.1875, -10000000.4 to -10000000.0), through JSON and back
+// to the bit, and the text pinned, since a saved document is the same bytes from every toolchain:
+// the writer is `std::to_chars`' shortest round trip, a function the standard fixes for a given
+// double, and the reader `std::from_chars`, correctly rounded.
+TEST_CASE("schema: worldpos and dvec3 round-trip far values to the bit, the text pinned") {
+  Far f;
+  // Defaults: value-initialized is the origin; a vector default is the doubles it names.
+  CHECK(f.at == WorldPos::origin());
+  CHECK(f.step == DVec3{});
+  CHECK_FALSE(f.goal.has_value());
+  CHECK(f.home == WorldPos{419072.0, 0.5, -10000000.25});
+
+  f.at = WorldPos{419070.2, -10000000.4, 100000000.25};
+  f.step = DVec3{1e11, -0.1, 3.0e-9};
+  f.goal = WorldPos{1e11, -1e11, 419072.0};
+  f.route.push_back(WorldPos{-10000000.4, 0.0, 100000000.25});
+  const std::string text = write_json(to_json(f), JsonWriteOptions{false});
+  CHECK(text ==
+        R"({"at":[419070.2,-10000000.4,100000000.25],"goal":[1e+11,-1e+11,419072.0],)"
+        R"("home":[419072.0,0.5,-10000000.25],"route":[[-10000000.4,0.0,100000000.25]],)"
+        R"("step":[1e+11,-0.1,3e-09]})");
+
+  JsonValue parsed;
+  REQUIRE(parse_json(text, parsed).ok);
+  Far back;
+  ReadContext ctx;
+  REQUIRE(from_json(back, parsed, ctx));
+  CHECK(back == f);
+  CHECK(back.at.x == 419070.2);
+  CHECK(back.at.y == -10000000.4);
+  CHECK(back.at.z == 100000000.25);
+  CHECK(back.goal->x == 1e11);
+  // Written again, the same text: the round trip is a fixed point.
+  CHECK(write_json(to_json(back), JsonWriteOptions{false}) == text);
+
+  // The binary form is the 24 bytes of three doubles: flat, compared by bytes for write-back.
+  const FieldInfo* at = type_of<Far>().find_field("at");
+  const FieldInfo* step = type_of<Far>().find_field("step");
+  REQUIRE(at != nullptr);
+  REQUIRE(step != nullptr);
+  CHECK(at->type.kind == Kind::WorldPos);
+  CHECK(step->type.kind == Kind::DVec3);
+  CHECK(at->type.size == 24);
+  CHECK(step->type.size == 24);
+  CHECK(std::string(kind_name(at->type.kind)) == "worldpos");
+  CHECK(std::string(kind_name(step->type.kind)) == "dvec3");
+  WorldPos copied;
+  std::memcpy(&copied, reinterpret_cast<const std::byte*>(&back) + at->offset, sizeof(copied));
+  CHECK(copied == f.at);
+}
+
+TEST_CASE("schema: a worldpos from outside is finite and inside the cells, or refused by name") {
+  Far f;
+  const auto refused = [&](const char* json, const char* path, const char* words) {
+    JsonValue v;
+    REQUIRE(parse_json(json, v).ok);
+    const WorldPos before = f.at;
+    ReadContext ctx;
+    CHECK_FALSE(from_json(f, v, ctx));
+    REQUIRE_FALSE(ctx.diagnostics.empty());
+    CHECK(ctx.diagnostics[0].path == path);
+    CHECK(ctx.diagnostics[0].message.find(words) != std::string::npos);
+    CHECK(f.at == before);  // a refused value leaves the field as it was
+  };
+  refused(R"({"at": [2e11, 0, 0]})", "at", "out of range");
+  refused(R"({"at": [0, 0, -2e11]})", "at", "out of range");
+  refused(R"({"goal": [0, 137438953408, 0]})", "goal", "out of range");
+  refused(R"({"route": [[0, 0, 0], [0, 0, 2e11]]})", "route[1]", "out of range");
+  refused(R"({"at": [1, 2]})", "at", "an array of 3 numbers");
+  refused(R"({"at": [1, "2", 3]})", "at", "numeric");
+  // The last metre a cell names is in; integers read as the same doubles.
+  JsonValue edge;
+  REQUIRE(parse_json(R"({"at": [137438953407, -137438953408, 419072]})", edge).ok);
+  ReadContext ok;
+  REQUIRE(from_json(f, edge, ok));
+  CHECK(f.at == WorldPos{137438953407.0, -137438953408.0, 419072.0});
+  // A displacement has no range of its own past finite.
+  JsonValue far_step;
+  REQUIRE(parse_json(R"({"step": [2e11, 0, 0]})", far_step).ok);
+  ReadContext step_ok;
+  CHECK(from_json(f, far_step, step_ok));
 }
 
 namespace {

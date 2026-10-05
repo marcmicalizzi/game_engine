@@ -43,12 +43,24 @@ enum class Kind : u8 {
   Array,       // Vector<T>
   FixedArray,  // std::array<T, N>
   Map,         // FlatMap<K, V>
+  // Appended, never inserted: a kind's number is part of what a reader older than it was built
+  // with, so the list only grows at its end (schemas/README.md, "Evolution rules").
+  //
+  // A position in the world and a displacement in f64 (ADR-0053, core/math/world.h): three f64,
+  // 24 bytes, serialized as [x, y, z] in the shortest text that reads back to the same double. Two
+  // kinds rather than one because the C++ types are two — a point and a displacement do not add —
+  // and the IDL keeps what the types keep. A `WorldPos` read from outside must be finite and inside
+  // `world_cell_valid`; a `DVec3` must be finite.
+  WorldPos,  // engine::WorldPos
+  DVec3,     // engine::DVec3
 };
 
 const char* kind_name(Kind kind) noexcept;
 constexpr bool is_integer(Kind k) noexcept { return k >= Kind::U8 && k <= Kind::I64; }
 constexpr bool is_unsigned(Kind k) noexcept { return k >= Kind::U8 && k <= Kind::U64; }
 constexpr bool is_float(Kind k) noexcept { return k == Kind::F32 || k == Kind::F64; }
+// The kinds that are three f64 in memory.
+constexpr bool is_f64_vector(Kind k) noexcept { return k == Kind::WorldPos || k == Kind::DVec3; }
 
 struct TypeInfo;
 

@@ -17,6 +17,8 @@ std::string kind_enum(const TypeExpr& t) {
       if (t.name == "string") return "String";
       if (t.name == "bytes") return "Bytes";
       if (t.name == "id128") return "Id128";
+      if (t.name == "worldpos") return "WorldPos";
+      if (t.name == "dvec3") return "DVec3";
       std::string k = t.name;
       k[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(k[0])));
       return k;  // u8 -> U8, f32 -> F32
@@ -76,6 +78,24 @@ std::string default_initializer(const Field& f) {
     case DefaultKind::Float: return t.name == "f32" ? f.default_text + "f" : f.default_text;
     case DefaultKind::String: return "\"" + escape_cpp_string(f.default_text) + "\"";
     case DefaultKind::Ident: return t.resolved_cpp + "::" + f.default_text;
+    case DefaultKind::Vector: {
+      // `engine::WorldPos{x, y, z}` with each component a double literal as written (an integer
+      // gains ".0"), so the C++ default is the double the schema's text names.
+      std::string out = cpp_type(t) + "{";
+      size_t start = 0;
+      bool first = true;
+      while (start <= f.default_text.size()) {
+        const size_t comma = f.default_text.find(',', start);
+        std::string part = f.default_text.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (part.find_first_of(".eExX") == std::string::npos) part += ".0";
+        out += (first ? "" : ", ") + part;
+        first = false;
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+      return out + "}";
+    }
   }
   return "{}";
 }
@@ -212,6 +232,7 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file) {
   out << "#include <core/ids/id128.h>\n";
   out << "#include <core/json/json_value.h>\n";
   out << "#include <core/math/math.h>\n";
+  out << "#include <core/math/world.h>\n";
   out << "#include <core/schema/type_info.h>\n\n";
   out << "#include <array>\n#include <optional>\n#include <string>\n";
   for (const std::string& imp : file.imports)

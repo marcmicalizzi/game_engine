@@ -134,6 +134,9 @@ struct Emitter {
       case Kind::Quat:
         out.append("{ read x: number, read y: number, read z: number, read w: number }");
         return;
+      // f64 components, so not a (float32) `vector`.
+      case Kind::WorldPos:
+      case Kind::DVec3: out.append("{ read x: number, read y: number, read z: number }"); return;
       case Kind::Json: out.append("any"); return;
       case Kind::Enum:
       case Kind::Struct: out.append(luau_name(*ref.type)); return;

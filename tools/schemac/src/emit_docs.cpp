@@ -23,6 +23,7 @@ std::string default_text(const Field& f) {
     case DefaultKind::Null: return "none";
     case DefaultKind::EmptyArray: return "empty";
     case DefaultKind::String: return "\"" + f.default_text + "\"";
+    case DefaultKind::Vector: return "[" + f.default_text + "]";
     default: return f.default_text;
   }
 }

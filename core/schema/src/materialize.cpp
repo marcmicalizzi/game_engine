@@ -1,4 +1,5 @@
 #include <core/base/assert.h>
+#include <core/math/world.h>
 #include <core/schema/materialize.h>
 
 #include <cstddef>
@@ -64,6 +65,10 @@ u32 float_lanes(Kind kind, bool& wide) noexcept {
     case Kind::Vec2: return 2;
     case Kind::Vec3: return 3;
     case Kind::Vec4: return 4;
+    // A world position converted between length units (a record in km, a component in m) is
+    // scaled in f64 and stored in f64: nothing on this path is ever a float32.
+    case Kind::WorldPos:
+    case Kind::DVec3: wide = true; return 3;
     default: return 0;
   }
 }
@@ -103,8 +108,18 @@ bool read_mapped(const MaterializeField& row, const FieldInfo& field, void* comp
   }
   // In f64, then narrowed once. Floating-point contraction is off tree-wide (ADR-0035), so the
   // multiply and the add are two roundings on every compiler and the same bytes everywhere.
+  f64 converted_all[4] = {};
+  for (u32 i = 0; i < lanes; ++i)
+    converted_all[i] = in[i] * row.scale + row.offset;
+  // A world position is held to what a cell can name after the conversion, as `from_json` holds
+  // an unconverted one (a record in km can name a point no metre field can hold).
+  if (field.type.kind == Kind::WorldPos &&
+      !world_cell_valid(WorldPos{converted_all[0], converted_all[1], converted_all[2]})) {
+    ctx.error("world position out of range once converted (ADR-0053)");
+    return false;
+  }
   for (u32 i = 0; i < lanes; ++i) {
-    const f64 converted = in[i] * row.scale + row.offset;
+    const f64 converted = converted_all[i];
     if (wide) {
       std::memcpy(at + i * sizeof(f64), &converted, sizeof(f64));
     } else {
@@ -163,6 +178,8 @@ bool is_byte_comparable(const TypeRef& type) noexcept {
     case Kind::Vec3:
     case Kind::Vec4:
     case Kind::Quat:
+    case Kind::WorldPos:
+    case Kind::DVec3:
     case Kind::Enum: return true;
     case Kind::FixedArray: return type.element != nullptr && is_byte_comparable(*type.element);
     default: return false;
