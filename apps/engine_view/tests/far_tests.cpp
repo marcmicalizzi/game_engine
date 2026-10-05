@@ -406,7 +406,7 @@ TEST_CASE("far: a second's walk along x at 1.5 m/s moves 1.5 m 10,000 km out") {
   }
 }
 
-// **The owner's sprint, 2026-10-04** (D:\workspace\game_engine_local\flythrough\
+// **The owner's sprint, 2026-10-04** (his frame log, game_engine_local/flythrough/
 // endless-2026-10-04T1710-frames.jsonl, frames 5256 to 5266): walking on the endless desert at
 // (-419,055.125, 81.7, -66,781.67), sprinting at yaw -2.7478 — 22 degrees off +z, towards +x — for
 // the 0.1224 s those eleven frames span, his eye's x stayed at -419,055.125 on every frame and its
