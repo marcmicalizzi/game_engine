@@ -1371,8 +1371,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pace_ms = p.pace_ms;
   record.pace_depth = p.pace_depth;
   record.submit_ms = p.submit_ms;
-  // ADR-0053 seam: schemas (`FrameRecord.pose_position`) takes WorldPos in the next commit.
-  record.pose_position = relative(p.pose.position, WorldPos::origin());
+  record.pose_position = p.pose.position;  // a worldpos since FrameRecord version 9
   record.pose_yaw = p.pose.yaw;
   record.pose_pitch = p.pose.pitch;
   record.pose_time = p.pose_time;

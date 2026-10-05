@@ -1016,7 +1016,11 @@ struct FrameTerrain @version(3) {
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(8) {
+///
+/// Version 9 (ADR-0053): `pose_position` is a `worldpos`, the session's f64 camera, where version 8
+/// wrote a float32 that stood on a 3.1 cm grid 420 km out. The JSON is the same three numbers, so a
+/// version 8 record reads as the same position.
+struct FrameRecord @version(9) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1064,8 +1068,9 @@ struct FrameRecord @version(8) {
   /// stands for, seconds — `FlySession::camera_at`'s fraction of a tick past the tick before the
   /// last. Presented one after another, frames should show `pose_time` advancing by a refresh
   /// each; a frame that advanced by much less shows nearly the pose before it, which is what a
-  /// viewer reads as a frame in its previous position. Zero on a flythrough.
-  pose_position: vec3 @since(6)
+  /// viewer reads as a frame in its previous position. Zero on a flythrough. The position is the
+  /// world's, in f64 (version 9).
+  pose_position: worldpos @since(6) @unit(m)
   pose_yaw: f32 = 0 @since(6)
   pose_pitch: f32 = 0 @since(6)
   pose_time: f64 = 0 @since(6)

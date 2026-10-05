@@ -164,6 +164,10 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(run_view({"--interactive", "--start", "0,1", "0,0"}).exit_code == 2);
   CHECK(run_view({"--interactive", "--start", "0,1,2", "0,95"}).exit_code == 2);
   CHECK(run_view({"--interactive", "--start", "0,1,2", "zero,0"}).exit_code == 2);
+  // A position is doubles, anywhere a world cell can name it: 1.37e11 m each way, and no further.
+  const Run outside = run_view({"--interactive", "--start", "0,1,2e11", "0,0"});
+  CHECK(outside.exit_code == 2);
+  CHECK_MESSAGE(outside.output.find("outside the world") != std::string::npos, outside.output);
   CHECK(run_view({"--replay-input", log, "--start", "0,1,2", "0,0"}).exit_code == 2);
   CHECK(
       run_view({"--interactive", "--start", "0,1,2", "0,0", "--camera-path", "p.json"}).exit_code ==
@@ -316,6 +320,84 @@ TEST_CASE("engine-view: a replay refuses what it cannot fly, before it asks for 
   CHECK(version.exit_code == 1);
   CHECK_MESSAGE(version.output.find("refused rather than misread") != std::string::npos,
                 version.output);
+}
+
+TEST_CASE("engine-view: a live session's frame records 420 km out carry its f64 camera") {
+  // The frame log's pose (FrameRecord `pose_position`) was a float32 until 2026-10-05, and so was
+  // the camera: 420 km out both stood on a 3.1 cm grid, and a camera flying along -z at 1 m/s, 4 mm
+  // a tick, did not move. Started at an x no float holds (419,072.37 is 419,072.375 as one) and
+  // flown forward for half a second, the session's records carry the x typed, to the bit, and a z
+  // that moves by the flight's 0.5 m and stands off the float's grid. Needs a display and a device.
+  const test::TempDir tmp("engine_view_far_pose");
+  input::InputLog forward;
+  forward.set_map(view::default_fly_map());
+  forward.record(input::RawEvent{SimTick{1}, input::Source::Key, 26, 1.0f, 0});  // W
+  view::SessionHeader header;
+  header.ticks = 120;
+  forward.set_session(view::session_to_json(header));
+  const std::string inject = tmp.file("forward.jsonl");
+  REQUIRE(forward.save(inject) == io::Status::Ok);
+  const std::string jsonl = tmp.file("far.jsonl");
+  const Run live = run_view({"--interactive",
+                             "--inject-input",
+                             inject,
+                             "--benchmark",
+                             jsonl,
+                             "--start",
+                             "419072.37,10,-419072.61",
+                             "0,0",
+                             "--procedural",
+                             "heightfield",
+                             "--grid",
+                             "65",
+                             "--tunable",
+                             "view.fly.speed=1",
+                             "--width",
+                             "256",
+                             "--height",
+                             "160",
+                             "--no-vsync",
+                             "--ddc",
+                             tmp.file("ddc")});
+  if (live.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  const std::string text = read_text(jsonl);
+  u32 records = 0;
+  u32 x_exact = 0;
+  u32 z_off_grid = 0;
+  f64 first_z = 0.0;
+  f64 last_z = 0.0;
+  for (usize begin = 0; begin < text.size();) {
+    const usize end = text.find('\n', begin);
+    const usize stop = end == std::string::npos ? text.size() : end;
+    JsonValue line;
+    if (stop > begin && parse_json(text.substr(begin, stop - begin), line).ok &&
+        line.find("repeat") != nullptr) {
+      const JsonValue* pose = line.find("pose_position");
+      REQUIRE(pose != nullptr);
+      REQUIRE(pose->size() == 3);
+      f64 x = 0.0;
+      f64 z = 0.0;
+      REQUIRE((*pose)[0].get_f64(x));
+      REQUIRE((*pose)[2].get_f64(z));
+      x_exact += x == 419072.37 ? 1u : 0u;
+      z_off_grid += std::fmod(std::fabs(z), 0.03125) != 0.0 ? 1u : 0u;
+      if (records == 0) first_z = z;
+      last_z = z;
+      ++records;
+    }
+    begin = stop + 1;
+  }
+  MESSAGE(records << " records: x as typed in " << x_exact << ", z off a float's 3.1 cm grid in "
+                  << z_off_grid << "; z moved " << first_z - last_z << " m along -z");
+  CHECK(records > 0);
+  CHECK(x_exact == records);
+  CHECK(z_off_grid * 2 > records);  // a grid point is a 1-in-8,000 chance at a 4 um step
+  CHECK(first_z - last_z > 0.3);    // half a second at 1 m/s, less the first frames' few ticks
+  CHECK(first_z - last_z < 0.51);
 }
 
 TEST_CASE("engine-view: a session recorded with float32 positions replays, and says so") {
