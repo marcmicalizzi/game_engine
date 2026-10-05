@@ -70,7 +70,7 @@ class TerrainRingSet final : public TerrainLevelSet {
   // here. False, with a sentence, for a terrain whose ground provider makes no rings (the waves; a
   // provider this build does not carry), a scene grid whose spacing is not a whole number of
   // millimetres, or tunables that leave no moving ring. `desc` must outlive the set.
-  bool build(const TerrainDesc& desc, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
+  bool build(const TerrainDesc& desc, WorldPos camera, jobs::JobSystem* jobs,
              std::string* error = nullptr);
   bool valid() const noexcept override { return levels_ > 1; }
   // Levels including the scene's grid: 1 + the moving rings.
@@ -106,10 +106,10 @@ class TerrainRingSet final : public TerrainLevelSet {
   // Where the terrain capability's re-centre rule (`terrain::recentre_rings`) puts the rings for a
   // camera at (x, z) when they stand at `from`: `from` itself when nothing moves. It reads only the
   // ring parameters, so the frame may ask while the worker runs an `update`.
-  TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
+  TerrainRingLayout next_layout(WorldPos camera,
                                 const TerrainRingLayout& from) const noexcept override;
   // Whether `next_layout` moves anything.
-  bool wants_update(f32 camera_x, f32 camera_z, const TerrainRingLayout& layout) const noexcept;
+  bool wants_update(WorldPos camera, const TerrainRingLayout& layout) const noexcept;
 
   // What the GPU scene reserves for a ring level: room for two rings the size of the largest this
   // layout rule can make, from the chunks built at load, with `renderer.terrain.ring_slack` on top.
@@ -123,13 +123,13 @@ class TerrainRingSet final : public TerrainLevelSet {
   // rings it moves are rebuilt from the field at `time_s` — read from `fields[level]` where it
   // covers a chunk, evaluated otherwise. The rule decides where the rings go; `target`, which the
   // frame worked out with the same rule, is the motion's to check against `layout()` after.
-  bool update(f32 camera_x, f32 camera_z, f64 time_s, std::span<const Heights> fields,
-              jobs::JobSystem* jobs, u32& moved, std::string* error = nullptr);
-  bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+  bool update(WorldPos camera, f64 time_s, std::span<const Heights> fields, jobs::JobSystem* jobs,
+              u32& moved, std::string* error = nullptr);
+  bool update(WorldPos camera, f64 time_s, const TerrainRingLayout& target,
               std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
               std::string* error) override {
     (void)target;
-    return update(camera_x, camera_z, time_s, fields, jobs, moved, error);
+    return update(camera, time_s, fields, jobs, moved, error);
   }
 
   // **The padding a level's spheres take while `field` is drawn** (`TerrainLevelSet::padding`): a

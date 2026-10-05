@@ -406,8 +406,28 @@ int2 terrain_window(TerrainLevelDesc level, bool along_z) {
   return int2(max(lo_a, lo_b), min(hi_a, hi_b));
 }
 
-void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out float3 position,
-                    out float3 normal) {
+// The blended field's normal at lattice point (i, j): central differences, one-sided at the
+// fields' window, as `load_terrain` gives the rest mesh its normals. A function of the lattice
+// alone, so a world-lattice tile and the scene's grid take the same one.
+float3 terrain_normal(TerrainLevelDesc level, int i, int j) {
+  const int2 wx = terrain_window(level, false);
+  const int2 wz = terrain_window(level, true);
+  const int x0 = clamp(i - 1, wx.x, wx.y);
+  const int x1 = clamp(i + 1, wx.x, wx.y);
+  const int z0 = clamp(j - 1, wz.x, wz.y);
+  const int z1 = clamp(j + 1, wz.x, wz.y);
+  const float dx = float(x1 - x0) * level.spacing;
+  const float dz = float(z1 - z0) * level.spacing;
+  const float hx = terrain_height(level, x1, j) - terrain_height(level, x0, j);
+  const float hz = terrain_height(level, i, z1) - terrain_height(level, i, z0);
+  // cross((0, hz, dz), (dx, hx, 0)), as `load_terrain` takes it: +y for a flat field.
+  const float3 n = float3(-dz * hx, dz * dx, -dx * hz);
+  const float len = length(n);
+  return len > 0.0 ? n / len : float3(0.0, 1.0, 0.0);
+}
+
+void terrain_vertex(MeshDesc mesh, InstanceDesc instance, TerrainLevelDesc level, uint vertex,
+                    out float3 position, out float3 normal) {
   // A vertex another level draws: a world tile's border along a coarser tile names that tile's
   // level in its rest normal (horizontal, at the level's number of sixteenths of a turn), and is
   // placed, raised and lit from that level's description, as the coarser tile's own copy is — so
@@ -423,6 +443,28 @@ void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out floa
     }
   }
   const float3 rest = load_quantized_position(mesh, vertex);
+  // **A world-lattice level's tile is placed at its corner** (scene.slang, `terrain_corner_mm`;
+  // renderer.md, "The ground's tiles are placed at their corners"): the vertex's lattice point is
+  // found from the corner in whole millimetres and its rest position from the corner, and it is
+  // written relative to the corner, so nothing here is the size of the distance from the world's
+  // origin. A world-lattice level has no hole.
+  if (level.spacing_mm > 0) {
+    const int64_t s = int64_t(level.spacing_mm);
+    const int64_t cx = terrain_corner_axis_mm(instance.cell.x, instance.rows[0].w);
+    const int64_t cz = terrain_corner_axis_mm(instance.cell.z, instance.rows[2].w);
+    const int ti = terrain_lattice_index(cx, rest.x, s);
+    const int tj = terrain_lattice_index(cz, rest.z, s);
+    bool down = false;
+    if (level.skirt > 0.0 && g_params.attributes != 0) {
+      VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+      down = decode_oct(attributes[vertex].normal_oct).y < -0.5;
+    }
+    position = float3(terrain_from_corner(ti, s, cx),
+                      terrain_height(level, ti, tj) - (down ? level.skirt : 0.0),
+                      terrain_from_corner(tj, s, cz));
+    normal = terrain_normal(level, ti, tj);
+    return;
+  }
   const float inv = 1.0 / level.spacing;
   int i = int(round((rest.x - level.origin.x) * inv));
   int j = int(round((rest.z - level.origin.y) * inv));
@@ -470,20 +512,7 @@ void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out floa
   position = float3(level.origin.x + float(i) * level.spacing,
                     terrain_height(level, i, j) - (skirt ? level.skirt : 0.0) - sunk,
                     level.origin.y + float(j) * level.spacing);
-  const int2 wx = terrain_window(level, false);
-  const int2 wz = terrain_window(level, true);
-  const int x0 = clamp(i - 1, wx.x, wx.y);
-  const int x1 = clamp(i + 1, wx.x, wx.y);
-  const int z0 = clamp(j - 1, wz.x, wz.y);
-  const int z1 = clamp(j + 1, wz.x, wz.y);
-  const float dx = float(x1 - x0) * level.spacing;
-  const float dz = float(z1 - z0) * level.spacing;
-  const float hx = terrain_height(level, x1, j) - terrain_height(level, x0, j);
-  const float hz = terrain_height(level, i, z1) - terrain_height(level, i, z0);
-  // cross((0, hz, dz), (dx, hx, 0)), as `load_terrain` takes it: +y for a flat field.
-  const float3 n = float3(-dz * hx, dz * dx, -dx * hz);
-  const float len = length(n);
-  normal = len > 0.0 ? n / len : float3(0.0, 1.0, 0.0);
+  normal = terrain_normal(level, i, j);
 }
 
 [shader("compute")]
@@ -528,7 +557,7 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
       float3 normal;
       const uint vertex = cluster.vertex_offset + i;
       if (have_level) {
-        terrain_vertex(mesh, level, vertex, moved, normal);
+        terrain_vertex(mesh, instance, level, vertex, moved, normal);
       } else {
         moved = load_quantized_position(mesh, vertex);
         normal = rest_normal(mesh, vertex, moved);

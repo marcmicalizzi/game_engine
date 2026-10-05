@@ -21,11 +21,12 @@
 // swim. Its radius is rounded up to a 64th of its power of two for the same reason, so that the
 // float noise of a moving camera cannot change a texel's size between frames, and its centre is
 // snapped to a whole texel across the light (`gfx::shadow_snap`'s rule, in the world and in f64),
-// so that a camera that moves moves the grid by whole texels. A cascade whose sphere would hold the whole scene's bounds is
-// replaced by them, and is the last: every receiver there is is inside it. That is the common
-// case for a camera framing an object — engine-view's orbit frames a mesh with a frustum wider
-// than the mesh, so its first slice already holds it and the frame draws **one** cascade, every
-// texel on the scene — and it is why a frame may draw fewer cascades than the atlas holds.
+// so that a camera that moves moves the grid by whole texels. A cascade whose sphere would hold the
+// whole scene's bounds is replaced by them, and is the last: every receiver there is is inside it.
+// That is the common case for a camera framing an object — engine-view's orbit frames a mesh with a
+// frustum wider than the mesh, so its first slice already holds it and the frame draws **one**
+// cascade, every texel on the scene — and it is why a frame may draw fewer cascades than the atlas
+// holds.
 //
 // **The depth range.** A cascade holds every caster between the light and its receivers: its
 // depth runs from the sphere's far side, away from the light, to the far side of the scene's

@@ -130,8 +130,7 @@ struct Rig {
     }
     if (resolved.terrain_rings) {
       rings = std::make_unique<TerrainRingSet>();
-      const Vec3 at = terrain_eye(ring_camera);
-      if (!rings->build(data.terrain, at.x, at.z, jobs, &error)) return false;
+      if (!rings->build(data.terrain, ring_camera, jobs, &error)) return false;
     }
     if (!scene.create(device, data, resolved, &error, rings.get())) return false;
     SceneRenderer::Desc rd;
@@ -605,7 +604,7 @@ void culling_case(bool with_rings) {
     u32 shot = 0;
     for (u32 f = 0; f < k_frames; ++f) {
       const Camera camera = looking_across(desc.terrain, f);
-      rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
+      rig.motion.frame(1.0 / 60.0, camera.position);
       FrameDesc frame;
       frame.camera = camera;
       frame.frame_index = f;
@@ -783,7 +782,7 @@ TEST_CASE(
   const u32 scene_instances = rig.data.instances.size();
   for (u32 f = 0; f < k_frames; ++f) {
     const Camera camera = camera_at(f);
-    rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
+    rig.motion.frame(1.0 / 60.0, camera.position);
     // One surface time: where two levels meet they draw the same sand.
     for (u32 k = 1; k < levels; ++k)
       CHECK(rig.motion.level_stats(k).surface_s == rig.motion.level_stats(0).surface_s);

@@ -465,12 +465,22 @@ struct TerrainField {
 // from its rest height in either field — in place of `InstanceDesc::bounds_padding`, because it
 // changes as the fields do and a per-frame table is where it can change without an upload.
 //
-// Everything is in the level's **mesh space**, which is the world: a terrain level's instance has
-// the identity transform (renderer::GpuScene refuses anything else).
+// **Two kinds of level, and where each is** (ADR-0053; renderer.md, "The ground's tiles are placed
+// at their corners"). The **scene's grid** (`spacing_mm` 0) is one mesh whose lattice is the
+// grid's float one (`origin + (i, j) * spacing`), in its mesh space, which is the world: its
+// instance has the identity transform at cell zero (renderer::GpuScene refuses anything else), and
+// `hole` is in that space. A **world-lattice level** (`spacing_mm` > 0: a ring of a scene's
+// terrain, a world tile level, a far level) is the world's lattice at `spacing_mm` from the world's
+// origin, and is drawn as tiles, each an instance **placed at its tile's corner**
+// (`set_terrain_corner`): the pool pass finds a vertex's lattice point from its rest position and
+// the corner in whole millimetres (`terrain_corner_mm`), and writes it **relative to the corner**,
+// `(i * spacing_mm - corner_mm) / 1000` metres, so no float32 on the way holds a distance from the
+// world's origin. `origin` and `hole` are the grid's alone; a world-lattice level has no hole (a
+// ring leaves out the square inside it by its own geometry).
 struct TerrainLevelDesc {
   TerrainField a;
   TerrainField b;
-  Vec2 origin{};       // x, z of lattice point (0, 0), metres
+  Vec2 origin{};       // x, z of lattice point (0, 0), metres: the scene's grid's
   f32 spacing = 1.0f;  // metres between lattice points
   f32 blend = 0.0f;    // 0 draws `a`, 1 draws `b`
   f32 padding = 0.0f;  // metres: the cull's sphere padding for every cluster of the level
@@ -484,8 +494,10 @@ struct TerrainLevelDesc {
   // the world's tiles"; `terrain_level_normal`). A heightfield vertex's rest normal is free for it,
   // since the pool writes the normals the resolve reads, as a skirt's already is.
   u32 flags = 0;
-  u32 pad = 0;
-  Vec4 hole{};  // x0, z0, x1, z1, metres; none when x1 <= x0
+  // Millimetres between lattice points of a world-lattice level, whose point (i, j) is at
+  // (i, j) * spacing_mm from the world's origin; 0 for the scene's grid. It took the last pad word.
+  i32 spacing_mm = 0;
+  Vec4 hole{};  // x0, z0, x1, z1, metres in the scene grid's mesh space; none when x1 <= x0
 };
 inline constexpr u32 k_terrain_level_named = 1u << 0;
 // The rest normal that names terrain level `level` (0..15) for `k_terrain_level_named`:
@@ -645,6 +657,52 @@ inline Mat4 instance_matrix(const InstanceDesc& instance, const WorldEye& eye) n
     m.at(r, 3) = t[r];
   }
   return m;
+}
+
+// ---- a terrain tile's corner (renderer.md, "The ground's tiles are placed at their corners") ----
+//
+// A world-lattice level's tile (`TerrainLevelDesc::spacing_mm`) is an instance at its corner,
+// which is a whole number of millimetres from the world's origin on x and z and at height zero:
+// its `WorldCell` is the corner's, set **from the millimetres** (the cell is `floor(mm / 64000)`
+// and the local the rest, in metres, rounded to float32 once — never through a float32 metre of the
+// corner itself), with the identity linear part. The pool pass and the cull pass recover the corner
+// in whole millimetres from the cell and the local (`terrain_corner_mm`): a local of whole
+// millimetres is within 3.8 µm of them in float32, so the local times 1000, rounded, gives them
+// back exactly, and every lattice index and every position the pool pass writes is then integer
+// arithmetic on millimetres plus a float32 the size of the tile.
+inline constexpr i64 k_world_cell_mm = 64000;
+
+inline constexpr i64 terrain_floor_div(i64 a, i64 b) noexcept {
+  const i64 q = a / b;
+  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+inline void set_terrain_corner(InstanceDesc& instance, i64 x_mm, i64 z_mm) noexcept {
+  const i64 cx = terrain_floor_div(x_mm, k_world_cell_mm);
+  const i64 cz = terrain_floor_div(z_mm, k_world_cell_mm);
+  instance.cell = Vec3i{static_cast<i32>(cx), 0, static_cast<i32>(cz)};
+  instance.rows[0] = Vec4{1.0f, 0.0f, 0.0f,
+                          static_cast<f32>(static_cast<f64>(x_mm - cx * k_world_cell_mm) / 1000.0)};
+  instance.rows[1] = Vec4{0.0f, 1.0f, 0.0f, 0.0f};
+  instance.rows[2] = Vec4{0.0f, 0.0f, 1.0f,
+                          static_cast<f32>(static_cast<f64>(z_mm - cz * k_world_cell_mm) / 1000.0)};
+  instance.scale_max = 1.0f;
+  instance.flags = k_instance_uniform_scale;
+}
+
+// The corner back, in whole millimetres: what shaders/scene.slang's `terrain_corner_mm` computes,
+// in its arithmetic (the local times 1000 in float32, rounded half away from zero).
+struct TerrainCornerMm {
+  i64 x = 0;
+  i64 z = 0;
+};
+inline TerrainCornerMm terrain_corner_mm(const InstanceDesc& instance) noexcept {
+  const auto axis = [](i32 cell, f32 local) {
+    const f32 mm = local * 1000.0f;
+    return static_cast<i64>(cell) * k_world_cell_mm + static_cast<i64>(std::round(mm));
+  };
+  return TerrainCornerMm{axis(instance.cell.x, instance.rows[0].w),
+                         axis(instance.cell.z, instance.rows[2].w)};
 }
 
 // The visibility buffer's extent as `ClusterDrawParams::extent` packs it: width in the low half,

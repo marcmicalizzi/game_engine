@@ -338,14 +338,15 @@ void cull_pair(uint pair, bool vertex_draw) {
     TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
     const TerrainLevelDesc level = levels[instance.terrain - 1];
     padding = max(padding, level.padding);
-    // The hole is in the level's mesh space, which a level at cell zero shares with its cell's
-    // frame; the test takes the cluster there and not in the frame's space, so it is the same test
-    // wherever the eye is.
+    // The hole is the scene grid's alone (`spacing_mm` 0; a world-lattice level's tiles leave out
+    // what they leave out by their own geometry), in the grid's mesh space, which the grid at cell
+    // zero shares with its cell's frame; the test takes the cluster there and not in the frame's
+    // space, so it is the same test wherever the eye is.
     const float4 hole = level.hole;
     const float3 at = instance_cell_point(instance, cluster.center);
     const float footprint = cluster.radius * instance.scale_max;
-    if (hole.z > hole.x && at.x - footprint >= hole.x && at.x + footprint <= hole.z &&
-        at.z - footprint >= hole.y && at.z + footprint <= hole.w) {
+    if (level.spacing_mm == 0 && hole.z > hole.x && at.x - footprint >= hole.x &&
+        at.x + footprint <= hole.z && at.z - footprint >= hole.y && at.z + footprint <= hole.w) {
       return;
     }
   }

@@ -60,12 +60,6 @@
 
 namespace engine::renderer {
 
-// The eye as the ground's motion and its tile layout take it: float32 metres from the world's
-// origin. **Stage 1 of ADR-0053 leaves the ground as it was** - world-space vertices under an
-// identity instance - so these inputs stay float32 until stage 2 puts a tile's vertices relative to
-// its corner; a tile chosen from a 3 cm rounding of the eye 420 km out is the same tile.
-inline Vec3 terrain_eye(WorldPos eye) noexcept { return relative(eye, WorldPos::origin()); }
-
 class GpuScene;
 
 struct TimeLapseConfig {
@@ -307,7 +301,9 @@ class TerrainMotion {
   // finished field goes to the GPU scene and the next is asked for; with rings, a camera that has
   // left a ring's middle half asks for a re-centre, and a finished one is uploaded and swapped in.
   // What the frame draws is handed to the scene (`GpuScene::terrain_show`, `terrain_chunk_show`).
-  void frame(f64 real_dt_s, f32 camera_x = 0.0f, f32 camera_z = 0.0f);
+  // The camera is a `WorldPos` (ADR-0053): the layout is chosen from it in f64 and whole
+  // millimetres, never from a float32 rounding of it.
+  void frame(f64 real_dt_s, WorldPos camera = WorldPos::origin());
   // Stops the worker, waiting for a field or a re-centre in flight.
   void finish();
 
@@ -538,8 +534,7 @@ class TerrainMotion {
   // A re-centre's chunks, on the ring worker: the rule for a camera at (x, z), the chunks it
   // changes rebuilt from the field at `time_s`.
   struct RingTask {
-    f32 camera_x = 0.0f;
-    f32 camera_z = 0.0f;
+    WorldPos camera;
     f64 time_s = 0.0;
     TerrainRingLayout layout;  // where the frame expects the rings to land
     u32 moved = 0;
@@ -574,7 +569,7 @@ class TerrainMotion {
   void post(Task&& task);
   bool schedule(u32 level);
   void schedule_next();
-  void ask_recentre(f32 camera_x, f32 camera_z);
+  void ask_recentre(WorldPos camera);
   bool schedule_pairs();
   void advance_recentre(bool complete);
   bool take_rings(bool block);
@@ -659,12 +654,10 @@ class TerrainMotion {
   RingStats ring_stats_;
   // Where the camera was when the layout drawn, and the one being made, were asked for, and the
   // frame each was asked on: what a frame's lag is measured from (`FrameLayout`).
-  f32 shown_camera_x_ = 0.0f;
-  f32 shown_camera_z_ = 0.0f;
+  WorldPos shown_camera_;
   u64 shown_asked_frame_ = 0;
   bool shown_camera_set_ = false;
-  f32 pending_camera_x_ = 0.0f;
-  f32 pending_camera_z_ = 0.0f;
+  WorldPos pending_camera_;
   FrameLayout frame_layout_;
   f64 max_lag_m_ = 0.0;
   u32 max_lag_frames_ = 0;

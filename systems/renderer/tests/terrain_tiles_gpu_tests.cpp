@@ -2,7 +2,8 @@
 // world's tiles"; ADR-0050), held by the visibility buffer and not by eye:
 //
 //   - the erg drawn from tiles at the grid's spacing is the fixed grid's picture inside the grid's
-//     extent, pixel for pixel, at the finest cut — colour and depth — and has ground past it;
+//     extent, pixel for pixel, at the finest cut — colour to the bit, depth within a few float
+//     steps (a tile is placed at its corner and the grid at cell zero) — and has ground past it;
 //   - tiles meet with no crack: every pixel of a view that is all ground is covered, no column of
 //     a grazing view has a hole under its ground, and every covered pixel stands on the surface —
 //     at one level, across levels, a time-lapse step apart, and 50 km from the origin;
@@ -11,7 +12,9 @@
 //   - the time-lapse holds across tiles: one surface time, each level within its bound;
 //   - a tile set built ahead and read back from a derived-data cache draws the procedural one's
 //     picture, pixel for pixel: the renderer does not know who made a tile;
-//   - a long flight keeps the resident tiles bounded and never drops a rebuild.
+//   - a long flight keeps the resident tiles bounded and never drops a rebuild;
+//   - the translation suite's terrain: tiles and a ground of the test's own moved by whole cells
+//     with the camera draw the same ids, depth and normals on every rasterizer and the ray path.
 //
 // Compiled only where the terrain capability is; each case skips with a message where there is no
 // device.
@@ -132,8 +135,7 @@ struct TileRig {
       ground = std::make_unique<TerrainSampler>(data.terrain);
       tiles = std::make_unique<TerrainTileSet>();
       const scene_gen::TileSource src = source != nullptr ? *source : ground->provider().tiles();
-      const Vec3 at = terrain_eye(camera);  // as MovingGround narrows it
-      if (!tiles->build(data.terrain, *tile_desc, src, at.x, at.z, jobs, &error)) return false;
+      if (!tiles->build(data.terrain, *tile_desc, src, camera, jobs, &error)) return false;
     }
     if (!scene.create(device, data, resolved, &error, tiles.get())) return false;
     SceneRenderer::Desc rd;
@@ -147,12 +149,11 @@ struct TileRig {
 
   // A frame's world update, as a host's ring hands it over: the tiles round the camera.
   void follow(const Camera& camera, f64 dt = 1.0 / 60.0) {
-    const Vec3 at = terrain_eye(camera.position);  // as MovingGround narrows it
     if (tiles != nullptr) {
-      terrain_tiles_round(tiles->tiles_desc(), at.x, at.z, held);
+      terrain_tiles_round(tiles->tiles_desc(), camera.position, held);  // as MovingGround does
       tiles->set_tiles(std::span<const TerrainTile>(held.data(), held.size()));
     }
-    motion.frame(dt, at.x, at.z);
+    motion.frame(dt, camera.position);
   }
 };
 
@@ -484,6 +485,9 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
   channels.ids = true;
   u32 compared = 0;
   u32 depth_differ = 0;
+  u32 depth_bits = 0;  // pixels whose depth differs in any bit
+  u32 worst_ulps = 0;
+  constexpr u32 k_depth_ulps = 16;
   u32 color_differ = 0;
   u32 beyond = 0;
   u32 diagnosed = 0;
@@ -510,7 +514,19 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
         // Inside the grid, two samples from its edge, where its normals are one-sided.
         if (std::abs(world.x) > 189.0f || std::abs(world.z) > 189.0f) continue;
         ++compared;
-        const bool depth_off = a.depth[p] != b.depth[p];
+        // **To a few float steps, not to the bit** (renderer.md, "The ground's tiles are placed at
+        // their corners"): the grid's vertices are world coordinates under an instance at cell
+        // zero and a tile's are metres from its corner under an instance at that corner, so the
+        // same lattice point reaches the frame through two different roundings, each within a
+        // float step at its distance from the eye.
+        u32 da = 0;
+        u32 db = 0;
+        std::memcpy(&da, &a.depth[p], 4);
+        std::memcpy(&db, &b.depth[p], 4);
+        const u32 ulps = da > db ? da - db : db - da;
+        worst_ulps = std::max(worst_ulps, ulps);
+        depth_bits += ulps != 0 ? 1u : 0u;
+        const bool depth_off = ulps > k_depth_ulps;
         depth_differ += depth_off ? 1u : 0u;
         u32 worst_byte = 0;
         for (u32 k = 0; k < 4; ++k) {
@@ -538,10 +554,14 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
     }
   }
   MESSAGE("the erg at 1.5 m: " << compared << " pixels inside the grid compared, " << depth_differ
-                               << " differ in depth, " << color_differ << " in colour; " << beyond
-                               << " pixels of ground past the grid's edge");
+                               << " differ in depth by more than " << k_depth_ulps
+                               << " float steps (" << depth_bits << " in any bit, " << worst_ulps
+                               << " steps at the most), " << color_differ << " in colour; "
+                               << beyond << " pixels of ground past the grid's edge");
   CHECK(compared > 50'000);
-  CHECK(depth_differ == 0);
+  // Past a few float steps only where a silhouette's edge moved by that rounding and a pixel went
+  // to the surface behind it: 11 of 156,172 on the RTX 5090 (2026-10-05), each of the same colour.
+  CHECK(depth_differ * 5'000 <= compared);
   CHECK(color_differ == 0);
   CHECK(beyond > 0);
 
@@ -763,6 +783,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
         u32 compared = 0;
         u32 borders = 0;  // compared pixels on a border of one layout's tiles of a level
         u32 differ = 0;
+        u32 depth_bits = 0;  // compared pixels whose depth differs in any bit
         for (u32 p = 0; p < k_width * k_height; ++p) {
           // The point each layout draws there, both of them clear far ground of one level in both
           // layouts: the squares differ with the tiles' size, so a crest in front may be drawn at
@@ -785,7 +806,17 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
           const f64 fz = static_cast<f64>(w.z) / ft;
           borders += std::abs(fx - std::round(fx)) * ft < 0.5 * s ||
                      std::abs(fz - std::round(fz)) * ft < 0.5 * s;
-          bool same = std::memcmp(&a.depth[p], &b.depth[p], sizeof(f32)) == 0;
+          // Depth to a few float steps: the two layouts' tiles have different corners, and a tile
+          // is placed at its own, so one lattice point reaches the frame through two roundings
+          // (renderer.md, "The ground's tiles are placed at their corners"). Normals and colour,
+          // which a float step does not reach, to the bit.
+          u32 da = 0;
+          u32 db = 0;
+          std::memcpy(&da, &a.depth[p], sizeof(f32));
+          std::memcpy(&db, &b.depth[p], sizeof(f32));
+          const u32 ulps = da > db ? da - db : db - da;
+          depth_bits += ulps != 0 ? 1u : 0u;
+          bool same = ulps <= 16;
           for (u32 k = 0; k < 3 && same; ++k)
             same = a.normals[u64{p} * 3 + k] == b.normals[u64{p} * 3 + k];
           for (u32 k = 0; k < 4 && same; ++k)
@@ -797,7 +828,8 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
         const std::string view = where + (grazing ? ", grazing" : ", from 90 m");
         MESSAGE(view << ": far tiles of four cells against six, " << compared
                      << " far pixels compared, " << borders << " of them on a border of four's, "
-                     << differ << " differ; the six's census, the normal's jump inside a tile "
+                     << differ << " differ (" << depth_bits
+                     << " in some bit of depth); the six's census, the normal's jump inside a tile "
                      << percentile(c.inside_excess, 1.0) << ", across one level's borders "
                      << percentile(c.same_level_excess, 1.0));
         CHECK(compared > 1'000);
@@ -1311,5 +1343,172 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
     CHECK(swaps_counted > 10);
     CHECK(far_moves > 0);
     CHECK(frame_allocations == 0);
+  }
+}
+
+// ---- the translation suite's terrain ----------------------------------------------------------
+//
+// **The world's tiles and their ground moved by whole cells with the camera draw the same bytes**
+// (ADR-0053 decision 6; renderer.md, "The ground's tiles are placed at their corners"; the meshes'
+// half of the suite is world_translation_tests.cpp). The dunes differ from place to place, so the
+// ground here is a tile source of the test's own whose heights are a function of the lattice point
+// **measured from its own origin**, in whole millimetres, which the test moves with the camera: by
+// the origin and 6,548, 156,250 and 1,562,500 cells out (419 km, 10,000 km, 1e8 m), with and
+// without far levels, on the mesh, software and both vertex rasterizers and the ray visibility
+// pass. A tile is an instance at its corner and its vertices are metres from it, so a move by whole
+// cells changes no operand a pass sees: ids, depth, the shading normal and the colour must be the
+// same to the bit.
+// Before 2026-10-05 a tile's vertices were world coordinates under an instance at cell zero, and
+// 419 km out every one of them reached the frame through a float32 the size of the distance.
+//
+// **At the finest cut**, the lattice's own triangles, and for a reason that is not precision: a
+// tile's UVs are in the scene grid's frame (its base-colour map is baked over the grid by the
+// origin and clamps past it), so a tile 419 km out has other UVs than its twin by the origin, and
+// the DAG's simplification weighs UVs — its coarser levels differ by content, not by rounding (the
+// default cut differed in about 10,000 of the 24,576 depths when this was written).
+namespace {
+
+struct ShiftedGround {
+  i64 x_mm = 0;  // where the ground's own origin is, whole millimetres from the world's
+  i64 z_mm = 0;
+};
+
+bool shifted_heights(const void* state, f64, i64 spacing_mm, i64, i32 i0, i32 j0, u32 nx, u32 nz,
+                     u32 begin, u32 end, std::span<f32> out) noexcept {
+  const ShiftedGround& g = *static_cast<const ShiftedGround*>(state);
+  if (out.size() != static_cast<usize>(nx) * nz) return false;
+  const u32 per_side = (nx + scene_gen::k_height_block - 1) / scene_gen::k_height_block;
+  for (u32 b = begin; b < end; ++b) {
+    const u32 bx = (b % per_side) * scene_gen::k_height_block;
+    const u32 bz = (b / per_side) * scene_gen::k_height_block;
+    for (u32 z = bz; z < std::min(nz, bz + scene_gen::k_height_block); ++z) {
+      for (u32 x = bx; x < std::min(nx, bx + scene_gen::k_height_block); ++x) {
+        const f64 wx = static_cast<f64>((i0 + static_cast<i64>(x)) * spacing_mm - g.x_mm) / 1000.0;
+        const f64 wz = static_cast<f64>((j0 + static_cast<i64>(z)) * spacing_mm - g.z_mm) / 1000.0;
+        out[static_cast<usize>(z) * nx + x] =
+            static_cast<f32>(1.5 * std::sin(0.31 * wx) * std::cos(0.23 * wz) + 0.05 * wx);
+      }
+    }
+  }
+  return true;
+}
+constexpr scene_gen::TileSourceOps k_shifted_ops{.heights = &shifted_heights};
+
+}  // namespace
+
+TEST_CASE(
+    "world translation: the world's tiles moved by whole cells with their ground draw the same "
+    "bytes") {
+  {
+    Gpu probe;
+    if (!probe.ok) {
+      MESSAGE("renderer unavailable here: " << probe.why);
+      return;
+    }
+  }
+  test::TempDir tmp{"engine_renderer_tiles_translation"};
+  const SceneDesc desc = dune_scene(slashes(tmp.native() / "ddc"));
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  struct Path {
+    const char* name;
+    RasterMode raster;
+    bool capacity;  // the vertex path without geometryShader: the capacity draw
+  };
+  const Path paths[] = {{"mesh", RasterMode::Hardware, false},
+                        {"software", RasterMode::Software, false},
+                        {"vertex indexed", RasterMode::Vertex, false},
+                        {"vertex capacity", RasterMode::Vertex, true},
+                        {"ray visibility", RasterMode::RayTrace, false}};
+  struct Layout {
+    const char* name;
+    TerrainTilesDesc tiles;
+  };
+  const Layout layouts[] = {{"the world's rings", small_tiles()},
+                            {"with far levels", small_far_tiles()}};
+  const f64 shifts[] = {6548.0, 156250.0, 1562500.0};
+  constexpr u32 k_width = 192;
+  constexpr u32 k_height = 128;
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  channels.normals = true;
+  for (const Path& path : paths) {
+    gfx::DeviceOptions options;
+    if (path.capacity) {
+      options.overrides.absent.push_back("VK_EXT_mesh_shader");
+      options.overrides.absent.push_back("geometryShader");
+    }
+    gfx::Device device;
+    std::string why;
+    if (!device.create(options, &why)) {
+      MESSAGE(std::string(path.name) << ": no device here: " << why);
+      continue;
+    }
+    for (const Layout& layout : layouts) {
+      // The camera over the tiles by the origin, and the same camera and ground moved by `cells`
+      // along x and -z.
+      const auto picture = [&](f64 cells, CapturedFrame& out) -> bool {
+        const i64 move_mm = static_cast<i64>(cells) * gfx::k_world_cell_mm;
+        ShiftedGround ground{move_mm, -move_mm};
+        const scene_gen::TileSource source{&k_shifted_ops, &ground};
+        const DVec3 move{cells * k_world_cell_m, 0.0, -cells * k_world_cell_m};
+        Camera camera;
+        camera.position = WorldPos{3.25, 9.5, 14.0} + move;
+        camera.target = WorldPos{-2.5, 0.0, -10.0} + move;
+        camera.znear = 0.05f;
+        RenderSettings settings;
+        settings.raster = path.raster;
+        settings.shadows = ShadowMode::Off;
+        settings.lights = false;  // the stand-in point lights stand by the scene's grid
+        TileRig rig;
+        if (!rig.build(device, desc, settings, k_width, k_height, still_lapse(), &pool,
+                       &layout.tiles, camera.position, &source)) {
+          why = rig.error;
+          return false;
+        }
+        rig.follow(camera);
+        FrameDesc frame;
+        frame.camera = camera;
+        frame.lod_px = 0.0f;  // the finest clusters: the lattice's own triangles (below)
+        if (!rig.renderer.capture(frame, channels, out, &rig.error)) {
+          why = rig.error;
+          return false;
+        }
+        return true;
+      };
+      CapturedFrame home;
+      if (!picture(0.0, home)) {
+        MESSAGE(std::string(path.name)
+                << ", " << std::string(layout.name) << ": not drawn here: " << why);
+        break;
+      }
+      REQUIRE(home.covered > k_width * k_height / 2);
+      for (const f64 shift : shifts) {
+        CapturedFrame moved;
+        REQUIRE_MESSAGE(picture(shift, moved), why);
+        u64 ids = 0;
+        u64 depth = 0;
+        u64 normals = 0;
+        u64 colour = 0;
+        for (u32 i = 0; i < home.ids.size(); ++i)
+          ids += home.ids[i] != moved.ids[i] ? 1u : 0u;
+        for (u32 i = 0; i < home.depth.size(); ++i)
+          depth += std::memcmp(&home.depth[i], &moved.depth[i], 4) != 0 ? 1u : 0u;
+        for (u32 i = 0; i < home.normals.size(); ++i)
+          normals += home.normals[i] != moved.normals[i] ? 1u : 0u;
+        for (u32 i = 0; i < home.color.size(); ++i)
+          colour += home.color[i] != moved.color[i] ? 1u : 0u;
+        MESSAGE(std::string(path.name)
+                << ", " << std::string(layout.name) << ", moved by " << shift << " cells: " << ids
+                << " id words, " << depth << " depths, " << normals << " normal bytes and "
+                << colour << " colour bytes differ");
+        CHECK(moved.covered == home.covered);
+        CHECK(ids == 0);
+        CHECK(depth == 0);
+        CHECK(normals == 0);
+        CHECK(colour == 0);
+      }
+    }
+    device.destroy();
   }
 }

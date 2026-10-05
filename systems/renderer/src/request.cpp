@@ -163,8 +163,7 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
   jobs_ = std::make_unique<jobs::JobSystem>(config);
   if (resolved.terrain_rings) {
     rings_ = std::make_unique<TerrainRingSet>();
-    const Vec3 at = terrain_eye(first.position);
-    if (!rings_->build(data.terrain, at.x, at.z, jobs_.get(), error)) {
+    if (!rings_->build(data.terrain, first.position, jobs_.get(), error)) {
       stage_ = "terrain-rings";
       return false;
     }
@@ -176,8 +175,7 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
     // `terrain_far_levels` lays them out, -1 the tunable's count.
     if (!tiles_->build(data.terrain,
                        terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels),
-                       ground_->provider().tiles(), terrain_eye(first.position).x,
-                       terrain_eye(first.position).z, jobs_.get(), error)) {
+                       ground_->provider().tiles(), first.position, jobs_.get(), error)) {
       stage_ = "terrain-tiles";
       return false;
     }
@@ -207,17 +205,13 @@ bool MovingGround::start(GpuScene& scene, const ResolvedSettings& resolved, bool
 
 void MovingGround::follow_tiles(WorldPos camera) {
   if (tiles_ == nullptr) return;
-  // The tile layout still takes float32 metres (ADR-0053 stage 2: the ground's tiles relative to
-  // their corners); a tile's choice from a 3 cm rounding of the eye is harmless.
-  const Vec3 at = terrain_eye(camera);
-  terrain_tiles_round(tiles_->tiles_desc(), at.x, at.z, round_);
+  // The world ring's first-fill rule, in its own float32 arithmetic (terrain_tiles_round's seam).
+  terrain_tiles_round(tiles_->tiles_desc(), camera, round_);
   tiles_->set_tiles(std::span<const TerrainTile>(round_.data(), round_.size()));
 }
 
 void MovingGround::frame(const Camera& camera) {
-  // The terrain's motion takes the eye in float32 metres too (ADR-0053 stage 2, as above).
-  const Vec3 at = terrain_eye(camera.position);
-  motion_.frame(1.0 / static_cast<f64>(k_frame_hz), at.x, at.z);
+  motion_.frame(1.0 / static_cast<f64>(k_frame_hz), camera.position);
 }
 
 void MovingGround::finish() { motion_.finish(); }

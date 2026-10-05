@@ -846,8 +846,9 @@ class GpuScene {
     f32 blend = 0.0f;
     f32 padding = 0.0f;
     Vec4 hole{};
-    f32 skirt = 0.0f;  // metres a ring's skirt hangs below its border
-    u32 flags = 0;     // gfx::TerrainLevelDesc::flags
+    f32 skirt = 0.0f;    // metres a ring's skirt hangs below its border
+    u32 flags = 0;       // gfx::TerrainLevelDesc::flags
+    i32 spacing_mm = 0;  // gfx::TerrainLevelDesc::spacing_mm: 0 for the scene's grid
     // Copies handed over and not yet wholly recorded, in order: `done` bytes of each went already.
     struct Pending {
       gfx::BufferResource staging;
@@ -872,6 +873,10 @@ class GpuScene {
     gfx::MeshDesc desc{};  // the template: the scene's addresses and the slot's clusters
     Vec4 quant{};          // the chunk's own 16-bit grid
     u32 clusters = 0;      // the chunk's clusters
+    // The chunk's corner, millimetres from the world's origin: where the slot's instance is placed
+    // when the slot is turned on (`gfx::set_terrain_corner`).
+    i64 corner_x_mm = 0;
+    i64 corner_z_mm = 0;
     bool loaded = false;
     bool on = false;
   };
@@ -935,7 +940,10 @@ class GpuScene {
   Vector<gfx::BufferResource> field_returning_[k_joint_slots];
   Vector<gfx::BufferResource> field_retired_;
   u32 field_staging_made_ = 0;
-  Vector<u32> pending_mesh_writes_;   // mesh indices whose MeshDesc the next frame writes
+  Vector<u32> pending_mesh_writes_;  // mesh indices whose MeshDesc the next frame writes
+  // Instance indices whose InstanceDesc the next frame writes: a ring slot turned on at its chunk's
+  // corner (renderer.md, "The ground's tiles are placed at their corners").
+  Vector<u32> pending_instance_writes_;
   Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
   TerrainLevelSet* rings_ = nullptr;  // during `create` only
   // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.

@@ -179,6 +179,31 @@ f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept {
   return static_cast<f64>(f.half - f.margin - f.snap / 2) / 1000.0;
 }
 
+void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<TerrainTile>& out) {
+  out.clear();
+  if (desc.ring_count == 0) return;
+  const f64 t = static_cast<f64>(desc.tile_size);
+  const f64 reach = static_cast<f64>(desc.radius[desc.ring_count - 1]) * t;
+  const i64 x0 = static_cast<i64>(std::floor((camera.x - reach) / t)) - 1;
+  const i64 x1 = static_cast<i64>(std::floor((camera.x + reach) / t)) + 1;
+  const i64 z0 = static_cast<i64>(std::floor((camera.z - reach) / t)) - 1;
+  const i64 z1 = static_cast<i64>(std::floor((camera.z + reach) / t)) + 1;
+  for (i64 i = x0; i <= x1; ++i) {
+    for (i64 j = z0; j <= z1; ++j) {
+      // The centre from the camera: the tile's corner is whole tiles, exact in f64 to 1e15 m.
+      const f64 dx = (static_cast<f64>(i) + 0.5) * t - camera.x;
+      const f64 dz = (static_cast<f64>(j) + 0.5) * t - camera.z;
+      const f64 d = std::sqrt(dx * dx + dz * dz);
+      for (u32 r = 0; r < desc.ring_count; ++r) {
+        if (d < static_cast<f64>(desc.radius[r]) * t) {
+          out.push_back(TerrainTile{static_cast<i32>(i), static_cast<i32>(j), static_cast<u8>(r)});
+          break;
+        }
+      }
+    }
+  }
+}
+
 void terrain_tiles_round(const TerrainTilesDesc& desc, f32 x, f32 z, Vector<TerrainTile>& out) {
   out.clear();
   if (desc.ring_count == 0) return;
@@ -345,6 +370,8 @@ void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f3
   out.lattice_i.clear();
   out.lattice_j.clear();
   out.drawn_from.clear();
+  out.corner_x_mm = static_cast<i64>(i0) * s;
+  out.corner_z_mm = static_cast<i64>(j0) * s;
   const f64 uv_scale = 1.0 / static_cast<f64>(spec.uv_size_mm);
   const f64 spacing_m = static_cast<f64>(s) / 1000.0;
   for (u32 j = 0; j < n; ++j) {
@@ -357,8 +384,11 @@ void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f3
       const i64 xm = static_cast<i64>(li) * s;
       const i64 zm = static_cast<i64>(lj) * s;
       const f32 y = h(static_cast<i32>(i), static_cast<i32>(j));
-      out.positions.push_back(Vec3{static_cast<f32>(static_cast<f64>(xm) / 1000.0), y,
-                                   static_cast<f32>(static_cast<f64>(zm) / 1000.0)});
+      // From the tile's corner (renderer.md, "The ground's tiles are placed at their corners"):
+      // whole millimetres, rounded to float32 once at the size of the tile.
+      out.positions.push_back(
+          Vec3{static_cast<f32>(static_cast<f64>(xm - out.corner_x_mm) / 1000.0), y,
+               static_cast<f32>(static_cast<f64>(zm - out.corner_z_mm) / 1000.0)});
       out.uvs.push_back(Vec2{static_cast<f32>(static_cast<f64>(xm - spec.uv_x0_mm) * uv_scale),
                              static_cast<f32>(static_cast<f64>(zm - spec.uv_z0_mm) * uv_scale)});
       // The border, and a far tile's hole's: every DAG level keeps the vertices a finer tile meets.
@@ -419,21 +449,18 @@ Vec4 TerrainTileSet::grid_hole(const TerrainRingLayout&) const noexcept {
 
 TerrainRingLayout TerrainTileSet::layout() const noexcept { return layout_; }
 
-void TerrainTileSet::window_centre(u32 level, f32 camera_x, f32 camera_z, i64& cx,
-                                   i64& cz) const noexcept {
+void TerrainTileSet::window_centre(u32 level, WorldPos camera, i64& cx, i64& cz) const noexcept {
   if (is_far(level)) {
     // On the next coarser level's tile grid, nearest the camera, so the square's border is on that
     // level's lattice and the square it leaves out of it is whole tiles of it.
     const f64 snap = static_cast<f64>(far_snap_mm_[level]) / 1000.0;
-    cx =
-        static_cast<i64>(std::floor(static_cast<f64>(camera_x) / snap + 0.5)) * far_snap_mm_[level];
-    cz =
-        static_cast<i64>(std::floor(static_cast<f64>(camera_z) / snap + 0.5)) * far_snap_mm_[level];
+    cx = static_cast<i64>(std::floor(camera.x / snap + 0.5)) * far_snap_mm_[level];
+    cz = static_cast<i64>(std::floor(camera.z / snap + 0.5)) * far_snap_mm_[level];
     return;
   }
   const f64 t = static_cast<f64>(tile_mm_) / 1000.0;
-  cx = static_cast<i64>(std::floor(static_cast<f64>(camera_x) / t)) * tile_mm_;
-  cz = static_cast<i64>(std::floor(static_cast<f64>(camera_z) / t)) * tile_mm_;
+  cx = static_cast<i64>(std::floor(camera.x / t)) * tile_mm_;
+  cz = static_cast<i64>(std::floor(camera.z / t)) * tile_mm_;
 }
 
 u8 TerrainTileSet::far_level_at(const TerrainRingLayout& layout, i32 x, i32 z) const noexcept {
@@ -591,7 +618,7 @@ bool TerrainTileSet::inside_far(const TerrainRingLayout& layout, i32 x, i32 z) c
          z0 - tile_mm_ >= layout.cz[far_] - fh && z0 + 2 * tile_mm_ <= layout.cz[far_] + fh;
 }
 
-TerrainRingLayout TerrainTileSet::next_layout(f32 camera_x, f32 camera_z,
+TerrainRingLayout TerrainTileSet::next_layout(WorldPos camera,
                                               const TerrainRingLayout& from) const noexcept {
   TerrainRingLayout out = from;
   if (!valid()) return out;
@@ -599,7 +626,7 @@ TerrainRingLayout TerrainTileSet::next_layout(f32 camera_x, f32 camera_z,
   for (u32 level = 1; level < levels_; ++level) {
     i64 cx = 0;
     i64 cz = 0;
-    window_centre(level, camera_x, camera_z, cx, cz);
+    window_centre(level, camera, cx, cz);
     if (is_far(level)) {
       // A far level's square follows the camera by the same margin rule, on its snap; nothing the
       // world holds moves it (its finest level's square holds every tile the rings can).
@@ -764,7 +791,7 @@ f64 TerrainTileSet::padding(u32 level, std::span<const f32> field,
 }
 
 bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& tiles,
-                           const scene_gen::TileSource& source, f32 camera_x, f32 camera_z,
+                           const scene_gen::TileSource& source, WorldPos camera,
                            jobs::JobSystem* jobs, std::string* error) {
   levels_ = 0;
   for (u32 l = 0; l < k_max_terrain_levels; ++l) {
@@ -828,11 +855,11 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   // The first layout: every window on the camera's tile, the world ring's first fill round it.
   layout_ = TerrainRingLayout{};
   for (u32 level = 1; level < levels_; ++level) {
-    window_centre(level, camera_x, camera_z, layout_.cx[level], layout_.cz[level]);
+    window_centre(level, camera, layout_.cx[level], layout_.cz[level]);
     layout_.half[level] = half_mm_[level];
   }
   Vector<TerrainTile> first;
-  terrain_tiles_round(tiles, camera_x, camera_z, first);
+  terrain_tiles_round(tiles, camera, first);
   held_.clear();
   changes_.clear();
   taken_.clear();
@@ -944,11 +971,10 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   return true;
 }
 
-bool TerrainTileSet::update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+bool TerrainTileSet::update(WorldPos camera, f64 time_s, const TerrainRingLayout& target,
                             std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
                             std::string* error) {
-  (void)camera_x;
-  (void)camera_z;
+  (void)camera;
   (void)fields;
   moved = 0;
   if (!valid()) return true;
@@ -1309,6 +1335,8 @@ bool TerrainTileSet::build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 ti
   build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), mesh);
   chunk.i = spec.x;
   chunk.j = spec.z;
+  chunk.corner_x_mm = mesh.corner_x_mm;
+  chunk.corner_z_mm = mesh.corner_z_mm;
   chunk.key = key;
   chunk.slot = ~0u;
   chunk.grid_vertices = mesh.positions.size();  // no skirts

@@ -2309,15 +2309,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // with levels and no world has no ring, so the order changes nothing else).
       const bool ok = !view_world.valid() ||
                       view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
-      time_lapse.frame(1.0 / view::k_frame_index_hz, renderer::terrain_eye(camera.position).x,
-                       renderer::terrain_eye(camera.position).z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position);
       return ok;
     };
 #else
     auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
       ground.follow_tiles(camera.position);
-      time_lapse.frame(1.0 / view::k_frame_index_hz, renderer::terrain_eye(camera.position).x,
-                       renderer::terrain_eye(camera.position).z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position);
       return true;
     };
 #endif
@@ -4474,9 +4472,7 @@ int main(int argc, char** argv) {
       // timed on its own, because which of them a frame's time went to is the whole question
       // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
       // The rings follow the last frame's camera, as the streamed world does.
-      time_lapse.frame(1.0 / view::k_frame_index_hz,
-                       renderer::terrain_eye(terrain_camera.position).x,
-                       renderer::terrain_eye(terrain_camera.position).z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, terrain_camera.position);
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();

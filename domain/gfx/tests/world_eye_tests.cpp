@@ -210,3 +210,46 @@ TEST_CASE(
   for (gfx::BufferResource* b : {&b_instances, &b_eyes, &b_points, &b_out})
     gfx::destroy_buffer(device, *b);
 }
+
+// **A terrain tile's corner comes back to the millimetre** (cluster_cull.h, `set_terrain_corner`;
+// renderer.md, "The ground's tiles are placed at their corners"). The pool pass and the cull pass
+// find every lattice point of a tile from the corner in whole millimetres, which they read back off
+// the instance's cell and float32 local; a millimetre lost there is a tile drawn a millimetre off.
+// Corners on lattices of 25 cm to 64 m, by the origin, astride a cell's edge, at the owner's 420 km
+// and at 10,000 km and 1e8 m, on both sides of zero: every one comes back exactly, and the local is
+// in [0, 64).
+TEST_CASE("terrain corner: a tile's corner placed from millimetres reads back to the millimetre") {
+  const i64 sites_mm[] = {0,
+                          gfx::k_world_cell_mm,
+                          gfx::k_world_cell_mm - 1,
+                          419'070'000,
+                          -419'070'000,
+                          -66'781'000,
+                          10'000'000'000,
+                          -10'000'000'000,
+                          100'000'000'000,
+                          -100'000'000'000};
+  const i64 spacings_mm[] = {250, 500, 1'000, 4'000, 16'000, 64'000};
+  u32 checked = 0;
+  for (const i64 site : sites_mm) {
+    for (const i64 spacing : spacings_mm) {
+      for (i64 k = -3; k <= 3; ++k) {
+        // A lattice point near the site, and one a millimetre either side of it.
+        const i64 base = gfx::terrain_floor_div(site, spacing) * spacing + k * spacing;
+        for (const i64 x : {base, base + 1, base - 1}) {
+          const i64 z = -x / 3;
+          gfx::InstanceDesc instance{};
+          gfx::set_terrain_corner(instance, x, z);
+          const gfx::TerrainCornerMm back = gfx::terrain_corner_mm(instance);
+          REQUIRE_MESSAGE(back.x == x, "x " << x << " came back as " << back.x);
+          REQUIRE_MESSAGE(back.z == z, "z " << z << " came back as " << back.z);
+          CHECK(instance.rows[0].w >= 0.0f);
+          CHECK(instance.rows[0].w < 64.0f);
+          CHECK(instance.cell.y == 0);
+          ++checked;
+        }
+      }
+    }
+  }
+  MESSAGE(checked << " corners, from the origin to 1e8 m: every one back to the millimetre");
+}

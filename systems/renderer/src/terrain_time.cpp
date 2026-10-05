@@ -965,7 +965,7 @@ void TerrainMotion::run_rings(RingTask& task) {
     before += rings_->chunks(k).size();
   // The chunks' rest heights are the field at the surface's time when the camera asked, which a
   // drawn field differs from by what the sand moved since: the padding measures it.
-  if (!rings_->update(task.camera_x, task.camera_z, task.time_s, task.layout,
+  if (!rings_->update(task.camera, task.time_s, task.layout,
                       std::span<const TerrainLevelSet::Heights>(), jobs_, moved, &error)) {
     task.ok = false;
     task.error = error;
@@ -1182,25 +1182,22 @@ void TerrainMotion::drop_ahead(u32 k) {
 
 // The camera has left a ring's middle half: its chunks are rebuilt on the ring worker, from the
 // field at the surface's time, while the sand goes on moving.
-void TerrainMotion::ask_recentre(f32 camera_x, f32 camera_z) {
-  const TerrainRingLayout next = rings_->next_layout(camera_x, camera_z, shown_layout_);
+void TerrainMotion::ask_recentre(WorldPos camera) {
+  const TerrainRingLayout next = rings_->next_layout(camera, shown_layout_);
   if (next == shown_layout_) {
     // What is drawn is what this camera asks for: no lag.
-    shown_camera_x_ = camera_x;
-    shown_camera_z_ = camera_z;
+    shown_camera_ = camera;
     shown_asked_frame_ = frames_;
     return;
   }
   pending_layout_ = next;
   asked_frame_ = frames_;
-  pending_camera_x_ = camera_x;
-  pending_camera_z_ = camera_z;
+  pending_camera_ = camera;
   // What the rebuild is to be of, taken on this thread before the worker has it: a tile set's
   // tiles as the world last handed them over, which the frame may change again meanwhile.
   rings_->prepare(next);
   RingTask task;
-  task.camera_x = camera_x;
-  task.camera_z = camera_z;
+  task.camera = camera;
   task.time_s = surface_s();
   task.layout = next;
   {
@@ -1497,8 +1494,7 @@ void TerrainMotion::swap_rings() {
   }
   shown_layout_ = pending_layout_;
   recentre_ = Recentre::none;
-  shown_camera_x_ = pending_camera_x_;
-  shown_camera_z_ = pending_camera_z_;
+  shown_camera_ = pending_camera_;
   shown_asked_frame_ = asked_frame_;
   frame_layout_.built = pending_built_;
   frame_layout_.dropped = pending_dropped_;
@@ -1605,15 +1601,14 @@ void TerrainMotion::advance_recentre(bool complete) {
   }
 }
 
-void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
+void TerrainMotion::frame(f64 real_dt_s, WorldPos camera) {
   if (!active()) return;
   const i64 frame_started = time::monotonic_ns();
   ++frames_;
   frame_layout_ = FrameLayout{};
   if (!shown_camera_set_) {
     // The first layout was built round the first frame's camera.
-    shown_camera_x_ = camera_x;
-    shown_camera_z_ = camera_z;
+    shown_camera_ = camera;
     shown_asked_frame_ = frames_;
     shown_camera_set_ = true;
   }
@@ -1633,7 +1628,7 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     }
   }
   if (rings_ != nullptr && !rings_stopped_) {
-    if (recentre_ == Recentre::none) ask_recentre(camera_x, camera_z);
+    if (recentre_ == Recentre::none) ask_recentre(camera);
     advance_recentre(config_.wait);
   }
   const u32 n = levels_.size();
@@ -1781,8 +1776,8 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   // How far behind the camera the layout this frame draws is: the camera now against where it was
   // when that layout was asked for.
   if (rings_ != nullptr) {
-    const f64 dx = static_cast<f64>(camera_x) - static_cast<f64>(shown_camera_x_);
-    const f64 dz = static_cast<f64>(camera_z) - static_cast<f64>(shown_camera_z_);
+    const f64 dx = camera.x - shown_camera_.x;
+    const f64 dz = camera.z - shown_camera_.z;
     frame_layout_.lag_m = std::sqrt(dx * dx + dz * dz);
     frame_layout_.lag_frames = static_cast<u32>(frames_ - shown_asked_frame_);
     max_lag_m_ = std::max(max_lag_m_, frame_layout_.lag_m);

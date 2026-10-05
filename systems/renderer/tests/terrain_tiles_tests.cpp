@@ -218,6 +218,9 @@ TEST_CASE("world tiles: a tile's mesh covers it once, face up, its border locked
   const TerrainTileMesh m = mesh_of(2, -3, 3, 16, TerrainTileNeighbours{}, level_cells);
   CHECK(m.indices.size() == 16u * 16u * 6u);
   CHECK(m.positions.size() == 17u * 17u);
+  // The corner is the tile's lattice point (0, 0), in whole millimetres: tile (2, -3) of 8 m.
+  CHECK(m.corner_x_mm == 16'000);
+  CHECK(m.corner_z_mm == -24'000);
   i64 flipped = 0;
   CHECK(twice_area(m, 500, flipped) == 2 * 8000 * 8000);
   CHECK(flipped == 0);
@@ -227,9 +230,10 @@ TEST_CASE("world tiles: a tile's mesh covers it once, face up, its border locked
     const i32 lj = m.lattice_j[v] + 3 * 16;
     const bool border = li == 0 || lj == 0 || li == 16 || lj == 16;
     bad += (m.locked[v] != 0) != border;
-    // Positions on the world's lattice, exactly, and the heights the source gave there.
-    bad += m.positions[v].x != static_cast<f32>(m.lattice_i[v] * 0.5);
-    bad += m.positions[v].z != static_cast<f32>(m.lattice_j[v] * 0.5);
+    // Positions on the world's lattice, exactly, from the tile's corner (renderer.md, "The ground's
+    // tiles are placed at their corners"), and the heights the source gave there.
+    bad += m.positions[v].x != static_cast<f32>(m.lattice_i[v] * 0.5 - 16.0);
+    bad += m.positions[v].z != static_cast<f32>(m.lattice_j[v] * 0.5 + 24.0);
     bad += m.positions[v].y != wave_at(m.lattice_i[v] * 0.5, m.lattice_j[v] * 0.5);
     // No neighbour is coarser: every vertex is drawn from its own level, with a real normal.
     bad += m.drawn_from[v] != 3;

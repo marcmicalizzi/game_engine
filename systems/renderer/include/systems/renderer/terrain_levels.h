@@ -25,6 +25,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/scene_gen/tile_source.h>
@@ -50,9 +51,16 @@ inline constexpr u32 k_max_terrain_levels = 16;
 // in the GPU scene once it has one, its DAG until it is uploaded, and its **rest heights** — the
 // heights its DAG was built from, what its bounds and LOD errors were fit to and what a moving
 // field's padding is measured against.
+//
+// **A chunk is placed at its corner** (ADR-0053; renderer.md, "The ground's tiles are placed at
+// their corners"): its DAG's positions are metres from `corner_x_mm`, `corner_z_mm` — its lattice
+// corner in whole millimetres from the world's origin, at height zero — and its slot's instance
+// carries the corner as a `WorldCell` set from those millimetres (`gfx::set_terrain_corner`).
 struct TerrainChunk {
   i32 i = 0;
   i32 j = 0;
+  i64 corner_x_mm = 0;
+  i64 corner_z_mm = 0;
   u64 key = 0;
   u32 slot = ~0u;
   u32 grid_vertices = 0;         // a DAG vertex whose source is at or past this is a skirt's
@@ -106,9 +114,11 @@ class TerrainLevelSet {
                                          const TerrainRingLayout& layout) const noexcept = 0;
   // The most samples `field_window(level, ...)` has for any layout: what a field slot holds.
   virtual u64 field_capacity(u32 level) const noexcept = 0;
-  // Where the levels are to stand for a camera at (x, z), from `from`: `from` itself when nothing
-  // changes. Called by the frame, which may ask while a rebuild runs on the worker.
-  virtual TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
+  // Where the levels are to stand for a camera at `camera` (its x and z), from `from`: `from`
+  // itself when nothing changes. Called by the frame, which may ask while a rebuild runs on the
+  // worker. The camera is a `WorldPos` (ADR-0053): a layout is whole millimetres and tiles, and it
+  // is chosen from the eye in f64, never from a float32 rounding of it 3 cm wide 420 km out.
+  virtual TerrainRingLayout next_layout(WorldPos camera,
                                         const TerrainRingLayout& from) const noexcept = 0;
 
   // What the GPU scene reserves for a level: slots, clusters a slot holds, and the vertex and
@@ -135,7 +145,7 @@ class TerrainLevelSet {
     gfx::TerrainField window;
   };
   virtual void prepare(const TerrainRingLayout& target) { (void)target; }
-  virtual bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+  virtual bool update(WorldPos camera, f64 time_s, const TerrainRingLayout& target,
                       std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
                       std::string* error) = 0;
 

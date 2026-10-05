@@ -402,6 +402,11 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
           return false;
         }
         ring.slots[s].on = true;
+        // At its chunk's corner, written with the first frame's copies (the instance table went
+        // up with the materials, before the chunks).
+        const u32 instance = ring.first_instance + s;
+        gfx::set_terrain_corner(instance_table_[instance], chunk.corner_x_mm, chunk.corner_z_mm);
+        pending_instance_writes_.push_back(instance);
       }
     }
   }
@@ -1345,11 +1350,11 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
     }
   }
   if (instance == ~0u) return true;
-  // A level's vertices are placed on its lattice in mesh space, which the cull pass and the pool
-  // pass take for the world; a terrain's instance is the identity, and anything else is refused
-  // rather than drawn in the wrong place.
-  // (Stage 1 of ADR-0053: a level is still world-space vertices at cell zero; a tile's vertices
-  // relative to its corner, with the corner its instance's cell, is the next step.)
+  // The scene's grid (level 0) is placed on its float lattice in its mesh space, which the cull
+  // pass's hole test and the pool pass take for the world: its instance is the identity at cell
+  // zero, and anything else is refused rather than drawn in the wrong place. The grid is the scene
+  // terrain's own, kilometres across round the world's origin. Every other level is the world's
+  // lattice drawn as tiles placed at their corners (`terrain_chunk_show`; gfx::TerrainLevelDesc).
   gfx::InstanceDesc identity{};
   gfx::set_instance_transform(identity, Mat4::identity());
   const gfx::InstanceDesc& placed = instance_table_[instance];
@@ -1376,6 +1381,14 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
       level.lattice = rings_->lattice(k);
       level.capacity = rings_->field_capacity(k);
       level.slots = 4;
+      // A world-lattice level's tiles are placed at their corners, and the pool pass finds their
+      // points in whole millimetres (gfx::TerrainLevelDesc::spacing_mm).
+      if (level.lattice.spacing_mm <= 0 || level.lattice.spacing_mm > 0x7fffffff) {
+        if (error != nullptr)
+          *error = "a terrain level's lattice is not a whole number of millimetres a point";
+        return false;
+      }
+      level.spacing_mm = static_cast<i32>(level.lattice.spacing_mm);
     }
     for (u32 s = 0; s < level.slots; ++s) {
       if (!gfx::create_buffer(device, level.capacity * sizeof(f32),
@@ -1577,6 +1590,7 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
     desc.hole = l.hole;
     desc.skirt = l.skirt;
     desc.flags = l.flags;
+    desc.spacing_mm = l.spacing_mm;
     if (l.shown_a != ~0u) {
       desc.a = l.windows[l.shown_a];
       out.fields.push_back(l.fields[l.shown_a]);
@@ -1626,6 +1640,42 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
                        log::field("error", error));
     }
     pending_mesh_writes_.clear();
+  }
+  // The instances of the slots turned on, at their chunks' corners, the same way: each written once
+  // with where it ends.
+  if (!pending_instance_writes_.empty() && instances.buffer.valid()) {
+    std::sort(pending_instance_writes_.begin(), pending_instance_writes_.end());
+    pending_instance_writes_.erase(
+        std::unique(pending_instance_writes_.begin(), pending_instance_writes_.end()),
+        pending_instance_writes_.end());
+    const u64 bytes = u64{pending_instance_writes_.size()} * sizeof(gfx::InstanceDesc);
+    u64 ring_at = 0;
+    const bool in_ring = ring_take(bytes, ring_at);
+    gfx::BufferResource staging = in_ring ? staging_ring_ : gfx::BufferResource{};
+    std::string error;
+    if (!in_ring && staging_ring_.mapped != nullptr) {
+      ++ring_overflows_;
+      ring_overflow_bytes_ += bytes;
+    }
+    if (in_ring ||
+        gfx::create_buffer(*device_, bytes, gfx::BufferUsage::TransferSrc, true, staging, &error)) {
+      auto* descs =
+          reinterpret_cast<gfx::InstanceDesc*>(static_cast<u8*>(staging.mapped) + ring_at);
+      for (u32 k = 0; k < pending_instance_writes_.size(); ++k) {
+        const u32 instance = pending_instance_writes_[k];
+        descs[k] = instance_table_[instance];
+        pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
+            staging.buffer, instances.buffer,
+            gfx::BufferCopy{ring_at + u64{k} * sizeof(gfx::InstanceDesc),
+                            u64{instance} * sizeof(gfx::InstanceDesc), sizeof(gfx::InstanceDesc)}});
+      }
+      pending_geometry_bytes_ += bytes;
+      if (!in_ring) pending_staging_.push_back(staging);
+    } else {
+      ENGINE_LOG_ERROR(log_renderer, "a terrain ring's slot instances could not be staged",
+                       log::field("error", error));
+    }
+    pending_instance_writes_.clear();
   }
   // Swapped and cleared rather than moved from, so both lists keep what they grew to and a frame
   // of chunk uploads allocates nothing once they have (the long-flight test counts it).
@@ -1756,6 +1806,7 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
   for (const RingSlots& ring : ring_slots_)
     all_slots += ring.slots.size();
   pending_mesh_writes_.reserve(2 * all_slots);
+  pending_instance_writes_.reserve(2 * all_slots);
   terrain_ring_bytes_ = bytes;
   ENGINE_LOG_INFO(log_renderer, "terrain ring slots", log::field("rings", ring_slots_.size()),
                   log::field("instances", instance_count_), log::field("pairs", pair_count_),
@@ -1937,6 +1988,8 @@ bool GpuScene::stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::str
   pending_geometry_bytes_ += total;
   slot.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
   slot.clusters = nc;
+  slot.corner_x_mm = chunk.corner_x_mm;
+  slot.corner_z_mm = chunk.corner_z_mm;
   slot.loaded = true;
   slot.on = false;
   ++terrain_chunk_uploads_;
@@ -2014,6 +2067,14 @@ void GpuScene::terrain_chunk_show(u32 level, u32 s, bool on) noexcept {
     desc.cluster_count = slot.on ? slot.clusters : 0u;
     mesh_descs_[mesh] = desc;
     pending_mesh_writes_.push_back(mesh);
+    // **Turned on, the slot's instance stands at its chunk's corner** (renderer.md, "The ground's
+    // tiles are placed at their corners"), written in the same frame as the record that names the
+    // chunk's clusters. Turned off, it stays where it was: a slot with no clusters draws nothing.
+    if (slot.on) {
+      const u32 instance = ring.first_instance + s;
+      gfx::set_terrain_corner(instance_table_[instance], slot.corner_x_mm, slot.corner_z_mm);
+      pending_instance_writes_.push_back(instance);
+    }
     if (!on && slot.loaded) {
       // Nothing recorded from the next frame on reads it, and the copy that reuses its ranges is
       // ordered after the frames in flight that may (the frame imports the geometry as last read

@@ -136,8 +136,7 @@ struct Rig {
       return false;
     }
     rings = std::make_unique<TerrainRingSet>();
-    const Vec3 at = terrain_eye(ring_camera);
-    if (!rings->build(data.terrain, at.x, at.z, jobs, &error)) return false;
+    if (!rings->build(data.terrain, ring_camera, jobs, &error)) return false;
     if (!scene.create(device, data, resolved, &error, rings.get())) return false;
     SceneRenderer::Desc rd;
     rd.width = width;
@@ -307,7 +306,7 @@ void draw_seams(const gfx::Device& device, const std::string& ddc,
                   rig.error);
   REQUIRE(rig.resolved.terrain_rings);
   REQUIRE(rig.scene.ground_detail());
-  rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
+  rig.motion.frame(1.0 / 60.0, camera.position);
   const gfx::GroundDetailParams block = rig.scene.ground_detail_params();
   REQUIRE((!instrument || (block.flags & gfx::k_ground_spacing) != 0u));
   FrameDesc frame;
@@ -650,7 +649,7 @@ TEST_CASE("sand detail: over the rings, culling changes no pixel and two runs ar
     REQUIRE_MESSAGE(
         rig.build(gpu.device, desc, variants[v], k_width, k_height, &pool, camera.position),
         rig.error);
-    rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
+    rig.motion.frame(1.0 / 60.0, camera.position);
     FrameDesc frame;
     frame.camera = camera;
     frame.frame_index = 0;

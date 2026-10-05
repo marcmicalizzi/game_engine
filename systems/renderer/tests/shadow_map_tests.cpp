@@ -292,13 +292,14 @@ TEST_CASE("renderer: a cascade's texels hold their place in the world as the eye
       REQUIRE(after.count == first.count);
       for (u32 c = 0; c < first.count; ++c) {
         REQUIRE(after.radii[c] == first.radii[c]);
-        const f64 off = off_by(light_texels(after, c, cameras[k]), light_texels(first, c, cameras[0]));
+        const f64 off =
+            off_by(light_texels(after, c, cameras[k]), light_texels(first, c, cameras[0]));
         worst[c] = off > worst[c] ? off : worst[c];
         // A centre in the frame's space is a float32 at the cascade's distance from the eye; its
         // rounding is a few ten-thousandths of a texel at the most.
         CHECK_MESSAGE(off < 1.0e-3, "cascade " << c << " at step " << k << " moved " << off
-                                               << " of a texel against the world, "
-                                               << cells << " cells out");
+                                               << " of a texel against the world, " << cells
+                                               << " cells out");
       }
     }
     MESSAGE(cells << " cells out, 12 steps across a cell's corner: texels "

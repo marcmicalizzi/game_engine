@@ -41,8 +41,8 @@ f32 quantize_radius(f32 r) noexcept {
 // `gfx::shadow_snap` **in the world's light space, in f64** (renderer.md, "Cascaded shadow maps"):
 // the centre `center` of the frame whose eye is `eye`, put back in the world and projected on the
 // light's right and up, made whole multiples of `texel` there, and the move that took expressed in
-// the frame again. The grid is the world's, so a texel is the same piece of the world for as long as
-// the sun stands still, wherever the eye is and whichever cell it is in. In f64 because the
+// the frame again. The grid is the world's, so a texel is the same piece of the world for as long
+// as the sun stands still, wherever the eye is and whichever cell it is in. In f64 because the
 // coordinates are as large as the distance from the world's origin: 1e7 texels of a centimetre
 // 100 km out, where f64 still has a hundred-millionth of a texel to spare (and a float32 had 3 cm).
 Vec3 snap_in_world(const gfx::ShadowLight& light, Vec3 center, f32 texel, WorldPos eye) noexcept {

@@ -2169,6 +2169,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool terrain_geometry = !terrain_frame_.geometry.empty();
   struct TerrainGeometry {
     gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
+    gfx::RgBuffer instances;  // a slot turned on stands at its chunk's corner
   } tg{};
   if (terrain_geometry) {
     const auto import = [&](const char* name, const gfx::BufferResource& buffer) {
@@ -2183,6 +2184,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     tg.attributes = import("ring attributes", scene.attributes);
     tg.triangles = import("ring triangles", scene.triangles);
     tg.meshes = import("ring meshes", scene.meshes);
+    tg.instances = import("ring instances", scene.instances);
     if (rt_chain) {
       tg.vertices = import("ring vertices", scene.vertices);
       tg.indices8 = import("ring indices8", scene.indices8);
@@ -2190,8 +2192,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   }
   auto read_ring_geometry = [&, terrain_geometry](gfx::PassBuilder& b, gfx::Access access) {
     if (!terrain_geometry) return;
-    for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
-                                       tg.triangles, tg.meshes, tg.vertices, tg.indices8}) {
+    for (const gfx::RgBuffer handle :
+         {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
+          tg.indices8, tg.instances}) {
       if (handle.valid()) b.read(handle, access);
     }
   };
@@ -2391,8 +2394,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
           }
           if (terrain_geometry) {
-            for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
-                                               tg.triangles, tg.meshes, tg.vertices, tg.indices8}) {
+            for (const gfx::RgBuffer handle :
+                 {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes,
+                  tg.vertices, tg.indices8, tg.instances}) {
               if (handle.valid()) b.write(handle, gfx::Access::TransferWrite);
             }
           }
@@ -3069,6 +3073,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           "tlas instances", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
             b.read(rt.blas_addresses, gfx::Access::ComputeRead);
+            // The scene's instance records, which a frame that turns a terrain slot on writes.
+            read_ring_geometry(b, gfx::Access::ComputeRead);
             b.write(rt.instances, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {

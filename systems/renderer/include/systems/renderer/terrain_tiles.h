@@ -128,9 +128,16 @@ TerrainFarLevel terrain_far_level(const TerrainTilesDesc& desc, u32 k) noexcept;
 // reach with no far level).
 f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept;
 
-// **The ring's first-fill rule**: every tile whose centre is within the outermost radius of (x, z)
-// on the ground, in the first ring whose radius its centre's distance is within, in tile order (x,
-// then z) — what the world's ring holds after its first update from nothing with no budget.
+// **The ring's first-fill rule**: every tile whose centre is within the outermost radius of the
+// camera on the ground, in the first ring whose radius its centre's distance is within, in tile
+// order (x, then z) — what the world's ring holds after its first update from nothing with no
+// budget. Each tile's centre is measured from the camera in f64, so the rule is the same 10,000 km
+// out as by the origin: a tile set moved by whole tiles with its camera holds the same tiles.
+void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<TerrainTile>& out);
+// The same rule in the world ring's own float32 arithmetic (absolute float32 metres, as
+// `TierAssignment::tier_of` scores a tile), which its tests compare the world's first update with.
+// ADR-0053 seam: systems/world's ring scores from a float32 observer; this goes when it takes
+// WorldPos. By the origin the two differ only on a centre exactly on a ring's radius.
 void terrain_tiles_round(const TerrainTilesDesc& desc, f32 x, f32 z, Vector<TerrainTile>& out);
 
 // **A tile's neighbourhood**: the levels of the tiles round it that decide its mesh (0: not held).
@@ -145,6 +152,10 @@ struct TerrainTileNeighbours {
 // `uv_x0_mm, uv_z0_mm, uv_size_mm`, the border locked, the edges along coarser tiles collapsed onto
 // their lattice, and the vertices another level draws naming it in their normals.
 struct TerrainTileMesh {
+  // The tile's corner, its lattice point (0, 0), in whole millimetres from the world's origin; the
+  // positions are metres from it (renderer.md, "The ground's tiles are placed at their corners").
+  i64 corner_x_mm = 0;
+  i64 corner_z_mm = 0;
   Vector<Vec3> positions;
   Vector<Vec3> normals;
   Vector<Vec2> uvs;
@@ -189,13 +200,14 @@ class TerrainTileSet final : public TerrainLevelSet {
   TerrainTileSet(const TerrainTileSet&) = delete;
   TerrainTileSet& operator=(const TerrainTileSet&) = delete;
 
-  // Lays the first layout out round the camera at (x, z) by the ring's first-fill rule and builds
-  // every tile of it from `source` at the terrain's own time, on `jobs` when given, and sizes each
-  // level's slots and arenas. False, with a sentence, for a description `validate_terrain_tiles`
-  // refuses, a terrain grid whose half-side is not whole millimetres (its UV frame is the tiles'),
-  // or a source with no heights. `terrain` and whatever `source` points at must outlive the set.
+  // Lays the first layout out round the camera at `camera` (its x and z) by the ring's first-fill
+  // rule and builds every tile of it from `source` at the terrain's own time, on `jobs` when given,
+  // and sizes each level's slots and arenas. False, with a sentence, for a description
+  // `validate_terrain_tiles` refuses, a terrain grid whose half-side is not whole millimetres (its
+  // UV frame is the tiles'), or a source with no heights. `terrain` and whatever `source` points at
+  // must outlive the set.
   bool build(const TerrainDesc& terrain, const TerrainTilesDesc& tiles,
-             const scene_gen::TileSource& source, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
+             const scene_gen::TileSource& source, WorldPos camera, jobs::JobSystem* jobs,
              std::string* error = nullptr);
 
   // **The tiles the world holds**, and their rings, as its ring hands them over after an update:
@@ -277,15 +289,34 @@ class TerrainTileSet final : public TerrainLevelSet {
   gfx::TerrainField field_window(u32 level,
                                  const TerrainRingLayout& layout) const noexcept override;
   u64 field_capacity(u32 level) const noexcept override;
-  TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
+  TerrainRingLayout next_layout(WorldPos camera,
                                 const TerrainRingLayout& from) const noexcept override;
   Capacity capacity(u32 level) const noexcept override { return capacity_[level]; }
   Vector<TerrainChunk>& chunks(u32 level) noexcept override { return chunks_[level]; }
   const Vector<TerrainChunk>& chunks(u32 level) const noexcept { return chunks_[level]; }
   void prepare(const TerrainRingLayout& target) override;
-  bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+  bool update(WorldPos camera, f64 time_s, const TerrainRingLayout& target,
               std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
               std::string* error) override;
+  // ADR-0053 seam: systems/world's tests hand the camera as float32 metres by the origin; they take
+  // WorldPos when the world's agent moves them. Exact widenings of the three above.
+  bool build(const TerrainDesc& terrain, const TerrainTilesDesc& tiles,
+             const scene_gen::TileSource& source, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
+             std::string* error = nullptr) {
+    return build(terrain, tiles, source, widened(camera_x, camera_z), jobs, error);
+  }
+  TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
+                                const TerrainRingLayout& from) const noexcept {
+    return next_layout(widened(camera_x, camera_z), from);
+  }
+  bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
+              std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
+              std::string* error) {
+    return update(widened(camera_x, camera_z), time_s, target, fields, jobs, moved, error);
+  }
+  static WorldPos widened(f32 x, f32 z) noexcept {
+    return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)};
+  }
   f64 padding(u32 level, std::span<const f32> field,
               const gfx::TerrainField& window) const override;
   bool changed_only() const noexcept override { return !whole_last_; }
@@ -297,9 +328,9 @@ class TerrainTileSet final : public TerrainLevelSet {
   u32 last_built() const noexcept override { return last_built_; }
   u32 last_kept() const noexcept override { return last_kept_; }
 
-  // The window's centre a camera at (x, z) puts a level's fields at, millimetres: its tile's
-  // corner.
-  void window_centre(u32 level, f32 camera_x, f32 camera_z, i64& cx, i64& cz) const noexcept;
+  // The window's centre a camera at `camera` (its x and z) puts a level's fields at, millimetres:
+  // its tile's corner.
+  void window_centre(u32 level, WorldPos camera, i64& cx, i64& cz) const noexcept;
 
  private:
   // Whether `layout`'s window of `level` covers tile (x, z), apron and all.

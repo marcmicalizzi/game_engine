@@ -107,6 +107,38 @@ void rest_of(TerrainChunk& chunk, const TerrainLattice& lattice) {
   }
 }
 
+// **A ring's chunk is placed at its corner** (renderer.md, "The ground's tiles are placed at their
+// corners"): the provider builds its DAG in the world's own frame, which for a scene's terrain is
+// kilometres from the origin at the most and on a lattice of whole millimetres, and the set moves
+// it to the corner's frame before anything reads it — positions, cluster spheres and cone apexes,
+// LOD spheres, and the 16-bit grid's origin (its steps are a function of the chunk's extent and do
+// not change). Every number moved is a lattice point or a sphere a few chunk widths from the
+// corner, so the move is exact on a dyadic lattice and a rounding at the chunk's size on any other.
+void place_at_corner(TerrainChunk& chunk, i64 x_mm, i64 z_mm) {
+  chunk.corner_x_mm = x_mm;
+  chunk.corner_z_mm = z_mm;
+  const f64 cx = static_cast<f64>(x_mm) / 1000.0;
+  const f64 cz = static_cast<f64>(z_mm) / 1000.0;
+  const auto from_corner = [&](Vec3 p) {
+    return Vec3{static_cast<f32>(static_cast<f64>(p.x) - cx), p.y,
+                static_cast<f32>(static_cast<f64>(p.z) - cz)};
+  };
+  geometry::ClusterMesh& mesh = chunk.lod.mesh;
+  for (Vec3& v : mesh.vertices)
+    v = from_corner(v);
+  for (geometry::ClusterDesc& c : mesh.clusters) {
+    c.center = from_corner(c.center);
+    c.cone_apex = from_corner(c.cone_apex);
+  }
+  for (geometry::ClusterLodDesc& l : chunk.lod.lod) {
+    const Vec3 own = from_corner(l.own.xyz());
+    const Vec3 parent = from_corner(l.parent.xyz());
+    l.own = Vec4{own, l.own.w};
+    l.parent = Vec4{parent, l.parent.w};
+  }
+  mesh.quant_origin = from_corner(mesh.quant_origin);
+}
+
 }  // namespace
 
 // The ground's own sampler, the rings its provider made (`scene_gen::GroundRings`: the layout
@@ -158,8 +190,8 @@ f64 TerrainRingSet::padding(u32 level, std::span<const f32> field,
   return std::max(now, before);
 }
 
-bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
-                           jobs::JobSystem* jobs, std::string* error) {
+bool TerrainRingSet::build(const TerrainDesc& desc, WorldPos camera, jobs::JobSystem* jobs,
+                           std::string* error) {
   levels_ = 0;
   for (Vector<TerrainChunk>& list : chunks_)
     list.clear();
@@ -207,8 +239,7 @@ bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
   s.source.time_s = desc.time_s;
   s.source.field_count = 0;
   const u32 moving_mask = (1u << (levels_ - 1)) - 1u;
-  if (!s.rings.build(std::llround(static_cast<f64>(camera_x) * 1000.0),
-                     std::llround(static_cast<f64>(camera_z) * 1000.0),
+  if (!s.rings.build(std::llround(camera.x * 1000.0), std::llround(camera.z * 1000.0),
                      scene_gen::RingHeights{&RingSource::heights, &s.source}, s.options, jobs,
                      moving_mask, error)) {
     levels_ = 0;
@@ -303,6 +334,8 @@ void TerrainRingSet::take_chunks(u32 level_mask) {
       *rc.lod = geometry::ClusterLodMesh{};
       chunk.rest_time_s = state_->source.time_s;
       rest_of(chunk, lattice_[level]);
+      const i64 chunk_mm = s.rings.spec(ring).chunk_mm;
+      place_at_corner(chunk, static_cast<i64>(rc.i) * chunk_mm, static_cast<i64>(rc.j) * chunk_mm);
       fresh.push_back(std::move(chunk));
     }
     // Then the lists, in the provider's chunk order, under the lock `padding` takes: the kept
@@ -330,7 +363,7 @@ void TerrainRingSet::take_chunks(u32 level_mask) {
   }
 }
 
-bool TerrainRingSet::update(f32 camera_x, f32 camera_z, f64 time_s, std::span<const Heights> fields,
+bool TerrainRingSet::update(WorldPos camera, f64 time_s, std::span<const Heights> fields,
                             jobs::JobSystem* jobs, u32& moved, std::string* error) {
   moved = 0;
   if (!valid()) return true;
@@ -346,9 +379,8 @@ bool TerrainRingSet::update(f32 camera_x, f32 camera_z, f64 time_s, std::span<co
     f.window = fields[level].window;
   }
   u32 rings = 0;
-  const bool ok =
-      s.rings.update(std::llround(static_cast<f64>(camera_x) * 1000.0),
-                     std::llround(static_cast<f64>(camera_z) * 1000.0), jobs, rings, error);
+  const bool ok = s.rings.update(std::llround(camera.x * 1000.0), std::llround(camera.z * 1000.0),
+                                 jobs, rings, error);
   s.source.field_count = 0;
   if (!ok) return false;
   for (u32 r = 0; r + 1 < levels_; ++r) {
@@ -433,7 +465,7 @@ u64 TerrainRingSet::field_capacity(u32 level) const noexcept {
 // (`scene_gen::GroundRings::next_layout`): a ring clamped at the scene's edge that the camera has
 // left behind does not move, and asks for nothing. It reads the ring parameters and nothing
 // `update` changes, so the frame may ask while a re-centre is being built.
-TerrainRingLayout TerrainRingSet::next_layout(f32 camera_x, f32 camera_z,
+TerrainRingLayout TerrainRingSet::next_layout(WorldPos camera,
                                               const TerrainRingLayout& from) const noexcept {
   if (!valid()) return from;
   scene_gen::RingsLayout rings;
@@ -445,8 +477,8 @@ TerrainRingLayout TerrainRingSet::next_layout(f32 camera_x, f32 camera_z,
     r.half = from.half[level];
   }
   scene_gen::RingsLayout moved;
-  state_->rings.next_layout(std::llround(static_cast<f64>(camera_x) * 1000.0),
-                            std::llround(static_cast<f64>(camera_z) * 1000.0), rings, moved);
+  state_->rings.next_layout(std::llround(camera.x * 1000.0), std::llround(camera.z * 1000.0), rings,
+                            moved);
   TerrainRingLayout out;
   for (u32 level = 1; level < levels_; ++level) {
     const scene_gen::RingPlace& r = moved.ring[ring_of_level(level)];
@@ -457,9 +489,8 @@ TerrainRingLayout TerrainRingSet::next_layout(f32 camera_x, f32 camera_z,
   return out;
 }
 
-bool TerrainRingSet::wants_update(f32 camera_x, f32 camera_z,
-                                  const TerrainRingLayout& layout) const noexcept {
-  return valid() && !(next_layout(camera_x, camera_z, layout) == layout);
+bool TerrainRingSet::wants_update(WorldPos camera, const TerrainRingLayout& layout) const noexcept {
+  return valid() && !(next_layout(camera, layout) == layout);
 }
 
 }  // namespace engine::renderer

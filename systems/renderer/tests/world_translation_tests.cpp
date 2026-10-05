@@ -306,8 +306,8 @@ constexpr i32 k_edge_pixels = 2;
 constexpr u64 k_min_shadowed = 64;
 
 struct Band {
-  Vector<u8> edge;  // per pixel: 1 inside the band
-  u64 pixels = 0;   // in the band
+  Vector<u8> edge;   // per pixel: 1 inside the band
+  u64 pixels = 0;    // in the band
   u64 shadowed = 0;  // outside it, shadowed in the first picture
 };
 
@@ -434,19 +434,18 @@ TEST_CASE("world translation: a scene and its camera moved by whole cells draw t
           const Band band = shadow_band(unshadowed[0], home[0], far[0]);
           const u64 outside = colour_outside(home[0], far[0], band);
           MESSAGE(std::string(path.name)
-                  << ", " << std::string(layout.name) << ", moved by " << shift << " cells: "
-                  << outside << " colour bytes differ outside the shadows' edges (" << band.pixels
-                  << " pixels, " << d.color << " bytes in all; " << band.shadowed
+                  << ", " << std::string(layout.name) << ", moved by " << shift
+                  << " cells: " << outside << " colour bytes differ outside the shadows' edges ("
+                  << band.pixels << " pixels, " << d.color << " bytes in all; " << band.shadowed
                   << " shadowed pixels compared), " << d.ids << " id words, " << d.depth
                   << " depths differ");
           // The comparison means something: there is shadow away from its edges.
           CHECK(band.shadowed >= k_min_shadowed);
           CHECK(outside == 0);
         } else {
-          MESSAGE(std::string(path.name)
-                  << ", " << std::string(layout.name) << ", moved by " << shift << " cells: "
-                  << d.color << " colour bytes, " << d.ids << " id words, " << d.depth
-                  << " depths differ");
+          MESSAGE(std::string(path.name) << ", " << std::string(layout.name) << ", moved by "
+                                         << shift << " cells: " << d.color << " colour bytes, "
+                                         << d.ids << " id words, " << d.depth << " depths differ");
           CHECK(d.color == 0);
         }
         CHECK(d.ids == 0);
@@ -519,10 +518,10 @@ TEST_CASE(
     const std::string band_note =
         maps ? " outside the shadows' edges (" + std::to_string(band_pixels) + " edge pixels)"
              : std::string();
-    MESSAGE(std::string(path.name) << ": " << differing << " differing bytes or words over "
-                                   << steps.size() << " millimetre steps" << band_note << "; "
-                                   << moved << " of " << steps.size() - 1
-                                   << " steps moved the picture");
+    MESSAGE(std::string(path.name)
+            << ": " << differing << " differing bytes or words over " << steps.size()
+            << " millimetre steps" << band_note << "; " << moved << " of " << steps.size() - 1
+            << " steps moved the picture");
     CHECK(differing == 0);
     CHECK(moved == steps.size() - 1);
   }

@@ -125,7 +125,7 @@ float3 instance_point(InstanceDesc instance, float3 from_eye, float3 p) {
 }
 
 // A point of the instance in its **cell's** frame — the 3x4 alone, the cell's corner at the origin.
-// What a test against something stored in the same frame takes (a terrain level's hole: a level is
+// What a test against something stored in the same frame takes (the scene grid's hole: the grid is
 // at cell zero, so its cell's frame is its mesh space).
 float3 instance_cell_point(InstanceDesc instance, float3 p) {
   return float3(dot(instance.rows[0], float4(p, 1.0)), dot(instance.rows[1], float4(p, 1.0)),
@@ -164,11 +164,14 @@ struct TerrainField {
 // Mirrors gfx::TerrainLevelDesc (96 bytes): a terrain level as this frame draws it — its lattice,
 // the two fields it blends, the padding its spheres take, and the square the next finer level
 // draws instead (deform.slang's terrain stage; cluster_cull.slang drops a cluster wholly inside
-// `hole`). In the level's mesh space, which is the world.
+// `hole`). Two kinds (gfx::TerrainLevelDesc): the scene's grid (`spacing_mm` 0), in its mesh
+// space, which is the world, with `origin`, `spacing` and `hole` in metres; and a world-lattice
+// level (`spacing_mm` > 0), whose tiles are instances at their corners and whose vertices the pool
+// pass writes relative to them (`terrain_corner_mm`).
 struct TerrainLevelDesc {
   TerrainField a;
   TerrainField b;
-  float2 origin;  // x, z of lattice point (0, 0)
+  float2 origin;  // x, z of lattice point (0, 0): the scene's grid's
   float spacing;
   float blend;    // 0 draws a, 1 draws b
   float padding;  // replaces InstanceDesc::bounds_padding for the level's clusters
@@ -176,10 +179,39 @@ struct TerrainLevelDesc {
   // k_terrain_level_named: a vertex whose rest normal is horizontal is drawn from the level it
   // names (a world tile's border along a coarser tile; gfx::TerrainLevelDesc::flags).
   uint flags;
-  uint pad2;
-  float4 hole;    // x0, z0, x1, z1; none when x1 <= x0
+  int spacing_mm;  // a world-lattice level's millimetres between points; 0 for the scene's grid
+  float4 hole;     // x0, z0, x1, z1, the scene's grid's; none when x1 <= x0
 };
 static const uint k_terrain_level_named = 1u;
+
+// **A terrain tile's corner in whole millimetres from the world's origin** (gfx::terrain_corner_mm,
+// operation for operation): a world-lattice level's tile is an instance at its corner, whose cell
+// and local (`gfx::set_terrain_corner`) are whole millimetres; the local times 1000 in float32 is
+// within a hundredth of a millimetre of them, so rounding gives them back exactly.
+int64_t terrain_corner_axis_mm(int cell, float local) {
+  return int64_t(cell) * 64000 + int64_t(round(local * 1000.0));
+}
+
+// a / b rounded down, for b > 0 (SPIR-V's integer division truncates towards zero).
+int64_t terrain_floor_div(int64_t a, int64_t b) {
+  const int64_t q = a / b;
+  return a - q * b < 0 ? q - 1 : q;
+}
+
+// The lattice index along one axis of a point `rest_m` metres from a tile's corner at `corner_mm`,
+// on the world's lattice at `spacing_mm`: the corner's whole spacings in integers, and what is left
+// of it plus the rest position in float32, which is the size of a tile and not of the world.
+int terrain_lattice_index(int64_t corner_mm, float rest_m, int64_t spacing_mm) {
+  const int64_t q = terrain_floor_div(corner_mm, spacing_mm);
+  const float r = float(corner_mm - q * spacing_mm);
+  return int(q + int64_t(round((r + rest_m * 1000.0) / float(spacing_mm))));
+}
+
+// Lattice point `index` at `spacing_mm`, in metres from a tile's corner at `corner_mm`: exact in
+// millimetres, rounded to float32 once at the size of the tile.
+float terrain_from_corner(int index, int64_t spacing_mm, int64_t corner_mm) {
+  return float(int64_t(index) * spacing_mm - corner_mm) / 1000.0;
+}
 
 // Mirrors gfx::DeformDesc (48 bytes): one per deformed instance, read by the pool pass alone.
 // `stages` is a **mask** of the chain's stages plus the procedural kind, not an exclusive mode.
