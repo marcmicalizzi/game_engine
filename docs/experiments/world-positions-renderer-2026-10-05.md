@@ -65,3 +65,51 @@ Stage 1 anchored the cascades' texel snapping at the corner of the eye's 64 m ce
 The remaining hundred-thousandths of a texel are the frame-space centre's float32 rounding. (The stage-1 row by the origin was not printed: the test stops at the first failing site's messages; the run with the old anchor failed 64 assertions over both sites.)
 
 **The translation suite's cascaded case** (`world_translation_tests.cpp`, RTX 5090): ids and depth still byte-identical at every move; colour byte-identical outside a band two pixels either side of every shadow edge — 1,302 to 2,211 of the 24,576 pixels, with 93 to 272 shadowed pixels and every lit one compared outside it, and 0 bytes differing there at 6,548, 156,250 and 1,562,500 cells. Inside the band 173 to 266 colour bytes differ, the shadows' filtered edges falling on the texel grid differently. The twelve millimetre steps 10,000 km out against the origin's: 0 bytes outside the band over the twelve frames.
+
+## Stage 2 (picture-2): the ground's tiles at their corners
+
+A terrain level's chunks — the world's tile levels, the far levels and a scene terrain's ring set — are instances at their lattice corners, with their vertices metres from them, and the pool's terrain stage works in whole millimetres from the corner ([renderer](../subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners)). Same machine; "before" is `main` at `97d3bf4f` (stage 1 merged) built from an exported copy, "after" is the branch; `msvc-release`; every run under `tools/gpu-lock.ps1 run`.
+
+### The owner's spot
+
+The endless desert at (−419070, 80.24, −66781.11) looking along the sand (`owner-420km.json`, the survey's pose), offscreen 3840×2160, `--time-of-day 10 --shadows rt`, 90 frames. Before against after: 214,740 pixels differ (2.6%), 173,454 of them by one level; 49 blocks of 4×4 pixels differ by more than 20 levels, and they are of two kinds. A handful are silhouette pixels on the far ridges. The rest are **specks the change removed**: before, a dotted row of seven orange-brown specks on the sand left of centre (about x 169–219, y 1,016–1,022) and an orange dash (about x 1,087–1,092, y 666), the colour of the shading under the sand showing through a pin-hole between triangles; after, plain sand. A faint dashed diagonal line in the lower left (a border between two levels' tiles, a shading step of a level or two) is in both pictures and was not changed. The `--view normals` capture differs in 3.7% of pixels (151,654 by one level), the `--view tri` capture in 77% — its colours are the clusters' ids, and a tile's DAG is built from positions relative to its corner now, so its clusters are other clusters — and the far look (`owner-420km-far.json`, 150 m up) in 14.5%, nearly all by one or two levels.
+
+**Not measured: the resolve's clamp count at the owner's spot.** engine-view has no counter for the points the resolve moves onto a triangle's edge (that count is the CPU mirror's, in `ground_detail_tests.cpp`, on its own quad of sand), and the test with a mesh instance placed far out that should read the origin's count was not written in this stage either.
+
+### What moved by the origin
+
+The same three scenes stage 1 captured, and two with tiles and rings, before against after (1920×1080, RGB of 255):
+
+| Scene | Pixels that differ | Worst |
+|---|---|---|
+| the erg, `--shadows csm` (the cascades now snap to the world) | 1,963 (0.09%), 843 by one level | 12 |
+| the dunes, `--shadows rt` | 0 | — |
+| the procedural heightfield, `--shadows rt` | 0 | — |
+| the erg with `--terrain-rings`, `--shadows rt` (the ring set's chunks at their corners) | 249 (0.012%), all by one level | 1 |
+| the endless desert at its path's start (−2,000, 90, 0), `--shadows rt` (world tiles and far levels) | 104,285 (5.0%), 102,964 by one level | 4 |
+
+The erg's are shadow edges whose filtered texels moved by a fraction of a texel against the scene (the grid's anchor is the world's origin now, not the eye's cell's corner). The tiles' are rounding: a lattice point reaches the frame through its tile's corner, and a tile's DAG is simplified from positions relative to the corner, which round differently from world coordinates.
+
+### Cost
+
+The endless desert's flight (`camera-path.json`, 7,201 frames), 11520×2160 `--views surround3`, `--repeat 1 --warmup 60 --wait-quiet 60`, the before and after runs interleaved (before rt, after rt, before csm, after csm, then csm again for both). GPU milliseconds at the median of the frames:
+
+| Run | cull | deform | hw | shadow (maps) | rt (structures) | resolve | total |
+|---|---|---|---|---|---|---|---|
+| `rt` | 0.068 → 0.065 | 0.038 → 0.039 | 0.313 → 0.312 | — | 0.946 → 0.944 | 1.860 → 1.861 | 4.295 → 4.363 |
+| `csm` | 0.129 → 0.130 | 0.054 → 0.055 | 0.293 → 0.291 | 0.475 → 0.481 | — | 1.741 → 1.739 | 4.045 → 4.124 |
+| `csm`, again | 0.130 → 0.131 | 0.055 → 0.055 | 0.305 → 0.291 | 0.477 → 0.482 | — | 1.742 → 1.739 | 4.108 → 4.122 |
+
+The frame thread's CPU (`FrameStats::cpu`, median / p95 / p99 ms): `rt` 0.407 / 0.629 / 0.931 → 0.418 / 0.597 / 0.950; `csm` 0.439 / 0.631 / 1.061 → 0.456 / 0.633 / 1.080; `csm` again 0.441 / 0.710 / 1.067 → 0.457 / 0.595 / 1.067. Its terrain share rose from 0.009 to 0.013 ms at the median.
+
+**Machine state.** The first four runs reported a quiet machine (`quiet` true; other processes 1.7–9.1% of the CPU at a run's start or end, the GPU 0–1%); both `csm` repeats did not (`quiet` false: 22% and 27% GPU at their ends, from another session). Nothing of this branch was building during any run.
+
+**What it says.** The pool pass's terrain stage pays for its integer corner arithmetic in the `deform` span: 1 to 4%, a few microseconds. The cascades' maps cost about 1% more (0.005 ms), within what a different snap of the same casters moves. The passes listed add up to under ±0.01 ms per run, and the totals moved by +0.07 (`rt`), +0.08 and +0.01 ms (`csm`): the two `csm` totals before differ from each other by 0.06 ms on the same binary, which is the size of the change, so a difference of that size here is not a cost. The frame thread's CPU rose by 0.01–0.02 ms at the median, 4 µs of it the terrain's share; its p95 and p99 did not move beyond the runs' own spread.
+
+**Stage 1's endless `csm` total.** Stage 1 measured it at 4.215 ms before and 4.428 after (+5%), in one run each on a busy machine. Its "after" is this page's "before": 4.045 and 4.108 ms in two runs here, the first quiet — below stage 1's own "before". The 5% was the machine and not the change. (The pre-stage-1 tree, `30c4ad70`, was not rebuilt for a same-session comparison.)
+
+### The translation suite's terrain
+
+`world translation: the world's tiles moved by whole cells with their ground draw the same bytes` (`terrain_tiles_gpu_tests.cpp`, `msvc-debug`, RTX 5090): small world tiles (8 m, rings of 50 cm, 1 m and 2 m) with and without three far levels, over a ground of the test's own whose heights are a function of the lattice point measured from its own origin, moved with the camera by 6,548, 156,250 and 1,562,500 cells, at the finest cut. Mesh, software, vertex indexed, vertex capacity and ray visibility, both layouts, every move: **0 id words, 0 depths, 0 normal bytes and 0 colour bytes differ**. At the default cut about 10,000 of the 24,576 depths differed in a first version of the test: the tiles' UVs are in the scene grid's frame, so a tile 419 km out has other UVs than its twin, and the DAG's simplification weighs them — content, not precision; the finest cut is the lattice's own triangles.
+
+Two existing tests that compared tiles drawn two ways were held to the bit and are now held to 16 float steps of depth, colour and normals still to the bit: the erg from tiles against the grid (6,690 of 156,172 pixels differ in some bit of depth, 11 by more than 16 steps, none in colour) and far tiles of four cells against six (0, 4, 1 and 15 pixels differ in some bit of depth in the four views, none past 16 steps). In both the same lattice point reaches the frame through two different corners.
