@@ -700,7 +700,8 @@ walker has to do it at fixed ticks and in a fixed order, never on a frame's sche
 
 **Pinned.** The scripted walk in `tests/character_tests.cpp` — 2,400 steps at 240 Hz over a
 heightfield with two walls and a raised slab, turning, sprinting, jumping six times and running
-into things — hashes to **`6b70c6f467ae6192`** on MSVC; the heightfield and the input are products
+into things — hashes to **`6b70c6f467ae6192`** on MSVC, and the Linux container reproduces it with
+Clang 18 (2026-10-05); the heightfield and the input are products
 and sums only, so nothing but the backend's own arithmetic stands between the input and the hash,
 and that is cross-platform deterministic ([Determinism](#determinism)). A change that moves it
 changes every recorded walk, and says why in its commit. It was `4efdb83d1aa9a5c6` (reproduced by

@@ -526,7 +526,7 @@ same numbers for B2a and B2b, whose supine states are one state):
 
 | Cage, settings | Settles | Distance from the certified supine state: p50 / p95 / max | Where the largest is |
 |---|---|---|---|
-| 275 nodes (hero), ADR-0029's 8 iterations × 2 sub-steps | in 221 steps (3.7 s simulated; 0.52 s single-threaded in `msvc-release`) | 1.580 / 3.547 / 4.029 mm | node 20, a boundary node of the `surface` set, which the certified state moves 5.25 mm and the settle 9.19 |
+| 275 nodes (hero), ADR-0029's 8 iterations × 2 sub-steps | in 216 steps (3.6 s simulated; 221 steps and 0.52 s single-threaded in `msvc-release` before the physics backend became double precision on 2026-10-05) | 1.580 / 3.547 / 4.029 mm | node 20, a boundary node of the `surface` set, which the certified state moves 5.25 mm and the settle 9.19 |
 | 256 nodes, the same | **no**: a vibration of 7.3 mm/s at the 99th percentile (205 nodes above 0.1 mm/s) that 50 s — and 200 s — do not damp, the shape still: the same distances at 5 s, 50 s and 200 s to 10⁻³ mm | 1.270 / 2.847 / 3.354 mm | node 19, the same kind of node, 5.27 against 8.54 mm |
 | 256 nodes, 4 collision sub-steps | in 747 steps (12.5 s; 3.2 s) | 1.130 / 2.319 / 2.673 mm | node 20, 5.25 against 7.81 mm |
 
@@ -1276,7 +1276,9 @@ fixture — refused without `--omit-state` (the failed standing reference), then
 default budget and as a hero with it, and validated with its source to exit 0. And `settle`: the
 synthetic slab under "pressed", settled, the same bytes twice, written with its settled state and
 validated clean; a ten-node body, a missing state and its flags refused; and the supine
-measurement pinned — the hero cage of each fixture settling in 221 steps to 1.580 / 3.547 / 4.029
+measurement pinned — the hero cage of each fixture settling in 216 steps (221 before the physics backend became double
+precision on 2026-10-05, [ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md): the same
+settled shape to the pinned tolerance, reached five steps sooner) to 1.580 / 3.547 / 4.029
 mm at node 20, B2a's twice to the same bytes, and B2a's 256-node cage 300 steps in, unsettled, at
 1.270 / 2.847 / 3.353 mm at node 19. Nothing of the packet is committed.
 

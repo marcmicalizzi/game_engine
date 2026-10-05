@@ -513,7 +513,7 @@ TEST_CASE("tissue: the supine cage as a soft body under the supine load, measure
     Run run = content(args);
     INFO(run.output);
     REQUIRE(run.exit_code == 0);
-    CHECK(count(run.result, "steps") == 221);
+    CHECK(count(run.result, "steps") == 216);  // 221 until the backend became double (ADR-0053)
     CHECK(count(run.result, "inverted_cells") == 0);
     CHECK(distance(run.result, "p50") == doctest::Approx(1.58027).epsilon(1e-4));
     CHECK(distance(run.result, "p95") == doctest::Approx(3.54670).epsilon(1e-4));
