@@ -281,7 +281,8 @@ TEST_CASE("ecs: what a system changes goes back to the document at Persist, attr
 
 // ADR-0053: a `worldpos` row fills a `WorldPos` field with the record's double, exactly, at 420 km,
 // 10,000 km and 1e8 m; a km row converts in f64 (the values are chosen so that ×1000 is exact);
-// write-back writes nothing while nothing moved, and a 1/1024 m move comes back as the double it is.
+// write-back writes nothing while nothing moved, and a 1/1024 m move comes back as the double it
+// is.
 TEST_CASE("ecs far: world positions materialize and write back exactly far from the origin") {
   constexpr f64 k_step = 1.0 / 1024.0;
   struct Site {
