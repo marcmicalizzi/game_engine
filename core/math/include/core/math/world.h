@@ -33,7 +33,10 @@ struct DVec3 {
   constexpr DVec3() = default;
   constexpr DVec3(f64 x_, f64 y_, f64 z_) : x(x_), y(y_), z(z_) {}
   // A float32 vector widens exactly, so this one is implicit.
-  constexpr DVec3(Vec3 v) : x(v.x), y(v.y), z(v.z) {}
+  // Spelled as casts: Clang's -Wdouble-promotion (an error under warnings-as-errors) reports an
+  // implicit float-to-double conversion even where it is exact.
+  constexpr DVec3(Vec3 v)
+      : x(static_cast<f64>(v.x)), y(static_cast<f64>(v.y)), z(static_cast<f64>(v.z)) {}
   constexpr bool operator==(const DVec3&) const = default;
 };
 
