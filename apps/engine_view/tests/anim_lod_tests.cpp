@@ -88,19 +88,22 @@ TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16
   Vec3 side{-6.0f, 0.0f, 0.0f};
   const Frustum centre = frustum_from_view_proj(surround[1].view_proj);
   const Frustum left = frustum_from_view_proj(surround[0].view_proj);
-  for (u32 step = 0; step < 64 && (frustum_contains_sphere(centre, side, 0.0f) ||
-                                   !frustum_contains_sphere(left, side, 0.0f));
+  // The views are the frame's, whose origin is the eye (ADR-0053): a world point is tested from it.
+  const Vec3 eye = relative(camera.position, WorldPos::origin());
+  for (u32 step = 0; step < 64 && (frustum_contains_sphere(centre, side - eye, 0.0f) ||
+                                   !frustum_contains_sphere(left, side - eye, 0.0f));
        ++step) {
     side.x -= 0.5f;
   }
-  REQUIRE(frustum_contains_sphere(left, side, 0.0f));
-  REQUIRE_FALSE(frustum_contains_sphere(centre, side, 0.0f));
+  REQUIRE(frustum_contains_sphere(left, side - eye, 0.0f));
+  REQUIRE_FALSE(frustum_contains_sphere(centre, side - eye, 0.0f));
 
   const Vec3 positions[3] = {ahead, side, behind};
   const f32 radii[3] = {0.0f, 0.0f, 0.0f};
   f32 importance[3] = {};
-  view::view_importance(surround, std::span<const Vec3>(positions, 3),
-                        std::span<const f32>(radii, 3), std::span<f32>(importance, 3));
+  view::view_importance(surround, relative(camera.position, WorldPos::origin()),
+                        std::span<const Vec3>(positions, 3), std::span<const f32>(radii, 3),
+                        std::span<f32>(importance, 3));
   CHECK(importance[0] == doctest::Approx(1.0f));                          // the centre sees it
   CHECK(importance[1] == doctest::Approx(0.25f));                         // only a side monitor
   CHECK(importance[2] == doctest::Approx(view::k_offscreen_importance));  // no view at all
@@ -110,7 +113,8 @@ TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16
   const Vec3 outside[1] = {behind};
   const f32 huge[1] = {60.0f};
   f32 padded[1] = {};
-  view::view_importance(surround, std::span<const Vec3>(outside, 1), std::span<const f32>(huge, 1),
+  view::view_importance(surround, relative(camera.position, WorldPos::origin()),
+                        std::span<const Vec3>(outside, 1), std::span<const f32>(huge, 1),
                         std::span<f32>(padded, 1));
   CHECK(padded[0] > view::k_offscreen_importance);
 }
@@ -165,7 +169,7 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
       const f32 spread = static_cast<f32>(i) * 0.05f;
       positions[i] = Vec3{0.0f, 0.0f, eye.z - depth - spread};
     }
-    view::view_importance(views, std::span<const Vec3>(positions.data(), positions.size()),
+    view::view_importance(views, eye, std::span<const Vec3>(positions.data(), positions.size()),
                           std::span<const f32>(radii.data(), radii.size()),
                           std::span<f32>(importance.data(), importance.size()));
     sim::TierInput input;

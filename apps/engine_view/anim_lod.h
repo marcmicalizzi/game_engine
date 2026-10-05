@@ -104,8 +104,13 @@ inline f32 max_view_weight(const renderer::ViewSet& views) noexcept {
 // is conservative in the same direction the cull pass is: the sphere carries the instance's bounds
 // padding, so a limb that swings out of the rest-pose sphere is still "on screen" here, and an
 // instance the test keeps is at worst animated too finely.
-inline void view_importance(const renderer::ViewSet& views, std::span<const Vec3> positions,
-                            std::span<const f32> radii, std::span<f32> out) {
+//
+// `views` are the frame's, whose origin is the camera's eye (ADR-0053), and `positions` are float32
+// world positions (`renderer::instance_world_matrix`'s seam), so each is measured from `eye`, the
+// eye in the same float32 frame (`observer_position`), before the test.
+inline void view_importance(const renderer::ViewSet& views, Vec3 eye,
+                            std::span<const Vec3> positions, std::span<const f32> radii,
+                            std::span<f32> out) {
   const f32 best_weight = max_view_weight(views);
   Frustum frusta[renderer::k_max_views];
   f32 weights[renderer::k_max_views];
@@ -119,7 +124,7 @@ inline void view_importance(const renderer::ViewSet& views, std::span<const Vec3
     f32 seen = 0.0f;
     for (u32 v = 0; v < view_count; ++v) {
       if (weights[v] <= seen) continue;  // a lesser view cannot improve the answer
-      if (frustum_contains_sphere(frusta[v], positions[i], radius)) seen = weights[v];
+      if (frustum_contains_sphere(frusta[v], positions[i] - eye, radius)) seen = weights[v];
     }
     out[i] = seen > 0.0f ? seen / best_weight : k_offscreen_importance;
   }

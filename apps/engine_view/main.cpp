@@ -932,7 +932,7 @@ void update_animation_lod(AnimatedScene& scene, const renderer::ViewSet& views,
                           const renderer::Camera& camera) {
   if (!scene.lod || scene.row_instance.empty()) return;
   view::build_observers(views, camera, scene.observers);
-  view::view_importance(views,
+  view::view_importance(views, view::observer_position(camera),
                         std::span<const Vec3>(scene.positions.data(), scene.positions.size()),
                         std::span<const f32>(scene.radii.data(), scene.radii.size()),
                         std::span<f32>(scene.importance.data(), scene.importance.size()));
