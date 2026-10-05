@@ -1118,7 +1118,8 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   for (u32 i = 0; i < count; ++i) {
     if (scene.entities[i].is_null()) continue;
     const gfx::InstanceDesc& instance = data.instances[i];
-    const Vec4 world_center = instance.world * Vec4{mesh_center[instance.mesh], 1.0f};
+    const Vec4 world_center =
+        renderer::instance_world_matrix(instance) * Vec4{mesh_center[instance.mesh], 1.0f};
     scene.row_instance.push_back(i);
     scene.positions.push_back(Vec3{world_center.x, world_center.y, world_center.z});
     scene.radii.push_back((mesh_radius[instance.mesh] + instance.bounds_padding) *
@@ -2217,7 +2218,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
           have_path
               ? renderer::camera_path_frame(path, 0, frames)
               : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
-      if (interactive.on) first.position = interactive.header.start.position;
+      if (interactive.on) {
+        first.position = renderer::camera_point_from_controller(interactive.header.start.position);
+      }
       if (!ground.prepare(scene_data, resolved, first, &error)) {
         exit_code = fail(ground.stage(), error);
         break;
@@ -2306,13 +2309,15 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // with levels and no world has no ring, so the order changes nothing else).
       const bool ok = !view_world.valid() ||
                       view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
-      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, renderer::terrain_eye(camera.position).x,
+                       renderer::terrain_eye(camera.position).z);
       return ok;
     };
 #else
     auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
       ground.follow_tiles(camera.position);
-      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, renderer::terrain_eye(camera.position).x,
+                       renderer::terrain_eye(camera.position).z);
       return true;
     };
 #endif
@@ -4010,7 +4015,8 @@ int main(int argc, char** argv) {
                                                                             : nullptr;
         interactive.header = live_header(options, scene_data, start_path);
       }
-      terrain_camera.position = interactive.header.start.position;
+      terrain_camera.position =
+          renderer::camera_point_from_controller(interactive.header.start.position);
     }
     if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
       exit_code = fail(ground.stage(), error);
@@ -4468,8 +4474,9 @@ int main(int argc, char** argv) {
       // timed on its own, because which of them a frame's time went to is the whole question
       // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
       // The rings follow the last frame's camera, as the streamed world does.
-      time_lapse.frame(1.0 / view::k_frame_index_hz, terrain_camera.position.x,
-                       terrain_camera.position.z);
+      time_lapse.frame(1.0 / view::k_frame_index_hz,
+                       renderer::terrain_eye(terrain_camera.position).x,
+                       renderer::terrain_eye(terrain_camera.position).z);
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();

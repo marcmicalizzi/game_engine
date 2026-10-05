@@ -65,7 +65,20 @@ struct SceneInstance {
   // -Wmissing-field-initializers error on Clang, and `SceneInstance{mesh, transform}` is the
   // spelling three call sites use.
   SceneAnimation animation{};  // the scene file's block, for the app; the renderer never reads it
+  // **Where `transform` is measured from** (ADR-0053): the instance stands at
+  // `origin + transform.position`, added in f64, so an instance can be placed anywhere in the world
+  // while its rotation, scale and float32 offset stay local. Zero - the world's origin, the frame
+  // every producer used until world positions were f64 - for whatever still hands over a float32
+  // world position: the scene file's `translation` (a `vec3` on disk this batch), a placement
+  // generator's placement and a world tile's (ADR-0053 seam: those producers hand over WorldPos
+  // after the merge, and set this instead).
+  WorldPos origin{};
 };
+
+// The world position `source` stands at once a fit's translation has gone through its rotation and
+// scale: `origin + transform.position + (R S)(fit's translation)`, in f64. What `load_scene` and
+// `make_instance` place an instance at.
+WorldPos instance_translation(const SceneInstance& source, const Mat4& fit) noexcept;
 
 // Where one instance's bone matrices are in the frame's one contiguous span. Parallel to the
 // scene's instances, and the whole of the renderer's side of the animation contract: the caller
@@ -307,7 +320,7 @@ struct SceneData {
   Vector<u32> instance_joints;
   u32 skinned_instances = 0;  // how many entries of `instance_joints` are non-zero
   u32 max_joints = 0;         // SceneDesc::max_joints, carried through for the GPU scene
-  Vec3 center{};              // the scene's bounding sphere: what the camera frames
+  WorldPos center{};          // the scene's bounding sphere: what the camera frames
   f32 radius = 10.0f;         // and what every distance, bias, and light reach scales with
   u32 pair_count = 0;         // the prefix sum the cull dispatch covers
   bool heightfield = false;   // the procedural scene: procedural materials and fixed bounds
@@ -371,6 +384,13 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
 // out once).
 bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
                    gfx::InstanceDesc& out, std::string* error = nullptr);
+
+// An instance's mesh-to-world matrix in float32, its translation measured from the world's origin.
+// ADR-0053 seam: scene_collision takes WorldPos after the merge. `systems/scene_collision` builds
+// its bodies from the loaded scene's instances and still takes a float32 world matrix this batch,
+// as engine-view's animation LOD does for its tier positions (sim takes WorldPos after the merge
+// too); this is the one place that narrows it, so the merge flips one function.
+Mat4 instance_world_matrix(const gfx::InstanceDesc& instance) noexcept;
 
 // Where the prefix sum ends after `instances`, starting at `first_pair`: `first_pair` plus each
 // instance's mesh's clusters. False, with `error`, for a mesh the scene has not or a sum past

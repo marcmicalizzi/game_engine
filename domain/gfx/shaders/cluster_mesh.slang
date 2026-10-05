@@ -4,7 +4,7 @@
 // the low 8 (scene.slang, `pair_of`: the id is the scene's and not the list's, so a depth tie goes
 // to the same surface whatever order the frame drew in). The entry names the (instance, cluster)
 // pair, so positions come off the 16-bit grid of that instance's mesh (six bytes a vertex) and go
-// through the instance's world matrix before the view projection. scene.slang holds the structs the CPU pins with size tables.
+// into the frame, whose origin is the eye, through `instance_point` before the view projection. scene.slang holds the structs the CPU pins with size tables.
 
 #include "scene.slang"
 
@@ -14,11 +14,10 @@ struct MeshParams {
   uint64_t mesh;  // MeshDesc[]: the quantized positions and each mesh's grid
   uint64_t triangles;
   uint visible_offset;  // this draw's first entry in the whole scene's visible list
-  uint pad;
+  uint extent;          // the visibility buffer's width | height << 16 (gfx::draw_extent)
   uint64_t visible;     // uint2[]: {instance, cluster} per entry; 0 draws {0, i} in index order
   uint64_t visibility;  // uint64_t[width * height]: depth << 32 | id, written with atomic max
-  uint width;           // visibility buffer size in pixels
-  uint height;
+  uint64_t eye;        // FrameEye*: the frame's origin; 0 is the world's
   uint64_t instances;  // InstanceDesc[]
 };
 
@@ -63,8 +62,11 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
     // deformed vertices, or k_no_pool_slot for the rest pose off the grid.
     const uint base = deform_base(mesh, instance, visible_index);
     const float3 p = load_position(mesh, base, cluster.vertex_offset, t);
-    const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
-    verts[t].position = mul(g_params.view_proj, float4(world, 1.0));
+    // The instance's translation from the frame's eye (scene.slang): the frame's origin is the eye,
+    // so no absolute position is formed and a vertex by the eye is as fine as a float is there.
+    const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
+    const float3 q = instance_point(instance, from_eye, p);
+    verts[t].position = mul(g_params.view_proj, float4(q, 1.0));
     verts[t].pair = pair_of(instance, mesh, cluster_id);
     verts[t].cluster_id = cluster_id;
   }
@@ -99,9 +101,9 @@ float4 fs_color(MeshVertex v, uint primitive_id : SV_PrimitiveID) : SV_Target {
 [shader("fragment")]
 void fs_visibility(MeshVertex v, uint primitive_id : SV_PrimitiveID) {
   const uint2 pixel = uint2(v.position.xy);
-  if (pixel.x >= g_params.width || pixel.y >= g_params.height) return;
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
   const uint id = (v.pair << 8) | (primitive_id & 0xff);
   const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
-  visibility[pixel.y * g_params.width + pixel.x].max(value);
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
 }

@@ -60,6 +60,12 @@
 
 namespace engine::renderer {
 
+// The eye as the ground's motion and its tile layout take it: float32 metres from the world's
+// origin. **Stage 1 of ADR-0053 leaves the ground as it was** - world-space vertices under an
+// identity instance - so these inputs stay float32 until stage 2 puts a tile's vertices relative to
+// its corner; a tile chosen from a 3 cm rounding of the eye 420 km out is the same tile.
+inline Vec3 terrain_eye(WorldPos eye) noexcept { return relative(eye, WorldPos::origin()); }
+
 class GpuScene;
 
 struct TimeLapseConfig {

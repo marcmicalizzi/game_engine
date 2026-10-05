@@ -36,6 +36,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 
 #include <algorithm>
 #include <cmath>
@@ -617,6 +618,23 @@ inline void ground_detail_frame(GroundDetailParams& d, f64 eye_x, f64 eye_z) noe
     lane.across = static_cast<f32>(across);
     lane.along = static_cast<f32>(along);
   }
+}
+
+// **The frame as the renderer gives it, whose GPU has no absolute position** (ADR-0053): the
+// lattices for an eye at `eye`, exactly as above, but `origin_x`/`origin_z` the frame's corner
+// **measured from `frame_origin`** in double and rounded once - the frame's origin, which the
+// resolve's `camera` is measured from (zero for the renderer's views). The pattern reads
+// `(camera - origin) + from_eye`, which is then `(eye - corner) + from_eye`: the point's offset
+// from the corner, on numbers the size of the frame, without a world coordinate on the GPU. With
+// `frame_origin` the world's origin it is the function above to the bit.
+inline void ground_detail_frame(GroundDetailParams& d, WorldPos eye,
+                                WorldPos frame_origin) noexcept {
+  ground_detail_frame(d, eye.x, eye.z);
+  const f64 g = k_ground_frame_cell;
+  const f64 ax = std::floor(eye.x / g + 0.5) * g;
+  const f64 az = std::floor(eye.z / g + 0.5) * g;
+  d.origin_x = static_cast<f32>(ax - frame_origin.x);
+  d.origin_z = static_cast<f32>(az - frame_origin.z);
 }
 
 }  // namespace engine::gfx

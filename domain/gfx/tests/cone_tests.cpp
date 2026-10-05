@@ -181,9 +181,7 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
   gfx::ClusterDrawParams draws[2];
   u64 params_address[2];
   for (u32 k = 0; k < 2; ++k) {

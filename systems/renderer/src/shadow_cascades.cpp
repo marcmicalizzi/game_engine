@@ -38,10 +38,27 @@ f32 quantize_radius(f32 r) noexcept {
   return std::ceil(r / step) * step;
 }
 
+// `gfx::shadow_snap` measured from `anchor` (a point of the frame's space) rather than from the
+// frame's origin, in f64: the centre's coordinates across the light, counted from the eye's cell's
+// corner, made whole multiples of `texel`. The anchor is the same point of the world for every eye
+// in a cell, so a cascade moves by whole texels while the eye moves inside one.
+Vec3 snap_from_cell(const gfx::ShadowLight& light, Vec3 center, f32 texel, DVec3 anchor) noexcept {
+  if (!(texel > 0.0f)) return center;
+  const DVec3 from = DVec3{center} - anchor;
+  const DVec3 right{light.right};
+  const DVec3 up{light.up};
+  const f64 t = static_cast<f64>(texel);
+  const f64 x = dot(from, right);
+  const f64 y = dot(from, up);
+  const f64 sx = std::round(x / t) * t;
+  const f64 sy = std::round(y / t) * t;
+  return narrow(DVec3{center} + right * (sx - x) + up * (sy - y));
+}
+
 }  // namespace
 
 void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 towards_sun,
-                         Vec3 scene_center, f32 scene_radius, const ShadowFit& fit,
+                         WorldPos scene_center_world, f32 scene_radius, const ShadowFit& fit,
                          ShadowCascades& out) noexcept {
   out = ShadowCascades{};
   out.resolution = fit.resolution > 0 ? fit.resolution : 1u;
@@ -49,8 +66,11 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
   const u32 wanted = fit.cascades < 1                            ? 1u
                      : fit.cascades > gfx::k_max_shadow_cascades ? gfx::k_max_shadow_cascades
                                                                  : fit.cascades;
-  const Vec3 eye = camera.position;
-  const Vec3 forward = normalize(camera.target - camera.position);
+  // The frame's space: the eye at the origin (ADR-0053). The scene's centre is measured from it in
+  // f64 and rounded once; everything below is relative to the eye.
+  const Vec3 eye{};
+  const Vec3 forward = camera_forward(camera);
+  const Vec3 scene_center = relative(scene_center_world, camera.position);
   const f32 to_center = length(scene_center - eye);
   const f32 far = fit.distance > 0.0f ? fit.distance : to_center + scene_radius;
   // Where geometry can begin: the scene's near side, or the camera's near plane when the camera is
@@ -103,6 +123,10 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
 
   const Dvec d_eye = dvec(eye);
   const Dvec d_forward = dvec(forward);
+  // Where the eye's cell's corner is in the frame's space, exactly: what the centres are snapped
+  // from.
+  const WorldEye frame = to_eye(camera.position);
+  const DVec3 cell_corner = to_world(WorldCell{frame.cell, Vec3{}}) - camera.position;
   for (u32 c = 0; c < wanted; ++c) {
     // The slice's corners in every view.
     Dvec corners[k_max_views * 8];
@@ -153,7 +177,7 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
     }
     if (!(radius > 0.0f)) radius = 1.0e-3f;  // a scene of one point still gets a cascade
     const f32 texel = 2.0f * radius / static_cast<f32>(out.resolution);
-    center = gfx::shadow_snap(out.light, center, texel);
+    center = snap_from_cell(out.light, center, texel, cell_corner);
     // Every caster between the light and the sphere: to the far side of the scene towards the
     // light, and at least the sphere's own radius. A thousandth more so that a caster exactly on
     // the bounds is inside the depth range rather than on its clipping edge.

@@ -19,11 +19,10 @@ struct RasterParams {
   uint64_t mesh;  // MeshDesc[]: the quantized positions and each mesh's grid
   uint64_t triangles;
   uint visible_offset;  // this draw's first entry in the whole scene's visible list
-  uint pad;
+  uint extent;          // the visibility buffer's width | height << 16 (gfx::draw_extent)
   uint64_t visible;     // uint2[]: {instance, cluster} per entry; 0 takes {0, i} in order
   uint64_t visibility;  // uint64_t[width * height]
-  uint width;
-  uint height;
+  uint64_t eye;        // FrameEye*: the frame's origin; 0 is the world's
   uint64_t instances;  // InstanceDesc[]
 };
 
@@ -45,7 +44,7 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   const InstanceDesc instance = instances[entry.x];
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[entry.y];
-  const float2 size = float2(float(g_params.width), float(g_params.height));
+  const float2 size = float2(float(extent_width(g_params.extent)), float(extent_height(g_params.extent)));
 
   // Vertices: mesh space to world to clip space to pixel space, with the same y flip as the
   // hardware viewport.
@@ -53,10 +52,11 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   const MeshDesc mesh = meshes[instance.mesh];
   // Once per workgroup: this entry's block in the frame's deformed-vertex pool, or the rest pose.
   const uint base = deform_base(mesh, instance, visible_index);
+  const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
   for (uint v = group_thread.x; v < cluster.vertex_count; v += 128) {
     const float3 p = load_position(mesh, base, cluster.vertex_offset, v);
-    const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
-    const float4 clip = mul(g_params.view_proj, float4(world, 1.0));
+    const float3 q = instance_point(instance, from_eye, p);
+    const float4 clip = mul(g_params.view_proj, float4(q, 1.0));
     const bool in_front = clip.w > 1e-6;
     const float3 ndc = in_front ? clip.xyz / clip.w : float3(0.0, 0.0, 0.0);
     s_screen[v] = float3((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y, ndc.z);
@@ -104,7 +104,7 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
       // Depth (z/w) is affine in screen space, so barycentric interpolation is exact.
       const float depth = (w0 * v0.z + w1 * v1.z + w2 * v2.z) * inv_area;
       const uint64_t value = (uint64_t(asuint(depth)) << 32) | uint64_t(id);
-      visibility[uint(y) * g_params.width + uint(x)].max(value);
+      visibility[uint(y) * extent_width(g_params.extent) + uint(x)].max(value);
     }
   }
 }

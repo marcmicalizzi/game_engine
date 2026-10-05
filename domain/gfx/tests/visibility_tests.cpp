@@ -150,8 +150,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
   gfx::ClusterDrawParams draw_hw = draw;
   draw_hw.visibility = vis_hw.address;
   gfx::ClusterDrawParams draw_sw = draw;

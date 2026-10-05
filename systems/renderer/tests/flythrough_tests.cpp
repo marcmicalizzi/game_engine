@@ -233,6 +233,10 @@ bool near(f32 a, f32 b, f32 eps = 1e-4f) { return std::fabs(a - b) <= eps; }
 bool near(const Vec3& a, const Vec3& b, f32 eps = 1e-4f) {
   return near(a.x, b.x, eps) && near(a.y, b.y, eps) && near(a.z, b.z, eps);
 }
+// A camera's position is a world position (ADR-0053); the paths here are by the origin.
+bool near(const WorldPos& a, const Vec3& b, f32 eps = 1e-4f) {
+  return near(relative(a, WorldPos::origin()), b, eps);
+}
 
 // The small world the GPU cases fly over: a 64 m terrain with an 8 m ridge across it at z = 0,
 // three cubes (fitted to 3 m) standing on the ground 8 m behind it, and a camera that holds low
@@ -392,7 +396,7 @@ TEST_CASE("camera path: keys are hit exactly, and linear and smooth differ only 
   }
   // Between the keys the cubic leaves the straight line, because it has to arrive at the second
   // key already turning towards the third.
-  CHECK(std::fabs(sample_camera_path(smooth, 0.5).position.z) > 0.01f);
+  CHECK(std::fabs(sample_camera_path(smooth, 0.5).position.z) > 0.01);
   // Past either end the camera holds.
   CHECK(near(sample_camera_path(smooth, -1.0).position, Vec3{0, 0, 0}));
   CHECK(near(sample_camera_path(smooth, 9.0).position, Vec3{10, 0, 20}));
@@ -668,11 +672,14 @@ TEST_CASE(
   CHECK(data.terrain.enabled);
   const gfx::InstanceDesc& tall = data.instances[0];
   CHECK(tall.scale_max == doctest::Approx(4.0f));
-  const Vec3 base = transform_point(tall.world, Vec3{0.0f, -0.5f, 0.0f});
+  // The instance's matrix with its translation from the world's origin (ADR-0053).
+  const Vec3 base =
+      transform_point(gfx::instance_matrix(tall, WorldEye{}), Vec3{0.0f, -0.5f, 0.0f});
   CHECK(near(base, grounded.transform.position, 1e-3f));
   const gfx::InstanceDesc& wide = data.instances[1];
   CHECK(wide.scale_max == doctest::Approx(2.0f));
-  CHECK(near(transform_point(wide.world, Vec3{0, 0, 0}), Vec3{0, 5, 0}, 1e-3f));
+  CHECK(near(transform_point(gfx::instance_matrix(wide, WorldEye{}), Vec3{0, 0, 0}), Vec3{0, 5, 0},
+             1e-3f));
 
   // A hash the bytes do not have is refused, naming both.
   SceneDesc wrong = desc;
@@ -1043,10 +1050,10 @@ constexpr MarkerCamera k_owner_markers[6] = {
 // the renderer's position-and-target camera.
 Camera marker_camera(const MarkerCamera& m) {
   Camera camera;
-  camera.position = m.position;
+  camera.position = absolute(WorldPos::origin(), m.position);
   const Vec3 forward{-std::sin(m.yaw) * std::cos(m.pitch), std::sin(m.pitch),
                      -std::cos(m.yaw) * std::cos(m.pitch)};
-  camera.target = m.position + forward * 100.0f;
+  camera.target = absolute(WorldPos::origin(), m.position + forward * 100.0f);
   camera.znear = 0.05f;
   return camera;
 }

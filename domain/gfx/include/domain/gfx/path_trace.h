@@ -46,7 +46,7 @@ struct PathTraceParams {
   // Clip space to the world direction of a primary ray, `clip_to_ray(projection, view)`
   // (view_ray.h): the camera's rotation and projection, never its position.
   Mat4 clip_to_ray;
-  Vec4 camera{};  // xyz eye position
+  Vec4 camera{};  // xyz the eye in the frame's space (`eye`, below)
   Vec4 sky{};     // rgb, the same value ResolveParams::sky carries
   Vec4 sun{};     // xyz normalized direction towards the light, w intensity
   // rgb: the ground's albedo, the same value ResolveParams::ground carries. An escaped ray below
@@ -106,6 +106,10 @@ struct PathTraceParams {
   // frame's rule. `sky`, `ground` and `background` are not read. Zero, the stand-in as before. It
   // took the pad word.
   u64 sky_params = 0;
+  // The frame's origin (`ResolveParams::eye`): `camera` is the eye in its space, and every hit the
+  // tracer rebuilds, every ray it starts and every light it reaches is in that space, as the
+  // frame's top-level structure is. 48 bytes appended (ADR-0053).
+  FrameEye eye;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the
@@ -117,7 +121,7 @@ inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
   };
   return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
 }
-static_assert(sizeof(PathTraceParams) == 288);
+static_assert(sizeof(PathTraceParams) == 336);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // Russian roulette starts after this many scattering events, so a short path is never cut and a

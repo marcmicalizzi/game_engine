@@ -156,8 +156,16 @@ struct FrameLighting {
 // they stand where frame 0 puts them. `lights` false leaves the two point lights out and the count
 // at zero, which is what `--no-lights` asks for. The sun is `options.sun` shining at
 // `options.sun_intensity`.
+//
+// **The lights are in the frame's space** (ADR-0053): a point light's position is measured from
+// `eye`, the frame's origin, in f64 and rounded once, because the resolve and the reference reach
+// it from a surface position in that space. Rewritten every frame, which costs nothing for the two
+// stand-in lights; a scene with many would keep each light's `WorldCell` on the GPU and measure it
+// from the eye in the shader, as an instance is. The rays' float offset is sized by the scene's
+// reach from the eye for the same reason. The default eye, the world's origin, is the frame every
+// caller had before.
 void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
-                    FrameLighting& out);
+                    FrameLighting& out, const WorldPos& eye = WorldPos::origin());
 
 // **With a sky** (sky.h; renderer.md, "The sky"): the sky's lights in place of the stand-in's. The
 // sun is the provider's at the frame's time and shines at 1 — the resolve and the reference take
@@ -170,6 +178,7 @@ void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptio
 // which a sky's scene has none, and a light four radii wide at the brightness of the stand-in sun
 // would be noon at midnight. The ground and the rays' offsets are the stand-in's.
 struct FrameSky;
-void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out);
+void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out,
+                    const WorldPos& eye = WorldPos::origin());
 
 }  // namespace engine::renderer

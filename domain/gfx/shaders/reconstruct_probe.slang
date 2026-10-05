@@ -58,6 +58,7 @@ void probe_main(uint3 id : SV_DispatchThreadID) {
   geo.cluster_materials = 0;
   geo.visible = 0;
   geo.normal_pool = 0;
+  geo.eye = load_eye(0);  // the probe works in the world's own frame: its cases are by the origin
   const InstanceDesc instance = ((InstanceDesc*)params->instances)[0];
   const float2 center = float2(id.xy) + 0.5;
   const TriangleFetch tri = fetch_triangle(geo, instance, 0u, cluster, triangle);

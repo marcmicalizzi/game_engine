@@ -27,6 +27,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/cluster_cull.h>
 
 #include <cmath>
 
@@ -347,8 +348,8 @@ struct ResolveParams {
   // `sun` and `sky` (brdf.slang, `brdf_ground_radiance`), so a surface turned towards the ground is
   // lit by it — a dune's slip face in shade by the sand around it. w is unused.
   Vec4 ground{k_neutral_ground_albedo, k_neutral_ground_albedo, k_neutral_ground_albedo, 0.0f};
-  Vec4 camera{};  // xyz position
-  Mat4 view_proj;
+  Vec4 camera{};              // xyz this view's eye in the frame's space (`eye`, below)
+  Mat4 view_proj;             // the frame's space to clip space
   u64 visibility = 0;         // u64[width * height]
   u64 clusters = 0;           // geometry::ClusterDesc[]
   u64 mesh = 0;               // MeshDesc[] (cluster_cull.h): the positions and each mesh's grid
@@ -455,8 +456,15 @@ struct ResolveParams {
   // pad words keep the block a whole number of float4 rows.
   u32 dither_steps = 0;
   u32 dither_pad[3] = {};
+  // **The frame's origin** (`FrameEye`, cluster_cull.h; ADR-0053). Everything the resolve forms is
+  // in the frame's space: a triangle is fetched into it, `camera` is this view's eye in it (zero
+  // for every view the renderer draws), `view_proj` maps it to clip space, and a surface's
+  // position - what a shadow ray leaves from and a light is reached from - is in it, so the
+  // lights, the cascades' matrices and the frame's top-level structure are too. Zero is the
+  // world's origin, which is what a test by the origin leaves it at.
+  FrameEye eye;
 };
-static_assert(sizeof(ResolveParams) == 352);
+static_assert(sizeof(ResolveParams) == 400);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

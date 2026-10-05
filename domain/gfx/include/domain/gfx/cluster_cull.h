@@ -46,12 +46,49 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 
 #include <cmath>
 
 namespace engine::gfx {
 
 inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
+
+// ---- the frame's origin (ADR-0053, docs/subsystems/gfx.md "The frame's origin") ---------------
+//
+// **The GPU never holds or computes an absolute world position.** A frame has one origin, its
+// reference eye, and every position a pass computes is relative to it: an instance's translation
+// is `relative(cell, eye)` (`instance_from_eye` in shaders/scene.slang, `engine::relative` in
+// core/math/world.h, operation for operation), a view's matrix is its rotation and projection
+// plus at most the view's own small offset from the frame's eye, and a light, a shadow cascade and
+// the ground's detail frame are rebased onto it on the CPU in f64. `FrameEye` is that origin as
+// the passes read it: a `WorldEye` laid out in three 16-byte rows so that it reads the same under
+// any of the layouts a shader may give a struct, with the three spare words left zero.
+//
+// **All zero is the world's origin.** A frame whose eye is the origin reads every instance at its
+// stored position (to the bit, for a translation a float32 holds), which is what the passes' own
+// tests near the origin build with, and what a null `ClusterDrawParams::eye` means.
+struct FrameEye {
+  Vec3i cell;
+  u32 pad0 = 0;
+  Vec3 local;
+  f32 pad1 = 0.0f;
+  Vec3 residual;
+  f32 pad2 = 0.0f;
+  constexpr bool operator==(const FrameEye&) const = default;
+};
+static_assert(sizeof(FrameEye) == 48);
+
+constexpr FrameEye frame_eye(const WorldEye& eye) noexcept {
+  FrameEye out;
+  out.cell = eye.cell;
+  out.local = eye.local;
+  out.residual = eye.residual;
+  return out;
+}
+constexpr WorldEye world_eye(const FrameEye& eye) noexcept {
+  return WorldEye{eye.cell, eye.local, eye.residual};
+}
 
 // **Geometry streaming** (docs/plan/04-renderer.md §4.3 step 3 and §4.9, geometry/cluster_pages.h).
 // The addresses the cull pass needs to run `geometry::select_lod_streaming`'s rule on the GPU and
@@ -96,10 +133,16 @@ inline constexpr u32 k_draw_args_bytes = 16;
 // entry's. `clas_records.slang` mirrors the number, because it builds that run beside run 0.
 inline constexpr u32 k_caster_run = 2;
 
-// Mirrors CullParams in cluster_cull.slang. 464 bytes.
+// Mirrors CullParams in cluster_cull.slang. 528 bytes.
+//
+// **Everything here is in the frame's space** (`eye`, above): the planes come from a
+// view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
+// is in that space (zero for every view the renderer draws today, which all share the frame's eye),
+// and the pass moves each instance into it with `instance_from_eye`. A test that leaves `eye` zero
+// works in the world's own coordinates, which is the frame whose eye is the origin.
 struct CullParams {
   Vec4 planes[6];         // inward-facing, normalized
-  Vec4 camera;            // xyz position, w = znear
+  Vec4 camera;            // xyz this view's eye in the frame's space, w = znear
   Vec4 lod;               // x = proj_scale (cot(fov_y/2) * viewport_height / 2), y = threshold_px,
                           // z = LOD selection enabled, w = frustum culling enabled
   Vec4 raster;            // x = projected cluster diameter (px) below which a cluster is software
@@ -167,8 +210,12 @@ struct CullParams {
   // `hole` is dropped — the next finer level draws that ground. 0 tests nothing.
   u64 terrain = 0;
   u64 pad_terrain = 0;
+  // The frame's origin (`FrameEye`): every instance is moved into its space before any test.
+  // `ClusterDrawParams::eye` points the rasterizers at this field of the view's own block.
+  FrameEye eye;
 };
-static_assert(sizeof(CullParams) == 480);
+static_assert(sizeof(CullParams) == 528);
+inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
@@ -513,8 +560,25 @@ inline constexpr u32 k_instance_uniform_scale = 1u;
 // margin. So an instance whose `deform` is not `k_invalid_deform` is never cone-tested — the cone
 // test needs a rigid instance as well as a uniform scale (docs/subsystems/geometry.md, "Normal
 // cones", has the measurement behind choosing that over a per-bone cone).
+//
+// **Where it is: a `WorldCell` and a local 3x4** (ADR-0053; gfx.md, "The instance's layout"). The
+// instance is placed by `rows`, an affine 3x4 from mesh space to its **cell's** frame — the cell's
+// corner, `cell * 64` metres, at the origin — and `cell`, the i32 cell on the world's 64 m grid.
+// The 3x4's translation column (each row's w) *is* the `WorldCell`'s local, the offset into the
+// cell in [0, 64]: storing it once is what keeps the record at 96 bytes, where a separate 4x4 or a
+// separate local would have taken it to 104. Rows rather than columns because a row is what a
+// point goes through as one dot product with float4(p, 1), and what a top-level instance record
+// holds (`VkTransformMatrixKHR` is three rows), which `tlas_references.slang` writes each frame
+// from these rows with the w column replaced by the instance's translation from the frame's eye.
+//
+// Every reader takes a point in mesh space to the frame's space as `instance_point` in
+// shaders/scene.slang: the 3x4's linear part, plus `instance_from_eye` — `relative(cell, eye)`,
+// operation for operation. **No reader forms an absolute position**, so a scene and its camera
+// moved by whole cells give every reader the same operands and the same bytes.
 struct InstanceDesc {
-  Mat4 world;             // mesh space to world; the top three rows are used
+  // Mesh space to the cell's frame: rows[r] = (m[r][0], m[r][1], m[r][2], local[r]).
+  Vec4 rows[3] = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}};
+  Vec3i cell;             // the WorldCell's cell: floor(translation / 64) per axis
   u32 mesh = 0;           // index into the MeshDesc array
   u32 material_base = 0;  // added to the cluster's material index in the resolve
   u32 first_pair = 0;     // prefix sum of the instances' mesh cluster counts, in order
@@ -525,30 +589,82 @@ struct InstanceDesc {
   // 1 + the terrain level this instance draws, in the frame's `TerrainLevelDesc` table; 0 for
   // everything that is not a terrain level. It took the record's last pad word.
   u32 terrain = 0;
+  u32 pad = 0;  // what the 4x4 world matrix's fourth row left over, after the cell took 12 bytes
 };
 static_assert(sizeof(InstanceDesc) == 96);
 
-// Fills `world`, `scale_max`, and the uniform-scale flag from an affine transform. The scales are
-// the lengths of the upper-left 3x3's columns; "uniform" means they agree to a part in 10^4,
-// which is what lets the cone test and the cheap normal transform run. A scale that far from
-// uniform turns a normal against the cone's axis by up to 1e-4 radians, which is what
-// `geometry::k_cone_margin` (1e-3) is sized to absorb: loosen this and widen that.
-inline void set_instance_transform(InstanceDesc& instance, const Mat4& world) noexcept {
-  instance.world = world;
-  const f32 sx = length(world.c[0].xyz());
-  const f32 sy = length(world.c[1].xyz());
-  const f32 sz = length(world.c[2].xyz());
+// Places `instance` at `translation` with `linear`'s upper-left 3x3 (rotation and scale; its
+// translation column is not read), and fills `scale_max` and the uniform-scale flag. The scales
+// are the lengths of the 3x3's columns; "uniform" means they agree to a part in 10^4, which is
+// what lets the cone test and the cheap normal transform run. A scale that far from uniform turns
+// a normal against the cone's axis by up to 1e-4 radians, which is what `geometry::k_cone_margin`
+// (1e-3) is sized to absorb: loosen this and widen that. `translation` must be `world_cell_valid`
+// (a caller reading one from outside validates it).
+inline void set_instance_placement(InstanceDesc& instance, const Mat4& linear,
+                                   WorldPos translation) noexcept {
+  const WorldCell at = to_cell(translation);
+  instance.cell = at.cell;
+  for (u32 r = 0; r < 3; ++r) {
+    instance.rows[r] = Vec4{linear.at(r, 0), linear.at(r, 1), linear.at(r, 2), at.local[r]};
+  }
+  const f32 sx = length(linear.c[0].xyz());
+  const f32 sy = length(linear.c[1].xyz());
+  const f32 sz = length(linear.c[2].xyz());
   const f32 hi = sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz);
   const f32 lo = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz);
   instance.scale_max = hi;
   instance.flags = hi - lo <= 1.0e-4f * hi ? k_instance_uniform_scale : 0u;
 }
 
-// Mirrors MeshParams in cluster_mesh.slang and RasterParams in cluster_sw_raster.slang: the push
-// constants of the mesh-shader and software rasterization paths. 128 bytes, the largest push
-// block the renderer allows.
+// The same from an affine matrix **whose frame is the world's**: its translation column widened to
+// a `WorldPos`, which is exact. What a placement by the origin is built with — the passes' own
+// tests, an identity instance — and the matrix such a test used to store, read back by
+// `instance_matrix` at the origin's eye to the bit for any translation a float32 holds.
+inline void set_instance_transform(InstanceDesc& instance, const Mat4& world) noexcept {
+  set_instance_placement(instance, world,
+                         WorldPos{static_cast<f64>(world.c[3].x), static_cast<f64>(world.c[3].y),
+                                  static_cast<f64>(world.c[3].z)});
+}
+
+// The instance's position as it is stored: its cell and the 3x4's translation column.
+constexpr WorldCell instance_cell(const InstanceDesc& instance) noexcept {
+  return WorldCell{instance.cell, Vec3{instance.rows[0].w, instance.rows[1].w, instance.rows[2].w}};
+}
+
+// The CPU mirror of what every pass applies (shaders/scene.slang, `instance_point`): mesh space to
+// the space of the frame whose origin is `eye`, the 3x4's linear part with `relative(cell, eye)`
+// as the translation. At the origin's eye (`WorldEye{}`) it is the world matrix the instance was
+// set from. What a test builds a top-level record or a CPU reference from.
+inline Mat4 instance_matrix(const InstanceDesc& instance, const WorldEye& eye) noexcept {
+  const Vec3 t = relative(instance_cell(instance), eye);
+  Mat4 m;
+  for (u32 r = 0; r < 3; ++r) {
+    m.at(r, 0) = instance.rows[r].x;
+    m.at(r, 1) = instance.rows[r].y;
+    m.at(r, 2) = instance.rows[r].z;
+    m.at(r, 3) = t[r];
+  }
+  return m;
+}
+
+// The visibility buffer's extent as `ClusterDrawParams::extent` packs it: width in the low half,
+// height in the high. 16 bits each is twice the Hi-Z's largest side (`k_hiz_max_mips`).
+inline constexpr u32 draw_extent(u32 width, u32 height) noexcept {
+  return (width & 0xffffu) | (height << 16);
+}
+
+// Mirrors MeshParams in cluster_mesh.slang, RasterParams in cluster_sw_raster.slang and the two
+// VertexParams of the vertex path: the push constants of every rasterizer. 128 bytes, the largest
+// push block the renderer allows (gfx/requirements.h).
+//
+// **`eye` took the room of `triangles_per_cluster` and of one of the extent's two words**
+// (ADR-0053, 2026-10-05). The rasterizers need the frame's origin to move an instance into the
+// frame (`instance_point`), and a `FrameEye` is 48 bytes where the block had none to spare; a
+// device address of one is eight. `triangles_per_cluster` was read by no shader (the vertex path's
+// capacity draws take their triangle from the vertex index, and the vertex count is the draw's
+// own), and the width and height share a word.
 struct ClusterDrawParams {
-  Mat4 view_proj;
+  Mat4 view_proj;  // the frame's space to clip space (CullParams' comment)
   u64 clusters = 0;
   u64 mesh = 0;  // MeshDesc[]: the quantized positions and each mesh's grid
   u64 triangles = 0;
@@ -557,11 +673,12 @@ struct ClusterDrawParams {
   // rasterizer append to their own runs of one list, so `visible` points at the run and this
   // shifts a slot back onto the whole list. The visibility id is the scene's pair, not the entry.
   u32 visible_offset = 0;
-  u32 triangles_per_cluster = 0;  // vertex path only: the draw's vertex count / 3
+  u32 extent = 0;      // draw_extent(width, height) of the visibility buffer
   u64 visible = 0;     // u32x2[]: {instance, cluster} per entry; 0 draws {0, i} in index order
   u64 visibility = 0;  // u64[width * height] visibility buffer (fs_visibility, software raster)
-  u32 width = 0;
-  u32 height = 0;
+  // FrameEye*: the frame's origin, which the renderer points at its view's `CullParams::eye`. 0 is
+  // the world's origin, and an instance is then drawn at its stored position.
+  u64 eye = 0;
   u64 instances = 0;  // InstanceDesc[]
 };
 static_assert(sizeof(ClusterDrawParams) == 128);

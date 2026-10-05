@@ -293,14 +293,16 @@ TEST_CASE("renderer: shadow casters on the Khronos samples" * doctest::skip()) {
         desc.instances.push_back(model);
         SceneInstance floor;
         floor.mesh = 1;
-        floor.transform.position = Vec3{probe.center.x, lowest, probe.center.z};
+        // A sample by the origin. (`relative` is the sample's path in this loop.)
+        const Vec3 probe_center = engine::relative(probe.center, WorldPos::origin());
+        floor.transform.position = Vec3{probe_center.x, lowest, probe_center.z};
         floor.transform.scale = Vec3{6.0f * probe.radius, 1.0f, 6.0f * probe.radius};
         desc.instances.push_back(floor);
       }
       if (variant == 2) desc.grid_instances = 3;
       SceneData data;
       REQUIRE_MESSAGE(load_scene(desc, data, error), error);
-      const Vec3 focus = variant == 1 ? probe.center : data.center;
+      const WorldPos focus = variant == 1 ? probe.center : data.center;
       const f32 reach = variant == 1 ? probe.radius : data.radius;
       const std::string where =
           sample + (variant == 0 ? " alone" : (variant == 1 ? " on a ground" : " 3x3 grid"));

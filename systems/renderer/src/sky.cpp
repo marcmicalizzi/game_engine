@@ -273,9 +273,12 @@ void SkyPass::fill(const FrameSky& sky, const ViewSet& views, const Camera& came
   // The eye's height in the tables: the world's y over the planet's ground, which is the world's
   // zero, and never below the tables' least nor above the top of the air.
   const f32 top = air.top_radius_km - air.bottom_radius_km;
-  const f32 altitude =
-      std::clamp(camera.position.y * 0.001f, gfx::k_sky_min_altitude_km, top - 0.001f);
-  out.camera = vec4(camera.position, altitude);
+  // The world is flat, so y is the eye's height: a number the size of the air, which a float holds.
+  const f32 height = static_cast<f32>(camera.position.y);
+  const f32 altitude = std::clamp(height * 0.001f, gfx::k_sky_min_altitude_km, top - 0.001f);
+  // The eye is the frame's origin (ADR-0053): its place in the frame's space is (0, 0, 0), and only
+  // its height above the planet, a number the size of the air, reaches the tables.
+  out.camera = Vec4{0.0f, 0.0f, 0.0f, altitude};
   out.celestial_x = vec4(s.celestial_x, 0.0f);
   out.celestial_y = vec4(s.celestial_y, 0.0f);
   out.celestial_z = vec4(s.celestial_z, 0.0f);

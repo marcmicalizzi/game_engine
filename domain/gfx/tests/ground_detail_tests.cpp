@@ -552,8 +552,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     draw.instances = scenes[s].instances.address;
     draw.triangles = triangles[s].address;
     draw.visibility = vis[v].address;
-    draw.width = k_size;
-    draw.height = k_size;
+    draw.extent = gfx::draw_extent(k_size, k_size);
     for (u32 mode = 0; mode < 3; ++mode) {
       gfx::ResolveParams& b = blocks[v * 3 + mode];
       b = gfx::ResolveParams{};

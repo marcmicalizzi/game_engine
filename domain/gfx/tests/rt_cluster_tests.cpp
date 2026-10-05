@@ -345,11 +345,9 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
   draw.visible = cut_buffer.address;
   draw.visibility = vis[0].address;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   u64 params_address[2];
   for (u32 p = 0; p < 2; ++p) {
     gfx::RayVisibilityParams ray{};

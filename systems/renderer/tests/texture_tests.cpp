@@ -200,8 +200,8 @@ struct Harness {
   // The albedo view from `distance` in front of the quad, looking at its centre.
   CapturedFrame shot(f32 distance) {
     FrameDesc frame;
-    frame.camera.position = Vec3{0.0f, 0.0f, distance};
-    frame.camera.target = Vec3{0.0f, 0.0f, 0.0f};
+    frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
+    frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
     frame.camera.fov_y = k_fov;
     frame.view_mode = k_albedo_view;
     CapturedFrame out;
@@ -660,7 +660,7 @@ struct KitRig {
     desc.cache = cache;
     desc.ddc = ddc;
     REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
-    data.center = Vec3{0.0f, 0.0f, 0.0f};
+    data.center = WorldPos::origin();
     data.radius = 6.0f;
     data.dynamic = dynamic;
     RenderSettings settings;
@@ -683,8 +683,8 @@ struct KitRig {
 
   CapturedFrame shot() {
     FrameDesc frame;
-    frame.camera.position = Vec3{0.0f, 0.0f, 14.0f};
-    frame.camera.target = Vec3{0.0f, 0.0f, 0.0f};
+    frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 14.0f});
+    frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
     frame.camera.fov_y = k_fov;
     CaptureChannels channels;
     channels.color = true;

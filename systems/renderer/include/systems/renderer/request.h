@@ -144,7 +144,7 @@ class MovingGround {
   bool start(GpuScene& scene, const ResolvedSettings& resolved, bool wait,
              std::string* error = nullptr);
   // The tiles round `camera` by the ring's first-fill rule, for a host with no world ring.
-  void follow_tiles(Vec3 camera);
+  void follow_tiles(WorldPos camera);
   // Before a frame: the motion a sixtieth of a second on, its rings following `camera`.
   void frame(const Camera& camera);
   void finish();

@@ -69,7 +69,8 @@ struct ShadowCascades {
   u32 resolution = 0;
   gfx::ShadowLight light;
   gfx::ShadowCascade cascades[gfx::k_max_shadow_cascades];
-  // The spheres the cascades cover (snapped), and the camera depths each was fit to.
+  // The spheres the cascades cover (snapped), in the frame's space, and the camera depths each was
+  // fit to.
   Vec3 centers[gfx::k_max_shadow_cascades] = {};
   f32 radii[gfx::k_max_shadow_cascades] = {};
   f32 splits[gfx::k_max_shadow_cascades + 1] = {};
@@ -80,8 +81,17 @@ struct ShadowCascades {
 // The frame's cascades, from the camera the frame is drawn with and the layout it is drawn
 // through (`views` must have been updated with `camera`). `towards_sun` is the sun vector of the
 // frame's lighting; the scene's bounds are its bounding sphere.
+//
+// **In the frame's space** (ADR-0053): the fit is done in f64 relative to the camera's eye, which
+// is the frame's origin, and every matrix, centre and sphere out of it is in that space, as the
+// resolve's surfaces are. A cascade's centre is snapped to whole texels across the light measured
+// from the corner of the eye's 64 m cell, not from the world's origin: still whole texels while the
+// eye moves inside a cell, so a static caster stays put, and a function of nothing but the scene,
+// the camera and the cell, so a scene and camera moved by whole cells draw the same maps. Where the
+// eye crosses into the next cell the lattice the centres snap to moves by a fraction of a texel
+// once (renderer.md, "Shadows").
 void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 towards_sun,
-                         Vec3 scene_center, f32 scene_radius, const ShadowFit& fit,
+                         WorldPos scene_center, f32 scene_radius, const ShadowFit& fit,
                          ShadowCascades& out) noexcept;
 
 // The block the resolve reads the maps through: the cascades, the light's frame, the atlas's

@@ -334,11 +334,11 @@ TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and
   CHECK(c.at(120) == 13.0 * 3600.0 + 1200.0);
   // The frame and the flight read the same numbers.
   renderer::Camera camera;
-  camera.position = Vec3{1.0f, 2.0f, 3.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{1.0f, 2.0f, 3.0f});
   const renderer::FrameDesc frame = renderer::frame_at(c, camera, 120);
   CHECK(frame.frame_index == 120);
   CHECK(frame.sun_time_s == c.at(120));
-  CHECK(frame.camera.position.y == 2.0f);
+  CHECK(frame.camera.position.y == 2.0);
   CHECK(frame.view_mode == renderer::FrameDesc{}.view_mode);
   renderer::FlightOptions flight;
   renderer::flight_clock(c, flight);
@@ -353,6 +353,8 @@ TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and
 namespace {
 
 bool same_bits(f32 a, f32 b) { return std::memcmp(&a, &b, sizeof(f32)) == 0; }
+// A camera's position and target are f64 (ADR-0053): the same comparison at their width.
+bool same_bits(f64 a, f64 b) { return std::memcmp(&a, &b, sizeof(f64)) == 0; }
 
 bool same_camera(const renderer::Camera& a, const renderer::Camera& b) {
   return same_bits(a.position.x, b.position.x) && same_bits(a.position.y, b.position.y) &&
@@ -371,7 +373,8 @@ TEST_CASE("request: an orbit on the wire is engine-view's --orbit camera, to the
   // different seventh digit and a channel byte at a pixel or two (renderer.md, "One request, two
   // hosts").
   renderer::SceneData scene;
-  scene.center = Vec3{1.692535400390625f, 36.8192138671875f, 4.50701904296875f};
+  scene.center =
+      absolute(WorldPos::origin(), Vec3{1.692535400390625f, 36.8192138671875f, 4.50701904296875f});
   scene.radius = 368.3621520996094f;
   CHECK(protocol::RenderOrbit{}.pitch_deg == renderer::k_orbit_pitch_deg);
   CHECK(same_bits(radians(protocol::RenderOrbit{}.pitch_deg), renderer::k_orbit_pitch));
@@ -389,10 +392,11 @@ TEST_CASE("request: an orbit on the wire is engine-view's --orbit camera, to the
                     renderer::orbit_camera(scene.center, scene.radius, 22.0f, 0)));
   // An explicit camera is taken as it is, its near plane the scene's when it names none.
   protocol::RenderCamera explicit_camera;
+  // `RenderCamera` is a `vec3` on the wire, widened where it is read.
   explicit_camera.position = Vec3{812.08923f, 401.49774f, 4.507019f};
-  explicit_camera.target = scene.center;
+  explicit_camera.target = relative(scene.center, WorldPos::origin());
   const renderer::Camera taken = renderer::read_protocol_camera(scene, &explicit_camera, nullptr);
-  CHECK(same_bits(taken.position.y, 401.49774f));
+  CHECK(same_bits(taken.position.y, static_cast<f64>(401.49774f)));
   CHECK(same_bits(taken.fov_y, radians(55.0f)));
   CHECK(same_bits(taken.znear, 0.01f * scene.radius));
 

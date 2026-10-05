@@ -68,11 +68,17 @@ inline f32 view_weight(const renderer::View& view) noexcept {
 // *view* is worth reaches the entity through its importance instead (`view_importance` below),
 // which is exactly what importance is for. Writing it as one observer at the camera would have
 // been shorter and would have been the wrong thing for a game to copy.
+// The camera's eye as an observer: `sim::ObserverSet` takes a float32 world position this batch.
+// ADR-0053 seam: sim::ObserverSet takes WorldPos after the merge.
+inline Vec3 observer_position(const renderer::Camera& camera) {
+  return relative(camera.position, WorldPos::origin());
+}
+
 inline void build_observers(const renderer::ViewSet& views, const renderer::Camera& camera,
                             sim::ObserverSet& out) {
   out.clear();
   for (u32 v = 0; v < views.size(); ++v)
-    out.add(camera.position, view_weight(views[v]));
+    out.add(observer_position(camera), view_weight(views[v]));
 }
 
 // The largest weight in the set built above, which `view_importance` normalizes against so that an

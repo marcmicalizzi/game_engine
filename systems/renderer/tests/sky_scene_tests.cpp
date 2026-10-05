@@ -261,8 +261,8 @@ sref::Stars mirror_stars(const scene_gen::SkyProvider& provider) {
 
 Camera aimed(Vec3 eye, Vec3 towards, f32 fov_deg) {
   Camera camera;
-  camera.position = eye;
-  camera.target = eye + towards * 100.0f;
+  camera.position = absolute(WorldPos::origin(), eye);
+  camera.target = absolute(WorldPos::origin(), eye + towards * 100.0f);
   camera.fov_y = fov_deg * 3.14159265f / 180.0f;
   camera.znear = 0.05f;
   return camera;
@@ -459,8 +459,9 @@ namespace {
 Camera placed(Vec3 eye, Vec3 towards, f32 fov_deg) {
   const auto q = [](f32 v) { return std::round(v * 100.0f * 64.0f) / 64.0f; };
   Camera camera;
-  camera.position = eye;
-  camera.target = eye + Vec3{q(towards.x), q(towards.y), q(towards.z)};
+  camera.position = absolute(WorldPos::origin(), eye);
+  camera.target =
+      absolute(WorldPos::origin(), eye + Vec3{q(towards.x), q(towards.y), q(towards.z)});
   camera.fov_y = fov_deg * 3.14159265f / 180.0f;
   camera.znear = 0.05f;
   return camera;
@@ -582,7 +583,15 @@ TEST_CASE("sky scene: the sky does not move with the camera 50 km from the origi
   tables.sky_view = sref::build_sky_view(sky, tables);
   const sref::Frame frame = sref::frame(sky, tables);
   const View& view = rig.renderer.views()[0];
-  const Mat4 old_inverse = inverse(view.view_proj);
+  // The whole view-projection as the old direction was made through: the camera's world position
+  // in it, a single centred view's projection times `look_at` from the eye to the target. (Since
+  // ADR-0053 `View::view_proj` has the eye at the origin, and through it "less the eye" would be
+  // exact.)
+  const Vec3 home_eye = relative(home.position, WorldPos::origin());
+  const Mat4 old_view_proj =
+      perspective_reversed_z(home.fov_y, view.aspect, home.znear) *
+      look_at(home_eye, relative(home.target, WorldPos::origin()), Vec3{0.0f, 1.0f, 0.0f});
+  const Mat4 old_inverse = inverse(old_view_proj);
   const f64 pixel = static_cast<f64>(origin.params.views[0].pixel.x);
   const sref::Dvec3 sun = brdf_ref::dvec3(state.sun);
   f64 widest = 0.0;  // radians between the old direction and the new
@@ -595,7 +604,7 @@ TEST_CASE("sky scene: the sky does not move with the camera 50 km from the origi
       const f32 ny = 1.0f - (static_cast<f32>(y) + 0.5f) / static_cast<f32>(k_height) * 2.0f;
       const Vec4 ahead = old_inverse * Vec4{nx, ny, 0.5f, 1.0f};
       const Vec3 old_f =
-          normalize(Vec3{ahead.x / ahead.w, ahead.y / ahead.w, ahead.z / ahead.w} - home.position);
+          normalize(Vec3{ahead.x / ahead.w, ahead.y / ahead.w, ahead.z / ahead.w} - home_eye);
       const sref::Dvec3 was = brdf_ref::dvec3(old_f);
       const sref::Dvec3 now =
           sref::pixel_direction(view.clip_to_ray, static_cast<f64>(nx), static_cast<f64>(ny));
@@ -725,7 +734,7 @@ TEST_CASE("sky scene: the same frame meters the same exposure in fresh renderers
     const Metered b = meter(second, frame);
     // Other frames in between — another hour and another eye — and then the same frame again.
     FrameDesc other = frame;
-    other.camera.position.y += 7.0f;
+    other.camera.position.y += 7.0;
     other.sun_time_s += 5400.0;
     (void)meter(first, other);
     const Metered again = meter(first, frame);

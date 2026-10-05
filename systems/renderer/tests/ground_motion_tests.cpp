@@ -316,8 +316,8 @@ Camera over(const TerrainSampler& ground, Vec3 point, Vec2 wind) {
   Camera camera;
   const f32 x = point.x - wind.x;
   const f32 z = point.z - wind.y;
-  camera.position = Vec3{x, ground.height(x, z) + 1.5f, z};
-  camera.target = point;
+  camera.position = absolute(WorldPos::origin(), Vec3{x, ground.height(x, z) + 1.5f, z});
+  camera.target = absolute(WorldPos::origin(), point);
   camera.znear = 0.05f;
   return camera;
 }
@@ -332,15 +332,19 @@ Camera over(const TerrainSampler& ground, Vec3 point, Vec2 wind) {
 // degrees from the block's wind, so what this reads is the travel times their mean cosine.
 struct Instrument {
   Mat4 view_proj;
+  Vec3 eye;
   Vector<Vec3> ground;  // the ground point of every other pixel of every other row, from its depth
   Vector<f32> climb;    // the ground's rise there per metre along the wind
   Vector<u32> pixels;   // which pixel each is
 
   // The pixels' ground points from `shot`'s depth, and the ground's rise along `wind` at each from
   // the height function (a trial displacement moves a point along the ground, not the horizontal).
-  void prepare(const CapturedFrame& shot, const Mat4& vp, const TerrainSampler& terrain,
-               Vec2 wind) {
+  // `vp` is the frame's, whose origin is the eye (ADR-0053): `eye_at` is that eye in float32, which
+  // takes a point the inverse gives back to the world and a world point into the frame.
+  void prepare(const CapturedFrame& shot, const Mat4& vp, Vec3 eye_at,
+               const TerrainSampler& terrain, Vec2 wind) {
     view_proj = vp;
+    eye = eye_at;
     const Mat4 inv = inverse(vp);
     ground.clear();
     pixels.clear();
@@ -353,7 +357,7 @@ struct Instrument {
         const f32 y = 1.0f - (static_cast<f32>(py) + 0.5f) / static_cast<f32>(shot.height) * 2.0f;
         const Vec4 w = inv * Vec4{x, y, depth, 1.0f};
         if (!(std::abs(w.w) > 0.0f)) continue;
-        const Vec3 g{w.x / w.w, w.y / w.w, w.z / w.w};
+        const Vec3 g = Vec3{w.x / w.w, w.y / w.w, w.z / w.w} + eye;
         constexpr f32 e = 0.02f;
         climb.push_back((terrain.height(g.x + e * wind.x, g.z + e * wind.y) -
                          terrain.height(g.x - e * wind.x, g.z - e * wind.y)) /
@@ -366,7 +370,8 @@ struct Instrument {
 
   // `a`'s red at the screen position of world point `q`; false off its covered pixels.
   bool sample(const CapturedFrame& a, Vec3 q, f64& out) const {
-    const Vec4 c = view_proj * Vec4{q.x, q.y, q.z, 1.0f};
+    const Vec3 r = q - eye;
+    const Vec4 c = view_proj * Vec4{r.x, r.y, r.z, 1.0f};
     if (!(c.w > 0.0f)) return false;
     const f64 fx = (static_cast<f64>(c.x / c.w) * 0.5 + 0.5) * static_cast<f64>(a.width) - 0.5;
     const f64 fy = (0.5 - static_cast<f64>(c.y / c.w) * 0.5) * static_cast<f64>(a.height) - 0.5;
@@ -501,7 +506,8 @@ TEST_CASE("sand motion: two frames a known time apart show the ripples moved by 
   REQUIRE_MESSAGE(rig.shoot(s.camera, t2 - k_frame_s, t2, gfx::ResolveMode::GroundDetail, b),
                   rig.error);
   Instrument instrument;
-  instrument.prepare(a, rig.renderer.views()[0].view_proj, ground, s.wind);
+  instrument.prepare(a, rig.renderer.views()[0].view_proj,
+                     relative(s.camera.position, WorldPos::origin()), ground, s.wind);
   REQUIRE(instrument.pixels.size() > 1000u);
   const f64 expected = travel_at(ground, celerity, t2) - travel_at(ground, celerity, t1);
   const f64 measured = instrument.displacement(a, b, s.wind, wavelength, expected);
@@ -574,7 +580,8 @@ TEST_CASE("sand motion: the instrument's series, a capture a game second for a g
   REQUIRE_MESSAGE(rig.shoot(s.camera, t0 - k_frame_s, t0, gfx::ResolveMode::GroundDetail, last),
                   rig.error);
   Instrument instrument;
-  instrument.prepare(last, rig.renderer.views()[0].view_proj, ground, s.wind);
+  instrument.prepare(last, rig.renderer.views()[0].view_proj,
+                     relative(s.camera.position, WorldPos::origin()), ground, s.wind);
   std::string series =
       "game s since the scene's time; the block's travel since then (mm); the pictures' "
       "displacement along the wind since the last capture and since the first (mm):\n";

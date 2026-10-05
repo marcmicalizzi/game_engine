@@ -111,18 +111,19 @@ LightingOptions lighting_options(const RenderSettings& settings, f64 sun_time_s)
 }
 
 void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
-                    FrameLighting& out) {
+                    FrameLighting& out, const WorldPos& eye) {
   out = FrameLighting{};
   out.sky = k_sky;
   out.sun = Vec4{options.sun, options.sun_intensity};
   out.ground = Vec4{scene.ground_albedo, 0.0f};
   // The ray's offset (lighting.h, `k_shadow_bias_*`): the float part sized by the scene's reach,
   // the grid part left to the shader, which knows whose grid a pixel is on.
-  out.shadow_bias = k_shadow_bias_relative * (length(scene.center) + scene.radius);
+  out.shadow_bias = k_shadow_bias_relative * (length(relative(scene.center, eye)) + scene.radius);
   out.shadow_bias_steps = k_shadow_bias_steps;
   if (!options.lights) return;
 
-  const Vec3 center = scene.center;
+  // The centre in the frame's space (ADR-0053; lighting.h): measured from the eye in f64.
+  const Vec3 center = relative(scene.center, eye);
   const f32 radius = scene.radius;
   const f32 orbit = 1.35f * radius;
   const f32 angle = options.orbit ? static_cast<f32>(frame_index) * 0.013f : 0.0f;
@@ -138,12 +139,13 @@ void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptio
   out.light_count = k_frame_lights;
 }
 
-void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out) {
+void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out,
+                    const WorldPos& eye) {
   out = FrameLighting{};
   out.sky = k_sky;
   out.sun = Vec4{normalize(sky.state.sun), 1.0f};
   out.ground = Vec4{scene.ground_albedo, 0.0f};
-  out.shadow_bias = k_shadow_bias_relative * (length(scene.center) + scene.radius);
+  out.shadow_bias = k_shadow_bias_relative * (length(relative(scene.center, eye)) + scene.radius);
   out.shadow_bias_steps = k_shadow_bias_steps;
   if (!sky.moon) return;
   gfx::ResolveLight& moon = out.lights[0];

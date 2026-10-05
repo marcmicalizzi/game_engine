@@ -171,9 +171,7 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   gfx::ClusterDrawParams draw_mesh = draw;
   draw_mesh.visibility = vis_mesh.address;
   gfx::ClusterDrawParams draw_vertex = draw;
@@ -659,9 +657,7 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   gfx::ClusterDrawParams draw_a = draw;  // the indexed draws read records
   draw_a.visible = run_a.records.address;
   draw_a.visibility = run_a.vis.address;

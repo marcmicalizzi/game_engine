@@ -48,9 +48,13 @@ struct MeshDesc {
   uint64_t skin;          // SkinBinding[]: eight bytes per scene-wide vertex, or 0
 };
 
-// Mirrors gfx::InstanceDesc (96 bytes): one per instance, in order of first_pair.
+// Mirrors gfx::InstanceDesc (96 bytes): one per instance, in order of first_pair. Where it is, is a
+// WorldCell — `cell` on the world's 64 m grid and the offset into it, which is the 3x4's
+// translation column — and a frame never reads it but through `instance_point` (below), which
+// measures it from the frame's eye (ADR-0053, gfx.md "The instance's layout").
 struct InstanceDesc {
-  column_major float4x4 world;  // mesh space to world
+  float4 rows[3];  // mesh space to the cell's frame: (linear row r, local[r])
+  int3 cell;
   uint mesh;
   uint material_base;  // added to the cluster's material index in the resolve
   uint first_pair;
@@ -62,7 +66,90 @@ struct InstanceDesc {
   // one, and a float plus zero is exact, so the rigid arithmetic is unchanged.
   float bounds_padding;
   uint terrain;  // 1 + this instance's terrain level in the frame's TerrainLevelDesc table, or 0
+  uint pad;
 };
+
+// ---- the frame's origin (ADR-0053; docs/subsystems/gfx.md, "The frame's origin") ----------------
+//
+// **No shader holds or computes an absolute world position.** A frame has one origin, its eye, and
+// every position a pass works with is measured from it. What a pass is given of the eye is this:
+// its cell, its offset into the cell, and what that offset's rounding to a float left over.
+
+// Mirrors gfx::FrameEye (48 bytes): engine::WorldEye in three 16-byte rows. All zero is the world's
+// origin, and an instance is then where it is stored, to the bit.
+struct FrameEye {
+  int3 cell;
+  uint pad0;
+  float3 local;
+  float pad1;
+  float3 residual;
+  float pad2;
+};
+
+// **engine::relative_axis (core/math/world.h), operation for operation**: where a stored position
+// is from the frame's eye along one axis. The cells' difference times the pitch, which is exact (to
+// 2^24 cells), then the two offsets, in the order that keeps every intermediate the size of the
+// result — `(cells - eye) + local` where the point's cell is above the eye's, which near the eye is
+// an eye at the top of its cell and a point at the bottom of the next, and `(cells + local) - eye`
+// otherwise — and the eye's residual last. `precise` is SPIR-V's NoContraction on every operation,
+// so the driver neither fuses nor reorders it: the world-eye test holds this function to the CPU's
+// to the bit, and a scene moved by whole cells hands it the same operands and gets the same bits.
+float relative_axis(int cell, float local, int eye_cell, float eye_local, float eye_residual) {
+  precise const float cells = float(cell - eye_cell) * 64.0;
+  precise const float from_local =
+      cells > 0.0 ? (cells - eye_local) + local : (cells + local) - eye_local;
+  precise const float result = from_local - eye_residual;
+  return result;
+}
+
+// The instance's translation from the frame's eye: engine::relative(WorldCell, WorldEye).
+float3 instance_from_eye(InstanceDesc instance, FrameEye eye) {
+  return float3(
+      relative_axis(instance.cell.x, instance.rows[0].w, eye.cell.x, eye.local.x, eye.residual.x),
+      relative_axis(instance.cell.y, instance.rows[1].w, eye.cell.y, eye.local.y, eye.residual.y),
+      relative_axis(instance.cell.z, instance.rows[2].w, eye.cell.z, eye.local.z, eye.residual.z));
+}
+
+// A mesh-space direction through the instance's linear part.
+float3 instance_direction(InstanceDesc instance, float3 v) {
+  return float3(dot(instance.rows[0].xyz, v), dot(instance.rows[1].xyz, v),
+                dot(instance.rows[2].xyz, v));
+}
+
+// **Every reader moves a mesh-space point into the frame through this**: the linear part, then the
+// instance's translation from the eye (`from_eye`, which a reader computes once per instance and
+// hands every vertex). The point's distance from the eye is what the sum rounds at, so a vertex by
+// the eye is as fine as a float is there, wherever in the world the eye is.
+float3 instance_point(InstanceDesc instance, float3 from_eye, float3 p) {
+  return instance_direction(instance, p) + from_eye;
+}
+
+// A point of the instance in its **cell's** frame — the 3x4 alone, the cell's corner at the origin.
+// What a test against something stored in the same frame takes (a terrain level's hole: a level is
+// at cell zero, so its cell's frame is its mesh space).
+float3 instance_cell_point(InstanceDesc instance, float3 p) {
+  return float3(dot(instance.rows[0], float4(p, 1.0)), dot(instance.rows[1], float4(p, 1.0)),
+                dot(instance.rows[2], float4(p, 1.0)));
+}
+
+// The visibility buffer's extent as gfx::draw_extent packs it.
+uint extent_width(uint extent) { return extent & 0xffffu; }
+uint extent_height(uint extent) { return extent >> 16; }
+
+// The frame's eye a block names: a FrameEye* or 0, which is the world's origin.
+FrameEye load_eye(uint64_t address) {
+  if (address == 0) {
+    FrameEye origin;
+    origin.cell = int3(0, 0, 0);
+    origin.pad0 = 0;
+    origin.local = float3(0.0, 0.0, 0.0);
+    origin.pad1 = 0.0;
+    origin.residual = float3(0.0, 0.0, 0.0);
+    origin.pad2 = 0.0;
+    return origin;
+  }
+  return ((FrameEye*)address)[0];
+}
 
 // Mirrors gfx::TerrainField (24 bytes): one evaluated height field on a window of a terrain
 // level's lattice, sample (i, j) at lattice point (i0 + i, j0 + j), rows of x in order of z.
@@ -360,14 +447,14 @@ uint instance_of_pair(InstanceDesc* instances, uint instance_count, uint pair) {
 }
 
 // A direction in the instance's frame, for normals. The cofactor matrix of the upper-left 3x3
-// (its columns are the cross products of the world's columns) is the adjugate transpose, which
-// is the inverse transpose scaled by the determinant: the same direction for any positive scale
-// and the correctly flipped one for a mirror, so normalizing afterwards makes the division
+// (its columns are the cross products of the linear part's columns) is the adjugate transpose,
+// which is the inverse transpose scaled by the determinant: the same direction for any positive
+// scale and the correctly flipped one for a mirror, so normalizing afterwards makes the division
 // unnecessary and the uniform-scale case needs no special path.
-float3 transform_normal(column_major float4x4 world, float3 n) {
-  const float3 c0 = float3(world[0][0], world[1][0], world[2][0]);
-  const float3 c1 = float3(world[0][1], world[1][1], world[2][1]);
-  const float3 c2 = float3(world[0][2], world[1][2], world[2][2]);
+float3 transform_normal(InstanceDesc instance, float3 n) {
+  const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
+  const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);
+  const float3 c2 = float3(instance.rows[0].z, instance.rows[1].z, instance.rows[2].z);
   return normalize(cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z);
 }
 

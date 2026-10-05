@@ -121,7 +121,7 @@ struct Rig {
 
   bool build(const gfx::Device& device, const SceneDesc& desc, const RenderSettings& settings,
              u32 width, u32 height, const TimeLapseConfig* lapse, jobs::JobSystem* jobs,
-             Vec3 ring_camera = Vec3{}) {
+             WorldPos ring_camera = WorldPos::origin()) {
     if (!load_scene(desc, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
@@ -130,7 +130,8 @@ struct Rig {
     }
     if (resolved.terrain_rings) {
       rings = std::make_unique<TerrainRingSet>();
-      if (!rings->build(data.terrain, ring_camera.x, ring_camera.z, jobs, &error)) return false;
+      const Vec3 at = terrain_eye(ring_camera);
+      if (!rings->build(data.terrain, at.x, at.z, jobs, &error)) return false;
     }
     if (!scene.create(device, data, resolved, &error, rings.get())) return false;
     SceneRenderer::Desc rd;
@@ -184,8 +185,10 @@ f32 surface_at(const TerrainDesc& desc, const Vector<f32>& h, f32 x, f32 z) {
   return h11 + (1.0f - u) * (h01 - h11) + (1.0f - v) * (h10 - h11);
 }
 
-// The world point a covered pixel's depth stands for, through the view's inverse projection.
-bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px, u32 py,
+// The world point a covered pixel's depth stands for, through the view's inverse projection. The
+// view's matrix is in the frame's space, whose origin is the camera's eye (ADR-0053), so the point
+// is put back in the world by adding `eye`: the camera's position, which here is by the origin.
+bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, Vec3 eye, u32 px, u32 py,
                Vec3& out) {
   const f32 depth = shot.depth[py * shot.width + px];
   if (!(depth > 0.0f)) return false;
@@ -193,14 +196,14 @@ bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px,
   const f32 y = 1.0f - (static_cast<f32>(py) + 0.5f) / static_cast<f32>(shot.height) * 2.0f;
   const Vec4 p = inverse_view_proj * Vec4{x, y, depth, 1.0f};
   if (!(std::abs(p.w) > 0.0f)) return false;
-  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w};
+  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w} + eye;
   return true;
 }
 
 Camera looking_down() {
   Camera camera;
-  camera.position = Vec3{3.0f, 38.0f, 30.0f};
-  camera.target = Vec3{0.0f, 0.0f, -4.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{3.0f, 38.0f, 30.0f});
+  camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, -4.0f});
   camera.znear = 0.5f;
   return camera;
 }
@@ -213,9 +216,10 @@ Camera looking_across(const TerrainDesc& desc, u32 f) {
   const f32 a = 0.02f * static_cast<f32>(f);
   const f32 x = -24.0f + 0.2f * static_cast<f32>(f);
   const f32 z = 20.0f;
-  camera.position = Vec3{x, terrain_height(desc, x, z) + 1.0f, z};
-  camera.target = Vec3{x + 30.0f * std::cos(0.6f + a), camera.position.y - 1.5f,
-                       z - 30.0f * std::sin(0.6f + a)};
+  const f32 eye_y = terrain_height(desc, x, z) + 1.0f;
+  camera.position = absolute(WorldPos::origin(), Vec3{x, eye_y, z});
+  camera.target = absolute(WorldPos::origin(), Vec3{x + 30.0f * std::cos(0.6f + a), eye_y - 1.5f,
+                                                    z - 30.0f * std::sin(0.6f + a)});
   camera.znear = 0.05f;
   return camera;
 }
@@ -391,10 +395,11 @@ TEST_CASE("terrain motion: the pool draws the blended field, and no vertex jumps
     previous = expected;
     // And the pool's output against the model, at every covered pixel over the grid.
     const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+    const Vec3 eye = relative(frame.camera.position, WorldPos::origin());
     for (u32 py = 0; py < k_height; ++py) {
       for (u32 px = 0; px < k_width; ++px) {
         Vec3 world;
-        if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+        if (!unproject(shot, inverse_view_proj, eye, px, py, world)) continue;
         const f32 model = surface_at(rig.data.terrain, expected, world.x, world.z);
         if (std::isnan(model)) continue;
         worst_error = std::max(worst_error, static_cast<f64>(std::abs(world.y - model)));
@@ -505,10 +510,11 @@ TEST_CASE("terrain motion: the rate changed while it runs, from a standing start
       }
       previous = expected;
       const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+      const Vec3 eye = relative(frame.camera.position, WorldPos::origin());
       for (u32 py = 0; py < k_height; py += 2) {
         for (u32 px = 0; px < k_width; px += 2) {
           Vec3 world;
-          if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+          if (!unproject(shot, inverse_view_proj, eye, px, py, world)) continue;
           const f32 model = surface_at(rig.data.terrain, expected, world.x, world.z);
           if (std::isnan(model)) continue;
           worst_error = std::max(worst_error, static_cast<f64>(std::abs(world.y - model)));
@@ -554,7 +560,7 @@ void culling_case(bool with_rings) {
   base.shadows = ShadowMode::Off;
   base.time_rate = 604'800.0;
   base.terrain_rings = with_rings;
-  const Vec3 ring_camera = looking_across(desc.terrain, 0).position;
+  const WorldPos ring_camera = looking_across(desc.terrain, 0).position;
   TimeLapseConfig lapse = time_lapse_config_from_tunables(base.time_rate);
   lapse.wait = true;  // every rig draws the same sand on the same frame
   jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
@@ -599,7 +605,7 @@ void culling_case(bool with_rings) {
     u32 shot = 0;
     for (u32 f = 0; f < k_frames; ++f) {
       const Camera camera = looking_across(desc.terrain, f);
-      rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
+      rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
       FrameDesc frame;
       frame.camera = camera;
       frame.frame_index = f;
@@ -748,8 +754,8 @@ TEST_CASE(
   const auto camera_at = [](u32 f) {
     Camera camera;
     const f32 x = -10.0f + 0.4f * static_cast<f32>(f);
-    camera.position = Vec3{x, 40.0f, 4.0f};
-    camera.target = Vec3{x + 2.0f, 0.0f, -12.0f};
+    camera.position = absolute(WorldPos::origin(), Vec3{x, 40.0f, 4.0f});
+    camera.target = absolute(WorldPos::origin(), Vec3{x + 2.0f, 0.0f, -12.0f});
     camera.znear = 0.5f;
     return camera;
   };
@@ -777,7 +783,7 @@ TEST_CASE(
   const u32 scene_instances = rig.data.instances.size();
   for (u32 f = 0; f < k_frames; ++f) {
     const Camera camera = camera_at(f);
-    rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
+    rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
     // One surface time: where two levels meet they draw the same sand.
     for (u32 k = 1; k < levels; ++k)
       CHECK(rig.motion.level_stats(k).surface_s == rig.motion.level_stats(0).surface_s);
@@ -798,10 +804,11 @@ TEST_CASE(
     before = models;
     // And every covered pixel against the level that draws it.
     const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+    const Vec3 eye = relative(frame.camera.position, WorldPos::origin());
     for (u32 py = 0; py < k_height; ++py) {
       for (u32 px = 0; px < k_width; ++px) {
         Vec3 world;
-        if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+        if (!unproject(shot, inverse_view_proj, eye, px, py, world)) continue;
         const u32 k = level_at(models, world.x, world.z, 2.0f);
         if (k == ~0u) continue;
         f32 lo = 0.0f;

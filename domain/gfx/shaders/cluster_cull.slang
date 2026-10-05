@@ -38,10 +38,10 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (480 bytes).
+// Read through a device address; mirrors gfx::CullParams (528 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
-  float4 camera;     // xyz position, w = znear
+  float4 camera;     // xyz this view's eye in the frame's space, w = znear
   float4 lod;        // x = proj_scale, y = threshold_px, z = lod enabled, w = frustum enabled
   // x = projected cluster diameter in pixels below which a cluster goes to the software
   // rasterizer; y = mode: 0 everything hardware, 1 everything software, 2 split by x
@@ -92,6 +92,9 @@ struct CullParams {
   // whose sphere is wholly inside the level's hole is dropped: the finer level draws that ground.
   uint64_t terrain;
   uint64_t pad_terrain;
+  // The frame's origin (scene.slang): every instance is moved into its space before any test, and
+  // the planes, `camera` and `view_proj` above are in that space.
+  FrameEye eye;
 };
 
 struct CullPush {
@@ -314,7 +317,10 @@ void cull_pair(uint pair, bool vertex_draw) {
 
   ClusterDesc* clusters = (ClusterDesc*)params->clusters;
   const ClusterDesc cluster = clusters[index];
-  const float3 center = mul(instance.world, float4(cluster.center, 1.0)).xyz;
+  // Everything below is in the frame's space, whose origin is the eye (scene.slang): the instance's
+  // translation from the eye once, and every point of it through `instance_point`.
+  const float3 from_eye = instance_from_eye(instance, params->eye);
+  const float3 center = instance_point(instance, from_eye, cluster.center);
   // A deformed instance's vertices leave their rest positions, so every sphere this pass tests is
   // inflated by the caller's bound on that displacement, in world units. It is zero for a rigid
   // instance, and adding zero to a float is exact, so nothing about the rigid path changes.
@@ -332,10 +338,14 @@ void cull_pair(uint pair, bool vertex_draw) {
     TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
     const TerrainLevelDesc level = levels[instance.terrain - 1];
     padding = max(padding, level.padding);
+    // The hole is in the level's mesh space, which a level at cell zero shares with its cell's
+    // frame; the test takes the cluster there and not in the frame's space, so it is the same test
+    // wherever the eye is.
     const float4 hole = level.hole;
+    const float3 at = instance_cell_point(instance, cluster.center);
     const float footprint = cluster.radius * instance.scale_max;
-    if (hole.z > hole.x && center.x - footprint >= hole.x && center.x + footprint <= hole.z &&
-        center.z - footprint >= hole.y && center.z + footprint <= hole.w) {
+    if (hole.z > hole.x && at.x - footprint >= hole.x && at.x + footprint <= hole.z &&
+        at.z - footprint >= hole.y && at.z + footprint <= hole.w) {
       return;
     }
   }
@@ -367,8 +377,8 @@ void cull_pair(uint pair, bool vertex_draw) {
   bool caster = false;
   if (params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0 &&
       instance.deform == k_invalid_deform) {
-    const float3 apex = mul(instance.world, float4(cluster.cone_apex, 1.0)).xyz;
-    const float3 axis = normalize(mul(instance.world, float4(cone_axis(cluster), 0.0)).xyz);
+    const float3 apex = instance_point(instance, from_eye, cluster.cone_apex);
+    const float3 axis = normalize(instance_direction(instance, cone_axis(cluster)));
     if (backfacing(cluster, apex, axis, params->camera.xyz)) {
       if (params->casters == 0) return;
       caster = true;
@@ -387,9 +397,9 @@ void cull_pair(uint pair, bool vertex_draw) {
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];
-    const float4 own_sphere = float4(mul(instance.world, float4(lod.own.xyz, 1.0)).xyz,
+    const float4 own_sphere = float4(instance_point(instance, from_eye, lod.own.xyz),
                                      lod.own.w * instance.scale_max + padding);
-    const float4 parent_sphere = float4(mul(instance.world, float4(lod.parent.xyz, 1.0)).xyz,
+    const float4 parent_sphere = float4(instance_point(instance, from_eye, lod.parent.xyz),
                                         lod.parent.w * instance.scale_max + padding);
     const float own = projected_error(own_sphere, lod.own_error * instance.scale_max,
                                       params->camera.xyz, params->camera.w, params->lod.x);

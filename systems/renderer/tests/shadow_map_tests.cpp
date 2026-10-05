@@ -94,12 +94,19 @@ void check_corners(const ViewSet& views, const Camera& camera, const ShadowCasca
   CHECK(checked > 0);
 }
 
-// The texel grid across the light: a snapped centre's coordinates are whole texels.
-f32 off_grid(const ShadowCascades& cascades, u32 c) {
+// The texel grid across the light: a snapped centre's coordinates are whole texels. The centres are
+// in the frame's space, whose origin is the camera's eye (ADR-0053), and the grid is anchored at
+// the corner of the eye's 64 m cell, so the centre is put back in the world and measured from that
+// corner, worked out here rather than read from the fit.
+f32 off_grid(const ShadowCascades& cascades, u32 c, const Camera& camera) {
   const f32 texel = 2.0f * cascades.radii[c] / static_cast<f32>(cascades.resolution);
-  const f32 x = dot(cascades.centers[c], cascades.light.right) / texel;
-  const f32 y = dot(cascades.centers[c], cascades.light.up) / texel;
-  return std::max(std::fabs(x - std::round(x)), std::fabs(y - std::round(y)));
+  const WorldPos corner{std::floor(camera.position.x / k_world_cell_m) * k_world_cell_m,
+                        std::floor(camera.position.y / k_world_cell_m) * k_world_cell_m,
+                        std::floor(camera.position.z / k_world_cell_m) * k_world_cell_m};
+  const DVec3 from = (camera.position + DVec3{cascades.centers[c]}) - corner;
+  const f64 x = dot(from, DVec3{cascades.light.right}) / static_cast<f64>(texel);
+  const f64 y = dot(from, DVec3{cascades.light.up}) / static_cast<f64>(texel);
+  return static_cast<f32>(std::max(std::fabs(x - std::round(x)), std::fabs(y - std::round(y))));
 }
 
 }  // namespace
@@ -113,7 +120,7 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
   // scene, so the first slice's sphere already holds all of it, and the one cascade there is is the
   // scene's own bounds — every texel on the scene, none on the empty frustum around it.
   {
-    const Vec3 center{0.0f, 0.0f, 0.0f};
+    const WorldPos center = WorldPos::origin();
     const f32 radius = 10.0f;
     const Camera camera = orbit_camera_at(center, radius, 22.0f, 0.3f, k_orbit_pitch);
     views.update(camera);
@@ -122,7 +129,9 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
     CHECK(cascades.count == 1);
     CHECK(cascades.scene_bounds[0]);
     CHECK(cascades.radii[0] == radius);
-    CHECK(length(cascades.centers[0] - center) <= cascades.cascades[0].texel_world);
+    // The centres are in the frame's space, measured from the eye (ADR-0053).
+    CHECK(length(cascades.centers[0] - relative(center, camera.position)) <=
+          cascades.cascades[0].texel_world);
     MESSAGE("orbit at 22 radius-tenths: one cascade over the scene's bounds, "
             << cascades.cascades[0].texel_world * 100.0f << " cm a texel at "
             << cascades.resolution);
@@ -132,16 +141,16 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
   // at the camera's near plane, the slices hold their corners, and the cascade whose sphere would
   // hold the whole scene is the scene's own bounds and the last.
   {
-    const Vec3 center{0.0f, 0.0f, 0.0f};
+    const WorldPos center = WorldPos::origin();
     const f32 radius = 100.0f;
     Camera camera;
-    camera.position = Vec3{0.0f, 50.0f, 150.0f};
+    camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 50.0f, 150.0f});
     camera.target = center;
     camera.znear = 0.1f;
     views.update(camera);
     ShadowCascades cascades;
     fit_shadow_cascades(views, camera, k_sun, center, radius, ShadowFit{}, cascades);
-    const f32 distance = length(camera.position - center);
+    const f32 distance = static_cast<f32>(length(camera.position - center));
     CHECK(cascades.splits[0] == doctest::Approx(distance - radius).epsilon(1e-4));
     CHECK(cascades.splits[cascades.count] == doctest::Approx(distance + radius).epsilon(1e-4));
     for (u32 c = 0; c < cascades.count; ++c)
@@ -160,11 +169,11 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
   // changes neither their count nor any radius — a sphere is the same whichever way it faces, and
   // the radius is quantized so the float noise of the turn cannot move a texel's size.
   {
-    const Vec3 center{0.0f, 0.0f, 0.0f};
+    const WorldPos center = WorldPos::origin();
     const f32 radius = 3600.0f;
     Camera camera;
-    camera.position = Vec3{10.0f, 3.0f, 900.0f};
-    camera.target = Vec3{0.0f, 40.0f, 300.0f};
+    camera.position = absolute(WorldPos::origin(), Vec3{10.0f, 3.0f, 900.0f});
+    camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 40.0f, 300.0f});
     camera.znear = 0.1f;
     ShadowFit fit;
     fit.distance = 2000.0f;  // well inside the terrain, so no cascade is the scene's bounds
@@ -174,7 +183,7 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
     REQUIRE(first.count == 4);
     CHECK(first.splits[1] == doctest::Approx(2.0f * std::pow(1000.0f, 0.25f)).epsilon(1e-3));
     check_corners(views, camera, first);
-    const Vec3 forward = camera.target - camera.position;
+    const Vec3 forward = narrow(camera.target - camera.position);
     for (const f32 yaw : {0.4f, 1.7f, -2.9f}) {
       Camera turned = camera;
       const f32 cs = std::cos(yaw);
@@ -198,8 +207,9 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
       ShadowCascades after;
       fit_shadow_cascades(views, moved, k_sun, center, radius, fit, after);
       for (u32 c = 0; c < after.count; ++c)
-        CHECK_MESSAGE(off_grid(after, c) < 2.0e-2f,
-                      "cascade " << c << " is " << off_grid(after, c) << " texel off its grid");
+        CHECK_MESSAGE(off_grid(after, c, moved) < 2.0e-2f, "cascade " << c << " is "
+                                                                      << off_grid(after, c, moved)
+                                                                      << " texel off its grid");
     }
     MESSAGE("inside a 3.6 km scene, 2 km of shadow: splits "
             << first.splits[1] << ", " << first.splits[2] << ", " << first.splits[3] << ", "
@@ -215,14 +225,14 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
     ViewSet surround;
     REQUIRE(surround.build(desc, 3 * 640, 360, &error));
     Camera camera;
-    camera.position = Vec3{5.0f, 4.0f, 30.0f};
-    camera.target = Vec3{0.0f, 0.0f, 0.0f};
+    camera.position = absolute(WorldPos::origin(), Vec3{5.0f, 4.0f, 30.0f});
+    camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
     camera.znear = 0.1f;
     surround.update(camera);
     ShadowFit fit;
     fit.distance = 80.0f;
     ShadowCascades cascades;
-    fit_shadow_cascades(surround, camera, k_sun, Vec3{}, 500.0f, fit, cascades);
+    fit_shadow_cascades(surround, camera, k_sun, WorldPos::origin(), 500.0f, fit, cascades);
     REQUIRE(cascades.count == 4);
     check_corners(surround, camera, cascades);
   }
@@ -571,11 +581,12 @@ TEST_CASE("renderer: a caster outside the camera's frustum casts into the maps")
     REQUIRE_MESSAGE(make_scene(Caster::card, data, error), error);
     const Mat4 frame = fixture_frame();
     Camera camera;
-    camera.position = to_world(frame, eye);
-    camera.target = to_world(frame, target);
+    camera.position = absolute(WorldPos::origin(), to_world(frame, eye));
+    camera.target = absolute(WorldPos::origin(), to_world(frame, target));
     const Mat4 view_proj =
         perspective_reversed_z(camera.fov_y, static_cast<f32>(k_width) / k_height, camera.znear) *
-        look_at(camera.position, camera.target, Vec3{0.0f, 1.0f, 0.0f});
+        look_at(relative(camera.position, WorldPos::origin()),
+                relative(camera.target, WorldPos::origin()), Vec3{0.0f, 1.0f, 0.0f});
     const Frustum frustum = frustum_from_view_proj(view_proj);
     const geometry::ClusterMeshPart& part = data.parts[1];
     u32 inside = 0;
@@ -756,7 +767,10 @@ TEST_CASE("renderer: a shadow ray leaves the ground by the ground's own grid, no
     REQUIRE_MESSAGE(make_scene(Caster::cube, data, error, k_reach), error);
     const geometry::ClusterMeshPart& part = data.parts[k_ground];
     const f32 grid = part.quant_scale * data.instances[k_ground].scale_max;
-    const f32 reach = length(data.center) + data.radius;
+    // The scene's reach is measured from the frame's eye (ADR-0053; lighting.cpp): the camera
+    // `render` draws the fixture from.
+    const WorldPos eye = absolute(WorldPos::origin(), to_world(fixture_frame(), k_eye_local));
+    const f32 reach = length(relative(data.center, eye)) + data.radius;
     lift = static_cast<f64>(k_shadow_bias_steps * grid + k_shadow_bias_relative * reach);
     const f64 origin = static_cast<f64>(part.quant_origin.y);
     const f64 step = static_cast<f64>(part.quant_scale);
@@ -969,7 +983,9 @@ TEST_CASE("renderer: cascaded shadow maps on the Khronos samples" * doctest::ski
     desc.instances.push_back(model);
     SceneInstance floor;
     floor.mesh = 1;
-    floor.transform.position = Vec3{probe.center.x, lowest, probe.center.z};
+    // A sample by the origin. (`relative` is the sample's path in this loop.)
+    const Vec3 probe_center = engine::relative(probe.center, WorldPos::origin());
+    floor.transform.position = Vec3{probe_center.x, lowest, probe_center.z};
     // Uniformly: the quad is flat, so its height scale changes nothing it draws, but a bounding
     // sphere scales by the largest axis, and a height scale of 1 under a 2 cm sample made the
     // scene's radius the unscaled quad's — and the ray-traced shadows' bias, a thousandth of

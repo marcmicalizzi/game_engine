@@ -45,10 +45,10 @@
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Mirrors gfx::PathTraceParams (288 bytes).
+// Mirrors gfx::PathTraceParams (336 bytes).
 struct PathTraceParams {
   column_major float4x4 clip_to_ray;  // clip to the world direction of a primary ray (view_ray.slang)
-  float4 camera;  // xyz eye position
+  float4 camera;  // xyz the eye in the frame's space (PathTraceParams::eye)
   float4 sky;
   float4 sun;     // xyz normalized direction towards the light, w intensity
   float4 ground;  // rgb the ground's albedo below the horizon, as ResolveParams::ground; w unused
@@ -78,6 +78,9 @@ struct PathTraceParams {
   float ray_bias_steps;  // plus this many steps of the hit surface's own grid (ray_offset)
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
   uint64_t sky_params;     // SkyParams* (sky.slang): the frame's physical sky; 0: the stand-in
+  // The frame's origin (scene.slang): `camera` is the eye in its space, and so is every hit, light
+  // and ray origin the tracer forms, as the frame's top-level structure is.
+  FrameEye eye;
 };
 
 struct PathTracePush {
@@ -105,6 +108,7 @@ SceneGeometry geometry_of(PathTraceParams* params) {
   // structures, but it is a *reference*, and a morphed scene's comparison against it is the next
   // step rather than this one.
   geo.normal_pool = 0;
+  geo.eye = params->eye;
   return geo;
 }
 

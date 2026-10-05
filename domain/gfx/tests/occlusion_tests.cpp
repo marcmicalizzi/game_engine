@@ -219,8 +219,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
   draw.visibility = vis.address;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   gfx::ClusterDrawParams draw_pass[2] = {draw, draw};
   for (u32 i = 0; i < 2; ++i) {
     draw_pass[i].visible = visible.address + visible_run[i];

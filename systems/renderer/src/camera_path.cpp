@@ -176,20 +176,23 @@ bool read_camera_path(const std::string& path, const TerrainDesc* terrain, Camer
 }
 
 Camera sample_camera_path(const CameraPath& path, f64 time) noexcept {
+  // A path's keys are the file's `vec3`s (a float32 on disk this batch, ADR-0053), interpolated in
+  // float32 as they always were and widened into the camera's world positions here, at the read.
+  auto widen = [](Vec3 p) { return absolute(WorldPos::origin(), p); };
   Camera camera;
   camera.znear = path.znear;
   if (path.keys.empty()) return camera;
   const Vector<CameraPathKey>& keys = path.keys;
   const u32 n = keys.size();
   if (n == 1 || time <= keys[0].time) {
-    camera.position = keys[0].position;
-    camera.target = keys[0].target;
+    camera.position = widen(keys[0].position);
+    camera.target = widen(keys[0].target);
     camera.fov_y = keys[0].fov_y;
     return camera;
   }
   if (time >= keys[n - 1].time) {
-    camera.position = keys[n - 1].position;
-    camera.target = keys[n - 1].target;
+    camera.position = widen(keys[n - 1].position);
+    camera.target = widen(keys[n - 1].target);
     camera.fov_y = keys[n - 1].fov_y;
     return camera;
   }
@@ -209,16 +212,17 @@ Camera sample_camera_path(const CameraPath& path, f64 time) noexcept {
   const f64 dt = b.time - a.time;
   const f32 s = static_cast<f32>((time - a.time) / dt);
   if (!path.smooth) {
-    camera.position = a.position + (b.position - a.position) * s;
-    camera.target = a.target + (b.target - a.target) * s;
+    camera.position = widen(a.position + (b.position - a.position) * s);
+    camera.target = widen(a.target + (b.target - a.target) * s);
     camera.fov_y = a.fov_y + (b.fov_y - a.fov_y) * s;
     return camera;
   }
   const f32 dtf = static_cast<f32>(dt);
-  camera.position = hermite(a.position, tangent<Vec3>(keys, lo, position_of, vec_still), b.position,
-                            tangent<Vec3>(keys, hi, position_of, vec_still), dtf, s);
-  camera.target = hermite(a.target, tangent<Vec3>(keys, lo, target_of, vec_still), b.target,
-                          tangent<Vec3>(keys, hi, target_of, vec_still), dtf, s);
+  camera.position =
+      widen(hermite(a.position, tangent<Vec3>(keys, lo, position_of, vec_still), b.position,
+                    tangent<Vec3>(keys, hi, position_of, vec_still), dtf, s));
+  camera.target = widen(hermite(a.target, tangent<Vec3>(keys, lo, target_of, vec_still), b.target,
+                                tangent<Vec3>(keys, hi, target_of, vec_still), dtf, s));
   // The field of view eases between keys rather than following a cubic through them: a zoom that
   // overshot its key would be the one wobble a reader of the pictures could not explain.
   const f32 e = s * s * (3.0f - 2.0f * s);

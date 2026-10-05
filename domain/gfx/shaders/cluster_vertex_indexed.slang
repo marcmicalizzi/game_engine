@@ -40,12 +40,11 @@ struct VertexParams {
   uint64_t clusters;
   uint64_t mesh;  // MeshDesc[]: the quantized positions and each mesh's grid
   uint64_t triangles;
-  uint visible_offset;         // this run's first entry in the whole scene's visible list
-  uint triangles_per_cluster;  // the fallback's capacity: its vertex count / 3
+  uint visible_offset;  // this run's first entry in the whole scene's visible list
+  uint extent;          // the visibility buffer's width | height << 16 (gfx::draw_extent)
   uint64_t records;            // uint4[] per slot of the run's region
   uint64_t visibility;         // uint64_t[width * height]
-  uint width;
-  uint height;
+  uint64_t eye;        // FrameEye*: the frame's origin; 0 is the world's
   uint64_t instances;  // InstanceDesc[]
 };
 
@@ -69,8 +68,9 @@ float4 clip_position(uint4 record, uint visible_index, uint local, out uint pair
   pair = pair_of(instance, mesh, record.y);
   const uint base = deform_base(mesh, instance, visible_index);
   const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
-  const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
-  return mul(g_params.view_proj, float4(world, 1.0));
+  const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
+  const float3 q = instance_point(instance, from_eye, p);
+  return mul(g_params.view_proj, float4(q, 1.0));
 }
 
 [shader("vertex")]
@@ -91,11 +91,11 @@ IndexedVertex vs_cluster_indexed(uint index : SV_VulkanVertexID) {
 [shader("fragment")]
 void fs_visibility_indexed(IndexedVertex v, uint primitive_id : SV_PrimitiveID) {
   const uint2 pixel = uint2(v.position.xy);
-  if (pixel.x >= g_params.width || pixel.y >= g_params.height) return;
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
   const uint id = v.id_base + primitive_id;
   const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
-  visibility[pixel.y * g_params.width + pixel.x].max(value);
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
 }
 
 // Matches cluster_vertex.slang's ClusterVertex, so its fs_visibility is this stage's fragment

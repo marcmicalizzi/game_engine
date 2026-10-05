@@ -1365,7 +1365,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // one near plane, differing in orientation and in the shape of the frustum.
   views_.update(frame.camera);
 
-  const Vec3 eye = frame.camera.position;
+  // **The frame's origin is its eye** (ADR-0053; renderer.md, "The frame's origin"). Every pass is
+  // given it as a `gfx::FrameEye` and works relative to it, and every view's eye is at the origin
+  // of that space (`eye`), because the views of a set share the camera's. Nothing below this line
+  // holds an absolute position in a float.
+  const WorldEye frame_origin = frame_eye(frame.camera);
+  const gfx::FrameEye gpu_eye = gfx::frame_eye(frame_origin);
+  const Vec3 eye{};
   const f32 znear = frame.camera.znear;
   const bool direct = resolved_.direct;
   const bool vertex_path = resolved_.vertex_path;
@@ -1531,7 +1537,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   FrameLighting lighting;
   if (sky_on) {
     sky_.evaluate(scene.ground_time_s() + frame.sun_time_s, frame_sky_);
-    frame_lighting(data, frame_sky_, lighting);
+    frame_lighting(data, frame_sky_, lighting, frame.camera.position);
     // The run's exposure (settings) under the frame's own (keys): a frame's fixed value wins, then
     // the run's, and the compensations add.
     ExposureRequest exposure = frame.exposure;
@@ -1559,7 +1565,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     s.moon_illuminance = frame_sky_.moon ? frame_sky_.state.moon_illuminance : 0.0f;
     s.moon_key = frame_sky_.moon_key;
   } else {
-    frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting);
+    frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting,
+                   frame.camera.position);
   }
   sky_params_address_ = sky_address;
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
@@ -1587,7 +1594,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::GroundDetailParams detail = scene.ground_detail_params();
     // Its frame at this frame's eye, which is every view's `camera` (gfx.md, "Far from the
     // origin"): the pattern's lattices are counted from a corner near it, in double.
-    gfx::ground_detail_frame(detail, static_cast<f64>(eye.x), static_cast<f64>(eye.z));
+    gfx::ground_detail_frame(detail, frame.camera.position, frame.camera.position);
     const u64 offset =
         sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights) + sizeof(gfx::ShadowMapParams);
     std::memcpy(resolve_bytes + offset, &detail, sizeof(detail));
@@ -1647,7 +1654,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       draw.mesh = scene.meshes.address;
       draw.instances = scene.instances.address;
       draw.triangles = scene.triangles.address;
-      draw.triangles_per_cluster = triangles_per_cluster;
+      // The frame's origin, read out of this view's first cull block (`CullParams::eye`).
+      draw.eye = vf.block_address[0] + gfx::k_cull_params_eye_offset;
       // Run 0 with culling off draws every leaf in index order, which is what a null list means.
       draw.visible = run == 0 && !settings.cull ? 0 : vf.run_address[run];
       // The indexed draw and its fallback read the run's records, which carry the entry.
@@ -1656,8 +1664,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       }
       draw.visible_offset = vf.run_base[run];
       draw.visibility = vf.vis_address;
-      draw.width = vf.width;
-      draw.height = vf.height;
+      draw.extent = gfx::draw_extent(vf.width, vf.height);
     }
 
     // ---- the cull pass's two blocks ----------------------------------------------------------
@@ -1665,6 +1672,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::set_frustum(cull, frustum_from_view_proj(view.view_proj));
     cull.view_proj = view.view_proj;
     cull.camera = Vec4{eye, znear};
+    cull.eye = gpu_eye;
     // The LOD threshold is this view's: a peripheral view lets a cluster be `lod_scale` times as
     // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation). A
     // frame may override the settings' threshold — `FrameDesc::lod_px`, which the reference
@@ -1772,6 +1780,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // sun and the sky, so its escaped rays see the ground this term stands for.
     resolve.ground = lighting.ground;
     resolve.camera = Vec4{eye, 0.0f};
+    resolve.eye = gpu_eye;
     resolve.view_proj = view.view_proj;
     resolve.visibility = vf.vis_address;
     resolve.clusters = scene.clusters.address;
@@ -1896,6 +1905,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::set_frustum(cull, frustum_from_view_proj(cascade.view_proj));
     cull.view_proj = cascade.view_proj;
     cull.camera = Vec4{eye, znear};
+    cull.eye = gpu_eye;
     cull.lod = Vec4{lod_view.proj_scale,
                     frame_lod_px * lod_view.quality.lod_scale * settings.shadow_lod_scale, 1.0f,
                     settings.shadow_frustum ? 1.0f : 0.0f};
@@ -1939,12 +1949,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     draw.mesh = scene.meshes.address;
     draw.instances = scene.instances.address;
     draw.triangles = scene.triangles.address;
-    draw.triangles_per_cluster = triangles_per_cluster;
+    draw.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c) +
+               gfx::k_cull_params_eye_offset;
     draw.visible = vertex_indexed ? cull.vertex_records : run_address;
     draw.visible_offset = base;
     draw.visibility = 0;  // depth only: no fragment stage reads it
-    draw.width = shadow_map;
-    draw.height = shadow_map;
+    draw.extent = gfx::draw_extent(shadow_map, shadow_map);
 
     if (resolved_.deform_pass) {
       gfx::DeformParams& d = shadow_deform[c];
@@ -2009,6 +2019,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     tlas_references.addresses = scene.blas_set.addresses.address;
     tlas_references.records = scene.rt_instances.address;
     tlas_references.count = instance_count;
+    // And each record's transform, from the instance's cell and this frame's eye (ADR-0053).
+    tlas_references.instances = scene.instances.address;
+    tlas_references.eye = gpu_eye;
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;

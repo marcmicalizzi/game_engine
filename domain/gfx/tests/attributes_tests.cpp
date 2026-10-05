@@ -146,8 +146,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
   draw.visibility = vis.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
   const Vec3 sun_dir{0.0f, 1.0f, 0.0f};
@@ -513,8 +512,7 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
   draw.visibility = vis.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
   gfx::ClusterDrawParams draw_below = draw;
   draw_below.view_proj = view_proj_below;
   draw_below.visibility = vis_below.address;
@@ -1041,8 +1039,7 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
   draw.visibility = vis.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
   const Vec3 sun_dir{0.0f, 1.0f, 0.0f};

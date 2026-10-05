@@ -301,13 +301,14 @@ TEST_CASE("fly camera: forward is the camera paths' forward, and each action mov
   }
   // And a start taken from a camera looks where the camera looked.
   renderer::Camera camera;
-  camera.position = Vec3{3.0f, 4.0f, 5.0f};
-  camera.target = Vec3{-2.0f, 1.0f, -7.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{3.0f, 4.0f, 5.0f});
+  camera.target = absolute(WorldPos::origin(), Vec3{-2.0f, 1.0f, -7.0f});
   const view::FlyState from = view::fly_state_from_camera(camera);
-  const Vec3 looked = normalize(camera.target - camera.position);
+  // The difference of two world positions is f64 (ADR-0053); by the origin it narrows exactly.
+  const Vec3 looked = normalize(narrow(camera.target - camera.position));
   CHECK(near(view::fly_forward(from), looked, 2e-6f));
   const renderer::Camera back = view::fly_view(from, 1.0f, 0.1f);
-  CHECK(near(normalize(back.target - back.position), looked, 2e-6f));
+  CHECK(near(normalize(narrow(back.target - back.position)), looked, 2e-6f));
 
   view::FlyParams params;
   params.tick_hz = 240;
@@ -446,7 +447,10 @@ TEST_CASE("fly camera: a live frame draws a camera on the segment between the la
   REQUIRE_MESSAGE(session.start(map, header, &error), error);
   // Before any tick both ends are the start.
   CHECK(session.previous().position == header.start.position);
-  CHECK(near(session.camera_at(0.5f).position, header.start.position, 0.0f));
+  // The drawn camera's position is a world position (ADR-0053); the controller's is float32, by
+  // the origin, where the one narrows back to the other exactly.
+  CHECK(near(relative(session.camera_at(0.5f).position, WorldPos::origin()), header.start.position,
+             0.0f));
 
   const f32 fractions[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
   u32 cursor = 0;

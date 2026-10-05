@@ -1445,8 +1445,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       return false;
     }
     gfx::InstanceDesc instance{};
-    gfx::set_instance_transform(instance,
-                                mat4_from_transform(source.transform) * fit_of_mesh[source.mesh]);
+    gfx::set_instance_placement(instance,
+                                mat4_from_transform(source.transform) * fit_of_mesh[source.mesh],
+                                instance_translation(source, fit_of_mesh[source.mesh]));
     instance.mesh = source.mesh;
     instance.first_pair = pair_count;
     // The cull pass inflates every sphere of a deformed instance by this, in the instance's own
@@ -1513,7 +1514,8 @@ bool make_instance(const SceneData& scene, const SceneInstance& source, u32 firs
   out = gfx::InstanceDesc{};
   const Mat4 fit =
       source.mesh < scene.mesh_fit.size() ? scene.mesh_fit[source.mesh] : Mat4::identity();
-  gfx::set_instance_transform(out, mat4_from_transform(source.transform) * fit);
+  gfx::set_instance_placement(out, mat4_from_transform(source.transform) * fit,
+                              instance_translation(source, fit));
   out.mesh = source.mesh;
   out.first_pair = first_pair;
   out.bounds_padding = source.bounds_padding;
@@ -1558,13 +1560,35 @@ std::span<const u32> mesh_vertex_ids(const SceneData& scene, u32 mesh) noexcept 
   return std::span<const u32>(ids.data() + first, end - first);
 }
 
+WorldPos instance_translation(const SceneInstance& source, const Mat4& fit) noexcept {
+  // The fit's translation through the instance's rotation and scale, in the instance's own frame:
+  // a float32 the size of the mesh. Then the world position in f64 (ADR-0053), where the old
+  // float32 product rounded the sum at the size of the world coordinate.
+  Transform3 local = source.transform;
+  local.position = Vec3{};
+  const Mat4 placed = mat4_from_transform(local) * fit;
+  return source.origin + DVec3{source.transform.position} + DVec3{placed.c[3].xyz()};
+}
+
+Mat4 instance_world_matrix(const gfx::InstanceDesc& instance) noexcept {
+  // ADR-0053 seam: scene_collision takes WorldPos after the merge.
+  return gfx::instance_matrix(instance, WorldEye{});
+}
+
 void update_scene_bounds(SceneData& out) {
   // The plain heightfield keeps the half extent it has always used, so a run with no mesh gets
   // exactly the camera it always did.
   if (out.heightfield && out.instances.size() == 1) {
-    out.center = Vec3{};
+    out.center = WorldPos{};
     out.radius = 10.0f;
   } else {
+    // **In a local frame, then placed in f64** (ADR-0053): the instances' centres measured from
+    // the corner of the first instance's cell, so the box and the sphere are float32 numbers the
+    // size of the scene wherever in the world it is, and a scene moved by whole cells gets the
+    // same radius and a centre moved by exactly as much. A scene whose first instance is in the
+    // cell at the origin is measured from the origin, as it always was.
+    const WorldCell corner{out.instances.empty() ? Vec3i{} : out.instances[0].cell, Vec3{}};
+    const WorldEye frame = to_eye(to_world(corner));
     Vec3 lo{1e30f, 1e30f, 1e30f};
     Vec3 hi{-1e30f, -1e30f, -1e30f};
     Vector<Vec3> centers(out.parts.size());
@@ -1588,17 +1612,18 @@ void update_scene_bounds(SceneData& out) {
       return (radii[instance.mesh] + instance.bounds_padding) * instance.scale_max;
     };
     for (const gfx::InstanceDesc& instance : out.instances) {
-      const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
+      const Vec3 c = transform_point(gfx::instance_matrix(instance, frame), centers[instance.mesh]);
       const f32 r = instance_radius(instance);
       lo = Vec3{std::min(lo.x, c.x - r), std::min(lo.y, c.y - r), std::min(lo.z, c.z - r)};
       hi = Vec3{std::max(hi.x, c.x + r), std::max(hi.y, c.y + r), std::max(hi.z, c.z + r)};
     }
-    out.center = (lo + hi) * 0.5f;
+    const Vec3 center = (lo + hi) * 0.5f;
     out.radius = 1e-6f;
     for (const gfx::InstanceDesc& instance : out.instances) {
-      const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
-      out.radius = std::max(out.radius, length(c - out.center) + instance_radius(instance));
+      const Vec3 c = transform_point(gfx::instance_matrix(instance, frame), centers[instance.mesh]);
+      out.radius = std::max(out.radius, length(c - center) + instance_radius(instance));
     }
+    out.center = absolute(to_world(frame), center);
   }
 }
 

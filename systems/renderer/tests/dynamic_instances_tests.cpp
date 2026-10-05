@@ -177,7 +177,7 @@ bool make_scene(std::span<const SceneInstance> instances, bool dynamic, SceneDat
   update_scene_bounds(out);
   // Every scene of the comparison frames the same box: the bounds are the prefix's only in the
   // dynamic one, and the lights scale with them (FrameLighting), so they are pinned.
-  out.center = Vec3{0.0f, 0.0f, 0.0f};
+  out.center = WorldPos{};
   out.radius = 14.0f;
   return true;
 }
@@ -207,8 +207,8 @@ struct Rig {
 
 FrameDesc frame_at(Vec3 eye) {
   FrameDesc frame;
-  frame.camera.position = eye;
-  frame.camera.target = Vec3{0.0f, 0.0f, 0.0f};
+  frame.camera.position = absolute(WorldPos::origin(), eye);
+  frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
   return frame;
 }
 

@@ -109,19 +109,20 @@ Vector<u32> reference_cut(const geometry::ClusterLodMesh& lod,
   Vector<u32> pairs;
   for (u32 i = 0; i < instances.size(); ++i) {
     const gfx::InstanceDesc& instance = instances[i];
+    const Mat4 world = gfx::instance_matrix(instance, WorldEye{});
     const geometry::ClusterMeshPart& part = parts[instance.mesh];
     for (u32 local = 0; local < part.cluster_count; ++local) {
       const u32 index = part.first_cluster + local;
       const geometry::ClusterDesc& c = lod.mesh.clusters[index];
-      const Vec3 center = transform_point(instance.world, c.center);
+      const Vec3 center = transform_point(world, c.center);
       const f32 radius = c.radius * instance.scale_max;
       if (!frustum_contains_sphere(frustum, center, radius)) continue;
       if (cone_cull && (instance.flags & gfx::k_instance_uniform_scale) != 0 &&
           instance.deform == gfx::k_invalid_deform) {
         geometry::ClusterDesc moved = c;
-        moved.cone_apex = transform_point(instance.world, c.cone_apex);
+        moved.cone_apex = transform_point(world, c.cone_apex);
         const geometry::NormalCone cone = geometry::decode_cone(c.cone);
-        const Vec3 axis = normalize(transform_direction(instance.world, cone.axis));
+        const Vec3 axis = normalize(transform_direction(world, cone.axis));
         moved.cone = geometry::encode_cone(axis, cone.cutoff);
         // encode_cone rounds the cutoff up, which would cull less than the shader does; the
         // shader reads the stored byte, so put the original byte back.
@@ -129,10 +130,9 @@ Vector<u32> reference_cut(const geometry::ClusterLodMesh& lod,
         if (geometry::cluster_backfacing(moved, view.camera)) continue;
       }
       geometry::ClusterLodDesc scaled = lod.lod[index];
-      const Vec3 own =
-          transform_point(instance.world, Vec3{scaled.own.x, scaled.own.y, scaled.own.z});
+      const Vec3 own = transform_point(world, Vec3{scaled.own.x, scaled.own.y, scaled.own.z});
       const Vec3 parent_center =
-          transform_point(instance.world, Vec3{scaled.parent.x, scaled.parent.y, scaled.parent.z});
+          transform_point(world, Vec3{scaled.parent.x, scaled.parent.y, scaled.parent.z});
       scaled.own = Vec4{own, scaled.own.w * instance.scale_max};
       scaled.parent = Vec4{parent_center, scaled.parent.w * instance.scale_max};
       scaled.own_error *= instance.scale_max;
@@ -412,10 +412,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
   draw.mesh = meshes.address;
   draw.instances = instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
   draw.visible = visible.address;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   // One block per visibility buffer: mesh, vertex, ray (unused), occlusion.
   gfx::ClusterDrawParams draw_to[4];
   for (u32 v = 0; v < 4; ++v) {
@@ -751,7 +749,7 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     Vector<gfx::TlasInstance> records;
     for (u32 k = 0; k < instance_count; ++k) {
       gfx::TlasInstance record;
-      record.transform = scene.instances[k].world;
+      record.transform = gfx::instance_matrix(scene.instances[k], WorldEye{});
       record.custom_index = k;
       record.blas = blas[k].address;
       records.push_back(record);

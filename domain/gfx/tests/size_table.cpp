@@ -81,8 +81,17 @@ ENGINE_EXPECT_SIZE(72, 8, gfx::DeformAllocParams);
 // deformed instance can say how far its vertices leave their rest positions without the record
 // growing. `terrain` took the last: the frame's terrain level an instance draws, for the cull
 // pass's hole test and the pool pass's terrain stage. None is left.
+// Still 96 with world cells (ADR-0053, 2026-10-05): the 4x4 world matrix became a 3x4 from mesh
+// space to the instance's 64 m cell (48 bytes, the translation column being the WorldCell's local)
+// and the i32 cell (12 bytes); the matrix's unused fourth row paid for both, and one pad word is
+// left. A 4x4 beside a WorldCell would have been 120.
 ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 
+// The frame's origin as the passes read it: a WorldEye in three float4 rows (ADR-0053).
+ENGINE_EXPECT_SIZE(48, 4, gfx::FrameEye);
+
+// Still 128 with world cells (2026-10-05): `eye`, the address of the frame's origin, took the
+// unread `triangles_per_cluster` and the word the extent's two halves now share.
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 
 // 128, not 120: the emit pass reads the MeshDesc array to find a deformed instance's pool and a
@@ -91,7 +100,9 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // by `pair_count` anyway (docs/plan/04-renderer.md §4.6).
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
-ENGINE_EXPECT_SIZE(24, 8, gfx::TlasReferenceParams);
+// 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
+// transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
+ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity
@@ -113,7 +124,9 @@ ENGINE_EXPECT_SIZE(24, 8, gfx::TlasReferenceParams);
 // 480, not 464: the terrain levels' table (`terrain`), so a cluster of a terrain level wholly
 // inside the square a finer level draws is dropped before any test that costs; eight bytes of pad
 // keep the block a whole number of float4 rows.
-ENGINE_EXPECT_SIZE(480, 8, gfx::CullParams);
+// 528, not 480: the frame's eye (`FrameEye`), which every instance is measured from before any
+// test, and which the rasterizers read through `ClusterDrawParams::eye` (ADR-0053, 2026-10-05).
+ENGINE_EXPECT_SIZE(528, 8, gfx::CullParams);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
 // expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads
@@ -172,7 +185,8 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // 352, not 336: `dither_steps`, the colour target's code steps the output encode dithers by
 // (2026-10-04, display.h, ADR-0052), with no pad word left to take it, and three pad words to keep
 // the block a whole number of float4 rows. Zero is no dither, the encode as it was.
-ENGINE_EXPECT_SIZE(352, 8, gfx::ResolveParams);
+// 400, not 352: the frame's eye, which a triangle is fetched relative to (ADR-0053, 2026-10-05).
+ENGINE_EXPECT_SIZE(400, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
@@ -211,7 +225,8 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // the horizon sees the ground the resolve's hemisphere term puts there (2026-09-25).
 // 288, not 272: `ground_detail`, the resolve's block, which the reference draws unfiltered, and a
 // pad (2026-09-29). Still 288 with the sky: `sky_params` took the pad (2026-09-30).
-ENGINE_EXPECT_SIZE(288, 8, gfx::PathTraceParams);
+// 336, not 288: the frame's eye, as the resolve's (ADR-0053, 2026-10-05).
+ENGINE_EXPECT_SIZE(336, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
 // slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a

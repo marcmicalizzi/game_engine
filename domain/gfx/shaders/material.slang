@@ -107,6 +107,9 @@ struct SceneGeometry {
   // stream as it always has. That is what keeps every picture of a scene with no morph channels
   // byte-identical (gfx.md, "What happens to the shading normal").
   uint64_t normal_pool;
+  // The frame's origin (scene.slang): a triangle is fetched into the frame's space, whose origin is
+  // the eye, so nothing here forms an absolute position.
+  FrameEye eye;
 };
 
 struct Surface {
@@ -142,10 +145,11 @@ float3 decode_normal_oct(uint packed) {
 
 float2 decode_half2(uint packed) { return float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16)); }
 
-// The three vertices of triangle `triangle` of cluster `cluster` under `instance`, in world
-// space: positions come off the mesh's 16-bit grid, or out of the frame's deformed-vertex pool
-// for a deformed instance (load_position), and go through the instance's world matrix, exactly
-// as the rasterizer and the acceleration structure builds moved them.
+// The three vertices of triangle `triangle` of cluster `cluster` under `instance`, in the frame's
+// space, whose origin is the eye (`geo.eye`; scene.slang, `instance_point`): positions come off
+// the mesh's 16-bit grid, or out of the frame's deformed-vertex pool for a deformed instance
+// (load_position), and go into the frame exactly as the rasterizers and the frame's top-level
+// structure moved them. No world coordinate is formed (ADR-0053).
 //
 // `entry` is the **visible index**: the one the pixel's pair was drawn as this frame (the resolve
 // reads it out of the view's pair-to-entry table) or the ray's geometry index carried, which is
@@ -160,6 +164,7 @@ TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint entr
   const ClusterDesc cluster = clusters[cluster_index];
   const uint packed = triangles[cluster.triangle_offset + triangle];
   const uint base = deform_base(mesh, instance, entry);
+  const float3 from_eye = instance_from_eye(instance, geo.eye);
   TriangleFetch fetched;
   fetched.pool_base = base;
   for (uint i = 0; i < 3; ++i) {
@@ -167,8 +172,7 @@ TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint entr
     fetched.local[i] = cluster.vertex_offset + local;
     fetched.pool_local[i] = local;
     fetched.p[i] =
-        mul(instance.world, float4(load_position(mesh, base, cluster.vertex_offset, local), 1.0))
-            .xyz;
+        instance_point(instance, from_eye, load_position(mesh, base, cluster.vertex_offset, local));
   }
   return fetched;
 }
@@ -202,7 +206,7 @@ Surface surface_at(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
       n2 = load_pool_normal(geo.normal_pool, tri.pool_base, tri.pool_local[2], n2);
     }
     const float3 n = b.x * n0 + b.y * n1 + b.z * n2;
-    s.normal = transform_normal(instance.world, n);
+    s.normal = transform_normal(instance, n);
     s.uv = b.x * decode_half2(a0.uv_half2) + b.y * decode_half2(a1.uv_half2) + b.z * decode_half2(a2.uv_half2);
   } else {
     s.normal = s.geometric;  // two-sided flat shading
@@ -263,7 +267,11 @@ float ray_offset(SceneGeometry geo, InstanceDesc instance, float floor, float st
 // n_i = c_j x c_k and N = sum n_i, and p moves by (2 / width, -2 / height) a pixel — the viewport
 // the rasterizer drew with, flipped in y.
 //
-// **Measured from the eye.** The corners go in as their differences from the eye, through the
+// **Measured from the eye.** (Since ADR-0053 the corners are already in the frame's space, whose
+// origin is the eye, and `eye` is the view's eye in it - zero for the renderer's views - so the
+// subtraction below is exact and the "world position" is the frame-space one; what follows is why it
+// was written this way when the corners were world coordinates, and still holds for a test that
+// draws in the world's own frame.) The corners go in as their differences from the eye, through the
 // matrix's linear part alone (a w of zero drops its translation column): that column is the eye's
 // world position through the matrix, a number the size of the camera's distance from the origin,
 // and a corner put through the whole matrix carries its rounding — millimetres of the corner fifty
@@ -326,7 +334,8 @@ ScreenBarycentrics screen_barycentrics(TriangleFetch tri, float2 pixel_center,
 // The surface a pixel shows: its triangle fetched, its barycentrics (`screen_barycentrics`), and
 // everything interpolated at them (`surface_at`). `from_eye` is the point less `camera`, made from
 // the corners less `camera`, which is what the view vector and the air's distance are taken from;
-// the surface's world position is `camera + from_eye`.
+// the surface's position in the frame is `camera + from_eye`, which for the renderer's views,
+// whose `camera` is zero, is `from_eye` itself.
 Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
                           uint cluster_index, uint triangle, float2 pixel_center,
                           column_major float4x4 view_proj, float3 camera, uint width,

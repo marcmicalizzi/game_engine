@@ -236,8 +236,8 @@ struct Rig {
 
 FrameDesc frame_at(Vec3 eye, Vec3 target) {
   FrameDesc frame;
-  frame.camera.position = eye;
-  frame.camera.target = target;
+  frame.camera.position = absolute(WorldPos::origin(), eye);
+  frame.camera.target = absolute(WorldPos::origin(), target);
   return frame;
 }
 

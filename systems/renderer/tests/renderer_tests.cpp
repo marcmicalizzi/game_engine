@@ -246,7 +246,9 @@ Vec3 view_centre_point(const View& view, const Camera& camera, f32 distance) {
   const Mat4 inverse_vp = inverse(view.view_proj);
   const Vec4 clip{0.0f, 0.0f, camera.znear / distance, 1.0f};
   const Vec4 world = inverse_vp * clip;
-  return Vec3{world.x, world.y, world.z} * (1.0f / world.w);
+  // The view-projection is the frame's, whose origin is the eye (ADR-0053): back to the world.
+  return Vec3{world.x, world.y, world.z} * (1.0f / world.w) +
+         relative(camera.position, WorldPos::origin());
 }
 
 // ---- the skinning fixture ---------------------------------------------------------------------
@@ -1155,8 +1157,8 @@ TEST_CASE("renderer: a surround's centre view is the single view of one monitor,
   // An explicit camera rather than an orbit: the orbit's distance scales with the scene's radius,
   // which is exactly the thing that decides whether the row reaches the side monitors.
   FrameDesc frame;
-  frame.camera.position = Vec3{0.0f, 0.0f, 12.0f};
-  frame.camera.target = Vec3{0.0f, 0.0f, 0.0f};
+  frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 12.0f});
+  frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
   frame.camera.znear = 0.05f;
   CaptureChannels channels;
   channels.ids = true;
@@ -1222,8 +1224,8 @@ TEST_CASE(
   std::string error;
   REQUIRE_MESSAGE(views.build(layout, k_monitor * 3, k_monitor, &error), error);
   Camera camera;
-  camera.position = Vec3{0.0f, 0.0f, k_distance};
-  camera.target = Vec3{0.0f, 0.0f, 0.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, k_distance});
+  camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
   camera.znear = 0.05f;
   views.update(camera);
 
@@ -1878,7 +1880,13 @@ TEST_CASE("renderer: a bend puts the bar where anim::skin_positions says it goes
       error);
 
   const Mat4& view_proj = rig.renderer.views()[0].view_proj;
-  const Mat4 world = rig.data.instances[0].world;
+  // The view-projection is the frame's, whose origin is the eye (ADR-0053), so the instance goes
+  // into the same space.
+  const Camera bent_camera =
+      skinned_frame(rig.data, std::span<const anim::JointMatrix>(bent.data(), bent.size()),
+                    std::span<const InstanceJoints>(runs, 1), 22.0f)
+          .camera;
+  const Mat4 world = gfx::instance_matrix(rig.data.instances[0], frame_eye(bent_camera));
   const PixelRect predicted =
       predicted_rect(bar, std::span<const anim::JointMatrix>(bent.data(), bent.size()), world,
                      view_proj, k_width, k_height);
@@ -2289,8 +2297,10 @@ TEST_CASE("renderer: a turned joint's clusters are not culled by their rest-pose
     SceneData probe;
     std::string error;
     REQUIRE_MESSAGE(make_ball_scene(ball, displacement, probe, error), error);
-    const Vec3 eye = skinned_frame(probe, joints, std::span<const InstanceJoints>(runs, 2), 22.0f)
-                         .camera.position;
+    const Vec3 eye =
+        relative(skinned_frame(probe, joints, std::span<const InstanceJoints>(runs, 2), 22.0f)
+                     .camera.position,
+                 WorldPos::origin());
     const geometry::ClusterMesh& mesh = probe.lod.mesh;
     Vector<Vec3> skinned(mesh.vertices.size());
     anim::skin_positions(std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()),

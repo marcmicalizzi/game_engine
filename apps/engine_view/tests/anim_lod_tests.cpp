@@ -40,8 +40,8 @@ renderer::ViewSet make_views(renderer::ViewLayout layout, f32 peripheral_lod, u3
 
 renderer::Camera looking_down_z(f32 distance) {
   renderer::Camera camera;
-  camera.position = Vec3{0.0f, 0.0f, distance};
-  camera.target = Vec3{};
+  camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
+  camera.target = absolute(WorldPos::origin(), Vec3{});
   return camera;
 }
 
@@ -153,6 +153,8 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
   Vector<sim::TierChange> changes;
   sim::TierAssignment assignment;
 
+  // The camera's eye in float32, by the origin (ADR-0053: the camera's position is f64).
+  const Vec3 eye = relative(camera.position, WorldPos::origin());
   u32 worst_tick = 0;
   for (u32 tick = 0; tick < k_ticks; ++tick) {
     // A slow sweep towards the camera and away again: every instance spends several ticks within a
@@ -161,7 +163,7 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
     const f32 depth = 200.0f * (1.0f - std::fabs(2.0f * phase - 1.0f));
     for (u32 i = 0; i < k_instances; ++i) {
       const f32 spread = static_cast<f32>(i) * 0.05f;
-      positions[i] = Vec3{0.0f, 0.0f, camera.position.z - depth - spread};
+      positions[i] = Vec3{0.0f, 0.0f, eye.z - depth - spread};
     }
     view::view_importance(views, std::span<const Vec3>(positions.data(), positions.size()),
                           std::span<const f32>(radii.data(), radii.size()),

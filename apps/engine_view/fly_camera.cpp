@@ -435,10 +435,10 @@ renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept 
   constexpr f32 k_reach = 100.0f;
   const Vec3 forward = fly_forward(state);
   renderer::Camera camera;
-  camera.position = state.position;
-  camera.target =
+  camera.position = renderer::camera_point_from_controller(state.position);
+  camera.target = renderer::camera_point_from_controller(
       Vec3{state.position.x + forward.x * k_reach, state.position.y + forward.y * k_reach,
-           state.position.z + forward.z * k_reach};
+           state.position.z + forward.z * k_reach});
   camera.fov_y = fov_y;
   camera.znear = znear;
   return camera;
@@ -466,9 +466,10 @@ FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexce
 
 FlyState fly_state_from_camera(const renderer::Camera& camera) noexcept {
   FlyState out;
-  out.position = camera.position;
-  const Vec3 d{camera.target.x - camera.position.x, camera.target.y - camera.position.y,
-               camera.target.z - camera.position.z};
+  const Vec3 position = renderer::camera_point_to_controller(camera.position);
+  const Vec3 target = renderer::camera_point_to_controller(camera.target);
+  out.position = position;
+  const Vec3 d{target.x - position.x, target.y - position.y, target.z - position.z};
   const f32 length = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
   if (!(length > 0.0f)) return out;
   const f32 y = d.y / length;

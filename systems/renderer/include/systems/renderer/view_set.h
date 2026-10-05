@@ -36,12 +36,40 @@ namespace engine::renderer {
 // scene's pair count.
 inline constexpr u32 k_max_views = 8;
 
+// **The camera is a world position, and the frame's origin** (ADR-0053). `position` is the eye in
+// f64 and `target` the point it looks at; what the GPU is given of them is the eye as a
+// `WorldEye` (`frame_eye`) and, per view, a view-projection made with that eye at the origin, so a
+// pass never sees where in the world the camera is (renderer.md, "The frame's origin").
 struct Camera {
-  Vec3 position{};
-  Vec3 target{};
+  WorldPos position{};
+  WorldPos target{};
   f32 fov_y = 0.9599310886f;  // radians(55)
   f32 znear = 0.1f;           // reversed-Z: there is no far plane
 };
+
+// The frame's origin a camera gives: its eye as the GPU stores it. Every pass of the frame measures
+// from this one point (gfx::FrameEye); a view's own eye, were it to differ (a headset's two), would
+// be a small offset from it in the view's matrix.
+inline WorldEye frame_eye(const Camera& camera) noexcept { return to_eye(camera.position); }
+
+// Where the camera looks, as a float32 direction: the f64 difference, normalized in f64 and rounded
+// once. Exact under a translation of the camera by whole cells (the difference does not change).
+Vec3 camera_forward(const Camera& camera) noexcept;
+
+// ---- ADR-0053 seams: engine-view's fly and walk controllers
+// --------------------------------------
+//
+// The controllers (`apps/engine_view/fly_camera.*`, `walk.*`) are the walker's and still keep a
+// float32 position this batch; they hand it over through these two and nothing else, so the merge
+// flips two functions and not their call sites.
+// ADR-0053 seam: the fly and walk controllers take WorldPos after the merge.
+inline WorldPos camera_point_from_controller(Vec3 p) noexcept {
+  return absolute(WorldPos::origin(), p);
+}
+// ADR-0053 seam: the fly and walk controllers take WorldPos after the merge.
+inline Vec3 camera_point_to_controller(WorldPos p) noexcept {
+  return relative(p, WorldPos::origin());
+}
 
 // **The elevation every orbit holds above its circle unless told otherwise**, in degrees and in
 // radians: the protocol's default `RenderOrbit.pitch_deg` (schemas/protocol.schema), which
@@ -73,10 +101,13 @@ f32 orbit_rise(f32 pitch) noexcept;
 // breathes between 8 and 36 units instead of holding still, and every distance scales with the
 // scene's radius, so a 2 cm mesh and a 20 m one are framed alike. At frame 0 it is
 // `orbit_camera_at(center, radius, distance, 0, k_orbit_pitch)` to the bit.
-Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept;
+// The eye is `center` plus a float32 offset added in f64, so an orbit about a centre moved by whole
+// cells is the same orbit moved by them.
+Camera orbit_camera(const WorldPos& center, f32 radius, f32 distance, u64 frame) noexcept;
 // The same orbit at explicit angles, which is what a caller that wants one picture asks for.
 // `distance` of zero is the breathing orbit's rest distance (22 radius-tenths).
-Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept;
+Camera orbit_camera_at(const WorldPos& center, f32 radius, f32 distance, f32 yaw,
+                       f32 pitch) noexcept;
 
 // A scripted fly-in: step `step` of `steps` on a path from `from` mesh radii to `to`, turning as
 // `orbit_camera` turns so that the cut has to change for two reasons and not one.
@@ -91,7 +122,8 @@ Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f3
 // measured exactly that: the outer 80% of the FlightHelmet's fly-in draws out of one page).
 //
 // `steps` under 2, or a non-positive distance, gives the camera at `from`.
-Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u32 steps) noexcept;
+Camera fly_camera(const WorldPos& center, f32 radius, f32 from, f32 to, u32 step,
+                  u32 steps) noexcept;
 
 // Reversed-Z perspective through an arbitrary rectangle on the near plane, which is what an
 // off-axis monitor needs and what `core/math`'s symmetric `perspective_reversed_z` cannot express.
@@ -164,6 +196,9 @@ struct View {
   ViewQuality quality;
 
   // ---- filled by ViewSet::update() ------------------------------------------------------------
+  // **The frame's space to clip space**: the projection times the view's rotation, with the
+  // frame's eye at the origin (ADR-0053). Every view of a set shares the camera's eye, so no view
+  // carries an offset today; a headset's two eyes would each carry theirs here, a few centimetres.
   Mat4 view_proj;
   // Clip space to the world direction of the eye's ray through a pixel: the inverse of the
   // projection times the view's rotation, with the eye at the origin (gfx::clip_to_ray). What the

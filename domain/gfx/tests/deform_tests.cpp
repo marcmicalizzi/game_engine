@@ -275,10 +275,8 @@ struct DeformScene {
     d.mesh = meshes.address;
     d.instances = instances.address;
     d.triangles = triangles.address;
-    d.triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
     d.visible = visible[instance].address;
-    d.width = k_w;
-    d.height = k_h;
+    d.extent = gfx::draw_extent(k_w, k_h);
     return d;
   }
 

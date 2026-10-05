@@ -243,11 +243,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   draw.mesh = scene_data.meshes.address;
   draw.instances = scene_data.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
   draw.visible = cut_buffer.address;
   draw.visibility = vis_raster.address;
-  draw.width = k_w;
-  draw.height = k_h;
+  draw.extent = gfx::draw_extent(k_w, k_h);
   gfx::RayVisibilityParams ray{};
   ray.view_proj = view_proj;
   ray.clip_to_ray = gfx::clip_to_ray(projection, eye_view);

@@ -134,10 +134,10 @@ RenderSettings sand_settings() {
 // and down to the ground there.
 Camera walker(const TerrainDesc& terrain, f32 x, f32 z, f32 heading, f32 ahead) {
   Camera camera;
-  camera.position = Vec3{x, terrain_height(terrain, x, z) + 1.65f, z};
+  camera.position = absolute(WorldPos::origin(), Vec3{x, terrain_height(terrain, x, z) + 1.65f, z});
   const f32 tx = x + ahead * std::cos(heading);
   const f32 tz = z + ahead * std::sin(heading);
-  camera.target = Vec3{tx, terrain_height(terrain, tx, tz), tz};
+  camera.target = absolute(WorldPos::origin(), Vec3{tx, terrain_height(terrain, tx, tz), tz});
   camera.znear = 0.05f;
   return camera;
 }
@@ -303,8 +303,9 @@ TEST_CASE("sand detail: pulling back from the eye to 350 m, no moiré and no pop
     const f32 back = 2.2f * height + 3.0f;
     const f32 x = target.x - back * 0.8f;
     const f32 z = target.z - back * 0.6f;
-    camera.position = Vec3{x, terrain_height(terrain, x, z) + height, z};
-    camera.target = target;
+    camera.position =
+        absolute(WorldPos::origin(), Vec3{x, terrain_height(terrain, x, z) + height, z});
+    camera.target = absolute(WorldPos::origin(), target);
     camera.znear = 0.05f;
     return camera;
   };

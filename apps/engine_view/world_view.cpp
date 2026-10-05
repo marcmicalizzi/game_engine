@@ -1,6 +1,8 @@
 // engine-view's streamed world (world_view.h).
 #include "world_view.h"
 
+#include "anim_lod.h"
+
 #if ENGINE_VIEW_WORLD
 
 #include <core/json/json.h>
@@ -142,7 +144,7 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     compact_next_ = true;
   }
   observers_.clear();  // kept, so a frame's update allocates nothing for it
-  observers_.add(camera.position, 1.0f);
+  observers_.add(observer_position(camera), 1.0f);
   log_.before(world_);
   world_.update(observers_, tick, mode != Mode::Budgeted);
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
@@ -291,7 +293,8 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     after_rubble.assign(placements_.tail_tags().begin(), placements_.tail_tags().end());
     placements_.tile_ranges(after_ranges);
     if (ok) to_tail(after);
-    const Vec3 eye = frame.camera.position;
+    // A distance for the log line: the eye in float32 is the observers' own seam (anim_lod.h).
+    const Vec3 eye = observer_position(frame.camera);
     for (const world::TileEvent& event : world_.last_events()) {
       if (!ok) break;
       if (!is_handover(event)) continue;

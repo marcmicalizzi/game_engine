@@ -114,7 +114,7 @@ struct TileRig {
   // With `tile_desc` null, the fixed grid as terrain levels (the reference); otherwise the tiles.
   bool build(const gfx::Device& device, const SceneDesc& desc, RenderSettings settings, u32 width,
              u32 height, const TimeLapseConfig& lapse, jobs::JobSystem* jobs,
-             const TerrainTilesDesc* tile_desc, Vec3 camera,
+             const TerrainTilesDesc* tile_desc, WorldPos camera,
              const scene_gen::TileSource* source = nullptr) {
     if (!load_scene(desc, data, error)) return false;
     settings.terrain_tiles = tile_desc != nullptr;
@@ -132,8 +132,8 @@ struct TileRig {
       ground = std::make_unique<TerrainSampler>(data.terrain);
       tiles = std::make_unique<TerrainTileSet>();
       const scene_gen::TileSource src = source != nullptr ? *source : ground->provider().tiles();
-      if (!tiles->build(data.terrain, *tile_desc, src, camera.x, camera.z, jobs, &error))
-        return false;
+      const Vec3 at = terrain_eye(camera);  // as MovingGround narrows it
+      if (!tiles->build(data.terrain, *tile_desc, src, at.x, at.z, jobs, &error)) return false;
     }
     if (!scene.create(device, data, resolved, &error, tiles.get())) return false;
     SceneRenderer::Desc rd;
@@ -147,11 +147,12 @@ struct TileRig {
 
   // A frame's world update, as a host's ring hands it over: the tiles round the camera.
   void follow(const Camera& camera, f64 dt = 1.0 / 60.0) {
+    const Vec3 at = terrain_eye(camera.position);  // as MovingGround narrows it
     if (tiles != nullptr) {
-      terrain_tiles_round(tiles->tiles_desc(), camera.position.x, camera.position.z, held);
+      terrain_tiles_round(tiles->tiles_desc(), at.x, at.z, held);
       tiles->set_tiles(std::span<const TerrainTile>(held.data(), held.size()));
     }
-    motion.frame(dt, camera.position.x, camera.position.z);
+    motion.frame(dt, at.x, at.z);
   }
 };
 
@@ -162,8 +163,10 @@ TimeLapseConfig still_lapse() {
   return lapse;
 }
 
-// The world point a covered pixel's depth stands for, through the view's inverse projection.
-bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px, u32 py,
+// The world point a covered pixel's depth stands for, through the view's inverse projection. The
+// view's matrix is in the frame's space, whose origin is the camera's eye (ADR-0053), so the point
+// is put back in the world by adding `eye`: the camera's position, which here is by the origin.
+bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, Vec3 eye, u32 px, u32 py,
                Vec3& out) {
   const f32 depth = shot.depth[py * shot.width + px];
   if (!(depth > 0.0f)) return false;
@@ -171,8 +174,19 @@ bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px,
   const f32 y = 1.0f - (static_cast<f32>(py) + 0.5f) / static_cast<f32>(shot.height) * 2.0f;
   const Vec4 p = inverse_view_proj * Vec4{x, y, depth, 1.0f};
   if (!(std::abs(p.w) > 0.0f)) return false;
-  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w};
+  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w} + eye;
   return true;
+}
+
+// The camera's eye as `unproject` adds it back.
+Vec3 eye_of(const Camera& camera) { return relative(camera.position, WorldPos::origin()); }
+
+// A camera at and looking at two float32 points of the world, as the cases name them.
+Camera camera_between(Vec3 position, Vec3 target) {
+  Camera camera;
+  camera.position = absolute(WorldPos::origin(), position);
+  camera.target = absolute(WorldPos::origin(), target);
+  return camera;
 }
 
 Vec3 normal_of(const CapturedFrame& shot, u32 p) {
@@ -257,8 +271,9 @@ struct SurfaceModel {
   }
 };
 
-Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const TerrainTileSet& set,
-              const SurfaceModel* model, u32 model_stride = 7, f32 pair_m = 0.25f) {
+Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, Vec3 eye,
+              const TerrainTileSet& set, const SurfaceModel* model, u32 model_stride = 7,
+              f32 pair_m = 0.25f) {
   Census c;
   const u32 w = shot.width;
   const u32 h = shot.height;
@@ -270,7 +285,7 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, const Te
   for (u32 py = 0; py < h; ++py) {
     for (u32 px = 0; px < w; ++px) {
       const u32 p = py * w + px;
-      if (!unproject(shot, inverse_view_proj, px, py, world[p])) {
+      if (!unproject(shot, inverse_view_proj, eye, px, py, world[p])) {
         ++c.uncovered;
         continue;
       }
@@ -398,16 +413,17 @@ void check_seams(const Census& c, const std::string& what) {
 // A view of the ground from above that straddles every level's borders round `centre`.
 Camera looking_down_at(Vec3 centre, f32 height = 26.0f) {
   Camera camera;
-  camera.position = Vec3{centre.x - 3.0f, height, centre.z + 9.0f};
-  camera.target = Vec3{centre.x + 1.0f, 0.0f, centre.z - 2.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{centre.x - 3.0f, height, centre.z + 9.0f});
+  camera.target = absolute(WorldPos::origin(), Vec3{centre.x + 1.0f, 0.0f, centre.z - 2.0f});
   camera.znear = 0.5f;
   return camera;
 }
 // A grazing one, a couple of metres over the sand, looking out over the rings.
 Camera looking_across(Vec3 eye_ground, f32 ground_y) {
   Camera camera;
-  camera.position = Vec3{eye_ground.x, ground_y + 2.5f, eye_ground.z};
-  camera.target = Vec3{eye_ground.x + 30.0f, ground_y - 4.0f, eye_ground.z - 18.0f};
+  camera.position = absolute(WorldPos::origin(), Vec3{eye_ground.x, ground_y + 2.5f, eye_ground.z});
+  camera.target = absolute(WorldPos::origin(),
+                           Vec3{eye_ground.x + 30.0f, ground_y - 4.0f, eye_ground.z - 18.0f});
   camera.znear = 0.1f;
   return camera;
 }
@@ -451,18 +467,18 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
   constexpr u32 k_width = 320;
   constexpr u32 k_height = 200;
   const Camera views[3] = {
-      Camera{Vec3{-40.0f, 90.0f, 60.0f}, Vec3{30.0f, 0.0f, -40.0f}},
-      Camera{Vec3{120.0f, 40.0f, -150.0f}, Vec3{40.0f, 10.0f, -60.0f}},
-      Camera{Vec3{0.0f, 250.0f, 0.1f}, Vec3{0.0f, 0.0f, 0.0f}},
+      camera_between(Vec3{-40.0f, 90.0f, 60.0f}, Vec3{30.0f, 0.0f, -40.0f}),
+      camera_between(Vec3{120.0f, 40.0f, -150.0f}, Vec3{40.0f, 10.0f, -60.0f}),
+      camera_between(Vec3{0.0f, 250.0f, 0.1f}, Vec3{0.0f, 0.0f, 0.0f}),
   };
   TileRig grid;
   REQUIRE_MESSAGE(grid.build(gpu.device, erg, settings, k_width, k_height, still_lapse(), &pool,
-                             nullptr, Vec3{}),
+                             nullptr, WorldPos::origin()),
                   grid.error);
   TileRig tiles;
-  REQUIRE_MESSAGE(
-      tiles.build(gpu.device, erg, settings, k_width, k_height, still_lapse(), &pool, &t, Vec3{}),
-      tiles.error);
+  REQUIRE_MESSAGE(tiles.build(gpu.device, erg, settings, k_width, k_height, still_lapse(), &pool,
+                              &t, WorldPos::origin()),
+                  tiles.error);
   CaptureChannels channels;
   channels.depth = true;
   channels.ids = true;
@@ -486,7 +502,7 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
       for (u32 px = 0; px < k_width; ++px) {
         const u32 p = py * k_width + px;
         Vec3 world;
-        const bool in_grid = unproject(a, inverse_view_proj, px, py, world);
+        const bool in_grid = unproject(a, inverse_view_proj, eye_of(camera), px, py, world);
         if (!in_grid) {
           beyond += b.depth[p] > 0.0f ? 1u : 0u;  // ground the tiles have past the grid
           continue;
@@ -531,7 +547,8 @@ TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its exte
 
   // And the desert goes on: two kilometres past the grid's edge, every pixel of a view down on the
   // sand is ground.
-  const Camera far{Vec3{2'200.0f, 120.0f, -1'700.0f}, Vec3{2'230.0f, 0.0f, -1'760.0f}};
+  const Camera far =
+      camera_between(Vec3{2'200.0f, 120.0f, -1'700.0f}, Vec3{2'230.0f, 0.0f, -1'760.0f});
   tiles.follow(far);
   FrameDesc frame;
   frame.camera = far;
@@ -562,9 +579,9 @@ TEST_CASE("world tiles: no crack, no T-junction and no lighting seam at any bord
   for (const f32 origin_x : {0.0f, 50'000.0f}) {
     TileRig rig;
     const Vec3 centre{origin_x + 3.0f, 0.0f, -2.0f};
-    REQUIRE_MESSAGE(
-        rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool, &t, centre),
-        rig.error);
+    REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool,
+                              &t, absolute(WorldPos::origin(), centre)),
+                    rig.error);
     REQUIRE(rig.tiles->level_count() == 4);
     const scene_gen::TileSource source = rig.ground->provider().tiles();
     SurfaceModel model;
@@ -582,8 +599,8 @@ TEST_CASE("world tiles: no crack, no T-junction and no lighting seam at any bord
         frame.lod_px = lod;
         CapturedFrame shot;
         REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
-        const Census c = census(shot, inverse(rig.renderer.views()[0].view_proj), *rig.tiles,
-                                lod == 0.0f ? &model : nullptr);
+        const Census c = census(shot, inverse(rig.renderer.views()[0].view_proj), eye_of(camera),
+                                *rig.tiles, lod == 0.0f ? &model : nullptr);
         const std::string what = std::string(origin_x > 0.0f ? "50 km out, " : "at the origin, ") +
                                  (grazing ? "grazing" : "from above") +
                                  (lod == 0.0f ? ", the finest cut" : ", a pixel's cut");
@@ -666,7 +683,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
     const Vec3 centre{origin_x + 3.0f, 0.0f, -2.0f};
     TileRig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool,
-                              &with_far, centre),
+                              &with_far, absolute(WorldPos::origin(), centre)),
                     rig.error);
     REQUIRE(rig.tiles->level_count() == 7);
     const std::string where = origin_x > 0.0f ? "50 km out" : "at the origin";
@@ -675,13 +692,11 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
     // level's edge. No hole in any column, and the shading normal steps across a border no more
     // than inside a tile.
     const f32 ground = rig.ground->height(centre.x, centre.z);
-    Camera high;
-    high.position = Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f};
-    high.target = Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f};
+    Camera high = camera_between(Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f},
+                                 Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f});
     high.znear = 0.5f;
-    Camera low;
-    low.position = Vec3{centre.x, ground + 6.0f, centre.z};
-    low.target = Vec3{centre.x + 300.0f, ground - 4.0f, centre.z - 180.0f};
+    Camera low = camera_between(Vec3{centre.x, ground + 6.0f, centre.z},
+                                Vec3{centre.x + 300.0f, ground - 4.0f, centre.z - 180.0f});
     low.znear = 0.1f;
     for (const bool grazing : {false, true}) {
       const Camera camera = grazing ? low : high;
@@ -693,8 +708,8 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
         CapturedFrame shot;
         REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
         // Pixels several metres apart on the far ground are neighbours here.
-        const Census c =
-            census(shot, inverse(rig.renderer.views()[0].view_proj), *rig.tiles, nullptr, 7, 6.0f);
+        const Census c = census(shot, inverse(rig.renderer.views()[0].view_proj), eye_of(camera),
+                                *rig.tiles, nullptr, 7, 6.0f);
         const std::string what = where +
                                  (grazing ? ", grazing out to the far edge" : ", from 90 m") +
                                  (lod == 0.0f ? ", the finest cut" : ", a pixel's cut");
@@ -730,7 +745,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
       six.far_cells = 6;
       TileRig other;
       REQUIRE_MESSAGE(other.build(gpu.device, desc, settings, k_width, k_height, still_lapse(),
-                                  &pool, &six, centre),
+                                  &pool, &six, absolute(WorldPos::origin(), centre)),
                       other.error);
       for (const bool grazing : {false, true}) {
         const Camera camera = grazing ? low : high;
@@ -744,6 +759,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
         REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, a, &rig.error), rig.error);
         REQUIRE_MESSAGE(other.renderer.capture(frame, channels, b, &other.error), other.error);
         const Mat4 inv = inverse(rig.renderer.views()[0].view_proj);
+        const Vec3 eye = eye_of(camera);
         u32 compared = 0;
         u32 borders = 0;  // compared pixels on a border of one layout's tiles of a level
         u32 differ = 0;
@@ -753,8 +769,8 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
           // another level's filtered heights in one of them and hide what the other shows.
           Vec3 w{};
           Vec3 wb{};
-          if (!unproject(a, inv, p % k_width, p / k_width, w) ||
-              !unproject(b, inv, p % k_width, p / k_width, wb))
+          if (!unproject(a, inv, eye, p % k_width, p / k_width, w) ||
+              !unproject(b, inv, eye, p % k_width, p / k_width, wb))
             continue;
           const u32 la = far_level_clear_at(*rig.tiles, w);
           if (la == 0 || far_level_clear_at(*other.tiles, w) != la ||
@@ -777,7 +793,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
           differ += same ? 0u : 1u;
         }
         // The census of the other layout: what was a border is the inside of a tile there.
-        const Census c = census(b, inv, *other.tiles, nullptr, 7, 6.0f);
+        const Census c = census(b, inv, eye, *other.tiles, nullptr, 7, 6.0f);
         const std::string view = where + (grazing ? ", grazing" : ", from 90 m");
         MESSAGE(view << ": far tiles of four cells against six, " << compared
                      << " far pixels compared, " << borders << " of them on a border of four's, "
@@ -795,7 +811,7 @@ TEST_CASE("world tiles: the far levels meet the rings and each other with no cra
     // without them.
     TileRig plain;
     REQUIRE_MESSAGE(plain.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool,
-                                &near_only, centre),
+                                &near_only, absolute(WorldPos::origin(), centre)),
                     plain.error);
     const Camera inside = looking_down_at(centre);
     rig.follow(inside);
@@ -852,7 +868,8 @@ TEST_CASE("world tiles: in time-lapse, one surface time, each level's bound, and
   constexpr u32 k_height = 150;
   const Vec3 start{3.0f, 0.0f, -2.0f};
   TileRig rig;
-  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, lapse, &pool, &t, start),
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, lapse, &pool, &t,
+                            absolute(WorldPos::origin(), start)),
                   rig.error);
   CaptureChannels channels;
   channels.depth = true;
@@ -888,7 +905,8 @@ TEST_CASE("world tiles: in time-lapse, one surface time, each level's bound, and
     frame.lod_px = 0.0f;
     CapturedFrame shot;
     REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
-    const Census c = census(shot, inverse(rig.renderer.views()[0].view_proj), *rig.tiles, nullptr);
+    const Census c = census(shot, inverse(rig.renderer.views()[0].view_proj), eye_of(camera),
+                            *rig.tiles, nullptr);
     CHECK(c.uncovered == 0);
     check_seams(c, "frame " + std::to_string(f));
   }
@@ -1034,7 +1052,7 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
   // The procedural picture.
   TileRig procedural;
   REQUIRE_MESSAGE(procedural.build(gpu.device, desc, settings, k_width, k_height, still_lapse(),
-                                   &pool, &t, centre),
+                                   &pool, &t, absolute(WorldPos::origin(), centre)),
                   procedural.error);
   // "The content build": every tile of a square round the centre, at the finest ring's spacing and
   // a point of apron, from the ground at the scene's own time, written into the cache by key.
@@ -1092,16 +1110,16 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
   }
   TileRig authored;
   REQUIRE_MESSAGE(authored.build(gpu.device, desc, settings, k_width, k_height, still_lapse(),
-                                 &pool, &t, centre, &built),
+                                 &pool, &t, absolute(WorldPos::origin(), centre), &built),
                   authored.error);
   CaptureChannels channels;
   channels.depth = true;
   u32 compared = 0;
   u32 differ = 0;
   u32 far_total = 0;
-  Camera high;  // over the rings' edge and the far levels
-  high.position = Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f};
-  high.target = Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f};
+  // Over the rings' edge and the far levels.
+  Camera high = camera_between(Vec3{centre.x - 20.0f, 90.0f, centre.z + 30.0f},
+                               Vec3{centre.x + 100.0f, 0.0f, centre.z - 90.0f});
   high.znear = 0.5f;
   const Camera cameras[3] = {looking_down_at(centre),
                              looking_across(centre, procedural.ground->height(centre.x, centre.z)),
@@ -1131,8 +1149,8 @@ TEST_CASE("world tiles: a tile set built ahead and read back draws what the grou
       view_differ += same ? 0u : 1u;
       if (!same) {
         Vec3 w{};
-        if (unproject(a, inverse(procedural.renderer.views()[0].view_proj), p % k_width,
-                      p / k_width, w)) {
+        if (unproject(a, inverse(procedural.renderer.views()[0].view_proj), eye_of(camera),
+                      p % k_width, p / k_width, w)) {
           u32 l = 0;
           u32 index = 0;
           const i32 tx = static_cast<i32>(std::floor(w.x / 8.0f));
@@ -1194,9 +1212,9 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
   constexpr u32 k_width = 160;
   constexpr u32 k_height = 120;
   TileRig rig;
-  REQUIRE_MESSAGE(
-      rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool, &t, Vec3{}),
-      rig.error);
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, still_lapse(), &pool, &t,
+                            WorldPos::origin()),
+                  rig.error);
   const u64 device_bytes = rig.scene.terrain_ring_bytes();
   u32 most_chunks[k_max_terrain_levels] = {};
   u32 far_moves = 0;  // in the counted half

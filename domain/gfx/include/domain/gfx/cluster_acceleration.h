@@ -26,6 +26,7 @@
 
 #include <core/base/types.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/cluster_cull.h>
 
 #include <span>
 #include <string>
@@ -299,13 +300,20 @@ static_assert(sizeof(ClusterRecordParams) == 128);
 // which the driver encodes region by region on the CPU: 47,849 of them a frame took 3 ms to record
 // on the endless desert, and every frame-thread spike past 8 ms with them
 // (docs/experiments/frame-thread-spikes-2026-10-04.md).
+//
+// **And each record's transform** (ADR-0053): the instance's 3x4 with its translation measured from
+// the frame's eye, `instance_from_eye` (shaders/scene.slang) - the same bits the rasterizers place
+// the instance at, written on the GPU every frame so that nothing is rewritten on the CPU when the
+// eye moves. 80 bytes, not the 24 it was: the instance table's address and the eye.
 struct TlasReferenceParams {
   u64 addresses = 0;  // u64[count]
   u64 records = 0;    // top-level instance records, k_instance_record_bytes each
   u32 count = 0;
   u32 pad = 0;
+  u64 instances = 0;  // InstanceDesc[count], the scene's, in record order
+  FrameEye eye;       // the frame's origin
 };
-static_assert(sizeof(TlasReferenceParams) == 24);
+static_assert(sizeof(TlasReferenceParams) == 80);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode

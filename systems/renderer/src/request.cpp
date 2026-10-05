@@ -163,7 +163,8 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
   jobs_ = std::make_unique<jobs::JobSystem>(config);
   if (resolved.terrain_rings) {
     rings_ = std::make_unique<TerrainRingSet>();
-    if (!rings_->build(data.terrain, first.position.x, first.position.z, jobs_.get(), error)) {
+    const Vec3 at = terrain_eye(first.position);
+    if (!rings_->build(data.terrain, at.x, at.z, jobs_.get(), error)) {
       stage_ = "terrain-rings";
       return false;
     }
@@ -173,9 +174,10 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
     tiles_ = std::make_unique<TerrainTileSet>();
     // The far levels past the world's rings are the renderer's own (ADR-0051): the request's
     // `terrain_far_levels` lays them out, -1 the tunable's count.
-    if (!tiles_->build(
-            data.terrain, terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels),
-            ground_->provider().tiles(), first.position.x, first.position.z, jobs_.get(), error)) {
+    if (!tiles_->build(data.terrain,
+                       terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels),
+                       ground_->provider().tiles(), terrain_eye(first.position).x,
+                       terrain_eye(first.position).z, jobs_.get(), error)) {
       stage_ = "terrain-tiles";
       return false;
     }
@@ -203,14 +205,19 @@ bool MovingGround::start(GpuScene& scene, const ResolvedSettings& resolved, bool
   return true;
 }
 
-void MovingGround::follow_tiles(Vec3 camera) {
+void MovingGround::follow_tiles(WorldPos camera) {
   if (tiles_ == nullptr) return;
-  terrain_tiles_round(tiles_->tiles_desc(), camera.x, camera.z, round_);
+  // The tile layout still takes float32 metres (ADR-0053 stage 2: the ground's tiles relative to
+  // their corners); a tile's choice from a 3 cm rounding of the eye is harmless.
+  const Vec3 at = terrain_eye(camera);
+  terrain_tiles_round(tiles_->tiles_desc(), at.x, at.z, round_);
   tiles_->set_tiles(std::span<const TerrainTile>(round_.data(), round_.size()));
 }
 
 void MovingGround::frame(const Camera& camera) {
-  motion_.frame(1.0 / static_cast<f64>(k_frame_hz), camera.position.x, camera.position.z);
+  // The terrain's motion takes the eye in float32 metres too (ADR-0053 stage 2, as above).
+  const Vec3 at = terrain_eye(camera.position);
+  motion_.frame(1.0 / static_cast<f64>(k_frame_hz), at.x, at.z);
 }
 
 void MovingGround::finish() { motion_.finish(); }
@@ -572,9 +579,11 @@ bool read_protocol_clock(const protocol::RenderClock& in, ClockRequest& out, std
 Camera read_protocol_camera(const SceneData& scene, const protocol::RenderCamera* camera,
                             const protocol::RenderOrbit* orbit) {
   if (camera != nullptr) {
+    // The protocol's `RenderCamera.position` and `target` are `vec3`s on the wire this batch
+    // (ADR-0053): widened here, where they are read.
     Camera out;
-    out.position = camera->position;
-    out.target = camera->target;
+    out.position = absolute(WorldPos::origin(), camera->position);
+    out.target = absolute(WorldPos::origin(), camera->target);
     out.fov_y = radians(camera->fov_deg);
     out.znear = camera->znear > 0.0f ? camera->znear : 0.01f * scene.radius;
     return out;

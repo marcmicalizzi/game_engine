@@ -197,8 +197,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   cut_params.triangles = triangles.address;
   cut_params.visible = visible.address;
   cut_params.visibility = vis_cut.address;
-  cut_params.width = k_size;
-  cut_params.height = k_size;
+  cut_params.extent = gfx::draw_extent(k_size, k_size);
   gfx::ClusterDrawParams leaf_params = cut_params;
   leaf_params.visible = 0;  // clusters 0..leaf_count-1: the leaves come first
   leaf_params.visibility = vis_leaves.address;

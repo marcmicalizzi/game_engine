@@ -128,7 +128,7 @@ struct Rig {
   std::string error;
 
   bool build(const gfx::Device& device, const SceneDesc& desc, const RenderSettings& settings,
-             u32 width, u32 height, jobs::JobSystem* jobs, Vec3 ring_camera) {
+             u32 width, u32 height, jobs::JobSystem* jobs, WorldPos ring_camera) {
     if (!load_scene(desc, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
@@ -136,7 +136,8 @@ struct Rig {
       return false;
     }
     rings = std::make_unique<TerrainRingSet>();
-    if (!rings->build(data.terrain, ring_camera.x, ring_camera.z, jobs, &error)) return false;
+    const Vec3 at = terrain_eye(ring_camera);
+    if (!rings->build(data.terrain, at.x, at.z, jobs, &error)) return false;
     if (!scene.create(device, data, resolved, &error, rings.get())) return false;
     SceneRenderer::Desc rd;
     rd.width = width;
@@ -148,7 +149,9 @@ struct Rig {
   }
 };
 
-bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px, u32 py,
+// The view's matrix is in the frame's space, whose origin is the camera's eye (ADR-0053): the point
+// is put back in the world by adding `eye`, the camera's position, which here is by the origin.
+bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, Vec3 eye, u32 px, u32 py,
                Vec3& out) {
   const f32 depth = shot.depth[py * shot.width + px];
   if (!(depth > 0.0f)) return false;
@@ -156,7 +159,7 @@ bool unproject(const CapturedFrame& shot, const Mat4& inverse_view_proj, u32 px,
   const f32 y = 1.0f - (static_cast<f32>(py) + 0.5f) / static_cast<f32>(shot.height) * 2.0f;
   const Vec4 p = inverse_view_proj * Vec4{x, y, depth, 1.0f};
   if (!(std::abs(p.w) > 0.0f)) return false;
-  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w};
+  out = Vec3{p.x / p.w, p.y / p.w, p.z / p.w} + eye;
   return true;
 }
 
@@ -290,19 +293,21 @@ void draw_seams(const gfx::Device& device, const std::string& ddc,
   // runs across both rings at x = 0 and at z = 0.
   const auto camera_for = [&](const TerrainDesc& terrain) {
     Camera camera;
-    camera.position = Vec3{3.0f, terrain_height(terrain, 3.0f, 3.0f) + 5.0f, 3.0f};
-    camera.target = Vec3{2.0f, terrain_height(terrain, 2.0f, -3.0f), -3.0f};
+    camera.position =
+        absolute(WorldPos::origin(), Vec3{3.0f, terrain_height(terrain, 3.0f, 3.0f) + 5.0f, 3.0f});
+    camera.target =
+        absolute(WorldPos::origin(), Vec3{2.0f, terrain_height(terrain, 2.0f, -3.0f), -3.0f});
     camera.znear = 0.05f;
     return camera;
   };
   Rig rig;
   const Camera camera = camera_for(desc.terrain);
-  REQUIRE_MESSAGE(
-      rig.build(device, desc, settings, k_width, k_height, &pool, Vec3{3.0f, 0.0f, 3.0f}),
-      rig.error);
+  REQUIRE_MESSAGE(rig.build(device, desc, settings, k_width, k_height, &pool,
+                            absolute(WorldPos::origin(), Vec3{3.0f, 0.0f, 3.0f})),
+                  rig.error);
   REQUIRE(rig.resolved.terrain_rings);
   REQUIRE(rig.scene.ground_detail());
-  rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
+  rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
   const gfx::GroundDetailParams block = rig.scene.ground_detail_params();
   REQUIRE((!instrument || (block.flags & gfx::k_ground_spacing) != 0u));
   FrameDesc frame;
@@ -316,6 +321,7 @@ void draw_seams(const gfx::Device& device, const std::string& ddc,
   REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
   REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
   const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+  const Vec3 eye = relative(camera.position, WorldPos::origin());
   const u32 scene_instances = rig.data.instances.size();
   const u32 middle_slots = rig.scene.terrain_slots(1);
   // Which level drew a pixel, and which instance: the scene's grid, a middle ring's slot, an inner
@@ -357,7 +363,7 @@ void draw_seams(const gfx::Device& device, const std::string& ddc,
       const u32 p = py * k_width + px;
       if (shot.ids[p * k_id_words] == k_no_id) continue;
       Vec3 world;
-      if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+      if (!unproject(shot, inverse_view_proj, eye, px, py, world)) continue;
       // The detail view's ripple is the scene's own profile, unfiltered, and its grain the coarse
       // octave: functions of (x, z), and of the normal only through the spacing's scale.
       const brdf_ref::Dvec3 point = brdf_ref::dvec3(world);
@@ -636,13 +642,15 @@ TEST_CASE("sand detail: over the rings, culling changes no pixel and two runs ar
     Rig rig;
     // A walker's eyes over the sand, looking along it across the inner ring's border.
     Camera camera;
-    camera.position = Vec3{-2.0f, terrain_height(desc.terrain, -2.0f, 2.0f) + 1.65f, 2.0f};
-    camera.target = Vec3{6.0f, terrain_height(desc.terrain, 6.0f, -9.0f), -9.0f};
+    camera.position = absolute(
+        WorldPos::origin(), Vec3{-2.0f, terrain_height(desc.terrain, -2.0f, 2.0f) + 1.65f, 2.0f});
+    camera.target =
+        absolute(WorldPos::origin(), Vec3{6.0f, terrain_height(desc.terrain, 6.0f, -9.0f), -9.0f});
     camera.znear = 0.05f;
     REQUIRE_MESSAGE(
         rig.build(gpu.device, desc, variants[v], k_width, k_height, &pool, camera.position),
         rig.error);
-    rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
+    rig.motion.frame(1.0 / 60.0, terrain_eye(camera.position).x, terrain_eye(camera.position).z);
     FrameDesc frame;
     frame.camera = camera;
     frame.frame_index = 0;

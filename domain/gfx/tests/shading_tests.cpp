@@ -204,8 +204,7 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
   draw.visibility = vis.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
   gfx::ClusterDrawParams draw_below = draw;
   draw_below.view_proj = view_proj_below;
   draw_below.visibility = vis_below.address;
@@ -755,10 +754,8 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   draw.mesh = scene.meshes.address;
   draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
   draw.visibility = vis.address;
-  draw.width = k_size;
-  draw.height = k_size;
+  draw.extent = gfx::draw_extent(k_size, k_size);
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
   gfx::ResolveParams base{};
@@ -1205,8 +1202,7 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
     d.instances = scenes[m].instances.address;
     d.triangles = triangles[m].address;
     d.visibility = visibility;
-    d.width = extent;
-    d.height = extent;
+    d.extent = gfx::draw_extent(extent, extent);
     return d;
   };
   const gfx::ClusterDrawParams quad_draw = draw_of(0, view_proj, vis.address, k_size);

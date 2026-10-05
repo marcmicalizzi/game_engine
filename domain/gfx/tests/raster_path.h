@@ -288,9 +288,9 @@ class ClusterRaster {
     }
   }
 
-  // Binds the pipeline and the bindless set, pushes `params` with `triangles_per_cluster` filled
-  // in, and draws `entries` entries of `params.visible` (clusters 0..entries-1 when it is null):
-  // one mesh workgroup, or one vertex instance, per entry.
+  // Binds the pipeline and the bindless set, pushes `params`, and draws `entries` entries of
+  // `params.visible` (clusters 0..entries-1 when it is null): one mesh workgroup, or one vertex
+  // instance, per entry.
   void draw(gfx::CommandList commands, const gfx::BindlessSet& bindless,
             gfx::ClusterDrawParams params, u32 entries) const {
     bind(commands, bindless, params);
@@ -319,7 +319,6 @@ class ClusterRaster {
  private:
   void bind(gfx::CommandList commands, const gfx::BindlessSet& bindless,
             gfx::ClusterDrawParams& params) const {
-    params.triangles_per_cluster = triangles_per_cluster_;
     commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline_);
     bindless.bind(commands, gfx::BindPoint::Graphics);
     commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(params),

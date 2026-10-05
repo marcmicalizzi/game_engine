@@ -1348,9 +1348,13 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
   // A level's vertices are placed on its lattice in mesh space, which the cull pass and the pool
   // pass take for the world; a terrain's instance is the identity, and anything else is refused
   // rather than drawn in the wrong place.
-  const Mat4& world = instance_table_[instance].world;
-  const Mat4 identity = Mat4::identity();
-  if (std::memcmp(&world, &identity, sizeof(Mat4)) != 0) {
+  // (Stage 1 of ADR-0053: a level is still world-space vertices at cell zero; a tile's vertices
+  // relative to its corner, with the corner its instance's cell, is the next step.)
+  gfx::InstanceDesc identity{};
+  gfx::set_instance_transform(identity, Mat4::identity());
+  const gfx::InstanceDesc& placed = instance_table_[instance];
+  if (std::memcmp(placed.rows, identity.rows, sizeof(identity.rows)) != 0 ||
+      !(placed.cell == identity.cell)) {
     if (error != nullptr) *error = "a moving terrain's instance must have the identity transform";
     return false;
   }
@@ -2641,15 +2645,17 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   }
 
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
-  // The top-level instance records, once: world transform, the instance as the custom index, and
-  // a bottom-level address of zero, which the frame's `tlas_references` dispatch overwrites from
-  // `blas_set.addresses` before every top-level build. An instance whose structure a frame did not
-  // build keeps a zero there, which the top-level build treats as an inactive instance.
+  // The top-level instance records, once: the instance as the custom index, and a bottom-level
+  // address of zero and a transform, both of which the frame's `tlas_references` dispatch
+  // overwrites — the address from `blas_set.addresses`, the transform from the instance's cell and
+  // the frame's eye (ADR-0053) — before every top-level build. An instance whose structure a frame
+  // did not build keeps a zero address, which the top-level build treats as an inactive instance.
+  // The transform written here is the one at the world's origin, which no frame reads.
   Vector<gfx::TlasInstance> tlas_records;
   tlas_records.reserve(instance_count_);
   for (u32 i = 0; i < instance_count_; ++i) {
     gfx::TlasInstance record;
-    record.transform = instance_table_[i].world;
+    record.transform = gfx::instance_matrix(instance_table_[i], WorldEye{});
     record.custom_index = i;
     record.blas = 0;
     tlas_records.push_back(record);

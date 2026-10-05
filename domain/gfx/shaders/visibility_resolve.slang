@@ -60,12 +60,12 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (352 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (400 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
   float4 ground;  // rgb the ground's albedo, the hemisphere ambient's lower half; w unused
-  float4 camera;  // xyz position
+  float4 camera;  // xyz this view's eye in the frame's space (ResolveParams::eye)
   column_major float4x4 view_proj;
   uint64_t visibility;         // uint64_t[width * height]
   uint64_t clusters;           // ClusterDesc[]
@@ -108,6 +108,11 @@ struct ResolveParams {
   uint dither_pad0;
   uint dither_pad1;
   uint dither_pad2;
+  // The frame's origin (scene.slang). `camera` is this view's eye in the frame's space, the
+  // reconstruction's `from_eye` is measured from it, and a surface's `position` — what a shadow ray
+  // leaves from and a light is reached from — is in that space, as the lights, the cascades and
+  // the frame's top-level structure are.
+  FrameEye eye;
 };
 
 // Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
@@ -209,6 +214,7 @@ SceneGeometry geometry_of(ResolveParams* params) {
   geo.cluster_materials = params->cluster_materials;
   geo.visible = params->visible;
   geo.normal_pool = params->normal_pool;
+  geo.eye = params->eye;
   return geo;
 }
 

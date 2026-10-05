@@ -223,17 +223,20 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   // and nothing touches until the renderer draws again (sky.h).
   const bool sky = renderer_->sky().active() && !settings.uniform_sky;
   if (sky) {
-    frame_lighting(scene_->data(), renderer_->frame_sky(), lighting);
+    frame_lighting(scene_->data(), renderer_->frame_sky(), lighting, camera.position);
   } else {
     frame_lighting(scene_->data(), settings.frame_index,
-                   lighting_options(resolved, settings.sun_time_s), lighting);
+                   lighting_options(resolved, settings.sun_time_s), lighting, camera.position);
   }
   std::memcpy(lights_.mapped, lighting.lights, sizeof(lighting.lights));
 
   const View& view = renderer_->views()[0];
   gfx::PathTraceParams params{};
   params.clip_to_ray = view.clip_to_ray;
-  params.camera = Vec4{camera.position, 0.0f};
+  // The frame's space, as the resolve's (ADR-0053): the eye at its origin, and the frame's
+  // top-level structure, which the frame just built, in it.
+  params.camera = Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+  params.eye = gfx::frame_eye(frame_eye(camera));
   params.sky = lighting.sky;
   params.sun = lighting.sun;
   params.ground = lighting.ground;
@@ -279,8 +282,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   if (scene_->ground_detail()) {
     gfx::GroundDetailParams detail = scene_->ground_detail_params();
     // And the resolve's frame, at the same eye (gfx.md, "Far from the origin").
-    gfx::ground_detail_frame(detail, static_cast<f64>(camera.position.x),
-                             static_cast<f64>(camera.position.z));
+    gfx::ground_detail_frame(detail, camera.position, camera.position);
     std::memcpy(static_cast<u8*>(params_.mapped) + sizeof(gfx::PathTraceParams), &detail,
                 sizeof(detail));
     params.ground_detail = params_.address + sizeof(gfx::PathTraceParams);

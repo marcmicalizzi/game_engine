@@ -122,8 +122,8 @@ struct Rig {
 
 Camera aimed(Vec3 eye, Vec3 towards, f32 fov_deg) {
   Camera camera;
-  camera.position = eye;
-  camera.target = eye + towards * 100.0f;
+  camera.position = absolute(WorldPos::origin(), eye);
+  camera.target = absolute(WorldPos::origin(), eye + towards * 100.0f);
   camera.fov_y = fov_deg * 3.14159265f / 180.0f;
   camera.znear = 0.05f;
   return camera;

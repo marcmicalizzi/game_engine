@@ -28,7 +28,7 @@ f32 orbit_rise(f32 pitch) noexcept {
   return static_cast<f32>(sine / cosine);
 }
 
-Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept {
+Camera orbit_camera(const WorldPos& center, f32 radius, f32 distance, u64 frame) noexcept {
   const f32 angle = static_cast<f32>(frame) * 0.006f;
   const f32 d =
       (distance > 0.0f ? distance : 22.0f + 14.0f * std::sin(static_cast<f32>(frame) * 0.004f)) *
@@ -37,14 +37,15 @@ Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noe
   // The rise of the protocol's default pitch, as `orbit_camera_at` works it out: what makes
   // `--orbit 22` and `orbit {distance: 22}` one camera (view_set.h, `k_orbit_pitch`).
   camera.position =
-      center + Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d};
+      center + DVec3{Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d}};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;  // reversed-Z: 0.1 for the heightfield, 0.2 mm for a 2 cm mesh
   return camera;
 }
 
-Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept {
+Camera orbit_camera_at(const WorldPos& center, f32 radius, f32 distance, f32 yaw,
+                       f32 pitch) noexcept {
   const f32 d = (distance > 0.0f ? distance : 22.0f) * (radius / 10.0f);
   // `pitch` is the elevation above the orbit circle of radius d; at the default, `k_orbit_pitch`,
   // this is `orbit_camera`'s camera to the bit. Clamped short of the pole, where the tangent and
@@ -52,14 +53,16 @@ Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f3
   const f32 limit = radians(85.0f);
   const f32 clamped = pitch < -limit ? -limit : (pitch > limit ? limit : pitch);
   Camera camera;
-  camera.position = center + Vec3{std::cos(yaw) * d, orbit_rise(clamped) * d, std::sin(yaw) * d};
+  camera.position =
+      center + DVec3{Vec3{std::cos(yaw) * d, orbit_rise(clamped) * d, std::sin(yaw) * d}};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;
   return camera;
 }
 
-Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u32 steps) noexcept {
+Camera fly_camera(const WorldPos& center, f32 radius, f32 from, f32 to, u32 step,
+                  u32 steps) noexcept {
   const f32 a = from > 0.0f ? from : 1.0f;
   const f32 b = to > 0.0f ? to : a;
   // exp(lerp(log a, log b, t)): equal steps in log distance, which are equal steps in projected
@@ -74,7 +77,7 @@ Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u3
   const f32 d = radii * radius;
   Camera camera;
   camera.position =
-      center + Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d};
+      center + DVec3{Vec3{std::cos(angle) * d, orbit_rise(k_orbit_pitch) * d, std::sin(angle) * d}};
   camera.target = center;
   camera.fov_y = radians(55.0f);
   camera.znear = 0.01f * radius;
@@ -254,22 +257,30 @@ bool panini_source_pixel(const ViewSet& set, const View& view, u32 x, u32 y, u32
   return source_x < view.source_width && source_y < view.source_height;
 }
 
+Vec3 camera_forward(const Camera& camera) noexcept {
+  const DVec3 d = camera.target - camera.position;
+  const f64 n = length(d);
+  return n > 0.0 ? narrow(d / n) : Vec3{0.0f, 0.0f, -1.0f};
+}
+
 void ViewSet::update(const Camera& camera) noexcept {
-  // The head frame: the frame camera's own forward, right, and up. A view's yaw turns the forward
-  // direction about the head's up, which is what a monitor standing beside another one does.
-  const Vec3 forward = normalize(camera.target - camera.position);
+  // **The frame's eye is the origin of every matrix made here** (ADR-0053; renderer.md, "The
+  // frame's origin"): the views look from (0, 0, 0) along the camera's direction, which is the f64
+  // difference of its two points normalized in f64, so a camera anywhere in the world gives the
+  // same matrices as the same camera by the origin — and a camera moved by whole cells the same
+  // bits. The head frame: the frame camera's own forward, right, and up. A view's yaw turns the
+  // forward direction about the head's up, which is what a monitor standing beside another one
+  // does.
+  const Vec3 forward = camera_forward(camera);
   const Vec3 right = normalize(cross(forward, Vec3{0.0f, 1.0f, 0.0f}));
   const Vec3 up = cross(right, forward);
+  const Vec3 eye{};
   for (u32 v = 0; v < count_; ++v) {
     View& view = views_[v];
-    // A view that is not turned takes the frame camera's own look-at expression, so that a single
-    // view produces the matrix it always has, to the bit.
     const Mat4 view_matrix =
         view.yaw == 0.0f
-            ? look_at(camera.position, camera.target, Vec3{0.0f, 1.0f, 0.0f})
-            : look_at(camera.position,
-                      camera.position + forward * std::cos(view.yaw) + right * std::sin(view.yaw),
-                      up);
+            ? look_at(eye, forward, Vec3{0.0f, 1.0f, 0.0f})
+            : look_at(eye, forward * std::cos(view.yaw) + right * std::sin(view.yaw), up);
     const Mat4 projection =
         view.symmetric ? perspective_reversed_z(camera.fov_y, view.aspect, camera.znear)
                        : off_center_reversed_z(view.left * camera.znear, view.right * camera.znear,

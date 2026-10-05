@@ -238,7 +238,7 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
         local.expand(cluster.center + Vec3(cluster.radius));
       }
       if (local.is_empty()) continue;
-      const Aabb3 bounds = transform_aabb(instance.world, local);
+      const Aabb3 bounds = transform_aabb(renderer::instance_world_matrix(instance), local);
       const i64 x0 = floor_div(static_cast<i64>(std::floor(bounds.min.x * 1000.0f)), tile_mm_);
       const i64 x1 = floor_div(static_cast<i64>(std::floor(bounds.max.x * 1000.0f)), tile_mm_);
       const i64 z0 = floor_div(static_cast<i64>(std::floor(bounds.min.z * 1000.0f)), tile_mm_);
@@ -737,7 +737,7 @@ bool SceneCollision::build_placements(Tile& tile) {
   } else if (const Vector<u32>* bin = bins_.find_value(key)) {
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
-      (void)add_piece(instance.mesh, instance.world, children_);
+      (void)add_piece(instance.mesh, renderer::instance_world_matrix(instance), children_);
     }
   }
   tile.pieces = children_.size();

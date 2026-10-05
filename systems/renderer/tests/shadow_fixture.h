@@ -336,8 +336,8 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   REQUIRE_MESSAGE(renderer.create(device, scene, resolved, desc, &error), error);
   const Mat4 frame_rotation = fixture_frame();
   FrameDesc frame;
-  frame.camera.position = to_world(frame_rotation, options.eye);
-  frame.camera.target = to_world(frame_rotation, options.target);
+  frame.camera.position = absolute(WorldPos::origin(), to_world(frame_rotation, options.eye));
+  frame.camera.target = absolute(WorldPos::origin(), to_world(frame_rotation, options.target));
   frame.view_mode = options.view_mode;
   CaptureChannels channels;
   channels.color = true;

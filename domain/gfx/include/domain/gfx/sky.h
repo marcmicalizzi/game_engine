@@ -147,7 +147,8 @@ struct SkyParams {
   Vec4 moon_illuminance{};  // rgb outside the atmosphere (lights the sky and the ground), w its
                             // albedo
   // ---- the eye and the heavens ----
-  // xyz the eye in the world, metres; w its altitude in the tables, km. The shaders read only w:
+  // xyz zero, the eye being the frame's origin (ADR-0053); w its altitude in the tables, km. The
+  // shaders read only w:
   // the sky is a function of the eye's height, and no direction is made from where it stands
   // (view_ray.h).
   Vec4 camera{};

@@ -337,8 +337,7 @@ class Rig {
     drawn.instances = scenes_[ci].instances.address;
     drawn.triangles = triangles_[ci].address;
     drawn.visibility = vis_.address;
-    drawn.width = k_size;
-    drawn.height = k_size;
+    drawn.extent = gfx::draw_extent(k_size, k_size);
     const u64 probe_address = params_.address;
     const u64 trace_address = params_.address + sizeof(ProbeParams);
 
