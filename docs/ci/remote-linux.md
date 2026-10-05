@@ -413,3 +413,5 @@ startup check says so correctly for every app, and `tools/schemac` — which the
   and what it costs"). `touch` the edited files on the remote once, or `-Clean`.
 - **A test that fails only here** — check `LastTest.log` from `-Fetch` first. The six pwsh tests
   above are *absent*, not failing; a run that reports fewer tests than the container is expected.
+
+**"No space left on device" from the compiler, with the build volume nearly empty.** The server's root filesystem is separate from the volume the tree is on, and it fills with other people's work. Until 2026-10-05 the compiler's temporary files and the tests' scratch directories went to the system's `/tmp`, on root, and a merge gate died there with `error writing to /tmp/cc….s`. The script now exports `TMPDIR` as a `tmp` directory beside the remote tree, so a build and its tests write only to the volume they are on. A full root disk is still worth telling the machine's owner about: `ssh <host> df -h /` says so in one line.

@@ -312,6 +312,10 @@ Write-Step "$Preset on $Server (jobs=$jobCount$(if ($Test) { ', with tests' }))"
 # FETCHCONTENT_BASE_DIR outside the build tree, so -Clean costs a compile and not a 300 MB
 # download, and FETCHCONTENT_UPDATES_DISCONNECTED so a reconfigure never re-fetches a pinned tag.
 $lines = @('set -e', "cd `"$RemoteSrc`"")
+# The compiler's and the tests' temporary files go beside the tree, on the volume the build is on,
+# and not in the system's /tmp: on 2026-10-05 the server's root filesystem was full, a compile died
+# with "error writing to /tmp/cc….s: No space left on device", and the build had done nothing wrong.
+$lines += "mkdir -p `"$RemoteRoot/tmp`" && export TMPDIR=`"$RemoteRoot/tmp`""
 if ($Clean) { $lines += "rm -rf `"build/$Preset`"" }
 $lines += "cmake --preset $Preset -DFETCHCONTENT_BASE_DIR=`"$RemoteDeps/$Preset`" -DFETCHCONTENT_UPDATES_DISCONNECTED=ON"
 $lines += "cmake --build --preset $Preset -j $jobCount -- -k 0"
