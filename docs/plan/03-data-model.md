@@ -117,7 +117,7 @@ An environment agent proposes a change to `founding_war`. On acceptance the subs
 ## 3.7 Spatial partition
 
 - A fixed **tile grid** (size chosen per game; 64–128 m is typical) with a quadtree of levels `L0..L4` over it. The same grid is the unit of: document layer files, streaming, persistent-state partitioning, nav tiles, acceleration-structure residency, agent edit leases, and world-gen mips. One partition, many consumers.
-- World positions are stored as (tile index, float local offset) and rendering uses camera-relative transforms, so float32 precision holds at any world size ([02 §2.7](02-architecture.md#27-generality-what-the-engine-must-not-preclude)).
+- World positions are stored as (tile index, float local offset) and rendering uses camera-relative transforms, so float32 precision holds at any world size ([02 §2.7](02-architecture.md#27-generality-what-the-engine-must-not-preclude)). **Status, 2026-10-05:** superseded in form by [ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md): a position is f64 on the CPU and in documents, and the (cell, local) pair is what GPU memory holds. The rule this line exists for, no absolute float32 anywhere, stands, and was not true of the code before that date ([far from the origin](../experiments/far-from-origin-2026-10-04.md)).
 - Tiles are columns (full vertical extent). Interiors are either in the column or in **interior cells** reached through portals and streamed independently.
 - Per-tile spatial index (BVH or grid) for queries below tile granularity. Cross-tile queries go through the level hierarchy.
 

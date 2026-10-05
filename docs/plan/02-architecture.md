@@ -151,7 +151,7 @@ The first game is small and single-player, but the engine should not bake in lim
 
 | Later need | What a limit would look like | Architectural hook now |
 |---|---|---|
-| Very large or space-scale worlds (flight, open worlds beyond ~10 km) | float32 world positions jitter far from the origin | Positions are (tile index, float local offset); rendering uses camera-relative transforms; no absolute float32 world coordinate exists anywhere |
+| Very large or space-scale worlds (flight, open worlds beyond ~10 km) | float32 world positions jitter far from the origin | Positions are (tile index, float local offset); rendering uses camera-relative transforms; no absolute float32 world coordinate exists anywhere. **Status, 2026-10-05:** the code kept absolute float32 positions until the owner walked 420 km out; [ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md) settles the form: f64 on the CPU as its own type, a 64 m cell and a local in GPU memory, eye-relative in a frame |
 | Long sessions | float seconds accumulate error after hours | 64-bit tick counters and integer game time; float only in per-frame deltas |
 | Many animated units (RTS, crowds, 10^4 and up) | CPU skinning, one draw per entity | GPU skinning, cluster instancing, animation LOD; entity count is a budget, not a constant |
 | Multiplayer | wall-clock reads in gameplay, a "the player" singleton, render-coupled logic | Deterministic fixed-step sim, observer set, schema replication annotations, headless `sim` mode as a dedicated server ([05 §5.12](05-simulation.md#512-multiplayer-readiness)) |
