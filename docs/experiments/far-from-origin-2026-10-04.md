@@ -46,7 +46,7 @@ The fix is described in [gfx](../subsystems/gfx.md) under "Far from the origin".
 What holds, and how it was checked:
 
 - **The origin's tolerances far out.** The far case holds 1 of 255 on the shaded picture and at most 2 on the detail view at 420 km and at 10,000 km, on level sand and on a 32° slip face, at three looks.
-- **No seam where the frame's cell changes.** The 420 km sand runs across a boundary of the frame's grid, with the walker's two eyes in the cells either side. Every view of every case is also drawn with the neighbouring cell's frame, and differs from its own by at most 4 of 255 on the raw detail view.
+- **No seam where the frame's cell changes.** The 420 km sand runs across a boundary of the frame's grid, with the walker's two eyes in the cells either side. Every view of every case is also drawn with the neighbouring cell's frame, and differs from its own by at most 5 of 255 on the raw detail view (4 before the ripples' travel became one phase at every scale; the test holds 6, which is the eye's 2 against the mirror plus the neighbour's 4).
 - **Old sites improved.** 3.7 km out, the old sites now measure what the origin does.
 - **Near the origin.** A frame at the origin is the old arithmetic, and every eye within 512 m of the origin gets it. Main's shader and this one were captured in the same tree, both at 3840×2160 with traced shadows:
   - At (−300, 1.65 m over the ground, 200), a walker's view, **no pixel differs**. No slip face is in that view, so the lanes' new stagger is not exercised there; it moves a tongue by under a micrometre.

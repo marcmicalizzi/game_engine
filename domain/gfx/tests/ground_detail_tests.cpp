@@ -304,8 +304,13 @@ struct GroundCase {
   bool framed = true;
   // The detail view with the neighbouring cell's frame against the eye's own, of 255: the raw
   // channels at full contrast, where the neighbour's frame puts the point up to 1.5 km from its
-  // origin and a float's step there is 0.12 mm against the eye's 0.06 (4 measured, RTX 5090).
-  int neighbour = 4;
+  // origin and a float's step there is 0.12 mm against the eye's 0.06. The bound is reasoned and
+  // not only measured: the eye's frame is held within 2 of the double mirror on this view, the
+  // neighbour's rounds twice as coarsely, so within 4, and the two may err apart: 6. Measured, 4
+  // before the ripples' travel became one phase for every scale and 5 after (a slip face 3.7 km
+  // out, the same on the RTX 5090 and the Titan Xp); the first merge gate with both changes failed
+  // on a bound of 4 that had been set to what one tree happened to read.
+  int neighbour = 6;
   // false: measure and report, and hold no tolerance (the far case's frameless run, which is there
   // to show what the instrument reads when the pattern is taken at a float32 world coordinate).
   bool hold = true;
