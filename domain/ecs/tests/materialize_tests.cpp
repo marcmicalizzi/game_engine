@@ -311,7 +311,9 @@ TEST_CASE("ecs far: world positions materialize and write back exactly far from 
   rig.driver.materialize(d);
   for (u64 i = 0; i < 4; ++i) {
     CAPTURE(i);
-    const demo::Beacon& b = rig.entity(100 + i).get<demo::Beacon>();
+    // A copy, not a reference through the temporary entity: GCC's -Wdangling-reference cannot see
+    // that the component outlives the handle, and warnings are errors.
+    const demo::Beacon b = rig.entity(100 + i).get<demo::Beacon>();
     CHECK(b.at == sites[i].at);
     CHECK(b.survey == WorldPos{sites[i].survey_km.x * 1000.0, sites[i].survey_km.y * 1000.0,
                                sites[i].survey_km.z * 1000.0});
