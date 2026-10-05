@@ -276,7 +276,9 @@ class SceneCollision {
   bool build_placements(Tile& tile);
   // Where the tile's bodies stand: its corner at y 0 (`Tile::coord` times the tile's millimetres).
   WorldPos tile_corner(const Tile& tile) const noexcept;
-  bool add_piece(u32 mesh, const Mat4& world, WorldPos corner,
+  // One piece of the tile's compound: `linear`'s rotation and scale (its translation column is not
+  // read) standing at `at`, placed in the compound relative to the tile's `corner`.
+  bool add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
                  Vector<physics::CompoundChild>& children);
   bool proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out);
   scene_gen::Context context_for(const Entry& entry) const noexcept;

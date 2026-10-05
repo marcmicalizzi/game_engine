@@ -66,11 +66,17 @@ u32 bits(f32 v) noexcept {
   return std::bit_cast<u32>(v);
 }
 
-JsonValue vec3_json(const Vec3& v) {
+u64 bits64(f64 v) noexcept {
+  if (v == 0.0) v = 0.0;
+  return std::bit_cast<u64>(v);
+}
+
+// A position as three JSON doubles, which read back to the same bits.
+JsonValue position_json(const WorldPos& p) {
   JsonValue out = JsonValue::array();
-  out.push_back(JsonValue(v.x));
-  out.push_back(JsonValue(v.y));
-  out.push_back(JsonValue(v.z));
+  out.push_back(JsonValue(p.x));
+  out.push_back(JsonValue(p.y));
+  out.push_back(JsonValue(p.z));
   return out;
 }
 
@@ -98,27 +104,31 @@ bool read_string(const JsonValue& object, const char* key, std::string& out) {
   return true;
 }
 
-bool read_vec3(const JsonValue& object, const char* key, Vec3& out) {
+// Three numbers as a world position, read as doubles (a version 1 session's float32 positions are
+// exact in them), and only where a cell can name it: a file is input from outside (world.h).
+bool read_position(const JsonValue& object, const char* key, WorldPos& out) {
   const JsonValue* v = object.find(key);
   if (v == nullptr || !v->is_array() || v->size() != 3) return false;
   f64 c[3] = {};
   for (u32 i = 0; i < 3; ++i) {
     if (!(*v)[i].get_f64(c[i])) return false;
   }
-  out = Vec3{static_cast<f32>(c[0]), static_cast<f32>(c[1]), static_cast<f32>(c[2])};
+  const WorldPos p{c[0], c[1], c[2]};
+  if (!world_cell_valid(p)) return false;
+  out = p;
   return true;
 }
 
 JsonValue state_json(const FlyState& state) {
   JsonValue out = JsonValue::object();
-  out.set("position", vec3_json(state.position));
+  out.set("position", position_json(state.position));
   out.set("yaw", JsonValue(state.yaw));
   out.set("pitch", JsonValue(state.pitch));
   return out;
 }
 
 bool read_state(const JsonValue& object, FlyState& out) {
-  return object.is_object() && read_vec3(object, "position", out.position) &&
+  return object.is_object() && read_position(object, "position", out.position) &&
          read_f32(object, "yaw", out.yaw) && read_f32(object, "pitch", out.pitch);
 }
 
@@ -426,19 +436,20 @@ void fly_tick(FlyState& state, const input::InputState& input, const FlyActions&
   const f32 step = speed * dt;
   const Vec3 forward = fly_forward(state);
   const Vec3 right = fly_right(state);
-  state.position.x = state.position.x + (forward.x * move.y + right.x * move.x) * step;
-  state.position.y = state.position.y + (forward.y * move.y + lift) * step;
-  state.position.z = state.position.z + (forward.z * move.y + right.z * move.x) * step;
+  // The tick's displacement in float32, the same arithmetic as ever; the sum in f64 (ADR-0053),
+  // where a float32 sum 420 km out rounded a 4 mm tick away.
+  const Vec3 moved{(forward.x * move.y + right.x * move.x) * step,
+                   (forward.y * move.y + lift) * step,
+                   (forward.z * move.y + right.z * move.x) * step};
+  state.position += DVec3{moved};
 }
 
 renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept {
-  constexpr f32 k_reach = 100.0f;
+  constexpr f64 k_reach = 100.0;
   const Vec3 forward = fly_forward(state);
   renderer::Camera camera;
-  camera.position = renderer::camera_point_from_controller(state.position);
-  camera.target = renderer::camera_point_from_controller(
-      Vec3{state.position.x + forward.x * k_reach, state.position.y + forward.y * k_reach,
-           state.position.z + forward.z * k_reach});
+  camera.position = state.position;
+  camera.target = state.position + DVec3{forward} * k_reach;
   camera.fov_y = fov_y;
   camera.znear = znear;
   return camera;
@@ -448,9 +459,7 @@ FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexce
   if (!(t > 0.0f)) return from;  // and a NaN, which is not a camera
   if (t >= 1.0f) return to;
   FlyState out;
-  out.position = Vec3{from.position.x + (to.position.x - from.position.x) * t,
-                      from.position.y + (to.position.y - from.position.y) * t,
-                      from.position.z + (to.position.z - from.position.z) * t};
+  out.position = lerp(from.position, to.position, static_cast<f64>(t));
   out.pitch = from.pitch + (to.pitch - from.pitch) * t;
   // The yaw is kept in [-pi, pi], so a turn across the seam is a jump of nearly a whole turn in
   // the stored numbers and a few milliradians on the screen; interpolate the few milliradians.
@@ -466,10 +475,10 @@ FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexce
 
 FlyState fly_state_from_camera(const renderer::Camera& camera) noexcept {
   FlyState out;
-  const Vec3 position = renderer::camera_point_to_controller(camera.position);
-  const Vec3 target = renderer::camera_point_to_controller(camera.target);
-  out.position = position;
-  const Vec3 d{target.x - position.x, target.y - position.y, target.z - position.z};
+  out.position = camera.position;
+  // The look from the difference of two world positions, in f64 and then a float: by the origin
+  // the same float the subtraction of two float32 points gave, and far out still the direction.
+  const Vec3 d = narrow(camera.target - camera.position);
   const f32 length = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
   if (!(length > 0.0f)) return out;
   const f32 y = d.y / length;
@@ -535,10 +544,13 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
   }
   SessionHeader h;
   if (!read_u32(value, "version", h.version)) return fail("no version");
-  if (h.version != k_fly_version) {
+  // Version 1 is version 2 with float32 positions: its numbers read as the same doubles, and it
+  // flies under version 2's arithmetic, its trajectory hash not comparable (fly_camera.h).
+  if (h.version != k_fly_version && h.version != k_fly_version_f32) {
     return fail("recorded with fly camera integration version " + std::to_string(h.version) +
                 ", and this engine-view integrates version " + std::to_string(k_fly_version) +
-                "; a trajectory from another version would go somewhere else without saying so, "
+                " (and reads version " + std::to_string(k_fly_version_f32) +
+                "); a trajectory from another version would go somewhere else without saying so, "
                 "so the log is refused rather than misread");
   }
   (void)read_string(value, "recorded_by", h.recorded_by);
@@ -555,7 +567,10 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
     return fail("'scene' is missing a field");
   }
   const JsonValue* start = value.find("start");
-  if (start == nullptr || !read_state(*start, h.start)) return fail("'start' is not a camera");
+  if (start == nullptr || !read_state(*start, h.start)) {
+    return fail("'start' is not a camera in the world (three numbers within " +
+                std::to_string(static_cast<i64>(k_world_extent_m)) + " m, a yaw and a pitch)");
+  }
   const JsonValue* camera = value.find("camera");
   if (camera == nullptr || !camera->is_object() || !read_f32(*camera, "fov_y", h.fov_y) ||
       !read_f32(*camera, "znear", h.znear)) {
@@ -593,9 +608,9 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
 // ---- the trajectory ----------------------------------------------------------------------------
 
 u64 hash_fly_state(u64 seed, const FlyState& state) noexcept {
-  u64 h = hash_combine(seed, bits(state.position.x));
-  h = hash_combine(h, bits(state.position.y));
-  h = hash_combine(h, bits(state.position.z));
+  u64 h = hash_combine(seed, bits64(state.position.x));
+  h = hash_combine(h, bits64(state.position.y));
+  h = hash_combine(h, bits64(state.position.z));
   h = hash_combine(h, bits(state.yaw));
   return hash_combine(h, bits(state.pitch));
 }

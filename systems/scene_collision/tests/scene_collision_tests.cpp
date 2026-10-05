@@ -453,6 +453,50 @@ TEST_CASE("scene_collision: the ground at 419 km, 10,000 km and 1e8 m is the til
   CHECK(home.lattice[0] == expect[0]);
 }
 
+// **A scene read whole collides where its instances stand, anywhere** (ADR-0053; docs: "Far from
+// the origin"). A piece's place is read from the instance as the GPU holds it — its cell and the
+// 3x4's translation column, summed in f64 — and its compound child is that place less the tile's
+// corner. Until 2026-10-05 it was the renderer's float32 world matrix, which 419 km out put this
+// box's face 1 mm off (its x, 419,087.407 m, rounded to a float's 3.1 cm), 10,000 km out up to half
+// a metre and 1e8 m out up to 4 m. A ray along +x meets the box's west face at the same distance
+// from the site at every site, to a micrometre (measured: the same bits).
+TEST_CASE("scene_collision: a scene read whole collides where its instances stand, far out too") {
+  const MeshSource meshes[] = {box_mesh(Vec3{1.0f, 0.5f, 0.75f})};
+  // Whole 1024ths of a metre into the site's tile (0, 0), and not on a float's 3.1 cm grid there.
+  const Vec3 offset{16.4072265625f, 0.0f, 16.5927734375f};
+  const auto west_face = [&](WorldPos site) {
+    renderer::SceneInstance placed;
+    placed.mesh = 0;
+    placed.transform.position = offset;
+    placed.origin = site;
+    renderer::SceneData scene;
+    build_scene(meshes, std::span<const renderer::SceneInstance>(&placed, 1), scene);
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    SceneCollision collision;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(observer_at(site + DVec3{16.0, 0.0, 16.0}), 0, true);
+    REQUIRE(collision.stats().placements == 1);
+    physics::RayHit hit;
+    const DVec3 from{static_cast<f64>(offset.x) - 5.0, 0.5, static_cast<f64>(offset.z)};
+    REQUIRE(physics.cast_ray(site + from, Vec3{10.0f, 0.0f, 0.0f}, hit));
+    return hit.position - site;
+  };
+  const DVec3 home = west_face(WorldPos::origin());
+  MESSAGE("by the origin the west face is at x = " << home.x << " (the box's: "
+                                                   << static_cast<f64>(offset.x) - 1.0 << ")");
+  CHECK(std::fabs(home.x - (static_cast<f64>(offset.x) - 1.0)) < 1.0e-4);
+  for (u32 s = 0; s < 3; ++s) {
+    const DVec3 far = west_face(k_far_sites[s]);
+    MESSAGE(std::string(k_far_names[s])
+            << ": the west face " << length(far - home) << " m from where it is by the origin");
+    CHECK(length(far - home) <= 1.0e-6);
+  }
+}
+
 TEST_CASE("scene_collision: bodies come and go with the walker's ring, within its budget") {
   TestGround g;
   scene_gen::GroundProvider ground(&k_still_ops, &g);

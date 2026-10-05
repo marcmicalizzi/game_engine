@@ -77,7 +77,7 @@ view::SessionHeader synthetic_header() {
   h.engine_commit = "synthetic";
   h.procedural = "heightfield";
   h.grid = 65;
-  h.start.position = Vec3{0.0f, 8.0f, 22.0f};
+  h.start.position = WorldPos{0.0, 8.0, 22.0};
   h.start.yaw = 0.0f;
   h.start.pitch = -0.3f;
   h.fov_y = 0.9599310886f;
@@ -185,6 +185,10 @@ void tick(view::FlyState& state, input::InputState& input, const view::FlyAction
 bool near(const Vec3& a, const Vec3& b, f32 tolerance) {
   return std::fabs(a.x - b.x) <= tolerance && std::fabs(a.y - b.y) <= tolerance &&
          std::fabs(a.z - b.z) <= tolerance;
+}
+// A camera's position by the origin against a point there.
+bool near(const WorldPos& a, const Vec3& b, f32 tolerance) {
+  return near(relative(a, WorldPos::origin()), b, tolerance);
 }
 
 }  // namespace
@@ -340,8 +344,8 @@ TEST_CASE("fly camera: forward is the camera paths' forward, and each action mov
   const input::RawEvent slow[] = {key(1, k_key_w, true), key(1, k_key_lalt, true)};
   CHECK(near(run(slow, 240).position, Vec3{0.0f, 0.0f, -0.5f}, 1e-4f));
   const input::RawEvent diagonal[] = {key(1, k_key_w, true), key(1, k_key_d, true)};
-  const Vec3 diag = run(diagonal, 240).position;
-  CHECK(std::sqrt(diag.x * diag.x + diag.z * diag.z) == doctest::Approx(2.0f).epsilon(1e-4));
+  const WorldPos diag = run(diagonal, 240).position;
+  CHECK(std::sqrt(diag.x * diag.x + diag.z * diag.z) == doctest::Approx(2.0).epsilon(1e-4));
 
   // The pointer: right turns right (yaw falls, forward swings towards +x), up looks up, and a
   // pull past the pole stops at the limit.
@@ -432,6 +436,51 @@ TEST_CASE("fly camera: the synthetic session flies the committed trajectory, how
   }
 }
 
+// **A session recorded before positions were f64** (fly_camera.h, `k_fly_version`): the committed
+// synthetic session as version 1 wrote it, float32 positions and all, kept beside the current one
+// with the trajectory version 1 flew. It is read — its numbers are the same JSON numbers — and
+// flown under version 2, and the trajectory says its hash is not the recording's. Where it ends
+// moved by 31 um (measured 2026-10-05): two seconds of float32 sums 22 m from the origin, each
+// rounding at 1.9 um, against f64 sums that do not. Far out, where version 1 lost whole ticks, the
+// same replay moves by as much as those ticks were (far_tests.cpp).
+TEST_CASE("fly camera: a version 1 session is read, flown as version 2, and said to be so") {
+  const std::string log_path = content_path("content/input-logs/sessions/fly-synthetic-v1.jsonl");
+  const std::string committed =
+      read_text(content_path("content/input-logs/sessions/fly-synthetic-v1.trajectory.json"));
+  input::InputLog log;
+  std::string error;
+  REQUIRE_MESSAGE(log.load(log_path, &error) == io::Status::Ok, error);
+  view::SessionHeader header;
+  REQUIRE_MESSAGE(view::session_from_json(log.session(), header, &error), error);
+  CHECK(header.version == view::k_fly_version_f32);
+  CHECK_FALSE(view::trajectory_comparable(header));
+  CHECK(header.start.position == WorldPos{0.0, 8.0, 22.0});
+  input::ActionMap map;
+  REQUIRE(view::default_fly_map_for(log.map_hash(), map));
+  const view::Trajectory flown = fly(log, map, header, 1);
+  CHECK(flown.ticks == 480);
+  CHECK(flown.markers.size() == 5);
+
+  JsonValue recorded;
+  REQUIRE(parse_json(committed, recorded).ok);
+  const JsonValue* last = recorded.find("last");
+  REQUIRE(last != nullptr);
+  const JsonValue* p = last->find("position");
+  REQUIRE(p != nullptr);
+  REQUIRE(p->size() == 3);
+  f64 c[3] = {};
+  for (u32 i = 0; i < 3; ++i)
+    REQUIRE((*p)[i].get_f64(c[i]));
+  const f64 moved = length(flown.last.position - WorldPos{c[0], c[1], c[2]});
+  MESSAGE("the version 1 session, flown as version 2, ends " << moved
+                                                             << " m from where version 1 ended it");
+  CHECK(moved > 0.0);     // the arithmetic did change
+  CHECK(moved < 1.0e-4);  // and by the origin only in the float32 roundings it no longer makes
+  const JsonValue now = view::trajectory_to_json(flown, 240);
+  REQUIRE(recorded.find("hash") != nullptr);
+  CHECK(now.find("hash")->as_string() != recorded.find("hash")->as_string());
+}
+
 TEST_CASE("fly camera: a live frame draws a camera on the segment between the last two ticks") {
   // A live frame samples the session between ticks and draws `camera_at(alpha)`: the camera
   // `alpha` of the way from the tick before the last to the last, so its motion is the frame's own
@@ -447,10 +496,8 @@ TEST_CASE("fly camera: a live frame draws a camera on the segment between the la
   REQUIRE_MESSAGE(session.start(map, header, &error), error);
   // Before any tick both ends are the start.
   CHECK(session.previous().position == header.start.position);
-  // The drawn camera's position is a world position (ADR-0053); the controller's is float32, by
-  // the origin, where the one narrows back to the other exactly.
-  CHECK(near(relative(session.camera_at(0.5f).position, WorldPos::origin()), header.start.position,
-             0.0f));
+  // The drawn camera's position is the controller's, a world position (ADR-0053), as it is.
+  CHECK(session.camera_at(0.5f).position == header.start.position);
 
   const f32 fractions[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
   u32 cursor = 0;
@@ -461,7 +508,7 @@ TEST_CASE("fly camera: a live frame draws a camera on the segment between the la
     cursor = session.run(log.events(), cursor, SimTick{t});
     const view::FlyState a = session.previous();
     const view::FlyState b = session.state();
-    const Vec3 d = b.position - a.position;
+    const Vec3 d = narrow(b.position - a.position);
     const f32 length2 = dot(d, d);
     f32 turn = b.yaw - a.yaw;  // the short way round, as the interpolation takes it
     if (turn > 3.14159265f) turn -= 6.28318531f;
@@ -470,7 +517,7 @@ TEST_CASE("fly camera: a live frame draws a camera on the segment between the la
       const view::FlyState s = view::fly_interpolate(a, b, alpha);
       // On the segment: its distance from the line through a and b is nothing, and it is `alpha`
       // of the way along.
-      const Vec3 from_a = s.position - a.position;
+      const Vec3 from_a = narrow(s.position - a.position);
       const f32 along = length2 > 0.0f ? dot(from_a, d) / length2 : alpha;
       const Vec3 off = from_a - d * along;
       worst_off_segment = std::fmax(worst_off_segment, std::sqrt(dot(off, off)));

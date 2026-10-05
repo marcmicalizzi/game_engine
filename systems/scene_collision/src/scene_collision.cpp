@@ -60,12 +60,27 @@ bool fits_i32(i64 v) noexcept {
          v <= static_cast<i64>(std::numeric_limits<i32>::max());
 }
 
-// ADR-0053 seam: renderer (`gfx::InstanceDesc::world`) and scene_gen (`Placement::transform`) give
-// WorldPos after the merge. Until then a placement's translation arrives as an absolute float32,
-// already on a float's grid far from the origin; it is widened here and nowhere else, and from here
-// on the compound holds it relative to its tile's corner.
+// ADR-0053 seam: scene_gen (`Placement::transform`) gives WorldPos after the merge. A streamed
+// generator's placement still arrives as an absolute float32, already on a float's grid far from
+// the origin (scene_collision.md, "Far from the origin": 1.6 cm at most at 419 km, half a metre at
+// 10,000 km); it is widened here and nowhere else, and from here on the compound holds it relative
+// to its tile's corner. A scene read whole hands over its instances' cells, which need no seam.
 WorldPos placement_position(Vec3 translation) noexcept {
   return absolute(WorldPos::origin(), translation);
+}
+
+// **An instance's place, as the GPU stores it** (`gfx::InstanceDesc`; ADR-0053): its 3x4 in its
+// cell's frame — the cell's corner at the origin, so the translation column is the cell's local,
+// under 64 m — and the cell. The frame's matrix is `gfx::instance_matrix` at an eye on the cell's
+// corner, which is the local exactly; the place is the cell and the local summed in f64. Nothing
+// here forms the float32 world matrix, which 420 km out rounded a piece by up to 1.6 cm.
+Mat4 cell_frame_matrix(const gfx::InstanceDesc& instance) noexcept {
+  return gfx::instance_matrix(instance, WorldEye{instance.cell, Vec3{}, Vec3{}});
+}
+WorldPos cell_corner(const gfx::InstanceDesc& instance) noexcept {
+  return WorldPos{static_cast<f64>(instance.cell.x) * k_world_cell_m,
+                  static_cast<f64>(instance.cell.y) * k_world_cell_m,
+                  static_cast<f64>(instance.cell.z) * k_world_cell_m};
 }
 
 u32 bits(f32 v) noexcept {
@@ -81,11 +96,11 @@ f32 cell_height(f32 h00, f32 h10, f32 h01, f32 h11, f32 u, f32 v) noexcept {
   return h00 + v * (h11 - h10) + u * (h10 - h00);
 }
 
-// A world matrix as a rigid placement and a scale the proxy is built at: the backend places a body
-// by a position and a rotation, and a shape carries its own size (physics.md, `BodyDesc`). A mirror
-// goes into the scale's x.
+// A matrix's linear part (its first three columns; the translation is the caller's, in f64) as a
+// rotation and a scale the proxy is built at: the backend places a body by a position and a
+// rotation, and a shape carries its own size (physics.md, `BodyDesc`). A mirror goes into the
+// scale's x.
 struct Placement {
-  Vec3 position{};
   Quat rotation{};
   Vec3 scale{1.0f, 1.0f, 1.0f};
 };
@@ -99,7 +114,6 @@ bool decompose(const Mat4& m, Placement& out) noexcept {
   if (!(sx > 0.0f) || !(sy > 0.0f) || !(sz > 0.0f)) return false;
   if (determinant(Mat3(c0, c1, c2)) < 0.0f) sx = -sx;
   out.rotation = quat_from_mat3(Mat3(c0 / sx, c1 / sy, c2 / sz));
-  out.position = m.c[3].xyz();
   out.scale = Vec3{sx, sy, sz};
   return true;
 }
@@ -258,14 +272,14 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
         local.expand(cluster.center + Vec3(cluster.radius));
       }
       if (local.is_empty()) continue;
-      // The instance's world matrix is the renderer's absolute float32 (the seam above
-      // `placement_position`); its bounds are taken to millimetres in f64, so the binning adds no
-      // rounding of its own to the float's.
-      const Aabb3 bounds = transform_aabb(renderer::instance_world_matrix(instance), local);
-      const i64 x0 = floor_div(floor_mm(static_cast<f64>(bounds.min.x)), tile_mm_);
-      const i64 x1 = floor_div(floor_mm(static_cast<f64>(bounds.max.x)), tile_mm_);
-      const i64 z0 = floor_div(floor_mm(static_cast<f64>(bounds.min.z)), tile_mm_);
-      const i64 z1 = floor_div(floor_mm(static_cast<f64>(bounds.max.z)), tile_mm_);
+      // The bounds in the instance's cell's frame (float32 the size of the cell and the mesh), then
+      // to millimetres of the world from the cell's corner in f64 (`cell_frame_matrix`).
+      const Aabb3 bounds = transform_aabb(cell_frame_matrix(instance), local);
+      const WorldPos corner = cell_corner(instance);
+      const i64 x0 = floor_div(floor_mm(corner.x + static_cast<f64>(bounds.min.x)), tile_mm_);
+      const i64 x1 = floor_div(floor_mm(corner.x + static_cast<f64>(bounds.max.x)), tile_mm_);
+      const i64 z0 = floor_div(floor_mm(corner.z + static_cast<f64>(bounds.min.z)), tile_mm_);
+      const i64 z1 = floor_div(floor_mm(corner.z + static_cast<f64>(bounds.max.z)), tile_mm_);
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096)
         continue;  // a scene-sized mesh is ground, not a piece
       for (i64 z = z0; z <= z1; ++z) {
@@ -740,17 +754,18 @@ WorldPos SceneCollision::tile_corner(const Tile& tile) const noexcept {
                   static_cast<f64>(i64{tile.coord.z} * tile_mm_) / 1000.0};
 }
 
-bool SceneCollision::add_piece(u32 mesh, const Mat4& world, WorldPos corner,
+bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
                                Vector<physics::CompoundChild>& children) {
   if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
   Placement placed;
-  if (!decompose(world, placed)) return false;
+  if (!decompose(linear, placed)) return false;
   physics::ShapeId shape;
   if (!proxy_for(mesh, placed.scale, shape)) return false;
   physics::CompoundChild child;
   child.shape = shape;
-  // In the compound's frame, which is the tile's corner: a few tens of metres at most.
-  child.transform.position = relative(placement_position(placed.position), corner);
+  // In the compound's frame, which is the tile's corner: a few tens of metres at most, the
+  // difference taken in f64 and rounded once.
+  child.transform.position = relative(at, corner);
   child.transform.rotation = placed.rotation;
   children.push_back(child);
   return true;
@@ -783,13 +798,21 @@ bool SceneCollision::build_placements(Tile& tile) {
         if (p.mesh >= entry.source->meshes.size()) continue;
         const u32 mesh = entry.source->meshes[p.mesh];
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
-        (void)add_piece(mesh, mat4_from_transform(p.transform) * fit, corner, children_);
+        // Where the renderer stands the same placement (`renderer::instance_translation`): the
+        // fit's offset through the rotation and scale in float32, the size of the mesh, and the
+        // sum with the placement's translation in f64.
+        Transform3 turned = p.transform;
+        turned.position = Vec3{};
+        const Mat4 linear = mat4_from_transform(turned) * fit;
+        const WorldPos stands = placement_position(p.transform.position) + DVec3{linear.c[3].xyz()};
+        (void)add_piece(mesh, linear, stands, corner, children_);
       }
     }
   } else if (const Vector<u32>* bin = bins_.find_value(key)) {
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
-      (void)add_piece(instance.mesh, renderer::instance_world_matrix(instance), corner, children_);
+      (void)add_piece(instance.mesh, cell_frame_matrix(instance),
+                      to_world(gfx::instance_cell(instance)), corner, children_);
     }
   }
   tile.pieces = children_.size();

@@ -386,10 +386,10 @@ bool make_instance(const SceneData& scene, const SceneInstance& source, u32 firs
                    gfx::InstanceDesc& out, std::string* error = nullptr);
 
 // An instance's mesh-to-world matrix in float32, its translation measured from the world's origin.
-// ADR-0053 seam: scene_collision takes WorldPos after the merge. `systems/scene_collision` builds
-// its bodies from the loaded scene's instances and still takes a float32 world matrix this batch,
-// as engine-view's animation LOD does for its tier positions (sim takes WorldPos after the merge
-// too); this is the one place that narrows it, so the merge flips one function.
+// ADR-0053 seam: sim takes WorldPos after the merge. Its one user is engine-view's animation LOD,
+// whose tier positions `sim::TierAssignment` still takes as float32 world positions; this is the
+// one place that narrows them, so the merge flips one function. (`systems/scene_collision` read
+// it until 2026-10-05 and now reads an instance's cell and local, `gfx::instance_cell`.)
 Mat4 instance_world_matrix(const gfx::InstanceDesc& instance) noexcept;
 
 // Where the prefix sum ends after `instances`, starting at `first_pair`: `first_pair` plus each

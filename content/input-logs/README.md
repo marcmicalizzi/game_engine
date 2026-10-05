@@ -150,5 +150,17 @@ the same five PNGs byte for byte.
 
 It moves only when the camera's integration does. If it does, bump `view::k_fly_version` in
 `apps/engine_view/fly_camera.h` — which makes every older session log refuse to replay rather than
-replay somewhere else — and commit the file the failing test writes into its kept scratch
-directory.
+replay somewhere else, unless the bump says how the older one is read (below) — and commit the
+file the failing test writes into its kept scratch directory. Both files were last regenerated on
+2026-10-05, when the integration became version 2: the position a `WorldPos` integrated in f64 and
+written as JSON doubles (ADR-0053; [apps](../../docs/subsystems/apps.md#the-session-format)).
+
+### `sessions/fly-synthetic-v1.jsonl` and `.trajectory.json` — the same session, as version 1 wrote it
+
+The two files above as they were committed before 2026-10-05, byte for byte: the session header at
+fly integration version 1 (float32 positions) and the trajectory version 1 flew. **They are never
+regenerated**; they are what every session recorded before then looks like. A version 1 session is
+read and flown under version 2, and the summary's trajectory says `"comparable": false`: its hash
+is not the recording's. `fly_tests.cpp` replays this one and holds where it ends to within 0.1 mm of
+where version 1 ended it (it moved 31 µm), and `interactive_tests.cpp` replays it through engine-view
+and checks the summary says so.

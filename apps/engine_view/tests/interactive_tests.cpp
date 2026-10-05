@@ -258,15 +258,15 @@ TEST_CASE("engine-view: a live session starts at --start, else at the scene's ow
   }
   REQUIRE(code == 0);
   // The path's key, over the ground at (3, 15), looking at the origin: not the orbit.
-  CHECK(from_scene.position.x == 3.0f);
-  CHECK(from_scene.position.z == 15.0f);
-  CHECK(from_scene.position.y > 1.0f);
-  CHECK(from_scene.position.y < 4.0f);
+  CHECK(from_scene.position.x == 3.0);
+  CHECK(from_scene.position.z == 15.0);
+  CHECK(from_scene.position.y > 1.0);
+  CHECK(from_scene.position.y < 4.0);
   CHECK(std::fabs(from_scene.yaw - std::atan2(3.0f, 15.0f)) < 1e-4f);
 
   view::FlyState given;
   REQUIRE(start_of({"--start", "1,-2,3.5", "90,-10"}, given) == 0);
-  CHECK(given.position == Vec3{1.0f, -2.0f, 3.5f});
+  CHECK(given.position == WorldPos{1.0, -2.0, 3.5});
   CHECK(std::fabs(given.yaw - 1.5707963f) < 1e-6f);
   CHECK(std::fabs(given.pitch + 0.17453293f) < 1e-6f);
   // Angles past a half turn come back into [-180, 180] before they are radians.
@@ -316,6 +316,37 @@ TEST_CASE("engine-view: a replay refuses what it cannot fly, before it asks for 
   CHECK(version.exit_code == 1);
   CHECK_MESSAGE(version.output.find("refused rather than misread") != std::string::npos,
                 version.output);
+}
+
+TEST_CASE("engine-view: a session recorded with float32 positions replays, and says so") {
+  // Every session recorded before 2026-10-05 is version 1 of the fly integration (fly_camera.h):
+  // it replays under version 2's f64 arithmetic, and the summary's trajectory says its hash cannot
+  // be compared with the recording's, rather than the replay being refused.
+  const test::TempDir tmp("engine_view_v1");
+  const std::string log = content_path("content/input-logs/sessions/fly-synthetic-v1.jsonl");
+  if (!test::path_exists(log)) {
+    MESSAGE("not in this bundle: " << log);
+    return;
+  }
+  const Run run = run_view({"--replay-input", log, "--offscreen", "--width", "256", "--height",
+                            "160", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  CHECK_MESSAGE(run.output.find("is not the recording's") != std::string::npos, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* trajectory = trajectory_of(summary);
+  REQUIRE(trajectory != nullptr);
+  const JsonValue* comparable = trajectory->find("comparable");
+  REQUIRE(comparable != nullptr);
+  bool value = true;
+  CHECK(comparable->get_bool(value));
+  CHECK_FALSE(value);
+  CHECK(number_of(trajectory, "recorded_version") == 1.0);
+  CHECK(number_of(trajectory, "ticks") == 480.0);
 }
 
 TEST_CASE("engine-view: a replay draws the same markers twice and flies the committed path") {

@@ -53,6 +53,11 @@ u32 bits(f32 v) noexcept {
   return std::bit_cast<u32>(v);
 }
 
+u64 bits64(f64 v) noexcept {
+  if (v == 0.0) v = 0.0;
+  return std::bit_cast<u64>(v);
+}
+
 bool read_f32(const JsonValue& object, const char* key, f32& out) {
   const JsonValue* v = object.find(key);
   f64 value = 0.0;
@@ -68,11 +73,6 @@ bool read_u32(const JsonValue& object, const char* key, u32& out) {
   out = static_cast<u32>(value);
   return true;
 }
-
-// The walker's feet are still float32 here while the character and the collision under them take
-// `WorldPos` (ADR-0053): these two cross between them, and go when the feet become `WorldPos`.
-[[maybe_unused]] WorldPos world_of(Vec3 p) noexcept { return absolute(WorldPos::origin(), p); }
-[[maybe_unused]] Vec3 feet_of(WorldPos p) noexcept { return relative(p, WorldPos::origin()); }
 
 // ADR-0053 seam: sim takes WorldPos after the merge. The collision ring's observer
 // (`sim::ObserverSet::add`) is a float32 position today; the ring only picks 32 m tiles by it, so a
@@ -161,7 +161,8 @@ bool walk_params_from_json(const JsonValue& value, WalkParams& out, std::string*
   if (!value.is_object()) return fail("not an object");
   u32 version = 0;
   if (!read_u32(value, "version", version)) return fail("no version");
-  if (version != k_walk_version) {
+  // Version 1's numbers mean what version 2's do; its walk is walked as version 2 (walk.h).
+  if (version != k_walk_version && version != k_walk_version_f32) {
     return fail("recorded with walk integration version " + std::to_string(version) +
                 ", and this engine-view walks version " + std::to_string(k_walk_version) +
                 "; a walk from another version would go somewhere else without saying so, so the "
@@ -195,7 +196,7 @@ struct Walker::Impl {
   std::string why = "the walker has not started";
   DrawnGround drawn;
   WalkStats stats;
-  Vec3 feet{};
+  WorldPos feet{};
   bool placed = false;
 
   // Following the ground.
@@ -344,13 +345,12 @@ struct Walker::Impl {
     return h[3] + (1.0f - u) * (h[2] - h[3]) + (1.0f - v) * (h[1] - h[3]);
   }
 
-  void note(Vec3 before, Vec3 after, f32 held) {
+  void note(WorldPos before, WorldPos after, f32 held) {
     ++stats.ticks;
-    const f32 dx = after.x - before.x;
-    const f32 dz = after.z - before.z;
-    stats.distance_m += static_cast<f64>(std::sqrt(dx * dx + dz * dz));
-    if (after.y > before.y) stats.climb_m += static_cast<f64>(after.y - before.y);
-    const f32 drawn_h = drawn_at(static_cast<f64>(after.x), static_cast<f64>(after.z));
+    const DVec3 d = after - before;
+    stats.distance_m += std::sqrt(d.x * d.x + d.z * d.z);
+    if (d.y > 0.0) stats.climb_m += d.y;
+    const f32 drawn_h = drawn_at(after.x, after.z);
     if (drawn_h == drawn_h && held == held) {
       const f32 e = std::fabs(held - drawn_h);
       stats.max_ground_error_m = e > stats.max_ground_error_m ? e : stats.max_ground_error_m;
@@ -448,36 +448,38 @@ void Walker::set_drawn(const DrawnGround& drawn) noexcept {
   if (drawn.tiles == nullptr && drawn.lattice.size < 2) impl_->drawn.lattice = lattice;
 }
 
-Vec3 Walker::eye() const noexcept {
-  return Vec3{impl_->feet.x, impl_->feet.y + impl_->params.eye_height, impl_->feet.z};
+WorldPos Walker::eye() const noexcept {
+  return impl_->feet + DVec3{0.0, static_cast<f64>(impl_->params.eye_height), 0.0};
 }
 
-Vec3 Walker::drop(Vec3 camera) {
+WorldPos Walker::feet() const noexcept { return impl_->feet; }
+
+WorldPos Walker::drop(WorldPos camera) {
   Impl& w = *impl_;
   if (w.ground == nullptr) return camera;
   ++w.stats.drops;
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
     // Every tile round the camera, and its ground as drawn, before anything is looked for.
-    w.move_ring(world_of(camera), true);
-    while (w.consumer.refresh(world_of(camera), w.params.radius) > 0) {
+    w.move_ring(camera, true);
+    while (w.consumer.refresh(camera, w.params.radius) > 0) {
     }
     // The highest surface below the camera; a camera under the ground (a flight below the sand)
     // comes up to the surface above it; nothing at all, the ground's own height.
     const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
     physics::RayHit hit;
-    Vec3 feet{camera.x, 0.0f, camera.z};
-    if (w.world.cast_ray(world_of(Vec3{camera.x, camera.y + 0.01f, camera.z}),
-                         Vec3{0.0f, -20000.0f, 0.0f}, hit, statics) ||
-        w.world.cast_ray(world_of(Vec3{camera.x, camera.y + 20000.0f, camera.z}),
-                         Vec3{0.0f, -40000.0f, 0.0f}, hit, statics)) {
-      feet.y = static_cast<f32>(hit.position.y);
+    WorldPos feet{camera.x, 0.0, camera.z};
+    if (w.world.cast_ray(camera + DVec3{0.0, 0.01, 0.0}, Vec3{0.0f, -20000.0f, 0.0f}, hit,
+                         statics) ||
+        w.world.cast_ray(camera + DVec3{0.0, 20000.0, 0.0}, Vec3{0.0f, -40000.0f, 0.0f}, hit,
+                         statics)) {
+      feet.y = hit.position.y;
     } else {
-      feet.y = w.ground_at(static_cast<f64>(camera.x), static_cast<f64>(camera.z));
+      feet.y = static_cast<f64>(w.ground_at(camera.x, camera.z));
     }
-    feet.y = feet.y + 0.02f;
+    feet.y = feet.y + 0.02;
     if (!w.body.valid()) {
-      if (w.body.create(w.world, w.character_config(), world_of(feet)) != physics::Status::Ok) {
+      if (w.body.create(w.world, w.character_config(), feet) != physics::Status::Ok) {
         w.physical = false;
         w.collision = "ground-follow";
         w.why =
@@ -485,49 +487,48 @@ Vec3 Walker::drop(Vec3 camera) {
             "follows the ground";
       }
     } else {
-      (void)w.body.teleport(world_of(feet));
+      (void)w.body.teleport(feet);
     }
     if (w.physical) {
-      w.feet = feet_of(w.body.feet());
+      w.feet = w.body.feet();
       w.placed = true;
       w.stats.hash = hash_combine(w.stats.hash, w.body.hash());
       return eye();
     }
   }
 #endif
-  w.feet =
-      Vec3{camera.x, w.ground_at(static_cast<f64>(camera.x), static_cast<f64>(camera.z)), camera.z};
+  w.feet = WorldPos{camera.x, static_cast<f64>(w.ground_at(camera.x, camera.z)), camera.z};
   w.vy = 0.0f;
   w.airborne = false;
   w.placed = true;
-  w.stats.hash = hash_combine(hash_combine(w.stats.hash, bits(w.feet.x)), bits(w.feet.z));
+  w.stats.hash = hash_combine(hash_combine(w.stats.hash, bits64(w.feet.x)), bits64(w.feet.z));
   return eye();
 }
 
-Vec3 Walker::step(const WalkInput& input) {
+WorldPos Walker::step(const WalkInput& input) {
   Impl& w = *impl_;
   if (w.ground == nullptr || !w.placed) return eye();
   const Vec3 direction = heading_direction(input);
-  const Vec3 before = w.feet;
+  const WorldPos before = w.feet;
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
     // The ground round the feet as this frame draws it, and the walker with it: carried by what a
     // refresh changed under it, never left under it (scene_collision.h, `follow`).
-    w.move_ring(world_of(before), false);
+    w.move_ring(before, false);
     (void)w.consumer.follow(w.body);
     // What the step did, from where the sand left it: being carried up a rising dune is not
     // climbing it.
-    const Vec3 from = feet_of(w.body.feet());
+    const WorldPos from = w.body.feet();
     physics::CharacterInput in;
     in.move = direction;
     in.sprint = input.sprint;
     in.jump = input.jump;
     (void)w.body.step(in);
-    w.feet = feet_of(w.body.feet());
+    w.feet = w.body.feet();
     f32 held = std::numeric_limits<f32>::quiet_NaN();
     if (w.body.state().ground == physics::Ground::OnGround) {
       f32 h = 0.0f;
-      if (w.consumer.ground_height(world_of(w.feet), h)) held = h;
+      if (w.consumer.ground_height(w.feet, h)) held = h;
     }
     w.note(from, w.feet, held);
     w.stats.hash = w.body.hash();
@@ -535,30 +536,31 @@ Vec3 Walker::step(const WalkInput& input) {
   }
 #endif
   // Following the ground: along the heading at the speed, the feet on the ground's height, and a
-  // jump an arc of the header's gravity back down onto it.
+  // jump an arc of the header's gravity back down onto it. A tick's step is float32, as it always
+  // was, and is added to the feet in f64 (ADR-0053).
   const f32 speed = input.sprint ? w.params.sprint : w.params.speed;
-  w.feet.x = w.feet.x + direction.x * speed * w.dt;
-  w.feet.z = w.feet.z + direction.z * speed * w.dt;
-  const f32 ground = w.ground_at(static_cast<f64>(w.feet.x), static_cast<f64>(w.feet.z));
+  w.feet.x = w.feet.x + static_cast<f64>(direction.x * speed * w.dt);
+  w.feet.z = w.feet.z + static_cast<f64>(direction.z * speed * w.dt);
+  const f32 ground = w.ground_at(w.feet.x, w.feet.z);
   if (!w.airborne && input.jump) {
     w.airborne = true;
     w.vy = w.params.jump_speed;
   }
   if (w.airborne) {
     w.vy = w.vy - w.params.gravity * w.dt;
-    w.feet.y = w.feet.y + w.vy * w.dt;
-    if (w.feet.y <= ground && w.vy <= 0.0f) {
-      w.feet.y = ground;
+    w.feet.y = w.feet.y + static_cast<f64>(w.vy * w.dt);
+    if (w.feet.y <= static_cast<f64>(ground) && w.vy <= 0.0f) {
+      w.feet.y = static_cast<f64>(ground);
       w.vy = 0.0f;
       w.airborne = false;
     }
   } else {
-    w.feet.y = ground;
+    w.feet.y = static_cast<f64>(ground);
   }
   w.note(before, w.feet, w.airborne ? std::numeric_limits<f32>::quiet_NaN() : ground);
-  u64 h = hash_combine(w.stats.hash, bits(w.feet.x));
-  h = hash_combine(h, bits(w.feet.y));
-  h = hash_combine(h, bits(w.feet.z));
+  u64 h = hash_combine(w.stats.hash, bits64(w.feet.x));
+  h = hash_combine(h, bits64(w.feet.y));
+  h = hash_combine(h, bits64(w.feet.z));
   w.stats.hash = hash_combine(h, bits(w.vy));
   return eye();
 }

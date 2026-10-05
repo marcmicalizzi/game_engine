@@ -603,7 +603,7 @@ struct Options {
   // (the camera paths' conventions: yaw about +y counter-clockwise from above, 0 looking along -z;
   // pitch up positive). Unset, it begins at the path's first frame or at the orbit.
   bool start_given = false;
-  Vec3 start_position{};
+  WorldPos start_position{};  // f64, and `world_cell_valid` (ADR-0053)
   f32 start_yaw_deg = 0.0f;
   f32 start_pitch_deg = 0.0f;
   // `--walk`: a live session starts walking (walk.h) — on the ground under its start camera — where
@@ -689,14 +689,15 @@ bool parse_f32_zero_ok(const std::string& text, f32& out) {
 }
 
 // `count` numbers separated by commas, each within ±`limit` (so finite): `--start`'s position and
-// angles, where a negative is as ordinary as a positive.
-bool parse_numbers(const std::string& text, f32* out, u32 count, f64 limit) {
+// angles, where a negative is as ordinary as a positive. Doubles, so a position 420 km out is the
+// number typed and not the float32 three centimetres from it (ADR-0053).
+bool parse_numbers(const std::string& text, f64* out, u32 count, f64 limit) {
   const char* at = text.c_str();
   for (u32 i = 0; i < count; ++i) {
     char* end = nullptr;
     const double v = std::strtod(at, &end);
     if (end == at || !(v >= -limit && v <= limit)) return false;
-    out[i] = static_cast<f32>(v);
+    out[i] = v;
     if (i + 1 < count) {
       if (*end != ',') return false;
       at = end + 1;
@@ -1370,7 +1371,8 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pace_ms = p.pace_ms;
   record.pace_depth = p.pace_depth;
   record.submit_ms = p.submit_ms;
-  record.pose_position = p.pose.position;
+  // ADR-0053 seam: schemas (`FrameRecord.pose_position`) takes WorldPos in the next commit.
+  record.pose_position = relative(p.pose.position, WorldPos::origin());
   record.pose_yaw = p.pose.yaw;
   record.pose_pitch = p.pose.pitch;
   record.pose_time = p.pose_time;
@@ -1418,6 +1420,13 @@ int prepare_interactive(Options& options, Interactive& it) {
   if (it.replay) {
     if (!view::session_from_json(it.log.session(), it.header, &error)) {
       return fail("replay", options.replay_input + ": " + error);
+    }
+    if (!view::trajectory_comparable(it.header)) {
+      std::fprintf(stderr,
+                   "engine-view: %s was recorded with fly camera integration version %u (float32 "
+                   "positions); this build flies it as version %u (f64), so its trajectory hash "
+                   "is not the recording's\n",
+                   options.replay_input.c_str(), it.header.version, view::k_fly_version);
     }
     // The refusal the input module makes, made before anything is loaded: the same key would
     // mean another action, and the replay would diverge from its session without saying so.
@@ -1567,7 +1576,19 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   view::SessionHeader header = session.header();
   header.ticks = session.tick().value;
   out.set("session", view::session_to_json(header));
-  out.set("trajectory", view::trajectory_to_json(session.trajectory(), header.params.tick_hz));
+  JsonValue trajectory = view::trajectory_to_json(session.trajectory(), header.params.tick_hz);
+  if (!view::trajectory_comparable(header)) {
+    // A session recorded with float32 positions, flown in f64 (fly_camera.h, `k_fly_version`): the
+    // same session, a different trajectory, so its hash says nothing about the recording's.
+    trajectory.set("comparable", false);
+    trajectory.set("recorded_version", static_cast<u64>(header.version));
+    trajectory.set(
+        "why", "the session was recorded with fly camera integration version " +
+                   std::to_string(header.version) + " (float32 positions) and flown with version " +
+                   std::to_string(view::k_fly_version) +
+                   " (f64): its trajectory hash cannot be compared with the recording's");
+  }
+  out.set("trajectory", std::move(trajectory));
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
   return out;
 }
@@ -2218,9 +2239,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
           have_path
               ? renderer::camera_path_frame(path, 0, frames)
               : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
-      if (interactive.on) {
-        first.position = renderer::camera_point_from_controller(interactive.header.start.position);
-      }
+      if (interactive.on) first.position = interactive.header.start.position;
       if (!ground.prepare(scene_data, resolved, first, &error)) {
         exit_code = fail(ground.stage(), error);
         break;
@@ -3266,19 +3285,29 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, position) || !next_value(argc, argv, i, a, angles)) {
         return k_exit_usage;
       }
-      f32 p[3] = {};
-      f32 yp[2] = {};
-      if (!parse_numbers(position, p, 3, 1.0e7) || !parse_numbers(angles, yp, 2, 720.0) ||
-          !(yp[1] > -90.0f && yp[1] < 90.0f)) {
+      f64 p[3] = {};
+      f64 yp[2] = {};
+      if (!parse_numbers(position, p, 3, 1.0e300) || !parse_numbers(angles, yp, 2, 720.0) ||
+          !(yp[1] > -90.0 && yp[1] < 90.0)) {
         std::fprintf(stderr,
                      "engine-view: --start expects a position and two angles in degrees, e.g. "
                      "--start 0,4,900 0,-5 (x,y,z yaw,pitch; pitch within -90..90)\n");
         return k_exit_usage;
       }
+      // Anywhere a world cell can name (world.h): a world position is i32 cells of 64 m, 1.37e11 m
+      // each way, and one past that has no cell for the renderer to put the eye in.
+      const WorldPos at{p[0], p[1], p[2]};
+      if (!world_cell_valid(at)) {
+        std::fprintf(stderr,
+                     "engine-view: --start %s is outside the world: a position's every coordinate "
+                     "must be within %.0f m of the origin, where a 64 m cell's i32 index ends\n",
+                     position.c_str(), k_world_extent_m);
+        return k_exit_usage;
+      }
       options.start_given = true;
-      options.start_position = Vec3{p[0], p[1], p[2]};
-      options.start_yaw_deg = yp[0];
-      options.start_pitch_deg = yp[1];
+      options.start_position = at;
+      options.start_yaw_deg = static_cast<f32>(yp[0]);
+      options.start_pitch_deg = static_cast<f32>(yp[1]);
     } else if (a == "--record-input") {
       if (!next_value(argc, argv, i, a, options.record_input)) return k_exit_usage;
     } else if (a == "--replay-input") {
@@ -4013,8 +4042,7 @@ int main(int argc, char** argv) {
                                                                             : nullptr;
         interactive.header = live_header(options, scene_data, start_path);
       }
-      terrain_camera.position =
-          renderer::camera_point_from_controller(interactive.header.start.position);
+      terrain_camera.position = interactive.header.start.position;
     }
     if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
       exit_code = fail(ground.stage(), error);

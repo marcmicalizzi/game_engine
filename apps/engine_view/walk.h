@@ -24,10 +24,16 @@
 // replay, and the character meets the same bodies with the same ids (physics.md, "The character").
 // A ground the time-lapse moves is the exception: its drawn time is set once a frame from the
 // renderer, whose clock a window's display drives.
+//
+// **The feet are a `WorldPos`** (ADR-0053): the character's own, or the ground-follow's, integrated
+// in f64 from a float32 tick (fly_camera.h, "Where the camera is"), so a walk 10,000 km out moves
+// as one by the origin does. Until 2026-10-05 they were float32, and 420 km out a 6 mm tick along
+// x rounded away.
 
 #include <core/base/types.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <memory>
@@ -43,7 +49,12 @@ namespace engine::view {
 // header's numbers and the scene — the heading's arithmetic, the order of the ring, the refresh and
 // the step, the ground-follow's jump — is this number. A session header records it, and a replay
 // under another is refused rather than walked somewhere else.
-inline constexpr u32 k_walk_version = 1;
+//
+// **2** (2026-10-05): the feet are f64 and hashed as doubles. A version 1 block — every walk
+// recorded before, whose numbers mean what they meant — is read and walked as version 2, with the
+// fly camera's version 1 (`k_fly_version_f32`, fly_camera.h).
+inline constexpr u32 k_walk_version = 2;
+inline constexpr u32 k_walk_version_f32 = 1;
 
 // The walker's numbers: the session header's `walk` block, read from the `view.walk.*` and
 // `walk.collision.*` tunables when a live session starts, so a replay walks with the recording's.
@@ -135,10 +146,11 @@ class Walker {
   void set_drawn(const DrawnGround& drawn) noexcept;
   // A switch to walking: the feet on the ground under `camera` — the highest surface below it, or
   // the ground's own height where there is none — and the eye returned.
-  Vec3 drop(Vec3 camera);
+  WorldPos drop(WorldPos camera);
   // One tick of walking; the eye.
-  Vec3 step(const WalkInput& input);
-  Vec3 eye() const noexcept;
+  WorldPos step(const WalkInput& input);
+  WorldPos eye() const noexcept;
+  WorldPos feet() const noexcept;
 
   const WalkStats& stats() const noexcept;
   // The summary's block (apps.md, "Walking"): the collision and its counts beside the stats.

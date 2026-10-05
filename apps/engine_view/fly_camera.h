@@ -19,14 +19,24 @@
 // `anim_lod.h` lives beside `main.cpp`. A game writes exactly this: a map, an `InputState`, a
 // fixed tick, and a state it integrates.
 //
-// **Determinism across machines.** The integration is `+ - * /` and `sqrt` on `f32`, which IEEE
-// fixes and the tree's `-ffp-contract=off` keeps unfused (ADR-0035), plus sine and cosine — which
-// the C library does *not* fix: MSVC's CRT and glibc disagree in the last bit for some arguments.
-// So the trigonometry here is `fly_sin_cos`, a polynomial in `f64` that every compiler evaluates
-// to the same bits, and the committed trajectory of `content/input-logs/sessions/` is the same
-// on Windows, on both Linux compilers and at both CPU baselines. The C library appears exactly
-// once, turning the start camera into a yaw and a pitch, and its answer is written into the
-// session header so a replay reads the numbers instead of recomputing them.
+// **Where the camera is: a `WorldPos`, in f64** (ADR-0053; apps.md, "Far from the origin"). The
+// look, the speeds and a tick's displacement are float32 as they always were — a tick moves a few
+// centimetres at most, and a float holds that to a fraction of a micrometre — and the displacement
+// is added to the position in f64. Until 2026-10-05 the position was a float32 too: 420 km out it
+// stepped by 3.1 cm, so a walk along x at 1.5 m/s, a 6 mm tick, rounded back to where it was and
+// did not move at all, and a sprint 22 degrees off +z went straight along +z at 3.75 m/s
+// (docs/experiments/far-from-origin-2026-10-04.md). In f64 the same tick lands within 2 nm of
+// where it should anywhere out to 10,000 km, and the camera goes to the renderer as it is.
+//
+// **Determinism across machines.** The integration is `+ - * /` and `sqrt` on `f32` and `f64`,
+// which IEEE fixes and the tree's `-ffp-contract=off` keeps unfused (ADR-0035), plus sine and
+// cosine — which the C library does *not* fix: MSVC's CRT and glibc disagree in the last bit for
+// some arguments. So the trigonometry here is `fly_sin_cos`, a polynomial in `f64` that every
+// compiler evaluates to the same bits, and the committed trajectory of
+// `content/input-logs/sessions/` is the same on Windows, on both Linux compilers and at both CPU
+// baselines. The C library appears exactly once, turning the start camera into a yaw and a pitch,
+// and its answer is written into the session header so a replay reads the numbers instead of
+// recomputing them.
 //
 // **Sign conventions** are the camera paths' (`engine.scene.CameraKey.rotation`: -z forward, +y
 // up): yaw is a turn about +y, counter-clockwise seen from above, and pitch a turn about the
@@ -41,6 +51,7 @@
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <core/time/time.h>
 #include <foundation/input/input.h>
 #include <systems/renderer/view_set.h>
@@ -56,7 +67,18 @@ namespace engine::view {
 // with, and a replay under another is refused rather than misread: it would fly somewhere else
 // and say nothing. Bump it with any such change, and regenerate the committed fixture's
 // trajectory (`tests/fly_tests.cpp` writes the new one beside its failure).
-inline constexpr u32 k_fly_version = 1;
+//
+// **2** (2026-10-05, ADR-0053): the position is a `WorldPos` integrated in f64 and hashed as three
+// doubles, and the session and the trajectory write it as JSON doubles. A **version 1** session —
+// float32 positions, every session recorded before — is not refused: it is read (its numbers are
+// the same JSON numbers, its floats exact in a double) and flown under version 2: by the origin it
+// lands within the float32 roundings version 1 made (the committed two-second synthetic session
+// ends 31 um from where version 1 ended it), far out it goes where version 1 lost whole ticks, and
+// its trajectory hash is not the recording's, which the summary says (`k_fly_version_f32`;
+// apps.md, "The session format"). Any other version is refused.
+inline constexpr u32 k_fly_version = 2;
+// The last version whose positions were float32: still read, flown as `k_fly_version`.
+inline constexpr u32 k_fly_version_f32 = 1;
 inline constexpr const char* k_session_format = "engine.view.session";
 inline constexpr const char* k_trajectory_format = "engine.view.trajectory";
 
@@ -77,9 +99,10 @@ struct FlyParams {
   f32 pitch_limit = 1.553343f;  // radians(89): short of the pole, where yaw stops meaning anything
 };
 
-// The camera between ticks. `yaw` is kept in [-pi, pi] and `pitch` in [-limit, limit].
+// The camera between ticks. `yaw` is kept in [-pi, pi] and `pitch` in [-limit, limit]; `position`
+// is the eye in the world, f64 (see the file comment).
 struct FlyState {
-  Vec3 position{};
+  WorldPos position{};
   f32 yaw = 0.0f;
   f32 pitch = 0.0f;
 };
@@ -173,7 +196,8 @@ Vec3 fly_right(const FlyState& state) noexcept;
 // One tick of the camera, from the tick's input: look and turn first, then move along the new
 // orientation — forward and right in the look direction (pitch included, so W flies where the
 // camera points), lift along world up — at `speed` times `fast` and/or `slow`, over one tick's
-// `dt = 1 / tick_hz`. A diagonal of two keys is normalized; a stick's is already in its disc.
+// `dt = 1 / tick_hz`. A diagonal of two keys is normalized; a stick's is already in its disc. The
+// tick's displacement is float32 and is added to the position in f64.
 void fly_tick(FlyState& state, const input::InputState& input, const FlyActions& actions,
               const FlyParams& params) noexcept;
 // The look alone — the first half of `fly_tick`, the same arithmetic in the same order: what a
@@ -181,14 +205,14 @@ void fly_tick(FlyState& state, const input::InputState& input, const FlyActions&
 void fly_look(FlyState& state, const input::InputState& input, const FlyActions& actions,
               const FlyParams& params) noexcept;
 
-// The camera the renderer draws from: the state's position, a target 100 m along forward (the
-// camera paths' reach for an orientation key, far enough that the direction survives the
-// subtraction at kilometres from the origin), and the header's field of view and near plane.
+// The camera the renderer draws from: the state's position as it is (a `WorldPos`, which is what
+// `renderer::Camera` holds), a target 100 m along forward added in f64 (the camera paths' reach for
+// an orientation key), and the header's field of view and near plane.
 renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept;
 
 // **The camera between two ticks**, `t` of the way from `from` to `to` (0 is `from`, 1 is `to`):
-// the position on the segment between them, the pitch between theirs, and the yaw the short way
-// round, wrapped back into [-pi, pi]. It is what a *live* frame draws — see
+// the position on the segment between them (in f64), the pitch between theirs, and the yaw the
+// short way round, wrapped back into [-pi, pi]. It is what a *live* frame draws — see
 // `FlySession::camera_at` — and never what a tick integrates from: the trajectory, its hash and
 // every replay are the ticks' alone.
 FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexcept;
@@ -201,6 +225,8 @@ FlyState fly_state_from_camera(const renderer::Camera& camera) noexcept;
 // The `session` block of a recorded `input::InputLog` (foundation/input/input_log.h): everything
 // a replay needs besides the events and the map, whose hash the log's own header carries.
 struct SessionHeader {
+  // The integration the session was recorded with: `k_fly_version`, or `k_fly_version_f32` for a
+  // session recorded before positions were f64, which is flown as `k_fly_version` all the same.
   u32 version = k_fly_version;
   std::string recorded_by = "engine-view";
   std::string engine_commit = "unknown";  // the build stamp of the binary that recorded it
@@ -231,9 +257,15 @@ struct SessionHeader {
 
 JsonValue session_to_json(const SessionHeader& header);
 // False with the reason for anything that is not a session block this engine-view can fly —
-// another format, a missing or mistyped field, or **another integration version**, which is
-// refused rather than misread.
+// another format, a missing or mistyped field, a start outside the world (`world_cell_valid`), or
+// **another integration version**, which is refused rather than misread. Version 1 is read and
+// flown as version 2 (`k_fly_version`, above).
 bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* error);
+// Whether a session's recorded trajectory can be compared with what this build flies from it:
+// false for a version 1 session, whose recording rounded every tick to float32.
+inline bool trajectory_comparable(const SessionHeader& header) noexcept {
+  return header.version == k_fly_version;
+}
 
 // ---- the trajectory ----------------------------------------------------------------------------
 
@@ -257,7 +289,8 @@ struct Trajectory {
 u64 trajectory_seed(const FlyState& start) noexcept;
 u64 hash_fly_state(u64 seed, const FlyState& state) noexcept;
 // {"format","version","tick_hz","ticks","hash","last","markers":[{"tick","position","yaw","pitch"}]}
-// with every float as the f64 of its f32, so the text reads back to the same bits.
+// with every position a JSON double and every angle the f64 of its f32, so the text reads back to
+// the same bits.
 JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz);
 
 // ---- the session -------------------------------------------------------------------------------

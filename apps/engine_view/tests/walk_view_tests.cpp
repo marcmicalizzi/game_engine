@@ -345,7 +345,7 @@ TEST_CASE("engine-view: a flight started high over the world's tiles has them wh
   view::SessionHeader header;
   header.ticks = 60;
   header.scene = scene;
-  header.start.position = Vec3{1500.0f, 350.0f, 0.0f};
+  header.start.position = WorldPos{1500.0, 350.0, 0.0};
   header.start.yaw = -1.5707963f;
   header.start.pitch = -0.17453292f;
   header.has_walk = true;
@@ -444,7 +444,7 @@ TEST_CASE("engine-view: a walk on the world's tiles stands on the ground they dr
   header.ticks = 1980;
   header.scene = grid_scene;
   // At x = 140, off the window's grid, looking east (yaw -90°) up the slip face.
-  header.start.position = Vec3{140.0f, 300.0f, 0.0f};
+  header.start.position = WorldPos{140.0, 300.0, 0.0};
   header.start.yaw = -1.5707963f;
   header.start.pitch = -0.17453292f;
   header.has_walk = true;

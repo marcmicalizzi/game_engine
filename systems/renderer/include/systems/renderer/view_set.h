@@ -56,21 +56,6 @@ inline WorldEye frame_eye(const Camera& camera) noexcept { return to_eye(camera.
 // once. Exact under a translation of the camera by whole cells (the difference does not change).
 Vec3 camera_forward(const Camera& camera) noexcept;
 
-// ---- ADR-0053 seams: engine-view's fly and walk controllers
-// --------------------------------------
-//
-// The controllers (`apps/engine_view/fly_camera.*`, `walk.*`) are the walker's and still keep a
-// float32 position this batch; they hand it over through these two and nothing else, so the merge
-// flips two functions and not their call sites.
-// ADR-0053 seam: the fly and walk controllers take WorldPos after the merge.
-inline WorldPos camera_point_from_controller(Vec3 p) noexcept {
-  return absolute(WorldPos::origin(), p);
-}
-// ADR-0053 seam: the fly and walk controllers take WorldPos after the merge.
-inline Vec3 camera_point_to_controller(WorldPos p) noexcept {
-  return relative(p, WorldPos::origin());
-}
-
 // **The elevation every orbit holds above its circle unless told otherwise**, in degrees and in
 // radians: the protocol's default `RenderOrbit.pitch_deg` (schemas/protocol.schema), which
 // `request_tests.cpp` holds to this constant, and so the pitch of `orbit {distance: 22}` and of

@@ -37,7 +37,7 @@ if(TARGET engine::scene_collision)
 endif()
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
-                tests/walk_view_tests.cpp ${_view_interactive})
+                tests/walk_view_tests.cpp tests/far_tests.cpp ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it through the registry, and the test writes the kit of boxes and counts the pieces with

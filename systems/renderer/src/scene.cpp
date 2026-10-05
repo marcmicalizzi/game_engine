@@ -1571,7 +1571,7 @@ WorldPos instance_translation(const SceneInstance& source, const Mat4& fit) noex
 }
 
 Mat4 instance_world_matrix(const gfx::InstanceDesc& instance) noexcept {
-  // ADR-0053 seam: scene_collision takes WorldPos after the merge.
+  // ADR-0053 seam: sim takes WorldPos after the merge (engine-view's animation LOD).
   return gfx::instance_matrix(instance, WorldEye{});
 }
 

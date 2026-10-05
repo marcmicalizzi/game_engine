@@ -65,3 +65,25 @@ The stack's 2.1 µm is the same at all three sites: the solver's floats meet a d
 ## What changed in the hashes
 
 The character's pinned walk hash moved from `4efdb83d1aa9a5c6` to `6b70c6f467ae6192` (MSVC): the backend's arithmetic is double now and the feet are hashed as three doubles. Every recorded walk's character hash changes with it.
+
+## The controllers in f64
+
+The second half of the change (2026-10-05, walker-2): `apps/engine_view`'s fly camera and walker hold `WorldPos` and integrate each 240 Hz tick's float32 displacement in f64 ([apps](../subsystems/apps.md#far-from-the-origin)), and `systems/scene_collision` reads a scene's instances from their cells. These are correctness measurements, not timings: MSVC debug, and the same bits on any compiler that keeps IEEE arithmetic unfused (ADR-0035). Each test compares a run from a far site with the same run from the origin, positions taken from the site (`apps/engine_view/tests/far_tests.cpp`, `systems/scene_collision/tests/scene_collision_tests.cpp`).
+
+| What | 419 km | 10,000 km | 1e8 m | Held to |
+|---|---|---|---|---|
+| Two seconds of flight (keys, pointer, fast, slow, lift), at its end | 44 pm | 81 nm | 0.50 µm | 1 µm (and every tick's angles the same bits) |
+| The same flight across a 64 m cell's corner at 419 km | 44 pm | | | 1 µm |
+| Two and a half seconds walked (a turn, a sprint, a jump, a strafe, back), at its end | 0.21 nm | 0.48 µm | 0.55 µm | 1 µm |
+| The same walk, the worst tick | 0.21 nm | 7.5 µm (tick 543) | 7.3 µm (tick 53) | 1 µm at 419 km, 20 µm beyond |
+| `walk.max_ground_error_m` over that walk (the collision's 1 m heightfield against a 25 cm tile lattice of the same source) | 0.748 mm | 0.748 mm | 0.748 mm | under 5 mm, within 0.1 mm of the origin's (0.748 mm) |
+| A second's walk along x at 1.5 m/s | | 1.49876 m | | 1.5 m to 5 mm, the origin's to 1 µm (the same 1.49876 m) |
+| A box of a scene read whole: its west face, by a ray | 0 | 0 | 0 | 1 µm |
+
+The flight's f64 sums round at the coordinate's own step (58 pm, 1.9 nm, 15 nm), so 480 ticks could at the very worst add to 14 nm, 0.45 µm and 3.6 µm; what was measured is under that. The walk's worst ticks at the two farther sites come back within half a micrometre by its end: that is the character backend's own double-precision stepping, which its own far walk above measured at 0.88 µm and 6.6 µm over ten seconds; it does not grow with the controller.
+
+**The owner's sprint.** His frame log of 2026-10-04 (`endless-2026-10-04T1710-frames.jsonl`, frames 5256 to 5266: walking at (−419,055.125, 81.7, −66,781.67), sprinting at yaw −2.7478, 22° off +z towards +x, for 0.1224 s) shows x at −419,055.125 on every frame and z advancing 0.461 m — 3.77 m/s of a sprint whose z share is 4.62: the float32 sum rounded each tick's 8 mm along x away and each 19 mm along z to two of z's 7.8 mm steps. The walker put at that pose on the test's swell and sprinting at that yaw for the 29 ticks the frames span now moves **0.2317 m along x and 0.5580 m along z** (5 m/s along his heading would be 0.2318 and 0.5579). The brief's "0.19 m" is the x his frames should have shown for the z they did show (0.461 × tan 22.6°); at full speed it is 0.232.
+
+**An old session.** The committed synthetic session as version 1 wrote it (two seconds over the procedural heightfield, 22 m from the origin) replays under version 2 and ends **31.5 µm** from where version 1 ended it (`fly_tests.cpp`); by the origin version 1's float32 sums rounded at 1.9 µm, and 480 of them moved it that far. Far out it moves by what version 1 lost, which is the point of the change.
+
+**What changed in the hashes.** The committed synthetic trajectory moved from `81f482098316f782` (version 1) to `b245b4d4b3e6dcdd` (version 2): positions in f64 and hashed as doubles. Every walk's hash changes too: the ground follower's feet are hashed as doubles, and the physical walker is dropped at the ray's hit plus 2 cm in f64 where that sum was float32, so its character starts a few nanometres elsewhere.

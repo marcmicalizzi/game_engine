@@ -59,7 +59,7 @@ renderer::SceneData waves_scene() {
 
 view::SessionHeader walk_header() {
   view::SessionHeader h;
-  h.start.position = Vec3{2.0f, 20.0f, 3.0f};
+  h.start.position = WorldPos{2.0, 20.0, 3.0};
   h.start.yaw = 0.0f;
   h.start.pitch = -0.3f;
   h.params.tick_hz = 240;
@@ -106,10 +106,11 @@ Walked walk_session(const view::SessionHeader& header, const input::ActionMap& m
   return out;
 }
 
-f32 ground_under(f32 x, f32 z) {
+// The waves by the origin, where a float32 metre is the provider's own argument.
+f64 ground_under(f64 x, f64 z) {
   const renderer::SceneData scene = waves_scene();
   const renderer::TerrainSampler sampler(scene.terrain);
-  return sampler.height(x, z);
+  return static_cast<f64>(sampler.height(static_cast<f32>(x), static_cast<f32>(z)));
 }
 
 }  // namespace
@@ -125,16 +126,16 @@ TEST_CASE("walk: F walks onto the ground under the camera, and F again flies fro
       key(420, k_key_w, true),  key(540, k_key_w, false),       // and a half second's flight
   };
   const view::SessionHeader header = walk_header();
-  f32 worst_feet = 0.0f;
-  Vec3 at_walk_end{};
-  f32 walked_z = 0.0f;
+  f64 worst_feet = 0.0;
+  WorldPos at_walk_end{};
+  f64 walked_z = 0.0;
   const Walked a =
       walk_session(header, map, events, 560, [&](const view::FlySession& s, const view::Walker& w) {
         const u64 t = s.tick().value;
         if (t >= 5 && t < 400) {
           REQUIRE(s.walking());
-          const Vec3 eye = s.state().position;
-          const f32 feet = eye.y - w.params().eye_height;
+          const WorldPos eye = s.state().position;
+          const f64 feet = eye.y - static_cast<f64>(w.params().eye_height);
           worst_feet = std::max(worst_feet, std::fabs(feet - ground_under(eye.x, eye.z)));
         }
         if (t == 260) walked_z = s.state().position.z;
@@ -143,16 +144,16 @@ TEST_CASE("walk: F walks onto the ground under the camera, and F again flies fro
   MESSAGE("walked: feet at most " << worst_feet << " m off the ground, a second's walk to z "
                                   << walked_z << ", the sprint to z " << at_walk_end.z
                                   << "; the walker's ground error " << a.max_error << " m");
-  CHECK(worst_feet <= k_feet_slack);
+  CHECK(worst_feet <= static_cast<f64>(k_feet_slack));
   // North is -z at yaw 0: a second at 1.5 m/s, and then half a second at 5 m/s.
-  CHECK(walked_z < 3.0f - 1.3f);
-  CHECK(walked_z > 3.0f - 1.7f);
-  CHECK(at_walk_end.z < walked_z - 2.0f);
+  CHECK(walked_z < 3.0 - 1.3);
+  CHECK(walked_z > 3.0 - 1.7);
+  CHECK(at_walk_end.z < walked_z - 2.0);
   // Flying again: the camera flew on from where the walker stood, along its pitched look (down).
   CHECK_FALSE(a.walking);
   CHECK(a.mode_changes == 2);
   CHECK(a.last.position.y < at_walk_end.y);
-  CHECK(a.last.position.z < at_walk_end.z - 1.0f);
+  CHECK(a.last.position.z < at_walk_end.z - 1.0);
   // The ground the walker stood on against the ground as drawn (the scene's grid): centimetres.
   CHECK(a.max_error < 0.1f);
 
@@ -167,24 +168,24 @@ TEST_CASE("walk: --walk starts on the ground, and a jump rises by v^2 / 2g and l
   header.walking = true;
   const input::ActionMap map = view::default_fly_map();
   const input::RawEvent events[] = {key(30, k_key_space, true), key(32, k_key_space, false)};
-  f32 standing = 0.0f;
-  f32 top = -1.0e9f;
+  f64 standing = 0.0;
+  f64 top = -1.0e9;
   u64 landed = 0;
   const Walked w =
       walk_session(header, map, events, 300, [&](const view::FlySession& s, const view::Walker&) {
         const u64 t = s.tick().value;
         if (t == 29) standing = s.state().position.y;
         if (t >= 30) top = std::max(top, s.state().position.y);
-        if (t > 60 && landed == 0 && std::fabs(s.state().position.y - standing) < 0.03f) landed = t;
+        if (t > 60 && landed == 0 && std::fabs(s.state().position.y - standing) < 0.03) landed = t;
       });
   CHECK(w.walking);
   CHECK(w.mode_changes == 0);  // it started walking; nothing switched
-  const f32 feet = standing - header.walk.eye_height;
-  CHECK(std::fabs(feet - ground_under(2.0f, 3.0f)) <= k_feet_slack);
-  const f32 expected =
-      header.walk.jump_speed * header.walk.jump_speed / (2.0f * header.walk.gravity);
+  const f64 feet = standing - static_cast<f64>(header.walk.eye_height);
+  CHECK(std::fabs(feet - ground_under(2.0, 3.0)) <= static_cast<f64>(k_feet_slack));
+  const f64 expected = static_cast<f64>(header.walk.jump_speed * header.walk.jump_speed /
+                                        (2.0f * header.walk.gravity));
   MESSAGE("jumped " << top - standing << " m (v^2/2g " << expected << "), back at tick " << landed);
-  CHECK(std::fabs((top - standing) - expected) < 0.05f);
+  CHECK(std::fabs((top - standing) - expected) < 0.05);
   CHECK(landed > 30 + 180);  // 2v/g = 0.82 s, 196 ticks
   CHECK(landed < 30 + 215);
 }
@@ -321,14 +322,14 @@ TEST_CASE("walk: standing on the erg's moving sand, the eye moves with it and ne
     return d;
   };
   walker.set_drawn(drawn());
-  Vec3 eye = walker.drop(Vec3{140.0f, 60.0f, -60.0f});
+  WorldPos eye = walker.drop(WorldPos{140.0, 60.0, -60.0});
   for (u32 tick = 0; tick < 120; ++tick)  // settled
     eye = walker.step(view::WalkInput{});
   // The drawn sand under the feet: the pair at the feet's point, blended as drawn.
-  const auto sand_at = [&](f32 x, f32 z) {
+  const auto sand_at = [&](f64 x, f64 z) {
     const scene_gen::Lattice point = scene_gen::ring_lattice(1);
-    const i32 i = static_cast<i32>(std::llround(static_cast<f64>(x) * 1000.0));
-    const i32 j = static_cast<i32>(std::llround(static_cast<f64>(z) * 1000.0));
+    const i32 i = static_cast<i32>(std::llround(x * 1000.0));
+    const i32 j = static_cast<i32>(std::llround(z * 1000.0));
     f32 ha = 0.0f;
     f32 hb = 0.0f;
     const view::DrawnGround d = drawn();
@@ -338,12 +339,12 @@ TEST_CASE("walk: standing on the erg's moving sand, the eye moves with it and ne
     return ha * (1.0f - t) + hb * t;
   };
   f64 game = scene.terrain.time_s;
-  f32 last_eye = eye.y;
+  f64 last_eye = eye.y;
   f32 last_sand = sand_at(eye.x, eye.z);
   const f32 first_sand = last_sand;
-  f32 max_eye_step = 0.0f;
+  f64 max_eye_step = 0.0;
   f32 max_sand_step = 0.0f;
-  f32 worst_gap = 0.0f;  // the eye's step over the sand's, in one frame
+  f64 worst_gap = 0.0;  // the eye's step over the sand's, in one frame
   for (u32 frame = 0; frame < 1'200; ++frame) {
     game += 600.0 / 60.0;
     if (!next.ready) {
@@ -360,7 +361,8 @@ TEST_CASE("walk: standing on the erg's moving sand, the eye moves with it and ne
     const f32 sand = sand_at(eye.x, eye.z);
     max_eye_step = std::max(max_eye_step, std::fabs(eye.y - last_eye));
     max_sand_step = std::max(max_sand_step, std::fabs(sand - last_sand));
-    worst_gap = std::max(worst_gap, std::fabs((eye.y - last_eye) - (sand - last_sand)));
+    worst_gap =
+        std::max(worst_gap, std::fabs((eye.y - last_eye) - static_cast<f64>(sand - last_sand)));
     last_eye = eye.y;
     last_sand = sand;
   }
@@ -371,8 +373,8 @@ TEST_CASE("walk: standing on the erg's moving sand, the eye moves with it and ne
           << walker.stats().max_ground_error_m << " m off the drawn grid");
   CHECK(last_sand - first_sand < -0.1f);  // it sinks, as it did under the owner
   // Until 2026-09-29 the eye stood still and then dropped 4.7 cm in one frame, three times here.
-  CHECK(max_eye_step < 2.0e-3f);
-  CHECK(worst_gap < 1.5e-3f);
+  CHECK(max_eye_step < 2.0e-3);
+  CHECK(worst_gap < 1.5e-3);
 }
 #endif
 
@@ -385,9 +387,9 @@ TEST_CASE("walk: walking back and forth over the same ground is the same walk ea
   header.walking = true;
   const input::RawEvent events[] = {key(10, k_key_w, true), key(490, k_key_w, false),
                                     key(500, k_key_s, true), key(980, k_key_s, false)};
-  Vec3 out{};
-  Vec3 back{};
-  Vec3 start{};
+  WorldPos out{};
+  WorldPos back{};
+  WorldPos start{};
   const Walked a =
       walk_session(header, map, events, 1000, [&](const view::FlySession& s, const view::Walker&) {
         if (s.tick().value == 1) start = s.state().position;
@@ -395,9 +397,9 @@ TEST_CASE("walk: walking back and forth over the same ground is the same walk ea
         if (s.tick().value == 1000) back = s.state().position;
       });
   MESSAGE("out to " << out.z << " and back to " << back.z << " from " << start.z);
-  CHECK(out.z < start.z - 2.5f);
-  CHECK(std::fabs(back.z - start.z) < 0.1f);
-  CHECK(std::fabs(back.y - start.y) < 0.05f);
+  CHECK(out.z < start.z - 2.5);
+  CHECK(std::fabs(back.z - start.z) < 0.1);
+  CHECK(std::fabs(back.y - start.y) < 0.05);
   const Walked b = walk_session(header, map, events, 1000, [](const auto&, const auto&) {});
   CHECK(a.hash == b.hash);
 }
