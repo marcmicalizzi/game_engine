@@ -430,7 +430,8 @@ TEST_CASE(
   // hash"). A change that moves the world — the fixture, a system's arithmetic, the write-back, the
   // hash itself — moves this, and says so here; a change that moves it on one compiler only is a
   // determinism bug (ADR-0035's kind), not an expectation to update.
-  CHECK(a.value == "c2168e9307bca23b");
+  // c2168e9307bca23b until 2026-10-05, when the carts began to integrate in f64 (ADR-0053).
+  CHECK(a.value == "034b0fdc9cda96f0");
 #endif
 }
 
@@ -525,13 +526,26 @@ struct CorpusSave {
 
 const std::vector<CorpusSave>& corpus() {
   static const std::vector<CorpusSave> saves = {
+      // ADR-0053 moved `Node` and `Mover` to version 2 (their positions are f64): a step each, and
+      // nothing to rewrite, since the JSON of a float32 position is the double it widens to. The
+      // loaded hashes did not move; the hash a second later did, because the carts now move in
+      // f64 from where the save left them.
       {"v1",
        300,
        "8a6d7d078e00bcbf",
        "3d528309eea2b9df",
-       {"engine.world.SaveManifest 1 -> 2", "store.tables 1 -> 2"},
-       "37645e758e706598"},
-      {"v2", 300, "3d528309eea2b9df", "3d528309eea2b9df", {}, "37645e758e706598"},
+       {"engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
+        "engine.world.SaveManifest 1 -> 2", "store.tables 1 -> 2"},
+       "25aef5f85a9efe56"},
+      {"v2",
+       300,
+       "3d528309eea2b9df",
+       "3d528309eea2b9df",
+       {"engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2"},
+       "25aef5f85a9efe56"},
+      // Written by the build that made them version 2: the same world, its carts moved in f64 for
+      // the 300 ticks before the save, which is why its hashes are not v2's.
+      {"v3", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "6ca572c1c0fa824b"},
   };
   return saves;
 }

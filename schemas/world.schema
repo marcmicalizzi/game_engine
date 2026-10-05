@@ -7,9 +7,13 @@ namespace engine.world
 /// Where an entity is, in world space: the document's positions are world positions (the tile
 /// partition reads them as such), so this is not a local transform and `ChildOf` does not
 /// propagate it.
-struct Transform @version(1) @kind(component) {
-  /// World position, metres, y up (core/math).
-  position: vec3 @unit(m)
+///
+/// Version 2 (ADR-0053): `position` is a `worldpos`, three f64, where version 1 had a float32
+/// `vec3` that stepped by 3.1 cm 420 km out. The JSON is the same three numbers, so nothing is
+/// migrated; the version says an older build must not read it as floats.
+struct Transform @version(2) @kind(component) {
+  /// World position, metres, y up (core/math/world.h).
+  position: worldpos @unit(m)
   /// Orientation; identity faces -z.
   orientation: quat
 }
@@ -17,9 +21,11 @@ struct Transform @version(1) @kind(component) {
 /// A named place in the world: the least a document record can be and still be somewhere. A
 /// capability's record types (a mover, a prop, a character) add what they need on top; this one is
 /// for grouping and marking — a yard, a spawn point, a waypoint.
-struct Node @version(1) @kind(record) {
+///
+/// Version 2 (ADR-0053): `position` is a `worldpos`; a version-1 record reads the same position.
+struct Node @version(2) @kind(record) {
   name: string
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   orientation: quat
 }
 

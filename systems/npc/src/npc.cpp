@@ -47,15 +47,23 @@ tunables::Int t_motion_every{"npc.motion.every_ticks", 1, 1, 3600,
 tunables::Int t_budget{"npc.fast_forward.budget", 100000, 0, i64{1} << 40,
                        "Events a fast-forward executes before it summarizes instead."};
 
-bool read_vec3(const JsonValue* value, Vec3& out) {
+// A place's position as the document holds it, f64 and unrounded (ADR-0053).
+bool read_world_position(const JsonValue* value, WorldPos& out) {
   if (value == nullptr || !value->is_array() || value->size() < 3) return false;
   f64 c[3] = {};
   for (usize i = 0; i < 3; ++i) {
     if (!(*value)[i].get_f64(c[i])) return false;
   }
-  out = Vec3{static_cast<f32>(c[0]), static_cast<f32>(c[1]), static_cast<f32>(c[2])};
+  const WorldPos p{c[0], c[1], c[2]};
+  if (!world_cell_valid(p)) return false;
+  out = p;
   return true;
 }
+
+// The tier pass's input: `domain/sim`'s `TierInput` and `ObserverSet` hold float32 world positions
+// until they take `WorldPos` (stage 2 of the ADR-0053 change, docs/subsystems/npc.md). The one
+// place the capability narrows an absolute position, kept here so that change is one line.
+Vec3 tier_position(WorldPos p) noexcept { return relative(p, WorldPos::origin()); }
 
 PlaceRole role_of(const JsonValue* value) {
   std::string_view text;
@@ -109,7 +117,7 @@ void PlaceIndex::clear() noexcept {
   ++generation_;
 }
 
-void PlaceIndex::add(const Id128& id, Vec3 position, PlaceRole role) {
+void PlaceIndex::add(const Id128& id, WorldPos position, PlaceRole role) {
   const u32* existing = by_id_.find_value(id);
   if (existing != nullptr) {
     positions_[*existing] = position;
@@ -128,12 +136,12 @@ u32 PlaceIndex::refresh(const doc::Document& document) {
   // `objects()` is the composed index's ids in id order, so the index is built in the same order
   // whatever the layers hold and wherever the places came from.
   Vector<Id128> ids;
-  Vector<Vec3> positions;
+  Vector<WorldPos> positions;
   Vector<PlaceRole> roles;
   for (const Id128& id : document.objects()) {
     if (document.type_of(id) != k_place_type) continue;
-    Vec3 position;
-    if (!read_vec3(document.property(id, "position"), position)) position = Vec3{};
+    WorldPos position;
+    if (!read_world_position(document.property(id, "position"), position)) position = WorldPos{};
     ids.push_back(id);
     positions.push_back(position);
     roles.push_back(role_of(document.property(id, "role")));
@@ -284,10 +292,10 @@ sim::EntityHandle NpcSystem::materialize(const sim::EntityRecord& record, u8 tie
     offsets_.push_back(0);
     for (u32 r = 0; r < 4; ++r)
       places_of_.push_back(k_no_place);
-    fallback_.push_back(Vec3{});
+    fallback_.push_back(WorldPos{});
     points_.push_back(RoutinePoint{});
     timers_.push_back(sim::TimerHandle{});
-    drawn_.push_back(Vec3{});
+    drawn_.push_back(WorldPos{});
     importance_.push_back(1.0f);
     const bool observed = observers_ != nullptr && !observers_->empty();
     tier_.push_back(observed ? u8{2} : (tier < 2 ? tier : u8{2}));
@@ -402,26 +410,25 @@ RoutinePoint NpcSystem::point_at(u32 i, i64 t_us) const noexcept {
   return routine_at_offset(variations_[i], t_us, offsets_[i]);
 }
 
-Vec3 NpcSystem::place_position(u32 i, PlaceRole role) const noexcept {
+WorldPos NpcSystem::place_position(u32 i, PlaceRole role) const noexcept {
   const u32 place = places_of_[i * 4 + role_index(role)];
   return place != k_no_place ? places_.position(place) : fallback_[i];
 }
 
-Vec3 NpcSystem::position_at(u32 i, i64 t_us) const noexcept {
+WorldPos NpcSystem::position_at(u32 i, i64 t_us) const noexcept {
   const RoutinePoint& p = points_[i];
-  const Vec3 anchor = place_position(i, p.place);
+  const WorldPos anchor = place_position(i, p.place);
   if (p.state != ResidentState::Travelling || p.end_us <= p.start_us) return anchor;
-  const Vec3 from = place_position(i, p.from);
+  const WorldPos from = place_position(i, p.from);
   i64 elapsed = t_us - p.start_us;
   if (elapsed < 0) elapsed = 0;
-  const f32 f =
-      static_cast<f32>(static_cast<f64>(elapsed) / static_cast<f64>(p.end_us - p.start_us));
-  const f32 k = f < 1.0f ? f : 1.0f;
-  return Vec3{from.x + (anchor.x - from.x) * k, from.y + (anchor.y - from.y) * k,
-              from.z + (anchor.z - from.z) * k};
+  const f64 f = static_cast<f64>(elapsed) / static_cast<f64>(p.end_us - p.start_us);
+  // In f64 along the segment between two world positions (ADR-0053): a trip 420 km out is drawn
+  // where it is, not on float32's 3.1 cm grid.
+  return lerp(from, anchor, f < 1.0 ? f : 1.0);
 }
 
-Vec3 NpcSystem::drawn_at(u32 i, i64 t_us) const noexcept {
+WorldPos NpcSystem::drawn_at(u32 i, i64 t_us) const noexcept {
   // Near, a trip is drawn where it is; at LOD2 at its destination, which is where the record is.
   return tier_[i] <= 1 ? position_at(i, t_us) : place_position(i, points_[i].place);
 }
@@ -531,7 +538,7 @@ void NpcSystem::lod_tick(sim::SystemContext& context, sim::Batch /*batch*/) {
   const i64 now = context.time.us;
   self->scored_.clear();
   for (u32 i = 0; i < self->ids_.size(); ++i)
-    self->scored_.push_back(self->position_at(i, now));
+    self->scored_.push_back(tier_position(self->position_at(i, now)));
   sim::TierInput input;
   input.positions = std::span<const Vec3>(self->scored_.data(), self->scored_.size());
   input.importance = std::span<const f32>(self->importance_.data(), self->importance_.size());
@@ -595,10 +602,10 @@ u64 NpcSystem::bytes_held() const noexcept {
   bytes += u64{variations_.capacity()} * sizeof(Variation);
   bytes += u64{offsets_.capacity()} * sizeof(i64);
   bytes += u64{places_of_.capacity()} * sizeof(u32);
-  bytes += u64{fallback_.capacity()} * sizeof(Vec3);
+  bytes += u64{fallback_.capacity()} * sizeof(WorldPos);
   bytes += u64{points_.capacity()} * sizeof(RoutinePoint);
   bytes += u64{timers_.capacity()} * sizeof(sim::TimerHandle);
-  bytes += u64{drawn_.capacity()} * sizeof(Vec3);
+  bytes += u64{drawn_.capacity()} * sizeof(WorldPos);
   bytes += u64{scored_.capacity()} * sizeof(Vec3);
   bytes += u64{importance_.capacity()} * sizeof(f32);
   bytes += u64{tier_.capacity()};
@@ -658,11 +665,11 @@ bool NpcSystem::place_tile(u32 place, f64 tile_size, u64& out) {
     place_tiles_size_ = tile_size;
     place_tiles_generation_ = places_.generation();
     for (u32 p = 0; p < places_.size(); ++p) {
-      const Vec3 at = places_.position(p);
+      const WorldPos at = places_.position(p);
       JsonValue position = JsonValue::array();
-      position.push_back(JsonValue(static_cast<f64>(at.x)));
-      position.push_back(JsonValue(static_cast<f64>(at.y)));
-      position.push_back(JsonValue(static_cast<f64>(at.z)));
+      position.push_back(JsonValue(at.x));
+      position.push_back(JsonValue(at.y));
+      position.push_back(JsonValue(at.z));
       doc::TileCoord tile;
       const bool tiled = doc::tile_of_position(position, tile_size, tile);
       place_tiles_.push_back(tiled ? tile_key(tile) : 0u);

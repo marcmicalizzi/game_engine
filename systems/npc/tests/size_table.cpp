@@ -7,10 +7,11 @@
 
 using namespace engine;
 
-// The components on a resident's entity. NpcState is the written-back part, widest field first so
-// it is 24 bytes and not 32; NpcRoutine is the clock offset, four place ids and a routine byte,
+// The components on a resident's entity. NpcState is the written-back part, widest field first; its
+// anchor is a worldpos (ADR-0053), so 40 bytes where a float32 anchor made it 24. NpcRoutine is the
+// clock offset, four place ids and a routine byte,
 // padded to 80.
-ENGINE_EXPECT_SIZE(24, 8, npc::NpcState);
+ENGINE_EXPECT_SIZE(40, 8, npc::NpcState);
 ENGINE_EXPECT_SIZE(80, 8, npc::NpcRoutine);
 ENGINE_EXPECT_SIZE(12, 4, npc::NpcPlace);
 // The capability's per-resident arrays: the drawn variation (two day plans of twelve minute
@@ -24,5 +25,5 @@ ENGINE_EXPECT_SIZE(10, 2, npc::RoutineRow);
 // place, and two flags (docs/subsystems/npc.md, "The schedule index").
 ENGINE_EXPECT_SIZE(72, 8, npc::ScheduledResident);
 // Everything the capability holds for one resident outside flecs and the wheel.
-static_assert(npc::NpcSystem::bytes_per_resident() == 177,
+static_assert(npc::NpcSystem::bytes_per_resident() == 201,
               "size table: a resident's arrays changed; update the table and npc.md");

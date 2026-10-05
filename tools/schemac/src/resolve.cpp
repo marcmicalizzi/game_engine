@@ -141,8 +141,8 @@ bool check_default(const Field& f, const std::map<std::string, DeclRef>& decls,
         start = comma + 1;
       }
       if (n != 3) {
-        errors.push_back(err(f.loc, "a " + t.name + " default has 3 components, not " +
-                                        std::to_string(n)));
+        errors.push_back(
+            err(f.loc, "a " + t.name + " default has 3 components, not " + std::to_string(n)));
         return false;
       }
       // The same bound the runtime holds a read position to (core/math/world.h).

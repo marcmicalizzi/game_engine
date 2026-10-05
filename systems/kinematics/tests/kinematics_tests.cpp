@@ -25,7 +25,7 @@ namespace {
 
 constexpr f32 k_step = 1.0f / 60.0f;
 
-flecs::entity spawn(ecs::SimWorld& sim, u64 n, Vec3 position, Vec3 linear, Vec3 angular) {
+flecs::entity spawn(ecs::SimWorld& sim, u64 n, WorldPos position, Vec3 linear, Vec3 angular) {
   const flecs::entity e = ecs::create_entity(sim.world(), Id128::from_parts(0x6B, n));
   world::Transform transform;
   transform.position = position;
@@ -44,7 +44,7 @@ TEST_CASE("kinematics: integrate moves by the velocity and turns about the entit
   Velocity v;
   v.linear = Vec3{2.0f, 0.0f, -1.0f};
   integrate(t, v, 0.5f);
-  CHECK(t.position == Vec3{1.0f, 0.0f, -0.5f});
+  CHECK(t.position == WorldPos{1.0, 0.0, -0.5});
   // Not turning: the orientation is left alone to the bit, so it is never written back.
   CHECK(t.orientation == Quat::identity());
 
@@ -59,6 +59,39 @@ TEST_CASE("kinematics: integrate moves by the velocity and turns about the entit
   CHECK(length(spun.orientation) == doctest::Approx(1.0f));
 }
 
+// ADR-0053: a cart walking pace along x and half that along z, stepped one second at 60 Hz, moves
+// as far 420 km, 10,000 km and 1e8 m out as it does by the origin. Each of the 60 additions rounds
+// at the position's own f64 step, so the far displacement is within 60 half-steps of the origin's,
+// bounded here by 60 × site × 2^-53: 6.7e-8 m at 1e7 m, 6.7e-7 m at 1e8 m.
+TEST_CASE("kinematics far: a second's motion is the same distance far from the origin") {
+  Velocity v;
+  v.linear = Vec3{1.5f, 0.0f, 0.75f};
+  const auto walk = [&](WorldPos start) {
+    world::Transform t;
+    t.position = start;
+    for (int i = 0; i < 60; ++i)
+      integrate(t, v, k_step);
+    return t.position - start;
+  };
+  const DVec3 by_origin = walk(WorldPos::origin());
+  CHECK(by_origin.x == doctest::Approx(1.5).epsilon(1e-6));
+  CHECK(by_origin.z == doctest::Approx(0.75).epsilon(1e-6));
+  for (const f64 site : {419072.0, 10000000.0, 100000000.0}) {
+    CAPTURE(site);
+    const DVec3 far = walk(WorldPos{site, 12.0, -site});
+    const f64 bound = 60.0 * site * 0x1p-53;  // 60 roundings of half the step at `site`
+    CHECK(std::fabs(far.x - by_origin.x) <= bound);
+    CHECK(std::fabs(far.z - by_origin.z) <= bound);
+    CHECK(far.y == 0.0);
+  }
+  // The float32 arithmetic this replaced, for the record: 420 km out each 2.5 cm step rounds up to
+  // the float's 3.125 cm, and the cart goes 1.875 m in the second it should go 1.5.
+  f32 x = 419072.0f;
+  for (int i = 0; i < 60; ++i)
+    x += v.linear.x * k_step;
+  CHECK(x == 419072.0f + 1.875f);
+}
+
 TEST_CASE("kinematics: the system registers through the engine's descriptor and moves entities") {
   ecs::SimWorld sim;
   KinematicsSystem system;
@@ -70,12 +103,12 @@ TEST_CASE("kinematics: the system registers through the engine's descriptor and 
   CHECK(desc.writes.test(ecs::component_index<world::Transform>(sim.world())));
   CHECK(ecs::systems(sim.world()).count_in(sim::TickPhase::Systems) == 1);
 
-  const flecs::entity moving = spawn(sim, 1, Vec3{}, Vec3{1.0f, 0.0f, 0.0f}, Vec3{});
-  const flecs::entity still = spawn(sim, 2, Vec3{5.0f, 0.0f, 0.0f}, Vec3{}, Vec3{});
+  const flecs::entity moving = spawn(sim, 1, WorldPos{}, Vec3{1.0f, 0.0f, 0.0f}, Vec3{});
+  const flecs::entity still = spawn(sim, 2, WorldPos{5.0, 0.0, 0.0}, Vec3{}, Vec3{});
   for (int i = 0; i < 30; ++i)
     sim.step();
-  CHECK(moving.get<world::Transform>().position.x == doctest::Approx(0.5f));
-  CHECK(still.get<world::Transform>().position.x == 5.0f);
+  CHECK(moving.get<world::Transform>().position.x == doctest::Approx(0.5));
+  CHECK(still.get<world::Transform>().position.x == 5.0);
   CHECK(system.stats().moved == 2);
 }
 
@@ -85,7 +118,7 @@ TEST_CASE("kinematics: the scheduler as executor ticks it with the same step and
     KinematicsSystem system;
     system.install(sim);
     for (u64 i = 0; i < 64; ++i) {
-      spawn(sim, i + 1, Vec3{static_cast<f32>(i), 0.0f, 0.0f},
+      spawn(sim, i + 1, WorldPos{static_cast<f64>(i), 0.0, 0.0},
             Vec3{0.25f * static_cast<f32>(i), 1.0f, -0.5f},
             Vec3{0.0f, 0.1f * static_cast<f32>(i % 7), 0.0f});
     }
@@ -158,5 +191,5 @@ TEST_CASE("kinematics: a Mover record materializes with its spin converted to ra
   ecs::ScheduledTick tick(sim, scheduler);
   for (int i = 0; i < 60; ++i)
     tick.step();
-  CHECK(e.get<world::Transform>().position.x == doctest::Approx(3.0f));
+  CHECK(e.get<world::Transform>().position.x == doctest::Approx(3.0));
 }

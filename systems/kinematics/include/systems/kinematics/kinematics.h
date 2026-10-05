@@ -55,9 +55,10 @@ inline constexpr const char* k_determinism = "hashed";
 inline constexpr sim::TickPhase k_phase = sim::TickPhase::Systems;
 
 // Moves `transform` by `velocity` over `seconds`: the tick's arithmetic, and the analytic step over
-// a frozen interval. Position is exact affine; orientation integrates the angular velocity as a
-// first-order quaternion step and renormalizes, and is left bit-for-bit alone when the entity does
-// not turn — so an entity that only translates never writes its orientation back.
+// a frozen interval. Position is affine in f64 (`Transform::position` is a `WorldPos`, ADR-0053),
+// so a step moves a thing as far 10,000 km out as by the origin; orientation integrates the angular
+// velocity as a first-order quaternion step and renormalizes, and is left bit-for-bit alone when
+// the entity does not turn — so an entity that only translates never writes its orientation back.
 void integrate(world::Transform& transform, const Velocity& velocity, f32 seconds) noexcept;
 
 // What the last tick did: stage 0's share, written once per tick, like `animation::AnimationStats`.

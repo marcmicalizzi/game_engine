@@ -17,9 +17,12 @@ struct Velocity @version(1) @kind(component) {
 /// A thing that moves at a set velocity without physics: a cart on a rail, a drifting buoy, a
 /// patrol a scheduled event will stop. Authored in the units a designer types: metres per second
 /// and degrees per second.
-struct Mover @version(1) @kind(record) {
+///
+/// Version 2 (ADR-0053): `position` is a `worldpos`, as `Transform.position` it fills; a version-1
+/// record reads the same position.
+struct Mover @version(2) @kind(record) {
   name: string
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   orientation: quat
   velocity: vec3 @unit("m/s")
   spin: vec3 @unit("deg/s")

@@ -137,14 +137,16 @@ In the Phase 3 replay the simulated rings cover every place, so no resident cros
 
 | Where | Bytes | What |
 |---|---|---|
-| this capability's arrays | 177, plus ~16 in the handle index and a 12-byte scratch the tier pass scores from | id 16, handle 8, variation 60, clock offset 8, four places 16, fallback and drawn position 24, point 32, timer 8, importance 4, tier 1 (`bytes_per_resident()`, pinned) |
+| this capability's arrays | 201, plus ~16 in the handle index and a 12-byte scratch the tier pass scores from | id 16, handle 8, variation 60, clock offset 8, four places 16, fallback and drawn position 48 (two `WorldPos`, f64, ADR-0053; 24 as float32 before 2026-10-05), point 32, timer 8, importance 4, tier 1 (`bytes_per_resident()`, pinned) |
 | the wheel | 56 | one `TimingWheel::Slot` (and one more for a resident not held that is watched) |
 | the schedule index | 155 per resident of the document, held or not | the 72-byte `ScheduledResident` (pinned), the id map, and one 4-byte entry in the list of each tile its places are in, up to four (`bytes_scheduled()` at the containers' capacity, measured at 10^5) |
-| the entity's components | 128 | `Transform` 28, `NpcRoutine` 80, `NpcState` 24 (size table) |
+| the entity's components | 160 | `Transform` 40, `NpcRoutine` 80, `NpcState` 40 (size table; `Transform` and `NpcState` each grew by an f64 position, ADR-0053) |
 | flecs, the identity map, the write-back shadow | see [E38](../experiments/e38-scheduled-npcs.md) | measured as the process's resident-set growth |
 | LOD3: the document | see E38 | a record's composed JSON in memory, and its bytes on disk |
 
 05 §5.6's ~200 B is a *LOD3* figure; E38 says how far a held resident and a record each are from it, and why.
+
+**Positions are world positions, f64** ([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md)). `Place.position`, `Resident.position` and `NpcState.anchor` are `worldpos` (records and component at version 2), the place index, the fallback and the drawn position are `WorldPos`, a trip is `lerp` between two of them in f64, and the generator writes a place where its stream put it rather than on float32's grid — so a town 420 km out is drawn and written back where it is. The anchor written back is a place's position exactly as the document holds it. **One narrowing is left, by name**: the tier pass scores residents through `domain/sim`'s `TierInput` and `ObserverSet`, which still hold float32 world positions, so `tier_position()` in `npc.cpp` converts there with `relative(p, WorldPos::origin())`. It costs nothing by the origin and up to half a float step of a distance far out (1.6 cm at 420 km against tier rings of tens of metres); it goes when `domain/sim`'s tiers take `WorldPos`, which is the second stage of the ADR-0053 change.
 
 ## Invariants
 

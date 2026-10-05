@@ -663,6 +663,20 @@ TEST_CASE("protocol: the day-one operations' schema types, their defaults and th
   CHECK(default_of("engine.protocol.Budget", "limit").is_null());
   CHECK(default_of("engine.protocol.SessionEvent", "attribution").is_null());
 
+  // ADR-0053: a world position is described as the IDL spells it, version 2, origin by default.
+  {
+    JsonValue d = host.ok("schema.describe", obj({{"type", JsonValue("engine.world.Transform")}}));
+    const JsonValue& description = at(d, "description");
+    CHECK(at(description, "version") == JsonValue(u32{2}));
+    const JsonValue& position = at(description, "fields")[0];
+    CHECK(at(position, "name") == JsonValue("position"));
+    CHECK(at(position, "type") == JsonValue("worldpos"));
+    JsonValue origin = JsonValue::array();
+    for (int i = 0; i < 3; ++i)
+      origin.push_back(JsonValue(0.0));
+    CHECK(at(position, "default") == origin);
+  }
+
   // A budget with no limit and no use says null for both, not 0: "counted, not bounded" and "not
   // in use yet" are different answers from "a limit of nothing".
   Budget budget;

@@ -51,7 +51,7 @@ The language keeps the distinction the types keep: a `materialize` row joins a `
 
 **On the wire** each is `[x, y, z]`: JSON numbers, each the shortest decimal that reads back to the same double (`std::to_chars`, whose output the C++ standard fixes, so a saved document is the same bytes from MSVC, GCC and Clang, as the content build's containers are). A float32 `vec3` was always written as its exact widened double, so **a document written with a `vec3` position reads the same position as a `worldpos`** and a field can change from one to the other under a version bump without a migration of its JSON. **A `worldpos` read from outside is validated**: three finite numbers, each in [−137,438,953,408, 137,438,953,408) m (`world_cell_valid`: where a 64 m cell's i32 index ends); anything else is refused, naming the field. In memory and in the flat (binary) form each is 24 bytes; the JSON Schema says `"items": {"type": "number", "minimum": -137438953408, "exclusiveMaximum": 137438953408}` for a `worldpos`, and `schema.describe` names them `worldpos` and `dvec3`.
 
-**A reader older than these types** must not meet them silently, so a type that changes a field from `vec3` to `worldpos` bumps its `@version` although its JSON is unchanged: an older build then refuses a save naming the type ("newer than this build's") rather than reading the positions as floats. A build older than the kinds themselves never sees one in a table, since generated tables are compiled with the build that reads them.
+**A reader older than these types** must not meet them silently, so a type that changes a field from `vec3` to `worldpos` bumps its `@version` although its JSON is unchanged: an older build then refuses a save naming the type ("newer than this build's") rather than reading the positions as floats. A build older than the kinds themselves never sees one in a table, since generated tables are compiled with the build that reads them. `engine.world.Transform` and `Node`, `engine.kinematics.Mover` and `engine.npc.Place`, `Resident` and `NpcState` went to version 2 this way on 2026-10-05; the migration corpus's older saves load to the same hash and name the steps (`content/migration-corpus/README.md`).
 
 **An optional array (`T[]?`) is how a field says "absent" apart from "empty"** — `std::optional<Vector<T>>`, `null` or missing in JSON for absent. Use it when the two mean different things: `engine.scene.Terrain.bands` is the first, where absent is the default band table and an empty table is refused as a mistake rather than read as "no dunes". A plain `T[]` cannot tell them apart, since `[]` is its default.
 
@@ -103,9 +103,9 @@ struct Velocity @version(1) @kind(component) {
   angular: vec3 @unit("rad/s")
 }
 
-struct Mover @version(1) @kind(record) {
+struct Mover @version(2) @kind(record) {
   name: string
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   orientation: quat
   velocity: vec3 @unit("m/s")
   spin: vec3 @unit("deg/s")
@@ -137,7 +137,7 @@ Names resolve like any named type — this file's namespace, then imports, then 
 - `<stem>.schema.json`: JSON Schema draft 2020-12 with `$defs` per type; `required` lists non-optional, non-container fields without defaults.
 - `<stem>.md`: one table per type, with each field's unit, and one per `materialize` declaration.
 
-The engine's own world vocabulary is `world.schema` here: `engine.world.Transform` (the component every placed thing has), `engine.world.Node` (the least a record can be and still be somewhere, with its mapping) and `engine.world.WriteBack` (the event a write-back leaves in the store's log).
+The engine's own world vocabulary is `world.schema` here: `engine.world.Transform` (the component every placed thing has; its position a `worldpos` since version 2), `engine.world.Node` (the least a record can be and still be somewhere, with its mapping) and `engine.world.WriteBack` (the event a write-back leaves in the store's log).
 
 ## Runtime
 

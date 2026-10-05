@@ -50,6 +50,7 @@
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <core/time/time.h>
 #include <domain/doc/document.h>
 #include <domain/ecs/sim_world.h>
@@ -107,7 +108,7 @@ NpcConfig config_from_tunables();
 class PlaceIndex {
  public:
   void clear() noexcept;
-  void add(const Id128& id, Vec3 position, PlaceRole role);
+  void add(const Id128& id, WorldPos position, PlaceRole role);
   // Every live Place record, through the document's composed index (never a scan of the layers).
   // A no-op when the document's revision is the one last read. Returns the places indexed.
   // `generation()` moves only when what the index holds changed — a place added, removed or moved —
@@ -115,13 +116,13 @@ class PlaceIndex {
   u32 refresh(const doc::Document& document);
   u64 generation() const noexcept { return generation_; }
   u32 find(const Id128& id) const noexcept;
-  Vec3 position(u32 index) const noexcept { return positions_[index]; }
+  WorldPos position(u32 index) const noexcept { return positions_[index]; }
   PlaceRole role(u32 index) const noexcept { return roles_[index]; }
   u32 size() const noexcept { return positions_.size(); }
 
  private:
   HashMap<Id128, u32> by_id_;
-  Vector<Vec3> positions_;
+  Vector<WorldPos> positions_;  // f64 world positions (ADR-0053)
   Vector<PlaceRole> roles_;
   Vector<Id128> ids_;
   u64 revision_ = ~u64{0};
@@ -175,8 +176,8 @@ struct ResidentView {
   Id128 id;
   sim::EntityHandle entity;
   RoutinePoint point;
-  Vec3 anchor;
-  Vec3 drawn;
+  WorldPos anchor;
+  WorldPos drawn;
   u8 tier = 2;
   bool timer_live = false;
 };
@@ -261,7 +262,7 @@ class NpcSystem {
   // Bytes this capability holds per resident, and in all (its arrays and index, not flecs').
   static constexpr u32 bytes_per_resident() noexcept {
     return static_cast<u32>(sizeof(Id128) + sizeof(sim::EntityHandle) + sizeof(Variation) +
-                            sizeof(i64) + 4 * sizeof(u32) + 2 * sizeof(Vec3) +
+                            sizeof(i64) + 4 * sizeof(u32) + 2 * sizeof(WorldPos) +
                             sizeof(RoutinePoint) + sizeof(sim::TimerHandle) + sizeof(f32) +
                             sizeof(u8));
   }
@@ -283,14 +284,14 @@ class NpcSystem {
   void dematerialize(sim::EntityHandle entity);
   // Puts resident `i` at `point` and arms its timer for the row's end.
   void move_to(u32 i, const RoutinePoint& point, i64 t_us);
-  Vec3 place_position(u32 i, PlaceRole role) const noexcept;
+  WorldPos place_position(u32 i, PlaceRole role) const noexcept;
   void resolve_places(u32 i, const NpcRoutine& routine) noexcept;
   // The closed form for resident `i` at game time `t`, in game time.
   RoutinePoint point_at(u32 i, i64 t_us) const noexcept;
   // Where a resident is: at its place, or on a trip's segment by elapsed fraction — whatever its
   // tier. `drawn_at` is that at LOD0–1 and the destination at LOD2.
-  Vec3 position_at(u32 i, i64 t_us) const noexcept;
-  Vec3 drawn_at(u32 i, i64 t_us) const noexcept;
+  WorldPos position_at(u32 i, i64 t_us) const noexcept;
+  WorldPos drawn_at(u32 i, i64 t_us) const noexcept;
   void write_components(u32 i);
   void remove(u32 i);
 
@@ -344,12 +345,12 @@ class NpcSystem {
   Vector<Id128> ids_;
   Vector<sim::EntityHandle> handles_;
   Vector<Variation> variations_;
-  Vector<i64> offsets_;    // the routine's clock at game time 0 (Resident.clock_offset)
-  Vector<u32> places_of_;  // four per resident: home, job, service, leisure (PlaceRole order)
-  Vector<Vec3> fallback_;  // where the document had it, for a role with no known place
+  Vector<i64> offsets_;        // the routine's clock at game time 0 (Resident.clock_offset)
+  Vector<u32> places_of_;      // four per resident: home, job, service, leisure (PlaceRole order)
+  Vector<WorldPos> fallback_;  // where the document had it, for a role with no known place
   Vector<RoutinePoint> points_;
   Vector<sim::TimerHandle> timers_;
-  Vector<Vec3> drawn_;  // the transform
+  Vector<WorldPos> drawn_;  // the transform
   Vector<f32> importance_;
   Vector<u8> tier_;
   HashMap<u64, u32> by_handle_;

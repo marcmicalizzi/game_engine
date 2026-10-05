@@ -38,10 +38,10 @@ enum Routine : u8 {
 }
 
 /// A place residents live, work, shop or spend time at. A document record like `engine.world.Node`,
-/// with what a routine needs to know about it.
-struct Place @version(1) @kind(record) {
+/// with what a routine needs to know about it. Version 2 (ADR-0053): `position` is a `worldpos`.
+struct Place @version(2) @kind(record) {
   name: string
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   orientation: quat
   role: PlaceRole = Home
   /// The workplace or service kind, the game's own numbering (a hospital, radiology; a bakery).
@@ -70,12 +70,13 @@ materialize Place {
 
 /// One resident: 13 §13.2's persistent record — home, job, the state it is in and when its next
 /// transition is. `state`, `next_event` and `position` are what the timing wheel decided and the
-/// world writes back; everything else is the author's (or the generator's).
-struct Resident @version(1) @kind(record) {
+/// world writes back; everything else is the author's (or the generator's). Version 2 (ADR-0053):
+/// `position` is a `worldpos`.
+struct Resident @version(2) @kind(record) {
   name: string
   /// Where its routine has it: the place of its current row, or — travelling — the place it is going
   /// to. The partition reads it, so it is also the tile the record is filed under.
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   /// Places, by record id. A routine row names a role and the resident's place for that role is
   /// where it goes. A role the resident has no place for (a retiree's job) is never visited.
   home: id128
@@ -107,10 +108,11 @@ struct NpcRoutine @version(1) @kind(component) {
 /// The routine's side: what the wheel decided. Written back, so it is in the document at `Persist`
 /// and survives a save. `anchor` is the place the current row is at (for a trip, its destination);
 /// the entity's `Transform` is where it is drawn, which at LOD1 and nearer moves along a trip. The
-/// widest field first: 24 bytes a resident rather than 32.
-struct NpcState @version(1) @kind(component) {
+/// widest field first. Version 2 (ADR-0053): `anchor` is a `worldpos`, as the record's `position`
+/// it writes back to: 40 bytes a resident where a float32 anchor took 24.
+struct NpcState @version(2) @kind(component) {
   next_event: i64 = 0 @unit(us)
-  anchor: vec3 @unit(m)
+  anchor: worldpos @unit(m)
   state: ResidentState = Sleeping
 }
 

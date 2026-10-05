@@ -106,10 +106,10 @@ struct Rig {
     const flecs::entity e = ecs::entity_for(sim.world(), id);
     return e.is_valid() ? e.try_get<NpcState>() : nullptr;
   }
-  Vec3 transform(const Id128& id) {
+  WorldPos transform(const Id128& id) {
     const flecs::entity e = ecs::entity_for(sim.world(), id);
     const world::Transform* t = e.is_valid() ? e.try_get<world::Transform>() : nullptr;
-    return t != nullptr ? t->position : Vec3{};
+    return t != nullptr ? t->position : WorldPos{};
   }
 };
 
@@ -128,7 +128,7 @@ struct Snapshot {
   RoutinePoint point;
   ResidentState state = ResidentState::Sleeping;
   i64 next_event = 0;
-  Vec3 anchor;
+  WorldPos anchor;
   bool held = false;
   bool timer_live = false;
 };
@@ -442,7 +442,7 @@ TEST_CASE("npc: the observer set promotes and demotes residents, and a tier chan
   REQUIRE(observed.npc.find(traveller, start));
   // Materialized with observers present: at LOD2 (05 §5.5 step 4), drawn at its destination.
   sim::ObserverSet observers;
-  observers.add(start.anchor, 1.0f);
+  observers.add(relative(start.anchor, WorldPos::origin()), 1.0f);  // sim takes WorldPos in stage 2
   observed.npc.set_observers(&observers);
   observed.driver.materialize(d);  // unchanged: nothing is re-materialized
   CHECK(start.tier == 2);
@@ -581,16 +581,16 @@ TEST_CASE("npc: a place that moves moves the residents at it, found through the 
   const flecs::entity e = ecs::entity_for(rig.sim.world(), who);
   const Id128 home = e.try_get<NpcRoutine>()->home;
   JsonValue position = JsonValue::array();
-  position.push_back(JsonValue(static_cast<f64>(before.anchor.x) + 10.0));
+  position.push_back(JsonValue(before.anchor.x + 10.0));
   position.push_back(JsonValue(0.0));
-  position.push_back(JsonValue(static_cast<f64>(before.anchor.z)));
+  position.push_back(JsonValue(before.anchor.z));
   REQUIRE(d.apply(doc::cmd_set(home, "position", std::move(position)), nullptr, nullptr));
   const u64 generation = rig.npc.places().generation();
   CHECK(rig.npc.refresh_places(d) == places);
   CHECK(rig.npc.places().generation() != generation);
   ResidentView after;
   REQUIRE(rig.npc.find(who, after));
-  CHECK(after.anchor.x == before.anchor.x + 10.0f);
+  CHECK(after.anchor.x == before.anchor.x + 10.0);
   CHECK(rig.state(who)->anchor.x == after.anchor.x);
   // Nothing changed since: the same generation, nothing looked up again.
   CHECK(rig.npc.refresh_places(d) == places);
@@ -632,11 +632,11 @@ namespace {
 constexpr f64 k_tile_size = 32.0;  // GeneratorParams' default grid
 constexpr i64 k_hour = 60 * k_us_per_minute;
 
-bool tile_of_vec(Vec3 at, doc::TileCoord& out) {
+bool tile_of_vec(WorldPos at, doc::TileCoord& out) {
   JsonValue position = JsonValue::array();
-  position.push_back(JsonValue(static_cast<f64>(at.x)));
-  position.push_back(JsonValue(static_cast<f64>(at.y)));
-  position.push_back(JsonValue(static_cast<f64>(at.z)));
+  position.push_back(JsonValue(at.x));
+  position.push_back(JsonValue(at.y));
+  position.push_back(JsonValue(at.z));
   return doc::tile_of_position(position, k_tile_size, out);
 }
 

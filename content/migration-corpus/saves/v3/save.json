@@ -1,0 +1,625 @@
+{
+  "document": "document",
+  "files": [
+    {
+      "bytes": 37368,
+      "hash": "4b9a3c2d732898d6",
+      "path": "document/journal.jsonl"
+    },
+    {
+      "bytes": 55,
+      "hash": "d49ff15c339ccd6e",
+      "path": "document/layers/base.json"
+    },
+    {
+      "bytes": 7117,
+      "hash": "5f00157a14276dc2",
+      "path": "document/layers/places/index.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "d0d4b9251605dcfb",
+      "path": "document/layers/places/tiles/-1_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "87d8502eba3bf9ce",
+      "path": "document/layers/places/tiles/-1_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "65f8aadfb9336a5d",
+      "path": "document/layers/places/tiles/-1_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "6c7155d1fd6b70eb",
+      "path": "document/layers/places/tiles/-2_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "8c2f8bc477eb34f7",
+      "path": "document/layers/places/tiles/-2_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "624d5ded612cc681",
+      "path": "document/layers/places/tiles/-2_1.json"
+    },
+    {
+      "bytes": 368,
+      "hash": "97a7f7e301da9054",
+      "path": "document/layers/places/tiles/0_-1.json"
+    },
+    {
+      "bytes": 367,
+      "hash": "711ceeb63b5ee573",
+      "path": "document/layers/places/tiles/0_0.json"
+    },
+    {
+      "bytes": 367,
+      "hash": "4537046e3460eb71",
+      "path": "document/layers/places/tiles/0_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "7d0c530e84dbcd80",
+      "path": "document/layers/places/tiles/10_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "6d4a8908023ace5f",
+      "path": "document/layers/places/tiles/10_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "fb776fa11ec8f91a",
+      "path": "document/layers/places/tiles/10_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "301b086f359b45bb",
+      "path": "document/layers/places/tiles/11_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "cabec6b73a71d70c",
+      "path": "document/layers/places/tiles/11_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "433667ab88e51d4d",
+      "path": "document/layers/places/tiles/11_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "33445e003a588467",
+      "path": "document/layers/places/tiles/12_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "ba8cd52f4fbe2145",
+      "path": "document/layers/places/tiles/12_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "a21bad17e1b8d70c",
+      "path": "document/layers/places/tiles/12_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "b706e855c6f9a1c0",
+      "path": "document/layers/places/tiles/13_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "5d2f24b44802d3ab",
+      "path": "document/layers/places/tiles/13_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "7defb407b445b75b",
+      "path": "document/layers/places/tiles/13_1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "a023cfd0a52e1725",
+      "path": "document/layers/places/tiles/1_-1.json"
+    },
+    {
+      "bytes": 840,
+      "hash": "853517ad9be25fb6",
+      "path": "document/layers/places/tiles/1_0.json"
+    },
+    {
+      "bytes": 841,
+      "hash": "d5bd6376cd078eea",
+      "path": "document/layers/places/tiles/1_1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "281be5ba6fce0c09",
+      "path": "document/layers/places/tiles/2_-1.json"
+    },
+    {
+      "bytes": 982,
+      "hash": "33646f2049730dfd",
+      "path": "document/layers/places/tiles/2_0.json"
+    },
+    {
+      "bytes": 368,
+      "hash": "3e08f363d5c34da2",
+      "path": "document/layers/places/tiles/2_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "9fd02d38d7460128",
+      "path": "document/layers/places/tiles/3_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "eba5bcc23e9ad1eb",
+      "path": "document/layers/places/tiles/3_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "1b51aa6f3edd6cb4",
+      "path": "document/layers/places/tiles/3_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "9c962971f84819f8",
+      "path": "document/layers/places/tiles/4_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "95b0edba64ee47a5",
+      "path": "document/layers/places/tiles/4_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "ac33d01eae76e8b7",
+      "path": "document/layers/places/tiles/4_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "d80d01982b13fc5e",
+      "path": "document/layers/places/tiles/5_-1.json"
+    },
+    {
+      "bytes": 830,
+      "hash": "52fc16b69ce59ea0",
+      "path": "document/layers/places/tiles/5_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "8b239919affe4c23",
+      "path": "document/layers/places/tiles/5_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "1dea1d568a6046bf",
+      "path": "document/layers/places/tiles/6_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "8486c94f5213e174",
+      "path": "document/layers/places/tiles/6_0.json"
+    },
+    {
+      "bytes": 832,
+      "hash": "f3acdd4c37c7ef39",
+      "path": "document/layers/places/tiles/6_1.json"
+    },
+    {
+      "bytes": 832,
+      "hash": "03dc8eb018b548c2",
+      "path": "document/layers/places/tiles/7_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "1970f001196dd800",
+      "path": "document/layers/places/tiles/7_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "51a7f25c36902bc3",
+      "path": "document/layers/places/tiles/7_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "02dfcbe545528381",
+      "path": "document/layers/places/tiles/8_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "2981eca651e9210c",
+      "path": "document/layers/places/tiles/8_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "c9c16019ab76421f",
+      "path": "document/layers/places/tiles/8_1.json"
+    },
+    {
+      "bytes": 370,
+      "hash": "e0ce6000f0317425",
+      "path": "document/layers/places/tiles/9_-1.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "408004b4ef6061c8",
+      "path": "document/layers/places/tiles/9_0.json"
+    },
+    {
+      "bytes": 369,
+      "hash": "d3db6dfffbca901d",
+      "path": "document/layers/places/tiles/9_1.json"
+    },
+    {
+      "bytes": 379,
+      "hash": "cec86d422697e7be",
+      "path": "document/manifest.json"
+    },
+    {
+      "bytes": 547,
+      "hash": "ea1debcce2ea4d2d",
+      "path": "input-map.json"
+    },
+    {
+      "bytes": 177,
+      "hash": "6373905ffa19af71",
+      "path": "input.jsonl"
+    },
+    {
+      "bytes": 40960,
+      "hash": "5087a7b890f8d333",
+      "path": "world.db"
+    }
+  ],
+  "format": "engine.save",
+  "game_time_us": 5000100,
+  "hz": 60,
+  "ring": {
+    "hysteresis": 0.15000000596046448,
+    "max_activations": 8,
+    "max_deactivations": 16,
+    "observers": [
+      {
+        "position": [
+          100.00233459472656,
+          1.7000000476837158,
+          0.0
+        ],
+        "velocity": [
+          20.0,
+          0.0,
+          0.0
+        ],
+        "weight": 1.0
+      },
+      {
+        "position": [
+          51.16755676269531,
+          1.7000000476837158,
+          -5.667088985443115
+        ],
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "weight": 1.0
+      }
+    ],
+    "player": {
+      "action": "move",
+      "log": "input.jsonl",
+      "map": "input-map.json",
+      "observer": 1,
+      "speed": 10.0
+    },
+    "rings": [
+      1.5,
+      3.0
+    ],
+    "simulated": 1,
+    "store": true,
+    "tile_size": 32.0,
+    "tiles": [
+      {
+        "ring": 1,
+        "x": -2,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": -2,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": -2,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": -3
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 1,
+        "z": -3
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": 0
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 1,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 2,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 2,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 3,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 3,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 4,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 4,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": 1
+      }
+    ]
+  },
+  "rng": [],
+  "saved_by": "engine-host 0.0.1",
+  "state_hash": "8cdae985e86ab1d5",
+  "store": "world.db",
+  "tick": 300,
+  "version": 2,
+  "versions": [
+    {
+      "name": "engine.doc.DocumentManifest",
+      "version": 1
+    },
+    {
+      "name": "engine.doc.LayerFile",
+      "version": 1
+    },
+    {
+      "name": "engine.doc.Patch",
+      "version": 1
+    },
+    {
+      "name": "engine.input.log",
+      "version": 1
+    },
+    {
+      "name": "engine.kinematics.Mover",
+      "version": 2
+    },
+    {
+      "name": "engine.world.Node",
+      "version": 2
+    },
+    {
+      "name": "engine.world.SaveFile",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveManifest",
+      "version": 2
+    },
+    {
+      "name": "engine.world.SaveObserver",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SavePlayer",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveRing",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveRngStream",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveTile",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveVersion",
+      "version": 1
+    },
+    {
+      "name": "engine.world.TileProjection",
+      "version": 1
+    },
+    {
+      "name": "engine.world.WriteBack",
+      "version": 1
+    },
+    {
+      "name": "store.tables",
+      "version": 2
+    }
+  ],
+  "world_seed": 1,
+  "write_back_every": 60
+}

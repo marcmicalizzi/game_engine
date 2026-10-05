@@ -326,10 +326,9 @@ TEST_CASE("schema: worldpos and dvec3 round-trip far values to the bit, the text
   f.goal = WorldPos{1e11, -1e11, 419072.0};
   f.route.push_back(WorldPos{-10000000.4, 0.0, 100000000.25});
   const std::string text = write_json(to_json(f), JsonWriteOptions{false});
-  CHECK(text ==
-        R"({"at":[419070.2,-10000000.4,100000000.25],"goal":[1e+11,-1e+11,419072.0],)"
-        R"("home":[419072.0,0.5,-10000000.25],"route":[[-10000000.4,0.0,100000000.25]],)"
-        R"("step":[1e+11,-0.1,3e-09]})");
+  CHECK(text == R"({"at":[419070.2,-10000000.4,100000000.25],"goal":[1e+11,-1e+11,419072.0],)"
+                R"("home":[419072.0,0.5,-10000000.25],"route":[[-10000000.4,0.0,100000000.25]],)"
+                R"("step":[1e+11,-0.1,3e-09]})");
 
   JsonValue parsed;
   REQUIRE(parse_json(text, parsed).ok);

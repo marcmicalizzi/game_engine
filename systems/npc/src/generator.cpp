@@ -64,10 +64,12 @@ struct PlaceSet {
   }
 };
 
-Vec3 place_position(const GeneratorParams& p, u32 index) noexcept {
+// f64 from the stream to the document (ADR-0053): a generated town 420 km out is where the
+// stream put it, not on float32's 3.1 cm grid.
+WorldPos place_position(const GeneratorParams& p, u32 index) noexcept {
   const f64 x = coordinate(stream(p.seed, 'P', index, k_key_x), p.min_x, p.max_x);
   const f64 z = coordinate(stream(p.seed, 'P', index, k_key_z), p.min_z, p.max_z);
-  return Vec3{static_cast<f32>(x), 0.0f, static_cast<f32>(z)};
+  return WorldPos{x, 0.0, z};
 }
 
 doc::ObjectRecord place_record(const GeneratorParams& p, const PlaceSet& set, u32 index) {
@@ -104,7 +106,7 @@ Routine choose_routine(const GeneratorParams& p, u32 index) noexcept {
 }
 
 doc::ObjectRecord resident_record(const GeneratorParams& p, const PlaceSet& set,
-                                  const Vector<Vec3>& positions, u32 index) {
+                                  const Vector<WorldPos>& positions, u32 index) {
   Resident r;
   const Id128 id = resident_id(p.seed, index);
   r.routine = choose_routine(p, index);
@@ -271,7 +273,7 @@ doc::Layer generate_layer(const GeneratorParams& params, jobs::JobSystem* jobs,
   set.services = p.services;
   set.leisure = p.leisure;
 
-  Vector<Vec3> positions;
+  Vector<WorldPos> positions;
   positions.resize(set.total());
   for (u32 i = 0; i < set.total(); ++i)
     positions[i] = place_position(p, i);

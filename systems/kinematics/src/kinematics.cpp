@@ -1,5 +1,6 @@
 #include <core/log/log.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/ecs/components.h>
 #include <domain/ecs/systems.h>
 #include <systems/kinematics/kinematics.h>
@@ -12,9 +13,10 @@ namespace engine::kinematics {
 ENGINE_LOG_CATEGORY_DEFINE(log_kinematics, "kinematics");
 
 void integrate(world::Transform& transform, const Velocity& velocity, f32 seconds) noexcept {
-  transform.position.x += velocity.linear.x * seconds;
-  transform.position.y += velocity.linear.y * seconds;
-  transform.position.z += velocity.linear.z * seconds;
+  // In f64 from the operands up (ADR-0053): the velocity and the step widen exactly, so the
+  // displacement is the float32 inputs' product to f64's precision and the position moves by it
+  // wherever it is. A float32 sum here moved a 1.5 m/s cart nothing at all 420 km out.
+  transform.position += DVec3{velocity.linear} * static_cast<f64>(seconds);
   const Vec3 w = velocity.angular;
   if (w.x == 0.0f && w.y == 0.0f && w.z == 0.0f) return;
   // dq/dt = ½ (0, ω) q, one explicit step and a renormalization: first order, which at a 60 Hz
