@@ -8,7 +8,10 @@
 // visibility buffer (ids and depth) and the colour, on the mesh, software and both vertex
 // rasterizers, the ray visibility pass, with traced shadows and with the cascaded maps. An absolute
 // float32 anywhere on a path fails this by centimetres 420 km out, which is why the rule is held by
-// this test and not by reading the code.
+// this test and not by reading the code. The one exception is by design: the cascaded maps' texels
+// are fixed in the world (renderer.md, "Cascaded shadow maps"), so a move by whole cells moves the
+// scene against them, and their colour is held to the same bytes outside a band round the shadows'
+// edges as wide as the filter's footprint; ids and depth are held everywhere.
 //
 // The scene is rigid cubes on a slab at positions that are whole 1024ths of a metre, so f64 holds
 // every position exactly at 1e8 m and a move by whole cells is exact too. Moved by 6,548 cells
@@ -288,6 +291,76 @@ const Path k_paths[] = {
     {"cascaded maps", RasterMode::Hardware, ShadowMode::Cascaded, false},
 };
 
+// **The cascaded maps' texels are the world's** (renderer.md, "Cascaded shadow maps"): a cascade's
+// centre snaps to whole texels in the world's light space, so a scene and its camera moved by whole
+// cells fall on the texel grid differently, and a shadow's filtered edge moves by up to a texel
+// against the scene. Everywhere else the maps answer the same, wholly lit or wholly shadowed, and
+// the bytes are the same. The band left out is every pixel within `k_edge_pixels` of a pixel whose
+// shadowed-ness differs from its own, in either picture — the way the cascaded maps' reference test
+// leaves out the filter's footprint (shadow_map_tests.cpp, `k_edge_pixels`). A pixel is shadowed
+// where its colour differs from the same frame drawn without shadows. Here a texel is a centimetre
+// or two against a pixel of about ten, so the 4 x 4 footprint is inside one pixel and two cover it.
+constexpr i32 k_edge_pixels = 2;
+// The shadowed pixels the comparison must hold away from the band, so it is about shadows at all:
+// the cubes' shadows are thin at 192 x 128, 93 to 272 pixels of them outside it (RTX 5090).
+constexpr u64 k_min_shadowed = 64;
+
+struct Band {
+  Vector<u8> edge;  // per pixel: 1 inside the band
+  u64 pixels = 0;   // in the band
+  u64 shadowed = 0;  // outside it, shadowed in the first picture
+};
+
+bool shadowed(const CapturedFrame& unshadowed, const CapturedFrame& f, u32 p) {
+  for (u32 c = 0; c < 3; ++c) {
+    if (f.color[u64{p} * 4 + c] != unshadowed.color[u64{p} * 4 + c]) return true;
+  }
+  return false;
+}
+
+Band shadow_band(const CapturedFrame& unshadowed, const CapturedFrame& a, const CapturedFrame& b) {
+  const i32 w = static_cast<i32>(a.width);
+  const i32 h = static_cast<i32>(a.height);
+  Vector<u8> sa(a.width * a.height, u8{0});
+  Vector<u8> sb(a.width * a.height, u8{0});
+  for (u32 p = 0; p < a.width * a.height; ++p) {
+    sa[p] = shadowed(unshadowed, a, p) ? 1 : 0;
+    sb[p] = shadowed(unshadowed, b, p) ? 1 : 0;
+  }
+  Band out;
+  out.edge = Vector<u8>(a.width * a.height, u8{0});
+  for (i32 y = 0; y < h; ++y) {
+    for (i32 x = 0; x < w; ++x) {
+      const u32 p = static_cast<u32>(y * w + x);
+      bool edge = false;
+      for (i32 dy = -k_edge_pixels; dy <= k_edge_pixels && !edge; ++dy) {
+        for (i32 dx = -k_edge_pixels; dx <= k_edge_pixels && !edge; ++dx) {
+          const i32 qx = x + dx;
+          const i32 qy = y + dy;
+          if (qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+          const u32 q = static_cast<u32>(qy * w + qx);
+          edge = sa[q] != sa[p] || sb[q] != sb[p];
+        }
+      }
+      out.edge[p] = edge ? 1 : 0;
+      out.pixels += edge ? 1u : 0u;
+      out.shadowed += !edge && sa[p] != 0 ? 1u : 0u;
+    }
+  }
+  return out;
+}
+
+// The colour bytes two frames differ by outside the band.
+u64 colour_outside(const CapturedFrame& a, const CapturedFrame& b, const Band& band) {
+  u64 out = 0;
+  for (u32 p = 0; p < a.width * a.height; ++p) {
+    if (band.edge[p] != 0) continue;
+    for (u32 c = 0; c < 4; ++c)
+      out += a.color[u64{p} * 4 + c] != b.color[u64{p} * 4 + c] ? 1u : 0u;
+  }
+  return out;
+}
+
 }  // namespace
 
 TEST_CASE("world translation: a scene and its camera moved by whole cells draw the same bytes") {
@@ -345,15 +418,37 @@ TEST_CASE("world translation: a scene and its camera moved by whole cells draw t
       }
       REQUIRE(home.size() == 1);
       REQUIRE(home[0].covered > home[0].width * home[0].height / 8);
+      // The cascaded maps are held to the same bytes outside their texels' band (`Band`), which
+      // the same frame without shadows finds.
+      const bool maps = path.shadows == ShadowMode::Cascaded;
+      std::vector<CapturedFrame> unshadowed;
+      if (maps) {
+        REQUIRE_MESSAGE(draw(k_paths[0], mesh, ddc, layout.origin, cameras, unshadowed, why), why);
+      }
       for (const f64 shift : shifts) {
         std::vector<CapturedFrame> far;
         REQUIRE_MESSAGE(draw(path, mesh, ddc, layout.origin + cells(shift), cameras, far, why),
                         why);
         const Difference d = compare(home[0], far[0]);
-        MESSAGE(std::string(path.name) << ", " << std::string(layout.name) << ", moved by " << shift
-                                       << " cells: " << d.color << " colour bytes, " << d.ids
-                                       << " id words, " << d.depth << " depths differ");
-        CHECK(d.color == 0);
+        if (maps) {
+          const Band band = shadow_band(unshadowed[0], home[0], far[0]);
+          const u64 outside = colour_outside(home[0], far[0], band);
+          MESSAGE(std::string(path.name)
+                  << ", " << std::string(layout.name) << ", moved by " << shift << " cells: "
+                  << outside << " colour bytes differ outside the shadows' edges (" << band.pixels
+                  << " pixels, " << d.color << " bytes in all; " << band.shadowed
+                  << " shadowed pixels compared), " << d.ids << " id words, " << d.depth
+                  << " depths differ");
+          // The comparison means something: there is shadow away from its edges.
+          CHECK(band.shadowed >= k_min_shadowed);
+          CHECK(outside == 0);
+        } else {
+          MESSAGE(std::string(path.name)
+                  << ", " << std::string(layout.name) << ", moved by " << shift << " cells: "
+                  << d.color << " colour bytes, " << d.ids << " id words, " << d.depth
+                  << " depths differ");
+          CHECK(d.color == 0);
+        }
         CHECK(d.ids == 0);
         CHECK(d.depth == 0);
       }
@@ -401,17 +496,33 @@ TEST_CASE(
     REQUIRE_MESSAGE(draw(path, mesh, ddc, WorldPos{} + cells(156250.0), steps, far, why), why);
     REQUIRE(home.size() == steps.size());
     REQUIRE(far.size() == steps.size());
+    // The cascaded maps outside their texels' band, as above.
+    const bool maps = path.shadows == ShadowMode::Cascaded;
+    std::vector<CapturedFrame> unshadowed;
+    if (maps) REQUIRE_MESSAGE(draw(k_paths[0], mesh, ddc, WorldPos{}, steps, unshadowed, why), why);
     u64 differing = 0;
     u64 moved = 0;
+    u64 band_pixels = 0;
     for (u32 k = 0; k < steps.size(); ++k) {
       const Difference d = compare(home[k], far[k]);
-      differing += d.color + d.ids + d.depth;
+      if (maps) {
+        const Band band = shadow_band(unshadowed[k], home[k], far[k]);
+        band_pixels += band.pixels;
+        CHECK(band.shadowed >= k_min_shadowed);
+        differing += colour_outside(home[k], far[k], band) + d.ids + d.depth;
+      } else {
+        differing += d.color + d.ids + d.depth;
+      }
       // And the steps are steps: each frame's depth differs from the one before somewhere.
       if (k > 0) moved += compare(home[k], home[k - 1]).depth > 0 ? 1u : 0u;
     }
+    const std::string band_note =
+        maps ? " outside the shadows' edges (" + std::to_string(band_pixels) + " edge pixels)"
+             : std::string();
     MESSAGE(std::string(path.name) << ": " << differing << " differing bytes or words over "
-                                   << steps.size() << " millimetre steps; " << moved << " of "
-                                   << steps.size() - 1 << " steps moved the picture");
+                                   << steps.size() << " millimetre steps" << band_note << "; "
+                                   << moved << " of " << steps.size() - 1
+                                   << " steps moved the picture");
     CHECK(differing == 0);
     CHECK(moved == steps.size() - 1);
   }

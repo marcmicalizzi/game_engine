@@ -50,3 +50,18 @@ Everything a pass computes now goes through `instance_from_eye` and a view matri
 Both layouts, every move: 0 colour bytes, 0 id words, 0 depths differ. And twelve frames with the eye stepped 1/1024 m at a time, 10,000 km out against the same steps by the origin, on the mesh path and with the cascaded maps: 0 differing bytes or words over the twelve, and each of the eleven steps moved the picture (a float32 eye there would not have moved). Under it, `domain/gfx/tests/world_eye_tests.cpp` holds `instance_from_eye` to `engine::relative` to the bit over 483 cases (instances and eyes from the origin to 1e8 m, 5 cm to 80 km apart, astride a cell's edge, a local that rounds to 64.0f) and holds `instance_from_eye` and `instance_point` to the same bits with each case moved by those three numbers of cells: no mismatch on the RTX 5090.
 
 **Not measured in this stage.** The ground detail tests' far case (`domain/gfx/tests/ground_detail_tests.cpp`, "points clamped onto their triangle") still draws its sand as world-space vertices under an identity instance, so it reads what it read; a version with the sand as a mesh instance placed far out, which should fall to the origin's count, is not written yet.
+
+## Stage 2 (picture-2): the cascades snap to the world
+
+Stage 1 anchored the cascades' texel snapping at the corner of the eye's 64 m cell, which kept the translation suite's maps byte-identical and made every cascade take a sub-texel step whenever the eye crossed into another cell. `fit_shadow_cascades` now snaps in the world's light space in f64 (`snap_in_world`) and expresses the snapped centre relative to the eye afterwards ([renderer](../subsystems/renderer.md#cascaded-shadow-maps)).
+
+**The test that matters** (`renderer: a cascade's texels hold their place in the world as the eye crosses a cell`, CPU): the eye stepped a 1024th of a metre at a time, twelve steps, across the corner of a cell (x = 64 and z = 128 at once), four cascades of 1.17 cm to 2.09 m texels, by the origin and 156,250 cells (10,000 km) out. How far each cascade's grid moved against the world, in texels, at the worst step:
+
+| Anchor | by the origin | 10,000 km out |
+|---|---|---|
+| the eye's cell's corner (stage 1) | — | 0.46, 0.14, 0.46, 0.48 |
+| the world, in f64 (now) | 2.8e-5, 1.6e-5, 3.2e-5, 3.1e-5 | 3.4e-5, 1.7e-5, 2.8e-5, 3.6e-5 |
+
+The remaining hundred-thousandths of a texel are the frame-space centre's float32 rounding. (The stage-1 row by the origin was not printed: the test stops at the first failing site's messages; the run with the old anchor failed 64 assertions over both sites.)
+
+**The translation suite's cascaded case** (`world_translation_tests.cpp`, RTX 5090): ids and depth still byte-identical at every move; colour byte-identical outside a band two pixels either side of every shadow edge — 1,302 to 2,211 of the 24,576 pixels, with 93 to 272 shadowed pixels and every lit one compared outside it, and 0 bytes differing there at 6,548, 156,250 and 1,562,500 cells. Inside the band 173 to 266 colour bytes differ, the shadows' filtered edges falling on the texel grid differently. The twelve millimetre steps 10,000 km out against the origin's: 0 bytes outside the band over the twelve frames.

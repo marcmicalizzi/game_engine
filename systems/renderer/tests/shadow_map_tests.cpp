@@ -94,19 +94,34 @@ void check_corners(const ViewSet& views, const Camera& camera, const ShadowCasca
   CHECK(checked > 0);
 }
 
-// The texel grid across the light: a snapped centre's coordinates are whole texels. The centres are
-// in the frame's space, whose origin is the camera's eye (ADR-0053), and the grid is anchored at
-// the corner of the eye's 64 m cell, so the centre is put back in the world and measured from that
-// corner, worked out here rather than read from the fit.
+// Where cascade c's centre is in the world, across the light, in its own texels: the centres are in
+// the frame's space, whose origin is the camera's eye (ADR-0053), so the centre is put back in the
+// world in f64 and projected on the light's right and up. A texel's edges are the centre's
+// coordinates plus whole texels (the radius is a whole number of them), so two fits whose centres
+// differ here by whole numbers put every texel on the same piece of the world.
+struct LightTexels {
+  f64 x = 0.0;
+  f64 y = 0.0;
+};
+
+LightTexels light_texels(const ShadowCascades& cascades, u32 c, const Camera& camera) {
+  const f64 texel = 2.0 * static_cast<f64>(cascades.radii[c]) / cascades.resolution;
+  const DVec3 from = (camera.position + DVec3{cascades.centers[c]}) - WorldPos::origin();
+  return {dot(from, DVec3{cascades.light.right}) / texel,
+          dot(from, DVec3{cascades.light.up}) / texel};
+}
+
+// How far, in texels, a and b are from being a whole number of texels apart.
+f64 off_by(LightTexels a, LightTexels b) {
+  const f64 x = a.x - b.x;
+  const f64 y = a.y - b.y;
+  return std::max(std::fabs(x - std::round(x)), std::fabs(y - std::round(y)));
+}
+
+// The texel grid across the light: a snapped centre's coordinates, from the world's origin, are
+// whole texels (worked out here rather than read from the fit).
 f32 off_grid(const ShadowCascades& cascades, u32 c, const Camera& camera) {
-  const f32 texel = 2.0f * cascades.radii[c] / static_cast<f32>(cascades.resolution);
-  const WorldPos corner{std::floor(camera.position.x / k_world_cell_m) * k_world_cell_m,
-                        std::floor(camera.position.y / k_world_cell_m) * k_world_cell_m,
-                        std::floor(camera.position.z / k_world_cell_m) * k_world_cell_m};
-  const DVec3 from = (camera.position + DVec3{cascades.centers[c]}) - corner;
-  const f64 x = dot(from, DVec3{cascades.light.right}) / static_cast<f64>(texel);
-  const f64 y = dot(from, DVec3{cascades.light.up}) / static_cast<f64>(texel);
-  return static_cast<f32>(std::max(std::fabs(x - std::round(x)), std::fabs(y - std::round(y))));
+  return static_cast<f32>(off_by(light_texels(cascades, c, camera), LightTexels{}));
 }
 
 }  // namespace
@@ -235,6 +250,61 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
     fit_shadow_cascades(surround, camera, k_sun, WorldPos::origin(), 500.0f, fit, cascades);
     REQUIRE(cascades.count == 4);
     check_corners(surround, camera, cascades);
+  }
+}
+
+// **A texel is a fixed piece of the world for as long as the sun stands still** (renderer.md,
+// "Cascaded shadow maps"). The eye stepped a 1024th of a metre at a time across the corner of a
+// 64 m cell — x = 64 and z = 128 at once — by the origin and 10,000 km out: every cascade's texel
+// grid must stay where it is in the world, its centre moving by whole texels only. Until
+// 2026-10-05 (picture-2) the grid was anchored at the eye's cell's corner, and every cascade took a
+// sub-texel step at the crossing: a shimmer of every shadow edge every 64 m of travel.
+TEST_CASE("renderer: a cascade's texels hold their place in the world as the eye crosses a cell") {
+  std::string error;
+  ViewSet views;
+  REQUIRE(views.build(ViewSetDesc{}, 1280, 720, &error));
+  ShadowFit fit;
+  fit.distance = 2000.0f;  // inside the terrain below, so the splits are the eye's alone
+  const f32 scene_radius = 3600.0f;
+  for (const f64 cells : {0.0, 156250.0}) {
+    const WorldPos base{cells * k_world_cell_m, 0.0, -cells * k_world_cell_m};
+    Vector<Camera> cameras;
+    for (i32 k = -6; k <= 6; ++k) {
+      const f64 d = static_cast<f64>(k) / 1024.0;
+      Camera camera;
+      camera.position = base + DVec3{64.0 + d, 3.0, 128.0 + d};
+      camera.target = camera.position + DVec3{-10.0, 37.0, -600.0};
+      camera.znear = 0.1f;
+      cameras.push_back(camera);
+    }
+    // The steps do cross the corner.
+    REQUIRE(to_eye(cameras[0].position).cell.x + 1 == to_eye(cameras[12].position).cell.x);
+    REQUIRE(to_eye(cameras[0].position).cell.z + 1 == to_eye(cameras[12].position).cell.z);
+    ShadowCascades first;
+    views.update(cameras[0]);
+    fit_shadow_cascades(views, cameras[0], k_sun, base, scene_radius, fit, first);
+    REQUIRE(first.count == 4);
+    f64 worst[gfx::k_max_shadow_cascades] = {};
+    for (u32 k = 1; k < cameras.size(); ++k) {
+      views.update(cameras[k]);
+      ShadowCascades after;
+      fit_shadow_cascades(views, cameras[k], k_sun, base, scene_radius, fit, after);
+      REQUIRE(after.count == first.count);
+      for (u32 c = 0; c < first.count; ++c) {
+        REQUIRE(after.radii[c] == first.radii[c]);
+        const f64 off = off_by(light_texels(after, c, cameras[k]), light_texels(first, c, cameras[0]));
+        worst[c] = off > worst[c] ? off : worst[c];
+        // A centre in the frame's space is a float32 at the cascade's distance from the eye; its
+        // rounding is a few ten-thousandths of a texel at the most.
+        CHECK_MESSAGE(off < 1.0e-3, "cascade " << c << " at step " << k << " moved " << off
+                                               << " of a texel against the world, "
+                                               << cells << " cells out");
+      }
+    }
+    MESSAGE(cells << " cells out, 12 steps across a cell's corner: texels "
+                  << first.cascades[0].texel_world * 100.0f << " to "
+                  << first.cascades[3].texel_world * 100.0f << " cm; worst sub-texel move "
+                  << worst[0] << ", " << worst[1] << ", " << worst[2] << ", " << worst[3]);
   }
 }
 

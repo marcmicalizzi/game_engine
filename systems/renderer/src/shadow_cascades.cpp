@@ -38,13 +38,16 @@ f32 quantize_radius(f32 r) noexcept {
   return std::ceil(r / step) * step;
 }
 
-// `gfx::shadow_snap` measured from `anchor` (a point of the frame's space) rather than from the
-// frame's origin, in f64: the centre's coordinates across the light, counted from the eye's cell's
-// corner, made whole multiples of `texel`. The anchor is the same point of the world for every eye
-// in a cell, so a cascade moves by whole texels while the eye moves inside one.
-Vec3 snap_from_cell(const gfx::ShadowLight& light, Vec3 center, f32 texel, DVec3 anchor) noexcept {
+// `gfx::shadow_snap` **in the world's light space, in f64** (renderer.md, "Cascaded shadow maps"):
+// the centre `center` of the frame whose eye is `eye`, put back in the world and projected on the
+// light's right and up, made whole multiples of `texel` there, and the move that took expressed in
+// the frame again. The grid is the world's, so a texel is the same piece of the world for as long as
+// the sun stands still, wherever the eye is and whichever cell it is in. In f64 because the
+// coordinates are as large as the distance from the world's origin: 1e7 texels of a centimetre
+// 100 km out, where f64 still has a hundred-millionth of a texel to spare (and a float32 had 3 cm).
+Vec3 snap_in_world(const gfx::ShadowLight& light, Vec3 center, f32 texel, WorldPos eye) noexcept {
   if (!(texel > 0.0f)) return center;
-  const DVec3 from = DVec3{center} - anchor;
+  const DVec3 from = (eye - WorldPos::origin()) + DVec3{center};
   const DVec3 right{light.right};
   const DVec3 up{light.up};
   const f64 t = static_cast<f64>(texel);
@@ -123,10 +126,6 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
 
   const Dvec d_eye = dvec(eye);
   const Dvec d_forward = dvec(forward);
-  // Where the eye's cell's corner is in the frame's space, exactly: what the centres are snapped
-  // from.
-  const WorldEye frame = to_eye(camera.position);
-  const DVec3 cell_corner = to_world(WorldCell{frame.cell, Vec3{}}) - camera.position;
   for (u32 c = 0; c < wanted; ++c) {
     // The slice's corners in every view.
     Dvec corners[k_max_views * 8];
@@ -177,7 +176,7 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
     }
     if (!(radius > 0.0f)) radius = 1.0e-3f;  // a scene of one point still gets a cascade
     const f32 texel = 2.0f * radius / static_cast<f32>(out.resolution);
-    center = snap_from_cell(out.light, center, texel, cell_corner);
+    center = snap_in_world(out.light, center, texel, camera.position);
     // Every caster between the light and the sphere: to the far side of the scene towards the
     // light, and at least the sphere's own radius. A thousandth more so that a caster exactly on
     // the bounds is inside the depth range rather than on its clipping edge.

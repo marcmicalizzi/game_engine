@@ -20,8 +20,8 @@
 // turns, so a rotating camera keeps its texels the same size and a static shadow does not
 // swim. Its radius is rounded up to a 64th of its power of two for the same reason, so that the
 // float noise of a moving camera cannot change a texel's size between frames, and its centre is
-// snapped to a whole texel across the light (`gfx::shadow_snap`), so that a camera that moves
-// moves the grid by whole texels. A cascade whose sphere would hold the whole scene's bounds is
+// snapped to a whole texel across the light (`gfx::shadow_snap`'s rule, in the world and in f64),
+// so that a camera that moves moves the grid by whole texels. A cascade whose sphere would hold the whole scene's bounds is
 // replaced by them, and is the last: every receiver there is is inside it. That is the common
 // case for a camera framing an object — engine-view's orbit frames a mesh with a frustum wider
 // than the mesh, so its first slice already holds it and the frame draws **one** cascade, every
@@ -84,12 +84,12 @@ struct ShadowCascades {
 //
 // **In the frame's space** (ADR-0053): the fit is done in f64 relative to the camera's eye, which
 // is the frame's origin, and every matrix, centre and sphere out of it is in that space, as the
-// resolve's surfaces are. A cascade's centre is snapped to whole texels across the light measured
-// from the corner of the eye's 64 m cell, not from the world's origin: still whole texels while the
-// eye moves inside a cell, so a static caster stays put, and a function of nothing but the scene,
-// the camera and the cell, so a scene and camera moved by whole cells draw the same maps. Where the
-// eye crosses into the next cell the lattice the centres snap to moves by a fraction of a texel
-// once (renderer.md, "Shadows").
+// resolve's surfaces are. A cascade's centre is snapped to whole texels across the light **in the
+// world's light space, in f64**, and the snapped centre is then expressed relative to the eye: a
+// texel is a fixed piece of the world for as long as the sun stands still, wherever the eye is, so
+// a static caster's shadow never steps. The price is that a scene and its camera moved by whole
+// cells are not on the same texel grid, so their maps differ by where the grid falls on a shadow's
+// edge (renderer.md, "Cascaded shadow maps"; the translation suite leaves that band out).
 void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 towards_sun,
                          WorldPos scene_center, f32 scene_radius, const ShadowFit& fit,
                          ShadowCascades& out) noexcept;
