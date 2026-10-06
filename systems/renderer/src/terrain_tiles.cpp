@@ -488,8 +488,8 @@ bool TerrainTileSet::far_tile(u32 level, const TerrainRingLayout& layout,
     spec.level_cells[l] = level_cells_[l];
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
-  spec.uv_x0_mm = uv_x0_mm_;
-  spec.uv_z0_mm = uv_x0_mm_;
+  spec.uv_x0_mm = uv_corner_mm_;
+  spec.uv_z0_mm = uv_corner_mm_;
   spec.uv_size_mm = uv_size_mm_;
   // Its neighbours: this level inside its square, the next coarser far level past its border (none
   // past the coarsest's), and whatever is finer inside — which does not change its mesh.
@@ -789,7 +789,7 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   source_ = source;
   options_ = geometry::ClusterLodOptions{};
   tile_mm_ = std::llround(static_cast<f64>(tiles.tile_size) * 1000.0);
-  uv_x0_mm_ = -extent;
+  uv_corner_mm_ = -extent;
   uv_size_mm_ = 2 * extent;
   far_ = tiles.far_levels;
   levels_ = far_ + tiles.ring_count + 1;
@@ -886,8 +886,8 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
       spec.level = static_cast<u8>(level);
       spec.cells = level_cells_[level];
       spec.spacing_mm = lattice_[level].spacing_mm;
-      spec.uv_x0_mm = uv_x0_mm_;
-      spec.uv_z0_mm = uv_x0_mm_;
+      spec.uv_x0_mm = uv_corner_mm_;
+      spec.uv_z0_mm = uv_corner_mm_;
       spec.uv_size_mm = uv_size_mm_;
       const u32 a = spec.cells + 3;
       Vector<f32> h(static_cast<usize>(a) * a);
@@ -967,8 +967,8 @@ TerrainTileMeshSpec TerrainTileSet::spec_of(i32 x, i32 z, u8 level,
     spec.level_cells[l] = level_cells_[l];
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
-  spec.uv_x0_mm = uv_x0_mm_;
-  spec.uv_z0_mm = uv_x0_mm_;
+  spec.uv_x0_mm = uv_corner_mm_;
+  spec.uv_z0_mm = uv_corner_mm_;
   spec.uv_size_mm = uv_size_mm_;
   // A tile no ring draws is the far level's whose square holds it (none without far levels).
   const auto at = [&](i32 i, i32 j) {

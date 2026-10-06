@@ -350,7 +350,11 @@ class TerrainTileSet final : public TerrainLevelSet {
   geometry::ClusterLodOptions options_;
   u32 levels_ = 0;
   i64 tile_mm_ = 32000;
-  i64 uv_x0_mm_ = 0;
+  // The scene grid's UV frame, which the tiles' UVs are in: its corner on **both** axes, since the
+  // grid is a square centred on the world's origin (`build_terrain_mesh`: -extent..extent in x and
+  // in z), and its side. One number for both corners, so a spec's `uv_x0_mm` and `uv_z0_mm` are
+  // each this one.
+  i64 uv_corner_mm_ = 0;
   i64 uv_size_mm_ = 1;
   TerrainLattice lattice_[k_max_terrain_levels];
   u32 level_cells_[k_max_terrain_levels] = {};
