@@ -643,7 +643,7 @@ TEST_CASE(
       CHECK(cx <= tile.x * 32.0 + 32.0);
       CHECK(cz >= tile.z * 32.0);
       CHECK(cz <= tile.z * 32.0 + 32.0);
-      const Local p = to_local(frame, static_cast<f32>(cx), static_cast<f32>(cz));
+      const Local p = to_local(frame, cx, cz);
       const f64 r = kb.radius_cm - 2.0;
       for (const Assembler::Side& w : sides) {
         const f64 x1 = w.x0 + k_dx[w.dir] * w.length_cm;
