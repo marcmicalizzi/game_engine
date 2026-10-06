@@ -35,6 +35,7 @@
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/scene_gen/tile_source.h>
 
@@ -59,9 +60,20 @@ struct TileCoord {
 
 // ---- the ground a placement stands on -----------------------------------------------------------
 
-// A height in metres at (x, z): a plain function and a context, because a placement generator asks
-// it a few dozen times a building and is in the domain layer, below whoever made the ground.
-using HeightFn = f32 (*)(const void* context, f32 x, f32 z) noexcept;
+// The nearest whole millimetre to a coordinate in metres, halves up: the world's lattice is
+// integer millimetres, and a position reaches it in f64 (ADR-0053). The terrain's own `to_mm`
+// rounds a float32 metre the same way.
+i64 nearest_mm(f64 metres) noexcept;
+
+// A height in metres under a point given in **whole millimetres from the world's origin**: a plain
+// function and a context, because a placement generator asks it a few dozen times a building and
+// is in the domain layer, below whoever made the ground. The place is integers (ADR-0053;
+// scene_gen.md, "Far from the origin"), which is what the ground's own lattice and the walker's
+// queries speak (`GroundOps::height_mm`), so a building 10,000 km out is asked about the
+// millimetre it stands on and not the metre a float32 holds there; and an integer the generators
+// that decide in centimetres (the ruins, the city) reach exactly. The height is f64 so a ground
+// with more than a float's worth of height can hand it over; every ground here answers a float.
+using HeightFn = f64 (*)(const void* context, i64 x_mm, i64 z_mm) noexcept;
 
 // The view of the scene's ground a placement generator is handed (`Context::ground`): the surface
 // at the scene's time, and the **floor** — what a building stands on, the ground that does not move
@@ -72,12 +84,15 @@ struct Ground {
   HeightFn floor_fn = nullptr;  // null: the surface
   const void* context = nullptr;
   bool present() const noexcept { return surface_fn != nullptr; }
-  f32 surface(f32 x, f32 z) const noexcept {
-    return surface_fn != nullptr ? surface_fn(context, x, z) : 0.0f;
+  f64 surface_mm(i64 x_mm, i64 z_mm) const noexcept {
+    return surface_fn != nullptr ? surface_fn(context, x_mm, z_mm) : 0.0;
   }
-  f32 floor(f32 x, f32 z) const noexcept {
-    return floor_fn != nullptr ? floor_fn(context, x, z) : surface(x, z);
+  f64 floor_mm(i64 x_mm, i64 z_mm) const noexcept {
+    return floor_fn != nullptr ? floor_fn(context, x_mm, z_mm) : surface_mm(x_mm, z_mm);
   }
+  // Under a world position: its x and z to the nearest millimetre; its y is not read.
+  f64 surface(WorldPos at) const noexcept { return surface_mm(nearest_mm(at.x), nearest_mm(at.z)); }
+  f64 floor(WorldPos at) const noexcept { return floor_mm(nearest_mm(at.x), nearest_mm(at.z)); }
 };
 
 // ---- what a generator sees ----------------------------------------------------------------------
@@ -122,13 +137,27 @@ struct PlacementMesh {
   u64 hash = 0;
 };
 
-// One instance: a mesh, its world transform, and a tag the generator gives it and the host may read
-// (the ruins' 1 is rubble: a debris member or a fallen block, what engine-view's handover pass
-// splits a pop by). A mesh's materials are its own, as every scene instance's are. 48 bytes.
+// One instance: a mesh, where it stands in the world and how it is turned and scaled there, and a
+// tag the generator gives it and the host may read (the ruins' 1 is rubble: a debris member or a
+// fallen block, what engine-view's handover pass splits a pop by). A mesh's materials are its own,
+// as every scene instance's are. 64 bytes, 8-aligned (tests/size_table.cpp).
+//
+// **The position is a `WorldPos`** (ADR-0053; scene_gen.md, "Far from the origin"): the f64 point
+// the mesh's frame stands at, which a reader composes with the mesh's fit in f64 and hands to the
+// GPU as a cell and a local (`renderer::instance_translation`), so a placement lands within 2 µm of
+// where its generator put it anywhere a cell reaches. Until 2026-10-06 it was a float32
+// `Transform3`, an absolute position that 420 km out was on a 3.1 cm grid and 10,000 km out on a
+// metre's, and two pieces a generator laid to touch opened a gap of up to a float's step. The
+// rotation and the scale are the mesh's own frame and stay float32.
 struct Placement {
+  WorldPos position{};
+  Quat rotation = Quat::identity();
+  Vec3 scale = Vec3::one();
   u32 mesh = 0;
-  Transform3 transform{};
   u8 tag = 0;
+  // The rotation and scale as a transform with no translation: what a reader turns the mesh's fit
+  // by, in float32 at the size of the mesh, before it adds `position` in f64.
+  Transform3 turn() const noexcept { return Transform3{Vec3{}, rotation, scale}; }
 };
 
 // What a generator made. `expand` fills `meshes` with what its instances index; `tile` leaves it
@@ -217,11 +246,6 @@ struct Lattice {
 };
 Lattice scene_lattice(f32 extent, u32 size) noexcept;
 Lattice ring_lattice(i64 spacing_mm, i64 filter_mm = 0) noexcept;
-
-// The nearest whole millimetre to a coordinate in metres, halves up: the world's lattice is
-// integer millimetres, and a position reaches it in f64 (ADR-0053). The terrain's own `to_mm`
-// rounds a float32 metre the same way.
-i64 nearest_mm(f64 metres) noexcept;
 
 // A grid is cut into 64 x 64 blocks of lattice points, and a provider evaluates a range of them per
 // call, so a caller hands the blocks to as many jobs as it likes and gets the same bytes: blocks
@@ -441,6 +465,14 @@ struct GroundOps {
   // as `evaluate` on a 1 mm lattice at that point. Null: `GroundProvider::height_mm` falls back
   // (below).
   f32 (*height_mm)(const void* state, f64 time_s, i64 x_mm, i64 z_mm) noexcept = nullptr;
+  // **`height` and `floor` with the place in whole millimetres** (2026-10-06): the surface at the
+  // ground's own time and what a building stands on, where a placement generator's `Ground` asks
+  // (`view()`). The same heights as `height` and `floor` at a millimetre a float32 metre holds
+  // (within 16 km), and the right ones past it, where a float32 metre is a neighbour's place.
+  // `height_mm` cannot stand in for the first: it is asked at a time, and only the ground knows
+  // its own. Null: `GroundProvider::surface_mm`/`floor_mm` fall back (below).
+  f32 (*surface_mm)(const void* state, i64 x_mm, i64 z_mm) noexcept = nullptr;
+  f32 (*floor_mm)(const void* state, i64 x_mm, i64 z_mm) noexcept = nullptr;
 };
 
 class GroundProvider {
@@ -467,6 +499,13 @@ class GroundProvider {
   f32 floor(f32 x, f32 z) const noexcept {
     return ops_->floor != nullptr ? ops_->floor(state_, x, z) : ops_->height(state_, x, z);
   }
+  // The surface at its own time and the floor at a point in whole millimetres
+  // (`GroundOps::surface_mm`, `floor_mm`): what `view()` answers a placement generator with. A
+  // provider without the entries answers through what it has — a still ground's `height_mm`, which
+  // is its one surface at any time; otherwise `height` and `floor` at the point's float32 metres,
+  // exact only while a float holds the millimetre (16 km), which is why the dunes have them.
+  f32 surface_mm(i64 x_mm, i64 z_mm) const noexcept;
+  f32 floor_mm(i64 x_mm, i64 z_mm) const noexcept;
   void grid(const Lattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
             std::span<f32> heights) const noexcept;
   bool moves() const noexcept { return ops_ != nullptr && ops_->evaluate != nullptr; }

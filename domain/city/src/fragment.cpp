@@ -427,6 +427,13 @@ Vec3 proxy_translation(const Proxy& p) noexcept {
               static_cast<f32>(p.z) * 0.01f};
 }
 
+WorldPos proxy_position(const Proxy& p) noexcept {
+  // Centimetres to metres in f64, one correctly rounded division a coordinate: the integer's place
+  // to a nanometre at any distance an i32 of centimetres reaches (21,474 km).
+  return WorldPos{static_cast<f64>(p.x) / 100.0, static_cast<f64>(p.y) / 100.0,
+                  static_cast<f64>(p.z) / 100.0};
+}
+
 Vec3 proxy_scale(const Proxy& p) noexcept {
   return Vec3{static_cast<f32>(p.sx) * 0.01f, static_cast<f32>(p.sy) * 0.01f,
               static_cast<f32>(p.sz) * 0.01f};

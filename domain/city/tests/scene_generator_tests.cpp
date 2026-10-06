@@ -48,9 +48,15 @@ std::string write_plan(const engine::test::TempDir& tmp) {
   return path;
 }
 
+// The fragment writes the scene file's float32 `translation` (`proxy_translation`, an ADR-0053 seam
+// until the file's field is a `worldpos`) and the generator the f64 place (`proxy_position`): the
+// same centimetres, so the two agree to a float32's rounding of the place (a part in 10^7 of it).
 bool same_placement(const scene_gen::Placement& p, const scene::Instance& i) {
-  return p.mesh == i.mesh && p.transform.position == i.translation && i.scale.has_value() &&
-         p.transform.scale == *i.scale && p.transform.rotation == Quat::identity();
+  const DVec3 off =
+      p.position - WorldPos{static_cast<f64>(i.translation.x), static_cast<f64>(i.translation.y),
+                            static_cast<f64>(i.translation.z)};
+  return p.mesh == i.mesh && length(off) <= 1.0e-6 * (1.0 + length(p.position - WorldPos{})) &&
+         i.scale.has_value() && p.scale == *i.scale && p.rotation == Quat::identity();
 }
 
 }  // namespace
@@ -151,8 +157,8 @@ TEST_CASE("city generator: a streamed city is the per-tile query, and its tiles 
       REQUIRE(one.instances.size() == proxies.size());
       for (u32 i = 0; i < proxies.size(); ++i) {
         different += one.instances[i].mesh == static_cast<u32>(proxies[i].mesh) &&
-                             one.instances[i].transform.position == proxy_translation(proxies[i]) &&
-                             one.instances[i].transform.scale == proxy_scale(proxies[i])
+                             one.instances[i].position == proxy_position(proxies[i]) &&
+                             one.instances[i].scale == proxy_scale(proxies[i])
                          ? 0u
                          : 1u;
       }

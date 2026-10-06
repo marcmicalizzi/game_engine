@@ -71,13 +71,15 @@ Stage ring_stage(const scene_gen::Context& context) noexcept {
   return stage_for_distance(context.world->rings[inner].radius);
 }
 
+// Every proxy where the plan put it, in f64 from its integer centimetres (ADR-0053): the plan is
+// world-anchored centimetres, so the city's frame is the world's and nothing is relative to a site.
 void place(const Vector<Proxy>& proxies, scene_gen::Placements& out) {
   out.instances.reserve(out.instances.size() + proxies.size());
   for (const Proxy& p : proxies) {
     scene_gen::Placement placement;
     placement.mesh = static_cast<u32>(p.mesh);
-    placement.transform.position = proxy_translation(p);
-    placement.transform.scale = proxy_scale(p);
+    placement.position = proxy_position(p);
+    placement.scale = proxy_scale(p);
     out.instances.push_back(placement);
   }
 }

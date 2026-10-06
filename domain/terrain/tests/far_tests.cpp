@@ -77,3 +77,47 @@ TEST_CASE("terrain: the dunes' tile source at a far lattice point is the field's
     }
   }
 }
+
+// **What a placement generator stands on is the field's own, anywhere** (scene_gen.md, "Placements
+// far from the origin"): the scene's `Ground` asks the dunes in whole millimetres
+// (`GroundOps::surface_mm`, `floor_mm`), so the surface at the entry's time and the floor a
+// building stands on are the field's at the millimetre meant 419 km, 10,000 km and 1e8 m out, and
+// by the origin the same as the float entries (`height`, `floor`) at a millimetre a float32 metre
+// holds.
+TEST_CASE("terrain: the ground a placement stands on is the dunes' at its millimetre, far out") {
+  scene::Terrain entry;
+  REQUIRE(validate_terrain_entry(entry));
+  REQUIRE(entry.ridges.empty());
+  REQUIRE(entry.basins.empty());
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground(k_ground_provider);
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  std::string error;
+  REQUIRE_MESSAGE(desc->make(entry, scene_gen::Context{}, ground, &error), error);
+  const DuneField* field = dune_field(ground);
+  REQUIRE(field != nullptr);
+  const i64 own_us = static_cast<i64>(std::floor(entry.time * 1'000'000.0 + 0.5));
+  const scene_gen::Ground view = ground.view();
+  const i64 sites[] = {0, 419'072'000, 10'000'000'000, 100'000'000'000};
+  for (const i64 site : sites) {
+    u32 off = 0;
+    for (i64 k = 0; k < 16; ++k) {
+      const i64 x = site + 123 + 997 * k;
+      const i64 z = -site - 61 + 1009 * k;
+      const f32 surface = height_m(field->height_um(x, z, own_us, Detail::dunes));
+      const f32 floor = height_m(field->floor_um(x, z));
+      off += view.surface_mm(x, z) == static_cast<f64>(surface) ? 0u : 1u;
+      off += view.floor_mm(x, z) == static_cast<f64>(floor) ? 0u : 1u;
+      if (site == 0) {
+        // By the origin the float entries say the same: a float32 metre holds the millimetre.
+        const f32 xm = static_cast<f32>(static_cast<f64>(x) / 1000.0);
+        const f32 zm = static_cast<f32>(static_cast<f64>(z) / 1000.0);
+        off += ground.height(xm, zm) == surface ? 0u : 1u;
+        off += ground.floor(xm, zm) == floor ? 0u : 1u;
+      }
+    }
+    MESSAGE("at " << site << " mm: " << off << " heights off the field");
+    CHECK(off == 0);
+  }
+}

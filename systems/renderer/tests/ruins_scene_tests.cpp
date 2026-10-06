@@ -46,6 +46,13 @@ std::string scene_text(const std::string& extra = std::string()) {
          extra + "}]}";
 }
 
+// The ground the generator stands its buildings on, as it asks it: the scene ground's floor at the
+// millimetre (`scene_gen::Ground`, ADR-0053). The context is a `TerrainSampler`.
+f32 floor_as_generator(const void* context, f32 x, f32 z) noexcept {
+  return static_cast<f32>(static_cast<const TerrainSampler*>(context)->provider().view().floor(
+      WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}));
+}
+
 }  // namespace
 
 TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terrain") {
@@ -82,11 +89,8 @@ TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terra
   placement.world_seed = 11;
   placement.tile_cm = 2400;
   placement.wind_step = 2;
-  placement.ground =
-      ruins::Ground{[](const void* context, f32 x, f32 z) noexcept {
-                      return terrain_height(*static_cast<const TerrainDesc*>(context), x, z);
-                    },
-                    &desc.terrain};
+  const TerrainSampler sampler(desc.terrain);
+  placement.ground = ruins::Ground{&floor_as_generator, &sampler};
   ruins::Output built;
   REQUIRE(ruins::assemble_tiles(kit, placement,
                                 std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
@@ -98,9 +102,8 @@ TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terra
     const SceneInstance& instance = desc.instances[1 + i];
     CHECK(instance.mesh == 1 + kit.members[piece.member].mesh_index);
     const Vec3 t = ruins::instance_translation(kit, piece);
-    CHECK(instance.transform.position.x == t.x);
-    CHECK(instance.transform.position.y == t.y);
-    CHECK(instance.transform.position.z == t.z);
+    CHECK(instance.origin == absolute(WorldPos::origin(), t));
+    CHECK(instance.transform.position == Vec3{});
     // Every piece is on the terrain: a debris block at the height under it, a wall at or below
     // the lowest ground under its building.
     const f32 ground = terrain_height(desc.terrain, piece.position.x, piece.position.z);
@@ -119,6 +122,7 @@ TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terra
   for (u32 i = 0; i < desc.instances.size(); ++i) {
     CHECK(again.instances[i].mesh == desc.instances[i].mesh);
     CHECK(again.instances[i].transform == desc.instances[i].transform);
+    CHECK(again.instances[i].origin == desc.instances[i].origin);
   }
 
   // And it loads: the kit's GLBs import and cluster like any mesh, into a cache in scratch.
@@ -167,11 +171,8 @@ TEST_CASE("renderer: a scene's ruins drawn in blocks are the block layer's, on a
   placement.world_seed = 11;
   placement.tile_cm = 2400;
   placement.wind_step = 2;
-  placement.ground =
-      ruins::Ground{[](const void* context, f32 x, f32 z) noexcept {
-                      return terrain_height(*static_cast<const TerrainDesc*>(context), x, z);
-                    },
-                    &desc.terrain};
+  const TerrainSampler sampler(desc.terrain);
+  placement.ground = ruins::Ground{&floor_as_generator, &sampler};
   ruins::BlockOutput built;
   REQUIRE(ruins::assemble_block_tiles(kit, blocks, placement,
                                       std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
@@ -184,8 +185,7 @@ TEST_CASE("renderer: a scene's ruins drawn in blocks are the block layer's, on a
     const SceneInstance& instance = desc.instances[i];
     const Vec3 t = ruins::block_translation(blocks, block);
     all_same = instance.mesh == blocks.blocks[block.block].mesh_index &&
-               instance.transform.position.x == t.x && instance.transform.position.y == t.y &&
-               instance.transform.position.z == t.z;
+               instance.origin == absolute(WorldPos::origin(), t);
     CHECK_MESSAGE(all_same, "block " << i);
   }
   CHECK(desc.instances.back().mesh == desc.meshes.size() - 1);  // the terrain's, last
@@ -252,6 +252,7 @@ TEST_CASE("renderer: a placements entry naming the ruins reads as the ruins fiel
   for (u32 i = 0; i < a.instances.size(); ++i) {
     CHECK(a.instances[i].mesh == b.instances[i].mesh);
     CHECK(a.instances[i].transform == b.instances[i].transform);
+    CHECK(a.instances[i].origin == b.instances[i].origin);
   }
   // The list's entries are named by their place in it.
   const std::string bad = tmp.file("bad.json");
@@ -295,13 +296,15 @@ TEST_CASE("renderer: ruins over the dune generator stand on its ground") {
   CHECK(a.placed_buildings == 4);
   // The same buildings a year apart, to the bit: they stand on the floor, which does not move.
   REQUIRE(a.instances.size() == b.instances.size());
-  for (u32 i = 0; i + 1 < a.instances.size(); ++i)
+  for (u32 i = 0; i + 1 < a.instances.size(); ++i) {
     CHECK(a.instances[i].transform == b.instances[i].transform);
+    CHECK(a.instances[i].origin == b.instances[i].origin);
+  }
   // And on the ground: nothing of a building floats above the floor at its origin.
   const TerrainSampler ground(a.terrain);
   u32 floating = 0;
   for (u32 i = 0; i + 1 < a.instances.size(); ++i) {
-    const Vec3 p = a.instances[i].transform.position;
+    const Vec3 p = relative(a.instances[i].origin, WorldPos::origin());
     floating += p.y > ground.ground(p.x, p.z) + 1.0f;
   }
   CHECK(floating == 0);

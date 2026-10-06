@@ -79,7 +79,10 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
   placement.wind_step = ruins::yaw_step_from_degrees(45.0f);
   placement.ground =
       ruins::Ground{[](const void* c, f32 x, f32 z) noexcept {
-                      return static_cast<const renderer::TerrainSampler*>(c)->height(x, z);
+                      // As the generator asks it: the scene's ground, at the millimetre.
+                      return static_cast<f32>(
+                          static_cast<const renderer::TerrainSampler*>(c)->provider().view().floor(
+                              WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}));
                     },
                     &ground};
   Vector<renderer::SceneInstance> out;
@@ -91,7 +94,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
     for (const ruins::Block& block : built.blocks) {
       renderer::SceneInstance i;
       i.mesh = entry.meshes[kit_meshes + kits.blocks.blocks[block.block].mesh_index];
-      i.transform.position = ruins::block_translation(kits.blocks, block);
+      i.origin = absolute(WorldPos::origin(), ruins::block_translation(kits.blocks, block));
       out.push_back(i);
       if (rubble != nullptr && (block.flags & ruins::k_block_fallen) != 0) ++*rubble;
     }
@@ -104,7 +107,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
   for (const ruins::Instance& piece : built.instances) {
     renderer::SceneInstance i;
     i.mesh = entry.meshes[kits.kit.members[piece.member].mesh_index];
-    i.transform.position = ruins::instance_translation(kits.kit, piece);
+    i.origin = absolute(WorldPos::origin(), ruins::instance_translation(kits.kit, piece));
     out.push_back(i);
     if (rubble != nullptr && piece.kind == static_cast<u8>(ruins::PieceKind::debris)) ++*rubble;
   }
@@ -114,8 +117,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
 bool same(std::span<const renderer::SceneInstance> a, std::span<const renderer::SceneInstance> b) {
   if (a.size() != b.size()) return false;
   for (u32 i = 0; i < a.size(); ++i) {
-    if (a[i].mesh != b[i].mesh || !(a[i].transform.position == b[i].transform.position))
-      return false;
+    if (a[i].mesh != b[i].mesh || !(a[i].origin == b[i].origin)) return false;
   }
   return true;
 }

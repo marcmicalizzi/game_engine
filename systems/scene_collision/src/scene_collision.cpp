@@ -60,15 +60,6 @@ bool fits_i32(i64 v) noexcept {
          v <= static_cast<i64>(std::numeric_limits<i32>::max());
 }
 
-// ADR-0053 seam: scene_gen (`Placement::transform`) gives WorldPos after the merge. A streamed
-// generator's placement still arrives as an absolute float32, already on a float's grid far from
-// the origin (scene_collision.md, "Far from the origin": 1.6 cm at most at 419 km, half a metre at
-// 10,000 km); it is widened here and nowhere else, and from here on the compound holds it relative
-// to its tile's corner. A scene read whole hands over its instances' cells, which need no seam.
-WorldPos placement_position(Vec3 translation) noexcept {
-  return absolute(WorldPos::origin(), translation);
-}
-
 // **An instance's place, as the GPU stores it** (`gfx::InstanceDesc`; ADR-0053): its 3x4 in its
 // cell's frame — the cell's corner at the origin, so the translation column is the cell's local,
 // under 64 m — and the cell. The frame's matrix is `gfx::instance_matrix` at an eye on the cell's
@@ -800,11 +791,9 @@ bool SceneCollision::build_placements(Tile& tile) {
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
         // Where the renderer stands the same placement (`renderer::instance_translation`): the
         // fit's offset through the rotation and scale in float32, the size of the mesh, and the
-        // sum with the placement's translation in f64.
-        Transform3 turned = p.transform;
-        turned.position = Vec3{};
-        const Mat4 linear = mat4_from_transform(turned) * fit;
-        const WorldPos stands = placement_position(p.transform.position) + DVec3{linear.c[3].xyz()};
+        // sum with the placement's `WorldPos` in f64 — where its generator put it, anywhere.
+        const Mat4 linear = mat4_from_transform(p.turn()) * fit;
+        const WorldPos stands = p.position + DVec3{linear.c[3].xyz()};
         (void)add_piece(mesh, linear, stands, corner, children_);
       }
     }

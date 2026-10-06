@@ -67,11 +67,12 @@ struct SceneInstance {
   SceneAnimation animation{};  // the scene file's block, for the app; the renderer never reads it
   // **Where `transform` is measured from** (ADR-0053): the instance stands at
   // `origin + transform.position`, added in f64, so an instance can be placed anywhere in the world
-  // while its rotation, scale and float32 offset stay local. Zero - the world's origin, the frame
-  // every producer used until world positions were f64 - for whatever still hands over a float32
-  // world position: the scene file's `translation` (a `vec3` on disk this batch), a placement
-  // generator's placement and a world tile's (ADR-0053 seam: those producers hand over WorldPos
-  // after the merge, and set this instead).
+  // while its rotation, scale and float32 offset stay local. A placement generator's placement
+  // sets it to the placement's `WorldPos` with a zero offset (`expand_placements`, the world's
+  // placements consumer; 2026-10-06). Zero - the world's origin, the frame every producer used
+  // until world positions were f64 - for whatever still hands over a float32 world position: the
+  // scene file's `translation` (a `vec3` on disk this batch; ADR-0053 seam: it hands over WorldPos
+  // after the merge, and sets this instead).
   WorldPos origin{};
 };
 

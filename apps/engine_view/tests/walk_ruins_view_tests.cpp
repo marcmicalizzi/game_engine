@@ -129,7 +129,9 @@ TEST_CASE("engine-view: a walk into a ruin's wall is stopped at the wall") {
     }
   }
   REQUIRE_MESSAGE(best >= 0, "the building has no full-height section to walk into");
-  const Transform3 wall = desc.instances[static_cast<u32>(best)].transform;
+  // A placement stands at its origin (a WorldPos); this building is by the world's origin.
+  Transform3 wall = desc.instances[static_cast<u32>(best)].transform;
+  wall.position = relative(desc.instances[static_cast<u32>(best)].origin, WorldPos::origin());
   const f32 half = 0.3f;  // the kit of boxes' wall is 0.6 m thick
   const Vec3 outward = rotate(wall.rotation, Vec3{0.0f, 0.0f, 1.0f});
   const Vec3 face = wall.position + rotate(wall.rotation, Vec3{0.5f * best_length, 0.0f, half});

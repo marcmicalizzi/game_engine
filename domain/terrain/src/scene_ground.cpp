@@ -62,6 +62,24 @@ f32 dunes_floor(const void* state, f32 x, f32 z) noexcept {
   return floor + features(g, x, z);
 }
 
+// `dunes_height` and `dunes_floor` with the place in whole millimetres (`GroundOps::surface_mm`,
+// `floor_mm`): what a placement generator's ground asks (scene_gen.md, "Far from the origin"). The
+// field at the integers, the features at their float metres, as `dunes_height_mm` has them; the
+// same heights as the float entries wherever a float32 metre holds the millimetre.
+f32 dunes_surface_mm(const void* state, i64 x_mm, i64 z_mm) noexcept {
+  const auto& g = *static_cast<const DunesGround*>(state);
+  const f32 sand = height_m(g.field.height_um(x_mm, z_mm, g.time_us, Detail::dunes));
+  return sand + features(g, static_cast<f32>(static_cast<f64>(x_mm) / 1000.0),
+                         static_cast<f32>(static_cast<f64>(z_mm) / 1000.0));
+}
+
+f32 dunes_floor_mm(const void* state, i64 x_mm, i64 z_mm) noexcept {
+  const auto& g = *static_cast<const DunesGround*>(state);
+  const f32 floor = height_m(g.field.floor_um(x_mm, z_mm));
+  return floor + features(g, static_cast<f32>(static_cast<f64>(x_mm) / 1000.0),
+                          static_cast<f32>(static_cast<f64>(z_mm) / 1000.0));
+}
+
 bool dunes_evaluate(const void* state, f64 time_s, const scene_gen::Lattice& lattice, i32 i0,
                     i32 j0, u32 nx, u32 nz, u32 block_begin, u32 block_end,
                     std::span<f32> heights) noexcept {
@@ -315,6 +333,8 @@ constexpr scene_gen::GroundOps k_dunes_ops{
     .open_tiles = &dunes_open_tiles,
     .record = k_overlay_record,
     .height_mm = &dunes_height_mm,
+    .surface_mm = &dunes_surface_mm,
+    .floor_mm = &dunes_floor_mm,
 };
 
 // The entry's generator fields checked as the scene reader always checked them, and the band table

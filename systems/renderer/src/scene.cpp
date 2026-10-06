@@ -823,9 +823,13 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
                 "\" placed a mesh it did not name";
         return false;
       }
+      // Where the generator put it, in f64 (ADR-0053): the instance stands at its `origin`, its
+      // transform the placement's rotation and scale alone, so `instance_translation` adds the
+      // mesh's fit to the placement's `WorldPos` in f64 and no absolute float32 is formed.
       SceneInstance instance;
       instance.mesh = meshes[p.mesh];
-      instance.transform = p.transform;
+      instance.transform = p.turn();
+      instance.origin = p.position;
       out.instances.push_back(instance);
     }
     out.placed_buildings += placed.things;

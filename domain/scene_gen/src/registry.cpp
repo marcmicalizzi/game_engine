@@ -10,6 +10,14 @@
 
 namespace engine::scene_gen {
 
+namespace {
+
+// A point's millimetres as the float32 metres a provider's point function of metres takes: exact
+// only while a float holds the millimetre (16 km), which is why the mm entries exist.
+f32 metres_f32(i64 mm) noexcept { return static_cast<f32>(static_cast<f64>(mm) / 1000.0); }
+
+}  // namespace
+
 // ---- lattices -----------------------------------------------------------------------------------
 
 f32 Lattice::x(i32 i) const noexcept {
@@ -137,8 +145,20 @@ f32 GroundProvider::height_mm(f64 time_s, i64 x_mm, i64 z_mm) const noexcept {
     return h;
   }
   // Otherwise the provider's own point function at its own time, which takes float32 metres.
-  return ops_->height(state_, static_cast<f32>(static_cast<f64>(x_mm) / 1000.0),
-                      static_cast<f32>(static_cast<f64>(z_mm) / 1000.0));
+  return ops_->height(state_, metres_f32(x_mm), metres_f32(z_mm));
+}
+
+f32 GroundProvider::surface_mm(i64 x_mm, i64 z_mm) const noexcept {
+  if (ops_->surface_mm != nullptr) return ops_->surface_mm(state_, x_mm, z_mm);
+  // A still ground's surface is the same at every time, so its point entry at any time is it.
+  if (!moves()) return height_mm(0.0, x_mm, z_mm);
+  return ops_->height(state_, metres_f32(x_mm), metres_f32(z_mm));
+}
+
+f32 GroundProvider::floor_mm(i64 x_mm, i64 z_mm) const noexcept {
+  if (ops_->floor_mm != nullptr) return ops_->floor_mm(state_, x_mm, z_mm);
+  if (ops_->floor != nullptr) return ops_->floor(state_, metres_f32(x_mm), metres_f32(z_mm));
+  return surface_mm(x_mm, z_mm);
 }
 
 bool GroundProvider::make_rings(i64 extent_mm, i64 spacing_mm, GroundRings& out,
@@ -163,12 +183,13 @@ bool GroundProvider::open_tiles(const TileRecords& records, i64 tile_mm, GroundT
 
 namespace {
 
-f32 surface_of(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<const GroundProvider*>(context)->height(x, z);
+// The view's two functions: the provider's heights at the point's millimetres, widened.
+f64 surface_of(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  return static_cast<f64>(static_cast<const GroundProvider*>(context)->surface_mm(x_mm, z_mm));
 }
 
-f32 floor_of(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<const GroundProvider*>(context)->floor(x, z);
+f64 floor_of(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  return static_cast<f64>(static_cast<const GroundProvider*>(context)->floor_mm(x_mm, z_mm));
 }
 
 }  // namespace

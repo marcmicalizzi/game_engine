@@ -195,3 +195,37 @@ Steps: 420 km, 3.125 cm (worst rounding 1.6 cm); 10,000 km, 1 m (0.5 m). "Abs f3
 Order by what a player meets first: (1) and (3) for the walk, then (2) for the picture. The ground's detail needs nothing more: its frame can become the render origin's.
 
 What it does not need: f64 on the GPU. The baseline tier is a Maxwell and a Pascal, where it is slow, and nothing above wants it once positions are relative.
+
+## Part 3: placements
+
+*Added 2026-10-06 by the placements change ([scene_gen](../subsystems/scene_gen.md#placements-far-from-the-origin)).* The survey's row for the scene generators: a placement was a float32 `Transform3`, an absolute world position, and the ground under it was asked at float32 metres. What it cost, and what it costs now, measured by the tests that hold the change, with the old arithmetic put back in the tests' generators for the "before" column (the generator computing its place in float32 world coordinates and asking the ground at the float32 metre; not committed). MSVC `msvc-debug`, 2026-10-06; these are positions, not timings, so the machine's load does not enter them.
+
+**Where a placement lands** (`renderer: a placement lands within 2 um of where its generator put it, far out too`): a box 16.123456789 m by -7.654321098 m from the site, turned 30°, lifted 1.25 m off a sawtooth ground of millimetres, under a fit like a content mesh's; the distance from where the generator put the mesh's origin (its `WorldPos` composed with the fit in f64) to where the instance's cell and local put it.
+
+| Site | Before | After |
+|---|---|---|
+| origin | 0.91 µm | 0.83 µm |
+| 419,072 m | 3.18 mm | 0.83 µm |
+| 10,000,000 m | 0.387 m | 0.83 µm |
+| 100,000,000 m | 0.387 m | 0.83 µm |
+| 0.4 µm either side of a cell's edge, at each site | 1.19 µm | 1.12 µm |
+
+Before, the error is the float32's step at the site on x and z (0.123 m and 0.346 m of the box's offsets at 10,000 km, where a float steps by a metre, and at 1e8 m, where it steps by 8 m and the offsets happen to round the same way) and the sawtooth's height at the rounded millimetre on y (0.123 m). After, it is the fit's offset turned in float32 and the local's rounding at the box's place in its cell, the same at every site.
+
+**Two pieces laid to touch** (`renderer: two pieces laid to touch far out leave no gap`): a box 0.6 m wide and one 0.8 m wide whose faces meet 0.3 m short of a cell's edge, the boxes on either side of it; the faces measured in the frame of an eye at the seam, as every pass measures a vertex. Positive is a gap, negative an overlap.
+
+| Site | Before | After |
+|---|---|---|
+| 419,072 m | -12.5 mm | -1.55 µm |
+| 10,000,000 m | +0.300 m | -1.55 µm |
+| 100,000,000 m | -0.700 m | -1.58 µm |
+
+**In collision** (`scene_collision: a streamed placement collides where its generator put it, far out`): a streamed box 16.123456789 m into its site's tile, its west face met by a ray along +x; the hit's distance from where it is by the origin.
+
+| Site | Before | After |
+|---|---|---|
+| 419 km | 1.54 mm | 6e-12 m |
+| 10,000 km | 0.123 m | 7e-10 m |
+| 1e8 m | 0.123 m | 7e-9 m |
+
+What the after column rests on: a placement's position is a `WorldPos`; a reader adds the mesh's fit to it in f64 and stores a cell and a local (`renderer::instance_translation`); the collision adds the same in f64 and subtracts the tile's corner; and the ground is asked at whole millimetres, which reach the field without a float. The ruins still hand over float32 world metres at one marked helper until they place in f64 (the next stage); the city places from its integer centimetres in f64.

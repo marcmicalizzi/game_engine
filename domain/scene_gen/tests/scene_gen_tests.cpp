@@ -48,7 +48,7 @@ void one_close(void*) noexcept {}
 bool one_expand(void*, const Context& context, Placements& out, std::string*) {
   out.meshes.push_back(PlacementMesh{"one.glb", "one", 0});
   Placement p;
-  p.transform.position = Vec3{0.0f, context.ground.floor(0.0f, 0.0f), 0.0f};
+  p.position.y = context.ground.floor(p.position);
   out.instances.push_back(p);
   out.things = 1;
   return true;
@@ -93,7 +93,55 @@ TEST_CASE("scene_gen: a generator registered from its own source is found by its
   REQUIRE(one.expand(state, context, placed, &error));
   one.close(state);
   REQUIRE(placed.instances.size() == 1);
-  CHECK(placed.instances[0].transform.position.y == -1.0f);
+  CHECK(placed.instances[0].position.y == -1.0);
+  // The view asks in whole millimetres; a still ground with no millimetre entries of its own is
+  // answered at the point's float metres, which by the origin are the same place.
+  CHECK(context.ground.surface(WorldPos{4.0, 7.0, 9.0}) == 2.0);
+  CHECK(context.ground.floor_mm(4000, 9000) == 1.0);
+  CHECK(Ground{}.floor(WorldPos{4.0, 0.0, 9.0}) == 0.0);  // no terrain: flat ground at 0
+}
+
+namespace {
+
+// A ground that speaks millimetres: a sawtooth a metre long, so the millimetre a point is asked at
+// is its height, and a neighbour's millimetre another height. Its float entries take the float32
+// metre to the millimetre, as a ground of metres does.
+f32 saw(i64 x_mm) noexcept { return static_cast<f32>(((x_mm % 1000) + 1000) % 1000) * 0.001f; }
+f32 saw_height(const void*, f32 x, f32) noexcept { return saw(nearest_mm(static_cast<f64>(x))); }
+f32 saw_floor(const void*, f32 x, f32) noexcept {
+  return saw(nearest_mm(static_cast<f64>(x))) - 2.0f;
+}
+f32 saw_surface_mm(const void*, i64 x_mm, i64) noexcept { return saw(x_mm); }
+f32 saw_floor_mm(const void*, i64 x_mm, i64) noexcept { return saw(x_mm) - 2.0f; }
+constexpr GroundOps k_saw_ops{.height = &saw_height,
+                              .floor = &saw_floor,
+                              .surface_mm = &saw_surface_mm,
+                              .floor_mm = &saw_floor_mm};
+
+}  // namespace
+
+// **A placement generator's ground is asked at the millimetre it means, anywhere** (ADR-0053;
+// scene_gen.md, "Far from the origin"). 123 mm into a metre at 419 km, 10,000 km and 1e8 m, the
+// view answers the sawtooth's 0.123 and the floor two metres under it; the float32 metre the view
+// asked until 2026-10-06 is 3.1 cm, a metre and 8 m off there, so the same ground answered a
+// neighbour's height — measured below as what the float entries say at the float32 of the place.
+TEST_CASE(
+    "scene_gen: the ground a placement stands on is asked in whole millimetres, far out too") {
+  GroundProvider ground(&k_saw_ops, nullptr);
+  const Ground view = ground.view();
+  const f64 sites[] = {0.0, 419072.0, 10000000.0, 100000000.0};
+  for (const f64 site : sites) {
+    const WorldPos at{site + 0.123, 50.0, -site};
+    CHECK(nearest_mm(at.x) == static_cast<i64>(site) * 1000 + 123);
+    CHECK(view.surface(at) == static_cast<f64>(saw(123)));
+    CHECK(view.floor(at) == static_cast<f64>(saw(123) - 2.0f));
+    CHECK(view.floor(at) == view.floor_mm(nearest_mm(at.x), nearest_mm(at.z)));
+    // What the float32 metre would have asked.
+    const f32 old = ground.height(static_cast<f32>(at.x), static_cast<f32>(at.z));
+    MESSAGE("at " << site << " m the float32 metre's height is " << old << " for "
+                  << view.surface(at));
+    if (site >= 419072.0) CHECK(old != saw(123));
+  }
 }
 
 TEST_CASE("scene_gen: a name the executable does not carry is refused with a sentence") {

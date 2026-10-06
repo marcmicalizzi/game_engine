@@ -29,7 +29,10 @@ JsonValue entry_json(const std::string& text) {
 }
 
 // A gentle slope, so a building's pieces stand at heights a flat ground would not give them.
-f32 slope(const void*, f32 x, f32 z) noexcept { return 0.05f * x - 0.02f * z; }
+// The scene's ground speaks whole millimetres (scene_gen.md, "Placements far from the origin").
+f64 slope(const void*, i64 x_mm, i64 z_mm) noexcept {
+  return 0.05 * (static_cast<f64>(x_mm) / 1000.0) - 0.02 * (static_cast<f64>(z_mm) / 1000.0);
+}
 
 struct Opened {
   const scene_gen::PlacementGeneratorDesc* generator = nullptr;
@@ -113,7 +116,8 @@ TEST_CASE("ruins generator: a tile is the whole entry's building on it, in its r
       for (const scene_gen::Placement& p : one.instances) {
         REQUIRE(at < expanded.instances.size());
         const scene_gen::Placement& q = expanded.instances[at++];
-        mismatched += p.mesh != offset + q.mesh || !(p.transform == q.transform) || p.tag != q.tag;
+        mismatched += p.mesh != offset + q.mesh || !(p.position == q.position) ||
+                      !(p.rotation == q.rotation) || !(p.scale == q.scale) || p.tag != q.tag;
       }
     }
     CHECK(at == expanded.instances.size());

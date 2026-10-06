@@ -97,9 +97,10 @@ bool row_tile(void* state, scene_gen::TileCoord t, const scene_gen::Context& con
   g_log += row.name + " " + coord(t) + ";";
   scene_gen::Placement p;
   p.mesh = 0;
-  const f32 x = (static_cast<f32>(t.x) + 0.5f) * context.tile_size;
-  const f32 z = (static_cast<f32>(t.z) + 0.5f) * context.tile_size;
-  p.transform.position = Vec3{x, context.ground.floor(x, z), z};
+  const f64 size = static_cast<f64>(context.tile_size);
+  p.position =
+      WorldPos{(static_cast<f64>(t.x) + 0.5) * size, 0.0, (static_cast<f64>(t.z) + 0.5) * size};
+  p.position.y = context.ground.floor(p.position);
   out.instances.push_back(p);
   out.things = 1;
   return true;
@@ -182,7 +183,7 @@ std::string stream_one_tile(const char* first, const char* second) {
   // Both entries' instances, standing on the plane.
   const std::span<const renderer::SceneInstance> held = placements.tile_instances(TileCoord{1, -1});
   REQUIRE(held.size() == 2);
-  CHECK(held[0].transform.position.y == 2.0f);
+  CHECK(held[0].origin.y == 2.0);
   world.clear(1);
   g_placements = nullptr;
   return g_log;

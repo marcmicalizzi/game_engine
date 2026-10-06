@@ -746,8 +746,9 @@ bool posts_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context
   if (((tile.x + tile.z) & 1) != 0) return true;
   scene_gen::Placement p;
   p.mesh = 0;
-  p.transform.position = Vec3{(static_cast<f32>(tile.x) + 0.5f) * context.tile_size, 0.0f,
-                              (static_cast<f32>(tile.z) + 0.5f) * context.tile_size};
+  const f64 size = static_cast<f64>(context.tile_size);
+  p.position = WorldPos{(static_cast<f64>(tile.x) + 0.5) * size, 0.0,
+                        (static_cast<f64>(tile.z) + 0.5) * size};
   out.instances.push_back(p);
   out.things = 1;
   return true;
@@ -803,6 +804,83 @@ TEST_CASE("scene_collision: a streamed scene collides as each generator's tile")
   SceneCollision refused;
   CHECK_FALSE(refused.create(other, unknown, nullptr, Config{}, &error));
   CHECK(error.find("no_such_generator") != std::string::npos);
+}
+
+namespace {
+
+// A placement generator of the test's own that puts one box where the test says, on the tile that
+// holds it: a streamed placement far from the origin.
+WorldPos g_far_piece;
+bool far_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
+              scene_gen::Placements& out, std::string*) {
+  const f64 size = static_cast<f64>(context.tile_size);
+  if (tile.x != static_cast<i32>(std::floor(g_far_piece.x / size)) ||
+      tile.z != static_cast<i32>(std::floor(g_far_piece.z / size)))
+    return true;
+  scene_gen::Placement p;
+  p.mesh = 0;
+  p.position = g_far_piece;
+  out.instances.push_back(p);
+  out.things = 1;
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_far{.name = "collision_test_far",
+                                                  .open = &posts_open,
+                                                  .close = &posts_close,
+                                                  .expand = &posts_expand,
+                                                  .meshes = &posts_meshes,
+                                                  .tile = &far_tile};
+const scene_gen::Registrar k_far_registrar{k_far};
+
+}  // namespace
+
+// **A streamed placement collides where its generator put it, anywhere** (ADR-0053; docs: "Far
+// from the origin"). A generator's placement is a `WorldPos` and the compound's child is it less
+// the tile's corner, so a ray along +x meets the box's west face at the same distance from the site
+// 419 km, 10,000 km and 1e8 m out as by the origin. The box is 16.123456789 m into its site's tile,
+// which no float32 holds there: measured 6e-12 m, 7e-10 m and 7e-9 m from the origin's (2026-10-06,
+// MSVC). Until then the placement was a float32 widened in one helper (`placement_position`), and
+// with the old arithmetic put back the face stood 1.5 mm off at 419 km and 0.12 m at 10,000 km and
+// 1e8 m (docs/experiments/far-from-origin-2026-10-04.md, "Part 3: placements").
+TEST_CASE("scene_collision: a streamed placement collides where its generator put it, far out") {
+  const MeshSource meshes[] = {box_mesh(Vec3{1.0f, 0.5f, 0.75f})};
+  const DVec3 offset{16.123456789, 0.0, 16.654321098};
+  const auto west_face = [&](WorldPos site) {
+    g_far_piece = site + offset;
+    renderer::SceneData scene;
+    build_scene(meshes, {}, scene);
+    renderer::StreamedPlacements entry;
+    entry.generator = "collision_test_far";
+    entry.params = JsonValue::object();
+    entry.where = "test.json: placements 0";
+    entry.meshes.push_back(0);
+    scene.streamed.push_back(entry);
+    scene.world.enabled = true;
+    scene.dynamic = true;
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    SceneCollision collision;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(observer_at(site + DVec3{16.0, 0.0, 16.0}), 0, true);
+    REQUIRE(collision.stats().placements == 1);
+    physics::RayHit hit;
+    REQUIRE(physics.cast_ray(site + DVec3{offset.x - 5.0, 0.5, offset.z}, Vec3{10.0f, 0.0f, 0.0f},
+                             hit));
+    return hit.position - site;
+  };
+  const DVec3 home = west_face(WorldPos::origin());
+  MESSAGE("by the origin the west face is at x = " << home.x << " (the box's: " << offset.x - 1.0
+                                                   << ")");
+  CHECK(std::fabs(home.x - (offset.x - 1.0)) < 1.0e-4);
+  for (u32 s = 0; s < 3; ++s) {
+    const DVec3 far = west_face(k_far_sites[s]);
+    MESSAGE(std::string(k_far_names[s])
+            << ": the west face " << length(far - home) << " m from where it is by the origin");
+    CHECK(length(far - home) <= 2.0e-6);
+  }
 }
 
 TEST_CASE("scene_collision: a moving ground stays within its error of the drawn one") {

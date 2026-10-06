@@ -185,9 +185,12 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
                         log::field("entry", entry.source->where), log::field("mesh", p.mesh));
         continue;
       }
+      // At the placement's `WorldPos`, with its rotation and scale (ADR-0053): the renderer adds
+      // the mesh's fit to it in f64 (`renderer::instance_translation`).
       renderer::SceneInstance instance;
       instance.mesh = meshes[p.mesh];
-      instance.transform = p.transform;
+      instance.transform = p.turn();
+      instance.origin = p.position;
       out.instances.push_back(instance);
       out.tags.push_back(p.tag);
     }

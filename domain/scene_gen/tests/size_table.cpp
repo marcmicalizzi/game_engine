@@ -6,9 +6,11 @@
 
 using namespace engine;
 
-// Mesh (4), the transform — position, rotation, scale — (40), the tag (1) and three bytes of the
-// struct's own alignment.
-ENGINE_EXPECT_SIZE(48, 4, scene_gen::Placement);
+// The position, a `WorldPos` (24, ADR-0053), the rotation (16), the scale (12), the mesh (4), the
+// tag (1) and seven bytes of the struct's own alignment, which the f64s make 8. It was 48 bytes,
+// 4-aligned, while the position was a float32 `Transform3`'s (until 2026-10-06): 16 bytes more an
+// instance a generator makes, which a tile copies once into the scene's instances.
+ENGINE_EXPECT_SIZE(64, 8, scene_gen::Placement);
 ENGINE_EXPECT_SIZE(8, 4, scene_gen::TileCoord);
 // A ring's place, millimetres: centre and half-side.
 ENGINE_EXPECT_SIZE(24, 8, scene_gen::RingPlace);

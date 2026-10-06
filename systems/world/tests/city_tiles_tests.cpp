@@ -129,7 +129,8 @@ TEST_CASE("world city: a scene names the city, and the ring streams its tiles' p
     REQUIRE(held.size() == proxies.size());
     for (u32 k = 0; k < proxies.size(); ++k) {
       CHECK(held[k].mesh == desc.streamed[0].meshes[static_cast<u32>(proxies[k].mesh)]);
-      CHECK(held[k].transform.position == city::proxy_translation(proxies[k]));
+      CHECK(held[k].origin == city::proxy_position(proxies[k]));
+      CHECK(held[k].transform.position == Vec3{});
       CHECK(held[k].transform.scale == city::proxy_scale(proxies[k]));
     }
     checked += proxies.empty() ? 0u : 1u;
