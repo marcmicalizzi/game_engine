@@ -526,9 +526,9 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   out.mesh_primitives = scene->data.mesh_primitives;
   out.mesh_cache = scene->data.mesh_cache;
   out.build_ms = static_cast<f64>(scene->data.build_ns) / 1.0e6;
-  // `RenderSceneInfo.center` is a `vec3` on the wire this batch (ADR-0053: schemas/protocol.schema
-  // widens with the schema language's double type); the one place the scene's centre is narrowed.
-  out.center = relative(scene->data.center, WorldPos::origin());
+  // `RenderSceneInfo.center` is a `worldpos` (version 3, ADR-0053): the scene's f64 centre as it
+  // is.
+  out.center = scene->data.center;
   out.radius = scene->data.radius;
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
   out.shadows = renderer::resolved_shadow_name(scene->resolved);

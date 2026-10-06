@@ -151,7 +151,9 @@ TEST_CASE("renderer: a scene's placements expand through the registry, standing 
   CHECK(desc.placed_instances == 5);
   // The file's instance on the ground's surface, the rows on its floor, the terrain last.
   REQUIRE(desc.instances.size() == 1 + 3 + 2 + 1);
-  CHECK(desc.instances[0].transform.position.y == 4.0f);
+  // The file's translation is the instance's f64 origin (Instance version 3).
+  CHECK(desc.instances[0].origin.y == 4.0);
+  CHECK(desc.instances[0].transform.position == Vec3{});
   for (u32 i = 0; i < 3; ++i) {
     // A placement's place is the instance's origin, in f64; its transform is its turn alone.
     CHECK(desc.instances[1 + i].mesh == 1);

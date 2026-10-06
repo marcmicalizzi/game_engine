@@ -1049,6 +1049,279 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
              moved);
 }
 
+// ---- the translation suite from a file (ADR-0053 decision 6) ----------------------------------
+//
+// A scene file and its camera path written by the origin, and again 10,000 km out by their own
+// numbers — every instance, key and camera 156,250 cells along x and back along z — draw the same
+// bytes through engine-view and through `render.capture`. The positions are whole 1024ths of a
+// metre and the path's times and frames powers of two, so f64 holds every number in both files and
+// every sample of the path exactly (camera_path.h): what is left to differ is the file's reader,
+// the protocol's and the path's arithmetic, and those are what this holds. Shadows off: the
+// cascaded maps' texels are the world's (renderer.md), and `world_translation_tests.cpp` holds
+// every shadow path to its own rule.
+
+namespace {
+
+void put_u32(std::string& out, u32 v) {
+  for (u32 i = 0; i < 4; ++i)
+    out.push_back(static_cast<char>((v >> (8 * i)) & 0xffu));
+}
+
+void put_f32(std::string& out, f32 v) {
+  u32 bits = 0;
+  std::memcpy(&bits, &v, 4);
+  put_u32(out, bits);
+}
+
+// A unit cube as a GLB with normals and one plain material (world_translation_tests.cpp's).
+std::string cube_glb() {
+  const f32 normals[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  const f32 tangents[6][3] = {{0, 1, 0}, {0, 1, 0}, {0, 0, 1}, {0, 0, 1}, {1, 0, 0}, {1, 0, 0}};
+  std::string bin;
+  for (u32 f = 0; f < 6; ++f) {
+    const f32* n = normals[f];
+    const f32* t = tangents[f];
+    const f32 b[3] = {n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2],
+                      n[0] * t[1] - n[1] * t[0]};
+    const f32 signs[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    for (const auto& s : signs) {
+      for (u32 k = 0; k < 3; ++k)
+        put_f32(bin, 0.5f * n[k] + 0.5f * s[0] * t[k] + 0.5f * s[1] * b[k]);
+    }
+  }
+  const usize normal_offset = bin.size();
+  for (u32 f = 0; f < 6; ++f) {
+    for (u32 c = 0; c < 4; ++c) {
+      for (u32 k = 0; k < 3; ++k)
+        put_f32(bin, normals[f][k]);
+    }
+  }
+  const usize index_offset = bin.size();
+  for (u32 f = 0; f < 6; ++f) {
+    const u32 base = f * 4;
+    for (const u32 i : {base, base + 1, base + 2, base, base + 2, base + 3}) {
+      bin.push_back(static_cast<char>(i & 0xffu));
+      bin.push_back(static_cast<char>(i >> 8));
+    }
+  }
+  const usize index_bytes = bin.size() - index_offset;
+  while (bin.size() % 4 != 0)
+    bin.push_back('\0');
+  const auto n = [](usize v) { return std::to_string(v); };
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,"
+      "\"NORMAL\":1},\"indices\":2,\"material\":0}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.5,0.2,1],"
+      "\"metallicFactor\":0,\"roughnessFactor\":0.6}}],\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\","
+      "\"min\":[-0.5,-0.5,-0.5],\"max\":[0.5,0.5,0.5]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5123,\"count\":36,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
+      n(normal_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
+      ",\"byteLength\":" + n(index_offset - normal_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
+      "}],\"buffers\":[{\"byteLength\":" + n(bin.size()) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+  std::string glb;
+  put_u32(glb, 0x46546c67u);
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);
+  glb += json;
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);
+  glb += bin;
+  return glb;
+}
+
+// A coordinate as the file writes it: the decimal that reads back to the same double.
+std::string coord(f64 v) {
+  char text[40];
+  std::snprintf(text, sizeof(text), "%.17g", v);
+  return text;
+}
+
+// A point of the scene's own frame, moved to `x0` along x and `z0` along z, as a JSON array.
+struct Site {
+  f64 x0 = 0.0;
+  f64 z0 = 0.0;
+  std::string at(f64 x, f64 y, f64 z) const {
+    return "[" + coord(x0 + x) + "," + coord(y) + "," + coord(z0 + z) + "]";
+  }
+};
+
+// A slab and 28 cubes turned and scaled, every position a whole 1024th of a metre from the site.
+std::string translated_scene(const Site& site) {
+  std::string out = R"({"format":"engine.scene.v1","name":"cubes","meshes":[{"path":"cube.glb"}],)"
+                    R"("instances":[{"mesh":0,"translation":)" +
+                    site.at(0.0, -0.25, 0.0) + R"(,"scale":[24,0.5,24]})";
+  for (i32 z = -2; z <= 1; ++z) {
+    for (i32 x = -3; x <= 3; ++x) {
+      const f64 s = 1.0 + 0.25 * static_cast<f64>((x + z) & 3);
+      out += R"(,{"mesh":0,"translation":)" +
+             site.at(x * 2.25 + 0.125, 0.5 + 0.25 * (x & 1), z * 2.75 - 0.0625) + R"(,"yaw_deg":)" +
+             std::to_string(17 * (x + 3 * z)) + R"(,"scale":[)" + coord(s) + "," + coord(s) + "," +
+             coord(s) + "]}";
+    }
+  }
+  return out + "]}";
+}
+
+// Three keys a second apart, a cubic through them, 8 frames a second: 17 frames whose times are
+// eighths and whose samples are sums of 1024ths and powers of two.
+std::string translated_path(const Site& site) {
+  return R"({"format":"engine.camera-path.v1","name":"over the cubes","fps":8,"znear":0.05,)"
+         R"("interpolation":"Smooth","keys":[)"
+         R"({"time":0,"position":)" +
+         site.at(6.25, 3.5, 9.75) + R"(,"target":)" + site.at(0.0, 0.5, -1.0) +
+         R"(,"fov_deg":60},{"time":1,"position":)" + site.at(2.5, 2.75, 8.5) + R"(,"target":)" +
+         site.at(-0.75, 0.25, -1.5) + R"(,"fov_deg":60},{"time":2,"position":)" +
+         site.at(-1.75, 4.25, 7.25) + R"(,"target":)" + site.at(-0.5, 0.5, 0.25) +
+         R"(,"fov_deg":60}]})";
+}
+
+}  // namespace
+
+TEST_CASE("render: a scene file and its path written 10,000 km out draw the origin's bytes") {
+  const test::TempDir tmp("engine_render_far_file");
+  const std::string ddc = tmp.file("ddc");
+  REQUIRE(write_text(tmp.file("cube.glb"), cube_glb()));
+  const f64 far = 156250.0 * 64.0;  // 10,000 km, whole cells
+  const Site sites[2] = {Site{}, Site{far, -far}};
+  const char* names[2] = {"origin", "far"};
+  for (u32 s = 0; s < 2; ++s) {
+    REQUIRE(write_text(tmp.file(std::string(names[s]) + ".json"), translated_scene(sites[s])));
+    REQUIRE(write_text(tmp.file(std::string(names[s]) + "-path.json"), translated_path(sites[s])));
+  }
+
+  // engine-view: the path flown at its own 17 frames, every fourth frame written with its ids and
+  // depth (frames 3, 7, 11 and 15, between keys) and the last (frame 16, the last key).
+  const auto view = [&](u32 s) {
+    const std::string png = tmp.file(std::string("view-") + names[s] + ".png");
+    std::string output;
+    const i32 code = run_engine_view({"--scene",
+                                      tmp.file(std::string(names[s]) + ".json"),
+                                      "--camera-path",
+                                      tmp.file(std::string(names[s]) + "-path.json"),
+                                      "--ddc",
+                                      ddc,
+                                      "--offscreen",
+                                      "--frames",
+                                      "17",
+                                      "--capture-every",
+                                      "4",
+                                      "--capture-channels",
+                                      "ids,depth",
+                                      "--width",
+                                      "160",
+                                      "--height",
+                                      "96",
+                                      "--shadows",
+                                      "off",
+                                      "--capture",
+                                      png},
+                                     output);
+    if (code == 3) {
+      MESSAGE("engine-view cannot render here: " << output);
+      return false;
+    }
+    REQUIRE_MESSAGE(code == 0, output);
+    return true;
+  };
+  if (!view(0)) return;
+  REQUIRE(view(1));
+  u32 compared = 0;
+  for (const char* frame : {"-00003", "-00007", "-00011", "-00015", ""}) {
+    for (const char* channel : {".png", ".ids.bin", ".depth.png"}) {
+      std::string a;
+      std::string b;
+      const std::string stem_a = tmp.file(std::string("view-origin") + frame);
+      const std::string stem_b = tmp.file(std::string("view-far") + frame);
+      REQUIRE_MESSAGE(read_bytes(stem_a + channel, a), (stem_a + channel));
+      REQUIRE_MESSAGE(read_bytes(stem_b + channel, b), (stem_b + channel));
+      CHECK(!a.empty());
+      if (std::string_view(channel) == ".png") {
+        same_bytes(std::string("engine-view, frame") + frame + " colour", stem_a + channel,
+                   stem_b + channel, a, b);
+      } else {
+        CHECK_MESSAGE(a == b, (std::string("engine-view, frame") + frame + " " + channel));
+      }
+      ++compared;
+    }
+  }
+  CHECK(compared == 15u);
+
+  // The host: each scene loaded, and its camera named on the wire at the path's last key and at a
+  // point between keys, 10,000 km out by the request's own numbers. The last key is engine-view's
+  // last frame, so the host's picture of it is engine-view's too.
+  std::string host_color[2][2];
+  std::string host_ids[2][2];
+  std::string host_depth[2][2];
+  std::string host_png[2][2];
+  f64 host_center_x = 0.0;
+  f64 host_center_z = 0.0;
+  {
+    Host host;
+    REQUIRE(host.ok);
+    for (u32 s = 0; s < 2; ++s) {
+      const JsonValue loaded = host.call(
+          "render.load", "{\"scene\":" + json_path(tmp.file(std::string(names[s]) + ".json")) +
+                             ",\"ddc\":" + json_path(ddc) + ",\"settings\":{\"shadows\":\"off\"}}");
+      if (skipped(loaded)) return;
+      const JsonValue& info = result_of(loaded);
+      // The scene's centre on the wire is a `worldpos`: the far one is the origin's moved by
+      // exactly the cells.
+      const f64 cx = coordinate(info, "center", 0);
+      const f64 cz = coordinate(info, "center", 2);
+      if (s == 1) {
+        CHECK(cx == sites[1].x0 + host_center_x);
+        CHECK(cz == sites[1].z0 + host_center_z);
+      } else {
+        host_center_x = cx;
+        host_center_z = cz;
+      }
+      const std::string id = text(info, "scene");
+      const std::string cameras[2] = {
+          "{\"position\":" + sites[s].at(-1.75, 4.25, 7.25) +
+              ",\"target\":" + sites[s].at(-0.5, 0.5, 0.25) + ",\"fov_deg\":60,\"znear\":0.05}",
+          "{\"position\":" + sites[s].at(3.0009765625, 1.5, 5.5) + ",\"target\":" +
+              sites[s].at(-2.25, 0.75, -3.125) + ",\"fov_deg\":45,\"znear\":0.05}"};
+      for (u32 c = 0; c < 2; ++c) {
+        const std::string name = std::string("host-") + names[s] + "-" + std::to_string(c);
+        const JsonValue shot = host.call(
+            "render.capture", "{\"scene\":\"" + id + "\",\"camera\":" + cameras[c] +
+                                  ",\"width\":160,\"height\":96,\"channels\":[\"color\",\"ids\","
+                                  "\"depth\"],\"out_dir\":" +
+                                  json_path(tmp.path()) + ",\"name\":\"" + name + "\"}");
+        const JsonValue& files = member(result_of(shot), "files");
+        host_png[s][c] = uri_at(files, "color");
+        REQUIRE(read_bytes(host_png[s][c], host_color[s][c]));
+        REQUIRE(read_bytes(uri_at(files, "ids"), host_ids[s][c]));
+        REQUIRE(read_bytes(uri_at(files, "depth"), host_depth[s][c]));
+      }
+    }
+  }
+  for (u32 c = 0; c < 2; ++c) {
+    const std::string what = "render.capture, camera " + std::to_string(c);
+    same_bytes(what + " colour", host_png[0][c], host_png[1][c], host_color[0][c],
+               host_color[1][c]);
+    CHECK_MESSAGE(host_ids[0][c] == host_ids[1][c], (what + " ids"));
+    CHECK_MESSAGE(host_depth[0][c] == host_depth[1][c], (what + " depth"));
+  }
+  // engine-view's last frame and the host's camera at the last key are one picture, at each site.
+  for (u32 s = 0; s < 2; ++s) {
+    std::string view_last;
+    const std::string view_png = tmp.file(std::string("view-") + names[s] + ".png");
+    REQUIRE(read_bytes(view_png, view_last));
+    same_bytes(std::string("engine-view and the host at the last key, ") + names[s], view_png,
+               host_png[s][0], view_last, host_color[s][0]);
+  }
+}
+
 TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
   const test::TempDir tmp("engine_render_endless");
   const std::string committed =

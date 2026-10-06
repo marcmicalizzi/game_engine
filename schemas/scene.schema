@@ -347,14 +347,17 @@ struct RuinTag @version(2) {
 }
 
 /// One building the assembler placed.
-struct RuinSite @version(1) {
+///
+/// Version 2 (ADR-0053): `origin` is a `worldpos`. The JSON is the same numbers, so a version 1
+/// record reads the same origin.
+struct RuinSite @version(2) {
   /// The building's own seed, from the world seed and the tile: 16 lower-case hex digits.
   seed: string
   tile: i32[2]
   /// "rectangle", "l", "u" or "courtyard".
   shape: string
   /// The footprint's origin on the ground and its yaw about +y.
-  origin: vec3
+  origin: worldpos @unit(m)
   yaw_deg: f32 = 0
   walls: u32 = 0
   instances: u32 = 0
@@ -397,11 +400,15 @@ struct Scatter @version(1) {
 }
 
 /// One placement of one mesh.
-struct Instance @version(2) {
+///
+/// Version 3 (ADR-0053): `translation` is a `worldpos`, three f64, where version 2 read a float32
+/// that put a mesh 420 km out on a 3.1 cm grid. The JSON is the same numbers, so a version 2 scene
+/// places every instance where it did (each at its number as written, no longer rounded to a float).
+struct Instance @version(3) {
   /// Index into the scene's `meshes`.
   mesh: u32 = 0
   name: string
-  translation: vec3
+  translation: worldpos @unit(m)
   rotation: quat
   /// Degrees about +y, applied after `rotation`: the spelling a placement on a map wants.
   yaw_deg: f32 = 0
@@ -870,12 +877,16 @@ enum Interpolation : u8 {
 }
 
 /// One keyframe of a camera path.
-struct CameraKey @version(1) {
+///
+/// Version 2 (ADR-0053): `position` and `target` are `worldpos`, three f64, where version 1 read
+/// them as float32 and a key 420 km out stood on a 3.1 cm grid. The JSON is the same numbers, so a
+/// version 1 path reads the same keys (each its number as written, no longer rounded to a float).
+struct CameraKey @version(2) {
   /// Seconds from the path's start. Keys are in increasing time.
   time: f64 = 0
-  position: vec3
+  position: worldpos @unit(m)
   /// The point looked at. When absent, `rotation` says where the camera faces instead.
-  target: vec3?
+  target: worldpos? @unit(m)
   /// -z forward, +y up. Turned into a point 100 m ahead so that both forms interpolate alike.
   rotation: quat?
   /// Vertical field of view in degrees.

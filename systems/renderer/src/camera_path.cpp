@@ -1,6 +1,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/camera_path.h>
 
@@ -26,49 +27,51 @@ std::string schema_errors(const schema::ReadContext& ctx) {
   return text;
 }
 
-// The tangent a cubic leaves key `i` with, per unit of time. The average of the two neighbouring
-// segments' velocities, except that a key beside a segment that does not move — a hold, where the
-// file repeats a position — gets none: a cubic that carried the incoming velocity through a hold
-// would overshoot it and come back, which reads as a wobble on a camera that was told to stop.
-template <class T>
-T tangent(const Vector<CameraPathKey>& keys, u32 i, T (*get)(const CameraPathKey&),
-          bool (*still)(const T&, const T&)) noexcept {
+// The tangent a cubic leaves key `i` with, metres per second, in f64: the average of the two
+// neighbouring segments' velocities, except that a key beside a segment that does not move — a
+// hold, where the file repeats a position — gets none: a cubic that carried the incoming velocity
+// through a hold would overshoot it and come back, which reads as a wobble on a camera that was
+// told to stop. Built from the keys' differences only, so a path moved by whole cells has the same
+// tangents to the bit.
+using KeyPoint = WorldPos (*)(const CameraPathKey&);
+WorldPos position_of(const CameraPathKey& k) { return k.position; }
+WorldPos target_of(const CameraPathKey& k) { return k.target; }
+bool still(DVec3 d) { return length(d) < 1e-4; }
+
+DVec3 tangent(const Vector<CameraPathKey>& keys, u32 i, KeyPoint get) noexcept {
   const u32 n = keys.size();
-  if (n < 2) return T{};
-  if (i == 0) {
-    const T a = get(keys[0]);
-    const T b = get(keys[1]);
-    return still(a, b) ? T{} : (b - a) * static_cast<f32>(1.0 / (keys[1].time - keys[0].time));
+  if (n < 2) return DVec3{};
+  if (i == 0 || i + 1 >= n) {
+    const u32 a = i == 0 ? 0 : n - 2;
+    const DVec3 d = get(keys[a + 1]) - get(keys[a]);
+    return still(d) ? DVec3{} : d / (keys[a + 1].time - keys[a].time);
   }
-  if (i + 1 >= n) {
-    const T a = get(keys[n - 2]);
-    const T b = get(keys[n - 1]);
-    return still(a, b) ? T{}
-                       : (b - a) * static_cast<f32>(1.0 / (keys[n - 1].time - keys[n - 2].time));
-  }
-  const T prev = get(keys[i - 1]);
-  const T here = get(keys[i]);
-  const T next = get(keys[i + 1]);
-  if (still(prev, here) || still(here, next)) return T{};
-  const T in = (here - prev) * static_cast<f32>(1.0 / (keys[i].time - keys[i - 1].time));
-  const T out = (next - here) * static_cast<f32>(1.0 / (keys[i + 1].time - keys[i].time));
-  return (in + out) * 0.5f;
+  const DVec3 in = get(keys[i]) - get(keys[i - 1]);
+  const DVec3 out = get(keys[i + 1]) - get(keys[i]);
+  if (still(in) || still(out)) return DVec3{};
+  return (in / (keys[i].time - keys[i - 1].time) + out / (keys[i + 1].time - keys[i].time)) * 0.5;
 }
 
-Vec3 position_of(const CameraPathKey& k) { return k.position; }
-Vec3 target_of(const CameraPathKey& k) { return k.target; }
-bool vec_still(const Vec3& a, const Vec3& b) { return length(b - a) < 1e-4f; }
+// The cubic Hermite through one segment, in f64, **as a displacement from its first key**:
+// `p0 + (p1 - p0) h01 + m0 dt h10 + m1 dt h11`, which is the basis `p0 h00 + p1 h01 + ...` with
+// h00 = 1 - h01 and no world coordinate scaled. Everything but the last sum is the size of the
+// segment, so it is the same numbers wherever the path is (above).
+WorldPos hermite(WorldPos p0, DVec3 m0, WorldPos p1, DVec3 m1, f64 dt, f64 s) noexcept {
+  const f64 s2 = s * s;
+  const f64 s3 = s2 * s;
+  const f64 h10 = s3 - 2.0 * s2 + s;
+  const f64 h01 = -2.0 * s3 + 3.0 * s2;
+  const f64 h11 = s3 - s2;
+  return p0 + ((p1 - p0) * h01 + m0 * (h10 * dt) + m1 * (h11 * dt));
+}
 
-// The cubic Hermite basis over one segment, with tangents scaled by the segment's duration.
-template <class T>
-T hermite(const T& p0, const T& m0, const T& p1, const T& m1, f32 dt, f32 s) noexcept {
-  const f32 s2 = s * s;
-  const f32 s3 = s2 * s;
-  const f32 h00 = 2.0f * s3 - 3.0f * s2 + 1.0f;
-  const f32 h10 = s3 - 2.0f * s2 + s;
-  const f32 h01 = -2.0f * s3 + 3.0f * s2;
-  const f32 h11 = s3 - s2;
-  return p0 * h00 + m0 * (h10 * dt) + p1 * h01 + m1 * (h11 * dt);
+// The surface under a key at its whole millimetre, at the terrain's own time
+// (`GroundOps::height_mm`): no float32 metre on the way, so a key 420 km out stands on the ground
+// under it and not under the nearest float. By the origin, the heights `TerrainSampler::height`
+// gives at a point a float holds to the millimetre.
+f64 ground_under(const TerrainSampler& ground, WorldPos p) noexcept {
+  return static_cast<f64>(ground.provider().height_mm(
+      ground.desc().time_s, scene_gen::nearest_mm(p.x), scene_gen::nearest_mm(p.z)));
 }
 
 }  // namespace
@@ -130,19 +133,22 @@ bool parse_camera_path(std::string_view text, const TerrainDesc* terrain, Camera
       error = where + ": holds a height above the ground, and the scene has no terrain";
       return false;
     }
+    // The key's numbers as the file wrote them (`worldpos`, CameraKey version 2): a version 1
+    // path's are the same numbers, read without rounding them to a float.
     CameraPathKey key;
     key.time = source.time;
     key.position = source.position;
-    if (source.ground) key.position.y += ground.height(source.position.x, source.position.z);
+    if (source.ground) key.position.y += ground_under(ground, source.position);
     if (source.target.has_value()) {
       key.target = *source.target;
-      if (source.target_ground) key.target.y += ground.height(key.target.x, key.target.z);
+      if (source.target_ground) key.target.y += ground_under(ground, key.target);
     } else {
       const Quat rotation =
           source.rotation.has_value() ? normalize(*source.rotation) : Quat::identity();
-      key.target = key.position + rotate(rotation, Vec3{0.0f, 0.0f, -1.0f}) * k_orientation_reach;
+      key.target =
+          key.position + DVec3{rotate(rotation, Vec3{0.0f, 0.0f, -1.0f}) * k_orientation_reach};
     }
-    if (length(key.target - key.position) < 1e-3f) {
+    if (length(key.target - key.position) < 1e-3) {
       error = where + ": the camera looks at its own position";
       return false;
     }
@@ -176,23 +182,22 @@ bool read_camera_path(const std::string& path, const TerrainDesc* terrain, Camer
 }
 
 Camera sample_camera_path(const CameraPath& path, f64 time) noexcept {
-  // A path's keys are the file's `vec3`s (a float32 on disk this batch, ADR-0053), interpolated in
-  // float32 as they always were and widened into the camera's world positions here, at the read.
-  auto widen = [](Vec3 p) { return absolute(WorldPos::origin(), p); };
+  // In f64 (ADR-0053): the keys are world positions, and a sample is the segment's first key plus a
+  // displacement the size of the segment (`hermite`), so it rounds once, at the camera's own place.
   Camera camera;
   camera.znear = path.znear;
   if (path.keys.empty()) return camera;
   const Vector<CameraPathKey>& keys = path.keys;
   const u32 n = keys.size();
   if (n == 1 || time <= keys[0].time) {
-    camera.position = widen(keys[0].position);
-    camera.target = widen(keys[0].target);
+    camera.position = keys[0].position;
+    camera.target = keys[0].target;
     camera.fov_y = keys[0].fov_y;
     return camera;
   }
   if (time >= keys[n - 1].time) {
-    camera.position = widen(keys[n - 1].position);
-    camera.target = widen(keys[n - 1].target);
+    camera.position = keys[n - 1].position;
+    camera.target = keys[n - 1].target;
     camera.fov_y = keys[n - 1].fov_y;
     return camera;
   }
@@ -210,22 +215,22 @@ Camera sample_camera_path(const CameraPath& path, f64 time) noexcept {
   const CameraPathKey& a = keys[lo];
   const CameraPathKey& b = keys[hi];
   const f64 dt = b.time - a.time;
-  const f32 s = static_cast<f32>((time - a.time) / dt);
+  const f64 s = (time - a.time) / dt;
+  // The field of view is an angle, not a place: float32, as it always was, from the same fraction.
+  const f32 sf = static_cast<f32>(s);
   if (!path.smooth) {
-    camera.position = widen(a.position + (b.position - a.position) * s);
-    camera.target = widen(a.target + (b.target - a.target) * s);
-    camera.fov_y = a.fov_y + (b.fov_y - a.fov_y) * s;
+    camera.position = a.position + (b.position - a.position) * s;
+    camera.target = a.target + (b.target - a.target) * s;
+    camera.fov_y = a.fov_y + (b.fov_y - a.fov_y) * sf;
     return camera;
   }
-  const f32 dtf = static_cast<f32>(dt);
-  camera.position =
-      widen(hermite(a.position, tangent<Vec3>(keys, lo, position_of, vec_still), b.position,
-                    tangent<Vec3>(keys, hi, position_of, vec_still), dtf, s));
-  camera.target = widen(hermite(a.target, tangent<Vec3>(keys, lo, target_of, vec_still), b.target,
-                                tangent<Vec3>(keys, hi, target_of, vec_still), dtf, s));
+  camera.position = hermite(a.position, tangent(keys, lo, position_of), b.position,
+                            tangent(keys, hi, position_of), dt, s);
+  camera.target = hermite(a.target, tangent(keys, lo, target_of), b.target,
+                          tangent(keys, hi, target_of), dt, s);
   // The field of view eases between keys rather than following a cubic through them: a zoom that
   // overshot its key would be the one wobble a reader of the pictures could not explain.
-  const f32 e = s * s * (3.0f - 2.0f * s);
+  const f32 e = sf * sf * (3.0f - 2.0f * sf);
   camera.fov_y = a.fov_y + (b.fov_y - a.fov_y) * e;
   return camera;
 }

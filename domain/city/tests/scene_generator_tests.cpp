@@ -48,13 +48,10 @@ std::string write_plan(const engine::test::TempDir& tmp) {
   return path;
 }
 
-// The fragment writes the scene file's float32 `translation` (`proxy_translation`, an ADR-0053 seam
-// until the file's field is a `worldpos`) and the generator the f64 place (`proxy_position`): the
-// same centimetres, so the two agree to a float32's rounding of the place (a part in 10^7 of it).
+// The fragment writes the scene file's `worldpos` translation and the generator its f64 place: the
+// same centimetres divided once, so the two agree to f64's rounding of the place.
 bool same_placement(const scene_gen::Placement& p, const scene::Instance& i) {
-  const DVec3 off =
-      p.position - WorldPos{static_cast<f64>(i.translation.x), static_cast<f64>(i.translation.y),
-                            static_cast<f64>(i.translation.z)};
+  const DVec3 off = p.position - i.translation;
   return p.mesh == i.mesh && length(off) <= 1.0e-6 * (1.0 + length(p.position - WorldPos{})) &&
          i.scale.has_value() && p.scale == *i.scale && p.rotation == Quat::identity();
 }

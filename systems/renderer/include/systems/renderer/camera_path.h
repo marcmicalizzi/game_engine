@@ -9,9 +9,17 @@
 // the terrain rather than an absolute one, and an orientation rather than a point to look at; both
 // are turned into plain positions and look-at points when the file is read, so sampling is pure
 // arithmetic on resolved keys and costs nothing a frame.
+//
+// **Positions are the world's, in f64** (ADR-0053; `CameraKey` version 2): a key is the file's
+// numbers as written, and a sample is the segment's first key plus a displacement computed from
+// the keys' differences. So a path moved by a whole number of cells samples to the same
+// displacements, and its cameras move by exactly as much wherever f64 holds the sum (a path whose
+// numbers and times are whole 1024ths and powers of two, as the translation suite's are); in
+// general a far sample rounds at f64's own step there, 2 nm at 10,000 km.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/math/world.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/view_set.h>
 
@@ -22,8 +30,8 @@ namespace engine::renderer {
 
 struct CameraPathKey {
   f64 time = 0.0;  // seconds
-  Vec3 position{};
-  Vec3 target{};              // where the camera looks; always resolved
+  WorldPos position{};
+  WorldPos target{};          // where the camera looks; always resolved
   f32 fov_y = 0.9599310886f;  // radians
 };
 

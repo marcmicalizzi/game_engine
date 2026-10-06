@@ -80,12 +80,9 @@ bool tile_proxies(const Plan& plan, TileCoord tile, Stage detail, Vector<Proxy>&
 
 // Where a proxy's box stands and how large it is, metres. `proxy_position` is the place in f64,
 // exact from the integer centimetres anywhere: the placement the scene generator "city" makes of
-// it (scene_generator.h; ADR-0053). `proxy_translation` is the float32 a fragment writes into the
-// scene file's `translation`, which is an absolute float32 and on a float's grid far out
-// (ADR-0053 seam: the scene file's `translation` is a `worldpos` after the merge, and the fragment
-// writes `proxy_position`). The scale is the box's own size and stays float32.
+// it (scene_generator.h; ADR-0053), and what a fragment writes into the scene file's `worldpos`
+// `translation`. The scale is the box's own size and stays float32.
 WorldPos proxy_position(const Proxy& proxy) noexcept;
-Vec3 proxy_translation(const Proxy& proxy) noexcept;
 Vec3 proxy_scale(const Proxy& proxy) noexcept;
 // A proxy mesh's file in `dir`: "<dir>/<name>.glb".
 std::string proxy_mesh_path(std::string_view dir, ProxyMesh mesh);

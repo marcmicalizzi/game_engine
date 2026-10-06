@@ -237,6 +237,7 @@ bool near(const Vec3& a, const Vec3& b, f32 eps = 1e-4f) {
 bool near(const WorldPos& a, const Vec3& b, f32 eps = 1e-4f) {
   return near(relative(a, WorldPos::origin()), b, eps);
 }
+bool near(const WorldPos& a, const WorldPos& b, f64 eps = 1e-4) { return length(a - b) <= eps; }
 
 // The small world the GPU cases fly over: a 64 m terrain with an 8 m ridge across it at z = 0,
 // three cubes (fitted to 3 m) standing on the ground 8 m behind it, and a camera that holds low
@@ -645,7 +646,13 @@ TEST_CASE(
   CHECK(std::string(desc.mesh_info[2].origin) == "terrain");
   REQUIRE(desc.instances.size() == 2 + 5 + 1);
   const SceneInstance& grounded = desc.instances[0];
-  CHECK(near(grounded.transform.position.y, 1.0f + terrain_height(desc.terrain, 10.0f, -10.0f)));
+  // The file's translation is a `worldpos` (Instance version 3): it is the instance's f64 origin,
+  // whole, and the float32 offset stays zero.
+  CHECK(grounded.transform.position == Vec3{});
+  CHECK(grounded.origin.x == 10.0);
+  CHECK(grounded.origin.z == -10.0);
+  CHECK(near(static_cast<f32>(grounded.origin.y),
+             1.0f + terrain_height(desc.terrain, 10.0f, -10.0f)));
   CHECK(near(rotate(grounded.transform.rotation, Vec3{1, 0, 0}), Vec3{0, 0, -1}));
   for (u32 k = 2; k < 7; ++k) {
     const Vec3 p = desc.instances[k].transform.position;
@@ -660,8 +667,10 @@ TEST_CASE(
   // A second read places the scatter in exactly the same places.
   SceneDesc again;
   REQUIRE(read_scene_file(scene_file, again, error));
-  for (u32 k = 0; k < desc.instances.size(); ++k)
+  for (u32 k = 0; k < desc.instances.size(); ++k) {
     CHECK(desc.instances[k].transform.position == again.instances[k].transform.position);
+    CHECK(desc.instances[k].origin == again.instances[k].origin);
+  }
 
   // Loading it fits both cubes: 4 m tall standing on its point, and 2 m wide centred on its own.
   desc.ddc = slashes(dir / "ddc");
@@ -675,7 +684,7 @@ TEST_CASE(
   // The instance's matrix with its translation from the world's origin (ADR-0053).
   const Vec3 base =
       transform_point(gfx::instance_matrix(tall, WorldEye{}), Vec3{0.0f, -0.5f, 0.0f});
-  CHECK(near(base, grounded.transform.position, 1e-3f));
+  CHECK(near(base, relative(grounded.origin, WorldPos::origin()), 1e-3f));
   const gfx::InstanceDesc& wide = data.instances[1];
   CHECK(wide.scale_max == doctest::Approx(2.0f));
   CHECK(near(transform_point(gfx::instance_matrix(wide, WorldEye{}), Vec3{0, 0, 0}), Vec3{0, 5, 0},

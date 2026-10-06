@@ -422,11 +422,6 @@ bool write_proxy_meshes(const std::string& dir, std::string* error) {
   return true;
 }
 
-Vec3 proxy_translation(const Proxy& p) noexcept {
-  return Vec3{static_cast<f32>(p.x) * 0.01f, static_cast<f32>(p.y) * 0.01f,
-              static_cast<f32>(p.z) * 0.01f};
-}
-
 WorldPos proxy_position(const Proxy& p) noexcept {
   // Centimetres to metres in f64, one correctly rounded division a coordinate: the integer's place
   // to a nanometre at any distance an i32 of centimetres reaches (21,474 km).
@@ -464,7 +459,7 @@ void make_fragment(const Vector<Proxy>& proxies, std::string_view mesh_dir,
     instance.mesh = static_cast<u32>(p.mesh);
     if (p.lot != k_no_id)
       instance.name = "lot " + std::to_string(p.lot) + " floor " + std::to_string(p.floor);
-    instance.translation = proxy_translation(p);
+    instance.translation = proxy_position(p);
     instance.scale = proxy_scale(p);
     scene.instances.push_back(std::move(instance));
   }

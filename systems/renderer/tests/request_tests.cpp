@@ -392,13 +392,46 @@ TEST_CASE("request: an orbit on the wire is engine-view's --orbit camera, to the
                     renderer::orbit_camera(scene.center, scene.radius, 22.0f, 0)));
   // An explicit camera is taken as it is, its near plane the scene's when it names none.
   protocol::RenderCamera explicit_camera;
-  // `RenderCamera` is a `vec3` on the wire, widened where it is read.
-  explicit_camera.position = Vec3{812.08923f, 401.49774f, 4.507019f};
-  explicit_camera.target = relative(scene.center, WorldPos::origin());
+  // `RenderCamera` is a `worldpos` on the wire (version 2, ADR-0053), read without a float between
+  // the request and the camera.
+  explicit_camera.position = WorldPos{812.08923, 401.49774, 4.507019};
+  explicit_camera.target = scene.center;
   const renderer::Camera taken = renderer::read_protocol_camera(scene, &explicit_camera, nullptr);
-  CHECK(same_bits(taken.position.y, static_cast<f64>(401.49774f)));
+  CHECK(same_bits(taken.position.y, 401.49774));
+  CHECK(taken.target == scene.center);
   CHECK(same_bits(taken.fov_y, radians(55.0f)));
   CHECK(same_bits(taken.znear, 0.01f * scene.radius));
+  // 10,000 km out, where a float32 steps by a metre, a camera a 1024th of a metre past a whole
+  // metre is taken as it was asked for, from the request's JSON.
+  {
+    JsonValue json;
+    REQUIRE(parse_json(R"({"position":[10000000.0009765625,401.5,-2403.7099609375],)"
+                       R"("target":[10000000,0,-2500],"fov_deg":60})",
+                       json)
+                .ok);
+    protocol::RenderCamera far_camera;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(far_camera, json, ctx));
+    REQUIRE(ctx.ok());
+    const renderer::Camera far = renderer::read_protocol_camera(scene, &far_camera, nullptr);
+    CHECK(far.position == WorldPos{10'000'000.0 + 1.0 / 1024.0, 401.5, -2403.7099609375});
+    CHECK(far.target == WorldPos{10'000'000.0, 0.0, -2500.0});
+    CHECK(far.position.x != static_cast<f64>(static_cast<f32>(far.position.x)));
+  }
+  // A request written for version 1, whose numbers were float32s widened, names the same camera.
+  {
+    JsonValue json;
+    REQUIRE(parse_json(R"({"position":[812.0892333984375,401.49774169921875,4.50701904296875],)"
+                       R"("target":[0,0,0]})",
+                       json)
+                .ok);
+    protocol::RenderCamera old_camera;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(old_camera, json, ctx));
+    REQUIRE(ctx.ok());
+    const renderer::Camera old = renderer::read_protocol_camera(scene, &old_camera, nullptr);
+    CHECK(old.position == absolute(WorldPos::origin(), Vec3{812.08923f, 401.49774f, 4.507019f}));
+  }
 
   // The rise is tan to within a float step of the C library's over every pitch an orbit takes
   // (it is plain arithmetic rather than `std::tan`, so a folded constant and a pitch off the wire

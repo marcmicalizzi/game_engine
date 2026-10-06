@@ -49,7 +49,7 @@ Everything a pass computes now goes through `instance_from_eye` and a view matri
 
 Both layouts, every move: 0 colour bytes, 0 id words, 0 depths differ. And twelve frames with the eye stepped 1/1024 m at a time, 10,000 km out against the same steps by the origin, on the mesh path and with the cascaded maps: 0 differing bytes or words over the twelve, and each of the eleven steps moved the picture (a float32 eye there would not have moved). Under it, `domain/gfx/tests/world_eye_tests.cpp` holds `instance_from_eye` to `engine::relative` to the bit over 483 cases (instances and eyes from the origin to 1e8 m, 5 cm to 80 km apart, astride a cell's edge, a local that rounds to 64.0f) and holds `instance_from_eye` and `instance_point` to the same bits with each case moved by those three numbers of cells: no mismatch on the RTX 5090.
 
-**Not measured in this stage.** The ground detail tests' far case (`domain/gfx/tests/ground_detail_tests.cpp`, "points clamped onto their triangle") still draws its sand as world-space vertices under an identity instance, so it reads what it read; a version with the sand as a mesh instance placed far out, which should fall to the origin's count, is not written yet.
+**Not measured in this stage.** The ground detail tests' far case (`domain/gfx/tests/ground_detail_tests.cpp`, "points clamped onto their triangle") still draws its sand as world-space vertices under an identity instance, so it reads what it read; a version with the sand as a mesh instance placed far out, which should fall to the origin's count, is not written yet. (Written in stage 3: [below](#the-far-out-sand-as-a-mesh-instance).)
 
 ## Stage 2 (picture-2): the cascades snap to the world
 
@@ -113,3 +113,59 @@ The frame thread's CPU (`FrameStats::cpu`, median / p95 / p99 ms): `rt` 0.407 / 
 `world translation: the world's tiles moved by whole cells with their ground draw the same bytes` (`terrain_tiles_gpu_tests.cpp`, `msvc-debug`, RTX 5090): small world tiles (8 m, rings of 50 cm, 1 m and 2 m) with and without three far levels, over a ground of the test's own whose heights are a function of the lattice point measured from its own origin, moved with the camera by 6,548, 156,250 and 1,562,500 cells, at the finest cut. Mesh, software, vertex indexed, vertex capacity and ray visibility, both layouts, every move: **0 id words, 0 depths, 0 normal bytes and 0 colour bytes differ**. At the default cut about 10,000 of the 24,576 depths differed in a first version of the test: the tiles' UVs are in the scene grid's frame, so a tile 419 km out has other UVs than its twin, and the DAG's simplification weighs them — content, not precision; the finest cut is the lattice's own triangles.
 
 Two existing tests that compared tiles drawn two ways were held to the bit and are now held to 16 float steps of depth, colour and normals still to the bit: the erg from tiles against the grid (6,690 of 156,172 pixels differ in some bit of depth, 11 by more than 16 steps, none in colour) and far tiles of four cells against six (0, 4, 1 and 15 pixels differ in some bit of depth in the four views, none past 16 steps). In both the same lattice point reaches the frame through two different corners.
+
+## Stage 3 (picture-3): the files and the wire
+
+The scene file's `Instance.translation`, a camera path's `CameraKey.position`/`target`, `RuinSite.origin`, and the protocol's `RenderCamera.position`/`target` and `RenderSceneInfo.center` are `worldpos` (f64), read without a float between the file and the frame's eye, and the camera path is sampled in f64 ([renderer](../subsystems/renderer.md#positions-in-the-files-and-on-the-wire)). Same machine; "before" is `main` at `39c43173` built from an exported copy (`msvc-release`, engine-view only), "after" is the branch.
+
+The "after" captures were run twice, by picture-3 in its worktree and by picture-3b in its own from the same patch, and are byte-identical to each other.
+
+### What moved by the origin
+
+**The camera path's samples.** The erg's walk (`content/test-scenes/desert-erg/walk-path.json`: four keys on the ground at whole metres round x = −1,400 m, a cubic over 20 s, 1,201 frames at 60 fps) sampled the old way — keys as float32s, the Hermite in float32 — and the new way, emulated operation for operation in x and z (y holds the ground under a grounded key, which the emulation cannot evaluate): the eye moved in 1,136 of the 1,201 frames, by 0.046 mm on average and **0.22 mm at most** (frame 134), and the look-at point by at most 0.22 mm. A float's step at 1.4 km is 0.12 mm, so this is the float32 interpolation's rounding and nothing else. On a key the eye moves only in y, where 1.65 and the ground's height are now added in f64: a few micrometres. No instance in the erg is grounded; the endless desert's one grounded instance stands on its height at its whole millimetre, which by the origin is the height it had.
+
+**The pictures** (`engine-view --offscreen`, 1920×1080; `pngdiff.ps1`, the largest channel difference per pixel):
+
+| Picture | Pixels that differ | By 1 of 255 | Worst |
+|---|---|---|---|
+| erg, `csm`, frame 0 (the first key) | 3,381 (0.16%) | 3,369 | 8 |
+| erg walk, `rt`, frame 299 | 46,158 (2.23%) | 46,125 | 114 |
+| frame 599 | 55,941 (2.70%) | 55,925 | 81 |
+| frame 899 | 18,387 (0.89%) | 18,385 | 3 |
+| frame 1199 | 173,178 (8.35%) | 172,824 | 97 |
+| frame 1200 (the last key) | 17,633 (0.85%) | 17,614 | 71 |
+| erg on rings, `rt`, frame 2 | 1,288 (0.06%) | 1,282 | 21 |
+| endless desert, `rt`, frame 2 | 268 (0.01%) | 268 | 1 |
+| dunes, `rt`, orbit camera | 0 | | |
+| heightfield, `rt`, orbit camera | 0 | | |
+
+The two scenes without a path draw the same bytes, so nothing but the camera moved. With one, a sub-millimetre move of the eye shifts every pixel's sample on the sand by a fraction of the ripples' and grains' detail, which moves a few percent of the pixels by one level; the handful past a few levels (one to thirty a frame) are pixels a triangle's edge or a crest crossed. The desert overlook was not captured either time: its scene names the Khronos samples, which these worktrees have not fetched.
+
+**The flythrough's numbers** (`--benchmark`, `--terrain-rings`, 1920×1080, one repeat after 30 warm-up frames, `--wait-quiet 60`; machine state as recorded at the run's start and end):
+
+| | `rt` before | `rt` after | `csm` before | `csm` after |
+|---|---|---|---|---|
+| frames whose visible pairs differ | | 9 of 1,201, by 1 | | 28 of 1,201, by up to 5 |
+| visible pairs, all frames | 2,287,238 | 2,287,241 | 1,466,968 | 1,466,992 |
+| shadow pairs | | no frame differs | | 4 frames differ, by up to 18 (0.12%) |
+| LOD levels | | no frame differs | | no frame differs |
+| GPU total, median / p95 / p99 ms | 0.726 / 1.055 / 1.214 | 0.730 / 1.178 / 1.453 | 0.693 / 0.992 / 1.089 | 0.693 / 1.043 / 1.178 |
+| others' CPU start → end; GPU busy at end | 14% → 19%; 5% | 9% → 14%; 9% | 16% → 16%; 47% | 4% → 10%; 97% |
+
+The counts that are a function of the camera moved in under 3% of frames, by a pair or a few, as a 0.2 mm move of the eye moves a cluster across a LOD or frustum boundary now and then; no LOD level changed. The change adds a few dozen f64 operations a frame on the CPU and nothing on the GPU, and the medians agree to 0.6%. The tails are higher after, in this run and in a second one taken while a Linux container build held the CPU (`rt` 0.730 / 1.144 / 1.329 ms); the before and after runs are two hours apart on a shared GPU, so this does not say whether the tails are the change's.
+
+### The far-out sand as a mesh instance
+
+`ground_detail_tests.cpp`, "sand placed far out as a mesh instance clamps what its origin twin does" (`msvc-debug`, RTX 5090, 36 s with the lock): the erg's sand drawn as the renderer draws a mesh — a quad metres from its site under one instance at the site's cell and local, every view at its own eye — at 420 km, 10,000 km and 1e8 m astride a cell's edge, three looks each, and again at each site's twin by the origin.
+
+| Site | Points clamped, as a mesh instance (far / twin / the origin's own site) | As world-space vertices under an identity instance |
+|---|---|---|
+| 420 km, along the sand / at the feet / at a millimetre | 0 / 0 / 0 in each look | 45 / 138 / 44 |
+| 10,000 km | 0 / 0 / 0 in each look | 413 / 5 / 18 |
+| 1e8 m, astride a cell's edge | 0 / 0 / 0 in each look | no pixel inside the edge margin (a float's step there is 8 m) |
+
+Every far view's visibility buffer hashes to its twin's, word for word; the far views, shaded, measure 1 of 255 on the picture and at most 2 on the detail view, the origin's tolerances; 11,720 to 25,600 pixels compared a view, none missing.
+
+### The translation suite from a file
+
+`apps/engine_cli/tests/render_tests.cpp`, "a scene file and its path written 10,000 km out draw the origin's bytes" (`msvc-debug`, RTX 5090, 235 s): a slab and 28 cubes and a smooth three-key camera path, written by the origin and again 156,250 cells out along x and back along z by their own numbers. engine-view flying the path (frames 3, 7, 11, 15 and 16; colour, ids and depth): all 15 files byte for byte. `render.capture` at two cameras named on the wire (the last key, and a point between keys a 1024th of a metre off a whole metre): colour, ids and depth byte for byte; `RenderSceneInfo.center` of the far scene is the origin's plus exactly the cells; and engine-view's last frame is the host's picture of the last key, byte for byte, at both sites.

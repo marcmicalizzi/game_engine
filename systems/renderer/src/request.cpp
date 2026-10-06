@@ -573,11 +573,11 @@ bool read_protocol_clock(const protocol::RenderClock& in, ClockRequest& out, std
 Camera read_protocol_camera(const SceneData& scene, const protocol::RenderCamera* camera,
                             const protocol::RenderOrbit* orbit) {
   if (camera != nullptr) {
-    // The protocol's `RenderCamera.position` and `target` are `vec3`s on the wire this batch
-    // (ADR-0053): widened here, where they are read.
+    // `RenderCamera.position` and `target` are `worldpos`es (version 2, ADR-0053): the request's
+    // f64 numbers are the camera's, with nothing between them and the frame's eye.
     Camera out;
-    out.position = absolute(WorldPos::origin(), camera->position);
-    out.target = absolute(WorldPos::origin(), camera->target);
+    out.position = camera->position;
+    out.target = camera->target;
     out.fov_y = radians(camera->fov_deg);
     out.znear = camera->znear > 0.0f ? camera->znear : 0.01f * scene.radius;
     return out;

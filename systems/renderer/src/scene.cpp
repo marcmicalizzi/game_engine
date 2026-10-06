@@ -1141,6 +1141,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
   }
   auto ground_at = [&](f32 x, f32 z) { return out.terrain.enabled ? ground.height(x, z) : 0.0f; };
+  // The surface under a world position (ADR-0053): asked at its whole millimetre, which never
+  // passes through a float32 metre, at the terrain's own time — the heights `ground_at` gives at a
+  // point a float holds to the millimetre (`GroundOps::height_mm`), and the right ones far out.
+  auto ground_at_world = [&](WorldPos p) {
+    return out.terrain.enabled
+               ? static_cast<f64>(ground.provider().height_mm(
+                     out.terrain.time_s, scene_gen::nearest_mm(p.x), scene_gen::nearest_mm(p.z)))
+               : 0.0;
+  };
 
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
@@ -1154,9 +1163,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
     SceneInstance instance;
     instance.mesh = entry.mesh;
-    instance.transform.position = entry.translation;
-    if (entry.ground)
-      instance.transform.position.y += ground_at(entry.translation.x, entry.translation.z);
+    // The file's translation is a `worldpos` (Instance version 3): it goes whole into the
+    // instance's f64 `origin`, and `transform.position` stays zero, so nothing rounds it to a float
+    // on the way to the instance's cell. A version 2 file's numbers read as they are written.
+    instance.origin = entry.translation;
+    if (entry.ground) instance.origin.y += ground_at_world(entry.translation);
     instance.transform.rotation =
         normalize(quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(entry.yaw_deg)) *
                   normalize(entry.rotation));

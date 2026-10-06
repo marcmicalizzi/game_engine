@@ -779,7 +779,10 @@ struct RenderLoadParams @version(5) {
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
-struct RenderSceneInfo @version(2) {
+///
+/// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
+/// it rounded to a float32. The JSON is the same three numbers.
+struct RenderSceneInfo @version(3) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -797,7 +800,7 @@ struct RenderSceneInfo @version(2) {
   mesh_cache: string
   build_ms: f64 = 0
   /// The scene's bounding sphere: what a camera frames and what every distance scales with.
-  center: vec3
+  center: worldpos @unit(m)
   radius: f32 = 0
   /// The settings as the device and the scene resolved them, which is what will actually run.
   raster: string
@@ -817,9 +820,14 @@ struct RenderSceneInfo @version(2) {
 }
 
 /// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.
-struct RenderCamera @version(1) {
-  position: vec3
-  target: vec3
+///
+/// Version 2 (ADR-0053): `position` and `target` are `worldpos`, three f64, where version 1 read
+/// them as float32 and a camera 420 km out stood on a 3.1 cm grid. The JSON is the same numbers, so
+/// a request written for version 1 names the same camera (its numbers as written, no longer
+/// rounded to a float).
+struct RenderCamera @version(2) {
+  position: worldpos @unit(m)
+  target: worldpos @unit(m)
   fov_deg: f32 = 55
   znear: f32 = 0
 }

@@ -46,11 +46,6 @@ void add_meshes(const Vector<std::string>& meshes, const Vector<u64>& hashes,
   }
 }
 
-// ADR-0053 seam: the scene file's `Instance.translation` and `RuinSite.origin` are `worldpos` after
-// the merge (picture-3's schema change), and then a piece's place is written as it is. Until then a
-// fragment is a scene file of float32 world positions, narrowed here and nowhere else.
-Vec3 file_point(WorldPos p) noexcept { return relative(p, WorldPos::origin()); }
-
 // The buildings and the sand their walls ask for, the same for either representation.
 void add_sites_and_drifts(const Vector<Site>& sites, const Vector<Drift>& drifts,
                           scene::Scene& scene) {
@@ -59,7 +54,7 @@ void add_sites_and_drifts(const Vector<Site>& sites, const Vector<Drift>& drifts
     record.seed = hex16(site.seed);
     record.tile = {site.tile.x, site.tile.z};
     record.shape = shape_name(static_cast<Shape>(site.shape));
-    record.origin = file_point(site.origin);
+    record.origin = site.origin;
     record.yaw_deg = static_cast<f32>(site.yaw) * 22.5f;
     record.walls = site.walls;
     record.instances = site.instance_count;
@@ -111,7 +106,7 @@ void make_fragment(const Kit& kit, const Output& out, std::string_view fragment_
     scene::Instance instance;
     instance.mesh = member.mesh_index;
     instance.name = member.name;
-    instance.translation = file_point(instance_translation(kit, piece));
+    instance.translation = instance_translation(kit, piece);
     instance.yaw_deg = static_cast<f32>(instance_yaw_step(kit, piece)) * 22.5f;
     scene::RuinTag tag;
     tag.building = piece.building;
@@ -154,7 +149,7 @@ void make_block_fragment(const Kit& kit, const BlockKit& blocks, const BlockOutp
     scene::Instance instance;
     instance.mesh = kb.mesh_index;
     instance.name = kb.name;
-    instance.translation = file_point(block_translation(blocks, block));
+    instance.translation = block_translation(blocks, block);
     instance.yaw_deg = static_cast<f32>(block_yaw_step(blocks, block)) * 22.5f;
     scene::RuinTag tag;
     tag.building = block.building;
