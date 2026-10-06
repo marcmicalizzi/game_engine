@@ -163,33 +163,37 @@ u32 instance_yaw_step(const Kit& kit, const Instance& instance) noexcept {
   return (static_cast<u32>(instance.yaw) + kit.members[instance.member].yaw_step) & 15u;
 }
 
-Vec3 instance_translation(const Kit& kit, const Instance& instance) noexcept {
+WorldPos instance_translation(const Kit& kit, const Instance& instance) noexcept {
   const Member& member = kit.members[instance.member];
   const u32 step = instance_yaw_step(kit, instance);
   const f32 c = step_cos(step);
   const f32 s = step_sin(step);
   const Vec3 o = member.offset;
-  return Vec3{instance.position.x + (c * o.x + s * o.z), instance.position.y + o.y,
-              instance.position.z + (c * o.z - s * o.x)};
+  // The offset turned in float32, the size of a member, and added to the piece's place in f64.
+  return instance.position + DVec3{Vec3{c * o.x + s * o.z, o.y, c * o.z - s * o.x}};
 }
 
 u64 hash_output(const Output& out) noexcept {
   u64 h = hash_combine(k_hash_seed, out.sites.size());
   auto f = [](f32 v) { return static_cast<u64>(std::bit_cast<u32>(v)); };
+  auto wide = [](f64 v) { return std::bit_cast<u64>(v); };
   for (const Site& s : out.sites) {
     h = hash_combine(h, s.seed);
     h = hash_combine(
         h, static_cast<u64>(static_cast<u32>(s.tile.x)) << 32 | static_cast<u32>(s.tile.z));
-    h = hash_combine(h, f(s.origin.x) << 32 | f(s.origin.y));
-    h = hash_combine(h, f(s.origin.z));
+    h = hash_combine(h, wide(s.origin.x));
+    h = hash_combine(h, wide(s.origin.y));
+    h = hash_combine(h, wide(s.origin.z));
     h = hash_combine(h, static_cast<u64>(s.first_instance) << 32 | s.instance_count);
     h = hash_combine(h, static_cast<u64>(s.first_drift) << 32 | s.drift_count);
     h = hash_combine(h, static_cast<u64>(s.walls) << 16 | static_cast<u64>(s.shape) << 8 | s.yaw);
   }
   h = hash_combine(h, out.instances.size());
   for (const Instance& i : out.instances) {
-    h = hash_combine(h, f(i.position.x) << 32 | f(i.position.y));
-    h = hash_combine(h, f(i.position.z) << 32 | i.member);
+    h = hash_combine(h, wide(i.position.x));
+    h = hash_combine(h, wide(i.position.y));
+    h = hash_combine(h, wide(i.position.z));
+    h = hash_combine(h, i.member);
     h = hash_combine(h,
                      static_cast<u64>(i.building) << 32 | static_cast<u64>(i.wall) << 16 | i.slot);
     h = hash_combine(h, static_cast<u64>(i.height_q) << 16 | static_cast<u64>(i.kind) << 8 | i.yaw);
@@ -544,13 +548,15 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
   const u32 steps = rules.yaw_steps;
   const u8 yaw = static_cast<u8>(pick(draw(seed, k_yaw, 0), steps) * (16u / steps));
   const i64 slack = tile_cm / 2 - radius;
+  const i64 tile_x0 = placement.origin_x_cm + i64{tile.x} * tile_cm;
+  const i64 tile_z0 = placement.origin_z_cm + i64{tile.z} * tile_cm;
   const i64 centre_x =
-      i64{tile.x} * tile_cm + tile_cm / 2 +
+      tile_x0 + tile_cm / 2 +
       (slack > 0
            ? static_cast<i64>(pick(draw(seed, k_place, 0), static_cast<u32>(2 * slack + 1))) - slack
            : 0);
   const i64 centre_z =
-      i64{tile.z} * tile_cm + tile_cm / 2 +
+      tile_z0 + tile_cm / 2 +
       (slack > 0
            ? static_cast<i64>(pick(draw(seed, k_place, 1), static_cast<u32>(2 * slack + 1))) - slack
            : 0);
@@ -578,20 +584,13 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
       i64 wx = 0, wz = 0;
       const i64 along = k < 0 ? 0 : s.start_cm + k * m;
       world(s.x0 + k_dx[s.dir] * along, s.z0 + k_dz[s.dir] * along, wx, wz);
-      const f32 h = placement.ground.at(metres(wx), metres(wz));
+      const f32 h = placement.ground.at_cm(wx, wz);
       lowest = first || h < lowest ? h : lowest;
       first = false;
     }
   }
   const i32 base_cm = static_cast<i32>(std::floor(lowest * 100.0f)) - rules.embed_cm;
-  frame_ = Frame{seed,
-                 origin_x,
-                 origin_z,
-                 base_cm,
-                 yaw,
-                 i64{tile.x} * tile_cm,
-                 i64{tile.z} * tile_cm,
-                 placement.tile_cm};
+  frame_ = Frame{seed, origin_x, origin_z, base_cm, yaw, tile_x0, tile_z0, placement.tile_cm};
   rubble_ready_ = false;
 
   // ---- 3. each wall's ruin state: the wind and the corners decide how far it came down
@@ -664,7 +663,8 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
     i64 wx = 0, wz = 0;
     world(x, z, wx, wz);
     Instance inst;
-    inst.position = Vec3{metres(wx), metres(i64{base_cm} - sink_cm), metres(wz)};
+    inst.position = WorldPos{grid::metres_f64(wx), grid::metres_f64(i64{base_cm} - sink_cm),
+                             grid::metres_f64(wz)};
     inst.member = member;
     inst.building = building;
     inst.wall = static_cast<u16>(wall);
@@ -831,11 +831,12 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
         i64 wx = 0, wz = 0;
         world(x, z, wx, wz);
         // On the ground where it lies, not the building's base: debris follows the terrain.
-        const f32 ground = placement.ground.at(metres(wx), metres(wz));
+        const f32 ground = placement.ground.at_cm(wx, wz);
         Instance inst;
-        inst.position =
-            Vec3{metres(wx), metres(static_cast<i64>(std::floor(ground * 100.0f)) - rules.embed_cm),
-                 metres(wz)};
+        inst.position = WorldPos{
+            grid::metres_f64(wx),
+            grid::metres_f64(static_cast<i64>(std::floor(ground * 100.0f)) - rules.embed_cm),
+            grid::metres_f64(wz)};
         inst.member = member;
         inst.building = building;
         inst.wall = site.wall;
@@ -879,7 +880,7 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
   site.tile = tile;
   i64 ox = 0, oz = 0;
   world(0, 0, ox, oz);
-  site.origin = Vec3{metres(ox), metres(base_cm), metres(oz)};
+  site.origin = WorldPos{grid::metres_f64(ox), grid::metres_f64(base_cm), grid::metres_f64(oz)};
   site.first_instance = first_instance;
   site.instance_count = out.instances.size() - first_instance;
   site.first_drift = first_drift;

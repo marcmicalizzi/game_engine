@@ -72,29 +72,23 @@ void kit_meshes(const std::string& kit_name, const Vector<std::string>& meshes,
   }
 }
 
-// ADR-0053 seam: the assembler asks its ground at float32 metres until the ruins place in f64. The
-// scene's ground (`scene_gen::Ground`, which the `Context` holds for the call) asked at the
-// millimetre nearest the float.
-f32 floor_at_metres(const void* context, f32 x, f32 z) noexcept {
-  const auto& ground = *static_cast<const scene_gen::Ground*>(context);
-  return static_cast<f32>(ground.floor(WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}));
-}
-
 // The ground the buildings stand on: the floor of whatever ground the scene has (the dunes'
-// interdune floor, which does not move; the waves' surface), or flat ground with no terrain.
+// interdune floor, which does not move; the waves' surface), or flat ground with no terrain. The
+// scene's ground and the assembler's speak the same whole millimetres (ADR-0053), so its function
+// is handed over as it is.
 Ground ground_of(const scene_gen::Context& context) noexcept {
   if (!context.ground.present()) return Ground{};
-  return Ground{&floor_at_metres, &context.ground};
+  return Ground{
+      context.ground.floor_fn != nullptr ? context.ground.floor_fn : context.ground.surface_fn,
+      context.ground.context};
 }
 
-// ADR-0053 seam: the assembler places in float32 metres until the ruins place in f64; its place is
-// widened here and nowhere else.
-WorldPos placed_at(Vec3 at) noexcept { return absolute(WorldPos::origin(), at); }
-
-scene_gen::Placement yawed(u32 mesh, Vec3 at, u32 yaw_step, bool rubble) {
+// A piece where the assembler put it: its integer centimetres of the world, in f64 (ADR-0053). The
+// ruins decide in the world's own frame, so there is no site origin to place from.
+scene_gen::Placement yawed(u32 mesh, WorldPos at, u32 yaw_step, bool rubble) {
   scene_gen::Placement p;
   p.mesh = mesh;
-  p.position = placed_at(at);
+  p.position = at;
   p.rotation =
       quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(22.5f * static_cast<f32>(yaw_step)));
   p.tag = rubble ? u8{1} : u8{0};

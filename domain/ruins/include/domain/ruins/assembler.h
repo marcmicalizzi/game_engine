@@ -24,6 +24,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/ruins/kit.h>
 
 #include <span>
@@ -41,14 +42,27 @@ struct TileCoord {
   constexpr bool operator==(const TileCoord&) const = default;
 };
 
-// The terrain's height at (x, z), metres: a plain function and a context, because the assembler
-// is in the domain layer and the terrain in the renderer, and because it is called a few dozen
-// times a building, never in an inner loop over instances. No `fn` is flat ground at 0.
-using HeightFn = f32 (*)(const void* context, f32 x, f32 z) noexcept;
+// The terrain's height in metres under a point given in **whole millimetres from the world's
+// origin**: a plain function and a context, because the assembler is in the domain layer and the
+// terrain in the renderer, and because it is called a few dozen times a building, never in an
+// inner loop over instances. No `fn` is flat ground at 0. The place is integers (ADR-0053;
+// scene_gen.md, "Placements far from the origin"): the building's points are integer centimetres
+// of the world, so they reach the ground exactly anywhere; until 2026-10-06 they went through
+// float32 metres, which 419 km out is a 3.1 cm grid. The signature is `scene_gen::HeightFn`'s, so
+// the scene's ground is handed over as it is.
+using HeightFn = f64 (*)(const void* context, i64 x_mm, i64 z_mm) noexcept;
 struct Ground {
   HeightFn fn = nullptr;
   const void* context = nullptr;
-  f32 at(f32 x, f32 z) const noexcept { return fn != nullptr ? fn(context, x, z) : 0.0f; }
+  f64 at_mm(i64 x_mm, i64 z_mm) const noexcept {
+    return fn != nullptr ? fn(context, x_mm, z_mm) : 0.0;
+  }
+  // Under a point of whole centimetres, in the float32 every decision reads a height in (the
+  // building's base, a piece's bed), as it always did: every ground here answers a float, so the
+  // narrowing is exact and the decisions by the origin are the ones they were.
+  f32 at_cm(i64 x_cm, i64 z_cm) const noexcept {
+    return static_cast<f32>(at_mm(x_cm * 10, z_cm * 10));
+  }
 };
 
 enum class Shape : u8 { rectangle = 0, l_shape = 1, u_shape = 2, courtyard = 3 };
@@ -70,13 +84,23 @@ struct Placement {
   u8 wind_step = 0;    // where the wind blows from, sixteenths of a turn about +y from +x
   Detail detail = Detail::full;
   Ground ground;
+  // Where tile (0, 0)'s corner is, centimetres of the world: zero for every scene entry, whose
+  // tiles are the world's. A building's seed is its tile's (`building_seed`), so its shape is a
+  // function of where it stands; this moves the grid under the same seeds, which is how a test
+  // puts the same building 10,000 km out and holds that it is placed there exactly as by the
+  // origin (ruins.md, "Far from the origin").
+  i64 origin_x_cm = 0;
+  i64 origin_z_cm = 0;
 };
 
-// One placed piece: 28 bytes, 4-aligned (tests/size_table.cpp). The world transform is `position`
+// One placed piece: 40 bytes, 8-aligned (tests/size_table.cpp). The world transform is `position`
 // and `yaw` sixteenths of a turn about +y, applied to the member's frame; `instance_translation`
 // folds the member's own mesh offset in.
 struct Instance {
-  Vec3 position{};   // metres: x and z from integer centimetres, y from the ground query
+  // Metres in f64, each the integer centimetres of the world it was decided in, divided once
+  // (ADR-0053): x and z the piece's, y the base's or the ground's under it. Exact to a nanometre
+  // anywhere, where the float32 it was until 2026-10-06 was a 3.1 cm grid at 419 km.
+  WorldPos position{};
   u32 member = 0;    // index into Kit::members
   u32 building = 0;  // index into Output::sites
   u16 wall = 0;      // the wall it stands on or fell from; a corner is its outgoing wall's
@@ -103,7 +127,7 @@ struct Drift {
 struct Site {
   u64 seed = 0;  // building_seed(world seed, tile)
   TileCoord tile;
-  Vec3 origin{};  // the footprint's first vertex, on the ground, metres
+  WorldPos origin{};  // the footprint's first vertex, on the ground, metres from integer cm
   u32 first_instance = 0;
   u32 instance_count = 0;
   u32 first_drift = 0;
@@ -258,8 +282,9 @@ f32 step_sin(u32 step) noexcept;
 
 // The world translation and yaw of an instance's *mesh*: the instance's position and yaw with the
 // member's own offset and yaw folded in (translation = position + R(yaw + member yaw) * offset,
-// from the table). What a scene file writes and a renderer draws.
-Vec3 instance_translation(const Kit& kit, const Instance& instance) noexcept;
+// from the table): the offset turned in float32, the size of a member, and added in f64. What the
+// placement generator places and a renderer draws.
+WorldPos instance_translation(const Kit& kit, const Instance& instance) noexcept;
 u32 instance_yaw_step(const Kit& kit, const Instance& instance) noexcept;
 
 }  // namespace engine::ruins

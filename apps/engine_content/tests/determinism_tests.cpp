@@ -289,7 +289,13 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
 // (3,272 instances) when both representations began laying their rubble on one field
 // (ruins.md, "The rubble rule"): the debris is now a heap of pieces a profile block large on each
 // site, where it was a few pieces per loss by a count of the assembler's own.
-constexpr u64 k_ruins_golden = 0xdc4bfc4a807b427bull;
+//
+// Moved on 2026-10-06 (MSVC 14.51), 64 buildings and 5,726 instances still, from
+// 0xdc4bfc4a807b427b: the positions are hashed as the f64 a piece's place now is (ADR-0053; each
+// the integer centimetres divided once, exact on every toolchain), where they were the float32
+// `metres` of the same centimetres. No decision moved: the counts are the same, and the ruins' own
+// tests, which hold every piece to the grammar's centimetres, pass unchanged.
+constexpr u64 k_ruins_golden = 0x0d29923a1f3c328full;
 
 TEST_CASE("engine-content: ruins assembles the committed buildings on every toolchain") {
   const test::TempDir tmp("engine_content_ruins_determinism");
@@ -333,7 +339,10 @@ TEST_CASE("engine-content: ruins assembles the committed buildings on every tool
 // (44,876 blocks) with the assembler's, for the same reason: a fallen block now lies on each site
 // of the building's rubble field, one a site, where every block that fell lay beside its wall
 // (the block kit's `debris_kept`, which is no longer read). The standing blocks did not change.
-constexpr u64 k_ruin_blocks_golden = 0x7f74b136cd3438e6ull;
+//
+// Moved on 2026-10-06 (MSVC 14.51), 25,454 blocks still, from 0x7f74b136cd3438e6, for the same
+// reason as the assembler's: a block's place is hashed as its f64.
+constexpr u64 k_ruin_blocks_golden = 0x42f769e8223c5041ull;
 
 TEST_CASE("engine-content: ruins laid block by block are the committed blocks on every toolchain") {
   const test::TempDir tmp("engine_content_ruin_blocks_determinism");

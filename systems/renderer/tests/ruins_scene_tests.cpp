@@ -8,6 +8,8 @@
 // reads the same; and, where the terrain capability is too, the buildings stand on the dunes'
 // floor a year apart. The picture is engine-view's end-to-end test (apps/engine_view/tests).
 #include <core/math/math.h>
+#include <core/math/world.h>
+#include <domain/gfx/cluster_cull.h>
 #include <domain/ruins/assembler.h>
 #include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
@@ -19,6 +21,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -48,9 +51,8 @@ std::string scene_text(const std::string& extra = std::string()) {
 
 // The ground the generator stands its buildings on, as it asks it: the scene ground's floor at the
 // millimetre (`scene_gen::Ground`, ADR-0053). The context is a `TerrainSampler`.
-f32 floor_as_generator(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<f32>(static_cast<const TerrainSampler*>(context)->provider().view().floor(
-      WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}));
+f64 floor_as_generator(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  return static_cast<const TerrainSampler*>(context)->provider().view().floor_mm(x_mm, z_mm);
 }
 
 }  // namespace
@@ -101,16 +103,17 @@ TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terra
     const ruins::Instance& piece = built.instances[i];
     const SceneInstance& instance = desc.instances[1 + i];
     CHECK(instance.mesh == 1 + kit.members[piece.member].mesh_index);
-    const Vec3 t = ruins::instance_translation(kit, piece);
-    CHECK(instance.origin == absolute(WorldPos::origin(), t));
+    const WorldPos t = ruins::instance_translation(kit, piece);
+    CHECK(instance.origin == t);
     CHECK(instance.transform.position == Vec3{});
     // Every piece is on the terrain: a debris block at the height under it, a wall at or below
     // the lowest ground under its building.
-    const f32 ground = terrain_height(desc.terrain, piece.position.x, piece.position.z);
+    const f64 ground = static_cast<f64>(terrain_height(
+        desc.terrain, static_cast<f32>(piece.position.x), static_cast<f32>(piece.position.z)));
     if (piece.kind == static_cast<u8>(ruins::PieceKind::debris)) {
-      CHECK(std::fabs(piece.position.y - ground) <= 0.07f);
+      CHECK(std::fabs(piece.position.y - ground) <= 0.07);
     } else {
-      CHECK(piece.position.y <= ground + 0.01f);
+      CHECK(piece.position.y <= ground + 0.01);
     }
   }
   CHECK(desc.instances.back().mesh == desc.meshes.size() - 1);  // the terrain's, last
@@ -183,9 +186,8 @@ TEST_CASE("renderer: a scene's ruins drawn in blocks are the block layer's, on a
   for (u32 i = 0; i < built.blocks.size() && all_same; ++i) {
     const ruins::Block& block = built.blocks[i];
     const SceneInstance& instance = desc.instances[i];
-    const Vec3 t = ruins::block_translation(blocks, block);
-    all_same = instance.mesh == blocks.blocks[block.block].mesh_index &&
-               instance.origin == absolute(WorldPos::origin(), t);
+    const WorldPos t = ruins::block_translation(blocks, block);
+    all_same = instance.mesh == blocks.blocks[block.block].mesh_index && instance.origin == t;
     CHECK_MESSAGE(all_same, "block " << i);
   }
   CHECK(desc.instances.back().mesh == desc.meshes.size() - 1);  // the terrain's, last
@@ -308,4 +310,100 @@ TEST_CASE("renderer: ruins over the dune generator stand on its ground") {
     floating += p.y > ground.ground(p.x, p.z) + 1.0f;
   }
   CHECK(floating == 0);
+}
+
+namespace {
+
+// Flat ground 0.75 m up, in whole millimetres: the same under a building anywhere.
+f64 flat_ground(const void*, i64, i64) noexcept { return 0.75; }
+
+// Every piece of `tiles`' buildings, sections with their debris and then the blocks, made the GPU's
+// instance the way the reader makes one of a placement (`SceneInstance::origin` the placement's
+// place, the yaw its turn, `make_instance`), with the grid's corner at `origin_cm`.
+Vector<gfx::InstanceDesc> ruin_instances(const ruins::Kit& kit, const ruins::BlockKit& blocks,
+                                         std::span<const ruins::TileCoord> tiles, i64 origin_cm) {
+  ruins::Placement placement;
+  placement.world_seed = 11;
+  placement.tile_cm = 3200;
+  placement.wind_step = 2;
+  placement.ground = ruins::Ground{&flat_ground, nullptr};
+  placement.origin_x_cm = origin_cm;
+  placement.origin_z_cm = origin_cm;
+  std::string error;
+  ruins::Output built;
+  REQUIRE_MESSAGE(ruins::assemble_tiles(kit, placement, tiles, nullptr, built, &error), error);
+  ruins::BlockOutput laid;
+  REQUIRE_MESSAGE(ruins::assemble_block_tiles(kit, blocks, placement, tiles, nullptr, laid, &error),
+                  error);
+  SceneData scene;
+  scene.parts.resize(1);
+  scene.mesh_fit.resize(1, Mat4::identity());
+  const auto make = [&](WorldPos at, u32 yaw_step) {
+    SceneInstance source;
+    source.origin = at;
+    source.transform.rotation =
+        quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(22.5f * static_cast<f32>(yaw_step)));
+    gfx::InstanceDesc instance;
+    std::string why;
+    REQUIRE_MESSAGE(make_instance(scene, source, 0, instance, &why), why);
+    return instance;
+  };
+  Vector<gfx::InstanceDesc> out;
+  for (const ruins::Instance& piece : built.instances)
+    out.push_back(
+        make(ruins::instance_translation(kit, piece), ruins::instance_yaw_step(kit, piece)));
+  for (const ruins::Block& block : laid.blocks)
+    out.push_back(
+        make(ruins::block_translation(blocks, block), ruins::block_yaw_step(blocks, block)));
+  return out;
+}
+
+}  // namespace
+
+// **A ruin moved by whole cells is the same instances, its cells moved** (ADR-0053 decision 6;
+// ruins.md, "Far from the origin"). A building's shape is a function of its tile — its seed is the
+// tile's — so the generator is tested with an origin-relative input: the same tiles' buildings with
+// the grid's corner 10,000 km out (`Placement::origin_x_cm`, 156,250 cells on x and z), on the same
+// flat ground. Every piece and every block the reader would make an instance of has the same
+// 3x4 to the bit and a cell moved by exactly 156,250 — the GPU's instance records are the
+// origin's but for the whole cells, which the renderer's translation suite
+// (`world_translation_tests.cpp`) holds draws the same bytes under a camera moved by them. The
+// places are integer centimetres in f64, so the far one rounds at f64's step there (2 nm) where the
+// origin's does not; a float32 local would differ only where a centimetre lies within that of a
+// float's midpoint, and none of these does.
+TEST_CASE("renderer: a ruin moved by whole cells is the same instances, its cells moved") {
+  const test::TempDir tmp("renderer_ruins_translation");
+  std::string error;
+  std::string kit_path;
+  std::string blocks_path;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, &kit_path),
+      error);
+  REQUIRE_MESSAGE(ruins::write_synthetic_block_kit(
+                      tmp.file("blocks"), ruins::SyntheticBlockOptions{}, &error, &blocks_path),
+                  error);
+  ruins::Kit kit;
+  REQUIRE_MESSAGE(ruins::read_kit_file(kit_path, kit, error), error);
+  ruins::BlockKit blocks;
+  REQUIRE_MESSAGE(ruins::read_block_kit_file(blocks_path, blocks, error), error);
+  const ruins::TileCoord tiles[] = {{0, 0}, {-1, 0}, {0, -1}, {-1, -1}, {1, 1}, {-2, 1}};
+  const i64 far_cm = 1'000'000'000;  // 10,000 km: 156,250 cells of 64 m
+  const i32 cells = static_cast<i32>(far_cm / 6400);
+  const Vector<gfx::InstanceDesc> home = ruin_instances(kit, blocks, tiles, 0);
+  const Vector<gfx::InstanceDesc> far = ruin_instances(kit, blocks, tiles, far_cm);
+  REQUIRE(home.size() == far.size());
+  REQUIRE(home.size() > 100);
+  u32 cell_off = 0;
+  u32 rows_off = 0;
+  for (u32 i = 0; i < home.size(); ++i) {
+    cell_off += far[i].cell.x == home[i].cell.x + cells && far[i].cell.y == home[i].cell.y &&
+                        far[i].cell.z == home[i].cell.z + cells
+                    ? 0u
+                    : 1u;
+    rows_off += std::memcmp(far[i].rows, home[i].rows, sizeof(home[i].rows)) == 0 ? 0u : 1u;
+  }
+  MESSAGE(home.size() << " instances: " << cell_off << " cells and " << rows_off
+                      << " 3x4s not the origin's moved by whole cells");
+  CHECK(cell_off == 0);
+  CHECK(rows_off == 0);
 }

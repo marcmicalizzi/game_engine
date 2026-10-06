@@ -117,8 +117,9 @@ bool parse_ints(std::string_view text, i32* out, u32 count) {
   return true;
 }
 
-f32 flat_ground(const void* context, f32, f32) noexcept {
-  return *static_cast<const f32*>(context);
+// The ruins' ground speaks whole millimetres (ADR-0053); flat ground answers its one height.
+f64 flat_ground(const void* context, i64, i64) noexcept {
+  return static_cast<f64>(*static_cast<const f32*>(context));
 }
 
 // `ruins --blocks`: the same buildings laid block by block, reported by role, standing and fallen,

@@ -1143,9 +1143,9 @@ i64 DuneField::height_um(i64 x, i64 z, i64 time_us, Detail detail, const LagFiel
   return height_um(g, x, z, detail);
 }
 
-f32 DuneField::ground_height(const void* context, f32 x, f32 z) noexcept {
+f64 DuneField::ground_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
   const auto* field = static_cast<const DuneField*>(context);
-  return height_m(field->floor_um(to_mm(x), to_mm(z)));
+  return static_cast<f64>(height_m(field->floor_um(x_mm, z_mm)));
 }
 
 }  // namespace engine::terrain

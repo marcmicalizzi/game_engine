@@ -101,4 +101,10 @@ inline bool settle_clear(const Vector<Assembler::Side>& sides, i32 half, i32 r, 
 
 inline f32 metres(i64 cm) noexcept { return static_cast<f32>(cm) * 0.01f; }
 
+// Integer centimetres of the world as metres in f64: one correctly rounded division, so a piece's
+// place is its centimetres' to a nanometre anywhere an i64 reaches (ADR-0053). What a piece's and a
+// site's place are written in; `metres` is left to what is not a place in the world (a drift's
+// height and reach) and to a drift's ends, which are a declaration in float32 still.
+inline f64 metres_f64(i64 cm) noexcept { return static_cast<f64>(cm) / 100.0; }
+
 }  // namespace engine::ruins::grid

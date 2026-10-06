@@ -7,6 +7,7 @@
 #include <domain/ruins/assembler.h>
 #include <domain/ruins/kit.h>
 #include <domain/ruins/synthetic_kit.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/terrain/terrain.h>
 
 #include <doctest/doctest.h>
@@ -39,11 +40,11 @@ TEST_CASE("world terrain: a ruin stands on the generator's ground, the same at a
   REQUIRE(!out.instances.empty());
   u32 debris = 0;
   for (const ruins::Instance& piece : out.instances) {
-    const f32 ground =
-        terrain::DuneField::ground_height(&field, piece.position.x, piece.position.z);
+    const f64 ground = terrain::DuneField::ground_height(
+        &field, scene_gen::nearest_mm(piece.position.x), scene_gen::nearest_mm(piece.position.z));
     if (piece.kind == static_cast<u8>(ruins::PieceKind::debris)) {
       ++debris;
-      CHECK(std::fabs(piece.position.y - ground) <= 0.07f);
+      CHECK(std::fabs(piece.position.y - ground) <= 0.07);
     }
   }
   MESSAGE(out.instances.size() << " pieces, " << debris << " debris on the generator's floor");

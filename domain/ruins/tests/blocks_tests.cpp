@@ -52,10 +52,17 @@ BlockKit block_kit(const SyntheticBlockOptions& options = SyntheticBlockOptions{
 }
 
 // The assembler tests' ground: a tilted plane with a quadratic bump, no C library in it.
-f32 test_ground(const void*, f32 x, f32 z) noexcept {
+f32 test_ground_m(f64 x_m, f64 z_m) noexcept {
+  const f32 x = static_cast<f32>(x_m);
+  const f32 z = static_cast<f32>(z_m);
   const f32 u = x - 40.0f;
   const f32 v = z + 25.0f;
   return 1.5f + 0.02f * x - 0.015f * z + 0.0004f * (u * u + v * v) * 0.25f;
+}
+// The assembler asks it in whole millimetres (ADR-0053): the same heights at the same places.
+f64 test_ground(const void*, i64 x_mm, i64 z_mm) noexcept {
+  return static_cast<f64>(
+      test_ground_m(static_cast<f64>(x_mm) / 1000.0, static_cast<f64>(z_mm) / 1000.0));
 }
 
 Placement placement_of(u64 seed, u8 wind = 0) {
@@ -68,7 +75,7 @@ Placement placement_of(u64 seed, u8 wind = 0) {
 }
 
 bool same(const Block& a, const Block& b) {
-  return std::memcmp(&a.position, &b.position, sizeof(Vec3)) == 0 && a.block == b.block &&
+  return std::memcmp(&a.position, &b.position, sizeof(WorldPos)) == 0 && a.block == b.block &&
          a.building == b.building && a.wall == b.wall && a.index == b.index &&
          a.course == b.course && a.role == b.role && a.yaw == b.yaw && a.flags == b.flags;
 }
@@ -82,7 +89,7 @@ struct Local {
   f64 x;
   f64 z;
 };
-Local to_local(const Assembler::Frame& frame, f32 x, f32 z) {
+Local to_local(const Assembler::Frame& frame, f64 x, f64 z) {
   const f64 dx = static_cast<f64>(x) * 100.0 - static_cast<f64>(frame.origin_x_cm);
   const f64 dz = static_cast<f64>(z) * 100.0 - static_cast<f64>(frame.origin_z_cm);
   const f64 angle = static_cast<f64>(frame.yaw) * 22.5 * 3.14159265358979323846 / 180.0;
@@ -276,7 +283,7 @@ TEST_CASE("ruins blocks: one seed and tile is one building, the assembler's, on 
     CHECK(a.shape == b.shape);
     CHECK(a.yaw == b.yaw);
     CHECK(a.walls == b.walls);
-    CHECK(std::memcmp(&a.origin, &b.origin, sizeof(Vec3)) == 0);
+    CHECK(std::memcmp(&a.origin, &b.origin, sizeof(WorldPos)) == 0);
   }
   for (u32 i = 0; i < sections.drifts.size(); ++i)
     CHECK(std::memcmp(&sections.drifts[i], &serial.drifts[i], sizeof(Drift)) == 0);
@@ -625,8 +632,8 @@ TEST_CASE(
       ++fallen;
       const KitBlock& kb = blocks.blocks[block.block];
       // On the ground under where it lies, less the embed.
-      const f32 ground = test_ground(nullptr, block.position.x, block.position.z);
-      CHECK(std::fabs(block.position.y - ground) <= 0.2f);
+      const f32 ground = test_ground_m(block.position.x, block.position.z);
+      CHECK(std::fabs(block.position.y - static_cast<f64>(ground)) <= 0.2);
       // Its centre, half its length along its yaw from its origin, is outside every wall by its
       // own radius and inside the tile.
       const f64 yaw = static_cast<f64>(block.yaw) * 22.5 * 3.14159265358979323846 / 180.0;

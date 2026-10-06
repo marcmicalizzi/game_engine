@@ -228,4 +228,4 @@ Before, the error is the float32's step at the site on x and z (0.123 m and 0.34
 | 10,000 km | 0.123 m | 7e-10 m |
 | 1e8 m | 0.123 m | 7e-9 m |
 
-What the after column rests on: a placement's position is a `WorldPos`; a reader adds the mesh's fit to it in f64 and stores a cell and a local (`renderer::instance_translation`); the collision adds the same in f64 and subtracts the tile's corner; and the ground is asked at whole millimetres, which reach the field without a float. The ruins still hand over float32 world metres at one marked helper until they place in f64 (the next stage); the city places from its integer centimetres in f64.
+What the after column rests on: a placement's position is a `WorldPos`; a reader adds the mesh's fit to it in f64 and stores a cell and a local (`renderer::instance_translation`); the collision adds the same in f64 and subtracts the tile's corner; and the ground is asked at whole millimetres, which reach the field without a float. The ruins and the city place from their integer centimetres in f64 (the ruins from the second stage of the same change, [ruins](../subsystems/ruins.md#far-from-the-origin)).

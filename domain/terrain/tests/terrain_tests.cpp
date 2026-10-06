@@ -325,8 +325,8 @@ TEST_CASE("terrain: the ruins stand on the floor, which does not move") {
   const DuneField field(reference_desc());
   const f32 x = 13.25f;
   const f32 z = -7.5f;
-  const f32 ground = DuneField::ground_height(&field, x, z);
-  CHECK(ground == height_m(field.floor_um(to_mm(x), to_mm(z))));
+  const f64 ground = DuneField::ground_height(&field, to_mm(x), to_mm(z));
+  CHECK(ground == static_cast<f64>(height_m(field.floor_um(to_mm(x), to_mm(z)))));
   CHECK(field.height_um(to_mm(x), to_mm(z), 0, Detail::floor) ==
         field.height_um(to_mm(x), to_mm(z), 10 * k_year, Detail::floor));
   // Sand is never below the floor: the dunes are on it.

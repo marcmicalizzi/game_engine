@@ -17,6 +17,7 @@ using grid::draw;
 using grid::k_dx;
 using grid::k_dz;
 using grid::metres;
+using grid::metres_f64;
 using grid::pick;
 
 // The layer's own draws, beside the assembler's (src/assembler.cpp): a purpose never shared, so a
@@ -320,7 +321,8 @@ bool BlockAssembler::assemble(const Placement& placement, TileCoord tile, BlockO
         i64 wz = 0;
         assembler_.to_world_cm(s.x0 + k_dx[s.dir] * slot.u0, s.z0 + k_dz[s.dir] * slot.u0, wx, wz);
         Block block;
-        block.position = Vec3{metres(wx), metres(i64{frame.base_cm} + bottom), metres(wz)};
+        block.position =
+            WorldPos{metres_f64(wx), metres_f64(i64{frame.base_cm} + bottom), metres_f64(wz)};
         block.block = member;
         block.building = building;
         block.wall = static_cast<u16>(w);
@@ -406,14 +408,15 @@ bool BlockAssembler::assemble(const Placement& placement, TileCoord tile, BlockO
       }
       // Lying on the ground where it lands; its frame's origin is its start end, half its length
       // back from where its centre lies.
-      const f32 ground = placement.ground.at(metres(wx), metres(wz));
+      const f32 ground = placement.ground.at_cm(wx, wz);
       i64 ox = 0;
       i64 oz = 0;
       grid::rotate_cm(site.yaw, kb.length_cm / 2, 0, ox, oz);
       Block block;
-      block.position = Vec3{
-          metres(wx - ox), metres(static_cast<i64>(std::floor(ground * 100.0f)) - section.embed_cm),
-          metres(wz - oz)};
+      block.position =
+          WorldPos{metres_f64(wx - ox),
+                   metres_f64(static_cast<i64>(std::floor(ground * 100.0f)) - section.embed_cm),
+                   metres_f64(wz - oz)};
       block.block = member;
       block.building = building;
       block.wall = site.wall;
@@ -510,20 +513,24 @@ bool assemble_block_tiles(const Kit& kit, const BlockKit& blocks, const Placemen
 u64 hash_blocks(const BlockOutput& out) noexcept {
   u64 h = hash_combine(k_hash_seed, out.sites.size());
   auto f = [](f32 v) { return static_cast<u64>(std::bit_cast<u32>(v)); };
+  auto wide = [](f64 v) { return std::bit_cast<u64>(v); };
   for (const Site& s : out.sites) {
     h = hash_combine(h, s.seed);
     h = hash_combine(
         h, static_cast<u64>(static_cast<u32>(s.tile.x)) << 32 | static_cast<u32>(s.tile.z));
-    h = hash_combine(h, f(s.origin.x) << 32 | f(s.origin.y));
-    h = hash_combine(h, f(s.origin.z));
+    h = hash_combine(h, wide(s.origin.x));
+    h = hash_combine(h, wide(s.origin.y));
+    h = hash_combine(h, wide(s.origin.z));
     h = hash_combine(h, static_cast<u64>(s.first_instance) << 32 | s.instance_count);
     h = hash_combine(h, static_cast<u64>(s.first_drift) << 32 | s.drift_count);
     h = hash_combine(h, static_cast<u64>(s.walls) << 16 | static_cast<u64>(s.shape) << 8 | s.yaw);
   }
   h = hash_combine(h, out.blocks.size());
   for (const Block& b : out.blocks) {
-    h = hash_combine(h, f(b.position.x) << 32 | f(b.position.y));
-    h = hash_combine(h, f(b.position.z) << 32 | b.block);
+    h = hash_combine(h, wide(b.position.x));
+    h = hash_combine(h, wide(b.position.y));
+    h = hash_combine(h, wide(b.position.z));
+    h = hash_combine(h, b.block);
     h = hash_combine(h,
                      static_cast<u64>(b.building) << 32 | static_cast<u64>(b.wall) << 16 | b.index);
     h = hash_combine(h, static_cast<u64>(b.course) << 24 | static_cast<u64>(b.role) << 16 |
@@ -545,14 +552,14 @@ u32 block_yaw_step(const BlockKit& kit, const Block& block) noexcept {
   return (static_cast<u32>(block.yaw) + kit.blocks[block.block].yaw_step) & 15u;
 }
 
-Vec3 block_translation(const BlockKit& kit, const Block& block) noexcept {
+WorldPos block_translation(const BlockKit& kit, const Block& block) noexcept {
   const KitBlock& kb = kit.blocks[block.block];
   const u32 step = block_yaw_step(kit, block);
   const f32 c = step_cos(step);
   const f32 s = step_sin(step);
   const Vec3 o = kb.offset;
-  return Vec3{block.position.x + (c * o.x + s * o.z), block.position.y + o.y,
-              block.position.z + (c * o.z - s * o.x)};
+  // The offset turned in float32, the size of a block, and added to the block's place in f64.
+  return block.position + DVec3{Vec3{c * o.x + s * o.z, o.y, c * o.z - s * o.x}};
 }
 
 }  // namespace engine::ruins

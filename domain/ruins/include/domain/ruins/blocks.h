@@ -121,8 +121,10 @@ bool read_block_kit_file(const std::string& path, BlockKit& out, std::string& er
 // One placed block: 28 bytes, 4-aligned (tests/size_table.cpp). A thousand ruins laid block by
 // block are some hundreds of thousands of these, so they are the representation's hot type.
 struct Block {
-  Vec3 position{};   // metres: the block frame's origin — its start end on the wall's centre line,
-                     // at its bottom — x and z from integer centimetres, y from the base or ground
+  // Metres in f64: the block frame's origin — its start end on the wall's centre line, at its
+  // bottom — each the integer centimetres of the world it was decided in, divided once (x and z the
+  // block's, y the base's or the ground's under it; ADR-0053).
+  WorldPos position{};
   u32 block = 0;     // index into BlockKit::blocks
   u32 building = 0;  // index into BlockOutput::sites
   u16 wall = 0;      // the wall it stands in or fell from
@@ -225,7 +227,7 @@ u64 hash_blocks(const BlockOutput& out) noexcept;
 
 // The world translation and yaw of a block's *mesh*: its position and yaw with the kit block's
 // own offset and yaw folded in, as `instance_translation` does for a member.
-Vec3 block_translation(const BlockKit& kit, const Block& block) noexcept;
+WorldPos block_translation(const BlockKit& kit, const Block& block) noexcept;
 u32 block_yaw_step(const BlockKit& kit, const Block& block) noexcept;
 
 }  // namespace engine::ruins

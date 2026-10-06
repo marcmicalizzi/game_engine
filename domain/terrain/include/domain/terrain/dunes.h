@@ -327,9 +327,9 @@ class DuneField {
   i32 basin_q16(i64 x, i64 z) const noexcept;
 
   // The ruins' height query (`ruins::Ground`, whose signature this matches without this module
-  // depending on the ruins capability): `context` is a DuneField, (x, z) metres, and the answer
-  // the floor in metres.
-  static f32 ground_height(const void* context, f32 x, f32 z) noexcept;
+  // depending on the ruins capability): `context` is a DuneField, (x, z) whole millimetres from the
+  // world's origin (ADR-0053), and the answer the floor in metres.
+  static f64 ground_height(const void* context, i64 x_mm, i64 z_mm) noexcept;
 
   // The table the field was built from (the default's three when the description had none).
   u32 band_count() const noexcept { return bands_.size(); }

@@ -42,10 +42,17 @@ Kit kit_of(const SyntheticKitOptions& options) {
 // A ground with relief and no C library in it: a tilted plane with a quadratic bump, so a
 // building's corners stand at different heights and a debris block's own height differs from the
 // base's.
-f32 test_ground(const void*, f32 x, f32 z) noexcept {
+f32 test_ground_m(f64 x_m, f64 z_m) noexcept {
+  const f32 x = static_cast<f32>(x_m);
+  const f32 z = static_cast<f32>(z_m);
   const f32 u = x - 40.0f;
   const f32 v = z + 25.0f;
   return 1.5f + 0.02f * x - 0.015f * z + 0.0004f * (u * u + v * v) * 0.25f;
+}
+// The assembler asks it in whole millimetres (ADR-0053): the same heights at the same places.
+f64 test_ground(const void*, i64 x_mm, i64 z_mm) noexcept {
+  return static_cast<f64>(
+      test_ground_m(static_cast<f64>(x_mm) / 1000.0, static_cast<f64>(z_mm) / 1000.0));
 }
 
 Placement placement_of(u64 seed, u8 wind = 0) {
@@ -58,7 +65,7 @@ Placement placement_of(u64 seed, u8 wind = 0) {
 }
 
 bool same(const Instance& a, const Instance& b) {
-  return std::memcmp(&a.position, &b.position, sizeof(Vec3)) == 0 && a.member == b.member &&
+  return std::memcmp(&a.position, &b.position, sizeof(WorldPos)) == 0 && a.member == b.member &&
          a.building == b.building && a.wall == b.wall && a.slot == b.slot &&
          a.height_q == b.height_q && a.kind == b.kind && a.yaw == b.yaw;
 }
@@ -87,7 +94,7 @@ struct Local {
   f64 x;
   f64 z;
 };
-Local to_local(const Site& site, f32 x, f32 z) {
+Local to_local(const Site& site, f64 x, f64 z) {
   const f64 dx = (static_cast<f64>(x) - static_cast<f64>(site.origin.x)) * 100.0;
   const f64 dz = (static_cast<f64>(z) - static_cast<f64>(site.origin.z)) * 100.0;
   const f64 angle = static_cast<f64>(site.yaw) * 22.5 * 3.14159265358979323846 / 180.0;
@@ -441,20 +448,21 @@ TEST_CASE("ruins: the grammar's properties hold over a thousand buildings") {
         const Assembler::Side& s = sides[inst.wall];
         // Nothing that stands floats: a member's base is at or under the ground where it stands.
         if (kind != PieceKind::debris) {
-          CHECK(inst.position.y <= test_ground(nullptr, inst.position.x, inst.position.z) + 1e-4f);
+          CHECK(inst.position.y <=
+                static_cast<f64>(test_ground_m(inst.position.x, inst.position.z) + 1e-4f));
         }
         if (kind == PieceKind::corner || kind == PieceKind::inside_corner) {
           ++corners[inst.wall];
           CHECK(inst.slot == 0);
           CHECK(std::fabs(p.x - s.x0) <= 1.5);
           CHECK(std::fabs(p.z - s.z0) <= 1.5);
-          CHECK(inst.position.y <= site.origin.y + 1e-4f);  // on the base, or sunk into it
+          CHECK(inst.position.y <= site.origin.y + 1e-4);  // on the base, or sunk into it
           continue;
         }
         if (kind == PieceKind::debris) {
           ++debris;
           // On the terrain where it lies, less the embed.
-          const f32 ground = test_ground(nullptr, inst.position.x, inst.position.z);
+          const f32 ground = test_ground_m(inst.position.x, inst.position.z);
           const f32 expected =
               static_cast<f32>(std::floor(ground * 100.0f) - kit.rules.embed_cm) * 0.01f;
           CHECK(inst.position.y == doctest::Approx(expected).epsilon(1e-6));
