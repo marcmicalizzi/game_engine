@@ -22,8 +22,10 @@ struct SingleInstance {
   gfx::BufferResource instances;  // one identity InstanceDesc
   u32 cluster_count = 0;
 
+  // `at`: where the one instance stands, its mesh's frame unrotated and unscaled there (its 64 m
+  // cell and local, ADR-0053); the world's origin, an identity instance, unless a case says.
   bool create(const gfx::Device& device, const geometry::ClusterMesh& mesh, u32 clusters,
-              std::string* error) {
+              std::string* error, WorldPos at = WorldPos::origin()) {
     cluster_count = clusters;
     constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
     gfx::MeshDesc mesh_desc{};
@@ -31,7 +33,7 @@ struct SingleInstance {
     mesh_desc.first_cluster = 0;
     mesh_desc.cluster_count = clusters;
     gfx::InstanceDesc instance{};
-    gfx::set_instance_transform(instance, Mat4::identity());
+    gfx::set_instance_placement(instance, Mat4::identity(), at);
     if (!gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
                             k_storage, quantized, error)) {
       return false;

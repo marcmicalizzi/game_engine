@@ -314,6 +314,17 @@ struct GroundCase {
   // false: measure and report, and hold no tolerance (the far case's frameless run, which is there
   // to show what the instrument reads when the pattern is taken at a float32 world coordinate).
   bool hold = true;
+  // **The sand as the renderer draws a mesh** (ADR-0053): each site's quad built metres from the
+  // site, one instance placed at the site's 64 m cell and local, every view's frame at its own eye
+  // (`gfx::FrameEye`, the view matrix with the eye at the origin, the detail's frame measured from
+  // the eye). False is the sand as world-space vertices under an identity instance and an absolute
+  // view matrix, which is what every other case here draws: by the origin the two are the same
+  // sand, and 10,000 km out the world-space one rounds every vertex to a float's metre.
+  bool instanced = false;
+  // false: the visibility buffer and the reference's point on each pixel's triangle only (how many
+  // points it clamps), without shading a pixel: what the clamp test needs, at a fraction of the
+  // reference's cost in a debug build. Implies nothing is held; the caller checks what it wants.
+  bool shade = true;
 };
 
 // What one view of a case measured: the worst difference from the reference, of 255, on the shaded
@@ -348,6 +359,9 @@ struct GroundView {
   // point, changes along it: the most the GPU's can when the pattern is taken there.
   u32 coordinate_changes = 0;
   double row_metres = 0.0;
+  // A hash of the view's visibility buffer, word for word (depth and id): two views that drew the
+  // same triangles at the same depths under every pixel have the same one.
+  u64 visibility_hash = 0;
 };
 
 // The plane's unit normal for a climb of `climb_deg` along the wind: `-dot(n.xz, w) / n.y`, the
@@ -390,27 +404,50 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   const Site* sites = c.sites;
   const ref::Dvec3 normal = climb_normal(c.block, c.climb_deg, c.turn_deg);
   const bool level = c.climb_deg == 0.0;
+  // The plane's height at (dx, dz) metres from its point at a site.
+  const auto height_from = [&](double dx, double dz) {
+    if (level) return 0.0f;
+    return static_cast<f32>(-(normal.x * dx + normal.z * dz) / normal.y);
+  };
   // The plane's height at (x, z) over its point at site `s`.
   const auto height = [&](u32 s, f32 x, f32 z) {
-    if (level) return 0.0f;
-    const double dx = static_cast<double>(x) - static_cast<double>(sites[s].x);
-    const double dz = static_cast<double>(z) - static_cast<double>(sites[s].z);
-    return static_cast<f32>(-(normal.x * dx + normal.z * dz) / normal.y);
+    return height_from(static_cast<double>(x) - static_cast<double>(sites[s].x),
+                       static_cast<double>(z) - static_cast<double>(sites[s].z));
   };
   struct Look {
     Vec3 eye, target;
     f32 fov_y;
   };
+  // A view's eye and target: in world coordinates as floats, or with `instanced` in metres from the
+  // site (the mesh's own frame), where the far sites' numbers are the origin's.
   const auto look = [&](u32 v) {
     const u32 s = v / looks;
-    const Site site = sites[s];
-    const auto on = [&](f32 x, f32 z, f32 above) { return Vec3{x, height(s, x, z) + above, z}; };
+    const Site site = c.instanced ? Site{0.0f, 0.0f, "", 0} : sites[s];
+    const auto on = [&](f32 x, f32 z, f32 above) {
+      const f32 h = c.instanced ? height_from(static_cast<double>(x), static_cast<double>(z))
+                                : height(s, x, z);
+      return Vec3{x, h + above, z};
+    };
     if (v % looks == 0) {
       return Look{on(site.x, site.z + 6.0f, 1.6f), on(site.x + 2.0f, site.z - 20.0f, 0.0f),
                   radians(60.0f)};
     }
     return Look{on(site.x, site.z + 0.4f, 1.6f), on(site.x + 0.1f, site.z - 0.1f, 0.0f),
                 radians(v % looks == 1 ? 60.0f : 6.0f)};
+  };
+  // Where a view's coordinates are measured from, in the world: the site with `instanced`, the
+  // world's origin otherwise. The reference works in these coordinates and adds it back only where
+  // the pattern is evaluated, so its geometry is the same numbers at every site.
+  const auto frame_origin = [&](u32 v) {
+    const Site site = sites[v / looks];
+    return c.instanced ? ref::Dvec3{static_cast<double>(site.x), 0.0, static_cast<double>(site.z)}
+                       : ref::Dvec3{0.0, 0.0, 0.0};
+  };
+  const auto eye_world = [&](u32 v) {
+    const ref::Dvec3 o = frame_origin(v);
+    const Vec3 e = look(v).eye;
+    return WorldPos{o.x + static_cast<double>(e.x), o.y + static_cast<double>(e.y),
+                    o.z + static_cast<double>(e.z)};
   };
   const char* look_names[3] = {"along the sand", "at the feet", "at the feet at a millimetre"};
   const Vec3 up{0.0f, 1.0f, 0.0f};
@@ -420,15 +457,32 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   // frame of the cell beside it, a frame corner further along both axes — what the renderer hands
   // over once the eye has crossed into that cell — for the seam test.
   std::vector<gfx::GroundDetailParams> detail_blocks(2u * views, c.block);
+  // The reference's block for each view: the GPU's own, or with `instanced` the same frame with its
+  // origin in world coordinates, which is where the reference evaluates the pattern (the GPU's is
+  // measured from the eye, and only the origin differs: every lattice is the world's).
+  std::vector<gfx::GroundDetailParams> reference_blocks(views, c.block);
   for (u32 v = 0; v < views; ++v) {
     if (!c.framed) continue;
-    const Vec3 eye = look(v).eye;
+    const WorldPos eye = eye_world(v);
     const double g = gfx::k_ground_frame_cell;
-    gfx::ground_detail_frame(detail_blocks[2 * v], static_cast<double>(eye.x),
-                             static_cast<double>(eye.z));
-    gfx::ground_detail_frame(detail_blocks[2 * v + 1], static_cast<double>(eye.x) + g,
-                             static_cast<double>(eye.z) + g);
+    if (c.instanced) {
+      gfx::ground_detail_frame(detail_blocks[2 * v], eye, eye);
+      gfx::ground_detail_frame(detail_blocks[2 * v + 1], WorldPos{eye.x + g, eye.y, eye.z + g},
+                               eye);
+      gfx::ground_detail_frame(reference_blocks[v], eye.x, eye.z);
+      continue;
+    }
+    gfx::ground_detail_frame(detail_blocks[2 * v], eye.x, eye.z);
+    gfx::ground_detail_frame(detail_blocks[2 * v + 1], eye.x + g, eye.z + g);
+    reference_blocks[v] = detail_blocks[2 * v];
   }
+  // Each view's frame origin (`gfx::FrameEye`) with `instanced`: its own eye.
+  std::vector<gfx::FrameEye> frame_eyes(views);
+  for (u32 v = 0; v < views; ++v)
+    frame_eyes[v] = c.instanced ? gfx::frame_eye(to_eye(eye_world(v))) : gfx::FrameEye{};
+  gfx::BufferResource eye_buffer;
+  REQUIRE(gfx::upload_buffer(device, frame_eyes.data(), frame_eyes.size() * sizeof(gfx::FrameEye),
+                             k_storage, eye_buffer, &error));
   gfx::BufferResource detail_buffer;
   REQUIRE(gfx::upload_buffer(device, detail_blocks.data(),
                              detail_blocks.size() * sizeof(gfx::GroundDetailParams), k_storage,
@@ -458,6 +512,14 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     Vector<u32> indices;
     for (u32 j = 0; j <= k_cells; ++j) {
       for (u32 i = 0; i <= k_cells; ++i) {
+        if (c.instanced) {
+          // Metres from the site: the instance carries the site.
+          const f32 x = -30.0f + k_cell * static_cast<f32>(i);
+          const f32 z = -30.0f + k_cell * static_cast<f32>(j);
+          positions.push_back(
+              Vec3{x, height_from(static_cast<double>(x), static_cast<double>(z)), z});
+          continue;
+        }
         const f32 x = sites[s].x - 30.0f + k_cell * static_cast<f32>(i);
         const f32 z = sites[s].z - 30.0f + k_cell * static_cast<f32>(j);
         positions.push_back(Vec3{x, height(s, x, z), z});
@@ -483,7 +545,10 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                clusters[s], &error));
     REQUIRE(gfx::upload_buffer(device, zeros.data(), cluster_count[s] * sizeof(u32), k_storage,
                                cluster_materials[s], &error));
-    REQUIRE(scenes[s].create(device, meshes[s], cluster_count[s], &error));
+    const WorldPos at = c.instanced ? WorldPos{static_cast<double>(sites[s].x), 0.0,
+                                               static_cast<double>(sites[s].z)}
+                                    : WorldPos::origin();
+    REQUIRE(scenes[s].create(device, meshes[s], cluster_count[s], &error, at));
     REQUIRE(gfx::upload_buffer(device, meshes[s].triangles.data(),
                                meshes[s].triangles.size() * sizeof(u32), k_storage, triangles[s],
                                &error));
@@ -499,6 +564,11 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   }
   // Shaded, the detail view, and the detail view with the neighbouring cell's frame.
   const u32 blocks_count = views * 3;
+  // Three blocks a view. Until 2026-10-06 the two arrays below were sized for two (`k_max_views *
+  // 2`), which no case reached until one drew three sites at three looks: 27 blocks, and the loop
+  // filling `block_address` wrote past it into its own counter and never ended.
+  constexpr u32 k_max_blocks = k_max_views * 3;
+  REQUIRE(blocks_count <= k_max_blocks);
   gfx::BufferResource params;
   gfx::BufferResource host_color;
   gfx::BufferResource host_vis;
@@ -542,11 +612,15 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   for (u32 v = 0; v < views; ++v) {
     const Look l = look(v);
     const u32 s = v / looks;
+    // With `instanced` the view's eye is its frame's origin: the matrix turns and projects, and
+    // carries no position.
     const Mat4 view_proj =
-        perspective_reversed_z(l.fov_y, 1.0f, 0.05f) * look_at(l.eye, l.target, up);
+        perspective_reversed_z(l.fov_y, 1.0f, 0.05f) *
+        (c.instanced ? look_at(Vec3{}, l.target - l.eye, up) : look_at(l.eye, l.target, up));
     gfx::ClusterDrawParams& draw = draws[v];
     draw = gfx::ClusterDrawParams{};
     draw.view_proj = view_proj;
+    draw.eye = c.instanced ? eye_buffer.address + v * sizeof(gfx::FrameEye) : 0u;
     draw.clusters = clusters[s].address;
     draw.mesh = scenes[s].meshes.address;
     draw.instances = scenes[s].instances.address;
@@ -559,7 +633,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
       b.sky = sky;
       b.sun = Vec4{sun_dir, 1.0f};
       b.ground = ground;
-      b.camera = Vec4{l.eye, 0.0f};
+      b.camera = c.instanced ? Vec4{0.0f, 0.0f, 0.0f, 0.0f} : Vec4{l.eye, 0.0f};
+      b.eye = frame_eyes[v];
       b.view_proj = view_proj;
       b.visibility = vis[v].address;
       b.clusters = clusters[s].address;
@@ -576,7 +651,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
           static_cast<u32>(mode == 0 ? gfx::ResolveMode::Shaded : gfx::ResolveMode::GroundDetail);
     }
   }
-  u64 block_address[k_max_views * 2];
+  u64 block_address[k_max_blocks];
   for (u32 i = 0; i < blocks_count; ++i)
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
 
@@ -586,7 +661,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     rg_vis[v] = graph.import_buffer("vis", vis[v]);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
   const gfx::RgBuffer rg_host_vis = graph.import_buffer("host vis", host_vis);
-  gfx::RgImage targets[k_max_views * 2];
+  gfx::RgImage targets[k_max_blocks];
   for (u32 i = 0; i < blocks_count; ++i) {
     targets[i] = graph.create_image(
         "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
@@ -682,20 +757,26 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
     const u32 s = v / looks;
     const Site site = sites[s];
     const u32 far = site.tolerance;
-    const gfx::GroundDetailParams& block = detail_blocks[2 * v];
+    const gfx::GroundDetailParams& block = reference_blocks[v];
+    // The view in its own coordinates (`frame_origin`: the world's, or the site's with
+    // `instanced`); the pattern is evaluated at `origin + p`.
+    const ref::Dvec3 origin = frame_origin(v);
     const ref::Dvec3 eye = ref::dvec3(l.eye);
     const ref::Dvec3 target = ref::dvec3(l.target);
     const double fov = static_cast<double>(l.fov_y);
-    const ref::Dvec3 plane_point{static_cast<double>(site.x), 0.0, static_cast<double>(site.z)};
+    const ref::Dvec3 plane_point =
+        c.instanced ? ref::Dvec3{0.0, 0.0, 0.0}
+                    : ref::Dvec3{static_cast<double>(site.x), 0.0, static_cast<double>(site.z)};
     const geometry::ClusterMesh& mesh = meshes[s];
     GroundView r;
     r.name = std::string(site.name) + ", " + look_names[v % looks];
     // Pixels within this of the quad's edge are left out: half a metre, or four float steps of the
     // site's coordinates where those are coarser — 10,000 km out a step is a metre, and the
-    // rasterizer, which still puts world coordinates through the whole matrix, draws an edge that
-    // far off (gfx.md, "Measured from the eye").
-    const double site_far =
-        std::max(std::fabs(static_cast<double>(site.x)), std::fabs(static_cast<double>(site.z)));
+    // world-space quad's edge is drawn that far off (gfx.md, "Measured from the eye"). An instanced
+    // quad's vertices are metres from the site, wherever it is.
+    const double site_far = c.instanced ? 0.0
+                                        : std::max(std::fabs(static_cast<double>(site.x)),
+                                                   std::fabs(static_cast<double>(site.z)));
     const double edge = 29.5 - std::max(0.0, 4.0 * gref::float_step(site_far) - 0.5);
     // The instrument's row: the previous covered pixel's two ripple heights and where it was.
     int row_gpu = -1;
@@ -709,8 +790,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                                      cx, cy, plane_point, normal);
         // At or above the horizon, the ray meets the plane behind the eye.
         if (ref::dot(seen - eye, target - eye) <= 0.0) continue;
-        if (std::fabs(seen.x - static_cast<double>(site.x)) > edge ||
-            std::fabs(seen.z - static_cast<double>(site.z)) > edge) {
+        if (std::fabs(seen.x - plane_point.x) > edge || std::fabs(seen.z - plane_point.z) > edge) {
           continue;
         }
         ref::Dvec3 dpdx;
@@ -746,7 +826,12 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
             eye, ref::pixel_direction(eye, target, up_ref, fov, 1.0, k_size, k_size, cx, cy),
             corner);
         if (hit.clamped) ++r.clamped;
-        const ref::Dvec3 p = hit.position;
+        if (!c.shade) {
+          ++r.compared;
+          continue;
+        }
+        // The point in the world, where the pattern is: the view's own point plus its origin.
+        const ref::Dvec3 p = origin + hit.position;
         gref::plane_footprint(eye, target, up_ref, fov, 1.0, k_size, k_size, x, y, corner[0], n,
                               dpdx, dpdy);
         const gref::Shading g = gref::shade(block, p, n, dpdx, dpdy, 1.0, sand, 0.92, false);
@@ -754,7 +839,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         ref::Surface surface;
         surface.position = p;
         surface.normal = g.normal;
-        surface.view = ref::normalize(eye - p);
+        surface.view = ref::normalize(eye - hit.position);
         surface.albedo = g.albedo;
         surface.roughness = g.roughness;
         surface.metallic = 0.0;
@@ -814,6 +899,11 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
         ++r.compared;
       }
     }
+    r.visibility_hash = 1469598103934665603ull;  // FNV-1a over the view's words
+    for (u64 k = 0; k < u64{k_size} * k_size; ++k) {
+      r.visibility_hash =
+          (r.visibility_hash ^ words[u64{k_size} * k_size * v + k]) * 1099511628211ull;
+    }
     for (u32 y = k_size / 4; y < 3 * k_size / 4; ++y) {
       for (u32 x = k_size / 4; x < 3 * k_size / 4; ++x) {
         r.green_lo = std::min(r.green_lo, int{pixel(v * 3, x, y)[1]});
@@ -834,7 +924,7 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
                                 << "over " << r.row_metres << " m, where the float32 world "
                                 << "coordinate changes " << r.coordinate_changes << " times");
     out.push_back(r);
-    if (!c.hold) continue;
+    if (!c.hold || !c.shade) continue;
     CHECK(r.compared > k_size * k_size / 4);
     CHECK(r.missing == 0u);
     // The frame the eye crosses into draws what the eye's own did: every lattice, hash and lane is
@@ -872,7 +962,8 @@ void draw_ground_case(gfx::Device& device, const GroundCase& c, Vector<GroundVie
   }
   for (u32 v = 0; v < views; ++v)
     gfx::destroy_buffer(device, vis[v]);
-  for (gfx::BufferResource* b : {&host_color, &host_vis, &params, &detail_buffer, &materials})
+  for (gfx::BufferResource* b :
+       {&host_color, &host_vis, &params, &detail_buffer, &materials, &eye_buffer})
     gfx::destroy_buffer(device, *b);
   frames.destroy();
 }
@@ -1180,6 +1271,100 @@ TEST_CASE("ground detail: 420 km and 10,000 km out the resolve draws the origin'
   CHECK(b.ref_changes > 4u * b.gpu_changes);
   // With it the GPU changes where the reference does, to the pixels where the two round apart.
   CHECK(a.gpu_changes * 10u >= a.ref_changes * 9u);
+  device.destroy();
+}
+
+TEST_CASE(
+    "ground detail: sand placed far out as a mesh instance clamps what its origin twin does") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The case above draws its far sand as world-space vertices under an identity instance and an
+  // absolute view matrix, so its rasterizer still meets world coordinates as floats: 10,000 km out
+  // a vertex steps by a metre, and the points the resolve has to clamp onto their triangle — a
+  // pixel centre the rasterizer gave to the triangle across an edge — are that rounding's. The
+  // renderer draws a mesh as an instance at its 64 m cell and local, from each view's own eye
+  // (ADR-0053), and so does this: the same quad of sand metres from its site, at 420 km, 10,000 km
+  // and 1e8 m (the last straddling a cell's edge: the quad's cell at z = -0.25 and the eyes in the
+  // next), and again at each site's **twin**, the same place in its cell by the origin. Every
+  // operand a pass sees is then the twin's, so each view draws the twin's visibility buffer word
+  // for word and the reference clamps the same points; and the far sites, shaded, are held to the
+  // origin's tolerances like any case.
+  const gfx::GroundDetailDesc numbers = gref::erg_numbers();
+  gfx::GroundDetailParams erg = gfx::ground_detail_block(numbers, Vec2{0.6f, -0.8f}, 7u);
+  gfx::ground_detail_motion(
+      erg, numbers, 0.037, 0.002, 1.0f,
+      (17.0 + 1.0 / 3.0) / static_cast<double>(numbers.flow_turnover),
+      0.01 * static_cast<double>(numbers.flow_share) / static_cast<double>(numbers.flow_turnover));
+  using Site = GroundCase::Site;
+  const Site far_sites[3] = {{-419070.0f, -66051.0f, "420 km out", 0},
+                             {10000000.0f, -2403.71f, "10,000 km out", 0},
+                             {100000000.0f, -0.25f, "1e8 m out, astride a cell's edge", 0}};
+  // Each far site less a whole number of 64 m cells.
+  Site twins[3];
+  for (u32 s = 0; s < 3; ++s) {
+    const auto twin = [](f32 v) {
+      const double cells = std::floor(static_cast<double>(v) / k_world_cell_m);
+      return static_cast<f32>(static_cast<double>(v) - cells * k_world_cell_m);
+    };
+    twins[s] = Site{twin(far_sites[s].x), twin(far_sites[s].z), "its twin by the origin", 0};
+    REQUIRE(static_cast<double>(twins[s].x) ==
+            static_cast<double>(far_sites[s].x) -
+                std::floor(static_cast<double>(far_sites[s].x) / k_world_cell_m) * k_world_cell_m);
+  }
+  CHECK(twins[0].x == 2.0f);
+  CHECK(twins[0].z == 61.0f);
+  CHECK(twins[2].z == 63.75f);
+  const auto make = [&](const char* name, const Site* sites, u32 count, bool instanced,
+                        bool shade) {
+    GroundCase c;
+    c.name = name;
+    c.block = erg;
+    c.millimetre = true;
+    c.instanced = instanced;
+    c.shade = shade;
+    c.site_count = count;
+    for (u32 s = 0; s < count; ++s)
+      c.sites[s] = sites[s];
+    c.shaded[0] = 2;
+    c.ripple[0] = 2;
+    c.share[0] = 2;
+    c.grain[0] = 2;
+    return c;
+  };
+  // The far sites shaded and held to the origin's tolerances, as the renderer draws them; the rest
+  // for their clamps and their visibility alone (the reference's shading is most of a debug
+  // build's time here).
+  Vector<GroundView> far;
+  Vector<GroundView> twin;
+  draw_ground_case(device, make("far out, a mesh instance", far_sites, 3, true, true), far);
+  draw_ground_case(device, make("the twins, a mesh instance", twins, 3, true, false), twin);
+  // For the report: the origin's own site, and the far sites drawn the old way, as world-space
+  // vertices (measured, not held: the frame's case above holds those).
+  const Site origin_site[1] = {{0.0f, 0.0f, "by the origin", 0}};
+  Vector<GroundView> origin;
+  Vector<GroundView> world_space;
+  draw_ground_case(device, make("by the origin, a mesh instance", origin_site, 1, true, false),
+                   origin);
+  GroundCase old = make("far out, world-space vertices", far_sites, 3, false, false);
+  draw_ground_case(device, old, world_space);
+  REQUIRE(far.size() == 9u);
+  REQUIRE(twin.size() == 9u);
+  REQUIRE(origin.size() == 3u);
+  REQUIRE(world_space.size() == 9u);
+  for (u32 v = 0; v < 9; ++v) {
+    MESSAGE(far[v].name << ": " << far[v].clamped << " points clamped onto their triangle as a "
+                        << "mesh instance, " << twin[v].clamped << " at its twin by the origin, "
+                        << origin[v % 3].clamped << " at the origin's own site, "
+                        << world_space[v].clamped << " as world-space vertices (of "
+                        << world_space[v].compared << " pixels compared there, "
+                        << world_space[v].missing << " missing); " << far[v].compared
+                        << " pixels compared");
+    CHECK(far[v].clamped == twin[v].clamped);
+    CHECK(far[v].compared == twin[v].compared);
+    CHECK(far[v].visibility_hash == twin[v].visibility_hash);
+    CHECK(far[v].missing == 0u);
+  }
   device.destroy();
 }
 
