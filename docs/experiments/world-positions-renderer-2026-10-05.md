@@ -152,7 +152,16 @@ The two scenes without a path draw the same bytes, so nothing but the camera mov
 | GPU total, median / p95 / p99 ms | 0.726 / 1.055 / 1.214 | 0.730 / 1.178 / 1.453 | 0.693 / 0.992 / 1.089 | 0.693 / 1.043 / 1.178 |
 | others' CPU start → end; GPU busy at end | 14% → 19%; 5% | 9% → 14%; 9% | 16% → 16%; 47% | 4% → 10%; 97% |
 
-The counts that are a function of the camera moved in under 3% of frames, by a pair or a few, as a 0.2 mm move of the eye moves a cluster across a LOD or frustum boundary now and then; no LOD level changed. The change adds a few dozen f64 operations a frame on the CPU and nothing on the GPU, and the medians agree to 0.6%. The tails are higher after, in this run and in a second one taken while a Linux container build held the CPU (`rt` 0.730 / 1.144 / 1.329 ms); the before and after runs are two hours apart on a shared GPU, so this does not say whether the tails are the change's.
+The counts that are a function of the camera moved in under 3% of frames, by a pair or a few, as a 0.2 mm move of the eye moves a cluster across a LOD or frustum boundary now and then; no LOD level changed. The change adds a few dozen f64 operations a frame on the CPU and nothing on the GPU, and the medians agree to 0.6%. The tails are higher after, in this run and in a second one taken while a Linux container build held the CPU (`rt` 0.730 / 1.144 / 1.329 ms); the before and after runs are two hours apart on a shared GPU, so an A/B settled it: the two builds alternately, `rt`, each under the lock with `--wait-quiet 60` (others' CPU 9–18%, the GPU 8–97% busy at a run's end):
+
+| Run | GPU total median / p95 / p99, ms |
+|---|---|
+| before, 1st | 0.725 / 1.221 / 1.516 |
+| after, 1st | 0.723 / 1.211 / 1.531 |
+| before, 2nd | 0.724 / 1.232 / 1.614 |
+| after, 2nd | 0.727 / 1.235 / 1.634 |
+
+Medians within 0.4%, p95 within 1%, p99 within 1.3%, either way round: the change costs nothing measurable, and the tails of the first runs were the hour's.
 
 ### The far-out sand as a mesh instance
 
