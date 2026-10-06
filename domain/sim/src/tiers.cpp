@@ -11,12 +11,12 @@ void ObserverSet::clear() noexcept {
   weights_.clear();
 }
 
-void ObserverSet::add(Vec3 observer_position, f32 observer_weight) {
+void ObserverSet::add(WorldPos observer_position, f32 observer_weight) {
   positions_.push_back(observer_position);
   weights_.push_back(observer_weight > 0.0f ? observer_weight : 1.0f);
 }
 
-f32 TierAssignment::score(Vec3 position, f32 importance, const ObserverSet& observers,
+f32 TierAssignment::score(WorldPos position, f32 importance, const ObserverSet& observers,
                           const TierParams& params) noexcept {
   const u32 count = observers.size();
   if (count == 0) return std::numeric_limits<f32>::max();
@@ -25,7 +25,15 @@ f32 TierAssignment::score(Vec3 position, f32 importance, const ObserverSet& obse
   f32 best = std::numeric_limits<f32>::max();
   for (u32 i = 0; i < count; ++i) {
     const f32 weight = observers.weight(i);
-    const f32 value = distance(position, observers.position(i)) / (weight * scale);
+    // The displacement and its length in f64, then the length as a float32: the one narrowing on
+    // this path (tiers.h), so the distance a score is made of is within half a float step of the
+    // true one wherever the two are. Narrowing the displacement first and taking its length in
+    // float32 would round each axis and then the sum, two to three times that. (Measured
+    // 2026-10-06, docs/subsystems/sim.md "Positions are f64": this costs the 100,000-entity pass a
+    // tenth over the float32 one, and taking one root per entity instead of one per observer saved
+    // none of it.)
+    const f32 metres = static_cast<f32>(length(position - observers.position(i)));
+    const f32 value = metres / (weight * scale);
     if (value < best) best = value;
   }
   return best;
@@ -82,7 +90,7 @@ TierStats TierAssignment::assign_tiers(const TierInput& entities, const Observer
   bands_.resize(count);
   f32* scores = scores_.data();
   u8* bands = bands_.data();
-  const Vec3* positions = entities.positions.data();
+  const WorldPos* positions = entities.positions.data();
   const f32* importance = entities.importance.data();
 
   // Scoring is a pure function of the inputs, entity by entity, so splitting it over workers

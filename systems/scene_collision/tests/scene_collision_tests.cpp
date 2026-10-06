@@ -184,7 +184,7 @@ world::RingParams ring(u32 budget = 0) {
 
 sim::ObserverSet at(f32 x, f32 z) {
   sim::ObserverSet set;
-  set.add(Vec3{x, 0.0f, z}, 1.0f);
+  set.add(WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}, 1.0f);
   return set;
 }
 
@@ -343,12 +343,10 @@ constexpr WorldPos k_far_sites[] = {
 };
 constexpr const char* k_far_names[] = {"419 km", "10,000 km", "1e8 m"};
 
-// ADR-0053 seam: sim takes WorldPos after the merge. The collision ring's observer is a float32
-// position today; the sites and the offsets below are whole multiples of 8 m, which a float holds
-// exactly to 1e8 m.
+// The collision ring's observer, where the site is: `sim::ObserverSet` takes a `WorldPos`.
 sim::ObserverSet observer_at(WorldPos p) {
   sim::ObserverSet set;
-  set.add(relative(p, WorldPos::origin()), 1.0f);
+  set.add(p, 1.0f);
   return set;
 }
 

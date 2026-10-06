@@ -506,7 +506,7 @@ ReconcileResult SimScheduler::reconcile_tile(const ReconcileParams& params, cons
   changes_.clear();
   if (!records_.empty()) {
     TierInput input;
-    input.positions = std::span<const Vec3>(positions_.data(), positions_.size());
+    input.positions = std::span<const WorldPos>(positions_.data(), positions_.size());
     input.importance = std::span<const f32>(importance_.data(), importance_.size());
     input.tiers = std::span<u8>(tiers_buffer_.data(), tiers_buffer_.size());
     tiers_.assign_tiers(input, observers, tier_params, changes_);

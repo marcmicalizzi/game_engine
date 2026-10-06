@@ -29,6 +29,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/sim/tiers.h>
 
 #include <span>
@@ -63,9 +64,14 @@ constexpr u64 store_tile(TileCoord tile) noexcept {
   return (u64{static_cast<u32>(tile.x)} << 32) | u64{static_cast<u32>(tile.z)};
 }
 
-// The tile a world position is in, and a tile's centre on the ground plane (y = 0).
-TileCoord tile_at(Vec3 position, f32 tile_size) noexcept;
-Vec3 tile_center(TileCoord tile, f32 tile_size) noexcept;
+// The tile a world position is in, and a tile's centre on the ground plane (y = 0), both in f64
+// (ADR-0053): `floor(x / size)` of the f64 coordinate, never of a float32 metre, which at 10,000 km
+// steps by a metre and at 1e8 m by eight, and so puts a point by a tile's edge in the wrong tile.
+// The division is exact for a power-of-two size (32 m, 64 m); for another size it rounds once, at
+// the size of the quotient, and a point within that rounding of an edge may land on either side —
+// the same side on every machine, since IEEE division is.
+TileCoord tile_at(WorldPos position, f32 tile_size) noexcept;
+WorldPos tile_center(TileCoord tile, f32 tile_size) noexcept;
 
 // Rings in use are at most one fewer than the simulation's tiers: the last tier is "inactive".
 inline constexpr u32 k_max_rings = sim::k_max_tiers - 1;
@@ -171,7 +177,7 @@ class TileRing {
   const RingStats& stats() const noexcept { return stats_; }
 
  private:
-  void add_candidates(Vec3 observer, f32 weight);
+  void add_candidates(WorldPos observer, f32 weight);
 
   RingParams params_;
   sim::TierParams tiers_params_;
@@ -184,7 +190,7 @@ class TileRing {
   // One update's scratch, reused.
   Vector<u64> candidates_;
   Vector<u64> tracked_;
-  Vector<Vec3> centers_;
+  Vector<WorldPos> centers_;
   Vector<f32> importance_;
   Vector<u8> tier_;
   Vector<sim::TierChange> changes_;

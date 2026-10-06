@@ -353,7 +353,13 @@ TEST_CASE("doc: layers save to canonical JSON and load back identically") {
       "      \"type\": \"engine.content.AssetProvenance\"\n"
       "    }\n"
       "  ],\n"
-      "  \"role\": \"Base\"\n"
+      "  \"role\": \"Base\",\n"
+      "  \"types\": [\n"
+      "    {\n"
+      "      \"name\": \"engine.content.AssetProvenance\",\n"
+      "      \"version\": 1\n"
+      "    }\n"
+      "  ]\n"
       "}";
   CHECK(text == expected);
 

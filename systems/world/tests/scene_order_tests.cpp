@@ -156,7 +156,7 @@ RingParams one_tile() {
 
 sim::ObserverSet at(f32 x, f32 z) {
   sim::ObserverSet set;
-  set.add(Vec3{x, 0.0f, z}, 1.0f);
+  set.add(WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}, 1.0f);
   return set;
 }
 

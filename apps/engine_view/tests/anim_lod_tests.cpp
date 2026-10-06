@@ -98,25 +98,86 @@ TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16
   REQUIRE(frustum_contains_sphere(left, side - eye, 0.0f));
   REQUIRE_FALSE(frustum_contains_sphere(centre, side - eye, 0.0f));
 
-  const Vec3 positions[3] = {ahead, side, behind};
+  const WorldPos positions[3] = {absolute(WorldPos::origin(), ahead),
+                                 absolute(WorldPos::origin(), side),
+                                 absolute(WorldPos::origin(), behind)};
   const f32 radii[3] = {0.0f, 0.0f, 0.0f};
   f32 importance[3] = {};
-  view::view_importance(surround, relative(camera.position, WorldPos::origin()),
-                        std::span<const Vec3>(positions, 3), std::span<const f32>(radii, 3),
-                        std::span<f32>(importance, 3));
+  view::view_importance(surround, camera.position, std::span<const WorldPos>(positions, 3),
+                        std::span<const f32>(radii, 3), std::span<f32>(importance, 3));
   CHECK(importance[0] == doctest::Approx(1.0f));                          // the centre sees it
   CHECK(importance[1] == doctest::Approx(0.25f));                         // only a side monitor
   CHECK(importance[2] == doctest::Approx(view::k_offscreen_importance));  // no view at all
 
   // The radius is the conservative half: an instance whose centre is outside a frustum but whose
   // padded bounds reach into it is on screen, which is the direction a skinned limb needs.
-  const Vec3 outside[1] = {behind};
+  const WorldPos outside[1] = {absolute(WorldPos::origin(), behind)};
   const f32 huge[1] = {60.0f};
   f32 padded[1] = {};
-  view::view_importance(surround, relative(camera.position, WorldPos::origin()),
-                        std::span<const Vec3>(outside, 1), std::span<const f32>(huge, 1),
-                        std::span<f32>(padded, 1));
+  view::view_importance(surround, camera.position, std::span<const WorldPos>(outside, 1),
+                        std::span<const f32>(huge, 1), std::span<f32>(padded, 1));
   CHECK(padded[0] > view::k_offscreen_importance);
+}
+
+TEST_CASE(
+    "anim lod: far from the origin, the same crowd is worth the same and takes the same tiers") {
+  // ADR-0053's far sites, whole metres. The camera and a crowd round it are moved together: the
+  // views are built eye-relative, the importance tests each instance from the eye in f64 and the
+  // tiers score it in f64, so every number must be the origin's. Until 2026-10-06 both took float32
+  // world positions (`instance_world_matrix`, `observer_position`), which steps by a metre at
+  // 10,000 km: a character two metres off a band moved across it with the float's grid.
+  const DVec3 sites[] = {
+      DVec3{419072.0, 0.0, -419072.0},
+      DVec3{10000000.0, 0.0, 10000000.0},
+      DVec3{100000000.0, 0.0, -100000000.0},
+  };
+  constexpr u32 k_count = 96;
+  const auto run = [&](const DVec3& site, Vector<f32>& importance, Vector<u8>& tiers) {
+    renderer::Camera camera = looking_down_z(10.0f);
+    camera.position += site;
+    camera.target += site;
+    const renderer::ViewSet views =
+        make_views(renderer::ViewLayout::Surround3, 4.0f, 1920, 480, camera);
+    Vector<WorldPos> positions;
+    Vector<f32> radii(k_count, 0.75f);
+    for (u32 i = 0; i < k_count; ++i) {
+      // A fan in front of the camera and to its sides, 1 m to 140 m, in 1024ths of a metre.
+      const f64 x = static_cast<f64>(static_cast<i32>(i % 12) - 6) * 3.25;
+      const f64 z = -static_cast<f64>(i) * 1.4609375;
+      positions.push_back(WorldPos::origin() + site + DVec3{x, 0.5, z});
+    }
+    importance.assign(k_count, 0.0f);
+    view::view_importance(views, camera.position,
+                          std::span<const WorldPos>(positions.data(), positions.size()),
+                          std::span<const f32>(radii.data(), radii.size()),
+                          std::span<f32>(importance.data(), importance.size()));
+    sim::ObserverSet observers;
+    view::build_observers(views, camera, observers);
+    tiers.assign(k_count, u8{0});
+    sim::TierInput input;
+    input.positions = {positions.data(), positions.size()};
+    input.importance = {importance.data(), importance.size()};
+    input.tiers = {tiers.data(), tiers.size()};
+    sim::TierAssignment assignment;
+    Vector<sim::TierChange> changes;
+    for (u32 tick = 0; tick < 8; ++tick)
+      assignment.assign_tiers(input, observers, animation::tier_params(), changes);
+  };
+  Vector<f32> importance;
+  Vector<u8> tiers;
+  run(DVec3{}, importance, tiers);
+  u32 coarsened = 0;
+  for (const u8 t : tiers)
+    coarsened += t > 0 ? 1u : 0u;
+  REQUIRE(coarsened > 0);  // the crowd spans the bands, so the comparison means something
+  for (const DVec3& site : sites) {
+    CAPTURE(site.x);
+    Vector<f32> far_importance;
+    Vector<u8> far_tiers;
+    run(site, far_importance, far_tiers);
+    CHECK(far_importance == importance);
+    CHECK(far_tiers == tiers);
+  }
 }
 
 TEST_CASE("anim lod: the scale multiplies the capability's bands and 0 coarsens everything") {
@@ -149,7 +210,7 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
   const renderer::ViewSet views = make_views(renderer::ViewLayout::Single, 1.0f, 1280, 720, camera);
   const sim::TierParams params = view::scaled_tier_params(animation::tier_params(), 1.0f);
 
-  Vector<Vec3> positions(k_instances);
+  Vector<WorldPos> positions(k_instances);
   Vector<f32> radii(k_instances, 0.5f);
   Vector<f32> importance(k_instances, 1.0f);
   Vector<u8> tiers(k_instances, u8{0});
@@ -157,8 +218,7 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
   Vector<sim::TierChange> changes;
   sim::TierAssignment assignment;
 
-  // The camera's eye in float32, by the origin (ADR-0053: the camera's position is f64).
-  const Vec3 eye = relative(camera.position, WorldPos::origin());
+  const WorldPos eye = camera.position;  // f64, as the camera holds it (ADR-0053)
   u32 worst_tick = 0;
   for (u32 tick = 0; tick < k_ticks; ++tick) {
     // A slow sweep towards the camera and away again: every instance spends several ticks within a
@@ -167,9 +227,9 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
     const f32 depth = 200.0f * (1.0f - std::fabs(2.0f * phase - 1.0f));
     for (u32 i = 0; i < k_instances; ++i) {
       const f32 spread = static_cast<f32>(i) * 0.05f;
-      positions[i] = Vec3{0.0f, 0.0f, eye.z - depth - spread};
+      positions[i] = WorldPos{0.0, 0.0, eye.z - static_cast<f64>(depth) - static_cast<f64>(spread)};
     }
-    view::view_importance(views, eye, std::span<const Vec3>(positions.data(), positions.size()),
+    view::view_importance(views, eye, std::span<const WorldPos>(positions.data(), positions.size()),
                           std::span<const f32>(radii.data(), radii.size()),
                           std::span<f32>(importance.data(), importance.size()));
     sim::TierInput input;

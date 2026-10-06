@@ -5,15 +5,17 @@
 
 namespace engine::world {
 
-TileCoord tile_at(Vec3 position, f32 tile_size) noexcept {
+TileCoord tile_at(WorldPos position, f32 tile_size) noexcept {
   const f64 size = static_cast<f64>(tile_size);
-  return TileCoord{static_cast<i32>(std::floor(static_cast<f64>(position.x) / size)),
-                   static_cast<i32>(std::floor(static_cast<f64>(position.z) / size))};
+  return TileCoord{static_cast<i32>(std::floor(position.x / size)),
+                   static_cast<i32>(std::floor(position.z / size))};
 }
 
-Vec3 tile_center(TileCoord tile, f32 tile_size) noexcept {
-  return Vec3{(static_cast<f32>(tile.x) + 0.5f) * tile_size, 0.0f,
-              (static_cast<f32>(tile.z) + 0.5f) * tile_size};
+WorldPos tile_center(TileCoord tile, f32 tile_size) noexcept {
+  // Exact in f64 for any tile an i32 names: an integer and a half, times the size.
+  const f64 size = static_cast<f64>(tile_size);
+  return WorldPos{(static_cast<f64>(tile.x) + 0.5) * size, 0.0,
+                  (static_cast<f64>(tile.z) + 0.5) * size};
 }
 
 bool valid_ring_params(const RingParams& params, const char** error) noexcept {
@@ -76,23 +78,27 @@ f32 TileRing::score_of(TileCoord tile) const noexcept {
                                     tiers_params_);
 }
 
-void TileRing::add_candidates(Vec3 observer, f32 weight) {
+void TileRing::add_candidates(WorldPos observer, f32 weight) {
   // An observer of weight w reaches w times as far (the score divides the distance by it).
   const f32 reach = reach_tiles_ * (weight > 0.0f ? weight : 0.0f);
   if (!(reach > 0.0f)) return;
-  const f32 size = params_.tile_size;
-  const f32 ox = observer.x / size;
-  const f32 oz = observer.z / size;
-  const i32 x0 = static_cast<i32>(std::floor(ox - reach));
-  const i32 x1 = static_cast<i32>(std::floor(ox + reach));
-  const i32 z0 = static_cast<i32>(std::floor(oz - reach));
-  const i32 z1 = static_cast<i32>(std::floor(oz + reach));
+  // The observer's place in the grid in f64, in tiles (ADR-0053): never a float32 metre, which
+  // 10,000 km out steps by a metre and moved the window's edge by it. Each centre's offset from
+  // the observer is a few tiles, which a float holds to a part in 2^24.
+  const f64 size = static_cast<f64>(params_.tile_size);
+  const f64 ox = observer.x / size;
+  const f64 oz = observer.z / size;
+  const f64 r = static_cast<f64>(reach);
+  const i32 x0 = static_cast<i32>(std::floor(ox - r));
+  const i32 x1 = static_cast<i32>(std::floor(ox + r));
+  const i32 z0 = static_cast<i32>(std::floor(oz - r));
+  const i32 z1 = static_cast<i32>(std::floor(oz + r));
   const f32 reach2 = reach * reach;
   // x, then z: the window comes out in tile order, so each observer's run is already sorted.
   for (i32 x = x0; x <= x1; ++x) {
-    const f32 dx = static_cast<f32>(x) + 0.5f - ox;
+    const f32 dx = static_cast<f32>(static_cast<f64>(x) + 0.5 - ox);
     for (i32 z = z0; z <= z1; ++z) {
-      const f32 dz = static_cast<f32>(z) + 0.5f - oz;
+      const f32 dz = static_cast<f32>(static_cast<f64>(z) + 0.5 - oz);
       if (dx * dx + dz * dz <= reach2) candidates_.push_back(tile_key(TileCoord{x, z}));
     }
   }
@@ -107,8 +113,8 @@ u32 TileRing::update(const sim::ObserverSet& observers, Vector<TileEvent>& event
   ground_.clear();
   candidates_.clear();
   for (u32 o = 0; o < observers.size(); ++o) {
-    const Vec3 p = observers.position(o);
-    ground_.add(Vec3{p.x, 0.0f, p.z}, observers.weight(o));
+    const WorldPos p = observers.position(o);
+    ground_.add(WorldPos{p.x, 0.0, p.z}, observers.weight(o));
     add_candidates(p, observers.weight(o));
   }
   std::sort(candidates_.begin(), candidates_.end());
@@ -152,7 +158,7 @@ u32 TileRing::update(const sim::ObserverSet& observers, Vector<TileEvent>& event
   }
   changes_.clear();
   sim::TierInput input;
-  input.positions = std::span<const Vec3>(centers_.data(), n);
+  input.positions = std::span<const WorldPos>(centers_.data(), n);
   input.importance = std::span<const f32>(importance_.data(), n);
   input.tiers = std::span<u8>(tier_.data(), n);
   const sim::TierStats tier_stats = tiers_.assign_tiers(input, ground_, params, changes_);
@@ -214,8 +220,8 @@ bool TileRing::restore(std::span<const u64> keys, std::span<const u8> rings,
   stats_ = RingStats{};
   ground_.clear();
   for (u32 o = 0; o < observers.size(); ++o) {
-    const Vec3 p = observers.position(o);
-    ground_.add(Vec3{p.x, 0.0f, p.z}, observers.weight(o));
+    const WorldPos p = observers.position(o);
+    ground_.add(WorldPos{p.x, 0.0, p.z}, observers.weight(o));
   }
   for (usize i = 0; i < keys.size(); ++i) {
     active_keys_.push_back(keys[i]);

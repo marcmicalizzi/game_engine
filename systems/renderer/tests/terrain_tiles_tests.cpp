@@ -26,6 +26,12 @@ using namespace engine::renderer;
 
 namespace {
 
+// The camera on the ground plane at float32 metres by the origin, exactly widened: what these tests
+// hand the tile set and the first-fill rule (`systems/world`'s ring does the same in f64).
+WorldPos ground_at(f32 x, f32 z) noexcept {
+  return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)};
+}
+
 // A ground of the test's own as a tile source: gentle waves, a function of the lattice point.
 f32 wave_at(f64 x, f64 z) noexcept {
   return static_cast<f32>(3.0 * std::sin(0.11 * x) * std::cos(0.07 * z) + 0.02 * x);
@@ -181,7 +187,7 @@ TEST_CASE("world tiles: the first fill is every tile within the outer radius, ba
   for (const Vec2 camera :
        {Vec2{0.0f, 0.0f}, Vec2{3.0f, -5.5f}, Vec2{-200.25f, 71.0f}, Vec2{50'000.0f, -3.0f}}) {
     Vector<TerrainTile> tiles;
-    terrain_tiles_round(t, camera.x, camera.y, tiles);
+    terrain_tiles_round(t, ground_at(camera.x, camera.y), tiles);
     // Brute force over a wide square: a tile's centre strictly inside a ring's radius is in the
     // first such ring, and anything past the outer one is not held.
     u32 expected = 0;
@@ -335,16 +341,16 @@ TEST_CASE("world tiles: a rebuild of what changed draws what a whole build draws
   const TerrainTilesDesc t = small_tiles();
   TerrainTileSet set;
   std::string error;
-  REQUIRE_MESSAGE(set.build(grid, t, k_waves, 1.0f, 2.0f, nullptr, &error), error);
+  REQUIRE_MESSAGE(set.build(grid, t, k_waves, ground_at(1.0f, 2.0f), nullptr, &error), error);
   Vector<TerrainTile> held;
-  terrain_tiles_round(t, 1.0f, 2.0f, held);
+  terrain_tiles_round(t, ground_at(1.0f, 2.0f), held);
   u32 most_built = 0;
   u32 rebuilds = 0;
   for (u32 step = 1; step <= 90; ++step) {
     const f32 x = 1.0f + static_cast<f32>(step) * t.tile_size / 3.0f;
     const f32 z = 2.0f + 40.0f * std::sin(static_cast<f32>(step) * 0.05f);
     Vector<TerrainTile> next;
-    terrain_tiles_round(t, x, z, next);
+    terrain_tiles_round(t, ground_at(x, z), next);
     // The world's events: what entered or changed ring, and what left.
     Vector<TerrainTile> changes;
     for (const TerrainTile& n : next) {
@@ -363,11 +369,11 @@ TEST_CASE("world tiles: a rebuild of what changed draws what a whole build draws
     const bool changed =
         set.change_tiles(std::span<const TerrainTile>(changes.data(), changes.size()));
     CHECK(changed == !changes.empty());
-    const TerrainRingLayout target = set.next_layout(x, z, set.layout());
+    const TerrainRingLayout target = set.next_layout(ground_at(x, z), set.layout());
     if (target == set.layout()) continue;
     set.prepare(target);
     u32 moved = 0;
-    REQUIRE_MESSAGE(set.update(x, z, 0.0, target, {}, nullptr, moved, &error), error);
+    REQUIRE_MESSAGE(set.update(ground_at(x, z), 0.0, target, {}, nullptr, moved, &error), error);
     CHECK(set.changed_only());
     ++rebuilds;
     most_built = std::max(most_built, set.last_built());
@@ -379,7 +385,7 @@ TEST_CASE("world tiles: a rebuild of what changed draws what a whole build draws
       }
     }
     TerrainTileSet whole;
-    REQUIRE_MESSAGE(whole.build(grid, t, k_waves, x, z, nullptr, &error), error);
+    REQUIRE_MESSAGE(whole.build(grid, t, k_waves, ground_at(x, z), nullptr, &error), error);
     u32 drawn = 0;
     u32 differ = 0;
     for (u32 l = 1; l < set.level_count(); ++l) {
@@ -409,7 +415,7 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   const TerrainTilesDesc t = small_tiles();
   TerrainTileSet set;
   std::string error;
-  REQUIRE_MESSAGE(set.build(grid, t, k_waves, 1.0f, 2.0f, nullptr, &error), error);
+  REQUIRE_MESSAGE(set.build(grid, t, k_waves, ground_at(1.0f, 2.0f), nullptr, &error), error);
   REQUIRE(set.valid());
   CHECK(set.level_count() == 4);
   CHECK_FALSE(set.grid_drawn());
@@ -419,7 +425,7 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   CHECK(set.lattice(3).spacing_mm == 500);
   // The first layout is the first-fill rule's, every tile drawn at its ring's level.
   Vector<TerrainTile> first;
-  terrain_tiles_round(t, 1.0f, 2.0f, first);
+  terrain_tiles_round(t, ground_at(1.0f, 2.0f), first);
   u32 drawn = 0;
   for (u32 l = 1; l < 4; ++l)
     drawn += set.chunks(l).size();
@@ -450,7 +456,7 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   // The same set handed over again changes nothing and asks for nothing.
   const TerrainRingLayout shown = set.layout();
   CHECK_FALSE(set.set_tiles(std::span<const TerrainTile>(first.data(), first.size())));
-  CHECK(set.next_layout(1.0f, 2.0f, shown) == shown);
+  CHECK(set.next_layout(ground_at(1.0f, 2.0f), shown) == shown);
 
   // One tile moves out a ring (its level changes) — it and every tile whose mesh depends on it are
   // rebuilt, and nothing else.
@@ -462,11 +468,11 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   REQUIRE(moved_tile != ~0u);
   next[moved_tile].ring = 2;
   CHECK(set.set_tiles(std::span<const TerrainTile>(next.data(), next.size())));
-  const TerrainRingLayout target = set.next_layout(1.0f, 2.0f, shown);
+  const TerrainRingLayout target = set.next_layout(ground_at(1.0f, 2.0f), shown);
   CHECK(target.generation == shown.generation + 1);
   set.prepare(target);
   u32 moved = 0;
-  REQUIRE(set.update(1.0f, 2.0f, 0.0, target, {}, nullptr, moved, &error));
+  REQUIRE(set.update(ground_at(1.0f, 2.0f), 0.0, target, {}, nullptr, moved, &error));
   CHECK(set.layout() == target);
   CHECK((moved & (1u << set.level_of_ring(1))) != 0);
   CHECK((moved & (1u << set.level_of_ring(2))) != 0);
@@ -479,14 +485,15 @@ TEST_CASE("world tiles: a set's keys, rebuilds, windows and what it withholds") 
   // the window moves to the camera when it has gone past its margin.
   next.push_back(TerrainTile{400, 400, 2});
   CHECK(set.set_tiles(std::span<const TerrainTile>(next.data(), next.size())));
-  const TerrainRingLayout far = set.next_layout(1.0f, 2.0f, set.layout());
+  const TerrainRingLayout far = set.next_layout(ground_at(1.0f, 2.0f), set.layout());
   set.prepare(far);
-  REQUIRE(set.update(1.0f, 2.0f, 0.0, far, {}, nullptr, moved, &error));
+  REQUIRE(set.update(ground_at(1.0f, 2.0f), 0.0, far, {}, nullptr, moved, &error));
   CHECK(set.withheld() >= 1);
   u32 level = 0;
   u32 index = 0;
   CHECK_FALSE(set.find(400, 400, level, index));
-  const TerrainRingLayout moved_on = set.next_layout(1.0f + 5.0f * 8.0f, 2.0f, set.layout());
+  const TerrainRingLayout moved_on =
+      set.next_layout(ground_at(1.0f + 5.0f * 8.0f, 2.0f), set.layout());
   CHECK(moved_on.cx[3] != set.layout().cx[3]);
 }
 
@@ -625,7 +632,7 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
   }
 
   TerrainTileSet set;
-  REQUIRE_MESSAGE(set.build(grid, t, k_waves, 1.0f, 2.0f, nullptr, &error), error);
+  REQUIRE_MESSAGE(set.build(grid, t, k_waves, ground_at(1.0f, 2.0f), nullptr, &error), error);
   CHECK(set.level_count() == 7);
   CHECK(set.far_count() == 3);
   CHECK(set.is_far(1));
@@ -658,14 +665,14 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
   for (u32 k = 0; k < 110; ++k) {
     x += 2.7f;
     z += 1.1f;
-    terrain_tiles_round(t, x, z, round);
+    terrain_tiles_round(t, ground_at(x, z), round);
     set.set_tiles(std::span<const TerrainTile>(round.data(), round.size()));
-    const TerrainRingLayout target = set.next_layout(x, z, set.layout());
+    const TerrainRingLayout target = set.next_layout(ground_at(x, z), set.layout());
     for (u32 l = 1; l <= 3; ++l)
       far_moves += target.cx[l] != set.layout().cx[l] || target.cz[l] != set.layout().cz[l];
     set.prepare(target);
     u32 moved = 0;
-    REQUIRE_MESSAGE(set.update(x, z, 0.0, target, {}, nullptr, moved, &error), error);
+    REQUIRE_MESSAGE(set.update(ground_at(x, z), 0.0, target, {}, nullptr, moved, &error), error);
     if (k % 11 == 10) check_tiling(set, "in flight");
   }
   CHECK(far_moves >= 4);
@@ -674,6 +681,7 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
 
   // **Fifty kilometres out**: the same arithmetic, the same seams.
   TerrainTileSet out;
-  REQUIRE_MESSAGE(out.build(grid, t, k_waves, 50'000.0f, -50'000.0f, nullptr, &error), error);
+  REQUIRE_MESSAGE(out.build(grid, t, k_waves, ground_at(50'000.0f, -50'000.0f), nullptr, &error),
+                  error);
   check_tiling(out, "50 km out");
 }

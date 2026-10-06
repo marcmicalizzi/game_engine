@@ -29,6 +29,7 @@
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/sim/scheduler.h>
 #include <foundation/store/database.h>
 #include <foundation/store/event_log.h>
@@ -43,7 +44,7 @@ namespace engine::world {
 struct TileRow {
   Id128 record;
   std::string type;
-  Vec3 position{};
+  WorldPos position{};  // where the document had it, f64 (ADR-0053)
   f32 importance = 1.0f;
 };
 

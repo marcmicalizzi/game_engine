@@ -225,7 +225,7 @@ class RuntimeWorld {
     // What the ring was made with, for a save.
     u32 simulated = 0;
     bool keep_store = false;
-    Vector<Vec3> positions;
+    Vector<WorldPos> positions;  // the observers' places, f64 (ADR-0053)
     Vector<Vec3> velocities;
     Vector<f32> weights;
     // The observer an input log steers, when a call named one.
@@ -781,7 +781,9 @@ void RuntimeWorld::advance_observers() {
   const Vec3 input = player.bound() ? player.step(scheduler_.tick().value) : Vec3{};
   for (u32 i = 0; i < streamed_->positions.size(); ++i) {
     const Vec3 velocity = i == steered ? input : streamed_->velocities[i];
-    streamed_->positions[i] = streamed_->positions[i] + velocity * seconds;
+    // In f64 from the operands up, as `kinematics::integrate` moves a cart (ADR-0053): a float32
+    // sum here left an observer walking at 1.5 m/s standing still 420 km out.
+    streamed_->positions[i] += DVec3{velocity} * static_cast<f64>(seconds);
   }
 }
 

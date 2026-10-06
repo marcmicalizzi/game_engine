@@ -32,6 +32,7 @@
 #include <core/ids/id128.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <core/time/time.h>
 #include <domain/sim/tiers.h>
 #include <domain/sim/timing_wheel.h>
@@ -236,7 +237,8 @@ struct RecordSource;
 struct EntityRecord {
   Id128 entity;
   u64 seed = 0;
-  Vec3 position;
+  // Where the record is in the world, f64 (ADR-0053): what the tier pass scores it from.
+  WorldPos position;
   f32 importance = 1.0f;
   u32 kind = 0;
   u8 tier = 3;
@@ -450,7 +452,7 @@ class SimScheduler {
   mutable Vector<Invocation> invocations_;
   mutable Vector<jobs::Job> jobs_buffer_;
   Vector<EntityRecord> records_;
-  Vector<Vec3> positions_;
+  Vector<WorldPos> positions_;
   Vector<f32> importance_;
   Vector<u8> tiers_buffer_;
   Vector<EntityHandle> handles_;

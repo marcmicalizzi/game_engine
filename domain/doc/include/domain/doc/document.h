@@ -449,6 +449,21 @@ class Transaction {
   bool finished_ = false;
 };
 
+// --- record type versions (doc.md, "A layer says which versions it holds") --------------------
+
+// Fills `file.types` with the types its defining records are of, at this build's versions, in name
+// order and once each: a function of the file's records and this build, so a tile's bytes stay a
+// function of the records it holds. Types the schema registry does not have are left out — nothing
+// here can say what version they are. An override-only record names no type and adds none: the
+// layer that defines its object names it, and a document loads whole or not at all.
+// `Layer::to_file` calls it.
+void stamp_record_types(LayerFile& file);
+// False, with `why`, when `file` names a record type this build has at an older version than the
+// file was written at: its fields may not be the ones this build would read them as (a `worldpos`
+// read as a float32 was the case that made this). A type this build does not have, an older
+// version, and a file with no table (written before LayerFile version 2) all read as before.
+bool check_record_types(const LayerFile& file, std::string& why);
+
 // --- structural diff ------------------------------------------------------------------------
 
 // One property's change between two layers: the value it takes in `to`, or its removal.

@@ -60,11 +60,6 @@ bool read_world_position(const JsonValue* value, WorldPos& out) {
   return true;
 }
 
-// The tier pass's input: `domain/sim`'s `TierInput` and `ObserverSet` hold float32 world positions
-// until they take `WorldPos` (stage 2 of the ADR-0053 change, docs/subsystems/npc.md). The one
-// place the capability narrows an absolute position, kept here so that change is one line.
-Vec3 tier_position(WorldPos p) noexcept { return relative(p, WorldPos::origin()); }
-
 PlaceRole role_of(const JsonValue* value) {
   std::string_view text;
   if (value == nullptr || !value->get_string(text)) return PlaceRole::Home;
@@ -538,9 +533,9 @@ void NpcSystem::lod_tick(sim::SystemContext& context, sim::Batch /*batch*/) {
   const i64 now = context.time.us;
   self->scored_.clear();
   for (u32 i = 0; i < self->ids_.size(); ++i)
-    self->scored_.push_back(tier_position(self->position_at(i, now)));
+    self->scored_.push_back(self->position_at(i, now));
   sim::TierInput input;
-  input.positions = std::span<const Vec3>(self->scored_.data(), self->scored_.size());
+  input.positions = std::span<const WorldPos>(self->scored_.data(), self->scored_.size());
   input.importance = std::span<const f32>(self->importance_.data(), self->importance_.size());
   input.tiers = std::span<u8>(self->tier_.data(), self->tier_.size());
   // `assign_tiers` appends: a list not cleared is every change ever made, applied again each pass.
@@ -606,7 +601,7 @@ u64 NpcSystem::bytes_held() const noexcept {
   bytes += u64{points_.capacity()} * sizeof(RoutinePoint);
   bytes += u64{timers_.capacity()} * sizeof(sim::TimerHandle);
   bytes += u64{drawn_.capacity()} * sizeof(WorldPos);
-  bytes += u64{scored_.capacity()} * sizeof(Vec3);
+  bytes += u64{scored_.capacity()} * sizeof(WorldPos);
   bytes += u64{importance_.capacity()} * sizeof(f32);
   bytes += u64{tier_.capacity()};
   // The handle index: a key, a value and a bucket per entry, at its capacity.

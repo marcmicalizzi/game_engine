@@ -14,10 +14,11 @@ using namespace engine;
 
 namespace {
 
-Vec3 path_at(u32 t) {
+WorldPos path_at(u32 t) {
   // 1.5 m a frame along a gentle curve: E35's flythrough moves about that fast.
   const f32 s = static_cast<f32>(t);
-  return Vec3{s * 1.5f - 1500.0f, 10.0f, 200.0f * std::sin(s * 0.001f)};
+  return WorldPos{static_cast<f64>(s * 1.5f - 1500.0f), 10.0,
+                  static_cast<f64>(200.0f * std::sin(s * 0.001f))};
 }
 
 }  // namespace
@@ -32,7 +33,7 @@ ENGINE_BENCH_ARGS(world_ring_update, "world.ring.update", 1, 2, 4) {
   sim::ObserverSet observers;
   // Warm: the ring filled round the path's start, so each update is the steady state.
   for (u32 o = 0; o < count; ++o)
-    observers.add(path_at(0) + Vec3{static_cast<f32>(o) * 700.0f, 0.0f, 0.0f}, 1.0f);
+    observers.add(path_at(0) + DVec3{static_cast<f64>(o) * 700.0, 0.0, 0.0}, 1.0f);
   ring.update(observers, events, true);
   u32 t = 0;
   u64 total_events = 0;
@@ -40,7 +41,7 @@ ENGINE_BENCH_ARGS(world_ring_update, "world.ring.update", 1, 2, 4) {
     observers.clear();
     ++t;
     for (u32 o = 0; o < count; ++o)
-      observers.add(path_at(t) + Vec3{static_cast<f32>(o) * 700.0f, 0.0f, 0.0f}, 1.0f);
+      observers.add(path_at(t) + DVec3{static_cast<f64>(o) * 700.0, 0.0, 0.0}, 1.0f);
     events.clear();
     total_events += ring.update(observers, events);
     bench::keep(events.data());
@@ -54,7 +55,7 @@ ENGINE_BENCH(world_ring_fill, "world.ring.fill") {
   world::RingParams params;
   Vector<world::TileEvent> events;
   sim::ObserverSet observers;
-  observers.add(Vec3{10.0f, 0.0f, 10.0f}, 1.0f);
+  observers.add(WorldPos{10.0, 0.0, 10.0}, 1.0f);
   u32 activated = 0;
   while (state.keep_running()) {
     world::TileRing ring(params);
@@ -73,7 +74,7 @@ ENGINE_BENCH(world_store_tile, "world.store.tile") {
   for (u32 i = 0; i < rows.size(); ++i) {
     rows[i].record = Id128::from_parts(1, i + 1);
     rows[i].type = "engine.world.Node";
-    rows[i].position = Vec3{static_cast<f32>(i), 0.0f, 3.0f};
+    rows[i].position = WorldPos{static_cast<f64>(i), 0.0, 3.0};
   }
   Vector<world::TileRow> back;
   bool has_snapshot = false;

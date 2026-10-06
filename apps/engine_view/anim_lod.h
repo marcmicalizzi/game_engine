@@ -24,6 +24,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 #include <domain/sim/tiers.h>
 #include <systems/renderer/view_set.h>
 
@@ -68,17 +69,14 @@ inline f32 view_weight(const renderer::View& view) noexcept {
 // *view* is worth reaches the entity through its importance instead (`view_importance` below),
 // which is exactly what importance is for. Writing it as one observer at the camera would have
 // been shorter and would have been the wrong thing for a game to copy.
-// The camera's eye as an observer: `sim::ObserverSet` takes a float32 world position this batch.
-// ADR-0053 seam: sim::ObserverSet takes WorldPos after the merge.
-inline Vec3 observer_position(const renderer::Camera& camera) {
-  return relative(camera.position, WorldPos::origin());
-}
-
+//
+// The eye goes in as the camera holds it, a `WorldPos` (ADR-0053): the tier is the same 10,000 km
+// out as by the origin.
 inline void build_observers(const renderer::ViewSet& views, const renderer::Camera& camera,
                             sim::ObserverSet& out) {
   out.clear();
   for (u32 v = 0; v < views.size(); ++v)
-    out.add(observer_position(camera), view_weight(views[v]));
+    out.add(camera.position, view_weight(views[v]));
 }
 
 // The largest weight in the set built above, which `view_importance` normalizes against so that an
@@ -105,11 +103,11 @@ inline f32 max_view_weight(const renderer::ViewSet& views) noexcept {
 // padding, so a limb that swings out of the rest-pose sphere is still "on screen" here, and an
 // instance the test keeps is at worst animated too finely.
 //
-// `views` are the frame's, whose origin is the camera's eye (ADR-0053), and `positions` are float32
-// world positions (`renderer::instance_world_matrix`'s seam), so each is measured from `eye`, the
-// eye in the same float32 frame (`observer_position`), before the test.
-inline void view_importance(const renderer::ViewSet& views, Vec3 eye,
-                            std::span<const Vec3> positions, std::span<const f32> radii,
+// `views` are the frame's, whose origin is the camera's eye (ADR-0053), and `positions` are world
+// positions, so each is taken into that frame — `relative(position, eye)`, in f64 and then a float
+// the size of its distance from the eye — before the test. `eye` is the camera's position.
+inline void view_importance(const renderer::ViewSet& views, WorldPos eye,
+                            std::span<const WorldPos> positions, std::span<const f32> radii,
                             std::span<f32> out) {
   const f32 best_weight = max_view_weight(views);
   Frustum frusta[renderer::k_max_views];
@@ -124,7 +122,8 @@ inline void view_importance(const renderer::ViewSet& views, Vec3 eye,
     f32 seen = 0.0f;
     for (u32 v = 0; v < view_count; ++v) {
       if (weights[v] <= seen) continue;  // a lesser view cannot improve the answer
-      if (frustum_contains_sphere(frusta[v], positions[i] - eye, radius)) seen = weights[v];
+      if (frustum_contains_sphere(frusta[v], relative(positions[i], eye), radius))
+        seen = weights[v];
     }
     out[i] = seen > 0.0f ? seen / best_weight : k_offscreen_importance;
   }

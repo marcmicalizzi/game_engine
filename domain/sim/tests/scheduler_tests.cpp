@@ -511,14 +511,14 @@ TEST_CASE("scheduler: reconcile_tile runs the five steps of plan 05 section 5.5"
     record.entity = record_id(1000 + i);
     record.seed = store.seed ^ i;
     // The first two are inside the observer's LOD0 radius; the rest are far away.
-    record.position = Vec3{i < 2 ? 5.0f : 4000.0f, 0.0f, 0.0f};
+    record.position = WorldPos{i < 2 ? 5.0 : 4000.0, 0.0, 0.0};
     record.importance = 1.0f;
     record.tier = 3;
     store.records.push_back(record);
   }
 
   ObserverSet observers;
-  observers.add(Vec3{0.0f, 0.0f, 0.0f}, 1.0f);
+  observers.add(WorldPos{0.0, 0.0, 0.0}, 1.0f);
   TierParams tier_params;
   tier_params.max_promotions = 1000;
   tier_params.max_demotions = 1000;
@@ -565,11 +565,11 @@ TEST_CASE("scheduler: a record no hook materialized is not promoted into nothing
   store.known = false;
   EntityRecord record;
   record.entity = record_id(42);
-  record.position = Vec3{1.0f, 0.0f, 0.0f};
+  record.position = WorldPos{1.0, 0.0, 0.0};
   store.records.push_back(record);
 
   ObserverSet observers;
-  observers.add(Vec3{0.0f, 0.0f, 0.0f}, 1.0f);
+  observers.add(WorldPos{0.0, 0.0, 0.0}, 1.0f);
   ReconcileParams params;
   params.now = GameTime::from_days(1);
   const ReconcileResult result =
@@ -588,7 +588,7 @@ TEST_CASE("scheduler: reconciling the same tile twice is the same summary") {
     store.seed = seed;
     store.last_active = GameTime{0};
     ObserverSet observers;
-    observers.add(Vec3{0.0f, 0.0f, 0.0f}, 1.0f);
+    observers.add(WorldPos{0.0, 0.0, 0.0}, 1.0f);
     ReconcileParams params;
     params.tile = 3;
     params.now = GameTime::from_days(gap_days);
@@ -609,11 +609,11 @@ TEST_CASE("scheduler: an unknown tile is materialized without a summary") {
   store.known = false;
   EntityRecord record;
   record.entity = record_id(5);
-  record.position = Vec3{1.0f, 0.0f, 0.0f};
+  record.position = WorldPos{1.0, 0.0, 0.0};
   store.records.push_back(record);
 
   ObserverSet observers;
-  observers.add(Vec3{0.0f, 0.0f, 0.0f}, 1.0f);
+  observers.add(WorldPos{0.0, 0.0, 0.0}, 1.0f);
   ReconcileParams params;
   params.now = GameTime::from_days(3);
   const ReconcileResult result =

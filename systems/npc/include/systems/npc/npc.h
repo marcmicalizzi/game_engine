@@ -338,7 +338,7 @@ class NpcSystem {
   sim::TierAssignment tiers_;
   sim::TierParams tier_params_;
   Vector<sim::TierChange> changes_;
-  Vector<Vec3> scored_;  // scratch: the tier pass's positions
+  Vector<WorldPos> scored_;  // scratch: the tier pass's positions, where each resident is
 
   // One entry per held resident, dense: swap-removed, so a resident's index is not stable and
   // nothing outside keeps one. The wheel's payload names the entity handle instead.

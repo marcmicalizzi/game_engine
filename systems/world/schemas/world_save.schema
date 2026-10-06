@@ -31,10 +31,12 @@ struct SaveVersion @version(1) {
   version: u32 = 0
 }
 
-/// One observer of the tile ring, exactly as it was: an f32 widens to an f64 and back through the
-/// JSON writer bit for bit.
-struct SaveObserver @version(1) {
-  position: vec3 @unit(m)
+/// One observer of the tile ring, exactly as it was: its position the f64 the host moved it in
+/// (ADR-0053), and its velocity an f32, which widens to an f64 and back through the JSON writer bit
+/// for bit. Version 2 (2026-10-06) made `position` a `worldpos`; a version-1 observer's float32
+/// position was written as the double it widens to, so it reads as the same place.
+struct SaveObserver @version(2) {
+  position: worldpos @unit(m)
   /// Metres per game second, applied every tick.
   velocity: vec3
   weight: f32 = 1

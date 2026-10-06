@@ -152,7 +152,7 @@ ENGINE_BENCH(wheel_tick, "sim.wheel.tick") {
 ENGINE_BENCH_ARGS(tiers_assign, "sim.tiers.assign", 0, 1, 4, 8) {
   const u32 workers = static_cast<u32>(state.arg());
 
-  Vector<Vec3> positions;
+  Vector<WorldPos> positions;
   Vector<f32> importance;
   Vector<u8> tiers;
   positions.reserve(k_entities);
@@ -160,17 +160,17 @@ ENGINE_BENCH_ARGS(tiers_assign, "sim.tiers.assign", 0, 1, 4, 8) {
   tiers.reserve(k_entities);
   u64 random = 0x243F6A8885A308D3ull;
   for (u32 i = 0; i < k_entities; ++i) {
-    const f32 x = static_cast<f32>(next_random(random) % 4096u);
-    const f32 z = static_cast<f32>(next_random(random) % 4096u);
-    positions.push_back(Vec3{x, 0.0f, z});
+    const f64 x = static_cast<f64>(next_random(random) % 4096u);
+    const f64 z = static_cast<f64>(next_random(random) % 4096u);
+    positions.push_back(WorldPos{x, 0.0, z});
     importance.push_back(1.0f + static_cast<f32>(i % 4u));
     tiers.push_back(3);
   }
 
   ObserverSet observers;
-  observers.add(Vec3{512.0f, 0.0f, 512.0f}, 1.0f);
-  observers.add(Vec3{3000.0f, 0.0f, 900.0f}, 2.0f);
-  observers.add(Vec3{100.0f, 0.0f, 3500.0f}, 0.5f);
+  observers.add(WorldPos{512.0, 0.0, 512.0}, 1.0f);
+  observers.add(WorldPos{3000.0, 0.0, 900.0}, 2.0f);
+  observers.add(WorldPos{100.0, 0.0, 3500.0}, 0.5f);
 
   TierParams params;
   params.max_promotions = k_entities;
@@ -188,7 +188,7 @@ ENGINE_BENCH_ARGS(tiers_assign, "sim.tiers.assign", 0, 1, 4, 8) {
   TierAssignment assignment(system);
   assignment.set_grain(4096);
   TierInput input;
-  input.positions = std::span<const Vec3>(positions.data(), positions.size());
+  input.positions = std::span<const WorldPos>(positions.data(), positions.size());
   input.importance = std::span<const f32>(importance.data(), importance.size());
   input.tiers = std::span<u8>(tiers.data(), tiers.size());
 

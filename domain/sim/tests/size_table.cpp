@@ -52,8 +52,11 @@ ENGINE_EXPECT_SIZE(8, 8, EntityHandle);
 // eight bytes per projection row on the reconciliation path; the price of a name that is the same
 // name in the save, the protocol and the log is worth paying once there. 56 and not 48: `source`,
 // the pointer to the mapping row and property values a document record carries (materialize.h).
-// One is built on the stack per record the driver hands the hooks and none is stored.
-ENGINE_EXPECT_SIZE(56, 8, EntityRecord);
+// One is built on the stack per record the driver hands the hooks and none is stored. 72 and not
+// 56: `position` is a `WorldPos`, three f64 (ADR-0053, 2026-10-06) — twelve bytes for a position
+// that is where the record is 10,000 km out, and four of padding after `tier`, which no order of
+// the members avoids (65 bytes of fields at 8-byte alignment).
+ENGINE_EXPECT_SIZE(72, 8, EntityRecord);
 ENGINE_EXPECT_SIZE(56, 8, MaterializationHooks);
 ENGINE_EXPECT_SIZE(16, 8, TileState);
 ENGINE_EXPECT_SIZE(24, 8, TileStore);

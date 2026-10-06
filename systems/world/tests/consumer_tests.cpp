@@ -135,7 +135,7 @@ void node(doc::Document& d, u64 n, f64 x, f64 z) {
 
 sim::ObserverSet at(f32 x, f32 z) {
   sim::ObserverSet set;
-  set.add(Vec3{x, 0.0f, z}, 1.0f);
+  set.add(WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)}, 1.0f);
   return set;
 }
 
@@ -385,10 +385,10 @@ TEST_CASE("world consumers: a document on another grid is refused, once, with a 
 TEST_CASE("world consumers: where a record is, from its partition's property") {
   doc::Document d = partitioned(32.0);
   node(d, 1, -12.5, 44.0);
-  Vec3 p;
+  WorldPos p;
   REQUIRE(record_position(d, id_of(1), p));
-  CHECK(p.x == -12.5f);
-  CHECK(p.y == 1.0f);
-  CHECK(p.z == 44.0f);
+  CHECK(p.x == -12.5);
+  CHECK(p.y == 1.0);
+  CHECK(p.z == 44.0);
   CHECK_FALSE(record_position(d, id_of(9), p));
 }

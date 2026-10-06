@@ -1574,11 +1574,6 @@ WorldPos instance_translation(const SceneInstance& source, const Mat4& fit) noex
   return source.origin + DVec3{source.transform.position} + DVec3{placed.c[3].xyz()};
 }
 
-Mat4 instance_world_matrix(const gfx::InstanceDesc& instance) noexcept {
-  // ADR-0053 seam: sim takes WorldPos after the merge (engine-view's animation LOD).
-  return gfx::instance_matrix(instance, WorldEye{});
-}
-
 void update_scene_bounds(SceneData& out) {
   // The plain heightfield keeps the half extent it has always used, so a run with no mesh gets
   // exactly the camera it always did.

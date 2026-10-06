@@ -117,6 +117,7 @@ LayerFile Layer::to_file() const {
   file.objects.reserve(records_.size());
   for (auto [id, record] : records_)
     file.objects.push_back(record);
+  stamp_record_types(file);
   return file;
 }
 
@@ -128,7 +129,45 @@ LayerFile Layer::to_file(std::span<const ObjectId> ids) const {
   for (const ObjectId id : ids) {
     if (const ObjectRecord* r = records_.find_value(id)) file.objects.push_back(*r);
   }
+  stamp_record_types(file);
   return file;
+}
+
+void stamp_record_types(LayerFile& file) {
+  file.types.clear();
+  const schema::Registry& registry = schema::Registry::global();
+  std::string_view last;  // records of one type come in runs; skip the lookup for a repeat
+  for (const ObjectRecord& record : file.objects) {
+    const std::string_view type = record.type;
+    if (type.empty() || type == last) continue;
+    last = type;
+    bool seen = false;
+    for (const RecordTypeVersion& v : file.types)
+      seen = seen || v.name == type;
+    if (seen) continue;
+    const schema::TypeInfo* info = registry.find(type);
+    if (info == nullptr || info->kind != schema::Kind::Struct) continue;
+    RecordTypeVersion v;
+    v.name = std::string(type);
+    v.version = info->version;
+    file.types.push_back(std::move(v));
+  }
+  std::sort(file.types.begin(), file.types.end(),
+            [](const RecordTypeVersion& a, const RecordTypeVersion& b) { return a.name < b.name; });
+}
+
+bool check_record_types(const LayerFile& file, std::string& why) {
+  const schema::Registry& registry = schema::Registry::global();
+  for (const RecordTypeVersion& v : file.types) {
+    const schema::TypeInfo* info = registry.find(v.name);
+    if (info == nullptr || info->kind != schema::Kind::Struct || v.version <= info->version)
+      continue;
+    why = "layer '" + file.name + "' holds " + v.name + " records at version " +
+          std::to_string(v.version) + ", newer than this build's " + std::to_string(info->version) +
+          ": it was written by a newer engine, and its fields may not be the ones this build reads";
+    return false;
+  }
+  return true;
 }
 
 Layer Layer::from_file(LayerFile&& file) {
@@ -151,6 +190,11 @@ bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContex
   }
   LayerFile file;
   if (!schema::from_json(file, json, ctx)) return false;
+  std::string why;
+  if (!check_record_types(file, why)) {
+    ctx.error(why);
+    return false;
+  }
   out = from_file(std::move(file));
   return true;
 }

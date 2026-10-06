@@ -128,7 +128,7 @@ SaveManifest manifest_at(u64 tick, const StateHash& hash) {
   ring.rings.push_back(3.0f);
   ring.simulated = 1;
   SaveObserver o;
-  o.position = Vec3{0.1f, 1.7f, -2.3f};
+  o.position = WorldPos{0.1, 1.7, -2.3};
   o.velocity = Vec3{0.3f, 0.0f, 0.0f};
   ring.observers.push_back(o);
   SaveTile t;
@@ -190,7 +190,7 @@ TEST_CASE("world save: the state hash is the persistent state's, however it was 
     TileRow row;
     row.record = id_of(n);
     row.type = k_node;
-    row.position = Vec3{static_cast<f32>(n), 0.0f, 0.0f};
+    row.position = WorldPos{static_cast<f64>(n), 0.0, 0.0};
     rows.push_back(row);
   }
   REQUIRE(first.write_tile(TileCoord{0, 0}, {rows.data(), 2}, 5, 5) == store::Status::Ok);
@@ -240,9 +240,9 @@ TEST_CASE("world save: a ring restored from the tiles it held goes on as the rin
   params.max_deactivations = 2;
   auto observers_at = [](u32 step) {
     sim::ObserverSet set;
-    const f32 t = static_cast<f32>(step);
-    set.add(Vec3{t * 9.0f, 0.0f, step < 40 ? t * 2.0f : 80.0f - (t - 40.0f) * 6.0f}, 1.0f);
-    if (step >= 20 && step < 70) set.add(Vec3{-100.0f + t, 0.0f, 30.0f}, 1.5f);
+    const f64 t = static_cast<f64>(step);
+    set.add(WorldPos{t * 9.0, 0.0, step < 40 ? t * 2.0 : 80.0 - (t - 40.0) * 6.0}, 1.0f);
+    if (step >= 20 && step < 70) set.add(WorldPos{-100.0 + t, 0.0, 30.0}, 1.5f);
     return set;
   };
   World through(params);
@@ -359,7 +359,7 @@ TEST_CASE("world save: a save reads back as written, and restores to the same by
   TileRow row;
   row.record = id_of(1);
   row.type = k_node;
-  row.position = Vec3{5.0f, 0.0f, 5.0f};
+  row.position = WorldPos{5.0, 0.0, 5.0};
   rows.push_back(row);
   REQUIRE(store.write_tile(TileCoord{0, 0}, {rows.data(), rows.size()}, 30, 30 * 16667) ==
           store::Status::Ok);

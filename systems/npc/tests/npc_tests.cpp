@@ -442,7 +442,7 @@ TEST_CASE("npc: the observer set promotes and demotes residents, and a tier chan
   REQUIRE(observed.npc.find(traveller, start));
   // Materialized with observers present: at LOD2 (05 §5.5 step 4), drawn at its destination.
   sim::ObserverSet observers;
-  observers.add(relative(start.anchor, WorldPos::origin()), 1.0f);  // sim takes WorldPos in stage 2
+  observers.add(start.anchor, 1.0f);
   observed.npc.set_observers(&observers);
   observed.driver.materialize(d);  // unchanged: nothing is re-materialized
   CHECK(start.tier == 2);
@@ -475,7 +475,7 @@ TEST_CASE("npc: the observer set promotes and demotes residents, and a tier chan
 
   // The observer goes: everything demotes, the trip is drawn at its destination again.
   observers.clear();
-  observers.add(Vec3{10'000.0f, 0.0f, 10'000.0f}, 1.0f);
+  observers.add(WorldPos{10'000.0, 0.0, 10'000.0}, 1.0f);
   observed.run(30);
   unobserved.run(30);
   ResidentView far;
@@ -488,6 +488,95 @@ TEST_CASE("npc: the observer set promotes and demotes residents, and a tier chan
   for (u32 i = 0; i < 200; ++i) {
     const Id128 id = resident_id(k_seed, i);
     CHECK(same(snapshot(observed, id), snapshot(unobserved, id)));
+  }
+}
+
+TEST_CASE("npc: a resident stepped a second far out moves as it does by the origin") {
+  // ADR-0053's far sites (the owner's 419 km, 10,000 km, 1e8 m), whole metres. The generator puts
+  // places on a quarter-metre lattice from the window's corner, so the same world moved by a site
+  // is the same places moved exactly, and the sim scores the observer and the residents in f64:
+  // what differs is where the drawn trip rounds, and nothing else.
+  const DVec3 sites[] = {
+      DVec3{0.0, 0.0, 0.0},
+      DVec3{419072.0, 0.0, -419072.0},
+      DVec3{10000000.0, 0.0, 10000000.0},
+      DVec3{100000000.0, 0.0, -100000000.0},
+  };
+  struct Step {
+    Id128 id;
+    RoutinePoint point;
+    WorldPos anchor;
+    WorldPos before;
+    WorldPos after;
+    u8 tier = 3;
+  };
+  const auto step_at = [](const DVec3& site) {
+    GeneratorParams params = small_world(200, 8 * 60 * k_us_per_minute + 5 * k_us_per_minute);
+    params.min_x += site.x;
+    params.max_x += site.x;
+    params.min_z += site.z;
+    params.max_z += site.z;
+    doc::Document d = make_document(params);
+    Rig rig(params.time_us, 1);
+    rig.npc.places().refresh(d);
+    rig.driver.materialize(d);
+    Step out;
+    for (u32 i = 0; i < 200 && out.id.is_null(); ++i) {
+      ResidentView view;
+      REQUIRE(rig.npc.find(resident_id(k_seed, i), view));
+      if (view.point.state == ResidentState::Travelling &&
+          view.point.end_us - params.time_us > 5 * 60'000'000)
+        out.id = view.id;
+    }
+    REQUIRE_FALSE(out.id.is_null());
+    ResidentView start;
+    REQUIRE(rig.npc.find(out.id, start));
+    // An observer where the trip ends: tier 0 within the pass's first two ticks, so the trip is
+    // drawn along its segment, which is the motion compared.
+    sim::ObserverSet observers;
+    observers.add(start.anchor, 1.0f);
+    rig.npc.set_observers(&observers);
+    rig.run(2);
+    ResidentView before;
+    REQUIRE(rig.npc.find(out.id, before));
+    rig.run(1);  // one tick is one game second (k_hz)
+    ResidentView after;
+    REQUIRE(rig.npc.find(out.id, after));
+    out.point = after.point;
+    out.anchor = after.anchor;
+    out.before = before.drawn;
+    out.after = after.drawn;
+    out.tier = after.tier;
+    rig.npc.set_observers(nullptr);
+    return out;
+  };
+
+  const Step origin = step_at(sites[0]);
+  REQUIRE(origin.tier == 0);
+  const DVec3 moved = origin.after - origin.before;
+  // It walked: a trip is drawn on its segment at tier 0. This one is 13 m over 49 game minutes, so
+  // a second is 1.2 cm — below the float32 step at every far site (3.1 cm, 1 m, 8 m), where a
+  // float32 world position would have drawn it standing still or jumping a whole step.
+  REQUIRE(length(moved) > 0.005);
+  for (u32 s = 1; s < 4; ++s) {
+    CAPTURE(s);
+    const Step there = step_at(sites[s]);
+    // The same resident on the same trip, decided the same way: the routine reads no position.
+    CHECK(there.id == origin.id);
+    CHECK(there.tier == origin.tier);
+    CHECK(there.point.start_us == origin.point.start_us);
+    CHECK(there.point.end_us == origin.point.end_us);
+    CHECK(there.anchor == origin.anchor + sites[s]);
+    // Displaced as by the origin, to two f64 steps at the site (|site| * 2^-51: 0.09 nm at 419 km,
+    // 0.07 um at 1e8 m): each drawn point rounds once where it lands, and the trip's own segment is
+    // exact. A float32 world position steps by 3.1 cm, 1 m and 8 m at the three sites.
+    const f64 site =
+        std::abs(sites[s].x) > std::abs(sites[s].z) ? std::abs(sites[s].x) : std::abs(sites[s].z);
+    const f64 tolerance = site * 0x1p-51;
+    const DVec3 there_moved = there.after - there.before;
+    CHECK(std::abs(there_moved.x - moved.x) <= tolerance);
+    CHECK(std::abs(there_moved.y - moved.y) <= tolerance);
+    CHECK(std::abs(there_moved.z - moved.z) <= tolerance);
   }
 }
 

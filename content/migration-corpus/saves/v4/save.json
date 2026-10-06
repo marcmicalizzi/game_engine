@@ -1,0 +1,625 @@
+{
+  "document": "document",
+  "files": [
+    {
+      "bytes": 37368,
+      "hash": "ce8f53ee706a31c5",
+      "path": "document/journal.jsonl"
+    },
+    {
+      "bytes": 70,
+      "hash": "1d7844d80e1824e3",
+      "path": "document/layers/base.json"
+    },
+    {
+      "bytes": 7117,
+      "hash": "5f00157a14276dc2",
+      "path": "document/layers/places/index.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "df7c4f402e6d7acc",
+      "path": "document/layers/places/tiles/-1_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "033c03d3208fa232",
+      "path": "document/layers/places/tiles/-1_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "62c4ea79cbb931d8",
+      "path": "document/layers/places/tiles/-1_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "a9fe35e6bff551ba",
+      "path": "document/layers/places/tiles/-2_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "9c8f6214582f034d",
+      "path": "document/layers/places/tiles/-2_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "5cf995b7748e05af",
+      "path": "document/layers/places/tiles/-2_1.json"
+    },
+    {
+      "bytes": 452,
+      "hash": "0626537ac45d74ae",
+      "path": "document/layers/places/tiles/0_-1.json"
+    },
+    {
+      "bytes": 451,
+      "hash": "41ed7d2ab0521548",
+      "path": "document/layers/places/tiles/0_0.json"
+    },
+    {
+      "bytes": 451,
+      "hash": "06b9ffe09d2fa7cd",
+      "path": "document/layers/places/tiles/0_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "2e8573e02a3f6808",
+      "path": "document/layers/places/tiles/10_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "5a13cabbf5aa9635",
+      "path": "document/layers/places/tiles/10_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "b487e5b89a8d5e37",
+      "path": "document/layers/places/tiles/10_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "fc8263e96a25e66c",
+      "path": "document/layers/places/tiles/11_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "86bfe90d535cd702",
+      "path": "document/layers/places/tiles/11_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "da2b39bc006094f0",
+      "path": "document/layers/places/tiles/11_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "7c5e74ce28536f32",
+      "path": "document/layers/places/tiles/12_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "24209332b8f96d4d",
+      "path": "document/layers/places/tiles/12_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "161741b8f6ac44b6",
+      "path": "document/layers/places/tiles/12_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "36e77571a911137d",
+      "path": "document/layers/places/tiles/13_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "21bd924d55a8efab",
+      "path": "document/layers/places/tiles/13_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "a5ddfea425280f2f",
+      "path": "document/layers/places/tiles/13_1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "0fd2e3f7de0d9605",
+      "path": "document/layers/places/tiles/1_-1.json"
+    },
+    {
+      "bytes": 997,
+      "hash": "a5721597ab385cd1",
+      "path": "document/layers/places/tiles/1_0.json"
+    },
+    {
+      "bytes": 998,
+      "hash": "ac6ae757b27c5efb",
+      "path": "document/layers/places/tiles/1_1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "11d155a5aa2e2c23",
+      "path": "document/layers/places/tiles/2_-1.json"
+    },
+    {
+      "bytes": 1139,
+      "hash": "2dbffc77fb3091db",
+      "path": "document/layers/places/tiles/2_0.json"
+    },
+    {
+      "bytes": 452,
+      "hash": "cad9262343bd49b1",
+      "path": "document/layers/places/tiles/2_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "8295902c1bf2fe9f",
+      "path": "document/layers/places/tiles/3_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "bd951f1dad41991e",
+      "path": "document/layers/places/tiles/3_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "62c4c490276c38db",
+      "path": "document/layers/places/tiles/3_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "3cfa509102d51b6f",
+      "path": "document/layers/places/tiles/4_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "4b8d0f82d4707651",
+      "path": "document/layers/places/tiles/4_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "ededd9ea29e73265",
+      "path": "document/layers/places/tiles/4_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "6c04a0ba8ff4b76b",
+      "path": "document/layers/places/tiles/5_-1.json"
+    },
+    {
+      "bytes": 987,
+      "hash": "5d6f08ca4ebc9329",
+      "path": "document/layers/places/tiles/5_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "efc55e5f42b24957",
+      "path": "document/layers/places/tiles/5_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "e28a0215de09ee34",
+      "path": "document/layers/places/tiles/6_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "bdb38b55e829564b",
+      "path": "document/layers/places/tiles/6_0.json"
+    },
+    {
+      "bytes": 989,
+      "hash": "75a73b0e8ae4e895",
+      "path": "document/layers/places/tiles/6_1.json"
+    },
+    {
+      "bytes": 989,
+      "hash": "1d5b83a119851f8c",
+      "path": "document/layers/places/tiles/7_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "7c5378fb1015a554",
+      "path": "document/layers/places/tiles/7_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "93b701ba5cd62e69",
+      "path": "document/layers/places/tiles/7_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "7e7bd7cc141244c1",
+      "path": "document/layers/places/tiles/8_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "9c5afa2f6db3ec5b",
+      "path": "document/layers/places/tiles/8_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "d25e19fc673e3b9f",
+      "path": "document/layers/places/tiles/8_1.json"
+    },
+    {
+      "bytes": 454,
+      "hash": "196288621a6eb04b",
+      "path": "document/layers/places/tiles/9_-1.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "390fd571ae87c1b2",
+      "path": "document/layers/places/tiles/9_0.json"
+    },
+    {
+      "bytes": 453,
+      "hash": "78c53ad8e2b35eae",
+      "path": "document/layers/places/tiles/9_1.json"
+    },
+    {
+      "bytes": 379,
+      "hash": "cec86d422697e7be",
+      "path": "document/manifest.json"
+    },
+    {
+      "bytes": 547,
+      "hash": "ea1debcce2ea4d2d",
+      "path": "input-map.json"
+    },
+    {
+      "bytes": 177,
+      "hash": "6373905ffa19af71",
+      "path": "input.jsonl"
+    },
+    {
+      "bytes": 40960,
+      "hash": "5087a7b890f8d333",
+      "path": "world.db"
+    }
+  ],
+  "format": "engine.save",
+  "game_time_us": 5000100,
+  "hz": 60,
+  "ring": {
+    "hysteresis": 0.15000000596046448,
+    "max_activations": 8,
+    "max_deactivations": 16,
+    "observers": [
+      {
+        "position": [
+          100.0019945204258,
+          1.7,
+          0.0
+        ],
+        "velocity": [
+          20.0,
+          0.0,
+          0.0
+        ],
+        "weight": 1.0
+      },
+      {
+        "position": [
+          51.167368073016405,
+          1.7,
+          -5.667098812758923
+        ],
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "weight": 1.0
+      }
+    ],
+    "player": {
+      "action": "move",
+      "log": "input.jsonl",
+      "map": "input-map.json",
+      "observer": 1,
+      "speed": 10.0
+    },
+    "rings": [
+      1.5,
+      3.0
+    ],
+    "simulated": 1,
+    "store": true,
+    "tile_size": 32.0,
+    "tiles": [
+      {
+        "ring": 1,
+        "x": -2,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": -2,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": -2,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": -1,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": -3
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 0,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 0,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 1,
+        "z": -3
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": 0
+      },
+      {
+        "ring": 0,
+        "x": 1,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 1,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 2,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 2,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 2,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 3,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 3,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 3,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": -3
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": -2
+      },
+      {
+        "ring": 0,
+        "x": 4,
+        "z": -1
+      },
+      {
+        "ring": 0,
+        "x": 4,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": 1
+      },
+      {
+        "ring": 1,
+        "x": 4,
+        "z": 2
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": -2
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": -1
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": 0
+      },
+      {
+        "ring": 1,
+        "x": 5,
+        "z": 1
+      }
+    ]
+  },
+  "rng": [],
+  "saved_by": "engine-host 0.0.1",
+  "state_hash": "8cdae985e86ab1d5",
+  "store": "world.db",
+  "tick": 300,
+  "version": 2,
+  "versions": [
+    {
+      "name": "engine.doc.DocumentManifest",
+      "version": 1
+    },
+    {
+      "name": "engine.doc.LayerFile",
+      "version": 2
+    },
+    {
+      "name": "engine.doc.Patch",
+      "version": 1
+    },
+    {
+      "name": "engine.input.log",
+      "version": 1
+    },
+    {
+      "name": "engine.kinematics.Mover",
+      "version": 2
+    },
+    {
+      "name": "engine.world.Node",
+      "version": 2
+    },
+    {
+      "name": "engine.world.SaveFile",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveManifest",
+      "version": 2
+    },
+    {
+      "name": "engine.world.SaveObserver",
+      "version": 2
+    },
+    {
+      "name": "engine.world.SavePlayer",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveRing",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveRngStream",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveTile",
+      "version": 1
+    },
+    {
+      "name": "engine.world.SaveVersion",
+      "version": 1
+    },
+    {
+      "name": "engine.world.TileProjection",
+      "version": 2
+    },
+    {
+      "name": "engine.world.WriteBack",
+      "version": 1
+    },
+    {
+      "name": "store.tables",
+      "version": 2
+    }
+  ],
+  "world_seed": 1,
+  "write_back_every": 60
+}

@@ -112,7 +112,7 @@ ENGINE_BENCH(scene_collision_ring_change, "scene_collision.ring_change") {
   ring.add_consumer(collision.consumer());
   u64 tick = 0;
   sim::ObserverSet at;
-  at.add(Vec3{16.0f, 0.0f, 16.0f}, 1.0f);
+  at.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
   ring.update(at, tick++, true);
   u32 step = 0;
   while (state.keep_running()) {
@@ -120,7 +120,7 @@ ENGINE_BENCH(scene_collision_ring_change, "scene_collision.ring_change") {
     const u32 leg = step % 64;
     const f32 x = 16.0f + 32.0f * static_cast<f32>(leg < 32 ? leg : 63 - leg);
     sim::ObserverSet o;
-    o.add(Vec3{x, 0.0f, 16.0f}, 1.0f);
+    o.add(WorldPos{static_cast<f64>(x), 0.0, 16.0}, 1.0f);
     ring.update(o, tick++, true);
     ++step;
   }
@@ -145,13 +145,13 @@ ENGINE_BENCH(scene_collision_tick, "scene_collision.tick") {
   ring.add_consumer(collision.consumer());
   u64 tick = 0;
   sim::ObserverSet at;
-  at.add(Vec3{16.0f, 0.0f, 16.0f}, 1.0f);
+  at.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
   ring.update(at, tick++, true);
   f32 x = 4.0f;
   while (state.keep_running()) {
     x = x < 28.0f ? x + 0.00625f : 4.0f;  // within the one tile, so nothing comes or goes
     sim::ObserverSet o;
-    o.add(Vec3{x, 0.0f, 16.0f}, 1.0f);
+    o.add(WorldPos{static_cast<f64>(x), 0.0, 16.0}, 1.0f);
     ring.update(o, tick++, false);
     bench::keep(collision.refresh(wp(x, 16.0f)));
   }
@@ -184,7 +184,7 @@ ENGINE_BENCH(scene_collision_follow, "scene_collision.follow") {
   world::World ring(scene_collision::ring_params_from_tunables(32.0f));
   ring.add_consumer(collision.consumer());
   sim::ObserverSet at;
-  at.add(Vec3{16.0f, 0.0f, 16.0f}, 1.0f);
+  at.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
   ring.update(at, 0, true);
   f32 y = 0.0f;
   collision.ground_height(wp(16.0f, 16.0f), y);

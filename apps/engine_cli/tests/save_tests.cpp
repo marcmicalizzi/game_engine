@@ -530,22 +530,39 @@ const std::vector<CorpusSave>& corpus() {
       // nothing to rewrite, since the JSON of a float32 position is the double it widens to. The
       // loaded hashes did not move; the hash a second later did, because the carts now move in
       // f64 from where the save left them.
+      //
+      // 2026-10-06: `LayerFile` 2 (a layer names its record types' versions), `TileProjection` 2
+      // and `SaveObserver` 2 (their positions are f64) are three more steps for every older save,
+      // and rewrite nothing: a file with no type table reads as before, and a float32 position's
+      // JSON is the double it widens to.
       {"v1",
        300,
        "8a6d7d078e00bcbf",
        "3d528309eea2b9df",
-       {"engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
-        "engine.world.SaveManifest 1 -> 2", "store.tables 1 -> 2"},
-       "25aef5f85a9efe56"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
+        "engine.world.SaveManifest 1 -> 2", "engine.world.SaveObserver 1 -> 2",
+        "engine.world.TileProjection 1 -> 2", "store.tables 1 -> 2"},
+       "232aa2a53b31c9ac"},
       {"v2",
        300,
        "3d528309eea2b9df",
        "3d528309eea2b9df",
-       {"engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2"},
-       "25aef5f85a9efe56"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
+        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
+       "232aa2a53b31c9ac"},
       // Written by the build that made them version 2: the same world, its carts moved in f64 for
       // the 300 ticks before the save, which is why its hashes are not v2's.
-      {"v3", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "6ca572c1c0fa824b"},
+      {"v3",
+       300,
+       "8cdae985e86ab1d5",
+       "8cdae985e86ab1d5",
+       {"engine.doc.LayerFile 1 -> 2", "engine.world.SaveObserver 1 -> 2",
+        "engine.world.TileProjection 1 -> 2"},
+       "c9b72a04d230351f"},
+      // Written by the build that made those three version 2: the same world and the same state
+      // at tick 300 as v3 — nothing the 300 ticks wrote depended on the change — in files that
+      // name their versions.
+      {"v4", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
   };
   return saves;
 }

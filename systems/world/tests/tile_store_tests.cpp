@@ -58,10 +58,10 @@ TEST_CASE("world store: a tile's projections and snapshot round-trip through the
   TileRow rows[2];
   rows[0].record = id_of(2);
   rows[0].type = k_node;
-  rows[0].position = Vec3{-90.0f, 1.0f, 230.0f};
+  rows[0].position = WorldPos{-90.0, 1.0, 230.0};
   rows[1].record = id_of(1);
   rows[1].type = k_node;
-  rows[1].position = Vec3{-70.0f, 2.0f, 240.0f};
+  rows[1].position = WorldPos{-70.0, 2.0, 240.0};
   rows[1].importance = 4.0f;
 
   sim::TileStore seam = store.tile_store();
@@ -80,7 +80,7 @@ TEST_CASE("world store: a tile's projections and snapshot round-trip through the
   // The store's (entity, kind) order: by id.
   CHECK(records[0].entity == id_of(1));
   CHECK(records[0].importance == 4.0f);
-  CHECK(records[0].position.z == 240.0f);
+  CHECK(records[0].position.z == 240.0);
   CHECK(records[0].source == nullptr);
   CHECK(records[1].entity == id_of(2));
   CHECK(records[0].kind == schema::stable_type_id(k_node));
@@ -112,10 +112,10 @@ TEST_CASE("world store: reconciliation reads the gap, the seed and the records f
     TileRow rows[2];
     rows[0].record = id_of(1);
     rows[0].type = k_node;
-    rows[0].position = Vec3{140.0f, 0.0f, -50.0f};
+    rows[0].position = WorldPos{140.0, 0.0, -50.0};
     rows[1].record = id_of(2);
     rows[1].type = k_node;
-    rows[1].position = Vec3{150.0f, 0.0f, -40.0f};
+    rows[1].position = WorldPos{150.0, 0.0, -40.0};
     REQUIRE(store.write_tile(tile, std::span<const TileRow>(rows, 2), 60, 1'000'000) ==
             store::Status::Ok);
   }
@@ -144,7 +144,7 @@ TEST_CASE("world store: reconciliation reads the gap, the seed and the records f
   scheduler.wheel().add_summarizer(summarizer);
 
   sim::ObserverSet observers;
-  observers.add(Vec3{145.0f, 0.0f, -45.0f}, 1.0f);
+  observers.add(WorldPos{145.0, 0.0, -45.0}, 1.0f);
   sim::ReconcileParams params;
   params.tile = store_tile(tile);
   params.now = GameTime{9'000'000};
@@ -170,4 +170,66 @@ TEST_CASE("world store: reconciliation reads the gap, the seed and the records f
   CHECK_FALSE(fresh.known);
   CHECK(fresh.records == 0);
   CHECK(summaries.seen.size() == 1);
+}
+
+TEST_CASE(
+    "world store: a projection far out keeps the document's f64, and promotes as by the origin") {
+  // ADR-0053's far sites, at positions no float32 holds: a projection is the document's position,
+  // not the float it rounded to before version 2 (3.1 cm at 419 km, a metre at 10,000 km, 8 m at
+  // 1e8 m), and it is what reconciliation promotes from.
+  const WorldPos sites[] = {
+      WorldPos{419070.2, 1.5, -419072.7},
+      WorldPos{-10000000.4, 2.25, 10000000.3},
+      WorldPos{100000000.25, -3.0, -100000000.75},
+  };
+  for (const WorldPos& site : sites) {
+    CAPTURE(site.x);
+    WorldStore store;
+    REQUIRE(store.open_memory() == store::Status::Ok);
+    const TileCoord tile = tile_at(site, 32.0f);
+    TileRow rows[2];
+    rows[0].record = id_of(1);
+    rows[0].type = k_node;
+    rows[0].position = site;
+    rows[1].record = id_of(2);
+    rows[1].type = k_node;
+    rows[1].position = site + DVec3{0.001, 0.0, -0.3};
+    REQUIRE(store.write_tile(tile, std::span<const TileRow>(rows, 2), 60, 1'000'000) ==
+            store::Status::Ok);
+    Vector<TileRow> back;
+    bool has_snapshot = false;
+    store::SnapshotInfo info;
+    REQUIRE(store.read_tile(tile, back, has_snapshot, info) == store::Status::Ok);
+    REQUIRE(back.size() == 2);
+    CHECK(back[0].position == rows[0].position);
+    CHECK(back[1].position == rows[1].position);
+
+    // Reconciled with an observer 20 m off: both promoted from LOD2 to LOD0 (within 32 m), and the
+    // records handed the hooks are at the bits the projections were written with.
+    const sim::TileStore seam = store.tile_store();
+    Vector<sim::EntityRecord> records;
+    seam.load_records(seam.context, store_tile(tile), records);
+    REQUIRE(records.size() == 2);
+    CHECK(records[0].position == rows[0].position);
+    CHECK(records[1].position == rows[1].position);
+    sim::SimScheduler scheduler;
+    Resolver world;
+    world.entities[id_of(1)] = 11;
+    world.entities[id_of(2)] = 12;
+    sim::MaterializationHooks hooks;
+    hooks.name = "resolver";
+    hooks.context = &world;
+    hooks.materialize = &Resolver::materialize;
+    hooks.promote = &Resolver::promote;
+    scheduler.add_hooks(hooks);
+    sim::ObserverSet observers;
+    observers.add(site + DVec3{12.0, 0.0, 16.0}, 1.0f);
+    sim::ReconcileParams params;
+    params.tile = store_tile(tile);
+    params.now = GameTime{9'000'000};
+    const sim::ReconcileResult result =
+        scheduler.reconcile_tile(params, seam, observers, sim::TierParams{});
+    CHECK(result.records == 2);
+    CHECK(result.promoted == 2);
+  }
 }

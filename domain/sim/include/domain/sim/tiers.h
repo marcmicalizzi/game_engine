@@ -25,12 +25,19 @@
 // Determinism: `hashed`. Scores are computed per entity from the inputs alone, so the optional
 // job-system split changes nothing, and the emitted changes are sorted by entity index rather
 // than by the order candidates were selected in.
+//
+// **Positions are world positions, f64** (`WorldPos`, ADR-0053): an observer and an entity are
+// wherever the world puts them, and a tier 10,000 km out is the tier it is by the origin. The
+// displacement from an observer and its length are taken in f64; the one narrowing is that length,
+// to the float32 score — a distance in metres, which a float holds to a part in 2^24 at any size,
+// where the two absolute positions it came from would have held it to a metre out there.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
+#include <core/math/world.h>
 
 #include <span>
 
@@ -47,18 +54,18 @@ inline constexpr u32 k_max_tiers = 8;
 class ObserverSet {
  public:
   void clear() noexcept;
-  void add(Vec3 observer_position, f32 observer_weight);
+  void add(WorldPos observer_position, f32 observer_weight);
   u32 size() const noexcept { return positions_.size(); }
   bool empty() const noexcept { return positions_.empty(); }
-  Vec3 position(u32 index) const noexcept { return positions_[index]; }
+  WorldPos position(u32 index) const noexcept { return positions_[index]; }
   f32 weight(u32 index) const noexcept { return weights_[index]; }
-  std::span<const Vec3> positions() const noexcept {
+  std::span<const WorldPos> positions() const noexcept {
     return {positions_.data(), positions_.size()};
   }
   std::span<const f32> weights() const noexcept { return {weights_.data(), weights_.size()}; }
 
  private:
-  Vector<Vec3> positions_;
+  Vector<WorldPos> positions_;
   Vector<f32> weights_;
 };
 
@@ -104,7 +111,7 @@ struct TierStats {
 // The SoA the caller owns. `tiers` is in/out: assign_tiers writes the accepted changes into it
 // so the next call sees the state it left, which is what makes hysteresis work at all.
 struct TierInput {
-  std::span<const Vec3> positions;
+  std::span<const WorldPos> positions;
   std::span<const f32> importance;
   std::span<u8> tiers;
 };
@@ -127,8 +134,9 @@ class TierAssignment {
                          const TierParams& params, Vector<TierChange>& changes);
 
   // The score of one entity: min over observers of distance / (weight * importance). Exposed
-  // because a capability's own LOD policy has to be able to agree with this one.
-  static f32 score(Vec3 position, f32 importance, const ObserverSet& observers,
+  // because a capability's own LOD policy has to be able to agree with this one. The distance is
+  // the f64 length of the f64 displacement, narrowed once to float32 (the header's note).
+  static f32 score(WorldPos position, f32 importance, const ObserverSet& observers,
                    const TierParams& params) noexcept;
   // The tier a score lands in, ignoring hysteresis and rate limits.
   static u8 tier_of(f32 value, const TierParams& params) noexcept;

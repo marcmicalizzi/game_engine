@@ -74,13 +74,6 @@ bool read_u32(const JsonValue& object, const char* key, u32& out) {
   return true;
 }
 
-// ADR-0053 seam: sim takes WorldPos after the merge. The collision ring's observer
-// (`sim::ObserverSet::add`) is a float32 position today; the ring only picks 32 m tiles by it, so a
-// float's step is harmless to 1e8 m (8 m there), and the walker's own feet stay f64 behind it.
-[[maybe_unused]] Vec3 observer_position(WorldPos p) noexcept {
-  return relative(p, WorldPos::origin());
-}
-
 std::string hex16(u64 value) {
   char text[17];
   std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(value));
@@ -253,8 +246,8 @@ struct Walker::Impl {
   // made at the sand this frame draws; until 2026-09-29 it was made at the last tick's, which after
   // a flight over moving sand was wherever the sand had been when the walker last walked.
   void move_ring(WorldPos at, bool unlimited) {
-    observers.clear();  // kept, so a tick allocates nothing
-    observers.add(observer_position(at), 1.0f);
+    observers.clear();        // kept, so a tick allocates nothing
+    observers.add(at, 1.0f);  // the walker's own f64 place (ADR-0053)
     consumer.set_ground_time(ground_time());
     ring.update(observers, ring_tick++, unlimited);
   }

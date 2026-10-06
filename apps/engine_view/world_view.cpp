@@ -144,7 +144,7 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     compact_next_ = true;
   }
   observers_.clear();  // kept, so a frame's update allocates nothing for it
-  observers_.add(observer_position(camera), 1.0f);
+  observers_.add(camera.position, 1.0f);
   log_.before(world_);
   world_.update(observers_, tick, mode != Mode::Budgeted);
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
@@ -293,8 +293,8 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     after_rubble.assign(placements_.tail_tags().begin(), placements_.tail_tags().end());
     placements_.tile_ranges(after_ranges);
     if (ok) to_tail(after);
-    // A distance for the log line: the eye in float32 is the observers' own seam (anim_lod.h).
-    const Vec3 eye = observer_position(frame.camera);
+    // A distance for the log line, from the eye in f64 (ADR-0053).
+    const WorldPos eye = frame.camera.position;
     for (const world::TileEvent& event : world_.last_events()) {
       if (!ok) break;
       if (!is_handover(event)) continue;
@@ -381,8 +381,9 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       line.to_ring = event.to;
       line.from = drawn_as(event.from);
       line.to = drawn_as(event.to);
-      const Vec3 c = world::tile_center(event.tile, world_.params().tile_size);
-      line.distance = std::sqrt((c.x - eye.x) * (c.x - eye.x) + (c.z - eye.z) * (c.z - eye.z));
+      const WorldPos c = world::tile_center(event.tile, world_.params().tile_size);
+      line.distance = static_cast<f32>(
+          std::sqrt((c.x - eye.x) * (c.x - eye.x) + (c.z - eye.z) * (c.z - eye.z)));
       line.tile_before = tile_before;
       line.tile_after = tile_after;
       line.coverage_changed = coverage;

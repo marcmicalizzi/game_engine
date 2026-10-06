@@ -79,7 +79,8 @@ class StoreTiles {
 
 // Where a document record is: its composed position property under the partition of the layer that
 // defines it (`doc::position_property`), or the property named `position` or `transform` when no
-// layer is partitioned. False when it has none. The partition reads x and z; this reads all three.
-bool record_position(const doc::Document& document, const Id128& id, Vec3& out);
+// layer is partitioned. False when it has none, or one no cell can name (`world_cell_valid`). The
+// partition reads x and z; this reads all three, as the f64 the document holds (ADR-0053).
+bool record_position(const doc::Document& document, const Id128& id, WorldPos& out);
 
 }  // namespace engine::world

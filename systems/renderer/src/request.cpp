@@ -205,7 +205,7 @@ bool MovingGround::start(GpuScene& scene, const ResolvedSettings& resolved, bool
 
 void MovingGround::follow_tiles(WorldPos camera) {
   if (tiles_ == nullptr) return;
-  // The world ring's first-fill rule, in its own float32 arithmetic (terrain_tiles_round's seam).
+  // The world ring's first-fill rule (`terrain_tiles_round`), from the camera in f64.
   terrain_tiles_round(tiles_->tiles_desc(), camera, round_);
   tiles_->set_tiles(std::span<const TerrainTile>(round_.data(), round_.size()));
 }

@@ -28,10 +28,28 @@ struct ObjectRecord @version(1) {
   properties: map<string, json>
 }
 
+/// A record type a layer file's records are written in, and the version of it they were written at
+/// (docs/subsystems/doc.md, "A layer says which versions it holds").
+struct RecordTypeVersion @version(1) {
+  /// The type's qualified schema name.
+  name: string
+  version: u32 = 0
+}
+
 /// On-disk form of one layer: canonical JSON, records in id order.
-struct LayerFile @version(1) @kind(document) {
+///
+/// Version 2 (2026-10-06) added `types`: a document records no version per record, so a build that
+/// read a newer record type's fields read them as its own — a `worldpos` as float32, silently. A
+/// reader refuses a file naming a type newer than its own, by name, and reads a file without the
+/// table, or naming an older version, as before. A build that predates the table refuses the field
+/// itself ("unknown field"), which is a refusal and not a misreading.
+struct LayerFile @version(2) @kind(document) {
   name: string
   role: LayerRole = Base
+  /// Every record type the file's records are of, defined here or overridden here (the type the
+  /// document composes for them), that the writing build has in its schema registry: in name
+  /// order, once each, at the version that build has. Empty for a file written before version 2.
+  types: RecordTypeVersion[] @since(2)
   objects: ObjectRecord[]
 }
 

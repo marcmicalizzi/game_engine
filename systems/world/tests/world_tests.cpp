@@ -19,7 +19,7 @@ using namespace engine::world;
 
 namespace {
 
-sim::ObserverSet one(Vec3 position, f32 weight = 1.0f) {
+sim::ObserverSet one(WorldPos position, f32 weight = 1.0f) {
   sim::ObserverSet set;
   set.add(position, weight);
   return set;
@@ -33,16 +33,16 @@ RingParams unlimited_params() {
 }
 
 // Brute force: the tiles whose centre is within the ring's radius of one observer.
-u32 tiles_within(Vec3 observer, f32 radius_tiles, f32 tile_size) {
+u32 tiles_within(WorldPos observer, f32 radius_tiles, f32 tile_size) {
   const i32 reach = static_cast<i32>(std::ceil(radius_tiles)) + 2;
   const TileCoord at = tile_at(observer, tile_size);
   u32 n = 0;
   for (i32 x = at.x - reach; x <= at.x + reach; ++x) {
     for (i32 z = at.z - reach; z <= at.z + reach; ++z) {
-      const Vec3 c = tile_center(TileCoord{x, z}, tile_size);
-      const f32 d = std::sqrt((c.x - observer.x) * (c.x - observer.x) +
+      const WorldPos c = tile_center(TileCoord{x, z}, tile_size);
+      const f64 d = std::sqrt((c.x - observer.x) * (c.x - observer.x) +
                               (c.z - observer.z) * (c.z - observer.z));
-      n += d < radius_tiles * tile_size ? 1u : 0u;
+      n += d < static_cast<f64>(radius_tiles * tile_size) ? 1u : 0u;
     }
   }
   return n;
@@ -102,8 +102,8 @@ TEST_CASE("world: tile order is x then z, signed, and the store's id is the writ
   }
   CHECK(store_tile(TileCoord{1, 2}) == ((u64{1} << 32) | 2u));
   CHECK(store_tile(TileCoord{-1, 0}) == (u64{0xFFFFFFFFu} << 32));
-  CHECK(tile_at(Vec3{-0.5f, 7.0f, 31.9f}, 32.0f) == TileCoord{-1, 0});
-  CHECK(tile_at(Vec3{64.0f, 0.0f, -32.0f}, 32.0f) == TileCoord{2, -1});
+  CHECK(tile_at(WorldPos{-0.5, 7.0, 31.9}, 32.0f) == TileCoord{-1, 0});
+  CHECK(tile_at(WorldPos{64.0, 0.0, -32.0}, 32.0f) == TileCoord{2, -1});
 }
 
 TEST_CASE("world: ring parameters that do not make a ring are refused with a reason") {
@@ -129,7 +129,7 @@ TEST_CASE("world: ring parameters that do not make a ring are refused with a rea
 }
 
 TEST_CASE("world: a still observer's rings are the tiles within each radius, in tile order") {
-  const Vec3 observer{10.0f, 3.0f, -20.0f};
+  const WorldPos observer{10.0, 3.0, -20.0};
   TileRing ring(unlimited_params());
   Vector<TileEvent> events;
   ring.update(one(observer), events);
@@ -153,7 +153,7 @@ TEST_CASE("world: a still observer's rings are the tiles within each radius, in 
   tiers.tier_count = p.ring_count + 1;
   for (u32 r = 0; r < p.ring_count; ++r)
     tiers.boundaries[r] = p.radius[r] * p.tile_size;
-  sim::ObserverSet ground = one(Vec3{observer.x, 0.0f, observer.z});
+  sim::ObserverSet ground = one(WorldPos{observer.x, 0.0, observer.z});
   for (const TileEvent& e : events) {
     const f32 score =
         sim::TierAssignment::score(tile_center(e.tile, p.tile_size), 1.0f, ground, tiers);
@@ -167,7 +167,7 @@ TEST_CASE("world: a still observer's rings are the tiles within each radius, in 
 TEST_CASE("world: the budget spreads a first fill over updates, nearest first") {
   RingParams p;  // 8 activations an update
   TileRing ring(p);
-  const Vec3 observer{0.0f, 0.0f, 0.0f};
+  const WorldPos observer{0.0, 0.0, 0.0};
   Vector<TileEvent> events;
   ring.update(one(observer), events);
   CHECK(events.size() == p.max_activations);
@@ -200,8 +200,10 @@ TEST_CASE("world: the same observer path gives the same events, byte for byte") 
       // A path that turns, speeds up and doubles back, with a second observer that comes and goes.
       const f32 s = static_cast<f32>(t);
       sim::ObserverSet observers;
-      observers.add(Vec3{s * 3.1f - 200.0f, 2.0f, 40.0f * std::sin(s * 0.02f)}, 1.0f);
-      if (t % 97 < 50) observers.add(Vec3{-150.0f, 0.0f, 300.0f - s}, 0.5f);
+      observers.add(WorldPos{static_cast<f64>(s * 3.1f - 200.0f), 2.0,
+                             static_cast<f64>(40.0f * std::sin(s * 0.02f))},
+                    1.0f);
+      if (t % 97 < 50) observers.add(WorldPos{-150.0, 0.0, static_cast<f64>(300.0f - s)}, 0.5f);
       world.update(observers, t);
       for (const TileEvent& e : world.last_events())
         out.push_back(e);
@@ -216,6 +218,49 @@ TEST_CASE("world: the same observer path gives the same events, byte for byte") 
   CHECK(std::memcmp(a.data(), b.data(), a.size() * sizeof(TileEvent)) == 0);
 }
 
+TEST_CASE("world: the ring far out holds the tiles it holds by the origin, moved by whole tiles") {
+  // ADR-0053's far sites as whole 32 m tiles (13,096, 312,500 and 3,125,000 tiles out), and the
+  // owner's site less one tile, off the 64 m cell grid. Each walk starts nine metres short of its
+  // site, so it crosses a cell's edge and a tile's in its first seconds. The observers walk the
+  // same path from each, in 1024ths of a metre, so every displacement from a tile's centre is the
+  // same f64 there as by the origin: the ring's events must be the same events, the tiles moved by
+  // the site. A float32 observer steps by a metre at 10,000 km and by 8 m at 1e8 m, so its window
+  // and its scores moved with the float's grid and not with the walk.
+  const f64 sites[] = {419072.0, 10000000.0, 100000000.0, 419072.0 - 32.0};
+  const auto run = [](f64 site_x, f64 site_z, Vector<TileEvent>& out) {
+    World world;
+    REQUIRE(world.configure(RingParams{}));
+    for (u32 t = 0; t < 240; ++t) {
+      const f64 s = static_cast<f64>(t);
+      const f64 wander = std::round(40.0 * std::sin(s * 0.02) * 1024.0) / 1024.0;
+      sim::ObserverSet observers;
+      observers.add(WorldPos{site_x + s * 2.5 - 9.0, 1.75, site_z + wander}, 1.0f);
+      if (t % 97 < 50) observers.add(WorldPos{site_x - 150.0, 0.0, site_z + 300.0 - s}, 0.5f);
+      world.update(observers, t);
+      for (const TileEvent& e : world.last_events())
+        out.push_back(e);
+    }
+  };
+  Vector<TileEvent> by_origin;
+  run(0.0, 0.0, by_origin);
+  REQUIRE(by_origin.size() > 500);
+  for (const f64 site : sites) {
+    CAPTURE(site);
+    Vector<TileEvent> there;
+    run(site, -site, there);
+    REQUIRE(there.size() == by_origin.size());
+    const i32 shift = static_cast<i32>(site / 32.0);
+    u32 same = 0;
+    for (u32 i = 0; i < there.size(); ++i) {
+      TileEvent moved = by_origin[i];
+      moved.tile.x += shift;
+      moved.tile.z -= shift;
+      same += std::memcmp(&moved, &there[i], sizeof(TileEvent)) == 0 ? 1u : 0u;
+    }
+    CHECK(same == there.size());
+  }
+}
+
 TEST_CASE("world: hysteresis crosses a ring boundary once where none would thrash") {
   // An observer walking back and forth by a metre across the inner ring's radius from one tile's
   // centre: 1.5 tiles is 48 m, so the tile at x + 1.5 tiles flips on every step with no band.
@@ -225,12 +270,13 @@ TEST_CASE("world: hysteresis crosses a ring boundary once where none would thras
     TileRing ring(p);
     Vector<TileEvent> events;
     const TileCoord watched{1, 0};
-    const Vec3 center = tile_center(watched, p.tile_size);
+    const WorldPos center = tile_center(watched, p.tile_size);
     u32 changes = 0;
     for (u32 t = 0; t < 40; ++t) {
-      const f32 x = center.x - p.radius[0] * p.tile_size + (t % 2 == 0 ? -1.0f : 1.0f);
+      const f64 x =
+          center.x - static_cast<f64>(p.radius[0] * p.tile_size) + (t % 2 == 0 ? -1.0 : 1.0);
       events.clear();
-      ring.update(one(Vec3{x, 0.0f, center.z}), events);
+      ring.update(one(WorldPos{x, 0.0, center.z}), events);
       for (const TileEvent& e : events)
         changes += e.tile == watched ? 1u : 0u;
     }
@@ -246,10 +292,10 @@ TEST_CASE("world: a teleport activates the new place nearest first and lets the 
   p.max_deactivations = 16;
   TileRing ring(p);
   Vector<TileEvent> events;
-  ring.update(one(Vec3{0, 0, 0}), events, /*unlimited=*/true);
+  ring.update(one(WorldPos{0, 0, 0}), events, /*unlimited=*/true);
   const u32 before = ring.active_count();
   events.clear();
-  ring.update(one(Vec3{5000.0f, 0.0f, 0.0f}), events);
+  ring.update(one(WorldPos{5000.0, 0.0, 0.0}), events);
   u32 activated = 0;
   u32 activated_inner = 0;
   u32 deactivated = 0;
@@ -259,7 +305,7 @@ TEST_CASE("world: a teleport activates the new place nearest first and lets the 
     deactivated += e.kind == TileEventKind::Deactivate ? 1u : 0u;
   }
   // The whole inner ring is among the first eight: the nearest go first.
-  const u32 inner = tiles_within(Vec3{5000.0f, 0.0f, 0.0f}, p.radius[0], p.tile_size);
+  const u32 inner = tiles_within(WorldPos{5000.0, 0.0, 0.0}, p.radius[0], p.tile_size);
   REQUIRE(inner <= p.max_activations);
   CHECK(activated_inner == inner);
   CHECK(activated == p.max_activations);
@@ -271,19 +317,19 @@ TEST_CASE("world: two observers take the nearer, and a heavier one reaches farth
   TileRing ring(unlimited_params());
   Vector<TileEvent> events;
   sim::ObserverSet two;
-  two.add(Vec3{0, 0, 0}, 1.0f);
-  two.add(Vec3{2000.0f, 0.0f, 0.0f}, 2.0f);
+  two.add(WorldPos{0, 0, 0}, 1.0f);
+  two.add(WorldPos{2000.0, 0.0, 0.0}, 2.0f);
   ring.update(two, events);
   const RingParams& p = ring.params();
-  CHECK(ring.ring_of(tile_at(Vec3{0, 0, 0}, p.tile_size)) == 0);
-  CHECK(ring.ring_of(tile_at(Vec3{2000.0f, 0.0f, 0.0f}, p.tile_size)) == 0);
+  CHECK(ring.ring_of(tile_at(WorldPos{0, 0, 0}, p.tile_size)) == 0);
+  CHECK(ring.ring_of(tile_at(WorldPos{2000.0, 0.0, 0.0}, p.tile_size)) == 0);
   // Two tiles along x from each: the light observer's is 82 m to its centre, past the inner ring's
   // 48 m; the heavy one's is 66 m, which its weight of two halves to 33, inside it.
-  const TileCoord heavy_near = tile_at(Vec3{2000.0f + 64.0f, 0.0f, 0.0f}, p.tile_size);
-  const TileCoord light_near = tile_at(Vec3{64.0f, 0.0f, 0.0f}, p.tile_size);
+  const TileCoord heavy_near = tile_at(WorldPos{2000.0 + 64.0, 0.0, 0.0}, p.tile_size);
+  const TileCoord light_near = tile_at(WorldPos{64.0, 0.0, 0.0}, p.tile_size);
   CHECK(ring.ring_of(heavy_near) == 0);
   CHECK(ring.ring_of(light_near) == 1);
-  CHECK(ring.active_count() > tiles_within(Vec3{0, 0, 0}, p.radius[2], p.tile_size));
+  CHECK(ring.active_count() > tiles_within(WorldPos{0, 0, 0}, p.radius[2], p.tile_size));
 }
 
 TEST_CASE("world: consumers activate in registration order and deactivate in reverse") {
@@ -300,7 +346,7 @@ TEST_CASE("world: consumers activate in registration order and deactivate in rev
   world.add_consumer(b.row(0x1));  // the inner ring only
   // An observer at a tile's centre: that tile is inner (0 m), its four neighbours at one tile are
   // on the inner radius and so outer, the diagonals at 1.41 tiles outer too.
-  const Vec3 center = tile_center(TileCoord{0, 0}, p.tile_size);
+  const WorldPos center = tile_center(TileCoord{0, 0}, p.tile_size);
   world.update(one(center), 1);
   REQUIRE(!log.empty());
   // Tile (0, 0): a then b.
@@ -344,7 +390,7 @@ TEST_CASE("world: a refused tile is counted and stays active for the others") {
   World world(unlimited_params());
   world.add_consumer(a.row(0x7F));
   world.add_consumer(b.row(0x01));
-  const UpdateStats& s = world.update(one(Vec3{0, 0, 0}), 0);
+  const UpdateStats& s = world.update(one(WorldPos{0, 0, 0}), 0);
   CHECK(s.refused == s.per_ring[0]);
   CHECK(world.consumer_stats(1).refusals == s.per_ring[0]);
   CHECK(world.consumer_stats(0).refusals == 0);

@@ -785,3 +785,109 @@ TEST_CASE("doc save: a file that is not in the canonical form is rewritten by th
   CHECK(report.written[0] == "layers/base.json");
   CHECK(files_on_disk(tmp.file("world")) == reference_files(loaded, loaded_manifest));
 }
+
+TEST_CASE("doc save: a layer names its record types' versions; a newer one is refused by name") {
+  // LayerFile version 2 (doc.md, "A layer says which versions it holds"): a tiled layer defining a
+  // Placement 419 km out, and a single-file layer defining another and overriding the first.
+  TempDir tmp("engine_doc_save_types");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  const std::string dir = "docs://world";
+  std::string error;
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+  doc.add_layer("places", LayerRole::Feature);
+  doc.set_layer_partition(1, tiles_of(32));
+  doc.add_layer("moves", LayerRole::Feature);
+  doc.set_edit_layer(1);
+  {
+    JsonValue props = JsonValue::object();
+    props.set("position", point(419070.25, 5.5));
+    Transaction tx = doc.begin(who());
+    REQUIRE(tx.apply(cmd_create(id_of(1), k_placement, ObjectId{}, std::move(props))));
+    REQUIRE(tx.commit());
+  }
+  doc.set_edit_layer(2);
+  {
+    Transaction tx = doc.begin(who());
+    REQUIRE(tx.apply(cmd_set(id_of(1), "name", JsonValue("moved"))));
+    REQUIRE(tx.apply(cmd_create(id_of(2), k_placement)));
+    REQUIRE(tx.commit());
+  }
+  REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
+  const u32 version = schema::Registry::global().find(k_placement)->version;
+
+  const auto read_layer = [&](const std::string& rel, LayerFile& out) {
+    std::string text;
+    REQUIRE(vfs.read(dir + "/layers/" + rel, text) == io::Status::Ok);
+    JsonValue json;
+    REQUIRE(parse_json(text, json).ok);
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(out, json, ctx));
+  };
+  const auto write_layer = [&](const std::string& rel, const LayerFile& file) {
+    REQUIRE(vfs.write(dir + "/layers/" + rel, write_json(schema::to_json(file))) == io::Status::Ok);
+  };
+  // Each file names the type its defining records are of, at this build's version.
+  const std::string tile = "places/tiles/" + tile_file_name(TileCoord{13095, 0});
+  LayerFile tile_file;
+  read_layer(tile, tile_file);
+  REQUIRE(tile_file.types.size() == 1);
+  CHECK(tile_file.types[0].name == k_placement);
+  CHECK(tile_file.types[0].version == version);
+  LayerFile moves;
+  read_layer("moves.json", moves);
+  REQUIRE(moves.types.size() == 1);
+  CHECK(moves.types[0].name == k_placement);
+
+  // A layer written before version 2 has no table: it loads as it always did, and the next save
+  // writes the table in, since its bytes are not the canonical ones any more.
+  LayerFile older = tile_file;
+  older.types.clear();
+  write_layer(tile, older);
+  Document loaded;
+  DocumentManifest loaded_manifest;
+  REQUIRE_MESSAGE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error), error);
+  CHECK(loaded.changes(1).whole);
+  REQUIRE(DocumentStore::save(vfs, dir, loaded, loaded_manifest, &error));
+  LayerFile rewritten;
+  read_layer(tile, rewritten);
+  CHECK(rewritten.types.size() == 1);
+  // So does one naming an older version of the type: a field it lacks takes its default.
+  LayerFile old_version = tile_file;
+  old_version.types[0].version = version - 1;
+  write_layer(tile, old_version);
+  REQUIRE_MESSAGE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error), error);
+
+  // A newer one is refused, naming the file, the layer, the type and both versions: a tile, and a
+  // single-file layer.
+  LayerFile newer = tile_file;
+  newer.types[0].version = version + 1;
+  write_layer(tile, newer);
+  error.clear();
+  CHECK_FALSE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error));
+  MESSAGE(error);
+  CHECK(error.find(tile) != std::string::npos);
+  CHECK(error.find("layer 'places'") != std::string::npos);
+  CHECK(error.find(std::string(k_placement) + " records at version " +
+                   std::to_string(version + 1)) != std::string::npos);
+  CHECK(error.find("newer than this build's " + std::to_string(version)) != std::string::npos);
+  write_layer(tile, tile_file);
+  LayerFile newer_moves = moves;
+  newer_moves.types[0].version = version + 1;
+  write_layer("moves.json", newer_moves);
+  error.clear();
+  CHECK_FALSE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error));
+  CHECK(error.find("moves.json") != std::string::npos);
+  CHECK(error.find(k_placement) != std::string::npos);
+
+  // A type this build does not have is the document's data, as before: kept, not refused.
+  LayerFile unknown = moves;
+  RecordTypeVersion elsewhere;
+  elsewhere.name = "engine.elsewhere.Thing";
+  elsewhere.version = 99;
+  unknown.types.push_back(elsewhere);
+  write_layer("moves.json", unknown);
+  REQUIRE_MESSAGE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error), error);
+}

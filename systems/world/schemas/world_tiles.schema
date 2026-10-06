@@ -10,13 +10,18 @@ namespace engine.world
 /// `SimScheduler::reconcile_tile` reads back as an `EntityRecord` when the tile activates again
 /// (docs/plan/05-simulation.md §5.5 step 1). The record's authored state stays the document's;
 /// this is what the simulation needs to place it and to promote it by distance.
-struct TileProjection @version(1) {
+///
+/// Version 2 (2026-10-06): `position` is a `worldpos`, the document's own f64 (ADR-0053), where
+/// version 1 held the float32 it rounded to — 3.1 cm 420 km out, a metre at 10,000 km. The JSON is
+/// the same three numbers, and a version-1 float32 was always written as the double it widens to,
+/// so a version-1 projection reads as the same position: the step migrates nothing.
+struct TileProjection @version(2) {
   /// The record, and so the entity: one identity across saves (ADR-0028 seam 3).
   record: id128
   /// Its type's qualified name, as the document has it.
   type: string
   /// Where it was when the tile went inactive, world space, y up.
-  position: vec3 @unit(m)
+  position: worldpos @unit(m)
   /// What divides its distance to an observer (05 §5.4).
   importance: f32 = 1
 }

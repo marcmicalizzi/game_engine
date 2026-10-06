@@ -4,6 +4,7 @@
 #include <domain/doc/partition.h>
 #include <systems/world/store_tiles.h>
 
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -13,31 +14,31 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_world_tiles, "world.store_tiles");
 
-bool number(const JsonValue* value, f32& out) {
-  f64 v = 0.0;
-  if (value == nullptr || !value->get_f64(v)) return false;
-  out = static_cast<f32>(v);
-  return true;
+// A JSON number is a double, and the document's position is one (`worldpos`, ADR-0053): read as
+// it is, never through a float32, which put a record 420 km out on a 3.1 cm grid in its tile's
+// projection — and so wherever the tile's next activation promoted it from.
+bool number(const JsonValue* value, f64& out) {
+  return value != nullptr && value->get_f64(out) && std::isfinite(out);
 }
 
 // [x, y] (on the ground, y = 0 here) or [x, y, z]; an object with x, y, z; or a transform with a
 // `position` or `translation` member — the shapes `doc::read_position` accepts, all three axes.
-bool read_vec3(const JsonValue& value, Vec3& out) {
+bool read_point(const JsonValue& value, WorldPos& out) {
   if (value.is_array()) {
     if (value.size() == 3) {
       return number(&value[0], out.x) && number(&value[1], out.y) && number(&value[2], out.z);
     }
     if (value.size() == 2) {
-      out.y = 0.0f;
+      out.y = 0.0;
       return number(&value[0], out.x) && number(&value[1], out.z);
     }
     return false;
   }
   if (!value.is_object()) return false;
   for (const char* member : {"position", "translation"}) {
-    if (const JsonValue* inner = value.find(member)) return read_vec3(*inner, out);
+    if (const JsonValue* inner = value.find(member)) return read_point(*inner, out);
   }
-  out.y = 0.0f;
+  out.y = 0.0;
   if (!number(value.find("x"), out.x)) return false;
   number(value.find("y"), out.y);
   return number(value.find("z"), out.z);
@@ -47,7 +48,7 @@ bool read_vec3(const JsonValue& value, Vec3& out) {
 
 // ---- where a record is --------------------------------------------------------------------------
 
-bool record_position(const doc::Document& document, const Id128& id, Vec3& out) {
+bool record_position(const doc::Document& document, const Id128& id, WorldPos& out) {
   // The layer that defines the record decides which property is its position, exactly as the
   // partition's file layout does (`doc::position_property`).
   const doc::ObjectRecord* defining = nullptr;
@@ -69,7 +70,11 @@ bool record_position(const doc::Document& document, const Id128& id, Vec3& out) 
   }
   if (property.empty()) return false;
   const JsonValue* value = document.property(id, property);
-  return value != nullptr && read_vec3(*value, out);
+  // A position no cell can name is not a place a projection can keep (`worldpos` refuses it).
+  WorldPos p;
+  if (value == nullptr || !read_point(*value, p) || !world_cell_valid(p)) return false;
+  out = p;
+  return true;
 }
 
 // ---- the store consumer -------------------------------------------------------------------------

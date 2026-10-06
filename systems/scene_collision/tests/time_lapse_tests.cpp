@@ -147,7 +147,7 @@ void run(const Erg& erg, f64 rate, u32 frames, bool walker, Run& out) {
   world::World ring(ring_params_from_tunables(32.0f));
   ring.add_consumer(collision.consumer());
   sim::ObserverSet at;
-  at.add(Vec3{wx, 0.0f, wz}, 1.0f);
+  at.add(WorldPos{static_cast<f64>(wx), 0.0, static_cast<f64>(wz)}, 1.0f);
   ring.update(at, 0, true);
   physics::CharacterBody body;
   if (walker) {
@@ -399,7 +399,7 @@ void stand(const Erg& erg, f64 rate, u32 frames, f32 wx, f32 wz, const Cadence& 
   world::World ring(ring_params_from_tunables(32.0f));
   ring.add_consumer(collision.consumer());
   sim::ObserverSet at;
-  at.add(Vec3{wx, 0.0f, wz}, 1.0f);
+  at.add(WorldPos{static_cast<f64>(wx), 0.0, static_cast<f64>(wz)}, 1.0f);
   ring.update(at, 0, true);
   f32 y = 0.0f;
   REQUIRE(collision.ground_height(wp(wx, wz), y));

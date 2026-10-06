@@ -204,36 +204,6 @@ void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<T
   }
 }
 
-void terrain_tiles_round(const TerrainTilesDesc& desc, f32 x, f32 z, Vector<TerrainTile>& out) {
-  out.clear();
-  if (desc.ring_count == 0) return;
-  const f32 t = desc.tile_size;
-  const f32 reach = desc.radius[desc.ring_count - 1] * t;
-  const i32 x0 =
-      static_cast<i32>(std::floor(static_cast<f64>(x - reach) / static_cast<f64>(t))) - 1;
-  const i32 x1 =
-      static_cast<i32>(std::floor(static_cast<f64>(x + reach) / static_cast<f64>(t))) + 1;
-  const i32 z0 =
-      static_cast<i32>(std::floor(static_cast<f64>(z - reach) / static_cast<f64>(t))) - 1;
-  const i32 z1 =
-      static_cast<i32>(std::floor(static_cast<f64>(z + reach) / static_cast<f64>(t))) + 1;
-  const Vec3 eye{x, 0.0f, z};
-  // The world ring's arithmetic, as it scores a tile: its centre on the ground, the distance in
-  // floats, and the first ring whose boundary it is strictly inside (`TierAssignment::tier_of`).
-  for (i32 i = x0; i <= x1; ++i) {
-    for (i32 j = z0; j <= z1; ++j) {
-      const Vec3 centre{(static_cast<f32>(i) + 0.5f) * t, 0.0f, (static_cast<f32>(j) + 0.5f) * t};
-      const f32 d = distance(centre, eye);
-      for (u32 r = 0; r < desc.ring_count; ++r) {
-        if (d < desc.radius[r] * t) {
-          out.push_back(TerrainTile{i, j, static_cast<u8>(r)});
-          break;
-        }
-      }
-    }
-  }
-}
-
 // ---- a tile's mesh ------------------------------------------------------------------------------
 
 u64 terrain_tile_key(const TerrainTileMeshSpec& spec) noexcept {

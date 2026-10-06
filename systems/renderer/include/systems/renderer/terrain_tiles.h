@@ -133,12 +133,10 @@ f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept;
 // order (x, then z) — what the world's ring holds after its first update from nothing with no
 // budget. Each tile's centre is measured from the camera in f64, so the rule is the same 10,000 km
 // out as by the origin: a tile set moved by whole tiles with its camera holds the same tiles.
+// The world's ring (`systems/world`) scores the same centres from an f64 observer and bands the
+// distance as a float32 (`sim::TierAssignment`), so the two agree on every tile but one whose
+// centre is within half a float step of a ring's radius.
 void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<TerrainTile>& out);
-// The same rule in the world ring's own float32 arithmetic (absolute float32 metres, as
-// `TierAssignment::tier_of` scores a tile), which its tests compare the world's first update with.
-// ADR-0053 seam: systems/world's ring scores from a float32 observer; this goes when it takes
-// WorldPos. By the origin the two differ only on a centre exactly on a ring's radius.
-void terrain_tiles_round(const TerrainTilesDesc& desc, f32 x, f32 z, Vector<TerrainTile>& out);
 
 // **A tile's neighbourhood**: the levels of the tiles round it that decide its mesh (0: not held).
 // Edges are -x, +x, -z, +z; corners (-x, -z), (+x, -z), (-x, +z), (+x, +z).
@@ -298,25 +296,6 @@ class TerrainTileSet final : public TerrainLevelSet {
   bool update(WorldPos camera, f64 time_s, const TerrainRingLayout& target,
               std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
               std::string* error) override;
-  // ADR-0053 seam: systems/world's tests hand the camera as float32 metres by the origin; they take
-  // WorldPos when the world's agent moves them. Exact widenings of the three above.
-  bool build(const TerrainDesc& terrain, const TerrainTilesDesc& tiles,
-             const scene_gen::TileSource& source, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
-             std::string* error = nullptr) {
-    return build(terrain, tiles, source, widened(camera_x, camera_z), jobs, error);
-  }
-  TerrainRingLayout next_layout(f32 camera_x, f32 camera_z,
-                                const TerrainRingLayout& from) const noexcept {
-    return next_layout(widened(camera_x, camera_z), from);
-  }
-  bool update(f32 camera_x, f32 camera_z, f64 time_s, const TerrainRingLayout& target,
-              std::span<const Heights> fields, jobs::JobSystem* jobs, u32& moved,
-              std::string* error) {
-    return update(widened(camera_x, camera_z), time_s, target, fields, jobs, moved, error);
-  }
-  static WorldPos widened(f32 x, f32 z) noexcept {
-    return WorldPos{static_cast<f64>(x), 0.0, static_cast<f64>(z)};
-  }
   f64 padding(u32 level, std::span<const f32> field,
               const gfx::TerrainField& window) const override;
   bool changed_only() const noexcept override { return !whole_last_; }

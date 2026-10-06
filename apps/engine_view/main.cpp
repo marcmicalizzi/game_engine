@@ -746,12 +746,12 @@ struct AnimatedScene {
   sim::TierParams tier_params;
   sim::ObserverSet observers;
   sim::TierAssignment tiers;
-  Vector<u32> row_instance;  // scene instance of each row below
-  Vector<Vec3> positions;    // world centre of the instance's padded bounding sphere
-  Vector<f32> radii;         // its radius, padding and instance scale included
-  Vector<f32> importance;    // what the camera says the row is worth, refilled every frame
-  Vector<u8> tier_state;     // in/out of assign_tiers; the tier each row is at
-  Vector<u8> instance_tier;  // the same, indexed by scene instance, for `step_animation`
+  Vector<u32> row_instance;    // scene instance of each row below
+  Vector<WorldPos> positions;  // world centre of the instance's padded bounding sphere, f64
+  Vector<f32> radii;           // its radius, padding and instance scale included
+  Vector<f32> importance;      // what the camera says the row is worth, refilled every frame
+  Vector<u8> tier_state;       // in/out of assign_tiers; the tier each row is at
+  Vector<u8> instance_tier;    // the same, indexed by scene instance, for `step_animation`
   Vector<sim::TierChange> changes;
   u32 histogram[animation::k_tier_count] = {};
   u32 promotions = 0;
@@ -933,8 +933,8 @@ void update_animation_lod(AnimatedScene& scene, const renderer::ViewSet& views,
                           const renderer::Camera& camera) {
   if (!scene.lod || scene.row_instance.empty()) return;
   view::build_observers(views, camera, scene.observers);
-  view::view_importance(views, view::observer_position(camera),
-                        std::span<const Vec3>(scene.positions.data(), scene.positions.size()),
+  view::view_importance(views, camera.position,
+                        std::span<const WorldPos>(scene.positions.data(), scene.positions.size()),
                         std::span<const f32>(scene.radii.data(), scene.radii.size()),
                         std::span<f32>(scene.importance.data(), scene.importance.size()));
   sim::TierInput input;
@@ -1119,10 +1119,15 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   for (u32 i = 0; i < count; ++i) {
     if (scene.entities[i].is_null()) continue;
     const gfx::InstanceDesc& instance = data.instances[i];
-    const Vec4 world_center =
-        renderer::instance_world_matrix(instance) * Vec4{mesh_center[instance.mesh], 1.0f};
+    // The centre in the world, f64 (ADR-0053): the mesh's centre through the instance's 3x4 in the
+    // instance's own frame — the eye at its cell and local, so the translation is zero and the
+    // product is a float the size of the mesh — added to where the cell and local put the instance.
+    const WorldCell placed = gfx::instance_cell(instance);
+    const Mat4 own_frame =
+        gfx::instance_matrix(instance, WorldEye{placed.cell, placed.local, Vec3{}});
+    const Vec4 offset = own_frame * Vec4{mesh_center[instance.mesh], 1.0f};
     scene.row_instance.push_back(i);
-    scene.positions.push_back(Vec3{world_center.x, world_center.y, world_center.z});
+    scene.positions.push_back(to_world(placed) + DVec3{offset.xyz()});
     scene.radii.push_back((mesh_radius[instance.mesh] + instance.bounds_padding) *
                           instance.scale_max);
   }

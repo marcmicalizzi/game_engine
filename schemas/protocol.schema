@@ -1631,8 +1631,10 @@ struct MaterializeResult @version(1) {
 // back as commits attributed to `system` (docs/subsystems/protocol.md, "session.run_headless").
 
 /// An observer a headless run declares: where it starts, how it moves, and its weight (05 §5.4).
-struct HeadlessObserver @version(1) {
-  position: vec3 @unit(m)
+/// Version 2 (2026-10-06): `position` is a `worldpos`, f64 and refused outside the cells' extent
+/// (ADR-0053); the JSON is the same three numbers, so a version-1 call reads as the same place.
+struct HeadlessObserver @version(2) {
+  position: worldpos @unit(m)
   /// Metres per game second, applied every tick: a declared observer that walks the world.
   velocity: vec3
   weight: f32 = 1

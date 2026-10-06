@@ -111,7 +111,7 @@ ENGINE_BENCH_ARGS(npc_tick_observed, "npc.tick.observed", 1000, 10000, 100000) {
   const u32 residents = population(state);
   World world(residents);
   sim::ObserverSet observers;
-  observers.add(Vec3{}, 1.0f);
+  observers.add(WorldPos{}, 1.0f);
   world.npc.set_observers(&observers);
   world.driver.materialize(world.document);
   // Let the rate limits settle the tiers before timing.

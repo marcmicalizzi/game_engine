@@ -835,6 +835,10 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
     if (!read_file(disk, lf.tile(t.file), text, known, error) ||
         !parse_schema_text(text, path, file, error))
       return false;
+    if (std::string why; !check_record_types(file, why)) {
+      set_error(error, path, why);
+      return false;
+    }
     if (file.name != ref.name) {
       set_error(error, path,
                 "tile names layer '" + file.name + "', the manifest says '" + ref.name + "'");
@@ -890,6 +894,10 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
   if (!read_file(disk, lf.untiled, text, known, error) ||
       !parse_schema_text(text, untiled_path, untiled, error))
     return false;
+  if (std::string why; !check_record_types(untiled, why)) {
+    set_error(error, untiled_path, why);
+    return false;
+  }
   if (untiled.objects.size() != index.untiled.size()) {
     set_error(error, untiled_path,
               "holds " + std::to_string(untiled.objects.size()) + " records, the index lists " +

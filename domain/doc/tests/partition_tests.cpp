@@ -234,7 +234,13 @@ TEST_CASE("doc partition: the file layout and its canonical bytes") {
         "      \"type\": \"engine.doc.test.Placement\"\n"
         "    }\n"
         "  ],\n"
-        "  \"role\": \"Base\"\n"
+        "  \"role\": \"Base\",\n"
+        "  \"types\": [\n"
+        "    {\n"
+        "      \"name\": \"engine.doc.test.Placement\",\n"
+        "      \"version\": 1\n"
+        "    }\n"
+        "  ]\n"
         "}");
 
   REQUIRE(vfs.read("docs://world/layers/base/index.json", text) == io::Status::Ok);
