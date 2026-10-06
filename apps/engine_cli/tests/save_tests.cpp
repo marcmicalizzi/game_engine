@@ -430,8 +430,11 @@ TEST_CASE(
   // hash"). A change that moves the world — the fixture, a system's arithmetic, the write-back, the
   // hash itself — moves this, and says so here; a change that moves it on one compiler only is a
   // determinism bug (ADR-0035's kind), not an expectation to update.
-  // c2168e9307bca23b until 2026-10-05, when the carts began to integrate in f64 (ADR-0053).
-  CHECK(a.value == "034b0fdc9cda96f0");
+  // c2168e9307bca23b until 2026-10-05, when the carts began to integrate in f64 (ADR-0053);
+  // 034b0fdc9cda96f0 until 2026-10-06, when a tile's projections began to keep its records' f64
+  // positions (`TileProjection` 2) instead of the float32 each rounded to. The same on MSVC and
+  // Clang 18.
+  CHECK(a.value == "15b4cd29460682f8");
 #endif
 }
 

@@ -45,7 +45,9 @@ TEST_CASE("npc generator: the layer is the same bytes at none, one and four work
   }
   // And the same bytes on every compiler: the layer's canonical JSON, hashed.
   MESSAGE("layer hash " << hash_bytes(serial.data(), serial.size()));
-  CHECK(hash_bytes(serial.data(), serial.size()) == 1890793958909862474ull);
+  // 1890793958909862474 until 2026-10-06, when a layer file began to name its record types'
+  // versions (`LayerFile` 2, docs/subsystems/doc.md); the same on MSVC and Clang 18.
+  CHECK(hash_bytes(serial.data(), serial.size()) == 10378943820066845251ull);
   // Another seed is another world.
   p.seed = 10;
   CHECK(layer_text(generate_layer(p)) != serial);
