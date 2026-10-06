@@ -42,7 +42,8 @@ void run(bench::State& state, bool moving) {
     e.max_distance = 30.0f;
     // A spiral out from the listener: the near ones are in reach, most are not.
     const f32 r = 2.0f + 0.05f * static_cast<f32>(i);
-    e.position = Vec3{r * (static_cast<f32>(i % 7u) - 3.0f) / 3.0f, 0.0f, -r};
+    e.position =
+        absolute(WorldPos::origin(), Vec3{r * (static_cast<f32>(i % 7u) - 3.0f) / 3.0f, 0.0f, -r});
     entities.push_back(sim.world().entity().set(e).id());
   }
   sim.step();
@@ -54,7 +55,7 @@ void run(bench::State& state, bool moving) {
       state.pause_timing();
       for (const flecs::entity_t id : entities) {
         AudioEmitter* e = sim.world().entity(id).try_get_mut<AudioEmitter>();
-        e->position.y = 0.01f * static_cast<f32>(tick % 100u);
+        e->position.y = 0.01 * static_cast<f64>(tick % 100u);
       }
       state.resume_timing();
     }

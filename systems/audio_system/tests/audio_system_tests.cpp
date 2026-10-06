@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstring>
 #include <flecs.h>
 #include <optional>
 #include <string_view>
@@ -86,7 +87,7 @@ void expect(const Sent& sent, u64 plays, u64 stops, u64 params, u64 sources, u64
   CHECK(sent.listeners == listeners);
 }
 
-AudioEmitter loop_at(Vec3 position) {
+AudioEmitter loop_at(WorldPos position) {
   AudioEmitter e;
   e.clip = k_loop_clip;
   e.position = position;
@@ -113,7 +114,7 @@ TEST_CASE("a new emitter plays once, and an unchanged one sends nothing at all")
   Rig rig;
   // The listener at the origin is the mixer's default, but the system sends it once so the mixer
   // and the world agree from the first tick.
-  const flecs::entity emitter = rig.sim.world().entity().set(loop_at(Vec3{2.0f, 0.0f, -3.0f}));
+  const flecs::entity emitter = rig.sim.world().entity().set(loop_at(WorldPos{2.0, 0.0, -3.0}));
   expect(rig.tick(), 1, 0, 0, 0, 1);
   CHECK(rig.audio.stats().emitters == 1u);
   CHECK(rig.mixer.live_voices() == 1u);
@@ -124,7 +125,7 @@ TEST_CASE("a new emitter plays once, and an unchanged one sends nothing at all")
 
 TEST_CASE("each change sends exactly the command it implies") {
   Rig rig;
-  const flecs::entity emitter = rig.sim.world().entity().set(loop_at(Vec3{2.0f, 0.0f, -3.0f}));
+  const flecs::entity emitter = rig.sim.world().entity().set(loop_at(WorldPos{2.0, 0.0, -3.0}));
   rig.tick();
   auto edit = [&](auto&& change) {
     change(*emitter.try_get_mut<AudioEmitter>());
@@ -141,7 +142,7 @@ TEST_CASE("each change sends exactly the command it implies") {
            0, 0, 1, 0);  // two fields, one command
   }
   SUBCASE("position, orientation, distances, cone and spread are one source update") {
-    expect(edit([](AudioEmitter& e) { e.position = Vec3{3.0f, 0.0f, -3.0f}; }), 0, 0, 0, 1);
+    expect(edit([](AudioEmitter& e) { e.position = WorldPos{3.0, 0.0, -3.0}; }), 0, 0, 0, 1);
     expect(edit([](AudioEmitter& e) { e.orientation = Quat{0.0f, 1.0f, 0.0f, 0.0f}; }), 0, 0, 0, 1);
     expect(edit([](AudioEmitter& e) {
              e.directivity = Directivity::Cone;
@@ -173,7 +174,7 @@ TEST_CASE("each change sends exactly the command it implies") {
 
 TEST_CASE("the listener is sent when it moves, and only then") {
   Rig rig;
-  rig.sim.world().entity().set(loop_at(Vec3{0.0f, 0.0f, -5.0f}));
+  rig.sim.world().entity().set(loop_at(WorldPos{0.0, 0.0, -5.0}));
   expect(rig.tick(), 1, 0, 0, 0, 1);
   AudioListener l;
   l.forward = Vec3{0.0f, 0.0f, -1.0f};
@@ -181,22 +182,100 @@ TEST_CASE("the listener is sent when it moves, and only then") {
   const flecs::entity listener = rig.sim.world().entity().set(l);
   // The same pose as the default listener: nothing to send.
   expect(rig.tick(), 0, 0, 0, 0, 0);
-  listener.try_get_mut<AudioListener>()->position = Vec3{1.0f, 0.0f, 0.0f};
+  listener.try_get_mut<AudioListener>()->position = WorldPos{1.0, 0.0, 0.0};
   expect(rig.tick(), 0, 0, 0, 0, 1);
   expect(rig.tick(), 0, 0, 0, 0, 0);
   // A second listener is counted and ignored: the lowest entity id wins, and that is the first.
   AudioListener other;
-  other.position = Vec3{50.0f, 0.0f, 0.0f};
+  other.position = WorldPos{50.0, 0.0, 0.0};
   rig.sim.world().entity().set(other);
   expect(rig.tick(), 0, 0, 0, 0, 0);
   CHECK(rig.audio.stats().listeners == 2u);
+}
+
+TEST_CASE("a source a metre left of the listener is a metre left 10,000 km out, to the bit") {
+  // ADR-0053's far sites, whole 64 m cells, so the listener stands at the same place in its cell
+  // as by the origin. The mixer is handed both positions in its frame, the corner of the
+  // listener's cell (audio_system.md, "The mixer's frame"): the floats it gets are the origin's,
+  // so it renders the same bytes. As float32 world positions they were a metre apart only to the
+  // float's step — 3.1 cm at 419 km, a metre at 10,000 km, 8 m at 1e8 m — and the source was where
+  // that grid put it. The second layout stands the listener a quarter metre into its cell, so the
+  // source is in the cell before it.
+  const DVec3 sites[] = {
+      DVec3{419072.0, 0.0, -419072.0},
+      DVec3{10000000.0, 64.0, 10000000.0},
+      DVec3{100000000.0, 0.0, -100000000.0},
+  };
+  const Vec3 layouts[] = {Vec3{10.25f, 1.5f, 20.5f}, Vec3{0.25f, 1.5f, 20.5f}};
+  // Four ticks of a loop one metre to the listener's left (-x, facing -z), as rendered.
+  const auto heard = [](WorldPos ear, WorldPos& frame) {
+    Rig rig;
+    AudioListener l;
+    l.position = ear;
+    l.forward = Vec3{0.0f, 0.0f, -1.0f};
+    l.up = Vec3{0.0f, 1.0f, 0.0f};
+    rig.sim.world().entity().set(l);
+    rig.sim.world().entity().set(loop_at(ear + DVec3{-1.0, 0.0, 0.0}));
+    Vector<f32> out;
+    for (u32 t = 0; t < 4; ++t) {
+      rig.tick();
+      for (const f32 s : rig.buffer)
+        out.push_back(s);
+    }
+    frame = rig.audio.mixer_frame();
+    return out;
+  };
+  for (const Vec3& local : layouts) {
+    CAPTURE(local.x);
+    WorldPos frame;
+    const Vector<f32> by_origin = heard(absolute(WorldPos::origin(), local), frame);
+    CHECK(frame == WorldPos::origin());
+    // It is on the left: stereo, the left channel louder than the right.
+    f64 left = 0.0;
+    f64 right = 0.0;
+    for (u32 i = 0; i + 1 < by_origin.size(); i += 2) {
+      left += static_cast<f64>(by_origin[i]) * static_cast<f64>(by_origin[i]);
+      right += static_cast<f64>(by_origin[i + 1]) * static_cast<f64>(by_origin[i + 1]);
+    }
+    CHECK(left > 2.0 * right);
+    for (const DVec3& site : sites) {
+      CAPTURE(site.x);
+      const WorldPos ear = WorldPos::origin() + site + DVec3{local};
+      const Vector<f32> there = heard(ear, frame);
+      CHECK(frame == WorldPos::origin() + site);
+      // The floats the mixer was handed, and so every sample it rendered.
+      CHECK(relative(ear + DVec3{-1.0, 0.0, 0.0}, frame) - relative(ear, frame) ==
+            Vec3{-1.0f, 0.0f, 0.0f});
+      REQUIRE(there.size() == by_origin.size());
+      CHECK(std::memcmp(there.data(), by_origin.data(), there.size() * sizeof(f32)) == 0);
+    }
+  }
+}
+
+TEST_CASE("a listener moving inside its cell is one command; crossing into another resends") {
+  Rig rig;
+  // Two loops either side of the edge between the cells at x = 0 and x = 64, all within reach.
+  rig.sim.world().entity().set(loop_at(WorldPos{62.0, 0.0, 5.0}));
+  rig.sim.world().entity().set(loop_at(WorldPos{66.0, 0.0, 5.0}));
+  AudioListener l;
+  l.position = WorldPos{40.0, 0.0, 10.0};
+  const flecs::entity listener = rig.sim.world().entity().set(l);
+  expect(rig.tick(), 2, 0, 0, 0, 1);
+  // Inside the cell: the listener alone.
+  listener.try_get_mut<AudioListener>()->position = WorldPos{60.0, 0.0, 10.0};
+  expect(rig.tick(), 0, 0, 0, 0, 1);
+  // Into the next cell east: the frame moves to its corner, and both voices' sources follow.
+  listener.try_get_mut<AudioListener>()->position = WorldPos{65.0, 0.0, 10.0};
+  expect(rig.tick(), 0, 0, 0, 2, 1);
+  CHECK(rig.audio.mixer_frame() == WorldPos{64.0, 0.0, 0.0});
+  expect(rig.tick(), 0, 0, 0, 0, 0);
 }
 
 TEST_CASE("a one-shot plays out and stays silent until it is retriggered") {
   Rig rig;
   AudioEmitter shot;
   shot.clip = k_shot_clip;  // 200 frames: over inside the first rendered block
-  shot.position = Vec3{0.0f, 0.0f, -1.0f};
+  shot.position = WorldPos{0.0, 0.0, -1.0};
   const flecs::entity emitter = rig.sim.world().entity().set(shot);
   expect(rig.tick(), 1, 0, 0, 0, 1);
   for (int i = 0; i < 4; ++i)
@@ -217,8 +296,8 @@ TEST_CASE("a one-shot plays out and stays silent until it is retriggered") {
 
 TEST_CASE("a destroyed emitter's voice is stopped, and so is one whose component is removed") {
   Rig rig;
-  const flecs::entity a = rig.sim.world().entity().set(loop_at(Vec3{1.0f, 0.0f, -1.0f}));
-  const flecs::entity b = rig.sim.world().entity().set(loop_at(Vec3{-1.0f, 0.0f, -1.0f}));
+  const flecs::entity a = rig.sim.world().entity().set(loop_at(WorldPos{1.0, 0.0, -1.0}));
+  const flecs::entity b = rig.sim.world().entity().set(loop_at(WorldPos{-1.0, 0.0, -1.0}));
   expect(rig.tick(), 2, 0, 0, 0, 1);
   a.destruct();
   const Sent after_destroy = rig.tick();
@@ -240,36 +319,36 @@ TEST_CASE("audio LOD: past max_distance the voice goes, back inside it returns")
   CHECK(lod_tier(9.0f * 9.0f, 10.0f, k_tier_virtual, 0.1f) == k_tier_voiced);
 
   Rig rig;
-  AudioEmitter e = loop_at(Vec3{0.0f, 0.0f, -5.0f});
+  AudioEmitter e = loop_at(WorldPos{0.0, 0.0, -5.0});
   e.max_distance = 10.0f;
   const flecs::entity emitter = rig.sim.world().entity().set(e);
   expect(rig.tick(), 1, 0, 0, 0, 1);
   // Into the band: it keeps its voice and only its position is sent.
-  emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -10.5f};
+  emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -10.5};
   expect(rig.tick(), 0, 0, 0, 1);
   // Past the band: the voice goes.
-  emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -20.0f};
+  emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -20.0};
   expect(rig.tick(), 0, 1, 0, 0);
   CHECK(rig.audio.stats().virtualized == 1u);
   expect(rig.tick(), 0, 0, 0, 0);
   // Back inside max_distance: a loop gets a voice again.
-  emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -4.0f};
+  emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -4.0};
   expect(rig.tick(), 1, 0, 0, 0);
   CHECK(rig.audio.stats().devirtualized == 1u);
 
   // A 2D emitter has no distance: it never goes virtual.
-  AudioEmitter music = loop_at(Vec3{0.0f, 0.0f, -500.0f});
+  AudioEmitter music = loop_at(WorldPos{0.0, 0.0, -500.0});
   music.bus = k_bus_music;
   rig.sim.world().entity().set(music);
   expect(rig.tick(), 1, 0, 0, 0);
   // A one-shot triggered out of reach is over: it does not start when the listener arrives.
   AudioEmitter far_shot;
   far_shot.clip = k_shot_clip;
-  far_shot.position = Vec3{0.0f, 0.0f, -100.0f};
+  far_shot.position = WorldPos{0.0, 0.0, -100.0};
   far_shot.max_distance = 10.0f;
   const flecs::entity shot = rig.sim.world().entity().set(far_shot);
   expect(rig.tick(), 0, 0, 0, 0);
-  shot.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};
+  shot.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -1.0};
   expect(rig.tick(), 0, 0, 0, 0);
 }
 
@@ -288,12 +367,12 @@ TEST_CASE("a loop that comes back within reach resumes where it would have been"
     return static_cast<u32>(std::lround(rig.buffer[2u * k] / centre * 8192.0f));
   };
 
-  AudioEmitter e = loop_at(Vec3{0.0f, 0.0f, -1.0f});
+  AudioEmitter e = loop_at(WorldPos{0.0, 0.0, -1.0});
   e.clip = k_ramp;
   e.max_distance = 10.0f;
   const flecs::entity emitter = rig.sim.world().entity().set(e);
   auto move_to = [&](f32 z) {
-    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, z};
+    emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, static_cast<f64>(z)};
   };
 
   // Tick 1: the loop starts at its beginning. At 60 Hz a tick is 800 frames of the mix.
@@ -350,7 +429,7 @@ TEST_CASE("a full pool turns emitters away once a tick, and a stop lets the next
   Rig rig(with_voices(2));
   flecs::entity loud[3];
   for (u32 i = 0; i < 3; ++i) {
-    AudioEmitter e = loop_at(Vec3{static_cast<f32>(i), 0.0f, -2.0f});
+    AudioEmitter e = loop_at(WorldPos{static_cast<f64>(i), 0.0, -2.0});
     e.priority = 100;
     loud[i] = rig.sim.world().entity().set(e);
   }
@@ -361,7 +440,7 @@ TEST_CASE("a full pool turns emitters away once a tick, and a stop lets the next
   // Two quieter emitters: the pool has already refused priority 100 this tick, so they are turned
   // away without the mixer being asked — its refusal count moves by one a tick, not three.
   for (u32 i = 0; i < 2; ++i) {
-    AudioEmitter e = loop_at(Vec3{-1.0f - static_cast<f32>(i), 0.0f, -2.0f});
+    AudioEmitter e = loop_at(WorldPos{-1.0 - static_cast<f64>(i), 0.0, -2.0});
     e.priority = 50;
     rig.sim.world().entity().set(e);
   }
@@ -376,7 +455,7 @@ TEST_CASE("a full pool turns emitters away once a tick, and a stop lets the next
 
 TEST_CASE("an emitter whose clip is not loaded waits, and plays once it is") {
   Rig rig;
-  AudioEmitter e = loop_at(Vec3{0.0f, 0.0f, -2.0f});
+  AudioEmitter e = loop_at(WorldPos{0.0, 0.0, -2.0});
   e.clip = Id128{99, 99};
   rig.sim.world().entity().set(e);
   expect(rig.tick(), 0, 0, 0, 0, 1);
@@ -390,7 +469,7 @@ TEST_CASE("an emitter whose clip is not loaded waits, and plays once it is") {
 
 TEST_CASE("a cloned emitter gets a voice of its own rather than sharing its original's") {
   Rig rig;
-  const flecs::entity original = rig.sim.world().entity().set(loop_at(Vec3{0.0f, 0.0f, -2.0f}));
+  const flecs::entity original = rig.sim.world().entity().set(loop_at(WorldPos{0.0, 0.0, -2.0}));
   expect(rig.tick(), 1, 0, 0, 0, 1);
   original.clone();  // copies AudioEmitter *and* the EmitterVoice naming the original's voice
   const Sent sent = rig.tick();
@@ -416,7 +495,7 @@ TEST_CASE(
     sim::SimScheduler scheduler;
     Run out;
     std::vector<Sent>& sent = out.sent;
-    const flecs::entity emitter = rig.sim.world().entity().set(loop_at(Vec3{2.0f, 0.0f, -3.0f}));
+    const flecs::entity emitter = rig.sim.world().entity().set(loop_at(WorldPos{2.0, 0.0, -3.0}));
     std::optional<ecs::ScheduledTick> tick;
     if (scheduled) tick.emplace(rig.sim, scheduler);
     const auto step = [&]() {
@@ -436,12 +515,12 @@ TEST_CASE(
     step();
     emitter.try_get_mut<AudioEmitter>()->gain = 0.5f;
     step();
-    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};
+    emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -1.0};
     step();
-    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -100.0f};  // out of reach
+    emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -100.0};  // out of reach
     step();
     step();
-    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};  // back, resumed
+    emitter.try_get_mut<AudioEmitter>()->position = WorldPos{0.0, 0.0, -1.0};  // back, resumed
     step();
     emitter.try_get_mut<AudioEmitter>()->playing = false;
     step();

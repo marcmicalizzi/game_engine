@@ -49,9 +49,11 @@ bool source_changed(const AudioEmitter& a, const AudioEmitter& b) noexcept {
          a.spread != b.spread || a.mapping != b.mapping || a.two_d != b.two_d;
 }
 
-SourceSpatial source_of(const AudioEmitter& e) noexcept {
+// The emitter as the mixer is handed it: its position in the mixer's float32 frame (`frame`, the
+// corner of the listener's cell), the one place an emitter's f64 position becomes a float.
+SourceSpatial source_of(const AudioEmitter& e, WorldPos frame) noexcept {
   SourceSpatial s;
-  s.position = e.position;
+  s.position = relative(e.position, frame);
   s.orientation = e.orientation;
   s.min_distance = e.min_distance;
   s.max_distance = e.max_distance;
@@ -79,6 +81,15 @@ VoiceParams params_of(const AudioEmitter& e) noexcept {
 
 bool same_listener(const Listener& a, const Listener& b) noexcept {
   return a.position == b.position && a.forward == b.forward && a.up == b.up;
+}
+
+// The corner of the 64 m cell `p` is in: the mixer's frame for a listener at `p`. Exact in f64 (a
+// whole number of cells times a power of two).
+WorldPos cell_corner(WorldPos p) noexcept {
+  const WorldCell cell = to_cell(p);
+  return WorldPos{static_cast<f64>(cell.cell.x) * k_world_cell_m,
+                  static_cast<f64>(cell.cell.y) * k_world_cell_m,
+                  static_cast<f64>(cell.cell.z) * k_world_cell_m};
 }
 
 }  // namespace
@@ -152,10 +163,10 @@ void AudioSystem::install(ecs::SimWorld& sim) {
                   log::field("layout", layout_name(mixer_->layout())));
 }
 
-Listener AudioSystem::current_listener(u32& count) {
+AudioSystem::WorldListener AudioSystem::current_listener(u32& count) {
   // The lowest entity id when there are several: a stable choice that does not depend on the order
   // tables happen to be iterated in.
-  Listener chosen;
+  WorldListener chosen;
   flecs::entity_t best = 0;
   count = 0;
   listeners_.each([&](flecs::entity entity, const AudioListener& l) {
@@ -183,7 +194,22 @@ void AudioSystem::tick(flecs::iter& it) {
     c = 0;
   refused_priority_ = -1;
 
-  const Listener listener = current_listener(stats.listeners);
+  const WorldListener heard_from = current_listener(stats.listeners);
+  // The mixer's frame follows the listener's cell: a listener moving inside its cell is one
+  // `SetListener`, and one crossing into another moves the frame, so every voice's source is sent
+  // again in it (`frame_moved_`, step 4). A position no cell can name keeps the frame it had.
+  frame_moved_ = false;
+  if (world_cell_valid(heard_from.position)) {
+    const WorldPos corner = cell_corner(heard_from.position);
+    if (!(corner == frame_)) {
+      frame_ = corner;
+      frame_moved_ = true;
+    }
+  }
+  Listener listener;
+  listener.position = relative(heard_from.position, frame_);
+  listener.forward = heard_from.forward;
+  listener.up = heard_from.up;
   if (!listener_sent_ || !same_listener(listener, sent_listener_)) {
     if (mixer_->set_listener(listener)) {
       sent_listener_ = listener;
@@ -199,7 +225,7 @@ void AudioSystem::tick(flecs::iter& it) {
     auto states = it.field<EmitterVoice>(1);
     for (auto row : it) {
       ++stats.emitters;
-      step(emitters[row], states[row], listener.position, hysteresis, now, stats);
+      step(emitters[row], states[row], heard_from.position, hysteresis, now, stats);
     }
   }
 
@@ -215,7 +241,7 @@ void AudioSystem::tick(flecs::iter& it) {
   stats_ = stats;
 }
 
-void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& ear, f32 hysteresis,
+void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, WorldPos ear, f32 hysteresis,
                        u64 tick, AudioSystemStats& stats) {
   // 1. The voice this state names: still alive, and claimed by one emitter only.
   if (!state.voice.is_null()) {
@@ -272,7 +298,7 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
       e.two_d || mixer_->bus_is_2d(e.bus) || e.distance_model == DistanceModel::None;
   u8 tier = k_tier_voiced;
   if (!always_voiced) {
-    const Vec3 offset = e.position - ear;
+    const Vec3 offset = narrow(e.position - ear);  // from the listener: a float its own size
     tier = lod_tier(dot(offset, offset), e.max_distance, state.tier, hysteresis);
   }
   if (tier != state.tier) {
@@ -318,7 +344,7 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
       play.bus = e.bus;
       play.priority = e.priority;
       play.loop = e.looping;
-      play.source = source_of(e);
+      play.source = source_of(e, frame_);
       // A loop starts where its clock says it would be: its beginning on the tick it started,
       // somewhere else if it comes back within reach or the pool took a while to let it in. A
       // one-shot starts at its beginning, and only ever on the tick it is triggered in reach.
@@ -347,8 +373,8 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
     if (params_changed(e, sent)) {
       if (mixer_->set_params(state.voice, params_of(e))) ++stats.params;
     }
-    if (source_changed(e, sent)) {
-      if (mixer_->set_source(state.voice, source_of(e))) ++stats.sources;
+    if (source_changed(e, sent) || frame_moved_) {
+      if (mixer_->set_source(state.voice, source_of(e, frame_))) ++stats.sources;
     }
   }
 

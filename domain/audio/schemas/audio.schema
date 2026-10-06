@@ -76,13 +76,17 @@ enum ChannelMapping : u8 {
 /// commands that implies it (docs/subsystems/audio_system.md, "What a change sends"): a new or
 /// restarted emitter is one play, a moved or turned one is one source update, a louder one is one
 /// parameter update, an unchanged one is nothing at all.
-struct AudioEmitter @version(1) @kind(component) {
+///
+/// Version 2 (2026-10-06): `position` is a `worldpos`, f64 (ADR-0053). The JSON is the same three
+/// numbers and a version-1 float32 position reads as the same place.
+struct AudioEmitter @version(2) @kind(component) {
   /// The clip, as the clip store knows it: an asset id, or `audio::clip_key()` of the encoded
   /// bytes. An emitter whose clip is not loaded (yet) sounds nothing and retries every tick.
   clip: id128
-  /// World position. The engine has no transform component yet; when it has one the system reads
-  /// that and this field is migrated away.
-  position: vec3
+  /// World position, f64. The mixer is handed it in a float32 frame at the listener's 64 m cell
+  /// (docs/subsystems/audio_system.md, "The mixer's frame"). The engine's `Transform` is a separate
+  /// component; when the system reads that instead, this field is migrated away.
+  position: worldpos @unit(m)
   /// Which way the source faces: its -z axis, core/math's "ahead". Only a directional source
   /// (`directivity` other than Omni) sounds different when it turns.
   orientation: quat
@@ -128,9 +132,10 @@ struct AudioEmitter @version(1) @kind(component) {
 }
 
 /// Where the world is heard from. One per world is expected: with several, the system uses the
-/// one with the lowest entity id and counts the rest.
-struct AudioListener @version(1) @kind(component) {
-  position: vec3
+/// one with the lowest entity id and counts the rest. Version 2 (2026-10-06): `position` is a
+/// `worldpos`, f64 (ADR-0053).
+struct AudioListener @version(2) @kind(component) {
+  position: worldpos @unit(m)
   /// Need not be normalized. Zero means -z, core/math's "ahead".
   forward: vec3
   /// Need not be normalized or orthogonal to `forward`. Zero, or parallel to `forward`, means +y.

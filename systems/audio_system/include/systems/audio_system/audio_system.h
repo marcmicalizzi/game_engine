@@ -38,6 +38,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/math/world.h>
 #include <domain/audio/audio.h>
 #include <domain/ecs/sim_world.h>
 #include <domain/ecs/systems.h>
@@ -143,12 +144,24 @@ class AudioSystem {
   const AudioSystemStats& stats() const noexcept { return stats_; }
   const sim::SystemDesc& desc() const noexcept { return desc_; }
 
+  // **The mixer's frame** (ADR-0053; audio_system.md, "The mixer's frame"): the corner of the
+  // listener's 64 m cell (`k_world_cell_m`), the origin of the float32 positions the mixer is
+  // handed. A function of where the listener is now, never of where it has been.
+  WorldPos mixer_frame() const noexcept { return frame_; }
+
  private:
+  // The listener as the world holds it: an f64 position and its two directions.
+  struct WorldListener {
+    WorldPos position;
+    Vec3 forward{0.0f, 0.0f, -1.0f};
+    Vec3 up{0.0f, 1.0f, 0.0f};
+  };
+
   void tick(flecs::iter& it);
-  void step(const AudioEmitter& emitter, EmitterVoice& state, const Vec3& ear, f32 hysteresis,
+  void step(const AudioEmitter& emitter, EmitterVoice& state, WorldPos ear, f32 hysteresis,
             u64 tick, AudioSystemStats& stats);
   void release(VoiceHandle voice) noexcept;
-  Listener current_listener(u32& count);
+  WorldListener current_listener(u32& count);
 
   Mixer* mixer_;
   flecs::world* world_ = nullptr;
@@ -162,6 +175,10 @@ class AudioSystem {
   Vector<u8> claimed_;
   Listener sent_listener_;
   bool listener_sent_ = false;
+  // The mixer's frame (above), and whether this tick moved it: every voice's source is then sent
+  // again in the new frame, as one `SetSource` each.
+  WorldPos frame_{};
+  bool frame_moved_ = false;
   // The highest priority the pool refused this tick, or -1. Every voice outranks it until
   // something stops, so an emitter at or below it is refused without asking the mixer again.
   i32 refused_priority_ = -1;
