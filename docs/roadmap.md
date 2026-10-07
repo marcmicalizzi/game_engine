@@ -597,7 +597,7 @@ Defects that no plan section schedules: failures seen at gates, steps in a pictu
 | # | Item | State | Depends on | Effort | Reasoning | Where |
 |---|---|---|---|---|---|---|
 | F1 | Terrain-rings culling test fails under load | done (2026-10-07: an offscreen frame gave up at a ring's second ready field) | | M | research | [load-sensitive tests](experiments/load-sensitive-tests-2026-10-07.md#f1-one-rig-a-frame-behind) |
-| F2 | Live-window marker test fails under load | in progress | | S | research | [load-sensitive tests](experiments/load-sensitive-tests-2026-10-07.md#f2-a-tick-the-window-never-ran-and-a-frame-rate-the-test-assumed) |
+| F2 | Live-window marker test fails under load | done (2026-10-07: the injector ran slow frames past its events) | | S | research | [load-sensitive tests](experiments/load-sensitive-tests-2026-10-07.md#f2-a-tick-the-window-never-ran-and-a-frame-rate-the-test-assumed) |
 | F3 | Sky's haze table ends at 32 km: a horizon step | open | R55 | S | design | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
 | F4 | Traced-shadow specks and shards on the far ground | open | R52, W15 | M | research | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
 | F5 | Windowed submit waits 3.4 ms under traced shadows | open | R52 | S | research | [frame-thread spikes](experiments/frame-thread-spikes-2026-10-04.md#what-is-open) |

@@ -328,6 +328,13 @@ TEST_CASE("engine-view: a live session's frame records 420 km out carry its f64 
   // a tick, did not move. Started at an x no float holds (419,072.37 is 419,072.375 as one) and
   // flown forward for half a second, the session's records carry the x typed, to the bit, and a z
   // that moves by the flight's 0.5 m and stands off the float's grid. Needs a display and a device.
+  // **How many records there are is the machine's**: the window runs whatever ticks are due when a
+  // frame starts, so a frame slow enough runs sixty, and beside a merge gate's builds the first
+  // frame alone did — a quarter of a metre down the line before the first record — and the 120
+  // ticks came in as few as five records instead of about 58 (2026-10-07, docs/experiments/
+  // load-sensitive-tests-2026-10-07.md). So the motion is checked against each record's own
+  // simulated time, which holds at any frame rate: every pose lies on the line at 1 m/s, and the
+  // last at the session's half second.
   const test::TempDir tmp("engine_view_far_pose");
   input::InputLog forward;
   forward.set_map(view::default_fly_map());
@@ -368,8 +375,12 @@ TEST_CASE("engine-view: a live session's frame records 420 km out carry its f64 
   u32 records = 0;
   u32 x_exact = 0;
   u32 z_off_grid = 0;
+  u32 on_line = 0;
   f64 first_z = 0.0;
   f64 last_z = 0.0;
+  f64 first_t = 0.0;
+  f64 last_t = 0.0;
+  constexpr f64 k_start_z = -419072.61;
   for (usize begin = 0; begin < text.size();) {
     const usize end = text.find('\n', begin);
     const usize stop = end == std::string::npos ? text.size() : end;
@@ -383,21 +394,35 @@ TEST_CASE("engine-view: a live session's frame records 420 km out carry its f64 
       f64 z = 0.0;
       REQUIRE((*pose)[0].get_f64(x));
       REQUIRE((*pose)[2].get_f64(z));
+      f64 t = -1.0;
+      REQUIRE(line.find("pose_time") != nullptr);
+      REQUIRE(line.find("pose_time")->get_f64(t));
       x_exact += x == 419072.37 ? 1u : 0u;
       z_off_grid += std::fmod(std::fabs(z), 0.03125) != 0.0 ? 1u : 0u;
-      if (records == 0) first_z = z;
+      // A tenth of a millimetre: the ticks' float32 steps summed in f64, and the interpolation.
+      on_line += std::fabs((k_start_z - z) - t) < 1.0e-4 ? 1u : 0u;
+      if (records == 0) {
+        first_z = z;
+        first_t = t;
+      }
       last_z = z;
+      last_t = t;
       ++records;
     }
     begin = stop + 1;
   }
   MESSAGE(records << " records: x as typed in " << x_exact << ", z off a float's 3.1 cm grid in "
-                  << z_off_grid << "; z moved " << first_z - last_z << " m along -z");
-  CHECK(records > 0);
+                  << z_off_grid << ", on the line at 1 m/s in " << on_line << "; z moved "
+                  << first_z - last_z << " m along -z between " << first_t << " and " << last_t
+                  << " s");
+  CHECK(records > 1);
   CHECK(x_exact == records);
   CHECK(z_off_grid * 2 > records);  // a grid point is a 1-in-8,000 chance at a 4 um step
-  CHECK(first_z - last_z > 0.3);    // half a second at 1 m/s, less the first frames' few ticks
-  CHECK(first_z - last_z < 0.51);
+  CHECK(on_line == records);
+  // The last frame draws the session's 120th tick, or a fraction of it if the clock stood exactly
+  // there: half a second, and half a metre, to within a tick.
+  CHECK(last_t >= 119.0 / 240.0);
+  CHECK(last_t <= 0.5);
 }
 
 TEST_CASE("engine-view: a session recorded with float32 positions replays, and says so") {
@@ -575,7 +600,29 @@ TEST_CASE("engine-view: a live session fed through its window replays to its own
   CHECK(text_of(live_trajectory, "hash") == text_of(replay_trajectory, "hash"));
   const JsonValue* markers = live_trajectory->find("markers");
   REQUIRE(markers != nullptr);
-  CHECK(markers->size() == 5);  // the fixture's five, wherever the live ticks put them
+  CHECK(markers->size() == 5);  // the fixture's five
+  // **And each at the tick the fixture pressed it** (apps.md, "Driving a window with nobody at
+  // it"): the window lands every injected event on its own tick, however the frames fell. Until
+  // 2026-10-07 a slow frame ran past the events inside it, and beside a merge gate's builds the
+  // last marker, pressed at tick 475 of 480, was recorded late or not at all (four markers of
+  // five, once three: docs/experiments/load-sensitive-tests-2026-10-07.md).
+  input::InputLog pressed_log;
+  REQUIRE_MESSAGE(pressed_log.load(log, &error) == io::Status::Ok, error);
+  const input::ActionMap map = view::default_fly_map();
+  const input::ActionId marker = map.find_action("marker");
+  REQUIRE(marker != input::k_invalid_action);
+  std::vector<u64> pressed;
+  for (const input::RawEvent& e : pressed_log.events()) {
+    if (e.value != 1.0f) continue;
+    for (const input::ActionBinding& b : map.bindings(marker)) {
+      if (b.binding.source == e.source && b.binding.code == e.code) pressed.push_back(e.tick.value);
+    }
+  }
+  REQUIRE(pressed.size() == 5);
+  for (u32 m = 0; m < markers->size() && m < pressed.size(); ++m) {
+    CAPTURE(m);
+    CHECK(number_of(&(*markers)[m], "tick") == static_cast<f64>(pressed[m]));
+  }
 
   // The live --benchmark: the flythrough's JSONL, a record per presented frame whose ticks add up
   // to the session's.

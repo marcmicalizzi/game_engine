@@ -4544,6 +4544,19 @@ int main(int argc, char** argv) {
         }
         u64 to = clock.tick().value;
         if (session_end != 0 && to > session_end) to = session_end;
+        // **An injected run stops short of the next event it has not handed the window yet**
+        // (docs/subsystems/apps.md, "Driving a window with nobody at it"). An event goes onto the
+        // queue when its tick is the next to run (above) and is fed at the next tick the frame
+        // runs, so a frame that ran several ticks — a slow one, on a loaded machine — ran past the
+        // events whose ticks fell inside it: they went on the next frame's queue and landed late,
+        // and the ones inside the session's last frame were never fed at all (the test fixture's
+        // last marker, pressed at tick 475 of 480). Held here, every event lands on its own tick
+        // at any frame rate, and the frames after catch the session up with the clock. Somebody at
+        // the window is never held: their events are polled as they come.
+        if (inject_cursor < injected.size()) {
+          const u64 hold = injected[inject_cursor].tick.value;
+          if (hold > 0 && to >= hold) to = hold - 1;
+        }
         const u64 before = session.tick().value;
         // The ground as this frame draws it, for the walker's ticks (the time-lapse moved it
         // above).
