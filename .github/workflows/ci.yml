@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The sanitizer job reports and does not block yet: its first run (2026-10-07) found
     # initialization-order bugs, a use after free and third-party undefined behaviour that are
-    # roadmap rows F11 to F14 (docs/ci/what-to-run.md, "Sanitizers"). When they are fixed this goes.
+    # roadmap rows F13 to F16 (docs/ci/what-to-run.md, "Sanitizers"). When they are fixed this goes.
     continue-on-error: ${{ matrix.preset == 'linux-clang-asan' }}
     strategy:
       fail-fast: false
