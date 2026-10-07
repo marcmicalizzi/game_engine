@@ -9,9 +9,10 @@
 - With tracking on, every pointer passed to `deallocate` was returned by `allocate` and the byte count matches (both asserted in debug).
 - `total_stats().bytes_current` returns to its previous value after every allocation is freed (tested single- and multi-threaded).
 - `Arena::reset()` reaches steady state: after the first pass no further heap allocations occur.
+- `allocations_on_thread()` counts the calling thread's allocations and no other thread's, in every build and under any tag (tested). It is the frame-loop metric's counter ([renderer](renderer.md#what-a-frame-waits-for)): a frame's work is snapshotted on the frame's thread, so a job worker building tiles beside it does not count, and a shipping build with tracking compiled out counts the same as a development one. The global `allocation_counter()` sees every thread and so cannot say whether the frame loop allocated.
 
 **Public API.**
-- `core/memory/memory.h`: `TagId`, `register_tag`, `tag_name`, `current_tag`, `TagScope`, `Stats`, `stats(tag)`, `total_stats()`, `tracking_enabled()`, `allocation_counter()`, `allocate`, `try_allocate`, `deallocate`.
+- `core/memory/memory.h`: `TagId`, `register_tag`, `tag_name`, `current_tag`, `TagScope`, `Stats`, `stats(tag)`, `total_stats()`, `tracking_enabled()`, `allocation_counter()`, `allocations_on_thread()`, `allocate`, `try_allocate`, `deallocate`.
 - `core/memory/allocator.h`: `AllocatorPolicy` concept, `DefaultAlloc` (empty; the global tagged heap).
 - `core/memory/arena.h`: `Arena` (allocate, create, create_array, mark/rewind, reset, release, statistics), `ArenaAlloc` policy (one pointer).
 

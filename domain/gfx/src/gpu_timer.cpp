@@ -26,7 +26,13 @@ bool GpuTimer::create(const Device& device, u32 frames_in_flight, u32 max_zones,
   }
   max_zones_ = max_zones;
   slots_.resize(frames_in_flight);
+  // Everything a frame touches is sized here, for the most zones a slot holds, so `begin_frame`
+  // and `begin` allocate nothing: until 2026-10-07 every frame's read-back made a vector of its
+  // own, the one engine allocation a frame the flythrough's frame-loop count found on every scene.
+  stamps_.resize(static_cast<usize>(max_zones) * 2);
+  results_.reserve(max_zones);
   for (Slot& slot : slots_) {
+    slot.names.reserve(max_zones);
     VkQueryPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -54,6 +60,7 @@ void GpuTimer::destroy() noexcept {
   }
   slots_.clear();
   results_.clear();
+  stamps_.clear();
   device_ = nullptr;
   open_ = false;
 }
@@ -66,9 +73,9 @@ void GpuTimer::begin_frame(CommandList, u32 slot_index) {
   const Handles& h = device_->handles();
   results_.clear();
   if (slot.used > 0) {
-    Vector<u64> stamps(slot.used);
+    const u64* stamps = stamps_.data();
     const VkResult r = vkGetQueryPoolResults(h.device, vk::native(slot.pool), 0, slot.used,
-                                             slot.used * sizeof(u64), stamps.data(), sizeof(u64),
+                                             slot.used * sizeof(u64), stamps_.data(), sizeof(u64),
                                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
     if (r == VK_SUCCESS) {
       for (u32 z = 0; z < slot.used / 2; ++z) {

@@ -1,4 +1,6 @@
+#include <core/memory/memory.h>
 #include <core/time/time.h>
+#include <domain/gfx/resources.h>
 #include <systems/renderer/flythrough.h>
 
 #include <algorithm>
@@ -27,7 +29,31 @@ f64 rank(const Vector<f64>& sorted, f64 p) {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * t;
 }
 
+// What this thread's `FlightBookkeeping` scopes left out of the frame-loop count, and how deep
+// they are nested (only the outermost counts, so a scope inside another is not left out twice).
+thread_local u64 t_left_out_allocations = 0;
+thread_local u64 t_left_out_buffers = 0;
+thread_local u32 t_bookkeeping_depth = 0;
+
 }  // namespace
+
+FlightBookkeeping::FlightBookkeeping() noexcept : outermost_(t_bookkeeping_depth++ == 0) {
+  if (outermost_) {
+    allocations_ = mem::allocations_on_thread();
+    buffers_ = gfx::buffers_created_on_thread();
+  }
+}
+
+FlightBookkeeping::~FlightBookkeeping() {
+  --t_bookkeeping_depth;
+  if (outermost_) {
+    t_left_out_allocations += mem::allocations_on_thread() - allocations_;
+    t_left_out_buffers += gfx::buffers_created_on_thread() - buffers_;
+  }
+}
+
+u64 FlightBookkeeping::allocations_left_out() noexcept { return t_left_out_allocations; }
+u64 FlightBookkeeping::buffers_left_out() noexcept { return t_left_out_buffers; }
 
 scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, f64 time) {
   scene::FrameRecord out;
@@ -124,6 +150,8 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     bool recorded = false;
     f64 cpu_ms = 0.0;
     f64 frame_ms = 0.0;
+    u64 allocations = 0;
+    u64 buffers = 0;
   };
   Vector<Submission> submissions;
   submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
@@ -131,8 +159,19 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   renderer.reset_stats();
   u64 folded = renderer.stats().folded;
   i64 previous_start = 0;
+  // The frame loop's allocations on this thread (AGENTS.md, "No allocations in the frame loop in
+  // steady state"): the host's turn, `begin_frame` and `submit_frame`, and not this loop's own
+  // bookkeeping between them — the submissions list, which a warm-up by wall time can grow past its
+  // reserve, and the records, which carry the frame's numbers out — nor what the host's hook
+  // records for the benchmark inside a `FlightBookkeeping`.
+  auto counted = [] {
+    return std::pair<u64, u64>{
+        mem::allocations_on_thread() - FlightBookkeeping::allocations_left_out(),
+        gfx::buffers_created_on_thread() - FlightBookkeeping::buffers_left_out()};
+  };
   auto submit = [&](u32 f, bool recorded, u32 repeat, u32 warmup) {
     const i64 start = time::monotonic_ns();
+    const std::pair<u64, u64> turn = counted();
     // The host's turn, between two frames: a streamed world updates its ring from this camera and
     // hands the renderer its instances (FlightOptions::before_frame). It is in the frame's wall
     // time and not in its CPU milliseconds, which are the renderer's own; the hook measures itself.
@@ -146,6 +185,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
       if (!options.before_frame(options.before_frame_context, step, error)) return false;
     }
     renderer.begin_frame();
+    const std::pair<u64, u64> begun = counted();
     const Stats& stats = renderer.stats();
     if (stats.folded != folded) {
       folded = stats.folded;
@@ -157,6 +197,8 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
                            camera_path_frame_time(path, done.frame, frames));
           record.cpu_ms = done.cpu_ms;
           record.frame_ms = done.frame_ms;
+          record.allocations = static_cast<u32>(std::min<u64>(done.allocations, ~0u));
+          record.buffers = static_cast<u32>(std::min<u64>(done.buffers, ~0u));
           out.records.push_back(std::move(record));
         }
       }
@@ -168,8 +210,12 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     frame.frame_index = f;
     frame.sun_time_s = options.sun_time_s + options.sun_rate * static_cast<f64>(f) / 60.0;
     submissions.push_back(Submission{repeat, f, recorded});
+    const std::pair<u64, u64> before_submit = counted();
     const bool ok = renderer.submit_frame(frame, error) != 0;
+    const std::pair<u64, u64> submitted = counted();
     Submission& mine = submissions[submissions.size() - 1];
+    mine.allocations = (begun.first - turn.first) + (submitted.first - before_submit.first);
+    mine.buffers = (begun.second - turn.second) + (submitted.second - before_submit.second);
     mine.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
     mine.frame_ms = previous_start != 0 ? static_cast<f64>(start - previous_start) / 1.0e6 : 0.0;
     previous_start = start;
@@ -270,12 +316,20 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.upload_bytes = 0;
   out.evictions = 0;
   out.ticks = 0;
+  out.frame_loop = scene::FrameLoopAllocations{};
   for (const scene::FrameRecord* r : slot) {
     if (r == nullptr) continue;
     out.uploads += r->uploads;
     out.upload_bytes += r->upload_bytes;
     out.evictions += r->evictions;
     out.ticks += r->ticks;
+    out.frame_loop.allocations += r->allocations;
+    out.frame_loop.buffers += r->buffers;
+    out.frame_loop.allocating_frames += r->allocations > 0 ? 1u : 0u;
+    out.frame_loop.buffer_frames += r->buffers > 0 ? 1u : 0u;
+    if (r->allocations > 0 || r->buffers > 0) {
+      out.frame_loop.last_frame = std::max<i64>(out.frame_loop.last_frame, r->frame);
+    }
   }
   for (u32 f = 0; f < frames; ++f) {
     const scene::FrameRecord* first = nullptr;

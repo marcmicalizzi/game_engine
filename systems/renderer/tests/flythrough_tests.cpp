@@ -7,6 +7,7 @@
 // two properties the corpus leans on: the same path gives the same visible pairs frame by frame,
 // and occlusion culling changes no pixel anywhere on it while it does cull the hidden cubes.
 #include <core/math/math.h>
+#include <core/memory/memory.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/path_trace.h>
@@ -770,6 +771,10 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
       record.cpu_ms = 0.5 * (f + 1);
       record.frame_ms = 16.0 + (f == 0 && r == 0 ? 50.0 : 0.0);
       record.ticks = 4;
+      // The frame loop's allocations: frame 0 of the first repeat allocated (a list reaching its
+      // size), frame 1 of the second made a buffer, and nothing after.
+      record.allocations = f == 0 && r == 0 ? 3u : 0u;
+      record.buffers = f == 1 && r == 1 ? 1u : 0u;
       records.push_back(record);
     }
   }
@@ -785,12 +790,42 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
   CHECK(summary.cpu_ms.max == doctest::Approx(1.5));
   CHECK(summary.frame_ms.max == doctest::Approx(16.0));  // one slow repeat is not the median
   CHECK(summary.ticks == 36);
+  // Totals over every record, the records with any, and the last path frame that had any: where
+  // steady state began.
+  CHECK(summary.frame_loop.allocations == 3);
+  CHECK(summary.frame_loop.buffers == 1);
+  CHECK(summary.frame_loop.allocating_frames == 1);
+  CHECK(summary.frame_loop.buffer_frames == 1);
+  CHECK(summary.frame_loop.last_frame == 1);
   REQUIRE(summary.markers.size() == 1);
   CHECK(summary.markers[0].frame == 2);
   CHECK(summary.markers[0].total_ms == doctest::Approx(3.0));
   // A resampled run puts the marker on the frame that shares its time.
   CHECK(marker_frame(path, 2, 5) == 4);
   CHECK(marker_frame(path, 1, 5) == 2);
+}
+
+// What a host records for the benchmark inside its hook is left out of the frame-loop count, once
+// however the scopes nest, and nothing outside a scope is (renderer.md, "The frame loop allocates
+// nothing").
+TEST_CASE("flythrough: a host's bookkeeping is left out of the frame-loop count") {
+  const u64 before = FlightBookkeeping::allocations_left_out();
+  const u64 buffers_before = FlightBookkeeping::buffers_left_out();
+  {
+    const FlightBookkeeping outer;
+    void* a = mem::allocate(16, 8);
+    {
+      const FlightBookkeeping inner;
+      void* b = mem::allocate(16, 8);
+      mem::deallocate(b, 16, 8);
+    }
+    mem::deallocate(a, 16, 8);
+  }
+  CHECK(FlightBookkeeping::allocations_left_out() == before + 2);
+  CHECK(FlightBookkeeping::buffers_left_out() == buffers_before);
+  void* outside = mem::allocate(16, 8);
+  mem::deallocate(outside, 16, 8);
+  CHECK(FlightBookkeeping::allocations_left_out() == before + 2);
 }
 
 TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain it was built as") {

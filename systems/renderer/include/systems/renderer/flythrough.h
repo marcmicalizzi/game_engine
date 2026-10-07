@@ -59,6 +59,32 @@ struct FlightStep {
 // does it. False stops the flight with `error`.
 using FlightHook = bool (*)(void* context, const FlightStep& step, std::string* error);
 
+// **What the frame loop allocated is counted, and a measurement is not the frame loop.** A flight
+// counts the engine allocations and device buffers its thread makes in each frame's host turn,
+// `begin_frame` and `submit_frame` (`FrameRecord::allocations`, `buffers`; docs/subsystems/
+// renderer.md, "The frame loop allocates nothing"). A host whose hook also *records* the frame for
+// the benchmark — a time-lapse's state for the record, a world log's line — holds one of these
+// round that recording, and what it allocates is left out of the count: the record exists because
+// somebody is measuring, and a game's frame does not make it. On any thread, nested or not, flying
+// or not; outside a flight it changes nothing anybody reads.
+class FlightBookkeeping {
+ public:
+  FlightBookkeeping() noexcept;
+  ~FlightBookkeeping();
+  FlightBookkeeping(const FlightBookkeeping&) = delete;
+  FlightBookkeeping& operator=(const FlightBookkeeping&) = delete;
+
+  // What every scope on this thread has left out since the thread started: allocations and
+  // buffers. `fly_camera_path` subtracts the change across a frame from that frame's count.
+  static u64 allocations_left_out() noexcept;
+  static u64 buffers_left_out() noexcept;
+
+ private:
+  u64 allocations_ = 0;
+  u64 buffers_ = 0;
+  bool outermost_ = false;
+};
+
 // How a timed flight is flown. `frames` of 0 is the path's own frame count; any other count
 // resamples it. `frames_in_flight` must be the renderer's (`SceneRenderer::Desc`), because that
 // many frames are drawn after the last one so that its numbers come back.

@@ -107,7 +107,9 @@ function Get-AffectedTests {
   $names = @($affected | Sort-Object)
   $parts = New-Object System.Collections.Generic.List[string]
   if ($names.Count -gt 0) {
-    $parts.Add('^(bench\.)?(' + (($names | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$')
+    # A module's tests, its bench's smoke run, and a part of its tests registered as a test of its
+    # own, `<module>.<part>` (engine_view.frame_loop, whose flights would double engine_view's run).
+    $parts.Add('^(bench\.)?(' + (($names | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(\.[A-Za-z0-9_]+)?$')
   }
   foreach ($t in $script:AlwaysTests) { $parts.Add('^' + [regex]::Escape($t) + '$') }
   if ($tools) { $parts.Add('^tools\.') }

@@ -159,8 +159,16 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/linux-build.Tests.ps1"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.linux_build PROPERTIES LABELS "tools")
+  # The frame-budget gate's rules (tools/lib/FrameBudget.psm1, ADR-0018) over summaries written in
+  # the test, and the committed budget file read: no GPU. The gate itself flies the scenes on the
+  # budget's machine, at the merge (docs/ci/what-to-run.md, "Frame budgets").
+  add_test(NAME tools.frame_budget
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/frame-budget.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.frame_budget PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, and tools.linux_build tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.frame_budget, and tools.linux_build tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner

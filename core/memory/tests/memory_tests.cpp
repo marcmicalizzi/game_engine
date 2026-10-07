@@ -68,6 +68,31 @@ TEST_CASE("memory: totals and the allocation counter move with allocations") {
   CHECK(mem::allocation_counter() == counter_before + 1);  // frees do not count
 }
 
+// The frame loop's metric counts the frame's thread alone (renderer.md, "What a frame waits for"):
+// another thread's allocations, which the global counter sees, are not this thread's, and the
+// count does not depend on tracking or on the tag in force.
+TEST_CASE("memory: a thread's own allocation count sees its allocations and no other thread's") {
+  const u64 mine_before = mem::allocations_on_thread();
+  const u64 all_before = mem::allocation_counter();
+  u64 theirs = 0;
+  std::thread other([&theirs] {
+    const u64 start = mem::allocations_on_thread();
+    for (u32 i = 0; i < 3; ++i)
+      mem::deallocate(mem::allocate(64, 8), 64, 8);
+    theirs = mem::allocations_on_thread() - start;
+  });
+  other.join();
+  CHECK(theirs == 3);
+  CHECK(mem::allocations_on_thread() == mine_before);
+  CHECK(mem::allocation_counter() >= all_before + 3);
+  {
+    const mem::TagScope scope(mem::register_tag("test.thread-count"));
+    void* p = mem::allocate(32, 8);
+    mem::deallocate(p, 32, 8);
+  }
+  CHECK(mem::allocations_on_thread() == mine_before + 1);
+}
+
 TEST_CASE("memory: per-tag attribution follows the allocating scope, not the freeing one") {
   if (!mem::tracking_enabled()) {
     MESSAGE("memory tracking compiled out; skipping per-tag checks");

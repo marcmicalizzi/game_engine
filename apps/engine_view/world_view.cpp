@@ -10,6 +10,7 @@
 #include <core/schema/json_reflect.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/flythrough.h>
 #include <systems/world/scene_consumers.h>
 #include <systems/world/tile_ring.h>
 
@@ -145,11 +146,17 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
   }
   observers_.clear();  // kept, so a frame's update allocates nothing for it
   observers_.add(camera.position, 1.0f);
-  log_.before(world_);
+  {
+    // The world log is the measurement's and not the frame loop's: what it allocates (a line a
+    // frame, the ring's times for the summary) a flight leaves out of the frame-loop count.
+    const renderer::FlightBookkeeping bookkeeping;
+    log_.before(world_);
+  }
   world_.update(observers_, tick, mode != Mode::Budgeted);
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
   // draws what the scene has, so nothing here fails the run. `error` is for the hook's contract.
   (void)error;
+  const renderer::FlightBookkeeping bookkeeping;
   world::TileFrame line = log_.after(world_, repeat, frame, recorded);
   if (log_path_.empty()) return true;
   // What the renderer holds after the update: the load's prefix and the placements' tail.

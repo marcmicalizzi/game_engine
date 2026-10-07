@@ -65,6 +65,9 @@ class GpuTimer {
   const Device* device_ = nullptr;
   Vector<Slot> slots_;
   Vector<Zone> results_;
+  // A frame's timestamps as read back, sized once for every zone a slot can hold: `begin_frame`
+  // runs every frame, and the frame loop allocates nothing in steady state.
+  Vector<u64> stamps_;
   u32 max_zones_ = 0;
   u32 current_ = 0;
   bool open_ = false;

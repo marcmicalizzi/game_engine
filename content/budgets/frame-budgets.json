@@ -1,0 +1,360 @@
+{
+  "format": "engine.frame-budgets.v1",
+  "description": "Frame budgets (ADR-0018): per path scene and resolution, the GPU milliseconds per pass at the median and the p99 of the path's frames, and the frame thread's cpu_ms, that a merge may not push a run past (beyond the tolerance). tools/frame-budget.ps1 is the gate; docs/subsystems/bench.md \"Frame budgets\" is the format and how to re-baseline.",
+  "machine": {
+    "device": "NVIDIA GeForce RTX 5090",
+    "name": "the desktop: RTX 5090, Windows 11",
+    "preset": "msvc-release"
+  },
+  "tolerance": {
+    "gpu": {
+      "median": {
+        "pct": 10,
+        "ms": 0.05
+      },
+      "p99": {
+        "pct": 20,
+        "ms": 0.1
+      }
+    },
+    "cpu": {
+      "median": {
+        "pct": 25,
+        "ms": 0.1
+      },
+      "p99": {
+        "pct": 50,
+        "ms": 0.5
+      }
+    }
+  },
+  "runs": [
+    {
+      "id": "overlook-1080p",
+      "scene": "content/test-scenes/desert-overlook/scene.json",
+      "path": "content/test-scenes/desert-overlook/camera-path.json",
+      "width": 1920,
+      "height": 1080,
+      "views": "single",
+      "repeat": 1,
+      "warmup": 240,
+      "args": [
+        "--shadows",
+        "off"
+      ],
+      "gpu_ms": {
+        "cull": {
+          "median": 0.03,
+          "p99": 0.037
+        },
+        "hiz": {
+          "median": 0.021,
+          "p99": 0.022
+        },
+        "hw": {
+          "median": 0.023,
+          "p99": 0.045
+        },
+        "resolve": {
+          "median": 0.079,
+          "p99": 0.099
+        },
+        "total": {
+          "median": 0.155,
+          "p99": 0.358
+        }
+      },
+      "baseline": {
+        "date": "2026-10-07",
+        "by": "Claude (agent, roadmap T46), for the owner",
+        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": true,
+        "machine_state": "quiet (start 5.0% others, GPU 5%; end 8.3% others, GPU 5%)",
+        "identity": "b27e8b311de6fad1",
+        "frames": 2401,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.07,
+        "p99": 0.242
+      },
+      "sources": "Every number measured 2026-10-07 (this baseline). None of the three experiment pages measures the overlook: its scene names the Khronos samples, which the worktrees that took them had not fetched."
+    },
+    {
+      "id": "erg-walk-1080p-rt",
+      "scene": "content/test-scenes/desert-erg/scene.json",
+      "path": "content/test-scenes/desert-erg/walk-path.json",
+      "width": 1920,
+      "height": 1080,
+      "views": "single",
+      "repeat": 1,
+      "warmup": 30,
+      "args": [
+        "--terrain-rings",
+        "--shadows",
+        "rt"
+      ],
+      "gpu_ms": {
+        "blas": {
+          "median": 0.076,
+          "p99": 0.467
+        },
+        "clas": {
+          "median": 0.174,
+          "p99": 0.528
+        },
+        "cull": {
+          "median": 0.025,
+          "p99": 0.224
+        },
+        "deform": {
+          "median": 0.014,
+          "p99": 0.02
+        },
+        "hw": {
+          "median": 0.024,
+          "p99": 0.028
+        },
+        "resolve": {
+          "median": 0.2,
+          "p99": 0.24
+        },
+        "rt": {
+          "median": 0.368,
+          "p99": 0.805
+        },
+        "sky": {
+          "median": 0.081,
+          "p99": 0.416
+        },
+        "total": {
+          "median": 0.724,
+          "p99": 1.214
+        }
+      },
+      "baseline": {
+        "date": "2026-10-07",
+        "by": "Claude (agent, roadmap T46), for the owner",
+        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": false,
+        "machine_state": "busy (start 5.6% others, GPU 5%; end 8.5% others, GPU 97%)",
+        "identity": "33d911d95096f28e",
+        "frames": 1201,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.13,
+        "p99": 0.373
+      },
+      "sources": "Every number measured 2026-10-07 (this baseline). Its total agrees with docs/experiments/world-positions-renderer-2026-10-05.md (stage 3, rt after: 0.730 / 1.453 ms median / p99; the A/B runs 0.723-0.727 / 1.516-1.634); that page has no per-pass numbers at 1080p."
+    },
+    {
+      "id": "erg-walk-surround3-rt",
+      "scene": "content/test-scenes/desert-erg/scene.json",
+      "path": "content/test-scenes/desert-erg/walk-path.json",
+      "width": 11520,
+      "height": 2160,
+      "views": "surround3",
+      "repeat": 1,
+      "warmup": 60,
+      "args": [
+        "--terrain-rings",
+        "--shadows",
+        "rt"
+      ],
+      "gpu_ms": {
+        "blas": {
+          "median": 0.202,
+          "p99": 0.441
+        },
+        "clas": {
+          "median": 0.225,
+          "p99": 0.489
+        },
+        "cull": {
+          "median": 0.098,
+          "p99": 0.295
+        },
+        "deform": {
+          "median": 0.034,
+          "p99": 0.037
+        },
+        "hw": {
+          "median": 0.287,
+          "p99": 0.351
+        },
+        "resolve": {
+          "median": 2.342,
+          "p99": 2.669
+        },
+        "rt": {
+          "median": 0.616,
+          "p99": 1.029
+        },
+        "sky": {
+          "median": 0.088,
+          "p99": 0.09
+        },
+        "total": {
+          "median": 3.482,
+          "p99": 4.01
+        }
+      },
+      "baseline": {
+        "date": "2026-10-07",
+        "by": "Claude (agent, roadmap T46), for the owner",
+        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": false,
+        "machine_state": "busy (start 6.0% others, GPU 6%; end 11.5% others, GPU 71%)",
+        "identity": "33d911d95096f28e",
+        "frames": 1201,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.202,
+        "p99": 0.575
+      },
+      "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
+    },
+    {
+      "id": "endless-1080p-csm",
+      "scene": "content/test-scenes/desert-endless/scene.json",
+      "path": "content/test-scenes/desert-endless/camera-path.json",
+      "width": 1920,
+      "height": 1080,
+      "views": "single",
+      "repeat": 1,
+      "warmup": 60,
+      "args": [
+        "--shadows",
+        "csm"
+      ],
+      "gpu_ms": {
+        "cull": {
+          "median": 0.047,
+          "p99": 0.108
+        },
+        "deform": {
+          "median": 0.023,
+          "p99": 0.026
+        },
+        "hiz": {
+          "median": 0.021,
+          "p99": 0.021
+        },
+        "hw": {
+          "median": 0.033,
+          "p99": 0.038
+        },
+        "resolve": {
+          "median": 0.187,
+          "p99": 0.221
+        },
+        "shadow": {
+          "median": 0.335,
+          "p99": 1.019
+        },
+        "sky": {
+          "median": 0.086,
+          "p99": 0.395
+        },
+        "total": {
+          "median": 1.625,
+          "p99": 2.756
+        }
+      },
+      "baseline": {
+        "date": "2026-10-07",
+        "by": "Claude (agent, roadmap T46), for the owner",
+        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": true,
+        "machine_state": "quiet (start 8.8% others, GPU 5%; end 9.9% others, GPU 10%)",
+        "identity": "a73c20e15926dafa",
+        "frames": 7201,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.367,
+        "p99": 0.656
+      },
+      "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
+    },
+    {
+      "id": "endless-surround3-rt",
+      "scene": "content/test-scenes/desert-endless/scene.json",
+      "path": "content/test-scenes/desert-endless/camera-path.json",
+      "width": 11520,
+      "height": 2160,
+      "views": "surround3",
+      "repeat": 1,
+      "warmup": 60,
+      "args": [
+        "--shadows",
+        "rt"
+      ],
+      "gpu_ms": {
+        "blas": {
+          "median": 0.293,
+          "p99": 0.845
+        },
+        "clas": {
+          "median": 0.284,
+          "p99": 0.799
+        },
+        "cull": {
+          "median": 0.06,
+          "p99": 0.25
+        },
+        "deform": {
+          "median": 0.037,
+          "p99": 0.043
+        },
+        "hw": {
+          "median": 0.303,
+          "p99": 0.353
+        },
+        "resolve": {
+          "median": 1.829,
+          "p99": 2.231
+        },
+        "rt": {
+          "median": 0.961,
+          "p99": 1.628
+        },
+        "sky": {
+          "median": 0.083,
+          "p99": 0.286
+        },
+        "total": {
+          "median": 4.454,
+          "p99": 5.571
+        }
+      },
+      "baseline": {
+        "date": "2026-10-07",
+        "by": "Claude (agent, roadmap T46), for the owner",
+        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": false,
+        "machine_state": "busy (start 9.0% others, GPU 6%; end 12.7% others, GPU 9%)",
+        "identity": "a73c20e15926dafa",
+        "frames": 7201,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.455,
+        "p99": 1.305
+      },
+      "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
+    }
+  ]
+}

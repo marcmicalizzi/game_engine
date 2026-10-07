@@ -62,6 +62,11 @@ bool tracking_enabled() noexcept;
 // Monotonically increasing count of allocations since startup. Snapshot it around a frame to
 // count allocations inside the frame.
 u64 allocation_counter() noexcept;
+// The allocations the calling thread has made since it started, in every build (tracking or not)
+// and whatever tag is current. What a frame loop's metric counts: snapshot it around the frame's
+// work on the frame's thread, and the job workers' allocations — which `allocation_counter` sees
+// — stay out of it (docs/subsystems/renderer.md, "What a frame waits for").
+u64 allocations_on_thread() noexcept;
 
 // `align` must be a power of two. Zero-byte requests are rounded up to one byte.
 [[nodiscard]] void* allocate(usize bytes, usize align);               // aborts on failure

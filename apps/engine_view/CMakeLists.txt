@@ -37,7 +37,8 @@ if(TARGET engine::scene_collision)
 endif()
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
-                tests/walk_view_tests.cpp tests/far_tests.cpp ${_view_interactive})
+                tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
+                ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it through the registry, and the test writes the kit of boxes and counts the pieces with
@@ -80,6 +81,15 @@ engine_app(NAME engine_view OUTPUT engine-view
 target_link_libraries(engine_engine_view PRIVATE engine::gfx_vulkan)
 
 if(TARGET engine_engine_view_tests)
+  # The frame loop's allocations on the three path scenes (tests/frame_loop_tests.cpp;
+  # docs/subsystems/renderer.md, "The frame loop allocates nothing"): the CI metric of AGENTS.md's
+  # rule, a test of its own because its three flights would double `engine_view`'s run. Its cases
+  # are marked skip, which the `engine_view` run honours; this one runs them alone.
+  add_test(NAME engine_view.frame_loop
+    COMMAND engine_engine_view_tests --no-skip "--test-case=frame loop*")
+  set_tests_properties(engine_view.frame_loop PROPERTIES LABELS "unit;e2e;engine_view;frame_loop"
+    RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
+  engine_test_waits_for_gpu(engine_view.frame_loop)
   # The session fixture, its trajectory and the default map live under content/, found relative to
   # the source tree (or the test bundle's copy of it: tests/support/test_paths.h).
   target_compile_definitions(engine_engine_view_tests PRIVATE

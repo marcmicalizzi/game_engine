@@ -489,15 +489,17 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T43 | No dialogs on failure | done (4b4c2a89, c75d4e7a) | | M | routine | [platform](subsystems/platform.md#no-engine-binary-opens-a-dialog-when-it-fails) |
 | T44 | Profiling service: frame report, capture export | open | T6 | M | design | [09 §9.3](plan/09-testing-profiling.md#93-profiling-infrastructure-before-optimizing-anything) |
 | T45 | Tracy zones everywhere, GPU zones, vendor counters | open | T44, R35 | M | routine | [profiling](subsystems/profiling.md) |
-| T46 | Frame-budget files as merge gates | open | T44 | M | design | [11 §11.1](plan/11-performance-principles.md#111-culture-budgets-are-gates) |
+| T46 | Frame-budget files as merge gates | done (2026-10-07, content/budgets/frame-budgets.json) | | M | design | [bench](subsystems/bench.md#frame-budgets) |
 | T47 | Nightly performance regression with significance tests | open | T35, T46 | M | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |
-| T48 | Allocation counter as a frame-loop CI metric | open | | S | routine | [11 §11.2](plan/11-performance-principles.md#112-data-layout-and-footprint-first) |
+| T48 | Allocation counter as a frame-loop CI metric | done (2026-10-07, engine_view.frame_loop) | | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
 | T49 | A "nothing enabled" benchmark frame | open | R30 | M | design | [11 §11.10](plan/11-performance-principles.md#1110-absent-capabilities-are-free) |
 | T50 | Per-kernel instantiation and code-size report | open | | S | routine | [11 §11.4](plan/11-performance-principles.md#114-branch-free-hot-paths-and-constexpr-dispatch) |
 | T51 | E3: runtime-selected kernel variants | open | T5 | M | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | T52 | Calibration runner, stage 3 | deferred (ADR-0011) | T51 | L | design | [ADR-0011](adr/0011-tunables-before-calibration.md) |
 | T53 | Divergence bisector and replay methods | open | S17 | M | design | [09 §9.2](plan/09-testing-profiling.md#92-determinism-infrastructure) |
 | T54 | Publishing plan | done (388cc7c4) | | S | design | [publishing](publishing.md) |
+| T62 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
+| T64 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
 | T55 | Overlay directory found by the build | open | T54 | M | design | [publishing](publishing.md#a-private-and-experimental-capabilities-and-content-an-overlay-repository) |
 | T56 | History audit, private mirror, first public push | open | T55 | M | design | [publishing](publishing.md#c-before-the-first-public-push) |
 | T57 | ARM64 CI target | deferred (10 §10.6 2026-09-25) | | M | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |

@@ -2473,8 +2473,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
             (*hook->before)(step.camera, first_step ? WorldStep::restart : WorldStep::budgeted,
                             step.repeat, step.frame, step.recorded);
         const u32 at = step.repeat * hook->frames + step.frame;
-        if (step.recorded && at < hook->terrain->size())
+        if (step.recorded && at < hook->terrain->size()) {
+          // The record's time-lapse state is the benchmark's, not the frame loop's.
+          const renderer::FlightBookkeeping bookkeeping;
           (*hook->terrain)[at] = renderer::frame_terrain(*hook->lapse);
+        }
         return ok;
       };
       flight_options.before_frame_context = &world_hook;
@@ -2816,6 +2819,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     const u64 path_hash = interactive.on ? interactive.log_hash : (have_path ? path.hash : 0);
     describe_run(scene_data, options, path_name, path_hash, resolved, view_renderer, scene,
                  summary);
+    summary.device = device.adapter().name;
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
     summary.warmup = measured && !interactive.on ? options.warmup : 0;
@@ -4911,6 +4915,7 @@ int main(int argc, char** argv) {
                                       : std::string("interactive"),
                    interactive.replay ? interactive.log_hash : 0, resolved, view_renderer, scene,
                    summary);
+      summary.device = device.adapter().name;
       const u32 frames = static_cast<u32>(rendered);
       renderer::summarize_frames(
           std::span<const scene::FrameRecord>(records.data(), records.size()), frames, 1,

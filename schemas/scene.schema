@@ -1042,7 +1042,10 @@ struct FrameTerrain @version(3) {
 /// Version 9 (ADR-0053): `pose_position` is a `worldpos`, the session's f64 camera, where version 8
 /// wrote a float32 that stood on a 3.1 cm grid 420 km out. The JSON is the same three numbers, so a
 /// version 8 record reads as the same position.
-struct FrameRecord @version(9) {
+///
+/// Version 10: `allocations` and `buffers`, what the frame loop allocated on the frame's thread
+/// (AGENTS.md, "No allocations in the frame loop in steady state").
+struct FrameRecord @version(10) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1151,6 +1154,29 @@ struct FrameRecord @version(9) {
   terrain: FrameTerrain? = null @since(7)
   /// Where the frame's CPU time went on the frame's thread (see `CpuMs`).
   cpu: CpuMs @since(8)
+  /// What the frame loop allocated for this frame on the frame's thread: engine allocations
+  /// (`mem::allocations_on_thread`, in every build) and device buffers
+  /// (`gfx::buffers_created_on_thread`), counted over the host's turn before the frame (a streamed
+  /// world's update), `begin_frame` and `submit_frame`, and not over the benchmark's own
+  /// bookkeeping. **Zero in steady state** is the rule (docs/subsystems/renderer.md, "The frame
+  /// loop allocates nothing"); the job workers' allocations are not the frame thread's and are not
+  /// counted. Zero in a window's records (`--interactive`, `--windowed`), whose loop does not
+  /// count yet: the flight's (`fly_camera_path`, both hosts) is the one that does.
+  allocations: u32 = 0 @since(10)
+  buffers: u32 = 0 @since(10)
+}
+
+/// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
+/// repeat; warm-ups and the drain are not recorded): the totals of `FrameRecord.allocations` and
+/// `FrameRecord.buffers`, the records with any, and the last path frame that had any (-1 for none),
+/// which says where steady state began (docs/subsystems/renderer.md, "The frame loop allocates
+/// nothing").
+struct FrameLoopAllocations @version(1) {
+  allocations: u64 = 0
+  buffers: u64 = 0
+  allocating_frames: u32 = 0
+  buffer_frames: u32 = 0
+  last_frame: i64 = -1
 }
 
 /// A distribution over a path's frames.
@@ -1385,7 +1411,11 @@ struct FlythroughOutput @version(1) {
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(11) {
+///
+/// Version 12: `device`, the GPU the run drew on, and `frame_loop`, what the frame loop allocated
+/// (`FrameLoopAllocations`): what a frame budget is checked against and on
+/// (docs/subsystems/bench.md, "Frame budgets").
+struct FlythroughSummary @version(12) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1473,4 +1503,11 @@ struct FlythroughSummary @version(11) {
   /// Where the frames' CPU time went, stage by stage (`FrameRecord.cpu`), and how many frames'
   /// `cpu_ms` passed 8 and 16 ms (see `CpuPercentiles`).
   cpu: CpuPercentiles @since(11)
+  /// The adapter the run drew on, as the driver names it ("NVIDIA GeForce RTX 5090"): a frame
+  /// budget holds on the machine it was measured on and is skipped elsewhere. Empty in a summary
+  /// written before version 12.
+  device: string @since(12)
+  /// What the frame loop allocated on the frame's thread over the recorded frames (see
+  /// `FrameLoopAllocations`).
+  frame_loop: FrameLoopAllocations @since(12)
 }

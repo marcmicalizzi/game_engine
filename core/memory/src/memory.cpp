@@ -95,6 +95,8 @@ struct AtomicStats {
 
 AtomicStats g_total;
 std::atomic<u64> g_allocation_counter{0};
+// The calling thread's own count: a plain increment, no atomic, since only its thread writes it.
+thread_local u64 t_allocations = 0;
 
 #if ENGINE_MEMORY_TRACKING
 
@@ -241,6 +243,8 @@ bool tracking_enabled() noexcept { return ENGINE_MEMORY_TRACKING != 0; }
 
 u64 allocation_counter() noexcept { return g_allocation_counter.load(std::memory_order_relaxed); }
 
+u64 allocations_on_thread() noexcept { return t_allocations; }
+
 // --- allocation -----------------------------------------------------------------------------
 
 void* try_allocate(usize bytes, usize align) noexcept {
@@ -251,6 +255,7 @@ void* try_allocate(usize bytes, usize align) noexcept {
   if (p == nullptr) return nullptr;
 
   g_allocation_counter.fetch_add(1, std::memory_order_relaxed);
+  ++t_allocations;
   g_total.record_allocation(bytes);
 #if ENGINE_MEMORY_TRACKING
   const TagId tag = t_current_tag;

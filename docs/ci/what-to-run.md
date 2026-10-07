@@ -8,7 +8,7 @@ what it was measured against.
 | Where | Who | What runs | Why there |
 |---|---|---|---|
 | **Before a branch is handed over** | whoever wrote it | `tools/dev.ps1 test -Affected` in `msvc-debug`; `tools/dev.ps1 lint` and `docs` (both are in that run); `tools/linux-build.ps1 -Preset linux-clang-debug -Test -Filter <the same modules>` when C++ changed, and then `tools/linux-build.ps1 -Prune` ([why](local-linux.md#volumes-that-outlive-their-checkout)) | It answers "did I break what I touched, and what is built from it". It does not answer "does the tree still pass", and is not asked to. |
-| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the GCC container, and the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), on the branch rebased onto `main`; then `tools/linux-build.ps1 -Prune` in the gate worktree | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
+| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the GCC container, the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), and the frame budgets (`tools/frame-budget.ps1`, `msvc-release` on the RTX 5090; [below](#frame-budgets)), on the branch rebased onto `main`; then `tools/linux-build.ps1 -Prune` in the gate worktree | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
 
 A branch's author does not run the three suites. Until 2026-10-03 every agent did, as its last
 step, and then the merge ran them again on the rebased branch: the same hour of machine twice, the
@@ -35,6 +35,9 @@ presets that build them, not by the whole gate again.
 - The build system, `tests/support`, vendored code, the schema compiler and committed content are
   built into or read by everything: a change there runs everything, and the run says why.
 - Documentation selects nothing; the lint and the documentation check run in every case.
+- A module's tests are the test named after it, its bench's smoke run (`bench.<module>`), and a part
+  of its tests registered as a test of its own, `<module>.<part>` — so far `engine_view.frame_loop`,
+  whose three flights would double `engine_view`'s run.
 
 On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock free):
 
@@ -48,6 +51,39 @@ On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock f
 | the whole suite | 70 | 35 min |
 
 The times are the sum of those tests' own times in a gate's log, not a quiet measurement.
+
+## The gates the rules promised
+
+Four accepted rules had no machinery behind them until 2026-10-07 (roadmap T11, T20, T46, T48);
+the two performance gates are below.
+Where each runs is chosen by what it costs and what it needs.
+
+### The frame loop's allocations
+
+`engine_view.frame_loop` (every preset that builds `engine_view`; [renderer](../subsystems/renderer.md#the-frame-loop-allocates-nothing))
+flies the overlook, the erg's walk and the endless desert, each made small enough for a debug
+build, twice, and fails on any engine allocation or device buffer the frame's thread makes in the
+second flight. It needs a GPU, so it runs wherever the suites do and skips on a hosted runner as
+every GPU test does. About 220 s in `msvc-debug` and 60 s in `msvc-release` on the RTX 5090; an
+`-Affected` run that reaches `engine_view` includes it. **What its first run found**: one engine
+allocation in every frame of every scene (the GPU timer's read-back, fixed), two more a frame that
+were engine-view's own measurement (now left out), and on the endless desert's first flight 57
+allocations and 6 device buffers while its lists grew to the path's high-water mark — none in the
+second.
+
+### Frame budgets
+
+`tools/frame-budget.ps1` flies `content/budgets/frame-budgets.json`'s runs under the GPU lock and
+fails a pass over its budget on a quiet machine ([bench](../subsystems/bench.md#frame-budgets) has
+the file, the tolerance and the re-baseline). **It runs at the merge, once per batch, on the RTX
+5090**, after the suites and on the same rebased tip, in `msvc-release`: about **13 minutes** of flying for its five runs once the derived-data cache holds the scenes' terrain and meshes (2026-10-07: 122, 245, 142, 142 and 144 s, each run's wait for a quiet machine included), plus whatever each run waits for the GPU lock and, up to `-WaitQuiet` (600 s) each, for a quiet machine; a cold cache adds the erg's and the overlook's builds, about 3 minutes, once per checkout. A batch
+whose gate it fails does not merge until the pass is back under budget, behind a quality tier, or
+re-baselined with a reason the reviewer accepts (ADR-0018). Not on an author's branch — the author
+may run one run of it (`-Run <id>`) when a change is meant to move a number — and not nightly: the
+desktop has no nightly runner and the hosted ones have no GPU; a nightly with significance tests
+is T47's.
+
+**What its first run found** (2026-10-07, `msvc-release`, the budgets seeded an hour earlier by the same script, `-Rebaseline`, from the same tree): every run within budget, five of five — totals at the median and p99 of 0.155 / 0.345 ms (overlook, 1080p), 0.729 / 1.344 (erg walk, 1080p), 3.484 / 3.964 (erg walk, surround), 1.610 / 2.602 (endless, 1080p, maps) and 4.362 / 5.498 (endless, surround, traced) against budgets of 0.155 / 0.358, 0.724 / 1.214, 3.482 / 4.010, 1.625 / 2.756 and 4.454 / 5.571; the erg walk's p99 at 1080p came closest to its limit (1.344 of 1.557). Four of the five ran on a machine the harness called busy — another agent's renderer tests and builds — which is the shared machine as it is; a pass is a pass on a busy one. **What seeding found**: the experiment pages the budgets were to come from agree with today's tree for the erg walk (total 0.724 against the page's 0.730 at 1080p; every surround median within 2%) and the endless desert's surround run (total 4.454 against 4.363, every pass within 8%), and **do not for the endless desert at 1080p with the maps**: [far ground](../experiments/far-ground-2026-10-03.md#the-cost) reads 2.980 / 5.103 ms, today's tree 1.625 / 2.756 on the same path, every pass lower (the cull 0.047 against 0.306). Seeded from the page, that budget would have passed a doubling, so every budget is the gate's own measurement and `sources` in the file says which page agreed. And the full-size endless flight's first pass makes 573 engine allocations on its frame thread, every one before frame 3,896 of 7,201 — lists reaching the high-water mark the 12 km path needs, the second half of the path none — which the gate reports in each summary's `frame_loop` and does not judge.
 
 ## Waiting costs more than it looks
 
@@ -96,6 +132,8 @@ meet and not quiet figures; CTest's own "Total Test time" in each case, builds n
 | Linux container, warm, with a `-Filter` of a few modules | 1 to 7 min including the build |
 | Titan Xp (`remote-build.ps1 -Test`), `engine_cli` alone / `renderer` and `engine_cli` | 6 min / 24 min |
 | The whole merge gate (three Windows builds and suites, the GCC container, the server), in parallel | about 2 h |
+| The frame budgets (`tools/frame-budget.ps1`, five runs, `msvc-release`, warm cache; 2026-10-07) | 13 min, plus lock and quiet waits |
+| `engine_view.frame_loop` alone (2026-10-07) | 220 s in `msvc-debug`, 60 s in `msvc-release` |
 
 A first build in a fresh worktree comes on top of these, and a fresh worktree's first container
 run compiles every third-party dependency ([local Linux builds](local-linux.md) has those times).

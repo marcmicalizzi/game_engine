@@ -825,6 +825,9 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
             : 0.0;
     summary.gpu_memory_used_mib = scene->view->stats().gpu_memory.used_mib;
     summary.gpu_memory_budget_mib = scene->view->stats().gpu_memory.budget_mib;
+    if (const gfx::Device* device = host->open_device(); device != nullptr) {
+      summary.device = device->adapter().name;
+    }
     renderer::summarize_rt(scene->view->stats().rt, summary.rt);
     renderer::summarize_textures(*scene->gpu, summary.textures);
     JsonValue machine = JsonValue::object();
