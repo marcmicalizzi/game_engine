@@ -152,6 +152,8 @@ Scripting language (E7); game UI framework (RmlUi vs in-house); D3D12 backend ti
 
 ## 10.8 Calibrating the estimates
 
+This section is the history of estimates against actuals, phase by phase. The live board — every item with its state, its dependencies and its size — is [the roadmap](../roadmap.md), which a change that finishes, starts or blocks an item updates in the same commit.
+
 What actually bounds the schedule, in rough order:
 
 1. **Human review bandwidth.** The owner is the creative director and the final reviewer of visual quality, design, and taste. Once agents run ahead of review, the queue, not the agents, sets the pace. The review-queue tooling in [06 §6.10](06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) exists to keep this bottleneck as wide as possible.
