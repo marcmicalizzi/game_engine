@@ -37,10 +37,15 @@ permissions:
   contents: read
 
 jobs:
-  # Both GPU runners build a *-v2 preset, because both are x86-64-v2 and the tree's promised
+  # Both GPU runners build an x86-64-v2 preset, because both CPUs are v2 and the tree's promised
   # minimum is x86-64-v3 since ADR-0031: an i7-980 (Westmere, no AVX at all) here and a Xeon
   # E5-2670 (Sandy Bridge, AVX but no AVX2/FMA/BMI2) on the Linux job below. A v3 binary refuses
   # to start on either, by design and with a sentence naming the missing features.
+  # The Linux job builds linux-server-debug, which is linux-clang-debug-v2 plus
+  # ENGINE_WINDOW_BACKENDS=none: the server has a partial X11, so SDL's configure picks the X11
+  # backend and stops on the missing Xcursor unless it is told there is no window backend
+  # (docs/ci/self-hosted-runners.md, docs/ci/remote-linux.md). Until 2026-10-07 this job named
+  # linux-clang-debug-v2, the preset without that switch.
   # These are not one machine's exception: they are the project's only two GPU machines that are
   # not the development desktop, and the Linux one is the only Linux GPU coverage there is.
   # docs/ci/self-hosted-runners.md says what would retire them.
@@ -93,7 +98,7 @@ jobs:
           retention-days: 30
 
   linux-pascal:
-    name: Linux linux-clang-debug-v2 (GTX Titan Xp, Pascal, headless)
+    name: Linux linux-server-debug (GTX Titan Xp, Pascal, headless)
     runs-on: [self-hosted, linux, gpu]
     if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 6 * * 1' }}
     timeout-minutes: 90
@@ -105,17 +110,17 @@ jobs:
 
       - name: Clean build directory
         if: ${{ inputs.clean }}
-        run: pwsh -NoProfile -File ./tools/dev.ps1 clean -Preset linux-clang-debug-v2
+        run: pwsh -NoProfile -File ./tools/dev.ps1 clean -Preset linux-server-debug
 
       - name: GPU smoke
-        run: bash ./tools/ci/gpu-smoke.sh --preset linux-clang-debug-v2
+        run: bash ./tools/ci/gpu-smoke.sh --preset linux-server-debug
 
       - name: Upload ctest log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lasttest-linux-clang-debug-v2
-          path: build/linux-clang-debug-v2/Testing/Temporary/LastTest.log
+          name: lasttest-linux-server-debug
+          path: build/linux-server-debug/Testing/Temporary/LastTest.log
           if-no-files-found: warn
           retention-days: 30
 
@@ -127,10 +132,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gpu-smoke-linux-clang-debug-v2
+          name: gpu-smoke-linux-server-debug
           path: |
-            build/linux-clang-debug-v2/gpu-smoke.json
-            build/linux-clang-debug-v2/captures/
+            build/linux-server-debug/gpu-smoke.json
+            build/linux-server-debug/captures/
           if-no-files-found: warn
           retention-days: 30
 
