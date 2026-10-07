@@ -19,8 +19,13 @@
     experiment  an E<n> row of the plan's experiment table that says Done or Measured links
                 its write-up under docs/experiments/.
     plan        docs/plan/README.md's document table lists every docs/plan page.
+    roadmap     docs/roadmap.md's item ids are unique, every id a "Depends on" cell names is a
+                row, a done row names what closed it (an ADR, a commit, a dated status note), a
+                blocked row says by what, every row has a Where link, and State, Effort and
+                Reasoning use the page's own vocabulary.
     readme      the root README.md exists, names every layer directory and every engine_app(),
-                and links AGENTS.md and the plan, ADR, subsystems and experiments indexes.
+                and links AGENTS.md, the plan, ADR, subsystems and experiments indexes, and the
+                roadmap when there is one.
 
   Every failure is reported as file:line, and one run reports all of them: a check that stops
   at the first problem costs a round trip per problem.
@@ -303,7 +308,11 @@ if (-not (Test-Path -LiteralPath $rootReadme)) {
       Add-Problem $rootReadme 1 'readme' "the root README does not name the executable '$name'"
     }
   }
-  foreach ($index in @('AGENTS.md', 'docs/plan/README.md', 'docs/adr/README.md', 'docs/subsystems/README.md', 'docs/experiments/README.md')) {
+  # The roadmap is where the live state is kept, so the page that points a stranger at the state
+  # has to point at it too, once there is one.
+  $indexes = @('AGENTS.md', 'docs/plan/README.md', 'docs/adr/README.md', 'docs/subsystems/README.md', 'docs/experiments/README.md')
+  if (Test-Path -LiteralPath (Join-Path $Root 'docs/roadmap.md')) { $indexes += 'docs/roadmap.md' }
+  foreach ($index in $indexes) {
     if ($rootReadmeText -notmatch ('\(' + [regex]::Escape($index) + '(#[^)]*)?\)')) {
       Add-Problem $rootReadme 1 'readme' "the root README does not link $index"
     }
@@ -571,6 +580,114 @@ foreach ($file in $markdownFiles) {
   }
 }
 
+# ---- the roadmap ----------------------------------------------------------------------------------
+
+# docs/roadmap.md is the live board of every development item. Other rows name an item by its id,
+# so ids are unique and a "Depends on" cell names only rows that exist; a done row says what closed
+# it, so "done" is a claim a reader can follow to an ADR, a commit or a dated status note; a blocked
+# row says by what; and every row points somewhere, since the board holds titles, not descriptions.
+# Its links are checked above with every other document's. State, Effort and Reasoning are checked
+# against the page's own vocabulary, so a typo cannot hide a row from whoever filters the board.
+# An item table is one whose header row's first cell is '#'; other tables on the page are prose.
+function Get-RoadmapCell($cells, [hashtable]$columns, [string]$name) {
+  if (-not $columns.ContainsKey($name)) { return '' }
+  $c = $columns[$name]
+  if ($c -lt $cells.Count) { return $cells[$c] }
+  return ''
+}
+
+$roadmapPath = Join-Path $Root 'docs/roadmap.md'
+$roadmapItemCount = 0
+if (Test-Path -LiteralPath $roadmapPath) {
+  $info = Get-MarkdownInfo $roadmapPath
+  $roadmapIds = @{}
+  $roadmapRows = New-Object System.Collections.Generic.List[object]
+  $columns = $null
+  $skipTable = $false
+  $requiredColumns = @('#', 'Item', 'State', 'Depends on', 'Effort', 'Reasoning', 'Where')
+
+  for ($i = 0; $i -lt $info.Lines.Count; $i++) {
+    $line = $info.Lines[$i]
+    if ($info.Fenced[$i] -or $line -notmatch '^\s*\|') { $columns = $null; continue }   # a table ends at its first other line
+    $cells = @((($line.Trim() -replace '\\\|', '/') -replace '^\|', '' -replace '\|$', '') -split '\|' | ForEach-Object { $_.Trim() })
+
+    if ($null -eq $columns) {
+      if ($cells[0] -ne '#') { $columns = @{}; $skipTable = $true; continue }
+      $columns = @{}
+      for ($c = 0; $c -lt $cells.Count; $c++) { $columns[$cells[$c]] = $c }
+      $skipTable = $false
+      foreach ($required in $requiredColumns) {
+        if (-not $columns.ContainsKey($required)) {
+          Add-Problem $roadmapPath ($i + 1) 'roadmap' "this item table has no '$required' column; the columns are: $($requiredColumns -join ', ')"
+          $skipTable = $true
+        }
+      }
+      continue
+    }
+    if ($skipTable -or $cells[0] -match '^:?-+:?$') { continue }
+
+    $id = $cells[0]
+    if ($id -notmatch '^[A-Z]\d+$') {
+      Add-Problem $roadmapPath ($i + 1) 'roadmap' "'$id' is not an item id: an area letter and a number, like R12"
+      continue
+    }
+    if ($roadmapIds.ContainsKey($id)) {
+      Add-Problem $roadmapPath ($i + 1) 'roadmap' "$id is used twice (first on line $($roadmapIds[$id])); an id is never reused or renumbered"
+      continue
+    }
+    $roadmapIds[$id] = $i + 1
+    $roadmapRows.Add([pscustomobject]@{
+      Id        = $id
+      Line      = $i + 1
+      State     = Get-RoadmapCell $cells $columns 'State'
+      Depends   = Get-RoadmapCell $cells $columns 'Depends on'
+      Effort    = Get-RoadmapCell $cells $columns 'Effort'
+      Reasoning = Get-RoadmapCell $cells $columns 'Reasoning'
+      Where     = Get-RoadmapCell $cells $columns 'Where'
+    })
+  }
+
+  $roadmapItemCount = $roadmapRows.Count
+  if ($roadmapRows.Count -eq 0) {
+    Add-Problem $roadmapPath 1 'roadmap' "no item rows: an item table's header row starts with '#'"
+  }
+
+  foreach ($row in $roadmapRows) {
+    $state = $row.State
+    if ($state -match '^(done|in progress|open|blocked|deferred)\b') {
+      $word = $Matches[1]
+      # A commit is seven or more hex digits with at least one digit among them, so a word that
+      # happens to be spelled in a-f is not taken for one.
+      if ($word -eq 'done' -and $state -notmatch 'ADR-\d{4}|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\d{4}-\d{2}-\d{2}') {
+        Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id) is done but does not say what closed it: name the ADR, the commit or the dated status note"
+      }
+      if ($word -eq 'blocked' -and $state -notmatch '^blocked\W+\w') {
+        Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id) is blocked but does not say by what"
+      }
+    } else {
+      Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id)'s state '$state' is not one of: done, in progress, open, blocked, deferred"
+    }
+
+    foreach ($token in @(($row.Depends -replace '[—–]', ' ') -split '[,;\s]+' | Where-Object { $_ -and $_ -ne '-' })) {
+      if ($token -notmatch '^[A-Z]\d+$') {
+        Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id) depends on '$token', which is not an item id"
+      } elseif (-not $roadmapIds.ContainsKey($token)) {
+        Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id) depends on $token, which is no row's id"
+      }
+    }
+
+    if ($row.Effort -notmatch '^(S|M|L)$') {
+      Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id)'s effort '$($row.Effort)' is not one of: S, M, L"
+    }
+    if ($row.Reasoning -notmatch '^(routine|design|research)$') {
+      Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id)'s reasoning '$($row.Reasoning)' is not one of: routine, design, research"
+    }
+    if (-not $row.Where.Contains('](')) {
+      Add-Problem $roadmapPath $row.Line 'roadmap' "$($row.Id) has no Where link: the plan section, ADR, experiment or page to read"
+    }
+  }
+}
+
 # ---- the plan's own index -------------------------------------------------------------------------
 
 $planDir = Join-Path $Root 'docs/plan'
@@ -599,11 +716,12 @@ if ($problems.Count -gt 0) {
   }
   Write-Host ''
   Write-Host 'The rule is "Documentation moves with the code" in AGENTS.md: a module has a page, an'
-  Write-Host 'ADR is numbered and indexed, every link resolves, and the root README names what exists.'
+  Write-Host 'ADR is numbered and indexed, every link resolves, the root README names what exists, and'
+  Write-Host 'the roadmap''s rows name ids that exist and say what closed them.'
   Write-Host 'Fix the documents, not this check.'
   exit 1
 }
 
-Write-Host ("docs-check: OK ({0} markdown files, {1} links, {2} modules, {3} apps, {4} ADRs)" -f `
-  $markdownFiles.Count, $linkCount, $modules.Count, $apps.Count, $adrs.Count)
+Write-Host ("docs-check: OK ({0} markdown files, {1} links, {2} modules, {3} apps, {4} ADRs, {5} roadmap items)" -f `
+  $markdownFiles.Count, $linkCount, $modules.Count, $apps.Count, $adrs.Count, $roadmapItemCount)
 exit 0

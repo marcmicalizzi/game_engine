@@ -2,6 +2,8 @@
 
 The live board of every development item the plan, its ADRs and its experiments name: what is done and what closed it, what is under way, what is open, what is blocked and by what, and what a recorded decision has deferred. Each row is a title and a pointer; what the item is, and why, lives at the pointer. The history of estimates against actuals stays in the ledger ([10 §10.8](plan/10-roadmap-risks.md#108-calibrating-the-estimates)); this page is the current state.
 
+**Keeping it current.** A change that finishes, starts or blocks a roadmap item updates its row here in the same commit, and a new piece of work gets a row before it starts ([AGENTS.md](../AGENTS.md#rules-that-are-checked), "Documentation moves with the code"). `tools/docs-check.ps1` holds the page to its shape: ids are unique, every id a "Depends on" cell names is a row, a `done` row names what closed it, a `blocked` row says by what, every row has a Where link that resolves, and State, Effort and Reasoning use the words below.
+
 ## How to read it
 
 | Column | Values |

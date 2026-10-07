@@ -178,6 +178,7 @@ The first decision is [ADR-0001](../adr/0001-first-decision.md#context), the sha
 
   Set-FixtureFile $root 'AGENTS.md' "# Working in this repository`n`nRead the plan first.`n"
   Set-FixtureFile $root 'docs/experiments/README.md' "# Experiments`n`nOne write-up per experiment.`n"
+  Set-FixtureFile $root 'docs/roadmap.md' $fixtureRoadmap
   Set-FixtureFile $root 'README.md' @'
 # Fixture engine
 
@@ -188,9 +189,42 @@ executables; `engine-cli` is the scriptable client.
 - [docs/adr/README.md](docs/adr/README.md)
 - [docs/subsystems/README.md](docs/subsystems/README.md)
 - [docs/experiments/README.md](docs/experiments/README.md)
+- [docs/roadmap.md](docs/roadmap.md)
 - [AGENTS.md](AGENTS.md)
 '@
   return $root
+}
+
+# The fixture's roadmap: a legend table the check must leave alone, then two item tables whose
+# rows exercise each state that carries a rule (done with an ADR, a date and a commit; blocked
+# by something; open with dependencies across tables). Line 13 is R1, line 21 is T2.
+$fixtureRoadmap = @'
+# Roadmap
+
+A change that finishes, starts or blocks an item updates its row in the same commit.
+
+| State | Means |
+|---|---|
+| done | finished, and the row names what closed it |
+
+## R — The renderer
+
+| # | Item | State | Depends on | Effort | Reasoning | Where |
+|---|---|---|---|---|---|---|
+| R1 | The first decision | done (ADR-0001) | | S | design | [ADR-0001](adr/0001-first-decision.md) |
+| R2 | The shape | open | R1 | M | routine | [01 §1.1](plan/01-shape.md#11-a-section) |
+
+## T — Tools
+
+| # | Item | State | Depends on | Effort | Reasoning | Where |
+|---|---|---|---|---|---|---|
+| T1 | Does it work | done (2026-01-02, 2ce98b21) | R1, R2 | L | research | [E1](experiments/e1-thing.md) |
+| T2 | A runner | blocked (a machine with a GPU) | T1 | S | routine | [base](subsystems/base.md) |
+'@
+
+function Set-FixtureRoadmap([string]$root, [string]$old, [string]$new) {
+  if (-not $fixtureRoadmap.Contains($old)) { throw "the fixture roadmap has no '$old' to replace" }
+  Set-FixtureFile $root 'docs/roadmap.md' ($fixtureRoadmap.Replace($old, $new))
 }
 
 try {
@@ -382,6 +416,70 @@ Layers: `core/` and `apps/`; `engine-cli` is the client. See [docs/plan/README.m
   Remove-Item -LiteralPath (Join-Path $root 'README.md')
   Test-Reports 'a repository with no root README is reported' $root `
     'README.md:1: [readme] the repository has no README.md at its root'
+
+  Write-Host 'case: the roadmap'
+  $root = New-Fixture
+  Add-FixtureLine $root 'docs/roadmap.md' "| R2 | The shape again | open | | S | routine | [01](plan/01-shape.md) |`n"
+  Test-Reports 'an id used twice, at the second row' $root `
+    'docs/roadmap.md:22: [roadmap] R2 is used twice (first on line 14)'
+
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| open | R1 |' '| open | R1, R9 |'
+  Test-Reports 'a dependency that is no row' $root "R2 depends on R9, which is no row's id"
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| open | R1 |' '| open | the shape |'
+  Test-Reports 'a dependency that is not an id' $root "R2 depends on 'the', which is not an item id"
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| open | R1 |' '| open | — |'
+  Test-Passes 'a dash means no dependency' $root
+
+  $root = New-Fixture
+  Set-FixtureRoadmap $root 'done (ADR-0001)' 'done'
+  Test-Reports 'a done row that names nothing' $root `
+    'docs/roadmap.md:13: [roadmap] R1 is done but does not say what closed it'
+  $root = New-Fixture
+  Set-FixtureRoadmap $root 'done (ADR-0001)' 'done (defaced)'
+  Test-Reports 'a word spelled in hex is not a commit' $root 'R1 is done but does not say what closed it'
+  $root = New-Fixture
+  Set-FixtureRoadmap $root 'done (ADR-0001)' 'done (d1a2e690)'
+  Test-Passes 'a commit closes a row' $root
+
+  $root = New-Fixture
+  Set-FixtureRoadmap $root 'blocked (a machine with a GPU)' 'blocked'
+  Test-Reports 'a blocked row that says nothing of what by' $root 'T2 is blocked but does not say by what'
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| open | R1 |' '| finished | R1 |'
+  Test-Reports 'a state outside the vocabulary' $root "R2's state 'finished' is not one of: done, in progress, open, blocked, deferred"
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| R1, R2 | L | research |' '| R1, R2 | XL | hard |'
+  Test-Reports 'an effort outside the vocabulary' $root "T1's effort 'XL' is not one of: S, M, L"
+  Test-Reports 'a reasoning outside the vocabulary' $root "T1's reasoning 'hard' is not one of: routine, design, research"
+
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '[base](subsystems/base.md)' 'the base page'
+  Test-Reports 'a row with no Where link' $root 'T2 has no Where link'
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '[base](subsystems/base.md)' '[base](subsystems/nothing.md)'
+  Test-Reports 'a Where link to nothing' $root "docs/roadmap.md:21: [link] 'subsystems/nothing.md' does not exist"
+
+  $root = New-Fixture
+  Set-FixtureRoadmap $root '| R1 | The first' '| R-1 | The first'
+  Test-Reports 'an id that is not an area letter and a number' $root "'R-1' is not an item id"
+  $root = New-Fixture
+  Set-FixtureRoadmap $root "## T — Tools`n`n| # | Item | State | Depends on |" "## T — Tools`n`n| # | Item | State | Needs |"
+  Test-Reports 'an item table without a column the rules read' $root `
+    "docs/roadmap.md:18: [roadmap] this item table has no 'Depends on' column"
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/roadmap.md' "# Roadmap`n`nNothing yet.`n"
+  Test-Reports 'a roadmap with no item rows' $root "docs/roadmap.md:1: [roadmap] no item rows"
+  $root = New-Fixture
+  Set-FixtureFile $root 'README.md' ((Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw).Replace("- [docs/roadmap.md](docs/roadmap.md)`n", ''))
+  Test-Reports 'a root README that does not link the roadmap' $root `
+    'README.md:1: [readme] the root README does not link docs/roadmap.md'
+  $root = New-Fixture
+  Remove-Item -LiteralPath (Join-Path $root 'docs/roadmap.md')
+  Set-FixtureFile $root 'README.md' ((Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw).Replace("- [docs/roadmap.md](docs/roadmap.md)`n", ''))
+  Test-Passes 'a tree with no roadmap owes no link to one' $root
 
   Write-Host 'case: one run, every problem'
   $root = New-Fixture
