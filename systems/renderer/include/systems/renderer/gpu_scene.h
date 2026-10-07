@@ -510,13 +510,14 @@ class GpuScene {
   // `hole` (x0, z0, x1, z1; empty when x1 <= x0).
   void terrain_show(u32 level, u32 slot_a, u32 slot_b, f32 blend, f32 padding, Vec4 hole) noexcept;
   // **The rings' chunks** (renderer.md, "The rings in the scene"). Each ring level has
-  // `terrain_slots(level)` slots — a mesh and an identity instance each, `terrain_slot_clusters`
-  // clusters and pairs apiece — and arenas of vertices and triangles. A chunk goes into a free
-  // slot (`terrain_chunk_upload`: its clusters, LOD records, positions, attributes and triangles,
-  // and with ray tracing its float positions and 8-bit indices, staged for the next frame to copy,
-  // with its offsets moved to the slot's and the arenas'), and is drawn from the frame in which
-  // `terrain_chunk_show` turns its slot on, which is also where its predecessor's is turned off
-  // and freed. False, with a sentence, when no slot or no arena room is left, and nothing changes.
+  // `terrain_slots(level)` slots — a mesh and an instance at its chunk's corner each,
+  // `terrain_slot_clusters` clusters and pairs apiece — and arenas of vertices and triangles. A
+  // chunk goes into a free slot (`terrain_chunk_upload`: its clusters, LOD records, positions,
+  // attributes and triangles, and with ray tracing its float positions and 8-bit indices, staged
+  // for the next frame to copy, with its offsets moved to the slot's and the arenas'), and is
+  // drawn from the frame in which `terrain_chunk_show` turns its slot on, which is also where its
+  // predecessor's is turned off and freed. False, with a sentence, when no slot or no arena room
+  // is left, and nothing changes.
   u32 terrain_slots(u32 level) const noexcept;
   u32 terrain_slot_clusters(u32 level) const noexcept;
   u32 terrain_free_slots(u32 level) const noexcept;
@@ -547,13 +548,12 @@ class GpuScene {
   // On: the slot draws its chunk from the next frame. Off: it draws nothing, and its slot and arena
   // ranges are free for the next upload (whose copy the frame orders after every frame in flight).
   void terrain_chunk_show(u32 level, u32 slot, bool on) noexcept;
-  // **The scene grid's UV frame** (`TerrainUvFrame`), which a slot's chunk carries its UVs from its
-  // corner in when its level set says so (`TerrainLevelSet::uv_from_corner`: the world's tiles), so
-  // its instance is flagged `gfx::k_instance_uv_from_corner` and the resolve and the reference add
-  // the corner back (`ResolveParams::terrain_uv_*`). The frame is zero but for a side of one
-  // millimetre where no slot's chunk carries UVs from its corner, and is then read by nothing.
+  // **The scene grid's UV frame** (`TerrainUvFrame`), which every slot's chunk — a world tile's, a
+  // far level's, a ring's — carries its UVs from its corner in, so its instance is flagged
+  // `gfx::k_instance_uv_from_corner` and the resolve and the reference add the corner back
+  // (`ResolveParams::terrain_uv_*`). The frame is zero but for a side of one millimetre in a scene
+  // with no terrain levels, and is then read by nothing.
   const TerrainUvFrame& terrain_uv() const noexcept { return terrain_uv_; }
-  bool terrain_uv_from_corner() const noexcept { return terrain_uv_from_corner_; }
   // What the rings' slots and arenas hold on the device, and what the uploads have moved.
   u64 terrain_ring_bytes() const noexcept { return terrain_ring_bytes_; }
   u64 terrain_chunk_uploads() const noexcept { return terrain_chunk_uploads_; }
@@ -928,7 +928,6 @@ class GpuScene {
   u64 triangle_capacity_ = 0;
   u64 terrain_ring_bytes_ = 0;
   TerrainUvFrame terrain_uv_;
-  bool terrain_uv_from_corner_ = false;
   u64 terrain_upload_budget_ = 0;  // bytes of fields a frame copies; 0 all
   u64 terrain_chunk_uploads_ = 0;
   u64 terrain_chunk_upload_bytes_ = 0;

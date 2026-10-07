@@ -290,7 +290,6 @@ class TerrainTileSet final : public TerrainLevelSet {
   bool shares_vertices() const noexcept override { return true; }
   const scene_gen::TileSource* source() const noexcept override { return &source_; }
   u32 far_levels() const noexcept override { return far_; }
-  bool uv_from_corner() const noexcept override { return true; }
   TerrainRingLayout layout() const noexcept override;
   gfx::TerrainField field_window(u32 level,
                                  const TerrainRingLayout& layout) const noexcept override;

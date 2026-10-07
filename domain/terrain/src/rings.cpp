@@ -297,6 +297,13 @@ void build_ring_chunk_mesh(const Ring& ring, RingChunkCoord chunk, const RingPar
   out.locked.clear();
   Vector<u32> slot(nx * nz, ~0u);
   const f64 uv_scale = 1.0 / static_cast<f64>(params.uv_size_mm);
+  // The frame the chunk is built in: the world's, or its corner's (`RingParams::chunk_frame`),
+  // whose positions are the lattice point less the corner in integers, rounded to float32 once at
+  // the size of a chunk, and whose UVs are measured from the corner too.
+  const i64 origin_x = params.chunk_frame ? ring_chunk_corner_mm(ring, chunk.i) : 0;
+  const i64 origin_z = params.chunk_frame ? ring_chunk_corner_mm(ring, chunk.j) : 0;
+  const i64 uv_x0 = params.chunk_frame ? origin_x : params.uv_x0_mm;
+  const i64 uv_z0 = params.chunk_frame ? origin_z : params.uv_z0_mm;
   for (u32 j = 0; j < nz; ++j) {
     for (u32 i = 0; i < nx; ++i) {
       const i64 wi = c.i0 + i, wj = c.j0 + j;
@@ -305,9 +312,9 @@ void build_ring_chunk_mesh(const Ring& ring, RingChunkCoord chunk, const RingPar
       const i64 x = wi * s;
       const i64 z = wj * s;
       const i64 y = h[(j + 1) * ax + i + 1];
-      out.positions.push_back(Vec3{static_cast<f32>(static_cast<f64>(x) / 1000.0),
+      out.positions.push_back(Vec3{static_cast<f32>(static_cast<f64>(x - origin_x) / 1000.0),
                                    static_cast<f32>(static_cast<f64>(y) / 1e6),
-                                   static_cast<f32>(static_cast<f64>(z) / 1000.0)});
+                                   static_cast<f32>(static_cast<f64>(z - origin_z) / 1000.0)});
       // Central differences over the apron: (-dh/dx, 1, -dh/dz), both in metres per metre.
       const f64 dx = static_cast<f64>(h[(j + 1) * ax + i + 2] - h[(j + 1) * ax + i]) /
                      (2000.0 * static_cast<f64>(s));
@@ -316,8 +323,8 @@ void build_ring_chunk_mesh(const Ring& ring, RingChunkCoord chunk, const RingPar
       const f64 len = std::sqrt(dx * dx + 1.0 + dz * dz);
       out.normals.push_back(Vec3{static_cast<f32>(-dx / len), static_cast<f32>(1.0 / len),
                                  static_cast<f32>(-dz / len)});
-      out.uvs.push_back(Vec2{static_cast<f32>(static_cast<f64>(x - params.uv_x0_mm) * uv_scale),
-                             static_cast<f32>(static_cast<f64>(z - params.uv_z0_mm) * uv_scale)});
+      out.uvs.push_back(Vec2{static_cast<f32>(static_cast<f64>(x - uv_x0) * uv_scale),
+                             static_cast<f32>(static_cast<f64>(z - uv_z0) * uv_scale)});
       // The chunk's border and the hole's edge are locked: a neighbouring chunk (or ring) holds
       // the same line, and the two DAGs meet there exactly only if neither moves it.
       const bool border = i == 0 || j == 0 || i + 1 == nx || j + 1 == nz ||
@@ -443,6 +450,14 @@ bool build_ring_chunk(const Ring& ring, RingChunkCoord chunk, const RingParams& 
 bool TerrainRings::reset(const RingParams& params, i64 camera_x, i64 camera_z,
                          const RingHeights& source, const geometry::ClusterLodOptions& options,
                          jobs::JobSystem* jobs, std::string* error, u32 build_mask, bool merge) {
+  if (merge && params.chunk_frame) {
+    if (error != nullptr) {
+      *error =
+          "terrain rings: chunks built in their corners' frames cannot be merged into one ring's "
+          "DAG, which needs one frame: build them in the world's frame, or draw them one by one";
+    }
+    return false;
+  }
   params_ = params;
   source_ = &source;
   options_ = options;

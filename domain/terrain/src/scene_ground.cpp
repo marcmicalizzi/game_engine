@@ -283,11 +283,16 @@ constexpr scene_gen::GroundRingsOps k_rings_ops{
 };
 
 // The rings over a scene grid `extent_mm` either side at `spacing_mm`, from the ring tunables
-// (`terrain.rings.*`): the scene's grid is their outer ring, which the caller draws itself.
+// (`terrain.rings.*`): the scene's grid is their outer ring, which the caller draws itself. Every
+// chunk is built in its corner's frame (`scene_gen::RingChunkRef`): positions metres from its
+// corner and UVs from it in the scale of the scene grid's UV frame — corner −extent, side
+// 2 · extent, the frame `renderer::terrain_uv_frame` hands the resolve — so a chunk's DAG does not
+// depend on where it stands, and the renderer adds the corner back.
 bool dunes_make_rings(const void*, i64 extent_mm, i64 spacing_mm, scene_gen::GroundRings& out,
                       std::string* error) {
   auto made = std::make_unique<DunesRings>();
   made->params = ring_params_from_tunables(0, 0, extent_mm, spacing_mm);
+  made->params.chunk_frame = true;
   std::string why;
   if (!validate_rings(made->params, &why)) {
     if (error != nullptr) *error = why;

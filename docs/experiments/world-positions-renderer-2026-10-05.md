@@ -227,3 +227,26 @@ The endless desert's flight (`camera-path.json`, 7,201 frames, world tiles and f
 **What it says.** The first version formed the corner's offset as `gfx::terrain_corner_mm` does, in 64-bit integers, and the resolve paid 0.024–0.027 ms for it, 1.4%, in all four runs — the GPU emulates 64-bit integer arithmetic, and every shaded pixel of the ground ran it. The committed version does it in float32 (whole millimetres, exact within 16.7 km of the grid's corner, past which the UV clamps; `terrain_uv_offset`, gfx.md) and multiplies by the frame's UV units per millimetre instead of dividing by its side: the resolve pays 0.007–0.008 ms, 0.4–0.5%, which is the add, the flag's test and the instance words it reads. Every other pass moved by less than the runs' own spread (0.005 ms or less; the cull, the pool and the maps draw the same clusters), and the totals by +0.01 to −0.003 ms in the last pair. The frame thread's CPU did not move (0.417–0.424 ms at the median in `rt`, 0.452–0.464 in `csm`).
 
 **Machine state.** Of the twelve runs, `quiet` was true for the first `rt` pair, the first `csm` "before", and the last `rt` "before" and `csm` pair; the others were marked not quiet by another session's GPU use at their ends (23–34% busy) or other processes' CPU (0.7–10.9% at a run's start or end). Nothing of this branch was building during any run. The GPU spans are the passes' own timers; the resolve's difference repeated within 0.003 ms in each version, so it is the change and not the hour.
+
+## Stage 5: the ground's leftovers
+
+The last absolute float32 the ground and its placements had (roadmap W61–W64, 2026-10-07), each held by tests at the three far sites and astride a cell's edge. `msvc-debug`, RTX 5090. What is measured here is positions, meshes and pictures, not time, so the machine's load does not enter them.
+
+### Ring chunks in their corner's frame (W63)
+
+A ring's chunk was built by the ground provider in the world's frame and moved to its corner by the renderer afterwards (`place_at_corner`); the provider builds it in its corner's frame now (`terrain::RingParams::chunk_frame`): positions and UVs from the chunk's lattice corner ([renderer](../subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners)).
+
+**The far twin** (`terrain rings: a chunk built in its corner's frame far out is its twin by the origin`, `domain/terrain`, CPU): rings 16 m either side at 50 cm and 64 m either side at a metre, over a ground that is a function of the lattice point measured from its own origin, moved with the camera; the camera inside a chunk, and a millimetre short of a cell's edge (the inner ring straddling it). A chunk mesh has seven streams compared (positions, normals, UVs, locks, triangles, and the grid and skirt counts), a chunk's DAG nine (clusters, vertices, vertex sources, attributes, triangles, the 16-bit grid, its origin and step, LOD records, level counts), the DAG built for the inner ring's first chunk.
+
+| Move | Camera | Chunks | Mesh streams that differ: corner's frame / world's | DAG streams that differ: corner's / world's | Clusters: twin, corner's, world's |
+|---|---|---|---|---|---|
+| 419,072 m | in a chunk | 8 | 0 / 16 | 0 / 9 | 40, 40, 39 |
+| 10,000 km | in a chunk | 8 | 0 / 16 | 0 / 9 | 40, 40, 42 |
+| 1e8 m | in a chunk | 8 | 0 / 16 | 0 / 9 | 40, 40, 38 |
+| 419,072 m | 1 mm short of a cell's edge | 6 | 0 / 12 | 0 / 8 | 47, 47, 47 |
+| 10,000 km | the same | 6 | 0 / 12 | 0 / 9 | 47, 47, 50 |
+| 1e8 m | the same | 6 | 0 / 12 | 0 / 9 | 47, 47, 45 |
+
+In the world's frame two streams of every chunk differ — its positions and its UVs, the frame's absolute numbers — and its DAG is another tree. **By the origin** (`terrain rings: a chunk in its corner's frame is the world's chunk at its corner`) the corner's chunk is the world's less its corner to the bit over the 29 chunks of three rings at 50 cm, 1 m and 2 m, and a UV from the corner plus the corner's place in the frame is the world's UV exactly (the largest difference, in f64, 0): on the default dyadic lattices the move was exact, which is why the renderer could do it afterwards.
+
+**The picture by the origin.** `engine-view --terrain-rings` over a 512 m dune terrain at 2 m (seed 23, three years in) with the rings at 32 m (50 cm) and 128 m (1 m), 640×360, the camera 3 m over the sand, four frames, offscreen, before (this branch's base, `8cb66941`) and after, under `tools/gpu-lock.ps1`: the ids differ at 82,922 of 230,400 pixels (159,772 of 691,200 words), because the cut names other clusters — the DAG is simplified from UVs measured from the corner, near zero, where they were the grid frame's ~0.5, and the simplifier weighs UVs; the colour at 5,149 pixels, 1.5 levels on average and 31 at most; the depth image at 454 pixels; the normal image at 7,226 (3.2 levels on average, 74 at most). The same sand at another tessellation, as a re-centre's rebuild is. The rings' tests in the renderer pass unchanged (`terrain rings*`: every level at one time and no step at a re-centre, culling and the rasterizers over the rings; `sand detail*` across the rings' and chunks' borders), and the translation suite's terrain case stays byte-identical at both cuts.

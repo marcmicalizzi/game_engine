@@ -2,7 +2,8 @@
 // rings' meshes cover the outer square with no gap and no overlap, the re-centre rule step by step,
 // the skirts' winding, vertices that stay on the world's grid when a ring moves, and a rebuild that
 // is the same bytes on one, two, three and sixteen workers, and every skirt vertex of the chunks
-// the clamps clip thin against the grid vertex it hangs from.
+// the clamps clip thin against the grid vertex it hangs from. And a chunk built in its corner's
+// frame: the world's chunk at its corner by the origin, and its twin by the origin far out.
 #include <core/containers/detail/raw_storage.h>
 #include <core/jobs/job_system.h>
 #include <domain/terrain/fixed.h>
@@ -10,7 +11,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <bit>
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 
@@ -89,6 +93,78 @@ u32 check_skirt_vertices(const RingMesh& mesh, f32 drop, u32& wrong) {
     ++checked;
   }
   return checked;
+}
+
+// Heights of this test's own, a function of the lattice point measured from `(ox, oz)` alone, in
+// whole micrometres: a ground and its twin moved by whole cells give the same heights at the same
+// lattice points relative to their origins, which is what a translation test needs of a source.
+class MovedHeights final : public RingHeights {
+ public:
+  MovedHeights(i64 ox_mm, i64 oz_mm) noexcept : ox_(ox_mm), oz_(oz_mm) {}
+  void heights(i64 x0, i64 z0, u32 nx, u32 nz, i64 spacing_mm, jobs::JobSystem*,
+               Vector<i64>& out_um) const override {
+    out_um.resize(static_cast<usize>(nx) * nz);
+    for (u32 j = 0; j < nz; ++j) {
+      const f64 z = static_cast<f64>(z0 + i64{j} * spacing_mm - oz_);
+      for (u32 i = 0; i < nx; ++i) {
+        const f64 x = static_cast<f64>(x0 + i64{i} * spacing_mm - ox_);
+        out_um[static_cast<usize>(j) * nx + i] = std::llround(
+            1.0e6 * (0.9 * std::sin(x * 0.00041) + 0.6 * std::cos(z * 0.00053 + x * 0.00029)));
+      }
+    }
+  }
+
+ private:
+  i64 ox_;
+  i64 oz_;
+};
+
+// Small rings for the twins: an inner ring 16 m either side at 50 cm (64 m chunks) and a middle
+// ring 64 m either side at a metre (128 m chunks), round an outer ring centred on `(cx, cz)`.
+RingParams twin_rings(i64 cx_mm, i64 cz_mm, bool chunk_frame) {
+  RingParams p;
+  p.count = 3;
+  p.ring[0] = RingSpec{16'000, 500, 2'000};
+  p.ring[1] = RingSpec{64'000, 1'000, 4'000};
+  p.ring[2] = RingSpec{512'000, 2'000, 16'000};
+  p.outer_cx_mm = cx_mm;
+  p.outer_cz_mm = cz_mm;
+  p.uv_x0_mm = cx_mm - 512'000;
+  p.uv_z0_mm = cz_mm - 512'000;
+  p.uv_size_mm = 1'024'000;
+  p.chunk_frame = chunk_frame;
+  return p;
+}
+
+template <class T>
+bool same_bytes(const Vector<T>& a, const Vector<T>& b) {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
+}
+
+u32 one_if(bool differ) noexcept { return differ ? 1u : 0u; }
+
+// How many of a chunk mesh's streams differ from another's, bit for bit.
+u32 mesh_streams_differ(const RingMesh& a, const RingMesh& b) {
+  return one_if(!same_bytes(a.positions, b.positions)) + one_if(!same_bytes(a.normals, b.normals)) +
+         one_if(!same_bytes(a.uvs, b.uvs)) + one_if(!same_bytes(a.locked, b.locked)) +
+         one_if(!same_bytes(a.indices, b.indices)) + one_if(a.grid_vertices != b.grid_vertices) +
+         one_if(a.skirt_triangles != b.skirt_triangles);
+}
+
+// How many of a DAG's streams differ from another's, bit for bit.
+u32 dag_streams_differ(const geometry::ClusterLodMesh& a, const geometry::ClusterLodMesh& b) {
+  const geometry::ClusterMesh& m = a.mesh;
+  const geometry::ClusterMesh& n = b.mesh;
+  return one_if(!same_bytes(m.clusters, n.clusters)) + one_if(!same_bytes(m.vertices, n.vertices)) +
+         one_if(!same_bytes(m.vertex_source, n.vertex_source)) +
+         one_if(!same_bytes(m.attributes, n.attributes)) +
+         one_if(!same_bytes(m.triangles, n.triangles)) +
+         one_if(!same_bytes(m.quantized, n.quantized)) +
+         one_if(std::memcmp(&m.quant_origin, &n.quant_origin, sizeof(Vec3)) != 0 ||
+                m.quant_scale != n.quant_scale) +
+         one_if(!same_bytes(a.lod, b.lod)) +
+         one_if(!same_bytes(a.level_cluster_counts, b.level_cluster_counts));
 }
 
 }  // namespace
@@ -384,4 +460,161 @@ TEST_CASE("terrain rings: a rebuild is the same bytes on any number of threads, 
                     << " chunks and kept " << kept << "; hashes " << serial.hash(0) << " "
                     << serial.hash(1) << " " << serial.hash(2) << " moved " << incremental[0] << " "
                     << incremental[1] << " " << incremental[2]);
+}
+
+TEST_CASE("terrain rings: a chunk in its corner's frame is the world's chunk at its corner") {
+  // `RingParams::chunk_frame` (ADR-0053; renderer.md, "The ground's tiles are placed at their
+  // corners"): the same chunk, its positions metres from its corner and its UVs measured from it.
+  // By the origin on a 50 cm, a 1 m and a 2 m lattice every position is exact in float32 in both
+  // frames, so the corner's chunk is the world's less the corner to the bit; the normals, the
+  // locks, the skirts and the triangles are the same; and a UV from the corner plus the corner's
+  // place in the frame is the world's UV within a float's rounding.
+  const RingParams world = small_rings();
+  RingParams corner = small_rings();
+  corner.chunk_frame = true;
+  const FieldRingHeights heights(field(), 0);
+  RingLayout layout;
+  place_rings(world, 3'700, -1'850, layout);
+  u32 chunks = 0, wrong = 0, uv_wrong = 0;
+  f64 uv_most = 0.0;
+  const f64 uv_scale = 1.0 / static_cast<f64>(world.uv_size_mm);
+  for (u32 k = 0; k < layout.count; ++k) {
+    Vector<RingChunkCoord> coords;
+    ring_chunks(layout.ring[k], coords);
+    for (const RingChunkCoord c : coords) {
+      RingMesh a;
+      RingMesh b;
+      build_ring_chunk_mesh(layout.ring[k], c, world, heights, nullptr, a);
+      build_ring_chunk_mesh(layout.ring[k], c, corner, heights, nullptr, b);
+      ++chunks;
+      REQUIRE(a.positions.size() == b.positions.size());
+      wrong += a.indices == b.indices ? 0u : 1u;
+      wrong += same_bytes(a.normals, b.normals) && same_bytes(a.locked, b.locked) ? 0u : 1u;
+      wrong +=
+          a.grid_vertices == b.grid_vertices && a.skirt_triangles == b.skirt_triangles ? 0u : 1u;
+      const i64 cx = ring_chunk_corner_mm(layout.ring[k], c.i);
+      const i64 cz = ring_chunk_corner_mm(layout.ring[k], c.j);
+      const f64 cx_m = static_cast<f64>(cx) / 1000.0;
+      const f64 cz_m = static_cast<f64>(cz) / 1000.0;
+      const f64 u0 = static_cast<f64>(cx - world.uv_x0_mm) * uv_scale;
+      const f64 v0 = static_cast<f64>(cz - world.uv_z0_mm) * uv_scale;
+      for (u32 v = 0; v < a.positions.size(); ++v) {
+        const Vec3 p = a.positions[v];
+        const Vec3 q = b.positions[v];
+        wrong += q.x == static_cast<f32>(static_cast<f64>(p.x) - cx_m) && q.y == p.y &&
+                         q.z == static_cast<f32>(static_cast<f64>(p.z) - cz_m)
+                     ? 0u
+                     : 1u;
+        const f64 du = std::abs(static_cast<f64>(b.uvs[v].x) + u0 - static_cast<f64>(a.uvs[v].x));
+        const f64 dv = std::abs(static_cast<f64>(b.uvs[v].y) + v0 - static_cast<f64>(a.uvs[v].y));
+        uv_most = std::max(uv_most, std::max(du, dv));
+        uv_wrong += du > 1.0e-7 || dv > 1.0e-7 ? 1u : 0u;
+      }
+    }
+  }
+  CHECK(chunks > 4u);
+  CHECK(wrong == 0u);
+  CHECK(uv_wrong == 0u);
+  MESSAGE("corner frame against the world's: " << chunks << " chunks, the largest UV difference "
+                                               << uv_most);
+
+  // A ring's DAG merged from its chunks needs one frame: refused, with a sentence; drawn chunk by
+  // chunk, as the renderer draws them, it builds.
+  const geometry::ClusterLodOptions options;
+  std::string error;
+  TerrainRings merged;
+  CHECK_FALSE(merged.reset(corner, 0, 0, heights, options, nullptr, &error));
+  CHECK(error.find("merged") != std::string::npos);
+  TerrainRings chunked;
+  REQUIRE_MESSAGE(chunked.reset(corner, 0, 0, heights, options, nullptr, &error, 1u, false), error);
+  CHECK(chunked.chunks(0).size() > 0u);
+}
+
+TEST_CASE("terrain rings: a chunk built in its corner's frame far out is its twin by the origin") {
+  // ADR-0053 decision 6 for a ring's chunk (renderer.md, "The ground's tiles are placed at their
+  // corners"): rings and their ground moved by whole cells to the owner's 419 km, to 10,000 km and
+  // to 1e8 m, with the camera inside a chunk and a millimetre short of a cell's edge (the inner
+  // ring then straddles it), give the same chunks — the same mesh in every stream, so the same
+  // cluster DAG, which is a function of its mesh. In the world's frame (what the provider built
+  // until 2026-10-07, and the renderer moved to the corner afterwards) a far chunk's positions are
+  // hundreds of kilometres and its UVs the frame's thousands, so its DAG is another one.
+  struct Site {
+    i64 x;
+    i64 z;
+  };
+  const Site sites[] = {{419'072'000, -419'072'000},
+                        {10'000'000'000, 10'000'000'000},
+                        {100'000'000'000, -100'000'000'000}};
+  const Site cameras[] = {{3'700, -1'850}, {63'999, -1}};
+  const geometry::ClusterLodOptions options;
+  std::string error;
+  const MovedHeights home_heights(0, 0);
+  for (const Site camera : cameras) {
+    const RingParams home = twin_rings(0, 0, true);
+    REQUIRE(validate_rings(home, &error));
+    RingLayout home_layout;
+    place_rings(home, camera.x, camera.z, home_layout);
+    for (const Site site : sites) {
+      const RingParams far = twin_rings(site.x, site.z, true);
+      RingParams far_world = far;
+      far_world.chunk_frame = false;
+      REQUIRE(validate_rings(far, &error));
+      const MovedHeights far_heights(site.x, site.z);
+      RingLayout far_layout;
+      place_rings(far, site.x + camera.x, site.z + camera.z, far_layout);
+      u32 chunks = 0, differ = 0, world_differ = 0;
+      // The two rings the renderer builds (the outer is the scene's grid, which it draws itself).
+      for (u32 k = 0; k < 2; ++k) {
+        const Ring& h = home_layout.ring[k];
+        const Ring& f = far_layout.ring[k];
+        REQUIRE(f.cx == h.cx + site.x);
+        REQUIRE(f.cz == h.cz + site.z);
+        Vector<RingChunkCoord> hc;
+        Vector<RingChunkCoord> fc;
+        ring_chunks(h, hc);
+        ring_chunks(f, fc);
+        REQUIRE(hc.size() == fc.size());
+        const i64 chunk_mm = k_ring_chunk_cells * h.spacing;
+        for (u32 c = 0; c < hc.size(); ++c) {
+          REQUIRE(i64{fc[c].i} == i64{hc[c].i} + site.x / chunk_mm);
+          REQUIRE(i64{fc[c].j} == i64{hc[c].j} + site.z / chunk_mm);
+          RingMesh a;
+          RingMesh b;
+          RingMesh w;
+          build_ring_chunk_mesh(h, hc[c], home, home_heights, nullptr, a);
+          build_ring_chunk_mesh(f, fc[c], far, far_heights, nullptr, b);
+          build_ring_chunk_mesh(f, fc[c], far_world, far_heights, nullptr, w);
+          differ += mesh_streams_differ(a, b);
+          world_differ += mesh_streams_differ(a, w);
+          ++chunks;
+        }
+      }
+      // One chunk's DAG each way, to say it in clusters: the inner ring's first.
+      Vector<RingChunkCoord> hc;
+      Vector<RingChunkCoord> fc;
+      ring_chunks(home_layout.ring[0], hc);
+      ring_chunks(far_layout.ring[0], fc);
+      RingChunk a;
+      RingChunk b;
+      RingChunk w;
+      REQUIRE(build_ring_chunk(home_layout.ring[0], hc[0], home, home_heights, options, a, &error));
+      REQUIRE(build_ring_chunk(far_layout.ring[0], fc[0], far, far_heights, options, b, &error));
+      REQUIRE(
+          build_ring_chunk(far_layout.ring[0], fc[0], far_world, far_heights, options, w, &error));
+      const u32 dag_differ = dag_streams_differ(a.lod, b.lod);
+      const u32 dag_world_differ = dag_streams_differ(a.lod, w.lod);
+      MESSAGE("rings moved by (" << site.x << ", " << site.z << ") mm, camera (" << camera.x << ", "
+                                 << camera.z << ") mm: " << chunks << " chunks, " << differ
+                                 << " mesh streams differ in the corner's frame and "
+                                 << world_differ << " in the world's; a chunk's DAG: " << dag_differ
+                                 << " streams differ (" << b.lod.mesh.clusters.size()
+                                 << " clusters against " << a.lod.mesh.clusters.size()
+                                 << "), in the world's frame " << dag_world_differ << " ("
+                                 << w.lod.mesh.clusters.size() << " clusters)");
+      CHECK(chunks > 2u);
+      CHECK(differ == 0u);
+      CHECK(dag_differ == 0u);
+      CHECK(world_differ > 0u);
+    }
+  }
 }

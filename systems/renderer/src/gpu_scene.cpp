@@ -406,8 +406,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
         // up with the materials, before the chunks).
         const u32 instance = ring.first_instance + s;
         gfx::set_terrain_corner(instance_table_[instance], chunk.corner_x_mm, chunk.corner_z_mm);
-        if (terrain_uv_from_corner_)
-          instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
+        instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
         pending_instance_writes_.push_back(instance);
       }
     }
@@ -1739,13 +1738,12 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
   (void)resolved;
   ring_slots_.clear();
   slot_parts_.clear();
-  // A world tile's UVs are from its corner (renderer.md, "The ground's tiles are placed at their
-  // corners"): its slot's instance is flagged when it stands at the corner, and the frame's resolve
-  // is given the grid's UV frame to put the corner in.
+  // Every level's chunk carries its UVs from its corner (renderer.md, "The ground's tiles are
+  // placed at their corners"): a world tile's, a far level's and, since 2026-10-07, a ring's. Its
+  // slot's instance is flagged when it stands at the corner, and the frame's resolve is given the
+  // grid's UV frame to put the corner in.
   terrain_uv_ = TerrainUvFrame{};
-  terrain_uv_from_corner_ = rings.uv_from_corner();
-  if (terrain_uv_from_corner_ && !terrain_uv_frame(data_->terrain, terrain_uv_, error))
-    return false;
+  if (!terrain_uv_frame(data_->terrain, terrain_uv_, error)) return false;
   u64 bytes = 0;
   for (u32 level = 1; level < rings.level_count(); ++level) {
     const TerrainLevelSet::Capacity c = rings.capacity(level);
@@ -2078,14 +2076,13 @@ void GpuScene::terrain_chunk_show(u32 level, u32 s, bool on) noexcept {
     pending_mesh_writes_.push_back(mesh);
     // **Turned on, the slot's instance stands at its chunk's corner** (renderer.md, "The ground's
     // tiles are placed at their corners"), written in the same frame as the record that names the
-    // chunk's clusters — flagged when its UVs are from that corner too, so the material puts them
-    // back in the grid's frame. Turned off, it stays where it was: a slot with no clusters draws
-    // nothing.
+    // chunk's clusters — and flagged, since its UVs are from that corner too, so the material puts
+    // them back in the grid's frame. Turned off, it stays where it was: a slot with no clusters
+    // draws nothing.
     if (slot.on) {
       const u32 instance = ring.first_instance + s;
       gfx::set_terrain_corner(instance_table_[instance], slot.corner_x_mm, slot.corner_z_mm);
-      if (terrain_uv_from_corner_)
-        instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
+      instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
       pending_instance_writes_.push_back(instance);
     }
     if (!on && slot.loaded) {
@@ -2918,7 +2915,6 @@ void GpuScene::destroy() noexcept {
   ground_time_s_ = 0.0;
   ground_previous_s_ = 0.0;
   terrain_uv_ = TerrainUvFrame{};
-  terrain_uv_from_corner_ = false;
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
   // A dynamic scene's `instances` and `pair_table` name one of its table sets, which own them.

@@ -66,6 +66,17 @@ struct RingParams {
   // The UV frame over the whole terrain: u = (x - uv_x0) / uv_size, v likewise in z — the scene
   // grid's, so a ring's UVs are the ones the material maps were baked over.
   i64 uv_x0_mm = 0, uv_z0_mm = 0, uv_size_mm = 1;
+  // **Each chunk in its corner's frame** (ADR-0053; renderer.md, "The ground's tiles are placed at
+  // their corners"): a chunk's positions are metres from its corner — `(i, j) *
+  // k_ring_chunk_cells * spacing` in millimetres from the world's origin, at height zero, whether
+  // or not the ring's square clips the chunk — and its UVs are measured from that corner in the
+  // frame's scale, `(x - corner) / uv_size`, so a chunk's mesh and DAG are a function of its key
+  // and its heights and not of where it stands. Whoever draws it puts the corner back: the
+  // renderer stands the chunk's instance at the corner and adds the corner's place in the UV frame
+  // to the UVs. Off, the world's own frame: positions metres from the world's origin, UVs from
+  // `uv_x0`. `TerrainRings::reset` refuses it with `merge`, which joins every chunk of a ring into
+  // one DAG and so needs one frame.
+  bool chunk_frame = false;
 };
 
 // The default rings for a terrain whose own grid is `outer_half_mm` either side of `(cx, cz)` at
@@ -154,11 +165,18 @@ void ring_chunks(const Ring& ring, Vector<RingChunkCoord>& out);
 // the ring's border. Equal keys, equal meshes.
 u64 ring_chunk_key(const Ring& ring, RingChunkCoord chunk) noexcept;
 
+// A chunk's corner on one axis, mm from the world's origin: its lattice point (i, j) *
+// k_ring_chunk_cells, the frame `RingParams::chunk_frame` builds it in.
+inline i64 ring_chunk_corner_mm(const Ring& ring, i32 index) noexcept {
+  return i64{index} * k_ring_chunk_cells * ring.spacing;
+}
+
 // One chunk's mesh: its cells outside the hole, two counter-clockwise triangles a cell (seen from
-// +y, the renderer's winding), then the skirts of the ring's border in it. Positions in metres,
-// normals by central differences over a one-vertex apron (so a border vertex's normal is the
-// ground's, not a one-sided guess), UVs in the terrain's frame, and `locked` set on the chunk's
-// border, the hole's edge and every skirt vertex.
+// +y, the renderer's winding), then the skirts of the ring's border in it. Positions in metres —
+// from the world's origin, or from the chunk's corner with `RingParams::chunk_frame` — normals by
+// central differences over a one-vertex apron (so a border vertex's normal is the ground's, not a
+// one-sided guess), UVs in the terrain's frame (from the corner with `chunk_frame`), and `locked`
+// set on the chunk's border, the hole's edge and every skirt vertex.
 struct RingMesh {
   Vector<Vec3> positions;
   Vector<Vec3> normals;
@@ -198,7 +216,9 @@ class TerrainRings {
   // inside it, but it is never built — the renderer's rings leave the outer one to the scene's own
   // cached grid (renderer.md, "The rings in the scene"). `merge` false skips each ring's merged
   // DAG (`lod`, `hash`), which a consumer that draws the chunks one by one never reads: the merge
-  // costs as much as a chunk's build and the memory of the ring twice over.
+  // costs as much as a chunk's build and the memory of the ring twice over. False, with a
+  // sentence, for `merge` with `RingParams::chunk_frame`: chunks in their corners' frames do not
+  // join into one DAG.
   bool reset(const RingParams& params, i64 camera_x, i64 camera_z, const RingHeights& source,
              const geometry::ClusterLodOptions& options, jobs::JobSystem* jobs,
              std::string* error = nullptr, u32 build_mask = ~0u, bool merge = true);

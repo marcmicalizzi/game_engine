@@ -278,7 +278,12 @@ struct RingsLayout {
 };
 // One chunk of one ring as last built: its world chunk indices, the key that decides its mesh
 // besides the heights (equal keys, equal meshes), where its skirt vertices start, and its DAG,
-// which the caller may move out of.
+// which the caller may move out of. **The DAG is in the chunk's corner's frame** (ADR-0053;
+// renderer.md, "The ground's tiles are placed at their corners"): its positions are metres from
+// the corner (i, j) * `RingSpec::chunk_mm`, millimetres from the world's origin, at height zero,
+// and its UVs are measured from that corner in the scale of the terrain's UV frame (the scene
+// grid's: side 2 · extent), so a chunk's DAG is a function of its key and its heights and not of
+// where it stands; the caller puts the corner back.
 struct RingChunkRef {
   i32 i = 0;
   i32 j = 0;

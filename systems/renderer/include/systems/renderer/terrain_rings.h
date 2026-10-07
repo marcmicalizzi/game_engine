@@ -16,7 +16,9 @@
 // dropping its clusters wholly inside it (`gfx::TerrainLevelDesc::hole`).
 //
 // **A ring is chunks, and a chunk is a slot.** The GPU scene reserves, per ring, a fixed set of
-// **slots** — a mesh and an identity instance each, with a fixed run of clusters and pairs — and
+// **slots** — a mesh and an instance each, placed at its chunk's corner when it is turned on (the
+// provider builds a chunk in its corner's frame, `scene_gen::RingChunkRef`), with a fixed run of
+// clusters and pairs — and
 // arenas of vertices and triangles, all sized from the rings built at load (`capacity`). A chunk
 // drawn is a slot whose mesh names the chunk's clusters; a re-centre builds the chunks whose cells,
 // hole or border changed (`terrain::TerrainRings::update`), uploads them into free slots over as

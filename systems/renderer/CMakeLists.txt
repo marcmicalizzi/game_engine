@@ -68,6 +68,9 @@ if(TARGET engine::terrain)
   # and the time-lapse's cadence and blend; and on a GPU, the moving terrain's pool pass.
   list(APPEND _renderer_tests tests/terrain_generator_tests.cpp tests/terrain_motion_tests.cpp
        tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp
+       # The rings' chunks on the CPU: at their corners, their DAGs from them, their rests on the
+       # rings' lattices.
+       tests/terrain_rings_tests.cpp
        # The sand's detail across the rings' and their chunks' borders, and the dunes' wind.
        tests/ground_detail_rings_tests.cpp
        # The ripples' motion against the clock: the block on the CPU at four rates, and on a

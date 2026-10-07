@@ -69,10 +69,14 @@ struct RingSource {
 };
 
 // A chunk's rest heights, from its own DAG: every copy of a grid vertex on every level is at a
-// lattice point of the ring, at the height the chunk was built from.
+// lattice point of the ring, at the height the chunk was built from. The DAG is in the chunk's
+// corner's frame (`scene_gen::RingChunkRef`), so a vertex's lattice index is the corner's — a whole
+// number of chunks, so of spacings — plus its own place from the corner in spacings.
 void rest_of(TerrainChunk& chunk, const TerrainLattice& lattice) {
   const geometry::ClusterMesh& mesh = chunk.lod.mesh;
   const f64 inv = 1.0 / lattice.spacing;
+  const i64 corner_i = chunk.corner_x_mm / lattice.spacing_mm;
+  const i64 corner_j = chunk.corner_z_mm / lattice.spacing_mm;
   i32 lo_i = std::numeric_limits<i32>::max();
   i32 lo_j = std::numeric_limits<i32>::max();
   i32 hi_i = std::numeric_limits<i32>::min();
@@ -80,10 +84,13 @@ void rest_of(TerrainChunk& chunk, const TerrainLattice& lattice) {
   const auto grid = [&](u32 v) {
     return v >= mesh.vertex_source.size() || mesh.vertex_source[v] < chunk.grid_vertices;
   };
+  const auto index = [&](f32 local, i64 corner) {
+    return static_cast<i32>(corner + std::llround(static_cast<f64>(local) * inv));
+  };
   for (u32 v = 0; v < mesh.vertices.size(); ++v) {
     if (!grid(v)) continue;
-    const i32 i = static_cast<i32>(std::llround(static_cast<f64>(mesh.vertices[v].x) * inv));
-    const i32 j = static_cast<i32>(std::llround(static_cast<f64>(mesh.vertices[v].z) * inv));
+    const i32 i = index(mesh.vertices[v].x, corner_i);
+    const i32 j = index(mesh.vertices[v].z, corner_j);
     lo_i = std::min(lo_i, i);
     lo_j = std::min(lo_j, j);
     hi_i = std::max(hi_i, i);
@@ -100,43 +107,11 @@ void rest_of(TerrainChunk& chunk, const TerrainLattice& lattice) {
                     std::numeric_limits<f32>::quiet_NaN());
   for (u32 v = 0; v < mesh.vertices.size(); ++v) {
     if (!grid(v)) continue;
-    const i32 i = static_cast<i32>(std::llround(static_cast<f64>(mesh.vertices[v].x) * inv));
-    const i32 j = static_cast<i32>(std::llround(static_cast<f64>(mesh.vertices[v].z) * inv));
+    const i32 i = index(mesh.vertices[v].x, corner_i);
+    const i32 j = index(mesh.vertices[v].z, corner_j);
     chunk.rest[static_cast<usize>(j - lo_j) * chunk.rest_window.nx + (i - lo_i)] =
         mesh.vertices[v].y;
   }
-}
-
-// **A ring's chunk is placed at its corner** (renderer.md, "The ground's tiles are placed at their
-// corners"): the provider builds its DAG in the world's own frame, which for a scene's terrain is
-// kilometres from the origin at the most and on a lattice of whole millimetres, and the set moves
-// it to the corner's frame before anything reads it — positions, cluster spheres and cone apexes,
-// LOD spheres, and the 16-bit grid's origin (its steps are a function of the chunk's extent and do
-// not change). Every number moved is a lattice point or a sphere a few chunk widths from the
-// corner, so the move is exact on a dyadic lattice and a rounding at the chunk's size on any other.
-void place_at_corner(TerrainChunk& chunk, i64 x_mm, i64 z_mm) {
-  chunk.corner_x_mm = x_mm;
-  chunk.corner_z_mm = z_mm;
-  const f64 cx = static_cast<f64>(x_mm) / 1000.0;
-  const f64 cz = static_cast<f64>(z_mm) / 1000.0;
-  const auto from_corner = [&](Vec3 p) {
-    return Vec3{static_cast<f32>(static_cast<f64>(p.x) - cx), p.y,
-                static_cast<f32>(static_cast<f64>(p.z) - cz)};
-  };
-  geometry::ClusterMesh& mesh = chunk.lod.mesh;
-  for (Vec3& v : mesh.vertices)
-    v = from_corner(v);
-  for (geometry::ClusterDesc& c : mesh.clusters) {
-    c.center = from_corner(c.center);
-    c.cone_apex = from_corner(c.cone_apex);
-  }
-  for (geometry::ClusterLodDesc& l : chunk.lod.lod) {
-    const Vec3 own = from_corner(l.own.xyz());
-    const Vec3 parent = from_corner(l.parent.xyz());
-    l.own = Vec4{own, l.own.w};
-    l.parent = Vec4{parent, l.parent.w};
-  }
-  mesh.quant_origin = from_corner(mesh.quant_origin);
 }
 
 }  // namespace
@@ -325,17 +300,22 @@ void TerrainRingSet::take_chunks(u32 level_mask) {
         }
       }
       if (kept_from[c] != ~0u) continue;
+      // **At its corner** (renderer.md, "The ground's tiles are placed at their corners"): the
+      // provider built the chunk's DAG in its corner's frame, positions and UVs from it
+      // (`scene_gen::RingChunkRef`), so the corner is all the set adds — the slot's instance stands
+      // there and the material puts the corner back into the UVs.
       TerrainChunk chunk;
       chunk.i = rc.i;
       chunk.j = rc.j;
+      const i64 chunk_mm = s.rings.spec(ring).chunk_mm;
+      chunk.corner_x_mm = static_cast<i64>(rc.i) * chunk_mm;
+      chunk.corner_z_mm = static_cast<i64>(rc.j) * chunk_mm;
       chunk.key = rc.key;
       chunk.grid_vertices = rc.grid_vertices;
       chunk.lod = std::move(*rc.lod);
       *rc.lod = geometry::ClusterLodMesh{};
       chunk.rest_time_s = state_->source.time_s;
       rest_of(chunk, lattice_[level]);
-      const i64 chunk_mm = s.rings.spec(ring).chunk_mm;
-      place_at_corner(chunk, static_cast<i64>(rc.i) * chunk_mm, static_cast<i64>(rc.j) * chunk_mm);
       fresh.push_back(std::move(chunk));
     }
     // Then the lists, in the provider's chunk order, under the lock `padding` takes: the kept
