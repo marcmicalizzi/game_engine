@@ -606,3 +606,5 @@ Defects that no plan section schedules: failures seen at gates, steps in a pictu
 | F8 | Back-to-back sheets: a facing bit in the visibility id | open | R11 | S | design | [visible order](experiments/visible-order.md#what-it-decides) |
 | F9 | schemac refused `@unit` on optional numbers | done (bbe6544b) | D2 | S | routine | [schemas](../schemas/README.md#the-language) |
 | F10 | Device lost when a tight budget evicts beside the RT chain | done (7d794636) | R9 | S | research | [renderer](subsystems/renderer.md#a-pages-8-bit-indices-are-its-own) |
+| F11 | Tile index narrowed to i32 unchecked in TileSampler::tile_at and scene_collision | open | W64 | S | routine | [tile.cpp](../domain/terrain/src/tile.cpp) |
+| F12 | gfx.md says only world tiles carry k_instance_uv_from_corner; ring chunks do too | open | W63 | S | routine | [gfx](subsystems/gfx.md#the-frames-origin) |
