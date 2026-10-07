@@ -454,15 +454,16 @@ struct ResolveParams {
   // exactly as it was, which is what `domain/gfx`'s own tests and a data view draw with. The debug
   // and data modes (everything but Shaded, and the sky's stand-in clear) are never dithered.
   u32 dither_steps = 0;
-  // **The scene grid's UV frame**, millimetres from the world's origin: its corner on x and z and
-  // its side, the frame the terrain's maps are baked over (renderer.md, "The ground's tiles are
+  // **The scene grid's UV frame**, millimetres from the world's origin: its corner on x and z, and
+  // one over its side (the frame's UV units per millimetre, so the shader multiplies where it would
+  // divide), the frame the terrain's maps are baked over (renderer.md, "The ground's tiles are
   // placed at their corners"). A `k_instance_uv_from_corner` instance — a world tile — carries UVs
   // measured from its own corner, and its material's lookup adds `terrain_uv_offset(instance,
   // ...)` (cluster_cull.h), the corner's place in this frame; nothing else reads these. They took
   // the three pad words behind `dither_steps` (2026-10-06), so the block is still 400 bytes.
   i32 terrain_uv_x0_mm = 0;
   i32 terrain_uv_z0_mm = 0;
-  u32 terrain_uv_size_mm = 1;
+  f32 terrain_uv_per_mm = 0.0f;
   // **The frame's origin** (`FrameEye`, cluster_cull.h; ADR-0053). Everything the resolve forms is
   // in the frame's space: a triangle is fetched into it, `camera` is this view's eye in it (zero
   // for every view the renderer draws), `view_proj` maps it to clip space, and a surface's

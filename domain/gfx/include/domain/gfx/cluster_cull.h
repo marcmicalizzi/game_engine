@@ -716,16 +716,23 @@ inline TerrainCornerMm terrain_corner_mm(const InstanceDesc& instance) noexcept 
 // **Where a tile's corner stands in the scene grid's UV frame** (renderer.md, "The ground's tiles
 // are placed at their corners"): what the material's lookup adds to a `k_instance_uv_from_corner`
 // instance's interpolated UV before it samples, the corner less the frame's corner over the frame's
-// side, both axes — what shaders/scene.slang's `terrain_uv_offset` computes, operation for
-// operation. The difference is integer millimetres and exact in float32 within 16.7 km of the
-// frame's corner (beyond it the maps clamp at their edge, and a rounding of the offset there reads
-// the same texel); the one division rounds once. An instance without the flag offsets nothing.
+// side (`per_mm`, the frame's UV units per millimetre, one over its side), both axes — what
+// shaders/scene.slang's `terrain_uv_offset` computes, operation for operation. In float32, not in
+// the integers `terrain_corner_mm` uses, because every shaded pixel of the ground runs the shader's
+// and 64-bit integer arithmetic is emulated on the GPU (it cost the resolve 1.4% on the endless
+// flight): the cell's millimetres less the frame's corner, plus the local's, each a whole number of
+// millimetres, so the sum is exact while the corner is within 16.7 km of the frame's corner; past
+// that the UV is beyond 1 and the maps clamp at their edge. The product rounds once. An instance
+// without the flag offsets nothing.
 inline Vec2 terrain_uv_offset(const InstanceDesc& instance, i32 x0_mm, i32 z0_mm,
-                              u32 size_mm) noexcept {
+                              f32 per_mm) noexcept {
   if ((instance.flags & k_instance_uv_from_corner) == 0) return Vec2{0.0f, 0.0f};
-  const TerrainCornerMm corner = terrain_corner_mm(instance);
-  const f32 size = static_cast<f32>(size_mm);
-  return Vec2{static_cast<f32>(corner.x - x0_mm) / size, static_cast<f32>(corner.z - z0_mm) / size};
+  const auto axis = [per_mm](i32 cell, f32 local, i32 x0) {
+    const f32 corner = static_cast<f32>(cell) * 64000.0f - static_cast<f32>(x0);
+    return (corner + std::round(local * 1000.0f)) * per_mm;
+  };
+  return Vec2{axis(instance.cell.x, instance.rows[0].w, x0_mm),
+              axis(instance.cell.z, instance.rows[2].w, z0_mm)};
 }
 
 // The visibility buffer's extent as `ClusterDrawParams::extent` packs it: width in the low half,

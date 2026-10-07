@@ -85,7 +85,7 @@ struct PathTraceParams {
   // its corner in it (scene.slang, `terrain_uv_offset`).
   int terrain_uv_x0_mm;
   int terrain_uv_z0_mm;
-  uint terrain_uv_size_mm;
+  float terrain_uv_per_mm;
   uint terrain_uv_pad;
 };
 
@@ -243,7 +243,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // A world tile's UVs are from its corner: the resolve's offset puts them back in the grid's frame.
     const float2 surface_uv =
         s.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
-                                 params->terrain_uv_size_mm);
+                                 params->terrain_uv_per_mm);
     const float2 uv = material_uv(material, surface_uv * material.uv_scale);
     const MaterialSample sampled = sample_material(material, uv);
     float3 shading_normal = s.normal;

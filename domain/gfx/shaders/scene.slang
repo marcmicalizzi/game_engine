@@ -199,13 +199,19 @@ int64_t terrain_corner_axis_mm(int cell, float local) {
 // **Where a tile's corner stands in the scene grid's UV frame** (gfx::terrain_uv_offset, operation
 // for operation; gfx::k_instance_uv_from_corner): a world tile's UVs are measured from its corner,
 // so the material's lookup adds this to the interpolated UV — the corner less the frame's corner,
-// integer millimetres, over the frame's side. Zero for any other instance.
-float2 terrain_uv_offset(InstanceDesc instance, int x0_mm, int z0_mm, uint size_mm) {
+// in millimetres, times the frame's UV units per millimetre. Float32 and not the integers
+// `terrain_corner_axis_mm` uses, because every shaded pixel of the ground runs it and 64-bit
+// integer arithmetic is emulated: each term is a whole number of millimetres, so the sum is exact
+// while the corner is within 16.7 km of the frame's — over any grid a float32 map is baked for —
+// and past that the UV is beyond 1, where the maps clamp. Zero for any other instance.
+float2 terrain_uv_offset(InstanceDesc instance, int x0_mm, int z0_mm, float per_mm) {
   if ((instance.flags & k_instance_uv_from_corner) == 0) return float2(0.0, 0.0);
-  const int64_t x = terrain_corner_axis_mm(instance.cell.x, instance.rows[0].w) - int64_t(x0_mm);
-  const int64_t z = terrain_corner_axis_mm(instance.cell.z, instance.rows[2].w) - int64_t(z0_mm);
-  const float size = float(size_mm);
-  return float2(float(x) / size, float(z) / size);
+  precise const float x = (float(instance.cell.x) * 64000.0 - float(x0_mm)) +
+                          round(instance.rows[0].w * 1000.0);
+  precise const float z = (float(instance.cell.z) * 64000.0 - float(z0_mm)) +
+                          round(instance.rows[2].w * 1000.0);
+  precise const float2 offset = float2(x, z) * per_mm;
+  return offset;
 }
 
 // a / b rounded down, for b > 0 (SPIR-V's integer division truncates towards zero).

@@ -186,7 +186,7 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // (2026-10-04, display.h, ADR-0052), with no pad word left to take it, and three pad words to keep
 // the block a whole number of float4 rows. Zero is no dither, the encode as it was.
 // 400, not 352: the frame's eye, which a triangle is fetched relative to (ADR-0053, 2026-10-05).
-// Still 400 with the scene grid's UV frame (`terrain_uv_x0_mm`, `_z0_mm`, `_size_mm`, 2026-10-06):
+// Still 400 with the scene grid's UV frame (`terrain_uv_x0_mm`, `_z0_mm`, `_per_mm`, 2026-10-06):
 // it took the three pad words behind `dither_steps`. A world tile's UVs are from its corner, and
 // its material's lookup places the corner in this frame (renderer.md, "The ground's tiles are
 // placed at their corners").

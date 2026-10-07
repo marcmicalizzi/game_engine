@@ -115,7 +115,7 @@ struct PathTraceParams {
   // spare word, so these and a pad grew it by a row (2026-10-06).
   i32 terrain_uv_x0_mm = 0;
   i32 terrain_uv_z0_mm = 0;
-  u32 terrain_uv_size_mm = 1;
+  f32 terrain_uv_per_mm = 0.0f;
   u32 terrain_uv_pad = 0;
 };
 

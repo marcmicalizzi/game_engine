@@ -261,10 +261,12 @@ TEST_CASE("world tiles: a tile's mesh covers it once, face up, its border locked
   // the flag by nothing. The sum is the grid's own UV for the lattice point to a float's rounding.
   gfx::InstanceDesc tile{};
   gfx::set_terrain_corner(tile, m.corner_x_mm, m.corner_z_mm);
-  CHECK(gfx::terrain_uv_offset(tile, -64'000, -64'000, 128'000) == Vec2{0.0f, 0.0f});
+  constexpr f32 k_per_mm = 1.0f / 128'000.0f;  // the frame's UV units per millimetre
+  CHECK(gfx::terrain_uv_offset(tile, -64'000, -64'000, k_per_mm) == Vec2{0.0f, 0.0f});
   tile.flags |= gfx::k_instance_uv_from_corner;
-  const Vec2 offset = gfx::terrain_uv_offset(tile, -64'000, -64'000, 128'000);
-  CHECK(offset == Vec2{0.625f, 0.3125f});
+  const Vec2 offset = gfx::terrain_uv_offset(tile, -64'000, -64'000, k_per_mm);
+  CHECK(std::abs(offset.x - 0.625f) <= 6.0e-8f);  // the reciprocal's product, rounded once
+  CHECK(std::abs(offset.y - 0.3125f) <= 3.0e-8f);
   f32 worst = 0.0f;
   for (u32 v = 0; v < m.positions.size(); ++v) {
     const f64 u = static_cast<f64>(m.lattice_i[v] * 500 + 64'000) / 128'000.0;
@@ -274,7 +276,7 @@ TEST_CASE("world tiles: a tile's mesh covers it once, face up, its border locked
     worst =
         std::max(worst, static_cast<f32>(std::abs(static_cast<f64>(m.uvs[v].y + offset.y) - w)));
   }
-  CHECK(worst <= 6.0e-8f);  // half a float's step at 1
+  CHECK(worst <= 1.2e-7f);  // a float's step at 1: the reciprocal's, the product's, the sum's
 }
 
 namespace {

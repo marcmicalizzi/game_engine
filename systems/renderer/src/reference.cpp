@@ -267,7 +267,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   // The resolve's UV frame, which a world tile's material lookup places its corner in.
   params.terrain_uv_x0_mm = static_cast<i32>(scene_->terrain_uv().x0_mm);
   params.terrain_uv_z0_mm = static_cast<i32>(scene_->terrain_uv().z0_mm);
-  params.terrain_uv_size_mm = static_cast<u32>(scene_->terrain_uv().size_mm);
+  params.terrain_uv_per_mm = static_cast<f32>(1.0 / static_cast<f64>(scene_->terrain_uv().size_mm));
   // The frame's own dither (RenderSettings::dither), at the reference's 8-bit output: the noise the
   // resolve put on the same pixel, so the two pictures differ by what was drawn and not by it.
   params.flags = (settings.uniform_sky ? gfx::k_pt_uniform_sky : 0u) |

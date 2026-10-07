@@ -1833,7 +1833,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // (its UVs are from the corner; `terrain_uv_frame` keeps the numbers inside 32 bits).
     resolve.terrain_uv_x0_mm = static_cast<i32>(scene.terrain_uv().x0_mm);
     resolve.terrain_uv_z0_mm = static_cast<i32>(scene.terrain_uv().z0_mm);
-    resolve.terrain_uv_size_mm = static_cast<u32>(scene.terrain_uv().size_mm);
+    resolve.terrain_uv_per_mm =
+        static_cast<f32>(1.0 / static_cast<f64>(scene.terrain_uv().size_mm));
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------
