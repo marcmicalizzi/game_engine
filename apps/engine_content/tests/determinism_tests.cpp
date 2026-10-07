@@ -299,7 +299,8 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
 // Moved on 2026-10-07 (MSVC 14.51), 5,726 instances still, from 0x0d29923a1f3c328f: a wall's sand
 // drift's two ends are `WorldPos` now (ADR-0053; ruins.md, "Far from the origin") and are hashed as
 // their three f64 — the centimetres divided once, y the building's base — where they were float32
-// x and z. Nothing else in the hash moved; every piece and site is the same.
+// x and z. Nothing else in the hash moved; every piece and site is the same. Reproduced the same
+// day by GCC 14.3.1 at linux-server (x86-64-v2) on the TITAN Xp server, with the blocks' below.
 constexpr u64 k_ruins_golden = 0xdfb858d685ebff89ull;
 
 TEST_CASE("engine-content: ruins assembles the committed buildings on every toolchain") {
