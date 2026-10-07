@@ -1,7 +1,7 @@
 # ADR-0053: World positions are f64 on the CPU, and the GPU never sees an absolute one
 
-- **Status:** Proposed
-- **Date:** 2026-10-05
+- **Status:** Accepted
+- **Date:** 2026-10-05 (accepted 2026-10-06, after the three stages that built it were merged and gated)
 - **Plan references:** docs/plan/02-architecture.md §2.7 (the row for very large worlds), docs/plan/03-data-model.md §3.7, [ADR-0017](0017-no-hidden-limits.md)
 - **Docs touched:** `docs/subsystems/math.md` ("World positions"), `docs/plan/02-architecture.md` and `03-data-model.md` (status notes), `docs/experiments/far-from-origin-2026-10-04.md` (the measurements this rests on)
 
