@@ -1730,6 +1730,14 @@ void TerrainMotion::frame(f64 real_dt_s, WorldPos camera) {
       }
     } else if (level.next_state[0] == Level::Next::evaluating) {
       wait_worker();
+    } else if (level.next_state[0] == Level::Next::ready) {
+      // Already here: the next pass takes it. A pass offers a level one field and a ring holds two
+      // after its b, so a ring with both ready took the first, stood on it, and until 2026-10-07
+      // the frame gave up here at the second — short of game time by up to a pair, in a run whose
+      // field worker had got ahead of its frames and not in one whose had not, so an offscreen
+      // run's pictures depended on how busy the machine was (roadmap F1,
+      // docs/experiments/load-sensitive-tests-2026-10-07.md).
+      continue;
     } else {
       break;
     }
@@ -1827,6 +1835,8 @@ TerrainMotion::LevelStats TerrainMotion::level_stats(u32 k) const noexcept {
   s.blend = level.blend.blend();
   s.padding_m = std::max(level.a.padding_m, level.has_b ? level.b.padding_m : 0.0);
   s.ahead = level.ahead;
+  for (u32 e = 0; e < level.ahead; ++e)
+    s.ready += level.next_state[e] == Level::Next::ready ? 1u : 0u;
   return s;
 }
 

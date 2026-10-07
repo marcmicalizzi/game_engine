@@ -10,7 +10,9 @@
 // same again with the terrain rings in the scene (renderer.md, "The rings in the scene"): every
 // level draws its own blended field at one surface time, the rings re-centre under a moving camera
 // and every frame, the swaps' included, draws the continuous model, and the invariants hold over
-// the rings' slots as they do over the scene's grid.
+// the rings' slots as they do over the scene's grid — between rigs that are first checked to draw
+// the same sand frame by frame, since an offscreen frame takes every field that is ready however
+// far its worker ran ahead (a case of its own holds that).
 // Compiled only where the terrain capability is; each GPU case skips with a message where there is
 // no device.
 #include <core/jobs/job_system.h>
@@ -30,10 +32,14 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -588,6 +594,32 @@ void culling_case(bool with_rings) {
   CaptureChannels channels;
   channels.ids = true;
   channels.depth = true;
+  // **Every rig draws the same sand on the same frame** (`lapse.wait`), which every comparison
+  // below rests on: each level's surface, pair, blend and padding and the rings' layout, frame by
+  // frame. Checked first and by the frame it stopped holding at, because a rig a frame behind the
+  // others reads below as a tenth to a quarter of the ids differing — which is how the waiting
+  // loop's give-up at a second ready field showed itself, under load only, until 2026-10-07 (F1).
+  std::vector<std::string> drawn[5];
+  const auto describe = [](const TerrainMotion& motion) {
+    std::string s;
+    char text[192];
+    for (u32 l = 0; l < motion.level_count(); ++l) {
+      const TerrainMotion::LevelStats st = motion.level_stats(l);
+      std::snprintf(text, sizeof(text),
+                    " level %u: surface %.3f, pair %.3f to %.3f, blend %.9g, pad %.9g;", l,
+                    st.surface_s, st.time_a, st.time_b, st.blend, st.padding_m);
+      s += text;
+    }
+    if (motion.has_rings()) {
+      const TerrainRingLayout& layout = motion.ring_layout();
+      for (u32 l = 1; l < motion.level_count(); ++l) {
+        std::snprintf(text, sizeof(text), " ring %u at (%lld, %lld) mm;", l,
+                      static_cast<long long>(layout.cx[l]), static_cast<long long>(layout.cz[l]));
+        s += text;
+      }
+    }
+    return s;
+  };
   for (u32 k = 0; k < 5; ++k) {
     Rig rig;
     if (!rig.build(gpu.device, desc, variants[k].settings, k_width, k_height, &lapse, &pool,
@@ -609,6 +641,7 @@ void culling_case(bool with_rings) {
       frame.camera = camera;
       frame.frame_index = f;
       frame.lod_px = 0.5f;
+      drawn[k].push_back(describe(rig.motion));
       if (shot < 3 && f == shots_at[shot]) {
         REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shots[k][shot], &rig.error),
                         rig.error);
@@ -655,6 +688,17 @@ void culling_case(bool with_rings) {
     if (d.both > 0) d.depth_delta /= static_cast<f64>(d.both);
     return d;
   };
+  for (u32 k = 1; k < 5; ++k) {
+    if (!ran[k]) continue;
+    u32 f = 0;
+    while (f < k_frames && drawn[k][f] == drawn[0][f])
+      ++f;
+    CHECK_MESSAGE(f == k_frames, "variant " << variants[k].name << " drew other sand from frame "
+                                            << f << ":\n  " << variants[0].name << ":"
+                                            << (f < k_frames ? drawn[0][f] : std::string())
+                                            << "\n  " << variants[k].name << ":"
+                                            << (f < k_frames ? drawn[k][f] : std::string()));
+  }
   for (u32 s = 0; s < 3; ++s) {
     CAPTURE(shots_at[s]);
     // Occlusion culling changes no pixel: the same words and the same depths.
@@ -724,6 +768,75 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
 
 TEST_CASE("terrain rings: culling changes nothing and the rasterizers agree over the rings") {
   culling_case(true);
+}
+
+// **Offscreen, a frame takes every field that is ready** (renderer.md, "The bound, and a late
+// field"). A level holds up to two fields after its b; a frame offered the surface one of them a
+// pass, so a level with two ready took the first, stood on it, and the frame gave up at the
+// second — it was neither on its way nor missing — and stood short of game time by up to a pair.
+// Which rig found its level in that state was a matter of how far the field worker had run ahead
+// of the frames, so the rings' culling case, which compares five rigs frame by frame, failed under
+// load with one rig a frame behind the others (roadmap F1, docs/experiments/
+// load-sensitive-tests-2026-10-07.md). Frames of no time first fill every level's slots with ready
+// fields, so the case is the same on every machine.
+TEST_CASE("terrain rings: an offscreen frame takes every ready field and reaches game time") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SmallRings small;
+  test::TempDir tmp{"engine_renderer_terrain_ready"};
+  const SceneDesc desc = ring_scene(slashes(tmp.native() / "ddc"));
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.time_rate = 604'800.0;
+  settings.terrain_rings = true;
+  TimeLapseConfig lapse = time_lapse_config_from_tunables(settings.time_rate);
+  lapse.wait = true;
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  const Camera camera = looking_across(desc.terrain, 0);
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, 64, 48, &lapse, &pool, camera.position),
+                  rig.error);
+  REQUIRE(rig.resolved.terrain_rings);
+  const u32 levels = rig.motion.level_count();
+  REQUIRE(levels == 3u);
+  // Frames of no time: the surface stands where it is and the worker fills each level's room after
+  // b, one field a frame — one for the scene's grid, two for a ring — until every one is ready.
+  const auto full = [&] {
+    for (u32 k = 0; k < levels; ++k) {
+      const TerrainMotion::LevelStats s = rig.motion.level_stats(k);
+      if (s.ready != (k == 0 ? 1u : 2u)) return false;
+    }
+    return true;
+  };
+  const f64 start = rig.motion.game_time_s();
+  u32 still = 0;
+  for (; still < 20'000 && !full(); ++still) {
+    rig.motion.frame(0.0, camera.position);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE_MESSAGE(full(), "the levels' next fields were never all ready");
+  CHECK(rig.motion.game_time_s() == start);
+  const TerrainMotion::LevelStats before = rig.motion.level_stats(2);
+  // A sixtieth of a second at a week a second is 10,080 game seconds, several of the inner ring's
+  // pairs: its two ready fields are taken, the ones after them waited for, and the frame stands at
+  // game time — the same frame a rig whose worker had not run ahead draws.
+  rig.motion.frame(1.0 / 60.0, camera.position);
+  const f64 game = rig.motion.game_time_s();
+  for (u32 k = 0; k < levels; ++k) {
+    CAPTURE(k);
+    const TerrainMotion::LevelStats s = rig.motion.level_stats(k);
+    MESSAGE("level " << k << ": surface " << s.surface_s - start << " s of " << game - start
+                     << ", pair " << s.time_a - start << " to " << s.time_b - start
+                     << ", fields installed " << s.installed << ", frames capped " << s.capped);
+    CHECK(s.surface_s == game);
+    CHECK(s.capped == 0u);
+  }
+  CHECK(rig.motion.level_stats(2).installed >= before.installed + 3u);
+  MESSAGE(still << " frames of no time filled the levels' room");
+  rig.motion.finish();
 }
 
 TEST_CASE(

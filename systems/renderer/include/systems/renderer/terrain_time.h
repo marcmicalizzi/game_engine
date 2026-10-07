@@ -413,6 +413,7 @@ class TerrainMotion {
     bool frame_held = false;
     bool frame_late = false;
     u32 ahead = 0;  // fields after b: evaluating, uploading or ready
+    u32 ready = 0;  // of which ready to be taken as b
   };
   u32 level_count() const noexcept { return levels_.size(); }
   LevelStats level_stats(u32 level) const noexcept;
