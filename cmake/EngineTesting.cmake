@@ -159,6 +159,24 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/linux-build.Tests.ps1"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.linux_build PROPERTIES LABELS "tools")
+  # The licence check ADR-0014 promised (tools/license-check.ps1): the record in
+  # third_party/LICENSES.md against the policy, against every FetchContent_Declare, and against the
+  # licence files this preset's configure fetched into its _deps — so every CI job that configures
+  # reads the code's own licences, not only the record's word for them.
+  add_test(NAME lint.licenses
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/license-check.ps1" -Root "${CMAKE_SOURCE_DIR}"
+            -BuildDir "${CMAKE_BINARY_DIR}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(lint.licenses PROPERTIES LABELS "lint")
+
+  # And its rules, over fixture trees in a temporary directory.
+  add_test(NAME tools.license_check
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/license-check.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.license_check PROPERTIES LABELS "tools")
+
   # The frame-budget gate's rules (tools/lib/FrameBudget.psm1, ADR-0018) over summaries written in
   # the test, and the committed budget file read: no GPU. The gate itself flies the scenes on the
   # budget's machine, at the merge (docs/ci/what-to-run.md, "Frame budgets").
@@ -169,6 +187,7 @@ if(ENGINE_PWSH)
   set_tests_properties(tools.frame_budget PROPERTIES LABELS "tools")
 else()
   message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.frame_budget, and tools.linux_build tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, lint.licenses, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.license_check and tools.frame_budget tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner

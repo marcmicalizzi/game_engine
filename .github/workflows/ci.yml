@@ -40,6 +40,11 @@ jobs:
           fi
       - name: Documentation check
         run: tools/docs-check.sh
+      # The licence check ADR-0014 promised (tools/license-check.ps1): the record against the policy
+      # and against every FetchContent declaration, with no build. The jobs below run it again as
+      # the CTest test lint.licenses, over the licence files their configure fetched.
+      - name: Licence check
+        run: pwsh -NoProfile -File tools/license-check.ps1
 
   windows:
     name: Windows ${{ matrix.preset }}
@@ -80,13 +85,20 @@ jobs:
         # build without either. All-on and all-off both pass with a broken graph — all-on never
         # consults it and all-off switches everything off for a different reason — so this job is
         # the only one that would catch a capability that links another and forgot to declare it.
-        preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs]
+        #
+        # linux-clang-asan is linux-clang-debug with AddressSanitizer and UndefinedBehaviorSanitizer,
+        # undefined behaviour fatal (-fno-sanitize-recover) and leaks reported (T11; docs/ci/
+        # what-to-run.md, "Sanitizers"). tools/linux-build.ps1 -Preset linux-clang-asan runs the
+        # same configuration in the local container.
+        preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, linux-clang-asan]
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang g++ \
+          # libclang-rt-18-dev: Clang's sanitizer runtimes, which linux-clang-asan links; named so
+          # the job does not depend on the image or on apt installing what clang only recommends.
+          sudo apt-get install -y ninja-build clang libclang-rt-18-dev g++ \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
             libxtst-dev libdecor-0-dev libudev-dev

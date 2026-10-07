@@ -38,7 +38,7 @@ pwsh tools/linux-build.ps1 -Prune [-Stale [-KeepUnknown] [-Base <rev>]] [-WhatIf
 
 | Flag | What |
 |---|---|
-| `-Preset` | one preset, or `all` for `linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, `linux-clang-no-ecs` — ci.yml's matrix, in ci.yml's order. Any other Linux preset works too (`linux-clang-asan`). Default `all`. |
+| `-Preset` | one preset, or `all` for `linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, `linux-clang-no-ecs` — ci.yml's compile-and-test matrix, in ci.yml's order. Any other Linux preset works too: **`linux-clang-asan` is ci.yml's sanitizer job** (ASan and UBSan, undefined behaviour fatal, leaks reported; [what to run](what-to-run.md#sanitizers)) and is not in `all`, because it is a slower build the merge does not wait for. Default `all`. |
 | `-Test` | run CTest after the build. Without it the run is a compile check. |
 | `-Filter` | a regex on test names, passed through to `ctest -R`. |
 | `-Jobs` | parallel compile jobs. Default 8; see [Why eight jobs](#why-eight-jobs--and-why-the-worry-was-wrong). |
@@ -507,6 +507,7 @@ Versions, all pinned by the distribution or by an explicit version in the Docker
 | Ninja | 1.11.1 | |
 | Clang | 18.1.3 | Ubuntu 24.04's default, which is what the hosted `linux-clang-*` jobs get. |
 | GCC | 13.3.0 | Same, for `linux-gcc-release`. `-Wdangling-reference` exists here. |
+| libclang-rt-18-dev | 18.1.3 | Clang's sanitizer runtimes, for `linux-clang-asan` (ci.yml's sanitizer job). `clang` only recommends it and the image installs without recommends, so until 2026-10-07 the preset compiled every object and failed at the first link. Apache-2.0 with LLVM exception, like the rest of LLVM. |
 | clang-format | 18.1.3 | Not in `ci.yml`'s list. Without it `tools/new-capability.Tests.ps1` reports its formatting cases as **skipped**, and a check that only ever skips is not a check. See the note in [08 §8.5](../plan/08-toolchain.md#85-build-system-and-ci) about which versions have been measured against the scaffold; 18 now agrees with them. |
 | PowerShell | 7.4.12 | Six CTest tests are pwsh scripts (`lint.banned_patterns`, `tools.lint`, `tools.new_capability`, `docs_check`, `tools.docs_check`, `tools.machine_lock`). Without `pwsh` `cmake/EngineTesting.cmake` does not *fail* them, it does not **register** them — so a container without it would make a green run mean less than the hosted one. |
 | git, rsync | 2.43.0, 3.2.7 | `tools.docs_gate` builds throwaway repositories; rsync is the source sync. |

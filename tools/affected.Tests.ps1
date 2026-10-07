@@ -57,7 +57,7 @@ Test-That 'its tests and its bench run' { (Runs $r 'physics') -and (Runs $r 'ben
 Test-That 'and a part of its tests registered on its own as <module>.<part>' { (Runs $r 'physics.long_flight') -and -not (Runs $r 'gfx.long_flight') }
 Test-That 'an unrelated module does not' { -not (Runs $r 'gfx') -and -not (Runs $r 'renderer') -and -not (Runs $r 'engine_view') }
 Test-That 'a name that only contains the module name does not match' { -not (Runs $r 'physics_extra') -and -not (Runs $r 'my.physics') }
-Test-That 'the lint and the documentation check always run' { (Runs $r 'lint.banned_patterns') -and (Runs $r 'docs_check') }
+Test-That 'the lint, the licence check and the documentation check always run' { (Runs $r 'lint.banned_patterns') -and (Runs $r 'lint.licenses') -and (Runs $r 'docs_check') }
 Test-That 'the tools own tests do not' { -not (Runs $r 'tools.lint') -and -not $r.Tools }
 
 Write-Host 'a module in the middle'

@@ -124,7 +124,9 @@ function Stop-WithLine([string]$text) {
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Dockerfile = Join-Path $PSScriptRoot 'ci/linux.Dockerfile'
 
-# The four ci.yml runs, in ci.yml's order.
+# The four ci.yml compile-and-test runs, in ci.yml's order. ci.yml's fifth Linux job, the sanitizer
+# preset linux-clang-asan, is not in `all`: it is a slower build of the same tree that the merge does
+# not wait for, and `-Preset linux-clang-asan` runs it here (docs/ci/what-to-run.md, "Sanitizers").
 $AllPresets = @('linux-clang-debug', 'linux-gcc-release', 'linux-clang-minimal', 'linux-clang-no-ecs')
 
 # The presets that must be built where no display development package exists. They are named

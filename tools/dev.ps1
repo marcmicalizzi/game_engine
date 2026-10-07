@@ -27,7 +27,9 @@
                 -GpuLock passes --gpu-lock to each: every executable waits for the
                 machine-wide GPU lock, holds it while it measures, and releases it
                 (docs/subsystems/bench.md, "The GPU lock").
-    lint        Run the banned-pattern lint over the tree.
+    lint        Run the banned-pattern lint over the tree, and the licence check
+                (tools/license-check.ps1: third_party/LICENSES.md against ADR-0014's list,
+                every FetchContent declaration, and the preset's fetched licence files).
     docs        Check that the documentation moved with the code (tools/docs-check.ps1).
     format      Run clang-format in place over engine sources.
     modules     Print build/<preset>/modules.json.
@@ -190,6 +192,11 @@ function Invoke-Bench {
 function Invoke-Lint {
   & (Join-Path $PSScriptRoot 'lint.ps1') -Root $Root
   if ($LASTEXITCODE -ne 0) { throw "lint failed ($LASTEXITCODE)" }
+  # And the licence check (ADR-0014), with the preset's fetched sources when it has been configured.
+  $licenseArgs = @{ Root = $Root }
+  if (Test-Path -LiteralPath (Join-Path $BuildDir '_deps')) { $licenseArgs.BuildDir = $BuildDir }
+  & (Join-Path $PSScriptRoot 'license-check.ps1') @licenseArgs
+  if ($LASTEXITCODE -ne 0) { throw "license check failed ($LASTEXITCODE)" }
 }
 
 function Invoke-Docs {

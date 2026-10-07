@@ -454,7 +454,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T8 | Repository conventions, layer check, AGENTS.md | done (22c31122) | | M | design | [02 §2.5](plan/02-architecture.md#25-repository-organization-for-agent-comprehension) |
 | T9 | Phase 0 actuals and the first rescale | done (7c152a5c) | | S | routine | [10 §10.8](plan/10-roadmap-risks.md#108-calibrating-the-estimates) |
 | T10 | Phase 1 actuals and the rendering rescale | open | R36 | S | routine | [10 §10.8](plan/10-roadmap-risks.md#108-calibrating-the-estimates) |
-| T11 | Sanitizer builds in CI | open | T7 | M | routine | [08 §8.1](plan/08-toolchain.md#81-language) |
+| T11 | Sanitizer builds in CI | in progress | T7 | M | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | T12 | clang-cl in CI, and its contraction flag | open | T7 | S | routine | [determinism](experiments/content-build-determinism.md#follow-ups) |
 | T13 | Fuzzing of parsers, the protocol and saves | open | T11 | L | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |
 | T14 | Defect-rate tracking per phase | open | T11 | S | design | [08 §8.1](plan/08-toolchain.md#81-language) |
@@ -463,7 +463,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T17 | Banned-pattern lint | done (22c31122, 2425c624, 4c2bb759, ee884230) | | M | routine | [AGENTS.md](../AGENTS.md#rules-that-are-checked) |
 | T18 | Hot-type size table | done (22c31122, ADR-0019) | | S | routine | [11 §11.2](plan/11-performance-principles.md#112-data-layout-and-footprint-first) |
 | T19 | Documentation check and the docs gate | done (6f64f29c, 3a852ad7) | | M | routine | [02 §2.5](plan/02-architecture.md#25-repository-organization-for-agent-comprehension) |
-| T20 | Licence check in CI | open | | M | design | [08 §8.8](plan/08-toolchain.md#88-engine-license-and-dependency-policy) |
+| T20 | Licence check in CI | done (2026-10-07, tools/license-check.ps1) | | M | design | [what to run](ci/what-to-run.md#licences) |
 | T21 | CPU baseline v3, with v2 test presets | done (ADR-0031) | | M | design | [08 §8.9](plan/08-toolchain.md#89-the-cpu-baseline-and-what-each-dependency-does-about-it) |
 | T22 | Retire the v2 presets | deferred (ADR-0031) | T21 | S | routine | [ADR-0031](adr/0031-minimum-cpu-x86-64-v3.md) |
 | T23 | Host tools build for the build machine | done (ADR-0034) | T21 | S | design | [ADR-0034](adr/0034-host-tools-build-for-the-build-machine.md) |
@@ -499,6 +499,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T53 | Divergence bisector and replay methods | open | S17 | M | design | [09 §9.2](plan/09-testing-profiling.md#92-determinism-infrastructure) |
 | T54 | Publishing plan | done (388cc7c4) | | S | design | [publishing](publishing.md) |
 | T62 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
+| T63 | `msvc-asan` built and tested in CI | open | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | T64 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
 | T55 | Overlay directory found by the build | open | T54 | M | design | [publishing](publishing.md#a-private-and-experimental-capabilities-and-content-an-overlay-repository) |
 | T56 | History audit, private mirror, first public push | open | T55 | M | design | [publishing](publishing.md#c-before-the-first-public-push) |

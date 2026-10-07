@@ -46,9 +46,14 @@ ENV LANG=C.UTF-8
 # stricter test than the hosted runner, whose image ships a newer CMake that would hide a
 # feature we accidentally started depending on. It also keeps us on the 3.x line, where the
 # third-party CMakeLists files that declare `cmake_minimum_required` below 3.5 still configure.
+#
+# libclang-rt-18-dev is Clang's sanitizer runtimes, which `clang` only recommends and
+# --no-install-recommends therefore left out: without it linux-clang-asan (ci.yml's sanitizer job,
+# docs/ci/what-to-run.md "Sanitizers") compiled every object and failed at the first link, unable
+# to find libclang_rt.asan-x86_64.a (2026-10-07).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
-      build-essential cmake ninja-build clang clang-format g++ git rsync \
+      build-essential cmake ninja-build clang libclang-rt-18-dev clang-format g++ git rsync \
       pkg-config file unzip xz-utils \
  && rm -rf /var/lib/apt/lists/*
 

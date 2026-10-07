@@ -34,7 +34,8 @@ presets that build them, not by the whole gate again.
   links. Until it does, this is the conservative reading.
 - The build system, `tests/support`, vendored code, the schema compiler and committed content are
   built into or read by everything: a change there runs everything, and the run says why.
-- Documentation selects nothing; the lint and the documentation check run in every case.
+- Documentation selects nothing; the lint, the licence check (`lint.licenses`) and the
+  documentation check run in every case.
 - A module's tests are the test named after it, its bench's smoke run (`bench.<module>`), and a part
   of its tests registered as a test of its own, `<module>.<part>` — so far `engine_view.frame_loop`,
   whose three flights would double `engine_view`'s run.
@@ -54,8 +55,7 @@ The times are the sum of those tests' own times in a gate's log, not a quiet mea
 
 ## The gates the rules promised
 
-Four accepted rules had no machinery behind them until 2026-10-07 (roadmap T11, T20, T46, T48);
-the two performance gates are below.
+Four accepted rules had no machinery behind them until 2026-10-07 (roadmap T11, T20, T46, T48).
 Where each runs is chosen by what it costs and what it needs.
 
 ### The frame loop's allocations
@@ -84,6 +84,26 @@ desktop has no nightly runner and the hosted ones have no GPU; a nightly with si
 is T47's.
 
 **What its first run found** (2026-10-07, `msvc-release`, the budgets seeded an hour earlier by the same script, `-Rebaseline`, from the same tree): every run within budget, five of five — totals at the median and p99 of 0.155 / 0.345 ms (overlook, 1080p), 0.729 / 1.344 (erg walk, 1080p), 3.484 / 3.964 (erg walk, surround), 1.610 / 2.602 (endless, 1080p, maps) and 4.362 / 5.498 (endless, surround, traced) against budgets of 0.155 / 0.358, 0.724 / 1.214, 3.482 / 4.010, 1.625 / 2.756 and 4.454 / 5.571; the erg walk's p99 at 1080p came closest to its limit (1.344 of 1.557). Four of the five ran on a machine the harness called busy — another agent's renderer tests and builds — which is the shared machine as it is; a pass is a pass on a busy one. **What seeding found**: the experiment pages the budgets were to come from agree with today's tree for the erg walk (total 0.724 against the page's 0.730 at 1080p; every surround median within 2%) and the endless desert's surround run (total 4.454 against 4.363, every pass within 8%), and **do not for the endless desert at 1080p with the maps**: [far ground](../experiments/far-ground-2026-10-03.md#the-cost) reads 2.980 / 5.103 ms, today's tree 1.625 / 2.756 on the same path, every pass lower (the cull 0.047 against 0.306). Seeded from the page, that budget would have passed a doubling, so every budget is the gate's own measurement and `sources` in the file says which page agreed. And the full-size endless flight's first pass makes 573 engine allocations on its frame thread, every one before frame 3,896 of 7,201 — lists reaching the high-water mark the 12 km path needs, the second half of the path none — which the gate reports in each summary's `frame_loop` and does not judge.
+
+### Sanitizers
+
+`linux-clang-asan` — `linux-clang-debug` with AddressSanitizer and UndefinedBehaviorSanitizer (`ENGINE_ASAN`, `ENGINE_UBSAN`, `cmake/EngineOptions.cmake`) — is a job of ci.yml's Linux matrix since 2026-10-07, on every push and pull request, on the hosted runners: no GPU, so the GPU tests skip there as they do in the other jobs, and what it sanitizes is everything else. Undefined behaviour is fatal (`-fno-sanitize-recover=all`), so a test that reaches it fails rather than printing a report into a log nobody reads; its test preset sets `ASAN_OPTIONS` to report leaks and initialization-order bugs and `UBSAN_OPTIONS` to print a stack. `tools/linux-build.ps1 -Preset linux-clang-asan -Test` runs the same here; it is not in `-Preset all`. It is not a merge-gate step: the merge does not wait for an ASan build, and a finding comes back from CI as a failed job. `msvc-asan` exists and is not in CI yet (T63): it strips `/RTC1` from the C++ flags only, and the C dependencies (SQLite, miniaudio, SDL) have not been built with it.
+
+**What its first run found** (2026-10-07, the local container): nothing about the code yet. The container image had no sanitizer runtime — `clang` only recommends `libclang-rt-18-dev`, and the image installs without recommends — so every object compiled and the first link failed, unable to find `libclang_rt.asan-x86_64.a`. The package is in the image (`tools/ci/linux.Dockerfile`) and named in ci.yml's install step now. The run that would have said what the sanitizers find did not happen: Docker Desktop's Linux engine stopped answering during the next container run and was gone when this was written. **The first sanitized test run is still owed** — CI's first push with this job, or the container once Docker is back — and its findings go in the F area of the roadmap.
+
+
+### Licences
+
+`tools/license-check.ps1` holds `third_party/LICENSES.md` to ADR-0014's list, to every
+`FetchContent_Declare` under `cmake/` and in the `CMakeLists.txt` files, to every directory vendored
+under `third_party/`, and, given a configured build tree, to each fetched dependency's own licence
+file. It is cheap (a second or two), so it runs everywhere: in `tools/dev.ps1 lint`, as the CTest
+test `lint.licenses` in every preset (which `-Affected` always selects), and in CI's documentation
+job, with no build. **Its first run found one dependency nobody had recorded**: Jolt Physics
+(v5.6.0, MIT), downloaded by `cmake/EnginePhysics.cmake` since the physics capability landed and
+absent from the record; its row is in now. Every other dependency's licence file agreed with its
+row, and SQLite's amalgamation carries no licence file (the record says public domain, which its
+source header states).
 
 ## Waiting costs more than it looks
 

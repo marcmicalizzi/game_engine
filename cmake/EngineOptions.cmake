@@ -44,8 +44,11 @@ if(ENGINE_ASAN)
 endif()
 
 if(ENGINE_UBSAN AND NOT MSVC)
-  add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=undefined)
+  # -fno-sanitize-recover: undefined behaviour stops the process with a report instead of printing
+  # one and carrying on, so a CTest test that reaches it fails (T11; docs/ci/what-to-run.md,
+  # "Sanitizers"). Recovering would leave the report in a log nobody reads and the test green.
+  add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=undefined -fno-sanitize-recover=all)
 endif()
 
 # Engine targets are built without exceptions where the compiler allows it; tests and tools

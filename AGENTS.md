@@ -35,6 +35,7 @@ tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the ma
 tools/generate.ps1       image|3d|pipeline|manifest|ingest|balance ...  # generated images and meshes with provenance sidecars, outside the repo (docs/content-generation.md)
 tools/e10-harness.ps1    -Folder <dir of .glb>                          # content build + coarse-vs-finest picture check over generated meshes (E10)
 tools/frame-budget.ps1   [-Run <id>] [-Rebaseline -Reason "<why>"]      # the frame-budget gate (ADR-0018): content/budgets/ flown under the GPU lock, at the merge (docs/subsystems/bench.md, "Frame budgets")
+tools/license-check.ps1  [-BuildDir build/<preset>]                     # third_party/LICENSES.md against ADR-0014 and every FetchContent_Declare; part of `dev.ps1 lint`
 tools/blender-run.ps1    -Script <file.py> [-Out <dir>] [-GpuLock] -- <script args>   # headless Blender for a bpy script outside the repo; sidecars like generate.ps1's (E33)
 ```
 

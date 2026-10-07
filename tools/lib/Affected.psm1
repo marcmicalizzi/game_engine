@@ -20,7 +20,7 @@
 
 Set-StrictMode -Version Latest
 
-$script:AlwaysTests = @('lint.banned_patterns', 'docs_check')
+$script:AlwaysTests = @('lint.banned_patterns', 'lint.licenses', 'docs_check')
 $script:LayerDirs = @('core', 'foundation', 'domain', 'systems', 'apps', 'game')
 
 function Get-AffectedTests {
