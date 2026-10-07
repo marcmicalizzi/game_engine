@@ -1,6 +1,6 @@
 # ADR-0052: The picture is quantized once, with dither, at the depth the display takes
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-04
 - **Plan references:** docs/plan/04-renderer.md §4.1 (step 8, "Post and upscale") and §4.6 ("Presentation")
 - **Docs touched:** `docs/subsystems/renderer.md` ("The output encode"), `docs/subsystems/gfx.md` ("The output encode"), `docs/subsystems/apps.md` (`--dither`, `--present-bits`, the summary's `output` block), `docs/subsystems/protocol.md`, `docs/plan/04-renderer.md` (status note), `docs/experiments/sky-banding-2026-10-04.md`, `docs/experiments/hdr-output-proposal.md`

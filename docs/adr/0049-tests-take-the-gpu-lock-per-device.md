@@ -1,6 +1,6 @@
 # ADR-0049: Tests take the GPU lock per device, at device creation
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-30
 - **Plan references:** docs/plan/09-testing-profiling.md; docs/plan/11-performance-principles.md §11.8 (measurements on a shared machine)
 - **Docs touched:** `docs/subsystems/gpu_lock.md` (new), `docs/subsystems/bench.md` ("The GPU lock"), `docs/subsystems/gfx.md` ("Device"), `docs/subsystems/window.md`, `docs/subsystems/platform.md` (`Process::wait`), `docs/ci/self-hosted-runners.md`, `AGENTS.md`, `docs/experiments/gpu-lock-per-device-2026-09-30.md`

@@ -1,6 +1,6 @@
 # ADR-0050: The ground is drawn from the world's tiles: the rings' levels laid out by the tile ring, fed by a tile source
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-30
 - **Plan references:** docs/plan/04-renderer.md §4.3 (terrain, deformed clusters), §4.9 (streaming and residency); docs/plan/03-data-model.md §3.7 (one tile grid, many consumers); docs/plan/05-simulation.md §5.13 (deformable surfaces). Builds on [ADR-0040](0040-the-tile-ring.md) (the tile ring and its consumers), [ADR-0043](0043-dunes-as-a-function-of-time.md) (dunes as a function of time) and [ADR-0046](0046-scene-generators-register-themselves.md) (ground providers by name), and revises the latter's first revisit note.
 - **Docs touched:** [renderer](../subsystems/renderer.md#the-ground-from-the-worlds-tiles), [world](../subsystems/world.md#the-consumers), [scene_gen](../subsystems/scene_gen.md#the-tile-source), [scene_collision](../subsystems/scene_collision.md), [terrain](../subsystems/terrain.md#where-it-attaches), [apps](../subsystems/apps.md), status notes in [04 §4.3 and §4.9](../plan/04-renderer.md#49-streaming-and-residency)

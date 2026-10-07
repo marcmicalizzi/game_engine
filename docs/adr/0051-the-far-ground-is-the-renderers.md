@@ -1,6 +1,6 @@
 # ADR-0051: The far ground is the renderer's: coarser tile levels past the world's rings, fed by filtered lattices
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-03
 - **Plan references:** docs/plan/04-renderer.md §4.3 (terrain), §4.9 (streaming and residency); docs/plan/03-data-model.md §3.7 (one tile grid, many consumers). Builds on [ADR-0050](0050-the-ground-is-drawn-from-the-worlds-tiles.md) and answers its "far tier" revisit note differently from how it was written.
 - **Docs touched:** [renderer](../subsystems/renderer.md#ground-to-the-horizon), [scene_gen](../subsystems/scene_gen.md#the-tile-source), [world](../subsystems/world.md#an-authored-world), [terrain](../subsystems/terrain.md), [apps](../subsystems/apps.md), [the experiment](../experiments/far-ground-2026-10-03.md)

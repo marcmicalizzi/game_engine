@@ -88,7 +88,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R56 | Accept ADR-0048 | blocked (the owner's review) | R55 | S | design | [ADR-0048](adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md) |
 | R57 | Eye adaptation, bloom and the post chain | open | R55 | M | design | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |
 | R58 | Picture quantized once, with dither | done (b04e0ec2) | R55 | M | research | [renderer](subsystems/renderer.md#the-output-encode) |
-| R59 | Accept ADR-0052 | blocked (the owner's review) | R58 | S | design | [ADR-0052](adr/0052-the-picture-is-quantized-once-with-dither.md) |
+| R59 | Accept ADR-0052 | done (2026-10-07, the owner) | R58 | S | design | [ADR-0052](adr/0052-the-picture-is-quantized-once-with-dither.md) |
 | R60 | HDR output (E39) | blocked (a measurement on the owner's surround) | R58 | M | research | [E39](experiments/hdr-output-proposal.md) |
 | R61 | Top-level structure over occupied instances only | open | R51 | S | routine | [frame-thread spikes](experiments/frame-thread-spikes-2026-10-04.md#what-is-open) |
 | R62 | BLAS budget manager | open | R51 | L | design | [04 §4.4](plan/04-renderer.md#44-ray-tracing) |
@@ -127,10 +127,10 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W10 | A kit's geometry streamed per tile | open | W4, R9 | M | design | [04 §4.9](plan/04-renderer.md#49-streaming-and-residency) |
 | W11 | World seed in the document | open | W1 | S | routine | [world](subsystems/world.md#not-yet) |
 | W12 | Ground drawn from the world's tiles | done (83ed5ffb, de1d04ea) | W1, G35 | L | design | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
-| W13 | Accept ADR-0050 | blocked (the owner's review) | W12 | S | design | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
+| W13 | Accept ADR-0050 | done (2026-10-07, the owner) | W12 | S | design | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
 | W14 | Tiles keep up with a fast camera and a window | done (7c3239bd, 4afee714) | W12 | M | design | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md) |
 | W15 | Far ground to the horizon | done (2efc7749, 4e862d11) | W12 | L | design | [ADR-0051](adr/0051-the-far-ground-is-the-renderers.md) |
-| W16 | Accept ADR-0051 | blocked (the owner's review) | W15 | S | design | [ADR-0051](adr/0051-the-far-ground-is-the-renderers.md) |
+| W16 | Accept ADR-0051 | done (2026-10-07, the owner) | W15 | S | design | [ADR-0051](adr/0051-the-far-ground-is-the-renderers.md) |
 | W17 | Terrain motion, tiles, far levels over the protocol | done (c5a37706) | W15 | M | routine | [renderer](subsystems/renderer.md#one-request-two-hosts) |
 | W18 | Far tiles rebuilt only where they change | open | W15 | S | design | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
 | W19 | Windowed lag with far levels, measured | open | W15 | S | routine | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
@@ -483,7 +483,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T37 | Extreme-resolution captures in the GPU smoke run | done (4a9845e7) | T33 | S | routine | [runners](ci/self-hosted-runners.md#the-extreme-resolutions) |
 | T38 | Extreme resolutions nightly and offscreen | open | T34, T37 | S | routine | [runners](ci/self-hosted-runners.md#the-extreme-resolutions) |
 | T39 | Machine-wide GPU lock, per device | done (d4867e07) | | M | design | [gpu_lock](subsystems/gpu_lock.md) |
-| T40 | Accept ADR-0049 | blocked (the owner's review) | T39 | S | design | [ADR-0049](adr/0049-tests-take-the-gpu-lock-per-device.md) |
+| T40 | Accept ADR-0049 | done (2026-10-07, the owner) | T39 | S | design | [ADR-0049](adr/0049-tests-take-the-gpu-lock-per-device.md) |
 | T41 | Measurements that record the machine's state | done (f174fefc) | | S | routine | [bench](subsystems/bench.md#measuring-on-a-shared-machine) |
 | T42 | No-listeners check | done (6e6f1053) | | S | routine | [runners](ci/self-hosted-runners.md#toolscicheck-no-listenersps1) |
 | T43 | No dialogs on failure | done (4b4c2a89, c75d4e7a) | | M | routine | [platform](subsystems/platform.md#no-engine-binary-opens-a-dialog-when-it-fails) |
