@@ -237,53 +237,53 @@
       ],
       "gpu_ms": {
         "cull": {
-          "median": 0.047,
-          "p99": 0.108
+          "median": 0.3,
+          "p99": 0.335
         },
         "deform": {
-          "median": 0.023,
-          "p99": 0.026
+          "median": 0.1,
+          "p99": 0.134
         },
         "hiz": {
-          "median": 0.021,
-          "p99": 0.021
+          "median": 0.033,
+          "p99": 0.042
         },
         "hw": {
-          "median": 0.033,
-          "p99": 0.038
+          "median": 0.047,
+          "p99": 0.055
         },
         "resolve": {
-          "median": 0.187,
-          "p99": 0.221
+          "median": 0.467,
+          "p99": 0.597
         },
         "shadow": {
-          "median": 0.335,
-          "p99": 1.019
+          "median": 0.805,
+          "p99": 2.35
         },
         "sky": {
-          "median": 0.086,
-          "p99": 0.395
+          "median": 0.187,
+          "p99": 0.199
         },
         "total": {
-          "median": 1.625,
-          "p99": 2.756
+          "median": 2.916,
+          "p99": 5.06
         }
       },
       "baseline": {
         "date": "2026-10-07",
-        "by": "Claude (agent, roadmap T46), for the owner",
-        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
-        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "by": "Fable, merging batch 11",
+        "reason": "The first seed (1.625 / 2.756 ms, cull 0.047) was measured on a tree with the F1 time-lapse wait bug (commit 'renderer: an offscreen frame takes every ready terrain field'), which let an offscreen flight stop a pair of fields short and drew a fraction of the ground; the fixed tree measures 2.92 / 5.06 ms on a quiet machine, twice within 1%, which is what docs/experiments/far-ground-2026-10-03.md recorded (2.98 / 5.10 ms, cull 0.306), so the budget is re-seeded from the fixed tree at the merge of batch 11.",
+        "commit": "2b1ac147 (with uncommitted changes)",
         "device": "NVIDIA GeForce RTX 5090",
         "quiet": true,
-        "machine_state": "quiet (start 8.8% others, GPU 5%; end 9.9% others, GPU 10%)",
+        "machine_state": "quiet (start 9.8% others, GPU 0%; end 9.9% others, GPU 0%)",
         "identity": "a73c20e15926dafa",
         "frames": 7201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.367,
-        "p99": 0.656
+        "median": 0.382,
+        "p99": 0.515
       },
       "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
     },
