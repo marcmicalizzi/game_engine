@@ -498,9 +498,9 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T52 | Calibration runner, stage 3 | deferred (ADR-0011) | T51 | L | design | [ADR-0011](adr/0011-tunables-before-calibration.md) |
 | T53 | Divergence bisector and replay methods | open | S17 | M | design | [09 §9.2](plan/09-testing-profiling.md#92-determinism-infrastructure) |
 | T54 | Publishing plan | done (388cc7c4) | | S | design | [publishing](publishing.md) |
-| T62 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
-| T63 | `msvc-asan` built and tested in CI | open | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
-| T64 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
+| T65 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
+| T66 | `msvc-asan` built and tested in CI | open | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| T67 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
 | T55 | Overlay directory found by the build | open | T54 | M | design | [publishing](publishing.md#a-private-and-experimental-capabilities-and-content-an-overlay-repository) |
 | T56 | History audit, private mirror, first public push | open | T55 | M | design | [publishing](publishing.md#c-before-the-first-public-push) |
 | T57 | ARM64 CI target | deferred (10 §10.6 2026-09-25) | | M | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |
@@ -612,3 +612,7 @@ Defects that no plan section schedules: failures seen at gates, steps in a pictu
 | F10 | Device lost when a tight budget evicts beside the RT chain | done (7d794636) | R9 | S | research | [renderer](subsystems/renderer.md#a-pages-8-bit-indices-are-its-own) |
 | F11 | Tile index narrowed to i32 unchecked in TileSampler::tile_at and scene_collision | open | W64 | S | routine | [tile.cpp](../domain/terrain/src/tile.cpp) |
 | F12 | gfx.md says only world tiles carry k_instance_uv_from_corner; ring chunks do too | open | W63 | S | routine | [gfx](subsystems/gfx.md#the-frames-origin) |
+| F13 | Tunables read across translation units before they are initialized | open | | M | design | [what to run](ci/what-to-run.md#sanitizers) |
+| F14 | Heap use after free in the texture tests under ASan | open | | S | research | [what to run](ci/what-to-run.md#sanitizers) |
+| F15 | Third-party undefined behaviour under UBSan: suppress or exclude | open | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| F16 | Fault-probe tests under the sanitizers | open | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
