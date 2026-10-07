@@ -8,14 +8,20 @@
 // test's own. The GPU half — the seams by the visibility buffer, the grid's picture to the pixel,
 // the time-lapse across tiles — is terrain_tiles_gpu_tests.cpp, where the terrain capability is.
 #include <core/containers/hash_map.h>
+#include <core/hash/hash.h>
+#include <domain/geometry/cluster_file.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/terrain_tiles.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>  // engine-lint: allow-std-container a test's edge census
 #include <set>  // engine-lint: allow-std-container a test's edge census
 #include <string>
@@ -90,9 +96,7 @@ TerrainTileMesh mesh_of(i32 x, i32 z, u8 level, u32 cells, TerrainTileNeighbours
   spec.neighbours = n;
   for (u32 l = 0; l < 4; ++l)
     spec.level_cells[l] = level_cells[l];
-  spec.uv_x0_mm = -64000;
-  spec.uv_z0_mm = -64000;
-  spec.uv_size_mm = 128000;
+  spec.uv_size_mm = 128000;  // the 128 m grid's (`grid_desc`)
   const u32 a = cells + 3;
   Vector<f32> h(static_cast<usize>(a) * a);
   REQUIRE(k_waves.heights(0.0, spec.spacing_mm, x * static_cast<i32>(cells) - 1,
@@ -244,8 +248,189 @@ TEST_CASE("world tiles: a tile's mesh covers it once, face up, its border locked
     // No neighbour is coarser: every vertex is drawn from its own level, with a real normal.
     bad += m.drawn_from[v] != 3;
     bad += !(m.normals[v].y > 0.5f);
+    // UVs from the corner at the 128 m grid's scale, rounded once.
+    bad +=
+        m.uvs[v].x != static_cast<f32>(static_cast<f64>(m.lattice_i[v] * 500 - 16'000) / 128'000.0);
+    bad +=
+        m.uvs[v].y != static_cast<f32>(static_cast<f64>(m.lattice_j[v] * 500 + 24'000) / 128'000.0);
   }
   CHECK(bad == 0);
+  // **The material puts them back in the grid's frame** (renderer.md, "The ground's tiles are
+  // placed at their corners"): the tile's instance at its corner, flagged, offsets its UVs by the
+  // corner's place in the frame — (16 + 64) / 128 and (-24 + 64) / 128 — and an instance without
+  // the flag by nothing. The sum is the grid's own UV for the lattice point to a float's rounding.
+  gfx::InstanceDesc tile{};
+  gfx::set_terrain_corner(tile, m.corner_x_mm, m.corner_z_mm);
+  CHECK(gfx::terrain_uv_offset(tile, -64'000, -64'000, 128'000) == Vec2{0.0f, 0.0f});
+  tile.flags |= gfx::k_instance_uv_from_corner;
+  const Vec2 offset = gfx::terrain_uv_offset(tile, -64'000, -64'000, 128'000);
+  CHECK(offset == Vec2{0.625f, 0.3125f});
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < m.positions.size(); ++v) {
+    const f64 u = static_cast<f64>(m.lattice_i[v] * 500 + 64'000) / 128'000.0;
+    const f64 w = static_cast<f64>(m.lattice_j[v] * 500 + 64'000) / 128'000.0;
+    worst =
+        std::max(worst, static_cast<f32>(std::abs(static_cast<f64>(m.uvs[v].x + offset.x) - u)));
+    worst =
+        std::max(worst, static_cast<f32>(std::abs(static_cast<f64>(m.uvs[v].y + offset.y) - w)));
+  }
+  CHECK(worst <= 6.0e-8f);  // half a float's step at 1
+}
+
+namespace {
+
+// **A ground whose origin is somewhere else**: the waves measured from (`x_mm`, `z_mm`), so a tile
+// moved by whole cells with the ground's origin is given the same heights as its twin by the
+// origin, and anything that differs between the two is the tile's own arithmetic.
+struct MovedGround {
+  i64 x_mm = 0;
+  i64 z_mm = 0;
+};
+bool moved_heights(const void* state, f64, i64 spacing_mm, i64, i32 i0, i32 j0, u32 nx, u32 nz, u32,
+                   u32, std::span<f32> out) noexcept {
+  const MovedGround& g = *static_cast<const MovedGround*>(state);
+  if (out.size() != static_cast<usize>(nx) * nz) return false;
+  for (u32 z = 0; z < nz; ++z) {
+    for (u32 x = 0; x < nx; ++x) {
+      const f64 wx = static_cast<f64>((i0 + static_cast<i64>(x)) * spacing_mm - g.x_mm) / 1000.0;
+      const f64 wz = static_cast<f64>((j0 + static_cast<i64>(z)) * spacing_mm - g.z_mm) / 1000.0;
+      out[static_cast<usize>(z) * nx + x] = wave_at(wx, wz);
+    }
+  }
+  return true;
+}
+
+struct SectionHash {
+  u32 kind = 0;
+  u64 hash = 0;
+};
+
+// A tile's mesh and the container its DAG is written as.
+struct ClusterFileDataHolder {
+  TerrainTileMesh mesh;
+  geometry::ClusterFileData data;
+};
+
+// Every section of a `.clusters` file, as `domain/geometry`'s determinism test reads them: its
+// kind and the hash of its payload.
+bool section_hashes(const std::string& path, Vector<SectionHash>& out) {
+  std::string file;
+  if (io::read_file(path, file) != io::Status::Ok ||
+      file.size() < sizeof(geometry::ClusterFileHeader))
+    return false;
+  geometry::ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  out.clear();
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(geometry::ClusterFileSection) * i;
+    if (at + sizeof(geometry::ClusterFileSection) > file.size()) return false;
+    geometry::ClusterFileSection section;
+    std::memcpy(&section, file.data() + at, sizeof(section));
+    const u64 bytes = u64{section.element_size} * section.element_count;
+    if (section.offset > file.size() || bytes > file.size() - section.offset) return false;
+    out.push_back(SectionHash{section.kind, hash_bytes(file.data() + section.offset, bytes)});
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("world tiles: a tile built far out is its twin by the origin, cluster for cluster") {
+  // ADR-0053 decision 6 for a tile's **data** (renderer.md, "The ground's tiles are placed at their
+  // corners"): a tile and its ground moved by whole cells give the same mesh — positions from its
+  // corner, the same normals, UVs from its corner — and so the same cluster DAG and the same LOD
+  // tree, written as a `.clusters` container whose every section hashes alike. Until 2026-10-06 a
+  // tile's UVs were in the scene grid's frame, so a far tile's were thousands where its twin's were
+  // under one, and the DAG's simplification, which weighs UVs, built another tree from them.
+  // A tile of the inner ring's level with a coarser neighbour on +x, so collapsed edges and a
+  // vertex drawn from another level are in it too.
+  const u32 level_cells[4] = {0, 4, 8, 16};
+  TerrainTileNeighbours n;
+  for (u32 k = 0; k < 4; ++k) {
+    n.edge[k] = 3;
+    n.corner[k] = 3;
+  }
+  n.edge[1] = 2;
+  n.corner[1] = 2;
+  n.corner[3] = 2;
+  const auto build = [&](f64 cells, ClusterFileDataHolder& out) {
+    // The move in whole tiles of 8 m: a cell is eight of them.
+    const i64 move_mm = static_cast<i64>(cells) * gfx::k_world_cell_mm;
+    MovedGround ground{move_mm, -move_mm};
+    TerrainTileMeshSpec spec;
+    spec.x = 3 + static_cast<i32>(move_mm / 8000);
+    spec.z = -2 - static_cast<i32>(move_mm / 8000);
+    spec.level = 3;
+    spec.cells = 16;
+    spec.spacing_mm = 500;
+    spec.neighbours = n;
+    for (u32 l = 0; l < 4; ++l)
+      spec.level_cells[l] = level_cells[l];
+    spec.uv_size_mm = 128000;
+    const u32 a = spec.cells + 3;
+    Vector<f32> h(static_cast<usize>(a) * a);
+    REQUIRE(moved_heights(&ground, 0.0, spec.spacing_mm, 0, spec.x * 16 - 1, spec.z * 16 - 1, a, a,
+                          0, 1, std::span<f32>(h.data(), h.size())));
+    build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), out.mesh);
+    // As the set builds a tile's DAG (`TerrainTileSet::build_tile`).
+    geometry::AttributeSource attributes;
+    attributes.normals = std::span<const Vec3>(out.mesh.normals.data(), out.mesh.normals.size());
+    attributes.uvs = std::span<const Vec2>(out.mesh.uvs.data(), out.mesh.uvs.size());
+    attributes.locked = std::span<const u8>(out.mesh.locked.data(), out.mesh.locked.size());
+    std::string error;
+    REQUIRE_MESSAGE(geometry::build_cluster_lod(
+                        std::span<const Vec3>(out.mesh.positions.data(), out.mesh.positions.size()),
+                        std::span<const u32>(out.mesh.indices.data(), out.mesh.indices.size()),
+                        geometry::ClusterLodOptions{}, out.data.mesh, &error, attributes),
+                    error);
+    out.data.materials.push_back(geometry::ClusterFileMaterial{});
+    out.data.cluster_material.resize(out.data.mesh.mesh.clusters.size(), 0u);
+    out.data.source_path = "tile";
+  };
+  const test::TempDir tmp("renderer_tile_dag");
+  ClusterFileDataHolder home;
+  build(0.0, home);
+  const std::string home_path = tmp.file("home.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(geometry::write_cluster_file(home_path, home.data, &error), error);
+  Vector<SectionHash> want;
+  REQUIRE(section_hashes(home_path, want));
+  REQUIRE(want.size() > 4);
+  for (const f64 cells : {6548.0, 156250.0, 1562500.0}) {
+    ClusterFileDataHolder far;
+    build(cells, far);
+    // The mesh itself: the same numbers in every stream.
+    u32 differ = 0;
+    REQUIRE(far.mesh.positions.size() == home.mesh.positions.size());
+    for (u32 v = 0; v < home.mesh.positions.size(); ++v) {
+      differ += std::memcmp(&far.mesh.positions[v], &home.mesh.positions[v], sizeof(Vec3)) != 0;
+      differ += std::memcmp(&far.mesh.normals[v], &home.mesh.normals[v], sizeof(Vec3)) != 0;
+      differ += std::memcmp(&far.mesh.uvs[v], &home.mesh.uvs[v], sizeof(Vec2)) != 0;
+    }
+    CHECK(far.mesh.indices == home.mesh.indices);
+    const std::string path =
+        tmp.file("far-" + std::to_string(static_cast<i64>(cells)) + ".clusters");
+    REQUIRE_MESSAGE(geometry::write_cluster_file(path, far.data, &error), error);
+    Vector<SectionHash> got;
+    REQUIRE(section_hashes(path, got));
+    u32 sections_differ = 0;
+    std::string which;
+    REQUIRE(got.size() == want.size());
+    for (u32 s = 0; s < got.size(); ++s) {
+      if (got[s].kind == want[s].kind && got[s].hash == want[s].hash) continue;
+      ++sections_differ;
+      which += std::string(" ") + geometry::cluster_section_name(got[s].kind);
+    }
+    MESSAGE("a tile moved by " << cells << " cells: " << differ << " vertex streams differ; "
+                               << far.data.mesh.mesh.clusters.size() << " clusters against "
+                               << home.data.mesh.mesh.clusters.size() << ", in "
+                               << far.data.mesh.level_cluster_counts.size() << " levels against "
+                               << home.data.mesh.level_cluster_counts.size() << "; "
+                               << sections_differ << " of " << got.size()
+                               << " sections differ:" << which);
+    CHECK(differ == 0);
+    CHECK(sections_differ == 0);
+  }
 }
 
 TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its vertices from it") {

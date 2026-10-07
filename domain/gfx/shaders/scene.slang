@@ -59,7 +59,7 @@ struct InstanceDesc {
   uint material_base;  // added to the cluster's material index in the resolve
   uint first_pair;
   float scale_max;  // largest axis scale: radii and LOD errors multiply by it
-  uint flags;       // bit 0: uniform scale
+  uint flags;       // bit 0: uniform scale; bit 1: a terrain tile's UVs from its corner
   uint deform;      // entry of the DeformDesc table; k_invalid_deform: rigid
   // Mesh-space slack the cull pass adds to every sphere of this instance, so a deformed instance
   // whose vertices leave their rest positions is still culled conservatively. Zero for a rigid
@@ -68,6 +68,10 @@ struct InstanceDesc {
   uint terrain;  // 1 + this instance's terrain level in the frame's TerrainLevelDesc table, or 0
   uint pad;
 };
+// InstanceDesc::flags bit 1 (gfx::k_instance_uv_from_corner; bit 0, k_instance_uniform_scale, is
+// below with the cull's constants): a terrain tile whose UVs are measured from its corner, which
+// the material's lookup puts back in the scene grid's frame (`terrain_uv_offset`).
+static const uint k_instance_uv_from_corner = 2u;
 
 // ---- the frame's origin (ADR-0053; docs/subsystems/gfx.md, "The frame's origin") ----------------
 //
@@ -190,6 +194,18 @@ static const uint k_terrain_level_named = 1u;
 // within a hundredth of a millimetre of them, so rounding gives them back exactly.
 int64_t terrain_corner_axis_mm(int cell, float local) {
   return int64_t(cell) * 64000 + int64_t(round(local * 1000.0));
+}
+
+// **Where a tile's corner stands in the scene grid's UV frame** (gfx::terrain_uv_offset, operation
+// for operation; gfx::k_instance_uv_from_corner): a world tile's UVs are measured from its corner,
+// so the material's lookup adds this to the interpolated UV — the corner less the frame's corner,
+// integer millimetres, over the frame's side. Zero for any other instance.
+float2 terrain_uv_offset(InstanceDesc instance, int x0_mm, int z0_mm, uint size_mm) {
+  if ((instance.flags & k_instance_uv_from_corner) == 0) return float2(0.0, 0.0);
+  const int64_t x = terrain_corner_axis_mm(instance.cell.x, instance.rows[0].w) - int64_t(x0_mm);
+  const int64_t z = terrain_corner_axis_mm(instance.cell.z, instance.rows[2].w) - int64_t(z0_mm);
+  const float size = float(size_mm);
+  return float2(float(x) / size, float(z) / size);
 }
 
 // a / b rounded down, for b > 0 (SPIR-V's integer division truncates towards zero).

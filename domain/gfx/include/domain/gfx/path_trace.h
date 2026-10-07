@@ -41,7 +41,7 @@ inline constexpr u32 k_pt_pixel_center = 2u;
 // noise at the same pixel, so a reference of a dithered frame carries the noise the frame does.
 inline constexpr u32 k_pt_dither = 4u;
 
-// Mirrors PathTraceParams in path_trace.slang. 288 bytes.
+// Mirrors PathTraceParams in path_trace.slang. 352 bytes.
 struct PathTraceParams {
   // Clip space to the world direction of a primary ray, `clip_to_ray(projection, view)`
   // (view_ray.h): the camera's rotation and projection, never its position.
@@ -110,6 +110,13 @@ struct PathTraceParams {
   // tracer rebuilds, every ray it starts and every light it reaches is in that space, as the
   // frame's top-level structure is. 48 bytes appended (ADR-0053).
   FrameEye eye;
+  // The scene grid's UV frame, millimetres: the resolve's `terrain_uv_*`, which a world tile's
+  // material lookup places its corner in (`terrain_uv_offset`, cluster_cull.h). The block had no
+  // spare word, so these and a pad grew it by a row (2026-10-06).
+  i32 terrain_uv_x0_mm = 0;
+  i32 terrain_uv_z0_mm = 0;
+  u32 terrain_uv_size_mm = 1;
+  u32 terrain_uv_pad = 0;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the
@@ -121,7 +128,7 @@ inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
   };
   return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
 }
-static_assert(sizeof(PathTraceParams) == 336);
+static_assert(sizeof(PathTraceParams) == 352);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // Russian roulette starts after this many scattering events, so a short path is never cut and a

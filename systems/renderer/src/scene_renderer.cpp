@@ -1829,6 +1829,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.shadow_maps = shadow_maps_address;
     }
     resolve.ground_detail = ground_detail_address;
+    // The scene grid's UV frame, which a world tile's material lookup places the tile's corner in
+    // (its UVs are from the corner; `terrain_uv_frame` keeps the numbers inside 32 bits).
+    resolve.terrain_uv_x0_mm = static_cast<i32>(scene.terrain_uv().x0_mm);
+    resolve.terrain_uv_z0_mm = static_cast<i32>(scene.terrain_uv().z0_mm);
+    resolve.terrain_uv_size_mm = static_cast<u32>(scene.terrain_uv().size_mm);
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------

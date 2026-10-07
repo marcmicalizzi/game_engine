@@ -178,3 +178,35 @@ Every far view's visibility buffer hashes to its twin's, word for word; the far 
 ### The translation suite from a file
 
 `apps/engine_cli/tests/render_tests.cpp`, "a scene file and its path written 10,000 km out draw the origin's bytes" (`msvc-debug`, RTX 5090, 235 s): a slab and 28 cubes and a smooth three-key camera path, written by the origin and again 156,250 cells out along x and back along z by their own numbers. engine-view flying the path (frames 3, 7, 11, 15 and 16; colour, ids and depth): all 15 files byte for byte. `render.capture` at two cameras named on the wire (the last key, and a point between keys a 1024th of a metre off a whole metre): colour, ids and depth byte for byte; `RenderSceneInfo.center` of the far scene is the origin's plus exactly the cells; and engine-view's last frame is the host's picture of the last key, byte for byte, at both sites.
+
+## Stage 4 (picture-4): a tile's UVs from its corner
+
+A world tile's UVs were in the scene grid's frame — `(lattice point − grid corner) / side`, in the thousands 420 km out — and the cluster DAG's simplification weighs UVs, so a tile's level-of-detail tree depended on where it stood. They are measured from the tile's corner now, its instance carries `gfx::k_instance_uv_from_corner`, and the resolve and the reference path tracer add the corner's place in the grid's frame back before the material's lookup (`gfx::terrain_uv_offset`; [renderer](../subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners), [gfx](../subsystems/gfx.md#the-frames-origin)). `msvc-debug`, RTX 5090.
+
+### The DAG
+
+`world tiles: a tile built far out is its twin by the origin, cluster for cluster` (`terrain_tiles_tests.cpp`, CPU): a 16-cell tile of the inner level with a coarser neighbour on one edge, its ground a function of the lattice point measured from the ground's own origin, built by the origin and moved with its ground by 6,548, 156,250 and 1,562,500 cells, each DAG written as a `.clusters` container and its sections hashed as `domain/geometry`'s determinism test hashes them.
+
+| | Vertex streams that differ | Sections that differ (of 33) |
+|---|---|---|
+| UVs in the grid's frame (before) | 281 of 281 (the UVs; positions and normals equal) | 7 at every move: clusters, LOD records, vertices, attributes, triangles, vertex sources, the 16-bit grid |
+| UVs from the corner (after) | 0 | 0 at every move |
+
+Twelve clusters in four levels either way: the far tile's tree was the same shape and other clusters.
+
+### The translation suite's terrain at the default cut
+
+`world translation: the world's tiles moved by whole cells with their ground draw the same bytes` (`terrain_tiles_gpu_tests.cpp`) now runs at the finest cut and at the default one (`lod_px` 1). At the default cut, of 24,576 pixels, on each of the five paths (mesh, software, vertex indexed, vertex capacity, ray visibility), both layouts (the world's rings, and with far levels, which gave the same counts), and each move:
+
+| | Id words | Depths | Normal bytes | Colour bytes |
+|---|---|---|---|---|
+| before | 22,357–22,395 | 10,074–10,105 | 18,328–18,863 | 5,331–5,705 |
+| after | 0 | 0 | 0 | 0 |
+
+The finest cut was byte-identical before and is after.
+
+### What moved by the origin, and the tolerances
+
+**The erg drawn from tiles against the grid** (`world tiles: the erg from tiles is the grid's picture inside its extent`): unchanged — 156,172 pixels compared, 6,690 differ in some bit of depth and 11 by more than 16 float steps, **0 in colour**. The brief expected a colour tolerance here, since a tile's UVs are now far finer than the grid's (a half float between 0.5 and 1 steps by 2⁻¹¹, 19 cm of that test's 384 m grid); none was needed: the grid's maps there are 256 texels over 384 m and bilinear, and no byte moved.
+
+**The seams test** (`world tiles: no crack, no T-junction and no lighting seam at any border`) failed one check: 50 km out, from above, at a pixel's cut, the largest normal step across a same-level border was 0.1126 rad against a bound of the largest step inside a tile (0.0917) plus a quantum (0.016). One pair, at x = 50,000 m: the side before the border a coarse cluster, flat (0.008 rad to the pixel before it), the side after it the lattice's own triangles on a crest (0.033 to the pixel after it); the step's excess over its neighbours, 0.080, is within the inside excess's 0.070 plus a quantum, so the normal field is continuous there and kinks. With the old UVs that view's DAGs were simplified from UVs of 390 and its largest inside step was 0.206, which the bound had been measured against. The step's bound at a coarser cut now also admits the finest cut's largest inside step of the same view (0.1316 here) — the steepest the lattice's own triangles turn the normal — since a border's two tiles are cut apart and one may draw the lattice there. No other check moved; the excess bounds are unchanged.

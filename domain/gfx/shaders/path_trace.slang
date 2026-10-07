@@ -45,7 +45,7 @@
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Mirrors gfx::PathTraceParams (336 bytes).
+// Mirrors gfx::PathTraceParams (352 bytes).
 struct PathTraceParams {
   column_major float4x4 clip_to_ray;  // clip to the world direction of a primary ray (view_ray.slang)
   float4 camera;  // xyz the eye in the frame's space (PathTraceParams::eye)
@@ -81,6 +81,12 @@ struct PathTraceParams {
   // The frame's origin (scene.slang): `camera` is the eye in its space, and so is every hit, light
   // and ray origin the tracer forms, as the frame's top-level structure is.
   FrameEye eye;
+  // The scene grid's UV frame in millimetres, the resolve's: a world tile's material lookup places
+  // its corner in it (scene.slang, `terrain_uv_offset`).
+  int terrain_uv_x0_mm;
+  int terrain_uv_z0_mm;
+  uint terrain_uv_size_mm;
+  uint terrain_uv_pad;
 };
 
 struct PathTracePush {
@@ -234,7 +240,11 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     Surface s = surface_at(geo, instance, tri, b, origin);
 
     const ResolveMaterial material = material_of(geo, instance, entry.y);
-    const float2 uv = material_uv(material, s.uv * material.uv_scale);
+    // A world tile's UVs are from its corner: the resolve's offset puts them back in the grid's frame.
+    const float2 surface_uv =
+        s.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
+                                 params->terrain_uv_size_mm);
+    const float2 uv = material_uv(material, surface_uv * material.uv_scale);
     const MaterialSample sampled = sample_material(material, uv);
     float3 shading_normal = s.normal;
     if (material.normal_texture != k_no_texture) {

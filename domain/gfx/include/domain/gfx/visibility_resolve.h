@@ -340,7 +340,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 352 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 400 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -452,10 +452,17 @@ struct ResolveParams {
   // sky's are dithered before the store, at the pixel's place in its view (so a surround's centre
   // view and a single view of that monitor draw the same noise). Zero is no dither: the encode
   // exactly as it was, which is what `domain/gfx`'s own tests and a data view draw with. The debug
-  // and data modes (everything but Shaded, and the sky's stand-in clear) are never dithered. Three
-  // pad words keep the block a whole number of float4 rows.
+  // and data modes (everything but Shaded, and the sky's stand-in clear) are never dithered.
   u32 dither_steps = 0;
-  u32 dither_pad[3] = {};
+  // **The scene grid's UV frame**, millimetres from the world's origin: its corner on x and z and
+  // its side, the frame the terrain's maps are baked over (renderer.md, "The ground's tiles are
+  // placed at their corners"). A `k_instance_uv_from_corner` instance — a world tile — carries UVs
+  // measured from its own corner, and its material's lookup adds `terrain_uv_offset(instance,
+  // ...)` (cluster_cull.h), the corner's place in this frame; nothing else reads these. They took
+  // the three pad words behind `dither_steps` (2026-10-06), so the block is still 400 bytes.
+  i32 terrain_uv_x0_mm = 0;
+  i32 terrain_uv_z0_mm = 0;
+  u32 terrain_uv_size_mm = 1;
   // **The frame's origin** (`FrameEye`, cluster_cull.h; ADR-0053). Everything the resolve forms is
   // in the frame's space: a triangle is fetched into it, `camera` is this view's eye in it (zero
   // for every view the renderer draws), `view_proj` maps it to clip space, and a surface's

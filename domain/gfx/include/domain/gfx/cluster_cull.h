@@ -551,6 +551,14 @@ static_assert(sizeof(MeshDesc) == 64);
 // InstanceDesc::flags, bit 0: the world transform scales every axis alike, so a normal cone may
 // be tested (rotating its axis keeps it a cone) and a normal only needs the rotation.
 inline constexpr u32 k_instance_uniform_scale = 1u;
+// InstanceDesc::flags, bit 1: **a terrain tile whose UVs are measured from its corner**
+// (docs/subsystems/renderer.md, "The ground's tiles are placed at their corners"). The instance is
+// at its corner (`set_terrain_corner`), its mesh's UVs are `(lattice point − corner) / size` in
+// the scene grid's UV frame, and the material's lookup adds the corner's place in that frame
+// (`terrain_uv_offset`, below; the frame is `ResolveParams::terrain_uv_*`), so a tile's data — its
+// UVs and the cluster DAG simplified from them — is a function of its key and its heights alone,
+// wherever it is. Bit 1 took no new word.
+inline constexpr u32 k_instance_uv_from_corner = 2u;
 
 // GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
 // a device address. One per instance of the scene, in order of `first_pair`.
@@ -703,6 +711,21 @@ inline TerrainCornerMm terrain_corner_mm(const InstanceDesc& instance) noexcept 
   };
   return TerrainCornerMm{axis(instance.cell.x, instance.rows[0].w),
                          axis(instance.cell.z, instance.rows[2].w)};
+}
+
+// **Where a tile's corner stands in the scene grid's UV frame** (renderer.md, "The ground's tiles
+// are placed at their corners"): what the material's lookup adds to a `k_instance_uv_from_corner`
+// instance's interpolated UV before it samples, the corner less the frame's corner over the frame's
+// side, both axes — what shaders/scene.slang's `terrain_uv_offset` computes, operation for
+// operation. The difference is integer millimetres and exact in float32 within 16.7 km of the
+// frame's corner (beyond it the maps clamp at their edge, and a rounding of the offset there reads
+// the same texel); the one division rounds once. An instance without the flag offsets nothing.
+inline Vec2 terrain_uv_offset(const InstanceDesc& instance, i32 x0_mm, i32 z0_mm,
+                              u32 size_mm) noexcept {
+  if ((instance.flags & k_instance_uv_from_corner) == 0) return Vec2{0.0f, 0.0f};
+  const TerrainCornerMm corner = terrain_corner_mm(instance);
+  const f32 size = static_cast<f32>(size_mm);
+  return Vec2{static_cast<f32>(corner.x - x0_mm) / size, static_cast<f32>(corner.z - z0_mm) / size};
 }
 
 // The visibility buffer's extent as `ClusterDrawParams::extent` packs it: width in the low half,

@@ -179,6 +179,26 @@ f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept {
   return static_cast<f64>(f.half - f.margin - f.snap / 2) / 1000.0;
 }
 
+bool terrain_uv_frame(const TerrainDesc& desc, TerrainUvFrame& out, std::string* error) {
+  out = TerrainUvFrame{};
+  const f64 extent_mm = static_cast<f64>(desc.extent) * 1000.0;
+  // The GPU takes the corner as an i32 and the side as a u32 (`ResolveParams::terrain_uv_*`).
+  constexpr f64 k_most_mm = 2147483647.0;
+  const i64 extent = extent_mm > 0.0 && extent_mm <= k_most_mm ? std::llround(extent_mm) : 0;
+  if (extent <= 0 || std::abs(extent_mm - static_cast<f64>(extent)) > 1.0e-3) {
+    if (error != nullptr) {
+      *error =
+          "terrain: the scene grid's half-side must be whole millimetres and at most 2,147 km: "
+          "its UV frame, which the ground's maps are baked over, is in millimetres";
+    }
+    return false;
+  }
+  out.x0_mm = -extent;
+  out.z0_mm = -extent;
+  out.size_mm = 2 * extent;
+  return true;
+}
+
 void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<TerrainTile>& out) {
   out.clear();
   if (desc.ring_count == 0) return;
@@ -359,8 +379,11 @@ void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f3
       out.positions.push_back(
           Vec3{static_cast<f32>(static_cast<f64>(xm - out.corner_x_mm) / 1000.0), y,
                static_cast<f32>(static_cast<f64>(zm - out.corner_z_mm) / 1000.0)});
-      out.uvs.push_back(Vec2{static_cast<f32>(static_cast<f64>(xm - spec.uv_x0_mm) * uv_scale),
-                             static_cast<f32>(static_cast<f64>(zm - spec.uv_z0_mm) * uv_scale)});
+      // The UVs from the corner too, at the grid's UV scale: the material adds the corner's place
+      // in the grid's frame (`gfx::terrain_uv_offset`), so nothing here depends on where the tile
+      // is, and a UV a tile wide is as fine as a half float is near zero.
+      out.uvs.push_back(Vec2{static_cast<f32>(static_cast<f64>(xm - out.corner_x_mm) * uv_scale),
+                             static_cast<f32>(static_cast<f64>(zm - out.corner_z_mm) * uv_scale)});
       // The border, and a far tile's hole's: every DAG level keeps the vertices a finer tile meets.
       bool border = i == 0 || j == 0 || i == c || j == c;
       for (u32 dj = 0; !border && dj < 2; ++dj) {
@@ -488,8 +511,6 @@ bool TerrainTileSet::far_tile(u32 level, const TerrainRingLayout& layout,
     spec.level_cells[l] = level_cells_[l];
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
-  spec.uv_x0_mm = uv_corner_mm_;
-  spec.uv_z0_mm = uv_corner_mm_;
   spec.uv_size_mm = uv_size_mm_;
   // Its neighbours: this level inside its square, the next coarser far level past its border (none
   // past the coarsest's), and whatever is finer inside — which does not change its mesh.
@@ -776,21 +797,15 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   if (!terrain.enabled) return fail("world tiles: the scene has no terrain");
   if (!validate_terrain_tiles(tiles, error)) return false;
   if (!source.valid()) return fail("world tiles: the tile source has no heights");
-  const i64 extent = std::llround(static_cast<f64>(terrain.extent) * 1000.0);
-  if (std::abs(static_cast<f64>(terrain.extent) * 1000.0 - static_cast<f64>(extent)) > 1.0e-3 ||
-      extent <= 0) {
-    return fail(
-        "world tiles: the scene grid's half-side must be whole millimetres: the tiles' UVs are in "
-        "its frame");
-  }
+  TerrainUvFrame uv;
+  if (!terrain_uv_frame(terrain, uv, error)) return false;
   const i64 started = time::monotonic_ns();
   desc_ = &terrain;
   tiles_ = tiles;
   source_ = source;
   options_ = geometry::ClusterLodOptions{};
   tile_mm_ = std::llround(static_cast<f64>(tiles.tile_size) * 1000.0);
-  uv_corner_mm_ = -extent;
-  uv_size_mm_ = 2 * extent;
+  uv_size_mm_ = uv.size_mm;
   far_ = tiles.far_levels;
   levels_ = far_ + tiles.ring_count + 1;
   lattice_[0] = terrain_scene_lattice(terrain);
@@ -886,8 +901,6 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
       spec.level = static_cast<u8>(level);
       spec.cells = level_cells_[level];
       spec.spacing_mm = lattice_[level].spacing_mm;
-      spec.uv_x0_mm = uv_corner_mm_;
-      spec.uv_z0_mm = uv_corner_mm_;
       spec.uv_size_mm = uv_size_mm_;
       const u32 a = spec.cells + 3;
       Vector<f32> h(static_cast<usize>(a) * a);
@@ -967,8 +980,6 @@ TerrainTileMeshSpec TerrainTileSet::spec_of(i32 x, i32 z, u8 level,
     spec.level_cells[l] = level_cells_[l];
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
-  spec.uv_x0_mm = uv_corner_mm_;
-  spec.uv_z0_mm = uv_corner_mm_;
   spec.uv_size_mm = uv_size_mm_;
   // A tile no ring draws is the far level's whose square holds it (none without far levels).
   const auto at = [&](i32 i, i32 j) {

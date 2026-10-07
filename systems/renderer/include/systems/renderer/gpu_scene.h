@@ -547,6 +547,13 @@ class GpuScene {
   // On: the slot draws its chunk from the next frame. Off: it draws nothing, and its slot and arena
   // ranges are free for the next upload (whose copy the frame orders after every frame in flight).
   void terrain_chunk_show(u32 level, u32 slot, bool on) noexcept;
+  // **The scene grid's UV frame** (`TerrainUvFrame`), which a slot's chunk carries its UVs from its
+  // corner in when its level set says so (`TerrainLevelSet::uv_from_corner`: the world's tiles), so
+  // its instance is flagged `gfx::k_instance_uv_from_corner` and the resolve and the reference add
+  // the corner back (`ResolveParams::terrain_uv_*`). The frame is zero but for a side of one
+  // millimetre where no slot's chunk carries UVs from its corner, and is then read by nothing.
+  const TerrainUvFrame& terrain_uv() const noexcept { return terrain_uv_; }
+  bool terrain_uv_from_corner() const noexcept { return terrain_uv_from_corner_; }
   // What the rings' slots and arenas hold on the device, and what the uploads have moved.
   u64 terrain_ring_bytes() const noexcept { return terrain_ring_bytes_; }
   u64 terrain_chunk_uploads() const noexcept { return terrain_chunk_uploads_; }
@@ -920,6 +927,8 @@ class GpuScene {
   u64 vertex_capacity_ = 0;  // scene + arenas
   u64 triangle_capacity_ = 0;
   u64 terrain_ring_bytes_ = 0;
+  TerrainUvFrame terrain_uv_;
+  bool terrain_uv_from_corner_ = false;
   u64 terrain_upload_budget_ = 0;  // bytes of fields a frame copies; 0 all
   u64 terrain_chunk_uploads_ = 0;
   u64 terrain_chunk_upload_bytes_ = 0;

@@ -72,6 +72,19 @@ struct TerrainChunk {
   Vector<f32> rest;
 };
 
+// **The scene grid's UV frame**, in millimetres from the world's origin: the square the terrain's
+// maps are baked over (`bake_terrain_maps`), its corner on x and on z and its side — the grid spans
+// [-extent, extent] on both axes. A chunk whose set says `uv_from_corner` carries UVs measured from
+// its own corner in this frame's scale, and the material's lookup adds the corner's place in it
+// (`gfx::terrain_uv_offset`, from `ResolveParams::terrain_uv_*`). False, with a sentence, for a
+// half-side that is not whole millimetres or does not fit the GPU's 32-bit words (past 2,147 km).
+struct TerrainUvFrame {
+  i64 x0_mm = 0;
+  i64 z0_mm = 0;
+  i64 size_mm = 1;
+};
+bool terrain_uv_frame(const TerrainDesc& desc, TerrainUvFrame& out, std::string* error = nullptr);
+
 // Where the levels stand (level 0 unused): a centre and a half-side in millimetres per level — a
 // ring's square, or a tile level's field window — and, for a tile set, which set of tiles
 // (`generation`, 0 for rings).
@@ -106,6 +119,10 @@ class TerrainLevelSet {
   virtual const scene_gen::TileSource* source() const noexcept { return nullptr; }
   // The far levels drawn past the outermost ring (ADR-0051): the tiles' own, none for the rings.
   virtual u32 far_levels() const noexcept { return 0; }
+  // Whether a chunk's UVs are measured from its corner in the scene grid's UV frame
+  // (`TerrainUvFrame`), so its slot's instance is flagged `gfx::k_instance_uv_from_corner` and the
+  // material adds the corner back: the tiles'. False: the chunk's UVs are the frame's own.
+  virtual bool uv_from_corner() const noexcept { return false; }
 
   // The layout as built last. What the frame draws may be an older one, which its holder keeps.
   virtual TerrainRingLayout layout() const noexcept = 0;

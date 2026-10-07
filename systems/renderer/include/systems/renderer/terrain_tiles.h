@@ -13,13 +13,14 @@
 // band, and no two levels hold one tile.
 //
 // **A tile's mesh** is its lattice points at the level's spacing, two counter-clockwise triangles a
-// cell with the scene grid's diagonal, its border locked, its UVs in the grid's frame, and a
-// cluster DAG built from the heights at the surface's time. **Seams** (ADR-0050 decision 3): where
-// a tile meets a coarser one its edge keeps only the coarser lattice's points — every other edge
-// vertex is collapsed onto the nearer kept one (the lower on a tie) and the triangles that
-// degenerates are dropped — and every vertex it shares with a coarser tile names that tile's level
-// in its rest normal (`gfx::terrain_level_normal`), which the pool's terrain stage draws it from; a
-// corner names the coarsest of the four tiles round it. So a tile's mesh is a function of its
+// cell with the scene grid's diagonal, its border locked, its UVs from its corner at the grid's UV
+// scale, and a cluster DAG built from the heights at the surface's time. **Seams** (ADR-0050
+// decision 3): where a tile meets a coarser one its edge keeps only the coarser lattice's points —
+// every other edge vertex is collapsed onto the nearer kept one (the lower on a tie) and the
+// triangles that degenerates are dropped — and every vertex it shares with a coarser tile names
+// that tile's level in its rest normal (`gfx::terrain_level_normal`), which the pool's terrain
+// stage draws it from; a corner names the coarsest of the four tiles round it. So a tile's mesh is
+// a function of its
 // **key**: its coordinates, its level, and the levels of the eight tiles round it.
 //
 // **Fields.** A level's fields cover a square window of its lattice round a centre on the tile
@@ -146,9 +147,12 @@ struct TerrainTileNeighbours {
 };
 // A tile's mesh at `level` (`cells` a side, `spacing_mm` apart) with its neighbours: positions on
 // the world's lattice from `heights` — `(cells + 3)^2` of them, a point of apron round the tile,
-// rows of x in order of z — rest normals by central differences over them, UVs in the frame
-// `uv_x0_mm, uv_z0_mm, uv_size_mm`, the border locked, the edges along coarser tiles collapsed onto
-// their lattice, and the vertices another level draws naming it in their normals.
+// rows of x in order of z — rest normals by central differences over them, UVs **from the tile's
+// corner** at the scale of a frame `uv_size_mm` wide (the scene grid's), the border locked, the
+// edges along coarser tiles collapsed onto their lattice, and the vertices another level draws
+// naming it in their normals. Everything in it is a function of the spec and the heights and none
+// of where the tile is: the corner is the instance's (`corner_x_mm`, `corner_z_mm`), and the
+// material puts the UVs back in the grid's frame (`gfx::terrain_uv_offset`).
 struct TerrainTileMesh {
   // The tile's corner, its lattice point (0, 0), in whole millimetres from the world's origin; the
   // positions are metres from it (renderer.md, "The ground's tiles are placed at their corners").
@@ -182,8 +186,11 @@ struct TerrainTileMeshSpec {
   u64 hole_mask = 0;
   u32 hole_side = 0;
   u32 hole_cells = 0;
-  i64 uv_x0_mm = 0;
-  i64 uv_z0_mm = 0;
+  // The UVs' scale: a UV is millimetres from the tile's corner over this, the scene grid's side
+  // (`TerrainUvFrame::size_mm`), so a metre is as many UV units as it is in the grid's frame and
+  // the material's derivatives are the grid's. Until 2026-10-06 the spec carried the frame's corner
+  // too and the UVs were in the frame itself — thousands, 420 km out, against a twin's fractions —
+  // so a tile's DAG, whose simplification weighs UVs, depended on where the tile was.
   i64 uv_size_mm = 1;
 };
 void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f32> heights,
@@ -201,8 +208,8 @@ class TerrainTileSet final : public TerrainLevelSet {
   // Lays the first layout out round the camera at `camera` (its x and z) by the ring's first-fill
   // rule and builds every tile of it from `source` at the terrain's own time, on `jobs` when given,
   // and sizes each level's slots and arenas. False, with a sentence, for a description
-  // `validate_terrain_tiles` refuses, a terrain grid whose half-side is not whole millimetres (its
-  // UV frame is the tiles'), or a source with no heights. `terrain` and whatever `source` points at
+  // `validate_terrain_tiles` refuses, a terrain grid `terrain_uv_frame` refuses (its UV frame is
+  // the tiles' material's), or a source with no heights. `terrain` and whatever `source` points at
   // must outlive the set.
   bool build(const TerrainDesc& terrain, const TerrainTilesDesc& tiles,
              const scene_gen::TileSource& source, WorldPos camera, jobs::JobSystem* jobs,
@@ -283,6 +290,7 @@ class TerrainTileSet final : public TerrainLevelSet {
   bool shares_vertices() const noexcept override { return true; }
   const scene_gen::TileSource* source() const noexcept override { return &source_; }
   u32 far_levels() const noexcept override { return far_; }
+  bool uv_from_corner() const noexcept override { return true; }
   TerrainRingLayout layout() const noexcept override;
   gfx::TerrainField field_window(u32 level,
                                  const TerrainRingLayout& layout) const noexcept override;
@@ -350,11 +358,8 @@ class TerrainTileSet final : public TerrainLevelSet {
   geometry::ClusterLodOptions options_;
   u32 levels_ = 0;
   i64 tile_mm_ = 32000;
-  // The scene grid's UV frame, which the tiles' UVs are in: its corner on **both** axes, since the
-  // grid is a square centred on the world's origin (`build_terrain_mesh`: -extent..extent in x and
-  // in z), and its side. One number for both corners, so a spec's `uv_x0_mm` and `uv_z0_mm` are
-  // each this one.
-  i64 uv_corner_mm_ = 0;
+  // The scene grid's UV frame's side (`terrain_uv_frame`), the scale of the tiles' UVs; its corner
+  // is the material's to add back, through the frame the GPU scene hands the resolve.
   i64 uv_size_mm_ = 1;
   TerrainLattice lattice_[k_max_terrain_levels];
   u32 level_cells_[k_max_terrain_levels] = {};

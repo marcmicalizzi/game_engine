@@ -383,7 +383,10 @@ Census census(const CapturedFrame& shot, const Mat4& inverse_view_proj, Vec3 eye
   return c;
 }
 
-void check_seams(const Census& c, const std::string& what) {
+// `lattice_step` is, for a coarser cut, the largest step inside a tile at the finest cut of the
+// same view: the steepest the lattice's own triangles turn the normal between two pixels (0 at the
+// finest cut itself, where `c` says so).
+void check_seams(const Census& c, const std::string& what, f32 lattice_step = 0.0f) {
   INFO(what);
   MESSAGE(
       what << ": " << c.covered << " covered, " << c.uncovered << " uncovered, " << c.holes
@@ -404,9 +407,22 @@ void check_seams(const Census& c, const std::string& what) {
   // No lighting seam: the normal steps across a border no more than it does anywhere inside a tile,
   // and it jumps there — steps more than on either side of it — no more than it does across a
   // triangle's edge inside one (a quantum of the 8-bit normal channel spare, about 0.016 radians).
+  //
+  // **At a coarser cut the step is bounded by the lattice's own as well** (2026-10-06): the two
+  // tiles of a border are cut apart, so one may draw the lattice's own triangles there — on a
+  // crest, where they turn the normal fastest — and the other a coarser cluster, and that pair
+  // steps by the fine side's gradient, which the coarse cut's own tiles need not show anywhere
+  // inside. The finest cut of the same view measures it. Found when the tiles' UVs became relative
+  // to their corners and a tile's DAG stopped depending on where it is: 50 km out, from above, at a
+  // pixel's cut, one pair across a same-level border at x = 50,000 m stepped by 0.1126 rad — the
+  // flat coarse side 0.008 before it, the fine side 0.033 after — where the coarse cut's largest
+  // step inside a tile was 0.0917 and the finest cut's 0.1316; its excess, 0.080, is within the
+  // inside excess's 0.070 and a quantum. (The old DAGs, simplified from UVs of 390 there, had a
+  // step of 0.206 inside a tile at that cut, which the bound had been measured against.)
   constexpr f32 k_quantum = 0.016f;
-  CHECK(percentile(c.same_level_steps, 1.0) <= percentile(c.inside_steps, 1.0) + k_quantum);
-  CHECK(percentile(c.cross_level_steps, 1.0) <= percentile(c.inside_steps, 1.0) + k_quantum);
+  const f32 step_bound = std::max(percentile(c.inside_steps, 1.0), lattice_step) + k_quantum;
+  CHECK(percentile(c.same_level_steps, 1.0) <= step_bound);
+  CHECK(percentile(c.cross_level_steps, 1.0) <= step_bound);
   CHECK(percentile(c.same_level_excess, 1.0) <= percentile(c.inside_excess, 1.0) + k_quantum);
   CHECK(percentile(c.cross_level_excess, 1.0) <= percentile(c.inside_excess, 1.0) + k_quantum);
 }
@@ -615,6 +631,7 @@ TEST_CASE("world tiles: no crack, no T-junction and no lighting seam at any bord
       rig.follow(camera);
       FrameDesc frame;
       frame.camera = camera;
+      f32 lattice_step = 0.0f;  // the finest cut's largest step inside a tile, for the coarser one
       for (const f32 lod : {0.0f, 1.0f}) {  // the finest cut, and the default's coarser one
         frame.lod_px = lod;
         CapturedFrame shot;
@@ -625,7 +642,8 @@ TEST_CASE("world tiles: no crack, no T-junction and no lighting seam at any bord
                                  (grazing ? "grazing" : "from above") +
                                  (lod == 0.0f ? ", the finest cut" : ", a pixel's cut");
         if (!grazing) CHECK(c.uncovered == 0);
-        check_seams(c, what);
+        check_seams(c, what, lattice_step);
+        if (lod == 0.0f) lattice_step = percentile(c.inside_steps, 1.0);
       }
     }
   }
@@ -1361,11 +1379,13 @@ TEST_CASE("world tiles: a long flight keeps what is resident bounded and drops n
 // Before 2026-10-05 a tile's vertices were world coordinates under an instance at cell zero, and
 // 419 km out every one of them reached the frame through a float32 the size of the distance.
 //
-// **At the finest cut**, the lattice's own triangles, and for a reason that is not precision: a
-// tile's UVs are in the scene grid's frame (its base-colour map is baked over the grid by the
-// origin and clamps past it), so a tile 419 km out has other UVs than its twin by the origin, and
-// the DAG's simplification weighs UVs — its coarser levels differ by content, not by rounding (the
-// default cut differed in about 10,000 of the 24,576 depths when this was written).
+// **At the finest cut and at the default one** (2026-10-06). Until then only the finest held: a
+// tile's UVs were in the scene grid's frame, so a tile 419 km out had UVs of thousands where its
+// twin had fractions, and the DAG's simplification, which weighs UVs, built its coarser levels from
+// other numbers — at the default cut about 22,400 id words, 10,100 depths, 18,900 normal bytes and
+// 5,700 colour bytes of the 24,576 pixels differed on every path, at each of the three moves. A
+// tile's UVs are from its corner now and its material adds the corner's place in the grid's frame
+// (`gfx::terrain_uv_offset`), so its whole DAG is a function of its key and its heights.
 namespace {
 
 struct ShiftedGround {
@@ -1445,68 +1465,72 @@ TEST_CASE(
       continue;
     }
     for (const Layout& layout : layouts) {
-      // The camera over the tiles by the origin, and the same camera and ground moved by `cells`
-      // along x and -z.
-      const auto picture = [&](f64 cells, CapturedFrame& out) -> bool {
-        const i64 move_mm = static_cast<i64>(cells) * gfx::k_world_cell_mm;
-        ShiftedGround ground{move_mm, -move_mm};
-        const scene_gen::TileSource source{&k_shifted_ops, &ground};
-        const DVec3 move{cells * k_world_cell_m, 0.0, -cells * k_world_cell_m};
-        Camera camera;
-        camera.position = WorldPos{3.25, 9.5, 14.0} + move;
-        camera.target = WorldPos{-2.5, 0.0, -10.0} + move;
-        camera.znear = 0.05f;
-        RenderSettings settings;
-        settings.raster = path.raster;
-        settings.shadows = ShadowMode::Off;
-        settings.lights = false;  // the stand-in point lights stand by the scene's grid
-        TileRig rig;
-        if (!rig.build(device, desc, settings, k_width, k_height, still_lapse(), &pool,
-                       &layout.tiles, camera.position, &source)) {
-          why = rig.error;
-          return false;
+      for (const f32 cut : {0.0f, -1.0f}) {
+        const char* cut_name = cut == 0.0f ? "the finest cut" : "the default cut";
+        // The camera over the tiles by the origin, and the same camera and ground moved by `cells`
+        // along x and -z.
+        const auto picture = [&](f64 cells, CapturedFrame& out) -> bool {
+          const i64 move_mm = static_cast<i64>(cells) * gfx::k_world_cell_mm;
+          ShiftedGround ground{move_mm, -move_mm};
+          const scene_gen::TileSource source{&k_shifted_ops, &ground};
+          const DVec3 move{cells * k_world_cell_m, 0.0, -cells * k_world_cell_m};
+          Camera camera;
+          camera.position = WorldPos{3.25, 9.5, 14.0} + move;
+          camera.target = WorldPos{-2.5, 0.0, -10.0} + move;
+          camera.znear = 0.05f;
+          RenderSettings settings;
+          settings.raster = path.raster;
+          settings.shadows = ShadowMode::Off;
+          settings.lights = false;  // the stand-in point lights stand by the scene's grid
+          TileRig rig;
+          if (!rig.build(device, desc, settings, k_width, k_height, still_lapse(), &pool,
+                         &layout.tiles, camera.position, &source)) {
+            why = rig.error;
+            return false;
+          }
+          rig.follow(camera);
+          FrameDesc frame;
+          frame.camera = camera;
+          frame.lod_px = cut;
+          if (!rig.renderer.capture(frame, channels, out, &rig.error)) {
+            why = rig.error;
+            return false;
+          }
+          return true;
+        };
+        CapturedFrame home;
+        if (!picture(0.0, home)) {
+          MESSAGE(std::string(path.name)
+                  << ", " << std::string(layout.name) << ": not drawn here: " << why);
+          break;
         }
-        rig.follow(camera);
-        FrameDesc frame;
-        frame.camera = camera;
-        frame.lod_px = 0.0f;  // the finest clusters: the lattice's own triangles (below)
-        if (!rig.renderer.capture(frame, channels, out, &rig.error)) {
-          why = rig.error;
-          return false;
+        REQUIRE(home.covered > k_width * k_height / 2);
+        for (const f64 shift : shifts) {
+          CapturedFrame moved;
+          REQUIRE_MESSAGE(picture(shift, moved), why);
+          u64 ids = 0;
+          u64 depth = 0;
+          u64 normals = 0;
+          u64 colour = 0;
+          for (u32 i = 0; i < home.ids.size(); ++i)
+            ids += home.ids[i] != moved.ids[i] ? 1u : 0u;
+          for (u32 i = 0; i < home.depth.size(); ++i)
+            depth += std::memcmp(&home.depth[i], &moved.depth[i], 4) != 0 ? 1u : 0u;
+          for (u32 i = 0; i < home.normals.size(); ++i)
+            normals += home.normals[i] != moved.normals[i] ? 1u : 0u;
+          for (u32 i = 0; i < home.color.size(); ++i)
+            colour += home.color[i] != moved.color[i] ? 1u : 0u;
+          MESSAGE(std::string(path.name)
+                  << ", " << std::string(layout.name) << ", " << std::string(cut_name)
+                  << ", moved by " << shift << " cells: " << ids << " id words, " << depth
+                  << " depths, " << normals << " normal bytes and " << colour
+                  << " colour bytes differ");
+          CHECK(moved.covered == home.covered);
+          CHECK(ids == 0);
+          CHECK(depth == 0);
+          CHECK(normals == 0);
+          CHECK(colour == 0);
         }
-        return true;
-      };
-      CapturedFrame home;
-      if (!picture(0.0, home)) {
-        MESSAGE(std::string(path.name)
-                << ", " << std::string(layout.name) << ": not drawn here: " << why);
-        break;
-      }
-      REQUIRE(home.covered > k_width * k_height / 2);
-      for (const f64 shift : shifts) {
-        CapturedFrame moved;
-        REQUIRE_MESSAGE(picture(shift, moved), why);
-        u64 ids = 0;
-        u64 depth = 0;
-        u64 normals = 0;
-        u64 colour = 0;
-        for (u32 i = 0; i < home.ids.size(); ++i)
-          ids += home.ids[i] != moved.ids[i] ? 1u : 0u;
-        for (u32 i = 0; i < home.depth.size(); ++i)
-          depth += std::memcmp(&home.depth[i], &moved.depth[i], 4) != 0 ? 1u : 0u;
-        for (u32 i = 0; i < home.normals.size(); ++i)
-          normals += home.normals[i] != moved.normals[i] ? 1u : 0u;
-        for (u32 i = 0; i < home.color.size(); ++i)
-          colour += home.color[i] != moved.color[i] ? 1u : 0u;
-        MESSAGE(std::string(path.name)
-                << ", " << std::string(layout.name) << ", moved by " << shift << " cells: " << ids
-                << " id words, " << depth << " depths, " << normals << " normal bytes and "
-                << colour << " colour bytes differ");
-        CHECK(moved.covered == home.covered);
-        CHECK(ids == 0);
-        CHECK(depth == 0);
-        CHECK(normals == 0);
-        CHECK(colour == 0);
       }
     }
     device.destroy();

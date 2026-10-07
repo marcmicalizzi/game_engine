@@ -105,9 +105,11 @@ struct ResolveParams {
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
   uint64_t sky_params;     // SkyParams* (sky.slang): the physical sky; 0: the stand-in
   uint dither_steps;       // the target's code steps the output encode dithers by; 0: none
-  uint dither_pad0;
-  uint dither_pad1;
-  uint dither_pad2;
+  // The scene grid's UV frame in millimetres (its corner on x and z, its side), which a world
+  // tile's corner is placed in for its material's lookup (scene.slang, `terrain_uv_offset`).
+  int terrain_uv_x0_mm;
+  int terrain_uv_z0_mm;
+  uint terrain_uv_size_mm;
   // The frame's origin (scene.slang). `camera` is this view's eye in the frame's space, the
   // reconstruction's `from_eye` is measured from it, and a surface's `position` — what a shadow ray
   // leaves from and a light is reached from — is in that space, as the lights, the cascades and
@@ -467,12 +469,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                                        params->view_proj, params->camera.xyz, params->width,
                                        params->height, from_eye);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
-  if (params->mode == 5) return float4(frac(s.uv), 0.0, 1.0);
+  // A world tile's UVs are from its corner (gfx::k_instance_uv_from_corner): the corner's place in
+  // the scene grid's UV frame puts them back in the frame its maps are baked over. A constant per
+  // instance, so the derivatives below are the interpolated UVs' own.
+  const float2 surface_uv =
+      s.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
+                               params->terrain_uv_size_mm);
+  if (params->mode == 5) return float4(frac(surface_uv), 0.0, 1.0);
 
   const ResolveMaterial material = material_of(geo, instance, entry.y);
   // The material's UV transform (KHR_texture_transform) after the scale, and its linear part on
   // the derivatives: a brick texture authored to tile eight times reads eight tiles.
-  const float2 uv = material_uv(material, s.uv * material.uv_scale);
+  const float2 uv = material_uv(material, surface_uv * material.uv_scale);
   // Mip selection (texture.md): a mipmapped material samples at the level its own triangle's UV
   // derivatives select, since the quad's derivatives straddle other triangles in this pass.
   float2 duv_dx = float2(0.0, 0.0);

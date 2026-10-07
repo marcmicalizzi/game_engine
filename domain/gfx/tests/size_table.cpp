@@ -186,6 +186,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // (2026-10-04, display.h, ADR-0052), with no pad word left to take it, and three pad words to keep
 // the block a whole number of float4 rows. Zero is no dither, the encode as it was.
 // 400, not 352: the frame's eye, which a triangle is fetched relative to (ADR-0053, 2026-10-05).
+// Still 400 with the scene grid's UV frame (`terrain_uv_x0_mm`, `_z0_mm`, `_size_mm`, 2026-10-06):
+// it took the three pad words behind `dither_steps`. A world tile's UVs are from its corner, and
+// its material's lookup places the corner in this frame (renderer.md, "The ground's tiles are
+// placed at their corners").
 ENGINE_EXPECT_SIZE(400, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
@@ -226,7 +230,10 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // 288, not 272: `ground_detail`, the resolve's block, which the reference draws unfiltered, and a
 // pad (2026-09-29). Still 288 with the sky: `sky_params` took the pad (2026-09-30).
 // 336, not 288: the frame's eye, as the resolve's (ADR-0053, 2026-10-05).
-ENGINE_EXPECT_SIZE(336, 8, gfx::PathTraceParams);
+// 352, not 336: the scene grid's UV frame, the resolve's three words, which a world tile's material
+// lookup places its corner in (2026-10-06). The block had no pad word to take them, so it grew a
+// row.
+ENGINE_EXPECT_SIZE(352, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
 // slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a
