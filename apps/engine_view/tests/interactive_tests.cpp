@@ -604,8 +604,8 @@ TEST_CASE("engine-view: a live session fed through its window replays to its own
   // **And each at the tick the fixture pressed it** (apps.md, "Driving a window with nobody at
   // it"): the window lands every injected event on its own tick, however the frames fell. Until
   // 2026-10-07 a slow frame ran past the events inside it, and beside a merge gate's builds the
-  // last marker, pressed at tick 475 of 480, was recorded late or not at all (four markers of
-  // five, once three: docs/experiments/load-sensitive-tests-2026-10-07.md).
+  // last markers, pressed at ticks 450 and 475 of 480, were recorded late or not at all (three or
+  // four markers of five: docs/experiments/load-sensitive-tests-2026-10-07.md).
   input::InputLog pressed_log;
   REQUIRE_MESSAGE(pressed_log.load(log, &error) == io::Status::Ok, error);
   const input::ActionMap map = view::default_fly_map();
