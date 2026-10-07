@@ -7,8 +7,8 @@ what it was measured against.
 
 | Where | Who | What runs | Why there |
 |---|---|---|---|
-| **Before a branch is handed over** | whoever wrote it | `tools/dev.ps1 test -Affected` in `msvc-debug`; `tools/dev.ps1 lint` and `docs` (both are in that run); `tools/linux-build.ps1 -Preset linux-clang-debug -Test -Filter <the same modules>` when C++ changed | It answers "did I break what I touched, and what is built from it". It does not answer "does the tree still pass", and is not asked to. |
-| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the GCC container, and the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), on the branch rebased onto `main` | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
+| **Before a branch is handed over** | whoever wrote it | `tools/dev.ps1 test -Affected` in `msvc-debug`; `tools/dev.ps1 lint` and `docs` (both are in that run); `tools/linux-build.ps1 -Preset linux-clang-debug -Test -Filter <the same modules>` when C++ changed, and then `tools/linux-build.ps1 -Prune` ([why](local-linux.md#volumes-that-outlive-their-checkout)) | It answers "did I break what I touched, and what is built from it". It does not answer "does the tree still pass", and is not asked to. |
+| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the GCC container, and the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), on the branch rebased onto `main`; then `tools/linux-build.ps1 -Prune` in the gate worktree | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
 
 A branch's author does not run the three suites. Until 2026-10-03 every agent did, as its last
 step, and then the merge ran them again on the rebased branch: the same hour of machine twice, the

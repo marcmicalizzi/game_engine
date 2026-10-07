@@ -149,8 +149,18 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/affected.Tests.ps1"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.affected PROPERTIES LABELS "tools")
+
+  # Which Linux build volumes `tools/linux-build.ps1 -Prune -Stale` removes
+  # (tools/lib/LinuxVolumes.psm1), over a machine written down in the test: the sweep deletes
+  # build trees on a daemon every checkout shares, so its rule is tested as a rule. No daemon is
+  # contacted.
+  add_test(NAME tools.linux_build
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/linux-build.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.linux_build PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, and tools.affected tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, and tools.linux_build tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner

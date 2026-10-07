@@ -5,8 +5,9 @@
 
 .DESCRIPTION
   tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs <n>]
-                        [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Prune] [-Sync:$false]
+                        [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Sync:$false]
                         [-NoWait] [-Offline]
+  tools/linux-build.ps1 -Prune [-Stale [-KeepUnknown] [-Base <rev>]] [-WhatIf]
 
   The same toolchain `.github/workflows/ci.yml`'s `linux` job runs on — Ubuntu 24.04, the
   identical apt list, CMake 3.28, Clang 18, GCC 13, PowerShell 7 — in a container built from
@@ -49,9 +50,25 @@
                   else. The container has no git history, so the host's git produces the changed
                   file list and the commit messages and they are mounted read-only at /gate —
                   the same --files-from/--messages-from shape ci.yml uses for a pull request.
-    -Base         the revision -Docs diffs against. Default `main`.
-    -Prune        remove this checkout's two volumes and report what they held, then exit. The
-                  shared dependency cache is left alone; see docs/ci/local-linux.md.
+    -Base         the revision -Docs diffs against, and the one -Prune -Stale calls a worktree
+                  "merged" into. Default `main`.
+    -Prune        remove this checkout's two volumes and report what they held, then exit. **Run
+                  it from your worktree before you hand it back**, once you are done with
+                  containers: nothing else removes a checkout's volumes, and on 2026-10-07 250 of
+                  them held 568 GB. The shared dependency cache and the images are left alone.
+    -Stale        with -Prune: sweep the machine instead of this checkout. Removes every
+                  engine-linux-src-* and engine-linux-deps-* volume that is stale — its checkout is
+                  gone from disk; or its checkout is a worktree (not the main checkout, not locked,
+                  no uncommitted changes) whose HEAD -Base contains, or whose every own commit
+                  -Base holds by patch (a rebase merge, `git cherry`); or nothing can name its
+                  checkout (no label, and its id is no listed checkout's). A volume any container
+                  holds is kept and the container named; nothing else on the daemon is touched.
+                  One line per volume — name, size, checkout, why — and the total. Named for the
+                  rule rather than the scope: -All would read as "every volume", which is exactly
+                  what it must never mean. docs/ci/local-linux.md, "Volumes that outlive their
+                  checkout", has the rule and why each part of it is there.
+    -KeepUnknown  with -Stale: keep the volumes whose checkout nothing can name.
+    -WhatIf       with -Prune: print the same lines and remove nothing. Run it first.
     -Sync:$false  skip the source sync and build what is already in the volume.
     -NoWait       if another build holds the lock, say who and exit 2 instead of waiting.
     -Offline      run the build containers with --network none: proof that everything this
@@ -59,7 +76,8 @@
 
   Exit status is the build's, or the tests' when -Test is given. With `all`, every preset is
   attempted and the status is the first failure — nothing stops early, because the second
-  compiler's opinion is the reason to run four of them.
+  compiler's opinion is the reason to run four of them. -Prune exits 1 if docker refused a removal.
+  Docker or git unreachable, or a switch given without the one it belongs to: one line, exit 1.
 
 .NOTES
   The Windows checkout is mounted **read-only** and rsync'd into a named volume; nothing in the
@@ -71,7 +89,8 @@
   time of the copy, so a file edited while a build was running is always recompiled by the next
   one; see Invoke-Sync and "The sync" in docs/ci/local-linux.md.
 #>
-[CmdletBinding()]
+# SupportsShouldProcess for -WhatIf, which only -Prune honours; a build refuses it.
+[CmdletBinding(SupportsShouldProcess)]
 param(
   [string]$Preset = 'all',
   [switch]$Test,
@@ -82,6 +101,8 @@ param(
   [switch]$Docs,
   [string]$Base = 'main',
   [switch]$Prune,
+  [switch]$Stale,
+  [switch]$KeepUnknown,
   [switch]$Sync = $true,
   [switch]$NoWait,
   [switch]$Offline
@@ -90,6 +111,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/LinuxVolumes.psm1') -Force
+
+# The failures a caller can do something about — no docker, no daemon, a switch without the one it
+# belongs to — end in one line on stderr and exit 1, not a PowerShell error record: an agent reads
+# the first line, and a stack trace makes it read the wrong one.
+function Stop-WithLine([string]$text) {
+  [Console]::Error.WriteLine("linux-build: $text")
+  exit 1
+}
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Dockerfile = Join-Path $PSScriptRoot 'ci/linux.Dockerfile'
@@ -120,13 +150,9 @@ function Write-Step([string]$text) { Write-Host "== $text" -ForegroundColor Cyan
 # next line, never through a wrapper that returns it: a PowerShell function's return value is
 # its whole output stream, so a wrapper would swallow the build log into the status. The array
 # splat also keeps docker's own -v and -w from being bound as PowerShell parameters.
-
-function Get-ShortHash([string]$text) {
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
-  $sha = [System.Security.Cryptography.SHA256]::Create()
-  try { return ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant().Substring(0, 12) }
-  finally { $sha.Dispose() }
-}
+#
+# Get-ShortHash, the volume names and labels, and the sweep's decision live in
+# tools/lib/LinuxVolumes.psm1, so that tools/linux-build.Tests.ps1 tests them without a daemon.
 
 # The image tag is the Dockerfile's own hash **and the target**, so an edit to the toolchain
 # produces a different image rather than a stale one that happens to share a name, and the
@@ -141,10 +167,11 @@ function Get-TargetForPreset([string]$name) {
 }
 
 # Build volumes are per checkout: every agent worktree is a separate tree and must not share a
-# build directory with another one. The path is the identity.
-$VolumeId = Get-ShortHash $Root.ToLowerInvariant()
-$SrcVolume = "engine-linux-src-$VolumeId"
-$DepsVolume = "engine-linux-deps-$VolumeId"
+# build directory with another one. The path is the identity, and since 2026-10-07 each volume also
+# carries it as a label (Ensure-Volumes), so a sweep can name the checkout without hashing.
+$VolumeId = Get-CheckoutVolumeId $Root
+$SrcVolume = Get-CheckoutVolumeName -Role src -Root $Root
+$DepsVolume = Get-CheckoutVolumeName -Role deps -Root $Root
 # The downloaded dependency *sources* are not: they are a function of the pins, and one volume on
 # the machine holds them for every checkout and both image targets (tools/ci/fetch-cache.cmake).
 $FetchVolume = 'engine-linux-fetch-cache'
@@ -164,10 +191,10 @@ $HostMount = $Root -replace '\\', '/'
 
 function Ensure-Docker {
   if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw 'docker not found on PATH. Install Docker Desktop and make sure the Linux engine is running.'
+    Stop-WithLine 'docker is not on PATH; install Docker Desktop and start its Linux engine.'
   }
   & docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'the Docker daemon is not reachable; start Docker Desktop.' }
+  if ($LASTEXITCODE -ne 0) { Stop-WithLine 'the Docker daemon is not reachable; is Docker Desktop running?' }
 }
 
 # Builds the image for one target if it is not already there. It deliberately returns **nothing**:
@@ -188,13 +215,26 @@ function Ensure-Image([string]$target) {
   } finally { Remove-Item -Recurse -Force $ctx -ErrorAction SilentlyContinue }
 }
 
+# Every volume is created with labels that say whose it is (Get-VolumeLabels): engine.root, the
+# checkout as $Root spells it; engine.role, src, deps or fetch-cache; engine.scope, checkout or
+# shared; engine.created, UTC. docker cannot label a volume that already exists, so one made before
+# 2026-10-07 stays unlabelled until it is pruned and made again, and a sweep finds its checkout by
+# hashing the repository's worktrees instead.
 function Ensure-Volumes {
-  foreach ($v in @($SrcVolume, $DepsVolume, $FetchVolume)) {
-    & docker volume inspect $v 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      Write-Step "creating volume $v"
-      & docker volume create $v | Out-Null
-    }
+  $wanted = @(
+    @{ Name = $SrcVolume; Role = 'src' },
+    @{ Name = $DepsVolume; Role = 'deps' },
+    @{ Name = $FetchVolume; Role = 'fetch-cache' }
+  )
+  foreach ($v in $wanted) {
+    & docker volume inspect $v.Name 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { continue }
+    Write-Step "creating volume $($v.Name)"
+    $labels = Get-VolumeLabels -Role $v.Role -Root $Root
+    $createArgs = @('volume', 'create')
+    foreach ($k in $labels.Keys) { $createArgs += @('--label', "$k=$($labels[$k])") }
+    & docker @createArgs $v.Name | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "docker volume create $($v.Name) failed ($LASTEXITCODE)" }
   }
 }
 
@@ -418,29 +458,174 @@ function Invoke-Shell {
   exit $LASTEXITCODE
 }
 
-function Invoke-Prune {
-  $failed = 0
-  foreach ($v in @($SrcVolume, $DepsVolume)) {
-    $size = & docker volume inspect $v --format '{{.Mountpoint}}' 2>$null
-    if ($LASTEXITCODE -ne 0) { Write-Host "$v does not exist"; continue }
-    # A volume a container still holds cannot be removed, and docker says so on stderr; let that
-    # reach the caller rather than reporting a removal that did not happen.
-    & docker volume rm $v | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host "could not remove $v (a container may still be using it)" -ForegroundColor Red
-      $failed = 1
-    } else {
-      Write-Host "removed $v (was at $size)"
-    }
+# --- -Prune ------------------------------------------------------------------------------------
+#
+# The facts are gathered here and judged in tools/lib/LinuxVolumes.psm1 (Get-VolumeVerdict), which
+# is a pure function so that tools/linux-build.Tests.ps1 can write any machine down and check the
+# verdicts without a daemon. docs/ci/local-linux.md, "Volumes that outlive their checkout".
+
+# The checkout volumes on the daemon, with their labels and sizes. `docker system df -v` is the only
+# place docker reports a volume's size, and `docker volume inspect` the only place its labels come
+# back as a map rather than a "k=v,k=v" string that a path with a comma in it would break.
+function Get-VolumeFacts {
+  $json = & docker system df -v --format '{{json .Volumes}}' 2>$null
+  if ($LASTEXITCODE -ne 0) { Stop-WithLine "docker system df failed ($LASTEXITCODE)" }
+  $sizes = @{}
+  foreach ($v in @(("$json" | ConvertFrom-Json))) {
+    if ($v -and "$($v.Name)" -match '^engine-linux-(src|deps)-') { $sizes["$($v.Name)"] = "$($v.Size)" }
   }
+  $facts = @()
+  if ($sizes.Count -eq 0) { return , $facts }
+  $names = @($sizes.Keys | Sort-Object)
+  # A volume removed between the two calls makes inspect fail for that name alone; what it did
+  # return is still the answer for the rest.
+  $lines = & docker volume inspect @names --format '{{json .}}' 2>$null
+  foreach ($line in @($lines)) {
+    if (-not "$line".TrimStart().StartsWith('{')) { continue }
+    $o = "$line" | ConvertFrom-Json -AsHashtable
+    $facts += New-VolumeFact -Name $o['Name'] -Labels $o['Labels'] -Size $sizes[$o['Name']]
+  }
+  return , $facts
+}
+
+# Which containers hold which volumes. docker refuses to remove a volume any container holds,
+# running or stopped, so the sweep names the container rather than asking.
+function Get-VolumeHolders {
+  $lines = & docker ps -a --no-trunc --format '{{.Names}}|{{.State}}|{{.Mounts}}' 2>$null
+  if ($LASTEXITCODE -ne 0) { Stop-WithLine "docker ps failed ($LASTEXITCODE)" }
+  return ConvertFrom-ContainerMounts -Lines @($lines)
+}
+
+# The repository's checkouts, as the decision needs them. Merge state and uncommitted changes are
+# asked of git only for a worktree that owns a volume and could be stale, so a machine with fifty
+# worktrees and four volumes runs a handful of git commands, not a hundred. A root that only a label
+# names (a worktree already removed, or another clone's checkout) is looked for on disk.
+function Get-CheckoutFacts([object[]]$volumes) {
+  $porcelain = & git -C $Root worktree list --porcelain 2>$null
+  if ($LASTEXITCODE -ne 0) { Stop-WithLine "git worktree list failed in $Root; -Stale judges volumes by the repository's checkouts" }
+  $ids = @{}
+  $labelRoots = @()
+  foreach ($v in @($volumes)) {
+    if ("$($v.Name)" -match '-([0-9a-f]{12})$') { $ids[$Matches[1]] = $true }
+    if ($v.Labels -and $v.Labels.Contains('engine.root') -and $v.Labels['engine.root']) { $labelRoots += "$($v.Labels['engine.root'])" }
+  }
+  $labelKeys = @{}
+  foreach ($r in $labelRoots) { $labelKeys[(ConvertTo-RootKey $r)] = $true }
+
+  $facts = @()
+  $seen = @{}
+  # Not wrapped in @(): the parser returns its array as one object, and @() would make it the
+  # single element of another.
+  $worktrees = ConvertFrom-WorktreePorcelain -Lines @($porcelain)
+  foreach ($w in $worktrees) {
+    if ($w.Bare) { continue }
+    $croot = ConvertTo-CheckoutRoot $w.Path
+    $key = ConvertTo-RootKey $croot
+    $seen[$key] = $true
+    $present = Test-Path -LiteralPath (Join-Path $croot '.git')
+    $merged = $false
+    $byPatch = $false
+    $dirty = $false
+    $owns = $ids.ContainsKey((Get-CheckoutVolumeId $croot)) -or $labelKeys.ContainsKey($key)
+    if ($owns -and $present -and -not $w.IsMain -and -not $w.Locked -and $w.Head) {
+      & git -C $Root merge-base --is-ancestor $w.Head $Base 2>$null
+      $merged = ($LASTEXITCODE -eq 0)
+      if (-not $merged) {
+        # A merge that rebases the branch first lands its commits in the base as new commits, so
+        # the worktree's own are never ancestors of it. `git cherry` compares them by patch: every
+        # line '-' means every commit is there. A conflict resolved on the way changes the patch,
+        # and the worktree is kept.
+        $cherry = @(& git -C $Root cherry $Base $w.Head 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $cherry.Count -gt 0 -and @($cherry | Where-Object { "$_" -notmatch '^- ' }).Count -eq 0) {
+          $merged = $true
+          $byPatch = $true
+        }
+      }
+      if ($merged) {
+        # A status git cannot give counts as changes: the volume is kept rather than guessed about.
+        $status = & git -C $croot status --porcelain 2>$null
+        $dirty = ($LASTEXITCODE -ne 0) -or [bool]$status
+      }
+    }
+    $facts += New-CheckoutFact -Root $croot -IsMain:$w.IsMain -Present $present -Branch $w.Branch -Head $w.Head `
+                               -Merged $merged -MergedByPatch $byPatch -Locked $w.Locked -LockReason $w.LockReason -Dirty $dirty
+  }
+  foreach ($r in $labelRoots) {
+    $key = ConvertTo-RootKey $r
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = $true
+    $facts += New-CheckoutFact -Root $r -Listed $false -Present (Test-Path -LiteralPath (Join-Path $r '.git'))
+  }
+  return , $facts
+}
+
+# One line per volume, stale ones first; removes the stale ones unless -WhatIf. A container that
+# started after the decision was made still makes docker refuse, and the refusal is printed whole.
+# Returns 1 if docker refused anything. Only Write-Host reaches the console: this function's output
+# stream is its status.
+function Invoke-VolumeRemoval([object[]]$verdicts) {
+  $failed = 0
+  $count = 0
+  $bytes = 0.0
+  $ordered = @($verdicts | Sort-Object @{ Expression = { -not $_.Stale } }, @{ Expression = { "$($_.Root)" } }, Name)
+  foreach ($v in $ordered) {
+    if (-not $v.Stale) { Write-Host (Format-VolumeVerdict $v); continue }
+    if ($WhatIfPreference) {
+      Write-Host (Format-VolumeVerdict $v -Action 'stale') -ForegroundColor Yellow
+    } else {
+      $out = & docker volume rm $v.Name 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host (Format-VolumeVerdict $v -Action 'FAILED') -ForegroundColor Red
+        Write-Host "       docker: $(("$out" -replace '\s+', ' ').Trim())" -ForegroundColor Red
+        $failed = 1
+        continue
+      }
+      Write-Host (Format-VolumeVerdict $v -Action 'remove')
+    }
+    $count++
+    if ($null -ne $v.Bytes) { $bytes += $v.Bytes }
+  }
+  if ($WhatIfPreference) {
+    Write-Host ("-WhatIf: {0} volume(s), {1}, would be removed; nothing was." -f $count, (Format-DockerSize $bytes))
+  } else {
+    Write-Host ("reclaimed {0} from {1} volume(s)" -f (Format-DockerSize $bytes), $count)
+  }
+  return $failed
+}
+
+function Invoke-Prune {
+  $volumes = Get-VolumeFacts
+  $holders = Get-VolumeHolders
+  if ($Stale) {
+    & git -C $Root rev-parse --verify --quiet "$Base^{commit}" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-WithLine "-Base '$Base' is not a revision of this repository" }
+    $checkouts = Get-CheckoutFacts $volumes
+    $verdicts = Get-VolumeVerdict -Volumes $volumes -Checkouts $checkouts -Holders $holders -CurrentRoot $Root `
+                                  -Base $Base -KeepUnknown:$KeepUnknown
+    Write-Step "engine-linux checkout volumes on this daemon$(if ($WhatIfPreference) { ' (-WhatIf: nothing is removed)' })"
+    if ($verdicts.Count -eq 0) { Write-Host 'none'; exit 0 }
+    exit (Invoke-VolumeRemoval $verdicts)
+  }
+
+  $verdicts = Get-OwnVolumeVerdict -Volumes $volumes -Root $Root -Holders $holders
+  Write-Step "this checkout's volumes$(if ($WhatIfPreference) { ' (-WhatIf: nothing is removed)' })"
+  foreach ($name in @($SrcVolume, $DepsVolume)) {
+    if (-not ($verdicts | Where-Object { $_.Name -eq $name })) { Write-Host "$name does not exist" }
+  }
+  $failed = if ($verdicts.Count -gt 0) { Invoke-VolumeRemoval $verdicts } else { 0 }
   Write-Host 'The images are shared between checkouts and are left alone; remove them with'
   Write-Host "  docker image rm $(Get-ImageTag 'desktop') $(Get-ImageTag 'headless')"
   Write-Host "So is the dependency cache, $FetchVolume; every checkout's next configure refetches if it goes:"
   Write-Host "  docker volume rm $FetchVolume"
+  Write-Host "Other checkouts' leftovers: tools/linux-build.ps1 -Prune -Stale -WhatIf"
   exit $failed
 }
 
 # --- run ---------------------------------------------------------------------------------------
+
+if ($Stale -and -not $Prune) { Stop-WithLine '-Stale is a -Prune option: tools/linux-build.ps1 -Prune -Stale -WhatIf' }
+if ($KeepUnknown -and -not $Stale) { Stop-WithLine '-KeepUnknown is a -Prune -Stale option' }
+if ($WhatIfPreference -and -not $Prune) { Stop-WithLine '-WhatIf applies to -Prune only; a build has no dry run' }
 
 Ensure-Docker
 if ($Prune) { Invoke-Prune }

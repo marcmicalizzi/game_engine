@@ -56,7 +56,7 @@ tools/linux-build.ps1 [-Preset all|<name>] [-Test] [-Filter <regex>] [-Jobs 8] [
 ```
 
 Run it before pushing anything that touches C++: MSVC forgives a long list of things GCC and Clang
-do not, and the Windows build stays silent about every one of them. Only one container build runs on the machine at a time — a second waits for the machine-wide build lock and says whose it is (`-NoWait` exits 2 instead) — and downloaded dependency sources are shared by every checkout, but a fresh worktree's first run still compiles every third-party dependency, so start it early and in the background. See
+do not, and the Windows build stays silent about every one of them. Only one container build runs on the machine at a time — a second waits for the machine-wide build lock and says whose it is (`-NoWait` exits 2 instead) — and downloaded dependency sources are shared by every checkout, but a fresh worktree's first run still compiles every third-party dependency, so start it early and in the background. Nothing else removes a checkout's two build volumes, so an agent runs `tools/linux-build.ps1 -Prune` from its worktree before it hands back, once it is done with containers, a merge prunes the gate worktree's the same way, and `tools/linux-build.ps1 -Prune -Stale` (`-WhatIf` first) sweeps what slipped through. See
 [local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
 first four runs found.
 

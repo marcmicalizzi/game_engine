@@ -505,7 +505,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T59 | AI-policy review at the Phase 4 and 5 starts | open | | S | routine | [12 §12.5](plan/12-ai-usage-policy.md#125-review-points) |
 | T60 | Bazel | deferred (10 §10.6) | | M | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |
 | T61 | Console targets | deferred (10 §10.6 2026-09-25) | R2, T57 | L | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |
-| T62 | Linux build volumes labelled by checkout, and a stale-volume sweep | in progress | T26 | S | routine | [local Linux](ci/local-linux.md#size-and-getting-it-back) |
+| T62 | Linux build volumes labelled by checkout, and a stale-volume sweep | done (2026-10-07, `linux-build.ps1 -Prune -Stale`) | T26 | S | routine | [local Linux](ci/local-linux.md#volumes-that-outlive-their-checkout) |
 
 ## A — The agent protocol and tools
 

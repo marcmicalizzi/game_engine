@@ -31,8 +31,9 @@ shader. This is the compiler-and-CPU half of the gate, moved to where the work h
 
 ```powershell
 pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs <n>]
-                           [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Prune] [-Sync:$false]
+                           [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Sync:$false]
                            [-NoWait] [-Offline]
+pwsh tools/linux-build.ps1 -Prune [-Stale [-KeepUnknown] [-Base <rev>]] [-WhatIf]
 ```
 
 | Flag | What |
@@ -44,7 +45,10 @@ pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs
 | `-Rebuild` | delete `build/<preset>` inside the volume first. The dependencies' sources are in another volume and survive, so this costs a compile and not a download. It is **the whole compile, third-party code included**: the objects under `/deps/<preset>` survive, but ninja's record of which headers each one read is in `build/<preset>` and goes with it, and ninja rebuilds an object it has no such record for. Measured on 2026-09-24: 1116 edges, all 635 third-party ones among them, the same as a cold build. |
 | `-Shell` | an interactive `bash` in the container with the volumes mounted, for when a failure needs poking at. |
 | `-Docs` | run `tools/docs-gate.sh` and `tools/docs-check.sh` in the container and build nothing; `-Base` is what the gate diffs against (default `main`). See [Running the documentation gate here](#running-the-documentation-gate-here). |
-| `-Prune` | delete this checkout's two volumes and exit. The machine-wide dependency cache is left alone. |
+| `-Prune` | delete this checkout's two volumes and exit, one line per volume with its size. The machine-wide dependency cache and the images are left alone. **Run it from your worktree before you hand it back**, once you are done with containers; see [Volumes that outlive their checkout](#volumes-that-outlive-their-checkout). |
+| `-Stale` | with `-Prune`: sweep every checkout's volumes on the daemon instead of this one's, removing the [stale](#the-stale-rule) ones. |
+| `-KeepUnknown` | with `-Stale`: keep the volumes whose checkout [nothing can name](#unknown-checkouts-are-removed-by-default). |
+| `-WhatIf` | with `-Prune`: print the same lines and remove nothing. Any other run refuses it. |
 | `-Sync:$false` | build what is already in the volume without re-syncing the checkout. |
 | `-NoWait` | if another build holds the [build lock](#one-container-build-at-a-time-whoever-started-it), say whose and exit 2 instead of waiting for it. |
 | `-Offline` | run the build containers with `--network none`. A configure that still needs to download something then fails instead of downloading it, which makes "this build fetched nothing" a result rather than a reading of the log. |
@@ -52,7 +56,10 @@ pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs
 Exit status is the build's, or the tests' with `-Test`. **A build that fails ends the run with its status, and the tests do not run.** Until 2026-09-23 they did. The container script had `pipefail` but not `-e`, so a failed `cmake --build` fell through to `ctest`. `ctest` then ran the previous build's test binaries, which passed, and `-Test` printed `ok` with exit 0 over a Clang `-Werror` failure in the one file that had changed. The script is now `set -eo pipefail`. A run whose log says `ninja: build stopped` but whose verdict says `ok` came from before that fix. With `all`, every preset is attempted and
 the status is the first failure: nothing stops early, because a second compiler's opinion is the
 entire reason for running four of them. 2 means another build held the lock and `-NoWait` was
-given; 3 means a wait for it gave up after four hours.
+given; 3 means a wait for it gave up after four hours. `-Prune` exits 1 if docker refused a
+removal. Docker or git unreachable, or a switch given without the one it belongs to (`-Stale`
+without `-Prune`, `-WhatIf` on a build), is one line on stderr and exit 1, not a PowerShell error
+record.
 
 `-Preset all` prints a summary table at the end. One preset prints its own line.
 
@@ -233,7 +240,10 @@ it on Windows no longer helps, because its bytes have not changed.
 
 `<id>` is a hash of the checkout's path, so every agent worktree gets its own pair of build volumes
 and two of them cannot land in one build directory. The image is shared between checkouts — it is
-a function of the Dockerfile alone — and so, now, are the downloads.
+a function of the Dockerfile alone — and so, now, are the downloads. Since 2026-10-07 every volume
+is also created with **labels that say whose it is** — `engine.root`, `engine.role`,
+`engine.scope`, `engine.created` — so that a sweep can tell which checkout a volume belongs to
+without hashing anything; see [Volumes that outlive their checkout](#volumes-that-outlive-their-checkout).
 
 **The dependency cache.** Build trees differ between checkouts; the sources of Jolt v5.6.0 do not.
 Keeping the downloads per checkout meant that every agent's first run in a fresh worktree fetched
@@ -295,6 +305,7 @@ so Jolt, flecs, SQLite and Recast never arrive at all.
 
 ```powershell
 pwsh tools/linux-build.ps1 -Prune        # this checkout's two volumes, and it names the images
+pwsh tools/linux-build.ps1 -Prune -Stale -WhatIf   # every checkout's leftovers; drop -WhatIf to remove them
 docker image rm engine-linux-ci-desktop:<tag> engine-linux-ci-headless:<tag>
 docker volume rm engine-linux-fetch-cache  # every checkout's next configure refetches what it needs
 ```
@@ -308,6 +319,120 @@ metadata rather than a second 1.65 GB.
 
 Docker Desktop's WSL2 disk does not shrink on its own; `docker system prune` and, if it matters,
 Docker Desktop's own disk-reclaim are what return the space to Windows.
+
+### Volumes that outlive their checkout
+
+Nothing removed a checkout's volumes when the checkout was finished. Measured on 2026-10-07, before
+the owner swept them by hand: **250** engine volumes holding **568 GB**, and `docker system df`
+calling 99% of the volume space reclaimable. **194** belonged to checkouts that no longer existed
+on disk and **52** more to agent worktrees whose branches were already merged; only three
+checkouts had any use for theirs. Every agent works in a fresh worktree, and every worktree that
+ran one build left a pair behind (3.3 GB each for all four presets, [above](#size-and-getting-it-back)).
+
+So, two rules and a sweep:
+
+- **An agent prunes its own**: `tools/linux-build.ps1 -Prune` from its worktree before it hands
+  back, once it is done with containers. A worktree that comes back for a follow-up pays one fresh
+  first run for it; one that does not come back, which is most of them, costs nothing.
+- **A merge prunes the gate worktree's** the same way, once the gate has run.
+- **`-Prune -Stale` sweeps what slipped through**: an agent stopped before its last step, a
+  worktree removed by hand, every volume from before the rule.
+
+```powershell
+pwsh tools/linux-build.ps1 -Prune -Stale -WhatIf   # what it would remove and why; removes nothing
+pwsh tools/linux-build.ps1 -Prune -Stale           # the same, for real
+```
+
+Run the `-WhatIf` line first. Every checkout volume on the daemon gets one line — what happens to
+it, its name, its size from `docker system df -v`, its checkout or `unknown checkout`, and why —
+the stale ones first, and then the total. On this machine on 2026-10-07, after the hand sweep:
+
+```text
+== engine-linux checkout volumes on this daemon (-WhatIf: nothing is removed)
+keep   engine-linux-deps-049fb17c077a    6.37GB  D:\workspace\game_engine  -- the main checkout
+keep   engine-linux-src-049fb17c077a     4.41GB  D:\workspace\game_engine  -- the main checkout
+keep   engine-linux-deps-e0439115742d    1.61GB  D:\workspace\game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
+keep   engine-linux-src-e0439115742d      2.3GB  D:\workspace\game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
+-WhatIf: 0 volume(s), 0B, would be removed; nothing was.
+```
+
+Without `-WhatIf` a stale line says `remove`, a removal docker refuses says `FAILED` with docker's
+own words under it — a container that started after the sweep looked — and the exit status is 1.
+The sweep never touches anything but `engine-linux-src-<id>` and `engine-linux-deps-<id>`: not the
+dependency cache, not buildx's state, not another project's volumes (this daemon holds more than a
+dozen of those).
+
+#### The labels
+
+Every volume the script creates since 2026-10-07 says whose it is:
+
+| Label | Value |
+|---|---|
+| `engine.root` | the checkout, spelt as the script's `$Root`: `D:\workspace\game_engine\.claude\worktrees\agent-…` |
+| `engine.role` | `src`, `deps`, or `fetch-cache` |
+| `engine.scope` | `checkout`, or `shared` for `engine-linux-fetch-cache` |
+| `engine.created` | when the script created it, in UTC: `2026-10-07T12:30:05Z` |
+
+Docker cannot label a volume that already exists, so one made before then stays unlabelled until it
+is pruned and made again. For such a volume the sweep does what the script does when it names one:
+it hashes the path of every checkout `git worktree list --porcelain` reports, the main checkout
+first, in the same spelling (`ConvertTo-CheckoutRoot` turns git's `D:/…` into `$Root`'s `D:\…`),
+and matches the hash against the volume's `<id>`. `tools/linux-build.Tests.ps1` pins that hash for
+`D:\workspace\game_engine` to the `049fb17c077a` this machine's volumes carry: if it ever changed,
+every unlabelled volume would become an unknown checkout.
+
+#### The stale rule
+
+In this order, a checkout volume is
+
+| | when | because |
+|---|---|---|
+| kept | a container holds it, running or stopped | docker would refuse; the line names the container |
+| **stale** | it has no label and its id is no listed checkout's | an [unknown checkout](#unknown-checkouts-are-removed-by-default) |
+| **stale** | its checkout is gone: no `.git` at the root (a worktree git still lists as `prunable`, or a label's root) | nothing can build there again |
+| kept | it is the main checkout's, or the checkout's running the sweep | the first is always in use; the second has `-Prune` |
+| kept | its checkout exists but this repository does not list it | another clone's: its merge state is not this repository's to judge |
+| kept | its worktree is locked (`git worktree lock`) | below |
+| kept | its worktree's HEAD has commits `-Base` (`main`) does not | work not yet merged |
+| kept | its worktree is merged but has uncommitted changes | work in progress |
+| **stale** | its worktree's HEAD is an ancestor of `-Base`, or every commit it has that `-Base` does not is in `-Base` by patch | the work is in `main` |
+
+**A lock keeps a merged worktree.** "Merged" is `git merge-base --is-ancestor`, the test
+`git branch --merged main` makes, and it is true of a branch with no commits of its own — which is
+every agent worktree for the first minutes of its life, quite possibly while its first container
+build runs. The harness locks a live agent's worktree (`locked claude agent <name> (pid …)` in the
+porcelain), so a lock is what tells a fresh worktree from a finished one; a person's worktree is not
+locked, but a person in the middle of a change has uncommitted edits, which keep it too.
+
+**By patch, because the merge rebases.** A branch is gated "rebased onto `main`" ([what to run](what-to-run.md)),
+so its commits usually land in `main` as new commits and the worktree's own are never ancestors
+of it. `git cherry main <HEAD>` compares them by patch, and a worktree all of whose lines are `-`
+is merged; one conflict resolved on the way changes a patch, and that worktree is kept. Measured on
+2026-10-07 over the 32 worktrees git listed besides the main checkout: 13 unlocked ones had their
+work in `main`, **2 by ancestry and 11 only by patch** — the ancestry test alone would have kept
+eleven of thirteen finished worktrees' volumes for as long as the worktrees stayed on disk.
+
+#### Unknown checkouts are removed by default
+
+An unlabelled volume whose id is no listed checkout's is removed unless `-KeepUnknown` is given.
+That is the safer default here, because of what such a volume is and what each mistake costs:
+
+- **No build can reach it.** A build mounts the volumes named by its own checkout's hash; every
+  checkout of this repository is in `git worktree list`, and none hashes to this one. Every volume
+  the script creates from now on is labelled, so the population is the volumes from before
+  2026-10-07, and on that day 194 of 250 were exactly this.
+- **Removing one wrongly costs a first run; keeping them costs the disk.** A volume holds a synced
+  copy of a checkout and its build trees, nothing that is not rebuilt by the next build. The one
+  live checkout this can hit is an unlabelled one of *another clone* on the same machine, whose
+  worktrees this repository cannot list; it pays one fresh first run. The 194 cost 99% of 568 GB.
+
+`-KeepUnknown` is for a machine with a second clone whose checkouts predate the labels.
+
+The decision is `Get-VolumeVerdict` in `tools/lib/LinuxVolumes.psm1`, a pure function of the
+volumes (names, labels, sizes), the checkouts (present, main, listed, locked, merged, dirty) and the
+containers holding volumes; the script only asks docker and git and prints.
+`tools/linux-build.Tests.ps1` (CTest `tools.linux_build`, or `Invoke-Pester`) writes a machine down
+with a volume for every row of the table and checks every verdict, without a daemon.
 
 ### Why eight jobs — and why the worry was wrong
 
