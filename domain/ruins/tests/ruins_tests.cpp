@@ -635,6 +635,93 @@ TEST_CASE("ruins: a fragment is a scene with every piece, its tag, its site and 
   CHECK(back == scene);
 }
 
+namespace {
+
+f64 flat_ground(const void*, i64, i64) noexcept { return 0.75; }
+
+}  // namespace
+
+// **A wall's drift stands where its centimetres say, anywhere** (ADR-0053; ruins.md, "Far from the
+// origin"; 2026-10-07). The tile grid's corner moved to the owner's 419 km, to 10,000 km and to
+// 1e8 m under the same seeds (`Placement::origin_x_cm`), and once more 48 m past 10,000 km so a
+// tile straddles a cell's edge there: every building's drifts are the origin's, each end moved by
+// exactly the corner's centimetres and each the integer centimetres divided once in f64 at the
+// building's base; and a fragment written of them reads back as the same doubles. Until
+// 2026-10-07 a drift's ends were float32 metres of the world, a 3.1 cm grid at 419 km and a
+// metre's at 10,000 km.
+TEST_CASE("ruins: a wall's drift far out is its twin by the origin, moved by whole centimetres") {
+  const Kit kit = kit_of(SyntheticKitOptions{});
+  const TileCoord tiles[] = {{0, 0}, {1, 0}, {0, 1}, {-1, -1}};
+  const auto build = [&](i64 ox_cm, i64 oz_cm, Output& out) {
+    Placement p = placement_of(3);
+    p.ground = Ground{&flat_ground, nullptr};
+    p.origin_x_cm = ox_cm;
+    p.origin_z_cm = oz_cm;
+    Assembler assembler(kit);
+    std::string error;
+    for (const TileCoord t : tiles)
+      REQUIRE_MESSAGE(assembler.assemble(p, t, out, &error), error);
+  };
+  Output home;
+  build(0, 0, home);
+  REQUIRE(home.drifts.size() > 8u);
+  const auto cm = [](f64 metres) { return std::llround(metres * 100.0); };
+  const auto exact = [](f64 metres, i64 centimetres) {
+    return metres == static_cast<f64>(centimetres) / 100.0;  // divided once
+  };
+  const i64 corners_cm[] = {41'907'200, 1'000'000'000, 10'000'000'000, 1'000'004'800};
+  for (const i64 c : corners_cm) {
+    Output far;
+    build(c, -c, far);
+    REQUIRE(far.drifts.size() == home.drifts.size());
+    u32 moved_wrong = 0, not_exact = 0, other_wrong = 0;
+    for (u32 i = 0; i < far.drifts.size(); ++i) {
+      const Drift& a = home.drifts[i];
+      const Drift& b = far.drifts[i];
+      for (const bool to : {false, true}) {
+        const WorldPos pa = to ? a.to : a.from;
+        const WorldPos pb = to ? b.to : b.from;
+        moved_wrong +=
+            cm(pb.x) == cm(pa.x) + c && cm(pb.z) == cm(pa.z) - c && pb.y == pa.y ? 0u : 1u;
+        not_exact +=
+            exact(pb.x, cm(pb.x)) && exact(pb.z, cm(pb.z)) && exact(pb.y, cm(pb.y)) ? 0u : 1u;
+      }
+      other_wrong += std::memcmp(&a.normal, &b.normal, sizeof(Vec2)) == 0 && a.height == b.height &&
+                             a.reach == b.reach && a.building == b.building && a.wall == b.wall &&
+                             a.windward == b.windward
+                         ? 0u
+                         : 1u;
+    }
+    // The site's base is the drift's height on the ground.
+    for (const Site& site : far.sites) {
+      for (u32 i = site.first_drift; i < site.first_drift + site.drift_count; ++i)
+        other_wrong += far.drifts[i].from.y == site.origin.y ? 0u : 1u;
+    }
+    // Written into a fragment and read back through the schema, the ends are the same doubles.
+    scene::Scene scene;
+    make_fragment(kit, far, "", "far ruins", scene);
+    scene::Scene back;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(back, schema::to_json(scene), ctx));
+    REQUIRE(back.sand_drifts.size() == far.drifts.size());
+    u32 read_wrong = 0;
+    for (u32 i = 0; i < far.drifts.size(); ++i) {
+      read_wrong += back.sand_drifts[i].from == far.drifts[i].from &&
+                            back.sand_drifts[i].to == far.drifts[i].to
+                        ? 0u
+                        : 1u;
+    }
+    MESSAGE("the grid's corner " << c << " cm out: " << far.drifts.size() << " drifts, "
+                                 << moved_wrong << " ends not moved by the corner, " << not_exact
+                                 << " not their centimetres divided once, " << read_wrong
+                                 << " read back otherwise");
+    CHECK(moved_wrong == 0u);
+    CHECK(not_exact == 0u);
+    CHECK(other_wrong == 0u);
+    CHECK(read_wrong == 0u);
+  }
+}
+
 TEST_CASE("ruins: the synthetic kit's meshes are GLBs") {
   SyntheticKit kit;
   make_synthetic_kit(SyntheticKitOptions{}, kit);

@@ -110,11 +110,16 @@ struct Instance {
   u8 yaw = 0;        // sixteenths of a turn about +y
 };
 
-// The sand one wall face asks the terrain for (plan 05 §5.13): a declaration, not sand. 40 bytes.
+// The sand one wall face asks the terrain for (plan 05 §5.13): a declaration, not sand. 72 bytes,
+// 8-aligned (tests/size_table.cpp).
 struct Drift {
-  Vec2 from{};  // the face's ends, x and z, metres
-  Vec2 to{};
-  Vec2 normal{};  // the face's outward normal, x and z
+  // The face's ends on the ground, metres in f64 (ADR-0053; ruins.md, "Far from the origin"): x
+  // and z the integer centimetres of the world the face was decided in, divided once, and y the
+  // building's base, its site's `origin.y`. Until 2026-10-07 they were float32 x and z, a 3.1 cm
+  // grid at 419 km and a metre's at 10,000 km.
+  WorldPos from{};
+  WorldPos to{};
+  Vec2 normal{};  // the face's outward normal, x and z: a direction, float32
   f32 height = 0.0f;
   f32 reach = 0.0f;
   u32 building = 0;

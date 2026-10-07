@@ -7,7 +7,9 @@
 // test ground; the ground is made before any placement entry is opened, and the entries are
 // expanded in the scene's order — swapping them swaps the log and not the ground's place in it; a
 // streamed read opens each entry and expands nothing; and names the executable does not carry are
-// refused with the registry's sentence.
+// refused with the registry's sentence. Far from the origin: a placement lands where its generator
+// put it, two pieces laid to touch leave no gap, and a scene file's scatter is its twin by the
+// origin, moved by its centre.
 #include <core/math/world.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -18,6 +20,8 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -244,8 +248,10 @@ f32 saw_height(const void*, f32 x, f32) noexcept {
   return saw_of(scene_gen::nearest_mm(static_cast<f64>(x)));
 }
 f32 saw_mm(const void*, i64 x_mm, i64) noexcept { return saw_of(x_mm); }
+// The same at any time: what the scene reader grounds a file's instance and a scatter's on.
+f32 saw_at(const void*, f64, i64 x_mm, i64) noexcept { return saw_of(x_mm); }
 constexpr scene_gen::GroundOps k_saw_ops{
-    .height = &saw_height, .surface_mm = &saw_mm, .floor_mm = &saw_mm};
+    .height = &saw_height, .height_mm = &saw_at, .surface_mm = &saw_mm, .floor_mm = &saw_mm};
 bool saw_make(const scene::Terrain&, const scene_gen::Context&, scene_gen::GroundProvider& out,
               std::string*) {
   out = scene_gen::GroundProvider(&k_saw_ops, nullptr);
@@ -387,4 +393,86 @@ TEST_CASE("renderer: two pieces laid to touch far out leave no gap") {
     MESSAGE(edges[e] << " m: the faces laid to touch are " << gap << " m apart");
     CHECK(std::fabs(gap) <= 4.0e-6f);
   }
+}
+
+// **A scene file's scatter far out is its twin by the origin, moved** (ADR-0053; renderer.md,
+// "Positions in the files and on the wire"; `engine.scene.Scatter` version 2). The centre is a
+// `worldpos` and each instance's place is the centre plus the float32 offset the seed draws, added
+// in f64, so a scatter at 419 km, 10,000 km and 1e8 m — and one whose centre is a 1024th of a metre
+// short of a cell's edge 10,000 km out, so its instances stand either side of it — puts every
+// instance exactly where the same scatter by the origin puts it, moved by the centre; and a
+// grounded one stands on the sawtooth at the millimetre it is at. Until 2026-10-07 the centre was a
+// float32 `vec2` and the place float32 world metres: at 10,000 km a metre's grid.
+TEST_CASE("renderer: a scene file's scatter far out is its twin by the origin, moved") {
+  const test::TempDir tmp("renderer_scatter_far");
+  struct Centre {
+    f64 x;
+    f64 z;
+  };
+  const Centre centres[] = {{0.0, 0.0},
+                            {419072.0, -419072.0},
+                            {10000000.0, 10000000.0},
+                            {100000000.0, -100000000.0},
+                            {10000000.0 + 64.0 - 0.0009765625, 10000000.0}};
+  constexpr u32 k_count = 16;
+  Vector<SceneInstance> read[5];
+  for (u32 c = 0; c < 5; ++c) {
+    // The same two scatters, in the same places in the file (a scatter's seed is its own and its
+    // index's): one grounded, one at a height of its own. The centre's y is not read.
+    char centre[128];
+    std::snprintf(centre, sizeof(centre), "[%.17g, 123.5, %.17g]", centres[c].x, centres[c].z);
+    const std::string path = tmp.file("scatter-" + std::to_string(c) + ".json");
+    REQUIRE(write_text(
+        path,
+        std::string(R"({"format":"engine.scene.v1","name":"scatter",)") +
+            R"("meshes":[{"name":"marker","path":"marker.glb"}],)" +
+            R"("terrain":{"size":17,"extent":20,"provider":"scene-gen-test-saw"},)" +
+            R"("scatters":[{"mesh":0,"center":)" + centre +
+            R"(,"radius_min":2,"radius_max":6,"count":16,"seed":9,"y":0.25},)" +
+            R"({"mesh":0,"center":)" + centre +
+            R"(,"radius_min":2,"radius_max":6,"count":16,"seed":9,"ground":false,"y":1.5}]})"));
+    SceneDesc desc;
+    std::string error;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    REQUIRE(desc.instances.size() == 2 * k_count + 1);  // and the terrain's
+    for (u32 k = 0; k < 2 * k_count; ++k)
+      read[c].push_back(desc.instances[k]);
+  }
+  // By the origin each place is the offset itself, exactly: the centre is zero.
+  const Vector<SceneInstance>& home = read[0];
+  u32 off = 0, lifted = 0, floated = 0, west = 0, east = 0;
+  for (u32 c = 1; c < 5; ++c) {
+    for (u32 k = 0; k < 2 * k_count; ++k) {
+      const SceneInstance& got = read[c][k];
+      // The centre plus the offset in f64, as the reader adds them, and nothing in between.
+      off += got.origin.x == centres[c].x + home[k].origin.x &&
+                     got.origin.z == centres[c].z + home[k].origin.z &&
+                     got.transform.position == Vec3{} &&
+                     std::memcmp(&got.transform.rotation, &home[k].transform.rotation,
+                                 sizeof(Quat)) == 0 &&
+                     got.transform.scale == home[k].transform.scale
+                 ? 0u
+                 : 1u;
+      if (k < k_count) {
+        // Grounded: `y` above the sawtooth at the millimetre the instance is at.
+        const f64 want = 0.25 + static_cast<f64>(saw_of(scene_gen::nearest_mm(got.origin.x)));
+        lifted += got.origin.y == want ? 0u : 1u;
+      } else {
+        floated += got.origin.y == 1.5 ? 0u : 1u;
+      }
+      if (c == 4) {
+        west += got.origin.x < 10000064.0 ? 1u : 0u;
+        east += got.origin.x > 10000064.0 ? 1u : 0u;
+      }
+    }
+  }
+  MESSAGE("scatters far out: " << off << " places off their twins', " << lifted
+                               << " grounded off the millimetre's height, " << floated
+                               << " floated off theirs; at the cell's edge " << west
+                               << " instances west of it and " << east << " east");
+  CHECK(off == 0u);
+  CHECK(lifted == 0u);
+  CHECK(floated == 0u);
+  CHECK(west > 0u);
+  CHECK(east > 0u);
 }

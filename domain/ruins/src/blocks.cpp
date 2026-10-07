@@ -537,9 +537,15 @@ u64 hash_blocks(const BlockOutput& out) noexcept {
                             static_cast<u64>(b.yaw) << 8 | b.flags);
   }
   h = hash_combine(h, out.drifts.size());
+  // A drift's ends are hashed as the f64 they are (2026-10-07), where they were float32 x and z.
+  const auto point = [&](WorldPos p) {
+    h = hash_combine(h, wide(p.x));
+    h = hash_combine(h, wide(p.y));
+    h = hash_combine(h, wide(p.z));
+  };
   for (const Drift& d : out.drifts) {
-    h = hash_combine(h, f(d.from.x) << 32 | f(d.from.y));
-    h = hash_combine(h, f(d.to.x) << 32 | f(d.to.y));
+    point(d.from);
+    point(d.to);
     h = hash_combine(h, f(d.normal.x) << 32 | f(d.normal.y));
     h = hash_combine(h, f(d.height) << 32 | f(d.reach));
     h = hash_combine(

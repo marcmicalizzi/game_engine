@@ -199,9 +199,15 @@ u64 hash_output(const Output& out) noexcept {
     h = hash_combine(h, static_cast<u64>(i.height_q) << 16 | static_cast<u64>(i.kind) << 8 | i.yaw);
   }
   h = hash_combine(h, out.drifts.size());
+  // A drift's ends are hashed as the f64 they are (2026-10-07), where they were float32 x and z.
+  const auto point = [&](WorldPos p) {
+    h = hash_combine(h, wide(p.x));
+    h = hash_combine(h, wide(p.y));
+    h = hash_combine(h, wide(p.z));
+  };
   for (const Drift& d : out.drifts) {
-    h = hash_combine(h, f(d.from.x) << 32 | f(d.from.y));
-    h = hash_combine(h, f(d.to.x) << 32 | f(d.to.y));
+    point(d.from);
+    point(d.to);
     h = hash_combine(h, f(d.normal.x) << 32 | f(d.normal.y));
     h = hash_combine(h, f(d.height) << 32 | f(d.reach));
     h = hash_combine(
@@ -861,9 +867,10 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
     world(s.x0 + k_dx[s.dir] * s.length_cm + k_dx[n] * half,
           s.z0 + k_dz[s.dir] * s.length_cm + k_dz[n] * half, bx, bz);
     const u32 normal_step = (static_cast<u32>(n) * 4u + yaw) & 15u;
+    // The face's ends on the ground: the centimetres divided once in f64, at the building's base.
     Drift d;
-    d.from = Vec2{metres(ax), metres(az)};
-    d.to = Vec2{metres(bx), metres(bz)};
+    d.from = WorldPos{grid::metres_f64(ax), grid::metres_f64(base_cm), grid::metres_f64(az)};
+    d.to = WorldPos{grid::metres_f64(bx), grid::metres_f64(base_cm), grid::metres_f64(bz)};
     d.normal = Vec2{step_cos(normal_step), -step_sin(normal_step)};
     const i32 height = s.facing == 0   ? rules.drift_windward_cm
                        : s.facing == 1 ? (rules.drift_windward_cm + rules.drift_lee_cm) / 2

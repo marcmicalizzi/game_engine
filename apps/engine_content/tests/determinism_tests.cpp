@@ -295,7 +295,12 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
 // the integer centimetres divided once, exact on every toolchain), where they were the float32
 // `metres` of the same centimetres. No decision moved: the counts are the same, and the ruins' own
 // tests, which hold every piece to the grammar's centimetres, pass unchanged.
-constexpr u64 k_ruins_golden = 0x0d29923a1f3c328full;
+//
+// Moved on 2026-10-07 (MSVC 14.51), 5,726 instances still, from 0x0d29923a1f3c328f: a wall's sand
+// drift's two ends are `WorldPos` now (ADR-0053; ruins.md, "Far from the origin") and are hashed as
+// their three f64 — the centimetres divided once, y the building's base — where they were float32
+// x and z. Nothing else in the hash moved; every piece and site is the same.
+constexpr u64 k_ruins_golden = 0xdfb858d685ebff89ull;
 
 TEST_CASE("engine-content: ruins assembles the committed buildings on every toolchain") {
   const test::TempDir tmp("engine_content_ruins_determinism");
@@ -342,7 +347,10 @@ TEST_CASE("engine-content: ruins assembles the committed buildings on every tool
 //
 // Moved on 2026-10-06 (MSVC 14.51), 25,454 blocks still, from 0x7f74b136cd3438e6, for the same
 // reason as the assembler's: a block's place is hashed as its f64.
-constexpr u64 k_ruin_blocks_golden = 0x42f769e8223c5041ull;
+//
+// Moved on 2026-10-07 (MSVC 14.51), 25,454 blocks still, from 0x42f769e8223c5041, with the
+// assembler's: the drifts the layer carries over are hashed as their f64 ends.
+constexpr u64 k_ruin_blocks_golden = 0x9a6d5806eaa41f7cull;
 
 TEST_CASE("engine-content: ruins laid block by block are the committed blocks on every toolchain") {
   const test::TempDir tmp("engine_content_ruin_blocks_determinism");

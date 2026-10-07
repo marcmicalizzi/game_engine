@@ -47,8 +47,8 @@
     {"mesh": 11, "name": "wreck: suzanne", "translation": [-225, 0, -30], "ground": true, "yaw_deg": 80}
   ],
   "scatters": [
-    {"mesh": 5, "name": "oasis palms", "center": [0, 60], "radius_min": 28, "radius_max": 95, "count": 40, "seed": 11, "scale_min": 0.8, "scale_max": 1.25, "y": -0.3},
-    {"mesh": 5, "name": "outer palms", "center": [0, 60], "radius_min": 110, "radius_max": 175, "count": 24, "seed": 12, "scale_min": 0.7, "scale_max": 1.1, "y": -0.3}
+    {"mesh": 5, "name": "oasis palms", "center": [0, 0, 60], "radius_min": 28, "radius_max": 95, "count": 40, "seed": 11, "scale_min": 0.8, "scale_max": 1.25, "y": -0.3},
+    {"mesh": 5, "name": "outer palms", "center": [0, 0, 60], "radius_min": 110, "radius_max": 175, "count": 24, "seed": 12, "scale_min": 0.7, "scale_max": 1.1, "y": -0.3}
   ],
   "terrain": {
     "size": 2049,

@@ -11,6 +11,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/path_trace.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/texture/texture_build.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
@@ -629,7 +630,7 @@ TEST_CASE(
                 {"name":"stand-in","path":"cube.glb","overlay":"00000000000000aa","fit":{"extent":2,"ground":false}}],
       "instances":[{"mesh":0,"translation":[10,1,-10],"ground":true,"yaw_deg":90},
                    {"mesh":1,"translation":[0,5,0]}],
-      "scatters":[{"mesh":0,"center":[20,20],"radius_min":2,"radius_max":6,"count":5,"seed":9,
+      "scatters":[{"mesh":0,"center":[20,0,20],"radius_min":2,"radius_max":6,"count":5,"seed":9,
                    "scale_min":0.5,"scale_max":1.5}],
       "camera_path":"paths/over.json",
       "terrain":{"size":17,"extent":40,"seed":2,"ridges":[{"from":[-5,0],"to":[5,0],"height":6,"width":10}]}})"));
@@ -655,14 +656,28 @@ TEST_CASE(
              1.0f + terrain_height(desc.terrain, 10.0f, -10.0f)));
   CHECK(near(rotate(grounded.transform.rotation, Vec3{1, 0, 0}), Vec3{0, 0, -1}));
   for (u32 k = 2; k < 7; ++k) {
-    const Vec3 p = desc.instances[k].transform.position;
-    const f32 r = std::sqrt((p.x - 20.0f) * (p.x - 20.0f) + (p.z - 20.0f) * (p.z - 20.0f));
-    CHECK(r >= 2.0f - 1e-3f);
-    CHECK(r <= 6.0f + 1e-3f);
-    CHECK(near(p.y, terrain_height(desc.terrain, p.x, p.z)));
+    // A scatter's centre is a `worldpos` (Scatter version 2): each instance's place is the centre
+    // plus its float32 offset, added in f64, in `origin`, and the float32 offset stays zero.
+    const WorldPos p = desc.instances[k].origin;
+    CHECK(desc.instances[k].transform.position == Vec3{});
+    const f64 r = std::sqrt((p.x - 20.0) * (p.x - 20.0) + (p.z - 20.0) * (p.z - 20.0));
+    CHECK(r >= 2.0 - 1e-3);
+    CHECK(r <= 6.0 + 1e-3);
+    // On the ground at its whole millimetre, as a file's grounded instance is.
+    const f32 x_mm = static_cast<f32>(static_cast<f64>(scene_gen::nearest_mm(p.x)) / 1000.0);
+    const f32 z_mm = static_cast<f32>(static_cast<f64>(scene_gen::nearest_mm(p.z)) / 1000.0);
+    CHECK(near(static_cast<f32>(p.y), terrain_height(desc.terrain, x_mm, z_mm)));
     CHECK(desc.instances[k].transform.scale.x >= 0.5f);
     CHECK(desc.instances[k].transform.scale.x <= 1.5f);
   }
+  // Version 1's centre, two float32s, is refused with the field's path rather than read as
+  // something else: a scatter's centre is three numbers now.
+  const std::string old_scatter = slashes(dir / "old-scatter.json");
+  REQUIRE(write_text(old_scatter, R"({"meshes":[{"path":"cube.glb"}],
+      "scatters":[{"mesh":0,"center":[20,20],"radius_max":6,"count":5,"ground":false}]})"));
+  SceneDesc refused_scatter;
+  CHECK_FALSE(read_scene_file(old_scatter, refused_scatter, error));
+  CHECK(error.find("center") != std::string::npos);
   CHECK(desc.instances[7].mesh == 2);
   // A second read places the scatter in exactly the same places.
   SceneDesc again;

@@ -1140,10 +1140,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
-  auto ground_at = [&](f32 x, f32 z) { return out.terrain.enabled ? ground.height(x, z) : 0.0f; };
   // The surface under a world position (ADR-0053): asked at its whole millimetre, which never
-  // passes through a float32 metre, at the terrain's own time — the heights `ground_at` gives at a
-  // point a float holds to the millimetre (`GroundOps::height_mm`), and the right ones far out.
+  // passes through a float32 metre, at the terrain's own time — the heights the sampler's float
+  // `height` gives at a point a float holds to the millimetre (`GroundOps::height_mm`), and the
+  // right ones far out. A file's instances and its scatters' stand on it alike.
   auto ground_at_world = [&](WorldPos p) {
     return out.terrain.enabled
                ? static_cast<f64>(ground.provider().height_mm(
@@ -1183,7 +1183,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     out.instances.push_back(instance);
   }
   // Scatters, expanded here from their seeds, so the renderer sees plain instances and two
-  // machines place the same ones.
+  // machines place the same ones. **The centre is a `worldpos`** (Scatter version 2, ADR-0053):
+  // what the seed draws — the angle, the radius, the scale, the yaw — stays float32, the
+  // expansion's content and the size of the annulus, and an instance's place is the centre plus
+  // that offset in f64, into `origin` as a file's instance's is, with its ground asked at the whole
+  // millimetre
+  // (`ground_at_world`). Until 2026-10-07 the centre was a float32 `vec2` and the place float32
+  // world metres, a 3.1 cm grid 420 km out, and the ground asked at them.
   for (u32 s = 0; s < file.scatters.size(); ++s) {
     const scene::Scatter& scatter = file.scatters[s];
     if (scatter.mesh >= file_meshes) {
@@ -1206,10 +1212,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       const f32 yaw = seeded_unit(state) * 2.0f * k_pi;
       SceneInstance instance;
       instance.mesh = scatter.mesh;
-      const f32 x = scatter.center.x + std::cos(angle) * radius;
-      const f32 z = scatter.center.y + std::sin(angle) * radius;
-      instance.transform.position =
-          Vec3{x, scatter.y + (scatter.ground ? ground_at(x, z) : 0.0f), z};
+      instance.origin = WorldPos{scatter.center.x, 0.0, scatter.center.z} +
+                        DVec3{static_cast<f64>(std::cos(angle) * radius), 0.0,
+                              static_cast<f64>(std::sin(angle) * radius)};
+      instance.origin.y =
+          static_cast<f64>(scatter.y) + (scatter.ground ? ground_at_world(instance.origin) : 0.0);
       instance.transform.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, yaw);
       instance.transform.scale = Vec3{scale, scale, scale};
       out.instances.push_back(instance);

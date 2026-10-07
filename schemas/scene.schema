@@ -366,12 +366,17 @@ struct RuinSite @version(2) {
 /// The sand a wall asks the terrain to drift against it (plan 05 §5.13): a declaration for the
 /// deformable-surface system, not sand. The drift stands `height` against the face and falls to
 /// nothing `reach` metres out from it.
-struct SandDrift @version(1) {
+///
+/// Version 2 (ADR-0053): `from` and `to` are `worldpos`, three f64 — x and z the face's ends, y the
+/// building's base on the ground (its `RuinSite.origin.y`) — where version 1 held two float32s,
+/// x and z, a 3.1 cm grid 420 km out. A version 1 file's `[x, z]` is refused with the field's path:
+/// write it `[x, 0, z]`, or write the fragment again.
+struct SandDrift @version(2) {
   building: u32 = 0
   wall: u32 = 0
-  /// The wall face's ends, x and z, metres.
-  from: vec2
-  to: vec2
+  /// The wall face's ends on the ground.
+  from: worldpos @unit(m)
+  to: worldpos @unit(m)
   /// The face's outward normal, x and z.
   normal: vec2
   height: f32 = 0.3
@@ -382,11 +387,16 @@ struct SandDrift @version(1) {
 /// Instances of one mesh scattered over an annulus, from a seed: the oasis's palms are one of
 /// these. The expansion is a function of the fields alone, so the same file places the same
 /// instances on every machine.
-struct Scatter @version(1) {
+///
+/// Version 2 (ADR-0053): `center` is a `worldpos`, three f64, where version 1 held two float32s,
+/// x and z, which put a scatter 420 km out on a 3.1 cm grid and 10,000 km out on a metre's. Its `y`
+/// is not read: an instance stands `y` above the terrain's surface with `ground`, at `y` without.
+/// A version 1 file's `[x, z]` is refused with the field's path: write it `[x, 0, z]`.
+struct Scatter @version(2) {
   mesh: u32 = 0
   name: string
-  /// The annulus's centre, x and z.
-  center: vec2
+  /// The annulus's centre: its x and z. Its y is not read.
+  center: worldpos @unit(m)
   radius_min: f32 = 0
   radius_max: f32 = 10
   count: u32 = 0

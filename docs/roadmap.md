@@ -175,7 +175,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W58 | ADR-0053 stage 2: cascades and tile corners | done (874c7a20, a88764ef) | W57 | M | design | [world positions](experiments/world-positions-renderer-2026-10-05.md#stage-2-picture-2-the-cascades-snap-to-the-world) |
 | W59 | ADR-0053 stage 3: files and wire in f64 | done (5fb57ff3) | W57 | M | routine | [world positions](experiments/world-positions-renderer-2026-10-05.md#stage-3-picture-3-the-files-and-the-wire) |
 | W60 | ADR-0053 stage 4: a tile's UVs from its corner | done (63ce114e, d1a2e690) | W58 | S | design | [world positions](experiments/world-positions-renderer-2026-10-05.md#stage-4-picture-4-a-tiles-uvs-from-its-corner) |
-| W61 | Scatter centre and sand-drift endpoints in f64 | open | W59 | S | routine | [ruins](subsystems/ruins.md#far-from-the-origin) |
+| W61 | Scatter centre and sand-drift endpoints in f64 | done (2026-10-07, `Scatter` and `SandDrift` version 2) | W59 | S | routine | [ruins](subsystems/ruins.md#far-from-the-origin) |
 | W62 | Waves provider's millimetre entries | open | W56 | S | routine | [scene_gen](subsystems/scene_gen.md#placements-far-from-the-origin) |
 | W63 | Ring chunks built in their corner's frame | done (2026-10-07, `terrain::RingParams::chunk_frame`) | W58 | S | routine | [renderer](subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners) |
 | W64 | World tile index past 6.9e10 m | open | W56 | S | design | [far from the origin](experiments/far-from-origin-2026-10-04.md#the-survey) |

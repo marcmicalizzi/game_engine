@@ -70,12 +70,12 @@ struct SceneInstance {
   // while its rotation, scale and float32 offset stay local. **A producer with a world position
   // puts it here, whole, and leaves `transform.position` zero**: the scene file's reader does (its
   // `translation` is a `worldpos`, Instance version 3), and so does a placement generator's
-  // placement (`expand_placements`, from `scene_gen::Placement::position`; 2026-10-06), so an
-  // instance reaches its cell without a float on the way. Zero - the world's origin, the frame
-  // every producer used until world positions were f64 - only for what still hands over a float32
-  // world position in `transform.position`: `grid_instances` (a few metres round the origin by
-  // construction) and a scene file's `scatters`, whose centre is still a float32 `vec2` in the
-  // schema.
+  // placement (`expand_placements`, from `scene_gen::Placement::position`; 2026-10-06), and a
+  // scene file's scatter (its centre a `worldpos` and each instance's offset from it added in f64,
+  // Scatter version 2; 2026-10-07), so an instance reaches its cell without a float on the way.
+  // Zero - the world's origin, the frame every producer used until world positions were f64 - only
+  // for what still hands over a float32 world position in `transform.position`: `grid_instances`,
+  // a few metres round the origin by construction.
   WorldPos origin{};
 };
 

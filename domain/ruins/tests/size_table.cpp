@@ -16,8 +16,10 @@ ENGINE_EXPECT_SIZE(40, 8, ruins::Instance);
 // wall and index (4), course, role, yaw and flags (4). A thousand ruins laid block by block are
 // some hundreds of thousands of them.
 ENGINE_EXPECT_SIZE(40, 8, ruins::Block);
-// Three 2-vectors (24), height and reach (8), building (4), wall, windward and a spare byte (4).
-ENGINE_EXPECT_SIZE(40, 4, ruins::Drift);
+// The face's two ends (48, `WorldPos` since 2026-10-07: ADR-0053, the centimetres in f64, where two
+// float32 2-vectors were a 3.1 cm grid at 419 km), the normal (8), height and reach (8), building
+// (4), wall, windward and a spare byte (4): no padding, 8-aligned. It was 40 bytes, 4-aligned.
+ENGINE_EXPECT_SIZE(72, 8, ruins::Drift);
 // Seed (8), tile (8), origin (24, a `WorldPos`), four counts (16), walls, shape and yaw (4), and
 // four bytes of alignment. It was 48 bytes while the origin was float32.
 ENGINE_EXPECT_SIZE(64, 8, ruins::Site);

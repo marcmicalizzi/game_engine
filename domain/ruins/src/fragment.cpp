@@ -64,6 +64,7 @@ void add_sites_and_drifts(const Vector<Site>& sites, const Vector<Drift>& drifts
     scene::SandDrift record;
     record.building = drift.building;
     record.wall = drift.wall;
+    // The ends as they are: f64 world positions on disk too (`SandDrift` version 2).
     record.from = drift.from;
     record.to = drift.to;
     record.normal = drift.normal;
