@@ -14,6 +14,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/settings.h>
 #include <systems/renderer/terrain.h>
 
 #include <doctest/doctest.h>
@@ -23,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -475,4 +477,71 @@ TEST_CASE("renderer: a scene file's scatter far out is its twin by the origin, m
   CHECK(floated == 0u);
   CHECK(west > 0u);
   CHECK(east > 0u);
+}
+
+namespace {
+
+// Two grounds of this test's own that move — a ramp sliding along x — one that says its heights
+// are right wherever a cell reaches (`k_ground_millimetres`) and one that does not.
+f32 glide_height(const void*, f32 x, f32) noexcept { return 0.5f * x; }
+bool glide_evaluate(const void*, f64, const scene_gen::Lattice&, i32, i32, u32, u32, u32, u32,
+                    std::span<f32> out) noexcept {
+  for (f32& h : out)
+    h = 0.0f;
+  return true;
+}
+constexpr scene_gen::GroundOps k_glide_ops{.height = &glide_height, .evaluate = &glide_evaluate};
+bool glide_make(const scene::Terrain&, const scene_gen::Context&, scene_gen::GroundProvider& out,
+                std::string*) {
+  out = scene_gen::GroundProvider(&k_glide_ops, nullptr);
+  return true;
+}
+constexpr scene_gen::GroundProviderDesc k_glide{
+    .name = "scene-gen-test-glide", .make = &glide_make, .flags = scene_gen::k_ground_moves};
+const scene_gen::Registrar k_glide_registrar{k_glide};
+constexpr scene_gen::GroundProviderDesc k_glide_mm{
+    .name = "scene-gen-test-glide-mm",
+    .make = &glide_make,
+    .flags = scene_gen::k_ground_moves | scene_gen::k_ground_millimetres};
+const scene_gen::Registrar k_glide_mm_registrar{k_glide_mm};
+
+}  // namespace
+
+// **The world's tiles are drawn only from a ground that is right wherever a cell reaches**
+// (ADR-0053; renderer.md, "The ground from the world's tiles"; scene_gen.md, "Far from the
+// origin"). The tiles go wherever the camera does, so a provider whose heights are float arithmetic
+// of absolute metres — the renderer's waves, and here a moving ground that does not say otherwise —
+// would draw a tile 420 km out from a neighbour's heights. `resolve_settings` asks the provider's
+// descriptor (`scene_gen::k_ground_millimetres`), as it asks whether it moves, and draws the
+// scene's grid instead, with a sentence. The answer does not depend on where the camera is: the
+// line is the provider's, which is why there is no far site here.
+TEST_CASE("renderer: the world's tiles are drawn only from a ground with millimetre entries") {
+  gfx::DeviceFeatures features;
+  features.buffer_int64_atomics = true;
+  features.mesh_shader = true;
+  struct Case {
+    const char* provider;
+    bool tiles;
+  };
+  const Case cases[] = {{"scene-gen-test-glide-mm", true},
+                        {"scene-gen-test-glide", false},  // moves, and says nothing of millimetres
+                        {"waves", false}};                // neither
+  for (const Case& c : cases) {
+    SceneData data;
+    data.terrain.enabled = true;
+    data.terrain.provider = c.provider;
+    data.terrain_mesh = 0;
+    for (const bool by_setting : {true, false}) {
+      RenderSettings settings;
+      settings.terrain_tiles = by_setting;
+      data.world.enabled = !by_setting;
+      data.world.ground = !by_setting;
+      ResolvedSettings resolved;
+      resolve_settings(settings, features, &data, resolved);
+      CHECK_MESSAGE(resolved.terrain_tiles == c.tiles, c.provider);
+      // A ground that moves keeps its levels (the time-lapse draws the grid) whether or not it
+      // gets the tiles.
+      CHECK(resolved.terrain_levels == terrain_moves(data.terrain));
+    }
+  }
 }

@@ -350,12 +350,23 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // streamed scene, whose clusters live in pages, and not with cluster templates, which are built
   // once per mesh from a rest pose a slot does not have.
   const bool paged = s.stream && scene != nullptr && scene->paged();
-  out.terrain_tiles = out.terrain_levels && tiles_asked && !paged;
+  // **The world's tiles go wherever the camera does, so their ground must be right there**
+  // (ADR-0053; renderer.md, "The ground from the world's tiles"): a provider that says its heights
+  // are right wherever a cell reaches (`scene_gen::k_ground_millimetres`, the dunes). The waves
+  // are the stand-in ground of a scene that names no generator, float arithmetic of absolute
+  // metres drawn as the scene's grid round the origin, and are refused here rather than given
+  // millimetre entries (scene_gen.md, "Far from the origin", says why that is the line).
+  const bool millimetres = scene != nullptr && terrain_has_millimetres(scene->terrain);
+  out.terrain_tiles = out.terrain_levels && tiles_asked && !paged && millimetres;
   if (tiles_asked && !out.terrain_tiles && scene != nullptr) {
     ENGINE_LOG_WARN(log_renderer, "the ground is not drawn from the world's tiles",
                     log::field("reason", dynamic ? "a scene whose instances come and go has no pool"
                                          : paged ? "a scene streamed in pages"
-                                                 : "its terrain's ground does not move"));
+                                         : !out.terrain_levels
+                                             ? "its terrain's ground does not move"
+                                             : "its terrain's ground provider has no millimetre "
+                                               "entries: a tile past 16 km would stand on the "
+                                               "heights of a float32 metre"));
   }
   out.terrain_rings = out.terrain_levels && s.terrain_rings && !paged && !out.terrain_tiles;
   if (s.terrain_rings && out.terrain_tiles) {

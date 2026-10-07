@@ -567,6 +567,13 @@ struct GroundProviderDesc {
 inline constexpr u32 k_ground_moves = 1u << 0;  // `evaluate` and `travel_m`
 inline constexpr u32 k_ground_rings = 1u << 1;  // `make_rings`
 inline constexpr u32 k_ground_tiles = 1u << 2;  // `open_tiles`
+// **Its heights are right wherever a cell reaches** (ADR-0053; scene_gen.md, "Far from the
+// origin"): `height_mm`, `surface_mm` and `floor_mm`, and grids and re-evaluations that sample
+// the ground at the lattice's millimetres (`Lattice::x_mm`) and never at a float32 metre of the
+// world. What the renderer asks before it draws a ground from the world's tiles, which go wherever
+// the camera does. A provider without it (the renderer's waves) is exact only while a float holds
+// the millimetre, 16 km from the origin.
+inline constexpr u32 k_ground_millimetres = 1u << 3;
 
 // ---- the registry -------------------------------------------------------------------------------
 

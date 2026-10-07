@@ -148,7 +148,11 @@ bool waves_wind(const void* state, f64, f32& x, f32& z) noexcept {
 }
 
 // The waves have no time, no rings and no tiles of their own: a point function, which the registry
-// samples a point at a time for a grid; and one wind, which their detail lies across.
+// samples a point at a time for a grid; and one wind, which their detail lies across. **And no
+// millimetre entries** (scene_gen.md, "Far from the origin"): their phases are float32 of absolute
+// metres, exact only while a float holds the millimetre, which is all the scene's grid round the
+// origin needs; their descriptor does not say `k_ground_millimetres`, so the renderer draws no
+// world tile from them, and f64 phases would move every height by the origin for nothing drawn.
 constexpr scene_gen::GroundOps k_waves_ops{
     .destroy = &waves_destroy, .height = &waves_height, .wind = &waves_wind};
 
@@ -249,6 +253,11 @@ bool terrain_moves(const TerrainDesc& desc) noexcept {
 bool terrain_has_rings(const TerrainDesc& desc) noexcept {
   const scene_gen::GroundProviderDesc* found = provider_of(desc);
   return found != nullptr && (found->flags & scene_gen::k_ground_rings) != 0;
+}
+
+bool terrain_has_millimetres(const TerrainDesc& desc) noexcept {
+  const scene_gen::GroundProviderDesc* found = provider_of(desc);
+  return found != nullptr && (found->flags & scene_gen::k_ground_millimetres) != 0;
 }
 
 // ---- the sampler --------------------------------------------------------------------------------

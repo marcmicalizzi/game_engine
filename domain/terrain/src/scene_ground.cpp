@@ -367,7 +367,8 @@ bool dunes_make(const scene::Terrain& entry, const scene_gen::Context&,
 constexpr scene_gen::GroundProviderDesc k_dunes{
     .name = k_ground_provider,
     .make = &dunes_make,
-    .flags = scene_gen::k_ground_moves | scene_gen::k_ground_rings | scene_gen::k_ground_tiles,
+    .flags = scene_gen::k_ground_moves | scene_gen::k_ground_rings | scene_gen::k_ground_tiles |
+             scene_gen::k_ground_millimetres,
 };
 const scene_gen::Registrar k_dunes_registrar{k_dunes};
 

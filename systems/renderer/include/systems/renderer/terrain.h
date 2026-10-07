@@ -132,12 +132,14 @@ std::string_view terrain_provider(const TerrainDesc& desc) noexcept;
 // from: every field as it is, and the provider's name.
 scene::Terrain terrain_entry(const TerrainDesc& desc);
 // Whether this executable carries the description's provider, and whether that provider's grounds
-// move with game time (`scene_gen::k_ground_moves`) and have rings round a camera
-// (`scene_gen::k_ground_rings`): what a host decides a time-lapse and the rings by, without making
-// a ground.
+// move with game time (`scene_gen::k_ground_moves`), have rings round a camera
+// (`scene_gen::k_ground_rings`) and are right wherever a cell reaches
+// (`scene_gen::k_ground_millimetres`): what a host decides a time-lapse, the rings and the world's
+// tiles by, without making a ground.
 bool terrain_provider_known(const TerrainDesc& desc) noexcept;
 bool terrain_moves(const TerrainDesc& desc) noexcept;
 bool terrain_has_rings(const TerrainDesc& desc) noexcept;
+bool terrain_has_millimetres(const TerrainDesc& desc) noexcept;
 
 // Bumped when `terrain_height` or the mesh built from it changes, so a cache entry built by an
 // older generator is never mistaken for this one's. 5: one material over baked maps instead of

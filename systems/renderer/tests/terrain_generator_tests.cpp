@@ -100,6 +100,8 @@ TEST_CASE("renderer: a terrain names its ground provider, and the generator enum
   CHECK(terrain_hash(a.terrain) == terrain_hash(b.terrain));
   CHECK(terrain_moves(a.terrain));
   CHECK(terrain_has_rings(a.terrain));
+  // Right wherever a cell reaches: the ground the world's tiles may be drawn from.
+  CHECK(terrain_has_millimetres(a.terrain));
   // The waves by name are the default.
   const std::string waves = tmp.file("waves.json");
   REQUIRE(write_text(waves, scene(R"(,"provider":"waves")")));
@@ -107,6 +109,7 @@ TEST_CASE("renderer: a terrain names its ground provider, and the generator enum
   REQUIRE_MESSAGE(read_scene_file(waves, w, error), error);
   CHECK(w.terrain.generator == TerrainGenerator::waves);
   CHECK_FALSE(terrain_moves(w.terrain));
+  CHECK_FALSE(terrain_has_millimetres(w.terrain));
   TerrainDesc plain = w.terrain;
   plain.provider.clear();
   CHECK(terrain_hash(plain) == terrain_hash(w.terrain));

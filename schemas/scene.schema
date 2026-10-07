@@ -763,8 +763,9 @@ struct WorldRings @version(2) {
   /// Draw the terrain from the world's tiles (ADR-0050; docs/subsystems/renderer.md, "The ground
   /// from the world's tiles"): the ground streamed round the camera a tile at a time, at each
   /// ring's `ground_cells`, with no end, in place of the terrain's one grid (which then only carries
-  /// its material). Needs a terrain whose ground moves (the dunes), and is refused beside streamed
-  /// `ruins` or `placements`, which have no deformed-vertex pool yet.
+  /// its material). Needs a terrain whose ground moves and is right wherever a cell reaches (the
+  /// dunes; not the waves, whose heights are float32 metres of the world), and is refused beside
+  /// streamed `ruins` or `placements`, which have no deformed-vertex pool yet.
   ground: bool = false @since(2)
 }
 
