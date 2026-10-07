@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -259,6 +260,85 @@ TEST_CASE("world: the ring far out holds the tiles it holds by the origin, moved
     }
     CHECK(same == there.size());
   }
+}
+
+TEST_CASE("world: the tiles end at the i32 index, and an observer past them observes nothing") {
+  // W64 (ADR-0053; world.md, "Where an observer is"). A tile's index is an i32 on each axis, so at
+  // 32 m tiles they end 2^31 tiles out, 6.87e10 m, where a 64 m cell still names a place (to
+  // 1.37e11 m). Until 2026-10-07 `tile_at` and the ring's window cast floor(x / size) to i32
+  // unchecked, so a position past it that `world_cell_valid` let through was an overflow. Now the
+  // world refuses it where positions enter: an observer whose window of tiles leaves the index
+  // observes nothing and is counted, and one whose window ends on the last tile holds the tiles
+  // it holds by the origin.
+  constexpr i32 k_last = std::numeric_limits<i32>::max();
+  constexpr i32 k_first = std::numeric_limits<i32>::min();
+  const f64 last = static_cast<f64>(k_last);
+  const f64 first = static_cast<f64>(k_first);
+  const f32 size = 32.0f;
+  // Half a metre inside the last tile on x and a quarter inside the first on z, and half a metre
+  // past each: every one a place a cell names.
+  const WorldPos inside{(last + 1.0) * 32.0 - 0.5, 0.0, first * 32.0 + 0.25};
+  const WorldPos past_x{(last + 1.0) * 32.0 + 0.5, 0.0, 0.0};
+  const WorldPos past_z{0.0, 0.0, first * 32.0 - 0.5};
+  CHECK(world_cell_valid(inside));
+  CHECK(world_cell_valid(past_x));
+  CHECK(world_cell_valid(past_z));
+  CHECK(tile_reachable(inside, size));
+  CHECK(tile_at(inside, size) == TileCoord{k_last, k_first});
+  CHECK_FALSE(tile_reachable(past_x, size));
+  CHECK_FALSE(tile_reachable(past_z, size));
+  CHECK_FALSE(tile_reachable(WorldPos{1.3e11, 0.0, 0.0}, size));
+  CHECK_FALSE(tile_reachable(WorldPos{0.0, 0.0, 0.0}, 0.0f));
+  // ADR-0053's far sites, and a millimetre short of a cell's edge 10,000 km out, are far inside,
+  // window and all, at 32 m tiles and at a 1 m tile too (2.1e9 m).
+  for (const f64 site : {419072.0, 10000000.0, 100000000.0, 10000000.0 - 0.001}) {
+    CHECK(tile_reachable(WorldPos{site, 0.0, -site}, size, 25.0));
+    CHECK(tile_reachable(WorldPos{site, 0.0, -site}, 1.0f, 25.0));
+  }
+
+  // The ring's window reaches 25 tiles from the observer (the outer radius, 24, and one of
+  // slack). An observer at the centre of tile last - 25 has its window end on the last tile: it is
+  // the origin's observer at the centre of tile 0, moved by whole tiles, and holds the same tiles.
+  const RingParams p = unlimited_params();
+  const auto fill = [&](const sim::ObserverSet& observers, World& world) {
+    REQUIRE(world.configure(p));
+    world.update(observers, 1, true);
+  };
+  World home;
+  fill(one(WorldPos{16.0, 0.0, 16.0}), home);
+  World edge;
+  fill(one(WorldPos{(last - 25.0) * 32.0 + 16.0, 0.0, 16.0}), edge);
+  CHECK(edge.last().unreached == 0u);
+  REQUIRE(edge.last_events().size() == home.last_events().size());
+  REQUIRE(home.last_events().size() > 0u);
+  i32 east = k_first;
+  u32 moved = 0;
+  for (u32 i = 0; i < home.last_events().size(); ++i) {
+    TileEvent want = home.last_events()[i];
+    want.tile.x += k_last - 25;
+    const TileEvent got = edge.last_events()[i];
+    moved += std::memcmp(&want, &got, sizeof(TileEvent)) == 0 ? 1u : 0u;
+    east = std::max(east, got.tile.x);
+  }
+  CHECK(moved == home.last_events().size());
+  // The outermost ring's last column, 23 tiles out: a centre 24 tiles away is on the radius, out.
+  CHECK(east == k_last - 2);
+  // One tile further on and its window would run past the last tile: it observes nothing, and an
+  // observer by the origin beside it holds what it holds alone.
+  World past;
+  fill(one(WorldPos{(last - 24.0) * 32.0 + 16.0, 0.0, 16.0}), past);
+  CHECK(past.last().unreached == 1u);
+  CHECK(past.last_events().empty());
+  CHECK(past.ring().active_count() == 0u);
+  sim::ObserverSet two;
+  two.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  two.add(past_x, 1.0f);
+  World both;
+  fill(two, both);
+  CHECK(both.last().unreached == 1u);
+  REQUIRE(both.last_events().size() == home.last_events().size());
+  CHECK(std::memcmp(both.last_events().data(), home.last_events().data(),
+                    home.last_events().size() * sizeof(TileEvent)) == 0);
 }
 
 TEST_CASE("world: hysteresis crosses a ring boundary once where none would thrash") {

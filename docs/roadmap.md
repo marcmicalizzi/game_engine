@@ -178,7 +178,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W61 | Scatter centre and sand-drift endpoints in f64 | done (2026-10-07, `Scatter` and `SandDrift` version 2) | W59 | S | routine | [ruins](subsystems/ruins.md#far-from-the-origin) |
 | W62 | Waves provider's millimetre entries | done (2026-10-07, refused tiles instead: `scene_gen::k_ground_millimetres`) | W56 | S | routine | [scene_gen](subsystems/scene_gen.md#far-from-the-origin) |
 | W63 | Ring chunks built in their corner's frame | done (2026-10-07, `terrain::RingParams::chunk_frame`) | W58 | S | routine | [renderer](subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners) |
-| W64 | World tile index past 6.9e10 m | open | W56 | S | design | [far from the origin](experiments/far-from-origin-2026-10-04.md#the-survey) |
+| W64 | World tile index past 6.9e10 m | done (2026-10-07, refused where positions enter: `world::tile_reachable`) | W56 | S | design | [world](subsystems/world.md#where-an-observer-is) |
 | W65 | Lights placed by cell on the GPU | open | W57 | S | routine | [renderer](subsystems/renderer.md#the-frames-origin) |
 
 ## D — The data model and documents

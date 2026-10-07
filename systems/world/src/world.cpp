@@ -52,6 +52,15 @@ const UpdateStats& World::update(const sim::ObserverSet& observers, u64 tick, bo
   const i64 start = time::monotonic_ns();
   ring_.update(observers_, events_, unlimited);
   last_.ring_ns = time::monotonic_ns() - start;
+  // **Past the world's last tile** (`tile_reachable`; world.md, "Where an observer is"): the ring
+  // let such an observer observe nothing. Said once when it starts, not every update it lasts.
+  const u32 unreached = ring_.stats().unreached;
+  if (unreached > 0 && !warned_unreached_) {
+    const f64 last_tile_m = 2147483648.0 * static_cast<f64>(ring_.params().tile_size);
+    ENGINE_LOG_WARN(log_world, "an observer is past the world's last tile and observes nothing",
+                    log::field("observers", unreached), log::field("last_tile_m", last_tile_m));
+  }
+  warned_unreached_ = unreached > 0;
   dispatch(tick);
   return last_;
 }
@@ -102,6 +111,7 @@ void World::dispatch(u64 tick) {
   last_.tracked = ring.tracked;
   last_.deferred_promotions = ring.deferred_promotions;
   last_.deferred_demotions = ring.deferred_demotions;
+  last_.unreached = ring.unreached;
   for (u32 r = 0; r < k_max_rings; ++r)
     last_.per_ring[r] = ring.per_ring[r];
   ++updates_;

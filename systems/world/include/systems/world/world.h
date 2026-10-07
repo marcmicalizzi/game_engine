@@ -119,6 +119,8 @@ struct UpdateStats {
   u32 tracked = 0;
   u32 deferred_promotions = 0;
   u32 deferred_demotions = 0;
+  // Observers past the world's last tile (`tile_reachable`), which observed nothing this update.
+  u32 unreached = 0;
   u32 per_ring[k_max_rings] = {};
   i64 ring_ns = 0;      // the ring update alone
   i64 dispatch_ns = 0;  // every consumer's calls and commits
@@ -140,8 +142,10 @@ class World {
   const TileConsumer& consumer(u16 index) const noexcept { return consumers_[index]; }
   const ConsumerStats& consumer_stats(u16 index) const noexcept { return consumer_stats_[index]; }
 
-  // One update: the ring over `observers` (an observer of weight zero or less observes nothing),
-  // then every event to the consumers and a commit to each one whose tiles changed. Between ticks.
+  // One update: the ring over `observers` (an observer of weight zero or less observes nothing,
+  // and so does one past the world's last tile, `tile_reachable`, which `UpdateStats::unreached`
+  // counts and the log says once when it starts), then every event to the consumers and a commit
+  // to each one whose tiles changed. Between ticks.
   const UpdateStats& update(const sim::ObserverSet& observers, u64 tick, bool unlimited = false);
   // Every active tile deactivated, in tile order, consumers in reverse; then the commits.
   const UpdateStats& clear(u64 tick);
@@ -178,6 +182,7 @@ class World {
   u64 tick_ = 0;
   u64 updates_ = 0;
   u64 total_events_ = 0;
+  bool warned_unreached_ = false;  // the last update had an observer past the last tile
 };
 
 }  // namespace engine::world

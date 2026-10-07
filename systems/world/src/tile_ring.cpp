@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <systems/world/tile_ring.h>
 
 #include <algorithm>
@@ -5,7 +6,30 @@
 
 namespace engine::world {
 
+namespace {
+
+// The tiles an i32 index names, as the f64 a floored quotient is compared with: every tile index
+// is exact in f64.
+constexpr f64 k_first_tile = -2147483648.0;
+constexpr f64 k_last_tile = 2147483647.0;
+
+// Whether [floor(t - reach), floor(t + reach)] is all i32s: the window of tiles round a place `t`
+// tiles from the origin. False for anything not finite.
+bool window_reachable(f64 t, f64 reach) noexcept {
+  return std::floor(t - reach) >= k_first_tile && std::floor(t + reach) <= k_last_tile;
+}
+
+}  // namespace
+
+bool tile_reachable(WorldPos position, f32 tile_size, f64 reach_tiles) noexcept {
+  const f64 size = static_cast<f64>(tile_size);
+  if (!(size > 0.0) || !(reach_tiles >= 0.0)) return false;
+  return window_reachable(position.x / size, reach_tiles) &&
+         window_reachable(position.z / size, reach_tiles);
+}
+
 TileCoord tile_at(WorldPos position, f32 tile_size) noexcept {
+  ENGINE_ASSERT(tile_reachable(position, tile_size), "a position past the world's last tile");
   const f64 size = static_cast<f64>(tile_size);
   return TileCoord{static_cast<i32>(std::floor(position.x / size)),
                    static_cast<i32>(std::floor(position.z / size))};
@@ -89,19 +113,28 @@ void TileRing::add_candidates(WorldPos observer, f32 weight) {
   const f64 ox = observer.x / size;
   const f64 oz = observer.z / size;
   const f64 r = static_cast<f64>(reach);
-  const i32 x0 = static_cast<i32>(std::floor(ox - r));
-  const i32 x1 = static_cast<i32>(std::floor(ox + r));
-  const i32 z0 = static_cast<i32>(std::floor(oz - r));
-  const i32 z1 = static_cast<i32>(std::floor(oz + r));
+  // The window is all i32s: `update` let no observer through whose window is not (`reaches`). The
+  // counters are i64 so a window ending at the last i32 tile does not wrap.
+  const i64 x0 = static_cast<i64>(std::floor(ox - r));
+  const i64 x1 = static_cast<i64>(std::floor(ox + r));
+  const i64 z0 = static_cast<i64>(std::floor(oz - r));
+  const i64 z1 = static_cast<i64>(std::floor(oz + r));
   const f32 reach2 = reach * reach;
   // x, then z: the window comes out in tile order, so each observer's run is already sorted.
-  for (i32 x = x0; x <= x1; ++x) {
+  for (i64 x = x0; x <= x1; ++x) {
     const f32 dx = static_cast<f32>(static_cast<f64>(x) + 0.5 - ox);
-    for (i32 z = z0; z <= z1; ++z) {
+    for (i64 z = z0; z <= z1; ++z) {
       const f32 dz = static_cast<f32>(static_cast<f64>(z) + 0.5 - oz);
-      if (dx * dx + dz * dz <= reach2) candidates_.push_back(tile_key(TileCoord{x, z}));
+      if (dx * dx + dz * dz <= reach2)
+        candidates_.push_back(tile_key(TileCoord{static_cast<i32>(x), static_cast<i32>(z)}));
     }
   }
+}
+
+bool TileRing::reaches(WorldPos observer, f32 weight) const noexcept {
+  // The reach exactly as `add_candidates` forms it, so the window checked is the window walked.
+  const f32 reach = reach_tiles_ * (weight > 0.0f ? weight : 0.0f);
+  return tile_reachable(observer, params_.tile_size, static_cast<f64>(reach));
 }
 
 u32 TileRing::update(const sim::ObserverSet& observers, Vector<TileEvent>& events, bool unlimited) {
@@ -114,6 +147,12 @@ u32 TileRing::update(const sim::ObserverSet& observers, Vector<TileEvent>& event
   candidates_.clear();
   for (u32 o = 0; o < observers.size(); ++o) {
     const WorldPos p = observers.position(o);
+    // Past the world's last tile there is no tile to name (`tile_reachable`): the observer
+    // observes nothing — no candidates and no score — and is counted.
+    if (!reaches(p, observers.weight(o))) {
+      ++stats_.unreached;
+      continue;
+    }
     ground_.add(WorldPos{p.x, 0.0, p.z}, observers.weight(o));
     add_candidates(p, observers.weight(o));
   }

@@ -69,9 +69,23 @@ constexpr u64 store_tile(TileCoord tile) noexcept {
 // steps by a metre and at 1e8 m by eight, and so puts a point by a tile's edge in the wrong tile.
 // The division is exact for a power-of-two size (32 m, 64 m); for another size it rounds once, at
 // the size of the quotient, and a point within that rounding of an edge may land on either side —
-// the same side on every machine, since IEEE division is.
+// the same side on every machine, since IEEE division is. `position` must be `tile_reachable`.
 TileCoord tile_at(WorldPos position, f32 tile_size) noexcept;
 WorldPos tile_center(TileCoord tile, f32 tile_size) noexcept;
+
+// **Where the world's tiles end** (ADR-0053; world.md, "Where an observer is"). A tile's index is
+// an i32 on each axis — `TileCoord`, and the same cell `ruins::TileCoord`, `scene_gen::TileCoord`,
+// a partitioned layer's tile and the store's 32-bit halves (`store_tile`) name — so the tiles end
+// at `2^31 * tile_size` either side of the origin: 6.87e10 m at 32 m tiles, half of where a 64 m
+// cell's index ends (`world_cell_valid`, 1.37e11 m), and nearer at a smaller tile. A position
+// past it is in no tile, and the world refuses it where positions enter (`TileRing::update`, and
+// so `World::update`): such an observer observes nothing, is counted, and the world says so once.
+// The index is not widened, because every format a tile is written in (the store's ids, a layer's
+// tile files, the world log, the ruins' seeds) holds it in 32 bits, and what an i64 would buy is
+// tiles past half a cell's reach, where ADR-0053 already says a game needs a frame above this one.
+// True when `floor(x / size)` and `floor(z / size)` are both i32s, and `reach_tiles` more either
+// side too: the window of tiles the ring enumerates round an observer.
+bool tile_reachable(WorldPos position, f32 tile_size, f64 reach_tiles = 0.0) noexcept;
 
 // Rings in use are at most one fewer than the simulation's tiers: the last tier is "inactive".
 inline constexpr u32 k_max_rings = sim::k_max_tiers - 1;
@@ -131,6 +145,9 @@ struct RingStats {
   u32 deferred_promotions = 0;  // wanted to activate or move in, and lost to the rate limit
   u32 deferred_demotions = 0;
   u32 per_ring[k_max_rings] = {};  // active tiles in each ring
+  // Observers whose window of tiles leaves the tiles' i32 index (`tile_reachable`): they observe
+  // nothing this update.
+  u32 unreached = 0;
 };
 
 class TileRing {
@@ -146,7 +163,9 @@ class TileRing {
 
   // One update: appends this update's events to `events` in tile order and returns how many.
   // `unlimited` lifts the rate limits for this update — a first fill, or a host that would rather
-  // wait for a teleport than draw a world that arrives over several frames.
+  // wait for a teleport than draw a world that arrives over several frames. An observer whose
+  // window of tiles is not `tile_reachable` — past the world's last tile, ±2^31 tiles — observes
+  // nothing and is counted in `stats().unreached`.
   u32 update(const sim::ObserverSet& observers, Vector<TileEvent>& events, bool unlimited = false);
   // Deactivates every active tile, appending the events in tile order.
   u32 clear(Vector<TileEvent>& events);
@@ -178,6 +197,8 @@ class TileRing {
 
  private:
   void add_candidates(WorldPos observer, f32 weight);
+  // Whether the observer's window of tiles (`add_candidates`') is `tile_reachable`.
+  bool reaches(WorldPos observer, f32 weight) const noexcept;
 
   RingParams params_;
   sim::TierParams tiers_params_;
