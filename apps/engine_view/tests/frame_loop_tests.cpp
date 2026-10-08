@@ -44,6 +44,10 @@
 
 using namespace engine;
 
+// Everything below is for the cases at the end, and every one of them is behind
+// ENGINE_VIEW_TESTS_DUNES: with the dunes off this file has no cases, and Clang would otherwise
+// refuse the helpers as unused functions (-Werror), as linux-clang-minimal did on 2026-10-08.
+#if ENGINE_VIEW_TESTS_DUNES
 namespace {
 
 constexpr u32 k_frames = 96;
@@ -195,7 +199,6 @@ Flown fly(const test::TempDir& tmp, const std::string& name, const std::string& 
 
 }  // namespace
 
-#if ENGINE_VIEW_TESTS_DUNES
 
 TEST_CASE("frame loop: the desert overlook allocates nothing in its second flight" *
           doctest::skip()) {
