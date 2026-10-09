@@ -3428,9 +3428,9 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
       if (error != nullptr && error->empty()) *error = "unsupported color format";
       return false;
     }
-    if (channels.light && !capture_light(shot, desc_.display,
-                                         display_levels(resolved_.settings).paper_white_nits, out,
-                                         error)) {
+    if (channels.light &&
+        !capture_light(shot, desc_.display, display_levels(resolved_.settings).paper_white_nits,
+                       out, error)) {
       return false;
     }
     out.width = shot.width;

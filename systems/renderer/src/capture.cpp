@@ -1,9 +1,8 @@
-#include <systems/renderer/capture.h>
-
 #include <domain/gfx/display.h>
 #include <foundation/image/exr.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/capture.h>
 
 #include <cstdio>
 #include <cstring>
@@ -159,12 +158,13 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
     // one rounds back to it (image/exr.h).
     out.light = join(dir, stem + ".exr");
     Vector<u16> halves(frame.light.size());
-    for (u32 i = 0; i < frame.light.size(); ++i) halves[i] = image::half_from_f32(frame.light[i]);
+    for (u32 i = 0; i < frame.light.size(); ++i)
+      halves[i] = image::half_from_f32(frame.light[i]);
     image::ExrOptions options;
     options.white_luminance = frame.white_nits;
-    const io::Status status = image::write_exr(out.light, frame.width, frame.height, 3,
-                                               std::span<const u16>(halves.data(), halves.size()),
-                                               options);
+    const io::Status status =
+        image::write_exr(out.light, frame.width, frame.height, 3,
+                         std::span<const u16>(halves.data(), halves.size()), options);
     if (status != io::Status::Ok) {
       error = "cannot write " + out.light + ": " + io::status_name(status);
       return false;
@@ -181,8 +181,8 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
   return true;
 }
 
-bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding,
-                   f32 paper_white_nits, CapturedFrame& frame, std::string* error) {
+bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding, f32 paper_white_nits,
+                   CapturedFrame& frame, std::string* error) {
   const u32 pixels = picture.width * picture.height;
   const auto refuse = [&](const char* why) {
     if (error != nullptr) {
@@ -198,8 +198,8 @@ bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding,
   const bool ten_bit = picture.format == gfx::Format::A2B10G10R10Unorm ||
                        picture.format == gfx::Format::A2R10G10B10Unorm;
   const bool red_low = picture.format == gfx::Format::A2B10G10R10Unorm;
-  const bool eight_bit = picture.format == gfx::Format::R8G8B8A8Unorm ||
-                         picture.format == gfx::Format::B8G8R8A8Unorm;
+  const bool eight_bit =
+      picture.format == gfx::Format::R8G8B8A8Unorm || picture.format == gfx::Format::B8G8R8A8Unorm;
   const bool bgra = picture.format == gfx::Format::B8G8R8A8Unorm;
   const bool half = picture.format == gfx::Format::R16G16B16A16Sfloat;
   const bool sdr = encoding == gfx::DisplayEncoding::Sdr;
@@ -241,14 +241,16 @@ bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding,
       codes[2] = bgra ? p[0] : p[2];
     }
     if (sdr) {
-      for (u32 c = 0; c < 3; ++c) light[c] = gfx::sdr_decode(static_cast<f32>(codes[c]) / steps);
+      for (u32 c = 0; c < 3; ++c)
+        light[c] = gfx::sdr_decode(static_cast<f32>(codes[c]) / steps);
     } else if (pq) {
       const f32 nits2020[3] = {gfx::pq_decode(static_cast<f32>(codes[0]) / steps),
                                gfx::pq_decode(static_cast<f32>(codes[1]) / steps),
                                gfx::pq_decode(static_cast<f32>(codes[2]) / steps)};
       f32 nits709[3];
       gfx::bt2020_to_bt709(nits2020, nits709);
-      for (u32 c = 0; c < 3; ++c) light[c] = nits709[c] / white;
+      for (u32 c = 0; c < 3; ++c)
+        light[c] = nits709[c] / white;
     } else {
       u16 h[4];
       std::memcpy(h, src + static_cast<usize>(i) * 8, sizeof(h));

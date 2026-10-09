@@ -1,9 +1,8 @@
 #include <foundation/image/exr.h>
 
-#include <tinyexr.h>
-
 #include <cstdlib>
 #include <cstring>
+#include <tinyexr.h>
 
 namespace engine::image {
 
@@ -20,7 +19,7 @@ u16 half_from_f32(f32 value) noexcept {
   if (bits >= 0x477ff000u) return static_cast<u16>(sign | 0x7c00u);
   if (bits < 0x38800000u) {  // under 2^-14, the smallest normal half: a subnormal or zero
     if (bits < 0x33000000u) return static_cast<u16>(sign);  // under 2^-25 (a tie at it, to 0)
-    const u32 exponent = bits >> 23;                         // 102 .. 112
+    const u32 exponent = bits >> 23;                        // 102 .. 112
     const u32 mantissa = (bits & 0x7fffffu) | 0x800000u;
     const u32 shift = 126u - exponent;  // to units of 2^-24, the subnormal half's step
     u32 q = mantissa >> shift;
@@ -88,15 +87,9 @@ struct Layout {
 bool layout_for(u32 channels, Layout& out) {
   out = Layout{};
   switch (channels) {
-    case 1:
-      out = Layout{1, {"Y"}, {0}};
-      return true;
-    case 3:
-      out = Layout{3, {"B", "G", "R"}, {2, 1, 0}};
-      return true;
-    case 4:
-      out = Layout{4, {"A", "B", "G", "R"}, {3, 2, 1, 0}};
-      return true;
+    case 1: out = Layout{1, {"Y"}, {0}}; return true;
+    case 3: out = Layout{3, {"B", "G", "R"}, {2, 1, 0}}; return true;
+    case 4: out = Layout{4, {"A", "B", "G", "R"}, {3, 2, 1, 0}}; return true;
     default: return false;
   }
 }

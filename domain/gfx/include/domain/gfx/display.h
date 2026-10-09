@@ -306,7 +306,8 @@ inline void bt2020_to_bt709(const f32 in[3], f32 out[3]) noexcept {
   static const Inverse inverse = [] {
     f64 a[3][3];
     for (u32 r = 0; r < 3; ++r)
-      for (u32 c = 0; c < 3; ++c) a[r][c] = static_cast<f64>(k_bt709_to_bt2020[r][c]);
+      for (u32 c = 0; c < 3; ++c)
+        a[r][c] = static_cast<f64>(k_bt709_to_bt2020[r][c]);
     const f64 det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
                     a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
                     a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);

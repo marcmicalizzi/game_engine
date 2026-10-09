@@ -337,10 +337,9 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
       "journal",        "diff",          "merge_layers",  "validate",      "describe",
       "list_schema",    "capture",       "benchmark",     "compare",       "evaluate",
       "scenes",         "unload",        "get_logs",      "adapters",      "displays",
-      "host_info",
-      "build_content",  "events",        "budgets",       "run_headless",  "run_tests",
-      "acquire_lease",  "renew_lease",   "release_lease", "leases",        "propose_layer",
-      "promote",        "state_hash",    "save_game",     "load_game"};
+      "host_info",      "build_content", "events",        "budgets",       "run_headless",
+      "run_tests",      "acquire_lease", "renew_lease",   "release_lease", "leases",
+      "propose_layer",  "promote",       "state_hash",    "save_game",     "load_game"};
   for (usize i = 0; i < tools.size(); ++i) {
     const JsonValue& t = tools[i];
     const std::string name = str(t, "name");

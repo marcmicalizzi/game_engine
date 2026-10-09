@@ -1584,9 +1584,8 @@ void run_displays(Bridge& b, const JsonValue&, ToolOutcome& out) {
     lines += "\n  " + text_of(o, "name") + " on " + text_of(o, "adapter") + ": " +
              std::to_string(uint_of(o, "bits_per_color")) + " bits a colour, HDR " +
              (bool_of(o, "hdr") ? "on" : "off") + " (" + text_of(o, "color_space") + "), " +
-             fixed(real_of(o, "min_luminance"), 4) + " / " +
-             fixed(real_of(o, "max_luminance"), 0) + " / " +
-             fixed(real_of(o, "max_full_frame_luminance"), 0) +
+             fixed(real_of(o, "min_luminance"), 4) + " / " + fixed(real_of(o, "max_luminance"), 0) +
+             " / " + fixed(real_of(o, "max_full_frame_luminance"), 0) +
              " nits (minimum, peak, full frame), SDR white " +
              fixed(real_of(o, "sdr_white_nits"), 0) + " nits";
     const JsonValue* surfaces = o.find("surfaces");
@@ -1597,8 +1596,8 @@ void run_displays(Bridge& b, const JsonValue&, ToolOutcome& out) {
       for (usize f = 0; formats != nullptr && f < formats->size(); ++f) {
         const std::string space = text_of((*formats)[f], "color_space");
         if (space == "srgb_nonlinear") continue;
-        hdr_offers += (hdr_offers.empty() ? "" : ", ") + text_of((*formats)[f], "format") + " " +
-                      space;
+        hdr_offers +=
+            (hdr_offers.empty() ? "" : ", ") + text_of((*formats)[f], "format") + " " + space;
       }
       lines += "\n    a window there on " + text_of(offers, "adapter") + " is offered " +
                (hdr_offers.empty() ? std::string("sRGB formats only") : hdr_offers);
@@ -1607,8 +1606,8 @@ void run_displays(Bridge& b, const JsonValue&, ToolOutcome& out) {
   out.data = r;
   out.data.set("report", JsonValue(file_uri(report)));
   if (!bool_of(r, "available")) {
-    out.summary = "The display probe cannot run here: " + text_of(r, "error", "no reason given") +
-                  ".";
+    out.summary =
+        "The display probe cannot run here: " + text_of(r, "error", "no reason given") + ".";
   } else {
     out.summary = std::to_string(count) + " display output(s):" + lines;
   }

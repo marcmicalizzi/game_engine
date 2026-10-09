@@ -272,7 +272,10 @@ TEST_CASE(
         last = y;
         if (knee < ceiling) CHECK(y <= ceiling);
         CHECK(static_cast<f64>(y) ==
-              doctest::Approx(gfx::reference::display_tone(static_cast<f64>(x), static_cast<f64>(knee), static_cast<f64>(ceiling))).epsilon(1e-5));
+              doctest::Approx(gfx::reference::display_tone(static_cast<f64>(x),
+                                                           static_cast<f64>(knee),
+                                                           static_cast<f64>(ceiling)))
+                  .epsilon(1e-5));
         // The SDR picture's curve is the same function with its ceiling at paper white.
         const f32 sdr = gfx::display_tone(x, knee, 1.0f);
         if (x <= knee) {
@@ -351,7 +354,8 @@ TEST_CASE("display: the linear encoding, BT.2020 back to Rec. 709, and the ramp"
     }
     f32 back[3];
     gfx::bt2020_to_bt709(wide, back);
-    for (u32 r = 0; r < 3; ++r) CHECK(std::fabs(back[r] - c[r]) <= 2.0e-6f);
+    for (u32 r = 0; r < 3; ++r)
+      CHECK(std::fabs(back[r] - c[r]) <= 2.0e-6f);
   }
   const f32 green2020[3] = {0.0f, 1.0f, 0.0f};
   f32 green709[3];

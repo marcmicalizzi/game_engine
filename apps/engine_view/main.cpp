@@ -2841,9 +2841,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         if (!ok) break;
         char prefix[16];
         std::snprintf(prefix, sizeof(prefix), "%05u-", f);
-        const std::string file = io::join_path(
-            options.marker_captures, std::string(prefix) + file_stem(marker.name) +
-                                         (options.capture_exr ? ".exr" : ".png"));
+        const std::string file =
+            io::join_path(options.marker_captures, std::string(prefix) + file_stem(marker.name) +
+                                                       (options.capture_exr ? ".exr" : ".png"));
         if (!write_shot(file, shot, error)) {
           ok = false;
           break;
@@ -5026,8 +5026,8 @@ int main(int argc, char** argv) {
         const renderer::CaptureChannels& want = options.capture_channels;
         if (!gfx::capture_image(device, swapchain.image(image_index), gfx::ImageLayout::Present,
                                 shot, &error) ||
-            (want.color && !gfx::capture_to_rgba8(shot, picture.color, true,
-                                                  resolved.settings.dither)) ||
+            (want.color &&
+             !gfx::capture_to_rgba8(shot, picture.color, true, resolved.settings.dither)) ||
             (want.light &&
              !renderer::capture_light(shot, view_renderer.display(),
                                       renderer::display_levels(resolved.settings).paper_white_nits,

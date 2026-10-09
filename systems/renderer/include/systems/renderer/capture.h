@@ -69,15 +69,16 @@ struct CapturedFrame {
   Vector<f32> light;
   CodeHistogram codes;  // with `light`: `<stem>.codes.json`
   gfx::DisplayEncoding encoding = gfx::DisplayEncoding::Sdr;
-  f32 white_nits = 0.0f;  // the nits of `light`'s 1.0 for an HDR picture (paper white); 0 if unknown
+  f32 white_nits =
+      0.0f;  // the nits of `light`'s 1.0 for an HDR picture (paper white); 0 if unknown
 };
 
 // Where `write_capture` put each channel. Paths are native; `uri` forms are the caller's job
 // (engine-host makes `file://` URIs of them).
 struct CaptureFiles {
   std::string color;
-  std::string light;  // the half-float EXR
-  std::string codes;  // its code histogram
+  std::string light;       // the half-float EXR
+  std::string codes;       // its code histogram
   std::string ids;         // the raw u32 array
   std::string ids_header;  // the JSON that describes it
   std::string depth;
@@ -89,8 +90,8 @@ struct CaptureFiles {
 // to nits, back from BT.2020 to Rec. 709 (`gfx::bt2020_to_bt709`) and over paper white; scRGB's
 // halves times 80 nits over paper white; the linear radiance as it is. `paper_white_nits` is the
 // frame's (`display_levels`). False, with `error`, for a format the encoding is never drawn into.
-bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding,
-                   f32 paper_white_nits, CapturedFrame& frame, std::string* error = nullptr);
+bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding, f32 paper_white_nits,
+                   CapturedFrame& frame, std::string* error = nullptr);
 
 // Writes every channel `frame` carries into `dir`, named `<base>.<channel>.<ext>` (the color
 // channel is `<base>.png`, so a capture of one channel is one obvious file). The id buffer is

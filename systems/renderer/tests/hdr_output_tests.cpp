@@ -91,8 +91,7 @@ struct Rig {
   SceneRenderer renderer;
   std::string error;
 
-  bool build(const gfx::Device& device, bool sky, gfx::Format format,
-             gfx::DisplayEncoding encoding,
+  bool build(const gfx::Device& device, bool sky, gfx::Format format, gfx::DisplayEncoding encoding,
              u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded), bool dither = true) {
     if (!load_scene(hills(sky), data, error)) return false;
     RenderSettings settings;
@@ -196,7 +195,8 @@ void shoot(const gfx::Device& device, Rig& rig, const FrameDesc& frame, Light& o
       for (u32 c = 0; c < 3; ++c) {
         u16 h = 0;
         std::memcpy(&h, p + 2 * c, sizeof(h));
-        const f64 v = static_cast<f64>(half_to_float(h)) * static_cast<f64>(gfx::k_scrgb_unit_nits) / k_paper_white;
+        const f64 v = static_cast<f64>(half_to_float(h)) *
+                      static_cast<f64>(gfx::k_scrgb_unit_nits) / k_paper_white;
         out.rel[3 * i + c] = v;
         out.step[3 * i + c] = std::fabs(v) / 1024.0 + 1e-6;  // a half's last bit
       }
@@ -331,7 +331,8 @@ TEST_CASE("hdr output: an HDR encoding refuses a target that cannot hold it") {
 // read back, holds that light to the bit with paper white as its `whiteLuminance`; and below the
 // knee (1: the stand-in has no shoulder) the HDR10 light and the radiance are the SDR picture's
 // decoded light within one code of each encoding — the dither's amplitude, which both carry.
-TEST_CASE("hdr output: an EXR capture holds the picture's light, the SDR picture's below the knee") {
+TEST_CASE(
+    "hdr output: an EXR capture holds the picture's light, the SDR picture's below the knee") {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE("skipped: " << gpu.why);
@@ -407,8 +408,8 @@ TEST_CASE("hdr output: an EXR capture holds the picture's light, the SDR picture
       if (code >= 250) continue;  // the clip, and the shoulder's top for a pixel there
       // One 8-bit code of the SDR picture at this level, and one 10-bit PQ code (under 1.5% of
       // the light below paper white) plus a floor for the darkest codes.
-      const f64 sdr_code = static_cast<f64>(gfx::sdr_decode(static_cast<f32>(code + 1) / 255.0f)) -
-                           seen;
+      const f64 sdr_code =
+          static_cast<f64>(gfx::sdr_decode(static_cast<f32>(code + 1) / 255.0f)) - seen;
       const f64 allow = sdr_code + 0.015 * seen + 2.0e-4;
       CAPTURE(i);
       CAPTURE(c);
@@ -446,8 +447,8 @@ TEST_CASE("hdr output: the ramp view is display_ramp through the output encode")
   light.color = false;
   CapturedFrame h;
   REQUIRE_MESSAGE(pq.renderer.capture(frame, light, h, &pq.error), pq.error);
-  const f64 ceiling = static_cast<f64>(gfx::display_headroom(static_cast<f32>(k_peak),
-                                                             static_cast<f32>(k_paper_white)));
+  const f64 ceiling = static_cast<f64>(
+      gfx::display_headroom(static_cast<f32>(k_peak), static_cast<f32>(k_paper_white)));
   for (const u32 y : {7u, k_height * 5 / 8, k_height * 7 / 8}) {
     for (u32 x = 0; x < k_width; x += 3) {
       CAPTURE(x);
