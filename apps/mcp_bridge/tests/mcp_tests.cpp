@@ -336,7 +336,8 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
       "reparent",       "delete_object", "apply",         "undo",          "redo",
       "journal",        "diff",          "merge_layers",  "validate",      "describe",
       "list_schema",    "capture",       "benchmark",     "compare",       "evaluate",
-      "scenes",         "unload",        "get_logs",      "adapters",      "host_info",
+      "scenes",         "unload",        "get_logs",      "adapters",      "displays",
+      "host_info",
       "build_content",  "events",        "budgets",       "run_headless",  "run_tests",
       "acquire_lease",  "renew_lease",   "release_lease", "leases",        "propose_layer",
       "promote",        "state_hash",    "save_game",     "load_game"};

@@ -1560,6 +1560,62 @@ void run_adapters(Bridge& b, const JsonValue&, ToolOutcome& out) {
   link(out, file_uri(report), "adapters report", "application/json");
 }
 
+bool schema_displays(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("gpu.displays", s, e);
+}
+
+// E39's first measurement (docs/experiments/hdr-output-proposal.md): what Windows reports for
+// each output — whether "Use HDR" is on, the luminances, the SDR white level — and the formats and
+// colour spaces a window on it is offered. Read-only like `adapters`, and like it the whole result
+// goes to a file in the workspace, since it is what somebody sends back from a machine.
+void run_displays(Bridge& b, const JsonValue&, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("gpu.displays", JsonValue(), r, out)) return;
+  std::string dir;
+  if (!workspace_dir(b, "", dir, out)) return;
+  const std::string report = dir + "/displays.json";
+  if (!write_json_file(report, r, out)) return;
+  const JsonValue* list = r.find("outputs");
+  std::string lines;
+  usize count = 0;
+  for (usize i = 0; list != nullptr && i < list->size(); ++i) {
+    const JsonValue& o = (*list)[i];
+    ++count;
+    lines += "\n  " + text_of(o, "name") + " on " + text_of(o, "adapter") + ": " +
+             std::to_string(uint_of(o, "bits_per_color")) + " bits a colour, HDR " +
+             (bool_of(o, "hdr") ? "on" : "off") + " (" + text_of(o, "color_space") + "), " +
+             fixed(real_of(o, "min_luminance"), 4) + " / " +
+             fixed(real_of(o, "max_luminance"), 0) + " / " +
+             fixed(real_of(o, "max_full_frame_luminance"), 0) +
+             " nits (minimum, peak, full frame), SDR white " +
+             fixed(real_of(o, "sdr_white_nits"), 0) + " nits";
+    const JsonValue* surfaces = o.find("surfaces");
+    for (usize s = 0; surfaces != nullptr && s < surfaces->size(); ++s) {
+      const JsonValue& offers = (*surfaces)[s];
+      const JsonValue* formats = offers.find("formats");
+      std::string hdr_offers;
+      for (usize f = 0; formats != nullptr && f < formats->size(); ++f) {
+        const std::string space = text_of((*formats)[f], "color_space");
+        if (space == "srgb_nonlinear") continue;
+        hdr_offers += (hdr_offers.empty() ? "" : ", ") + text_of((*formats)[f], "format") + " " +
+                      space;
+      }
+      lines += "\n    a window there on " + text_of(offers, "adapter") + " is offered " +
+               (hdr_offers.empty() ? std::string("sRGB formats only") : hdr_offers);
+    }
+  }
+  out.data = r;
+  out.data.set("report", JsonValue(file_uri(report)));
+  if (!bool_of(r, "available")) {
+    out.summary = "The display probe cannot run here: " + text_of(r, "error", "no reason given") +
+                  ".";
+  } else {
+    out.summary = std::to_string(count) + " display output(s):" + lines;
+  }
+  out.summary += "\nFull report: " + file_uri(report);
+  link(out, file_uri(report), "displays report", "application/json");
+}
+
 constexpr u32 k_logs_default = 100;
 constexpr u32 k_logs_max = 2000;
 
@@ -2291,6 +2347,12 @@ constexpr ToolDef k_tools[] = {
      "The machine's Vulkan devices and whether the renderer can run on each: its tier, and what "
      "blocks or degrades it. The full requirements report goes to <workspace>/adapters.json.",
      "gpu.adapters", true, false, true, &schema_adapters, &run_adapters},
+    {"displays", "List display outputs",
+     "Every display output Windows reports, with whether HDR is on, its minimum, peak and "
+     "full-frame luminance, the SDR white level, and the formats and colour spaces a window on it "
+     "is offered (HDR10, scRGB). Shows no window and changes no display setting. The full result "
+     "goes to <workspace>/displays.json.",
+     "gpu.displays", true, false, true, &schema_displays, &run_displays},
     {"host_info", "About the host",
      "What the bridge is talking to: the engine-host's version, build, process id, uptime, "
      "generation and method count, the workspace directory, the default attribution, the call "
