@@ -91,7 +91,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R59 | Accept ADR-0052 | done (2026-10-07, the owner) | R58 | S | design | [ADR-0052](adr/0052-the-picture-is-quantized-once-with-dither.md) |
 | R60 | HDR output (E39) | blocked (a measurement on the owner's surround) | R58, R79, R80 | M | research | [E39](experiments/hdr-output-proposal.md) |
 | R79 | HDR output paths: colour-space extensions, PQ encode, scRGB chain, EXR capture, the probe | done (2026-10-09: stage 1 59a99ffd, the EXR capture, linear radiance and ramp in the commit after 998830a1) | R58 | M | design | [renderer](subsystems/renderer.md#hdr-output) |
-| R80 | The HDR measurement script for E39 | open | R79 | S | routine | [E39](experiments/hdr-output-proposal.md#what-the-owner-measures) |
+| R80 | The HDR measurement script for E39 | done (2026-10-09, tools/hdr-measure.ps1 in the commit after 015afad4) | R79 | S | routine | [E39](experiments/hdr-output-proposal.md#what-the-owner-measures) |
 | R61 | Top-level structure over occupied instances only | open | R51 | S | routine | [frame-thread spikes](experiments/frame-thread-spikes-2026-10-04.md#what-is-open) |
 | R62 | BLAS budget manager | open | R51 | L | design | [04 §4.4](plan/04-renderer.md#44-ray-tracing) |
 | R63 | Cluster structures shared across rigid instances | open | R50 | S | design | [gfx](subsystems/gfx.md#what-a-device-has-to-have) |

@@ -117,6 +117,15 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.blender_run PROPERTIES LABELS "tools")
 
+  # E39's measurement script (tools/hdr-measure.ps1, roadmap R80): its refusals, a dry run's plan
+  # (every picture waits for a quiet machine, none lifts the present ceiling) and a run through
+  # stand-ins for engine-cli and engine-view. No GPU and no window.
+  add_test(NAME tools.hdr_measure
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/hdr-measure.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.hdr_measure PROPERTIES LABELS "tools")
+
   # "Documentation moves with the code" (AGENTS.md), over this tree: a module has a page, an ADR
   # is numbered and indexed, and every link resolves. It reads files, so it runs under every
   # preset including the minimal ones, where the documentation is the same documentation.
