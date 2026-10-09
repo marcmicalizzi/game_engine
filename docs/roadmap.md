@@ -501,7 +501,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T53 | Divergence bisector and replay methods | open | S17 | M | design | [09 §9.2](plan/09-testing-profiling.md#92-determinism-infrastructure) |
 | T54 | Publishing plan | done (388cc7c4) | | S | design | [publishing](publishing.md) |
 | T65 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
-| T66 | `msvc-asan` built and tested in CI | open | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| T66 | `msvc-asan` built and tested in CI | done (2026-10-09: 96 of 96 here after a renderer test's use after scope; in the Windows matrix, blocking) | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | T67 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
 | T55 | Overlay directory found by the build | open | T54 | M | design | [publishing](publishing.md#a-private-and-experimental-capabilities-and-content-an-overlay-repository) |
 | T56 | History audit, private mirror, first public push | open | T55 | M | design | [publishing](publishing.md#c-before-the-first-public-push) |

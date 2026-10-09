@@ -32,9 +32,13 @@ endif()
 if(ENGINE_ASAN)
   if(MSVC)
     add_compile_options(/fsanitize=address)
-    # MSVC ASan is incompatible with /RTC and incremental linking.
+    # MSVC ASan is incompatible with /RTC and incremental linking. The C flags too (T66): SQLite,
+    # miniaudio, SDL, flecs and volk are C, and until 2026-10-09 their objects were compiled with
+    # both /RTC1 and /fsanitize=address — which MSVC 14.51 compiles without a word, against its
+    # documentation, so nothing said the C half of the build was outside the supported combination.
     foreach(_cfg "" _DEBUG _RELWITHDEBINFO)
       string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS${_cfg} "${CMAKE_CXX_FLAGS${_cfg}}")
+      string(REPLACE "/RTC1" "" CMAKE_C_FLAGS${_cfg} "${CMAKE_C_FLAGS${_cfg}}")
     endforeach()
     add_link_options(/INCREMENTAL:NO)
   else()

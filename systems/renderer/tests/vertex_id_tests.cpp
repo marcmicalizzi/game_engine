@@ -147,8 +147,12 @@ TEST_CASE("renderer: a loaded mesh exposes its canonical vertex ids, from the gl
     const std::span<const u32> ids = mesh_vertex_ids(data, 0);
     CHECK(ids.size() == data.lod.mesh.vertices.size());
     CHECK(misplaced(data, 0) == 0);
-    // The two edges the file named apart stayed apart: all eight authored ids are there.
-    for (const u32 id : Quads{}.ids)
+    // The two edges the file named apart stayed apart: all eight authored ids are there. The ids
+    // are a named object's: `for (id : Quads{}.ids)` is standard C++ (a reference bound to a
+    // temporary's member extends the temporary), but MSVC ends the temporary's scope after the
+    // range's initializer and msvc-asan reported the loop reading it (2026-10-09, roadmap T66).
+    const Quads quads;
+    for (const u32 id : quads.ids)
       CHECK(std::find(ids.begin(), ids.end(), id) != ids.end());
     CHECK(mesh_vertex_ids(data, 1).empty());  // past the scene's meshes
   }

@@ -52,7 +52,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [msvc-debug, msvc-release]
+        # msvc-asan is msvc-debug with MSVC's AddressSanitizer (T66; docs/ci/what-to-run.md,
+        # "Sanitizers"): the Windows half of the sanitizer job, which reaches what linux-clang-asan
+        # cannot — MSVC's code generation and the Windows paths. It blocks like the others since
+        # 2026-10-09, when it first ran 96 of 96. The runtime DLL it loads is beside cl.exe, which
+        # msvc-dev-cmd puts on PATH for the build and the tests alike.
+        preset: [msvc-debug, msvc-release, msvc-asan]
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
