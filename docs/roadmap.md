@@ -456,7 +456,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T8 | Repository conventions, layer check, AGENTS.md | done (22c31122) | | M | design | [02 §2.5](plan/02-architecture.md#25-repository-organization-for-agent-comprehension) |
 | T9 | Phase 0 actuals and the first rescale | done (7c152a5c) | | S | routine | [10 §10.8](plan/10-roadmap-risks.md#108-calibrating-the-estimates) |
 | T10 | Phase 1 actuals and the rendering rescale | open | R36 | S | routine | [10 §10.8](plan/10-roadmap-risks.md#108-calibrating-the-estimates) |
-| T11 | Sanitizer builds in CI | in progress | T7 | M | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| T11 | Sanitizer builds in CI | done (2026-10-09: linux-clang-asan 96 of 96, the job blocks) | T7 | M | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | T12 | clang-cl in CI, and its contraction flag | open | T7 | S | routine | [determinism](experiments/content-build-determinism.md#follow-ups) |
 | T13 | Fuzzing of parsers, the protocol and saves | open | T11 | L | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |
 | T14 | Defect-rate tracking per phase | open | T11 | S | design | [08 §8.1](plan/08-toolchain.md#81-language) |

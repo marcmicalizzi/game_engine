@@ -98,7 +98,7 @@ is T47's.
 
 **What the next runs found** (2026-10-09, the local container). The first, with `llvm-symbolizer` in the image and strict mode off, built cold and ran **85 of 96** (a test was added since): no initialization-order report anywhere, the platform, atlas, texture and nav tests on F14 to F16 as above, and seven more — terrain, its bench, renderer, world, scene collision, `engine_view` and `engine_content` — stopping on undefined behaviour F13's start-up stops had hidden: **F17**, the dunes' ripple shift for yesterday computed as `86'400 * speed_q16` in `int`, which overflows on any day whose wind beats 0.38 of the mean (`domain/terrain/src/dunes.cpp`; [terrain](../subsystems/terrain.md#the-time-function)). On every other build it wrapped, so the full-detail surface's ripples jumped at midnight; it is an `i64` now, and a test holds the next day's yesterday to the last second of the day. With the five fixed, **96 of 96 passed** (46 minutes 38 seconds warm, almost all of it the tests: `engine_cli` 606 s, `bench.physics` 329 s, `terrain` 256 s), and no sanitizer report appears in the log.
 
-Until those rows are closed **the job reports and does not block** (`continue-on-error` for that preset in ci.yml), and T11 stays in progress; the other five Linux jobs are unchanged.
+**The job blocks since 2026-10-09**: with those rows closed, ci.yml's `continue-on-error` for the preset is gone, and a sanitizer finding fails a push like any other failed test (T11, done). Until then it reported and did not block.
 
 ### Licences
 

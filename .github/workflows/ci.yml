@@ -71,10 +71,6 @@ jobs:
   linux:
     name: Linux ${{ matrix.preset }}
     runs-on: ubuntu-24.04
-    # The sanitizer job reports and does not block yet: its first run (2026-10-07) found
-    # initialization-order bugs, a use after free and third-party undefined behaviour that are
-    # roadmap rows F13 to F16 (docs/ci/what-to-run.md, "Sanitizers"). When they are fixed this goes.
-    continue-on-error: ${{ matrix.preset == 'linux-clang-asan' }}
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +89,8 @@ jobs:
         # linux-clang-asan is linux-clang-debug with AddressSanitizer and UndefinedBehaviorSanitizer,
         # undefined behaviour fatal (-fno-sanitize-recover) and leaks reported (T11; docs/ci/
         # what-to-run.md, "Sanitizers"). tools/linux-build.ps1 -Preset linux-clang-asan runs the
-        # same configuration in the local container.
+        # same configuration in the local container. It blocks like the others since 2026-10-09,
+        # when the first run's findings (roadmap F13 to F17) were closed and it ran 96 of 96.
         preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, linux-clang-asan]
     steps:
       - uses: actions/checkout@v4
