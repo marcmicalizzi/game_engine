@@ -620,3 +620,4 @@ Defects that no plan section schedules: failures seen at gates, steps in a pictu
 | F16 | Fault-probe tests under the sanitizers | open | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | F17 | Traced-shadow specks at a far crease in one view: a ray from its own cluster | open | F4 | S | research | [shadow shards](experiments/shadow-shards-2026-10-09.md#what-is-left) |
 | F18 | Surround side monitors keep the layout's field of view, not the camera's | open | | S | design | [renderer](subsystems/renderer.md#multi-view-a-viewset-over-one-scene) |
+| F19 | Dune ripples' yesterday shift overflowed an `int` | done (2026-10-09: a whole day's seconds as an i64; the next day's yesterday held to the last second's shift) | | S | routine | [terrain](subsystems/terrain.md#the-time-function) |

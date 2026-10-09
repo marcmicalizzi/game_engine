@@ -591,6 +591,35 @@ TEST_CASE("terrain: golden hashes of the reference tile on every toolchain") {
   }
 }
 
+// Yesterday's ripples, which the first two hours of a day blend out of, are where the day left
+// them: the shift a day ends on is the shift the next day starts from as its yesterday. Until
+// 2026-10-09 the yesterday shift was computed in `int` and overflowed on any day whose wind beat
+// 0.38 of the mean — undefined behaviour the first sanitizer run reported, and on every other build
+// a wrapped value metres from where the ripples were — and this failed on most days.
+TEST_CASE("terrain: yesterday's ripples start where the day left them") {
+  const DuneField field(reference_desc());
+  constexpr i64 k_second = k_us_per_second;
+  // The most an `int` product of a day's seconds and a speed could hold, as a shift in mm.
+  constexpr i64 k_int_limit_mm = (i64{2'147'483'647} * 167) / 65'536'000;
+  i64 largest = 0;
+  for (i64 day = 0; day < 40; ++day) {
+    CAPTURE(day);
+    Gather last_second;
+    field.gather(0, 0, 1'000, 1'000, (day + 1) * k_day - k_second, nullptr, last_second);
+    Gather next_day;
+    field.gather(0, 0, 1'000, 1'000, (day + 1) * k_day, nullptr, next_day);
+    CHECK(next_day.ripple_prev_x == last_second.ripple_x);
+    CHECK(next_day.ripple_prev_z == last_second.ripple_z);
+    CHECK(next_day.ripple_prev_amp == last_second.ripple_amp);
+    // One second more of the same day's drift: at most a few millimetres on.
+    CHECK(next_day.ripple_prev_shift >= last_second.ripple_shift);
+    CHECK(next_day.ripple_prev_shift - last_second.ripple_shift <= 8);
+    largest = std::max(largest, next_day.ripple_prev_shift);
+  }
+  // The days covered reach shifts an `int` could not have held, so the check above saw them.
+  CHECK(largest > k_int_limit_mm);
+}
+
 TEST_CASE("terrain: the band table — the default is the three bands, and a bad table is refused") {
   // The empty table is the default's three bands, derived from the dune height and wavelength: the
   // same primitives, the same tile, bit for bit, whether the table is left out or written out.

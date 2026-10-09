@@ -696,7 +696,11 @@ void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagFie
   out.ripple_prev_x = cos_q15(yesterday.turn) / 2;
   out.ripple_prev_z = sin_q15(yesterday.turn) / 2;
   out.ripple_shift = (into_s * today.speed_q16 * k_ripple_speed_um_per_s) / 65'536'000;
-  out.ripple_prev_shift = (86'400 * yesterday.speed_q16 * k_ripple_speed_um_per_s) / 65'536'000;
+  // A whole day's seconds as an i64: as the literal 86'400 the first product was an `int`, and a
+  // day whose wind beat 0.38 of the mean overflowed it (UB, fatal under linux-clang-asan; on every
+  // other build a wrapped, wrong shift, so yesterday's ripples were not where the day left them).
+  out.ripple_prev_shift =
+      (k_us_per_day / k_us_per_second * yesterday.speed_q16 * k_ripple_speed_um_per_s) / 65'536'000;
   const auto amp = [](i32 speed) {
     return (k_ripple_um * (32768 + min_i64(speed, k_one_q16) / 2)) >> 16;
   };
