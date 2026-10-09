@@ -95,7 +95,7 @@ jobs:
         # undefined behaviour fatal (-fno-sanitize-recover) and leaks reported (T11; docs/ci/
         # what-to-run.md, "Sanitizers"). tools/linux-build.ps1 -Preset linux-clang-asan runs the
         # same configuration in the local container. It blocks like the others since 2026-10-09,
-        # when the first run's findings (roadmap F13 to F17) were closed and it ran 96 of 96.
+        # when the first run's findings (roadmap F13 to F16 and F19) were closed and it ran 96 of 96.
         preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, linux-clang-asan]
     steps:
       - uses: actions/checkout@v4
