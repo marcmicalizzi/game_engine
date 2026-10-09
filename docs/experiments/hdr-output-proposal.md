@@ -49,7 +49,8 @@ The ADR it would produce names the route (or both, chosen by what the surface of
 - **The probe** (measurement 1): `engine-cli gpu.displays` ([protocol](../subsystems/protocol.md)) lists every output Windows reports — bits per colour, DXGI colour space (which says whether "Use HDR" is on), primaries, minimum, peak and full-frame luminance, Windows' SDR white level — and per Vulkan device what a hidden window on it is offered. No window is shown, no device opened, no setting changed.
 - **The chains**: engine-view's `--present-format hdr10` (`A2B10G10R10Unorm` in `HDR10_ST2084`) and `scrgb` (`R16G16B16A16Sfloat` in `EXTENDED_SRGB_LINEAR`), refused with a sentence naming the surface's offers where it has neither; `auto` and `sdr10` are today's `--present-bits auto` and `10` exactly ([apps](../subsystems/apps.md)).
 - **The encode** ([renderer](../subsystems/renderer.md#hdr-output)): the SDR shoulder with its ceiling moved to the display's peak over **paper white**, so everything the SDR picture shows below its knee is shown at the same luminance at paper white; then BT.2020 and PQ with the dither at one 10-bit code, or scRGB's linear light. Peak and paper white are the flags', the tunables', what Windows reports for the window's output (DXGI's `MaxLuminance`, the SDR white level), or 1000 and 200 nits, and the summary says which. An HDR10 chain carries matching static metadata. **UI** has a named seam (between the curve and the encode, in `display_output`) and nothing built.
-- **Not yet**: the half-float EXR capture (R79's remaining half; until it lands an HDR run refuses `--capture`) and the measurement script (`tools/hdr-measure.ps1`, R80).
+- **The capture** (measurement 5; 2026-10-09, R79's second half): `--capture <file>.exr` writes a picture's **linear light** as a half-float OpenEXR — linear Rec. 709 with 1.0 at the picture's white (paper white for HDR, whose nits the file's `whiteLuminance` carries), so an SDR, an HDR10, a scRGB and a linear capture of one frame compare directly — with `<stem>.codes.json`, the histogram of the codes it was stored in (PQ codes for HDR10, and for scRGB the PQ codes an HDR10 signal of its light would carry). **The resolve's linear radiance** is `--present-format linear`: the exposed radiance before any curve, offscreen into a half-float target, so the tone curve can be read off a pair of files. And **the 10-bit ramp** is `--view ramp`, a grey test pattern through the frame's own encode and dither in place of the scene ([renderer](../subsystems/renderer.md#hdr-output), [apps](../subsystems/apps.md)).
+- **The script** (2026-10-09, R80): `tools/hdr-measure.ps1` runs measurements 1 to 5 in one go under the GPU lock and writes one folder with everything below and a README to read at the panels.
 
 **What it costs**: not measured yet. The encode's cost at 1920×1080 offscreen (`engine-view --offscreen --present-format hdr10|scrgb --benchmark`, `--wait-quiet`, the resolve's GPU time against `sdr`) comes with the measurement script.
 
@@ -57,9 +58,14 @@ The ADR it would produce names the route (or both, chosen by what the surface of
 
 ## What the owner measures
 
-Pending R80's script. Until then, by hand, with Windows' HDR toggle and the NVIDIA control panel left as they are for each run (the engine changes neither, and reads only what Windows reports):
+Two runs of one script (R80), with a release build: the engine changes no display setting and reads only what Windows reports, so **Windows' "Use HDR" and the NVIDIA control panel's output colour depth (10 bpc) are set by hand before each run**.
 
-1. `build/msvc-release/bin/engine-cli gpu.displays --report displays-hdr-off.json` with "Use HDR" off, and again (`displays-hdr-on.json`) with it on for the Surround display.
-2. `build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-of-day 19.5 --present-format sdr10 --dither on` and `--dither off`, with HDR off and on.
-3. The same with `--present-format hdr10` and `--paper-white-nits 100`, `200`, `300`, and with no `--paper-white-nits` (Windows' SDR white level), HDR on.
-4. The same with `--present-format scrgb`, HDR on.
+```powershell
+tools/dev.ps1 build -Preset msvc-release
+# Run 1: "Use HDR" off for the Surround display, the NVIDIA control panel at 10 bpc.
+tools/hdr-measure.ps1 -Out D:\workspace\game_engine_local\e39\hdr-off
+# Run 2: "Use HDR" on (the SDR content brightness where you keep it: it is one of the paper whites).
+tools/hdr-measure.ps1 -Out D:\workspace\game_engine_local\e39\hdr-on
+```
+
+Each run takes the GPU lock once, probes the displays (measurement 1: `displays.json`), then shows, borderless over the whole display for four seconds each, the ramp and the erg's sky at dusk, dawn and the moonlit night looking west and east (the banding test's hours) through `sdr10` with the dither on and off (measurement 2), `hdr10` at paper whites of 100, 200 and 300 nits and at Windows' SDR white level, the reported peak in all of them (measurement 3), and `scrgb` (measurement 4), each captured on its last frame as an EXR with its code histogram (and the SDR ones as a PNG too), with its present timings; and the offscreen linear radiance under each view (measurement 5). Formats the display does not offer with HDR off are recorded as not offered. **Read `README.md` in the folder while you look at the panels**: it says what each picture should and should not show, and holds the table of every capture's distinct codes and present timings. `-DryRun` shows what would run; `-Views`, `-Formats` and `-PaperWhites` run a part of it again. What it cannot measure is the eye: whether a band is visible, whether the highlights look right, whether HDR on the Surround group is worth having — that verdict, and R60, are the owner's.

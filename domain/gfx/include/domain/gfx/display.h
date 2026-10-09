@@ -132,25 +132,35 @@ inline f32 display_dithered(f32 encoded, u32 x, u32 y, u32 steps) noexcept {
 // up to the peak instead. At a peak equal to paper white the curve is the SDR shoulder exactly.
 // display.slang is the GPU side, `domain/gfx/tests/display_reference.h` the same in double.
 
-// What the output encode writes: the SDR transfer (the 1/2.2 power) into a UNORM target, PQ, or
-// scRGB's linear light. `ResolveParams::display_encoding`; the numbers are display.slang's.
-enum class DisplayEncoding : u32 { Sdr = 0, Pq = 1, ScRgb = 2 };
+// What the output encode writes: the SDR transfer (the 1/2.2 power) into a UNORM target, PQ,
+// scRGB's linear light, or **`Linear`: the exposed radiance itself**, before any curve — no
+// shoulder, no roll-off, no transfer, no dither — into a half-float target, which is how "the
+// resolve's linear radiance" is captured (an EXR, roadmap R79): what every curve starts from, so a
+// tone curve can be judged against the light it was given. Not a display's: no swapchain takes it.
+// `ResolveParams::display_encoding`; the numbers are display.slang's.
+enum class DisplayEncoding : u32 { Sdr = 0, Pq = 1, ScRgb = 2, Linear = 3 };
 
-// "sdr", "hdr10", "scrgb": what a summary says.
+// "sdr", "hdr10", "scrgb", "linear": what a summary says.
 inline const char* display_encoding_name(DisplayEncoding encoding) noexcept {
   switch (encoding) {
     case DisplayEncoding::Pq: return "hdr10";
     case DisplayEncoding::ScRgb: return "scrgb";
+    case DisplayEncoding::Linear: return "linear";
     default: return "sdr";
   }
 }
+
+// The largest finite half: the linear encoding clamps there, because a half-float store of
+// anything larger is infinity and the sun's disc, exposed for the ground, is larger.
+inline constexpr f32 k_half_max = 65504.0f;
 
 // What a presenting host asks its swapchain for (engine-view's `--present-format`): `Auto` takes
 // 10 bits in the sRGB non-linear colour space where the surface offers them and 8 where it does
 // not (`--present-bits auto`, ADR-0052), `Sdr8` 8 bits, `Sdr10` 10 bits where offered (8 where not,
 // as `--present-bits 10` always did); `Hdr10` and `ScRgb` exactly the HDR format and colour space
-// above, refused where the surface does not offer them.
-enum class PresentFormat : u8 { Auto, Sdr8, Sdr10, Hdr10, ScRgb };
+// above, refused where the surface does not offer them. `Linear` is the offscreen picture of the
+// exposed radiance (`DisplayEncoding::Linear`), which a host refuses for a window.
+enum class PresentFormat : u8 { Auto, Sdr8, Sdr10, Hdr10, ScRgb, Linear };
 
 inline const char* present_format_name(PresentFormat format) noexcept {
   switch (format) {
@@ -158,23 +168,28 @@ inline const char* present_format_name(PresentFormat format) noexcept {
     case PresentFormat::Sdr10: return "sdr10";
     case PresentFormat::Hdr10: return "hdr10";
     case PresentFormat::ScRgb: return "scrgb";
+    case PresentFormat::Linear: return "linear";
     default: return "auto";
   }
 }
 
-// The encoding a present format draws with: PQ for HDR10, scRGB for scRGB, the SDR curve else.
+// The encoding a present format draws with: PQ for HDR10, scRGB for scRGB, the radiance for
+// linear, the SDR curve else.
 inline DisplayEncoding present_format_encoding(PresentFormat format) noexcept {
-  return format == PresentFormat::Hdr10   ? DisplayEncoding::Pq
-         : format == PresentFormat::ScRgb ? DisplayEncoding::ScRgb
-                                          : DisplayEncoding::Sdr;
+  return format == PresentFormat::Hdr10    ? DisplayEncoding::Pq
+         : format == PresentFormat::ScRgb  ? DisplayEncoding::ScRgb
+         : format == PresentFormat::Linear ? DisplayEncoding::Linear
+                                           : DisplayEncoding::Sdr;
 }
 
-// The colour target an HDR encoding draws into offscreen and asks a swapchain for: 10-bit packed
-// for PQ, half float for scRGB; Undefined for SDR, whose target is the host's choice.
+// The colour target an encoding past SDR draws into offscreen and asks a swapchain for: 10-bit
+// packed for PQ, half float for scRGB and the linear radiance; Undefined for SDR, whose target is
+// the host's choice.
 inline Format display_encoding_format(DisplayEncoding encoding) noexcept {
-  return encoding == DisplayEncoding::Pq      ? Format::A2B10G10R10Unorm
-         : encoding == DisplayEncoding::ScRgb ? Format::R16G16B16A16Sfloat
-                                              : Format::Undefined;
+  return encoding == DisplayEncoding::Pq ? Format::A2B10G10R10Unorm
+         : encoding == DisplayEncoding::ScRgb || encoding == DisplayEncoding::Linear
+             ? Format::R16G16B16A16Sfloat
+             : Format::Undefined;
 }
 
 // The defaults a display that reports nothing is drawn for, and the two fixed points of the
@@ -240,6 +255,11 @@ inline f32 display_headroom(f32 peak_nits, f32 paper_white_nits) noexcept {
 // colour and a test's expectation are computed with.
 inline void display_encode_hdr(const f32 exposed[3], f32 knee, DisplayEncoding encoding,
                                f32 paper_white_nits, f32 peak_nits, f32 out[3]) noexcept {
+  if (encoding == DisplayEncoding::Linear) {  // the radiance itself, as a half can hold it
+    for (u32 c = 0; c < 3; ++c)
+      out[c] = exposed[c] > 0.0f ? (exposed[c] < k_half_max ? exposed[c] : k_half_max) : 0.0f;
+    return;
+  }
   const f32 ceiling = display_headroom(peak_nits, paper_white_nits);
   f32 nits[3];
   for (u32 c = 0; c < 3; ++c)
@@ -273,6 +293,61 @@ inline HdrMetadata hdr10_metadata(f32 peak_nits, f32 min_nits, f32 paper_white_n
 // radiance it shows relative to its white: what an HDR picture is compared with.
 inline f32 sdr_decode(f32 encoded) noexcept {
   return std::pow(encoded <= 0.0f ? 0.0f : encoded, 2.2f);
+}
+
+// Linear BT.2020 back to linear Rec. 709: the inverse of `k_bt709_to_bt2020`, computed from it in
+// double once, so decoding undoes the encode's own matrix and not a rounded copy of the textbook
+// one. What a capture of an HDR10 picture is decoded with (renderer/capture.h); a colour outside
+// Rec. 709 comes back with a negative channel, as scRGB would hold it.
+inline void bt2020_to_bt709(const f32 in[3], f32 out[3]) noexcept {
+  struct Inverse {
+    f64 m[3][3];
+  };
+  static const Inverse inverse = [] {
+    f64 a[3][3];
+    for (u32 r = 0; r < 3; ++r)
+      for (u32 c = 0; c < 3; ++c) a[r][c] = static_cast<f64>(k_bt709_to_bt2020[r][c]);
+    const f64 det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+                    a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                    a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    Inverse inv{};
+    for (u32 r = 0; r < 3; ++r) {
+      for (u32 c = 0; c < 3; ++c) {
+        // The cofactor of a[c][r] (the transpose), over the determinant.
+        const u32 r0 = (c + 1) % 3, r1 = (c + 2) % 3, c0 = (r + 1) % 3, c1 = (r + 2) % 3;
+        inv.m[r][c] = (a[r0][c0] * a[r1][c1] - a[r0][c1] * a[r1][c0]) / det;
+      }
+    }
+    return inv;
+  }();
+  for (u32 r = 0; r < 3; ++r) {
+    const f64 v = inverse.m[r][0] * static_cast<f64>(in[0]) +
+                  inverse.m[r][1] * static_cast<f64>(in[1]) +
+                  inverse.m[r][2] * static_cast<f64>(in[2]);
+    out[r] = static_cast<f32>(v);
+  }
+}
+
+// **The ramp** (`ResolveMode::Ramp`, engine-view's `--view ramp`; E39's "10-bit ramp"): a test
+// pattern of exposed radiance drawn through the frame's own output encode in place of the scene,
+// so the encode, its dither and the display behind it are seen with nothing upstream of them. Grey,
+// in three bands, top to bottom:
+//   - the top half: black to white evenly in the SDR signal — exposed v^2.2 for v from 0 at the
+//     left edge to 1 at the right — so an SDR target's codes climb one step every width / 2^bits
+//     pixels (11 px at 10 bits across 11,520) and an HDR picture shows the same light at paper
+//     white;
+//   - the third quarter: the darkest eighth of that (v from 0 to 1/8) across the whole width, where
+//     a step is the largest share of the light it is a step of;
+//   - the last quarter: past white, exposed from 1 to 16 (four stops) evenly in stops, which an SDR
+//     picture clips to white and an HDR one rolls off towards the display's peak.
+// The knee is 1, as for a scene with no sky: nothing below white is rolled off. display.slang's
+// `display_ramp` computes the same with the GPU's `pow` and `exp2`, so the two agree to a last bit,
+// not to the bit.
+inline f32 display_ramp(u32 x, u32 y, u32 width, u32 height) noexcept {
+  const f32 u = width > 1 ? static_cast<f32>(x) / static_cast<f32>(width - 1) : 0.0f;
+  if (2u * y < height) return std::pow(u, 2.2f);
+  if (4u * y < 3u * height) return std::pow(u * 0.125f, 2.2f);
+  return std::exp2(4.0f * u);
 }
 
 }  // namespace engine::gfx

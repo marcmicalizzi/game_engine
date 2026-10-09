@@ -67,6 +67,7 @@ float3 display_output(float3 linear_color, uint2 pixel, uint steps) {
 static const uint k_display_sdr = 0;   // gfx::DisplayEncoding::Sdr
 static const uint k_display_pq = 1;    // gfx::DisplayEncoding::Pq
 static const uint k_display_scrgb = 2; // gfx::DisplayEncoding::ScRgb
+static const uint k_display_linear = 3; // gfx::DisplayEncoding::Linear: the exposed radiance
 
 // What the frame's output is: the encoding, the target's steps (the dither's, 0 for none), paper
 // white and the peak in nits. `ResolveParams`' display fields, gathered by the caller.
@@ -112,6 +113,9 @@ float3 bt709_to_bt2020(float3 c) {
 // white — so this function would split there into a tone pass and an encode pass the frame ends
 // on. Nothing composites yet, and nothing is built for it.
 float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget target) {
+  // The linear picture (display.h's `DisplayEncoding::Linear`): the radiance as a half holds it,
+  // no curve, no dither — what an EXR of the scene's light is.
+  if (target.encoding == k_display_linear) return min(max(exposed, 0.0), 65504.0);
   if (target.encoding == k_display_sdr) {
     const float3 toned = float3(display_tone1(exposed.x, knee, 1.0),
                                 display_tone1(exposed.y, knee, 1.0),
@@ -125,6 +129,16 @@ float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget tar
                       target.paper_white_nits;
   if (target.encoding == k_display_scrgb) return nits / 80.0;
   return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
+}
+
+// The ramp test pattern's exposed radiance at `pixel` of a view `size` (display.h's
+// `display_ramp`, which says what its three bands are): drawn through `display_output` with a
+// knee of 1 by the resolve's ramp mode, in place of the scene.
+float display_ramp(uint2 pixel, uint2 size) {
+  const float u = size.x > 1 ? float(pixel.x) / float(size.x - 1) : 0.0;
+  if (2 * pixel.y < size.y) return pow(u, 2.2);
+  if (4 * pixel.y < 3 * size.y) return pow(u * 0.125, 2.2);
+  return exp2(4.0 * u);
 }
 
 #endif  // ENGINE_DISPLAY_SLANG

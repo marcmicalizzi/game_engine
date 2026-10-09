@@ -312,6 +312,11 @@ enum class ResolveMode : u32 {
   // the pixel draws — its sand share, times the fade by the ground's slope, times the fade by its
   // footprint. What the seam tests compare against the CPU function of the same world position.
   GroundDetail = 9,
+  // A test pattern in place of the scene: display.h's `display_ramp` — grey ramps from black to
+  // white, across the darkest eighth, and past white — through the frame's own output encode and
+  // dither, so an SDR, HDR10 or scRGB chain and the display behind it are seen with nothing
+  // upstream of the encode (E39's "10-bit ramp"; renderer.md, "HDR output").
+  Ramp = 10,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the

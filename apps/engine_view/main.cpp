@@ -170,7 +170,10 @@ constexpr const char* k_usage =
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
-    "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
+    "  --capture <file>  write the last frame (implies --frames 60 when unset): a PNG (.png), or\n"
+    "                   its linear light as a half-float OpenEXR (.exr; 1.0 the picture's white)\n"
+    "                   with <stem>.codes.json, the histogram of the codes it was stored in. An\n"
+    "                   hdr10, scrgb or linear picture is captured as .exr only\n"
     "  --capture-every <n>  offscreen, with --capture: also write every n-th frame, drawn at that\n"
     "                   frame, as <capture>-<frame>.png (a time-lapse's sand as it stood then)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
@@ -255,8 +258,10 @@ constexpr const char* k_usage =
     "                   textured base colour, unlit: what filtering and mip selection alone do),\n"
     "                   occlusion (the material's ambient occlusion, unencoded: byte = AO * 255),\n"
     "                   detail (a terrain's sand detail as data: R ripple height, G the share\n"
-    "                   drawn, B grain; black elsewhere)\n"
-    "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
+    "                   drawn, B grain; black elsewhere), or ramp (a grey test pattern through the\n"
+    "                   output encode in place of the scene: black to white, the darkest eighth,\n"
+    "                   and four stops past white; E39's 10-bit ramp)\n"
+    "  --orbit <d>    orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
     "                   (experiment E25): identity writes the rest pose, wave displaces along the\n"
@@ -390,7 +395,10 @@ constexpr const char* k_usage =
     "  --marker-captures <d>  offscreen: write a PNG of every marker frame of the path into <d>\n"
     "  --capture-channels <list>  offscreen --capture and --marker-captures: also read back ids,\n"
     "                   depth and/or normals (e.g. ids,normals), written beside each PNG as\n"
-    "                   <stem>.ids.bin + .ids.json, <stem>.depth.png and <stem>.normals.png\n"
+    "                   <stem>.ids.bin + .ids.json, <stem>.depth.png and <stem>.normals.png;\n"
+    "                   color and light (also in a window) are the picture as <stem>.png and as\n"
+    "                   <stem>.exr + <stem>.codes.json, so --capture x.png --capture-channels light\n"
+    "                   writes both of one frame\n"
     "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
     "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
     "  --world          stream the scene tile by tile round the camera (the world capability,\n"
@@ -457,7 +465,9 @@ constexpr const char* k_usage =
     "                   hdr10 (A2B10G10R10 in HDR10_ST2084, the PQ encode) or scrgb\n"
     "                   (R16G16B16A16Sfloat in EXTENDED_SRGB_LINEAR, linear, 1.0 = 80 nits); a\n"
     "                   surface that offers neither is refused, naming what it offers. Offscreen,\n"
-    "                   hdr10 and scrgb draw into that format (no --capture yet: an EXR, R79)\n"
+    "                   hdr10 and scrgb draw into that format; linear (offscreen only) draws the\n"
+    "                   exposed radiance before any curve into R16G16B16A16Sfloat. All three are\n"
+    "                   captured as an .exr\n"
     "  --peak-nits <n>  an HDR picture's peak (default: what the display reports, else 1000)\n"
     "  --paper-white-nits <n>  where an HDR picture shows a diffuse white (default: Windows' SDR\n"
     "                   white level for the display, else 200)\n"
@@ -604,6 +614,10 @@ struct Options {
   // What an offscreen capture reads back beside the picture (`--capture-channels`): the id
   // buffer, depth and normals, in `renderer::write_capture`'s files next to each PNG.
   renderer::CaptureChannels capture_channels;
+  bool capture_channels_set = false;  // `--capture-channels` was given
+  // The picture is captured as its light, an EXR: `--capture` names an .exr, or the picture is
+  // past 8 bits (an HDR or linear --present-format), whose marker captures are .exr too.
+  bool capture_exr = false;
   bool require_quiet = false;
   u32 wait_quiet_s = 0;
   // A streamed world (world_view.h): `--world` asks for it on a scene file with no `world` block,
@@ -2034,10 +2048,12 @@ std::string file_stem(std::string_view name) {
   return out.empty() ? std::string("marker") : out;
 }
 
-// `--capture-channels`: what an offscreen capture reads back. The picture is always one of them,
-// because the file the flag names is the picture; the list adds the others.
+// `--capture-channels`: what a capture reads back beside the picture. The picture's own channel
+// (color for a PNG, light for an EXR) is added by the flag's check, because the file `--capture`
+// names is the picture; `color` and `light` listed here ask for the other one as well.
 bool parse_capture_channels(std::string_view text, renderer::CaptureChannels& out) {
   out = renderer::CaptureChannels{};
+  out.color = false;
   while (!text.empty()) {
     const size_t comma = text.find(',');
     const std::string_view name = text.substr(0, comma);
@@ -2047,7 +2063,11 @@ bool parse_capture_channels(std::string_view text, renderer::CaptureChannels& ou
       out.depth = true;
     } else if (name == "normals") {
       out.normals = true;
-    } else if (name != "color") {
+    } else if (name == "light") {
+      out.light = true;
+    } else if (name == "color") {
+      out.color = true;
+    } else {
       return false;
     }
     if (comma == std::string_view::npos) break;
@@ -2056,26 +2076,36 @@ bool parse_capture_channels(std::string_view text, renderer::CaptureChannels& ou
   return true;
 }
 
-// Writes an offscreen capture: the picture at `color_path`, exactly as a capture always wrote it,
-// and every other channel the frame carries beside it under the same stem, in `write_capture`'s
-// names and formats — `<stem>.ids.bin` + `<stem>.ids.json`, `<stem>.depth.png`,
+bool ends_with_exr(std::string_view path) {
+  return path.size() > 4 && path.substr(path.size() - 4) == ".exr";
+}
+
+// Writes a capture: a PNG picture at `path` exactly as a capture always wrote it, or — when `path`
+// ends in .exr — the picture's light there, and every other channel the frame carries beside it
+// under the same stem, in `write_capture`'s names and formats: `<stem>.png`, `<stem>.exr` +
+// `<stem>.codes.json`, `<stem>.ids.bin` + `<stem>.ids.json`, `<stem>.depth.png`,
 // `<stem>.normals.png` — which are also what `render.capture` writes, so one reader serves both.
-bool write_shot(const std::string& color_path, renderer::CapturedFrame& shot, std::string& error) {
-  const io::Status status =
-      image::write_png(color_path, shot.width, shot.height, 4,
-                       std::span<const u8>(shot.color.data(), shot.color.size()));
+bool write_shot(const std::string& path, renderer::CapturedFrame& shot, std::string& error) {
+  std::string_view name = io::file_name(path);
+  const bool exr = ends_with_exr(path);
+  if (exr || (name.size() > 4 && name.substr(name.size() - 4) == ".png")) name.remove_suffix(4);
+  renderer::CaptureFiles files;
+  if (exr || shot.color.empty()) {
+    return renderer::write_capture(io::parent_path(path), name, shot, files, error);
+  }
+  const io::Status status = image::write_png(
+      path, shot.width, shot.height, 4, std::span<const u8>(shot.color.data(), shot.color.size()));
   if (status != io::Status::Ok) {
-    error = "cannot write " + color_path + ": " + io::status_name(status);
+    error = "cannot write " + path + ": " + io::status_name(status);
     return false;
   }
-  if (shot.ids.empty() && shot.depth.empty() && shot.normals.empty()) return true;
-  std::string_view name = io::file_name(color_path);
-  if (name.size() > 4 && name.substr(name.size() - 4) == ".png") name.remove_suffix(4);
+  if (shot.light.empty() && shot.ids.empty() && shot.depth.empty() && shot.normals.empty()) {
+    return true;
+  }
   // The picture is written; the rest go through the renderer's writer without it.
   Vector<u8> color = std::move(shot.color);
   shot.color = Vector<u8>{};
-  renderer::CaptureFiles files;
-  const bool ok = renderer::write_capture(io::parent_path(color_path), name, shot, files, error);
+  const bool ok = renderer::write_capture(io::parent_path(path), name, shot, files, error);
   shot.color = std::move(color);
   return ok;
 }
@@ -2634,10 +2664,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
             break;
           }
           std::string stem = options.capture;
-          if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
+          const bool exr = ends_with_exr(stem);
+          if (exr || (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png"))
             stem.resize(stem.size() - 4);
           char suffix[16];
-          std::snprintf(suffix, sizeof(suffix), "-%05u.png", f);
+          std::snprintf(suffix, sizeof(suffix), "-%05u%s", f, exr ? ".exr" : ".png");
           if (!write_shot(stem + suffix, shot, error)) {
             shot_failed = true;
             break;
@@ -2769,8 +2800,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         ok = ok && view_renderer.capture(frame, options.capture_channels, shot, &error);
         if (!ok) break;
         char name[40];
-        std::snprintf(name, sizeof(name), "tick-%07llu.png",
-                      static_cast<unsigned long long>(marker.tick));
+        std::snprintf(name, sizeof(name), "tick-%07llu%s",
+                      static_cast<unsigned long long>(marker.tick),
+                      options.capture_exr ? ".exr" : ".png");
         const std::string file = io::join_path(options.marker_captures, name);
         if (!write_shot(file, shot, error)) {
           ok = false;
@@ -2810,7 +2842,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         char prefix[16];
         std::snprintf(prefix, sizeof(prefix), "%05u-", f);
         const std::string file = io::join_path(
-            options.marker_captures, std::string(prefix) + file_stem(marker.name) + ".png");
+            options.marker_captures, std::string(prefix) + file_stem(marker.name) +
+                                         (options.capture_exr ? ".exr" : ".png"));
         if (!write_shot(file, shot, error)) {
           ok = false;
           break;
@@ -3173,7 +3206,7 @@ int main(int argc, char** argv) {
       if (!renderer::parse_view_mode(value, options.settings.view_mode)) {
         std::fprintf(stderr,
                      "engine-view: --view expects id, tri, depth, shaded, normals, uv, shadow, "
-                     "albedo, occlusion, or detail\n");
+                     "albedo, occlusion, detail, or ramp\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {
@@ -3313,10 +3346,11 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!parse_capture_channels(value, options.capture_channels)) {
         std::fprintf(stderr,
-                     "engine-view: --capture-channels expects a list of color, ids, depth and "
-                     "normals, e.g. ids,normals\n");
+                     "engine-view: --capture-channels expects a list of color, light, ids, depth "
+                     "and normals, e.g. ids,normals\n");
         return k_exit_usage;
       }
+      options.capture_channels_set = true;
     } else if (a == "--interactive") {
       options.interactive = true;
     } else if (a == "--walk") {
@@ -3445,9 +3479,12 @@ int main(int argc, char** argv) {
         options.present_format = gfx::PresentFormat::Hdr10;
       } else if (value == "scrgb") {
         options.present_format = gfx::PresentFormat::ScRgb;
+      } else if (value == "linear") {
+        options.present_format = gfx::PresentFormat::Linear;
       } else {
         std::fprintf(stderr,
-                     "engine-view: --present-format expects auto, sdr8, sdr10, hdr10 or scrgb\n");
+                     "engine-view: --present-format expects auto, sdr8, sdr10, hdr10, scrgb or "
+                     "linear\n");
         return k_exit_usage;
       }
       options.present_format_set = true;
@@ -3659,7 +3696,16 @@ int main(int argc, char** argv) {
   }
   const bool hdr_output = options.present_format == gfx::PresentFormat::Hdr10 ||
                           options.present_format == gfx::PresentFormat::ScRgb;
-  if (hdr_output && options.reference != 0) {
+  // The exposed radiance before any curve (gfx::DisplayEncoding::Linear) is a picture for an EXR,
+  // not for a display: nothing presents it.
+  const bool linear_output = options.present_format == gfx::PresentFormat::Linear;
+  if (linear_output && !options.offscreen) {
+    std::fprintf(stderr,
+                 "engine-view: --present-format linear is the radiance before any curve, which no "
+                 "display takes; draw it --offscreen and --capture it as an .exr\n");
+    return k_exit_usage;
+  }
+  if ((hdr_output || linear_output) && options.reference != 0) {
     std::fprintf(stderr,
                  "engine-view: --reference writes the path tracer's 8-bit picture; an HDR "
                  "--present-format has no reference yet\n");
@@ -3679,18 +3725,38 @@ int main(int argc, char** argv) {
     return k_exit_usage;
   }
   // Offscreen, an HDR --present-format draws into the HDR format with the HDR encode (E39): what
-  // the encode's cost is measured on and an EXR captures. Its picture is PQ codes or scRGB's
-  // linear light, which an 8-bit PNG cannot hold.
-  // The half-float EXR that captures it is roadmap R79's second half and not built yet, so an HDR
-  // run refuses a capture rather than write PQ codes or half floats into an 8-bit PNG.
-  if (hdr_output && (!options.capture.empty() || !options.marker_captures.empty())) {
-    std::fprintf(stderr,
-                 "engine-view: a --present-format %s picture is captured as a half-float .exr, "
-                 "which is not built yet (roadmap R79); run it without --capture\n",
-                 gfx::present_format_name(options.present_format));
-    return k_exit_usage;
+  // the encode's cost is measured on and an EXR captures. Its picture is PQ codes, scRGB's linear
+  // light or the radiance's half floats, which an 8-bit PNG cannot hold, so it is captured as its
+  // light in a half-float EXR (renderer/capture.h, `capture_light`; roadmap R79) and never as a
+  // PNG. Which file a capture is follows from that and from the name `--capture` gives: an .exr is
+  // the light, anything else the PNG it always was; `--capture-channels` adds the other one.
+  const bool light_picture = hdr_output || linear_output;
+  const bool named_exr = ends_with_exr(options.capture);
+  options.capture_exr = light_picture || named_exr;
+  renderer::CaptureChannels& channels = options.capture_channels;
+  {
+    const bool color_listed = options.capture_channels_set && channels.color;
+    if (light_picture && (color_listed || (!options.capture.empty() && !named_exr))) {
+      std::fprintf(stderr,
+                   "engine-view: a --present-format %s picture is captured as its light, a "
+                   "half-float .exr; it has no 8-bit color channel or PNG\n",
+                   gfx::present_format_name(options.present_format));
+      return k_exit_usage;
+    }
+    if (options.capture_exr) {
+      channels.color = color_listed;
+      channels.light = true;
+    } else {
+      channels.color = true;
+    }
+    if (options.capture_channels_set && options.capture.empty() &&
+        options.marker_captures.empty()) {
+      std::fprintf(stderr,
+                   "engine-view: --capture-channels says what --capture and --marker-captures "
+                   "write; give one of them\n");
+      return k_exit_usage;
+    }
   }
-  const renderer::CaptureChannels& channels = options.capture_channels;
   if (channels.ids || channels.depth || channels.normals) {
     // The id buffer, depth and normals come out of the renderer's own target; a window's capture
     // is a read of the presented swapchain image, which is the picture and nothing else.
@@ -4951,23 +5017,31 @@ int main(int argc, char** argv) {
         view_renderer.wait(value);
         view_renderer.collect_visible();
         gfx::Capture shot;
-        Vector<u8> rgba;
+        renderer::CapturedFrame picture;
         // A 10-bit window's picture reaches the 8-bit PNG through the output encode's own noise at
         // 8 bits when the frame dithers (gfx/capture.h), so the PNG carries no bands the window
-        // did not; rounded plainly when it does not.
+        // did not; rounded plainly when it does not. Its light, the EXR (`--capture x.exr`, or
+        // `light` in --capture-channels), is decoded from the presented image's own codes: an HDR
+        // window's PQ codes or half floats, or an SDR one's 8 or 10 bits (renderer/capture.h).
+        const renderer::CaptureChannels& want = options.capture_channels;
         if (!gfx::capture_image(device, swapchain.image(image_index), gfx::ImageLayout::Present,
                                 shot, &error) ||
-            !gfx::capture_to_rgba8(shot, rgba, true, resolved.settings.dither)) {
+            (want.color && !gfx::capture_to_rgba8(shot, picture.color, true,
+                                                  resolved.settings.dither)) ||
+            (want.light &&
+             !renderer::capture_light(shot, view_renderer.display(),
+                                      renderer::display_levels(resolved.settings).paper_white_nits,
+                                      picture, &error))) {
           exit_code = fail("capture", error.empty() ? "unsupported swapchain format" : error);
-        } else if (const io::Status status =
-                       image::write_png(options.capture, shot.width, shot.height, 4,
-                                        std::span<const u8>(rgba.data(), rgba.size()));
-                   status != io::Status::Ok) {
-          exit_code = fail("capture", std::string("cannot write ") + options.capture + ": " +
-                                          io::status_name(status));
         } else {
-          captured = true;
-          window_capture_levels = capture_levels(shot);  // at the image's own depth
+          picture.width = shot.width;
+          picture.height = shot.height;
+          if (!write_shot(options.capture, picture, error)) {
+            exit_code = fail("capture", error);
+          } else {
+            captured = true;
+            window_capture_levels = capture_levels(shot);  // at the image's own depth
+          }
         }
       }
       const i64 before_present = time::monotonic_ns();

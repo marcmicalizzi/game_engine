@@ -324,3 +324,50 @@ TEST_CASE("display: the HDR encodes of one pixel, and an SDR white at paper whit
   CHECK(gfx::describe_surface_formats(offers) ==
         "B8G8R8A8Unorm srgb_nonlinear, A2B10G10R10Unorm hdr10_st2084");
 }
+
+// What an EXR capture decodes with (roadmap R79): the linear encoding is the radiance itself, as a
+// half holds it; BT.2020 back to Rec. 709 undoes the encode's own matrix; and the ramp's three
+// bands are what display.h says.
+TEST_CASE("display: the linear encoding, BT.2020 back to Rec. 709, and the ramp") {
+  const f32 exposed[3] = {0.25f, 3.5f, 1.0e9f};
+  f32 out[3];
+  gfx::display_encode_hdr(exposed, 0.6f, gfx::DisplayEncoding::Linear, 200.0f, 1000.0f, out);
+  CHECK(out[0] == 0.25f);
+  CHECK(out[1] == 3.5f);
+  CHECK(out[2] == gfx::k_half_max);
+  CHECK(gfx::present_format_encoding(gfx::PresentFormat::Linear) == gfx::DisplayEncoding::Linear);
+  CHECK(gfx::display_encoding_format(gfx::DisplayEncoding::Linear) ==
+        gfx::Format::R16G16B16A16Sfloat);
+  CHECK(std::strcmp(gfx::display_encoding_name(gfx::DisplayEncoding::Linear), "linear") == 0);
+
+  // The inverse matrix: a colour to BT.2020 and back is itself, white stays white, and a pure
+  // BT.2020 green is outside Rec. 709 (a negative red and blue).
+  const f32 colours[3][3] = {{1.0f, 1.0f, 1.0f}, {0.8f, 0.1f, 0.3f}, {0.02f, 0.5f, 0.9f}};
+  for (const auto& c : colours) {
+    f32 wide[3];
+    for (u32 r = 0; r < 3; ++r) {
+      wide[r] = gfx::k_bt709_to_bt2020[r][0] * c[0] + gfx::k_bt709_to_bt2020[r][1] * c[1] +
+                gfx::k_bt709_to_bt2020[r][2] * c[2];
+    }
+    f32 back[3];
+    gfx::bt2020_to_bt709(wide, back);
+    for (u32 r = 0; r < 3; ++r) CHECK(std::fabs(back[r] - c[r]) <= 2.0e-6f);
+  }
+  const f32 green2020[3] = {0.0f, 1.0f, 0.0f};
+  f32 green709[3];
+  gfx::bt2020_to_bt709(green2020, green709);
+  CHECK(green709[0] < 0.0f);
+  CHECK(green709[1] > 1.0f);
+  CHECK(green709[2] < 0.0f);
+
+  // The ramp at 1024 x 400: the top half's signal is x / 1023, the third quarter's an eighth of
+  // that, the last quarter four stops from white.
+  CHECK(gfx::display_ramp(0, 0, 1024, 400) == 0.0f);
+  CHECK(std::fabs(std::pow(gfx::display_ramp(511, 10, 1024, 400), 1.0f / 2.2f) - 511.0f / 1023.0f) <
+        1.0e-6f);
+  CHECK(gfx::display_ramp(1023, 199, 1024, 400) == 1.0f);
+  CHECK(std::fabs(std::pow(gfx::display_ramp(1023, 200, 1024, 400), 1.0f / 2.2f) - 0.125f) <
+        1.0e-6f);
+  CHECK(gfx::display_ramp(0, 300, 1024, 400) == 1.0f);
+  CHECK(gfx::display_ramp(1023, 399, 1024, 400) == 16.0f);
+}

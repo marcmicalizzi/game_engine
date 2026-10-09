@@ -110,6 +110,7 @@ const char* view_mode_name(u32 mode) noexcept {
     case 7: return "albedo";
     case 8: return "occlusion";
     case 9: return "detail";
+    case 10: return "ramp";
     default: return "?";
   }
 }
@@ -135,6 +136,8 @@ bool parse_view_mode(std::string_view text, u32& out) noexcept {
     out = 8;
   } else if (text == "detail") {
     out = 9;  // the sand's detail as data (gfx::ResolveMode::GroundDetail)
+  } else if (text == "ramp") {
+    out = 10;  // the output encode's test pattern (gfx::ResolveMode::Ramp, E39)
   } else {
     return false;
   }

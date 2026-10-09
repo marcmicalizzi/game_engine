@@ -29,7 +29,11 @@
 #include <domain/scene_gen/scene_gen.h>
 #endif
 
+#include <domain/gfx/visibility_resolve.h>
+#include <foundation/image/exr.h>
+
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cmath>
@@ -88,9 +92,12 @@ struct Rig {
   std::string error;
 
   bool build(const gfx::Device& device, bool sky, gfx::Format format,
-             gfx::DisplayEncoding encoding) {
+             gfx::DisplayEncoding encoding,
+             u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded), bool dither = true) {
     if (!load_scene(hills(sky), data, error)) return false;
     RenderSettings settings;
+    settings.view_mode = view_mode;
+    settings.dither = dither;
     settings.shadows = ShadowMode::Off;
     settings.peak_nits = static_cast<f32>(k_peak);
     settings.paper_white_nits = static_cast<f32>(k_paper_white);
@@ -314,4 +321,145 @@ TEST_CASE("hdr output: an HDR encoding refuses a target that cannot hold it") {
   Rig rig;
   CHECK_FALSE(rig.build(gpu.device, false, gfx::Format::R8G8B8A8Unorm, gfx::DisplayEncoding::Pq));
   CHECK(rig.error.find("10-bit packed") != std::string::npos);
+}
+
+// ---- the EXR capture (roadmap R79): the picture's light, and the radiance under it ------------
+//
+// The heightfield drawn as the 8-bit SDR picture a PNG capture is, as HDR10, and as the linear
+// radiance (`DisplayEncoding::Linear`), each read back as its light (`capture_light`): the SDR
+// light is its PNG's codes through the 1/2.2 power exactly; the HDR10 picture's EXR, written and
+// read back, holds that light to the bit with paper white as its `whiteLuminance`; and below the
+// knee (1: the stand-in has no shoulder) the HDR10 light and the radiance are the SDR picture's
+// decoded light within one code of each encoding — the dither's amplitude, which both carry.
+TEST_CASE("hdr output: an EXR capture holds the picture's light, the SDR picture's below the knee") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  engine::test::TempDir dir("engine_renderer_exr");
+  const FrameDesc frame = looking(0.0);
+  Rig sdr;
+  REQUIRE_MESSAGE(
+      sdr.build(gpu.device, false, gfx::Format::R8G8B8A8Unorm, gfx::DisplayEncoding::Sdr),
+      sdr.error);
+  Rig pq;
+  REQUIRE_MESSAGE(
+      pq.build(gpu.device, false, gfx::Format::A2B10G10R10Unorm, gfx::DisplayEncoding::Pq),
+      pq.error);
+  Rig linear;
+  REQUIRE_MESSAGE(linear.build(gpu.device, false, gfx::Format::R16G16B16A16Sfloat,
+                               gfx::DisplayEncoding::Linear),
+                  linear.error);
+
+  CaptureChannels both;
+  both.light = true;
+  CapturedFrame s;
+  REQUIRE_MESSAGE(sdr.renderer.capture(frame, both, s, &sdr.error), sdr.error);
+  CaptureChannels light_only;
+  light_only.color = false;
+  light_only.light = true;
+  CapturedFrame h;
+  REQUIRE_MESSAGE(pq.renderer.capture(frame, light_only, h, &pq.error), pq.error);
+  CapturedFrame r;
+  REQUIRE_MESSAGE(linear.renderer.capture(frame, light_only, r, &linear.error), linear.error);
+  // An HDR picture has no 8-bit color channel to give.
+  CapturedFrame refused;
+  CHECK_FALSE(pq.renderer.capture(frame, CaptureChannels{}, refused, &pq.error));
+
+  const u32 pixels = k_width * k_height;
+  REQUIRE(s.color.size() == pixels * 4);
+  REQUIRE(s.light.size() == pixels * 3);
+  REQUIRE(h.light.size() == pixels * 3);
+  REQUIRE(r.light.size() == pixels * 3);
+  CHECK(std::strcmp(s.codes.domain, "sdr") == 0);
+  CHECK(s.codes.bits == 8);
+  CHECK(std::strcmp(h.codes.domain, "pq") == 0);
+  CHECK(h.white_nits == static_cast<f32>(k_paper_white));
+  CHECK(r.white_nits == 0.0f);
+
+  // The HDR10 light through an EXR and back, to the bit.
+  CaptureFiles files;
+  std::string error;
+  REQUIRE_MESSAGE(write_capture(dir.path(), "hdr10", h, files, error), error);
+  REQUIRE(!files.light.empty());
+  CHECK(files.light.find("hdr10.exr") != std::string::npos);
+  CHECK(files.codes.find("hdr10.codes.json") != std::string::npos);
+  image::ExrImage back;
+  REQUIRE_MESSAGE(image::read_exr(files.light, back, &error), error);
+  REQUIRE(back.width == k_width);
+  REQUIRE(back.height == k_height);
+  REQUIRE(back.channels == 3);
+  CHECK(back.white_luminance == static_cast<f32>(k_paper_white));
+  u32 differ = 0;
+  for (u32 i = 0; i < pixels * 3; ++i) {
+    if (back.halves[i] != image::half_from_f32(h.light[i])) ++differ;
+  }
+  CHECK(differ == 0);
+
+  // Below the knee: a few hundred pixels across the frame, sky and ground alike.
+  u32 compared = 0;
+  for (u32 i = 0; i < pixels; i += 97) {
+    for (u32 c = 0; c < 3; ++c) {
+      const u32 code = s.color[i * 4 + c];
+      const f64 seen = static_cast<f64>(s.light[i * 3 + c]);
+      CHECK(seen == static_cast<f64>(gfx::sdr_decode(static_cast<f32>(code) / 255.0f)));
+      if (code >= 250) continue;  // the clip, and the shoulder's top for a pixel there
+      // One 8-bit code of the SDR picture at this level, and one 10-bit PQ code (under 1.5% of
+      // the light below paper white) plus a floor for the darkest codes.
+      const f64 sdr_code = static_cast<f64>(gfx::sdr_decode(static_cast<f32>(code + 1) / 255.0f)) -
+                           seen;
+      const f64 allow = sdr_code + 0.015 * seen + 2.0e-4;
+      CAPTURE(i);
+      CAPTURE(c);
+      CHECK(std::fabs(static_cast<f64>(h.light[i * 3 + c]) - seen) <= allow);
+      CHECK(std::fabs(static_cast<f64>(r.light[i * 3 + c]) - seen) <= allow);
+      ++compared;
+    }
+  }
+  CHECK(compared > 1000);
+}
+
+// The ramp (`--view ramp`): each pixel is display.h's `display_ramp` through the output encode.
+// Undithered into 8 bits, the top half is a code ramp from 0 to 255 and the bottom quarter white;
+// as HDR10 the light is the curve's (`display_tone`, knee 1, ceiling peak over paper white).
+TEST_CASE("hdr output: the ramp view is display_ramp through the output encode") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const u32 ramp = static_cast<u32>(gfx::ResolveMode::Ramp);
+  Rig sdr;
+  REQUIRE_MESSAGE(sdr.build(gpu.device, false, gfx::Format::R8G8B8A8Unorm,
+                            gfx::DisplayEncoding::Sdr, ramp, false),
+                  sdr.error);
+  Rig pq;
+  REQUIRE_MESSAGE(pq.build(gpu.device, false, gfx::Format::A2B10G10R10Unorm,
+                           gfx::DisplayEncoding::Pq, ramp, false),
+                  pq.error);
+  const FrameDesc frame = looking(0.0);
+  CaptureChannels light;
+  light.light = true;
+  CapturedFrame s;
+  REQUIRE_MESSAGE(sdr.renderer.capture(frame, light, s, &sdr.error), sdr.error);
+  light.color = false;
+  CapturedFrame h;
+  REQUIRE_MESSAGE(pq.renderer.capture(frame, light, h, &pq.error), pq.error);
+  const f64 ceiling = static_cast<f64>(gfx::display_headroom(static_cast<f32>(k_peak),
+                                                             static_cast<f32>(k_paper_white)));
+  for (const u32 y : {7u, k_height * 5 / 8, k_height * 7 / 8}) {
+    for (u32 x = 0; x < k_width; x += 3) {
+      CAPTURE(x);
+      CAPTURE(y);
+      const f32 exposed = gfx::display_ramp(x, y, k_width, k_height);
+      const f64 encoded = std::pow(std::min(static_cast<f64>(exposed), 1.0), 1.0 / 2.2);
+      const u32 code = s.color[(y * k_width + x) * 4];
+      CHECK(std::fabs(static_cast<f64>(code) - encoded * 255.0) <= 0.6);
+      const f64 toned =
+          static_cast<f64>(gfx::display_tone(exposed, 1.0f, static_cast<f32>(ceiling)));
+      CHECK(std::fabs(static_cast<f64>(h.light[(y * k_width + x) * 3]) - toned) <=
+            0.012 * toned + 2.0e-4);
+    }
+  }
 }

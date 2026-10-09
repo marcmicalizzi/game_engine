@@ -421,6 +421,14 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const bool resample = params->panini_x > 0.0;
   const uint out_width = resample ? params->out_width : params->width;
   const uint out_height = resample ? params->out_height : params->height;
+  // The ramp test pattern (gfx::ResolveMode::Ramp; display.slang's `display_ramp`): every pixel of
+  // the view is the pattern through the frame's output encode and dither, whatever the scene put
+  // there, so the encode is seen with nothing upstream of it (E39).
+  if (params->mode == 10) {
+    const float ramp = display_ramp(out_pixel, uint2(out_width, out_height));
+    return float4(display_output(float3(ramp, ramp, ramp), 1.0, noise_pixel, display_target(params)),
+                  1.0);
+  }
   if (out_pixel.x >= out_width || out_pixel.y >= out_height) {
     return sky_pixel(params, float2(out_pixel) + 0.5, noise_pixel);
   }

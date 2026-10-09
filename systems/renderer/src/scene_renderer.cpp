@@ -261,7 +261,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     const bool pq_ok = desc.display == gfx::DisplayEncoding::Pq &&
                        (desc.color_format == gfx::Format::A2B10G10R10Unorm ||
                         desc.color_format == gfx::Format::A2R10G10B10Unorm);
-    const bool scrgb_ok = desc.display == gfx::DisplayEncoding::ScRgb &&
+    const bool scrgb_ok = (desc.display == gfx::DisplayEncoding::ScRgb ||
+                           desc.display == gfx::DisplayEncoding::Linear) &&
                           desc.color_format == gfx::Format::R16G16B16A16Sfloat;
     if (!pq_ok && !scrgb_ok) {
       if (error != nullptr) {
@@ -3409,11 +3410,27 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
   first.wait = {};
   first.signal = {};
   if (!render_offscreen(first, error)) return false;
-  if (channels.color) {
+  if (channels.color && desc_.display != gfx::DisplayEncoding::Sdr) {
+    // PQ codes or half floats reduced to 8 bits would be a picture of nothing (E39): an HDR or
+    // linear picture is read back as its light.
+    if (error != nullptr) {
+      *error = std::string("a ") + gfx::display_encoding_name(desc_.display) +
+               " picture has no 8-bit color channel; capture its light (an EXR)";
+    }
+    return false;
+  }
+  if (channels.color || channels.light) {
     gfx::Capture shot;
-    if (!gfx::capture_image(*device_, color_, gfx::ImageLayout::TransferSrc, shot, error) ||
-        !gfx::capture_to_rgba8(shot, out.color)) {
+    if (!gfx::capture_image(*device_, color_, gfx::ImageLayout::TransferSrc, shot, error)) {
+      return false;
+    }
+    if (channels.color && !gfx::capture_to_rgba8(shot, out.color)) {
       if (error != nullptr && error->empty()) *error = "unsupported color format";
+      return false;
+    }
+    if (channels.light && !capture_light(shot, desc_.display,
+                                         display_levels(resolved_.settings).paper_white_nits, out,
+                                         error)) {
       return false;
     }
     out.width = shot.width;

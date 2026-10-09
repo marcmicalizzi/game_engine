@@ -431,8 +431,9 @@ struct RenderSettings @version(12) {
   shadows: string = "auto"
   /// id, tri, depth, shaded, normals, uv, shadow (the sun's shadow alone: white where it reaches
   /// the surface, black where a shadow ray is blocked, grey where the surface faces away), albedo,
-  /// occlusion, or detail (the sand's ripples and grain as data: docs/subsystems/renderer.md, "The
-  /// sand close up").
+  /// occlusion, detail (the sand's ripples and grain as data: docs/subsystems/renderer.md, "The
+  /// sand close up"), or ramp (a grey test pattern through the output encode in place of the
+  /// scene: renderer.md, "HDR output").
   view: string = "shaded"
   /// Screen-space error threshold in pixels for LOD selection.
   lod_px: f32 = 1
