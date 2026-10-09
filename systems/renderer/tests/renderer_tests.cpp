@@ -1279,6 +1279,82 @@ TEST_CASE(
   }
 }
 
+// **One cut for every view, in a frame that traces** (renderer.md, "One cut for every view"; the
+// roadmap's F4). The frame's acceleration structures hold every view's runs, one bottom-level
+// structure per instance, so a ray from one view's surface meets whatever the other views put in
+// them. A turned surround's side monitors stand further from the eye along their own axes than the
+// centre one does, so their projection scale is larger and their own cut finer; where a far
+// cluster's sphere passed two views' frusta, both levels of the same ground were in the structure,
+// and a shadow ray leaving the one met the other from below — the dark shards on the erg's far sand
+// in the owner's surround (docs/experiments/shadow-shards-2026-10-09.md). A frame that builds the
+// structures therefore takes the finest view's LOD in every view. The witness here is a
+// heightfield, which cannot shadow any part of itself under a sun straight overhead, drawn in a
+// turned surround from low over its edge in the shadow view: every pixel of it is lit, or a shadow
+// is being cast by something that is not there.
+TEST_CASE("renderer: a turned surround traces its shadows against one cut and not three") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("ray-traced shadows unavailable here: " << unavailable_reason(
+                RenderAvailability::NoAccelerationStructures, gpu.device));
+    return;
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(std::string{});  // the procedural heightfield, 20 m across
+  constexpr u32 k_monitor = 256;
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.views = ViewLayout::Surround3;
+  settings.side_yaw = radians(35.0f);
+  settings.lights = false;  // the sun alone, which is what the shadow view asks about
+  settings.sun_azimuth_deg = 0.0f;
+  settings.sun_elevation_deg = 90.0f;
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_monitor * 3, k_monitor), rig.error);
+  REQUIRE(rig.resolved.shadows);
+  REQUIRE(rig.resolved.rt_chain);
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 2.5f, 10.5f});
+  frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, -10.0f});
+  frame.camera.znear = 0.05f;
+  frame.camera.fov_y = radians(55.0f);  // the layout's own, so the monitors meet
+  frame.view_mode = static_cast<u32>(gfx::ResolveMode::Shadow);
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shot;
+  std::string error;
+  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &error), error);
+  // The precondition: the side views' own cut would not be the centre's (a projection is made by
+  // the frame, from its camera).
+  const ViewSet& views = rig.renderer.views();
+  INFO("projection scales " << views[0].proj_scale << ", " << views[1].proj_scale << ", "
+                            << views[2].proj_scale);
+  REQUIRE(views[0].proj_scale > views[1].proj_scale * 1.05f);
+  u64 ground = 0;
+  u64 lit = 0;
+  u64 blocked[3] = {0, 0, 0};
+  for (u32 y = 0; y < shot.height; ++y) {
+    for (u32 x = 0; x < shot.width; ++x) {
+      if (pixel_id(shot, x, y)[0] == k_no_id) continue;
+      ++ground;
+      const u8 v = shot.color[(u64{y} * shot.width + x) * 4];
+      lit += v == 255 ? 1u : 0u;
+      blocked[x / k_monitor] += v == 0 ? 1u : 0u;
+    }
+  }
+  MESSAGE("a heightfield under a sun overhead in a turned surround: "
+          << ground << " ground pixels, " << lit << " lit, shadowed by nothing there " << blocked[0]
+          << " / " << blocked[1] << " / " << blocked[2] << " (left / centre / right); "
+          << rig.renderer.stats().visible_pairs() << " pairs drawn");
+  CHECK(ground > u64{k_monitor} * k_monitor);  // the witness: the ground fills the monitors
+  CHECK(lit > ground * 9 / 10);
+  CHECK(blocked[0] + blocked[1] + blocked[2] == 0);
+}
+
 // Two-pass occlusion culling brings two pieces of machinery into a frame that a frame without it
 // does not have — the Hi-Z pyramid, and the per-32x32-tile coverage mask the last build of it
 // leaves behind for the resolve to skip empty tiles by — and **neither may change one pixel**.

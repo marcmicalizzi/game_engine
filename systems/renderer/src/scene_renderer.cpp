@@ -1638,7 +1638,21 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     std::memcpy(resolve_bytes + offset, &detail, sizeof(detail));
     ground_detail_address = resolves_[slot].address + offset;
   }
+  // The view whose cut is finest: the largest projection scale over threshold. The cascades take
+  // their LOD from it, and so does every view of a frame that builds acceleration structures
+  // (below, "the cull pass's two blocks").
   u32 shadow_lod_view = 0;
+  {
+    f32 finest = -1.0f;
+    for (u32 v = 0; v < views; ++v) {
+      const f32 threshold = frame_lod_px * views_[v].quality.lod_scale;
+      const f32 ratio = threshold > 0.0f ? views_[v].proj_scale / threshold : 3.0e38f;
+      if (ratio > finest) {
+        finest = ratio;
+        shadow_lod_view = v;
+      }
+    }
+  }
   if (csm) {
     ShadowFit fit;
     fit.cascades = cascade_runs;
@@ -1655,16 +1669,6 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     maps.light = frame_sky_.moon_key ? 1u : 0u;
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights), &maps,
                 sizeof(maps));
-    // The view whose cut is finest: the largest projection scale over threshold.
-    f32 finest = -1.0f;
-    for (u32 v = 0; v < views; ++v) {
-      const f32 threshold = frame_lod_px * views_[v].quality.lod_scale;
-      const f32 ratio = threshold > 0.0f ? views_[v].proj_scale / threshold : 3.0e38f;
-      if (ratio > finest) {
-        finest = ratio;
-        shadow_lod_view = v;
-      }
-    }
   }
 
   for (u32 v = 0; v < views; ++v) {
@@ -1715,7 +1719,18 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation). A
     // frame may override the settings' threshold — `FrameDesc::lod_px`, which the reference
     // renderer sets to 0 to make the frame's cut the finest clusters (04 §4.8).
-    cull.lod = Vec4{view.proj_scale, frame_lod_px * view.quality.lod_scale, 1.0f, 1.0f};
+    //
+    // **Except in a frame that builds acceleration structures, where every view takes the finest
+    // view's** (renderer.md, "One cut for every view"). The structures hold every view's runs in
+    // one bottom-level structure per instance, so two views that chose different levels for the
+    // same ground — a surround's side monitors stand at another distance from the eye than the
+    // centre one, so their projection scale is another, and a frustum test on a far cluster's
+    // sphere keeps it in both views across a wide band — put both levels in it, and a shadow ray
+    // from one surface met the other from below: the far ground's shards. The same scale and
+    // threshold in every view make the views' cuts parts of one cut, bit for bit. `lod.x` is also
+    // the software split's and a streamed page's priority scale; such a frame has no software pass.
+    const View& cut_view = rt_chain ? views_[shadow_lod_view] : view;
+    cull.lod = Vec4{cut_view.proj_scale, frame_lod_px * cut_view.quality.lod_scale, 1.0f, 1.0f};
     cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
