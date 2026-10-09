@@ -199,7 +199,6 @@ Flown fly(const test::TempDir& tmp, const std::string& name, const std::string& 
 
 }  // namespace
 
-
 TEST_CASE("frame loop: the desert overlook allocates nothing in its second flight" *
           doctest::skip()) {
   const test::TempDir tmp("engine_view_frame_loop_overlook");
