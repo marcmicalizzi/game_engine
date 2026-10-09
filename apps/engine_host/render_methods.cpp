@@ -581,7 +581,7 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   if (params.channels.empty()) {
     channels.color = true;
   } else {
-    channels = renderer::CaptureChannels{false, false, false, false};
+    channels = renderer::CaptureChannels{.color = false, .light = false, .ids = false, .depth = false, .normals = false};
     for (const std::string& name : params.channels) {
       if (name == "color") {
         channels.color = true;

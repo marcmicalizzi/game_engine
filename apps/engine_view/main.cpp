@@ -2586,7 +2586,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         Vector<Vector<u32>> meshes_of(frames);
         Vector<Vector<u32>> pixels_of(frames);
         Vector<u32> pairs_of(frames, 0u);
-        renderer::CaptureChannels id_channel{false, true, false, false};
+        renderer::CaptureChannels id_channel{.color = false, .light = false, .ids = true, .depth = false, .normals = false};
         for (u32 f = 0; f < frames && ok; ++f) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(f);
@@ -2603,6 +2603,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
                                      : view_renderer.render_offscreen(frame, &error);
           ok = ok && census.count(scene_data, scene, view_renderer.stats(), levels_of[f],
                                   meshes_of[f], &error);
+          // A capture asked for the ids and given none is an error here, never a null read: the
+          // 2026-10-09 gate found that a positional initializer of CaptureChannels had set `light`
+          // instead of `ids` once the struct gained a member, and the server crashed at the ids below.
+          if (ok && options.census_pixels && shot.ids == nullptr) {
+            error = "census: the capture returned no id buffer";
+            ok = false;
+          }
           pairs_of[f] = view_renderer.stats().visible_pairs();
           if (ok && options.census_pixels) {
             pixels_of[f].assign(scene_data.parts.size(), 0u);

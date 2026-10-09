@@ -42,6 +42,10 @@ FetchContent_Declare(tinyexr
   SOURCE_SUBDIR  cmake-not-used)
 FetchContent_MakeAvailable(tinyexr)
 
+# miniz is C. With every capability off (ENGINE_MINIMAL) nothing else in the tree enables the C
+# language, and CMake then has no rule to compile it ("CMAKE_C_COMPILE_OBJECT not set" at the
+# generate step of linux-clang-minimal and msvc-minimal, the batch 12 gate, 2026-10-09).
+enable_language(C)
 add_library(engine_tinyexr STATIC
   "${tinyexr_SOURCE_DIR}/tinyexr.cc"
   "${tinyexr_SOURCE_DIR}/deps/miniz/miniz.c")
