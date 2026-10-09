@@ -508,6 +508,7 @@ Versions, all pinned by the distribution or by an explicit version in the Docker
 | Clang | 18.1.3 | Ubuntu 24.04's default, which is what the hosted `linux-clang-*` jobs get. |
 | GCC | 13.3.0 | Same, for `linux-gcc-release`. `-Wdangling-reference` exists here. |
 | libclang-rt-18-dev | 18.1.3 | Clang's sanitizer runtimes, for `linux-clang-asan` (ci.yml's sanitizer job). `clang` only recommends it and the image installs without recommends, so until 2026-10-07 the preset compiled every object and failed at the first link. Apache-2.0 with LLVM exception, like the rest of LLVM. |
+| llvm | 18.1.3 | For one binary, `llvm-symbolizer`, which the sanitizer runtimes look for on `PATH` to print a report's stack as function, file and line; without it they print bare addresses and do not fall back to `addr2line` unless told to. The first `linux-clang-asan` run's use after free (roadmap F14) came back unreadable for want of it (2026-10-07); with it the next run (2026-10-09) named the test's line. Ubuntu's `llvm` is the unversioned links to LLVM 18's tools, the same LLVM `clang` is, and ci.yml installs it too. |
 | clang-format | 18.1.3 | Not in `ci.yml`'s list. Without it `tools/new-capability.Tests.ps1` reports its formatting cases as **skipped**, and a check that only ever skips is not a check. See the note in [08 §8.5](../plan/08-toolchain.md#85-build-system-and-ci) about which versions have been measured against the scaffold; 18 now agrees with them. |
 | PowerShell | 7.4.12 | Six CTest tests are pwsh scripts (`lint.banned_patterns`, `tools.lint`, `tools.new_capability`, `docs_check`, `tools.docs_check`, `tools.machine_lock`). Without `pwsh` `cmake/EngineTesting.cmake` does not *fail* them, it does not **register** them — so a container without it would make a green run mean less than the hosted one. |
 | git, rsync | 2.43.0, 3.2.7 | `tools.docs_gate` builds throwaway repositories; rsync is the source sync. |
@@ -531,7 +532,7 @@ because the policy says to know what is in the build:
 |---|---|
 | `ubuntu:24.04` base | mixed; Ubuntu's own terms per package |
 | `build-essential`, `g++` (GCC 13) | GPL-3 with the GCC Runtime Library Exception; glibc LGPL-2.1 |
-| `clang`, `clang-format` (LLVM 18) | Apache-2.0 with LLVM exception |
+| `clang`, `clang-format`, `libclang-rt-18-dev`, `llvm` (LLVM 18) | Apache-2.0 with LLVM exception |
 | `cmake` | BSD-3-Clause |
 | `ninja-build` | Apache-2.0 |
 | `powershell` (7.4 LTS, Microsoft apt repository) | MIT |

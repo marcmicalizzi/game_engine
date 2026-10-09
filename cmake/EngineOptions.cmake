@@ -51,6 +51,20 @@ if(ENGINE_UBSAN AND NOT MSVC)
   add_link_options(-fsanitize=undefined -fno-sanitize-recover=all)
 endif()
 
+# Third-party files excused from one named check each, every entry with the reason it is the
+# dependency's and not ours (cmake/sanitizer-ignorelist.txt, roadmap F15). Compile-time, because a
+# fatal check cannot be suppressed at run time; per file, so nothing of the engine's and no other
+# check is touched. Clang only, and per language: GCC has no such list and refuses the flag, and
+# the C dependencies (SQLite, SDL, flecs, volk) are compiled by the system's `cc` — GCC on the
+# Linux images — even in the Clang presets, which name only the C++ compiler. Every entry is a C++
+# file today, so the C side loses nothing.
+if((ENGINE_ASAN OR ENGINE_UBSAN) AND NOT MSVC)
+  set(_engine_ignorelist "${CMAKE_CURRENT_LIST_DIR}/sanitizer-ignorelist.txt")
+  add_compile_options(
+    "$<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fsanitize-ignorelist=${_engine_ignorelist}>"
+    "$<$<COMPILE_LANG_AND_ID:C,Clang>:-fsanitize-ignorelist=${_engine_ignorelist}>")
+endif()
+
 # Engine targets are built without exceptions where the compiler allows it; tests and tools
 # keep them. RTTI stays on everywhere: the engine never uses dynamic_cast or typeid, but a
 # polymorphic class compiled without RTTI in a library and subclassed in a test compiled with

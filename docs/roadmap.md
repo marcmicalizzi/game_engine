@@ -614,10 +614,10 @@ Defects that no plan section schedules: failures seen at gates, steps in a pictu
 | F10 | Device lost when a tight budget evicts beside the RT chain | done (7d794636) | R9 | S | research | [renderer](subsystems/renderer.md#a-pages-8-bit-indices-are-its-own) |
 | F11 | Tile index narrowed to i32 unchecked in TileSampler::tile_at and scene_collision | open | W64 | S | routine | [tile.cpp](../domain/terrain/src/tile.cpp) |
 | F12 | gfx.md says only world tiles carry k_instance_uv_from_corner; ring chunks do too | open | W63 | S | routine | [gfx](subsystems/gfx.md#the-frames-origin) |
-| F13 | Tunables read across translation units before they are initialized | open | | M | design | [what to run](ci/what-to-run.md#sanitizers) |
-| F14 | Heap use after free in the texture tests under ASan | open | | S | research | [what to run](ci/what-to-run.md#sanitizers) |
-| F15 | Third-party undefined behaviour under UBSan: suppress or exclude | open | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
-| F16 | Fault-probe tests under the sanitizers | open | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| F13 | Tunables read across translation units before they are initialized | done (2026-10-09: not a defect; strict mode reports reads of initialized globals by design, and non-strict reports nothing) | | M | design | [what to run](ci/what-to-run.md#sanitizers) |
+| F14 | Heap use after free in the texture tests under ASan | done (2026-10-09: the test pushed a vector's own element; llvm-symbolizer in the image named it) | | S | research | [what to run](ci/what-to-run.md#sanitizers) |
+| F15 | Third-party undefined behaviour under UBSan: suppress or exclude | done (2026-10-09: cmake/sanitizer-ignorelist.txt, one file and one check per entry) | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
+| F16 | Fault-probe tests under the sanitizers | done (2026-10-09: under a sanitizer the test checks that the engine stands aside) | | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | F17 | Traced-shadow specks at a far crease in one view: a ray from its own cluster | open | F4 | S | research | [shadow shards](experiments/shadow-shards-2026-10-09.md#what-is-left) |
 | F18 | Surround side monitors keep the layout's field of view, not the camera's | open | | S | design | [renderer](subsystems/renderer.md#multi-view-a-viewset-over-one-scene) |
 | F19 | Dune ripples' yesterday shift overflowed an `int` | done (2026-10-09: a whole day's seconds as an i64; the next day's yesterday held to the last second's shift) | | S | routine | [terrain](subsystems/terrain.md#the-time-function) |

@@ -212,8 +212,13 @@ TEST_CASE("texture file: the writer refuses a chain that does not validate") {
   CHECK_FALSE(write_texture_file(path, srgb_bc5, &error));
   CHECK_MESSAGE(error.find("no sRGB form") != std::string::npos, error);
 
+  // The level is copied out before the push: an argument to push_back must not refer into the
+  // vector, whose old buffer is freed before the argument is read when the push grows it
+  // (containers.md). Pushing `levels.back()` directly was the heap use after free the first
+  // linux-clang-asan run found (2026-10-07, roadmap F14).
   TextureData too_long = make_fixture();
-  too_long.levels.push_back(too_long.levels.back());
+  const TextureFileLevel last_level = too_long.levels.back();
+  too_long.levels.push_back(last_level);
   CHECK_FALSE(write_texture_file(path, too_long, &error));
   CHECK_MESSAGE(error.find("more than") != std::string::npos, error);
   CHECK_FALSE(io::exists(path));

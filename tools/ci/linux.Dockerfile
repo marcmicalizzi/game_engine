@@ -51,9 +51,16 @@ ENV LANG=C.UTF-8
 # --no-install-recommends therefore left out: without it linux-clang-asan (ci.yml's sanitizer job,
 # docs/ci/what-to-run.md "Sanitizers") compiled every object and failed at the first link, unable
 # to find libclang_rt.asan-x86_64.a (2026-10-07).
+#
+# llvm is here for one binary, llvm-symbolizer, which the sanitizer runtimes look for on PATH to
+# turn a report's addresses into function, file and line. Without it every ASan and UBSan stack is
+# bare addresses (the runtimes do not fall back to addr2line unless told to), which is how the
+# first run's use after free in the texture tests (F14) came back with no frame anyone could read
+# (2026-10-07). The `llvm` package is Ubuntu's unversioned links to LLVM 18's tools, the same LLVM
+# `clang` is.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
-      build-essential cmake ninja-build clang libclang-rt-18-dev clang-format g++ git rsync \
+      build-essential cmake ninja-build clang libclang-rt-18-dev llvm clang-format g++ git rsync \
       pkg-config file unzip xz-utils \
  && rm -rf /var/lib/apt/lists/*
 

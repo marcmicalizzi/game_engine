@@ -102,7 +102,9 @@ jobs:
           sudo apt-get update
           # libclang-rt-18-dev: Clang's sanitizer runtimes, which linux-clang-asan links; named so
           # the job does not depend on the image or on apt installing what clang only recommends.
-          sudo apt-get install -y ninja-build clang libclang-rt-18-dev g++ \
+          # llvm: for llvm-symbolizer, which the sanitizer runtimes need on PATH to print a report's
+          # stack as function, file and line instead of bare addresses (F14 came back unreadable).
+          sudo apt-get install -y ninja-build clang libclang-rt-18-dev llvm g++ \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
             libxtst-dev libdecor-0-dev libudev-dev

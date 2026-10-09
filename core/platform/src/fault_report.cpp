@@ -40,18 +40,8 @@
 #include <unistd.h>
 #endif
 
-// A sanitizer's runtime reports faults itself, with more than this can; it keeps them.
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-#define ENGINE_FAULT_UNDER_SANITIZER 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
-    __has_feature(memory_sanitizer)
-#define ENGINE_FAULT_UNDER_SANITIZER 1
-#endif
-#endif
-#ifndef ENGINE_FAULT_UNDER_SANITIZER
-#define ENGINE_FAULT_UNDER_SANITIZER 0
-#endif
+// A sanitizer's runtime reports faults itself, with more than this can; it keeps them
+// (ENGINE_FAULT_UNDER_SANITIZER, fault_report.h).
 
 namespace engine::platform::detail {
 

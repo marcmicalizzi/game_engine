@@ -1,0 +1,40 @@
+# Third-party code the sanitizers do not check, each entry one dependency's file and one check.
+#
+# Passed to Clang as -fsanitize-ignorelist by cmake/EngineOptions.cmake whenever ENGINE_ASAN or
+# ENGINE_UBSAN is on (linux-clang-asan, ci.yml's sanitizer job; docs/ci/what-to-run.md,
+# "Sanitizers"). Undefined behaviour is fatal in that build (-fno-sanitize-recover=all), and a
+# runtime suppressions file cannot help there: UBSan's suppressions apply only to checks compiled
+# recoverable, and an unrecoverable report ends the process whatever the file says. So the checks
+# are left out of these files when they are compiled, which is narrower than turning a check off
+# for a whole target and much narrower than turning it off for the tree.
+#
+# The rules for this file (roadmap F15):
+# - Only third-party sources, matched by a path that exists only inside that dependency. Never an
+#   engine file: a finding in the engine is fixed, not listed here.
+# - One check per section, never a group (`undefined`) and never `*`.
+# - Every entry says what it hides and why it is the dependency's to fix, with the version pinned
+#   where the dependency is declared. Re-read the entry when that pin moves; delete it when the
+#   dependency has fixed it.
+# - The paths begin with `*` because the same file is /fetch/<name>-<hash>/... in the local
+#   container (tools/ci/fetch-cache.cmake) and build/<preset>/_deps/<name>-src/... on a hosted
+#   runner.
+#
+# Format: Clang's sanitizer special case list (clang.llvm.org/docs/SanitizerSpecialCaseList.html),
+# glob patterns. A section names the check its entries are excused from.
+
+[function]
+# xatlas (cmake/EngineAtlas.cmake, ENGINE_XATLAS_COMMIT) carries OpenNL's C-style inheritance in
+# its least-squares solver: a sparse or CRS matrix's destroy and multiply functions take that
+# matrix type and are stored, cast, in pointers typed for the base `NLMatrix`, then called through
+# them (`M->destroy_func(M)`, xatlas.cpp:4045 in the first run, from the atlas tests; `mult_func`
+# is the same pattern). Calling through a mismatched function type is UB the ABIs the engine
+# targets all tolerate; the fix is a change to the solver's signatures upstream, and the library
+# is upstream's single file used unmodified.
+src:*/source/xatlas/xatlas.cpp
+
+[signed-integer-overflow]
+# Recast/Detour (cmake/EngineNav.cmake, ENGINE_RECAST_TAG): DetourCrowd's proximity grid hashes a
+# cell as (x*73856093) ^ (y*19349663) in `int`, which overflows for most cells
+# (DetourProximityGrid.cpp:45, from the nav tests). The hash only needs the low bits and
+# wraps on every compiler the engine uses; the fix is upstream's (unsigned arithmetic).
+src:*/DetourCrowd/Source/DetourProximityGrid.cpp

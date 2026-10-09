@@ -7,6 +7,14 @@
 // Before the handlers existed every fault here printed nothing — measured on Windows in
 // `msvc-release` (2026-10-04): `read` and `worker` exited 0xC0000005 and `abort` 3, all silent;
 // Linux had no handler at all — and every case below failed on its "one line" check.
+//
+// Under a sanitizer (ENGINE_FAULT_UNDER_SANITIZER) the module installs nothing and the sanitizer's
+// runtime reports every fault itself, so there is no line to read: each kind is checked for the
+// other half of the promise instead — the probe still dies, and the engine prints no line over the
+// runtime's report. Reading for the line there failed every kind of the first `linux-clang-asan`
+// run (2026-10-07, roadmap F16); the line itself stays checked in every other build.
+#include "../src/fault_report.h"
+
 #include <core/base/types.h>
 #include <core/platform/process.h>
 
@@ -115,6 +123,18 @@ struct Case {
 #endif
 };
 
+#if ENGINE_FAULT_UNDER_SANITIZER
+// The sanitizer's runtime has the fault (fault_report.h): the probe dies of it — the runtime's
+// report and exit status, or the signal's default action for the kinds it does not handle — and
+// no engine line joins the report.
+void check(const Case& c) {
+  CAPTURE(c.kind);
+  const Outcome out = run_probe(c.kind);
+  INFO("the probe printed: " << out.output);
+  CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
+}
+#else
 void check(const Case& c) {
   CAPTURE(c.kind);
   const Outcome out = run_probe(c.kind);
@@ -150,6 +170,7 @@ void check(const Case& c) {
   CHECK(line.find("re-raised") != std::string::npos);
 #endif
 }
+#endif
 
 }  // namespace
 
@@ -190,6 +211,12 @@ TEST_CASE("fault report: every fatal fault prints one line and exits as document
       {"bus", "SIGBUS, no such physical address reading 0x", true, "(main)", SIGBUS},
       {"worker", "SIGSEGV, address not mapped writing 0x10", true, "\"fault-worker\"", SIGSEGV},
   };
+#endif
+#if ENGINE_FAULT_UNDER_SANITIZER
+  MESSAGE(
+      "the one-line checks are skipped: this is a sanitizer build, whose runtime reports "
+      "faults itself and in which nothing of the engine's is installed; checking that the "
+      "probe still dies and the engine prints no line of its own instead");
 #endif
   for (const Case& c : cases)
     check(c);
