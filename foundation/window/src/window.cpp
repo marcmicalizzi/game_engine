@@ -732,6 +732,20 @@ void Window::refresh_pixel_size() noexcept {
   pixel_height_ = h > 0 ? static_cast<u32>(h) : 0;
 }
 
+bool Window::desktop_center(i32& x, i32& y) const noexcept {
+  if (handle_ == nullptr) return false;
+  SDL_Window* window = static_cast<SDL_Window*>(handle_);
+  int left = 0;
+  int top = 0;
+  int w = 0;
+  int h = 0;
+  if (!SDL_GetWindowPosition(window, &left, &top) || !SDL_GetWindowSize(window, &w, &h))
+    return false;
+  x = left + w / 2;
+  y = top + h / 2;
+  return true;
+}
+
 bool Window::poll(Event& out) {
   SDL_Event e;
   while (SDL_PollEvent(&e)) {

@@ -40,3 +40,26 @@
 5. **Captures.** A half-float EXR capture of either route, and what a test would compare in.
 
 The ADR it would produce names the route (or both, chosen by what the surface offers), the tone curve's parameters and where they come from, where UI composites, and what a capture is.
+
+## What is built
+
+**2026-10-09** (roadmap R79; the measurement is still R60's, and the owner's). Both routes, so the measurement can choose between them; **no ADR**, because the route is the measurement's to decide and it has not run.
+
+- **The extensions.** A presenting device enables `VK_EXT_swapchain_colorspace` on the instance and `VK_EXT_hdr_metadata` on the device where they are offered, and only then ([gfx](../subsystems/gfx.md#the-hdr-branches-and-the-surfaces-offers)). The RHI says it in its own words: `gfx::ColorSpace`, `SurfaceFormat`, `HdrMetadata`, `PresentFormat`.
+- **The probe** (measurement 1): `engine-cli gpu.displays` ([protocol](../subsystems/protocol.md)) lists every output Windows reports — bits per colour, DXGI colour space (which says whether "Use HDR" is on), primaries, minimum, peak and full-frame luminance, Windows' SDR white level — and per Vulkan device what a hidden window on it is offered. No window is shown, no device opened, no setting changed.
+- **The chains**: engine-view's `--present-format hdr10` (`A2B10G10R10Unorm` in `HDR10_ST2084`) and `scrgb` (`R16G16B16A16Sfloat` in `EXTENDED_SRGB_LINEAR`), refused with a sentence naming the surface's offers where it has neither; `auto` and `sdr10` are today's `--present-bits auto` and `10` exactly ([apps](../subsystems/apps.md)).
+- **The encode** ([renderer](../subsystems/renderer.md#hdr-output)): the SDR shoulder with its ceiling moved to the display's peak over **paper white**, so everything the SDR picture shows below its knee is shown at the same luminance at paper white; then BT.2020 and PQ with the dither at one 10-bit code, or scRGB's linear light. Peak and paper white are the flags', the tunables', what Windows reports for the window's output (DXGI's `MaxLuminance`, the SDR white level), or 1000 and 200 nits, and the summary says which. An HDR10 chain carries matching static metadata. **UI** has a named seam (between the curve and the encode, in `display_output`) and nothing built.
+- **Not yet**: the half-float EXR capture (R79's remaining half; until it lands an HDR run refuses `--capture`) and the measurement script (`tools/hdr-measure.ps1`, R80).
+
+**What it costs**: not measured yet. The encode's cost at 1920×1080 offscreen (`engine-view --offscreen --present-format hdr10|scrgb --benchmark`, `--wait-quiet`, the resolve's GPU time against `sdr`) comes with the measurement script.
+
+**What this machine reported** (2026-10-09, `engine-cli gpu.displays`, the desktop as the owner left it): `DISPLAY1`, 7680 × 1440, driven at 10 bits, Windows' HDR **on** (`rgb_full_g2084_none_p2020`), DXGI's luminances 0.0001 / 1015 / 658 nits (minimum, peak, full frame), SDR white level 280 nits; the RTX 5090 offers a window on it `A2B10G10R10Unorm` in `hdr10_st2084` and `R16G16B16A16Sfloat` in `extended_srgb_linear` beside the SDR formats, and `VK_EXT_hdr_metadata`. A second, 8-bit SDR output (1280 × 720, 270 nits) offers the SDR formats only. So both routes can be presented here; the Surround group was not the desktop's configuration at the time.
+
+## What the owner measures
+
+Pending R80's script. Until then, by hand, with Windows' HDR toggle and the NVIDIA control panel left as they are for each run (the engine changes neither, and reads only what Windows reports):
+
+1. `build/msvc-release/bin/engine-cli gpu.displays --report displays-hdr-off.json` with "Use HDR" off, and again (`displays-hdr-on.json`) with it on for the Surround display.
+2. `build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-of-day 19.5 --present-format sdr10 --dither on` and `--dither off`, with HDR off and on.
+3. The same with `--present-format hdr10` and `--paper-white-nits 100`, `200`, `300`, and with no `--paper-white-nits` (Windows' SDR white level), HDR on.
+4. The same with `--present-format scrgb`, HDR on.

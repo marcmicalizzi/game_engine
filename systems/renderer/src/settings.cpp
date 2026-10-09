@@ -1,6 +1,8 @@
 #include <core/log/log.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/display.h>
 #include <domain/gfx/requirements.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/view_set.h>
@@ -159,6 +161,44 @@ bool parse_view_layout(std::string_view text, ViewLayout& out) noexcept {
     return false;
   }
   return true;
+}
+
+namespace {
+
+// The HDR output's display, for a run that names none (E39; `display_levels`). 0 is "not set":
+// what the display reports, then the defaults.
+tunables::Float display_peak{"renderer.display.peak_nits", 0.0, 0.0, 10000.0,
+                             "The peak luminance an HDR picture rolls off towards, nits (0: what "
+                             "the display reports, else 1000)"};
+tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,
+                                    "The luminance an HDR picture shows a diffuse white at, nits "
+                                    "(0: Windows' SDR white level for the display, else 200)"};
+
+}  // namespace
+
+DisplayLevels display_levels(const RenderSettings& settings) {
+  DisplayLevels out;
+  const auto pick = [](f32 setting, f64 tunable, f32 reported, f32 fallback, f32& value,
+                       const char*& source) {
+    if (setting > 0.0f) {
+      value = setting;
+      source = "setting";
+    } else if (tunable > 0.0) {
+      value = static_cast<f32>(tunable);
+      source = "tunable";
+    } else if (reported > 0.0f) {
+      value = reported;
+      source = "display";
+    } else {
+      value = fallback;
+      source = "default";
+    }
+  };
+  pick(settings.peak_nits, display_peak.get(), settings.display_peak_nits, gfx::k_default_peak_nits,
+       out.peak_nits, out.peak_source);
+  pick(settings.paper_white_nits, display_paper_white.get(), settings.display_paper_white_nits,
+       gfx::k_default_paper_white_nits, out.paper_white_nits, out.paper_white_source);
+  return out;
 }
 
 // The order here is the order the decisions depend on each other in, and changing it changes

@@ -190,7 +190,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // it took the three pad words behind `dither_steps`. A world tile's UVs are from its corner, and
 // its material's lookup places the corner in this frame (renderer.md, "The ground's tiles are
 // placed at their corners").
-ENGINE_EXPECT_SIZE(400, 8, gfx::ResolveParams);
+// 416, not 400: the output's display — the encoding (SDR, PQ, scRGB), paper white and the peak in
+// nits — for the HDR encodes E39 measures (display.h, "HDR output"; 2026-10-09). No pad word was
+// left, so it is a row of its own.
+ENGINE_EXPECT_SIZE(416, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

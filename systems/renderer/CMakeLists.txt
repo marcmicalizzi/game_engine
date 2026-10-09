@@ -42,7 +42,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/atlas_lod_tests.cpp tests/vertex_id_tests.cpp
                     tests/shadow_caster_tests.cpp tests/flythrough_tests.cpp
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
-                    tests/world_translation_tests.cpp
+                    tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
@@ -92,6 +92,10 @@ endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
 if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_SKY_TESTS_TERRAIN=1)
+endif()
+# The HDR output test draws its second case under the sky capability's sky (E39).
+if(TARGET engine_renderer_tests AND TARGET engine::sky)
+  target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_HDR_TESTS_SKY=1)
 endif()
 # The sand's detail is held to its CPU mirror in double precision, which lives beside the BSDF's
 # in domain/gfx's tests (ground_detail_reference.h, brdf_reference.h): one mirror for both modules.

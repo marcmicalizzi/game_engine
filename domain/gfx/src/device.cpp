@@ -252,6 +252,12 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   const bool surface_capabilities2 =
       options.instance_extension_count > 0 &&
       instance_extensions.enable_if_available("VK_KHR_get_surface_capabilities2");
+  // The colour spaces past sRGB non-linear — HDR10's PQ, scRGB's extended linear — are not even
+  // listed by a surface unless the instance enables this (E39; docs/subsystems/gfx.md, "The
+  // surface's offers"). Same rule: a presenting caller, only where the loader has it, and an
+  // instance without it presents exactly as before, sRGB non-linear only.
+  h.swapchain_colorspace = options.instance_extension_count > 0 &&
+                           instance_extensions.enable_if_available("VK_EXT_swapchain_colorspace");
 
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -424,6 +430,12 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   h.present_id2 = ext_present_id2;
   h.present_wait2 = ext_present_wait2;
   h.present_timing = ext_present_timing;
+  // HDR10's static metadata (E39): the mastering display and the content's light levels an HDR
+  // swapchain hands the display (Swapchain::set_hdr_metadata). A presentation extra like the three
+  // above — no feature struct, nothing drawn depends on it — enabled with presentation where the
+  // driver offers it, and a device without it presents an HDR chain with no metadata.
+  h.hdr_metadata =
+      impl->features.presentation && device_extensions.enable_if_available("VK_EXT_hdr_metadata");
   const bool ext_mesh = enable_ext("VK_EXT_mesh_shader", caps_.mesh_shader);
   const bool ext_deferred =
       enable_ext("VK_KHR_deferred_host_operations", caps_.deferred_host_operations);

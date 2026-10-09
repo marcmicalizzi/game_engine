@@ -29,6 +29,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/gfx/display.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/pipeline.h>
@@ -452,6 +453,12 @@ class SceneRenderer {
     // the default, which differs from an 8-bit swapchain's only in channel order and so reads back
     // byte for byte the same, and which an 8-bit PNG holds without a second quantization.
     gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
+    // **What the output encode writes into it** (gfx/display.h, renderer.md "HDR output"; E39):
+    // the SDR curve (every picture before E39), PQ into BT.2020 — `color_format` then a 10-bit
+    // packed one, a window's HDR10 swapchain or `A2B10G10R10Unorm` offscreen — or scRGB's linear
+    // light into `R16G16B16A16Sfloat`. `create` refuses an HDR encoding over any other format. The
+    // display it is drawn for is the settings' (`display_levels`).
+    gfx::DisplayEncoding display = gfx::DisplayEncoding::Sdr;
     u32 frames_in_flight = 2;
     // Create an offscreen color target the renderer owns, for frames that name no image.
     bool offscreen = true;
@@ -517,6 +524,8 @@ class SceneRenderer {
   // The format the pipelines draw into (`Desc::color_format`): what the output encode quantizes to
   // and dithers by (gfx/display.h), and what a summary reports as the picture's depth.
   gfx::Format color_format() const noexcept { return desc_.color_format; }
+  // What the output encode writes into it (`Desc::display`): SDR, PQ or scRGB.
+  gfx::DisplayEncoding display() const noexcept { return desc_.display; }
   // The sun's cascades the last frame was drawn with (`ResolvedSettings::csm`); `count` 0 without
   // maps. The fit is the CPU's (`fit_shadow_cascades`), so this is what the frame used, not a
   // readback.

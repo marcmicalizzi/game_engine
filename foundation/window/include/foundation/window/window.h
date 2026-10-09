@@ -382,6 +382,10 @@ class Window {
   u32 pixel_width() const noexcept { return pixel_width_; }
   u32 pixel_height() const noexcept { return pixel_height_; }
   void refresh_pixel_size() noexcept;
+  // The window's centre on the desktop, in the desktop's coordinates: which display it is on, for
+  // a host that asks the display what it can show (HDR output's peak and paper white, E39). False
+  // without a window or where the platform does not say (Wayland).
+  bool desktop_center(i32& x, i32& y) const noexcept;
 
   // Pulls the next pending event for this window (and process-wide Quit). False when none
   // is left; call until it returns false once per frame.

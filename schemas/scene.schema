@@ -1389,7 +1389,7 @@ struct FlythroughPresentation @version(2) {
 /// What the picture was quantized into (docs/subsystems/renderer.md, "The output encode"; ADR-0052):
 /// the colour target — a window's swapchain image, or offscreen the renderer's own 8-bit target —
 /// its bits a channel, and whether the output encode dithered by them.
-struct FlythroughOutput @version(1) {
+struct FlythroughOutput @version(2) {
   /// The target's format: "B8G8R8A8Unorm", "R8G8B8A8Unorm", "A2B10G10R10Unorm", ...
   format: string
   /// Bits a colour channel: 8 or 10.
@@ -1407,6 +1407,24 @@ struct FlythroughOutput @version(1) {
   /// bits. More than 256 is the readback's proof that the window holds more than 8 bits. 0 without
   /// a windowed capture.
   capture_levels: u32 = 0
+  /// Version 2 (E39, docs/experiments/hdr-output-proposal.md): what the output encode wrote —
+  /// "sdr", "hdr10" (PQ, BT.2020) or "scrgb" (linear, 1.0 at 80 nits) — and what
+  /// `--present-format` asked for ("auto", "sdr8", "sdr10", "hdr10", "scrgb").
+  encoding: string @since(2)
+  present_format: string @since(2)
+  /// An HDR encoding's display: the peak its curve rolls off towards and the paper white a diffuse
+  /// white is shown at, nits, and where each came from — "setting" (`--peak-nits`,
+  /// `--paper-white-nits`), "tunable" (`renderer.display.*`), "display" (what Windows reports for
+  /// the output the window is on) or "default" (1000, 200). Zero and empty for SDR.
+  peak_nits: f32 = 0 @since(2)
+  paper_white_nits: f32 = 0 @since(2)
+  peak_source: string @since(2)
+  paper_white_source: string @since(2)
+  /// The HDR chain carries HDR10 static metadata (VK_EXT_hdr_metadata).
+  hdr_metadata: bool = false @since(2)
+  /// A window's: every format and colour space its surface offered, "A2B10G10R10Unorm
+  /// hdr10_st2084" each.
+  offers: string[] @since(2)
 }
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An

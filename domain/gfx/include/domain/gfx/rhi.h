@@ -263,6 +263,57 @@ enum class Format : u32 {
   Bc7Srgb = 146,
 };
 
+// **A presentation surface's colour space** (E39, docs/subsystems/gfx.md "The surface's offers"):
+// how the display reads the values a swapchain image holds. The numbers are VkColorSpaceKHR's, like
+// every enumeration here; a value not named is a colour space the engine has no use for yet, and
+// still reaches a probe's report as its number. The names past `SrgbNonlinear` are offered only
+// on an instance with VK_EXT_swapchain_colorspace, which a presenting device enables where the
+// loader has it.
+enum class ColorSpace : u32 {
+  SrgbNonlinear = 0,  // the SDR desktop: what every picture before E39 went to
+  DisplayP3Nonlinear = 1000104001,
+  ExtendedSrgbLinear = 1000104002,  // scRGB: linear Rec. 709, 1.0 at 80 nits, values past 1
+  DisplayP3Linear = 1000104003,
+  DciP3Nonlinear = 1000104004,
+  Bt709Linear = 1000104005,
+  Bt709Nonlinear = 1000104006,
+  Bt2020Linear = 1000104007,
+  Hdr10St2084 = 1000104008,  // HDR10: BT.2020 primaries, SMPTE ST 2084 (PQ)
+  DolbyVision = 1000104009,
+  Hdr10Hlg = 1000104010,
+  AdobeRgbLinear = 1000104011,
+  AdobeRgbNonlinear = 1000104012,
+  PassThrough = 1000104013,
+  ExtendedSrgbNonlinear = 1000104014,
+  DisplayNativeAmd = 1000213000,
+};
+
+// "srgb_nonlinear", "hdr10_st2084", "extended_srgb_linear", ...; "other" for a value not named.
+const char* color_space_name(ColorSpace space) noexcept;
+
+// One format and colour space a surface offers a swapchain (vkGetPhysicalDeviceSurfaceFormatsKHR),
+// in the engine's vocabulary. A format the `Format` enumeration does not name is still its number.
+struct SurfaceFormat {
+  Format format = Format::Undefined;
+  ColorSpace color_space = ColorSpace::SrgbNonlinear;
+};
+
+// **The HDR10 static metadata** a swapchain hands the display (VK_EXT_hdr_metadata, SMPTE ST 2086
+// and CTA-861.3): the mastering display's primaries and white point as CIE 1931 xy, its luminance
+// range in nits, and the content's light levels — MaxCLL, the brightest pixel, and MaxFALL, the
+// brightest frame's average. A display tone-maps what exceeds what it can show by these, so a
+// picture the engine has already fitted to the display's peak says so (`hdr10_metadata`).
+struct HdrMetadata {
+  f32 red[2] = {0.708f, 0.292f};  // BT.2020
+  f32 green[2] = {0.170f, 0.797f};
+  f32 blue[2] = {0.131f, 0.046f};
+  f32 white[2] = {0.3127f, 0.3290f};  // D65
+  f32 max_luminance = 1000.0f;
+  f32 min_luminance = 0.0f;
+  f32 max_content_light_level = 1000.0f;
+  f32 max_frame_average_light_level = 200.0f;
+};
+
 // The layout an image is in, which is what the render graph's `Access` vocabulary maps to and
 // what a caller tells the graph an imported image arrives in or has to leave in.
 enum class ImageLayout : u32 {

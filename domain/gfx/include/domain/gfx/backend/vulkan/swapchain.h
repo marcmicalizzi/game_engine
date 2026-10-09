@@ -32,6 +32,7 @@
 #include <core/containers/vector.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/display.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
 
@@ -60,6 +61,14 @@ struct SwapchainDesc {
   // its first format, as before. format() and offers_ten_bit() say what happened.
   u32 color_bits = 8;
   Format preferred_format = Format::B8G8R8A8Unorm;
+  // **The present format** (display.h, E39). `Auto` leaves the choice to `color_bits` above, as
+  // every chain before it; `Sdr8` and `Sdr10` are `color_bits` 8 and 10. `Hdr10` takes
+  // A2B10G10R10 (then A2R10G10B10) in HDR10_ST2084 and `ScRgb` R16G16B16A16Sfloat in
+  // EXTENDED_SRGB_LINEAR, exactly: a surface that does not offer it fails create() with a sentence
+  // naming what it does offer (`describe_surface_formats`), never a fallback to an SDR chain the
+  // picture's PQ codes would be shown through. Those colour spaces are listed only on an instance
+  // with VK_EXT_swapchain_colorspace, which a presenting device enables where the loader has it.
+  PresentFormat present_format = PresentFormat::Auto;
   // Clamped to the surface's range; image_count() is what the driver created, which may be more.
   u32 min_image_count = 3;
   // Carry an id on every present and allow waiting for one to be shown (VK_KHR_present_id2 and
@@ -146,6 +155,20 @@ class Swapchain {
   // The surface offers a 10-bit UNORM format in the sRGB non-linear colour space: what `auto`
   // would have taken, whatever `color_bits` asked for.
   bool offers_ten_bit() const noexcept { return ten_bit_offered_; }
+  // Every format and colour space the surface offered when the chain was last made (E39's first
+  // measurement for this window; display_probe.h asks the same of every output).
+  const Vector<SurfaceFormat>& offered() const noexcept { return offered_; }
+  // The chain's colour space in the engine's vocabulary.
+  ColorSpace surface_color_space() const noexcept { return vk::wrap(color_space_); }
+
+  // ---- HDR10 static metadata (VK_EXT_hdr_metadata) ----
+  // Hands the display the mastering primaries and luminances and the content's light levels, and
+  // hands them again whenever the chain is recreated. False when the device has no
+  // VK_EXT_hdr_metadata (the chain presents without metadata) or there is no chain.
+  bool set_hdr_metadata(const HdrMetadata& metadata);
+  bool hdr_metadata_supported() const noexcept {
+    return device_ != nullptr && device_->handles().hdr_metadata;
+  }
   Extent2D extent() const noexcept { return extent_; }
   VkPresentModeKHR present_mode() const noexcept { return mode_; }
   bool transfer_src() const noexcept { return transfer_src_; }
@@ -172,6 +195,10 @@ class Swapchain {
   Format format_ = Format::Undefined;
   VkColorSpaceKHR color_space_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   bool ten_bit_offered_ = false;
+  Vector<SurfaceFormat> offered_;
+  HdrMetadata metadata_{};
+  bool has_metadata_ = false;
+  void apply_hdr_metadata() noexcept;
   Extent2D extent_{};
   VkPresentModeKHR mode_ = VK_PRESENT_MODE_FIFO_KHR;
   bool transfer_src_ = false;

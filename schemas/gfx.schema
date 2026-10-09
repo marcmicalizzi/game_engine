@@ -104,3 +104,66 @@ struct AdapterInfo @version(2) {
   /// Whether the renderer would run here, and at what tier.
   verdict: DeviceVerdict @since(2)
 }
+
+/// One format and colour space a window's surface offers a swapchain
+/// (vkGetPhysicalDeviceSurfaceFormatsKHR on an instance with VK_EXT_swapchain_colorspace; E39's
+/// first measurement, docs/experiments/hdr-output-proposal.md).
+struct SurfaceOffer @version(1) {
+  /// The format as gfx spells it ("A2B10G10R10Unorm", "R16G16B16A16Sfloat"); "other" for one the
+  /// engine has no name for, whose VkFormat is `format_value`.
+  format: string
+  format_value: u32 = 0
+  /// "srgb_nonlinear", "hdr10_st2084", "extended_srgb_linear", ...; "other" with the
+  /// VkColorSpaceKHR in `color_space_value`.
+  color_space: string
+  color_space_value: u32 = 0
+}
+
+/// What one Vulkan device offers a hidden window placed on one output.
+struct SurfaceOffers @version(1) {
+  /// The device's name, as `gpu.adapters` reports it.
+  adapter: string
+  /// The device's graphics queue can present to the window; nothing else is filled when false.
+  supported: bool = false
+  formats: SurfaceOffer[]
+  /// "fifo", "mailbox", "immediate", "fifo_relaxed", or the number.
+  present_modes: string[]
+  /// The device offers VK_EXT_hdr_metadata (the HDR10 static metadata a swapchain can carry).
+  hdr_metadata: bool = false
+}
+
+/// One display output as Windows reports it — DXGI's `IDXGIOutput6::GetDesc1` and the display
+/// configuration's SDR white level — with what a window on it is offered. Read with no window
+/// shown and no device opened (docs/subsystems/gfx.md, "The surface's offers").
+struct DisplayOutput @version(1) {
+  /// The GDI device name ("DISPLAY1" after its prefix): one per output, and one for a whole NVIDIA
+  /// Surround group, which Windows sees as a single display.
+  name: string
+  /// The DXGI adapter it hangs off.
+  adapter: string
+  /// Its rectangle on the desktop, pixels: left, top, right, bottom.
+  desktop: i32[]
+  attached: bool = false
+  /// What the output is driven at, bits a colour channel (DXGI's `BitsPerColor`).
+  bits_per_color: u32 = 0
+  /// DXGI's colour space: "rgb_full_g22_none_p709" with Windows' HDR off,
+  /// "rgb_full_g2084_none_p2020" with it on; another one's number.
+  color_space: string
+  /// The output is in HDR10's colour space: Windows' "Use HDR" is on for it.
+  hdr: bool = false
+  /// The luminances DXGI reports for the panel, nits: the darkest, the brightest a small area can
+  /// reach, and the brightest a full white frame holds.
+  min_luminance: f32 = 0
+  max_luminance: f32 = 0
+  max_full_frame_luminance: f32 = 0
+  /// Windows' SDR white level for the output, nits ("SDR content brightness"): where an SDR
+  /// picture's white lands with HDR on, the natural paper white. 0 when Windows does not say.
+  sdr_white_nits: f32 = 0
+  /// The panel's primaries and white point as DXGI reports them, CIE 1931 x, y.
+  red: f32[]
+  green: f32[]
+  blue: f32[]
+  white: f32[]
+  /// What each Vulkan device offers a window on this output.
+  surfaces: SurfaceOffers[]
+}

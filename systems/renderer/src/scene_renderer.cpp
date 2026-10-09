@@ -74,6 +74,23 @@ constexpr gfx::Format k_shadow_format = gfx::Format::D32Sfloat;
 // pixel of every comparison, which is a mistake this project has already made once and measured
 // (docs/subsystems/renderer.md, "Reference renderer").
 
+// The stand-in sky's flat colour in the target's encoding (E39). `k_sky` is an SDR picture's
+// encoded value, cleared into the target as it is; an HDR target takes the luminance the SDR
+// picture shows it at, put at paper white through the same curve and encode as a shaded pixel (a
+// scene with no sky has no shoulder, so its knee is 1). Exactly `encoded` for SDR, so the clear,
+// `ResolveParams::sky` and the reference's background stay one number there; for HDR only the clear
+// takes it, since `ResolveParams::sky` is also the stand-in's ambient light.
+Vec4 stand_in_sky(const Vec4& encoded, gfx::DisplayEncoding display,
+                  const RenderSettings& settings) {
+  if (display == gfx::DisplayEncoding::Sdr) return encoded;
+  const DisplayLevels levels = display_levels(settings);
+  const f32 linear[3] = {gfx::sdr_decode(encoded.x), gfx::sdr_decode(encoded.y),
+                         gfx::sdr_decode(encoded.z)};
+  f32 out[3];
+  gfx::display_encode_hdr(linear, 1.0f, display, levels.paper_white_nits, levels.peak_nits, out);
+  return Vec4{out[0], out[1], out[2], encoded.w};
+}
+
 // The GPU timer keys zones by name and sums equal names, so a view's own milliseconds need a name
 // of their own. View 0 keeps the bare name, so a single-view frame records exactly the zones it
 // always has, and the per-pass totals are the sum over the views' names.
@@ -237,6 +254,26 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   desc_ = desc;
   width_ = desc.width;
   height_ = desc.height;
+
+  // An HDR encoding writes PQ codes or scRGB's linear light, which only its own target holds
+  // (gfx/display.h): PQ a 10-bit packed format, scRGB half floats.
+  if (desc.display != gfx::DisplayEncoding::Sdr) {
+    const bool pq_ok = desc.display == gfx::DisplayEncoding::Pq &&
+                       (desc.color_format == gfx::Format::A2B10G10R10Unorm ||
+                        desc.color_format == gfx::Format::A2R10G10B10Unorm);
+    const bool scrgb_ok = desc.display == gfx::DisplayEncoding::ScRgb &&
+                          desc.color_format == gfx::Format::R16G16B16A16Sfloat;
+    if (!pq_ok && !scrgb_ok) {
+      if (error != nullptr) {
+        *error = std::string("the ") + gfx::display_encoding_name(desc.display) +
+                 " output encode needs " +
+                 (desc.display == gfx::DisplayEncoding::Pq ? "a 10-bit packed" : "a half-float") +
+                 " colour target, not " + gfx::format_name(desc.color_format);
+      }
+      destroy();
+      return false;
+    }
+  }
 
   if (!views_.build(desc.views, width_, height_, error)) {
     destroy();
@@ -1751,6 +1788,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::ResolveParams resolve{};
     // `frame_lighting`'s sky, which is `k_sky` — one spelling, because the clear below writes it
     // too and the reference path tracer reads it as its background (04 §4.8, lighting.h).
+    // It is also the stand-in's ambient sky (linear light, `ambient_radiance`), so an HDR target
+    // keeps it as it is: there only the clear is the HDR-encoded colour (`stand_in_sky`), and the
+    // empty pixel the shader discards keeps that.
     resolve.sky = lighting.sky;
     // Both raster paths clear the colour target to exactly this before they draw, so an empty
     // pixel is a fragment whose value is already in the target: the shader discards it instead.
@@ -1762,6 +1802,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // pipelines draw into — 255 at 8 bits, 1023 at 10, none for a float target — so the picture is
     // quantized once, at the depth the target holds.
     resolve.dither_steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
+    // The display the encode is for (E39): SDR, or an HDR encoding at the run's paper white and
+    // peak (`display_levels`: the setting, the tunable, what the display reports, the default).
+    if (desc_.display != gfx::DisplayEncoding::Sdr) {
+      const DisplayLevels levels = display_levels(settings);
+      resolve.display_encoding = static_cast<u32>(desc_.display);
+      resolve.display_paper_white_nits = levels.paper_white_nits;
+      resolve.display_peak_nits = levels.peak_nits;
+    }
     // Skip the visibility read for a 32 x 32 tile with nothing in it. The mask is exact **only**
     // when the last write to the visibility buffer happened before the last Hi-Z build, and that
     // is exactly when two-pass occlusion culling is on: `resolve_settings` allows it only under
@@ -2262,10 +2310,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.instances = graph.import_buffer("tlas instances", scene.rt_instances);
   }
   gfx::ClearColor sky{};
-  sky.float32[0] = k_sky.x;
-  sky.float32[1] = k_sky.y;
-  sky.float32[2] = k_sky.z;
-  sky.float32[3] = k_sky.w;
+  const Vec4 clear_sky = stand_in_sky(k_sky, desc_.display, resolved_.settings);
+  sky.float32[0] = clear_sky.x;
+  sky.float32[1] = clear_sky.y;
+  sky.float32[2] = clear_sky.z;
+  sky.float32[3] = clear_sky.w;
   // The sky's tables and sums (sky.h). The star table is written once at create and read here only.
   struct SkyBuffers {
     gfx::RgBuffer transmittance, multiscatter, view, aerial, frame;

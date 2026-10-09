@@ -21,6 +21,43 @@ const char* format_name(Format format) noexcept {
   }
 }
 
+const char* color_space_name(ColorSpace space) noexcept {
+  switch (space) {
+    case ColorSpace::SrgbNonlinear: return "srgb_nonlinear";
+    case ColorSpace::DisplayP3Nonlinear: return "display_p3_nonlinear";
+    case ColorSpace::ExtendedSrgbLinear: return "extended_srgb_linear";
+    case ColorSpace::DisplayP3Linear: return "display_p3_linear";
+    case ColorSpace::DciP3Nonlinear: return "dci_p3_nonlinear";
+    case ColorSpace::Bt709Linear: return "bt709_linear";
+    case ColorSpace::Bt709Nonlinear: return "bt709_nonlinear";
+    case ColorSpace::Bt2020Linear: return "bt2020_linear";
+    case ColorSpace::Hdr10St2084: return "hdr10_st2084";
+    case ColorSpace::DolbyVision: return "dolby_vision";
+    case ColorSpace::Hdr10Hlg: return "hdr10_hlg";
+    case ColorSpace::AdobeRgbLinear: return "adobe_rgb_linear";
+    case ColorSpace::AdobeRgbNonlinear: return "adobe_rgb_nonlinear";
+    case ColorSpace::PassThrough: return "pass_through";
+    case ColorSpace::ExtendedSrgbNonlinear: return "extended_srgb_nonlinear";
+    case ColorSpace::DisplayNativeAmd: return "display_native_amd";
+    default: return "other";
+  }
+}
+
+std::string describe_surface_formats(std::span<const SurfaceFormat> formats) {
+  if (formats.empty()) return "nothing";
+  std::string out;
+  for (const SurfaceFormat& f : formats) {
+    if (!out.empty()) out += ", ";
+    const char* format = format_name(f.format);
+    out += std::strcmp(format, "other") == 0 ? std::to_string(static_cast<u32>(f.format)) : format;
+    out.push_back(' ');
+    const char* space = color_space_name(f.color_space);
+    out +=
+        std::strcmp(space, "other") == 0 ? std::to_string(static_cast<u32>(f.color_space)) : space;
+  }
+  return out;
+}
+
 u32 capture_bytes_per_pixel(Format format) noexcept {
   switch (format) {
     case Format::R8G8B8A8Unorm:

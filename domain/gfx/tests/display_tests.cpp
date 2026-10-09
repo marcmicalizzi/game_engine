@@ -2,11 +2,14 @@
 // device: the code steps a target has, the noise's range, distribution and spread, the dither's
 // ends, and a 10-bit capture's reduction to 8 bits. The renderer's banding test holds the GPU's
 // picture to these functions; this file holds the functions to what they promise.
+#include "display_reference.h"
+
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -193,4 +196,131 @@ TEST_CASE("display: a 10-bit capture reduces to 8 bits, rounded or through the d
     }
     CHECK(std::fabs(got - want) / 16.0 < 0.34);
   }
+}
+
+// ---- HDR output (E39): display.h against display_reference.h, in double -----------------------
+
+TEST_CASE("display: PQ round-trips in double, and the float encode is the reference's") {
+  // The reference against itself: encode then decode is the identity to 1e-6 relative across the
+  // whole range (0.001 to 10,000 nits); black is c1^m2, 7e-7, far under a code; 1 is 10,000 nits.
+  CHECK(gfx::reference::pq_encode(0.0) < 1e-6);
+  CHECK(gfx::reference::pq_decode(gfx::reference::pq_encode(0.0)) < 1e-9);
+  CHECK(gfx::reference::pq_encode(10000.0) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(gfx::reference::pq_decode(1.0) == doctest::Approx(10000.0).epsilon(1e-9));
+  // Known points of the curve: 100 nits is 0.508, 1,000 nits 0.752 (ITU-R BT.2100's table).
+  CHECK(gfx::reference::pq_encode(100.0) == doctest::Approx(0.5081).epsilon(2e-4));
+  CHECK(gfx::reference::pq_encode(1000.0) == doctest::Approx(0.7518).epsilon(2e-4));
+  f64 worst = 0.0;
+  for (f64 nits = 0.001; nits <= 10000.0; nits *= 1.05) {
+    const f64 back = gfx::reference::pq_decode(gfx::reference::pq_encode(nits));
+    worst = std::max(worst, std::fabs(back - nits) / nits);
+  }
+  MESSAGE("PQ round trip in double, worst relative error " << worst);
+  CHECK(worst < 1e-6);
+  // The float encode (display.h, display.slang's arithmetic) within a sixteenth of a 10-bit code
+  // of the double one everywhere, and its decode within a thousandth relative above a hundredth
+  // of a nit: a float is enough for a 10-bit PQ signal.
+  f64 encode_worst = 0.0;
+  f64 decode_worst = 0.0;
+  for (f64 nits = 0.01; nits <= 10000.0; nits *= 1.02) {
+    const f64 e = gfx::reference::pq_encode(nits);
+    encode_worst = std::max(
+        encode_worst, std::fabs(static_cast<f64>(gfx::pq_encode(static_cast<f32>(nits))) - e));
+    const f64 d = static_cast<f64>(gfx::pq_decode(static_cast<f32>(e)));
+    decode_worst = std::max(decode_worst, std::fabs(d - nits) / nits);
+  }
+  MESSAGE("float PQ: encode within " << encode_worst * 1023.0 << " of a 10-bit code, decode within "
+                                     << decode_worst << " relative");
+  CHECK(encode_worst * 1023.0 < 1.0 / 16.0);
+  CHECK(decode_worst < 1e-3);
+}
+
+TEST_CASE("display: the Rec. 709 to BT.2020 matrix is the primaries', and white stays white") {
+  f64 m[3][3];
+  gfx::reference::bt709_to_bt2020(m);
+  for (u32 r = 0; r < 3; ++r) {
+    f64 sum = 0.0;
+    f64 float_sum = 0.0;
+    for (u32 c = 0; c < 3; ++c) {
+      CAPTURE(r);
+      CAPTURE(c);
+      MESSAGE("reference[" << r << "][" << c << "] = " << m[r][c]);
+      CHECK(std::fabs(static_cast<f64>(gfx::k_bt709_to_bt2020[r][c]) - m[r][c]) < 1e-6);
+      CHECK(gfx::k_bt709_to_bt2020[r][c] > 0.0f);
+      sum += m[r][c];
+      float_sum += static_cast<f64>(gfx::k_bt709_to_bt2020[r][c]);
+    }
+    // White (1, 1, 1) in Rec. 709 is white in BT.2020: every row sums to one.
+    CHECK(std::fabs(sum - 1.0) < 1e-9);
+    CHECK(std::fabs(float_sum - 1.0) < 1e-6);
+  }
+}
+
+TEST_CASE(
+    "display: the tone curve rises, holds the SDR picture below its knee, and is the SDR "
+    "shoulder at a peak of paper white") {
+  for (const f32 knee : {0.6f, 1.0f}) {
+    for (const f32 ceiling : {1.0f, 2.5f, 5.0f, 10.0f}) {
+      CAPTURE(knee);
+      CAPTURE(ceiling);
+      f32 last = -1.0f;
+      for (u32 i = 0; i <= 4000; ++i) {
+        const f32 x = static_cast<f32>(i) * 0.01f;  // 0 .. 40 times paper white
+        const f32 y = gfx::display_tone(x, knee, ceiling);
+        // Monotonic, never past the ceiling (once the knee is below it), and the double's.
+        CHECK(y >= last);
+        last = y;
+        if (knee < ceiling) CHECK(y <= ceiling);
+        CHECK(static_cast<f64>(y) ==
+              doctest::Approx(gfx::reference::display_tone(static_cast<f64>(x), static_cast<f64>(knee), static_cast<f64>(ceiling))).epsilon(1e-5));
+        // The SDR picture's curve is the same function with its ceiling at paper white.
+        const f32 sdr = gfx::display_tone(x, knee, 1.0f);
+        if (x <= knee) {
+          // Below the knee — everything the SDR picture shows unrolled — the HDR picture is it.
+          CHECK(y == x);
+          CHECK(sdr == x);
+        }
+        // Above it the HDR picture never shows less than the SDR one, whose store clips at its
+        // white: it has room to spare.
+        CHECK(y >= std::min(sdr, 1.0f));
+      }
+    }
+  }
+  // The headroom: the peak over paper white, never below 1.
+  CHECK(gfx::display_headroom(1000.0f, 200.0f) == 5.0f);
+  CHECK(gfx::display_headroom(100.0f, 200.0f) == 1.0f);
+  CHECK(gfx::display_headroom(1000.0f, 0.0f) == 1.0f);
+}
+
+TEST_CASE("display: the HDR encodes of one pixel, and an SDR white at paper white") {
+  // A white below the knee lands at exactly paper white, in both encodings: HDR10's PQ code for
+  // paper white on every channel (white stays white through the matrix), scRGB's paper white over
+  // 80 nits.
+  const f32 white[3] = {0.5f, 0.5f, 0.5f};
+  f32 pq[3];
+  gfx::display_encode_hdr(white, 0.6f, gfx::DisplayEncoding::Pq, 200.0f, 1000.0f, pq);
+  for (const f32 v : pq)
+    CHECK(static_cast<f64>(v) == doctest::Approx(gfx::reference::pq_encode(100.0)).epsilon(1e-5));
+  f32 sc[3];
+  gfx::display_encode_hdr(white, 0.6f, gfx::DisplayEncoding::ScRgb, 200.0f, 1000.0f, sc);
+  for (const f32 v : sc)
+    CHECK(static_cast<f64>(v) == doctest::Approx(100.0 / 80.0));
+  // Far past the knee a channel approaches the peak and never passes it.
+  const f32 sun[3] = {1000.0f, 1000.0f, 1000.0f};
+  gfx::display_encode_hdr(sun, 0.6f, gfx::DisplayEncoding::Pq, 200.0f, 1000.0f, pq);
+  for (const f32 v : pq) {
+    CHECK(gfx::pq_decode(v) <= 1000.5f);
+    CHECK(gfx::pq_decode(v) > 990.0f);
+  }
+  // The present formats' names and encodings.
+  CHECK(std::strcmp(gfx::present_format_name(gfx::PresentFormat::Hdr10), "hdr10") == 0);
+  CHECK(gfx::present_format_encoding(gfx::PresentFormat::ScRgb) == gfx::DisplayEncoding::ScRgb);
+  CHECK(gfx::present_format_encoding(gfx::PresentFormat::Sdr10) == gfx::DisplayEncoding::Sdr);
+  CHECK(gfx::display_encoding_format(gfx::DisplayEncoding::Pq) == gfx::Format::A2B10G10R10Unorm);
+  CHECK(std::strcmp(gfx::color_space_name(gfx::ColorSpace::Hdr10St2084), "hdr10_st2084") == 0);
+  const gfx::SurfaceFormat offers[2] = {
+      {gfx::Format::B8G8R8A8Unorm, gfx::ColorSpace::SrgbNonlinear},
+      {gfx::Format::A2B10G10R10Unorm, gfx::ColorSpace::Hdr10St2084}};
+  CHECK(gfx::describe_surface_formats(offers) ==
+        "B8G8R8A8Unorm srgb_nonlinear, A2B10G10R10Unorm hdr10_st2084");
 }

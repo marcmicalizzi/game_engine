@@ -72,6 +72,14 @@ const Row k_settings_rows[] = {
     ENGINE_ROW(exposure_ev, "exposure_ev", ""),
     ENGINE_ROW(exposure_ev100, "exposure_ev100", ""),
     ENGINE_ROW(dither, "dither", ""),
+    ENGINE_ROW(peak_nits, nullptr,
+               "an HDR encode's display (E39): a call renders into the 8-bit SDR target, which "
+               "reads none of it"),
+    ENGINE_ROW(paper_white_nits, nullptr, "an HDR encode's display, as peak_nits"),
+    ENGINE_ROW(display_peak_nits, nullptr,
+               "what the display a presenting host's window is on reports; a call has no window"),
+    ENGINE_ROW(display_paper_white_nits, nullptr, "as display_peak_nits"),
+    ENGINE_ROW(display_min_nits, nullptr, "as display_peak_nits"),
     ENGINE_ROW(deform, "deform", ""),
     ENGINE_ROW(deform_kind, "deform", ""),
     ENGINE_ROW(deform_amplitude, "deform_amplitude", ""),
@@ -200,9 +208,9 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   renderer::RenderSettings settings;
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
-                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42] =
-      settings;
-  static_assert(std::size(k_settings_rows) == 43, "one row per RenderSettings field");
+                          s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
+                          s45, s46, s47] = settings;
+  static_assert(std::size(k_settings_rows) == 48, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;

@@ -119,7 +119,19 @@ struct RenderSettings {
   // picture rounded, which is what a test that holds the lighting model to a CPU reference within
   // a code or two measures; nothing else turns it off. A float target is never dithered.
   bool dither = true;
-  bool deform = false;  // every instance reads the per-frame deformed-vertex pool
+  // **The HDR output's display** (E39; gfx/display.h, renderer.md "HDR output"): the peak an HDR
+  // picture's curve rolls off towards and the paper white a diffuse white is shown at, nits. 0
+  // takes the tunable (`renderer.display.peak_nits`, `renderer.display.paper_white_nits`), then
+  // what the display reports — `display_peak_nits` (DXGI's MaxLuminance) and
+  // `display_paper_white_nits` (Windows' SDR white level), which a presenting host fills for the
+  // output its window is on — then 1000 and 200 (`display_levels`). Read by an HDR encoding only;
+  // an SDR picture is the same whatever they say.
+  f32 peak_nits = 0.0f;
+  f32 paper_white_nits = 0.0f;
+  f32 display_peak_nits = 0.0f;
+  f32 display_paper_white_nits = 0.0f;
+  f32 display_min_nits = 0.0f;  // the panel's black (DXGI's MinLuminance), for the metadata
+  bool deform = false;          // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;
   // The deformed-vertex pool's budget in kibibytes; 0 takes `k_default_deform_pool_kib`. It sizes
@@ -313,6 +325,18 @@ u64 rt_max_geometry_index(u32 pair_count, u32 views, bool casters) noexcept;
 // two scene-driven overrides are then skipped.
 void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures& features,
                       const SceneData* scene, ResolvedSettings& out);
+
+// **The display an HDR picture is drawn for** (E39; renderer.md, "HDR output"): the peak and paper
+// white in nits, and where each came from — "setting" (the run's own: `--peak-nits`), "tunable"
+// (`renderer.display.*` set non-zero), "display" (what the presenting host read from the display
+// its window is on) or "default" (1000 and 200). The frame summary records both.
+struct DisplayLevels {
+  f32 peak_nits = 0.0f;
+  f32 paper_white_nits = 0.0f;
+  const char* peak_source = "default";
+  const char* paper_white_source = "default";
+};
+DisplayLevels display_levels(const RenderSettings& settings);
 
 // Whether a device can run the resolved settings at all. Presentation is deliberately not
 // checked: that is the window's requirement, not the renderer's.

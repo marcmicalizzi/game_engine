@@ -60,7 +60,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (400 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (416 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -115,7 +115,23 @@ struct ResolveParams {
   // leaves from and a light is reached from — is in that space, as the lights, the cascades and
   // the frame's top-level structure are.
   FrameEye eye;
+  // The output's display (gfx::DisplayEncoding; display.slang, "HDR output"): SDR, PQ or scRGB,
+  // and paper white and the peak in nits, which only the HDR encodings read.
+  uint display_encoding;
+  float display_paper_white_nits;
+  float display_peak_nits;
+  uint display_pad;
 };
+
+// The output encode's target, gathered from the block (display.slang's `DisplayTarget`).
+DisplayTarget display_target(ResolveParams* params) {
+  DisplayTarget target;
+  target.encoding = params->display_encoding;
+  target.steps = params->dither_steps;
+  target.paper_white_nits = params->display_paper_white_nits;
+  target.peak_nits = params->display_peak_nits;
+  return target;
+}
 
 // Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
 struct ShadowCascade {
@@ -183,8 +199,8 @@ float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
                             1.0 - source.y / float(params->height) * 2.0);
   const float3 dir = sky_pixel_direction(sky, params->sky_view, ndc);
   const float3 radiance = sky_background(sky, dir, sky->views[params->sky_view].pixel.x);
-  return float4(display_output(sky_tone(sky, radiance * sky_exposure((SkyFrame*)sky->frame)), pixel,
-                               params->dither_steps),
+  return float4(display_output(radiance * sky_exposure((SkyFrame*)sky->frame), sky->shoulder,
+                               pixel, display_target(params)),
                 1.0);
 }
 
@@ -668,8 +684,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float transmittance = 1.0;
     if (distance > 0.0) sky_aerial(sky, to_surface / distance, distance, inscatter, transmittance);
     color = color * transmittance + inscatter;
-    color = sky_tone(sky, color * sky_exposure((SkyFrame*)sky->frame));
+    color = color * sky_exposure((SkyFrame*)sky->frame);
   }
-  // Linear to the target's code values, dithered by its steps: the one output encode.
-  return float4(display_output(color, noise_pixel, params->dither_steps), 1.0);
+  // Exposed radiance to the target's code values — the display's curve from the sky's shoulder (a
+  // scene without a sky has none: its knee is 1, the SDR picture's clip), then the transfer and
+  // the dither by the target's steps: the one output encode, SDR or HDR (display.slang).
+  float knee = 1.0;
+  if (has_sky) knee = sky->shoulder;  // never a read through the null block
+  return float4(display_output(color, knee, noise_pixel, display_target(params)), 1.0);
 }

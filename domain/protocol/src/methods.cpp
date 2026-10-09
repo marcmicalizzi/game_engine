@@ -5,6 +5,7 @@
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/display_probe.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/tunables/tunables.h>
@@ -337,6 +338,13 @@ bool gpu_adapters(Context&, AdaptersResult& out, RpcError&) {
   return true;
 }
 
+// E39's first measurement (gfx/display_probe.h): the outputs, their luminances, and what a hidden
+// window on each is offered. Reads; shows no window, opens no device, changes no display setting.
+bool gpu_displays(Context&, DisplaysResult& out, RpcError&) {
+  out.available = gfx::probe_displays(out.outputs, out.swapchain_colorspace, &out.error);
+  return true;
+}
+
 // ---- schema.* --------------------------------------------------------------------------------
 
 void render_type(const schema::TypeRef& t, std::string& out) {
@@ -536,6 +544,10 @@ void add_builtin_methods(Dispatcher& d) {
   d.add(read_only(method_no_params<AdaptersResult, &gpu_adapters>(
       "gpu.adapters",
       "Vulkan physical devices with driver, memory, queues, extensions, and tier.")));
+  d.add(read_only(method_no_params<DisplaysResult, &gpu_displays>(
+      "gpu.displays",
+      "Display outputs with the luminances Windows reports and the surface formats and colour "
+      "spaces a window on each is offered (E39). Shows no window, changes no setting.")));
 
   d.add(read_only(method_no_params<SchemaTypesResult, &schema_types>(
       "schema.types", "Every registered schema type.")));

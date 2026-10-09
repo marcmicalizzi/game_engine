@@ -100,13 +100,53 @@ bool Swapchain::create_chain(std::string* error) {
     }
     return nullptr;
   };
+  offered_.clear();
+  for (const VkSurfaceFormatKHR& f : formats)
+    offered_.push_back(SurfaceFormat{vk::wrap(f.format), vk::wrap(f.colorSpace)});
   const VkSurfaceFormatKHR* ten = offered(VK_FORMAT_A2B10G10R10_UNORM_PACK32);
   if (ten == nullptr) ten = offered(VK_FORMAT_A2R10G10B10_UNORM_PACK32);
   ten_bit_offered_ = ten != nullptr;
-  const VkSurfaceFormatKHR* pick = desc_.color_bits >= 10 ? ten : nullptr;
-  if (pick == nullptr) pick = offered(vk::native(desc_.preferred_format));
-  if (pick == nullptr) pick = offered(VK_FORMAT_B8G8R8A8_UNORM);
-  if (pick == nullptr) pick = offered(VK_FORMAT_R8G8B8A8_UNORM);
+  const PresentFormat request = desc_.present_format;
+  const VkSurfaceFormatKHR* pick = nullptr;
+  if (request == PresentFormat::Hdr10 || request == PresentFormat::ScRgb) {
+    // An HDR format is taken exactly or not at all (E39): HDR10 is a 10-bit packed format in
+    // HDR10_ST2084 (A2B10G10R10 first), scRGB the half-float one in EXTENDED_SRGB_LINEAR. Falling
+    // back to SDR would draw a PQ picture into an sRGB chain, so a surface without it is refused
+    // with what it does offer.
+    const bool hdr10 = request == PresentFormat::Hdr10;
+    const VkColorSpaceKHR space =
+        hdr10 ? VK_COLOR_SPACE_HDR10_ST2084_EXT : VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+    const auto in_space = [&](VkFormat format) -> const VkSurfaceFormatKHR* {
+      for (const VkSurfaceFormatKHR& f : formats) {
+        if (f.format == format && f.colorSpace == space) return &f;
+      }
+      return nullptr;
+    };
+    pick = hdr10 ? in_space(VK_FORMAT_A2B10G10R10_UNORM_PACK32)
+                 : in_space(VK_FORMAT_R16G16B16A16_SFLOAT);
+    if (pick == nullptr && hdr10) pick = in_space(VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+    if (pick == nullptr) {
+      if (error != nullptr) {
+        *error = std::string("the surface does not offer ") +
+                 (hdr10 ? "A2B10G10R10Unorm or A2R10G10B10Unorm in hdr10_st2084"
+                        : "R16G16B16A16Sfloat in extended_srgb_linear") +
+                 " (" + present_format_name(request) + "); it offers " +
+                 describe_surface_formats(offered_) +
+                 (device_->handles().swapchain_colorspace
+                      ? ""
+                      : ", and the instance has no VK_EXT_swapchain_colorspace to list more");
+      }
+      return false;
+    }
+  } else {
+    const u32 bits = request == PresentFormat::Sdr8    ? 8u
+                     : request == PresentFormat::Sdr10 ? 10u
+                                                       : desc_.color_bits;
+    pick = bits >= 10 ? ten : nullptr;
+    if (pick == nullptr) pick = offered(vk::native(desc_.preferred_format));
+    if (pick == nullptr) pick = offered(VK_FORMAT_B8G8R8A8_UNORM);
+    if (pick == nullptr) pick = offered(VK_FORMAT_R8G8B8A8_UNORM);
+  }
   const VkSurfaceFormatKHR chosen = pick != nullptr ? *pick : formats[0];
   format_ = vk::wrap(chosen.format);
   color_space_ = chosen.colorSpace;
@@ -232,6 +272,8 @@ bool Swapchain::create_chain(std::string* error) {
   ++chains_;
   chain_first_id_ = present_id_ + 1;
   if (timing_) setup_timing();
+  // A recreated chain (a resize) is a new swapchain object, and the metadata was the old one's.
+  if (has_metadata_) apply_hdr_metadata();
 
   u32 count = 0;
   vkGetSwapchainImagesKHR(h.device, swapchain_, &count, nullptr);
@@ -469,6 +511,29 @@ void Swapchain::destroy() noexcept {
   vkDeviceWaitIdle(device_->handles().device);
   destroy_chain();
   device_ = nullptr;
+  has_metadata_ = false;
+}
+
+bool Swapchain::set_hdr_metadata(const HdrMetadata& metadata) {
+  if (swapchain_ == VK_NULL_HANDLE || !device_->handles().hdr_metadata) return false;
+  metadata_ = metadata;
+  has_metadata_ = true;
+  apply_hdr_metadata();
+  return true;
+}
+
+void Swapchain::apply_hdr_metadata() noexcept {
+  VkHdrMetadataEXT m{};
+  m.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT;
+  m.displayPrimaryRed = {metadata_.red[0], metadata_.red[1]};
+  m.displayPrimaryGreen = {metadata_.green[0], metadata_.green[1]};
+  m.displayPrimaryBlue = {metadata_.blue[0], metadata_.blue[1]};
+  m.whitePoint = {metadata_.white[0], metadata_.white[1]};
+  m.maxLuminance = metadata_.max_luminance;
+  m.minLuminance = metadata_.min_luminance;
+  m.maxContentLightLevel = metadata_.max_content_light_level;
+  m.maxFrameAverageLightLevel = metadata_.max_frame_average_light_level;
+  vkSetHdrMetadataEXT(device_->handles().device, 1, &swapchain_, &m);
 }
 
 bool Swapchain::resize(u32 width, u32 height, std::string* error) {

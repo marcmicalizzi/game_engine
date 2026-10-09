@@ -340,7 +340,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 400 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 416 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -471,8 +471,17 @@ struct ResolveParams {
   // lights, the cascades' matrices and the frame's top-level structure are too. Zero is the
   // world's origin, which is what a test by the origin leaves it at.
   FrameEye eye;
+  // **The output's display** (display.h, "HDR output"; E39): `DisplayEncoding` as a number — SDR
+  // (0, the default: the encode exactly as it was), PQ into BT.2020 for an HDR10 target, or
+  // scRGB's linear light for a half-float one — and paper white and the display's peak in nits,
+  // which only the HDR encodings read. A new 16-byte row (2026-10-09): the block grew from 400 to
+  // 416 bytes, because no pad word was left.
+  u32 display_encoding = 0;
+  f32 display_paper_white_nits = 0.0f;
+  f32 display_peak_nits = 0.0f;
+  u32 display_pad = 0;
 };
-static_assert(sizeof(ResolveParams) == 400);
+static_assert(sizeof(ResolveParams) == 416);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

@@ -54,6 +54,11 @@ struct Handles {
   bool present_id2 = false;
   bool present_wait2 = false;
   bool present_timing = false;
+  // HDR output (E39): the instance lists colour spaces past sRGB non-linear
+  // (VK_EXT_swapchain_colorspace), and the device can hand a swapchain HDR10 metadata
+  // (VK_EXT_hdr_metadata). Each only where offered; without them a surface offers sRGB alone.
+  bool swapchain_colorspace = false;
+  bool hdr_metadata = false;
 };
 
 const char* result_name(VkResult result) noexcept;
@@ -115,6 +120,10 @@ inline CommandList command_list(VkCommandBuffer commands) noexcept {
 // Enumerations: the engine's numbers are Vulkan's (src/rhi_vulkan.cpp checks every enumerator).
 inline VkFormat native(Format format) noexcept { return static_cast<VkFormat>(format); }
 inline Format wrap(VkFormat format) noexcept { return static_cast<Format>(format); }
+inline VkColorSpaceKHR native(ColorSpace space) noexcept {
+  return static_cast<VkColorSpaceKHR>(space);
+}
+inline ColorSpace wrap(VkColorSpaceKHR space) noexcept { return static_cast<ColorSpace>(space); }
 inline VkImageLayout native(ImageLayout layout) noexcept {
   return static_cast<VkImageLayout>(layout);
 }

@@ -395,6 +395,20 @@ struct AdaptersResult @version(1) {
   adapters: engine.gfx.AdapterInfo[]
 }
 
+/// Result of `gpu.displays` (E39's first measurement; docs/experiments/hdr-output-proposal.md):
+/// every display output Windows reports, with its luminances and the formats and colour spaces a
+/// window on it is offered. Read with hidden windows and no device; changes no display setting.
+struct DisplaysResult @version(1) {
+  /// False where the probe cannot run — no Vulkan loader, or a platform without DXGI (the probe
+  /// is Windows-only; engine-view's summary reports its own window's offers anywhere) — and
+  /// `error` says why.
+  available: bool = false
+  error: string
+  /// The loader has VK_EXT_swapchain_colorspace, without which a surface lists sRGB alone.
+  swapchain_colorspace: bool = false
+  outputs: engine.gfx.DisplayOutput[]
+}
+
 // ---- render.* ---------------------------------------------------------------------------------
 // The renderer over the protocol (docs/subsystems/renderer.md, docs/plan/04-renderer.md §4.8,
 // 06 §6.9): load a scene once, then capture it, benchmark it, and compare the pictures. Every

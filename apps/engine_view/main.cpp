@@ -45,6 +45,7 @@
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/display.h>
+#include <domain/gfx/display_probe.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
@@ -163,7 +164,8 @@ constexpr const char* k_usage =
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
-    "                   [--present-bits auto|8|10]\n"
+    "                   [--present-bits auto|8|10] [--present-format auto|sdr8|sdr10|hdr10|scrgb]\n"
+    "                   [--peak-nits <n>] [--paper-white-nits <n>]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
@@ -451,6 +453,14 @@ constexpr const char* k_usage =
     "                   that depth; the summary's \"output\" block says what it got. A --capture of\n"
     "                   a 10-bit window is reduced to the 8-bit PNG through the same dither.\n"
     "                   Offscreen runs draw into 8 bits, as their PNGs are\n"
+    "  --present-format <f>  auto, sdr8 or sdr10 (--present-bits auto, 8, 10), or HDR for E39:\n"
+    "                   hdr10 (A2B10G10R10 in HDR10_ST2084, the PQ encode) or scrgb\n"
+    "                   (R16G16B16A16Sfloat in EXTENDED_SRGB_LINEAR, linear, 1.0 = 80 nits); a\n"
+    "                   surface that offers neither is refused, naming what it offers. Offscreen,\n"
+    "                   hdr10 and scrgb draw into that format (no --capture yet: an EXR, R79)\n"
+    "  --peak-nits <n>  an HDR picture's peak (default: what the display reports, else 1000)\n"
+    "  --paper-white-nits <n>  where an HDR picture shows a diffuse white (default: Windows' SDR\n"
+    "                   white level for the display, else 200)\n"
     "  --swapchain-images <n>  images to ask the window's swapchain for, 2..8 (default 3)\n"
     "  --frames-in-flight <n>  frames the window's loop records ahead of the GPU, 1..3 (default 2)\n"
     "  --borderless     a window with no title bar or border at the primary display's top-left\n"
@@ -517,6 +527,12 @@ struct Options {
   // surface offers A2B10G10R10 in the sRGB non-linear colour space and 8 otherwise; the renderer's
   // colour target follows the swapchain (docs/subsystems/apps.md, "--present-bits").
   u32 present_bits = 0;
+  // --present-format (E39; docs/subsystems/apps.md, "--present-format"): `auto`, `sdr8` and
+  // `sdr10` are `--present-bits auto`, 8 and 10; `hdr10` and `scrgb` ask the window's swapchain for
+  // the HDR format and colour space exactly (refused, naming what the surface offers, where it
+  // offers neither), and an offscreen run draws into that format with that encode.
+  gfx::PresentFormat present_format = gfx::PresentFormat::Auto;
+  bool present_format_set = false;
   u32 adapter = 0;
   bool validation = false;
   u32 grid = 257;
@@ -1633,19 +1649,32 @@ u32 capture_levels(const gfx::Capture& shot) {
 scene::FlythroughOutput output_summary(const renderer::SceneRenderer& view,
                                        const renderer::ResolvedSettings& resolved,
                                        const Options& options, const gfx::Swapchain* swapchain,
-                                       u32 levels = 0) {
+                                       u32 levels = 0, bool hdr_metadata = false) {
   scene::FlythroughOutput out;
   out.capture_levels = levels;
   out.format = gfx::format_name(view.color_format());
   out.bits = gfx::display_bits(view.color_format());
   out.dither = resolved.settings.dither;
+  // E39: the encode, what was asked for, and an HDR encoding's display and where it came from.
+  out.encoding = gfx::display_encoding_name(view.display());
+  out.present_format = gfx::present_format_name(options.present_format);
+  if (view.display() != gfx::DisplayEncoding::Sdr) {
+    const renderer::DisplayLevels display = renderer::display_levels(resolved.settings);
+    out.peak_nits = display.peak_nits;
+    out.paper_white_nits = display.paper_white_nits;
+    out.peak_source = display.peak_source;
+    out.paper_white_source = display.paper_white_source;
+  }
+  out.hdr_metadata = hdr_metadata;
   if (swapchain != nullptr) {
-    out.color_space =
-        swapchain->color_space() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ? "srgb_nonlinear" : "other";
+    out.color_space = gfx::color_space_name(swapchain->surface_color_space());
     out.requested_bits = options.present_bits == 0   ? "auto"
                          : options.present_bits == 8 ? "8"
                                                      : "10";
     out.ten_bit_offered = swapchain->offers_ten_bit();
+    for (const gfx::SurfaceFormat& f : swapchain->offered())
+      out.offers.push_back(
+          gfx::describe_surface_formats(std::span<const gfx::SurfaceFormat>(&f, 1)));
   }
   return out;
 }
@@ -2283,6 +2312,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
     renderer_desc.offscreen = true;
     renderer_desc.shader_manifest = options.shaders;
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
+    // An HDR --present-format offscreen: its format and its encode, at the display the settings
+    // name (no window, so no display of its own: the flags, the tunables, or 1000 and 200 nits).
+    renderer_desc.display = gfx::present_format_encoding(options.present_format);
+    if (renderer_desc.display != gfx::DisplayEncoding::Sdr)
+      renderer_desc.color_format = gfx::display_encoding_format(renderer_desc.display);
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
@@ -3399,6 +3433,35 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine-view: --present-bits expects auto, 8 or 10\n");
         return k_exit_usage;
       }
+    } else if (a == "--present-format") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value == "auto") {
+        options.present_format = gfx::PresentFormat::Auto;
+      } else if (value == "sdr8") {
+        options.present_format = gfx::PresentFormat::Sdr8;
+      } else if (value == "sdr10") {
+        options.present_format = gfx::PresentFormat::Sdr10;
+      } else if (value == "hdr10") {
+        options.present_format = gfx::PresentFormat::Hdr10;
+      } else if (value == "scrgb") {
+        options.present_format = gfx::PresentFormat::ScRgb;
+      } else {
+        std::fprintf(stderr,
+                     "engine-view: --present-format expects auto, sdr8, sdr10, hdr10 or scrgb\n");
+        return k_exit_usage;
+      }
+      options.present_format_set = true;
+    } else if (a == "--peak-nits" || a == "--paper-white-nits") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double nits = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(nits > 0.0) || nits > 10000.0) {
+        std::fprintf(stderr, "engine-view: %s expects nits, more than 0 and at most 10000\n",
+                     std::string(a).c_str());
+        return k_exit_usage;
+      }
+      (a == "--peak-nits" ? options.settings.peak_nits : options.settings.paper_white_nits) =
+          static_cast<f32>(nits);
     } else if (a == "--dither") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (value != "on" && value != "off") {
@@ -3573,6 +3636,35 @@ int main(int argc, char** argv) {
   // set going (RenderSettings::time_rate_live). Offscreen the keys do nothing and the rate is the
   // flag's.
   if (options.interactive && !options.offscreen) options.settings.time_rate_live = true;
+  // `--present-bits` and `--present-format` name one choice (E39): one or the other, or both
+  // agreeing; `auto`, `sdr8` and `sdr10` are the bits' `auto`, 8 and 10.
+  {
+    const gfx::PresentFormat from_bits = options.present_bits == 8    ? gfx::PresentFormat::Sdr8
+                                         : options.present_bits == 10 ? gfx::PresentFormat::Sdr10
+                                                                      : gfx::PresentFormat::Auto;
+    if (options.present_format_set) {
+      if (options.present_bits != 0 && from_bits != options.present_format) {
+        std::fprintf(stderr,
+                     "engine-view: --present-bits %u and --present-format %s ask for different "
+                     "formats; give one\n",
+                     options.present_bits, gfx::present_format_name(options.present_format));
+        return k_exit_usage;
+      }
+      options.present_bits = options.present_format == gfx::PresentFormat::Sdr8    ? 8u
+                             : options.present_format == gfx::PresentFormat::Sdr10 ? 10u
+                                                                                   : 0u;
+    } else {
+      options.present_format = from_bits;
+    }
+  }
+  const bool hdr_output = options.present_format == gfx::PresentFormat::Hdr10 ||
+                          options.present_format == gfx::PresentFormat::ScRgb;
+  if (hdr_output && options.reference != 0) {
+    std::fprintf(stderr,
+                 "engine-view: --reference writes the path tracer's 8-bit picture; an HDR "
+                 "--present-format has no reference yet\n");
+    return k_exit_usage;
+  }
   // An offscreen run's target is the renderer's own 8-bit one, whatever `--present-bits` says: its
   // capture is an 8-bit PNG, and a picture quantized once at 8 bits with the dither is a better
   // 8-bit picture than a 10-bit one rounded again (renderer.md, "The output encode").
@@ -3584,6 +3676,18 @@ int main(int argc, char** argv) {
                  "engine-view: --present, --present-bits, --swapchain-images, --frames-in-flight, "
                  "--pace, --borderless and --no-present-timing are the window's; an offscreen run "
                  "has none (its target is 8 bits, as its PNG is)\n");
+    return k_exit_usage;
+  }
+  // Offscreen, an HDR --present-format draws into the HDR format with the HDR encode (E39): what
+  // the encode's cost is measured on and an EXR captures. Its picture is PQ codes or scRGB's
+  // linear light, which an 8-bit PNG cannot hold.
+  // The half-float EXR that captures it is roadmap R79's second half and not built yet, so an HDR
+  // run refuses a capture rather than write PQ codes or half floats into an 8-bit PNG.
+  if (hdr_output && (!options.capture.empty() || !options.marker_captures.empty())) {
+    std::fprintf(stderr,
+                 "engine-view: a --present-format %s picture is captured as a half-float .exr, "
+                 "which is not built yet (roadmap R79); run it without --capture\n",
+                 gfx::present_format_name(options.present_format));
     return k_exit_usage;
   }
   const renderer::CaptureChannels& channels = options.capture_channels;
@@ -3874,6 +3978,7 @@ int main(int argc, char** argv) {
   // only motion reported after relative mode came on.
   view::PointerGate pointer_gate;
   pointer_gate.takes_pointer = grab_pointer;
+  bool hdr_metadata_set = false;  // the HDR chain carries HDR10 metadata (E39)
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -3892,6 +3997,9 @@ int main(int argc, char** argv) {
     // renderer's colour target follows the swapchain below, so the picture is quantized once, at
     // the depth the display takes (renderer.md, "The output encode").
     swapchain_desc.color_bits = options.present_bits == 8 ? 8u : 10u;
+    // `--present-format hdr10|scrgb` (E39): that format and colour space exactly, or a refusal
+    // that names what the surface offers.
+    swapchain_desc.present_format = options.present_format;
     // The pacer waits on present ids; a measured session asks for display times as well, unless
     // `--no-present-timing` says not to (on this project's driver a chain with them paces FIFO
     // differently, which a before-and-after has to be able to leave out).
@@ -3899,8 +4007,34 @@ int main(int argc, char** argv) {
     swapchain_desc.timing = (options.interactive || options.windowed) &&
                             !options.benchmark.empty() && options.present_timing;
     if (!swapchain.create(device, swapchain_desc, &error)) {
-      exit_code = fail("swapchain", error);
+      exit_code = fail(hdr_output ? "present format" : "swapchain", error);
       break;
+    }
+    if (hdr_output) {
+      // The display the HDR picture is drawn for: what Windows reports for the output the window
+      // is on (DXGI's peak and black, the SDR white level as paper white), under the flags and the
+      // tunables (`renderer::display_levels`); and the HDR10 metadata that says the picture is
+      // already fitted to that peak. Read only here, so an SDR run asks the display nothing.
+      Vector<gfx::DisplayOutput> outputs;
+      std::string why;
+      i32 cx = 0;
+      i32 cy = 0;
+      if (gfx::display_outputs(outputs, &why)) {
+        if (!window.desktop_center(cx, cy)) cx = cy = 0;
+        if (const gfx::DisplayOutput* o = gfx::output_at(outputs, cx, cy)) {
+          options.settings.display_peak_nits = o->max_luminance;
+          options.settings.display_paper_white_nits = o->sdr_white_nits;
+          options.settings.display_min_nits = o->min_luminance;
+          ENGINE_LOG_INFO(log_view, "the display", log::field("output", o->name),
+                          log::field("hdr", o->hdr), log::field("max_nits", o->max_luminance),
+                          log::field("sdr_white_nits", o->sdr_white_nits));
+        }
+      } else {
+        ENGINE_LOG_INFO(log_view, "the display reports nothing", log::field("reason", why));
+      }
+      const renderer::DisplayLevels levels = renderer::display_levels(options.settings);
+      hdr_metadata_set = swapchain.set_hdr_metadata(gfx::hdr10_metadata(
+          levels.peak_nits, options.settings.display_min_nits, levels.paper_white_nits));
     }
     if (options.present_bits == 10 && gfx::display_bits(swapchain.format()) != 10) {
       ENGINE_LOG_WARN(log_view, "--present-bits 10: the surface offers no 10-bit format; 8 bits",
@@ -4134,6 +4268,13 @@ int main(int argc, char** argv) {
     renderer_desc.width = swapchain.extent().width;
     renderer_desc.height = swapchain.extent().height;
     renderer_desc.color_format = swapchain.format();
+    // The swapchain's colour space says how the display reads it: HDR10's PQ, scRGB's linear
+    // light, or the SDR curve (E39).
+    renderer_desc.display = swapchain.surface_color_space() == gfx::ColorSpace::Hdr10St2084
+                                ? gfx::DisplayEncoding::Pq
+                            : swapchain.surface_color_space() == gfx::ColorSpace::ExtendedSrgbLinear
+                                ? gfx::DisplayEncoding::ScRgb
+                                : gfx::DisplayEncoding::Sdr;
     renderer_desc.frames_in_flight = options.frames_in_flight;
     renderer_desc.offscreen = false;  // the swapchain image is the target
     renderer_desc.shader_manifest = options.shaders;
@@ -4942,8 +5083,8 @@ int main(int argc, char** argv) {
           options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
           swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0,
           pace_display ? &pacer : nullptr, static_cast<u32>(ceiling_hz), ceiling_waits);
-      summary.output =
-          output_summary(view_renderer, resolved, options, &swapchain, window_capture_levels);
+      summary.output = output_summary(view_renderer, resolved, options, &swapchain,
+                                      window_capture_levels, hdr_metadata_set);
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
@@ -4966,7 +5107,7 @@ int main(int argc, char** argv) {
   // What the picture was quantized into, read while the swapchain still says.
   const std::string output_text =
       write_json(schema::to_json(output_summary(view_renderer, resolved, options, &swapchain,
-                                                window_capture_levels)),
+                                                window_capture_levels, hdr_metadata_set)),
                  JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_WORLD
   view_world.close_log();  // the world log's summary line, while the world is still whole

@@ -20,8 +20,13 @@ engine_module(NAME gfx LAYER domain
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
-          src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp)
+          src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp
+          src/display_probe.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
+# The display probe (display_probe.h, E39) asks DXGI for the outputs' luminances on Windows.
+if(WIN32)
+  target_link_libraries(engine_gfx PRIVATE dxgi)
+endif()
 
 # The Vulkan backend (docs/subsystems/gfx.md, "The RHI surface and the backend surface"). The
 # Vulkan headers, volk and VMA are *not* on engine_gfx's public include path: its public headers

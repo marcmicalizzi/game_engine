@@ -45,6 +45,24 @@ static_assert(bits(Format::Bc5Unorm) == VK_FORMAT_BC5_UNORM_BLOCK);
 static_assert(bits(Format::Bc7Unorm) == VK_FORMAT_BC7_UNORM_BLOCK);
 static_assert(bits(Format::Bc7Srgb) == VK_FORMAT_BC7_SRGB_BLOCK);
 
+// ---- surface colour spaces (VK_KHR_surface, VK_EXT_swapchain_colorspace, E39) ----
+static_assert(bits(ColorSpace::SrgbNonlinear) == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+static_assert(bits(ColorSpace::DisplayP3Nonlinear) == VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT);
+static_assert(bits(ColorSpace::ExtendedSrgbLinear) == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT);
+static_assert(bits(ColorSpace::DisplayP3Linear) == VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT);
+static_assert(bits(ColorSpace::DciP3Nonlinear) == VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT);
+static_assert(bits(ColorSpace::Bt709Linear) == VK_COLOR_SPACE_BT709_LINEAR_EXT);
+static_assert(bits(ColorSpace::Bt709Nonlinear) == VK_COLOR_SPACE_BT709_NONLINEAR_EXT);
+static_assert(bits(ColorSpace::Bt2020Linear) == VK_COLOR_SPACE_BT2020_LINEAR_EXT);
+static_assert(bits(ColorSpace::Hdr10St2084) == VK_COLOR_SPACE_HDR10_ST2084_EXT);
+static_assert(bits(ColorSpace::Hdr10Hlg) == VK_COLOR_SPACE_HDR10_HLG_EXT);
+static_assert(bits(ColorSpace::AdobeRgbLinear) == VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT);
+static_assert(bits(ColorSpace::AdobeRgbNonlinear) == VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT);
+static_assert(bits(ColorSpace::PassThrough) == VK_COLOR_SPACE_PASS_THROUGH_EXT);
+static_assert(bits(ColorSpace::ExtendedSrgbNonlinear) ==
+              VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT);
+static_assert(bits(ColorSpace::DisplayNativeAmd) == VK_COLOR_SPACE_DISPLAY_NATIVE_AMD);
+
 // ---- image layouts ----
 static_assert(bits(ImageLayout::Undefined) == VK_IMAGE_LAYOUT_UNDEFINED);
 static_assert(bits(ImageLayout::General) == VK_IMAGE_LAYOUT_GENERAL);

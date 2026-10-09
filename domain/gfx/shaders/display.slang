@@ -58,4 +58,73 @@ float3 display_output(float3 linear_color, uint2 pixel, uint steps) {
   return display_dithered(display_encode(linear_color), pixel, steps);
 }
 
+// ---- HDR output (E39; gfx/display.h says what and why; renderer.md, "HDR output") ------------
+//
+// The same encode for a display past [0, 1]: the display tone curve in units of paper white with
+// its ceiling at the display's peak, the nits, then PQ into BT.2020 (dithered by one 10-bit PQ
+// code) or scRGB's linear light (1.0 at 80 nits, no dither). display.h mirrors every function.
+
+static const uint k_display_sdr = 0;   // gfx::DisplayEncoding::Sdr
+static const uint k_display_pq = 1;    // gfx::DisplayEncoding::Pq
+static const uint k_display_scrgb = 2; // gfx::DisplayEncoding::ScRgb
+
+// What the frame's output is: the encoding, the target's steps (the dither's, 0 for none), paper
+// white and the peak in nits. `ResolveParams`' display fields, gathered by the caller.
+struct DisplayTarget {
+  uint encoding;
+  uint steps;
+  float paper_white_nits;
+  float peak_nits;
+};
+
+// display.h's `display_tone`: at or below `knee` the value, above it a roll-off towards
+// `ceiling` with the line's slope where they meet. With `ceiling` 1 it is sky.slang's `sky_tone1`.
+float display_tone1(float x, float knee, float ceiling) {
+  if (x <= knee || knee >= ceiling) return x;
+  return knee + (ceiling - knee) * (1.0 - exp(-(x - knee) / (ceiling - knee)));
+}
+
+// SMPTE ST 2084: nits to PQ's encoded value. display.h's `pq_encode`.
+float3 pq_encode(float3 nits) {
+  const float m1 = 2610.0 / 16384.0;
+  const float m2 = 2523.0 / 4096.0 * 128.0;
+  const float c1 = 3424.0 / 4096.0;
+  const float c2 = 2413.0 / 4096.0 * 32.0;
+  const float c3 = 2392.0 / 4096.0 * 32.0;
+  const float3 p = pow(clamp(nits / 10000.0, 0.0, 1.0), m1);
+  return pow((c1 + c2 * p) / (1.0 + c3 * p), m2);
+}
+
+// Linear Rec. 709 to linear BT.2020 (display.h's `k_bt709_to_bt2020`, rows).
+float3 bt709_to_bt2020(float3 c) {
+  return float3(dot(float3(0.6274038959, 0.3292830384, 0.0433130657), c),
+                dot(float3(0.0690972894, 0.9195403951, 0.0113623156), c),
+                dot(float3(0.0163914389, 0.0880133079, 0.8955952532), c));
+}
+
+// **The one output encode, with the display it is for.** `exposed` is radiance times the frame's
+// exposure, *before* any shoulder; `knee` where the curve starts to roll off (the sky's shoulder,
+// or 1 for a scene with no sky). SDR is exactly what the three-argument form and `sky_tone` drew;
+// HDR10 and scRGB tone towards the peak instead of the SDR white (display.h says why).
+//
+// **The UI's seam** (04 §4.7; renderer.md, "HDR output"): an interface composited over the picture
+// belongs between the curve and the encode — `nits` below, in the output's own primaries, at paper
+// white — so this function would split there into a tone pass and an encode pass the frame ends
+// on. Nothing composites yet, and nothing is built for it.
+float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget target) {
+  if (target.encoding == k_display_sdr) {
+    const float3 toned = float3(display_tone1(exposed.x, knee, 1.0),
+                                display_tone1(exposed.y, knee, 1.0),
+                                display_tone1(exposed.z, knee, 1.0));
+    return display_output(toned, pixel, target.steps);
+  }
+  const float ceiling = max(target.peak_nits / max(target.paper_white_nits, 1e-6), 1.0);
+  const float3 e = max(exposed, 0.0);
+  const float3 nits = float3(display_tone1(e.x, knee, ceiling), display_tone1(e.y, knee, ceiling),
+                             display_tone1(e.z, knee, ceiling)) *
+                      target.paper_white_nits;
+  if (target.encoding == k_display_scrgb) return nits / 80.0;
+  return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
+}
+
 #endif  // ENGINE_DISPLAY_SLANG
