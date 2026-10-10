@@ -746,8 +746,10 @@ TEST_CASE("mcp: a mutation with no rationale is refused, with what to add") {
   CHECK(is_error(no_why));
   CHECK(text_of(no_why).find("no rationale") != std::string::npos);
 
-  // Nothing reached the journal.
-  CHECK(num(ok(mcp.tool("journal", "{" + s + "}")), "total") == 0);
+  // Nothing reached the journal, and the journal says so in words.
+  const JsonValue empty = mcp.tool("journal", "{" + s + "}");
+  CHECK(num(ok(empty), "total") == 0);
+  CHECK(text_of(empty).find("The journal is empty") != std::string::npos);
 
   // A transaction the host refuses commits nothing and names every problem.
   const JsonValue refused = mcp.tool(

@@ -815,9 +815,18 @@ void run_journal(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data.set("patches", patches);
   out.data.set("position", JsonValue(uint_of(r, "position")));
   finish_page(out.data, page.offset, patches.size(), total);
-  out.summary = "Journal patches " + range_text(page.offset, patches.size(), total) +
-                "; the first " + std::to_string(uint_of(r, "position")) +
-                " are applied and the rest can be redone.";
+  // Said as what an agent acts on: nothing yet, all applied, or how many an undo left to redo.
+  const u64 position = uint_of(r, "position");
+  if (total == 0) {
+    out.summary = "The journal is empty: nothing has been committed.";
+  } else {
+    out.summary = "Journal patches " + range_text(page.offset, patches.size(), total) +
+                  (position >= total ? ", all applied."
+                                     : "; the first " + std::to_string(position) +
+                                           " are applied and the last " +
+                                           std::to_string(total - position) +
+                                           " were undone and can be redone.");
+  }
 }
 
 // ---- diff, merge, validate
