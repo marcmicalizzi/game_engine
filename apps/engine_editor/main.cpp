@@ -123,6 +123,7 @@ struct Camera {
   view::FlyState state;
   view::FlyParams params;
   view::FlyActions actions;
+  input::ActionMap map;  // what `input` points at: it has to live as long as the state does
   input::InputState input;
   view::EdgeEvents edge;
   FixedStepClock clock{240, 60};
@@ -132,7 +133,7 @@ struct Camera {
   bool start(const renderer::Camera& from, f32 radius, std::string& error) {
     state = view::fly_state_from_camera(from);
     params.speed = std::max(1.0f, radius * 0.5f);
-    const input::ActionMap map = view::default_fly_map();
+    map = view::default_fly_map();
     if (!view::resolve_fly_actions(map, actions, &error)) return false;
     input.set_map(map);
     return true;
