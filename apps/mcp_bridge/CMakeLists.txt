@@ -16,4 +16,17 @@ if(TARGET engine_mcp_bridge_tests)
   # The engine-host behind the bridge opens a GPU device for the render tools, and so can wait
   # for the machine-wide GPU lock (ADR-0049).
   engine_test_waits_for_gpu(mcp_bridge)
+  # The MCP conformance client (tools/mcp-check.ps1) drives this engine-mcp as an agent's client
+  # does and runs plan 06 §6.10's one-agent loop over it; its tests also prove it fails a stand-in
+  # server that breaks the rules it checks. Named mcp_bridge.<part> so that `tools/dev.ps1 test
+  # -Affected` runs it with the bridge's own tests; its capture and benchmark take the GPU lock.
+  if(ENGINE_PWSH)
+    add_test(NAME mcp_bridge.mcp_check
+      COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/mcp-check.Tests.ps1"
+              -Mcp "$<TARGET_FILE:engine_mcp_bridge>"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(mcp_bridge.mcp_check PROPERTIES LABELS "mcp_bridge;tools")
+    engine_test_waits_for_gpu(mcp_bridge.mcp_check)
+  endif()
 endif()

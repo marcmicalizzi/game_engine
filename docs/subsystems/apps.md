@@ -962,6 +962,51 @@ The long class is the work whose time grows with the content or with what was as
 
 **The test hook.** A hung host is made on purpose with engine-host's `--debug-hang <method>` (under **engine-host** at the top of this page), handed to it through `--host-arg`, so the end-to-end case needs no fault injection in the bridge: `--call-timeout 1 --host-arg --debug-hang --host-arg session.list` makes `list_sessions` come back after one second (measured 1.004 s) with the error, a new pid and generation 2 on the next call; `--long-call-timeout 3` with `content.build` hung makes `build_content` come back after three (3.013 s) and not after the quick deadline of one.
 
+### The conformance client
+
+```powershell
+pwsh tools/mcp-check.ps1 [-Mcp build/msvc-debug/bin/engine-mcp.exe] [-Scratch <dir>] [-Report <file.json>]
+                         [-ProtocolVersion 2025-11-25] [-NoRender] [-KeepScratch]
+```
+
+`tools/mcp-check.ps1` drives engine-mcp from start to finish as an agent's client does, and nothing in it knows the bridge's C++: it starts `engine-mcp --workspace <scratch>/workspace --actor mcp-check`, speaks newline-delimited JSON-RPC over the pipes (`initialize` with a protocol version, `notifications/initialized`, `tools/list`, then `tools/call` with increasing ids), and runs [06 §6.10](../plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director)'s one-agent loop as a script of tool calls: open (create) a session, find a type with `list_schema` and read it with `describe`, create an object and set a property with a rationale each, read the journal, add a layer and read the diff, validate, capture a frame, benchmark a short camera path the check writes itself, read the log tail, undo, close. Around the loop it asserts the plan's invariants on the wire: every edit is **one** journal patch of one command carrying the actor and its rationale; an edit with no attribution or a blank rationale is refused with a hint and journals nothing; a notification gets no answer (a `ping` sent straight after must be the next line); every tool has a description, an object schema whose `required` names its own properties, and a `readOnlyHint`; a capture's answer is under 8 KB and every `resource_link` names a file that exists; a closed session's id answers with a hint. Then two more bridges on the same document under `content/roles/roles.json`: under **`qa`** the read-only tools are offered and answer (`open_session`, `objects`, `journal`, `validate`, `layers`, `describe`), no read-only tool is withheld, the writing tools are not offered and a call to one is refused; under **`designer`** a direct `set_property` comes back as 1008 with the hint pointing at `propose_layer`. The render steps skip with the reason — never fail — where the bridge answers 1007, so the check runs on a CI runner as it does here. It records, per tool, the response time and the byte size of its `inputSchema` (measured on the raw `tools/list` text, as the bridge wrote it) and of its result, prints a table and the size of the whole list, writes every line both ways to `<scratch>/transcript.jsonl` and each bridge's stderr beside it, and with `-Report` writes the steps and the measurements as JSON. Exit 0 when every step passed or skipped, 1 when one failed, 2 when there was no engine-mcp to start. It is a test, so it owns nothing outside its scratch directory: `-Scratch` names one, and without it a fresh GUID directory under the system temp directory is made and removed (kept when a step failed).
+
+It runs under CTest as **`mcp_bridge.mcp_check`** (`tools/mcp-check.Tests.ps1`, with the built `engine-mcp` passed as `-Mcp`, so `tools/dev.ps1 test -Affected` runs it whenever the bridge changes), which also proves the check is not vacuous: a stand-in server written by the test, which answers a notification and accepts an edit with no rationale, must fail the check with both named and the table still printed, and a missing binary must exit 2.
+
+**What the first run found (2026-10-10, `msvc-debug`, RTX 5090, beside other agents' builds, so the times are upper bounds).** The loop ran end to end on the first attempt once the client's own bugs were out, and every invariant above held. What it showed, and what became of each:
+
+| Finding | What the client showed | Now |
+|---|---|---|
+| `tools/list` was **146.5 KB** for 46 tools (~37k tokens at four bytes a token), not the 96.1 KB this page last measured: `RenderSettings` had grown to 10.7 KB with its documentation and stood twice in each of `capture` (30.6 KB), `benchmark` (29.2) and `evaluate` (30.3) | the per-tool schema sizes | `$defs` inside each render tool's schema ([above](#input-schemas-are-generated-not-written)): **115.3 KB** (~29k tokens), the three at 20.1, 18.7 and 19.8 KB; under `qa`, 112.2 → 81.0 KB for 29 tools |
+| A tool withheld by the role, called by name, answered `unknown tool 'create_object'`, which reads as a typo or a broken server | the `qa` step's refusal text | `tool 'create_object' is not offered to role 'qa': it calls doc.apply, which that role may not call. The role is chosen when engine-mcp is started (--role), not by a call` ([roles](#roles-leases-and-proposals)) |
+| `list_schema` with a `namespace` still sent the whole method catalogue: **30.9 KB** to learn that `engine.content` holds two types | `list_schema`'s result size | the catalogue defaults to on only when no namespace is given: the same call is 368 bytes |
+| The journal said "Journal patches none of 0; the first 0 are applied and the rest can be redone" of an empty journal, and "the rest can be redone" when nothing could be | the summary text | "The journal is empty: nothing has been committed."; "…, all applied."; "the last 1 were undone and can be redone." |
+| The page and the test said 45 tools; there are 46 (`materialize` was offered and never listed) | the tool count | the test names all 46 and checks the count |
+| A capture made without a camera says nowhere which camera the host framed it with — not in the answer, not in `<name>.json` — so an agent cannot capture the same view again, benchmark a path from it, or say what it is looking at, and 06 §6.6 makes the camera part of a capture's provenance | building the benchmark's path from the capture | not fixed: a field of `render.capture`'s result in the host, roadmap [A32](../roadmap.md) |
+
+Per tool, from the run after the fixes (the input schema before and after where `$defs` changed it):
+
+| Tool | Calls | Slowest ms | Schema bytes before | after | Largest result bytes |
+|---|---|---|---|---|---|
+| `initialize` (the host starting included) | 1 | 470–2390 | | | 1,269 |
+| `tools/list` | 1 | 74 | | | 146,533 → 115,280 |
+| `open_session` | 3 | 42 | 513 | 513 | 1,356 |
+| `list_schema` | 1 | 21 | 623 | 693 | 30,903 → 368 |
+| `describe` | 2 | 8 | 319 | 319 | 4,964 |
+| `create_object` | 4 | 23 | 1,413 | 1,413 | 830 |
+| `set_property` | 3 | 8 | 1,145 | 1,145 | 901 |
+| `journal` | 7 | 5 | 667 | 667 | 1,665 |
+| `add_layer` | 1 | 5 | 1,585 | 1,585 | 698 |
+| `diff` | 1 | 3 | 636 | 636 | 764 |
+| `validate` | 2 | 3 | 459 | 459 | 241 |
+| `capture` (320×180, color and ids, the scene loaded) | 1 | 742 | 30,575 | 20,134 | 4,963 |
+| `benchmark` (a 15-frame path, the scene reused) | 1 | 831 | 29,180 | 18,739 | 6,883 |
+| `get_logs` | 1 | 13 | 601 | 601 | 15,880 |
+| `undo` | 1 | 6 | 697 | 697 | 231 |
+| `get`, `layers`, `objects`, `list_sessions`, `close_session`, `host_info` | 1–2 | ≤ 3 | 62–909 | same | ≤ 2,000 |
+
+Everything but the two render calls answers in milliseconds; what an agent pays for is the list it reads once per session, and after `$defs` the three render tools are still half of it (`RenderSettings`' documentation is most of that, and is what makes the settings usable without reading the engine's source).
+
 ### Registering it with Claude Code
 
 Build a preset, then register the binary. For yourself, in this project (`--scope local`, kept in your own Claude Code settings rather than in the tree, because the command line names paths on your machine):
