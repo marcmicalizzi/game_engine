@@ -226,7 +226,7 @@ try {
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/src/scene_renderer.cpp' "#include <domain/gfx/backend/vulkan/vulkan.h>`nnamespace engine::renderer {}`n"
   Test-Reports 'the renderer including the backend set is reported' $root 'systems/renderer/src/scene_renderer.cpp:1: [vulkan-backend-include]'
-  Test-Reports 'and the message names who may' $root 'domain/gfx, foundation/window and apps/engine_view'
+  Test-Reports 'and the message names who may' $root 'domain/gfx, foundation/window and the two apps that present, apps/engine_view and apps/engine_editor'
 
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/tests/renderer_tests.cpp' "#include <volk.h>`nint main() { return 0; }`n"

@@ -14,7 +14,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/ray_visibility.slang shaders/clas_records.slang
                              shaders/deform.slang shaders/deform_alloc.slang
                              shaders/path_trace.slang shaders/pair_expand.slang
-                             shaders/sky_luts.slang shaders/tlas_references.slang)
+                             shaders/sky_luts.slang shaders/tlas_references.slang
+                             shaders/overlay.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io gpu_lock time
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp

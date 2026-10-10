@@ -3089,6 +3089,56 @@ void GpuScene::destroy() noexcept {
   page_budget_bytes_ = stream_bytes_ = geometry_bytes_ = 0;
 }
 
+bool GpuScene::place_instances(std::span<const u32> indices,
+                               std::span<const SceneInstance> placements, std::string* error) {
+  if (device_ == nullptr || data_ == nullptr) {
+    if (error != nullptr) *error = "the scene is not created";
+    return false;
+  }
+  if (dynamic_) {
+    if (error != nullptr) *error = "a dynamic scene's instances move through set_dynamic_instances";
+    return false;
+  }
+  if (indices.size() != placements.size()) {
+    if (error != nullptr) *error = "place_instances takes one placement per index";
+    return false;
+  }
+  // Everything is checked before anything is written, so a refusal moves nothing.
+  for (usize i = 0; i < indices.size(); ++i) {
+    const u32 index = indices[i];
+    if (index >= instance_count_ || index >= instance_table_.size()) {
+      if (error != nullptr) *error = "instance " + std::to_string(index) + " is past the scene's";
+      return false;
+    }
+    if (placements[i].mesh != instance_table_[index].mesh ||
+        placements[i].mesh >= data_->mesh_fit.size()) {
+      if (error != nullptr)
+        *error = "instance " + std::to_string(index) + " is placed as a mesh it is not";
+      return false;
+    }
+    const WorldPos at = instance_translation(placements[i], data_->mesh_fit[placements[i].mesh]);
+    if (!world_cell_valid(at)) {
+      if (error != nullptr) *error = "instance " + std::to_string(index) + " is off the world grid";
+      return false;
+    }
+  }
+  for (usize i = 0; i < indices.size(); ++i) {
+    gfx::InstanceDesc& entry = instance_table_[indices[i]];
+    const Mat4& fit = data_->mesh_fit[placements[i].mesh];
+    gfx::set_instance_placement(entry, mat4_from_transform(placements[i].transform) * fit,
+                                instance_translation(placements[i], fit));
+  }
+  return gfx::submit_immediate(
+      *device_,
+      [&](gfx::CommandList commands) {
+        for (const u32 index : indices) {
+          commands.update_buffer(instances.buffer, u64{index} * sizeof(gfx::InstanceDesc),
+                                 sizeof(gfx::InstanceDesc), &instance_table_[index]);
+        }
+      },
+      error);
+}
+
 bool GpuScene::pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcept {
   if (pair >= pair_count_ || instance_count_ == 0 || instance_table_.size() < instance_count_ ||
       data_ == nullptr) {

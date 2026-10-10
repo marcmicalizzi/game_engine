@@ -40,6 +40,7 @@
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/overlay.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/shadow_cascades.h>
 #include <systems/renderer/sky.h>
@@ -439,6 +440,10 @@ struct FrameDesc {
   // passes. The **static** weights are not here: they change rarely, they live on the scene, and
   // that is the whole difference between the two stages.
   std::span<const f32> morph_weights;
+  // 2D lists composited onto the colour image after everything else the frame draws (overlay.h,
+  // ADR-0054): the tools UI. Null draws nothing, which is every frame before the overlay existed.
+  // Refused on an HDR target (`Desc::display` other than SDR), where the UI's seam is not built.
+  const OverlayDrawData* overlay = nullptr;
 };
 
 class SceneRenderer {
@@ -591,6 +596,36 @@ class SceneRenderer {
   bool capture(const FrameDesc& frame, const CaptureChannels& channels, CapturedFrame& out,
                std::string* error = nullptr);
 
+  // **The ids of the frame last submitted, without drawing another** (renderer.md, "Picking"):
+  // waits for the device, then reads the visibility buffer that frame wrote and decodes it as
+  // `capture` does — `ids` and `depth` only, since a presented frame's colour belongs to the
+  // swapchain. What a window's click is answered from, where `capture` would need a target of the
+  // renderer's own; offscreen it reads what the last `render_offscreen` or `capture` drew. False,
+  // with `error`, before any frame, under `--raster direct`, or for any other channel.
+  bool read_last_frame(const CaptureChannels& channels, CapturedFrame& out,
+                       std::string* error = nullptr);
+
+  // **Moves instances of a scene read whole** (renderer.md, "Moving an instance"): instance
+  // `indices[i]` is placed as `placements[i]` places it — the mesh's fit, then the transform, at
+  // `origin` — keeping its mesh, its pairs, its material base and its deformation. Waits for the
+  // device, then writes the changed entries of the instance table; every pass reads the table each
+  // frame (the cull pass, the rasterizers, the resolve, the top-level structure's records), so the
+  // next frame draws them where they now stand. The scene's bounds are the load's. Refused, with
+  // nothing moved, for a dynamic scene (its tail is `set_dynamic_instances`'), an index past the
+  // scene's instances, or a placement naming another mesh. Never between `begin_frame` and
+  // `submit_frame`.
+  bool move_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
+                      std::string* error = nullptr);
+
+  // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
+  // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
+  // which this waits for.
+  OverlayPass& overlay() noexcept { return overlay_; }
+  void remove_overlay_texture(u32 texture) noexcept {
+    frames_.wait_idle();
+    overlay_.remove_texture(texture);
+  }
+
   // Recompiles every shader whose source changed and rebuilds the pipelines when any did,
   // naming the ones that changed. False only when the pipelines could not be rebuilt, which is
   // fatal for the caller; a shader that does not compile is not a failure — it keeps its last
@@ -697,6 +732,8 @@ class SceneRenderer {
   ShadowCascades cascades_;
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
+  OverlayPass overlay_;
+  bool drawn_ = false;  // a frame has been submitted, so the visibility buffer holds one
   FrameSky frame_sky_;
   u64 sky_params_address_ = 0;
   Vector<gfx::BufferResource> params_;       // two CullParams per view, per slot

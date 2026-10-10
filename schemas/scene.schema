@@ -432,6 +432,23 @@ struct Instance @version(3) {
   ruin: RuinTag? @since(2)
 }
 
+/// One placed mesh as a **document record**: the `Instance` a layer holds, which this file's header
+/// promised the move to documents would be. The fields are an instance's, named the same, with one
+/// difference a document forces: it has no table of meshes to index, so the mesh is named by its
+/// path. What the editor's viewport draws (docs/subsystems/doc_scene.md): each live record of this
+/// type is one instance, and an edit to `translation` moves it in the next frame.
+struct MeshPlacement @version(1) @kind(record) {
+  name: string
+  /// A glTF, GLB or .clusters file, relative to the document's directory (or absolute).
+  mesh: string
+  translation: worldpos @unit(m)
+  rotation: quat
+  /// Degrees about +y, applied after `rotation`.
+  yaw_deg: f32 = 0
+  /// Absent: 1, 1, 1.
+  scale: vec3?
+}
+
 /// A rock ridge: a raised band along a segment, full height on the segment and falling to nothing
 /// `width` metres from it with a cosine profile, roughened by a seeded noise.
 struct Ridge @version(1) {

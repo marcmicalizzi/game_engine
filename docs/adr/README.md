@@ -57,3 +57,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0051](0051-the-far-ground-is-the-renderers.md) | The far ground is the renderer's: coarser tile levels past the world's rings, fed by filtered lattices | Accepted |
 | [0052](0052-the-picture-is-quantized-once-with-dither.md) | The picture is quantized once, with dither, at the depth the display takes | Accepted |
 | [0053](0053-world-positions-are-f64-and-the-gpu-sees-none.md) | World positions are f64 on the CPU, and the GPU never sees an absolute one: a cell and a local in memory, eye-relative in a frame | Accepted |
+| [0054](0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) | The tools UI is Dear ImGui, drawn by the renderer's overlay pass | Proposed |

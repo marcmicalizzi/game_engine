@@ -1003,6 +1003,16 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   rendering.colorAttachmentCount = blend.attachmentCount;
   rendering.pColorAttachmentFormats = &color_format;
   rendering.depthAttachmentFormat = vk::native(desc.depth_format);
+  // Straight-alpha "over" (pipeline.h, `BlendMode`): the overlay's, and nothing else's.
+  if (desc.blend == BlendMode::Alpha) {
+    blend_attachment.blendEnable = VK_TRUE;
+    blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+  }
 
   VkGraphicsPipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;

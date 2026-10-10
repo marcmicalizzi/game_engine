@@ -211,6 +211,15 @@ class GpuScene {
                              Vector<gfx::BufferResource>* retired, std::string* error = nullptr,
                              bool compact = false);
   const TileLayout& tile_layout() const noexcept { return layout_; }
+  // **Places instances of a scene read whole again** (`SceneRenderer::move_instances`, which waits
+  // for the device first; renderer.md, "Moving an instance"): instance `indices[i]` takes
+  // `placements[i]`'s transform and origin through its mesh's fit, as the load placed it, and keeps
+  // everything else — mesh, pairs, material base, deformation — so nothing laid out per pair or per
+  // instance moves. The entries are written into the device table at once (a blocking submission),
+  // which is why **no frame may be in flight**. Refused, with nothing written, for a dynamic scene,
+  // an index past the instances, a placement of another mesh, or a translation off the world grid.
+  bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
+                       std::string* error = nullptr);
   u64 compactions() const noexcept { return compactions_; }
   // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
   // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,

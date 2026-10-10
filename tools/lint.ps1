@@ -106,8 +106,8 @@ $rules = @(
   # targets that link engine::gfx_vulkan see volk.h); the lint says why, and says it first.
   @{ Name = 'vulkan-backend-include'; Marker = 'allow-vulkan'; Scope = 'all'
      Pattern = '^\s*#\s*include\s*[<"](domain/gfx/backend/|foundation/window/backend/|vulkan/|volk\.h|vk_mem_alloc\.h)'
-     AllowedPaths = @('domain/gfx', 'foundation/window', 'apps/engine_view')
-     Message = 'the Vulkan backend set (domain/gfx/backend/vulkan/, foundation/window/backend/vulkan/, volk, VMA, vulkan/*) is included only by domain/gfx, foundation/window and apps/engine_view; everything else uses the engine''s RHI vocabulary, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' }
+     AllowedPaths = @('domain/gfx', 'foundation/window', 'apps/engine_view', 'apps/engine_editor')
+     Message = 'the Vulkan backend set (domain/gfx/backend/vulkan/, foundation/window/backend/vulkan/, volk, VMA, vulkan/*) is included only by domain/gfx, foundation/window and the two apps that present, apps/engine_view and apps/engine_editor; everything else uses the engine''s RHI vocabulary, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' }
 )
 
 $violations = New-Object System.Collections.Generic.List[string]

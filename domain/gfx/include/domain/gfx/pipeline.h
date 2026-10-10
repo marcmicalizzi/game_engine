@@ -13,6 +13,12 @@
 
 namespace engine::gfx {
 
+// How a graphics pipeline's colour output meets what the attachment holds. `None` overwrites, what
+// every pass of the frame does. `Alpha` is straight-alpha "over" — colour `src * a + dst * (1 -
+// a)`, alpha `src + dst * (1 - src)` — which is what an immediate-mode UI's vertices are written
+// for: the renderer's overlay pass (systems/renderer, `overlay.h`; ADR-0054) draws with it.
+enum class BlendMode : u8 { None, Alpha };
+
 // SPIR-V bytes (4-byte aligned, as the embedded headers provide). Null on failure.
 ShaderModuleHandle create_shader_module(const Device& device, const unsigned char* spirv,
                                         usize bytes, std::string* error = nullptr);
@@ -49,6 +55,7 @@ struct GraphicsPipelineDesc {
   bool depth_write = false;
   // Reversed-Z: greater-or-equal passes (core/math projections produce near = 1).
   CompareOp depth_compare = CompareOp::GreaterOrEqual;
+  BlendMode blend = BlendMode::None;
 };
 bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
                               PipelineHandle& out, std::string* error = nullptr);

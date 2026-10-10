@@ -22,6 +22,7 @@
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/tlas_references.spv.h>
@@ -433,6 +434,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_clas_records_spirv_size);
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
                         shaders::k_tlas_references_spirv_size);
+  shaders_.add_embedded("overlay", shaders::k_overlay_spirv, shaders::k_overlay_spirv_size);
   shaders_.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
@@ -468,7 +470,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
 
   graph_ = new gfx::RenderGraph(device);
   if (!create_pipelines(error) || !targets_.create(device, views_, error) ||
-      !create_color_target(error) || !create_shadow_maps(error)) {
+      !create_color_target(error) || !create_shadow_maps(error) ||
+      !overlay_.create(device, scene.bindless(), shaders_, desc_.color_format,
+                       desc_.frames_in_flight, error)) {
     destroy();
     return false;
   }
@@ -763,6 +767,11 @@ void SceneRenderer::destroy() noexcept {
   }
   targets_.destroy(device);
   pipelines_.destroy(device);
+  // The overlay's textures and sampler live in the scene's bindless set; a scene destroyed first
+  // took them with it (as `destroy_shadow_maps` allows for).
+  if (scene_ == nullptr || !scene_->valid()) overlay_.detach_bindless();
+  overlay_.destroy();
+  drawn_ = false;
   sky_.destroy();
   frame_sky_ = FrameSky{};
   sky_params_address_ = 0;
@@ -1365,6 +1374,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const SceneData& data = scene.data();
   const RenderSettings& settings = resolved_.settings;
   const u32 slot = frames_.slot();
+  // The overlay composites into the encoded picture with no curve of its own, which is right on an
+  // SDR target only (overlay.h); before anything is recorded, so a refusal records nothing.
+  const bool overlay_on = frame.overlay != nullptr && !frame.overlay->commands.empty();
+  if (overlay_on && desc_.display != gfx::DisplayEncoding::Sdr) {
+    if (error != nullptr)
+      *error =
+          "the overlay composites onto an SDR target only; HDR waits for display_output's "
+          "split at paper white (ADR-0054)";
+    return false;
+  }
   // A streamed world's tables, before anything reads their addresses: after a change the frame
   // flips `scene.instances` and `scene.pair_table` to the next table set, which no frame in flight
   // reads, and stages that set's changed slots in this slot's staging for the passes below to copy
@@ -3387,6 +3406,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           cb.copy_buffer(scene.page_used.buffer, target->buffer, used);
         });
   }
+  // The overlay (overlay.h, ADR-0054): the tools UI, over everything the frame drew, as its last
+  // raster pass. Its lists are copied into this slot's own buffers now, so the caller's spans need
+  // not outlive `submit_frame`.
+  if (overlay_on) {
+    if (!overlay_.stage(slot, *frame.overlay, frames_, error)) return false;
+    const OverlayDrawData* overlay = frame.overlay;
+    const u32 overlay_width = width_;
+    const u32 overlay_height = height_;
+    graph.add_pass(
+        "overlay", gfx::PassKind::Raster,
+        [&](gfx::PassBuilder& b) { b.color_attachment(color, gfx::LoadOp::Load); },
+        [&, overlay, slot, overlay_width, overlay_height](gfx::CommandList cb, gfx::RenderGraph&) {
+          scene.bindless().bind(cb, gfx::BindPoint::Graphics);
+          overlay_.record(cb, slot, *overlay, overlay_width, overlay_height);
+        });
+  }
   graph.set_final_layout(color, frame.final_layout);
   phase_ns_[2] = time::monotonic_ns();
   const bool compiled = graph.compile(error);
@@ -3403,7 +3438,38 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     frames_.defer_destroy(staging);
   terrain_frame_.retire.clear();
   if (slot < slot_terrain_bytes_.size()) slot_terrain_bytes_[slot] = terrain_bytes;
+  drawn_ = drawn_ || compiled;
   return compiled;
+}
+
+bool SceneRenderer::read_last_frame(const CaptureChannels& channels, CapturedFrame& out,
+                                    std::string* error) {
+  if (channels.color || channels.light || channels.normals) {
+    if (error != nullptr) *error = "the last frame's ids and depth only: its colour was presented";
+    return false;
+  }
+  if (resolved_.direct) {
+    if (error != nullptr) *error = "the direct raster path writes no visibility buffer";
+    return false;
+  }
+  if (!drawn_) {
+    if (error != nullptr) *error = "no frame has been drawn yet";
+    return false;
+  }
+  // One visibility buffer, written by every frame: once the device is idle it holds the last one.
+  frames_.wait_idle();
+  out = CapturedFrame{};
+  out.width = width_;
+  out.height = height_;
+  return read_visibility(out, channels, error);
+}
+
+bool SceneRenderer::move_instances(std::span<const u32> indices,
+                                   std::span<const SceneInstance> placements, std::string* error) {
+  ENGINE_ASSERT(!recording_, "SceneRenderer::move_instances: between begin_frame and submit_frame");
+  // The table every frame in flight reads is the one written; so no frame may be in flight.
+  frames_.wait_idle();
+  return scene_->place_instances(indices, placements, error);
 }
 
 bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& channels,

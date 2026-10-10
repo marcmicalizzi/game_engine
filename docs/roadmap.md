@@ -541,7 +541,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A21 | World mips: semantic, visual, design density | open | A8, D32 | L | research | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
 | A22 | Edit context: cell, overlap ring, token budget | open | A18, A21 | L | design | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
 | A23 | Task ledger and review items | open | | M | design | [06 §6.8](plan/06-agent-tooling.md#68-long-running-work) |
-| A24 | Editor client v0 with a review queue | open | A2, A15, A23 | L | design | [06 §6.10](plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) |
+| A24 | Editor client v0 with a review queue | open | A2, A15, A23, A34 | L | design | [06 §6.10](plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) |
 | A25 | The editor as a complete tool suite | open | A24 | L | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
 | A26 | View policies applied to captures and reviews | open | C3, A23 | M | design | [ADR-0033](adr/0033-content-classes-and-view-policies.md) |
 | A27 | E5: one agent builds a small level | open | A12, A13, D14 | M | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
@@ -551,6 +551,8 @@ The engine as a server, its clients, and what agents and the human director work
 | A31 | MCP conformance client (`tools/mcp-check.ps1`) | done (c8e6e302) | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
 | A32 | `render.capture` reports the camera it framed | open | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A33 | Console: Luau scripts over the protocol | done (06 §6.3 2026-10-10) | A1 | M | design | [apps](subsystems/apps.md#the-console-luau-scripts-over-the-protocol) |
+| A34 | Editor v0: viewport, outliner, properties, picking, edits through commands | in progress (stage 1 2026-10-10: the viewport, the three panels, picking, the document-to-scene bridge; stage 2's edits, gizmo and save open) | A1, A18 | M | design | [apps](subsystems/apps.md#engine-editor-the-editors-first-slice) |
+| A35 | Accept ADR-0054 | blocked (the owner's review) | A34 | S | design | [ADR-0054](adr/0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) |
 
 ## P — The reference games
 

@@ -36,6 +36,7 @@ include(EngineAtlas)
 include(EngineTexture)
 include(EngineShaders)
 include(EngineBench)
+include(EngineImgui)
 # Capability dependencies: each returns immediately when its ENGINE_WITH_<NAME> switch is off,
 # so a minimal build (ADR-0027) fetches nothing for a capability it does not contain.
 include(EngineEcs)

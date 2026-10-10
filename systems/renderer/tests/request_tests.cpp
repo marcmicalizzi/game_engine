@@ -196,6 +196,9 @@ const FrameRow k_frame_rows[] = {
     {"morph_weights",
      "the pose stage's (engine-view --morph-animate, the animation capability's); "
      "a call's static weights are settings.morph"},
+    {"overlay",
+     "a host's own tools UI (engine-editor's Dear ImGui panels, ADR-0054); render.* captures "
+     "the scene, not a host's chrome"},
 };
 
 }  // namespace
@@ -214,9 +217,9 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;
-  [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13] =
-      frame;
-  static_assert(std::size(k_frame_rows) == 14, "one row per FrameDesc field");
+  [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13,
+                          f14] = frame;
+  static_assert(std::size(k_frame_rows) == 15, "one row per FrameDesc field");
   for (const FrameRow& row : k_frame_rows) {
     CHECK_MESSAGE(std::strlen(row.source) > 0, row.field);
   }
