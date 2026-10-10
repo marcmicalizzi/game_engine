@@ -8,7 +8,7 @@ what it was measured against.
 | Where | Who | What runs | Why there |
 |---|---|---|---|
 | **Before a branch is handed over** | whoever wrote it | `tools/dev.ps1 test -Affected` in `msvc-debug`; `tools/dev.ps1 lint` and `docs` (both are in that run); `tools/linux-build.ps1 -Preset linux-clang-debug -Test -Filter <the same modules>` when C++ changed, and then `tools/linux-build.ps1 -Prune` ([why](local-linux.md#volumes-that-outlive-their-checkout)) | It answers "did I break what I touched, and what is built from it". It does not answer "does the tree still pass", and is not asked to. |
-| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the GCC container, the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), and the frame budgets (`tools/frame-budget.ps1`, `msvc-release` on the RTX 5090; [below](#frame-budgets)), on the branch rebased onto `main`; then `tools/linux-build.ps1 -Prune` in the gate worktree | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
+| **At the merge** | whoever merges | the three Windows suites (`msvc-debug`, `msvc-minimal`, `msvc-no-ecs`), the three Linux containers the hosted matrix runs (`linux-gcc-release`, `linux-clang-debug`, `linux-clang-minimal`), the GPU server (`tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test`), and the frame budgets (`tools/frame-budget.ps1`, `msvc-release` on the RTX 5090; [below](#frame-budgets)), on the batch stacked onto `main` in the persistent gate worktree, whose build directories and container volumes stay warm between batches ([how long things take](#how-long-things-take)) | It is the only place the integrated tree exists, the only place the capability graph's two off-configurations are exercised, and the only place a second GPU and a second compiler see the change. |
 
 A branch's author does not run the three suites. Until 2026-10-03 every agent did, as its last
 step, and then the merge ran them again on the rebased branch: the same hour of machine twice, the
@@ -148,22 +148,39 @@ agent's test and not behind its hour.
 
 ### How long things take
 
-So that a wait can be sized before it is written. Measured on the desktop on 2026-10-04, with one
-to four agents building and testing beside each run, so these are what an agent will actually
-meet and not quiet figures; CTest's own "Total Test time" in each case, builds not included.
+So that a wait can be sized before it is written. Measured on the desktop on 2026-10-04 and, where a row says so, 2026-10-10, with one to four
+agents building and testing beside each run, so these are what an agent will actually meet and
+not quiet figures; CTest's own "Total Test time" in each case, builds not included.
 
 | Run | Time |
 |---|---|
 | `test -Affected` that reaches the renderer (36 tests: `gfx`, `renderer`, `engine_view`, the capabilities above them) | 29 min |
-| `test -Affected` that selects everything (a changed test scene, `cmake/`, a `core/` header): the `msvc-debug` suite, 91 tests | 36 min |
+| `test -Affected` that selects everything (a changed test scene, `cmake/`, a `core/` header): the `msvc-debug` suite | 36 min (91 tests, 2026-10-04); 42 to 49 min beside a gate's containers (99 tests, 2026-10-10) |
 | `test -Filter engine_cli` alone (the end-to-end host tests) | 7 min |
-| `msvc-minimal` suite, 59 tests | 13 min |
-| `msvc-no-ecs` suite, 81 tests | 29 min |
+| `msvc-minimal` suite | 13 min (59 tests, 2026-10-04); 17 min beside the other two suites (68 tests, 2026-10-10) |
+| `msvc-no-ecs` suite | 29 min (81 tests, 2026-10-04); 45 min beside the other two suites (90 tests, 2026-10-10) |
 | Linux container, warm, with a `-Filter` of a few modules | 1 to 7 min including the build |
 | Titan Xp (`remote-build.ps1 -Test`), `engine_cli` alone / `renderer` and `engine_cli` | 6 min / 24 min |
-| The whole merge gate (three Windows builds and suites, the GCC container, the server), in parallel | about 2 h |
+| The whole merge gate on the persistent gate worktree (below; 2026-10-10, batch 13): the Windows half after its four incremental builds (the three suites side by side, then the budgets) / the three Linux containers, warm / the server | 62 min (52 of suites, bounded by `msvc-debug`, and 9.5 of budgets) / 28 min / 74 min, all three in parallel |
+| The three Windows suites in series, the way a per-batch gate ran them before 2026-10-10 | about 2 h, plus a fresh worktree's four builds |
 | The frame budgets (`tools/frame-budget.ps1`, five runs, `msvc-release`, warm cache; 2026-10-07) | 13 min, plus lock and quiet waits |
 | `engine_view.frame_loop` alone (2026-10-07) | 220 s in `msvc-debug`, 60 s in `msvc-release` |
+
+**The merge gate runs in a worktree that persists** (`D:workspacege-gate`, branch `gate`, locked so the
+volume sweep keeps it): main is reset onto it and the batch's branches are cherry-picked on top, so its
+four MSVC build directories, its derived-data cache and its two container volumes are warm from the
+last batch and a build is the batch's own compilation units (1.5 to 2 minutes each at batch 13), its
+three suites run side by side (the GPU lock serialises the GPU tests across them, so the three take the
+longest one's time), and its release binaries are the ones installed, because the merge fast-forwards
+main to the very commit they were built from. Before it, every batch built four presets from nothing
+in a fresh worktree and ran the suites one after another, which is where the four to five hours
+between the agents' hand-back and the merge went. **One lesson from its first run:** a wait for free
+memory before each build must be sized to one build and must say what it is waiting for. The desktop
+holds about 106 GB of its 125 GB commit limit at rest (a hundred Python processes, Edge, Visual Studio,
+and some 37 GB outside any process), so a bar of 20 GB of commit to spare was met only by luck, and
+the gate's first run spent three of its five hours in that wait, silently, because a PowerShell function
+that writes a string and returns a value hands both to the caller's `if`. Ten GB to spare and four
+free, fifteen minutes, then proceed and log it: a build that fails for memory is retried anyway.
 
 A first build in a fresh worktree comes on top of these, and a fresh worktree's first container
 run compiles every third-party dependency ([local Linux builds](local-linux.md) has those times).
