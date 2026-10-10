@@ -339,7 +339,11 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
       "scenes",         "unload",        "get_logs",      "adapters",      "displays",
       "host_info",      "build_content", "events",        "budgets",       "run_headless",
       "run_tests",      "acquire_lease", "renew_lease",   "release_lease", "leases",
-      "propose_layer",  "promote",       "state_hash",    "save_game",     "load_game"};
+      "propose_layer",  "promote",       "state_hash",    "save_game",     "load_game",
+      "materialize"};
+  // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
+  // (it said 45 while there were 46: materialize was offered and never listed).
+  CHECK(tools.size() == std::size(wanted));
   for (usize i = 0; i < tools.size(); ++i) {
     const JsonValue& t = tools[i];
     const std::string name = str(t, "name");
