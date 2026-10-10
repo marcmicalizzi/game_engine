@@ -17,15 +17,18 @@ using namespace engine;
 
 namespace {
 
+#if defined(ENGINE_CLI_TESTS_SCRIPTING)
 const std::string& cli_exe() {
   static const std::string path = test::app_path(ENGINE_APP_PATH);
   return path;
 }
+#endif
 const std::string& host_exe() {
   static const std::string path = test::app_path(ENGINE_HOST_PATH);
   return path;
 }
 
+#if defined(ENGINE_CLI_TESTS_SCRIPTING)
 std::string script(std::string_view name) {
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/console", "content/console");
   return dir + "/" + std::string(name);
@@ -33,6 +36,7 @@ std::string script(std::string_view name) {
 std::string roles_file() {
   return test::data_path(ENGINE_SOURCE_DIR "/content/roles", "content/roles") + "/roles.json";
 }
+#endif
 
 struct Run {
   i32 exit_code = -1;
