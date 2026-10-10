@@ -526,6 +526,17 @@ TEST_CASE("mcp: --roles withholds tools, and leases and proposals are tools") {
     CHECK(at(at(info, "bridge"), "roles_loaded") == JsonValue(true));
     CHECK(str(at(info, "bridge"), "role_configuration") == "qa");
     CHECK(num(at(info, "bridge"), "tools_withheld") > 0);
+    // A withheld tool called by name says why, rather than "unknown tool" (found by
+    // tools/mcp-check.ps1 on 2026-10-10).
+    const JsonValue withheld = qa.request(
+        "tools/call", R"({"name":"create_object","arguments":{"session":"s1","type":"x"}})");
+    i64 code = 0;
+    REQUIRE(at(at(withheld, "error"), "code").get_i64(code));
+    CHECK(code == -32602);
+    const std::string why = str(at(withheld, "error"), "message");
+    CHECK(why.find("not offered to role 'qa'") != std::string::npos);
+    CHECK(why.find("doc.apply") != std::string::npos);
+    CHECK(why.find("--role") != std::string::npos);
     // Reading is never restricted, opening included.
     ok(qa.tool("open_session", "{\"path\":" + write_json(JsonValue(doc)) + ",\"create\":true}"));
   }

@@ -253,6 +253,13 @@ class Bridge {
     const ToolDef* def;
     JsonValue schema;
   };
+  // A tool of the table this bridge does not offer, and why: kept so that a call to it by name is
+  // told the reason (the role, or a host built without the method) rather than "unknown tool".
+  struct Withheld {
+    const ToolDef* def;
+    std::string method;
+    bool by_role;
+  };
   struct LoadedScene {
     std::string key;
     std::string id;
@@ -265,11 +272,14 @@ class Bridge {
   bool on_tools_call(const JsonValue* params, JsonValue& result, i32& code, std::string& message);
   JsonValue tool_result(const ToolOutcome& outcome) const;
   const Tool* find_tool(std::string_view name) const noexcept;
+  // The JSON-RPC error message for a tools/call naming a tool this bridge does not offer.
+  std::string unoffered_message(std::string_view name) const;
 
   BridgeOptions options_;
   HostClient host_;
   SchemaGen schemas_;
   Vector<Tool> tools_;
+  Vector<Withheld> withheld_;
   Vector<LoadedScene> scenes_;
   u32 scenes_generation_ = 0;
   std::string protocol_version_;

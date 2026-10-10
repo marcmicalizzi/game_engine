@@ -364,6 +364,7 @@ bool Bridge::start(std::string& error) {
     if (!missing.empty()) {
       ENGINE_LOG_WARN(log_mcp, "tool not offered: the host has no such method",
                       log::field("tool", def.name), log::field("method", missing));
+      withheld_.push_back(Withheld{&def, missing, false});
       continue;
     }
     if (!forbidden.empty()) {
@@ -371,6 +372,7 @@ bool Bridge::start(std::string& error) {
                       log::field("tool", def.name), log::field("method", forbidden),
                       log::field("role", role_name_));
       ++tools_withheld_;
+      withheld_.push_back(Withheld{&def, forbidden, true});
       continue;
     }
     JsonValue schema;
@@ -612,6 +614,28 @@ JsonValue Bridge::on_tools_list() const {
   return result;
 }
 
+// A model that calls a tool by a name it remembers — from another session, another role, the
+// documentation — is told why this bridge does not have it. "Unknown tool" for create_object under
+// a QA role reads as a typo or a broken server; the role is the answer, and it is not one a call
+// can change (docs/subsystems/apps.md, "Roles, leases and proposals").
+std::string Bridge::unoffered_message(std::string_view name) const {
+  const std::string offered =
+      "tools/list names the " + std::to_string(tools_.size()) + " tools this bridge offers";
+  for (const Withheld& w : withheld_) {
+    if (name != w.def->name) continue;
+    if (w.by_role) {
+      return "tool '" + std::string(name) + "' is not offered to role '" + role_name_ +
+             "': it calls " + w.method +
+             ", which that role may not call. The role is chosen when engine-mcp is started "
+             "(--role), not by a call; " +
+             offered;
+    }
+    return "tool '" + std::string(name) + "' is not offered: this engine-host does not serve " +
+           w.method + " (a build without it); " + offered;
+  }
+  return "unknown tool '" + std::string(name) + "': " + offered;
+}
+
 bool Bridge::on_tools_call(const JsonValue* params, JsonValue& result, i32& code,
                            std::string& message) {
   if (params == nullptr || !params->is_object()) {
@@ -623,8 +647,7 @@ bool Bridge::on_tools_call(const JsonValue* params, JsonValue& result, i32& code
   const Tool* tool = find_tool(name);
   if (tool == nullptr) {
     code = k_invalid_params;
-    message = "unknown tool '" + name + "': tools/list names the " + std::to_string(tools_.size()) +
-              " tools this bridge offers";
+    message = unoffered_message(name);
     return false;
   }
   JsonValue args = JsonValue::object();
