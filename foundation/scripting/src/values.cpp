@@ -198,8 +198,10 @@ void push_value(lua_State* L, Impl& impl, const schema::TypeRef& type, const voi
   lua_pushnil(L);
 }
 
-void push_json(lua_State* L, const JsonValue& value) {
-  lua_rawcheckstack(L, 3);
+void push_json(lua_State* L, const JsonValue& value, bool read_only) {
+  // lua_checkstack and not lua_rawcheckstack: inside a C function a script called (a program's
+  // method results) the frame's own top has to move too, or a nested result outgrows it.
+  luaL_checkstack(L, 3, "a value nests too deeply to convert");
   switch (value.kind()) {
     case JsonValue::Kind::Null: lua_pushnil(L); return;
     case JsonValue::Kind::Bool: lua_pushboolean(L, value.as_bool() ? 1 : 0); return;
@@ -208,17 +210,18 @@ void push_json(lua_State* L, const JsonValue& value) {
     case JsonValue::Kind::Float: lua_pushnumber(L, value.as_float()); return;
     case JsonValue::Kind::String: {
       const std::string_view s = value.as_string();
-      lua_pushlstring(L, s.data(), s.size());
+      // An empty string's view may carry a null pointer, which lua_pushlstring refuses.
+      lua_pushlstring(L, s.empty() ? "" : s.data(), s.size());
       return;
     }
     case JsonValue::Kind::Array: {
       const JsonValue::Array& array = value.as_array();
       lua_createtable(L, static_cast<int>(array.size()), 0);
       for (u32 i = 0; i < array.size(); ++i) {
-        push_json(L, array[i]);
+        push_json(L, array[i], read_only);
         lua_rawseti(L, -2, static_cast<int>(i + 1));
       }
-      lua_setreadonly(L, -1, true);
+      if (read_only) lua_setreadonly(L, -1, true);
       return;
     }
     case JsonValue::Kind::Object: {
@@ -227,10 +230,10 @@ void push_json(lua_State* L, const JsonValue& value) {
       for (u32 i = 0; i < object.size(); ++i) {
         const std::string& key = object.key_at(i);
         lua_pushlstring(L, key.data(), key.size());
-        push_json(L, object.value_at(i));
+        push_json(L, object.value_at(i), read_only);
         lua_rawset(L, -3);
       }
-      lua_setreadonly(L, -1, true);
+      if (read_only) lua_setreadonly(L, -1, true);
       return;
     }
   }
@@ -383,10 +386,171 @@ bool convert(lua_State* L, Impl& impl, int index, JsonValue& out, std::string& e
   return false;
 }
 
+// ---- out of the VM, read through a schema type -------------------------------------------------
+//
+// A program's params table (ScriptContext::run_program) becomes the JSON a protocol method reads.
+// Luau has one table type where JSON has two, and one number type where the schema has integers
+// and floats, so the untyped conversion has to guess, and guesses `{}` as `[]`. The method's params
+// type knows: these functions walk the table beside the descriptors and settle exactly those
+// questions. They decide nothing else — a field the type does not have, or a value of the wrong
+// type, converts untyped, so the reader on the other side reports it in its own words and the
+// console's errors are the protocol's.
+
+bool convert_typed(lua_State* L, Impl& impl, int index, const schema::TypeRef& type, JsonValue& out,
+                   std::string& error, std::string& where, int depth);
+
+// Keys exactly 1..n (or none) make a sequence; anything else converts untyped.
+bool typed_sequence(lua_State* L, Impl& impl, int index, const schema::TypeRef* element,
+                    JsonValue& out, std::string& error, std::string& where, int depth) {
+  if (lua_type(L, index) != LUA_TTABLE) return convert(L, impl, index, out, error, depth);
+  if (!lua_checkstack(L, 3)) {
+    error = "out of stack converting a table";
+    return false;
+  }
+  index = lua_absindex(L, index);
+  const int length = lua_objlen(L, index);
+  int keys = 0;
+  bool sequence = true;
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    ++keys;
+    if (lua_type(L, -2) != LUA_TNUMBER) {
+      sequence = false;
+    } else {
+      const f64 k = lua_tonumber(L, -2);
+      if (!(k >= 1.0 && k <= static_cast<f64>(length) && std::floor(k) == k)) sequence = false;
+    }
+    lua_pop(L, 1);
+  }
+  if (keys == 0) {
+    out = JsonValue::array();
+    return true;
+  }
+  if (!sequence || keys != length) return convert(L, impl, index, out, error, depth);
+  JsonValue::Array array;
+  array.reserve(static_cast<u32>(length));
+  for (int i = 1; i <= length; ++i) {
+    lua_rawgeti(L, index, i);
+    JsonValue value;
+    const bool ok = element != nullptr
+                        ? convert_typed(L, impl, -1, *element, value, error, where, depth + 1)
+                        : convert(L, impl, -1, value, error, depth + 1);
+    lua_pop(L, 1);
+    if (!ok) {
+      where.insert(0, "[" + std::to_string(i) + "]");
+      return false;
+    }
+    array.push_back(std::move(value));
+  }
+  out = JsonValue(std::move(array));
+  return true;
+}
+
+// String keys make an object, each member typed by `type`'s field of that name (a struct) or by
+// `value` (a string-keyed map); a table that is not all string keys converts untyped.
+bool typed_record(lua_State* L, Impl& impl, int index, const schema::TypeInfo* type,
+                  const schema::TypeRef* value, JsonValue& out, std::string& error,
+                  std::string& where, int depth) {
+  if (lua_type(L, index) != LUA_TTABLE) return convert(L, impl, index, out, error, depth);
+  if (!lua_checkstack(L, 3)) {
+    error = "out of stack converting a table";
+    return false;
+  }
+  index = lua_absindex(L, index);
+  int keys = 0;
+  bool strings = true;
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    ++keys;
+    if (lua_type(L, -2) != LUA_TSTRING) strings = false;
+    lua_pop(L, 1);
+  }
+  if (keys == 0) {
+    out = JsonValue::object();
+    return true;
+  }
+  if (!strings) return convert(L, impl, index, out, error, depth);
+  JsonValue::Object object;
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    size_t len = 0;
+    const char* key = lua_tolstring(L, -2, &len);  // a string already: no conversion
+    const std::string_view name(key, len);
+    const schema::FieldInfo* field = type != nullptr ? type->find_field(name) : nullptr;
+    const schema::TypeRef* member_type = field != nullptr ? &field->type : value;
+    JsonValue member;
+    const bool ok = member_type != nullptr
+                        ? convert_typed(L, impl, -1, *member_type, member, error, where, depth + 1)
+                        : convert(L, impl, -1, member, error, depth + 1);
+    if (!ok) {
+      where.insert(0, "." + std::string(name));
+      lua_pop(L, 2);
+      return false;
+    }
+    object.insert_or_assign(std::string(name), std::move(member));
+    lua_pop(L, 1);
+  }
+  out = JsonValue(std::move(object));
+  return true;
+}
+
+bool convert_typed(lua_State* L, Impl& impl, int index, const schema::TypeRef& type, JsonValue& out,
+                   std::string& error, std::string& where, int depth) {
+  using schema::Kind;
+  if (depth >= k_max_depth) {
+    error = "a table nests deeper than 64 levels (or refers to itself)";
+    return false;
+  }
+  switch (type.kind) {
+    case Kind::Optional:
+      if (lua_isnil(L, index)) {
+        out = JsonValue();
+        return true;
+      }
+      return convert_typed(L, impl, index, *type.element, out, error, where, depth);
+    case Kind::Array:
+    case Kind::FixedArray:
+      return typed_sequence(L, impl, index, type.element, out, error, where, depth);
+    case Kind::Struct:
+      return typed_record(L, impl, index, type.type, nullptr, out, error, where, depth);
+    case Kind::Map:
+      // A string-keyed map is an object; any other key type is an array of [key, value] pairs.
+      if (type.key != nullptr && type.key->kind == Kind::String)
+        return typed_record(L, impl, index, nullptr, type.element, out, error, where, depth);
+      return typed_sequence(L, impl, index, nullptr, out, error, where, depth);
+    case Kind::F32:
+    case Kind::F64:
+      if (lua_type(L, index) == LUA_TNUMBER) {
+        const f64 n = lua_tonumber(L, index);
+        if (!std::isfinite(n)) {
+          error = "a number is not finite (nan or inf has no JSON form)";
+          return false;
+        }
+        out = JsonValue(n);
+        return true;
+      }
+      return convert(L, impl, index, out, error, depth);
+    default: return convert(L, impl, index, out, error, depth);
+  }
+}
+
 }  // namespace
 
 bool to_json(lua_State* L, Impl& impl, int index, JsonValue& out, std::string& error) {
   return convert(L, impl, index, out, error, 0);
+}
+
+bool to_json_typed(lua_State* L, Impl& impl, int index, const schema::TypeInfo* type,
+                   JsonValue& out, std::string& error) {
+  if (type == nullptr || type->kind != schema::Kind::Struct)
+    return convert(L, impl, index, out, error, 0);
+  std::string where;
+  if (typed_record(L, impl, index, type, nullptr, out, error, where, 0)) return true;
+  if (!where.empty()) {
+    if (where[0] == '.') where.erase(0, 1);
+    error = where + ": " + error;
+  }
+  return false;
 }
 
 }  // namespace engine::scripting

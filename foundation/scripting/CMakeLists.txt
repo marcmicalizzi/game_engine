@@ -16,7 +16,7 @@ engine_fetch_luau()
 engine_module(NAME scripting LAYER foundation OPTIONAL
   DEPS base containers memory hash ids json log time schema tunables io
   SOURCES src/script_context.cpp src/bindings.cpp src/values.cpp src/type_definitions.cpp
-          src/scripting.cpp)
+          src/scripting.cpp src/program.cpp)
 
 # PRIVATE: Luau is an implementation detail. For a static library CMake still carries the link
 # dependency to whoever links scripting ($<LINK_ONLY:...>), but not the include directories or the
@@ -32,6 +32,7 @@ engine_schema_library(NAME scripting_test_types
 engine_module_tests(NAME scripting
   SOURCES tests/scripting_tests.cpp tests/binding_tests.cpp tests/reload_tests.cpp
           tests/typed_api_tests.cpp tests/luau_check.cpp tests/size_table.cpp
+          tests/program_tests.cpp
   DEPS scripting_test_types)
 # The type checker is test-only: the typed API test drives Luau's analysis library with the
 # emitted definition file, which is what `luau-analyze` would do if it could load one. Nothing the

@@ -30,6 +30,8 @@
                         against the compiled-in map (4 KB).
     content/roles       the five named role configurations, which the protocol
                         test reads to check the shipped file loads (3 KB).
+    content/console     the Luau scripts the console test runs through
+                        engine-host --console (5 KB).
     content/migration-corpus
                         one save game per version of the save format, which
                         engine-cli's corpus test loads and holds to its
@@ -252,11 +254,11 @@ foreach ($path in $exeFiles) {
   }
 }
 
-# Data the tests open. `content/input-logs`, `content/input-maps`, `content/roles` and
+# Data the tests open. `content/input-logs`, `content/input-maps`, `content/roles`, `content/console` and
 # `content/migration-corpus` are the ones the suite needs; the rest is small and useful to have on
 # the far end.
 $dataDirs = @('content/input-logs', 'content/input-maps', 'content/roles', 'content/test-scenes',
-              'content/migration-corpus')
+              'content/migration-corpus', 'content/console')
 if ($WithSamples) { $dataDirs += 'content/samples' }
 $data = @()
 foreach ($rel in $dataDirs) {

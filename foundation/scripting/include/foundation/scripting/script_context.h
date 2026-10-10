@@ -182,6 +182,47 @@ struct ObjectResolver {
   bool (*resolve)(void* user, const Id128& id, ObjectRef& out) = nullptr;
 };
 
+// ---- programs: a client's script ----------------------------------------------------------------
+//
+// The other shape a script can take (docs/subsystems/scripting.md, "Programs: the console"). Not
+// content logic a host calls for data, but a program a host runs once, top to bottom, which drives
+// the host through the methods the host offers it: engine-host's console, where a coding agent's
+// script calls the engine protocol (docs/subsystems/apps.md, "The console"). A program changes
+// nothing itself either; it asks the host, one method call at a time, and the host decides — for
+// the console, the protocol's dispatcher with its roles, attribution and journal.
+
+// One method a program may call, as `engine.call(name, params)` and as a function named after it:
+// `engine.doc.apply(params)` for "doc.apply". A name in the `engine` namespace is a function of
+// `engine` itself ("engine.ping" is `engine.ping()`, not `engine.engine.ping()`), and a name that
+// would replace `engine.call`, `engine.json` or another method's namespace gets no function of
+// its own and is reached through `engine.call`.
+struct HostMethod {
+  std::string_view name;
+  // The struct its params table is read as, through the descriptors: what turns Luau's one table
+  // type into JSON's two (`{}` is `[]` for an array field, `{}` for a struct or a map) and keeps a
+  // float field a float. Null reads the table untyped.
+  const schema::TypeInfo* params = nullptr;
+};
+
+// Why a method call failed. The program sees it as a Luau error whose value is the table
+// `{method, code, message, data}`, so `pcall` returns it to the script; uncaught, it ends the run.
+struct HostError {
+  i64 code = 0;
+  std::string message;
+  JsonValue data;
+};
+
+struct ProgramHost {
+  void* user = nullptr;
+  std::span<const HostMethod> methods;
+  // One method call: false with `error` filled raises it in the program. Required.
+  bool (*call)(void* user, std::string_view method, const JsonValue& params, JsonValue& result,
+               HostError& error) = nullptr;
+  // What `print(...)` writes: its arguments through tostring, tab-separated, with a newline. Null
+  // drops it.
+  void (*print)(void* user, std::string_view text) = nullptr;
+};
+
 struct ContextStats {
   // What the VM holds from the engine heap: Luau hands out small objects from 16 and 32 KiB pages
   // it allocates per size class, so this is its footprint, unused page space included.
@@ -235,6 +276,19 @@ class ScriptContext {
   // find_function() and call() in one step, for cold paths.
   Status call(ScriptId script, std::string_view function, std::span<const Arg> args = {},
               JsonValue* result = nullptr);
+
+  // ---- programs --------------------------------------------------------------------------
+
+  // Runs `source` once as a program: compiled as chunk `name`, its top level called with `args`
+  // as `...`, under ONE step budget and the memory limit for the whole run (a program is one
+  // call). Its globals are its own and writable, and read through to the sandbox's libraries; in
+  // place of the content-logic API it sees `print` and an `engine` table of `call`, `json(value
+  // [, pretty])` — a value's JSON text — and one function per host method. A method's result is
+  // an ordinary table the program may change and send back. Nothing of the program stays loaded.
+  // Errors are reported as call() reports them: a host error the program did not catch as
+  // "<method>: error <code>: <message>" plus its data as JSON, at the line that made the call.
+  Status run_program(std::string_view name, std::string_view source, const ProgramHost& host,
+                     std::span<const std::string_view> args = {});
 
   // ---- document state --------------------------------------------------------------------
 

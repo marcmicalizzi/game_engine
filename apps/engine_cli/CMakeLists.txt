@@ -7,7 +7,7 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   SOURCES main.cpp
   DEPS base containers json platform
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
-            tests/save_tests.cpp tests/npc_replay_tests.cpp)
+            tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp)
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)
@@ -55,6 +55,12 @@ if(TARGET engine_engine_cli_tests)
   if(TARGET engine::npc AND TARGET engine::world)
     target_link_libraries(engine_engine_cli_tests PRIVATE engine::npc)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_NPC=1)
+  endif()
+  # console_tests.cpp runs Luau scripts through `engine-host --console` and `engine-cli --console`
+  # (apps.md, "The console") when the host has the scripting capability; without it the case checks
+  # that --console says so and exits 2. The scripts are content/console/'s.
+  if(TARGET engine::scripting)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_SCRIPTING=1)
   endif()
   # engine.run_tests runs the tissue validators when the host has the tissue capability; the case
   # makes its fixture with `engine-content tissue example`, which is built in the same

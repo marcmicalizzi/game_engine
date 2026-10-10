@@ -80,6 +80,8 @@ build/msvc-debug/bin/engine-cli --doc ./world doc.undo
 build/msvc-debug/bin/engine-host --stdio                                        # JSON-RPC 2.0, one request per line
 build/msvc-debug/bin/engine-cli gpu.adapters                                   # Vulkan devices, extensions, capability tier
 build/msvc-debug/bin/engine-mcp --workspace <dir> --actor <name>               # MCP server over stdio for agents' clients; starts its own engine-host
+build/msvc-debug/bin/engine-cli --console script.luau -- ./world                # a Luau script against one host: engine.doc.apply{...}, engine.call, print; exit 0/1/2
+build/msvc-debug/bin/engine-host --console --script script.luau -- ./world      # the same in the host itself (stdin without --script); every call a request
 ```
 
 Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`. `engine-mcp` generates its tools' input schemas from the same descriptions, so a params field added to the schema reaches MCP by rebuilding; how to register it with Claude Code is in `apps.md` ("engine-mcp").

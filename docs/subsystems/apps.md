@@ -6,6 +6,7 @@
 ```
 engine-host [--stdio] [--request <json>] [--mount <scheme>=<dir>[:rw]]... [--log <spec>] [--log-json <path>] [--tunables <file>]
             [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]
+engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>] ... [-- <script args>...]   # a Luau script, below
 engine-host --debug-hang <method> ...     # a test hook (below)
 ```
 
@@ -20,9 +21,12 @@ Beyond `domain/protocol`'s methods it registers its own: `engine.ping` (in `main
 
 **engine-cli.**
 ```
-engine-cli [--host <path>] [--doc <dir>] [--create] [--name <name>] [--mount <spec>]... [--compact] [--report <file>] <method> [params-json]
+engine-cli [--host <path>] [--doc <dir>] [--create] [--name <name>] [--mount <spec>]... [--roles <file>] [--actor <name>] [--role <name>] [--task <id>]
+           [--compact] [--report <file>] <method> [params-json]
+engine-cli [--host <path>] [--mount <spec>]... [--roles <file>] [--actor <name>] [--role <name>] [--task <id>] [--step-budget <n>] [--memory-mb <n>]
+           --console <file.luau | -> [-- <script args>...]
 ```
-With `--doc` the CLI opens the document first (creating it with `--create`) and injects the session id into the params. Results print as pretty JSON (or one line with `--compact`); errors print `error <code>: <message>` and any diagnostics to stderr and exit 1; usage problems exit 2. The host is found beside the CLI unless `--host` says otherwise.
+With `--doc` the CLI opens the document first (creating it with `--create`) and injects the session id into the params. Results print as pretty JSON (or one line with `--compact`); errors print `error <code>: <message>` and any diagnostics to stderr and exit 1; usage problems exit 2. The host is found beside the CLI unless `--host` says otherwise. `--roles`, `--actor`, `--role` and `--task` are handed to the host as they are (engine-host's, above), so a one-shot call can be attributed and checked like any client's. `--console <file>` runs a Luau script against the host instead of one method — [the console](#the-console-luau-scripts-over-the-protocol), below.
 
 `--report <file>` writes the same result to a file as one JSON document — `{"tool", "method", "generated_utc", "result"}` — **after** printing it, so a file that cannot be written never costs the caller the answer it already has. It is generic across methods and exists for one: `engine-cli gpu.adapters --report adapters.json` is what somebody runs on a machine no one here can log in to, and the file that comes back carries the whole requirements table and the verdict for every device on it (see [gfx](gfx.md#what-a-device-has-to-have)). The timestamp is there because such a file is read weeks later.
 
@@ -830,6 +834,55 @@ When other processes used more than 10% of the CPU or the GPU was more than 20% 
 **Multi-view over the protocol.** `RenderSettings` went to `@version(2)` for this: `views` (`single`, `surround3`, `panini`), `side_yaw_deg`, `panini_d` and `peripheral_lod` are `@since(2)` with the single-view defaults, so both hosts spell the layout the same way and parse it with the same function ([settings.h](renderer.md#public-api)). `RenderStats` went to `@version(3)` and gained `views` — one `RenderViewStats` per view with its rectangle, its source extent, its tier, its visible pairs and its milliseconds by pass — beside `view_layout` and `oversample`. Changing the layout between calls rebuilds the GPU scene and the renderer the way any other settings change does, because the per-frame working set is sized by the view count. This is the path E9 measured through, since it renders offscreen at 11520×2160 on a machine whose window would not be that big.
 
 **Where there is no GPU**, every `render.*` method fails with error code **1007 `RenderUnavailable`** and a message naming the adapter and what it lacks — no Vulkan loader or driver, no 64-bit buffer atomics, or, for `"raster":"rt"`, an explicit `"shadows":"rt"` or the reference integrator, the sentence the adapter's own verdict carries about ray tracing (`renderer::unavailable_reason`), which names the missing extension: on the Pascal server, "NVIDIA TITAN Xp cannot trace rays: no VK_KHR_ray_query and no VK_NV_cluster_acceleration_structure: …". A device without mesh shaders is not unavailable: `"raster":"hw"` resolves to the vertex path there, and the scene info says `"raster":"vertex"`. It is a code of its own so a client can tell "this machine cannot render" from "you asked for something wrong" ([protocol](protocol.md)); the end-to-end test skips on it exactly as engine-view's suite skips on exit 3, which is what lets one suite run on the hosted CI runners and on the GPU machines alike.
+
+## The console: Luau scripts over the protocol
+
+`engine-host --console` runs **one Luau script against the host's own dispatcher** instead of serving JSON-RPC on stdin, and `engine-cli --console <file>` is the same thing as one line for an agent at a terminal (plan 06 §6.3's third interface, [status note](../plan/06-agent-tooling.md#63-mcp-bridge); roadmap A31). It exists because a coding agent on the local machine does more with fewer round trips through a script it writes and runs against the live engine than through one tool call at a time: a script composes, loops, branches and keeps local state, so "create forty props on a ring, capture each, keep the ones whose coverage is above a threshold" is one file and one run, not two hundred tool calls with the whole conversation re-sent each time. The owner runs his own business software this way, with a Lua console that Claude Code drives.
+
+```
+engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]
+            [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>] [--mount ...] [-- <script args>...]
+engine-cli  [--host <path>] [--roles <file>] [--actor <name>] [--role <name>] [--task <id>] [--step-budget <n>] [--memory-mb <n>]
+            --console <file.luau | -> [-- <script args>...]
+```
+
+- **Where the script comes from.** `--script <file>`, or stdin until EOF without it; engine-cli's `-` hands its own stdin over. Everything after `--` is the script's `...` (`local dir = ...`). engine-cli refuses a method, `--doc` or `--report` beside `--console`: the script opens its own documents, and a path it needs is an argument.
+- **What a script can reach.** Every method the host serves, two ways: `engine.call("doc.apply", {...})`, and one generated function per method named by the catalogue — `engine.doc.apply{...}`, `engine.render.capture{...}`, `engine.session.open{...}`, and `engine.ping()`, `engine.methods()` for the `engine.*` ones. `engine.json(value [, pretty])` turns a result into JSON text, since `print` shows a table as its address. `print` is the script's own output, on stdout, a line at a time (engine-cli forwards it as the host writes it). The Luau sandbox is the scripting module's: no `io`, `os`, `debug`, `require` or `loadstring`, so a script reaches the file system only through methods, as any client does.
+- **Every call is a request.** A call is a JSON-RPC request object handed to the same `protocol::Dispatcher` a line on stdin reaches, so attribution, roles and the journal hold exactly as for any client: the blanks of a call's `attribution` are `--actor`, `--role` and `--task`; with `--roles` the role gate refuses a write the role does not name (1008) and never a read, by the [read-only rule](protocol.md#identity-and-what-a-role-restricts); a `doc.apply` is a journaled transaction with its rationale. **The console mutates only by calling methods** — the sanctioned path — and is a client, not a gameplay script ([scripting](scripting.md#programs-the-console)).
+- **Params and results.** A params table is read through the method's params type in the schema registry, never by a binding per method: the descriptors say that `channels = {}` is an empty array and `properties = {}` an empty map, which Luau alone cannot tell apart; a field the type does not have, or a value of the wrong type, reaches the protocol's params reader and comes back as its -32602 with the path. A result is an ordinary table the script may change and send back.
+- **Errors.** A method that fails raises a Luau error whose value is a table, `{method, code, message, data}` — `pcall` returns it, so `local ok, err = pcall(engine.doc.apply, p); if not ok and err.code == 1008 then ... end` reads the protocol's code and `err.data.reason` without parsing text. Uncaught, it ends the run.
+- **Limits.** One step budget for the whole run (`--step-budget`, default 100,000,000 Luau safepoints, 0 for none): it counts the script's own loop iterations, calls and returns — deterministically, and never the time a method takes — so `while true do end` stops in about a second of a debug build and a render that takes a minute does not. A `pcall` cannot catch its way past it. The heap is `--memory-mb` (default 512).
+- **Exit codes.** `0` the script ran to its end. `1` it failed: a compile error, an uncaught error (a method's included) or a limit, reported on stderr as `<chunk>:<line>: <message>` the way a compiler reports a position — `content/console/forbidden_write.luau:30: doc.apply: error 1008: ... {"reason":"method",...}` — and for a limit a second line naming the flag that sets it. `2` the console could not start: a script that does not read, a console flag without `--console`, or a build without the scripting capability (`msvc-minimal`: `--console needs the scripting capability ... (ENGINE_WITH_SCRIPTING=OFF)`). engine-cli exits with the host's code. The host's stdout protocol mode is untouched: without `--console` nothing changes.
+
+**A worked example**, what an agent would write to put a row of objects into a document, read back what it did, and take the last one out again (`engine-cli --console row.luau -- ./world`):
+
+```lua
+local dir = ...
+local s = engine.session.open({ path = dir, create = true }).session
+local who = { actor = "claude", role = "environment", task = "row-of-markers" }
+
+local ids = {}
+for i = 1, 8 do
+  local id = string.format("000000000000001000000000%08x", i)
+  who.rationale = "marker " .. i .. " of a row of eight"
+  local r = engine.doc.apply({ session = s, attribution = who, commands = {
+    { kind = "CreateObject", id = id, type = "engine.content.AssetProvenance" },
+    { kind = "SetProperty", id = id, name = "generator", value = "row-" .. i },
+  } })
+  assert(r.committed, engine.json(r))
+  ids[#ids + 1] = id
+end
+
+local listed = engine.doc.objects({ session = s })
+print("objects", listed.total)
+local ok, err = pcall(engine.doc.undo, { session = s })
+print(ok and "undid the last marker" or tostring(err))
+print(engine.json(engine.doc.journal({ session = s, offset = 6 }).patches[1].attribution))
+```
+
+The fixtures under `content/console/` are four more, each with its command line at the top ([README](../../content/console/README.md)). `apps/engine_cli/tests/console_tests.cpp` runs them end to end: a script that creates a document, applies two transactions with rationales, reads the journal, undoes one and lists objects, asserted in Luau, through engine-cli's one-shot form and again from stdin; the catalogue's generated names, a runtime and a compile error with their chunk and line, and the usage errors; a params table read through its schema type (an empty `properties` map, a wrong type refused as -32602, a function refused before the host sees it); the `qa` role refused on the write with the refusal reaching `pcall`, and uncaught failing at the line of the call; `runaway.luau` stopped by `--step-budget 100000` with exit 1 and the budget named; and a frame captured through `engine.render.capture` with the file on disk, skipped on a machine with no usable GPU. The VM side is `foundation/scripting`'s `ScriptContext::run_program` ([scripting](scripting.md#programs-the-console)), linked into engine-host when the configuration has the scripting capability (ADR-0027), with `ENGINE_HOST_SCRIPTING` for `console.cpp`.
+
+**When to use which** (the three interfaces of [plan 06 §6.3](../plan/06-agent-tooling.md#63-mcp-bridge)): MCP (`engine-mcp`) is the cognitive interface — curated, documented tools with pagination and error hints, for an agent that reasons a step at a time or cannot run local programs; the native protocol (`engine-host --stdio`, `engine-cli <method>`) is the mechanical one — one method a call, for the editor, tests and other programs; the console is the scriptable one — for a coding agent on this machine with a terminal, when the work is many calls that depend on each other's results. **Not yet:** a script cannot keep a host alive between runs (each run is its own host, as engine-cli's calls are, so a loaded scene or a runtime world lasts one script), there is no interactive REPL (stdin is read to EOF, then run), no Luau type-definition file for the method functions, and no subscription or event callback — a script polls `session.events` with its cursor.
 
 ## engine-mcp: the MCP bridge
 

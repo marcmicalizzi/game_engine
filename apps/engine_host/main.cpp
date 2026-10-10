@@ -5,8 +5,10 @@
 // in the process, which is what the Phase 1 exit criterion asks for: agents capture and
 // benchmark, and an agent has no display — and the rest of plan 06 §6.9's day-one operations,
 // content.build, session.events, engine.budgets, session.run_headless and engine.run_tests
-// (ops_methods.cpp). It answers `engine.ping` itself, below, because liveness is a question about
-// this process rather than about any library it links.
+// (ops_methods.cpp). With `--console` it runs a Luau script against the same dispatcher instead of
+// serving stdin (console.cpp). It answers `engine.ping` itself, below, because liveness is a
+// question about this process rather than about any library it links.
+#include "console.h"
 #include "host_state.h"
 #include "ops_methods.h"
 #include "render_methods.h"
@@ -66,6 +68,19 @@ const char* k_usage =
     "                   who a call that names no actor, role or task is: its attribution, and\n"
     "                   with --roles the role it is checked as (--role must be in the file)\n"
     "\n"
+    "       engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]\n"
+    "                   [the options above] [-- <script args>...]\n"
+    "\n"
+    "  --console        run one Luau script against this host instead of serving JSON-RPC:\n"
+    "                   engine.call(method, params) and engine.doc.apply{...} go through the\n"
+    "                   dispatcher as requests would (roles, attribution, journal); print is\n"
+    "                   stdout. Exit 0 when it ends, 1 on an uncaught error (chunk:line on\n"
+    "                   stderr) or a limit, 2 when it cannot start (docs/subsystems/apps.md)\n"
+    "  --script <file>  the script; without it, stdin until EOF\n"
+    "  --step-budget    Luau safepoints for the whole run (default 100000000; 0: none)\n"
+    "  --memory-mb      the script's heap (default 512)\n"
+    "  -- <args>        the script's `...`\n"
+    "\n"
     "Test hook, not for use (docs/subsystems/apps.md, \"Deadlines\"):\n"
     "  --debug-hang <method>  never answer <method>, and read nothing after it: the host a\n"
     "                         client's deadline exists for, made on purpose\n";
@@ -77,6 +92,27 @@ bool next_value(int argc, char** argv, int& i, std::string_view flag, std::strin
     return false;
   }
   out = argv[++i];
+  return true;
+}
+
+bool next_u64(int argc, char** argv, int& i, std::string_view flag, u64& out) {
+  std::string text;
+  if (!next_value(argc, argv, i, flag, text)) return false;
+  u64 value = 0;
+  bool digits = !text.empty();
+  for (const char c : text) {
+    if (c < '0' || c > '9' || value > (~u64{0} - 9) / 10) {
+      digits = false;
+      break;
+    }
+    value = value * 10 + static_cast<u64>(c - '0');
+  }
+  if (!digits) {
+    std::fprintf(stderr, "engine-host: %.*s expects a whole number, not '%s'\n",
+                 static_cast<int>(flag.size()), flag.data(), text.c_str());
+    return false;
+  }
+  out = value;
   return true;
 }
 
@@ -140,11 +176,33 @@ int main(int argc, char** argv) {
   std::string roles_file;
   protocol::Policy policy;
   Vector<std::string> mounts;
+  bool console = false;
+  bool console_only_flag = false;  // a flag that means something only with --console
+  host::ConsoleOptions console_options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
     std::string value;
     if (a == "--stdio") {
       continue;
+    } else if (a == "--console") {
+      console = true;
+    } else if (a == "--script") {
+      if (!next_value(argc, argv, i, a, console_options.script)) return 2;
+      console_only_flag = true;
+    } else if (a == "--step-budget") {
+      if (!next_u64(argc, argv, i, a, console_options.step_budget)) return 2;
+      console_only_flag = true;
+    } else if (a == "--memory-mb") {
+      if (!next_u64(argc, argv, i, a, console_options.memory_mb)) return 2;
+      if (console_options.memory_mb == 0 || console_options.memory_mb > (u64{1} << 20)) {
+        std::fprintf(stderr, "engine-host: --memory-mb must be 1 to 1048576\n");
+        return 2;
+      }
+      console_only_flag = true;
+    } else if (a == "--") {
+      for (++i; i < argc; ++i)
+        console_options.args.push_back(argv[i]);
+      console_only_flag = true;
     } else if (a == "--help" || a == "-h") {
       std::fputs(k_usage, stdout);
       return 0;
@@ -173,6 +231,14 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
     }
+  }
+  if (console_only_flag && !console) {
+    std::fputs("engine-host: --script, --step-budget, --memory-mb and -- need --console\n", stderr);
+    return 2;
+  }
+  if (console && !request.empty()) {
+    std::fputs("engine-host: --console and --request are two ways to run; choose one\n", stderr);
+    return 2;
   }
 
 #if ENGINE_PLATFORM_WINDOWS
@@ -291,7 +357,10 @@ int main(int argc, char** argv) {
                     log::field("method", hang_method));
   }
   int exit_code = 0;
-  if (!request.empty()) {
+  if (console) {
+    // stdout is the script's `print` now, not the protocol's; the dispatcher is the same one.
+    exit_code = host::run_console(dispatcher, console_options);
+  } else if (!request.empty()) {
     if (!hang_method.empty() && names_method(request, hang_method)) hang_forever(hang_method);
     const std::string out = dispatcher.dispatch_text(request);
     if (!out.empty()) {

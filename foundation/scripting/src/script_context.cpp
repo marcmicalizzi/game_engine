@@ -378,9 +378,12 @@ void open_sandboxed_libraries(lua_State* L) {
   lua_pop(L, 1);
 }
 
-// ---- calls -------------------------------------------------------------------------------------
+}  // namespace
 
-constexpr int k_handler_index = 1;
+// ---- calls -------------------------------------------------------------------------------------
+//
+// Shared with program.cpp through context_impl.h: a program runs under the same handler, the same
+// budget accounting and the same error report as a call.
 
 void begin_call(Impl& impl) noexcept {
   impl.depth = 1;
@@ -400,6 +403,8 @@ void end_call(Impl& impl) noexcept {
   ++impl.calls;
 }
 
+namespace {
+
 // Strips the "chunk:line: " Luau puts at the front of a message raised from `chunk`, which
 // last_error() already carries as fields.
 std::string_view strip_position(std::string_view message, std::string_view chunk) noexcept {
@@ -414,6 +419,8 @@ std::string_view strip_position(std::string_view message, std::string_view chunk
     return message;
   return message.substr(i + 2);
 }
+
+}  // namespace
 
 // A failed protected call: the status from the cause the interrupt or the allocator recorded (a
 // script cannot fake those by raising the same text), the position from the error handler, the
@@ -454,9 +461,8 @@ void set_error(Impl& impl, Status status, std::string_view chunk, u32 line,
   impl.error.message.assign(message.data(), message.size());
 }
 
-// Compiles `source` and runs its top level in a fresh sandboxed global table, which is frozen
-// afterwards and returned as a registry reference. Nothing is replaced here; the caller swaps.
-Status compile_and_run(Impl& impl, std::string_view name, std::string_view source, int& env_ref) {
+Status compile_chunk(Impl& impl, std::string_view name, std::string_view source,
+                     PrepareEnv prepare) {
   lua_CompileOptions options{};
   options.optimizationLevel = 1;  // no inlining: line numbers in errors stay the source's
   options.debugLevel = 1;         // line info and function names, for errors
@@ -487,6 +493,13 @@ Status compile_and_run(Impl& impl, std::string_view name, std::string_view sourc
   lua_State* L = impl.L;
   lua_State* thread = lua_newthread(L);  // L: [.., thread]
   luaL_sandboxthread(thread);            // its own global table, reading through to the frozen one
+  if (prepare != nullptr) {
+    // Before luau_load: the loader resolves a chunk's imports (`engine.doc.apply`) against the
+    // environment as it is then, and caches what it finds.
+    lua_pushvalue(thread, LUA_GLOBALSINDEX);
+    prepare(thread, impl, lua_gettop(thread));
+    lua_pop(thread, 1);
+  }
   std::string chunkname;
   chunkname.reserve(name.size() + 1);
   chunkname.push_back('=');
@@ -505,7 +518,17 @@ Status compile_and_run(Impl& impl, std::string_view name, std::string_view sourc
   lua_xmove(thread, L, 2);                  // L: [.., thread, fn, env]
   lua_remove(L, -3);                        // L: [.., fn, env]; the closure keeps env alive
   lua_insert(L, -2);                        // L: [.., env, fn]
+  return Status::Ok;
+}
 
+namespace {
+
+// Compiles `source` and runs its top level in a fresh sandboxed global table, which is frozen
+// afterwards and returned as a registry reference. Nothing is replaced here; the caller swaps.
+Status compile_and_run(Impl& impl, std::string_view name, std::string_view source, int& env_ref) {
+  if (const Status compiled = compile_chunk(impl, name, source); compiled != Status::Ok)
+    return compiled;
+  lua_State* L = impl.L;
   begin_call(impl);
   const int code = lua_pcall(L, 0, 0, k_handler_index);
   end_call(impl);

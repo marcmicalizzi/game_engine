@@ -5,6 +5,10 @@
 # (docs/subsystems/apps.md, protocol.md, renderer.md). It depends on `renderer` the way any app
 # depends on a system: apps are L4 and systems are L3.
 #
+# `--console` (console.cpp) runs a Luau script against the dispatcher over the scripting capability
+# (docs/subsystems/apps.md, "The console"); linked like the others below, and without it the flag
+# says so and exits 2.
+#
 # Every capability a method reaches is optional (ADR-0027). An app is not a capability and cannot
 # declare `engine_capability_requires`, so it does what engine-view does for animation: link the
 # module when this configuration has it and define ENGINE_HOST_<NAME> so the code that uses it
@@ -19,7 +23,7 @@
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
                schemas bench time platform jobs geometry gfx sim content_build doc input)
 set(_host_defs)
-foreach(_cap audio ecs animation audio_system kinematics npc store tissue world)
+foreach(_cap audio ecs animation audio_system kinematics npc scripting store tissue world)
   if(TARGET engine::${_cap})
     list(APPEND _host_deps ${_cap})
     string(TOUPPER ${_cap} _cap_upper)
@@ -36,7 +40,7 @@ foreach(_gen city ruins sky terrain)
   endif()
 endforeach()
 engine_app(NAME engine_host OUTPUT engine-host
-  SOURCES main.cpp render_methods.cpp ops_methods.cpp
+  SOURCES main.cpp render_methods.cpp ops_methods.cpp console.cpp
   DEPS ${_host_deps})
 if(_host_defs)
   target_compile_definitions(engine_engine_host PRIVATE ${_host_defs})

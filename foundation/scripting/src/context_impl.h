@@ -86,6 +86,20 @@ struct FunctionSlot {
   std::string name;
 };
 
+// A program in flight (ScriptContext::run_program, program.cpp): the host it calls, and the values
+// a host function hands across a call. They live here and not on the stack of the function a
+// script called, because that function raises (the rule at the top of this file).
+struct ProgramState {
+  const ProgramHost* host = nullptr;
+  Vector<std::string> names;  // the methods' names, NUL-terminated: the closures' debug names
+  std::string method;         // the method of the call in flight, for its error table
+  JsonValue params;
+  JsonValue result;
+  HostError error;
+  std::string text;  // engine.json's text, or why a params table has no JSON form
+  int error_meta_ref = LUA_NOREF;
+};
+
 // Why the call in flight failed, recorded where it happened (the interrupt, the allocator) rather
 // than read back from a message a script could have written itself.
 enum class Cause : u8 { None, Budget, Time, Memory };
@@ -135,6 +149,8 @@ struct ScriptContext::Impl {
   Vector<u64>* gc_pauses = nullptr;
   bool in_gc_step = false;
   i64 gc_step_start = 0;
+
+  ProgramState program;
 };
 
 using Impl = ScriptContext::Impl;
@@ -142,6 +158,29 @@ using Impl = ScriptContext::Impl;
 inline Impl& impl_of(lua_State* L) noexcept {
   return *static_cast<Impl*>(lua_callbacks(L)->userdata);
 }
+
+// The message handler every call runs under is stack slot 1 of the main thread.
+inline constexpr int k_handler_index = 1;
+
+// ---- script_context.cpp -----------------------------------------------------------------------
+
+// The start and end of a protected call: the step count, the budget, the deadline, the cause.
+void begin_call(Impl& impl) noexcept;
+void end_call(Impl& impl) noexcept;
+// A failed protected call's status, chunk, line and message into Impl::error; the error object is
+// on the top of the stack.
+Status fail_call(Impl& impl, int code, std::string_view default_chunk);
+void set_error(Impl& impl, Status status, std::string_view chunk, u32 line,
+               std::string_view message);
+// Fills a fresh chunk's own global table (stack index `env` of `L`) before the chunk is loaded.
+using PrepareEnv = void (*)(lua_State* L, Impl& impl, int env);
+// Compiles `source` as chunk `name` into a fresh sandboxed thread. On success it pushes two values,
+// the thread's own global table and the chunk's function (L: [.., env, fn]); on failure it pushes
+// nothing and the error is in Impl::error. `prepare`, when given, runs on the global table before
+// luau_load, because the loader resolves the chunk's imports (`engine.doc.apply`) against the
+// environment it finds then and caches them.
+Status compile_chunk(Impl& impl, std::string_view name, std::string_view source,
+                     PrepareEnv prepare = nullptr);
 
 // ---- bindings.cpp -----------------------------------------------------------------------------
 
@@ -169,10 +208,19 @@ bool resolve_view(const Impl& impl, const View& view, const void*& data,
 // Pushes a schema value (a field, an array element) as the script sees it. May raise.
 void push_value(lua_State* L, Impl& impl, const schema::TypeRef& type, const void* value, u32 slot,
                 u32 version);
-// Pushes a JSON value as a read-only table or scalar. May raise.
-void push_json(lua_State* L, const JsonValue& value);
+// Pushes a JSON value as a table or scalar, the tables read-only unless `read_only` is false (a
+// program's results are its own to change and send back). May raise.
+void push_json(lua_State* L, const JsonValue& value, bool read_only = true);
 // Converts the value at `index` to JSON. Never raises: it touches only values that need no
 // allocation to read, and reports what it cannot convert in `error`.
 bool to_json(lua_State* L, Impl& impl, int index, JsonValue& out, std::string& error);
+// to_json() read as an instance of the struct `type` through its descriptors (null: untyped). It
+// settles what Luau's one table type cannot say: an empty table is [] for an array field and {}
+// for a struct or a string-keyed map, and a number is a float where the field is one. Whatever the
+// type does not settle converts as to_json() would, so a value of the wrong type reaches whoever
+// reads the JSON — for the console, the protocol's own params reader — and is reported there.
+// `error` names the path of a value with no JSON form ("commands[2].value: ..."). Never raises.
+bool to_json_typed(lua_State* L, Impl& impl, int index, const schema::TypeInfo* type,
+                   JsonValue& out, std::string& error);
 
 }  // namespace engine::scripting
