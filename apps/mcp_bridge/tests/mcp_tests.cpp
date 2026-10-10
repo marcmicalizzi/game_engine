@@ -406,8 +406,7 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
   CHECK(str(settings, "$ref") == k_settings_ref);
   CHECK(str(property("capture", "settings"), "$ref") == k_settings_ref);
   CHECK_FALSE(str(property("capture", "settings"), "description").empty());
-  const JsonValue& shared =
-      at(at(schema_of("capture"), "$defs"), "engine.protocol.RenderSettings");
+  const JsonValue& shared = at(at(schema_of("capture"), "$defs"), "engine.protocol.RenderSettings");
   CHECK(at(at(at(shared, "properties"), "raster"), "default") == JsonValue("hw"));
   CHECK(shared.find("description") == nullptr);
   for (const char* tool : {"capture", "benchmark", "evaluate"}) {

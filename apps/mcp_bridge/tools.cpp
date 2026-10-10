@@ -821,11 +821,10 @@ void run_journal(Bridge& b, const JsonValue& args, ToolOutcome& out) {
     out.summary = "The journal is empty: nothing has been committed.";
   } else {
     out.summary = "Journal patches " + range_text(page.offset, patches.size(), total) +
-                  (position >= total ? ", all applied."
-                                     : "; the first " + std::to_string(position) +
-                                           " are applied and the last " +
-                                           std::to_string(total - position) +
-                                           " were undone and can be redone.");
+                  (position >= total
+                       ? ", all applied."
+                       : "; the first " + std::to_string(position) + " are applied and the last " +
+                             std::to_string(total - position) + " were undone and can be redone.");
   }
 }
 

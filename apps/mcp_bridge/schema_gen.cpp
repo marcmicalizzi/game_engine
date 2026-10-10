@@ -357,7 +357,8 @@ bool SchemaGen::type_schema_at(std::string_view type, u32 depth, JsonValue& out,
   return true;
 }
 
-// ---- $defs ---------------------------------------------------------------------------------------
+// ---- $defs
+// ---------------------------------------------------------------------------------------
 
 namespace {
 
@@ -367,7 +368,8 @@ constexpr std::string_view k_site_members[] = {"description", "default", "deprec
 
 JsonValue body_of(const JsonValue& node) {
   JsonValue body = node;
-  for (std::string_view key : k_site_members) body.as_object().erase(key);
+  for (std::string_view key : k_site_members)
+    body.as_object().erase(key);
   return body;
 }
 
@@ -380,7 +382,8 @@ struct Shared {
 
 void collect(const JsonValue& node, Vector<Shared>& found) {
   if (node.is_array()) {
-    for (usize i = 0; i < node.size(); ++i) collect(node[i], found);
+    for (usize i = 0; i < node.size(); ++i)
+      collect(node[i], found);
     return;
   }
   if (!node.is_object()) return;
@@ -400,12 +403,14 @@ void collect(const JsonValue& node, Vector<Shared>& found) {
     }
   }
   const JsonValue::Object& members = node.as_object();
-  for (u32 i = 0; i < members.size(); ++i) collect(members.value_at(i), found);
+  for (u32 i = 0; i < members.size(); ++i)
+    collect(members.value_at(i), found);
 }
 
 void replace(JsonValue& node, const Shared& shared, const std::string& ref) {
   if (node.is_array()) {
-    for (usize i = 0; i < node.size(); ++i) replace(node[i], shared, ref);
+    for (usize i = 0; i < node.size(); ++i)
+      replace(node[i], shared, ref);
     return;
   }
   if (!node.is_object()) return;
@@ -421,18 +426,21 @@ void replace(JsonValue& node, const Shared& shared, const std::string& ref) {
     return;
   }
   JsonValue::Object& members = node.as_object();
-  for (u32 i = 0; i < members.size(); ++i) replace(members.value_at(i), shared, ref);
+  for (u32 i = 0; i < members.size(); ++i)
+    replace(members.value_at(i), shared, ref);
 }
 
 void strip_markers(JsonValue& node) {
   if (node.is_array()) {
-    for (usize i = 0; i < node.size(); ++i) strip_markers(node[i]);
+    for (usize i = 0; i < node.size(); ++i)
+      strip_markers(node[i]);
     return;
   }
   if (!node.is_object()) return;
   node.as_object().erase(k_type_marker);
   JsonValue::Object& members = node.as_object();
-  for (u32 i = 0; i < members.size(); ++i) strip_markers(members.value_at(i));
+  for (u32 i = 0; i < members.size(); ++i)
+    strip_markers(members.value_at(i));
 }
 
 }  // namespace
