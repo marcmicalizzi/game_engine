@@ -1009,11 +1009,13 @@ bool schema_list_schema(Bridge&, JsonValue& s, std::string&) {
                prop("string",
                     "Only types whose qualified name starts with this, e.g. engine.doc "
                     "or engine.content. Omit it for every type."));
-  JsonValue methods = prop("boolean",
-                           "Also list the protocol's methods, with the tools that call "
-                           "each one.");
-  methods.set("default", JsonValue(true));
-  props(s).set("methods", std::move(methods));
+  // No "default" member: the default depends on namespace, which a schema cannot say. The
+  // catalogue is 30 KB with its documentation, and an agent narrowing the types to a namespace
+  // was paying for it on every call (tools/mcp-check.ps1, 2026-10-10).
+  props(s).set("methods", prop("boolean",
+                               "Also list the protocol's methods, with the tools that call each "
+                               "one (about 30 KB). Defaults to true when namespace is omitted "
+                               "and false when it is given."));
   page_schema(s, k_types_default, k_types_max, "types");
   return true;
 }
@@ -1037,7 +1039,7 @@ void run_list_schema(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.summary = std::to_string(total) + " schema type(s)" +
                 (ns.empty() ? std::string() : " under " + ns) + "; showing " +
                 range_text(page.offset, out.data.find("types")->size(), total) + ".";
-  if (bool_of(args, "methods", true)) {
+  if (bool_of(args, "methods", ns.empty())) {
     JsonValue methods = JsonValue::array();
     for (const SchemaGen::Method& m : b.schemas().methods()) {
       JsonValue o = JsonValue::object();

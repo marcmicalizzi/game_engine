@@ -654,6 +654,14 @@ TEST_CASE("mcp: a scripted editing session") {
            "generator") == JsonValue("dune-gen"));
   CHECK(num(ok(mcp.tool("redo", "{" + s + "}")), "position") == 4);
 
+  // The types of one namespace come without the method catalogue unless asked for; the whole
+  // listing carries it (tools/mcp-check.ps1 found 30 KB of methods on every narrowed call).
+  const JsonValue& narrowed = ok(mcp.tool("list_schema", R"({"namespace":"engine.content"})"));
+  CHECK(narrowed.find("methods") == nullptr);
+  CHECK(has(at(narrowed, "types"), JsonValue(k_type)));
+  CHECK(ok(mcp.tool("list_schema", R"({"namespace":"engine.content","methods":true})"))
+            .find("methods") != nullptr);
+  CHECK(ok(mcp.tool("list_schema", "{}")).find("methods") != nullptr);
   // The journal carries the attribution, with the actor the bridge was started with.
   const JsonValue& journal = ok(mcp.tool("journal", "{" + s + "}"));
   CHECK(num(journal, "total") == 4);
