@@ -99,7 +99,8 @@ int run_console(protocol::Dispatcher& dispatcher, const ConsoleOptions& options)
   limits.memory_bytes = options.memory_mb << 20;
   limits.time_budget_ns = 0;  // a method may render for minutes; only the script's own work counts
   scripting::ScriptContext context(limits);
-  Link link{&dispatcher};
+  Link link;
+  link.dispatcher = &dispatcher;
   const scripting::ProgramHost host{&link, {methods.data(), methods.size()}, &call, &print};
   Vector<std::string_view> args;
   for (const std::string& a : options.args)
