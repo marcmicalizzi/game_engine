@@ -550,6 +550,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A30 | Hierarchical world generation, boundary contracts | open | A22, A23, D32, D33 | L | research | [06 §6.12](plan/06-agent-tooling.md#612-hierarchical-world-generation) |
 | A31 | MCP conformance client (`tools/mcp-check.ps1`) | done (c8e6e302) | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
 | A32 | `render.capture` reports the camera it framed | open | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
+| A33 | Console: Luau scripts over the protocol | in progress | A1 | M | design | [06 §6.3](plan/06-agent-tooling.md#63-mcp-bridge) |
 
 ## P — The reference games
 
