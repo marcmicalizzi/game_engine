@@ -548,7 +548,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A28 | Phase 4 exit | open | A24, A27 | L | research | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | A29 | Automated playtesting: bots, telemetry, fuzzing | open | A7, T4 | L | design | [06 §6.11](plan/06-agent-tooling.md#611-automated-playtesting) |
 | A30 | Hierarchical world generation, boundary contracts | open | A22, A23, D32, D33 | L | research | [06 §6.12](plan/06-agent-tooling.md#612-hierarchical-world-generation) |
-| A31 | MCP conformance client (`tools/mcp-check.ps1`) | open | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
+| A31 | MCP conformance client (`tools/mcp-check.ps1`) | done (c8e6e302) | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
 | A32 | `render.capture` reports the camera it framed | open | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 
 ## P — The reference games
