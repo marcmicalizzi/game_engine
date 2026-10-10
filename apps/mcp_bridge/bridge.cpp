@@ -381,6 +381,7 @@ bool Bridge::start(std::string& error) {
       error = std::string("cannot build the input schema of ") + def.name + ": " + why;
       return false;
     }
+    share_definitions(schema);
     tools_.push_back(Tool{&def, std::move(schema)});
   }
   ENGINE_LOG_INFO(log_mcp, "engine-mcp ready", log::field("tools", static_cast<u64>(tools_.size())),

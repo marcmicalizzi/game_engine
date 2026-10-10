@@ -394,8 +394,22 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
   CHECK(at(property("capture", "width"), "default") == JsonValue(u32{1280}));
   CHECK(str(at(property("capture", "channels"), "items"), "type") == "string");
   CHECK(at(schema_of("capture"), "properties").find("out_dir") == nullptr);
+  // RenderSettings stands twice in each render tool (load.settings and the per-call settings), so
+  // it is one definition in the tool's $defs, referenced from both places, each reference keeping
+  // its own description; and the generator's type markers never reach a client.
+  const char* k_settings_ref = "#/$defs/engine.protocol.RenderSettings";
   const JsonValue& settings = at(at(property("capture", "load"), "properties"), "settings");
-  CHECK(at(at(at(settings, "properties"), "raster"), "default") == JsonValue("hw"));
+  CHECK(str(settings, "$ref") == k_settings_ref);
+  CHECK(str(property("capture", "settings"), "$ref") == k_settings_ref);
+  CHECK_FALSE(str(property("capture", "settings"), "description").empty());
+  const JsonValue& shared =
+      at(at(schema_of("capture"), "$defs"), "engine.protocol.RenderSettings");
+  CHECK(at(at(at(shared, "properties"), "raster"), "default") == JsonValue("hw"));
+  CHECK(shared.find("description") == nullptr);
+  for (const char* tool : {"capture", "benchmark", "evaluate"}) {
+    CHECK(str(property(tool, "settings"), "$ref") == k_settings_ref);
+    CHECK_MESSAGE(write_json(schema_of(tool)).find("x-engine-type") == std::string::npos, tool);
+  }
   // An f32 default reads as the number the schema wrote, not its double widening.
   CHECK(at(at(at(property("capture", "orbit"), "properties"), "pitch_deg"), "default") ==
         JsonValue(24.2277));

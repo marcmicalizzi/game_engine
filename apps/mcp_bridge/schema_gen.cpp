@@ -12,6 +12,10 @@
 
 namespace engine::mcp {
 
+// A member type_schema_at puts on every struct's schema while a tool's schema is built, naming the
+// type; share_definitions reads it and removes it, so no client ever sees it.
+constexpr std::string_view k_type_marker = "x-engine-type";
+
 namespace {
 
 // Descriptions come from `///` comments, which are wrapped at 100 columns; a JSON Schema
@@ -322,6 +326,8 @@ bool SchemaGen::type_schema_at(std::string_view type, u32 depth, JsonValue& out,
 
   out = typed("object");
   if (!doc.empty()) out.set("description", JsonValue(doc));
+  // Which type this is, for share_definitions; removed before the schema leaves the bridge.
+  out.set(k_type_marker, JsonValue(std::string(t)));
   JsonValue properties = JsonValue::object();
   if (const JsonValue* fields = d.find("fields"); fields != nullptr && fields->is_array()) {
     for (usize i = 0; i < fields->size(); ++i) {
@@ -349,6 +355,114 @@ bool SchemaGen::type_schema_at(std::string_view type, u32 depth, JsonValue& out,
   // schema says the same thing up front.
   out.set("additionalProperties", JsonValue(false));
   return true;
+}
+
+// ---- $defs ---------------------------------------------------------------------------------------
+
+namespace {
+
+// The members a reference keeps from the place it stands: what the field says, not what the type
+// is. Everything else is the type's body and goes into the definition.
+constexpr std::string_view k_site_members[] = {"description", "default", "deprecated"};
+
+JsonValue body_of(const JsonValue& node) {
+  JsonValue body = node;
+  for (std::string_view key : k_site_members) body.as_object().erase(key);
+  return body;
+}
+
+struct Shared {
+  std::string type;
+  std::string text;  // the body, written compactly: two occurrences are one type when it is equal
+  JsonValue body;
+  u32 count = 0;
+};
+
+void collect(const JsonValue& node, Vector<Shared>& found) {
+  if (node.is_array()) {
+    for (usize i = 0; i < node.size(); ++i) collect(node[i], found);
+    return;
+  }
+  if (!node.is_object()) return;
+  if (const JsonValue* type = node.find(k_type_marker); type != nullptr && type->is_string()) {
+    JsonValue body = body_of(node);
+    std::string text = write_json(body, JsonWriteOptions{.pretty = false});
+    bool known = false;
+    for (Shared& s : found) {
+      if (s.type == type->as_string() && s.text == text) {
+        ++s.count;
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      found.push_back(Shared{std::string(type->as_string()), std::move(text), std::move(body), 1});
+    }
+  }
+  const JsonValue::Object& members = node.as_object();
+  for (u32 i = 0; i < members.size(); ++i) collect(members.value_at(i), found);
+}
+
+void replace(JsonValue& node, const Shared& shared, const std::string& ref) {
+  if (node.is_array()) {
+    for (usize i = 0; i < node.size(); ++i) replace(node[i], shared, ref);
+    return;
+  }
+  if (!node.is_object()) return;
+  if (const JsonValue* type = node.find(k_type_marker);
+      type != nullptr && type->is_string() && type->as_string() == shared.type &&
+      write_json(body_of(node), JsonWriteOptions{.pretty = false}) == shared.text) {
+    JsonValue site = JsonValue::object();
+    site.set("$ref", JsonValue(ref));
+    for (std::string_view key : k_site_members) {
+      if (const JsonValue* v = node.find(key); v != nullptr) site.set(key, *v);
+    }
+    node = std::move(site);
+    return;
+  }
+  JsonValue::Object& members = node.as_object();
+  for (u32 i = 0; i < members.size(); ++i) replace(members.value_at(i), shared, ref);
+}
+
+void strip_markers(JsonValue& node) {
+  if (node.is_array()) {
+    for (usize i = 0; i < node.size(); ++i) strip_markers(node[i]);
+    return;
+  }
+  if (!node.is_object()) return;
+  node.as_object().erase(k_type_marker);
+  JsonValue::Object& members = node.as_object();
+  for (u32 i = 0; i < members.size(); ++i) strip_markers(members.value_at(i));
+}
+
+}  // namespace
+
+void share_definitions(JsonValue& schema) {
+  if (!schema.is_object()) return;
+  // The largest repeated body first, so a struct inside a shared one is shared by being inside
+  // its definition rather than given a definition of its own; then again, until nothing repeats.
+  for (;;) {
+    Vector<Shared> found;
+    collect(schema, found);
+    const Shared* best = nullptr;
+    for (const Shared& s : found) {
+      if (s.count >= 2 && (best == nullptr || s.text.size() > best->text.size())) best = &s;
+    }
+    if (best == nullptr) break;
+    const Shared shared = *best;
+    // The qualified name, which is unique and says what it is; a second body of the same type
+    // (a tool that edited one occurrence) takes a suffix. Neither needs escaping in a pointer.
+    JsonValue* defs = schema.find("$defs");
+    std::string name = shared.type;
+    for (u32 n = 2; defs != nullptr && defs->find(name) != nullptr; ++n)
+      name = shared.type + "-" + std::to_string(n);
+    replace(schema, shared, "#/$defs/" + name);
+    JsonValue body = shared.body;
+    body.as_object().erase(k_type_marker);
+    if (schema.find("$defs") == nullptr) schema.set("$defs", JsonValue::object());
+    schema.find("$defs")->set(name, std::move(body));
+  }
+  strip_markers(schema);
 }
 
 }  // namespace engine::mcp

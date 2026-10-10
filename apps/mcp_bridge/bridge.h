@@ -164,6 +164,16 @@ class SchemaGen {
   FlatMap<std::string, JsonValue> described_;
 };
 
+// Moves every struct type that appears more than once, unchanged, in one tool's input schema into
+// that schema's $defs, and puts {"$ref": "#/$defs/<qualified type>"} where each one stood,
+// keeping the field's own description, default and deprecation beside the reference; then removes
+// the type markers the generator left. Each inputSchema is a document of its own, so a definition
+// is shared only inside one tool: RenderSettings, 10.7 KB with its documentation, stood twice in
+// each of capture, benchmark and evaluate (`load.settings` and the per-call `settings`), and the
+// second copies were a fifth of tools/list (docs/subsystems/apps.md, "Input schemas are generated,
+// not written").
+void share_definitions(JsonValue& schema);
+
 // ---- tools -------------------------------------------------------------------------------------
 
 // What a tool call produced: a short summary for a reader, the data as an object (the MCP
