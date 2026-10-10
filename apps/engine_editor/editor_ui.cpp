@@ -299,8 +299,10 @@ bool EditorUi::render(renderer::SceneRenderer& renderer, renderer::OverlayDrawDa
     const u32 index_count = static_cast<u32>(list->IdxBuffer.Size);
     vertices_.resize(vertex_base + vertex_count);
     indices_.resize(index_base + index_count);
+    // Byte for byte (the static_assert above): `OverlayVertex`'s member initializers make it
+    // non-trivial to GCC's -Wclass-memaccess, though its bytes are ImDrawVert's.
     if (vertex_count > 0)
-      std::memcpy(vertices_.data() + vertex_base, list->VtxBuffer.Data,
+      std::memcpy(static_cast<void*>(vertices_.data() + vertex_base), list->VtxBuffer.Data,
                   vertex_count * sizeof(ImDrawVert));
     if (index_count > 0)
       std::memcpy(indices_.data() + index_base, list->IdxBuffer.Data,
