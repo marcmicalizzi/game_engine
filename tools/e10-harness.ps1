@@ -694,6 +694,10 @@ if ($FromReport) {
     $row.materials = [int]$b.materials; $row.images = [int]$b.images
     $row.warnings = [int]$b.warnings; $row.warning_rules = [pscustomobject]$rules
     $row.container_bytes = [long]$b.bytes; $row.build_ms = [math]::Round([double]$b.build_ms, 1)
+    # The built textures' bytes (BC7/BC5/BC4 with mips, docs/subsystems/texture.md), when the build
+    # had a derived-data root to build them into — `-BuildArgs '--ddc <dir>'` — which is what a
+    # texture budget is judged on: an 8K base colour alone is 89 MB, a 2K PBR set of three 17 MB.
+    if ($null -ne $b.textures -and $b.textures.enabled) { $row.texture_bytes = [long]$b.textures.bytes }
     # What the build repaired rather than warned about (geometry.md, "Zero-area triangles: the
     # repair" and "UV-degenerate triangles: the repair"): one row per repair that fired, an empty
     # array when nothing needed one, absent from a build older than the rules. report.md's
@@ -948,7 +952,7 @@ function Get-RepairedText($r) {
   $ut = if ($u) { [long]$u.refolded + [long]$u.dropped } else { 0 }
   return "$zt / $ut"
 }
-$md.Add('| asset | triangles | clusters | levels | warn | repaired (zero-area / UV) | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest (share; finest per 1,000 object px) | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
+$md.Add('| asset | triangles | clusters | levels | warn | repaired (zero-area / UV) | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest (share; finest per 1,000 object px) | GLB MB | container MB (+ built textures) | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
 $md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $rows) {
   $objectFlip = (F $r.flip_object_mean '0.000') + $(if ($r.PSObject.Properties['object_flip_reliable'] -and $r.object_flip_reliable -eq $false) { ' †' } else { '' })
@@ -958,7 +962,8 @@ foreach ($r in $rows) {
   $md.Add(('| {0} | {1} | {2} | {3} | {4} | {19} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16} | {17} | {18} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
       (F $r.warnings '0'), (F $r.islands 'N0'), (F $(if ($null -ne $r.seam_fraction) { 100 * $r.seam_fraction }) '0.0'), (F $r.smallest_island_texels_4096 '0.###'),
       (F $r.median_island_texels_4096 'N0'), (F $(if ($null -ne $r.uv_area) { 100 * $r.uv_area }) '0.0'), $pairs, (F $(if ($r.glb_bytes) { $r.glb_bytes / 1MB }) '0.0'),
-      (F $(if ($r.container_bytes) { $r.container_bytes / 1MB }) '0.0'), (F $r.build_ms 'N0'), (F $r.psnr '0.0'), (F $r.flip_mean '0.0000'), $objectFlip,
+      ((F $(if ($r.container_bytes) { $r.container_bytes / 1MB }) '0.0') + $(if ($r.PSObject.Properties['texture_bytes'] -and $null -ne $r.texture_bytes) { ' + ' + (F ($r.texture_bytes / 1MB) '0.0') } else { '' })),
+      (F $r.build_ms 'N0'), (F $r.psnr '0.0'), (F $r.flip_mean '0.0000'), $objectFlip,
       (F $(if ($null -ne $r.coverage) { 100 * $r.coverage }) '0.0'),
       $(if ($r.status -eq 'pass') { 'pass' } else { "**fail** ($((@($r.checks.Keys | Where-Object { $r.checks[$_] -in 'fail', 'unmeasured' })) -join ', '))" }),
       (Get-RepairedText $r)))

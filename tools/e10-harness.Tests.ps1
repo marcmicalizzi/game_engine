@@ -73,6 +73,9 @@ function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false, [bool]
   $report.assets[0].repairs = @(
     [ordered]@{ rule = 'geometry.zero_area'; triangles = 4; collinear = 3; coincident = 1; dropped = 3; unrepaired = 1 },
     [ordered]@{ rule = 'geometry.uv_degenerate'; islands = 1; triangles = 2; refolded = 1; dropped = 1; unrepaired = 0 })
+  # And its textures built (`-BuildArgs '--ddc <dir>'`): a 2K PBR set of three, as September's Tripo
+  # props built (16,778,688 bytes).
+  $report.assets[0].texture_bytes = 16778688
   if ($collapse) {
     # The three cases the collapse check tells apart, each measured once in E10: a mesh whose LOD
     # coarsens, one that does not (Meshy's triangle remesh: a fragmented atlas, the coarse cut is the
@@ -127,8 +130,9 @@ try {
   $md = Get-Content -Raw (Join-Path $root 'fresh/report.md')
   $json = Get-Content -Raw $file | ConvertFrom-Json
   Test-That 'no caveat when nothing is stale, and the report says so' { $md -cnotmatch 'STALE' -and $null -eq $json.caveat -and $md -match 'none stale' }
-  Test-That 'the repaired column: zero-area triangles dropped / UV triangles repaired, and a row with no repairs says so' {
-    $md -match '\| warn \| repaired \(zero-area / UV\) \| islands \|' -and $md -match '\| solid-crate \| 100,000 \| 900 \| 10 \| 0 \| 3 / 2 \| 400 \|' -and $md -match '\| thin-tree \| 100,000 \| 900 \| 10 \| 0 \| — \| 400 \|' }
+  Test-That 'the repaired column (zero-area dropped / UV repaired, — for no repairs) and the built textures beside the container' {
+    $md -match '\| warn \| repaired \(zero-area / UV\) \| islands \|' -and $md -match '\| container MB \(\+ built textures\) \|' -and
+    $md -match '\| 1\.0 \| 2\.0 \+ 16\.0 \| 500 \|' -and $md -match '\| 1\.0 \| 2\.0 \| 500 \|' -and $md -match '\| solid-crate \| 100,000 \| 900 \| 10 \| 0 \| 3 / 2 \| 400 \|' -and $md -match '\| thin-tree \| 100,000 \| 900 \| 10 \| 0 \| — \| 400 \|' }
   Test-That 'a report measured without -Offscreen does not claim it' { $md -notmatch '--offscreen' }
   $json.settings | Add-Member -NotePropertyName offscreen -NotePropertyValue $true -Force
   $json.machine_state.samples = 0
