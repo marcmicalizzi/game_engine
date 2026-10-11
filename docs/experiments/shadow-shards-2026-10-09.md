@@ -2,7 +2,7 @@
 
 - **Question.** On the erg's western floor, with `--terrain-rings` and `--shadows rt`, the owner's surround drew dark grey shards on the sand far from the camera ([the sand-detail captures](sand-detail-2026-09-29.md#captures); [far ground](far-ground-2026-10-03.md#what-is-open) saw specks too). The suspect written down was shadow rays stopped by the rings' own geometry: the scene grid's sunken hole under the middle ring, or a skirt. What stops those rays, and what is the fix?
 - **Date:** 2026-10-09. **Machine:** the owner's desktop (RTX 5090), `msvc-release`, offscreen, every capture under the GPU lock. **Machine state:** other agents' builds held 20–31% of the CPU through the measurement, and 46% at the start of one of the timed runs, beside this session's own debug build (`--wait-quiet 300` ran out every time, `quiet: false`); the GPU was ours. The timings below are an upper bound on the cost, and the counts no load changes.
-- **Status:** diagnosed, fixed ([renderer](../subsystems/renderer.md#one-cut-for-every-view), "One cut for every view"), and held by a test. Of what was left, the surround defect found on the way (F18) is fixed and the single-view specks (F17) are re-diagnosed as fold-overs in the terrain's coarse clusters, which no ray offset can clear ([2026-10-10](#2026-10-10-the-census-again-f17-and-the-surround-at-the-cameras-field-of-view-f18)).
+- **Status:** diagnosed, fixed ([renderer](../subsystems/renderer.md#one-cut-for-every-view), "One cut for every view"), and held by a test. Of what was left, the surround defect found on the way (F18) is fixed and the single-view specks (F17) were re-diagnosed as fold-overs in the terrain's coarse clusters, which no ray offset can clear ([2026-10-10](#2026-10-10-the-census-again-f17-and-the-surround-at-the-cameras-field-of-view-f18)), and on 2026-10-11 traced to the LOD builder's regular simplifier and refused there ([2026-10-11](#2026-10-11-where-the-folds-are-made-f17)): 3 → 1 and 10 → 0 blocked pixels.
 
 ## Reproducing it
 
@@ -62,7 +62,7 @@ When a frame builds acceleration structures (`ResolvedSettings::rt_chain`: trace
 
 ## What is left
 
-- **Single-view specks (F17).** After the fix, 4 of the 5 blocked rays at 5760×1080 hit their own cluster and 1 a neighbour this view drew. This page put them down to a ray from a point on its triangle's edge under a neighbour across a concave crease; the census of 2026-10-10 (below) found no such point, and the specks to be rays from under **fold-overs in the terrain's coarse clusters**, which no offset can clear.
+- **Single-view specks (F17).** Fixed 2026-10-11 in the geometry ([below](#2026-10-11-where-the-folds-are-made-f17)): the LOD builder refuses a heightfield simplification that turns a triangle over. After the fix, 4 of the 5 blocked rays at 5760×1080 hit their own cluster and 1 a neighbour this view drew. This page put them down to a ray from a point on its triangle's edge under a neighbour across a concave crease; the census of 2026-10-10 (below) found no such point, and the specks to be rays from under **fold-overs in the terrain's coarse clusters**, which no offset can clear.
 - **The surround's side monitors and the camera's field of view (F18).** Fixed 2026-10-10 (below, and [renderer](../subsystems/renderer.md#multi-view-a-viewset-over-one-scene)): the surround is laid out from the camera's field of view, so a flat surround's three views share one projection scale.
 - **The maps in a surround.** The cascades already took the finest view's LOD, so a coarser side view's receiver is compared against a map drawn from a finer cut. The maps' receiver-plane bias and normal offset hid it here (0 pixels the maps darkened that the rays lit), and it is not changed. Since F18 a flat surround's views are one scale and this case is a turned surround's alone; not looked at again on 2026-10-10.
 - Brown dashes a few pixels long on the far floor in both the before and after captures are not shadows (they are lighter than the sand around them); not looked into, then or on 2026-10-10.
@@ -150,3 +150,31 @@ Then the same grid built again through a copy of clusterlod's loop that asks, of
 ### The guard
 
 `ClusterLodOptions::up`, set by the scene's grid, the rings' chunks and the world's tiles: every group's result is checked on the floats and on the grid the mesh will be quantized to, and a result that turns any triangle over is refused and simplified again with the folded triangles' corners, and every vertex of the group's triangles touching them, locked — up to eight rounds, then left unsimplified (it never came to that) ([geometry](../subsystems/geometry.md#heightfield-levels-never-fold) has the rules and why there). On the erg's grid it refused 5,332 of 45,459 groups' first results and ran 5,918 simplifications again; the guarded container counts **0 / 0 on the floats and 0 / 0 on the grid at every level**, with 741,526 clusters against 741,591 and every level's triangles within 0.01% of before. The engine-view run that built and cached it took 236 s against 198 s.
+
+### The census after
+
+Same scene, camera, sun and settings as 2026-10-10, `main` (`dea21318`) against this branch, both `msvc-release`, each capture under the GPU lock; the counts are the sun-facing pixels the shadow view draws black.
+
+| | 5760×1080 `surround3` | 11520×2160 `surround3` |
+|---|---|---|
+| before (`main`, after F18) | 3 | 10 |
+| after | **1** | **0** |
+
+**What is left is not a fold.** The census shader of 2026-10-10, applied to a scratch build and not committed, names the one pixel at 5760×1080 (the right monitor, (5418, 445)): a ray leaving **within a grid step of its triangle's edge** that meets **the next triangle of its own cluster from behind, 0.1 mm on** — a triangle facing up, across a concave crease from the receiver, which the 2026-10-10 census found none of. That is the kind the page first suspected for all of them, a crease a ray's offset falls a hair short of at that one point; it is one ray in 6.2 million pixels and the offset was left alone. No ray meets a triangle turned over its receiver any more, and the fold census of the erg's guarded grid is zero on the floats and on the grid at every level (above).
+
+### The cut sizes, and the three budgets
+
+A refused collapse is made elsewhere in its group, so the levels are as coarse as they were to within a few dozen triangles in millions (the level table above) and the cuts are the same size: the census view's scene holds 741,526 pairs against 741,591, and along the budgets' paths the median pairs drawn are 1,836 against 1,839 (the erg walk at 1080p) and 4,087 against 4,083 (its surround).
+
+`tools/frame-budget.ps1 -Run erg-walk-1080p-rt,erg-walk-surround3-rt,endless-surround3-rt` under the script's own GPU lock and `--wait-quiet 600`, `main` then this branch, the same machine; **not re-baselined**:
+
+| run | GPU frame, median / p99 | resolve | CLAS + BLAS | pairs drawn (median) | machine |
+|---|---|---|---|---|---|
+| `erg-walk-1080p-rt`, before | 0.724 / 1.395 ms | 0.200 | 0.249 | 1,839 | busy: 9.7% others at the start, 7.5% at the end |
+| `erg-walk-1080p-rt`, after | 0.726 / 1.028 ms | 0.199 | 0.251 | 1,836 | busy: 9.9% and 12.6% |
+| `erg-walk-surround3-rt`, before | 3.490 / 4.495 ms | 2.335 | 0.417 | 4,083 | busy: 9.5% and 23.2% |
+| `erg-walk-surround3-rt`, after | 3.626 / 4.560 ms | 2.344 | 0.425 | 4,087 | busy: 14.6% and 25.6% (the 600 s quiet wait ran out) |
+| `endless-surround3-rt`, before | 4.519 / 6.037 ms | 1.974 | 0.571 | 9,395 | busy: 9.2% and 21.0% |
+| `endless-surround3-rt`, after | 4.496 / 5.979 ms | 1.930 | 0.574 | 9,400 | busy: 9.9% and 27.8% |
+
+Every run was busy (other agents' builds), so the timings are upper bounds; the budgets are 0.724 / 1.214, 3.482 / 4.010 and 4.454 / 5.571 ms. The pairs drawn move by 0.2% at most and the passes that scale with them (the CLAS and BLAS builds, the hardware rasterizer, the cull) by under 2%; the erg surround's +0.136 ms median is not in the passes the cut feeds (the resolve +0.009 ms, the CLAS and BLAS builds +0.008, the rasterizer −0.004, the cull and the pool unchanged) and is the load's. The world's tiles, rebuilt on the job pool along the endless path (7,198 rebuilds each run), took 19.9 ms for the last against 21.0 ms before and 74 ms at most against 238: the guard's checks and its second simplifications are not visible beside the load. The gate decides at the merge with these numbers.

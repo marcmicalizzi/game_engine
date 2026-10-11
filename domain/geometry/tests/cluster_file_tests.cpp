@@ -1212,6 +1212,19 @@ TEST_CASE("cluster file: the cache key answers to everything that went into the 
   other = options;
   other.id_seams = SeamRule::none;
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  // A heightfield's `up` holds its levels to the ground, so a terrain built with it is not the
+  // answer to a question asked without it (geometry.md, "Heightfield levels never fold"), and
+  // the count-only build is a third mesh again. Unset, it leaves the key what it was.
+  other = options;
+  other.refuse_folds = false;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) == key);
+  other = options;
+  other.up = Vec3{0.0f, 1.0f, 0.0f};
+  const u64 held = cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes);
+  CHECK(held != key);
+  other.refuse_folds = false;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != held);
   // And the page target, because paging renumbers the clusters: two page sizes are two
   // containers, and "no pages" is a third.
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, k_page_bytes / 2) != key);
