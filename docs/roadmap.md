@@ -439,6 +439,8 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G54 | Procedural tree solver | open | R65, S66 | L | research | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | G55 | Vegetation growth, ecology and placement | open | G37, S7 | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | G56 | Phase 5 exit | open | G15, G28, G32, G37 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
+| G57 | Degenerate-triangle repair in the content build | in progress | G17 | S | routine | [geometry](subsystems/geometry.md#uv-degenerate-triangles-the-repair) |
+| G58 | Tripo smart-mesh A/B against September's triangle exports | blocked (the owner's exports: wooden-crate and cart-wheel as smart mesh and as triangles, at 2K and 4K PBR, from Tripo Studio by hand) | G57 | S | research | [E10](experiments/e10-generated-props.md) |
 
 ## T — Tooling and CI
 
