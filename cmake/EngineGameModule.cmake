@@ -71,6 +71,14 @@ function(_engine_game_module_write_config target)
     # Debug information in the object (/Z7) rather than through mspdbsrv (/Zi): a test's compile
     # should not leave a PDB server behind it.
     list(TRANSFORM _flags REPLACE "^[/-]Zi$" "/Z7")
+    # CMake 3.25's CMP0141 puts the debug-information flag in the generator
+    # (CMAKE_MSVC_DEBUG_INFORMATION_FORMAT) and not in CMAKE_CXX_FLAGS_<CONFIG>, so there is no /Zi
+    # above to transform: a Debug or RelWithDebInfo module, and every module under ASan, gets /Z7
+    # here. MSVC's ASan without debug information is warning C5072, which /WX makes an error; the
+    # msvc-asan job found it on 2026-10-11 (hotload's tests compile modules at test time).
+    if(NOT "${_flags}" MATCHES "/Z[7iI]" AND (_cfg STREQUAL "DEBUG" OR _cfg STREQUAL "RELWITHDEBINFO" OR ENGINE_ASAN))
+      list(APPEND _flags /Z7)
+    endif()
     if(_cfg STREQUAL "DEBUG")
       list(APPEND _flags /MDd)
     else()
