@@ -63,3 +63,24 @@ endif()
 engine_module_bench(NAME hotload
   SOURCES bench/hotload_bench.cpp
   DEPS hotload_test_types io)
+
+# E7's binary-size row for the host: the same small program with and without a module host,
+# linking the same engine modules otherwise (the twin of scripting's probe). Built with the
+# benches, never run by the build or the tests.
+if(TARGET engine_hotload_bench)
+  foreach(_variant IN ITEMS without with)
+    set(_probe engine_hotload_size_probe_${_variant})
+    add_executable(${_probe} bench/size_probe.cpp)
+    target_link_libraries(${_probe} PRIVATE
+      engine::platform engine::log engine::json engine::schema engine::io)
+    if(_variant STREQUAL "with")
+      target_link_libraries(${_probe} PRIVATE engine::hotload)
+      target_compile_definitions(${_probe} PRIVATE ENGINE_SIZE_PROBE_WITH_HOTLOAD=1)
+    else()
+      target_compile_definitions(${_probe} PRIVATE ENGINE_SIZE_PROBE_WITH_HOTLOAD=0)
+    endif()
+    target_compile_options(${_probe} PRIVATE ${ENGINE_NO_EXCEPTIONS_FLAGS})
+    engine_apply_warnings(${_probe})
+    set_target_properties(${_probe} PROPERTIES FOLDER "bench")
+  endforeach()
+endif()

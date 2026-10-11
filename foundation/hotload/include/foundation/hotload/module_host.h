@@ -75,6 +75,13 @@ struct ReloadReport {
   Vector<std::string> removed;    // fields the old build had and the new does not: dropped
   Vector<std::string> converted;  // fields whose kind changed compatibly (u16 -> u32, f32 -> f64)
   u64 state_bytes = 0;            // the serialized state handed across
+  // Where the reload's time went: the per-load copy, the OS loader with describe and the checks,
+  // the migration and on_load, and unloading the old build (its destructor, the OS, the copy's
+  // deletion).
+  i64 copy_ns = 0;
+  i64 load_ns = 0;
+  i64 migrate_ns = 0;
+  i64 unload_ns = 0;
 };
 
 struct HostStats {
@@ -203,6 +210,8 @@ class ModuleHost {
   // resolve, reported together when it returns.
   std::string pending_failure_;
   Vector<std::string> pending_unresolved_;
+  i64 pending_copy_ns_ = 0;
+  i64 pending_load_ns_ = 0;
 };
 
 // Moves a state object from one build's descriptor to another's: the old one serialized as schema

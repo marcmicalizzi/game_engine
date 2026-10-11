@@ -374,6 +374,7 @@ Status ModuleHost::reload() {
     fail(Status::CopyFailed, "cannot create " + dir);
     return Status::CopyFailed;
   }
+  const i64 copy_start = time::monotonic_ns();
   const u32 next = generation_ + 1;
   const std::string copy =
       io::join_path(dir, stem_of(library_path_) + "." + std::to_string(detail::process_id()) + "." +
@@ -390,9 +391,12 @@ Status ModuleHost::reload() {
     }
   }
 
+  pending_copy_ns_ = time::monotonic_ns() - copy_start;
   auto build = std::make_unique<Module>();
   build->copy_path = copy;
+  const i64 load_start = time::monotonic_ns();
   const Status loaded = load_build(*build, copy);
+  pending_load_ns_ = time::monotonic_ns() - load_start;
   if (loaded != Status::Ok) {
     destroy_build(build);
     return loaded;
@@ -545,10 +549,15 @@ Status ModuleHost::adopt(std::unique_ptr<Module> build) {
 
   // The swap. The old build hears it is leaving while it can still run, then its state is
   // destroyed by its own code, then it is unloaded.
+  report.migrate_ns = time::monotonic_ns() - start;
+  const i64 unload_start = time::monotonic_ns();
   if (module_) {
     if (module_->on_unload != nullptr) module_->on_unload(&context_);
     destroy_build(module_);
   }
+  report.unload_ns = time::monotonic_ns() - unload_start;
+  report.copy_ns = pending_copy_ns_;
+  report.load_ns = pending_load_ns_;
   module_ = std::move(build);
   context_.state = module_->state;
   for (usize i = 0; i < functions_.size(); ++i)

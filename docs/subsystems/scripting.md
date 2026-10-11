@@ -153,7 +153,7 @@ What is not optimized yet, and would be first: a property read could use Luau's 
 - **Coroutines or scheduling across ticks.** A routine that waits ("walk to the well, then drink") needs a coroutine kept alive between calls, which needs its state saved with the world. Within one call coroutines work; yielding out of a call is an error.
 - **Debugging.** No breakpoints, stepping or stack inspection; errors carry the chunk and line.
 - **The typed API for agents.** `script.check` and `script.types` over the protocol (engine-host is being changed on another branch); until then the checker is a test helper. A typed `engine.object` (per resolver type) is not designed.
-- **The C++ and C# comparison.** E7 asks for the same gameplay feature in C++ hot-reload, Luau and C#; this module is the Luau third ([08 §8.2](../plan/08-toolchain.md#82-gameplay-and-scripting-layer) status note).
+- **The C# arm.** E7 asks for the same gameplay feature in C++ hot-reload, Luau and C#. The C++ arm is built ([hotload](hotload.md)) and compared with this one row for row ([write-up](../experiments/e7-luau-spike.md#the-c-hot-reload-arm)); the C# arm is not, and the write-up recommends deciding it from the two rather than building it (roadmap G47, the owner's call).
 - **Per-game script sets.** Where a game's scripts live, how they are named in the document, and a bytecode cache in `ddc/` are not decided.
 - **64-bit integers.** Luau 0.739 has an `integer` type behind a flag; until it ships, an `i64`/`u64` field past 2^53 cannot be read.
 

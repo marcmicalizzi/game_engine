@@ -82,7 +82,22 @@ The tests use it to compile second builds into their own scratch directories (a 
 
 ## Performance notes
 
-Measured for E7 on the development machine; every number and the machine's state are in the [write-up](../experiments/e7-luau-spike.md#the-c-hot-reload-arm), beside the Luau arm's.
+Measured on 2026-10-10, `msvc-release`, on the i9-10980XE development machine (quiet at the start of every group by the harness, a GPU lock held by another agent for part of it, so upper bounds); every number and the machine's state are in the [write-up](../experiments/e7-luau-spike.md#the-c-hot-reload-arm), beside the Luau arm's measured in the same window. The ones that set expectations:
+
+| What | Cost | Luau, the same row |
+|---|---|---|
+| A call into the module, nothing passed | 3.1 ns | 74 ns |
+| One scalar property read through a view | 7.0 ns | 50 ns |
+| `on_tick` over 10,000 bound characters | 166 µs a tick, 16.6 ns an instance, no allocation | 2.36 ms, 236 ns |
+| The same routine as engine code, no boundary | 1.9 ns an instance | — |
+| Host memory per bound instance | 34–37 B | 174–432 B |
+| Rebuilding the 200-line module (unity, `ninja` on the target) | 2.4–2.6 s, of which 0.6 s is `ninja` itself | 0.45 ms to compile the script |
+| `reload()`: copy, load, migrate, swap, unload | 34–36 ms: copy 1.0 ms, **OS load 29.4 ms** (an antivirus scan of the new image), migrate and `on_load` 18 µs, unload 0.45 ms | 1.5 ms from the poll |
+| Migrating one state object (37 bytes of JSON) | 1.5 µs | — |
+| Polling the watched file, unchanged | 227–240 µs (`io::stat_file`) | 256 µs a file |
+| The module file / what the host adds to an executable | 55,808 B / 151,552 B | +1,689,088 B |
+
+The boundary is the view read, not the call: a routine through the module costs 8.7× the same routine as engine code, and 1/14 of the Luau routine. **Keep per-entity hot loops in engine code**; a module is for gameplay logic iterated on with its state carried.
 
 What is not optimized yet: the poll stats the file through `io::stat_file` (three file-system queries, the same cost the Luau arm's poll pays); a directory change notification would replace it. The copy reads and writes the whole library; a hard link or `CopyFileEx` would be cheaper and was not needed at this size.
 
@@ -111,7 +126,7 @@ This is a capability: it was added without editing `core/`, the rest of `foundat
 | Determinism | `hotload::k_determinism` = `hashed`: a module is native code compiled with the engine's flags, the clock it sees is the host's fixed step, and the host adds nothing machine-dependent | done |
 | Zero cost when unused | no linked code with the switch off; linked and unused, no library is loaded and the log category is the only static state | done |
 | Tests and size table | `tests/*_tests.cpp`, `tests/size_table.cpp` | done |
-| Bench | `bench/hotload_bench.cpp`, over `game/sandbox_npc` | done |
+| Bench | `bench/hotload_bench.cpp`, over `game/sandbox_npc`, and the two size probes (`bench/size_probe.cpp`) | done |
 | Removal proof | `ENGINE_WITH_HOTLOAD`, off in the minimal build | works |
 
 **Removing it.** `cmake --preset msvc-minimal` (or `-DENGINE_WITH_HOTLOAD=OFF`) drops the module, its tests, its bench and every game module; the module disappears from `build/<preset>/modules.json` and is listed there under `disabled_capabilities`. Everything else builds and passes.

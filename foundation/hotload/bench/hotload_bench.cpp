@@ -33,6 +33,7 @@
 
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -248,6 +249,28 @@ ENGINE_BENCH(reload_swap, "hotload.reload.swap") {
     ENGINE_VERIFY(m.host->reload() == Status::Ok, "hotload bench: reload failed");
   }
   state.set_items(1);
+  if (report_once("hotload.reload.split", 0)) {
+    // Where a swap goes, as medians of fifteen more: copy, OS load with describe and the checks,
+    // migration with on_load, and unloading the old build.
+    Vector<i64> parts[4];
+    for (int i = 0; i < 15; ++i) {
+      ENGINE_VERIFY(m.host->reload() == Status::Ok, "hotload bench: reload failed");
+      const ReloadReport& r = m.host->last_report();
+      parts[0].push_back(r.copy_ns);
+      parts[1].push_back(r.load_ns);
+      parts[2].push_back(r.migrate_ns);
+      parts[3].push_back(r.unload_ns);
+    }
+    f64 median[4];
+    for (int p = 0; p < 4; ++p) {
+      std::sort(parts[p].begin(), parts[p].end());
+      median[p] = static_cast<f64>(parts[p][parts[p].size() / 2]) * 1e-3;
+    }
+    std::printf(
+        "{\"e7\":\"hotload.reload.split\",\"copy_us\":%.1f,\"load_us\":%.1f,"
+        "\"migrate_us\":%.1f,\"unload_us\":%.1f}\n",
+        median[0], median[1], median[2], median[3]);
+  }
   if (report_once("hotload.size", 0)) {
     std::error_code ec;
     const auto bytes = std::filesystem::file_size(std::filesystem::path(k_module), ec);
