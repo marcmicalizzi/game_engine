@@ -269,6 +269,12 @@ export class Viewport {
       await img.decode();
       this.image.src = url;
       this.empty.hidden = true;
+      // The slideshow notice says its piece once: it fades for good a few seconds after the first
+      // picture, rather than sitting over every one after it.
+      if (!this.noted) {
+        this.noted = true;
+        setTimeout(() => this.el.classList.add("noted"), 6000);
+      }
       const report = result.camera;
       // The host's report is the camera from here on: what it drew is what the page flies from.
       if (motion === this.motion && !this.drag && this.keys.size === 0) {

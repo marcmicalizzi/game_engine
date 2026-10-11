@@ -901,6 +901,19 @@ textarea.input {
   opacity: 0.25;
 }
 
+/* Once the first picture has been up a few seconds (viewport.js), the notice is gone for good. */
+.viewport.noted .viewport-hud-note {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 600ms var(--ease), visibility 0s linear 600ms;
+}
+
+/* `hidden` must win over a `display` set above (the empty-viewport placeholder is a grid): without
+   this the "Connecting…" text stayed drawn over every capture the page received. */
+[hidden] {
+  display: none !important;
+}
+
 .viewport-marker {
   position: absolute;
   width: 18px;
