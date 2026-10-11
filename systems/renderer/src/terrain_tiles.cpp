@@ -803,7 +803,10 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
   desc_ = &terrain;
   tiles_ = tiles;
   source_ = source;
+  // A tile is a piece of a heightfield: its levels are built never to fold over the ground
+  // (geometry.md, "Heightfield levels never fold").
   options_ = geometry::ClusterLodOptions{};
+  options_.up = Vec3{0.0f, 1.0f, 0.0f};
   tile_mm_ = std::llround(static_cast<f64>(tiles.tile_size) * 1000.0);
   uv_size_mm_ = uv.size_mm;
   far_ = tiles.far_levels;

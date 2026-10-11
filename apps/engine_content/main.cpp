@@ -138,6 +138,9 @@ const char* k_usage =
     "      --ddc <dir>, --jobs <n>, --log <spec>   as above\n"
     "  info <file.clusters|file.tex|file.clip>  print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
+    "  folds <file.clusters>                   a heightfield container's fold census per LOD\n"
+    "                                          level: triangles facing down (-y) and triangles\n"
+    "                                          overlapping another of their cluster from above\n"
     "  tissue import|info|validate|report|example ...   tissue definitions (engine-content tissue\n"
     "                                          help); present with the tissue capability\n"
     "  limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]\n"
@@ -1151,6 +1154,58 @@ int stats(const std::string& path) {
   return k_exit_ok;
 }
 
+// The fold census of a heightfield's container (geometry.md, "Heightfield levels never fold"): per
+// DAG level, the triangles facing away from +y and the triangles overlapping another of their own
+// cluster seen from above, on the builder's floats and on the 16-bit grid the rasterizers draw. A
+// terrain level must show zero of both everywhere; on any other mesh the numbers mean nothing.
+int folds(const std::string& path) {
+  geometry::ClusterFileData data;
+  std::string error;
+  if (!geometry::read_cluster_file(path, data, &error)) return failed(error);
+  constexpr Vec3 k_up{0.0f, 1.0f, 0.0f};
+  Vector<geometry::LodFoldLevel> on_floats;
+  Vector<geometry::LodFoldLevel> on_grid;
+  if (!geometry::count_lod_folds(data.mesh, k_up, false, on_floats, &error)) return failed(error);
+  const bool grid = data.mesh.mesh.quantized.size() >= data.mesh.mesh.vertices.size() * 3;
+  if (grid && !geometry::count_lod_folds(data.mesh, k_up, true, on_grid, &error))
+    return failed(error);
+  const auto counts = [](const geometry::LodFoldLevel& level) {
+    JsonValue row = JsonValue::object();
+    row.set("upside_down", JsonValue(level.upside_down));
+    row.set("overlapping", JsonValue(level.overlapping));
+    row.set("folded_clusters", JsonValue(level.folded_clusters));
+    return row;
+  };
+  JsonValue levels = JsonValue::array();
+  geometry::LodFoldLevel total_floats;
+  geometry::LodFoldLevel total_grid;
+  for (u32 l = 0; l < on_floats.size(); ++l) {
+    JsonValue row = JsonValue::object();
+    row.set("level", JsonValue(l));
+    row.set("clusters", JsonValue(on_floats[l].clusters));
+    row.set("triangles", JsonValue(on_floats[l].triangles));
+    row.set("floats", counts(on_floats[l]));
+    if (grid) row.set("grid", counts(on_grid[l]));
+    levels.push_back(std::move(row));
+    total_floats.upside_down += on_floats[l].upside_down;
+    total_floats.overlapping += on_floats[l].overlapping;
+    total_floats.folded_clusters += on_floats[l].folded_clusters;
+    if (grid) {
+      total_grid.upside_down += on_grid[l].upside_down;
+      total_grid.overlapping += on_grid[l].overlapping;
+      total_grid.folded_clusters += on_grid[l].folded_clusters;
+    }
+  }
+  JsonValue summary = JsonValue::object();
+  summary.set("file", JsonValue(path));
+  summary.set("clusters", JsonValue(data.mesh.mesh.clusters.size()));
+  summary.set("floats", counts(total_floats));
+  if (grid) summary.set("grid", counts(total_grid));
+  summary.set("levels", std::move(levels));
+  print_json(summary);
+  return k_exit_ok;
+}
+
 int read_command(int argc, char** argv, const char* name, int (*run)(const std::string&)) {
   std::string log_spec;
   Vector<std::string> positional;
@@ -1198,6 +1253,7 @@ int main(int argc, char** argv) {
   if (command == "texture") return texture_command(argc, argv);
   if (command == "info") return read_command(argc, argv, "info", info);
   if (command == "stats") return read_command(argc, argv, "stats", stats);
+  if (command == "folds") return read_command(argc, argv, "folds", folds);
   if (command == "tissue") return content::tissue_command(argc, argv);
   if (command == "limit-dump") return content::limit_dump_command(argc, argv);
   if (command == "normal-cases") return content::normal_cases_command(argc, argv);

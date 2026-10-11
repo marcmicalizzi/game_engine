@@ -20,7 +20,7 @@ engine_module_tests(NAME geometry
           tests/uv_repair_tests.cpp tests/zero_area_repair_tests.cpp tests/limit_surface_tests.cpp
           tests/surface_binding_tests.cpp
           tests/vertex_id_tests.cpp tests/size_table.cpp
-          tests/determinism_tests.cpp)
+          tests/determinism_tests.cpp tests/heightfield_fold_tests.cpp)
 
 # The per-frame half of the limit surface: the operator's matvec at the fixture's size and at the
 # cage-size limit, and the displacement transfer over a region's bound vertices.

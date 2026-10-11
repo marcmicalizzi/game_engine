@@ -121,3 +121,32 @@ The owner's two surround budgets (`tools/frame-budget.ps1 -Run endless-surround3
 | `endless-surround3-rt`, after | 4.347 / 5.332 ms | 1.864 | 0.566 | 9,395 | busy: 9.5% and 7.1% others, GPU 0% then 27% |
 
 The erg's walk is at 60°: its side views no longer force a 1.109-times finer cut on all three, so it draws 5.5% fewer pairs and its median is 0.03 ms lower, inside its noise but in the direction the pairs say. The endless desert's path names no field of view and takes the layout's 55°, so nothing changed: the same pairs, and the medians within noise of each other. Both stay within their budgets (3.482 / 4.010 and 4.454 / 5.571 ms); the budgets were not re-baselined.
+
+## 2026-10-11: where the folds are made (F17)
+
+**Machine:** the owner's desktop (RTX 5090), `msvc-release`. The fold census is CPU arithmetic over a container and no load changes it; the captures were offscreen under the GPU lock.
+
+### By construction step
+
+The census tile is the erg's scene grid itself — 4097² vertices 1.5 m apart, 33.5 M triangles, cached by `main` as a 741,591-cluster container in 20 levels — whose far reaches beyond the middle ring held most of the 2026-10-10 receivers; the rest were middle-ring chunks, built by the same builder at run time. `engine-content folds` ([geometry](../subsystems/geometry.md#heightfield-levels-never-fold)) counts, per LOD level, the triangles facing down (more than 90.06° from +y) and the triangles overlapping another of their own cluster seen from above, once on the builder's floats and once on the 16-bit grid:
+
+| level | clusters | floats: upside down / overlapping | grid: upside down / overlapping |
+|---|---|---|---|
+| 0 | 348,935 | 0 / 0 | 0 / 0 |
+| 1 | 195,504 | 0 / 0 | 1,803 / 9,296 |
+| 2 | 98,737 | 19 / 92 | 1,840 / 10,290 |
+| 3 | 49,196 | 43 / 196 | 1,265 / 8,127 |
+| 4 | 24,587 | 129 / 588 | 751 / 5,162 |
+| 5 | 12,321 | 181 / 759 | 439 / 3,169 |
+| 6–13 | 12,264 | 385 / 1,733 | 551 / 3,725 |
+| 14–19 | 47 | 0 / 0 | 0 / 0 |
+| **all** | 741,591 | **757 / 3,368** | **6,649 / 39,769** |
+
+Then the same grid built again through a copy of clusterlod's loop that asks, of every group's simplification, which simplifier produced the result and whether it turned a triangle over, and refuses nothing: its container is `main`'s **section for section, byte for byte** (all 33 section hashes), so what it says is about the census tile itself. **No group's regular simplification got stuck, so meshoptimizer's sloppy fallback never ran; 383 groups' regular edge-collapse results turned a triangle over in the floats.** No seam rule is involved (the grid's UVs are continuous, and a lock only forbids a collapse), and the grid is one mesh with no stitching. So two steps make folds:
+
+- **The regular simplifier**, from level 2 up. meshoptimizer's edge collapse refuses a collapse that turns a triangle by more than about 75° **relative to the triangle as it is**; two collapses of 60° turn a triangle on a slip face past square. The fixture in the guard's test (a 129² tile of the erg's kind) folds the same way: 38 triangles upside down and 153 overlapping, every fold from a regular result, none from sloppy.
+- **Quantization**, from level 1 up: a coarse level's lattice slivers — tens of metres long and centimetres wide in shadow — turn over when their corners snap to the 9.4 cm grid. These draw only off the grid: a terrain with no rings, tiles or time-lapse, or a cluster the pool had no room for. Under `--terrain-rings` every level of the ground is drawn through the pool's terrain stage, which puts each vertex back on its lattice point from its rest position and takes its height from the field — the floats — so **the census's specks were the simplifier's folds**.
+
+### The guard
+
+`ClusterLodOptions::up`, set by the scene's grid, the rings' chunks and the world's tiles: every group's result is checked on the floats and on the grid the mesh will be quantized to, and a result that turns any triangle over is refused and simplified again with the folded triangles' corners, and every vertex of the group's triangles touching them, locked — up to eight rounds, then left unsimplified (it never came to that) ([geometry](../subsystems/geometry.md#heightfield-levels-never-fold) has the rules and why there). On the erg's grid it refused 5,332 of 45,459 groups' first results and ran 5,918 simplifications again; the guarded container counts **0 / 0 on the floats and 0 / 0 on the grid at every level**, with 741,526 clusters against 741,591 and every level's triangles within 0.01% of before. The engine-view run that built and cached it took 236 s against 198 s.

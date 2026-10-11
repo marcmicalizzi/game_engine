@@ -209,7 +209,11 @@ bool TerrainRingSet::build(const TerrainDesc& desc, WorldPos camera, jobs::JobSy
     skirt_m_[level] = static_cast<f32>(static_cast<f64>(spec.skirt_mm) / 1000.0);
     half_mm_[level] = spec.half_mm;
   }
+  // Every chunk is a piece of a heightfield, so its levels are built never to fold over the
+  // ground (geometry.md, "Heightfield levels never fold"); its skirts hang straight down and are
+  // locked, so the guard never sees them turn.
   s.options = geometry::ClusterLodOptions{};
+  s.options.up = Vec3{0.0f, 1.0f, 0.0f};
   s.source.sampler = s.sampler.get();
   s.source.time_s = desc.time_s;
   s.source.field_count = 0;

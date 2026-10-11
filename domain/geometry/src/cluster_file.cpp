@@ -1163,6 +1163,17 @@ u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool we
   std::memcpy(&weight_bits[0], &options.normal_weight, sizeof(f32));
   std::memcpy(&weight_bits[1], &options.uv_weight, sizeof(f32));
   key = hash_combine(key, (u64{weight_bits[0]} << 32) | u64{weight_bits[1]});
+  // A heightfield's `up` holds its levels to the ground (geometry.md, "Heightfield levels never
+  // fold"): the same source with and without it is two meshes. Mixed in only when it is set, so a
+  // mesh without one keeps the key it had.
+  if (options.up.x != 0.0f || options.up.y != 0.0f || options.up.z != 0.0f) {
+    u32 up_bits[3] = {};
+    std::memcpy(&up_bits[0], &options.up.x, sizeof(f32));
+    std::memcpy(&up_bits[1], &options.up.y, sizeof(f32));
+    std::memcpy(&up_bits[2], &options.up.z, sizeof(f32));
+    key = hash_combine(key, (u64{up_bits[0]} << 32) | u64{up_bits[1]});
+    key = hash_combine(key, (u64{up_bits[2]} << 1) | (options.refuse_folds ? 1ull : 0ull));
+  }
   return hash_combine(key, page_bytes);
 }
 

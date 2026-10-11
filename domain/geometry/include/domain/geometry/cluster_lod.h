@@ -108,6 +108,36 @@ struct ClusterLodOptions {
   // without authored ids: a derived id is a function of the position, so no two coincident vertices
   // ever disagree.
   SeamRule id_seams = SeamRule::protect;
+
+  // ---- heightfield levels ------------------------------------------------------------------
+  //
+  // The direction a heightfield's ground faces, for a mesh that is one. Every level of such a
+  // mesh is a single-valued surface over the plane across `up`, so no triangle of any level may
+  // face away from it; a group whose simplified triangles do has folded the ground over itself,
+  // and a ray leaving the lower sheet meets the fold (docs/experiments/shadow-shards-2026-10-09.md,
+  // F17). With `up` set the builder refuses such a result (geometry.md, "Heightfield levels never
+  // fold"). Zero, the default, for every other mesh, which is built exactly as before, byte for
+  // byte. The terrain builders set it and nothing else does: a mesh with overhangs is not a
+  // heightfield, and only a group whose input faces `up` everywhere is held to it.
+  Vec3 up{};
+  // With `up` set, false keeps every result the simplifier gives — the build without `up`, byte for
+  // byte — and only counts, in `ClusterLodMesh::fold_guard`, the groups whose result turned a
+  // triangle over. It is the "before" the guard's test and the fold census are taken against;
+  // nothing that draws sets it.
+  bool refuse_folds = true;
+};
+
+// What the heightfield guard saw during one build (`ClusterLodOptions::up`), counted by the
+// builder and **not stored in a container**: a mesh read from a file reports zeros.
+struct FoldGuardStats {
+  u32 groups = 0;          // groups simplified with `up` set
+  u32 regular_folded = 0;  // groups whose regular result first turned a triangle over
+  u32 refused = 0;         // of those, refused and simplified again (`refuse_folds`)
+  u32 retries = 0;         // the simplifications those took, all rounds
+  u32 unsimplified = 0;    // groups that still folded after every round, left as they were
+  u32 sloppy = 0;          // groups whose regular simplification got stuck short of the target
+  u32 sloppy_folded = 0;   // of those, the ones whose sloppy result turned a triangle over
+  u32 sloppy_refused = 0;  // of those, dropped for the regular result (`refuse_folds`)
 };
 
 struct ClusterLodMesh {
@@ -116,6 +146,7 @@ struct ClusterLodMesh {
   Vector<u32> level_cluster_counts;  // clusters per DAG level
   u32 group_count = 0;
   u32 leaf_triangle_count = 0;  // level 0 total, equal to the source triangle count
+  FoldGuardStats fold_guard;    // the build's own; zero for a mesh read from a container
 };
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
@@ -229,6 +260,38 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
 // lists concatenated with each shifted by the source vertex counts of the parts before it.
 bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> source_indices,
                           std::string* error = nullptr);
+
+// ---- folds in a heightfield's levels -------------------------------------------------------
+//
+// A heightfield's every level is a single-valued surface over the plane across its `up`, so no
+// triangle of it faces away from `up` and no two triangles of it overlap seen along `up`. This is
+// the census of both, per DAG level: the check the heightfield guard (`ClusterLodOptions::up`) is
+// held to, and the diagnostic that found where the terrain's folds were made (geometry.md,
+// "Heightfield levels never fold"; `engine-content folds`).
+//
+// A triangle is **upside down** when its geometric normal (counter-clockwise front) is more than
+// `k_fold_facing` past square to `up` — 90.06 degrees: a skirt hung straight down from a border
+// faces exactly sideways and is not counted, and the census's folds were 105 to 166 degrees from
+// the ground they covered. Two triangles **overlap** when their shadows on the ground plane share
+// area (a separating-axis test in double, edges and corners shared exactly do not count); only
+// pairs within one cluster are tested, which is what a ray leaving one triangle meets first, and a
+// triangle standing on edge (its shadow a segment) overlaps nothing.
+inline constexpr f64 k_fold_facing = 1.0 / 1024.0;  // cosine past square: 90.056 degrees
+
+struct LodFoldLevel {
+  u32 clusters = 0;
+  u32 triangles = 0;
+  u32 upside_down = 0;      // triangles facing away from `up`
+  u32 overlapping = 0;      // triangles whose shadow overlaps another's of the same cluster
+  u32 folded_clusters = 0;  // clusters holding either
+};
+
+// One entry per DAG level. `on_grid` reads the positions the rasterizers draw, off the 16-bit grid
+// (`dequantize_position`), rather than the floats the builder produced, so a fold quantization
+// made is told apart from one the simplifier made. Fails on an empty mesh, a zero `up`, or
+// `on_grid` on a mesh with no grid.
+bool count_lod_folds(const ClusterLodMesh& mesh, Vec3 up, bool on_grid, Vector<LodFoldLevel>& out,
+                     std::string* error = nullptr);
 
 // ---- how much of the *picture* a cut costs ------------------------------------------------
 //

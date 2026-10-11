@@ -138,6 +138,374 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
   return group_index;
 }
 
+// ---- heightfield levels never fold ----------------------------------------------------------
+//
+// `up`, normalized in double: the direction a heightfield's ground faces. Every decision below is
+// made in double from the float positions, with no C library call but a correctly rounded square
+// root, so it is the same decision on every toolchain (geometry.md, "The same bytes from every
+// toolchain").
+struct Up {
+  f64 x = 0.0, y = 0.0, z = 0.0;
+};
+
+Up normalized_up(Vec3 up) noexcept {
+  const f64 x = up.x, y = up.y, z = up.z;
+  const f64 len = std::sqrt(x * x + y * y + z * z);
+  if (!(len > 0.0)) return Up{};
+  return Up{x / len, y / len, z / len};
+}
+
+// A triangle's geometric normal (counter-clockwise seen from its front, unnormalized) and its
+// component along `up`: twice the signed area of the triangle's shadow on the ground plane.
+struct Along {
+  f64 d = 0.0;   // n . up
+  f64 n2 = 0.0;  // |n|^2
+};
+
+Along along_up(Vec3 a, Vec3 b, Vec3 c, const Up& up) noexcept {
+  const f64 ex = static_cast<f64>(b.x) - static_cast<f64>(a.x);
+  const f64 ey = static_cast<f64>(b.y) - static_cast<f64>(a.y);
+  const f64 ez = static_cast<f64>(b.z) - static_cast<f64>(a.z);
+  const f64 fx = static_cast<f64>(c.x) - static_cast<f64>(a.x);
+  const f64 fy = static_cast<f64>(c.y) - static_cast<f64>(a.y);
+  const f64 fz = static_cast<f64>(c.z) - static_cast<f64>(a.z);
+  const f64 nx = ey * fz - ez * fy;
+  const f64 ny = ez * fx - ex * fz;
+  const f64 nz = ex * fy - ey * fx;
+  return Along{nx * up.x + ny * up.y + nz * up.z, nx * nx + ny * ny + nz * nz};
+}
+
+// The census's reading (`count_lod_folds`): facing up, standing on edge (within `k_fold_facing` of
+// square either way: a skirt hung straight down from a border is exactly square), or away.
+enum class Facing : u8 { up, on_edge, away };
+
+Facing facing_of(Vec3 a, Vec3 b, Vec3 c, const Up& up) noexcept {
+  const Along along = along_up(a, b, c, up);
+  if (along.d * along.d <= k_fold_facing * k_fold_facing * along.n2) return Facing::on_edge;
+  return along.d > 0.0 ? Facing::up : Facing::away;
+}
+
+// The guard's, which is stricter: a triangle is **turned over** when its shadow's signed area is
+// negative at all, so no turn is too small to be one. A heightfield's triangle has a shadow of
+// positive area, and a skirt hung straight down from a border one of exactly zero (two of its
+// corners share their position across `up`, so both products are of an exact zero), so nothing a
+// heightfield level may hold is refused. A sliver whose shadow rounds to a hair under zero is
+// refused too, which costs a collapse and never a fold.
+bool turns_over(Vec3 a, Vec3 b, Vec3 c, const Up& up) noexcept {
+  return along_up(a, b, c, up).d < 0.0;
+}
+
+Vec3 position_of(const clodMesh& mesh, unsigned int v) noexcept {
+  const float* p = &mesh.vertex_positions[v * (mesh.vertex_positions_stride / sizeof(float))];
+  return Vec3{p[0], p[1], p[2]};
+}
+
+// What a heightfield's simplification is held to: `up`, and the 16-bit grid the mesh will be drawn
+// on. The grid is `quantize_positions`' over the vertices the triangles name — the box of level 0,
+// which every level shares because clusterlod keeps source vertices — known before the first
+// level is simplified; `snap` places a vertex on it with `quantize_positions`' arithmetic and
+// `dequantize_position`'s, operation for operation, so the guard sees the triangle the
+// rasterizers draw and not only the one the simplifier made. A sliver a few grid steps wide can
+// turn over when its corners snap, and that is a fold too.
+struct FoldGuard {
+  Up up;
+  bool refuse = true;
+  Vec3 lo{};
+  f32 scale = 1.0f;
+  f32 inverse = 1.0f;
+};
+
+FoldGuard fold_guard_of(const ClusterLodOptions& options, std::span<const Vec3> positions,
+                        std::span<const u32> indices) noexcept {
+  FoldGuard guard;
+  guard.up = normalized_up(options.up);
+  guard.refuse = options.refuse_folds;
+  Vec3 lo = positions[indices[0]];
+  Vec3 hi = lo;
+  for (const u32 index : indices) {
+    const Vec3 p = positions[index];
+    lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+  }
+  const f32 extent = std::max(std::max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z);
+  guard.lo = lo;
+  guard.scale = extent > 0.0f ? extent / 65535.0f : 1.0f;
+  guard.inverse = 1.0f / guard.scale;
+  return guard;
+}
+
+Vec3 snap(const FoldGuard& guard, Vec3 p) noexcept {
+  const f32 axis[3] = {p.x - guard.lo.x, p.y - guard.lo.y, p.z - guard.lo.z};
+  f32 q[3];
+  for (u32 k = 0; k < 3; ++k) {
+    const f32 grid = std::round(axis[k] * guard.inverse);
+    const f32 clamped = grid < 0.0f ? 0.0f : (grid > 65535.0f ? 65535.0f : grid);
+    q[k] = static_cast<f32>(static_cast<u16>(static_cast<u32>(clamped)));
+  }
+  return Vec3{guard.lo.x + q[0] * guard.scale, guard.lo.y + q[1] * guard.scale,
+              guard.lo.z + q[2] * guard.scale};
+}
+
+// A triangle folds when it is turned over as the simplifier made it or as the grid draws it.
+bool folds(const FoldGuard& guard, Vec3 a, Vec3 b, Vec3 c) noexcept {
+  return turns_over(a, b, c, guard.up) ||
+         turns_over(snap(guard, a), snap(guard, b), snap(guard, c), guard.up);
+}
+
+bool folds(const FoldGuard& guard, const clodMesh& mesh, const unsigned int* triangle) noexcept {
+  return folds(guard, position_of(mesh, triangle[0]), position_of(mesh, triangle[1]),
+               position_of(mesh, triangle[2]));
+}
+
+// How many triangles of an index list fold.
+size_t count_folds(const clodMesh& mesh, const std::vector<unsigned int>& indices,
+                   const FoldGuard& guard) noexcept {
+  size_t count = 0;
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    if (folds(guard, mesh, &indices[i])) ++count;
+  }
+  return count;
+}
+
+// The regular simplification of one group, as clusterlod's `simplify` makes it: permissive, sparse,
+// absolute error, and the permissive fallback upstream has for a config that is not permissive.
+void simplify_regular(const clodConfig& config, const clodMesh& mesh,
+                      const std::vector<unsigned int>& indices,
+                      const std::vector<unsigned char>& locks, size_t target_count, float* error,
+                      std::vector<unsigned int>& lod) {
+  lod.resize(indices.size());
+  unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute |
+                         (config.simplify_permissive ? meshopt_SimplifyPermissive : 0) |
+                         (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
+
+  lod.resize(meshopt_simplifyWithAttributes(
+      &lod[0], &indices[0], indices.size(), mesh.vertex_positions, mesh.vertex_count,
+      mesh.vertex_positions_stride, mesh.vertex_attributes, mesh.vertex_attributes_stride,
+      mesh.attribute_weights, mesh.attribute_count, &locks[0], target_count, FLT_MAX, options,
+      error));
+
+  if (lod.size() > target_count && config.simplify_fallback_permissive &&
+      !config.simplify_permissive) {
+    lod.resize(meshopt_simplifyWithAttributes(
+        &lod[0], &indices[0], indices.size(), mesh.vertex_positions, mesh.vertex_count,
+        mesh.vertex_positions_stride, mesh.vertex_attributes, mesh.vertex_attributes_stride,
+        mesh.attribute_weights, mesh.attribute_count, &locks[0], target_count, FLT_MAX,
+        options | meshopt_SimplifyPermissive, error));
+  }
+}
+
+// How many times a group's regular simplification is retried with more of its vertices locked
+// before the group is left unsimplified.
+constexpr u32 k_fold_rounds = 8;
+
+// clusterlod's `simplify` (demo/clusterlod.h) held to `up`. Upstream runs the regular simplifier
+// and, when that gets stuck short of the target, meshoptimizer's sloppy one; this does the same,
+// and refuses either result when it turns a triangle of a group that faced `up` everywhere away
+// from it:
+//
+//  - **The regular result** that turns one over is simplified again with the corners of every
+//    folded triangle locked, and every vertex of the group's triangles that touch them, so no
+//    collapse can move into or out of the fold's corners; again, with the new folds' corners
+//    added, up to `k_fold_rounds` times. A group that still folds is returned unsimplified, and
+//    the caller ends its chain there (its clusters become terminal), which is coarse geometry
+//    kept finer, never a fold kept.
+//  - **The sloppy result** that turns one over is dropped for the regular one, short of the
+//    target as it is: the caller keeps it when it is under the stuck threshold and ends the
+//    group's chain otherwise.
+//
+// A group neither step refuses comes out exactly as upstream makes it, so a heightfield that never
+// folds builds the same bytes with `up` set and without; the guard's test holds that.
+//
+// Why both: meshoptimizer's edge collapse refuses a collapse that turns a triangle by more than
+// about 75 degrees **relative to the triangle as it is**, so two collapses of 60 degrees each turn
+// a sloped triangle past square, and on a heightfield's coarse levels they do: every fold the
+// census of the erg's grid found was made by the regular simplifier (docs/experiments/
+// shadow-shards-2026-10-09.md, "2026-10-11: where the folds are made"). The sloppy simplifier has
+// no facing test at all.
+//
+// `locks` is the build's own array: the locks added here touch only this group's vertices (a
+// vertex two groups share is on their border and locked already), and `lockBoundary` clears them
+// when the next level starts.
+std::vector<unsigned int> simplify_heightfield(const clodConfig& config, const clodMesh& mesh,
+                                               const std::vector<unsigned int>& indices,
+                                               std::vector<unsigned char>& locks,
+                                               size_t target_count, float* error,
+                                               const FoldGuard& guard, FoldGuardStats& stats) {
+  if (target_count > indices.size()) return indices;
+
+  std::vector<unsigned int> lod;
+  simplify_regular(config, mesh, indices, locks, target_count, error, lod);
+
+  ++stats.groups;
+  // A group that already faces away somewhere is not a piece of a heightfield, and nothing here
+  // can say what folding means for it: it is built as upstream builds it.
+  const bool held = count_folds(mesh, indices, guard) == 0;
+  bool folded = held && count_folds(mesh, lod, guard) != 0;
+  if (folded) {
+    ++stats.regular_folded;
+    if (guard.refuse) {
+      ++stats.refused;
+      std::vector<unsigned int> corners;
+      for (u32 round = 0; folded && round < k_fold_rounds; ++round) {
+        for (size_t i = 0; i + 2 < lod.size(); i += 3) {
+          if (folds(guard, mesh, &lod[i])) {
+            corners.push_back(lod[i]);
+            corners.push_back(lod[i + 1]);
+            corners.push_back(lod[i + 2]);
+          }
+        }
+        std::sort(corners.begin(), corners.end());
+        corners.erase(std::unique(corners.begin(), corners.end()), corners.end());
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+          const bool touches = std::binary_search(corners.begin(), corners.end(), indices[i]) ||
+                               std::binary_search(corners.begin(), corners.end(), indices[i + 1]) ||
+                               std::binary_search(corners.begin(), corners.end(), indices[i + 2]);
+          if (!touches) continue;
+          for (size_t k = 0; k < 3; ++k)
+            locks[indices[i + k]] |= static_cast<unsigned char>(meshopt_SimplifyVertex_Lock);
+        }
+        ++stats.retries;
+        simplify_regular(config, mesh, indices, locks, target_count, error, lod);
+        folded = count_folds(mesh, lod, guard) != 0;
+      }
+      if (folded) {
+        ++stats.unsimplified;
+        return indices;
+      }
+    }
+  }
+
+  if (lod.size() > target_count && config.simplify_fallback_sloppy) {
+    ++stats.sloppy;
+    const float regular_error = *error;
+    std::vector<unsigned int> sloppy;
+    clod::simplifyFallback(sloppy, mesh, indices, locks, target_count, error);
+    *error *= config.simplify_error_factor_sloppy;
+    bool keep = true;
+    if (held && count_folds(mesh, sloppy, guard) != 0) {
+      ++stats.sloppy_folded;
+      if (guard.refuse) {
+        // The regular result, short of half as it is: the caller keeps it when it is under the
+        // stuck threshold, and ends the group's chain where it is otherwise. Either way the level
+        // above is coarser than this group's leaves and never folded.
+        ++stats.sloppy_refused;
+        *error = regular_error;
+        keep = false;
+      }
+    }
+    if (keep) lod = std::move(sloppy);
+  }
+
+  if (config.simplify_error_edge_limit > 0) {
+    float max_edge_sq = 0;
+    for (size_t i = 0; i < indices.size(); i += 3) {
+      const Vec3 va = position_of(mesh, indices[i + 0]);
+      const Vec3 vb = position_of(mesh, indices[i + 1]);
+      const Vec3 vc = position_of(mesh, indices[i + 2]);
+      const float eab = length_squared(va - vb);
+      const float eac = length_squared(va - vc);
+      const float ebc = length_squared(vb - vc);
+      const float emax = std::max(std::max(eab, eac), ebc);
+      const float emin = std::min(std::min(eab, eac), ebc);
+      max_edge_sq = std::max(max_edge_sq, std::max(emin, emax / 4));
+    }
+    *error = std::min(*error, std::sqrt(max_edge_sq) * config.simplify_error_edge_limit);
+  }
+
+  return lod;
+}
+
+// clusterlod's `clodBuild` (demo/clusterlod.h, MIT, Arseny Kapoulkine), line for line, with its
+// `simplify` replaced by `simplify_heightfield` above. It runs only for a mesh with
+// `ClusterLodOptions::up` set; every other mesh goes through `clodBuild` itself. When meshoptimizer
+// is updated, this is the one function to compare with upstream's again; the guard's test that a
+// heightfield which never folds builds the same bytes with `up` set and without is what catches a
+// drift.
+size_t build_heightfield_lod(const clodConfig& config, const clodMesh& mesh, const FoldGuard& guard,
+                             FoldGuardStats& stats, void* output_context,
+                             clodOutput output_callback) {
+  using namespace clod;
+
+  std::vector<unsigned char> locks(mesh.vertex_count);
+
+  std::vector<unsigned int> remap(mesh.vertex_count);
+  meshopt_generatePositionRemap(&remap[0], mesh.vertex_positions, mesh.vertex_count,
+                                mesh.vertex_positions_stride);
+
+  if (mesh.attribute_protect_mask) {
+    size_t max_attributes = mesh.vertex_attributes_stride / sizeof(float);
+    for (size_t i = 0; i < mesh.vertex_count; ++i) {
+      unsigned int r = remap[i];
+      for (size_t j = 0; j < max_attributes; ++j)
+        if (r != i && (mesh.attribute_protect_mask & (1u << j)) &&
+            mesh.vertex_attributes[i * max_attributes + j] !=
+                mesh.vertex_attributes[r * max_attributes + j])
+          locks[i] |= meshopt_SimplifyVertex_Protect;
+    }
+  }
+
+  std::vector<Cluster> clusters = clusterize(config, mesh, mesh.indices, mesh.index_count);
+  for (Cluster& cluster : clusters)
+    cluster.bounds = boundsCompute(mesh, cluster.indices, 0.f);
+
+  std::vector<int> pending(clusters.size());
+  for (size_t i = 0; i < clusters.size(); ++i)
+    pending[i] = int(i);
+
+  int depth = 0;
+  while (pending.size() > 1) {
+    std::vector<std::vector<int>> groups = partition(config, mesh, clusters, pending, remap);
+    pending.clear();
+    lockBoundary(locks, groups, clusters, remap, mesh.vertex_lock);
+
+    for (size_t i = 0; i < groups.size(); ++i) {
+      std::vector<unsigned int> merged;
+      merged.reserve(groups[i].size() * config.max_triangles * 3);
+      for (size_t j = 0; j < groups[i].size(); ++j)
+        merged.insert(merged.end(), clusters[groups[i][j]].indices.begin(),
+                      clusters[groups[i][j]].indices.end());
+
+      size_t target_size = size_t((merged.size() / 3) * config.simplify_ratio) * 3;
+      clodBounds bounds = mergeGroups(clusters, groups[i]);
+
+      float error = 0.f;
+      std::vector<unsigned int> simplified =
+          simplify_heightfield(config, mesh, merged, locks, target_size, &error, guard, stats);
+      if (simplified.size() > merged.size() * config.simplify_threshold) {
+        bounds.error = FLT_MAX;
+        outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context,
+                    output_callback);
+        continue;
+      }
+
+      bounds.error = std::max(bounds.error * config.simplify_error_merge_previous, error) +
+                     error * config.simplify_error_merge_additive;
+      int refined = outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context,
+                                output_callback);
+      for (size_t j = 0; j < groups[i].size(); ++j)
+        clusters[groups[i][j]].indices = std::vector<unsigned int>();
+
+      std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size());
+      for (Cluster& cluster : split) {
+        cluster.refined = refined;
+        cluster.bounds = bounds;
+        clusters.push_back(std::move(cluster));
+        pending.push_back(int(clusters.size()) - 1);
+      }
+    }
+    depth++;
+  }
+
+  if (pending.size()) {
+    const Cluster& cluster = clusters[pending[0]];
+    clodBounds bounds = cluster.bounds;
+    bounds.error = FLT_MAX;
+    outputGroup(config, mesh, clusters, pending, bounds, depth, output_context, output_callback);
+  }
+
+  return clusters.size();
+}
+
 }  // namespace
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
@@ -300,7 +668,15 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   ctx.normal_cones = options.normal_cones;
   out.mesh.source_vertex_count = static_cast<u32>(positions.size());
   out.mesh.source_triangle_count = static_cast<u32>(indices.size() / 3);
-  const size_t produced = clodBuild(config, mesh, &ctx, &emit_group);
+  // A heightfield is built by the same loop with its simplification held to `up`; everything else
+  // by clusterlod's own.
+  const Up up = normalized_up(options.up);
+  const bool heightfield = up.x != 0.0 || up.y != 0.0 || up.z != 0.0;
+  FoldGuardStats fold_guard;
+  const size_t produced =
+      heightfield ? build_heightfield_lod(config, mesh, fold_guard_of(options, positions, indices),
+                                          fold_guard, &ctx, &emit_group)
+                  : clodBuild(config, mesh, &ctx, &emit_group);
   if (ctx.failed) {
     if (error != nullptr) *error = "build_cluster_lod: a cluster exceeded the format limits";
     out = ClusterLodMesh{};
@@ -312,6 +688,7 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
     return false;
   }
   out.group_count = ctx.group_bounds.size();
+  out.fold_guard = fold_guard;
   fill_cluster_attributes(out.mesh, positions, indices, attributes);
   quantize_positions(out.mesh);  // one grid over every level
   return true;
@@ -1033,6 +1410,146 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
       triangles += mesh.mesh.clusters[c].triangle_count;
     if (triangles > previous_triangles) return fail("cut triangle count grew with the threshold");
     previous_triangles = triangles;
+  }
+  return true;
+}
+
+namespace {
+
+// A triangle's shadow on the ground plane, in double, with its box.
+struct Shadow {
+  f64 x[3];
+  f64 y[3];
+  f64 lo_x, hi_x, lo_y, hi_y;
+};
+
+// Whether two shadows share area: no edge normal of either separates them by more than a rounding.
+// Coordinates are taken from `a`'s first corner so the products stay the size of the triangles.
+bool shadows_overlap(const Shadow& a, const Shadow& b) noexcept {
+  const f64 ox = a.x[0], oy = a.y[0];
+  f64 ax[3], ay[3], bx[3], by[3];
+  for (u32 k = 0; k < 3; ++k) {
+    ax[k] = a.x[k] - ox;
+    ay[k] = a.y[k] - oy;
+    bx[k] = b.x[k] - ox;
+    by[k] = b.y[k] - oy;
+  }
+  f64 span = 0.0;
+  for (u32 k = 0; k < 3; ++k) {
+    span = std::max(span, std::max(std::abs(ax[k]), std::abs(ay[k])));
+    span = std::max(span, std::max(std::abs(bx[k]), std::abs(by[k])));
+  }
+  for (u32 side = 0; side < 2; ++side) {
+    const f64* ex = side == 0 ? ax : bx;
+    const f64* ey = side == 0 ? ay : by;
+    for (u32 e = 0; e < 3; ++e) {
+      const u32 f = e == 2 ? 0 : e + 1;
+      const f64 nx = -(ey[f] - ey[e]);
+      const f64 ny = ex[f] - ex[e];
+      const f64 tolerance = 1e-9 * span * (std::abs(nx) + std::abs(ny));
+      f64 a_lo = 0.0, a_hi = 0.0, b_lo = 0.0, b_hi = 0.0;
+      for (u32 k = 0; k < 3; ++k) {
+        const f64 pa = ax[k] * nx + ay[k] * ny;
+        const f64 pb = bx[k] * nx + by[k] * ny;
+        a_lo = k == 0 ? pa : std::min(a_lo, pa);
+        a_hi = k == 0 ? pa : std::max(a_hi, pa);
+        b_lo = k == 0 ? pb : std::min(b_lo, pb);
+        b_hi = k == 0 ? pb : std::max(b_hi, pb);
+      }
+      if (a_hi <= b_lo + tolerance || b_hi <= a_lo + tolerance) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool count_lod_folds(const ClusterLodMesh& mesh, Vec3 up_in, bool on_grid,
+                     Vector<LodFoldLevel>& out, std::string* error) {
+  out.clear();
+  auto fail = [&](const char* what) {
+    if (error != nullptr) *error = what;
+    return false;
+  };
+  if (mesh.mesh.clusters.empty() || mesh.lod.size() != mesh.mesh.clusters.size())
+    return fail("count_lod_folds: the mesh is empty or has no LOD");
+  const Up up = normalized_up(up_in);
+  if (up.x == 0.0 && up.y == 0.0 && up.z == 0.0) return fail("count_lod_folds: `up` is zero");
+  if (on_grid && mesh.mesh.quantized.size() < mesh.mesh.vertices.size() * 3)
+    return fail("count_lod_folds: the mesh has no 16-bit grid");
+
+  // Two directions across `up`: the ground plane the shadows are drawn on.
+  const bool x_helper = std::abs(up.x) < 0.9;
+  f64 tx = x_helper ? 1.0 : 0.0, ty = x_helper ? 0.0 : 1.0, tz = 0.0;
+  const f64 along = tx * up.x + ty * up.y + tz * up.z;
+  tx -= along * up.x;
+  ty -= along * up.y;
+  tz -= along * up.z;
+  const f64 tlen = std::sqrt(tx * tx + ty * ty + tz * tz);
+  tx /= tlen;
+  ty /= tlen;
+  tz /= tlen;
+  const f64 sx = up.y * tz - up.z * ty, sy = up.z * tx - up.x * tz, sz = up.x * ty - up.y * tx;
+
+  out.resize(mesh.level_cluster_counts.size());
+  Vector<Shadow> shadows;
+  Vector<u8> flat;  // a triangle standing on edge: its shadow has no area
+  Vector<u8> overlapping;
+  for (u32 c = 0; c < mesh.mesh.clusters.size(); ++c) {
+    const ClusterDesc& desc = mesh.mesh.clusters[c];
+    const u32 level = mesh.lod[c].level;
+    if (level >= out.size()) out.resize(level + 1);
+    LodFoldLevel& counts = out[level];
+    ++counts.clusters;
+    counts.triangles += desc.triangle_count;
+    shadows.resize(desc.triangle_count);
+    flat.resize(desc.triangle_count, u8{0});
+    overlapping.resize(desc.triangle_count, u8{0});
+    bool folded = false;
+    for (u32 t = 0; t < desc.triangle_count; ++t) {
+      const u32 packed = mesh.mesh.triangles[desc.triangle_offset + t];
+      Vec3 p[3];
+      for (u32 k = 0; k < 3; ++k) {
+        const u32 v = desc.vertex_offset + ClusterMesh::unpack(packed, k);
+        p[k] = on_grid ? dequantize_position(mesh.mesh, v) : mesh.mesh.vertices[v];
+      }
+      const Facing facing = facing_of(p[0], p[1], p[2], up);
+      if (facing == Facing::away) {
+        ++counts.upside_down;
+        folded = true;
+      }
+      flat[t] = facing == Facing::on_edge ? u8{1} : u8{0};
+      Shadow& s = shadows[t];
+      for (u32 k = 0; k < 3; ++k) {
+        const f64 x = p[k].x, y = p[k].y, z = p[k].z;
+        s.x[k] = x * tx + y * ty + z * tz;
+        s.y[k] = x * sx + y * sy + z * sz;
+      }
+      s.lo_x = std::min(s.x[0], std::min(s.x[1], s.x[2]));
+      s.hi_x = std::max(s.x[0], std::max(s.x[1], s.x[2]));
+      s.lo_y = std::min(s.y[0], std::min(s.y[1], s.y[2]));
+      s.hi_y = std::max(s.y[0], std::max(s.y[1], s.y[2]));
+      overlapping[t] = 0;
+    }
+    for (u32 i = 0; i < desc.triangle_count; ++i) {
+      if (flat[i] != 0) continue;
+      for (u32 j = i + 1; j < desc.triangle_count; ++j) {
+        if (flat[j] != 0) continue;
+        const Shadow& a = shadows[i];
+        const Shadow& b = shadows[j];
+        if (a.hi_x <= b.lo_x || b.hi_x <= a.lo_x || a.hi_y <= b.lo_y || b.hi_y <= a.lo_y) continue;
+        if (!shadows_overlap(a, b)) continue;
+        overlapping[i] = 1;
+        overlapping[j] = 1;
+      }
+    }
+    for (u32 t = 0; t < desc.triangle_count; ++t) {
+      if (overlapping[t] != 0) {
+        ++counts.overlapping;
+        folded = true;
+      }
+    }
+    if (folded) ++counts.folded_clusters;
   }
   return true;
 }

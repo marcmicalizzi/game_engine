@@ -332,9 +332,14 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   geometry::ClusterPages& pages, std::string& error) {
   const u64 hash = terrain_hash(desc.terrain);
   out.source_hash = hash;
+  // The grid is a heightfield over the ground plane, so its levels are built never to fold over it
+  // (geometry.md, "Heightfield levels never fold"); `up` is part of the cache key, so an entry
+  // built before the guard is never read for it.
+  geometry::ClusterLodOptions lod_options = desc.lod;
+  lod_options.up = Vec3{0.0f, 1.0f, 0.0f};
   std::string cache_path;
   if (desc.cache) {
-    const u64 key = geometry::cluster_cache_key(hash, desc.lod, false,
+    const u64 key = geometry::cluster_cache_key(hash, lod_options, false,
                                                 geometry::ClusterPagesOptions{}.page_bytes);
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
     out.cache = "miss";
@@ -375,7 +380,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
   geometry::AttributeSource attribute_source;
   attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());
   attribute_source.normals = std::span<const Vec3>(normals.data(), normals.size());
-  if (!geometry::build_cluster_lod(positions, indices, desc.lod, lod, &error, attribute_source))
+  if (!geometry::build_cluster_lod(positions, indices, lod_options, lod, &error, attribute_source))
     return false;
   geometry::ClusterPages built;
   std::string page_error;
@@ -433,7 +438,12 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("triangles", lod.leaf_triangle_count),
                   log::field("clusters", lod.mesh.clusters.size()),
                   log::field("lod_levels", lod.level_cluster_counts.size()),
-                  log::field("maps_ms", maps_ms));
+                  log::field("maps_ms", maps_ms), log::field("fold_groups", lod.fold_guard.groups),
+                  log::field("folded", lod.fold_guard.regular_folded),
+                  log::field("fold_retries", lod.fold_guard.retries),
+                  log::field("fold_unsimplified", lod.fold_guard.unsimplified),
+                  log::field("sloppy", lod.fold_guard.sloppy),
+                  log::field("sloppy_folded", lod.fold_guard.sloppy_folded));
   if (!cache_path.empty() &&
       write_cluster_cache(cache_path, "", desc.ddc, out.data, out.part_material,
                           out.part_of_cluster, lod, built, out.textures)) {
