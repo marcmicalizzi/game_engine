@@ -91,7 +91,7 @@ constexpr const char* k_usage =
     "  --shell      the shell's files (default <bin>/../shell)\n"
     "  --offscreen  no window: draw --frames frames into the renderer's own target\n"
     "  --frames N   stop after N frames of the viewport (0: until the window closes); with the\n"
-    "               shell, counted from when the page first placed the viewport\n"
+    "               shell, counted from when the page last placed the viewport\n"
     "  --pick X,Y   after the second frame, select what is under the pointer at (X, Y), in the\n"
     "               viewport's window coordinates (the picture's pixels offscreen or where "
     "nothing\n"
@@ -601,6 +601,11 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     summary.listen = listening ? host.listener.port() : u16{0};
     Vector<window::Event> scripted;
     u64 scripted_frame = ~u64{0};  // the frame whose scripted events were sent
+    // Frames drawn since the page last moved the viewport: what the scripted pick and gesture and
+    // `--frames` count with the shell, so a pick reads a frame drawn at the size it is aimed at (a
+    // layout that lands between two frames resizes the picture, and the frame before it is gone).
+    // Without the shell nothing resets it, and it is the run's frame count.
+    u64 settled = 0;
     if (code == 0) {
       if (!window::vulkan::create_surface(*view_window, device.handles().instance, surface,
                                           &error)) {
@@ -733,6 +738,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
             placed = true;
           }
           resize = true;
+          settled = 0;
+          scripted_frame = ~u64{0};
         }
       }
       if (!placed && time::monotonic_ns() - started_ns > k_layout_timeout_ns) {
@@ -741,9 +748,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       // Once a frame: an iteration that draws nothing (an out-of-date swapchain) keeps the count.
       scripted.clear();
-      if (placed && summary.frames != scripted_frame) {
-        scripted_frame = summary.frames;
-        scripted_events(options, summary.frames, scripted);
+      if (placed && settled != scripted_frame) {
+        scripted_frame = settled;
+        scripted_events(options, settled, scripted);
       }
       for (const window::Event& e : scripted)
         failed = failed || !on_event(e);
@@ -770,8 +777,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       const u32 width = swapchain.extent().width;
       const u32 height = swapchain.extent().height;
-      if (!between_frames(options, summary.frames, scale, width, height, document, viewport, ui,
-                          input, summary, error)) {
+      if (!between_frames(options, settled, scale, width, height, document, viewport, ui, input,
+                          summary, error)) {
         code = 1;
         break;
       }
@@ -822,7 +829,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       if (presented == gfx::PresentStatus::OutOfDate) resize = true;
       ++summary.frames;
-      if (options.frames > 0 && summary.frames >= options.frames) running = false;
+      ++settled;
+      if (options.frames > 0 && settled >= options.frames) running = false;
     }
     // Nothing the listener dispatches reaches into the window, the viewport or the device, but it
     // stops before they go so that the page's last call is answered by a whole editor.

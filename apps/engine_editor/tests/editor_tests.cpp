@@ -1045,7 +1045,9 @@ TEST_CASE("engine-editor: --embedded puts the shell beside the viewport, and the
   CHECK(number(&(*rect)[3]) > 16.0);
   // The picture is the child's, not the window's: narrower than the 900 the window is.
   CHECK(number(summary.find("width")) < 900.0);
-  CHECK(write_json(*summary.find("frames")) == "8");
+  // Eight frames after the page last moved the viewport; the page may move it more than once as
+  // it lays itself out, so the run draws at least eight.
+  CHECK(number(summary.find("frames")) >= 8.0);
   const JsonValue* selected = summary.find("selected");
   const bool named = selected != nullptr && selected->is_string();
   REQUIRE_MESSAGE(named, output);
