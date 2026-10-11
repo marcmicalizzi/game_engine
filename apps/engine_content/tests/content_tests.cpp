@@ -137,6 +137,9 @@ struct CubeOptions {
   i32 collinear_face = -1;
   i32 coincident_face = -1;
   i32 repeated_index_face = -1;
+  // A face with no area at all: corner 1 moved onto corner 0 and corner 2 onto corner 3, so both of
+  // its triangles have coincident corners. -1: none.
+  i32 flat_face = -1;
   // The index buffer names the faces last to first. The weld numbers vertices by first use, so
   // this makes it renumber every one of them — which the vertex order of the default cube never
   // does, and which is what a builder that leaves a stream out of the weld gets wrong.
@@ -168,6 +171,10 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
     if (static_cast<i32>(f) == options.collinear_face)
       corners[2] = (corners[0] + corners[3]) * 0.5f;
     if (static_cast<i32>(f) == options.coincident_face) corners[3] = corners[0];
+    if (static_cast<i32>(f) == options.flat_face) {
+      corners[1] = corners[0];
+      corners[2] = corners[3];
+    }
     for (const Vec3& c : corners) {
       put_f32(bin, c.x);
       put_f32(bin, c.y);
@@ -1173,6 +1180,21 @@ TEST_CASE(
   CHECK(refused.output.find("1 collinear and 0 with coincident corners, and removed 1") !=
         std::string::npos);
   CHECK_FALSE(std::filesystem::exists(dir / "refused.clusters"));
+
+  // A primitive with no area at all (six primitives, one face each; face 3 flat): the repair drops
+  // one of its two triangles and keeps the other rather than empty the primitive, and the build
+  // refuses it, naming the primitive.
+  const std::string flat = slashes(dir / "flat.glb");
+  REQUIRE(write_cube_glb(flat, CubeOptions{.primitives = 6, .flat_face = 3}));
+  const Run no_area = content({"build", flat, slashes(dir / "flat.clusters")}, true);
+  CHECK(no_area.exit_code == 1);
+  CHECK_MESSAGE(
+      no_area.output.find("geometry.degenerate_triangle: primitive 3 of") != std::string::npos,
+      no_area.output);
+  CHECK(no_area.output.find("has no triangle with any area") != std::string::npos);
+  CHECK(no_area.output.find("it found 2 triangles") != std::string::npos);
+  CHECK(no_area.output.find("0 collinear and 2 with coincident corners, and removed 1") !=
+        std::string::npos);
 }
 
 TEST_CASE("engine-content: stats counts atlas islands, not the pieces a hard edge makes") {
