@@ -149,7 +149,7 @@ struct Up {
 };
 
 Up normalized_up(Vec3 up) noexcept {
-  const f64 x = up.x, y = up.y, z = up.z;
+  const f64 x = static_cast<f64>(up.x), y = static_cast<f64>(up.y), z = static_cast<f64>(up.z);
   const f64 len = std::sqrt(x * x + y * y + z * z);
   if (!(len > 0.0)) return Up{};
   return Up{x / len, y / len, z / len};
@@ -1521,7 +1521,8 @@ bool count_lod_folds(const ClusterLodMesh& mesh, Vec3 up_in, bool on_grid,
       flat[t] = facing == Facing::on_edge ? u8{1} : u8{0};
       Shadow& s = shadows[t];
       for (u32 k = 0; k < 3; ++k) {
-        const f64 x = p[k].x, y = p[k].y, z = p[k].z;
+        const f64 x = static_cast<f64>(p[k].x), y = static_cast<f64>(p[k].y),
+                  z = static_cast<f64>(p[k].z);
         s.x[k] = x * tx + y * ty + z * tz;
         s.y[k] = x * sx + y * sy + z * sz;
       }
