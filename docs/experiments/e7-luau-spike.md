@@ -244,7 +244,7 @@ The caveat of the Luau section holds here too: these are mistakes one agent chos
 
 ### Caveats of the C++ arm
 
-- **One machine, one compiler, Windows.** The Linux containers build and run the tests (`dlopen`, `-z defs`), not the benches. The swap's 29 ms is this machine's antivirus; on Linux, or with the build tree excluded, the swap is the copy, the loader and the 18 µs.
+- **One machine, one compiler, Windows.** The Linux containers build and run the tests (`dlopen`, `-z defs`), not the benches. The swap's 29 ms is this machine's antivirus; on Linux, or with the build tree excluded, the swap is the copy, the loader and the 18 µs. And on Linux a build with Tracy compiled in (the release presets) never unloads an old build: Tracy replaces `dlclose` with a no-op so it can symbolize closed libraries, so each reload leaves one module mapped ([hotload](../subsystems/hotload.md#building-a-module)).
 - **The rebuild is the module alone.** A change to a `core/` header a module includes rebuilds everything that includes it; a change to the host rebuilds the host. Nothing here measures a change that crosses the boundary.
 - **A module's view reads are generic.** `HostApi::read` switches on the field's kind on every read, as the Luau binding does; a module that knew its types at compile time could read through typed accessors, and a batch export (one call for N instances) would amortize the call. Neither was built, because the comparison is with the Luau arm's shape.
 - **The seeded mistakes are seeded.** Sixteen mistakes one agent chose, each tested on its own (and the Luau section's B and C as written); not a frequency, and not a study of agents writing either language from scratch.

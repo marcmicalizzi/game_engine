@@ -17,6 +17,10 @@
 #include <schemas/hotload_test.h>
 #include <string>
 
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
+
 using namespace engine;
 using namespace engine::hotload;
 using engine::hotload::test::build_module;
@@ -241,14 +245,31 @@ TEST_CASE("hotload: unloading leaves no handle open") {
     CHECK_FALSE(host.loaded());
     CHECK_FALSE(std::filesystem::exists(copy));
   }
-#if defined(__linux__)
-  // dlclose that does not unmap (a GNU-unique symbol pins a library) would leave it here.
+#if defined(__linux__) && defined(HOTLOAD_DLCLOSE_IS_NOOP)
+  // Tracy's client defines dlclose as a no-op on Linux (TracyOverride.cpp), so that it can still
+  // symbolize addresses in a library that was closed: in a build with ENGINE_TRACY every unloaded
+  // build stays mapped, by the profiler's design (docs/subsystems/hotload.md).
+  MESSAGE("ENGINE_TRACY: dlclose is Tracy's no-op here; the unloaded build stays mapped");
+#elif defined(__linux__)
+  // A dlclose that does not unload (a GNU-unique symbol pins a library) would leave the module's
+  // code mapped and glibc still holding it. Only an executable mapping counts: a profiler's
+  // symbolizer (Tracy's libbacktrace, in the release presets) may keep a read-only view of every
+  // image it has seen, which is not the module staying loaded.
   std::ifstream maps("/proc/self/maps");
   std::string line;
-  bool mapped = false;
-  while (std::getline(maps, line))
-    if (line.find(copy) != std::string::npos) mapped = true;
-  CHECK_FALSE(mapped);
+  bool code_mapped = false;
+  while (std::getline(maps, line)) {
+    if (line.find(copy) == std::string::npos) continue;
+    MESSAGE("still mapped after unload: " << line);
+    const usize space = line.find(' ');
+    if (space != std::string::npos && line.size() > space + 3 && line[space + 3] == 'x')
+      code_mapped = true;
+  }
+  CHECK_FALSE(code_mapped);
+  // RTLD_NOLOAD finds a loaded object by name before touching the (deleted) file.
+  void* still = dlopen(copy.c_str(), RTLD_NOW | RTLD_NOLOAD);
+  CHECK(still == nullptr);
+  if (still != nullptr) dlclose(still);
 #endif
 }
 

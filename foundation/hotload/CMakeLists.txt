@@ -51,6 +51,11 @@ if(TARGET engine_hotload_tests)
     list(APPEND _defs "HOTLOAD_MODULE_${_upper}=\"$<TARGET_FILE:engine_game_hotload_${_m}>\"")
   endforeach()
   target_compile_definitions(engine_hotload_tests PRIVATE ${_defs})
+  # Tracy's client replaces dlclose with a no-op on Linux, so an unloaded module stays mapped in a
+  # build with it (docs/subsystems/hotload.md, "Tracy keeps every build mapped").
+  if(ENGINE_TRACY AND NOT WIN32)
+    target_compile_definitions(engine_hotload_tests PRIVATE HOTLOAD_DLCLOSE_IS_NOOP=1)
+  endif()
   # The command that compiles a module from sources in the test's own scratch directory.
   engine_game_module_build_command(engine_hotload_tests)
   # The seeded-mistake table compiles about fifteen small modules; give it room on a loaded box.

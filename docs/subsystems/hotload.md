@@ -15,6 +15,8 @@ What it deliberately does not do, in v0: give a module write access to anything 
 - **A closed set of export signatures.** An export is a name, a signature number and a pointer. `export_function()` refuses at compile time a function whose type is not one of `module_abi.h`'s signatures, and the host refuses to hand out a function under a signature it was not exported with, so a module and a host that disagree about a call never make it. A function the host already holds must still be exported, under the same signature, by every later build, or the reload is refused (`MissingFunction`, `SignatureMismatch`): a held pointer to a function that no longer exists would be a call into an unloaded library.
 - **In the foundation layer, and optional.** The host depends on core, `io` and nothing else; the game layer and anything else that wants gameplay DLLs can attach. It is a capability (ADR-0027): `ENGINE_WITH_HOTLOAD=OFF` and the minimal build drop the host, its tests, its bench, and every game module (`engine_game_module()` does nothing without it).
 
+**One thread.** A `ModuleHost` is used from one thread, like a `ScriptContext`: binding, resolving, polling, reloading and calling exports all happen there, and a reload never runs while an export is executing (the host's caller ticks, then polls between ticks). Calling exports from worker threads would need the view table and the refused-read counter made safe for it, and a reload barrier; neither is built.
+
 **Owned data.** Per host: the watched library's path, size and modification time; the loaded build (library handle, copy path, name, state type, state object, hooks, exports); the export table the host hands out (`FunctionId` → name, signature, current pointer); the binding slots (object, type, version); the resolved field paths (root type, offset, kind, path) — one entry per path, however often it is resolved; the last error and the last reload's report.
 
 ## The module ABI
@@ -59,6 +61,8 @@ cmake -DCONFIG=build/<preset>/game_modules/build_config.cmake -DSOURCE_DIR=<dir>
 ```
 
 The tests use it to compile second builds into their own scratch directories (a test owns nothing outside them), and it is what an editor or an agent session would call to rebuild a module outside the build tree. It records the MSVC environment the configure ran in, so it works from a shell without one.
+
+**Tracy keeps every build mapped.** Tracy's client defines `dlclose` as a no-op on Linux whenever it is compiled in (`TracyOverride.cpp`), so that it can still symbolize addresses in a library that was closed. In a build with `ENGINE_TRACY` — the release presets — every reload therefore leaves the old build's code mapped (one module's pages, 56 KB for `sandbox_npc`, per reload). The reload is still correct, because every build is loaded from its own path; it is a leak a development session can afford and a shipping build without Tracy does not have. It cost a container run to find: the GCC release preset failed the unload test while the Clang debug one passed, the module exported nothing that could pin it, and the cause was in the host. The test says so in those builds (`HOTLOAD_DLCLOSE_IS_NOOP`) instead of checking the mapping; Windows is unaffected.
 
 **The game layer.** `game/` is the L5 directory, and `game/sandbox_npc` is its first module: E7's Luau fixtures as C++ (`empty`, `echo`, `base`, `ten`, `mixed`, `on_tick`) plus a 200-line body (`routines.cpp`) for the rebuild measurement. Nothing in the engine links a game module.
 
