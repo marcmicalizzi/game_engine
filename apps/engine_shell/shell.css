@@ -390,6 +390,15 @@ body.resizing * {
   animation: pulse 1.2s var(--ease) infinite;
 }
 
+.pill[data-state="refused"] {
+  color: var(--danger);
+  border-color: rgba(238, 122, 131, 0.4);
+}
+
+.pill[data-state="refused"]::before {
+  background: var(--danger);
+}
+
 .pill[data-state="reconnecting"] {
   color: var(--warn);
   border-color: rgba(227, 189, 115, 0.35);

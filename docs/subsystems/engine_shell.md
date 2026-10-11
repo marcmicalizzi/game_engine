@@ -41,7 +41,7 @@ The shell is tested through its clients, not in a browser — no test opens a wi
 
 ## Not yet
 
-- **A live viewport.** Each picture is a `render.capture`; at the panel's size on a desktop GPU that is tens of milliseconds a frame plus the PNG, which is a slideshow, not a view. The live one is the native window as a client of the host.
+- **A live viewport.** Each picture is a `render.capture` — a frame drawn offscreen, read back, encoded as a PNG and fetched over HTTP — which is a slideshow, not a view, however fast the GPU; the time each one took is in the viewport's corner. The live one is the native window as a client of the host.
 - **Selection in the picture.** A selected record is not outlined in the viewport (engine-editor draws its box); the shell would need the host to draw it, which is a capture option nobody has asked for yet.
 - **A gizmo, multi-select, create and delete**, the review queue (A23, A24), a layer picker, leases and proposals in the UI. Each is a protocol call away; none is built.
 - **Subscriptions instead of a two-second look**, and the bulk channel instead of HTTP GETs of kept captures (roadmap A2).
