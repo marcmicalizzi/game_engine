@@ -521,7 +521,7 @@ The engine as a server, its clients, and what agents and the human director work
 | # | Item | State | Depends on | Effort | Reasoning | Where |
 |---|---|---|---|---|---|---|
 | A1 | Engine protocol: JSON-RPC over stdio, sessions | done (ADR-0001, 834d4bc4) | D4 | L | routine | [protocol](subsystems/protocol.md) |
-| A2 | WebSocket transport, bulk channel, subscriptions | open | A1 | L | design | [06 §6.2](plan/06-agent-tooling.md#62-engine-protocol) |
+| A2 | WebSocket transport, bulk channel, subscriptions | in progress (2026-10-10: the transport half, `engine-host --listen` on loopback with a session token, A36; the bulk channel and subscriptions open) | A1 | L | design | [06 §6.2](plan/06-agent-tooling.md#62-engine-protocol) |
 | A3 | One host shared by several clients | open | A2 | L | design | [06 §6.3](plan/06-agent-tooling.md#63-mcp-bridge) |
 | A4 | Protocol authentication | open | A3 | M | design | [protocol](subsystems/protocol.md#roles-leases-and-proposals) |
 | A5 | MCP bridge (engine-mcp) | done (589795a8) | A1 | L | design | [apps](subsystems/apps.md#engine-mcp-the-mcp-bridge) |
@@ -551,10 +551,11 @@ The engine as a server, its clients, and what agents and the human director work
 | A29 | Automated playtesting: bots, telemetry, fuzzing | open | A7, T4 | L | design | [06 §6.11](plan/06-agent-tooling.md#611-automated-playtesting) |
 | A30 | Hierarchical world generation, boundary contracts | open | A22, A23, D32, D33 | L | research | [06 §6.12](plan/06-agent-tooling.md#612-hierarchical-world-generation) |
 | A31 | MCP conformance client (`tools/mcp-check.ps1`) | done (c8e6e302) | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
-| A32 | `render.capture` reports the camera it framed | open | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
+| A32 | `render.capture` reports the camera it framed | in progress | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A33 | Console: Luau scripts over the protocol | done (06 §6.3 2026-10-10) | A1 | M | design | [apps](subsystems/apps.md#the-console-luau-scripts-over-the-protocol) |
 | A34 | Editor v0: viewport, outliner, properties, picking, edits through commands | done (2026-10-10; stage 1 a74c72b0: the viewport, the three panels, picking, the document-to-scene bridge; stage 2: the translate gizmo with one transaction per drag, undo, redo and delete, picking under display scaling, `--version`; property editing and text input moved to the authoring shell, A36, by ADR-0054's narrowed decision 4) | A1, A18 | M | design | [apps](subsystems/apps.md#engine-editor-the-engines-window-on-a-document) |
 | A35 | Accept ADR-0054: the in-engine tools UI is Dear ImGui drawn by the overlay pass | blocked (the owner's review of the narrowed decision: ImGui for the tools inside the engine's window, the authoring shell left to A36's spike) | A34 | S | design | [ADR-0054](adr/0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) |
+| A36 | Web shell spike over the protocol | in progress | A2, A32 | M | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
 
 ## P — The reference games
 
