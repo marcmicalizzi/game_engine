@@ -28,6 +28,9 @@ include(EngineModule)
 include(EngineBuildStamp)
 include(EngineTesting)
 include(EngineSchema)
+# Hot-reloadable game modules (foundation/hotload): engine_game_module(), used by game/ and by
+# hotload's tests. Does nothing when ENGINE_WITH_HOTLOAD is off.
+include(EngineGameModule)
 include(EngineProfiling)
 include(EngineGraphics)
 include(EngineImage)
@@ -53,7 +56,9 @@ add_subdirectory(foundation)
 add_subdirectory(domain)
 add_subdirectory(systems)
 add_subdirectory(apps)
-# add_subdirectory(game)
+# L5: per-game code. Game modules are shared libraries a ModuleHost loads (engine_game_module);
+# with the hotload capability off they are not built.
+add_subdirectory(game)
 
 engine_write_shader_manifest()
 engine_finalize_modules()

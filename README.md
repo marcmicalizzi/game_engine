@@ -21,7 +21,7 @@ Source is one directory per module, layered lowest to highest, and CMake refuses
 | `domain/` | L2 | gfx (RHI and render graph), geometry, assets, atlas, physics, nav, anim, ecs, doc, protocol, sim, tissue, audio |
 | `systems/` | L3 | renderer, animation, audio_system |
 | `apps/` | L4 | the executables below |
-| `game/` | L5 | per-game code (none yet) |
+| `game/` | L5 | per-game code, as hot-reloadable game modules ([hotload](docs/subsystems/hotload.md)); `game/sandbox_npc` is E7's fixture |
 
 The executables build into `build/<preset>/bin/`: `engine-host` (the engine as a JSON-RPC 2.0 server), `engine-cli` (its command-line client), `engine-view` (renders a mesh or a scene to a window or a PNG, flies camera paths, benchmarks), `engine-editor` (the editor's first slice: a document's placements in a window, Dear ImGui panels, picking, edits as commands through the protocol's session), `engine-content` (the content build: glTF to `.clusters`, images to block-compressed `.tex`, the derived-data cache, tissue definitions), `engine-image` (image decode and encode checks), `engine-input` (the input-device probe), and `engine-mcp` (the MCP bridge: a Model Context Protocol server for agents' clients over an engine-host of its own). `docs/subsystems/apps.md` documents each.
 

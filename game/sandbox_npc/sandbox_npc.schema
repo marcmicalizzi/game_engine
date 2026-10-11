@@ -1,0 +1,12 @@
+// The state of the sandbox NPC game module (game/sandbox_npc, E7's C++ arm): what it keeps between
+// calls and carries across a reload. A game module's state holds fixed-layout values only
+// (docs/subsystems/hotload.md, "What a module's state may hold").
+namespace engine.sandbox_npc
+
+/// What the module remembers. The host migrates it through this descriptor on every reload.
+struct NpcBrain @version(1) {
+  /// on_tick calls that asked an NPC to flee, since the module was first loaded.
+  flee_requests: u64 = 0
+  /// Calls of `routines`, the 200-line body E7's rebuild row edits.
+  routine_calls: u64 = 0
+}

@@ -1,0 +1,8 @@
+// The test module's state, first build.
+namespace engine.hotload_counter
+
+struct CounterState @version(1) {
+  count: u32 = 0
+  scale: f32 = 1
+  label: u16 = 7
+}

@@ -428,7 +428,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G43 | Kit schema and ashlar kit fixes | open | G39, G40 | M | design | [E33](experiments/e33-hard-surface-kits.md#what-the-assemblers-kit-schema-cannot-say) |
 | G44 | Clutter and furniture generator | open | P22 | M | design | [city](subsystems/city.md#what-is-left-open) |
 | G45 | E7, the Luau arm | done (0a6d80c4) | | L | research | [E7](experiments/e7-luau-spike.md) |
-| G46 | E7, the C++ hot-reload arm | open | | L | research | [08 §8.2](plan/08-toolchain.md#82-gameplay-and-scripting-layer) |
+| G46 | E7, the C++ hot-reload arm | in progress | | L | research | [08 §8.2](plan/08-toolchain.md#82-gameplay-and-scripting-layer) |
 | G47 | E7, the C# arm or a decision from the C++ arm | open | G46 | M | research | [08 §8.2](plan/08-toolchain.md#82-gameplay-and-scripting-layer) |
 | G48 | Scripting language decision | deferred (10 §10.6) | G46, G47 | S | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |
 | G49 | Script tooling: check, types, mutations | open | G45 | M | design | [scripting](subsystems/scripting.md#not-yet) |

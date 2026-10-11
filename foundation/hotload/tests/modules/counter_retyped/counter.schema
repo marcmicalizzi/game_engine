@@ -1,0 +1,8 @@
+// The test module's state, a build that changed `count` incompatibly (u32 to vec3): refused.
+namespace engine.hotload_counter
+
+struct CounterState @version(2) {
+  count: vec3
+  scale: f32 = 1
+  label: u16 = 7
+}

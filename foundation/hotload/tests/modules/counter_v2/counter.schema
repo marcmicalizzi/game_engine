@@ -1,0 +1,8 @@
+// The test module's state, second build: `label` removed, `bonus` added, `scale` widened to f64.
+namespace engine.hotload_counter
+
+struct CounterState @version(2) {
+  count: u32 = 0
+  scale: f64 = 1
+  bonus: i32 = 5
+}

@@ -384,6 +384,11 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "};\n\n";
   }
 
+  // The registrations are the one part of a generated source that needs a library: the tables
+  // above are constant data and header templates. A hot-reloadable game module compiles this file
+  // for its state type's descriptor and links no engine library (docs/subsystems/hotload.md), so
+  // it defines ENGINE_SCHEMA_NO_REGISTRAR and the module hands its TypeInfo to the host instead.
+  out << "#if !defined(ENGINE_SCHEMA_NO_REGISTRAR)\n";
   out << "namespace {\n";
   out << "const engine::schema::TypeInfo* const k_all_types[] = {\n";
   for (const EnumDecl& e : file.enums)
@@ -395,6 +400,7 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
          "sizeof(k_all_types[0]));\n";
   out << "}  // namespace\n\n";
   emit_materializations(out, file);
+  out << "#endif  // !defined(ENGINE_SCHEMA_NO_REGISTRAR)\n";
   out << "}  // namespace " << ns << "::schema_detail\n";
   return out.str();
 }
