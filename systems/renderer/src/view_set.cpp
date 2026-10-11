@@ -108,8 +108,8 @@ bool ViewSet::build(const ViewSetDesc& desc, u32 width, u32 height, std::string*
     if (error != nullptr) *error = "a view set needs a target with a positive extent";
     return false;
   }
-  const f32 half_fov_y = desc.fov_y * 0.5f;
-  const f32 tan_half_y = std::tan(half_fov_y);
+  fov_y_ = desc.fov_y;
+  const f32 tan_half_y = std::tan(desc.fov_y * 0.5f);
 
   switch (desc.layout) {
     case ViewLayout::Single: {
@@ -136,52 +136,28 @@ bool ViewSet::build(const ViewSetDesc& desc, u32 width, u32 height, std::string*
         return false;
       }
       count_ = 3;
-      // The eye distance that makes one monitor subtend the vertical field of view, in the same
-      // pixel units the monitor geometry is in. Everything below is a similar triangle.
-      const f32 eye_distance = (static_cast<f32>(monitor_h) * 0.5f) / tan_half_y;
-      const f32 half_w = static_cast<f32>(monitor_w) * 0.5f;
-      const f32 half_h = static_cast<f32>(monitor_h) * 0.5f;
-      const f32 hinge = half_w + static_cast<f32>(desc.surround.bezel);
-      const f32 yaw = desc.surround.side_yaw;
-      const f32 cos_yaw = std::cos(yaw);
-      const f32 sin_yaw = std::sin(yaw);
-      // A side monitor is perpendicular to its own view axis by construction, so every point on it
-      // is the same distance along that axis and the frustum is one rectangle at that distance.
-      const f32 side_distance = eye_distance * cos_yaw + hinge * sin_yaw;
-      const f32 side_x0 = hinge * cos_yaw - eye_distance * sin_yaw;
+      monitor_width_ = monitor_w;
+      monitor_height_ = monitor_h;
       for (u32 v = 0; v < 3; ++v) {
         View& view = views_[v];
         view.rect = ViewRect{v * monitor_w, 0, monitor_w, monitor_h};
         view.source_width = monitor_w;
         view.source_height = monitor_h;
-        view.symmetric = false;
+        // The centre monitor is never turned and never moved by the bezel, so its frustum is
+        // centred whatever the arrangement — and a centred frustum is the symmetric projection.
+        // Taking it rather than the off-axis one is not an optimization: it makes the centre view
+        // of a flat surround **bit-for-bit** the single view of one monitor, which is the identity
+        // the multi-view cull is tested against.
+        view.symmetric = v == 1;
         if (v == 1) {
-          // The centre monitor is never turned and never moved by the bezel, so its frustum is
-          // centred whatever the arrangement — and a centred frustum is the symmetric projection.
-          // Taking it rather than the off-axis one is not an optimization: it makes the centre
-          // view of a flat surround **bit-for-bit** the single view of one monitor, which is the
-          // identity the multi-view cull is tested against.
-          view.yaw = 0.0f;
-          view.symmetric = true;
           view.aspect = static_cast<f32>(monitor_w) / static_cast<f32>(monitor_h);
-          view.left = -half_w / eye_distance;
-          view.right = half_w / eye_distance;
-          view.top = half_h / eye_distance;
-          view.bottom = -view.top;
         } else {
-          const f32 side = v == 0 ? -1.0f : 1.0f;
-          view.yaw = side * yaw;
-          const f32 inner = side_x0 / side_distance;
-          const f32 outer = (side_x0 + static_cast<f32>(monitor_w)) / side_distance;
-          view.left = side > 0.0f ? inner : -outer;
-          view.right = side > 0.0f ? outer : -inner;
-          view.top = half_h / side_distance;
-          view.bottom = -view.top;
           view.quality.lod_scale = desc.peripheral_lod;
           // A coarser shading rate for the periphery is what §4.6 asks for next; nothing reads it.
           view.quality.shading_rate = desc.peripheral_lod > 1.0f ? 2u : 1u;
         }
       }
+      lay_out_surround(desc.fov_y);
       break;
     }
     case ViewLayout::Panini: {
@@ -231,6 +207,44 @@ bool ViewSet::build(const ViewSetDesc& desc, u32 width, u32 height, std::string*
   return true;
 }
 
+void ViewSet::lay_out_surround(f32 fov_y) noexcept {
+  fov_y_ = fov_y;
+  // The eye distance that makes one monitor subtend the vertical field of view, in the same pixel
+  // units the monitor geometry is in. Everything below is a similar triangle.
+  const f32 eye_distance = (static_cast<f32>(monitor_height_) * 0.5f) / std::tan(fov_y * 0.5f);
+  const f32 half_w = static_cast<f32>(monitor_width_) * 0.5f;
+  const f32 half_h = static_cast<f32>(monitor_height_) * 0.5f;
+  const f32 hinge = half_w + static_cast<f32>(desc_.surround.bezel);
+  const f32 yaw = desc_.surround.side_yaw;
+  const f32 cos_yaw = std::cos(yaw);
+  const f32 sin_yaw = std::sin(yaw);
+  // A side monitor is perpendicular to its own view axis by construction, so every point on it is
+  // the same distance along that axis and the frustum is one rectangle at that distance.
+  const f32 side_distance = eye_distance * cos_yaw + hinge * sin_yaw;
+  const f32 side_x0 = hinge * cos_yaw - eye_distance * sin_yaw;
+  for (u32 v = 0; v < 3; ++v) {
+    View& view = views_[v];
+    if (v == 1) {
+      // The centre's tangents, for whoever reads them; its projection is the symmetric one from the
+      // camera's own field of view, which is this one after `update`.
+      view.yaw = 0.0f;
+      view.left = -half_w / eye_distance;
+      view.right = half_w / eye_distance;
+      view.top = half_h / eye_distance;
+      view.bottom = -view.top;
+    } else {
+      const f32 side = v == 0 ? -1.0f : 1.0f;
+      view.yaw = side * yaw;
+      const f32 inner = side_x0 / side_distance;
+      const f32 outer = (side_x0 + static_cast<f32>(monitor_width_)) / side_distance;
+      view.left = side > 0.0f ? inner : -outer;
+      view.right = side > 0.0f ? outer : -inner;
+      view.top = half_h / side_distance;
+      view.bottom = -view.top;
+    }
+  }
+}
+
 // The same inverse the resolve does, in double precision on the CPU. Kept beside the projection
 // it inverts rather than beside its caller, because the shader's copy and this one have to agree
 // and the test that says so compares them here.
@@ -271,6 +285,16 @@ void ViewSet::update(const Camera& camera) noexcept {
   // bits. The head frame: the frame camera's own forward, right, and up. A view's yaw turns the
   // forward direction about the head's up, which is what a monitor standing beside another one
   // does.
+  // **A surround follows the camera's field of view** (renderer.md, "Multi-view"): the centre
+  // monitor's projection is the camera's, so the side monitors' frusta are laid out again from it
+  // whenever it is not the one they were laid out from — a frame or a path that changes it, or a
+  // host whose camera is not at the layout's. Nothing the surround sized depends on it (the
+  // rectangles are the monitors'), and a field of view that does not make a frustum keeps the last
+  // one. A single view and a Panini view read the camera's in their projection below, as always.
+  if (desc_.layout == ViewLayout::Surround3 && camera.fov_y != fov_y_ && camera.fov_y > 0.0f &&
+      camera.fov_y < 3.14159265f) {
+    lay_out_surround(camera.fov_y);
+  }
   const Vec3 forward = camera_forward(camera);
   const Vec3 right = normalize(cross(forward, Vec3{0.0f, 1.0f, 0.0f}));
   const Vec3 up = cross(right, forward);

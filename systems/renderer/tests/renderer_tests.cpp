@@ -1114,6 +1114,87 @@ TEST_CASE("view set: the Panini inverse map agrees with the projection it invert
   }
 }
 
+// F18 (renderer.md, "Multi-view"): the surround was laid out once from `ViewSetDesc::fov_y` and the
+// centre monitor drew at the camera's own, so a camera at 60° beside a 55° layout drew side views
+// 1.109 times as large as the centre one — a step in scale at both seams — and at a finer LOD.
+TEST_CASE("view set: a surround follows the camera's field of view across both seams") {
+  constexpr u32 k_width = 5760;
+  constexpr u32 k_height = 1080;
+  Camera camera;
+  camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+  camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, -1.0f});
+  camera.znear = 0.1f;
+  camera.fov_y = radians(60.0f);
+  // Where a point of the frame lands in a view, in that view's pixels (x right, y down).
+  const auto pixel = [](const View& view, const Vec3& p) {
+    const Vec4 clip = view.view_proj * Vec4{p, 1.0f};
+    return Vec2{(clip.x / clip.w * 0.5f + 0.5f) * static_cast<f32>(view.rect.width),
+                (0.5f - clip.y / clip.w * 0.5f) * static_cast<f32>(view.rect.height)};
+  };
+  for (const f32 side_yaw_deg : {0.0f, 30.0f}) {
+    ViewSetDesc desc;  // laid out at the default 55°
+    desc.layout = ViewLayout::Surround3;
+    desc.surround.side_yaw = radians(side_yaw_deg);
+    ViewSet set;
+    std::string error;
+    REQUIRE_MESSAGE(set.build(desc, k_width, k_height, &error), error);
+    CHECK(set.fov_y() == desc.fov_y);
+    set.update(camera);
+    CHECK(set.fov_y() == camera.fov_y);
+    // The centre monitor's left and right edges at unit distance: the camera's own frustum.
+    const f32 edge = std::tan(camera.fov_y * 0.5f) * static_cast<f32>(set[1].rect.width) /
+                     static_cast<f32>(set[1].rect.height);
+    for (const f32 side : {-1.0f, 1.0f}) {
+      const View& outer = set[side < 0.0f ? 0u : 2u];
+      // A feature a metre tall straddling the seam ten metres out: it is drawn as tall on the side
+      // monitor as on the centre one, and its foot lands at the seam on both.
+      const Vec3 foot{side * edge * 10.0f, -0.5f, -10.0f};
+      const Vec3 head{side * edge * 10.0f, 0.5f, -10.0f};
+      const Vec2 centre_foot = pixel(set[1], foot);
+      const Vec2 centre_head = pixel(set[1], head);
+      const Vec2 outer_foot = pixel(outer, foot);
+      const Vec2 outer_head = pixel(outer, head);
+      const f32 centre_tall = centre_foot.y - centre_head.y;
+      const f32 outer_tall = outer_foot.y - outer_head.y;
+      INFO("side_yaw " << side_yaw_deg << " side " << side << ": centre " << centre_tall
+                       << " px, side " << outer_tall << " px");
+      CHECK(centre_tall > 80.0f);
+      CHECK(std::fabs(centre_tall - outer_tall) < 1.0f);
+      CHECK(std::fabs(centre_foot.y - outer_foot.y) < 1.0f);
+      CHECK(std::fabs(centre_foot.x - (side < 0.0f ? 0.0f : static_cast<f32>(k_width / 3))) < 0.5f);
+      CHECK(std::fabs(outer_foot.x - (side < 0.0f ? static_cast<f32>(k_width / 3) : 0.0f)) < 0.5f);
+    }
+    // One field of view, one shape: the same layout built at the camera's field of view and
+    // updated with the same camera is the same three views, to the bit, LOD scale included.
+    ViewSetDesc at_camera = desc;
+    at_camera.fov_y = camera.fov_y;
+    ViewSet direct;
+    REQUIRE_MESSAGE(direct.build(at_camera, k_width, k_height, &error), error);
+    direct.update(camera);
+    for (u32 v = 0; v < 3; ++v) {
+      CHECK(std::memcmp(&set[v].view_proj, &direct[v].view_proj, sizeof(Mat4)) == 0);
+      CHECK(set[v].proj_scale == direct[v].proj_scale);
+      CHECK(set[v].left == direct[v].left);
+      CHECK(set[v].right == direct[v].right);
+    }
+    // A flat surround is three thirds of one frustum: one LOD scale for all three views.
+    if (side_yaw_deg == 0.0f) {
+      CHECK(set[0].proj_scale == doctest::Approx(set[1].proj_scale).epsilon(1e-6));
+      CHECK(set[2].proj_scale == doctest::Approx(set[1].proj_scale).epsilon(1e-6));
+    }
+  }
+
+  // A single view never had a layout to keep: the camera's projection, to the bit.
+  ViewSet single;
+  std::string error;
+  REQUIRE_MESSAGE(single.build(ViewSetDesc{}, 1920, 1080, &error), error);
+  single.update(camera);
+  const Mat4 expected = perspective_reversed_z(camera.fov_y, 1920.0f / 1080.0f, camera.znear) *
+                        look_at(Vec3{}, camera_forward(camera), Vec3{0.0f, 1.0f, 0.0f});
+  CHECK(std::memcmp(&single[0].view_proj, &expected, sizeof(Mat4)) == 0);
+  CHECK(single.fov_y() == ViewSetDesc{}.fov_y);  // nothing to lay out again
+}
+
 TEST_CASE("renderer: a surround's centre view is the single view of one monitor, to the pixel") {
   Gpu gpu;
   if (!gpu.ok) {

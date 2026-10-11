@@ -207,11 +207,13 @@ struct ViewSetDesc {
   // is the centre monitor for a surround and the whole display otherwise (§4.6), so this is the
   // side monitors' `ViewQuality::lod_scale` and nothing else's.
   f32 peripheral_lod = 1.0f;
-  // The vertical field of view the layout is sized from. It decides the surround's eye distance
-  // and the Panini source's width, both of which size buffers, so it is fixed here rather than
-  // taken from a frame's camera. `update()` still builds every projection from the camera it is
-  // given; a camera with a different field of view is rendered correctly, just over- or
-  // under-sampled at the edges of a Panini view.
+  // The vertical field of view a Panini view's source is sized from, and the one a surround is
+  // laid out from **until the first `update()`**. The Panini source's width sizes buffers, so it
+  // is fixed here: a camera with another field of view is rendered correctly, just over- or
+  // under-sampled at the edges of a Panini view. A surround sizes nothing from it — its rectangles
+  // are the monitors' — so `update()` lays its three frusta out again from the **camera's** field
+  // of view whenever that differs (renderer.md, "Multi-view": a centre monitor at the camera's 60°
+  // beside side monitors at this 55° was a step in scale at both seams and two cuts of the ground).
   f32 fov_y = 0.9599310886f;  // radians(55)
 };
 
@@ -227,8 +229,13 @@ class ViewSet {
   // need more source pixels than `k_max_source_pixels`, or a zero extent.
   bool build(const ViewSetDesc& desc, u32 width, u32 height, std::string* error = nullptr);
   // Every view's projection and view-projection matrix, from this frame's camera. The eye and the
-  // near plane are shared; only the orientation and the frustum differ.
+  // near plane are shared; only the orientation and the frustum differ. A surround whose frusta
+  // were laid out at another field of view than the camera's is laid out again from the camera's
+  // first, by the same function `build` uses, so its three views are one field of view.
   void update(const Camera& camera) noexcept;
+  // The vertical field of view the views' frusta are laid out from now: `desc().fov_y` after
+  // `build`, and for a surround the last camera's after `update`.
+  f32 fov_y() const noexcept { return fov_y_; }
 
   u32 size() const noexcept { return count_; }
   const View& operator[](u32 index) const noexcept { return views_[index]; }
@@ -254,9 +261,17 @@ class ViewSet {
   f32 oversample() const noexcept { return oversample_; }
 
  private:
+  // The surround's three frusta (yaw and tangents) at `fov_y`: the eye distance that makes one
+  // monitor subtend it, and the arrangement's bezel correction and turn. The one place they are
+  // computed, for `build` and `update` alike.
+  void lay_out_surround(f32 fov_y) noexcept;
+
   ViewSetDesc desc_;
   View views_[k_max_views];
   u32 count_ = 1;
+  u32 monitor_width_ = 0;  // a surround's monitor, in the target's pixels
+  u32 monitor_height_ = 0;
+  f32 fov_y_ = 0.0f;
   u32 width_ = 0;
   u32 height_ = 0;
   u32 source_width_ = 0;
