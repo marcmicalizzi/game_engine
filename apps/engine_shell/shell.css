@@ -822,6 +822,23 @@ textarea.input {
   cursor: grabbing;
 }
 
+/* Embedded in engine-editor (`?embedded=1`, embedded.js): the editor's native viewport is a child
+   window laid over this cell, so the cell draws nothing but a dark backing — which is what shows
+   for the frame a resize takes the native window to follow. The slideshow's image, notes and
+   buttons are not there. Nothing the page draws may extend over the cell (the native window covers
+   it and would hide it): the panels' popups — the command line's completions, the toasts — stay
+   inside their own panels, and a new popup must too. */
+.embedded .viewport {
+  cursor: default;
+  background: #07080a;
+}
+
+.embedded .viewport > *,
+.embedded #btn-frame,
+.embedded #btn-capture {
+  display: none;
+}
+
 .viewport-image {
   position: absolute;
   inset: 0;

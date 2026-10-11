@@ -7,6 +7,16 @@
 
 #include <utility>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace engine::window {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_window, "window");
@@ -14,6 +24,76 @@ ENGINE_LOG_CATEGORY_DEFINE(log_window, "window");
 namespace {
 
 bool g_initialized = false;
+
+// **Child windows** (WindowDesc::parent). SDL3 has no child window in the platform's sense: its
+// "parent" makes an owned top-level window (a popup, a tooltip, a modal) that is not clipped by the
+// parent's client area and does not move inside it. So on Windows the child is a plain WS_CHILD
+// window of our own class, made here, which SDL then adopts as an external window
+// (SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER): its pointer events and its Vulkan surface are SDL's
+// as a top-level window's are, and nothing above this file sees the difference.
+//
+// SDL's event queue is one per process, so a child's events are routed to its parent's `poll`:
+// this table says whose child a window id is. Main-thread only, like everything here.
+struct ChildEntry {
+  u32 child = 0;
+  u32 parent = 0;
+};
+ChildEntry g_children[16];
+
+[[maybe_unused]] void add_child(u32 child, u32 parent) noexcept {
+  for (ChildEntry& e : g_children) {
+    if (e.child == 0) {
+      e = ChildEntry{child, parent};
+      return;
+    }
+  }
+}
+
+void remove_child(u32 child) noexcept {
+  for (ChildEntry& e : g_children) {
+    if (e.child == child) e = ChildEntry{};
+  }
+}
+
+// Whether an event for `window_id` is the polling window's (`own`): its own, or a child's, which is
+// marked as such.
+bool route(u32 own, u32 window_id, Event& out) noexcept {
+  if (window_id == own) return true;
+  for (const ChildEntry& e : g_children) {
+    if (e.child != 0 && e.child == window_id && e.parent == own) {
+      out.child = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+#if defined(_WIN32)
+constexpr const wchar_t* k_child_class = L"engine_window_child";
+
+bool register_child_class() noexcept {
+  static bool registered = false;
+  if (registered) return true;
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
+  // Black until the first frame is presented, so a child that has just moved or grown shows the
+  // dark of the viewport's cell rather than a white flash.
+  wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+  wc.lpszClassName = k_child_class;
+  registered = RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+  return registered;
+}
+
+HWND hwnd_of(void* sdl_window) noexcept {
+  if (sdl_window == nullptr) return nullptr;
+  return static_cast<HWND>(
+      SDL_GetPointerProperty(SDL_GetWindowProperties(static_cast<SDL_Window*>(sdl_window)),
+                             SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+#endif
 
 Key key_from_scancode(SDL_Scancode code) noexcept {
   switch (code) {
@@ -688,6 +768,58 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
   // A hidden one takes it when it is shown (show()): it is not on screen until then, and a test
   // that only needs a window's events should not queue behind somebody else's GPU work.
   vulkan_ = desc.vulkan;
+  if (desc.parent != nullptr) {
+#if defined(_WIN32)
+    HWND parent = desc.parent->valid() ? hwnd_of(desc.parent->native()) : nullptr;
+    if (parent == nullptr) {
+      if (error != nullptr) *error = "a child window needs a parent that has a window";
+      return false;
+    }
+    if (!register_child_class()) {
+      if (error != nullptr) *error = "RegisterClassExW for the child window class failed";
+      return false;
+    }
+    if (desc.vulkan && !desc.hidden) (void)gpu_hold_.acquire();
+    HWND hwnd = CreateWindowExW(
+        0, k_child_class, L"",
+        WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | (desc.hidden ? 0u : WS_VISIBLE), desc.x,
+        desc.y, static_cast<int>(desc.width), static_cast<int>(desc.height), parent, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    if (hwnd == nullptr) {
+      if (error != nullptr)
+        *error = "CreateWindowExW (child window) failed: " + std::to_string(GetLastError());
+      gpu_hold_.release();
+      return false;
+    }
+    const SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, hwnd);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, desc.vulkan);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
+    SDL_Window* window = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (window == nullptr) {
+      set_error(error, "SDL_CreateWindowWithProperties (child window)");
+      DestroyWindow(hwnd);
+      gpu_hold_.release();
+      return false;
+    }
+    handle_ = window;
+    id_ = SDL_GetWindowID(window);
+    child_ = true;
+    add_child(id_, desc.parent->id_);
+    // Above the parent's other children (a webview made before it), so where they overlap the
+    // pointer and the picture are this window's.
+    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    refresh_pixel_size();
+    ENGINE_LOG_DEBUG(log_window, "child window created", log::field("width", pixel_width_),
+                     log::field("height", pixel_height_));
+    return true;
+#else
+    if (error != nullptr)
+      *error = "child windows are built on Windows only so far (docs/subsystems/window.md)";
+    return false;
+#endif
+  }
   if (desc.vulkan && !desc.hidden) (void)gpu_hold_.acquire();
   SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
   if (desc.resizable) flags |= SDL_WINDOW_RESIZABLE;
@@ -718,23 +850,99 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
 
 void Window::destroy() noexcept {
   if (handle_ == nullptr) return;
+#if defined(_WIN32)
+  // SDL lets go of a window it adopted without destroying it; the child is ours to destroy.
+  HWND own = child_ ? hwnd_of(handle_) : nullptr;
+#endif
   SDL_DestroyWindow(static_cast<SDL_Window*>(handle_));
+#if defined(_WIN32)
+  if (own != nullptr && IsWindow(own)) DestroyWindow(own);
+#endif
+  if (child_) remove_child(id_);
   handle_ = nullptr;
   id_ = 0;
   gpu_hold_.release();  // the last of the process's holds (a device's, a window's) lets it go
   vulkan_ = false;
+  child_ = false;
 }
 
 void Window::refresh_pixel_size() noexcept {
   int w = 0;
   int h = 0;
+#if defined(_WIN32)
+  // A child's client rectangle is its pixels (SDL makes the process per-monitor DPI aware); SDL's
+  // own idea of an adopted window's size lags a move it did not make.
+  if (child_) {
+    RECT r{};
+    if (GetClientRect(hwnd_of(handle_), &r)) {
+      w = r.right - r.left;
+      h = r.bottom - r.top;
+    }
+    pixel_width_ = w > 0 ? static_cast<u32>(w) : 0;
+    pixel_height_ = h > 0 ? static_cast<u32>(h) : 0;
+    return;
+  }
+#endif
   if (handle_ != nullptr) SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(handle_), &w, &h);
   pixel_width_ = w > 0 ? static_cast<u32>(w) : 0;
   pixel_height_ = h > 0 ? static_cast<u32>(h) : 0;
 }
 
+void* Window::os_handle() const noexcept {
+#if defined(_WIN32)
+  return hwnd_of(handle_);
+#else
+  return nullptr;
+#endif
+}
+
+bool Window::set_rect(i32 x, i32 y, u32 width, u32 height) noexcept {
+  if (handle_ == nullptr || !child_) return false;
+#if defined(_WIN32)
+  if (!SetWindowPos(hwnd_of(handle_), HWND_TOP, x, y, static_cast<int>(width),
+                    static_cast<int>(height), SWP_NOACTIVATE))
+    return false;
+  refresh_pixel_size();
+  return true;
+#else
+  (void)x;
+  (void)y;
+  (void)width;
+  (void)height;
+  return false;
+#endif
+}
+
+bool Window::set_visible(bool visible) noexcept {
+  if (handle_ == nullptr) return false;
+  if (visible && vulkan_ && !gpu_hold_.counted()) (void)gpu_hold_.acquire();
+#if defined(_WIN32)
+  if (child_) {
+    ShowWindow(hwnd_of(handle_), visible ? SW_SHOWNA : SW_HIDE);
+    return true;
+  }
+#endif
+  return visible ? SDL_ShowWindow(static_cast<SDL_Window*>(handle_))
+                 : SDL_HideWindow(static_cast<SDL_Window*>(handle_));
+}
+
+void Window::focus() noexcept {
+#if defined(_WIN32)
+  if (HWND hwnd = hwnd_of(handle_); hwnd != nullptr && GetFocus() != hwnd) SetFocus(hwnd);
+#endif
+}
+
 bool Window::logical_size(u32& width, u32& height) const noexcept {
   if (handle_ == nullptr) return false;
+#if defined(_WIN32)
+  // A child's coordinates are its parent's client pixels, which is what SDL reports its pointer in
+  // (an adopted window's own size in SDL can lag a move SDL did not make).
+  if (child_) {
+    width = pixel_width_;
+    height = pixel_height_;
+    return true;
+  }
+#endif
   int w = 0;
   int h = 0;
   if (!SDL_GetWindowSize(static_cast<SDL_Window*>(handle_), &w, &h)) return false;
@@ -861,35 +1069,37 @@ bool Window::poll(Event& out) {
         return true;
       }
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        if (e.window.windowID != id_) continue;
+        if (!route(id_, e.window.windowID, out)) continue;
         out.kind = EventKind::CloseRequested;
         return true;
       case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-        if (e.window.windowID != id_) continue;
+        if (!route(id_, e.window.windowID, out)) continue;
         out.kind = EventKind::Resized;
         out.width = e.window.data1;
         out.height = e.window.data2;
-        pixel_width_ = e.window.data1 > 0 ? static_cast<u32>(e.window.data1) : 0;
-        pixel_height_ = e.window.data2 > 0 ? static_cast<u32>(e.window.data2) : 0;
+        if (!out.child) {  // a child's size is its own Window's, refreshed by its owner
+          pixel_width_ = e.window.data1 > 0 ? static_cast<u32>(e.window.data1) : 0;
+          pixel_height_ = e.window.data2 > 0 ? static_cast<u32>(e.window.data2) : 0;
+        }
         return true;
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
-        if (e.window.windowID != id_) continue;
+        if (!route(id_, e.window.windowID, out)) continue;
         out.kind = EventKind::FocusGained;
         return true;
       case SDL_EVENT_WINDOW_FOCUS_LOST:
-        if (e.window.windowID != id_) continue;
+        if (!route(id_, e.window.windowID, out)) continue;
         out.kind = EventKind::FocusLost;
         return true;
       case SDL_EVENT_KEY_DOWN:
       case SDL_EVENT_KEY_UP:
-        if (e.key.windowID != id_) continue;
+        if (!route(id_, e.key.windowID, out)) continue;
         out.kind = e.type == SDL_EVENT_KEY_DOWN ? EventKind::KeyDown : EventKind::KeyUp;
         out.key = key_from_scancode(e.key.scancode);
         out.scancode = static_cast<u16>(e.key.scancode);
         out.repeat = e.key.repeat;
         return true;
       case SDL_EVENT_MOUSE_MOTION:
-        if (e.motion.windowID != id_) continue;
+        if (!route(id_, e.motion.windowID, out)) continue;
         out.kind = EventKind::MouseMove;
         out.x = e.motion.x;
         out.y = e.motion.y;
@@ -898,7 +1108,7 @@ bool Window::poll(Event& out) {
         return true;
       case SDL_EVENT_MOUSE_BUTTON_DOWN:
       case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (e.button.windowID != id_) continue;
+        if (!route(id_, e.button.windowID, out)) continue;
         out.kind = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? EventKind::MouseButtonDown
                                                          : EventKind::MouseButtonUp;
         out.button = e.button.button;
@@ -906,7 +1116,7 @@ bool Window::poll(Event& out) {
         out.y = e.button.y;
         return true;
       case SDL_EVENT_MOUSE_WHEEL:
-        if (e.wheel.windowID != id_) continue;
+        if (!route(id_, e.wheel.windowID, out)) continue;
         out.kind = EventKind::MouseWheel;
         out.x = e.wheel.mouse_x;
         out.y = e.wheel.mouse_y;

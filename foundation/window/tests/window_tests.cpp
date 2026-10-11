@@ -311,6 +311,84 @@ TEST_CASE("window: a borderless window is created at the size asked") {
   window::shutdown();
 }
 
+TEST_CASE("window: a child window sits in its parent, moves, and reports through its parent") {
+  // WindowDesc::parent (window.md, "Child windows"): a rectangle inside the parent's client area,
+  // movable with set_rect, whose events come out of the parent's poll marked `child`. Both hidden
+  // and without Vulkan, so nothing appears and the GPU lock is not taken.
+  std::string error;
+  if (!window::init(&error)) {
+    MESSAGE("no display: " << error);
+    return;
+  }
+  window::WindowDesc pd;
+  pd.title = "engine child test";
+  pd.width = 200;
+  pd.height = 150;
+  pd.hidden = true;
+  pd.vulkan = false;
+  window::Window parent;
+  if (!parent.create(pd, &error)) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
+  window::WindowDesc cd;
+  cd.parent = &parent;
+  cd.x = 10;
+  cd.y = 20;
+  cd.width = 64;
+  cd.height = 48;
+  cd.hidden = true;
+  cd.vulkan = false;
+  window::Window child;
+  const bool made = child.create(cd, &error);
+#if defined(_WIN32)
+  REQUIRE_MESSAGE(made, error);
+  CHECK(child.is_child());
+  CHECK_FALSE(parent.is_child());
+  CHECK(child.os_handle() != nullptr);
+  CHECK(child.os_handle() != parent.os_handle());
+  CHECK(child.pixel_width() == 64);
+  CHECK(child.pixel_height() == 48);
+  u32 lw = 0;
+  u32 lh = 0;
+  REQUIRE(child.logical_size(lw, lh));
+  CHECK(lw == 64);
+  // Moved and grown inside the parent: its pixel size follows at once.
+  CHECK(child.set_rect(30, 40, 120, 90));
+  CHECK(child.pixel_width() == 120);
+  CHECK(child.pixel_height() == 90);
+  CHECK_FALSE(parent.set_rect(0, 0, 10, 10));  // a top-level window is not placed this way
+  CHECK(child.set_visible(false));
+  // An event of the child's comes out of the parent's poll, marked as the child's, with the
+  // child's own coordinates.
+  window::Event press;
+  press.kind = window::EventKind::MouseButtonDown;
+  press.button = 1;
+  press.x = 12.0f;
+  press.y = 7.0f;
+  if (child.push_event(press)) {
+    bool seen = false;
+    window::Event e;
+    while (parent.poll(e)) {
+      if (e.kind == window::EventKind::MouseButtonDown) {
+        seen = true;
+        CHECK(e.child);
+        CHECK(e.x == 12.0f);
+      }
+    }
+    CHECK(seen);
+  }
+  child.destroy();
+  CHECK_FALSE(child.valid());
+#else
+  CHECK_FALSE(made);
+  CHECK_FALSE(error.empty());
+#endif
+  parent.destroy();
+  window::shutdown();
+}
+
 TEST_CASE("window: the gamepad enums are named and numbered for the input log") {
   CHECK(static_cast<u32>(window::GamepadButton::Unknown) == 0);
   CHECK(static_cast<u32>(window::GamepadButton::South) == 1);

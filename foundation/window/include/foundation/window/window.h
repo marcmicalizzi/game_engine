@@ -231,6 +231,9 @@ struct Event {
   u8 joystick = 0;  // Joystick*: the joystick slot id, 0..k_max_joysticks-1
   u8 index = 0;     // JoystickAxis/JoystickButton*/JoystickHat: the axis, button, or hat index
   HatDirection hat = HatDirection::Centered;  // JoystickHat
+  // The event is a child window's (`WindowDesc::parent`), reported through its parent's `poll`:
+  // pointer coordinates are then the child's own, and Resized is the child's size.
+  bool child = false;
   f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1
   // When the platform reported it, nanoseconds on SDL's clock (`SDL_GetTicksNS`), which is also the
   // clock of `Window::relative_mouse_since_ns`: what tells motion reported before relative mode
@@ -346,6 +349,8 @@ bool set_damper(u8 joystick, f32 strength) noexcept;
 // Stops and destroys every effect this module started on the slot. The wheel goes limp.
 bool stop_forces(u8 joystick) noexcept;
 
+class Window;
+
 struct WindowDesc {
   const char* title = "engine";
   u32 width = 1280;  // logical size; the pixel size may differ on high-DPI displays
@@ -367,6 +372,17 @@ struct WindowDesc {
   // windows and presentation"). Not fullscreen: the display mode never changes and other windows
   // can still be brought over it.
   bool borderless = false;
+  // **A child window** (docs/subsystems/window.md, "Child windows"): with a parent, the window is a
+  // rectangle inside the parent's client area — at (`x`, `y`) in the parent's coordinates, `width`
+  // by `height`, no border, moved with the parent and clipped by it, and movable inside it with
+  // `set_rect`. It carries a Vulkan surface exactly as a top-level window does (`vulkan`), which is
+  // what lets engine-editor keep its swapchain in a rectangle of a window whose other children are
+  // an OS webview. Its events arrive through the **parent's** `poll`, marked `Event::child` (one
+  // queue, so polling the child alone would drop the parent's). Keyboard focus moves into it with
+  // `focus()`. Windows only for now: elsewhere `create` refuses it with the reason.
+  const Window* parent = nullptr;
+  i32 x = 0;
+  i32 y = 0;
 };
 
 class Window {
@@ -400,6 +416,20 @@ class Window {
   void set_title(const char* title) noexcept;
   void show() noexcept;
   void* native() const noexcept { return handle_; }  // SDL_Window*
+  // The platform's own handle for the window — an HWND on Windows — for a module that embeds a
+  // platform view in it (foundation/webview). Null where there is none to give.
+  void* os_handle() const noexcept;
+
+  // A child window's (`WindowDesc::parent`) place and size in its parent, in the parent's
+  // coordinates; it is raised above its siblings, and its pixel size follows at once. False for a
+  // top-level window or with no window.
+  bool set_rect(i32 x, i32 y, u32 width, u32 height) noexcept;
+  // Shows or hides a child window without taking the GPU lock again (show() is the top-level's).
+  bool set_visible(bool visible) noexcept;
+  bool is_child() const noexcept { return child_; }
+  // Gives the window the keyboard: what a host does when the pointer presses in a child window,
+  // since a child is not activated by a click the way a top-level window is.
+  void focus() noexcept;
 
   // **Relative mouse mode**: the cursor is hidden and held inside the window, and `MouseMove`
   // keeps reporting motion in `dx`/`dy` when the pointer would have stopped at the screen's edge,
@@ -433,6 +463,7 @@ class Window {
   u32 pixel_height_ = 0;
   gpu_lock::DeviceHold gpu_hold_;  // a Vulkan window's share of the GPU lock (WindowDesc::vulkan)
   bool vulkan_ = false;            // created with WindowDesc::vulkan: show() takes the hold
+  bool child_ = false;             // created with WindowDesc::parent
   u64 relative_since_ns_ = 0;      // set_relative_mouse(true)'s moment, SDL_GetTicksNS
 };
 

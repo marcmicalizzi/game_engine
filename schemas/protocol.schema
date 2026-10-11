@@ -2270,3 +2270,52 @@ struct RejectParams @version(1) {
   proposal: string
   attribution: engine.doc.Attribution
 }
+
+// ---- engine-editor's own methods (roadmap A37) ------------------------------------------------
+// The web shell embedded beside the editor's native viewport tells the editor where its viewport
+// cell is (`editor.layout`), what its outliner chose (`editor.select`), and reads what the viewport
+// chose (`editor.state`) (docs/subsystems/protocol.md, "The editor's methods"). They change the
+// editor's UI state and never a document, so all three are read-only, and only the editor's
+// dispatcher has them: engine-host answers "method not found".
+
+/// Parameters of `editor.layout`, which the page sends as a notification: its viewport cell's
+/// rectangle in CSS pixels from the page's top-left corner, and the page's device pixel ratio.
+struct EditorLayoutParams @version(1) {
+  x: f64 = 0
+  y: f64 = 0
+  width: f64 = 0
+  height: f64 = 0
+  device_pixel_ratio: f64 = 1
+}
+
+/// What `editor.layout` placed, for a caller that sent it as a request rather than a notification:
+/// the cell in the editor window's own coordinates, after the page's ratio and the window's scale.
+struct EditorLayoutResult @version(1) {
+  x: i32 = 0
+  y: i32 = 0
+  width: u32 = 0
+  height: u32 = 0
+  /// How many layouts the editor has received, this one included.
+  layouts: u32 = 0
+}
+
+/// Parameters of `editor.select`: a live record of the editor's session, or null to clear.
+struct EditorSelectParams @version(1) {
+  id: id128?
+}
+
+/// The editor's UI state, as `editor.state` and `editor.select` report it.
+struct EditorStateResult @version(1) {
+  /// The editor's session, which `session.*` and `doc.*` take.
+  session: string
+  /// The selected record; null when nothing is selected.
+  selected: id128?
+  /// The viewport's camera as of its last frame, in `render.capture`'s shape (roadmap A32).
+  camera: RenderFramedCamera
+  /// The last layout the page sent, in CSS pixels; `layouts` is zero when none has come.
+  layout: EditorLayoutParams
+  layouts: u32 = 0
+  /// The viewport's picture in pixels as of its last frame.
+  width: u32 = 0
+  height: u32 = 0
+}

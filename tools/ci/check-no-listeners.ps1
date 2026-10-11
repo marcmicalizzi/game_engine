@@ -107,6 +107,10 @@ function Get-ProbeArgs([string]$name) {
     # sees the socket it opens and the firewall sees a new path bind it. Loopback raises no prompt.
     # The backslashes are for Start-Process, which hands the command line on as written.
     '^engine-host$' { return @('--listen', '127.0.0.1:0', '--request', '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine.ping\"}') }
+    # engine-editor runs the same listener in process for its web shell (docs/subsystems/apps.md,
+    # "engine-editor"): one frame of the viewport alone in a 64-pixel window with the listener open,
+    # like engine-view's probe, so the check sees the socket it opens from a fresh path.
+    '^engine-editor$' { return @('--doc', (Join-Path $fresh 'editor-doc'), '--create', '--no-shell', '--listen', '127.0.0.1:0', '--frames', '1', '--width', '64', '--height', '64') }
     '_tests$'      { return @('--help') }
     default        { return @('--help') }
   }

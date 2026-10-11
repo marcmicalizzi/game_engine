@@ -101,6 +101,15 @@ export class Rpc extends EventTarget {
     return this.callRaw({ jsonrpc: "2.0", method, params: params === undefined ? null : params });
   }
 
+  // A JSON-RPC notification: no id, so the host sends nothing back. Dropped, not queued, while the
+  // socket is down: a notification carries the page's current state (editor.layout), and the page
+  // sends it again when the connection opens.
+  notify(method, params) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify({ jsonrpc: "2.0", method, params: params === undefined ? null : params }));
+    return true;
+  }
+
   // Sends a request object as given (the command line's), with an id of this client's own.
   callRaw(request) {
     return new Promise((resolve, reject) => {

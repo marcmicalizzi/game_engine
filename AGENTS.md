@@ -79,6 +79,7 @@ build/msvc-debug/bin/engine-cli --doc ./world doc.apply '{"commands":[...],"attr
 build/msvc-debug/bin/engine-cli --doc ./world doc.undo
 build/msvc-debug/bin/engine-host --stdio                                        # JSON-RPC 2.0, one request per line
 build/msvc-debug/bin/engine-host --listen 127.0.0.1:0 --doc <dir> --actor <name>  # the same over a loopback WebSocket with a printed token; its "shell" URL is the browser shell (docs/subsystems/engine_shell.md)
+build/msvc-debug/bin/engine-editor --doc <dir>                                  # one window: the web shell in WebView2 beside the live Vulkan viewport, both clients of the editor's in-process listener (--no-shell: the viewport alone)
 build/msvc-debug/bin/engine-cli gpu.adapters                                   # Vulkan devices, extensions, capability tier
 build/msvc-debug/bin/engine-mcp --workspace <dir> --actor <name>               # MCP server over stdio for agents' clients; starts its own engine-host
 build/msvc-debug/bin/engine-cli --console script.luau -- ./world                # a Luau script against one host: engine.doc.apply{...}, engine.call, print; exit 0/1/2

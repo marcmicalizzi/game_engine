@@ -44,6 +44,7 @@ include(EngineImgui)
 # so a minimal build (ADR-0027) fetches nothing for a capability it does not contain.
 include(EngineEcs)
 include(EngineStore)
+include(EngineWebview)
 
 # Build tools first: schemac generates sources for schema modules below.
 add_subdirectory(tools/schemac)

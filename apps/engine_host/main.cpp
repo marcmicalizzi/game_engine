@@ -427,11 +427,13 @@ int main(int argc, char** argv) {
     doc_session = std::string(id);
   }
 
-  // --listen (listen.h, docs/subsystems/apps.md): the same dispatcher over a loopback WebSocket,
-  // beside the stdio loop. Every dispatch, from either side, holds `dispatch_lock`, which is what
-  // keeps the host's state single-threaded with a socket in the process.
+  // --listen (protocol::Listener; listen.h is the captures it serves; docs/subsystems/apps.md):
+  // the same dispatcher over a loopback WebSocket, beside the stdio loop. Every dispatch, from
+  // either side, holds `dispatch_lock`, which is what keeps the host's state single-threaded with a
+  // socket in the process.
   std::mutex dispatch_lock;
-  host::Listen listen(dispatcher, dispatch_lock, state);
+  host::HostCaptures captures(state);
+  protocol::Listener listen(dispatcher, dispatch_lock, &captures);
   if (!listen_address.empty()) {
     if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
     std::string error;

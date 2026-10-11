@@ -81,6 +81,8 @@ class EditorDocument {
 
   const doc::Document& document() const;
   protocol::Session& session() { return *session_; }
+  // The sessions the document was opened through: what a dispatcher over the editor serves.
+  protocol::SessionManager& sessions() { return *sessions_; }
   const std::string& directory() const noexcept { return dir_; }
   const protocol::Caller& caller() const noexcept { return caller_; }
 

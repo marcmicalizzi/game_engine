@@ -13,6 +13,7 @@ import { Properties } from "./properties.js";
 import { Rpc } from "./rpc.js";
 import { installSplits } from "./splits.js";
 import { Viewport } from "./viewport.js";
+import { EmbeddedViewport } from "./embedded.js";
 
 class App extends EventTarget {
   constructor() {
@@ -20,6 +21,9 @@ class App extends EventTarget {
     const query = new URLSearchParams(location.search);
     this.token = query.get("token") || "";
     this.session = query.get("session") || "";
+    // `?embedded=1`: the page fills engine-editor's webview beside its native viewport (embedded.js).
+    this.embedded = query.get("embedded") === "1";
+    document.documentElement.classList.toggle("embedded", this.embedded);
     this.selection = "";
     this.identity = { actor: "", role: "" };
     this.journalLength = -1;
@@ -30,7 +34,7 @@ class App extends EventTarget {
     this.properties = new Properties(this);
     this.journal = new Journal(this);
     this.console = new Console(this);
-    this.viewport = new Viewport(this);
+    this.viewport = this.embedded ? new EmbeddedViewport(this) : new Viewport(this);
     this.refreshing = null;
     this.refreshAgain = false;
   }
@@ -55,8 +59,20 @@ class App extends EventTarget {
       this.step(e.shiftKey ? "doc.redo" : "doc.undo");
     });
     // No subscriptions yet (roadmap A2): the page looks at the session's journal length every two
-    // seconds while it is visible, so an edit an agent or stdin makes shows up here too.
-    setInterval(() => this.poll(), 2000);
+    // seconds while it is visible, so an edit an agent or stdin makes shows up here too. Embedded in
+    // the editor it also reads `editor.state` — the selection a click in the native viewport made —
+    // and does so four times as often, because a person who clicked the viewport is looking at the
+    // outliner for the answer: one small read-only call on loopback, which the editor answers
+    // between two of its frames.
+    if (this.embedded) {
+      let ticks = 0;
+      setInterval(() => {
+        this.pollEditor();
+        if (++ticks % 4 === 0) this.poll();
+      }, 500);
+    } else {
+      setInterval(() => this.poll(), 2000);
+    }
     this.properties.refresh();
   }
 
@@ -171,10 +187,29 @@ class App extends EventTarget {
     }
   }
 
-  select(id) {
+  // Embedded: the selection the native viewport made, which the page did not.
+  async pollEditor() {
+    if (this.rpc.state !== "open" || document.visibilityState !== "visible") return;
+    try {
+      const state = await this.rpc.call("editor.state", null);
+      const id = state.selected || "";
+      if (id !== this.selection) this.select(id, true);
+    } catch {
+      /* the next look will say */
+    }
+  }
+
+  // `fromEditor`: the editor reported it, so it is not sent back. Otherwise, embedded, the editor's
+  // viewport is told (`editor.select`) so it outlines the record and its gizmo attaches.
+  select(id, fromEditor = false) {
     if (id === this.selection) return;
     this.selection = id;
     this.dispatchEvent(new Event("selection"));
+    if (this.embedded && !fromEditor) {
+      this.call("editor.select", { id: id || null }).catch(() => {
+        /* reported */
+      });
+    }
   }
 
   // One transaction with the person's rationale; true when it committed.

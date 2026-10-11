@@ -45,6 +45,7 @@ One page per module, created in the same change that creates the module. Templat
 | store (capability) | foundation | [store.md](store.md) |
 | scripting (capability) | foundation | [scripting.md](scripting.md) |
 | net | foundation | [net.md](net.md) |
+| webview (capability) | foundation | [webview.md](webview.md) |
 | hotload (capability) | foundation | [hotload.md](hotload.md) |
 | doc | domain | [doc.md](doc.md) |
 | geometry | domain | [geometry.md](geometry.md) |

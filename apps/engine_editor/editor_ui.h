@@ -1,17 +1,16 @@
 #pragma once
 
-// engine-editor's panels, in Dear ImGui (ADR-0054): a toolbar (undo, redo, delete, the selection's
-// name), the outliner, the property panel and the journal, docked round the viewport, and the
-// selection's box and the translate gizmo's handles drawn over it. ImGui is fed the
-// window's events and its draw lists are handed to the renderer's overlay pass
-// (`renderer::OverlayDrawData`) — no ImGui backend is compiled, so Vulkan and SDL stay where the
-// confinement rules keep them. The panels draw from `EditorDocument`'s models and `EditorInput`'s
-// handles and change nothing themselves: what a button asks for comes back in `Actions`, and every
-// edit is the document's (`EditorDocument::apply`, through `EditorInput`).
+// What engine-editor draws over its viewport, in Dear ImGui (ADR-0054: ImGui is for the tools that
+// live inside the engine's window): the selection's box, the translate gizmo's handles, and the
+// last edit the session refused. ImGui is fed the window's events and its draw lists are handed to
+// the renderer's overlay pass (`renderer::OverlayDrawData`) — no ImGui backend is compiled, so
+// Vulkan and SDL stay where the confinement rules keep them. It changes nothing itself: every edit
+// is the document's (`EditorDocument::apply`, through `EditorInput`).
 //
-// **These panels are a stopgap.** The authoring editor's shell is not decided by ADR-0054 and its
-// candidate is a web client over the protocol (roadmap A36); what stays here is what belongs to
-// the viewport whatever the shell is — the picking, the selection box and the gizmo.
+// **There are no panels here.** The outliner, the properties and the journal are the web shell's
+// (apps/engine_shell), which the editor shows in an OS webview beside this viewport and which
+// reaches the session through the protocol like any other client (roadmap A37; the three ImGui
+// panels of A34 were a stopgap and are gone).
 
 #include "editor_document.h"
 #include "editor_input.h"
@@ -43,21 +42,15 @@ class EditorUi {
   // One window event into ImGui's queue.
   void feed(const window::Event& event);
   // Whether ImGui takes the pointer or the keyboard this frame: what the viewport does not get.
+  // With nothing but the viewport's own drawing, ImGui takes neither; the editor still asks, so a
+  // tool window added here later takes its events without a second path.
   bool wants_mouse() const noexcept;
   bool wants_keyboard() const noexcept;
 
-  // What a frame of panels asked for.
-  struct Actions {
-    bool select = false;  // the outliner chose `selected`
-    Id128 selected;
-    bool undo = false;  // the toolbar's buttons
-    bool redo = false;
-    bool remove = false;  // delete the selection
-  };
-  // Builds one frame of panels over a `width` x `height` target; the gizmo is `input`'s handles.
+  // Builds one frame of overlay over a `width` x `height` target: the selection's box and the
+  // gizmo, `input`'s handles.
   void frame(f32 dt, u32 width, u32 height, const EditorDocument& document,
-             const Viewport& viewport, const renderer::Camera& camera, const EditorInput& input,
-             Actions& out);
+             const Viewport& viewport, const renderer::Camera& camera, const EditorInput& input);
   // ImGui's draw lists as the overlay's, after its textures are made, updated and retired through
   // the renderer (`SceneRenderer::overlay`). `out` points into this object until the next call.
   bool render(renderer::SceneRenderer& renderer, renderer::OverlayDrawData& out,
@@ -66,22 +59,8 @@ class EditorUi {
   // ImGui has is made again on the next `render`.
   void forget_textures() noexcept;
 
-  // The panels' row counts in the last frame (the summary, the tests).
-  u32 outliner_rows() const noexcept { return static_cast<u32>(outliner_.size()); }
-  u32 property_rows() const noexcept { return static_cast<u32>(properties_.size()); }
-  u32 journal_rows() const noexcept { return static_cast<u32>(journal_.size()); }
-
  private:
-  void refresh(const EditorDocument& document);
-
   ImGuiContext* context_ = nullptr;
-  bool laid_out_ = false;
-  u64 revision_ = ~u64{0};
-  Id128 shown_;
-  u32 journal_size_ = ~0u;
-  Vector<OutlinerRow> outliner_;
-  Vector<PropertyRow> properties_;
-  Vector<JournalRow> journal_;
   Vector<renderer::OverlayVertex> vertices_;
   Vector<u32> indices_;
   Vector<renderer::OverlayCommand> commands_;

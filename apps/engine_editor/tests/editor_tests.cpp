@@ -10,6 +10,7 @@
 
 #include "../editor_document.h"
 #include "../editor_input.h"
+#include "../editor_methods.h"
 #include "../editor_ui.h"
 #include "../editor_viewport.h"
 #include "../viewport_math.h"
@@ -18,6 +19,8 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/policy.h>
+#include <domain/protocol/rpc.h>
 #include <systems/renderer/capture.h>
 
 #include <doctest/doctest.h>
@@ -46,6 +49,13 @@ void put_f32(std::vector<u8>& out, f32 v) {
 }
 
 std::string n(u64 v) { return std::to_string(v); }
+
+// A JSON number as a double, whichever way it was written; NaN when it is not one.
+f64 number(const JsonValue* v) {
+  f64 out = std::nan("");
+  if (v != nullptr) (void)v->get_f64(out);
+  return out;
+}
 
 // A unit cube as a GLB (systems/renderer/tests/world_translation_tests.cpp's).
 bool write_cube_glb(const std::string& path) {
@@ -525,33 +535,38 @@ TEST_CASE("engine-editor: the panels reach the picture through the renderer's ov
     document.select(k_right);
     editor::EditorInput input;
     renderer::OverlayDrawData overlay;
-    // Two frames: the first lays the dock out and makes the font atlas.
+    // Two frames, as the window draws them: the first makes the font atlas.
     for (u32 f = 0; f < 2; ++f) {
-      editor::EditorUi::Actions actions;
       input.set_view(document, viewport, camera, 320, 200, 1.0f);
-      ui.frame(1.0f / 60.0f, 320, 200, document, viewport, camera, input, actions);
+      ui.frame(1.0f / 60.0f, 320, 200, document, viewport, camera, input);
       REQUIRE_MESSAGE(ui.render(viewport.renderer(), overlay, error), error);
     }
-    CHECK(ui.outliner_rows() == 3);
-    CHECK(ui.property_rows() == 6);
-    CHECK(ui.journal_rows() == 1);
+    // No panels (they are the web shell's now): the selection's box and the gizmo, and ImGui
+    // takes neither the pointer nor the keys from the viewport.
     CHECK_FALSE(overlay.commands.empty());
     CHECK(viewport.renderer().overlay().texture_count() >= 1);
+    CHECK_FALSE(ui.wants_mouse());
+    CHECK_FALSE(ui.wants_keyboard());
 
     frame.overlay = &overlay;
-    renderer::CapturedFrame panels;
-    REQUIRE_MESSAGE(viewport.renderer().capture(frame, color, panels, &error), error);
-    REQUIRE(panels.color.size() == bare.color.size());
-    // The outliner docks on the left: its pixels are the panel's, not the picture's.
+    renderer::CapturedFrame drawn;
+    REQUIRE_MESSAGE(viewport.renderer().capture(frame, color, drawn, &error), error);
+    REQUIRE(drawn.color.size() == bare.color.size());
+    // The box and the handles are drawn over the picture, and nowhere is a panel: the left
+    // quarter, where the outliner docked, is the scene's own.
     u32 differing = 0;
-    for (u32 yy = 40; yy < 160; ++yy) {
-      for (u32 xx = 4; xx < 60; ++xx) {
+    u32 left = 0;
+    for (u32 yy = 0; yy < 200; ++yy) {
+      for (u32 xx = 0; xx < 320; ++xx) {
         const u32 p = (yy * 320 + xx) * 4;
-        differing += std::memcmp(&panels.color[p], &bare.color[p], 3) != 0 ? 1u : 0u;
+        const bool d = std::memcmp(&drawn.color[p], &bare.color[p], 3) != 0;
+        differing += d ? 1u : 0u;
+        left += d && xx < 60 && yy > 40 && yy < 160 ? 1u : 0u;
       }
     }
-    CHECK(differing > 1000);
-    // The overlay draws only colour: the ids under the panels are still the scene's.
+    CHECK(differing > 50);
+    CHECK(left < 200);
+    // The overlay draws only colour: the ids under it are still the scene's.
     renderer::CaptureChannels ids;
     ids.color = false;
     ids.ids = true;
@@ -584,9 +599,10 @@ TEST_CASE("engine-editor: the window picks what is under its pixel") {
   const std::string doc_dir = tmp.path();
   const std::string ddc = tmp.file("ddc");
   // Small, vsynced and under the editor's 120 Hz ceiling: never an unthrottled window.
-  const std::vector<std::string_view> argv = {exe,        "--doc", doc_dir,    "--width", "320",
-                                              "--height", "240",   "--frames", "6",       "--pick",
-                                              "160,110",  "--ddc", ddc};
+  // The viewport alone (`--no-shell`): the web view beside it is the embedded case's.
+  const std::vector<std::string_view> argv = {
+      exe,        "--doc", doc_dir,  "--width", "320",   "--height", "240",
+      "--frames", "6",     "--pick", "160,110", "--ddc", ddc,        "--no-shell"};
   JsonValue summary;
   std::string output;
   if (!run_editor(argv, summary, output)) return;
@@ -597,9 +613,8 @@ TEST_CASE("engine-editor: the window picks what is under its pixel") {
   REQUIRE(selected != nullptr);
   REQUIRE_MESSAGE(selected->is_string(), output);
   CHECK(std::string(selected->as_string()) == editor::hex(k_left));
-  const JsonValue* panels = summary.find("panels");
-  REQUIRE(panels != nullptr);
-  CHECK(write_json(*panels->find("properties")) == "6");
+  CHECK(write_json(*summary.find("embedded")) == "false");
+  CHECK(summary.find("listen")->is_null());
 }
 
 TEST_CASE(
@@ -824,8 +839,8 @@ TEST_CASE("engine-editor: the window's gizmo drag is one transaction") {
   // centre is on the y handle and a release 30 higher drags it up. Small, vsynced and under the
   // editor's 120 Hz ceiling: never an unthrottled window.
   const std::vector<std::string_view> argv = {
-      exe,  "--doc",  doc_dir,   "--width", "320",    "--height", "240",   "--frames",
-      "12", "--pick", "160,110", "--drag",  "160,75", "160,45",   "--ddc", ddc};
+      exe,      "--doc",   doc_dir,  "--width", "320",    "--height", "240", "--frames",  "12",
+      "--pick", "160,110", "--drag", "160,75",  "160,45", "--ddc",    ddc,   "--no-shell"};
   JsonValue summary;
   std::string output;
   if (!run_editor(argv, summary, output)) return;
@@ -863,6 +878,178 @@ TEST_CASE("engine-editor: the window's gizmo drag is one transaction") {
   CHECK(journal[0].rationale == "move only along y");
   CHECK(journal[0].actor == "editor");
   CHECK_FALSE(journal[0].undone);
+}
+
+TEST_CASE("engine-editor: the shell's three methods, through the editor's dispatcher") {
+  const test::TempDir tmp("engine_editor_methods");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  // The editor's host as main.cpp makes it, with a roles file whose default role may write
+  // nothing: the three methods are UI state, registered read-only, and a role that may not write
+  // still lays out, selects and reads.
+  editor::EditorState state;
+  state.document = &document;
+  protocol::Policy policy;
+  std::string error;
+  REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"watcher","roles":[
+      {"name":"watcher","doc":"reads","methods":[],"layers":[],"tiles":[],"untiled":false,
+       "object_types":[],"review_required":false}]})",
+                                    error),
+                  error);
+  protocol::Dispatcher d(
+      protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
+  protocol::add_builtin_methods(d);
+  editor::add_editor_methods(d);
+  const auto call = [&](std::string_view text) {
+    JsonValue response;
+    const std::string out = d.dispatch_text(text);
+    REQUIRE_MESSAGE(parse_json(out, response).ok, out);
+    return response;
+  };
+
+  // editor.layout as the page sends it — a notification, so nothing comes back — moves the
+  // recorded rectangle; as a request it says where the window will put the viewport.
+  CHECK(d.dispatch_text(R"({"jsonrpc":"2.0","method":"editor.layout","params":{"x":300.5,)"
+                        R"("y":48,"width":400,"height":300,"device_pixel_ratio":1.5}})")
+            .empty());
+  CHECK(state.layouts == 1);
+  CHECK(state.layout.x == 300.5);
+  CHECK(state.layout.device_pixel_ratio == 1.5);
+  state.pixels_per_unit = 1.0;
+  JsonValue placed =
+      call(R"({"jsonrpc":"2.0","id":1,"method":"editor.layout","params":)"
+           R"({"x":300.5,"y":48,"width":400,"height":300,"device_pixel_ratio":1.5}})");
+  const JsonValue* r = placed.find("result");
+  REQUIRE_MESSAGE(r != nullptr, write_json(placed));
+  // 300.5 x 1.5 = 450.75, floored; (300.5 + 400) x 1.5 = 1050.75, ceiled: the cell is covered.
+  CHECK(write_json(*r->find("x")) == "450");
+  CHECK(write_json(*r->find("y")) == "72");
+  CHECK(write_json(*r->find("width")) == "601");
+  CHECK(write_json(*r->find("height")) == "450");
+  CHECK(write_json(*r->find("layouts")) == "2");
+  // A window whose coordinates are half its pixels (a display that scales) halves the rectangle.
+  const editor::ViewportRect half = editor::layout_rect(state.layout, 2.0);
+  CHECK(half.x == 225);
+  CHECK(half.width == 301);
+  // External input is validated: no negative size, no ratio of zero.
+  JsonValue bad = call(R"({"jsonrpc":"2.0","id":2,"method":"editor.layout","params":)"
+                       R"({"x":0,"y":0,"width":-4,"height":3,"device_pixel_ratio":0}})");
+  REQUIRE(bad.find("error") != nullptr);
+  CHECK(state.layouts == 2);
+
+  // editor.select changes the selection the viewport outlines and the summary reports, though the
+  // role may write nothing; a write by the same role is refused, so the policy is in force.
+  JsonValue selected = call(std::string(R"({"jsonrpc":"2.0","id":3,"method":"editor.select",)") +
+                            R"("params":{"id":")" + editor::hex(k_right) + R"("}})");
+  REQUIRE_MESSAGE(selected.find("result") != nullptr, write_json(selected));
+  CHECK(document.selection() == k_right);
+  CHECK(std::string(selected.find("result")->find("selected")->as_string()) ==
+        editor::hex(k_right));
+  JsonValue write = call(std::string(R"({"jsonrpc":"2.0","id":4,"method":"doc.apply","params":)") +
+                         R"({"session":")" + document.session().id() +
+                         R"(","commands":[],"attribution":{"rationale":"nothing"}}})");
+  REQUIRE(write.find("error") != nullptr);
+  CHECK(write_json(*write.find("error")->find("code")) == "1008");
+  // A record that is not there is refused, and the selection stays; null clears it.
+  JsonValue missing = call(R"({"jsonrpc":"2.0","id":5,"method":"editor.select","params":)"
+                           R"({"id":"0123456789abcdef0123456789abcdef"}})");
+  REQUIRE(missing.find("error") != nullptr);
+  CHECK(document.selection() == k_right);
+  JsonValue cleared =
+      call(R"({"jsonrpc":"2.0","id":6,"method":"editor.select","params":{"id":null}})");
+  REQUIRE(cleared.find("result") != nullptr);
+  CHECK(document.selection().is_null());
+
+  // editor.state: the selection a click in the viewport made, the camera in render.capture's
+  // shape (A32), the last layout and the picture's size.
+  document.select(k_left);
+  renderer::Camera camera = test_camera();
+  state.camera = editor::framed_camera(camera);
+  state.width = 640;
+  state.height = 360;
+  JsonValue st = call(R"({"jsonrpc":"2.0","id":7,"method":"editor.state"})");
+  const JsonValue* s = st.find("result");
+  REQUIRE_MESSAGE(s != nullptr, write_json(st));
+  CHECK(std::string(s->find("selected")->as_string()) == editor::hex(k_left));
+  CHECK(std::string(s->find("session")->as_string()) == document.session().id());
+  CHECK(write_json(*s->find("layouts")) == "2");
+  CHECK(write_json(*s->find("width")) == "640");
+  const JsonValue* cam = s->find("camera");
+  REQUIRE(cam != nullptr);
+  const JsonValue* position = cam->find("position");
+  REQUIRE(position != nullptr);
+  REQUIRE(position->size() == 3);
+  CHECK(number(&(*position)[0]) == 0.0);
+  CHECK(number(&(*position)[1]) == 1.0);
+  CHECK(number(&(*position)[2]) == 7.0);
+  CHECK(std::fabs(number(cam->find("fov_deg")) - 55.0) < 1e-4);
+  // Looking from +z, a little above, at the origin: yaw zero, pitch below the horizon.
+  CHECK(std::fabs(number(cam->find("yaw_deg"))) < 1e-4);
+  CHECK(number(cam->find("pitch_deg")) < 0.0);
+
+  // The three are the editor's: a dispatcher with only the built-in methods (engine-host's) does
+  // not have them.
+  protocol::Dispatcher plain(
+      protocol::Context{&document.sessions(), nullptr, nullptr, nullptr, nullptr});
+  protocol::add_builtin_methods(plain);
+  JsonValue unknown;
+  REQUIRE(parse_json(plain.dispatch_text(R"({"jsonrpc":"2.0","id":8,"method":"editor.state"})"),
+                     unknown)
+              .ok);
+  REQUIRE(unknown.find("error") != nullptr);
+  CHECK(write_json(*unknown.find("error")->find("code")) == "-32601");
+}
+
+TEST_CASE("engine-editor: --embedded puts the shell beside the viewport, and the page places it") {
+  const test::TempDir tmp("engine_editor_embedded");
+  {
+    editor::EditorDocument document;
+    std::string error;
+    REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
+    REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+    const doc::Command add = doc::cmd_create(
+        k_left, k_placement, Id128{},
+        json(R"({"name":"only","mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})"));
+    REQUIRE_MESSAGE(document.apply(std::span<const doc::Command>(&add, 1), "", error), error);
+  }
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string doc_dir = tmp.path();
+  const std::string ddc = tmp.file("ddc");
+  // Small enough for a shared desktop and wide enough for the shell's three columns; vsynced and
+  // under the editor's ceiling. The listener starts, the web view loads the shell from it, the
+  // page's first editor.layout places the viewport's child window, and the pick at the middle of
+  // the child's picture finds the cube. Without the WebView2 runtime (a hosted runner) the editor
+  // exits 3 saying so, and this skips.
+  const std::vector<std::string_view> argv = {
+      exe,        "--doc", doc_dir,  "--width", "900",   "--height", "560",
+      "--frames", "8",     "--pick", "center",  "--ddc", ddc,        "--embedded"};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  // The announcement is the first line on stdout (the log's lines on stderr are merged in here):
+  // the listener's URL, its token and the shell's address.
+  const usize at = output.find("{\"listen\":");
+  REQUIRE_MESSAGE(at != std::string::npos, output);
+  JsonValue announcement;
+  REQUIRE_MESSAGE(parse_json(output.substr(at, output.find('\n', at) - at), announcement).ok,
+                  output);
+  REQUIRE(announcement.find("shell") != nullptr);
+  CHECK(std::string(announcement.find("listen")->as_string()).starts_with("ws://127.0.0.1:"));
+  CHECK(write_json(*summary.find("embedded")) == "true");
+  CHECK(summary.find("listen")->is_number());
+  CHECK_MESSAGE(number(summary.find("layouts")) >= 1.0, output);
+  const JsonValue* rect = summary.find("viewport");
+  const bool four = rect != nullptr && rect->is_array() && rect->size() == 4;
+  REQUIRE_MESSAGE(four, output);
+  CHECK(number(&(*rect)[2]) > 16.0);
+  CHECK(number(&(*rect)[3]) > 16.0);
+  // The picture is the child's, not the window's: narrower than the 900 the window is.
+  CHECK(number(summary.find("width")) < 900.0);
+  CHECK(write_json(*summary.find("frames")) == "8");
+  const JsonValue* selected = summary.find("selected");
+  const bool named = selected != nullptr && selected->is_string();
+  REQUIRE_MESSAGE(named, output);
+  CHECK(std::string(selected->as_string()) == editor::hex(k_left));
 }
 
 TEST_CASE("engine-editor: --version prints the build stamp with no window") {

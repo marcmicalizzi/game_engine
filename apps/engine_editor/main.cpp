@@ -1,21 +1,27 @@
 // engine-editor: the engine's window on a document (docs/subsystems/apps.md, "engine-editor";
-// ADR-0054; roadmap A34). One window: the renderer's picture of a document's placements,
-// engine-view's fly camera, picking from the visibility buffer, a translate gizmo whose every drag
-// is one transaction, undo, redo and delete — the in-engine half of the editor, whatever its shell
-// becomes — and three Dear ImGui panels (outliner, properties, journal) that are a stopgap for the
-// shell (A36's web client over the protocol). A transaction that moves a placement moves it in the
-// next frame, whoever made it.
+// ADR-0054; roadmap A34, A37). One native window holding two children that tile and never overlap:
+// the web shell (apps/engine_shell — outliner, properties, journal, command line) in the platform's
+// web view, and the renderer's live viewport in a child window placed over the page's viewport
+// cell, with engine-view's fly camera, picking from the visibility buffer, a translate gizmo whose
+// every drag is one transaction, undo, redo and delete. Both are clients of **one host**: the
+// editor runs the protocol's listener in process over the session it holds (protocol::Listener,
+// editor_methods.h), the page speaks only the protocol over it, and the viewport follows the
+// document after every transaction, whoever made it. Nothing is composited and nothing crosses per
+// frame: the viewport presents at the display's rate, the page repaints on state, and the two
+// share only state over the protocol and the cell's rectangle when it changes.
 //
 // The document is opened through `protocol::Session` and every edit goes through its checked write
 // path (editor_document.h); the pointer and keys are editor_input.h's, their maths
-// viewport_math.h's; everything drawn is the renderer's (editor_viewport.h). `--offscreen` runs the
-// same frames with no window, and `--frames`, `--pick`, `--move`, `--drag` and `--capture` are how
-// a test drives either mode and reads the answer from the one JSON line it prints at the end.
+// viewport_math.h's; everything drawn is the renderer's (editor_viewport.h). `--no-shell` is the
+// viewport alone in the window, `--offscreen` the same frames with no window, and `--frames`,
+// `--pick`, `--move`, `--drag` and `--capture` are how a test drives either mode and reads the
+// answer from the one JSON line it prints at the end.
 
 #include "../engine_view/fly_camera.h"
 #include "../engine_view/window_input.h"
 #include "editor_document.h"
 #include "editor_input.h"
+#include "editor_methods.h"
 #include "editor_ui.h"
 #include "editor_viewport.h"
 #include "viewport_math.h"
@@ -23,23 +29,31 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/platform/cpu_baseline.h>
+#include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/gfx/backend/vulkan/swapchain.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/listener.h>
+#include <domain/protocol/rpc.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
+#include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
 #include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/capture.h>
 
+#if defined(ENGINE_EDITOR_WEBVIEW)
+#include <foundation/webview/webview.h>
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <engine_build_stamp.h>
-#include <fstream>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -52,37 +66,64 @@ tunables::Int present_max_hz{"editor.present.max_hz", 120, 1, 1000,
                              "The most frames a second the editor's window draws: it shares the "
                              "desktop, so it never runs unthrottled"};
 
+// How long an embedded window waits for the page's first `editor.layout` before it gives up: the
+// web view's first start on a machine makes its profile, which takes seconds, not minutes.
+constexpr i64 k_layout_timeout_ns = 60'000'000'000;
+
 constexpr const char* k_usage =
     "engine-editor --doc <dir> [--create] [--actor <name>] [--width N] [--height N]\n"
-    "              [--offscreen] [--frames N] [--pick X,Y] [--move X,Y,Z] [--drag X0,Y0 X1,Y1]\n"
-    "              [--capture out.png] [--ddc <dir>]\n"
+    "              [--embedded | --no-shell] [--listen 127.0.0.1:<port>] [--shell <dir>]\n"
+    "              [--offscreen] [--frames N] [--pick X,Y|center] [--move X,Y,Z]\n"
+    "              [--drag X0,Y0 X1,Y1] [--capture out.png] [--ddc <dir>]\n"
     "engine-editor --version\n"
     "  --doc        the document directory (protocol::Session opens it)\n"
     "  --create     create the document when the directory holds none\n"
     "  --actor      who the edits are attributed to (role: director)\n"
+    "  (window)     the web shell in the platform's web view beside the native viewport, both\n"
+    "               clients of the protocol listener the editor runs on 127.0.0.1; where there is\n"
+    "               no web view (no WebView2 runtime, a build without ENGINE_WITH_WEBVIEW) the\n"
+    "               viewport fills the window and the printed \"shell\" URL opens in a browser\n"
+    "  --embedded   the web shell beside the viewport, or exit 3 saying why there is none\n"
+    "  --no-shell   the viewport alone in the window, and no listener unless --listen asks\n"
+    "  --listen     the listener's address (default 127.0.0.1:0, a free port); loopback only.\n"
+    "               Prints one line first: "
+    "{\"listen\":\"ws://...\",\"token\":\"...\",\"shell\":...}\n"
+    "  --shell      the shell's files (default <bin>/../shell)\n"
     "  --offscreen  no window: draw --frames frames into the renderer's own target\n"
-    "  --frames N   stop after N frames (0: until the window closes)\n"
-    "  --pick X,Y   after the second frame, select what is under the pointer at (X, Y), in\n"
-    "               window coordinates (the picture's pixels offscreen or where nothing scales)\n"
+    "  --frames N   stop after N frames of the viewport (0: until the window closes); with the\n"
+    "               shell, counted from when the page first placed the viewport\n"
+    "  --pick X,Y   after the second frame, select what is under the pointer at (X, Y), in the\n"
+    "               viewport's window coordinates (the picture's pixels offscreen or where "
+    "nothing\n"
+    "               scales); `center` is the middle of the picture\n"
     "  --move X,Y,Z after picking, set the selection's translation in one transaction\n"
     "  --drag X0,Y0 X1,Y1  after picking, press at the first point, move to the second over\n"
     "               three frames and release, as a pointer would (frames 3 to 8): on a gizmo\n"
     "               handle that is one transaction; needs --pick and --frames 10 or more\n"
-    "  --capture    offscreen: the last frame, panels and all, as a PNG\n"
+    "  --capture    offscreen: the last frame, overlay and all, as a PNG\n"
     "  --version    the commit this binary was built from, as one JSON line\n"
-    "In the window: left click picks; drag a gizmo handle to move the selection along it (Escape\n"
+    "In the viewport: left click picks; drag a gizmo handle to move the selection along it "
+    "(Escape\n"
     "cancels); Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes the selection.\n"
-    "Exit codes: 0 ok, 1 runtime error, 2 usage, 3 no display or no device.\n";
+    "Exit codes: 0 ok, 1 runtime error, 2 usage, 3 no display, no device or (--embedded) no web\n"
+    "view.\n";
+
+enum class Shell : u8 { Auto, Embedded, None };
 
 struct Options {
   std::string doc;
   bool create = false;
   std::string actor = "editor";
-  u32 width = 1280;
-  u32 height = 720;
+  u32 width = 1600;  // the shell's three columns want about 950 CSS pixels, at 150 % about 1430
+  u32 height = 900;
   bool offscreen = false;
+  Shell shell = Shell::Auto;
+  std::string listen;  // empty: the default for the mode
+  u16 listen_port = 0;
+  std::string shell_dir;
   u32 frames = 0;
   bool pick = false;
+  bool pick_center = false;
   u32 pick_x = 0;
   u32 pick_y = 0;
   bool move = false;
@@ -133,8 +174,8 @@ int unavailable(const char* what, const std::string& why) {
   return 3;
 }
 
-// engine-view's fly camera, fed only what the panels do not take: WASD and E/Q to move, the pointer
-// to look while the right button is held over the picture (apps/engine_view/fly_camera.h).
+// engine-view's fly camera, fed only what the overlay does not take: WASD and E/Q to move, the
+// pointer to look while the right button is held over the picture (apps/engine_view/fly_camera.h).
 struct Camera {
   view::FlyState state;
   view::FlyParams params;
@@ -181,14 +222,15 @@ struct Summary {
   Id128 selected;
   bool picked = false;
   bool moved = false;
-  u32 outliner = 0;
-  u32 properties = 0;
-  u32 journal = 0;
   u32 rebuilds = 0;
   u32 transactions = 0;  // the session's journal, whole
   u32 undo_position = 0;
   u32 width = 0;  // the picture's pixels: the swapchain's, or the offscreen target's
   u32 height = 0;
+  bool embedded = false;          // the web shell was beside the viewport
+  u16 listen = 0;                 // the listener's port, 0 when there was none
+  u32 layouts = 0;                // editor.layout notifications received
+  editor::ViewportRect viewport;  // where the last layout put the viewport, in window coordinates
   editor::EditorInput::Stats input;
 };
 
@@ -207,6 +249,19 @@ void print_summary(const Summary& s, const Options& o) {
   out["height"] = JsonValue(s.height);
   out["transactions"] = JsonValue(s.transactions);
   out["undo_position"] = JsonValue(s.undo_position);
+  out["embedded"] = JsonValue(s.embedded);
+  out["listen"] = s.listen == 0 ? JsonValue() : JsonValue(u64{s.listen});
+  out["layouts"] = JsonValue(s.layouts);
+  if (s.layouts > 0) {
+    JsonValue rect = JsonValue::array();
+    rect.push_back(JsonValue(static_cast<i64>(s.viewport.x)));
+    rect.push_back(JsonValue(static_cast<i64>(s.viewport.y)));
+    rect.push_back(JsonValue(s.viewport.width));
+    rect.push_back(JsonValue(s.viewport.height));
+    out["viewport"] = std::move(rect);
+  } else {
+    out["viewport"] = JsonValue();
+  }
   // What one pick costs: it reads the whole visibility buffer back for one pixel, which is a
   // click's price and not a frame's (`Viewport::pick`). Null before any pick.
   out["pick_ms"] = s.input.pick_ms < 0.0 ? JsonValue() : JsonValue(s.input.pick_ms);
@@ -224,11 +279,6 @@ void print_summary(const Summary& s, const Options& o) {
   out["undos"] = JsonValue(s.input.undos);
   out["redos"] = JsonValue(s.input.redos);
   out["deletes"] = JsonValue(s.input.deletes);
-  JsonValue panels = JsonValue::object();
-  panels["outliner"] = JsonValue(s.outliner);
-  panels["properties"] = JsonValue(s.properties);
-  panels["journal"] = JsonValue(s.journal);
-  out["panels"] = std::move(panels);
   JsonWriteOptions compact;
   compact.pretty = false;  // one line, the last the run prints: what a test reads
   std::printf("%s\n", write_json(out, compact).c_str());
@@ -265,17 +315,19 @@ void to_pixels(window::Event& e, editor::PointerScale scale) noexcept {
 }
 
 // What both modes do between frames: the scripted pick and move, a drag's preview, then the
-// viewport brought up to the document.
-bool between_frames(const Options& options, u64 frame, editor::PointerScale scale,
-                    editor::EditorDocument& document, editor::Viewport& viewport,
+// viewport brought up to the document. `width` x `height` is the picture.
+bool between_frames(const Options& options, u64 frame, editor::PointerScale scale, u32 width,
+                    u32 height, editor::EditorDocument& document, editor::Viewport& viewport,
                     editor::EditorUi& ui, editor::EditorInput& input, Summary& summary,
                     std::string& error) {
   // Once: a window's loop can pass a frame's number twice (a swapchain out of date), and --move
   // must not commit twice.
   if (options.pick && frame == 2 && !summary.picked) {
-    if (!input.pick(static_cast<f32>(options.pick_x) * scale.x,
-                    static_cast<f32>(options.pick_y) * scale.y, document, viewport, error))
-      return false;
+    const f32 px = options.pick_center ? static_cast<f32>(width) * 0.5f
+                                       : static_cast<f32>(options.pick_x) * scale.x;
+    const f32 py = options.pick_center ? static_cast<f32>(height) * 0.5f
+                                       : static_cast<f32>(options.pick_y) * scale.y;
+    if (!input.pick(px, py, document, viewport, error)) return false;
     const Id128 picked = document.selection();
     summary.picked = true;
     if (options.move && !picked.is_null()) {
@@ -298,18 +350,8 @@ bool between_frames(const Options& options, u64 frame, editor::PointerScale scal
   return true;
 }
 
-// What the toolbar asked for this frame, through the same calls as the keys.
-bool toolbar(const editor::EditorUi::Actions& actions, editor::EditorDocument& document,
-             editor::Viewport& viewport, editor::EditorInput& input, std::string& error) {
-  if (actions.select) document.select(actions.selected);
-  if (actions.undo && !input.undo(document, viewport, error)) return false;
-  if (actions.redo && !input.redo(document, viewport, error)) return false;
-  if (actions.remove && !input.remove_selection(document, viewport, error)) return false;
-  return true;
-}
-
 void finish(Summary& summary, editor::EditorDocument& document, const editor::Viewport& viewport,
-            const editor::EditorUi& ui, const editor::EditorInput& input) {
+            const editor::EditorInput& input) {
   summary.selected = document.selection();
   summary.transactions = static_cast<u32>(document.document().journal().size());
   summary.undo_position = document.session().undo_position();
@@ -318,9 +360,6 @@ void finish(Summary& summary, editor::EditorDocument& document, const editor::Vi
   for (const Id128 id : viewport.scene().records)
     summary.records += id.is_null() ? 0u : 1u;
   summary.instances = static_cast<u32>(viewport.scene().desc.instances.size());
-  summary.outliner = ui.outliner_rows();
-  summary.properties = ui.property_rows();
-  summary.journal = ui.journal_rows();
 }
 
 int run_offscreen(const Options& options, editor::EditorDocument& document) {
@@ -363,19 +402,14 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
         }
       }
       if (code != 0) break;
-      if (!between_frames(options, f, scale, document, viewport, ui, input, summary, error)) {
+      if (!between_frames(options, f, scale, options.width, options.height, document, viewport, ui,
+                          input, summary, error)) {
         code = 1;
         break;
       }
       const renderer::Camera view = camera.view();
       input.set_view(document, viewport, view, options.width, options.height, scale.y);
-      editor::EditorUi::Actions actions;
-      ui.frame(1.0f / 60.0f, options.width, options.height, document, viewport, view, input,
-               actions);
-      if (!toolbar(actions, document, viewport, input, error)) {
-        code = 1;
-        break;
-      }
+      ui.frame(1.0f / 60.0f, options.width, options.height, document, viewport, view, input);
       renderer::OverlayDrawData overlay;
       if (!ui.render(viewport.renderer(), overlay, error)) {
         code = 1;
@@ -407,7 +441,7 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
       ++summary.frames;
     }
     if (code == 0) {
-      finish(summary, document, viewport, ui, input);
+      finish(summary, document, viewport, input);
       summary.width = options.width;
       summary.height = options.height;
       print_summary(summary, options);
@@ -419,6 +453,26 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
   return code;
 }
 
+// The protocol in process (editor_methods.h): a dispatcher over the editor's own session, with the
+// built-in methods every host has and the editor's three, and the listener over it.
+struct Host {
+  editor::EditorState state;
+  protocol::Policy policy;
+  protocol::Dispatcher dispatcher;
+  std::mutex lock;
+  protocol::Listener listener;
+
+  explicit Host(editor::EditorDocument& document)
+      : dispatcher(protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy}),
+        listener(dispatcher, lock) {
+    state.document = &document;
+    // The shell's edits are the editor's: the same actor, the director, as the viewport's.
+    policy.identity = document.caller().who;
+    protocol::add_builtin_methods(dispatcher);
+    editor::add_editor_methods(dispatcher);
+  }
+};
+
 int run_window(const Options& options, editor::EditorDocument& document) {
   std::string error;
   if (!window::init(&error)) return unavailable("no display", error);
@@ -427,12 +481,58 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     window::shutdown();
     return unavailable("SDL has no Vulkan support here", "");
   }
+  // The shell beside the viewport, where there is one to show. Asked before anything appears, so
+  // `--embedded` on a machine without the runtime exits with nothing on screen.
+  bool embedded = false;
+  std::string no_webview;
+  if (options.shell != Shell::None) {
+#if defined(ENGINE_EDITOR_WEBVIEW)
+    embedded = webview::runtime_available(&no_webview);
+#else
+    no_webview = "this build has no web view (ENGINE_WITH_WEBVIEW is off)";
+#endif
+    if (!embedded) {
+      if (options.shell == Shell::Embedded) {
+        window::shutdown();
+        return unavailable("no web view for the embedded shell", no_webview);
+      }
+      std::fprintf(stderr,
+                   "engine-editor: %s; the viewport fills the window and the shell is the "
+                   "\"shell\" URL above, in a browser\n",
+                   no_webview.c_str());
+    }
+  }
+
+  Host host(document);
+  const bool listening = options.shell != Shell::None || !options.listen.empty();
+  if (listening) {
+    std::string shell_dir = options.shell_dir;
+    if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
+    if (!host.listener.start(options.listen_port, shell_dir, document.session().id(), error)) {
+      window::shutdown();
+      std::fprintf(stderr, "engine-editor: --listen: %s\n", error.c_str());
+      return 1;
+    }
+    // The first line on stdout, before anything is served, so a client can be started from it.
+    const std::string line = host.listener.announcement();
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+  }
+
+  // The top-level window. Embedded, it carries no surface: its children do the drawing — the web
+  // view, and the viewport's child window over the page's cell (window.md, "Child windows").
   window::WindowDesc wd;
   wd.title = "engine-editor";
   wd.width = options.width;
   wd.height = options.height;
+  wd.vulkan = !embedded;
+  // Embedded, it appears only once the device is made: the device takes the GPU lock, and a window
+  // on screen while its process waits for the lock pumps nothing and reads "Not responding".
+  wd.hidden = embedded;
   window::Window window;
   if (!window.create(wd, &error)) {
+    host.listener.stop();
     window::shutdown();
     return unavailable("cannot create a window", error);
   }
@@ -442,6 +542,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   gfx::Device device;
   if (!device.create(device_options, &error) || !device.features().presentation) {
     if (device.valid()) device.destroy();
+    host.listener.stop();
     window.destroy();
     window::shutdown();
     return unavailable("no Vulkan device that presents", error);
@@ -449,26 +550,74 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   int code = 0;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   {
+#if defined(ENGINE_EDITOR_WEBVIEW)
+    webview::Webview web;
+#endif
+    // The window that presents: the child over the page's cell, or the top-level window itself.
+    window::Window child;
+    window::Window* view_window = &window;
+    // The viewport is placed (and frames are counted) once the page has said where its cell is.
+    bool placed = !embedded;
+    u32 applied_layouts = 0;
+    if (embedded) {
+#if defined(ENGINE_EDITOR_WEBVIEW)
+      window.show();
+      u32 logical_w = 0;
+      u32 logical_h = 0;
+      if (!window.logical_size(logical_w, logical_h)) logical_w = logical_h = 0;
+      if (!web.create(window.os_handle(), webview::WebviewOptions{}, &error)) {
+        code = options.shell == Shell::Embedded ? unavailable("no web view", error) : 1;
+        if (code == 1) std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
+      } else {
+        web.set_rect(0, 0, logical_w, logical_h);
+        if (!web.navigate(host.listener.shell_url() + "&embedded=1")) {
+          error = "the web view refused the shell's address";
+          code = 1;
+        }
+      }
+#endif
+      if (code == 0) {
+        // Hidden until the page places it, so it never covers the page while the page loads.
+        window::WindowDesc cd;
+        cd.parent = &window;
+        cd.width = 64;
+        cd.height = 64;
+        cd.hidden = true;
+        cd.vulkan = true;
+        if (!child.create(cd, &error)) {
+          code = unavailable("cannot create the viewport's child window", error);
+        } else {
+          view_window = &child;
+        }
+      }
+    }
     gfx::Swapchain swapchain;
     editor::Viewport viewport;
     editor::EditorUi ui;
     editor::EditorInput input;
     Camera camera;
     Summary summary;
+    summary.embedded = embedded;
+    summary.listen = listening ? host.listener.port() : u16{0};
     Vector<window::Event> scripted;
     u64 scripted_frame = ~u64{0};  // the frame whose scripted events were sent
-    if (!window::vulkan::create_surface(window, device.handles().instance, surface, &error)) {
-      code = unavailable("cannot create a surface", error);
-    } else {
-      gfx::SwapchainDesc sd;
-      sd.surface = surface;
-      sd.width = window.pixel_width();
-      sd.height = window.pixel_height();
-      sd.vsync = true;
-      sd.color_bits = 8;  // SDR: the overlay composites onto the encoded picture (ADR-0054)
-      if (!swapchain.create(device, sd, &error)) code = unavailable("no swapchain", error);
+    if (code == 0) {
+      if (!window::vulkan::create_surface(*view_window, device.handles().instance, surface,
+                                          &error)) {
+        code = unavailable("cannot create a surface", error);
+      } else {
+        gfx::SwapchainDesc sd;
+        sd.surface = surface;
+        sd.width = view_window->pixel_width();
+        sd.height = view_window->pixel_height();
+        sd.vsync = true;
+        sd.color_bits = 8;  // SDR: the overlay composites onto the encoded picture (ADR-0054)
+        if (!swapchain.create(device, sd, &error)) code = unavailable("no swapchain", error);
+      }
     }
     if (code == 0) {
+      // The listener may already be serving the page: the document is read under its lock.
+      std::lock_guard<std::mutex> lock(host.lock);
       editor::Viewport::Options vo;
       vo.width = swapchain.extent().width;
       vo.height = swapchain.extent().height;
@@ -481,10 +630,11 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         code = 1;
       }
       ui.create();
-      window.show();
+      if (!embedded) window.show();
     }
     const i64 period_ns = 1'000'000'000 / std::max<i64>(1, present_max_hz.get());
-    i64 last_ns = time::monotonic_ns();
+    const i64 started_ns = time::monotonic_ns();
+    i64 last_ns = started_ns;
     bool resize = false;
     bool running = code == 0;
     while (running) {
@@ -494,11 +644,15 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       const i64 now = time::monotonic_ns();
       const i64 dt_ns = now - last_ns;
       last_ns = now;
+      // Everything that reads or writes the document, the selection or the editor's state happens
+      // under the listener's dispatch lock; the frame's submission and present do not.
+      std::unique_lock<std::mutex> lock(host.lock);
       // The pointer arrives in the window's coordinates and the picture is the swapchain's pixels;
       // under display scaling the two differ, and a click would land beside its target.
       u32 logical_width = 0;
       u32 logical_height = 0;
-      if (!window.logical_size(logical_width, logical_height)) logical_width = logical_height = 0;
+      if (!view_window->logical_size(logical_width, logical_height))
+        logical_width = logical_height = 0;
       const editor::PointerScale scale = editor::pointer_scale(
           logical_width, logical_height, swapchain.extent().width, swapchain.extent().height);
       // One path for the platform's events and the scripted gesture's: ImGui first, then the
@@ -506,18 +660,18 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       const auto on_event = [&](window::Event e) {
         to_pixels(e, scale);
         ui.feed(e);
-        const bool over_panels = ui.wants_mouse() && !input.dragging();
-        if (e.kind == window::EventKind::MouseButtonDown && e.button == 3 && !over_panels)
+        const bool over_overlay = ui.wants_mouse() && !input.dragging();
+        if (e.kind == window::EventKind::MouseButtonDown && e.button == 3 && !over_overlay)
           camera.looking = true;
         if (e.kind == window::EventKind::MouseButtonUp && e.button == 3) camera.looking = false;
         const bool keys_free = !ui.wants_keyboard();
-        if (!input.handle(e, over_panels, keys_free, document, viewport, error)) return false;
+        if (!input.handle(e, over_overlay, keys_free, document, viewport, error)) return false;
         const bool is_key =
             e.kind == window::EventKind::KeyDown || e.kind == window::EventKind::KeyUp;
         // Ctrl is the editor's modifier (Ctrl+Z, Ctrl+Y), so here it does not lower the camera as
         // it does in engine-view; Q does.
         const bool editor_key = is_key && e.key == window::Key::Control;
-        if (!editor_key && ((is_key && keys_free) || (!is_key && !over_panels) ||
+        if (!editor_key && ((is_key && keys_free) || (!is_key && !over_overlay) ||
                             e.kind == window::EventKind::MouseButtonUp)) {
           camera.edge.add(e, camera.next(), camera.looking);
         }
@@ -528,14 +682,66 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       while (!failed && window.poll(event)) {
         if (event.kind == window::EventKind::Quit ||
             event.kind == window::EventKind::CloseRequested) {
-          running = false;
+          if (!event.child) running = false;
+          continue;
         }
-        if (event.kind == window::EventKind::Resized) resize = true;
+        if (embedded && !event.child) {
+          // The top-level window's own: its size is the web view's. Its keys are the viewport's —
+          // a key the page has never reaches the platform's event queue, and one that reaches it
+          // came to the viewport's child, which the platform reports as its top-level window's.
+          if (event.kind == window::EventKind::Resized) {
+#if defined(ENGINE_EDITOR_WEBVIEW)
+            u32 w = 0;
+            u32 h = 0;
+            if (window.logical_size(w, h)) web.set_rect(0, 0, w, h);
+#endif
+            continue;
+          }
+          if (is_pointer(event)) continue;
+        }
+        if (event.kind == window::EventKind::Resized) {
+          resize = true;
+          continue;
+        }
+        // A press in the viewport gives it the keyboard: a child window is not activated by a
+        // click the way a top-level window is, and a click in the page takes the keyboard back.
+        if (embedded && event.child && event.kind == window::EventKind::MouseButtonDown)
+          child.focus();
         failed = !on_event(event);
+      }
+      // The page's layout, when it moved: the viewport's child window goes where the cell is, and
+      // is shown the first time.
+      if (embedded && host.state.layouts != applied_layouts) {
+        applied_layouts = host.state.layouts;
+        u32 pw = 0;
+        u32 lw = 0;
+        u32 lh = 0;
+        pw = window.pixel_width();
+        if (!window.logical_size(lw, lh)) lw = 0;
+        host.state.pixels_per_unit =
+            lw > 0 && pw > 0 ? static_cast<f64>(pw) / static_cast<f64>(lw) : 1.0;
+        const editor::ViewportRect rect =
+            editor::layout_rect(host.state.layout, host.state.pixels_per_unit);
+        summary.viewport = rect;
+        summary.layouts = host.state.layouts;
+        if (!child.set_rect(rect.x, rect.y, rect.width, rect.height)) {
+          error = "the viewport's child window could not be placed";
+          failed = true;
+        } else {
+          if (!placed) {
+            child.set_visible(true);
+            placed = true;
+          }
+          resize = true;
+        }
+      }
+      if (!placed && time::monotonic_ns() - started_ns > k_layout_timeout_ns) {
+        error = "the page sent no editor.layout within a minute of starting";
+        failed = true;
       }
       // Once a frame: an iteration that draws nothing (an out-of-date swapchain) keeps the count.
       scripted.clear();
-      if (summary.frames != scripted_frame) {
+      if (placed && summary.frames != scripted_frame) {
         scripted_frame = summary.frames;
         scripted_events(options, summary.frames, scripted);
       }
@@ -546,11 +752,12 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         break;
       }
       if (!running) break;
-      window.set_relative_mouse(camera.looking);
+      if (!placed) continue;  // nothing to draw until the page says where
+      view_window->set_relative_mouse(camera.looking);
       camera.advance(dt_ns);
       if (resize) {
         resize = false;
-        if (!swapchain.resize(window.pixel_width(), window.pixel_height(), &error)) {
+        if (!swapchain.resize(view_window->pixel_width(), view_window->pixel_height(), &error)) {
           code = 1;
           break;
         }
@@ -561,27 +768,25 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           break;
         }
       }
-      if (!between_frames(options, summary.frames, scale, document, viewport, ui, input, summary,
-                          error)) {
-        code = 1;
-        break;
-      }
       const u32 width = swapchain.extent().width;
       const u32 height = swapchain.extent().height;
-      const renderer::Camera view = camera.view();
-      input.set_view(document, viewport, view, width, height, scale.y);
-      editor::EditorUi::Actions actions;
-      ui.frame(static_cast<f32>(dt_ns) / 1.0e9f, width, height, document, viewport, view, input,
-               actions);
-      if (!toolbar(actions, document, viewport, input, error)) {
+      if (!between_frames(options, summary.frames, scale, width, height, document, viewport, ui,
+                          input, summary, error)) {
         code = 1;
         break;
       }
+      const renderer::Camera view = camera.view();
+      host.state.camera = editor::framed_camera(view);
+      host.state.width = width;
+      host.state.height = height;
+      input.set_view(document, viewport, view, width, height, scale.y);
+      ui.frame(static_cast<f32>(dt_ns) / 1.0e9f, width, height, document, viewport, view, input);
       renderer::OverlayDrawData overlay;
       if (!ui.render(viewport.renderer(), overlay, error)) {
         code = 1;
         break;
       }
+      lock.unlock();
       renderer::SceneRenderer& r = viewport.renderer();
       r.begin_frame();
       u32 image = 0;
@@ -619,11 +824,15 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       ++summary.frames;
       if (options.frames > 0 && summary.frames >= options.frames) running = false;
     }
+    // Nothing the listener dispatches reaches into the window, the viewport or the device, but it
+    // stops before they go so that the page's last call is answered by a whole editor.
+    host.listener.stop();
     if (viewport.valid()) viewport.renderer().wait_idle();
     if (code == 0) {
-      finish(summary, document, viewport, ui, input);
+      finish(summary, document, viewport, input);
       summary.width = swapchain.extent().width;
       summary.height = swapchain.extent().height;
+      summary.layouts = host.state.layouts;
       print_summary(summary, options);
     } else if (!error.empty()) {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
@@ -631,9 +840,14 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     ui.destroy();
     viewport.destroy();
     swapchain.destroy();
+    if (surface != VK_NULL_HANDLE)
+      window::vulkan::destroy_surface(device.handles().instance, surface);
+    surface = VK_NULL_HANDLE;
+#if defined(ENGINE_EDITOR_WEBVIEW)
+    web.destroy();
+#endif
+    child.destroy();
   }
-  if (surface != VK_NULL_HANDLE)
-    window::vulkan::destroy_surface(device.handles().instance, surface);
   device.destroy();
   window.destroy();
   window::shutdown();
@@ -675,15 +889,36 @@ int main(int argc, char** argv) {
       (a == "--width" ? options.width : options.height) = n;
     } else if (a == "--offscreen") {
       options.offscreen = true;
+    } else if (a == "--embedded") {
+      options.shell = Shell::Embedded;
+    } else if (a == "--no-shell") {
+      options.shell = Shell::None;
+    } else if (a == "--listen") {
+      if (!value(options.listen)) return usage("--listen needs 127.0.0.1:<port>");
+      std::string why;
+      // Loopback or nothing (AGENTS.md: a listener binds loopback unless the user opts in, and
+      // there is no opt-in here): any other address is refused before anything starts.
+      if (!net::parse_loopback_address(options.listen, options.listen_port, why)) {
+        std::fprintf(stderr, "engine-editor: --listen %s: %s\n", options.listen.c_str(),
+                     why.c_str());
+        return 2;
+      }
+    } else if (a == "--shell") {
+      if (!value(options.shell_dir)) return usage("--shell needs a directory");
     } else if (a == "--frames") {
       if (!value(v) || !parse_u32(v, options.frames)) return usage("--frames needs a count");
     } else if (a == "--pick") {
-      f64 xy[2];
-      if (!value(v) || !parse_list(v, xy, 2) || xy[0] < 0.0 || xy[1] < 0.0)
-        return usage("--pick needs X,Y");
+      if (!value(v)) return usage("--pick needs X,Y or center");
+      if (v == "center") {
+        options.pick_center = true;
+      } else {
+        f64 xy[2];
+        if (!parse_list(v, xy, 2) || xy[0] < 0.0 || xy[1] < 0.0)
+          return usage("--pick needs X,Y or center");
+        options.pick_x = static_cast<u32>(xy[0]);
+        options.pick_y = static_cast<u32>(xy[1]);
+      }
       options.pick = true;
-      options.pick_x = static_cast<u32>(xy[0]);
-      options.pick_y = static_cast<u32>(xy[1]);
     } else if (a == "--move") {
       if (!value(v) || !parse_list(v, options.move_to, 3)) return usage("--move needs X,Y,Z");
       options.move = true;
@@ -710,6 +945,8 @@ int main(int argc, char** argv) {
   if (options.drag && !options.pick) return usage("--drag drags what --pick selected");
   if (options.drag && options.frames > 0 && options.frames < 10)
     return usage("--drag releases at the eighth frame: --frames 10 or more");
+  if (options.offscreen && (options.shell == Shell::Embedded || !options.listen.empty()))
+    return usage("--offscreen draws the viewport alone: no --embedded, no --listen");
 
   editor::EditorDocument document;
   std::string error;

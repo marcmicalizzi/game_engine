@@ -543,7 +543,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A21 | World mips: semantic, visual, design density | open | A8, D32 | L | research | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
 | A22 | Edit context: cell, overlap ring, token budget | open | A18, A21 | L | design | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
 | A23 | Task ledger and review items | open | | M | design | [06 §6.8](plan/06-agent-tooling.md#68-long-running-work) |
-| A24 | Editor client v0 with a review queue | open | A2, A15, A23, A34 | L | design | [06 §6.10](plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) |
+| A24 | Editor client v0 with a review queue | open (2026-10-11: the editor is one window, the web shell beside the native viewport, both clients of one in-process host, A37; the review queue and the proposal views are what is left) | A2, A15, A23, A34, A37 | L | design | [06 §6.10](plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) |
 | A25 | The editor as a complete tool suite | open | A24 | L | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
 | A26 | View policies applied to captures and reviews | open | C3, A23 | M | design | [ADR-0033](adr/0033-content-classes-and-view-policies.md) |
 | A27 | E5: one agent builds a small level | open | A12, A13, D14 | M | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
@@ -555,7 +555,8 @@ The engine as a server, its clients, and what agents and the human director work
 | A33 | Console: Luau scripts over the protocol | done (06 §6.3 2026-10-10) | A1 | M | design | [apps](subsystems/apps.md#the-console-luau-scripts-over-the-protocol) |
 | A34 | Editor v0: viewport, outliner, properties, picking, edits through commands | done (2026-10-10; stage 1 a74c72b0: the viewport, the three panels, picking, the document-to-scene bridge; stage 2: the translate gizmo with one transaction per drag, undo, redo and delete, picking under display scaling, `--version`; property editing and text input moved to the authoring shell, A36, by ADR-0054's narrowed decision 4) | A1, A18 | M | design | [apps](subsystems/apps.md#engine-editor-the-engines-window-on-a-document) |
 | A35 | Accept ADR-0054: the in-engine tools UI is Dear ImGui drawn by the overlay pass | blocked (the owner's review of the narrowed decision: ImGui for the tools inside the engine's window, the authoring shell left to A36's spike) | A34 | S | design | [ADR-0054](adr/0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) |
-| A36 | Web shell spike over the protocol | done (06 §6.13 2026-10-10; the owner's verdict on it open) | A2, A32 | M | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
+| A36 | Web shell spike over the protocol | done (06 §6.13 2026-10-10; the owner's verdict, 2026-10-11: the panels yes, the capture slideshow as a viewport no — every frame a render, readback, PNG, fetch and decode — hence A37) | A2, A32 | M | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
+| A37 | Editor: the web shell embedded beside the native viewport | in progress (2026-10-11: the listener lifted into `protocol::Listener`; engine-editor serves the shell in process and shows it in WebView2 beside the Vulkan viewport in a child window; `editor.layout`, `editor.select`, `editor.state`; the ImGui panels retired) | A34, A36 | M | design | [apps](subsystems/apps.md#engine-editor-the-engines-window-on-a-document) |
 
 ## P — The reference games
 
