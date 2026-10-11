@@ -120,6 +120,10 @@ constexpr f32 k_uv_limit = 16.0f;
 struct Diagnostics {
   Vector<Diagnostic> warnings;
   Diagnostic error;  // the first one; `rule` is empty while there is none
+  // The first triangle that repeats an index, named as the source numbers it. It is an error, but
+  // one reported after the zero-area repair has run, so that its sentence can say what the repair
+  // removed and that this one is not of that kind (`build_one`).
+  Diagnostic repeated;
 };
 
 bool is_finite(Vec3 p) noexcept {
@@ -167,18 +171,20 @@ bool validate_mesh(const assets::MeshData& mesh, const std::string& source, Diag
                                std::to_string(index) + " has a position that is not finite");
         }
       }
-      // Degenerate either topologically (a repeated corner) or geometrically (two edges exactly
-      // parallel in float arithmetic, so the triangle has no area and covers no pixel).
-      const Vec3 normal = cross(mesh.positions[corner[1]] - mesh.positions[corner[0]],
-                                mesh.positions[corner[2]] - mesh.positions[corner[0]]);
+      // Degenerate topologically: a repeated corner, which is an indexing fault and stays an
+      // error. It is reported after the zero-area repair (`Diagnostics::repeated`). A triangle
+      // degenerate only geometrically — three distinct corners whose positions span no area — is
+      // not checked here any more: the zero-area repair drops it, by this same test
+      // (`geometry::spans_zero_area`), and reports what it dropped (geometry.md, "Zero-area
+      // triangles: the repair").
       const bool repeated =
           corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2];
-      if (repeated || (normal.x == 0.0f && normal.y == 0.0f && normal.z == 0.0f)) {
-        return fail_rule(out, k_rule_degenerate,
-                         where + ", triangle " + std::to_string(t) + " is degenerate: indices " +
-                             std::to_string(corner[0]) + " " + std::to_string(corner[1]) + " " +
-                             std::to_string(corner[2]) +
-                             (repeated ? " repeat a vertex" : " span no area"));
+      if (repeated && *out.repeated.rule == '\0') {
+        out.repeated.rule = k_rule_degenerate;
+        out.repeated.message = where + ", triangle " + std::to_string(t) +
+                               " is degenerate: indices " + std::to_string(corner[0]) + " " +
+                               std::to_string(corner[1]) + " " + std::to_string(corner[2]) +
+                               " repeat a vertex";
       }
       if (has_uvs) {
         for (const u32 index : corner) {
@@ -298,6 +304,47 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   if (!validate_mesh(mesh, input, diagnostics)) {
     error = std::move(diagnostics.error);
     return false;
+  }
+
+  // Zero-area triangles are dropped first: after validation, so every diagnostic above names a
+  // triangle as the source numbers it, and before the UV repair, which should not have to fold a
+  // triangle that has no area to show (geometry.md, "Zero-area triangles: the repair").
+  // `engine-view --mesh` calls the same function at the same point, because the two share cache
+  // entries. What it does not cover is still refused, after it, with a sentence that says what it
+  // removed: a triangle that repeats an index, and a primitive with no area left at all.
+  if (!assets::repair_zero_area_triangles(mesh, out.zero_area_repair, &message)) {
+    error.rule = k_rule_degenerate;
+    error.message = message;
+    return false;
+  }
+  const geometry::ZeroAreaRepairReport& zero_area = out.zero_area_repair;
+  const std::string removed =
+      " (the zero-area repair ran first: it found " + std::to_string(zero_area.triangles) +
+      " triangle" + (zero_area.triangles == 1 ? "" : "s") +
+      " whose three distinct corners span no area, " + std::to_string(zero_area.collinear) +
+      " collinear and " + std::to_string(zero_area.coincident) +
+      " with coincident corners, and removed " + std::to_string(zero_area.dropped);
+  if (*diagnostics.repeated.rule != '\0') {
+    error.rule = diagnostics.repeated.rule;
+    error.message = diagnostics.repeated.message + removed +
+                    "; a repeated index is an indexing fault it does not repair)";
+    return false;
+  }
+  if (zero_area.unrepaired != 0) {
+    for (u32 p = 0; p < mesh.primitives.size(); ++p) {
+      const assets::Primitive& primitive = mesh.primitives[p];
+      if (primitive.index_count != 3) continue;  // a run it kept a triangle of holds just that one
+      const u32* corner = mesh.indices.data() + primitive.first_index;
+      if (!geometry::spans_zero_area(mesh.positions[corner[0]], mesh.positions[corner[1]],
+                                     mesh.positions[corner[2]])) {
+        continue;
+      }
+      error.rule = k_rule_degenerate;
+      error.message = "primitive " + std::to_string(p) + " of '" + input +
+                      "' has no triangle with any area" + removed +
+                      ", keeping this primitive's last triangle rather than empty it)";
+      return false;
+    }
   }
   out.warnings = std::move(diagnostics.warnings);
   if (strict && !out.warnings.empty()) {
@@ -540,6 +587,18 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
 // empty when none did, so a reader tells "nothing to repair" from "an older build" by the key.
 JsonValue repairs_json(const BuildResult& result) {
   JsonValue rows = JsonValue::array();
+  // In the order the build runs them: the zero-area repair, then the UV repair.
+  const geometry::ZeroAreaRepairReport& z = result.zero_area_repair;
+  if (z.triangles != 0) {
+    JsonValue row = JsonValue::object();
+    row.set("rule", JsonValue(k_rule_zero_area));
+    row.set("triangles", JsonValue(z.triangles));
+    row.set("collinear", JsonValue(z.collinear));
+    row.set("coincident", JsonValue(z.coincident));
+    row.set("dropped", JsonValue(z.dropped));
+    row.set("unrepaired", JsonValue(z.unrepaired));
+    rows.push_back(std::move(row));
+  }
   const geometry::UvRepairReport& r = result.uv_repair;
   if (r.triangles != 0) {
     JsonValue row = JsonValue::object();

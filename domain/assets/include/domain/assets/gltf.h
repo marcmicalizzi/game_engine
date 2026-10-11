@@ -44,6 +44,7 @@
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/geometry/uv_repair.h>
+#include <domain/geometry/zero_area_repair.h>
 
 #include <span>
 #include <string>
@@ -269,6 +270,18 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error = null
 // mesh with no ids. The joint count is the widest skin of the file, which is the palette a merged
 // mesh's indices live in.
 geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept;
+
+// The content build's zero-area repair (`geometry::repair_zero_area_triangles`) over an imported
+// mesh: one run per primitive, every primitive whatever its material, and the primitive ranges
+// rewritten as triangles are dropped (a primitive is never emptied). Both builders of a cluster
+// container call it — `engine-content build` and the renderer's glTF path behind `engine-view
+// --mesh` — **after loading and before the UV repair**, because they share derived-data cache
+// entries and have to produce the same bytes, and because a triangle with no area is not one the
+// UV repair should have to fold. Returns false with a sentence only for a mesh the importer would
+// never produce (primitives out of order or overlapping, an index out of range); the mesh is then
+// unchanged.
+bool repair_zero_area_triangles(MeshData& mesh, geometry::ZeroAreaRepairReport& report,
+                                std::string* error = nullptr);
 
 // The content build's UV repair (`geometry::repair_uv_degenerate_triangles`) over an imported
 // mesh: one run per primitive, a run's UVs counted as sampled when its material names any image,

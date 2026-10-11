@@ -550,7 +550,13 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    and its records name textures whose mips were filtered with clamped edges. Its geometry
 //    sections are byte-identical to what a build makes now; the new section, the texture records
 //    and the identity differ.
-inline constexpr u32 k_cluster_cache_version = 15;
+// 16: both builders drop zero-area triangles before the UV repair (`zero_area_repair.h`,
+//    geometry.md "Zero-area triangles: the repair"): a triangle with three distinct corners whose
+//    positions span no area. `engine-content build` refused such a source outright, so it has no
+//    container at 15; but the renderer's glTF path drew it, and an entry it built at 15 keeps the
+//    triangle — its index stream and DAG differ from what either builder makes now under the same
+//    key. A source with none builds the same bytes as before and merely moves to a new cache path.
+inline constexpr u32 k_cluster_cache_version = 16;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

@@ -183,8 +183,9 @@ constexpr u32 k_source_path_kind = 14;
 // hash and the build key over it) carries, so a version bump moves that row and only that row —
 // and moved to 14 the same day, which moved row 15 and added row 32 (`textures`, empty: the
 // fixture has no images), and to 15 the same day again, which moved row 15 and added row 33
-// (`material_sampling`: one default record per material). 723 clusters. The empty sections all
-// hash to 0x9ca066f1a4ab2eea, `hash_bytes` of nothing.
+// (`material_sampling`: one default record per material), and to 16 on 2026-10-10 for the zero-area
+// repair, which moved row 15 alone (the fixture has no zero-area triangle). 723 clusters. The empty
+// sections all hash to 0x9ca066f1a4ab2eea, `hash_bytes` of nothing.
 constexpr SectionHash k_golden[] = {
     {1, 0xcf16170acf2289bdull},   // clusters
     {2, 0x490fb3784ad8b04eull},   // lod
@@ -199,7 +200,7 @@ constexpr SectionHash k_golden[] = {
     {11, 0x9ca066f1a4ab2eeaull},  // strings
     {12, 0xabbe4b9547eecfedull},  // scalars
     {13, 0x8de2d34a8650a3bcull},  // quantized
-    {15, 0x4a013abb37af46a9ull},  // source_hash: the source's hash and the build key
+    {15, 0xca673f877e13cd0cull},  // source_hash: the source's hash and the build key
     {16, 0x4e5e346448e74edeull},  // pages
     {17, 0xcac3ebbc6dcebd3aull},  // page_children
     {18, 0x1d46f3ca5f069ef3ull},  // page_scalars

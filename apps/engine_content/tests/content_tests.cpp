@@ -127,6 +127,16 @@ struct CubeOptions {
   // A face whose four UVs are one point: an atlas island of no area, the defect the content
   // build's UV repair exists for (geometry.md, "UV-degenerate triangles: the repair"). -1: none.
   i32 point_uv_face = -1;
+  // The two zero-area triangles the content build's zero-area repair drops (geometry.md,
+  // "Zero-area triangles: the repair"), each in the face's second triangle (corners 0, 2, 3): on
+  // `collinear_face` corner 2 is moved to the midpoint of corners 0 and 3, so the triangle is three
+  // distinct points on one line (exactly: every coordinate is ±0.5 or 0); on `coincident_face`
+  // corner 3 is moved onto corner 0, two distinct vertices at one point. And `repeated_index_face`
+  // writes that triangle as corners 0, 2, 2: a repeated index, which the repair does not cover and
+  // the build still refuses. -1: none.
+  i32 collinear_face = -1;
+  i32 coincident_face = -1;
+  i32 repeated_index_face = -1;
   // The index buffer names the faces last to first. The weld numbers vertices by first use, so
   // this makes it renumber every one of them — which the vertex order of the default cube never
   // does, and which is what a builder that leaves a stream out of the weld gets wrong.
@@ -153,8 +163,11 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
     const Vec3 nrm = normals[f];
     const Vec3 t = tangents[f];
     const Vec3 b = cross(nrm, t);
-    const Vec3 corners[4] = {nrm * h - t * h - b * h, nrm * h + t * h - b * h,
-                             nrm * h + t * h + b * h, nrm * h - t * h + b * h};
+    Vec3 corners[4] = {nrm * h - t * h - b * h, nrm * h + t * h - b * h, nrm * h + t * h + b * h,
+                       nrm * h - t * h + b * h};
+    if (static_cast<i32>(f) == options.collinear_face)
+      corners[2] = (corners[0] + corners[3]) * 0.5f;
+    if (static_cast<i32>(f) == options.coincident_face) corners[3] = corners[0];
     for (const Vec3& c : corners) {
       put_f32(bin, c.x);
       put_f32(bin, c.y);
@@ -187,8 +200,11 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
   for (u32 k = 0; k < 6; ++k) {
     const u32 f = options.reverse_faces ? 5 - k : k;
     const u16 base = static_cast<u16>(f * 4);
+    const u16 last = static_cast<i32>(f) == options.repeated_index_face
+                         ? static_cast<u16>(base + 2)
+                         : static_cast<u16>(base + 3);
     const u16 tris[6] = {base, static_cast<u16>(base + 1), static_cast<u16>(base + 2),
-                         base, static_cast<u16>(base + 2), static_cast<u16>(base + 3)};
+                         base, static_cast<u16>(base + 2), last};
     for (const u16 i : tris)
       put_u16(bin, i);
   }
@@ -1095,6 +1111,68 @@ TEST_CASE("engine-content: an atlas island of no area is repaired and reported, 
   REQUIRE(entry_repairs != nullptr);
   REQUIRE(entry_repairs->size() == 1);
   CHECK(number((*entry_repairs)[0], "refolded") == 2);
+}
+
+TEST_CASE(
+    "engine-content: a zero-area triangle is dropped and reported, a repeated index refused") {
+  const test::TempDir tmp("engine_content_zero_area_tests");
+  const std::filesystem::path dir = tmp.native();
+  const std::string out = slashes(dir / "out.clusters");
+
+  // A collinear triangle in the first primitive (face 2) and a coincident one in the second (face
+  // 4): before the repair the build refused this file as `geometry.degenerate_triangle`, on the
+  // first of them.
+  const std::string mesh = slashes(dir / "zero_area.glb");
+  REQUIRE(write_cube_glb(mesh, CubeOptions{.collinear_face = 2, .coincident_face = 4}));
+  const Run repaired = content({"build", mesh, out});
+  REQUIRE_MESSAGE(repaired.exit_code == 0, repaired.output);
+  CHECK(number(repaired.result, "warnings") == 0);  // a repair is not a warning
+  CHECK(number(repaired.result, "triangles") == 10);
+  const JsonValue* repairs = repaired.result.find("repairs");
+  REQUIRE(repairs != nullptr);
+  REQUIRE(repairs->size() == 1);  // and nothing for the UV repair: every face keeps its island
+  const JsonValue& row = (*repairs)[0];
+  CHECK(text_of(row, "rule") == "geometry.zero_area");
+  CHECK(number(row, "triangles") == 2);
+  CHECK(number(row, "collinear") == 1);
+  CHECK(number(row, "coincident") == 1);
+  CHECK(number(row, "dropped") == 2);
+  CHECK(number(row, "unrepaired") == 0);
+  const Run said = content({"build", mesh, out}, true);
+  CHECK_MESSAGE(said.output.find("repair: geometry.zero_area") != std::string::npos, said.output);
+  CHECK(said.output.find("2 dropped") != std::string::npos);
+  CHECK(said.output.find("degenerate_triangle") == std::string::npos);
+
+  // build-all carries the same row on the entry's line.
+  const std::string manifest = slashes(dir / "meshes.json");
+  REQUIRE(write_text(manifest,
+                     "{\"meshes\":[{\"source\":\"zero_area.glb\",\"output\":\"many.clusters\"}]}"));
+  const Run all = content({"build-all", manifest});
+  REQUIRE_MESSAGE(all.exit_code == 0, all.output);
+  const JsonValue* entry_repairs = all.lines[0].find("repairs");
+  REQUIRE(entry_repairs != nullptr);
+  REQUIRE(entry_repairs->size() == 1);
+  CHECK(number((*entry_repairs)[0], "dropped") == 2);
+
+  // A repeated index is still refused, with the same rule, after the repair has run and saying
+  // what it removed — so whoever reads it knows this one is a different fault.
+  const std::string repeated = slashes(dir / "repeated.glb");
+  REQUIRE(write_cube_glb(repeated, CubeOptions{.collinear_face = 2, .repeated_index_face = 5}));
+  const Run refused = content({"build", repeated, slashes(dir / "refused.clusters")}, true);
+  CHECK(refused.exit_code == 1);
+  CHECK_MESSAGE(refused.output.find("geometry.degenerate_triangle") != std::string::npos,
+                refused.output);
+  CHECK(refused.output.find("primitive 1 of") != std::string::npos);
+  // Face 5's corners are vertices 20..23 of the file; the import gives each primitive its own copy
+  // of the vertices it reads, so in the second primitive they are 44..47.
+  CHECK_MESSAGE(refused.output.find("triangle 5 is degenerate: indices 44 46 46 repeat a vertex") !=
+                    std::string::npos,
+                refused.output);
+  CHECK(refused.output.find("the zero-area repair ran first: it found 1 triangle") !=
+        std::string::npos);
+  CHECK(refused.output.find("1 collinear and 0 with coincident corners, and removed 1") !=
+        std::string::npos);
+  CHECK_FALSE(std::filesystem::exists(dir / "refused.clusters"));
 }
 
 TEST_CASE("engine-content: stats counts atlas islands, not the pieces a hard edge makes") {

@@ -32,6 +32,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/uv_repair.h>
+#include <domain/geometry/zero_area_repair.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 
@@ -109,6 +110,11 @@ inline constexpr const char* k_rule_missing_image = "material.missing_image";
 // the repair"). An asset that needed it is still one the pipeline can take unattended, which is
 // the difference between this and a warning.
 inline constexpr const char* k_rule_uv_degenerate = "geometry.uv_degenerate";
+// The other repair, of the same kind: a triangle with three distinct corners whose positions span
+// no area is dropped before the UV repair (docs/subsystems/geometry.md, "Zero-area triangles: the
+// repair"). It used to be refused as `geometry.degenerate_triangle`, which now names only what
+// the repair does not cover: a repeated index, or a primitive with no area left at all.
+inline constexpr const char* k_rule_zero_area = "geometry.zero_area";
 // The atlas step's failure (xatlas refused the mesh, or a rebaked image could not be encoded). A
 // material it merely could not repack is not one: it keeps its own atlas and the report says why.
 inline constexpr const char* k_rule_atlas_repack = "atlas.repack";
@@ -164,8 +170,10 @@ struct BuildResult {
   u64 hash = 0;
   f64 build_ms = 0.0;
   Vector<Diagnostic> warnings;
-  geometry::UvRepairReport uv_repair;  // what the UV repair did; all zero when it had nothing to do
-  bool repacked = false;               // `--atlas repack` ran (whether or not it changed anything)
+  // What the two repairs did, in the order they run; all zero when they had nothing to do.
+  geometry::ZeroAreaRepairReport zero_area_repair;
+  geometry::UvRepairReport uv_repair;
+  bool repacked = false;  // `--atlas repack` ran (whether or not it changed anything)
   atlas::RepackReport atlas;
   // The images the texture step builds for this mesh, from the records the container carries.
   Vector<TextureSource> texture_sources;

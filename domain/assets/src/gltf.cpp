@@ -1141,11 +1141,12 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
   return source;
 }
 
-bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& report,
-                                    std::string* error) {
-  // Runs in index order, which is the order the flatten appends primitives in; `order` maps each
-  // run back to its primitive so a file whose primitives were listed some other way still gets
-  // its own ranges back.
+namespace {
+
+// The primitives in index order, which is the order the flatten appends them in: both repairs run
+// over the index buffer as runs in that order, and map each run back to its primitive through
+// this, so a file whose primitives were listed some other way still gets its own ranges back.
+Vector<u32> primitives_in_index_order(const MeshData& mesh) {
   Vector<u32> order(mesh.primitives.size());
   for (u32 p = 0; p < order.size(); ++p)
     order[p] = p;
@@ -1154,6 +1155,36 @@ bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& re
                ? mesh.primitives[a].first_index < mesh.primitives[b].first_index
                : a < b;
   });
+  return order;
+}
+
+}  // namespace
+
+bool repair_zero_area_triangles(MeshData& mesh, geometry::ZeroAreaRepairReport& report,
+                                std::string* error) {
+  // Every primitive is a run, textured or not: a triangle with no area is nobody's geometry.
+  const Vector<u32> order = primitives_in_index_order(mesh);
+  Vector<geometry::ZeroAreaRepairRange> ranges;
+  ranges.reserve(order.size());
+  for (const u32 p : order) {
+    const Primitive& primitive = mesh.primitives[p];
+    ranges.push_back(geometry::ZeroAreaRepairRange{primitive.first_index, primitive.index_count});
+  }
+  if (!geometry::repair_zero_area_triangles(
+          std::span<const Vec3>(mesh.positions.data(), mesh.positions.size()), mesh.indices,
+          std::span<geometry::ZeroAreaRepairRange>(ranges.data(), ranges.size()), report, error)) {
+    return false;
+  }
+  for (u32 r = 0; r < order.size(); ++r) {
+    mesh.primitives[order[r]].first_index = ranges[r].first;
+    mesh.primitives[order[r]].index_count = ranges[r].count;
+  }
+  return true;
+}
+
+bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& report,
+                                    std::string* error) {
+  const Vector<u32> order = primitives_in_index_order(mesh);
   Vector<geometry::UvRepairRange> ranges;
   ranges.reserve(order.size());
   for (const u32 p : order) {

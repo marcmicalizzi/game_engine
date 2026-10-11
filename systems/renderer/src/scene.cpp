@@ -588,12 +588,28 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   }
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
-  // The UV repair, exactly where `engine-content build` runs it — after the load, before the weld
-  // — because the two write and read the same cache entries and have to build the same bytes
-  // ([geometry](geometry.md), "UV-degenerate triangles: the repair"). A mesh the repair refuses
-  // (primitives out of order, which the importer never produces) is drawn unrepaired, as before.
-  geometry::UvRepairReport uv_repair;
+  // The two repairs, exactly where `engine-content build` runs them — after the load, before the
+  // weld, the zero-area repair first — because the two write and read the same cache entries and
+  // have to build the same bytes ([geometry](geometry.md), "Zero-area triangles: the repair" and
+  // "UV-degenerate triangles: the repair"). A mesh a repair refuses (primitives out of order or an
+  // index out of range, which the importer never produces) is drawn unrepaired, as before; and
+  // where engine-content refuses what the zero-area repair does not cover (a repeated index, a
+  // primitive with no area at all), this path draws it, as it always did.
+  geometry::ZeroAreaRepairReport zero_area_repair;
   std::string repair_error;
+  if (!assets::repair_zero_area_triangles(out.data, zero_area_repair, &repair_error)) {
+    ENGINE_LOG_WARN(log_renderer, "zero-area repair refused", log::field("path", path),
+                    log::field("error", repair_error));
+  } else if (zero_area_repair.triangles != 0) {
+    ENGINE_LOG_INFO(log_renderer, "zero-area repair", log::field("path", path),
+                    log::field("rule", "geometry.zero_area"),
+                    log::field("triangles", zero_area_repair.triangles),
+                    log::field("collinear", zero_area_repair.collinear),
+                    log::field("coincident", zero_area_repair.coincident),
+                    log::field("dropped", zero_area_repair.dropped),
+                    log::field("unrepaired", zero_area_repair.unrepaired));
+  }
+  geometry::UvRepairReport uv_repair;
   if (!assets::repair_uv_degenerate_triangles(out.data, uv_repair, &repair_error)) {
     ENGINE_LOG_WARN(log_renderer, "uv repair refused", log::field("path", path),
                     log::field("error", repair_error));

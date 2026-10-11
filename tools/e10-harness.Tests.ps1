@@ -67,6 +67,12 @@ function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false, [bool]
     machine_state = [ordered]@{ samples = 4; cpu_others_pct = $state; gpu_util_pct = $state; gpu_memory_used_mib = $state; gpu_memory_total_mib = $state; captures_warned = 0; gpu_lock_at_start = 'free'; gpu_lock_at_end = 'free' }
     assets = @((& $row 'solid-crate' 0.45 0.009 5.0), (& $row 'thin-tree' 0.06 0.0072 5.0))
   }
+  # What the build repaired, as its `repairs` array: three zero-area triangles dropped (one kept, so
+  # the column counts the dropped ones), and a UV island of two triangles, one refolded and one
+  # dropped. The thin tree's row carries none, as a build older than the rules would.
+  $report.assets[0].repairs = @(
+    [ordered]@{ rule = 'geometry.zero_area'; triangles = 4; collinear = 3; coincident = 1; dropped = 3; unrepaired = 1 },
+    [ordered]@{ rule = 'geometry.uv_degenerate'; islands = 1; triangles = 2; refolded = 1; dropped = 1; unrepaired = 0 })
   if ($collapse) {
     # The three cases the collapse check tells apart, each measured once in E10: a mesh whose LOD
     # coarsens, one that does not (Meshy's triangle remesh: a fragmented atlas, the coarse cut is the
@@ -121,6 +127,8 @@ try {
   $md = Get-Content -Raw (Join-Path $root 'fresh/report.md')
   $json = Get-Content -Raw $file | ConvertFrom-Json
   Test-That 'no caveat when nothing is stale, and the report says so' { $md -cnotmatch 'STALE' -and $null -eq $json.caveat -and $md -match 'none stale' }
+  Test-That 'the repaired column: zero-area triangles dropped / UV triangles repaired, and a row with no repairs says so' {
+    $md -match '\| warn \| repaired \(zero-area / UV\) \| islands \|' -and $md -match '\| solid-crate \| 100,000 \| 900 \| 10 \| 0 \| 3 / 2 \| 400 \|' -and $md -match '\| thin-tree \| 100,000 \| 900 \| 10 \| 0 \| — \| 400 \|' }
   Test-That 'a report measured without -Offscreen does not claim it' { $md -notmatch '--offscreen' }
   $json.settings | Add-Member -NotePropertyName offscreen -NotePropertyValue $true -Force
   $json.machine_state.samples = 0

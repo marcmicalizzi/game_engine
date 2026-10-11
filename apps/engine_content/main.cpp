@@ -283,6 +283,14 @@ void print_atlas(const std::string& source, const BuildResult& result) {
 // The same, for a person, on stderr: a `repair` line, which is tool output like the stats table
 // and not a log record — a warning is something to act on, and this is something that was done.
 void print_repairs(const std::string& source, const BuildResult& result) {
+  const geometry::ZeroAreaRepairReport& z = result.zero_area_repair;
+  if (z.triangles != 0) {
+    std::fprintf(stderr,
+                 "repair: %s: %s: %u triangle%s whose three distinct corners span no area (%u "
+                 "collinear, %u with coincident corners): %u dropped, %u unrepaired\n",
+                 k_rule_zero_area, source.c_str(), z.triangles, z.triangles == 1 ? "" : "s",
+                 z.collinear, z.coincident, z.dropped, z.unrepaired);
+  }
   const geometry::UvRepairReport& r = result.uv_repair;
   if (r.triangles == 0) return;
   std::fprintf(stderr,

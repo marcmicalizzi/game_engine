@@ -411,7 +411,10 @@ function Get-Coverage([string]$png) {
 # ---- judging: thresholds and diagnoses, from the measurements alone ---------------------------------
 
 $RuleRepairs = @{
-  'geometry.degenerate_triangle' = 'drop zero-area triangles (weld, then remove degenerates) before import'
+  # Since G57 the build drops a zero-area triangle of three distinct corners itself (the repair
+  # `geometry.zero_area`, geometry.md "Zero-area triangles: the repair"), so this rule refuses only
+  # what that repair does not cover.
+  'geometry.degenerate_triangle' = 'a triangle repeats a vertex index, or a primitive has no area left at all: an indexing fault the build does not repair (its zero-area repair has already dropped the triangles of three distinct corners and no area, and the error says how many); re-export'
   'geometry.nan_position'        = 'drop or reject non-finite vertices; the source is corrupt'
   'geometry.index_range'         = 'the index buffer points past the vertices; re-export'
   'geometry.empty_primitive'     = 'remove the empty primitive; re-export'
@@ -671,7 +674,11 @@ if ($FromReport) {
     $buildErr = "$(Get-Content -Raw -LiteralPath (Join-Path $dir 'build.err') -ErrorAction SilentlyContinue)"
     $b = Get-LastJsonLine $buildOut
     $rules = [ordered]@{}
-    foreach ($m in [regex]::Matches($buildErr, '\b((?:geometry|material)\.[a-z_]+)\b')) {
+    # The rules a warning or an error named. A `repair:` line names its repair's rule too, and a
+    # repair is not a warning (the build's `repairs` array, recorded below, is where it is counted),
+    # so those lines are left out.
+    $ruleText = (@("$buildErr" -split "`n" | Where-Object { -not $_.StartsWith('repair: ') }) -join "`n")
+    foreach ($m in [regex]::Matches($ruleText, '\b((?:geometry|material)\.[a-z_]+)\b')) {
       $k = $m.Groups[1].Value; if ($rules.Contains($k)) { $rules[$k]++ } else { $rules[$k] = 1 }
     }
     if ($buildCode -ne 0 -or -not $b) {
@@ -687,8 +694,10 @@ if ($FromReport) {
     $row.materials = [int]$b.materials; $row.images = [int]$b.images
     $row.warnings = [int]$b.warnings; $row.warning_rules = [pscustomobject]$rules
     $row.container_bytes = [long]$b.bytes; $row.build_ms = [math]::Round([double]$b.build_ms, 1)
-    # What the build repaired rather than warned about (geometry.md, "UV-degenerate triangles:
-    # the repair"): an empty array when nothing needed it, absent from a build older than the rule.
+    # What the build repaired rather than warned about (geometry.md, "Zero-area triangles: the
+    # repair" and "UV-degenerate triangles: the repair"): one row per repair that fired, an empty
+    # array when nothing needed one, absent from a build older than the rules. report.md's
+    # "repaired" column reads it.
     if ($null -ne $b.repairs) { $row.repairs = @($b.repairs) }
     # The atlas step (atlas.md): charts, atlas sizes, and how far each rebaked image is from its
     # source on the surface. Absent from a build older than the flag, {"mode":"keep"} without it.
@@ -928,19 +937,31 @@ $md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.t
 $md.Add('')
 $md.Add("Thresholds: $MaxWarnings warnings; smallest atlas island >= $MinIslandTexels texel of a 4096 atlas; coarse-vs-finest FLIP mean <= $MaxFlip (the seam fix's numbers put every known-good build below 0.02 and every known-bad one above); the coarse cut draws <= $([math]::Round(100 * $MaxCollapseShare))% of the finest cut's pairs, judged where the finest cut has at least $MinCollapseDensity pairs per 1,000 pixels of the object ($($script:CollapseWhy)).")
 $md.Add('')
-$md.Add('| asset | triangles | clusters | levels | warn | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest (share; finest per 1,000 object px) | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
-$md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+# The two repairs, as the "repaired" column: the triangles the zero-area repair dropped, then the
+# UV repair's triangles (refolded or dropped); "—" for an import that was refused or a build older
+# than the rules, whose rows carry no `repairs`.
+function Get-RepairedText($r) {
+  if (-not $r.PSObject.Properties['repairs'] -or $null -eq $r.repairs) { return '—' }
+  $z = @($r.repairs | Where-Object { $_ -and $_.rule -eq 'geometry.zero_area' }) | Select-Object -First 1
+  $u = @($r.repairs | Where-Object { $_ -and $_.rule -eq 'geometry.uv_degenerate' }) | Select-Object -First 1
+  $zt = if ($z) { [long]$z.dropped } else { 0 }
+  $ut = if ($u) { [long]$u.refolded + [long]$u.dropped } else { 0 }
+  return "$zt / $ut"
+}
+$md.Add('| asset | triangles | clusters | levels | warn | repaired (zero-area / UV) | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest (share; finest per 1,000 object px) | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
+$md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $rows) {
   $objectFlip = (F $r.flip_object_mean '0.000') + $(if ($r.PSObject.Properties['object_flip_reliable'] -and $r.object_flip_reliable -eq $false) { ' †' } else { '' })
   $pairs = if ($null -ne $r.coarse_visible_pairs -and $null -ne $r.finest_visible_pairs) {
     "$(F $r.coarse_visible_pairs 'N0') / $(F $r.finest_visible_pairs 'N0') ($(F $(if ($null -ne $r.collapse_share) { 100 * $r.collapse_share }) '0')%; $(F $r.finest_pairs_per_kpx '0.0')$(if ($r.checks.collapse -eq 'n/a') { ', too sparse to judge' }))"
   } else { '—' }
-  $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16} | {17} | {18} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
+  $md.Add(('| {0} | {1} | {2} | {3} | {4} | {19} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16} | {17} | {18} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
       (F $r.warnings '0'), (F $r.islands 'N0'), (F $(if ($null -ne $r.seam_fraction) { 100 * $r.seam_fraction }) '0.0'), (F $r.smallest_island_texels_4096 '0.###'),
       (F $r.median_island_texels_4096 'N0'), (F $(if ($null -ne $r.uv_area) { 100 * $r.uv_area }) '0.0'), $pairs, (F $(if ($r.glb_bytes) { $r.glb_bytes / 1MB }) '0.0'),
       (F $(if ($r.container_bytes) { $r.container_bytes / 1MB }) '0.0'), (F $r.build_ms 'N0'), (F $r.psnr '0.0'), (F $r.flip_mean '0.0000'), $objectFlip,
       (F $(if ($null -ne $r.coverage) { 100 * $r.coverage }) '0.0'),
-      $(if ($r.status -eq 'pass') { 'pass' } else { "**fail** ($((@($r.checks.Keys | Where-Object { $r.checks[$_] -in 'fail', 'unmeasured' })) -join ', '))" })))
+      $(if ($r.status -eq 'pass') { 'pass' } else { "**fail** ($((@($r.checks.Keys | Where-Object { $r.checks[$_] -in 'fail', 'unmeasured' })) -join ', '))" }),
+      (Get-RepairedText $r)))
 }
 $md.Add('')
 $thin = @($rows | Where-Object { $_.PSObject.Properties['object_flip_reliable'] -and $_.object_flip_reliable -eq $false })
