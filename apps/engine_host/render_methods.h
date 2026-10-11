@@ -15,6 +15,7 @@
 #include <core/containers/vector.h>
 #include <domain/gfx/device.h>
 #include <domain/protocol/rpc.h>
+#include <systems/doc_scene/doc_scene.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/request.h>
@@ -60,6 +61,11 @@ class RenderHost {
     // call that asks for one and kept afterwards: it owns a shader library, two pipelines and two
     // screen-sized buffers, and an optimization loop calls it once per proposal.
     std::unique_ptr<renderer::ReferenceRenderer> reference;
+    // A session's scene (`render.load {session}`, docs/subsystems/doc_scene.md): the session it
+    // draws and the bridge's description of its document, read at `document->revision`. A later
+    // `render.load` of the same session moves or rebuilds this scene in place. Null otherwise.
+    std::string session;
+    std::unique_ptr<doc_scene::DocumentScene> document;
     renderer::RenderSettings built;  // what `gpu` and `view` were built with; the frame size is
                                      // the renderer's own (`view->width()`), because a resize
                                      // touches only the screen-sized targets
@@ -71,6 +77,8 @@ class RenderHost {
 
   Scene* add_scene();
   Scene* find(std::string_view id) noexcept;
+  // The scene a `render.load {session}` made for that session, or null.
+  Scene* find_session(std::string_view session) noexcept;
   // Takes a scene out of the host, which then no longer knows the id; null when it holds none by
   // that name. `render.unload` releases what it returns (`release`), and the scene's memory goes
   // with the pointer.
@@ -110,10 +118,30 @@ class RenderHost {
   // that build none.
   bool ensure_reference(Scene& scene, std::string& error, bool& unavailable);
 
+  // **Captures kept for the listener** (`render.capture` with `keep`; docs/subsystems/apps.md,
+  // "engine-host --listen"): the colour PNG and the id buffer's bytes, in memory, so a client of
+  // the host's WebSocket fetches `GET /capture/<id>` and never needs a file path. The last
+  // `k_kept_captures` are kept and older ones are dropped, since a shell captures after every
+  // gesture and a host that kept them all would grow without bound. Read under the dispatcher's
+  // lock, like everything else here.
+  struct KeptCapture {
+    std::string id;
+    u32 width = 0;
+    u32 height = 0;
+    Vector<u8> png;
+    Vector<u8> ids;  // little-endian u32, renderer::k_id_words per pixel; empty without the channel
+  };
+  static constexpr u32 k_kept_captures = 8;
+  // Keeps a capture and returns its id ("c1", "c2", ...: never reused in a process).
+  std::string keep_capture(u32 width, u32 height, Vector<u8> png, Vector<u8> ids);
+  const KeptCapture* kept_capture(std::string_view id) const noexcept;
+
  private:
   gfx::Device device_;
   Vector<std::unique_ptr<Scene>> scenes_;
   u32 next_id_ = 1;
+  KeptCapture kept_[k_kept_captures];
+  u64 next_capture_ = 1;
   bool device_ready_ = false;
   bool device_failed_ = false;
   std::string device_error_;

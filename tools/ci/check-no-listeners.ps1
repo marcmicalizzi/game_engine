@@ -102,6 +102,11 @@ function Get-ProbeArgs([string]$name) {
   switch -Regex ($name) {
     '_bench$'      { return @('--smoke', '--quiet', '--no-pin') }
     '^engine-view$' { return @('--frames', '1', '--width', '64', '--height', '64') }
+    # engine-host is the one binary that listens on purpose (--listen, docs/subsystems/net.md): it is
+    # run with its listener open on a fresh path, answering one request and exiting, so the check
+    # sees the socket it opens and the firewall sees a new path bind it. Loopback raises no prompt.
+    # The backslashes are for Start-Process, which hands the command line on as written.
+    '^engine-host$' { return @('--listen', '127.0.0.1:0', '--request', '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine.ping\"}') }
     '_tests$'      { return @('--help') }
     default        { return @('--help') }
   }

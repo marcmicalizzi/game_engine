@@ -1,0 +1,126 @@
+<!doctype html>
+<!--
+  The engine shell (docs/subsystems/engine_shell.md): a page that speaks nothing but the engine
+  protocol, over engine-host's loopback WebSocket. Every string it shows came out of a method;
+  it never reads a document file. Static files only: no bundler, no package manager, no CDN,
+  nothing fetched at run time but what the host it was served from answers.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Engine shell</title>
+  <link rel="stylesheet" href="/shell/shell.css">
+  <script type="module" src="/shell/main.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="titlebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Engine shell</span>
+      </div>
+      <div class="titlebar-doc" id="doc-title" title="The session's document">no session</div>
+      <div class="titlebar-actions">
+        <button class="btn btn-ghost" id="btn-undo" title="Undo the last transaction (doc.undo) — Ctrl+Z">Undo</button>
+        <button class="btn btn-ghost" id="btn-redo" title="Redo (doc.redo) — Ctrl+Shift+Z">Redo</button>
+        <span class="pill" id="conn-pill" data-state="connecting">connecting</span>
+      </div>
+    </header>
+
+    <main class="workspace" id="workspace">
+      <section class="column column-left" id="col-left">
+        <div class="panel" id="panel-outliner">
+          <div class="panel-head">
+            <h2 class="panel-title">Outliner</h2>
+            <span class="panel-meta" id="outliner-count"></span>
+          </div>
+          <div class="panel-tools">
+            <input class="input input-search" id="outliner-filter" type="search" placeholder="Filter by name, type or id" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="panel-body tree" id="outliner" role="tree" tabindex="0"></div>
+        </div>
+        <div class="split split-row" data-split="left-rows" role="separator" aria-orientation="horizontal" tabindex="0"></div>
+        <div class="panel" id="panel-journal">
+          <div class="panel-head">
+            <h2 class="panel-title">Journal</h2>
+            <span class="panel-meta" id="journal-meta"></span>
+          </div>
+          <div class="panel-body journal" id="journal"></div>
+        </div>
+      </section>
+
+      <div class="split split-col" data-split="left" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+      <section class="column column-center" id="col-center">
+        <div class="panel panel-viewport" id="panel-viewport">
+          <div class="panel-head">
+            <h2 class="panel-title">Viewport</h2>
+            <span class="panel-meta" id="viewport-meta"></span>
+            <span class="panel-spacer"></span>
+            <button class="btn btn-ghost btn-small" id="btn-frame" title="Frame the scene again (the host's own framing) — F">Frame</button>
+            <button class="btn btn-ghost btn-small" id="btn-capture" title="Capture again — R">Capture</button>
+          </div>
+          <div class="viewport" id="viewport" tabindex="0" aria-label="Viewport: click to select, drag to look, W A S D Q E to fly">
+            <img class="viewport-image" id="viewport-image" alt="" draggable="false">
+            <div class="viewport-empty" id="viewport-empty">Connecting…</div>
+            <div class="viewport-marker" id="viewport-marker" hidden></div>
+            <div class="viewport-hud viewport-hud-camera" id="viewport-camera"></div>
+            <div class="viewport-hud viewport-hud-note" id="viewport-note">
+              Slideshow: each gesture ends in one capture. Drag to look, W A S D Q E to fly, Shift
+              to hurry, wheel to dolly, click to select. The live viewport comes when the native
+              window is a client of this same host.
+            </div>
+            <div class="viewport-busy" id="viewport-busy" hidden></div>
+          </div>
+        </div>
+        <div class="split split-row" data-split="center-rows" role="separator" aria-orientation="horizontal" tabindex="0"></div>
+        <div class="panel panel-console" id="panel-console">
+          <div class="panel-head">
+            <h2 class="panel-title">Command line</h2>
+            <span class="panel-meta">one JSON-RPC request: <code>method {params}</code></span>
+            <span class="panel-spacer"></span>
+            <button class="btn btn-ghost btn-small" id="btn-console-clear" title="Clear the output">Clear</button>
+          </div>
+          <div class="panel-body console-log" id="console-log" aria-live="polite"></div>
+          <div class="console-input-row">
+            <span class="console-prompt" aria-hidden="true">›</span>
+            <div class="console-input-wrap">
+              <input class="input input-console" id="console-input" spellcheck="false" autocomplete="off" placeholder="doc.objects {&quot;session&quot;:&quot;s1&quot;}">
+              <ul class="completions" id="console-completions" role="listbox" hidden></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="split split-col" data-split="right" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+      <section class="column column-right" id="col-right">
+        <div class="panel" id="panel-properties">
+          <div class="panel-head">
+            <h2 class="panel-title">Properties</h2>
+            <span class="panel-meta" id="properties-meta"></span>
+          </div>
+          <div class="panel-body properties" id="properties"></div>
+          <div class="rationale-row">
+            <label class="label" for="rationale">Rationale</label>
+            <input class="input" id="rationale" spellcheck="true" autocomplete="off" placeholder="Why — recorded in the journal with the change">
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar" id="statusbar">
+      <span class="status-item" id="st-host" title="The host this page speaks to"></span>
+      <span class="status-item" id="st-session" title="The protocol session"></span>
+      <span class="status-item" id="st-actor" title="Who an edit is attributed to (the host's --actor)"></span>
+      <span class="status-item" id="st-role" title="The role edits are checked as (the host's --role)"></span>
+      <span class="status-item" id="st-token" title="Whether this page has the host's session token"></span>
+      <span class="status-spacer"></span>
+      <span class="status-item status-error" id="st-error" title="The last error a method returned"></span>
+    </footer>
+  </div>
+</body>
+</html>

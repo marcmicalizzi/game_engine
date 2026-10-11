@@ -10,16 +10,19 @@
 // question about this process rather than about any library it links.
 #include "console.h"
 #include "host_state.h"
+#include "listen.h"
 #include "ops_methods.h"
 #include "render_methods.h"
 
 #include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
+#include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
+#include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
 
 #include <condition_variable>
@@ -54,6 +57,7 @@ const char* k_usage =
     "usage: engine-host [--stdio] [--request <json>] [--mount <scheme>=<dir>[:rw]]...\n"
     "                   [--log <spec>] [--log-json <path>] [--tunables <file>]\n"
     "                   [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]\n"
+    "                   [--doc <dir> [--create]] [--listen 127.0.0.1:<port>] [--shell <dir>]\n"
     "\n"
     "  --stdio          serve JSON-RPC 2.0: one request per line on stdin, one response per\n"
     "                   line on stdout (default)\n"
@@ -67,6 +71,17 @@ const char* k_usage =
     "  --actor, --role, --task\n"
     "                   who a call that names no actor, role or task is: its attribution, and\n"
     "                   with --roles the role it is checked as (--role must be in the file)\n"
+    "  --doc <dir>      open a session on this document at start, as session.open would; with\n"
+    "                   --create, create it when the directory holds none\n"
+    "  --listen <addr>  also serve the protocol over a WebSocket on 127.0.0.1:<port> (or\n"
+    "                   localhost:<port>; port 0 picks a free one). Loopback only: any other\n"
+    "                   address is refused. Prints one line first, {\"listen\":\"ws://...\",\n"
+    "                   \"token\":\"...\",\"shell\":\"http://...\"}; a connection without the "
+    "token\n"
+    "                   is closed with 1008. The same listener serves the browser shell on GET /\n"
+    "                   (docs/subsystems/engine_shell.md). The host serves until its standard\n"
+    "                   input closes, as without --listen\n"
+    "  --shell <dir>    the shell's static files (default: <bin>/../shell)\n"
     "\n"
     "       engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]\n"
     "                   [the options above] [-- <script args>...]\n"
@@ -174,6 +189,10 @@ int main(int argc, char** argv) {
   std::string tunables_file;
   std::string hang_method;
   std::string roles_file;
+  std::string listen_address;
+  std::string doc_dir;
+  std::string shell_dir;
+  bool create_doc = false;
   protocol::Policy policy;
   Vector<std::string> mounts;
   bool console = false;
@@ -227,6 +246,14 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, policy.identity.role)) return 2;
     } else if (a == "--task") {
       if (!next_value(argc, argv, i, a, policy.identity.task)) return 2;
+    } else if (a == "--listen") {
+      if (!next_value(argc, argv, i, a, listen_address)) return 2;
+    } else if (a == "--doc") {
+      if (!next_value(argc, argv, i, a, doc_dir)) return 2;
+    } else if (a == "--create") {
+      create_doc = true;
+    } else if (a == "--shell") {
+      if (!next_value(argc, argv, i, a, shell_dir)) return 2;
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -238,6 +265,24 @@ int main(int argc, char** argv) {
   }
   if (console && !request.empty()) {
     std::fputs("engine-host: --console and --request are two ways to run; choose one\n", stderr);
+    return 2;
+  }
+  // The listener's address is checked before anything starts: a non-loopback address is refused
+  // outright with the reason (foundation/net/socket.h), never bound and never quietly narrowed.
+  u16 listen_port = 0;
+  if (!listen_address.empty()) {
+    std::string why;
+    if (!net::parse_loopback_address(listen_address, listen_port, why)) {
+      std::fprintf(stderr, "engine-host: --listen %s: %s\n", listen_address.c_str(), why.c_str());
+      return 2;
+    }
+    if (console) {
+      std::fputs("engine-host: --console and --listen are two ways to run; choose one\n", stderr);
+      return 2;
+    }
+  }
+  if (create_doc && doc_dir.empty()) {
+    std::fputs("engine-host: --create needs --doc\n", stderr);
     return 2;
   }
 
@@ -356,13 +401,64 @@ int main(int argc, char** argv) {
     ENGINE_LOG_WARN(log_host, "--debug-hang is set: a test hook, never for use",
                     log::field("method", hang_method));
   }
+
+  // --doc: a session opened at start exactly as a client's `session.open` would open it (through
+  // the dispatcher, so nothing about it is special), and named in --listen's announcement so the
+  // shell can be pointed at it.
+  std::string doc_session;
+  if (!doc_dir.empty()) {
+    JsonValue open = JsonValue::object();
+    open.set("jsonrpc", "2.0");
+    open.set("id", 0);
+    open.set("method", "session.open");
+    JsonValue open_params = JsonValue::object();
+    open_params.set("path", doc_dir);
+    open_params.set("create", create_doc);
+    open.set("params", std::move(open_params));
+    const JsonValue response = dispatcher.dispatch(open);
+    const JsonValue* result = response.find("result");
+    const JsonValue* session = result != nullptr ? result->find("session") : nullptr;
+    std::string_view id;
+    if (session == nullptr || !session->get_string(id)) {
+      std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(),
+                   write_json(response).c_str());
+      return 2;
+    }
+    doc_session = std::string(id);
+  }
+
+  // --listen (listen.h, docs/subsystems/apps.md): the same dispatcher over a loopback WebSocket,
+  // beside the stdio loop. Every dispatch, from either side, holds `dispatch_lock`, which is what
+  // keeps the host's state single-threaded with a socket in the process.
+  std::mutex dispatch_lock;
+  host::Listen listen(dispatcher, dispatch_lock, state);
+  if (!listen_address.empty()) {
+    if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
+    std::string error;
+    if (!listen.start(listen_port, shell_dir, doc_session, error)) {
+      std::fprintf(stderr, "engine-host: --listen %s: %s\n", listen_address.c_str(), error.c_str());
+      return 2;
+    }
+    // The first line on stdout, before anything is served, so a client can be started from it.
+    const std::string line = listen.announcement();
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+    ENGINE_LOG_INFO(log_host, "listening on loopback", log::field("port", u64{listen.port()}),
+                    log::field("shell", shell_dir));
+  }
+
   int exit_code = 0;
   if (console) {
     // stdout is the script's `print` now, not the protocol's; the dispatcher is the same one.
     exit_code = host::run_console(dispatcher, console_options);
   } else if (!request.empty()) {
     if (!hang_method.empty() && names_method(request, hang_method)) hang_forever(hang_method);
-    const std::string out = dispatcher.dispatch_text(request);
+    std::string out;
+    {
+      std::lock_guard<std::mutex> lock(dispatch_lock);
+      out = dispatcher.dispatch_text(request);
+    }
     if (!out.empty()) {
       std::fwrite(out.data(), 1, out.size(), stdout);
       std::fputc('\n', stdout);
@@ -373,7 +469,11 @@ int main(int argc, char** argv) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.empty()) continue;
       if (!hang_method.empty() && names_method(line, hang_method)) hang_forever(hang_method);
-      const std::string out = dispatcher.dispatch_text(line);
+      std::string out;
+      {
+        std::lock_guard<std::mutex> lock(dispatch_lock);
+        out = dispatcher.dispatch_text(line);
+      }
       if (!out.empty()) {
         std::fwrite(out.data(), 1, out.size(), stdout);
         std::fputc('\n', stdout);
@@ -381,6 +481,8 @@ int main(int argc, char** argv) {
       }
     }
   }
+  // Standard input closed: the listener stops before anything it dispatches into goes away.
+  listen.stop();
   std::fflush(stdout);
   ENGINE_LOG_INFO(log_host, "engine-host exiting", log::field("sessions", sessions.count()),
                   log::field("scenes", state.render.count()),

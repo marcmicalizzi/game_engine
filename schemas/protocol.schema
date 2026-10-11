@@ -747,7 +747,7 @@ struct RenderViewStats @version(2) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(5) {
+struct RenderLoadParams @version(6) {
   /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads a **procedural**
   /// scene, which is what needs no content at all; `procedural` says which one.
   mesh: string
@@ -791,13 +791,21 @@ struct RenderLoadParams @version(5) {
   /// its derived-data cache entry — as `page_bytes` does. `engine-view --ground-time`. Null: the
   /// file's own `time`; a scene with no terrain refuses one.
   ground_time_s: f64? @since(5)
+  /// A protocol session whose document is the scene (docs/subsystems/doc_scene.md): every live
+  /// `engine.scene.MeshPlacement` record one instance, its mesh path relative to the document's
+  /// directory. Exactly one of `mesh`, `scene` and `session` may be named. Loading the same session
+  /// again answers with the **same** scene id after reading the document's changes since the last
+  /// load: a placement whose transform changed is moved in place, anything else rebuilds the scene
+  /// (`RenderSceneInfo.moved` and `rebuilt` say which); `grid_instances`, `overlay` and
+  /// `ground_time_s` do not apply to it.
+  session: string @since(6)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
 ///
 /// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
 /// it rounded to a float32. The JSON is the same three numbers.
-struct RenderSceneInfo @version(3) {
+struct RenderSceneInfo @version(4) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -832,6 +840,14 @@ struct RenderSceneInfo @version(3) {
   /// How the resolved settings draw the ground: "none" (no terrain), "mesh" (the scene's grid,
   /// still), "levels" (the grid as a terrain level), "rings" or "tiles".
   ground: string = "none" @since(2)
+  /// A session's scene only (`RenderLoadParams.session`): the session, the document revision the
+  /// scene now shows, how many placements this load moved in place, and whether it built the scene
+  /// again (the first load of a session, a placement created, deleted or pointed at another mesh,
+  /// or a change feed that no longer reaches back to the last load).
+  session: string @since(4)
+  revision: u64 = 0 @since(4)
+  moved: u32 = 0 @since(4)
+  rebuilt: bool = false @since(4)
 }
 
 /// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.
@@ -879,7 +895,7 @@ struct RenderReference @version(1) {
 
 /// Parameters of `render.capture`. With neither `camera` nor `orbit` the default orbit frames
 /// the scene.
-struct RenderCaptureParams @version(3) {
+struct RenderCaptureParams @version(4) {
   scene: string
   camera: RenderCamera?
   orbit: RenderOrbit?
@@ -910,6 +926,11 @@ struct RenderCaptureParams @version(3) {
   settings: RenderSettings? @since(3)
   /// The frame's clock: a sky's hour and the sun's day (see `RenderClock`).
   clock: RenderClock @since(3)
+  /// Keep the colour PNG and the id buffer in the host's memory, under `RenderCaptureResult.capture`,
+  /// for a client of the host's listener to fetch (`GET /capture/<id>`, docs/subsystems/net.md)
+  /// without a file path. The host keeps the last eight. With an empty `out_dir` nothing is written
+  /// to disk.
+  keep: bool = false @since(4)
 }
 
 /// GPU milliseconds per pass, averaged over the frames whose timestamps came back (`frames`,
@@ -1017,7 +1038,20 @@ struct RenderStats @version(9) {
   ground: RenderGroundStats? @since(9)
 }
 
-struct RenderCaptureResult @version(2) {
+/// The camera a frame was drawn with, as `render.capture` reports it whether the call named one or
+/// the host framed it (roadmap A32, 06 §6.6): `position`, `target`, `fov_deg` and `znear` given back
+/// as a `RenderCamera` draw the same view again, bit for bit (`fov_deg` is chosen so that its radians
+/// are the frame's own float). `yaw_deg` and `pitch_deg` are the same look in engine-view's fly
+/// convention, forward = (-cos p sin y, sin p, -cos p cos y), for a client that flies from it.
+struct RenderFramedCamera @version(1) {
+  position: worldpos @unit(m)
+  target: worldpos @unit(m)
+  fov_deg: f32 = 55
+  znear: f32 = 0
+  yaw_deg: f32 = 0
+  pitch_deg: f32 = 0
+}
+struct RenderCaptureResult @version(3) {
   width: u32 = 0
   height: u32 = 0
   /// Pixels the scene covered. Zero for a reference capture, which has no visibility buffer to
@@ -1039,6 +1073,14 @@ struct RenderCaptureResult @version(2) {
   samples: u32 = 0 @since(2)
   trace_ms: f64 = 0 @since(2)
   seconds: f64 = 0 @since(2)
+  /// The camera the frame was drawn with (roadmap A32).
+  camera: RenderFramedCamera @since(3)
+  /// A session's scene only: instance i's record, so a client reading the ids channel picks a
+  /// record without knowing the instance order. The null id is the stand-in ground of a document
+  /// with no placements.
+  records: id128[] @since(3)
+  /// With `keep`: the id the host's listener serves this capture under (`GET /capture/<id>`).
+  capture: string @since(3)
 }
 
 /// Parameters of `render.benchmark`. Without `camera_path` the camera is held still for every

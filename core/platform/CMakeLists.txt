@@ -1,10 +1,16 @@
 # OS and CPU facts the rest of the engine builds on: processor topology (cores, SMT, cache
 # domains, NUMA, efficiency classes), CPUID feature detection, the ADR-0031 startup check, no
-# dialog and one line on stderr for every fatal fault, and thread pinning/naming.
+# dialog and one line on stderr for every fatal fault, thread pinning/naming, and the system's
+# secure random source.
 engine_module(NAME platform LAYER core
   DEPS base memory containers
   SOURCES src/topology.cpp src/cpu_features.cpp src/cpu_baseline.cpp src/thread.cpp
-          src/process.cpp src/error_dialogs.cpp src/fault_report.cpp)
+          src/process.cpp src/error_dialogs.cpp src/fault_report.cpp src/random.cpp)
+
+# The secure random source (random.h) is BCryptGenRandom on Windows.
+if(WIN32)
+  target_link_libraries(engine_platform PRIVATE bcrypt)
+endif()
 
 # This module is compiled at the floor baseline, whatever the rest of the tree is built for
 # (ADR-0031). It is the module that decides whether the rest of the binary may run: a
@@ -18,7 +24,7 @@ engine_strip_cpu_baseline(engine_platform)
 engine_module_tests(NAME platform
   SOURCES tests/topology_tests.cpp tests/cpu_features_tests.cpp tests/cpu_baseline_tests.cpp
           tests/process_tests.cpp tests/error_dialogs_tests.cpp tests/fault_report_tests.cpp
-          tests/size_table.cpp)
+          tests/random_tests.cpp tests/size_table.cpp)
 
 # A process that fails on request — an access violation, a stack overflow, abort() and the rest,
 # one argument per kind — for the test that reads the line its death prints

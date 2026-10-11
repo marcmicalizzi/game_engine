@@ -7,6 +7,8 @@
 #include <core/log/log.h>
 #include <core/memory/memory.h>
 #include <core/time/time.h>
+#include <domain/gfx/cluster_cull.h>
+#include <domain/protocol/session.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
@@ -19,6 +21,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <schemas/scene.h>
 
@@ -371,6 +374,188 @@ renderer::Camera camera_of(const RenderHost::Scene& scene,
                                         orbit.has_value() ? &*orbit : nullptr);
 }
 
+// **The camera a frame was drawn with** (roadmap A32, `RenderFramedCamera`): what a client sends
+// back as a `RenderCamera` to draw the same view again. `fov_deg` is the float whose radians are
+// the camera's own `fov_y` — the plain conversion can land a float step off, and a view that comes
+// back one step wider is not the same view — and yaw and pitch are engine-view's fly convention,
+// forward = (-cos p sin y, sin p, -cos p cos y), worked out in f64 from the two world positions.
+protocol::RenderFramedCamera framed_camera(const renderer::Camera& camera) {
+  protocol::RenderFramedCamera out;
+  out.position = camera.position;
+  out.target = camera.target;
+  out.znear = camera.znear;
+  f32 deg = static_cast<f32>(static_cast<f64>(camera.fov_y) * (180.0 / 3.14159265358979323846));
+  for (u32 step = 0; step < 16 && radians(deg) != camera.fov_y; ++step) {
+    deg = std::nextafter(deg, radians(deg) < camera.fov_y ? std::numeric_limits<f32>::infinity()
+                                                          : -std::numeric_limits<f32>::infinity());
+  }
+  out.fov_deg = deg;
+  const DVec3 d = camera.target - camera.position;
+  const f64 length = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+  if (length > 0.0) {
+    const f64 y = d.y / length;
+    const f64 to_deg = 180.0 / 3.14159265358979323846;
+    out.pitch_deg = static_cast<f32>(std::asin(y < -1.0 ? -1.0 : (y > 1.0 ? 1.0 : y)) * to_deg);
+    out.yaw_deg = static_cast<f32>(std::atan2(-d.x, -d.z) * to_deg);
+  }
+  return out;
+}
+
+// Fills the load's answer from a registered scene.
+void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
+                     protocol::RenderSceneInfo& out) {
+  out.scene = scene.id;
+  out.adapter = device.adapter().name;
+  out.meshes = scene.data.parts.size();
+  out.instances = scene.data.instances.size();
+  out.pairs = scene.data.pair_count;
+  out.clusters = scene.data.cluster_count();
+  out.leaf_clusters = scene.data.leaf_count();
+  out.triangles = scene.data.lod.leaf_triangle_count;
+  out.lod_levels = scene.data.lod.level_cluster_counts.size();
+  out.mesh_primitives = scene.data.mesh_primitives;
+  out.mesh_cache = scene.data.mesh_cache;
+  out.build_ms = static_cast<f64>(scene.data.build_ns) / 1.0e6;
+  // `RenderSceneInfo.center` is a `worldpos` (version 3, ADR-0053): the scene's f64 centre as it
+  // is.
+  out.center = scene.data.center;
+  out.radius = scene.data.radius;
+  out.raster = renderer::raster_name(scene.resolved.settings.raster);
+  out.shadows = renderer::resolved_shadow_name(scene.resolved);
+  out.cull = scene.resolved.settings.cull;
+  out.occlusion = scene.resolved.occlusion;
+  out.deform = renderer::deform_name(scene.resolved.settings);
+  out.rt_templates = scene.resolved.settings.rt_templates;
+  out.sky = scene.data.sky.has_value();
+  if (scene.data.terrain.enabled) out.ground_time_s = scene.data.terrain.time_s;
+  out.ground = ground_name(scene.data, scene.resolved);
+  if (scene.document != nullptr) {
+    out.session = scene.session;
+    out.revision = scene.document->revision;
+  }
+}
+
+// ---- render.load {session} ---------------------------------------------------------------------
+//
+// A session's document as the scene (docs/subsystems/doc_scene.md): the bridge reads every live
+// `MeshPlacement` into a scene description with the document's directory as the path base, and the
+// scene is registered like any other. Loading the **same session again** reads the document's
+// change feed from the revision the scene shows: when the bridge says only transforms changed, the
+// instances are placed again — in the host's `SceneData`, so a later rebuild for new settings or a
+// new size starts from where they stand, and in the GPU scene when one exists — and the answer says
+// how many moved; anything else (a placement created, deleted or pointed at another mesh, or a feed
+// that no longer reaches back) reads the document again into the same scene id and says `rebuilt`.
+// A client therefore holds one scene id per session for the session's life.
+bool load_session(protocol::Context& ctx, RenderHost& host,
+                  const protocol::RenderLoadParams& params, const renderer::RenderRequest& request,
+                  gfx::Device& device, protocol::RenderSceneInfo& out, protocol::RpcError& error) {
+  protocol::Session* session =
+      ctx.sessions != nullptr ? ctx.sessions->require(params.session, error) : nullptr;
+  if (session == nullptr) return false;
+  if (params.grid_instances > 1 || !params.overlay.empty() || params.ground_time_s.has_value()) {
+    error = invalid("grid_instances, overlay and ground_time_s do not apply to a session's scene");
+    return false;
+  }
+  const doc::Document& document = session->document();
+  RenderHost::Scene* scene = host.find_session(params.session);
+  std::string message;
+  if (scene != nullptr) {
+    doc_scene::SceneChanges changes;
+    if (!doc_scene::changes_since(document, *scene->document, changes, message)) {
+      error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+      return false;
+    }
+    if (!changes.rebuild) {
+      renderer::RenderSettings settings;
+      if (!renderer::settings_for(request, scene->data, settings, &message)) {
+        error = invalid("settings.morph: " + message);
+        return false;
+      }
+      renderer::ResolvedSettings resolved;
+      renderer::resolve_settings(settings, device.features(), &scene->data, resolved);
+      if (const renderer::RenderAvailability a =
+              renderer::check_availability(resolved, device.features());
+          a != renderer::RenderAvailability::Ok) {
+        error = unavailable(renderer::unavailable_reason(a, device));
+        return false;
+      }
+      for (u32 i = 0; i < changes.moved.size(); ++i) {
+        const u32 index = changes.moved[i];
+        const renderer::SceneInstance& placement = changes.placements[i];
+        if (index >= scene->data.instances.size() ||
+            placement.mesh >= scene->data.mesh_fit.size()) {
+          continue;
+        }
+        const Mat4& fit = scene->data.mesh_fit[placement.mesh];
+        gfx::set_instance_placement(scene->data.instances[index],
+                                    mat4_from_transform(placement.transform) * fit,
+                                    renderer::instance_translation(placement, fit));
+      }
+      if (scene->view != nullptr && !changes.moved.empty() &&
+          !scene->view->move_instances(changes.moved, changes.placements, &message)) {
+        error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+        return false;
+      }
+      scene->request = request;
+      scene->requested = settings;
+      scene->resolved = resolved;
+      fill_scene_info(*scene, device, out);
+      out.moved = static_cast<u32>(changes.moved.size());
+      out.rebuilt = false;
+      return true;
+    }
+  }
+  auto described = std::make_unique<doc_scene::DocumentScene>();
+  if (!doc_scene::read_document_scene(document, session->dir(), *described, message)) {
+    error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
+    return false;
+  }
+  renderer::SceneDesc desc = described->desc;
+  desc.heightfield_grid = params.grid;
+  desc.ddc = params.ddc;
+  desc.cache = params.cache;
+  desc.stream = request.settings.stream;
+  desc.page_bytes = params.page_bytes;
+  renderer::SceneData data;
+  if (!renderer::load_scene(desc, data, message)) {
+    error = protocol::make_error(protocol::codes::k_io_error, std::move(message));
+    return false;
+  }
+  renderer::RenderSettings settings;
+  if (!renderer::settings_for(request, data, settings, &message)) {
+    error = invalid("settings.morph: " + message);
+    return false;
+  }
+  renderer::ResolvedSettings resolved;
+  renderer::resolve_settings(settings, device.features(), &data, resolved);
+  if (const renderer::RenderAvailability a =
+          renderer::check_availability(resolved, device.features());
+      a != renderer::RenderAvailability::Ok) {
+    error = unavailable(renderer::unavailable_reason(a, device));
+    return false;
+  }
+  if (scene == nullptr) {
+    scene = host.add_scene();
+  } else {
+    RenderHost::release(*scene);  // the GPU state goes; the id stays the session's
+  }
+  scene->kind = "session";
+  scene->source = session->dir();
+  scene->session = params.session;
+  scene->request = request;
+  scene->requested = settings;
+  scene->resolved = resolved;
+  scene->data = std::move(data);
+  scene->document = std::move(described);
+  fill_scene_info(*scene, device, out);
+  out.moved = 0;
+  out.rebuilt = true;
+  ENGINE_LOG_INFO(log_render, "session scene loaded", log::field("scene", scene->id),
+                  log::field("session", scene->session), log::field("instances", out.instances),
+                  log::field("revision", out.revision));
+  return true;
+}
+
 // ---- render.load -------------------------------------------------------------------------------
 
 bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& params,
@@ -380,8 +565,10 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     error = unavailable("this host has no renderer attached");
     return false;
   }
-  if (!params.mesh.empty() && !params.scene.empty()) {
-    error = invalid("name a mesh or a scene file, not both");
+  if ((params.mesh.empty() ? 0 : 1) + (params.scene.empty() ? 0 : 1) +
+          (params.session.empty() ? 0 : 1) >
+      1) {
+    error = invalid("name one of a mesh, a scene file and a session, not two");
     return false;
   }
   if (params.grid_instances > 64) {
@@ -428,6 +615,8 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     error = unavailable(std::move(device_error));
     return false;
   }
+  if (!params.session.empty())
+    return load_session(ctx, *host, params, request, *device, out, error);
 
   // Which procedural scene an empty mesh path builds. An unknown name is refused rather than
   // silently drawing the terrain, because a corpus scene that asked for the atlas fixture and
@@ -514,31 +703,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
                      std::to_string(params.grid_instances) + " instances";
   }
 
-  out.scene = scene->id;
-  out.adapter = device->adapter().name;
-  out.meshes = scene->data.parts.size();
-  out.instances = scene->data.instances.size();
-  out.pairs = scene->data.pair_count;
-  out.clusters = scene->data.cluster_count();
-  out.leaf_clusters = scene->data.leaf_count();
-  out.triangles = scene->data.lod.leaf_triangle_count;
-  out.lod_levels = scene->data.lod.level_cluster_counts.size();
-  out.mesh_primitives = scene->data.mesh_primitives;
-  out.mesh_cache = scene->data.mesh_cache;
-  out.build_ms = static_cast<f64>(scene->data.build_ns) / 1.0e6;
-  // `RenderSceneInfo.center` is a `worldpos` (version 3, ADR-0053): the scene's f64 centre as it
-  // is.
-  out.center = scene->data.center;
-  out.radius = scene->data.radius;
-  out.raster = renderer::raster_name(scene->resolved.settings.raster);
-  out.shadows = renderer::resolved_shadow_name(scene->resolved);
-  out.cull = scene->resolved.settings.cull;
-  out.occlusion = scene->resolved.occlusion;
-  out.deform = renderer::deform_name(scene->resolved.settings);
-  out.rt_templates = scene->resolved.settings.rt_templates;
-  out.sky = scene->data.sky.has_value();
-  if (scene->data.terrain.enabled) out.ground_time_s = scene->data.terrain.time_s;
-  out.ground = ground_name(scene->data, scene->resolved);
+  fill_scene_info(*scene, *device, out);
   ENGINE_LOG_INFO(log_render, "scene loaded", log::field("scene", scene->id),
                   log::field("clusters", out.clusters), log::field("instances", out.instances),
                   log::field("pairs", out.pairs), log::field("cache", out.mesh_cache));
@@ -655,9 +820,39 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
     return false;
   }
   renderer::CaptureFiles files;
-  if (!renderer::write_capture(params.out_dir, params.name, shot, files, message)) {
+  // A kept capture with no directory is the listener's alone and touches no disk; every other
+  // capture writes its files as it always has.
+  if (!(params.keep && params.out_dir.empty()) &&
+      !renderer::write_capture(params.out_dir, params.name, shot, files, message)) {
     error = protocol::make_error(protocol::codes::k_io_error, std::move(message));
     return false;
+  }
+  if (params.keep) {
+    Vector<u8> png;
+    if (!shot.color.empty() &&
+        !image::encode_png(shot.width, shot.height, 4,
+                           std::span<const u8>(shot.color.data(), shot.color.size()), png,
+                           image::Compression::Fast)) {
+      error = protocol::make_error(protocol::codes::k_internal_error, "could not encode the PNG");
+      return false;
+    }
+    // The id buffer as `write_capture` lays it out: little-endian u32, k_id_words a pixel.
+    Vector<u8> ids(shot.ids.size() * 4);
+    for (u32 i = 0; i < shot.ids.size(); ++i) {
+      const u32 v = shot.ids[i];
+      ids[i * 4 + 0] = static_cast<u8>(v & 0xffu);
+      ids[i * 4 + 1] = static_cast<u8>((v >> 8) & 0xffu);
+      ids[i * 4 + 2] = static_cast<u8>((v >> 16) & 0xffu);
+      ids[i * 4 + 3] = static_cast<u8>((v >> 24) & 0xffu);
+    }
+    out.capture = host->keep_capture(shot.width, shot.height, std::move(png), std::move(ids));
+    if (!shot.ids.empty() && files.ids.empty())
+      out.ids_header = renderer::id_buffer_header(shot, "");
+  }
+  out.camera = framed_camera(camera);
+  if (scene->document != nullptr) {
+    for (const Id128 id : scene->document->records)
+      out.records.push_back(id);
   }
   out.width = shot.width;
   out.height = shot.height;
@@ -1221,6 +1416,30 @@ void RenderHost::release(Scene& scene) noexcept {
   scene.view.reset();  // waits for the device, then its pipelines and screen targets go
   scene.ground.reset();
   scene.gpu.reset();  // the scene's buffers, textures and acceleration structures
+}
+
+RenderHost::Scene* RenderHost::find_session(std::string_view session) noexcept {
+  for (const std::unique_ptr<Scene>& scene : scenes_) {
+    if (scene->document != nullptr && scene->session == session) return scene.get();
+  }
+  return nullptr;
+}
+
+std::string RenderHost::keep_capture(u32 width, u32 height, Vector<u8> png, Vector<u8> ids) {
+  KeptCapture& slot = kept_[next_capture_ % k_kept_captures];
+  slot.id = "c" + std::to_string(next_capture_++);
+  slot.width = width;
+  slot.height = height;
+  slot.png = std::move(png);
+  slot.ids = std::move(ids);
+  return slot.id;
+}
+
+const RenderHost::KeptCapture* RenderHost::kept_capture(std::string_view id) const noexcept {
+  for (const KeptCapture& k : kept_) {
+    if (!k.id.empty() && k.id == id) return &k;
+  }
+  return nullptr;
 }
 
 std::unique_ptr<RenderHost::Scene> RenderHost::take(std::string_view id) noexcept {

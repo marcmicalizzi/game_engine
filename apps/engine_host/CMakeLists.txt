@@ -21,7 +21,7 @@
 # alone — which materializes nothing and says so — when it is not. `msvc-minimal` and the
 # `*-no-ecs` presets are the proof.
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
-               schemas bench time platform jobs geometry gfx sim content_build doc input)
+               schemas bench time platform jobs geometry gfx sim content_build doc input net doc_scene)
 set(_host_defs)
 foreach(_cap audio ecs animation audio_system kinematics npc scripting store tissue world)
   if(TARGET engine::${_cap})
@@ -40,8 +40,9 @@ foreach(_gen city ruins sky terrain)
   endif()
 endforeach()
 engine_app(NAME engine_host OUTPUT engine-host
-  SOURCES main.cpp render_methods.cpp ops_methods.cpp console.cpp
-  DEPS ${_host_deps})
+  SOURCES main.cpp render_methods.cpp ops_methods.cpp console.cpp listen.cpp
+  DEPS ${_host_deps}
+  E2E_TESTS tests/transport_tests.cpp)
 if(_host_defs)
   target_compile_definitions(engine_engine_host PRIVATE ${_host_defs})
 endif()
@@ -50,3 +51,40 @@ target_compile_definitions(engine_engine_host PRIVATE ENGINE_VERSION="${PROJECT_
 # `bench` is here for foundation/bench/machine_state.h alone: render.benchmark reports what else
 # the machine was doing, in the same shape and with the same thresholds the CPU benchmarks use,
 # rather than growing a second copy of the sampler (docs/subsystems/bench.md).
+
+# `--listen` (listen.cpp, docs/subsystems/apps.md): the protocol over a loopback WebSocket through
+# foundation/net, and `net` and `doc_scene` above are what it and `render.load {session}` need.
+# The listener serves the browser shell (apps/engine_shell, docs/subsystems/engine_shell.md) on
+# GET /, from build/<preset>/shell/ beside shaders/manifest.json: the files are copied there at
+# build, one rule per file so an edited page is copied again and nothing else is.
+file(GLOB_RECURSE _shell_sources CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/apps/engine_shell/*")
+set(_shell_outputs)
+foreach(_source IN LISTS _shell_sources)
+  file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}/apps/engine_shell" "${_source}")
+  set(_output "${CMAKE_BINARY_DIR}/shell/${_rel}")
+  get_filename_component(_output_dir "${_output}" DIRECTORY)
+  add_custom_command(OUTPUT "${_output}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_output_dir}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_source}" "${_output}"
+    DEPENDS "${_source}" VERBATIM)
+  list(APPEND _shell_outputs "${_output}")
+endforeach()
+add_custom_target(engine_shell_files DEPENDS ${_shell_outputs})
+add_dependencies(engine_engine_host engine_shell_files)
+
+if(TARGET engine_engine_host_tests)
+  # transport_tests.cpp starts engine-host with --listen and drives it through foundation/net's own
+  # client (engine_app above links the host's modules into it and marks it as one that can wait for
+  # the GPU lock, since render.load {session} and A32's camera open a device).
+  # And a second, independent client: .NET's ClientWebSocket against the same host
+  # (tools/host-ws.Tests.ps1), because a framing bug the in-tree server and client shared would be
+  # invisible to the test above. Named engine_host.<part> so `test -Affected` runs it with the rest.
+  if(ENGINE_PWSH)
+    add_test(NAME engine_host.host_ws
+      COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/host-ws.Tests.ps1"
+              -HostExe "$<TARGET_FILE:engine_engine_host>"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(engine_host.host_ws PROPERTIES LABELS "engine_host;tools")
+  endif()
+endif()

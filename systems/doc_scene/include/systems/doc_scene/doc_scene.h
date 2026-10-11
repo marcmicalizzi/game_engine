@@ -6,7 +6,7 @@
 // **Why a module of its own.** The renderer reads scenes and must not depend on the document model
 // (schemas/scene.schema, the header), and the document must not know the renderer; and the bridge
 // is not an app's, because every host that draws a document needs the same one — the editor's
-// viewport today, engine-host's `render.load` of a session tomorrow (06 §6.13: a feature only the
+// viewport and engine-host's `render.load` of a session (06 §6.13: a feature only the
 // GUI can reach is a protocol bug). So it sits above both, in `systems/`, and holds nothing but the
 // mapping: one live `engine.scene.MeshPlacement` record is one instance, its `mesh` path one of the
 // scene's meshes (shared by every record naming the same path), its `translation`, `rotation`,

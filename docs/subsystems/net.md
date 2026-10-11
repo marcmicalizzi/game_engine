@@ -1,0 +1,52 @@
+# net (foundation)
+
+**Purpose.** Loopback networking for the engine's own processes: TCP sockets that can bind 127.0.0.1 and nothing else, the HTTP/1.1 subset a local listener needs, RFC 6455 WebSocket framing for **both** ends, and a thread-per-connection server that hands HTTP GETs and WebSocket messages to a handler the application implements. engine-host's `--listen` is built on it ([apps](apps.md#engine-host---listen-the-protocol-over-a-loopback-websocket), [protocol](protocol.md#transport)), which is the transport plan [06 §6.2](../plan/06-agent-tooling.md#62-engine-protocol) promised for the editor and remote agents. No third-party dependency: SHA-1 and base64 are [hash](hash.md)'s, the masking keys and nonces come from [platform](platform.md)'s secure random source, and the whole module is a few hundred lines a reader can check.
+
+**Owned data.** A `Server` owns its `Listener`, its listener thread and one thread per connection; a `WebSocket` owns its `Socket` and its receive buffer. Nothing global except Winsock's one-time start-up on Windows, which is never undone (the process's exit is its cleanup).
+
+## Loopback, and why there is no way to bind anything else
+
+AGENTS.md's listener rule: **a listener binds loopback unless the user opts in.** A listener on a non-loopback address is one Windows Firewall prompt per executable *path*; this tree makes paths cheaply (every preset, every agent's worktree), each pending prompt is a `PickerHost.exe` holding a GPU context, and on 2026-09-18 enough of them stopped the NVIDIA driver surviving `vkCreateDevice` for a night ([gpu driver wedge](../../AGENTS.md)). So the rule is the shape of the API rather than a check:
+
+- `Listener::open_loopback(port)` binds `INADDR_LOOPBACK` and takes no address at all.
+- `parse_loopback_address("<host>:<port>")` accepts `127.0.0.1` and `localhost` and refuses every other host — `0.0.0.0`, a LAN address, `[::]`, a name — with a sentence that says why, which engine-host prints before it exits 2.
+- A module that does not link `net` cannot open a socket. The socket wrapper is here rather than in `core/platform`, where the brief that started this module suggested it, for exactly that reason: everything links `platform`.
+
+A user's opt-in to a reachable listener, when one is wanted (a remote agent, plan 06 §6.2), is a new function with its own name and its own page section, never a parameter on this one. `tools/ci/check-no-listeners.ps1` runs engine-host with `--listen 127.0.0.1:0` from a fresh path and fails on a firewall prompt or a non-loopback endpoint.
+
+Sockets are **non-inheritable** (`WSA_FLAG_NO_HANDLE_INHERIT` and `HANDLE_FLAG_INHERIT` cleared on accepted sockets; `SOCK_CLOEXEC` on Linux), so a process the host starts — `engine.run_tests`, the content build — never keeps the port open after the host exits. Linux sends with `MSG_NOSIGNAL`: a peer that went away is an error to return, not a `SIGPIPE` that ends the host. Every socket sets `TCP_NODELAY`, because a JSON-RPC answer is one small write and Nagle's delay would be most of a loopback round trip.
+
+## HTTP: the subset
+
+`read_http_request` reads one request head (16 KiB at most, a bounded wait for each piece) and `parse_http_request` splits it: the request line in origin form (`/path?query`, nothing else), headers lowercased and trimmed, the path percent-decoded (a `%00` or a bad escape is a malformed request), obsolete line folding refused. `format_http_response` always says `Content-Length`, `Connection: close`, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. There are **no request bodies, no chunked encoding, no keep-alive and no TLS**: a page load on loopback is a handful of GETs on fresh connections, which cost nothing, and a parser this small is one a reviewer can read. `safe_relative_path` is what a static file server checks before joining a URL path to its root: no empty, `.` or `..` segment, no backslash, no `:`, no NUL, no leading slash. `content_type_for` names the types a browser shell needs.
+
+## WebSocket: both ends
+
+- **Handshake.** `is_websocket_upgrade` wants a GET with `Upgrade: websocket`, a `Connection` that lists `upgrade`, `Sec-WebSocket-Version: 13` and a key that is base64 of 16 bytes; `websocket_upgrade_response` answers 101 with `Sec-WebSocket-Accept` = base64(SHA-1(key + the RFC's GUID)). `websocket_connect` is the client's side: a fresh nonce from the secure random source, the 101 checked, the accept value checked against the key.
+- **Frames.** `encode_frame` and `decode_frame` do the 7-, 16- and 64-bit lengths, masking, and refuse what RFC 6455 forbids: a reserved bit set (no extension is ever negotiated, so **permessage-deflate is never offered or accepted**), an unknown opcode, a control frame that is fragmented or longer than 125 bytes, a 64-bit length with its top bit set, and a payload over the limit (close 1009).
+- **The masking rule** is the role's: a `WebSocket` in `Role::Server` closes with 1002 on an unmasked frame, one in `Role::Client` masks every frame with fresh random bytes and closes on a masked frame from the server.
+- **Messages.** `receive` reassembles fragments, answers every ping with a pong carrying its payload (a ping between two fragments of a message is answered without disturbing it), drops pongs, checks a text message is well-formed UTF-8 (no overlong forms, no surrogates, nothing past U+10FFFF; close 1007), and answers a close by echoing its code. A close frame's code must be one a peer may send. The message limit is 64 MiB by default.
+- **Close.** `close(code, reason)` sends one close frame and waits a bounded time for the peer's before shutting the socket.
+
+The client half is in the module, not in a test, because the end-to-end tests drive engine-host through it and a future engine-side client (a native window that is a client of a host, [06 §6.13](../plan/06-agent-tooling.md#613-human-developer-tooling)) needs it. **A framing bug this server and this client shared would be invisible to every test that uses both**, so a second, independent client — .NET's `System.Net.WebSockets.ClientWebSocket` in `tools/host-ws.Tests.ps1` — drives the same host ([apps](apps.md#engine-host---listen-the-protocol-over-a-loopback-websocket)).
+
+## The server
+
+`Server::start(port, handler)` binds and starts one listener thread; every accepted connection gets its own thread, which reads the request head and either hands a GET to `ServerHandler::http` or completes the upgrade and loops over messages, calling `ServerHandler::message` for each text message and sending back what it returns. A refused upgrade (`ServerHandler::accept` false) **still completes the handshake** and closes at once with the handler's code and reason, because a browser's `WebSocket` reports a close code and its reason to the page and an HTTP status to nobody. Binary messages close with 1003 unless the handler takes them. At most `k_max_connections` (32) at once; the next is answered 503.
+
+The handler is called from several threads at once and serializes what it shares; engine-host takes one lock around its dispatcher. `stop()` stops accepting, shuts every open connection's socket down (a connection closes its socket under the server's lock and marks itself done in the same breath, so `stop` never shuts down a handle that has been reused), and joins every thread. The listener thread looks at its stop flag every quarter of a second between accepts: the one wait in the module not on a peer, and the simplest way to stop a blocked accept alike on both systems.
+
+**Why threads and blocking reads.** The clients are a browser tab or two, a test, an agent's script. A thread a connection keeps every read a plain loop and each connection's messages in the order they arrived, and costs nothing at that scale; an event loop would buy nothing until there are hundreds of clients, which a loopback listener will not have.
+
+**Public API.** `foundation/net/socket.h`: `Socket` (`send_all`, `receive`, `wait_readable`, `shutdown_both`), `shutdown_socket`, `parse_loopback_address`, `Listener` (`open_loopback`, `port`, `accept`), `connect_loopback`. `foundation/net/http.h`: `HttpRequest` (`header`, `query_param`), `parse_http_request`, `read_http_request`, `HttpResponse`, `format_http_response`, `http_error`, `percent_decode`, `content_type_for`, `safe_relative_path`. `foundation/net/websocket.h`: `websocket_accept`, `is_websocket_upgrade`, `websocket_upgrade_response`, `close_code::*`, `Opcode`, `encode_frame`, `decode_frame`, `valid_utf8`, `WebSocket` (`receive`, `send_text`, `send_binary`, `send_ping`, `send_fragmented`, `close`), `websocket_connect`. `foundation/net/server.h`: `ServerHandler`, `Server`.
+
+**Depends on.** `base`, `containers`, `hash`, `platform`; Winsock (`ws2_32`) on Windows.
+
+**Testing.** `tools/dev.ps1 test -Filter net`. `tests/net_tests.cpp`: the loopback-only address rule and its refusal sentence; the HTTP head parser on a good request and five malformed ones; the static-path guard; RFC 6455 §5.7's example frames byte for byte, masked and not, the 16- and 64-bit lengths, a truncated buffer, an oversized frame (1009), a reserved bit and a long ping (1002); UTF-8 validation; and a real server and client on loopback — echo, a 200 KB message in 4 KB fragments with a ping between every two, a refused upgrade's 1008 and reason, an unmasked client frame closed with 1002, two connections answered independently, a plain GET, and `stop()` leaving no connection open. engine-host's `transport_tests.cpp` and `tools/host-ws.Tests.ps1` test it end to end.
+
+## Not yet
+
+- **A reachable listener.** Remote agents (06 §6.2) need one, and with it real authentication and TLS ([protocol](protocol.md#transport) says what the token is and is not). Neither is built, and neither will be a flag on `open_loopback`.
+- **IPv6 loopback** (`[::1]`). Nothing needs it: every client here connects to 127.0.0.1.
+- **The bulk channel** (shared memory locally, raw TCP remotely, 06 §6.2) and **subscriptions** (server-pushed notifications) — roadmap [A2](../roadmap.md)'s other half. The server sends only what a handler returns for a message.
+- **permessage-deflate.** Loopback bandwidth is not the constraint, and compression would put a decompressor in front of every message the host reads.

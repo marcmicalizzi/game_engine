@@ -1,6 +1,6 @@
 # doc_scene: a document's placements as a renderer scene (systems)
 
-**Purpose.** The bridge from a `doc::Document` to what the renderer draws, and from a transaction to the instances it moved. It is what engine-editor's viewport is built on ([apps](apps.md#engine-editor-the-engines-window-on-a-document)), and what engine-host's `render.load` of a session will be built on when the protocol grows one.
+**Purpose.** The bridge from a `doc::Document` to what the renderer draws, and from a transaction to the instances it moved. It is what engine-editor's viewport is built on ([apps](apps.md#engine-editor-the-engines-window-on-a-document)), and what engine-host's `render.load` of a session is built on ([below](#over-the-protocol)).
 
 **Why a module of its own, above both sides.** The renderer reads scenes and must not depend on the document model — its journal, undo and ids ([scene.schema](../../schemas/scene.schema), the header) — and the document model knows nothing of drawing. Nor is the bridge an app's: every host that draws a document needs the same mapping, and a feature only the editor's GUI could reach would be a protocol bug ([06 §6.13](../plan/06-agent-tooling.md#613-human-developer-tooling)). So it sits in `systems/`, depends on `doc` and `renderer`, and holds nothing but the mapping. It is not a capability: it is the engine's one mapping from placement records to instances, with no switch.
 
@@ -36,9 +36,11 @@ A rebuild reloads through the derived-data cache, so its cost is the GPU scene's
 
 `systems/doc_scene/tests/doc_scene_tests.cpp`, CPU only, on a document built in memory: placements in id order with a `Node` between them ignored, meshes shared by path and resolved against the document's directory (an absolute path kept), placement as `Instance` (the origin in f64 420 km out, the yaw, the scale); a translation is a move and the description follows it, another type's edit is nothing, a new mesh, a new placement and a deletion are rebuilds; a document with no placements is the stand-in ground with nothing to pick; a placement with no mesh is refused naming the record. The GPU half — picking and moving through a real frame — is engine-editor's test.
 
+## Over the protocol
+
+engine-host's `render.load {"session": <id>}` (2026-10-10, [apps](apps.md#engine-host---listen-the-protocol-over-a-loopback-websocket)) reads a session's document through this module, with the document's directory as the base — the gap this page's "Not yet" named, closed. The host keeps the `DocumentScene` beside the scene it loaded, and a later `render.load` of the same session calls `changes_since` on it: moves become placements written into the host's `SceneData` and, when the GPU scene exists, `SceneRenderer::move_instances`; a rebuild reads the document again into the same scene id. `render.capture` on that scene answers `records` (this module's `DocumentScene::records`, instance to id), so a remote client — the [engine shell](engine_shell.md) first — picks a record from the ids channel exactly as engine-editor's `Viewport::pick` does in process. The editor's viewport is therefore no longer the only thing that can draw a document: anything that speaks the protocol can.
 ## Not yet
 
-- **`render.load` of a session.** engine-host's `render.load` takes a mesh, a scene file or a procedural name; taking `{"session": ...}` through this module, with `render.capture`'s ids channel answering in record ids, is what makes the editor's viewport reachable over the protocol. Not built in the first slice.
 - **Records that place other things**: a scatter, a ruin, a terrain as document records are the rest of the scene file's types; only a placed mesh is a record today.
 - **Hierarchy**: a placement's document parent does not transform it (as `Transform` does not propagate through `ChildOf`, [world.schema](../../schemas/world.schema)); positions are world positions.
 - **A dynamic scene's tail.** Moves go through `move_instances`, which needs a scene read whole; a streamed world's instances would move through `set_dynamic_instances` instead.

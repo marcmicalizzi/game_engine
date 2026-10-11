@@ -9,7 +9,9 @@
 
     subsystems  every engine_module() has docs/subsystems/<module>.md, listed in that
                 directory's README with the layer it lives in; every engine_app() is named
-                in docs/subsystems/apps.md and in its README row; no page without a module.
+                in docs/subsystems/apps.md and in its README row; no page without a module (a
+                directory under apps/ with an index.html and no CMakeLists.txt, a static app like
+                the browser shell, counts as one).
     adr         every docs/adr/NNNN-*.md has a **Status:** the template allows, numbers are
                 unique and contiguous, and docs/adr/README.md lists each one with its title
                 and its status.
@@ -204,6 +206,26 @@ foreach ($manifest in Get-CMakeManifests $Root) {
       Output = $m.Groups[2].Value
       File   = $manifest
       Line   = Get-LineOf $text $m.Index
+    }
+  }
+}
+
+# A directory under apps/ with no CMakeLists.txt is an app made of static files — the browser
+# shell, served by engine-host's listener (docs/subsystems/engine_shell.md). It declares no
+# engine_module() for the scan above to find, and it still owns a page, which it needs and which is
+# not stale; so it counts as a module of the apps layer here.
+$appsDir = Join-Path $Root 'apps'
+if (Test-Path -LiteralPath $appsDir) {
+  foreach ($dir in (Get-ChildItem -LiteralPath $appsDir -Directory | Sort-Object Name)) {
+    if (Test-Path -LiteralPath (Join-Path $dir.FullName 'CMakeLists.txt')) { continue }
+    if (-not (Test-Path -LiteralPath (Join-Path $dir.FullName 'index.html'))) { continue }
+    if ($modules.ContainsKey($dir.Name)) { continue }
+    $modules[$dir.Name] = [pscustomobject]@{
+      Name     = $dir.Name
+      Layer    = 'apps'
+      LayerDir = 'apps'
+      File     = (Join-Path $dir.FullName 'index.html')
+      Line     = 1
     }
   }
 }
