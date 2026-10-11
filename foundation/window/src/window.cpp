@@ -32,6 +32,7 @@ Key key_from_scancode(SDL_Scancode code) noexcept {
     case SDL_SCANCODE_RCTRL: return Key::Control;
     case SDL_SCANCODE_LALT:
     case SDL_SCANCODE_RALT: return Key::Alt;
+    case SDL_SCANCODE_DELETE: return Key::Delete;
     default: break;
   }
   if (code >= SDL_SCANCODE_A && code <= SDL_SCANCODE_Z) {
@@ -730,6 +731,16 @@ void Window::refresh_pixel_size() noexcept {
   if (handle_ != nullptr) SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(handle_), &w, &h);
   pixel_width_ = w > 0 ? static_cast<u32>(w) : 0;
   pixel_height_ = h > 0 ? static_cast<u32>(h) : 0;
+}
+
+bool Window::logical_size(u32& width, u32& height) const noexcept {
+  if (handle_ == nullptr) return false;
+  int w = 0;
+  int h = 0;
+  if (!SDL_GetWindowSize(static_cast<SDL_Window*>(handle_), &w, &h)) return false;
+  width = w > 0 ? static_cast<u32>(w) : 0;
+  height = h > 0 ? static_cast<u32>(h) : 0;
+  return true;
 }
 
 bool Window::desktop_center(i32& x, i32& y) const noexcept {

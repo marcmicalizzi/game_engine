@@ -100,6 +100,7 @@ enum class Key : u16 {
   F10,
   F11,
   F12,
+  Delete,  // after the F keys, so every value above keeps its number
 };
 
 // How many gamepads this module tracks at once. Slots are handed out lowest free first and
@@ -382,6 +383,11 @@ class Window {
   u32 pixel_width() const noexcept { return pixel_width_; }
   u32 pixel_height() const noexcept { return pixel_height_; }
   void refresh_pixel_size() noexcept;
+  // The window's size in its own coordinates, the ones `Event::x`/`y` are in. On a display that
+  // scales it is not the framebuffer's (a 1280 x 720 window at 150 % is 1920 x 1080 pixels), so a
+  // host that turns the pointer into a pixel of its picture multiplies by the two sizes' ratio
+  // (engine-editor's picking and gizmo). Asked of the platform each call; false without a window.
+  bool logical_size(u32& width, u32& height) const noexcept;
   // The window's centre on the desktop, in the desktop's coordinates: which display it is on, for
   // a host that asks the display what it can show (HDR output's peak and paper white, E39). False
   // without a window or where the platform does not say (Wayland).

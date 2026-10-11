@@ -49,6 +49,15 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   CHECK(window.native() != nullptr);
   CHECK(window.pixel_width() >= 96);  // high-DPI scaling can only make it larger
   CHECK(window.pixel_height() >= 64);
+  // The size the pointer's coordinates are in: never more pixels than the framebuffer has, and
+  // the ratio of the two is what engine-editor scales a pointer by.
+  u32 logical_width = 0;
+  u32 logical_height = 0;
+  REQUIRE(window.logical_size(logical_width, logical_height));
+  CHECK(logical_width > 0);
+  CHECK(logical_height > 0);
+  CHECK(window.pixel_width() >= logical_width);
+  CHECK(window.pixel_height() >= logical_height);
 
   // The surface extensions always include VK_KHR_surface when SDL has a Vulkan loader.
   const auto extensions = window::vulkan::instance_extensions();
@@ -221,17 +230,25 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   motion.kind = window::EventKind::MouseMove;
   motion.dx = 12.5f;
   motion.dy = -3.0f;
+  window::Event del;
+  del.kind = window::EventKind::KeyDown;
+  del.scancode = 76;  // SDL_SCANCODE_DELETE: `Key::Delete`, what engine-editor deletes with
   window::Event pad;
   pad.kind = window::EventKind::GamepadButtonDown;
   CHECK_FALSE(window.push_event(pad));
-  if (window.push_event(key) && window.push_event(motion)) {
+  if (window.push_event(key) && window.push_event(motion) && window.push_event(del)) {
     bool saw_key = false;
     bool saw_motion = false;
+    bool saw_delete = false;
     for (u32 i = 0; i < 1000 && window.poll(event); ++i) {
       if (event.kind == window::EventKind::KeyDown && event.scancode == 26) {
         saw_key = true;
         CHECK(event.key == window::Key::W);
         CHECK_FALSE(event.repeat);
+      }
+      if (event.kind == window::EventKind::KeyDown && event.scancode == 76) {
+        saw_delete = true;
+        CHECK(event.key == window::Key::Delete);
       }
       if (event.kind == window::EventKind::MouseMove && event.dx == 12.5f) {
         saw_motion = true;
@@ -240,6 +257,7 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
     }
     CHECK(saw_key);
     CHECK(saw_motion);
+    CHECK(saw_delete);
   } else {
     MESSAGE("SDL's event queue refused a synthetic event here");
   }
@@ -250,6 +268,7 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   CHECK_FALSE(window.set_relative_mouse(true));
   CHECK_FALSE(window.relative_mouse());
   CHECK_FALSE(window.push_event(key));
+  CHECK_FALSE(window.logical_size(logical_width, logical_height));
   window::shutdown();
   CHECK_FALSE(window::initialized());
   // shutdown() closes every device it opened.
