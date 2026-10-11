@@ -4,6 +4,7 @@
 #include <systems/renderer/request.h>
 
 #include <algorithm>
+#include <span>
 
 namespace engine::editor {
 
@@ -62,6 +63,7 @@ bool Viewport::load(std::string& error) {
 }
 
 void Viewport::destroy() noexcept {
+  preview_instance_ = ~0u;
   if (renderer_ != nullptr) renderer_->destroy();
   renderer_.reset();
   if (gpu_ != nullptr) gpu_->destroy();
@@ -73,6 +75,7 @@ bool Viewport::sync(const doc::Document& document, bool& rebuilt, std::string& e
   doc_scene::SceneChanges changes;
   if (!doc_scene::changes_since(document, scene_, changes, error)) return false;
   if (changes.rebuild) {
+    preview_instance_ = ~0u;  // the instances are numbered again; a preview of one is gone
     const u32 width = renderer_ != nullptr ? renderer_->width() : options_.width;
     const u32 height = renderer_ != nullptr ? renderer_->height() : options_.height;
     options_.width = width;
@@ -87,7 +90,10 @@ bool Viewport::sync(const doc::Document& document, bool& rebuilt, std::string& e
 }
 
 renderer::Camera Viewport::framing_camera() const noexcept {
-  return renderer::orbit_camera(data_.center, data_.radius, 2.6f * data_.radius, 0);
+  // 2.6 radii out: `orbit_camera` measures its distance in tenths of the radius, so 26. (Stage 1
+  // passed 2.6 radii as the distance, which is 0.26 r² metres: inside any scene smaller than
+  // ten metres across — the camera stood inside the nearer of two cubes.)
+  return renderer::orbit_camera(data_.center, data_.radius, 26.0f, 0);
 }
 
 bool Viewport::pick(u32 x, u32 y, Id128& out, std::string& error) {
@@ -104,9 +110,40 @@ bool Viewport::pick(u32 x, u32 y, Id128& out, std::string& error) {
   return true;
 }
 
+bool Viewport::preview(u32 instance, const renderer::SceneInstance& placed, std::string& error) {
+  if (instance >= scene_.desc.instances.size()) {
+    error = "no such instance to preview";
+    return false;
+  }
+  if (preview_instance_ != ~0u && preview_instance_ != instance && !cancel_preview(error))
+    return false;
+  if (!renderer_->move_instances(std::span<const u32>(&instance, 1),
+                                 std::span<const renderer::SceneInstance>(&placed, 1), &error))
+    return false;
+  preview_instance_ = instance;
+  preview_placement_ = placed;
+  return true;
+}
+
+bool Viewport::cancel_preview(std::string& error) {
+  if (preview_instance_ == ~0u) return true;
+  const u32 instance = preview_instance_;
+  preview_instance_ = ~0u;
+  const renderer::SceneInstance& document_placement = scene_.desc.instances[instance];
+  return renderer_->move_instances(std::span<const u32>(&instance, 1),
+                                   std::span<const renderer::SceneInstance>(&document_placement, 1),
+                                   &error);
+}
+
+const renderer::SceneInstance* Viewport::placement(u32 instance) const noexcept {
+  if (instance >= scene_.desc.instances.size()) return nullptr;
+  return instance == preview_instance_ ? &preview_placement_ : &scene_.desc.instances[instance];
+}
+
 bool Viewport::instance_box(u32 instance, WorldPos corners[8]) const noexcept {
-  if (instance >= scene_.desc.instances.size()) return false;
-  const renderer::SceneInstance& source = scene_.desc.instances[instance];
+  const renderer::SceneInstance* placed = placement(instance);
+  if (placed == nullptr) return false;
+  const renderer::SceneInstance& source = *placed;
   if (source.mesh >= mesh_lo_.size() || source.mesh >= data_.mesh_fit.size()) return false;
   const Mat4& fit = data_.mesh_fit[source.mesh];
   // Placed as `load_scene` places it: the linear part of transform-then-fit about the instance's

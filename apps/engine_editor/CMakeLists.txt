@@ -1,6 +1,7 @@
-# engine-editor: the editor's first slice (docs/subsystems/apps.md, "engine-editor"; ADR-0054;
-# roadmap A31). A window on a document: the renderer's picture of its placements, engine-view's fly
-# camera, and Dear ImGui panels drawn through the renderer's overlay pass.
+# engine-editor: the engine's window on a document (docs/subsystems/apps.md, "engine-editor";
+# ADR-0054; roadmap A34). The renderer's picture of its placements, engine-view's fly camera,
+# picking, a translate gizmo, undo/redo/delete, and Dear ImGui drawn through the renderer's overlay
+# pass. `viewport_math.cpp` is the pointer's maths and `editor_input.cpp` what it does with it.
 #
 # `protocol` because the document is opened through `protocol::Session` and edited through its
 # checked write path, never behind it (editor_document.h); `doc_scene` is the bridge from the
@@ -15,7 +16,8 @@ set(_editor_deps base containers hash ids math time jobs log platform window ima
 set(_editor_camera ${CMAKE_SOURCE_DIR}/apps/engine_view/fly_camera.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/window_input.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/walk.cpp)
-set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp)
+set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp editor_input.cpp
+                    viewport_math.cpp)
 
 engine_app(NAME engine_editor OUTPUT engine-editor
   SOURCES main.cpp ${_editor_sources} ${_editor_camera}

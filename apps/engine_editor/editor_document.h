@@ -99,6 +99,13 @@ class EditorDocument {
              std::string& error);
   bool undo(std::string& error);
   bool redo(std::string& error);
+  // Whether the session has a transaction to undo, or an undone one to redo (its undo position
+  // against the journal): what the toolbar's buttons are enabled by.
+  bool can_undo() const;
+  bool can_redo() const;
+  // What a rationale and the toolbar call a record: its `name` property, or its id in hex when it
+  // has none.
+  std::string display_name(Id128 id) const;
 
  private:
   io::Vfs vfs_;

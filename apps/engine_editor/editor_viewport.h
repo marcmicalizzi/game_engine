@@ -70,8 +70,25 @@ class Viewport {
   bool pick(u32 x, u32 y, Id128& out, std::string& error);
 
   // The eight corners of instance `instance`'s box (its mesh's, through the mesh's fit and the
-  // instance's placement) in world space; false past the instances.
+  // instance's placement — the preview's while there is one) in world space; false past the
+  // instances.
   bool instance_box(u32 instance, WorldPos corners[8]) const noexcept;
+
+  // **A preview**: instance `instance` drawn as `placed` places it while the document still
+  // says otherwise — what the gizmo shows while its button is held, so that a drag writes nothing
+  // until it is released (one gesture, one command). It is `SceneRenderer::move_instances`, the
+  // call `sync` makes for a transaction, so it waits for the device: a pointer event's cost. One
+  // instance at a time; the box follows it. Never between `begin_frame` and `submit_frame`.
+  bool preview(u32 instance, const renderer::SceneInstance& placed, std::string& error);
+  // Puts the previewed instance back where the document has it: a cancelled or empty drag.
+  bool cancel_preview(std::string& error);
+  // Forgets the preview without moving anything, once the transaction that commits it is applied:
+  // the next `sync` moves the instance to the record's translation, which is where it stands.
+  void keep_preview() noexcept { preview_instance_ = ~0u; }
+  bool previewing() const noexcept { return preview_instance_ != ~0u; }
+  // Where instance `instance` is drawn: the preview's placement while there is one, else the
+  // document's; null past the instances.
+  const renderer::SceneInstance* placement(u32 instance) const noexcept;
 
  private:
   bool load(std::string& error);
@@ -86,6 +103,8 @@ class Viewport {
   std::unique_ptr<renderer::SceneRenderer> renderer_;
   Vector<Vec3> mesh_lo_;  // each mesh's box, in its own space before the fit
   Vector<Vec3> mesh_hi_;
+  u32 preview_instance_ = ~0u;
+  renderer::SceneInstance preview_placement_;
 };
 
 }  // namespace engine::editor

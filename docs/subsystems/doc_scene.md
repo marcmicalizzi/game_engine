@@ -1,6 +1,6 @@
 # doc_scene: a document's placements as a renderer scene (systems)
 
-**Purpose.** The bridge from a `doc::Document` to what the renderer draws, and from a transaction to the instances it moved. It is what engine-editor's viewport is built on ([apps](apps.md#engine-editor-the-editors-first-slice)), and what engine-host's `render.load` of a session will be built on when the protocol grows one.
+**Purpose.** The bridge from a `doc::Document` to what the renderer draws, and from a transaction to the instances it moved. It is what engine-editor's viewport is built on ([apps](apps.md#engine-editor-the-engines-window-on-a-document)), and what engine-host's `render.load` of a session will be built on when the protocol grows one.
 
 **Why a module of its own, above both sides.** The renderer reads scenes and must not depend on the document model — its journal, undo and ids ([scene.schema](../../schemas/scene.schema), the header) — and the document model knows nothing of drawing. Nor is the bridge an app's: every host that draws a document needs the same mapping, and a feature only the editor's GUI could reach would be a protocol bug ([06 §6.13](../plan/06-agent-tooling.md#613-human-developer-tooling)). So it sits in `systems/`, depends on `doc` and `renderer`, and holds nothing but the mapping. It is not a capability: it is the engine's one mapping from placement records to instances, with no switch.
 

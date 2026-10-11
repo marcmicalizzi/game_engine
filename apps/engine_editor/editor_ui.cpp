@@ -30,6 +30,7 @@ ImGuiKey key_of(window::Key key) noexcept {
     case Key::Shift: return ImGuiKey_LeftShift;
     case Key::Control: return ImGuiKey_LeftCtrl;
     case Key::Alt: return ImGuiKey_LeftAlt;
+    case Key::Delete: return ImGuiKey_Delete;
     default: break;
   }
   const u16 k = static_cast<u16>(key);
@@ -133,7 +134,8 @@ void EditorUi::refresh(const EditorDocument& document) {
 }
 
 void EditorUi::frame(f32 dt, u32 width, u32 height, const EditorDocument& document,
-                     const Viewport& viewport, const renderer::Camera& camera, Actions& out) {
+                     const Viewport& viewport, const renderer::Camera& camera,
+                     const EditorInput& input, Actions& out) {
   out = Actions{};
   ImGui::SetCurrentContext(context_);
   ImGuiIO& io = ImGui::GetIO();
@@ -141,6 +143,32 @@ void EditorUi::frame(f32 dt, u32 width, u32 height, const EditorDocument& docume
   io.DeltaTime = dt > 0.0f ? dt : 1.0f / 60.0f;
   refresh(document);
   ImGui::NewFrame();
+
+  // The toolbar: undo and redo (Ctrl+Z, Ctrl+Y), delete (Del), the selection, and the last edit
+  // the session refused. Before the dock space, which then docks below it.
+  if (ImGui::BeginMainMenuBar()) {
+    ImGui::BeginDisabled(!document.can_undo());
+    if (ImGui::MenuItem("Undo")) out.undo = true;
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!document.can_redo());
+    if (ImGui::MenuItem("Redo")) out.redo = true;
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(document.selection().is_null());
+    if (ImGui::MenuItem("Delete")) out.remove = true;
+    ImGui::EndDisabled();
+    ImGui::Separator();
+    if (document.selection().is_null()) {
+      ImGui::TextDisabled("nothing selected");
+    } else {
+      const std::string name = document.display_name(document.selection());
+      ImGui::TextUnformatted(name.c_str());
+    }
+    if (!input.message().empty()) {
+      ImGui::Separator();
+      ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", input.message().c_str());
+    }
+    ImGui::EndMainMenuBar();
+  }
 
   // The panels dock round a central node that lets the pointer through to the viewport.
   const ImGuiID dock =
@@ -254,6 +282,27 @@ void EditorUi::frame(f32 dt, u32 width, u32 height, const EditorDocument& docume
         draw->AddLine(screen[e[0]], screen[e[1]], rgba(255, 196, 64, 255), 2.0f);
       }
     }
+  }
+
+  // The translate gizmo: three handles from the box's centre along world x, y and z, the one under
+  // the pointer (or being dragged) lit. Projected by `EditorInput` with the same view as the box.
+  const GizmoHandles& handles = input.handles();
+  if (handles.visible) {
+    static constexpr u8 k_axis_rgb[k_axis_count][3] = {
+        {230, 64, 64}, {96, 210, 72}, {72, 128, 240}};
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const u32 lit = input.active() != k_no_axis ? input.active() : input.hovered();
+    const ImVec2 centre(handles.cx, handles.cy);
+    for (u32 a = 0; a < k_axis_count; ++a) {
+      if (!handles.shown[a]) continue;
+      const bool hot = a == lit;
+      const ImU32 colour = hot ? rgba(255, 236, 96, 255)
+                               : rgba(k_axis_rgb[a][0], k_axis_rgb[a][1], k_axis_rgb[a][2], 255);
+      const ImVec2 end(handles.ex[a], handles.ey[a]);
+      draw->AddLine(centre, end, colour, hot ? 4.0f : 2.5f);
+      draw->AddCircleFilled(end, hot ? 6.0f : 4.5f, colour);
+    }
+    draw->AddCircleFilled(centre, 3.0f, rgba(240, 240, 240, 255));
   }
   ImGui::Render();
 }

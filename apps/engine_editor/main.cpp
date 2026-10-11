@@ -1,20 +1,24 @@
-// engine-editor: the editor's first slice (docs/subsystems/apps.md, "engine-editor"; ADR-0054;
-// roadmap A31). One window: the renderer's picture of a document's placements, engine-view's fly
-// camera, and Dear ImGui panels docked round it — an outliner, a property panel generated from the
-// selected record's schema descriptor, and the session's journal. A click in the picture selects
-// the record under it, read from the visibility buffer. A transaction that moves a placement moves
-// it in the next frame.
+// engine-editor: the engine's window on a document (docs/subsystems/apps.md, "engine-editor";
+// ADR-0054; roadmap A34). One window: the renderer's picture of a document's placements,
+// engine-view's fly camera, picking from the visibility buffer, a translate gizmo whose every drag
+// is one transaction, undo, redo and delete — the in-engine half of the editor, whatever its shell
+// becomes — and three Dear ImGui panels (outliner, properties, journal) that are a stopgap for the
+// shell (A36's web client over the protocol). A transaction that moves a placement moves it in the
+// next frame, whoever made it.
 //
 // The document is opened through `protocol::Session` and every edit goes through its checked write
-// path (editor_document.h); everything drawn is the renderer's (editor_viewport.h). `--offscreen`
-// runs the same frames with no window, and `--frames`, `--pick`, `--move` and `--capture` are how
+// path (editor_document.h); the pointer and keys are editor_input.h's, their maths
+// viewport_math.h's; everything drawn is the renderer's (editor_viewport.h). `--offscreen` runs the
+// same frames with no window, and `--frames`, `--pick`, `--move`, `--drag` and `--capture` are how
 // a test drives either mode and reads the answer from the one JSON line it prints at the end.
 
 #include "../engine_view/fly_camera.h"
 #include "../engine_view/window_input.h"
 #include "editor_document.h"
+#include "editor_input.h"
 #include "editor_ui.h"
 #include "editor_viewport.h"
+#include "viewport_math.h"
 
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -34,6 +38,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <engine_build_stamp.h>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -49,16 +54,24 @@ tunables::Int present_max_hz{"editor.present.max_hz", 120, 1, 1000,
 
 constexpr const char* k_usage =
     "engine-editor --doc <dir> [--create] [--actor <name>] [--width N] [--height N]\n"
-    "              [--offscreen] [--frames N] [--pick X,Y] [--move X,Y,Z] [--capture out.png]\n"
-    "              [--ddc <dir>]\n"
+    "              [--offscreen] [--frames N] [--pick X,Y] [--move X,Y,Z] [--drag X0,Y0 X1,Y1]\n"
+    "              [--capture out.png] [--ddc <dir>]\n"
+    "engine-editor --version\n"
     "  --doc        the document directory (protocol::Session opens it)\n"
     "  --create     create the document when the directory holds none\n"
     "  --actor      who the edits are attributed to (role: director)\n"
     "  --offscreen  no window: draw --frames frames into the renderer's own target\n"
     "  --frames N   stop after N frames (0: until the window closes)\n"
-    "  --pick X,Y   after the second frame, select what is under pixel (X, Y)\n"
+    "  --pick X,Y   after the second frame, select what is under the pointer at (X, Y), in\n"
+    "               window coordinates (the picture's pixels offscreen or where nothing scales)\n"
     "  --move X,Y,Z after picking, set the selection's translation in one transaction\n"
+    "  --drag X0,Y0 X1,Y1  after picking, press at the first point, move to the second over\n"
+    "               three frames and release, as a pointer would (frames 3 to 8): on a gizmo\n"
+    "               handle that is one transaction; needs --pick and --frames 10 or more\n"
     "  --capture    offscreen: the last frame, panels and all, as a PNG\n"
+    "  --version    the commit this binary was built from, as one JSON line\n"
+    "In the window: left click picks; drag a gizmo handle to move the selection along it (Escape\n"
+    "cancels); Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes the selection.\n"
     "Exit codes: 0 ok, 1 runtime error, 2 usage, 3 no display or no device.\n";
 
 struct Options {
@@ -74,6 +87,9 @@ struct Options {
   u32 pick_y = 0;
   bool move = false;
   f64 move_to[3] = {0.0, 0.0, 0.0};
+  bool drag = false;
+  f64 drag_from[2] = {0.0, 0.0};
+  f64 drag_to[2] = {0.0, 0.0};
   std::string capture;
   std::string ddc;
 };
@@ -169,6 +185,11 @@ struct Summary {
   u32 properties = 0;
   u32 journal = 0;
   u32 rebuilds = 0;
+  u32 transactions = 0;  // the session's journal, whole
+  u32 undo_position = 0;
+  u32 width = 0;  // the picture's pixels: the swapchain's, or the offscreen target's
+  u32 height = 0;
+  editor::EditorInput::Stats input;
 };
 
 void print_summary(const Summary& s, const Options& o) {
@@ -182,6 +203,27 @@ void print_summary(const Summary& s, const Options& o) {
   out["picked"] = JsonValue(s.picked);
   out["moved"] = JsonValue(s.moved);
   out["rebuilds"] = JsonValue(s.rebuilds);
+  out["width"] = JsonValue(s.width);
+  out["height"] = JsonValue(s.height);
+  out["transactions"] = JsonValue(s.transactions);
+  out["undo_position"] = JsonValue(s.undo_position);
+  // What one pick costs: it reads the whole visibility buffer back for one pixel, which is a
+  // click's price and not a frame's (`Viewport::pick`). Null before any pick.
+  out["pick_ms"] = s.input.pick_ms < 0.0 ? JsonValue() : JsonValue(s.input.pick_ms);
+  out["drags"] = JsonValue(s.input.drags);
+  if (s.input.last_transaction >= 0) {
+    JsonValue drag = JsonValue::object();
+    drag["axis"] = JsonValue(editor::axis_name(s.input.last_axis));
+    drag["delta"] = JsonValue(s.input.last_delta);
+    drag["transaction"] = JsonValue(s.input.last_transaction);
+    drag["rationale"] = JsonValue(s.input.last_rationale);
+    out["drag"] = std::move(drag);
+  } else {
+    out["drag"] = JsonValue();
+  }
+  out["undos"] = JsonValue(s.input.undos);
+  out["redos"] = JsonValue(s.input.redos);
+  out["deletes"] = JsonValue(s.input.deletes);
   JsonValue panels = JsonValue::object();
   panels["outliner"] = JsonValue(s.outliner);
   panels["properties"] = JsonValue(s.properties);
@@ -192,15 +234,49 @@ void print_summary(const Summary& s, const Options& o) {
   std::printf("%s\n", write_json(out, compact).c_str());
 }
 
-// What both modes do between frames: the scripted pick and move, then the viewport brought up to
-// the document.
-bool between_frames(const Options& options, u64 frame, editor::EditorDocument& document,
-                    editor::Viewport& viewport, editor::EditorUi& ui, Summary& summary,
+// The scripted gesture's events for frame `frame`, in window coordinates, as a pointer would send
+// them: after the pick (frame 2) the pointer goes to the first point (frame 3, so the handle under
+// it is hovered first, as a person's would be), presses there (4), moves to the second over three
+// frames (5 to 7) and releases there (8).
+void scripted_events(const Options& o, u64 frame, Vector<window::Event>& out) {
+  out.clear();
+  if (!o.drag || frame < 3 || frame > 8) return;
+  window::Event e;
+  e.button = 1;
+  const f64 k = frame <= 4 ? 0.0 : (frame >= 7 ? 1.0 : static_cast<f64>(frame - 4) / 3.0);
+  e.x = static_cast<f32>(o.drag_from[0] + (o.drag_to[0] - o.drag_from[0]) * k);
+  e.y = static_cast<f32>(o.drag_from[1] + (o.drag_to[1] - o.drag_from[1]) * k);
+  e.kind = frame == 4   ? window::EventKind::MouseButtonDown
+           : frame == 8 ? window::EventKind::MouseButtonUp
+                        : window::EventKind::MouseMove;
+  out.push_back(e);
+}
+
+bool is_pointer(const window::Event& e) noexcept {
+  return e.kind == window::EventKind::MouseMove || e.kind == window::EventKind::MouseButtonDown ||
+         e.kind == window::EventKind::MouseButtonUp || e.kind == window::EventKind::MouseWheel;
+}
+
+// The window's pointer coordinates as the picture's pixels (viewport_math.h, `pointer_scale`).
+void to_pixels(window::Event& e, editor::PointerScale scale) noexcept {
+  if (!is_pointer(e)) return;
+  e.x *= scale.x;
+  e.y *= scale.y;
+}
+
+// What both modes do between frames: the scripted pick and move, a drag's preview, then the
+// viewport brought up to the document.
+bool between_frames(const Options& options, u64 frame, editor::PointerScale scale,
+                    editor::EditorDocument& document, editor::Viewport& viewport,
+                    editor::EditorUi& ui, editor::EditorInput& input, Summary& summary,
                     std::string& error) {
-  if (options.pick && frame == 2) {
-    Id128 picked;
-    if (!viewport.pick(options.pick_x, options.pick_y, picked, error)) return false;
-    document.select(picked);
+  // Once: a window's loop can pass a frame's number twice (a swapchain out of date), and --move
+  // must not commit twice.
+  if (options.pick && frame == 2 && !summary.picked) {
+    if (!input.pick(static_cast<f32>(options.pick_x) * scale.x,
+                    static_cast<f32>(options.pick_y) * scale.y, document, viewport, error))
+      return false;
+    const Id128 picked = document.selection();
     summary.picked = true;
     if (options.move && !picked.is_null()) {
       JsonValue to = JsonValue::array();
@@ -212,6 +288,7 @@ bool between_frames(const Options& options, u64 frame, editor::EditorDocument& d
       summary.moved = true;
     }
   }
+  if (!input.flush(viewport, error)) return false;
   bool rebuilt = false;
   if (!viewport.sync(document.document(), rebuilt, error)) return false;
   if (rebuilt) {
@@ -221,9 +298,22 @@ bool between_frames(const Options& options, u64 frame, editor::EditorDocument& d
   return true;
 }
 
-void finish(Summary& summary, const editor::EditorDocument& document,
-            const editor::Viewport& viewport, const editor::EditorUi& ui) {
+// What the toolbar asked for this frame, through the same calls as the keys.
+bool toolbar(const editor::EditorUi::Actions& actions, editor::EditorDocument& document,
+             editor::Viewport& viewport, editor::EditorInput& input, std::string& error) {
+  if (actions.select) document.select(actions.selected);
+  if (actions.undo && !input.undo(document, viewport, error)) return false;
+  if (actions.redo && !input.redo(document, viewport, error)) return false;
+  if (actions.remove && !input.remove_selection(document, viewport, error)) return false;
+  return true;
+}
+
+void finish(Summary& summary, editor::EditorDocument& document, const editor::Viewport& viewport,
+            const editor::EditorUi& ui, const editor::EditorInput& input) {
   summary.selected = document.selection();
+  summary.transactions = static_cast<u32>(document.document().journal().size());
+  summary.undo_position = document.session().undo_position();
+  summary.input = input.stats();
   summary.records = 0;
   for (const Id128 id : viewport.scene().records)
     summary.records += id.is_null() ? 0u : 1u;
@@ -255,17 +345,37 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
       return 1;
     }
+    editor::EditorInput input;
     Summary summary;
+    Vector<window::Event> scripted;
+    // No window: the scripted coordinates are the picture's own pixels.
+    const editor::PointerScale scale;
     const u32 frames = options.frames > 0 ? options.frames : 3u;
     for (u64 f = 0; f < frames && code == 0; ++f) {
-      if (!between_frames(options, f, document, viewport, ui, summary, error)) {
+      scripted_events(options, f, scripted);
+      for (window::Event e : scripted) {
+        to_pixels(e, scale);
+        ui.feed(e);
+        if (!input.handle(e, ui.wants_mouse() && !input.dragging(), !ui.wants_keyboard(), document,
+                          viewport, error)) {
+          code = 1;
+          break;
+        }
+      }
+      if (code != 0) break;
+      if (!between_frames(options, f, scale, document, viewport, ui, input, summary, error)) {
         code = 1;
         break;
       }
       const renderer::Camera view = camera.view();
+      input.set_view(document, viewport, view, options.width, options.height, scale.y);
       editor::EditorUi::Actions actions;
-      ui.frame(1.0f / 60.0f, options.width, options.height, document, viewport, view, actions);
-      if (actions.select) document.select(actions.selected);
+      ui.frame(1.0f / 60.0f, options.width, options.height, document, viewport, view, input,
+               actions);
+      if (!toolbar(actions, document, viewport, input, error)) {
+        code = 1;
+        break;
+      }
       renderer::OverlayDrawData overlay;
       if (!ui.render(viewport.renderer(), overlay, error)) {
         code = 1;
@@ -297,7 +407,9 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
       ++summary.frames;
     }
     if (code == 0) {
-      finish(summary, document, viewport, ui);
+      finish(summary, document, viewport, ui, input);
+      summary.width = options.width;
+      summary.height = options.height;
       print_summary(summary, options);
     } else {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
@@ -340,8 +452,11 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     gfx::Swapchain swapchain;
     editor::Viewport viewport;
     editor::EditorUi ui;
+    editor::EditorInput input;
     Camera camera;
     Summary summary;
+    Vector<window::Event> scripted;
+    u64 scripted_frame = ~u64{0};  // the frame whose scripted events were sent
     if (!window::vulkan::create_surface(window, device.handles().instance, surface, &error)) {
       code = unavailable("cannot create a surface", error);
     } else {
@@ -379,31 +494,56 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       const i64 now = time::monotonic_ns();
       const i64 dt_ns = now - last_ns;
       last_ns = now;
+      // The pointer arrives in the window's coordinates and the picture is the swapchain's pixels;
+      // under display scaling the two differ, and a click would land beside its target.
+      u32 logical_width = 0;
+      u32 logical_height = 0;
+      if (!window.logical_size(logical_width, logical_height)) logical_width = logical_height = 0;
+      const editor::PointerScale scale = editor::pointer_scale(
+          logical_width, logical_height, swapchain.extent().width, swapchain.extent().height);
+      // One path for the platform's events and the scripted gesture's: ImGui first, then the
+      // editor's pointer and keys, then the camera, which gets what neither took.
+      const auto on_event = [&](window::Event e) {
+        to_pixels(e, scale);
+        ui.feed(e);
+        const bool over_panels = ui.wants_mouse() && !input.dragging();
+        if (e.kind == window::EventKind::MouseButtonDown && e.button == 3 && !over_panels)
+          camera.looking = true;
+        if (e.kind == window::EventKind::MouseButtonUp && e.button == 3) camera.looking = false;
+        const bool keys_free = !ui.wants_keyboard();
+        if (!input.handle(e, over_panels, keys_free, document, viewport, error)) return false;
+        const bool is_key =
+            e.kind == window::EventKind::KeyDown || e.kind == window::EventKind::KeyUp;
+        // Ctrl is the editor's modifier (Ctrl+Z, Ctrl+Y), so here it does not lower the camera as
+        // it does in engine-view; Q does.
+        const bool editor_key = is_key && e.key == window::Key::Control;
+        if (!editor_key && ((is_key && keys_free) || (!is_key && !over_panels) ||
+                            e.kind == window::EventKind::MouseButtonUp)) {
+          camera.edge.add(e, camera.next(), camera.looking);
+        }
+        return true;
+      };
+      bool failed = false;
       window::Event event;
-      while (window.poll(event)) {
+      while (!failed && window.poll(event)) {
         if (event.kind == window::EventKind::Quit ||
             event.kind == window::EventKind::CloseRequested) {
           running = false;
         }
         if (event.kind == window::EventKind::Resized) resize = true;
-        ui.feed(event);
-        const bool over_panels = ui.wants_mouse();
-        if (event.kind == window::EventKind::MouseButtonDown && event.button == 3 && !over_panels)
-          camera.looking = true;
-        if (event.kind == window::EventKind::MouseButtonUp && event.button == 3)
-          camera.looking = false;
-        if (event.kind == window::EventKind::MouseButtonDown && event.button == 1 && !over_panels) {
-          Id128 picked;
-          if (viewport.pick(static_cast<u32>(event.x), static_cast<u32>(event.y), picked, error))
-            document.select(picked);
-        }
-        const bool keys_free = !ui.wants_keyboard();
-        const bool is_key =
-            event.kind == window::EventKind::KeyDown || event.kind == window::EventKind::KeyUp;
-        if ((is_key && keys_free) || (!is_key && !over_panels) ||
-            event.kind == window::EventKind::MouseButtonUp) {
-          camera.edge.add(event, camera.next(), camera.looking);
-        }
+        failed = !on_event(event);
+      }
+      // Once a frame: an iteration that draws nothing (an out-of-date swapchain) keeps the count.
+      scripted.clear();
+      if (summary.frames != scripted_frame) {
+        scripted_frame = summary.frames;
+        scripted_events(options, summary.frames, scripted);
+      }
+      for (const window::Event& e : scripted)
+        failed = failed || !on_event(e);
+      if (failed) {
+        code = 1;
+        break;
       }
       if (!running) break;
       window.set_relative_mouse(camera.looking);
@@ -421,16 +561,22 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           break;
         }
       }
-      if (!between_frames(options, summary.frames, document, viewport, ui, summary, error)) {
+      if (!between_frames(options, summary.frames, scale, document, viewport, ui, input, summary,
+                          error)) {
         code = 1;
         break;
       }
       const u32 width = swapchain.extent().width;
       const u32 height = swapchain.extent().height;
       const renderer::Camera view = camera.view();
+      input.set_view(document, viewport, view, width, height, scale.y);
       editor::EditorUi::Actions actions;
-      ui.frame(static_cast<f32>(dt_ns) / 1.0e9f, width, height, document, viewport, view, actions);
-      if (actions.select) document.select(actions.selected);
+      ui.frame(static_cast<f32>(dt_ns) / 1.0e9f, width, height, document, viewport, view, input,
+               actions);
+      if (!toolbar(actions, document, viewport, input, error)) {
+        code = 1;
+        break;
+      }
       renderer::OverlayDrawData overlay;
       if (!ui.render(viewport.renderer(), overlay, error)) {
         code = 1;
@@ -475,7 +621,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     }
     if (viewport.valid()) viewport.renderer().wait_idle();
     if (code == 0) {
-      finish(summary, document, viewport, ui);
+      finish(summary, document, viewport, ui, input);
+      summary.width = swapchain.extent().width;
+      summary.height = swapchain.extent().height;
       print_summary(summary, options);
     } else if (!error.empty()) {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
@@ -508,6 +656,12 @@ int main(int argc, char** argv) {
     if (a == "--help" || a == "-h") {
       std::fputs(k_usage, stdout);
       return 0;
+    } else if (a == "--version") {
+      // The build stamp (cmake/EngineBuildStamp.cmake), as every executable prints it: what an
+      // install check reads. No document, no window, no device.
+      std::printf("{\"tool\":\"engine-editor\",\"commit\":\"%s\",\"dirty\":%s}\n",
+                  build_stamp::commit(), build_stamp::dirty() ? "true" : "false");
+      return 0;
     } else if (a == "--doc") {
       if (!value(options.doc)) return usage("--doc needs a directory");
     } else if (a == "--create") {
@@ -533,6 +687,12 @@ int main(int argc, char** argv) {
     } else if (a == "--move") {
       if (!value(v) || !parse_list(v, options.move_to, 3)) return usage("--move needs X,Y,Z");
       options.move = true;
+    } else if (a == "--drag") {
+      std::string to;
+      if (!value(v) || !value(to) || !parse_list(v, options.drag_from, 2) ||
+          !parse_list(to, options.drag_to, 2))
+        return usage("--drag needs X0,Y0 X1,Y1");
+      options.drag = true;
     } else if (a == "--capture") {
       if (!value(options.capture)) return usage("--capture needs a path");
     } else if (a == "--ddc") {
@@ -547,6 +707,9 @@ int main(int argc, char** argv) {
     return usage("--capture is offscreen's (a window's frame is the swapchain's)");
   if (options.pick && options.frames > 0 && options.frames < 3)
     return usage("--pick answers after the second frame: --frames 3 or more");
+  if (options.drag && !options.pick) return usage("--drag drags what --pick selected");
+  if (options.drag && options.frames > 0 && options.frames < 10)
+    return usage("--drag releases at the eighth frame: --frames 10 or more");
 
   editor::EditorDocument document;
   std::string error;

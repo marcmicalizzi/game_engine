@@ -1,13 +1,18 @@
-// engine-editor (docs/subsystems/apps.md, "engine-editor"; ADR-0054). In process and offscreen: a
-// fixture document opened through the protocol's session, its panels' models built with no window,
-// a pixel of an offscreen capture picked back to its record, a transaction moving that record's
-// translation moving its instance in the next frame, and the panels composited by the renderer's
-// overlay pass. Then the executable itself in a small window, throttled by vsync and the
-// editor's own ceiling, picking through the window's frame.
+// engine-editor (docs/subsystems/apps.md, "engine-editor"; ADR-0054). With no window and no
+// device: the pointer's maths (display scaling, a pixel's ray, the gizmo's handles, hover and
+// drag). In process and offscreen: a fixture document opened through the protocol's session, its
+// panels' models built with no window, a pixel of an offscreen capture picked back to its record, a
+// transaction moving that record's translation moving its instance in the next frame, a gizmo drag
+// that previews without writing and commits one transaction on release, Escape, undo, redo and
+// delete through the keys, and the panels composited by the renderer's overlay pass. Then the
+// executable itself in a small window, throttled by vsync and the editor's own ceiling, picking
+// through the window's frame and dragging a gizmo handle by a scripted pointer.
 
 #include "../editor_document.h"
+#include "../editor_input.h"
 #include "../editor_ui.h"
 #include "../editor_viewport.h"
+#include "../viewport_math.h"
 
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -19,6 +24,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -176,7 +182,172 @@ renderer::Camera test_camera() {
   return camera;
 }
 
+// A record's `translation` as three doubles.
+bool translation_of(const doc::Document& d, Id128 id, f64 out[3]) {
+  const JsonValue* t = d.property(id, "translation");
+  if (t == nullptr || !t->is_array() || t->size() != 3) return false;
+  for (u32 i = 0; i < 3; ++i) {
+    if (!(*t)[i].get_f64(out[i])) return false;
+  }
+  return true;
+}
+
+window::Event pointer(window::EventKind kind, f32 x, f32 y) {
+  window::Event e;
+  e.kind = kind;
+  e.x = x;
+  e.y = y;
+  e.button = 1;
+  return e;
+}
+
+window::Event key(window::EventKind kind, window::Key k) {
+  window::Event e;
+  e.kind = kind;
+  e.key = k;
+  return e;
+}
+
+// Runs a test program and returns its summary line, or skips (false) where it has no window.
+bool run_editor(const std::vector<std::string_view>& argv, JsonValue& summary,
+                std::string& output) {
+  platform::Process p;
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                          /*merge_stderr=*/true),
+                  error);
+  p.close_stdin();
+  p.read_all(output);
+  const i32 code = p.wait();
+  if (code == 3) {
+    MESSAGE("engine-editor has no window here: " << output);
+    return false;
+  }
+  REQUIRE_MESSAGE(code == 0, output);
+  // The summary is the last line the run prints, one JSON object (its keys sorted).
+  const usize line = output.rfind("\n{");
+  const usize brace = line != std::string::npos ? line + 1 : (output.rfind('{', 0) == 0 ? 0 : line);
+  REQUIRE_MESSAGE(brace != std::string::npos, output);
+  REQUIRE_MESSAGE(parse_json(output.substr(brace), summary).ok, output);
+  return true;
+}
+
 }  // namespace
+
+TEST_CASE("engine-editor: the pointer's maths, with no window and no device") {
+  using namespace editor;
+  // **Display scaling.** A 1280 x 720 window at 150 % draws a 1920 x 1080 picture, and its pointer
+  // reports window coordinates: unscaled, a click at the window's (640, 360) would read pixel
+  // (640, 360) of the picture, a third of the way from its middle to its corner.
+  const PointerScale scaled = pointer_scale(1280, 720, 1920, 1080);
+  CHECK(scaled.x == doctest::Approx(1.5f));
+  CHECK(scaled.y == doctest::Approx(1.5f));
+  CHECK(640.0f * scaled.x == doctest::Approx(960.0f));
+  CHECK(360.0f * scaled.y == doctest::Approx(540.0f));
+  const PointerScale uneven = pointer_scale(1000, 500, 1250, 1000);
+  CHECK(uneven.x == doctest::Approx(1.25f));
+  CHECK(uneven.y == doctest::Approx(2.0f));
+  const PointerScale same = pointer_scale(320, 240, 320, 240);
+  CHECK(same.x == 1.0f);
+  CHECK(same.y == 1.0f);
+  const PointerScale unknown = pointer_scale(0, 0, 320, 240);  // no window: offscreen
+  CHECK(unknown.x == 1.0f);
+  CHECK(unknown.y == 1.0f);
+
+  // **The eye's ray through a pixel.** A frame's view-projection with the eye at the origin, as
+  // the renderer builds it: a point projects to a pixel, and the ray through that pixel — reached
+  // from the window's coordinates through the 150 % scale — passes through the point.
+  const u32 w = 1920;
+  const u32 h = 1080;
+  const f32 fov = radians(55.0f);
+  const Mat4 vp = perspective_reversed_z(fov, static_cast<f32>(w) / static_cast<f32>(h), 0.05f) *
+                  look_at(Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, -0.3f, -1.0f}, Vec3{0.0f, 1.0f, 0.0f});
+  const Vec3 p{1.2f, -0.4f, -6.0f};
+  f32 px = 0.0f;
+  f32 py = 0.0f;
+  REQUIRE(project_point(vp, p, w, h, px, py));
+  const f32 window_x = px / scaled.x;
+  const f32 window_y = py / scaled.y;
+  Ray ray;
+  REQUIRE(pixel_ray(vp, window_x * scaled.x, window_y * scaled.y, w, h, ray));
+  CHECK(length(ray.direction) == doctest::Approx(1.0f));
+  const Vec3 to = p - ray.origin;
+  CHECK(length(to - ray.direction * dot(to, ray.direction)) < 1.0e-3f);
+  // Unscaled, the same click misses the point by metres.
+  Ray wrong;
+  REQUIRE(pixel_ray(vp, window_x, window_y, w, h, wrong));
+  const Vec3 to_wrong = p - wrong.origin;
+  CHECK(length(to_wrong - wrong.direction * dot(to_wrong, wrong.direction)) > 0.5f);
+  CHECK_FALSE(project_point(vp, Vec3{0.0f, 0.0f, 4.0f}, w, h, px, py));  // behind the eye
+  CHECK_FALSE(pixel_ray(vp, 1.0f, 1.0f, 0, h, ray));
+
+  // **The nearest point of an axis to a ray**, and the two ways there is none.
+  const Ray down{Vec3{2.0f, 0.0f, 5.0f}, Vec3{0.0f, 0.0f, -1.0f}};
+  f32 t = 0.0f;
+  REQUIRE(closest_on_axis(down, Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, t));
+  CHECK(t == doctest::Approx(2.0f));
+  CHECK_FALSE(
+      closest_on_axis(down, Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 1.0f}, t));  // at the eye
+  const Ray away{Vec3{2.0f, 0.0f, 5.0f}, Vec3{0.0f, 0.0f, 1.0f}};
+  CHECK_FALSE(closest_on_axis(away, Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, t));  // behind
+
+  // **The handles**: `pixels` long across the view at the centre's depth, x to the right and y up
+  // the picture; the pointer hovers a handle near its segment, none where all three meet, none
+  // between them.
+  const Vec3 centre{0.0f, -1.0f, -8.0f};
+  const GizmoHandles g = gizmo_handles(vp, centre, fov, w, h, 120.0f);
+  REQUIRE(g.visible);
+  REQUIRE(g.shown[0]);
+  REQUIRE(g.shown[1]);
+  REQUIRE(g.shown[2]);
+  CHECK(std::hypot(g.ex[0] - g.cx, g.ey[0] - g.cy) == doctest::Approx(120.0f).epsilon(0.01));
+  CHECK(g.ex[0] > g.cx);
+  CHECK(g.ey[1] < g.cy);
+  CHECK(hover_axis(g, g.cx + 90.0f, g.cy + 2.0f, k_hover_pixels) == 0u);
+  CHECK(hover_axis(g, (g.cx + g.ex[1]) * 0.5f + 3.0f, (g.cy + g.ey[1]) * 0.5f, k_hover_pixels) ==
+        1u);
+  CHECK(hover_axis(g, (g.cx + g.ex[2]) * 0.5f, (g.cy + g.ey[2]) * 0.5f, k_hover_pixels) == 2u);
+  CHECK(hover_axis(g, g.cx + 3.0f, g.cy - 3.0f, k_hover_pixels) == k_no_axis);
+  CHECK(hover_axis(g, g.cx + 60.0f, g.cy - 60.0f, k_hover_pixels) == k_no_axis);
+  CHECK(hover_axis(g, g.cx + 140.0f, g.cy, k_hover_pixels) == k_no_axis);  // past the end
+  const GizmoHandles behind = gizmo_handles(vp, Vec3{0.0f, 0.0f, 3.0f}, fov, w, h, 120.0f);
+  CHECK_FALSE(behind.visible);
+  CHECK(hover_axis(behind, g.cx + 90.0f, g.cy, k_hover_pixels) == k_no_axis);
+
+  // **A drag along y**, far from the world's origin: begun on the handle a quarter of a metre up,
+  // its delta is a metre when the pointer is over the point a metre and a quarter up — and still a
+  // metre after the eye has flown three metres sideways with the pointer over the same point.
+  const WorldPos eye{100000.0, 20.0, -30.0};
+  const WorldPos anchor = eye + DVec3{centre};
+  REQUIRE(project_point(vp, centre + Vec3{0.0f, 0.25f, 0.0f}, w, h, px, py));
+  REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+  AxisDrag drag;
+  REQUIRE(begin_axis_drag(1, anchor, eye, ray, drag));
+  CHECK(drag.start == doctest::Approx(0.25f).epsilon(0.002));
+  REQUIRE(project_point(vp, centre + Vec3{0.0f, 1.25f, 0.0f}, w, h, px, py));
+  REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+  REQUIRE(update_axis_drag(drag, eye, ray));
+  CHECK(drag.delta == doctest::Approx(1.0f).epsilon(0.002));
+  const WorldPos flown = eye + DVec3{3.0, 0.0, 0.0};
+  REQUIRE(project_point(vp, relative(anchor + DVec3{0.0, 1.25, 0.0}, flown), w, h, px, py));
+  REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+  REQUIRE(update_axis_drag(drag, flown, ray));
+  CHECK(drag.delta == doctest::Approx(1.0f).epsilon(0.002));
+  // Along the eye's own line of sight there is nothing to read: the last delta stands.
+  const Ray along{Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}};
+  CHECK_FALSE(update_axis_drag(drag, eye, along));
+  CHECK(drag.delta == doctest::Approx(1.0f).epsilon(0.002));
+  // The translation moves along y alone; x and z keep their bits.
+  const WorldPos start{7.25, -3.5, 1000000.125};
+  const WorldPos moved = dragged_translation(start, drag);
+  CHECK(moved.x == start.x);
+  CHECK(moved.z == start.z);
+  CHECK(moved.y == doctest::Approx(-2.5).epsilon(0.002));
+  CHECK(std::string(axis_name(1)) == "y");
+  AxisDrag none;
+  CHECK(dragged_translation(start, none) == start);
+  CHECK_FALSE(begin_axis_drag(k_no_axis, anchor, eye, ray, none));
+}
 
 TEST_CASE("engine-editor: the panels' models come from the session and the schema") {
   const test::TempDir tmp("engine_editor_panels");
@@ -352,11 +523,13 @@ TEST_CASE("engine-editor: the panels reach the picture through the renderer's ov
     editor::EditorUi ui;
     REQUIRE(ui.create());
     document.select(k_right);
+    editor::EditorInput input;
     renderer::OverlayDrawData overlay;
     // Two frames: the first lays the dock out and makes the font atlas.
     for (u32 f = 0; f < 2; ++f) {
       editor::EditorUi::Actions actions;
-      ui.frame(1.0f / 60.0f, 320, 200, document, viewport, camera, actions);
+      input.set_view(document, viewport, camera, 320, 200, 1.0f);
+      ui.frame(1.0f / 60.0f, 320, 200, document, viewport, camera, input, actions);
       REQUIRE_MESSAGE(ui.render(viewport.renderer(), overlay, error), error);
     }
     CHECK(ui.outliner_rows() == 3);
@@ -414,24 +587,9 @@ TEST_CASE("engine-editor: the window picks what is under its pixel") {
   const std::vector<std::string_view> argv = {exe,        "--doc", doc_dir,    "--width", "320",
                                               "--height", "240",   "--frames", "6",       "--pick",
                                               "160,110",  "--ddc", ddc};
-  platform::Process p;
-  std::string error;
-  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-                          /*merge_stderr=*/true),
-                  error);
-  p.close_stdin();
-  std::string output;
-  p.read_all(output);
-  const i32 code = p.wait();
-  if (code == 3) {
-    MESSAGE("engine-editor has no window here: " << output);
-    return;
-  }
-  REQUIRE_MESSAGE(code == 0, output);
-  const usize brace = output.rfind("{\"frames\"");
-  REQUIRE_MESSAGE(brace != std::string::npos, output);
   JsonValue summary;
-  REQUIRE_MESSAGE(parse_json(output.substr(brace), summary).ok, output);
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
   const JsonValue* frames = summary.find("frames");
   REQUIRE(frames != nullptr);
   CHECK(write_json(*frames) == "6");
@@ -442,4 +600,286 @@ TEST_CASE("engine-editor: the window picks what is under its pixel") {
   const JsonValue* panels = summary.find("panels");
   REQUIRE(panels != nullptr);
   CHECK(write_json(*panels->find("properties")) == "6");
+}
+
+TEST_CASE(
+    "engine-editor: a gizmo drag previews, then commits one transaction; keys undo, redo, delete") {
+  const test::TempDir tmp("engine_editor_gizmo");
+  gfx::Device device;
+  std::string why;
+  if (!device.create(gfx::DeviceOptions{}, &why)) {
+    MESSAGE("no Vulkan device here: " << why);
+    return;
+  }
+  {
+    using window::EventKind;
+    using window::Key;
+    editor::EditorDocument document;
+    make_fixture(document, tmp.path());
+    editor::Viewport viewport;
+    editor::Viewport::Options options;
+    options.width = 320;
+    options.height = 200;
+    options.ddc = tmp.file("ddc");
+    std::string error;
+    if (!viewport.build(device, document.document(), document.directory(), options, error)) {
+      MESSAGE("the viewport cannot draw here: " << error);
+      return;
+    }
+    const renderer::Camera camera = test_camera();
+    renderer::FrameDesc frame;
+    frame.camera = camera;
+    REQUIRE_MESSAGE(viewport.renderer().render_offscreen(frame, &error), error);
+    const u32 left = viewport.scene().instance_of(k_left);
+    REQUIRE(left != ~0u);
+
+    // A click on the left cube picks it, and says what the read cost.
+    editor::EditorInput input;
+    u32 x = 0;
+    u32 y = 0;
+    REQUIRE(project(viewport, camera, WorldPos{-1.5, 0.0, 0.0}, x, y));
+    const f32 fx = static_cast<f32>(x);
+    const f32 fy = static_cast<f32>(y);
+    input.set_view(document, viewport, camera, 320, 200, 1.0f);
+    CHECK_FALSE(input.handles().visible);  // nothing selected: no handles
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, fx, fy), false, true, document,
+                         viewport, error));
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonUp, fx, fy), false, true, document, viewport,
+                         error));
+    CHECK(document.selection() == k_left);
+    CHECK(input.stats().picks == 1);
+    CHECK(input.stats().pick_ms >= 0.0);
+
+    // The handles stand at its box's centre; the pointer over the y handle hovers it.
+    input.set_view(document, viewport, camera, 320, 200, 1.0f);
+    const editor::GizmoHandles& h = input.handles();
+    REQUIRE(h.visible);
+    REQUIRE(h.shown[1]);
+    CHECK(std::fabs(h.cx - fx) < 2.0f);
+    CHECK(std::fabs(h.cy - fy) < 2.0f);
+    const f32 gx = h.cx + (h.ex[1] - h.cx) * 0.6f;
+    const f32 gy = h.cy + (h.ey[1] - h.cy) * 0.6f;
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, gx, gy), false, true, document, viewport,
+                         error));
+    CHECK(input.hovered() == 1u);
+    // Pressing on it starts a drag rather than a pick, and the selection stays.
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, gx, gy), false, true, document,
+                         viewport, error));
+    CHECK(input.dragging());
+    CHECK(input.active() == 1u);
+    CHECK(document.selection() == k_left);
+    CHECK(input.stats().picks == 1);
+
+    // While the button is held the instance moves in the viewport and the document does not.
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, gx, gy - 20.0f), false, true, document,
+                         viewport, error));
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, gx, gy - 40.0f), false, true, document,
+                         viewport, error));
+    REQUIRE_MESSAGE(input.flush(viewport, error), error);
+    CHECK(viewport.previewing());
+    const f64 previewed = viewport.placement(left)->origin.y;
+    CHECK(previewed > 0.5);
+    CHECK(viewport.placement(left)->origin.x == -1.5);
+    CHECK(document.document().journal().size() == 1);
+    f64 t[3] = {};
+    REQUIRE(translation_of(document.document(), k_left, t));
+    CHECK(t[1] == 0.0);
+    REQUIRE_MESSAGE(viewport.renderer().render_offscreen(frame, &error), error);
+    Id128 picked;
+    REQUIRE(viewport.pick(x, y, picked, error));
+    CHECK(picked != k_left);  // the preview took it from where it stood
+    u32 px = 0;
+    u32 py = 0;
+    REQUIRE(project(viewport, camera, WorldPos{-1.5, previewed, 0.0}, px, py));
+    REQUIRE(viewport.pick(px, py, picked, error));
+    CHECK(picked == k_left);
+
+    // Release: one transaction of one command, named for the record and the axis; x and z are
+    // exactly where they were, and the viewport follows it as it follows anyone's edit.
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonUp, gx, gy - 40.0f), false, true, document,
+                         viewport, error));
+    CHECK_FALSE(input.dragging());
+    Vector<editor::JournalRow> journal;
+    document.journal(journal, 10);
+    REQUIRE(journal.size() == 2);
+    CHECK(journal[0].commands == 1);
+    CHECK(journal[0].rationale == "move left along y");
+    CHECK(journal[0].role == "director");
+    REQUIRE(translation_of(document.document(), k_left, t));
+    CHECK(t[0] == -1.5);
+    CHECK(t[2] == 0.0);
+    CHECK(t[1] == doctest::Approx(previewed).epsilon(0.05));
+    const f64 committed = t[1];
+    CHECK(input.stats().drags == 1);
+    CHECK(input.stats().last_axis == 1u);
+    CHECK(input.stats().last_transaction == 1);
+    bool rebuilt = true;
+    REQUIRE_MESSAGE(viewport.sync(document.document(), rebuilt, error), error);
+    CHECK_FALSE(rebuilt);
+    CHECK_FALSE(viewport.previewing());
+    CHECK(viewport.placement(left)->origin.y == committed);
+
+    // Escape cancels a drag: the preview goes back and nothing is written.
+    input.set_view(document, viewport, camera, 320, 200, 1.0f);
+    const editor::GizmoHandles& moved = input.handles();
+    REQUIRE(moved.visible);
+    const f32 hx = moved.cx + (moved.ex[1] - moved.cx) * 0.6f;
+    const f32 hy = moved.cy + (moved.ey[1] - moved.cy) * 0.6f;
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, hx, hy), false, true, document, viewport,
+                         error));
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, hx, hy), false, true, document,
+                         viewport, error));
+    REQUIRE(input.dragging());
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, hx, hy + 30.0f), false, true, document,
+                         viewport, error));
+    REQUIRE(input.flush(viewport, error));
+    CHECK(viewport.placement(left)->origin.y < committed);
+    REQUIRE(
+        input.handle(key(EventKind::KeyDown, Key::Escape), false, true, document, viewport, error));
+    CHECK_FALSE(input.dragging());
+    CHECK_FALSE(viewport.previewing());
+    CHECK(viewport.placement(left)->origin.y == committed);
+    CHECK(document.document().journal().size() == 2);
+    // A press and a release on a handle that move nothing write nothing either.
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, hx, hy), false, true, document,
+                         viewport, error));
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonUp, hx, hy), false, true, document, viewport,
+                         error));
+    CHECK(document.document().journal().size() == 2);
+
+    // Ctrl+Z undoes the drag: the session steps back, and the viewport follows with a move.
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Control), false, true, document, viewport,
+                         error));
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Z), false, true, document, viewport, error));
+    REQUIRE(input.handle(key(EventKind::KeyUp, Key::Z), false, true, document, viewport, error));
+    CHECK(input.stats().undos == 1);
+    CHECK(document.session().undo_position() == 1);
+    REQUIRE(translation_of(document.document(), k_left, t));
+    CHECK(t[1] == 0.0);
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK_FALSE(rebuilt);
+    CHECK(viewport.placement(left)->origin.y == 0.0);
+    document.journal(journal, 10);
+    CHECK(journal[0].undone);
+    // Ctrl+Y redoes it.
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Y), false, true, document, viewport, error));
+    REQUIRE(
+        input.handle(key(EventKind::KeyUp, Key::Control), false, true, document, viewport, error));
+    CHECK(input.stats().redos == 1);
+    REQUIRE(translation_of(document.document(), k_left, t));
+    CHECK(t[1] == committed);
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK_FALSE(rebuilt);
+    // Without Ctrl, Z is the camera's and nothing is undone.
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Z), false, true, document, viewport, error));
+    CHECK(input.stats().undos == 1);
+    // Nor does Delete delete while the panels have the keyboard.
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Delete), false, false, document, viewport,
+                         error));
+    CHECK(document.document().exists(k_left));
+
+    // Delete removes the selection through one transaction; the viewport rebuilds without it, and
+    // undoing the delete is a rebuild that brings it back.
+    REQUIRE(
+        input.handle(key(EventKind::KeyDown, Key::Delete), false, true, document, viewport, error));
+    CHECK(input.stats().deletes == 1);
+    CHECK_FALSE(document.document().exists(k_left));
+    CHECK(document.selection().is_null());
+    document.journal(journal, 10);
+    REQUIRE(journal.size() == 3);
+    CHECK(journal[0].rationale == "delete left");
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK(rebuilt);
+    CHECK(viewport.scene().records.size() == 1);
+    REQUIRE(input.undo(document, viewport, error));
+    CHECK(document.document().exists(k_left));
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK(rebuilt);
+    CHECK(viewport.scene().records.size() == 2);
+    CHECK(input.message().empty());
+  }
+  device.destroy();
+}
+
+TEST_CASE("engine-editor: the window's gizmo drag is one transaction") {
+  const test::TempDir tmp("engine_editor_window_drag");
+  // One cube at the origin, three metres across: the window's framing camera looks at it from
+  // +x, a little above, so its y handle runs straight up the middle of the picture from the
+  // centre, and the z handle runs left.
+  {
+    editor::EditorDocument document;
+    std::string error;
+    REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
+    REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+    const doc::Command add = doc::cmd_create(
+        k_left, k_placement, Id128{},
+        json(R"({"name":"only","mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})"));
+    REQUIRE_MESSAGE(document.apply(std::span<const doc::Command>(&add, 1), "", error), error);
+  }
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string doc_dir = tmp.path();
+  const std::string ddc = tmp.file("ddc");
+  // In window coordinates, which the editor scales to the picture's pixels as it does a real
+  // pointer: the handle is 80 of them long whatever the display's scale, so a press 45 above the
+  // centre is on the y handle and a release 30 higher drags it up. Small, vsynced and under the
+  // editor's 120 Hz ceiling: never an unthrottled window.
+  const std::vector<std::string_view> argv = {
+      exe,  "--doc",  doc_dir,   "--width", "320",    "--height", "240",   "--frames",
+      "12", "--pick", "160,110", "--drag",  "160,75", "160,45",   "--ddc", ddc};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  CHECK(write_json(*summary.find("frames")) == "12");
+  const JsonValue* selected = summary.find("selected");
+  REQUIRE(selected != nullptr);
+  REQUIRE_MESSAGE(selected->is_string(), output);
+  CHECK(std::string(selected->as_string()) == editor::hex(k_left));
+  const JsonValue* pick_ms = summary.find("pick_ms");
+  REQUIRE(pick_ms != nullptr);
+  CHECK(pick_ms->is_number());
+  CHECK_MESSAGE(write_json(*summary.find("drags")) == "1", output);
+  const JsonValue* drag = summary.find("drag");
+  REQUIRE(drag != nullptr);
+  REQUIRE_MESSAGE(drag->is_object(), output);
+  CHECK(std::string(drag->find("axis")->as_string()) == "y");
+  CHECK(std::string(drag->find("rationale")->as_string()) == "move only along y");
+  CHECK(write_json(*drag->find("transaction")) == "1");
+  CHECK(write_json(*summary.find("transactions")) == "2");
+
+  // What the run left on disk, read back through a session of our own: the record moved up the y
+  // axis and nowhere else, by exactly one transaction of one command after the fixture's.
+  editor::EditorDocument document;
+  std::string error;
+  REQUIRE_MESSAGE(document.open(doc_dir, false, "editor-test", error), error);
+  f64 t[3] = {};
+  REQUIRE(translation_of(document.document(), k_left, t));
+  CHECK(t[0] == 0.0);
+  CHECK(t[2] == 0.0);
+  CHECK(t[1] > 0.1);
+  Vector<editor::JournalRow> journal;
+  document.journal(journal, 10);
+  REQUIRE(journal.size() == 2);
+  CHECK(journal[0].commands == 1);
+  CHECK(journal[0].rationale == "move only along y");
+  CHECK(journal[0].actor == "editor");
+  CHECK_FALSE(journal[0].undone);
+}
+
+TEST_CASE("engine-editor: --version prints the build stamp with no window") {
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::vector<std::string_view> argv = {exe, "--version"};
+  platform::Process p;
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                          /*merge_stderr=*/true),
+                  error);
+  p.close_stdin();
+  std::string output;
+  p.read_all(output);
+  REQUIRE_MESSAGE(p.wait() == 0, output);
+  JsonValue stamp;
+  REQUIRE_MESSAGE(parse_json(output, stamp).ok, output);
+  CHECK(std::string(stamp.find("tool")->as_string()) == "engine-editor");
+  CHECK(stamp.find("commit")->is_string());
+  CHECK(stamp.find("dirty")->is_bool());
 }

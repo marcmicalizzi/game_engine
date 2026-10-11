@@ -551,8 +551,8 @@ The engine as a server, its clients, and what agents and the human director work
 | A31 | MCP conformance client (`tools/mcp-check.ps1`) | done (c8e6e302) | A5 | S | routine | [apps](subsystems/apps.md#the-conformance-client) |
 | A32 | `render.capture` reports the camera it framed | open | A8 | S | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A33 | Console: Luau scripts over the protocol | done (06 §6.3 2026-10-10) | A1 | M | design | [apps](subsystems/apps.md#the-console-luau-scripts-over-the-protocol) |
-| A34 | Editor v0: viewport, outliner, properties, picking, edits through commands | in progress (stage 1 2026-10-10: the viewport, the three panels, picking, the document-to-scene bridge; stage 2's edits, gizmo and save open) | A1, A18 | M | design | [apps](subsystems/apps.md#engine-editor-the-editors-first-slice) |
-| A35 | Accept ADR-0054 | blocked (the owner's review) | A34 | S | design | [ADR-0054](adr/0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) |
+| A34 | Editor v0: viewport, outliner, properties, picking, edits through commands | done (2026-10-10; stage 1 a74c72b0: the viewport, the three panels, picking, the document-to-scene bridge; stage 2: the translate gizmo with one transaction per drag, undo, redo and delete, picking under display scaling, `--version`; property editing and text input moved to the authoring shell, A36, by ADR-0054's narrowed decision 4) | A1, A18 | M | design | [apps](subsystems/apps.md#engine-editor-the-engines-window-on-a-document) |
+| A35 | Accept ADR-0054: the in-engine tools UI is Dear ImGui drawn by the overlay pass | blocked (the owner's review of the narrowed decision: ImGui for the tools inside the engine's window, the authoring shell left to A36's spike) | A34 | S | design | [ADR-0054](adr/0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) |
 
 ## P — The reference games
 

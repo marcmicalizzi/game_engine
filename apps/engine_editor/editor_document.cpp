@@ -248,4 +248,19 @@ bool EditorDocument::redo(std::string& error) {
   return true;
 }
 
+bool EditorDocument::can_undo() const {
+  return session_ != nullptr && session_->undo_position() > 0;
+}
+
+bool EditorDocument::can_redo() const {
+  return session_ != nullptr && session_->undo_position() < document().journal().size();
+}
+
+std::string EditorDocument::display_name(Id128 id) const {
+  if (const JsonValue* name = document().property(id, "name")) {
+    if (name->is_string() && !name->as_string().empty()) return std::string(name->as_string());
+  }
+  return hex(id);
+}
+
 }  // namespace engine::editor
