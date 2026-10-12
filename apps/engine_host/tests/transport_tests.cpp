@@ -125,9 +125,13 @@ struct Client {
     CHECK_MESSAGE(connected, error);
     return connected;
   }
+  // Forty minutes: a render.load may wait half an hour for the machine's GPU lock (ADR-0049)
+  // before it answers, and a client that gave up first would fail a host that was only queueing
+  // (it did, at 615 s, behind another agent's frame budgets on 2026-10-11).
+  static constexpr i32 k_answer_ms = 40 * 60 * 1000;
   JsonValue receive_one() {
     net::Message m;
-    REQUIRE_MESSAGE(ws.receive(m, 600000),
+    REQUIRE_MESSAGE(ws.receive(m, k_answer_ms),
                     "closed " << ws.close_code() << " " << ws.close_reason());
     JsonValue message;
     REQUIRE_MESSAGE(parse_json(m.data, message).ok, m.data);
