@@ -22,11 +22,18 @@
 // otherwise leave the join waiting for it. The cancel can miss a thread that was between two reads
 // at that instant; the join then waits for the pipe to close, which is when the host's last child
 // exits, and nvidia-smi exits on its own.
+//
+// **Attached** (`--connect`): the same reader thread reads the host's WebSocket instead of a pipe
+// (foundation/net's client half), hands each answer over the same way, and passes each
+// notification — an event the host pushed — to the event sink at once, so an event never waits
+// for a call. The connection is the bridge's but the host is not: a deadline that runs out is
+// reported and the connection kept, and stopping closes the connection and nothing else.
 #include "bridge.h"
 
 #include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/platform/thread.h>
+#include <foundation/net/websocket.h>
 
 #include <condition_variable>
 #include <cstdio>
@@ -82,6 +89,10 @@ std::string seconds_text(u64 milliseconds) {
 // Process's read side (its stdout handle and its line buffer) belongs to the thread alone while it
 // runs, and the write side and the process handle to the caller, so the two never touch the same
 // state; the Process is destroyed only after the thread has been joined.
+struct HostClient::Socket {
+  net::WebSocket ws;
+};
+
 struct HostClient::Reader {
   std::mutex mutex;
   std::condition_variable ready;
@@ -89,6 +100,33 @@ struct HostClient::Reader {
   u32 head = 0;
   bool end = false;
   std::thread thread;
+
+  // Attached: one message per answer, and notifications to the sink as they come.
+  void run_socket(net::WebSocket& ws, EventSink sink, void* user) {
+    (void)platform::set_current_thread_name("mcp-host-socket");
+    for (;;) {
+      net::Message m;
+      const bool got = ws.receive(m);
+      if (got) {
+        JsonValue message;
+        if (parse_json(m.data, message).ok && message.is_object() &&
+            message.find("id") == nullptr && message.find("method") != nullptr) {
+          if (sink != nullptr) sink(user, message);
+          continue;
+        }
+      }
+      {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (got) {
+          lines.push_back(std::move(m.data));
+        } else {
+          end = true;
+        }
+      }
+      ready.notify_all();
+      if (!got) return;
+    }
+  }
 
   void run(platform::Process& process) {
     (void)platform::set_current_thread_name("mcp-host-reader");
@@ -114,8 +152,66 @@ HostClient::HostClient() = default;
 
 HostClient::~HostClient() { stop(); }
 
+bool HostClient::connect(const BridgeOptions& options, std::string& error) {
+  auto socket = std::make_unique<Socket>();
+  // The token as a header, not in the URL: the URL is what logs and errors print.
+  const std::pair<std::string, std::string> headers[] = {{"X-Engine-Token", options.connect_token}};
+  std::string why;
+  u32 refused = 0;
+  if (!net::websocket_connect(options.connect_port, "/", headers, socket->ws, why, &refused)) {
+    error = "cannot connect to the host at ws://127.0.0.1:" + std::to_string(options.connect_port) +
+            "/: " + why;
+    return false;
+  }
+  call_timeout_ms_ = options.call_timeout_ms;
+  long_call_timeout_ms_ = options.long_call_timeout_ms;
+  socket_ = std::move(socket);
+  attached_ = true;
+  reader_ = std::make_unique<Reader>();
+  Reader* reader = reader_.get();
+  net::WebSocket* ws = &socket_->ws;
+  const EventSink sink = sink_;
+  void* user = sink_user_;
+  reader_->thread = std::thread([reader, ws, sink, user] { reader->run_socket(*ws, sink, user); });
+  ++generation_;
+  // A refused token is a handshake that completes and a close that follows: the first call finds
+  // it, so the start does one now and says so rather than reporting a working connection.
+  JsonValue pong;
+  Error failure;
+  if (call("engine.ping", JsonValue(), pong, failure) != Status::ok) {
+    error = "the host at ws://127.0.0.1:" + std::to_string(options.connect_port) +
+            "/ refused the bridge: " + failure.message;
+    stop();
+    return false;
+  }
+  // The events the bridge passes on (journal and scene, for every session): subscribed on every
+  // connection, since a subscription is the connection's.
+  JsonValue params = JsonValue::object();
+  JsonValue kinds = JsonValue::array();
+  kinds.push_back(JsonValue("journal"));
+  kinds.push_back(JsonValue("scene"));
+  params.set("kinds", std::move(kinds));
+  JsonValue subscribed;
+  if (call("session.subscribe", params, subscribed, failure) != Status::ok) {
+    ENGINE_LOG_WARN(log_host_client, "the host would not push its events; none will be passed on",
+                    log::field("reason", failure.message));
+  }
+  ENGINE_LOG_INFO(log_host_client, "attached to a running host",
+                  log::field("port", u64{options.connect_port}),
+                  log::field("generation", generation_));
+  return true;
+}
+
+bool HostClient::send_line(std::string_view line) {
+  if (socket_ != nullptr) return socket_->ws.send_text(line);
+  std::string text(line);
+  text.push_back('\n');
+  return process_->write(text);
+}
+
 bool HostClient::start(const BridgeOptions& options, std::string& error) {
   stop();
+  if (options.connect_port != 0) return connect(options, error);
   Vector<std::string_view> argv;
   argv.push_back(options.host_path);
   argv.push_back("--stdio");
@@ -182,6 +278,13 @@ HostClient::Next HostClient::next_line(std::string& line,
 
 void HostClient::join_reader() noexcept {
   if (reader_ == nullptr) return;
+  if (socket_ != nullptr) {
+    // The socket's reader returns once the socket is shut down, on both systems.
+    socket_->ws.socket().shutdown_both();
+    if (reader_->thread.joinable()) reader_->thread.join();
+    reader_.reset();
+    return;
+  }
   if (reader_->thread.joinable()) {
 #if ENGINE_PLATFORM_WINDOWS
     // See the top of the file: a child of the host may still hold the pipe's write end.
@@ -193,6 +296,14 @@ void HostClient::join_reader() noexcept {
 }
 
 void HostClient::stop() {
+  if (socket_ != nullptr) {
+    // The host is somebody else's: the bridge closes its connection and leaves the host running.
+    socket_->ws.close(net::close_code::k_normal, "engine-mcp is done");
+    join_reader();
+    socket_.reset();
+    ENGINE_LOG_INFO(log_host_client, "detached from the running host");
+    return;
+  }
   if (process_ == nullptr) return;
   process_->close_stdin();
   // A host exits when its input ends, and its output ends with it. One still there after the
@@ -218,6 +329,21 @@ void HostClient::stop() {
 }
 
 void HostClient::reap(Error& error, std::string_view what) {
+  if (socket_ != nullptr) {
+    const u16 code = socket_->ws.close_code();
+    const std::string reason = socket_->ws.close_reason();
+    join_reader();
+    socket_.reset();
+    error.code = -1;
+    error.deadline_ms = 0;
+    error.message = "the connection to the running host closed (" + std::to_string(code) +
+                    (reason.empty() ? std::string() : " " + reason) + "); " + std::string(what) +
+                    ". The next call connects again";
+    error.data = JsonValue();
+    ENGINE_LOG_WARN(log_host_client, "the running host's connection closed",
+                    log::field("code", u64{code}), log::field("while", what));
+    return;
+  }
   // The host's end of a pipe is closed, which a process does by exiting: waiting cannot block for
   // long. The exit code is the only account of the death the bridge will get.
   process_->close_stdin();
@@ -258,7 +384,7 @@ void HostClient::abandon(Error& error, std::string_view method, u64 deadline_ms)
 
 HostClient::Status HostClient::call(std::string_view method, const JsonValue& params,
                                     JsonValue& result, Error& error) {
-  if (process_ == nullptr) {
+  if (!running()) {
     error.code = -1;
     error.message = "engine-host is not running";
     return Status::gone;
@@ -269,15 +395,14 @@ HostClient::Status HostClient::call(std::string_view method, const JsonValue& pa
   request.set("id", JsonValue(id));
   request.set("method", JsonValue(method));
   if (!params.is_null()) request.set("params", params);
-  std::string line = write_json(request, JsonWriteOptions{.pretty = false});
-  line.push_back('\n');
+  const std::string line = write_json(request, JsonWriteOptions{.pretty = false});
   // The deadline starts when the request is sent and covers the whole answer. The write itself has
   // none: a host that answered the previous call is back in its read of the next line, and reads a
   // whole line before it dispatches it, so a hang is always in the dispatch — after the write.
   const u64 deadline_ms = is_long_call(method) ? long_call_timeout_ms_ : call_timeout_ms_;
   const auto due =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<i64>(deadline_ms));
-  if (!process_->write(line)) {
+  if (!send_line(line)) {
     reap(error, std::string("it would not take the request for ") + std::string(method));
     return Status::gone;
   }
@@ -287,6 +412,17 @@ HostClient::Status HostClient::call(std::string_view method, const JsonValue& pa
     std::string text;
     const Next next = next_line(text, deadline_ms != 0 ? &due : nullptr);
     if (next == Next::timeout) {
+      if (socket_ != nullptr) {
+        // Not the bridge's host to stop: say so, and keep the connection. The answer, if it ever
+        // comes, has an id no call is waiting for and is dropped below.
+        error.code = -1;
+        error.deadline_ms = deadline_ms;
+        error.message = "the running host did not answer " + std::string(method) + " within " +
+                        seconds_text(deadline_ms) + " s; it is not the bridge's to stop, so it " +
+                        "was left running";
+        error.data = JsonValue();
+        return Status::timed_out;
+      }
       abandon(error, method, deadline_ms);
       return Status::timed_out;
     }

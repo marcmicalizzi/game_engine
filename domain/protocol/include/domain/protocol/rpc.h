@@ -32,6 +32,7 @@ namespace engine::protocol {
 class SessionManager;
 class Dispatcher;
 class Policy;
+class Subscriptions;
 
 namespace codes {
 inline constexpr i32 k_parse_error = -32700;
@@ -82,6 +83,13 @@ struct Context {
   // attributes nothing, which is every host before roles existed and every in-process caller that
   // does not ask for them.
   const Policy* policy = nullptr;
+  // The host's subscriptions (events.h), when it serves a socket; null otherwise. A handler that
+  // knows a change happened publishes through it (engine-host's `render.load {session}`).
+  Subscriptions* events = nullptr;
+  // The socket connection the request being dispatched came on, which `session.subscribe` names
+  // its subscriber by; 0 for stdio and every in-process caller, which have no channel to push on.
+  // The listener sets it under the dispatch lock for each request and puts 0 back after.
+  u64 connection = 0;
 };
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);

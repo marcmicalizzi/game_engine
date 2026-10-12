@@ -92,7 +92,12 @@ class EditorDocument {
   void journal(Vector<JournalRow>& out, u32 limit) const;
 
   Id128 selection() const noexcept { return selection_; }
-  void select(Id128 id) noexcept { selection_ = id; }
+  // Every change of the selection — a click in the viewport, `editor.select`, a delete that clears
+  // it — comes through here, and a change publishes `event.selection` to the session's subscribers
+  // (domain/protocol/events.h) when events are set. Called under the listener's dispatch lock.
+  void select(Id128 id);
+  // The listener's subscriptions, which the selection publishes through; null publishes nothing.
+  void set_events(protocol::Subscriptions* events) noexcept { events_ = events; }
 
   // One transaction through the checked write path, attributed to the editor's caller with
   // `rationale` (a default naming the edit when empty). False, with `error`, when the session
@@ -116,6 +121,7 @@ class EditorDocument {
   protocol::Caller caller_;
   std::string dir_;
   Id128 selection_;
+  protocol::Subscriptions* events_ = nullptr;
 };
 
 }  // namespace engine::editor

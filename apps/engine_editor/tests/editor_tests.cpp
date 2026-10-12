@@ -19,8 +19,10 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/listener.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
+#include <foundation/net/websocket.h>
 #include <systems/renderer/capture.h>
 
 #include <doctest/doctest.h>
@@ -417,6 +419,106 @@ TEST_CASE("engine-editor: the panels' models come from the session and the schem
   CHECK(document.document().exists(k_left));
 }
 
+// The editor's host as main.cpp makes it — a dispatcher over the document's session with the
+// editor's methods, and the listener over it with the selection publishing through its
+// subscriptions — and one WebSocket client subscribed to `selection`.
+struct SelectionWatch {
+  editor::EditorState state;
+  protocol::Dispatcher dispatcher;
+  std::mutex lock;
+  protocol::Listener listener;
+  editor::EditorDocument* document;
+  net::WebSocket client;
+
+  explicit SelectionWatch(editor::EditorDocument& doc)
+      : dispatcher(protocol::Context{&doc.sessions(), nullptr, nullptr, &state, nullptr}),
+        listener(dispatcher, lock),
+        document(&doc) {
+    state.document = &doc;
+    protocol::add_builtin_methods(dispatcher);
+    editor::add_editor_methods(dispatcher);
+    doc.set_events(&listener.events());
+    std::string error;
+    REQUIRE_MESSAGE(listener.start(0, "", doc.session().id(), error), error);
+    const std::pair<std::string, std::string> token[] = {{"X-Engine-Token", listener.token()}};
+    REQUIRE_MESSAGE(net::websocket_connect(listener.port(), "/", token, client, error), error);
+    const JsonValue subscribed = call("session.subscribe", R"({"session":")" + doc.session().id() +
+                                                               R"(","kinds":["selection"]})");
+    REQUIRE_MESSAGE(subscribed.find("result") != nullptr, write_json(subscribed));
+  }
+  ~SelectionWatch() {
+    client.close(net::close_code::k_normal, "done");
+    listener.stop();
+    document->set_events(nullptr);
+  }
+  JsonValue receive() {
+    net::Message m;
+    REQUIRE_MESSAGE(client.receive(m, 60000), client.close_reason());
+    JsonValue message;
+    REQUIRE_MESSAGE(parse_json(m.data, message).ok, m.data);
+    return message;
+  }
+  // A request's answer; the selection's events in between are kept in `events`.
+  JsonValue call(std::string_view method, const std::string& params) {
+    REQUIRE(client.send_text(R"({"jsonrpc":"2.0","id":1,"method":")" + std::string(method) +
+                             R"(","params":)" + params + "}"));
+    for (;;) {
+      JsonValue message = receive();
+      if (message.find("id") != nullptr) return message;
+      events.push_back(std::move(message));
+    }
+  }
+  // The next `event.selection`: its `selected`, or "" for none.
+  std::string next_selected() {
+    JsonValue event;
+    if (!events.empty()) {
+      event = std::move(events.front());
+      events.erase(events.begin());
+    } else {
+      event = receive();
+    }
+    CHECK(std::string(event.find("method")->as_string()) == "event.selection");
+    const JsonValue& p = *event.find("params");
+    CHECK(std::string(p.find("session")->as_string()) == document->session().id());
+    const JsonValue* selected = p.find("selected");
+    return selected != nullptr && selected->is_string() ? std::string(selected->as_string())
+                                                        : std::string();
+  }
+  std::vector<JsonValue> events;
+};
+
+TEST_CASE("engine-editor: a selection change reaches a subscriber as event.selection") {
+  const test::TempDir tmp("engine_editor_selection_events");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  SelectionWatch watch(document);
+  // editor.select over the socket, as the shell's outliner sends it.
+  const JsonValue chosen =
+      watch.call("editor.select", std::string(R"({"id":")") + editor::hex(k_right) + "\"}");
+  REQUIRE_MESSAGE(chosen.find("result") != nullptr, write_json(chosen));
+  CHECK(watch.next_selected() == editor::hex(k_right));
+  // The same selection again changes nothing and says nothing; null clears it, and says so.
+  (void)watch.call("editor.select", std::string(R"({"id":")") + editor::hex(k_right) + "\"}");
+  (void)watch.call("editor.select", R"({"id":null})");
+  CHECK(watch.next_selected().empty());
+  CHECK(watch.events.empty());
+  // The viewport's own path (a click, under the dispatch lock as main.cpp takes it), and a click
+  // on nothing — the scripted pick's off-picture case — which clears.
+  {
+    std::lock_guard<std::mutex> guard(watch.lock);
+    document.select(k_left);
+  }
+  CHECK(watch.next_selected() == editor::hex(k_left));
+  editor::EditorInput input;
+  editor::Viewport unbuilt;
+  std::string error;
+  {
+    std::lock_guard<std::mutex> guard(watch.lock);
+    REQUIRE_MESSAGE(input.pick(-1.0f, -1.0f, document, unbuilt, error), error);
+  }
+  CHECK(watch.next_selected().empty());
+}
+
 TEST_CASE("engine-editor: a pick finds the record, and a moved translation moves it next frame") {
   const test::TempDir tmp("engine_editor_pick");
   gfx::Device device;
@@ -468,6 +570,24 @@ TEST_CASE("engine-editor: a pick finds the record, and a moved translation moves
     CHECK(picked == k_right);
     REQUIRE(viewport.pick(2, 2, picked, error));
     CHECK(picked.is_null());  // the sky
+
+    // The scripted pick's path (`--pick`, main.cpp's between_frames): the input's pick selects
+    // what is under the pixel, and a subscriber hears it as `event.selection`.
+    {
+      SelectionWatch watch(document);
+      editor::EditorInput input;
+      {
+        std::lock_guard<std::mutex> guard(watch.lock);
+        REQUIRE_MESSAGE(
+            input.pick(static_cast<f32>(x), static_cast<f32>(y), document, viewport, error), error);
+      }
+      CHECK(watch.next_selected() == editor::hex(k_left));
+      {
+        std::lock_guard<std::mutex> guard(watch.lock);
+        REQUIRE(input.pick(static_cast<f32>(rx), static_cast<f32>(ry), document, viewport, error));
+      }
+      CHECK(watch.next_selected() == editor::hex(k_right));
+    }
 
     // One transaction through the session moves the left cube up and over; the viewport moves the
     // instance in place (no rebuild), and the next frame draws it there.

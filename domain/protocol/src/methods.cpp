@@ -6,6 +6,7 @@
 #include <core/schema/type_info.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/display_probe.h>
+#include <domain/protocol/events.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/tunables/tunables.h>
@@ -86,6 +87,84 @@ bool session_info(Context& ctx, const SessionRef& params, SessionInfo& out, RpcE
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   out = s->info();
+  return true;
+}
+
+// session.subscribe / session.unsubscribe (events.h): the kinds named, checked, as a mask. Empty
+// is every kind.
+bool subscription_of(Context& ctx, const SubscribeParams& params, std::string_view method,
+                     u32& mask, RpcError& error) {
+  if (ctx.events == nullptr || ctx.connection == 0) {
+    error =
+        make_error(codes::k_unavailable,
+                   std::string(method) +
+                       " needs a socket connection (engine-host --listen, engine-editor): "
+                       "events are pushed on the subscriber's own connection, and stdio has "
+                       "no channel to push them on. Poll session.info's journal_length instead");
+    return false;
+  }
+  if (!params.session.empty() && ctx.sessions->require(params.session, error) == nullptr) {
+    return false;
+  }
+  mask = 0;
+  for (const std::string& name : params.kinds) {
+    EventKind kind = EventKind::Journal;
+    if (!event_kind_from(name, kind)) {
+      error = make_error(
+          codes::k_invalid_argument,
+          "no event kind '" + name + "': the kinds are journal, selection, scene and session");
+      return false;
+    }
+    mask |= event_bit(kind);
+  }
+  if (params.kinds.empty()) mask = k_all_event_kinds;
+  return true;
+}
+
+void kind_names(u32 mask, Vector<std::string>& out) {
+  for (u32 i = 0; i < k_event_kind_count; ++i) {
+    if ((mask & (1u << i)) != 0) out.push_back(event_kind_name(static_cast<EventKind>(i)));
+  }
+}
+
+void fill_subscription(const Context& ctx, const SubscribeParams& params, u32 mask,
+                       SubscribeResult& out) {
+  out.session = params.session;
+  kind_names(mask, out.kinds);
+  out.queue = Subscriptions::queue_bound();
+  out.connection = ctx.connection;
+}
+
+bool session_subscriptions(Context& ctx, SubscriptionsResult& out, RpcError&) {
+  out.queue = Subscriptions::queue_bound();
+  if (ctx.events == nullptr) return true;
+  Vector<Subscriptions::Snapshot> snapshot;
+  ctx.events->snapshot(snapshot);
+  for (const Subscriptions::Snapshot& s : snapshot) {
+    SubscriberInfo info;
+    info.connection = s.connection;
+    info.session = s.session;
+    kind_names(s.kinds, info.kinds);
+    info.dropped = s.dropped;
+    out.subscribers.push_back(std::move(info));
+  }
+  return true;
+}
+
+bool session_subscribe(Context& ctx, const SubscribeParams& params, SubscribeResult& out,
+                       RpcError& error) {
+  u32 mask = 0;
+  if (!subscription_of(ctx, params, "session.subscribe", mask, error)) return false;
+  fill_subscription(ctx, params, ctx.events->subscribe(ctx.connection, params.session, mask), out);
+  return true;
+}
+
+bool session_unsubscribe(Context& ctx, const SubscribeParams& params, SubscribeResult& out,
+                         RpcError& error) {
+  u32 mask = 0;
+  if (!subscription_of(ctx, params, "session.unsubscribe", mask, error)) return false;
+  fill_subscription(ctx, params, ctx.events->unsubscribe(ctx.connection, params.session, mask),
+                    out);
   return true;
 }
 
@@ -497,6 +576,23 @@ void add_builtin_methods(Dispatcher& d) {
       read_only(method_no_params<SessionsResult, &session_list>("session.list", "Open sessions.")));
   d.add(read_only(method<SessionRef, SessionInfo, &session_info>(
       "session.info", "Layers, journal length, undo position.")));
+  // Subscriptions change no document, lease or host setting — only what this connection is sent —
+  // so they are read-only like the reads they replace (a poll of session.info).
+  d.add(read_only(method<SubscribeParams, SubscribeResult, &session_subscribe>(
+      "session.subscribe",
+      "Socket connections only: push this connection the session's events as JSON-RPC "
+      "notifications `event.<kind>` — journal (a commit, undo or redo), selection (engine-editor), "
+      "scene (a render.load {session} scene followed the document) and session (opened, closed, a "
+      "lease). Empty session is every session; empty kinds is all four. Events carry ids, indices, "
+      "revisions and attribution, never content.")));
+  d.add(read_only(method<SubscribeParams, SubscribeResult, &session_unsubscribe>(
+      "session.unsubscribe",
+      "Socket connections only: stop pushing the named kinds (empty: all) of the session's "
+      "events to this connection.")));
+  d.add(read_only(method_no_params<SubscriptionsResult, &session_subscriptions>(
+      "session.subscriptions",
+      "Who is subscribed to which events, and how many each has had dropped since it was last "
+      "sent one (non-zero: that connection is not reading).")));
 
   d.add(read_only(method<SessionRef, LayersResult, &doc_layers>(
       "doc.layers",

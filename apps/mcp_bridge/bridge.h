@@ -15,6 +15,14 @@
 // keeps the plan's shape — the editor, the CLI and this bridge are equal clients of one server —
 // and one host per bridge keeps session ownership simple: every session and scene id the agent
 // sees was made by this bridge's host, and they all go when it does.
+//
+// **Attached** (`--connect`, roadmap A6): the bridge is instead a client of a host somebody else
+// runs — engine-editor, or engine-host --listen — over its loopback WebSocket with its token, so
+// the agent edits the very document the owner has open, and the owner sees each edit arrive
+// through the shell's subscription. The tools are the same; the host is not the bridge's to start,
+// stop or kill, so a call that outlives its deadline is reported and the connection kept. The
+// bridge subscribes to the host's `journal` and `scene` events and passes them on to its MCP
+// client as `notifications/resources/updated` for the resources it subscribed to (Bridge below).
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -25,6 +33,7 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -60,6 +69,11 @@ struct BridgeOptions {
   // `is_long_call` names.
   u64 call_timeout_ms = k_default_call_timeout_ms;
   u64 long_call_timeout_ms = k_default_long_call_timeout_ms;
+  // Attached (`--connect`, `--connect-from`): the running host's loopback port and token, and the
+  // session its announcement named (empty when it named none). `connect_port` 0 spawns a host.
+  u16 connect_port = 0;
+  std::string connect_token;
+  std::string connect_session;
 };
 
 // Whether a protocol method is in the long class: render.load, render.capture, render.benchmark,
@@ -99,9 +113,20 @@ class HostClient {
   bool start(const BridgeOptions& options, std::string& error);
   // `gone` fills `error.message` with what happened to the host and `error.code` with its exit
   // code; `timed_out` says which call it failed to answer and in how long. Either way the process
-  // is reaped, and the next `start` makes a new one.
+  // is reaped, and the next `start` makes a new one. Attached, `gone` is the connection closing
+  // (the next `start` connects again) and `timed_out` leaves the host alone: its late answer is
+  // recognised by its id and dropped.
   Status call(std::string_view method, const JsonValue& params, JsonValue& result, Error& error);
-  bool running() const noexcept { return process_ != nullptr; }
+  bool running() const noexcept { return process_ != nullptr || socket_ != nullptr; }
+  bool attached() const noexcept { return attached_; }
+
+  // Where the host's events go when attached: each notification it pushes (`event.journal`, ...),
+  // called on the socket's reader thread. Set before `start`.
+  using EventSink = void (*)(void* user, const JsonValue& notification);
+  void set_event_sink(EventSink sink, void* user) noexcept {
+    sink_ = sink;
+    sink_user_ = user;
+  }
   // Closes the host's stdin and waits for it to exit, which a host does when its input ends; one
   // that is still there after the short deadline is killed.
   void stop();
@@ -120,7 +145,16 @@ class HostClient {
   // Joins the reader, cancelling its read first on Windows (host_client.cpp).
   void join_reader() noexcept;
 
+  bool connect(const BridgeOptions& options, std::string& error);
+  bool send_line(std::string_view line);
+
   std::unique_ptr<platform::Process> process_;
+  // Attached: the connection to the running host (net::WebSocket, host_client.cpp).
+  struct Socket;
+  std::unique_ptr<Socket> socket_;
+  bool attached_ = false;
+  EventSink sink_ = nullptr;
+  void* sink_user_ = nullptr;
   std::unique_ptr<Reader> reader_;
   u64 call_timeout_ms_ = k_default_call_timeout_ms;
   u64 long_call_timeout_ms_ = k_default_long_call_timeout_ms;
@@ -251,6 +285,15 @@ class Bridge {
   std::string_view protocol_version() const noexcept { return protocol_version_; }
   bool structured_results() const noexcept;
 
+  // Attached: the MCP notifications go out through this, from the socket's reader thread, so it
+  // must take the same lock the main loop's writes take (main.cpp). Null drops them.
+  using Notify = void (*)(const JsonValue& message);
+  void set_notify(Notify notify) noexcept { notify_ = notify; }
+  // A notification from the host (HostClient's event sink): `event.journal` and `event.scene`
+  // become `notifications/resources/updated` for the resource they name, when the client
+  // subscribed to it.
+  void on_host_event(const JsonValue& notification);
+
   // The host restricts calls by a role configuration (engine.roles said so at startup), and the
   // role every call of this bridge runs in; empty when a call that names none is not restricted.
   bool roles_loaded() const noexcept { return roles_loaded_; }
@@ -279,6 +322,12 @@ class Bridge {
 
   JsonValue on_initialize(const JsonValue* params);
   JsonValue on_tools_list() const;
+  // The resources (attached or not): each session's journal, `engine://session/<id>/journal`, and
+  // each loaded scene, `engine://scene/<id>`. Read through the host, under the bridge's role.
+  bool on_resources_list(JsonValue& result, std::string& why);
+  bool on_resources_read(const JsonValue* params, JsonValue& result, std::string& why);
+  // Subscriptions to resources' updates, which only an attached bridge can deliver.
+  void on_resources_subscribe(const JsonValue* params, bool subscribe);
   bool on_tools_call(const JsonValue* params, JsonValue& result, i32& code, std::string& message);
   JsonValue tool_result(const ToolOutcome& outcome) const;
   const Tool* find_tool(std::string_view name) const noexcept;
@@ -297,6 +346,10 @@ class Bridge {
   std::string role_name_;
   Vector<std::string> role_methods_;  // every method the role may call, reads included
   u32 tools_withheld_ = 0;
+  Notify notify_ = nullptr;
+  // The resource URIs the client subscribed to; read on the socket's reader thread.
+  std::mutex resources_mutex_;
+  Vector<std::string> subscribed_;
 };
 
 // ---- shared helpers

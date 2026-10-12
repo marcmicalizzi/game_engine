@@ -314,6 +314,11 @@ Bridge::Bridge(BridgeOptions options) : options_(std::move(options)), schemas_(h
 Bridge::~Bridge() { shutdown(); }
 
 bool Bridge::start(std::string& error) {
+  host_.set_event_sink(
+      [](void* user, const JsonValue& notification) {
+        static_cast<Bridge*>(user)->on_host_event(notification);
+      },
+      this);
   if (!host_.start(options_, error)) return false;
   if (!schemas_.load_methods(error)) return false;
   // The role configuration (plan 06 §6.5): when the host restricts calls, the role this bridge's
@@ -530,6 +535,21 @@ JsonValue Bridge::handle(const JsonValue& message) {
   if (name == "initialize") return rpc_result(*id, on_initialize(params));
   if (name == "ping") return rpc_result(*id, JsonValue::object());
   if (name == "tools/list") return rpc_result(*id, on_tools_list());
+  if (name == "resources/list" || name == "resources/read") {
+    JsonValue result;
+    std::string why;
+    const bool ok = name == "resources/list" ? on_resources_list(result, why)
+                                             : on_resources_read(params, result, why);
+    if (!ok) return rpc_error(*id, k_invalid_params, why);
+    return rpc_result(*id, std::move(result));
+  }
+  if (name == "resources/subscribe" || name == "resources/unsubscribe") {
+    if (params == nullptr || text_of(*params, "uri").empty()) {
+      return rpc_error(*id, k_invalid_params, name + " needs a `uri` from resources/list");
+    }
+    on_resources_subscribe(params, name == "resources/subscribe");
+    return rpc_result(*id, JsonValue::object());
+  }
   if (name == "tools/call") {
     JsonValue result;
     i32 code = 0;
@@ -549,7 +569,169 @@ JsonValue Bridge::handle(const JsonValue& message) {
   }
   return rpc_error(*id, k_method_not_found,
                    "method not found: " + name +
-                       " (this server offers initialize, ping, tools/list and tools/call)");
+                       " (this server offers initialize, ping, tools/list, tools/call and "
+                       "resources/list, read, subscribe and unsubscribe)");
+}
+
+// ---- resources ---------------------------------------------------------------------------------
+// Each open session's journal and each loaded scene, as resources an MCP client can read and, when
+// the bridge is attached to a running host, subscribe to: the host's `event.journal` and
+// `event.scene` arrive on the socket's reader thread and leave as
+// `notifications/resources/updated` with the resource's URI and nothing else — the same rule the
+// host's events keep (ids, never content): the client reads the resource again, through the host,
+// under the bridge's role. That notification, rather than `notifications/message`, because it is
+// MCP's own word for "this thing changed": it reaches only a client that asked for that resource,
+// and every protocol version the bridge declares (2024-11-05 on) has it.
+
+namespace {
+
+constexpr std::string_view k_session_prefix = "engine://session/";
+constexpr std::string_view k_journal_suffix = "/journal";
+constexpr std::string_view k_scene_prefix = "engine://scene/";
+
+std::string journal_uri(std::string_view session) {
+  return std::string(k_session_prefix) + std::string(session) + std::string(k_journal_suffix);
+}
+
+std::string scene_uri(std::string_view scene) {
+  return std::string(k_scene_prefix) + std::string(scene);
+}
+
+JsonValue resource(std::string uri, std::string name, std::string description) {
+  JsonValue r = JsonValue::object();
+  r.set("uri", JsonValue(uri));
+  r.set("name", JsonValue(name));
+  r.set("description", JsonValue(description));
+  r.set("mimeType", JsonValue("application/json"));
+  return r;
+}
+
+}  // namespace
+
+bool Bridge::on_resources_list(JsonValue& result, std::string& why) {
+  JsonValue list = JsonValue::array();
+  ToolOutcome failed;
+  JsonValue sessions;
+  if (!call("session.list", JsonValue(), sessions, failed)) {
+    why = "session.list failed: " + failed.summary;
+    return false;
+  }
+  const JsonValue* open = sessions.find("sessions");
+  for (usize i = 0; open != nullptr && i < open->size(); ++i) {
+    const std::string id = text_of((*open)[i], "session");
+    list.push_back(resource(journal_uri(id), text_of((*open)[i], "name", id) + " journal",
+                            "The newest transactions of session " + id + " (" +
+                                text_of((*open)[i], "path") + "), newest last."));
+  }
+  if (schemas_.method("render.scenes") != nullptr) {
+    JsonValue scenes;
+    if (call("render.scenes", JsonValue(), scenes, failed)) {
+      const JsonValue* loaded = scenes.find("scenes");
+      for (usize i = 0; loaded != nullptr && i < loaded->size(); ++i) {
+        const std::string id = text_of((*loaded)[i], "scene");
+        list.push_back(
+            resource(scene_uri(id), "scene " + id, "What render.scenes says of scene " + id + "."));
+      }
+    }
+  }
+  result = JsonValue::object();
+  result.set("resources", std::move(list));
+  return true;
+}
+
+bool Bridge::on_resources_read(const JsonValue* params, JsonValue& result, std::string& why) {
+  const std::string uri = params != nullptr ? text_of(*params, "uri") : std::string();
+  JsonValue data;
+  ToolOutcome failed;
+  if (uri.starts_with(k_session_prefix) && uri.ends_with(k_journal_suffix)) {
+    const std::string session = uri.substr(
+        k_session_prefix.size(), uri.size() - k_session_prefix.size() - k_journal_suffix.size());
+    JsonValue info;
+    JsonValue ref = JsonValue::object();
+    ref.set("session", JsonValue(session));
+    if (!call("session.info", ref, info, failed)) {
+      why = "session.info failed: " + failed.summary;
+      return false;
+    }
+    // The newest twenty: what a client that was told the journal changed wants to look at.
+    const u64 length = uint_of(info, "journal_length");
+    JsonValue params_journal = JsonValue::object();
+    params_journal.set("session", JsonValue(session));
+    params_journal.set("offset", JsonValue(length > 20 ? length - 20 : u64{0}));
+    params_journal.set("limit", JsonValue(u64{20}));
+    if (!call("doc.journal", params_journal, data, failed)) {
+      why = "doc.journal failed: " + failed.summary;
+      return false;
+    }
+    data.set("undo_position", JsonValue(uint_of(info, "undo_position")));
+  } else if (uri.starts_with(k_scene_prefix)) {
+    const std::string scene = uri.substr(k_scene_prefix.size());
+    JsonValue scenes;
+    if (!call("render.scenes", JsonValue(), scenes, failed)) {
+      why = "render.scenes failed: " + failed.summary;
+      return false;
+    }
+    const JsonValue* loaded = scenes.find("scenes");
+    for (usize i = 0; loaded != nullptr && i < loaded->size(); ++i) {
+      if (text_of((*loaded)[i], "scene") == scene) data = (*loaded)[i];
+    }
+    if (data.is_null()) {
+      why = "no scene " + scene + " on the host (render.scenes lists them)";
+      return false;
+    }
+  } else {
+    why = "no resource '" + uri + "': resources/list names them";
+    return false;
+  }
+  JsonValue content = JsonValue::object();
+  content.set("uri", JsonValue(uri));
+  content.set("mimeType", JsonValue("application/json"));
+  content.set("text", JsonValue(write_json(data, JsonWriteOptions{.pretty = false})));
+  JsonValue contents = JsonValue::array();
+  contents.push_back(std::move(content));
+  result = JsonValue::object();
+  result.set("contents", std::move(contents));
+  return true;
+}
+
+void Bridge::on_resources_subscribe(const JsonValue* params, bool subscribe) {
+  const std::string uri = text_of(*params, "uri");
+  const std::lock_guard<std::mutex> lock(resources_mutex_);
+  for (u32 i = 0; i < subscribed_.size(); ++i) {
+    if (subscribed_[i] != uri) continue;
+    if (!subscribe) subscribed_.erase_at(i);
+    return;
+  }
+  if (subscribe) subscribed_.push_back(uri);
+}
+
+void Bridge::on_host_event(const JsonValue& notification) {
+  const std::string method = text_of(notification, "method");
+  const JsonValue* params = notification.find("params");
+  if (params == nullptr) return;
+  std::string uri;
+  if (method == "event.journal") {
+    uri = journal_uri(text_of(*params, "session"));
+  } else if (method == "event.scene") {
+    uri = scene_uri(text_of(*params, "scene"));
+  } else {
+    return;
+  }
+  {
+    const std::lock_guard<std::mutex> lock(resources_mutex_);
+    bool wanted = false;
+    for (const std::string& s : subscribed_)
+      wanted = wanted || s == uri;
+    if (!wanted) return;
+  }
+  if (notify_ == nullptr) return;
+  JsonValue updated = JsonValue::object();
+  updated.set("uri", JsonValue(uri));
+  JsonValue message = JsonValue::object();
+  message.set("jsonrpc", JsonValue("2.0"));
+  message.set("method", JsonValue("notifications/resources/updated"));
+  message.set("params", std::move(updated));
+  notify_(message);
 }
 
 JsonValue Bridge::on_initialize(const JsonValue* params) {
@@ -568,6 +750,11 @@ JsonValue Bridge::on_initialize(const JsonValue* params) {
   tools.set("listChanged", JsonValue(false));
   JsonValue capabilities = JsonValue::object();
   capabilities.set("tools", std::move(tools));
+  // Resources always; their updates only when attached, which is when the host can push them.
+  JsonValue resources = JsonValue::object();
+  resources.set("subscribe", JsonValue(host_.attached()));
+  resources.set("listChanged", JsonValue(false));
+  capabilities.set("resources", std::move(resources));
 
   JsonValue server = JsonValue::object();
   server.set("name", JsonValue("engine-mcp"));
@@ -581,7 +768,21 @@ JsonValue Bridge::on_initialize(const JsonValue* params) {
   result.set("capabilities", std::move(capabilities));
   result.set("serverInfo", std::move(server));
   if (version_at_least(protocol_version_, "2025-03-26")) {
-    result.set("instructions", JsonValue(k_instructions));
+    std::string instructions = k_instructions;
+    if (host_.attached()) {
+      instructions +=
+          " This bridge is attached to a running host (engine-editor or engine-host --listen) on "
+          "127.0.0.1:" +
+          std::to_string(options_.connect_port) +
+          " that its owner is using: the document is open there too, every edit you make appears "
+          "to them as it commits, and theirs reach you as notifications/resources/updated for the "
+          "journal resource you subscribe to.";
+      if (!options_.connect_session.empty()) {
+        instructions += " The host's own document is session " + options_.connect_session +
+                        ": pass it as `session`, or open_session its path, which joins it.";
+      }
+    }
+    result.set("instructions", JsonValue(instructions));
   }
   return result;
 }

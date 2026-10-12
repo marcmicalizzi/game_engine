@@ -36,6 +36,53 @@ u32 Server::connections() const {
   return open;
 }
 
+Post Server::post(u64 connection, std::string text, u32 bound) {
+  // Under the server's lock, so the connection cannot be reaped between the lookup and the queue;
+  // nothing here waits on a peer, so holding it is brief.
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& c : connections_) {
+    if (c->id != connection) continue;
+    if (c->done.load()) return Post::Gone;
+    std::lock_guard<std::mutex> out(c->out_mutex);
+    if (c->ws == nullptr || c->out_stop) return Post::Gone;
+    if (c->outbox.size() - c->out_head >= bound) return Post::Full;
+    c->outbox.push_back(std::move(text));
+    if (!c->writer.joinable()) {
+      Connection& target = *c;
+      c->writer = std::thread([this, &target] { write_loop(target); });
+    }
+    c->out_ready.notify_one();
+    return Post::Queued;
+  }
+  return Post::Gone;
+}
+
+void Server::write_loop(Connection& c) {
+  for (;;) {
+    std::string next;
+    WebSocket* ws = nullptr;
+    {
+      std::unique_lock<std::mutex> out(c.out_mutex);
+      c.out_ready.wait(out, [&] { return c.out_stop || c.out_head < c.outbox.size(); });
+      if (c.out_stop) return;
+      next = std::move(c.outbox[c.out_head++]);
+      if (c.out_head == c.outbox.size()) {
+        c.outbox.clear();
+        c.out_head = 0;
+      }
+      ws = c.ws;
+    }
+    // Outside the outbox's lock: a peer that has stopped reading blocks this send, and only this
+    // connection's writer waits on it, while posts keep queueing until the bound refuses them.
+    // `ws` stays valid until serve() has joined this thread.
+    if (ws == nullptr || !ws->send_text(next)) {
+      std::lock_guard<std::mutex> out(c.out_mutex);
+      c.out_stop = true;
+      return;
+    }
+  }
+}
+
 void Server::reap(bool all) {
   Vector<std::unique_ptr<Connection>> finished;
   {
@@ -117,6 +164,10 @@ void Server::serve(Connection& connection, Socket socket) {
     if (!handler_->accept(request, code, reason)) {
       ws.close(code, reason);
     } else {
+      {
+        std::lock_guard<std::mutex> out(connection.out_mutex);
+        connection.ws = &ws;
+      }
       Message message;
       while (!stopping_.load() && ws.receive(message)) {
         if (message.opcode == Opcode::Text) {
@@ -126,6 +177,20 @@ void Server::serve(Connection& connection, Socket socket) {
           ws.close(close_code::k_unsupported_data, "this server takes text messages");
           break;
         }
+      }
+      handler_->closed(connection.id);
+      // The writer goes before the socket does: told to stop, woken from a send the peer is not
+      // reading (shutdown, and on Windows the cancel in shutdown_socket), and joined, so it never
+      // touches a closed handle.
+      {
+        std::lock_guard<std::mutex> out(connection.out_mutex);
+        connection.out_stop = true;
+        connection.ws = nullptr;
+      }
+      connection.out_ready.notify_all();
+      if (connection.writer.joinable()) {
+        ws.socket().shutdown_both();
+        connection.writer.join();
       }
     }
   }

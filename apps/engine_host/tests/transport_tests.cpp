@@ -5,7 +5,10 @@
 // over the socket exactly as on stdin; a second connection answered while the first is open; a
 // non-loopback --listen refused before anything binds; the static files and their path guard; and
 // `render.load {session}` with A32's camera, the records of the ids channel and a kept capture
-// fetched over HTTP. tools/host-ws.Tests.ps1 drives the same host with an independent client.
+// fetched over HTTP. And the events (protocol.md, "Events"): a second connection's journal events
+// for the first's commit, undo and redo, in order; the refusal on stdio; a subscriber that never
+// reads, its bounded queue and the dropped count; unsubscribing; and the scene's events after a
+// move and a rebuild. tools/host-ws.Tests.ps1 drives the same host with an independent client.
 #include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/platform/process.h>
@@ -16,9 +19,13 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace engine;
@@ -108,6 +115,8 @@ struct ListeningHost {
 struct Client {
   net::WebSocket ws;
   u32 next_id = 1;
+  // Notifications that arrived while a call waited for its answer, oldest first.
+  std::vector<JsonValue> events;
 
   bool connect(u16 port, std::string_view token) {
     std::string error;
@@ -116,14 +125,38 @@ struct Client {
     CHECK_MESSAGE(connected, error);
     return connected;
   }
-  JsonValue call(std::string_view method, std::string_view params) {
-    REQUIRE(ws.send_text(request(next_id++, method, params)));
+  JsonValue receive_one() {
     net::Message m;
     REQUIRE_MESSAGE(ws.receive(m, 600000),
                     "closed " << ws.close_code() << " " << ws.close_reason());
-    JsonValue response;
-    REQUIRE_MESSAGE(parse_json(m.data, response).ok, m.data);
-    return response;
+    JsonValue message;
+    REQUIRE_MESSAGE(parse_json(m.data, message).ok, m.data);
+    return message;
+  }
+  // The answer to one request; an event pushed meanwhile (a message with no id) is kept.
+  JsonValue call(std::string_view method, std::string_view params) {
+    const u32 id = next_id++;
+    REQUIRE(ws.send_text(request(id, method, params)));
+    for (;;) {
+      JsonValue message = receive_one();
+      if (message.find("id") == nullptr) {
+        events.push_back(std::move(message));
+        continue;
+      }
+      CHECK(at(message, "id").as_int() == id);
+      return message;
+    }
+  }
+  // The next event, kept or read now.
+  JsonValue next_event() {
+    if (!events.empty()) {
+      JsonValue first = std::move(events.front());
+      events.erase(events.begin());
+      return first;
+    }
+    JsonValue message = receive_one();
+    REQUIRE_MESSAGE(message.find("id") == nullptr, write_json(message));
+    return message;
   }
 };
 
@@ -306,7 +339,8 @@ TEST_CASE("listen: the handshake needs the token, and refuses without it with 10
     std::string error;
     const std::pair<std::string, std::string> header[] = {{"X-Engine-Token", host.token}};
     REQUIRE(net::websocket_connect(host.port, "/", header, ws, error));
-    Client c{std::move(ws)};
+    Client c;
+    c.ws = std::move(ws);
     const JsonValue pong = c.call("engine.ping", "null");
     CHECK(at(at(pong, "result"), "pid").as_int() > 0);
   }
@@ -432,6 +466,214 @@ TEST_CASE("listen: the shell's files, and nothing outside them") {
   CHECK(http_get(host.port, "/", "evil.example:" + std::to_string(host.port)).status == 403);
 }
 
+constexpr const char* k_set_translation =
+    R"({"kind":"SetProperty","id":"%s","name":"translation","value":[%d,0,0]})";
+
+std::string set_translation(const char* id, int x) {
+  char text[256];
+  std::snprintf(text, sizeof(text), k_set_translation, id, x);
+  return text;
+}
+
+TEST_CASE("listen: a second connection sees the first's commit, undo and redo as journal events") {
+  test::TempDir tmp("engine_host_listen_events");
+  ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "writer"});
+  const std::string session = host.session;
+  // stdio has nothing to push on, and says so.
+  const JsonValue on_stdin = host.stdio("session.subscribe", R"({"session":")" + session + "\"}");
+  CHECK(error_code(on_stdin) == 1006);
+  CHECK(std::string(at(at(on_stdin, "error"), "message").as_string()).find("socket") !=
+        std::string::npos);
+
+  Client a;
+  Client b;
+  REQUIRE(a.connect(host.port, host.token));
+  REQUIRE(b.connect(host.port, host.token));
+  const JsonValue subscribed = b.call(
+      "session.subscribe", R"({"session":")" + session + R"(","kinds":["journal","session"]})");
+  REQUIRE_MESSAGE(error_code(subscribed) == 0, write_json(subscribed));
+  const JsonValue& kinds = at(at(subscribed, "result"), "kinds");
+  REQUIRE(kinds.size() == 2);
+  CHECK(kinds[0].as_string() == "journal");
+  CHECK(kinds[1].as_string() == "session");
+  CHECK(at(at(subscribed, "result"), "queue").as_int() == 256);
+  CHECK(error_code(b.call("session.subscribe", R"({"kinds":["weather"]})")) == 1004);
+
+  const auto apply = [&](const std::string& command, const char* why) {
+    const JsonValue r =
+        a.call("doc.apply", R"({"session":")" + session + R"(","commands":[)" + command +
+                                R"(],"attribution":{"rationale":")" + why + "\"}}");
+    REQUIRE_MESSAGE(at(at(r, "result"), "committed").as_bool(), write_json(r));
+  };
+  apply(create_placement(k_left, "left", "[0,0,0]"), "make");
+  apply(set_translation(k_left, 2), "move");
+  REQUIRE(error_code(a.call("doc.undo", R"({"session":")" + session + "\"}")) == 0);
+  REQUIRE(error_code(a.call("doc.redo", R"({"session":")" + session + "\"}")) == 0);
+
+  struct Seen {
+    const char* action;
+    i64 index;
+    i64 journal_length;
+    i64 undo_position;
+    const char* rationale;
+  };
+  const Seen expected[] = {{"commit", 0, 1, 1, "make"},
+                           {"commit", 1, 2, 2, "move"},
+                           {"undo", 1, 2, 1, "move"},
+                           {"redo", 1, 2, 2, "move"}};
+  i64 revision = 0;
+  for (const Seen& e : expected) {
+    const JsonValue event = b.next_event();
+    CHECK(at(event, "method").as_string() == "event.journal");
+    const JsonValue& p = at(event, "params");
+    CHECK(at(p, "session").as_string() == session);
+    CHECK(at(p, "action").as_string() == e.action);
+    CHECK(at(p, "index").as_int() == e.index);
+    CHECK(at(p, "journal_length").as_int() == e.journal_length);
+    CHECK(at(p, "undo_position").as_int() == e.undo_position);
+    CHECK(at(at(p, "attribution"), "rationale").as_string() == e.rationale);
+    CHECK(at(at(p, "attribution"), "actor").as_string() == "writer");
+    REQUIRE(at(p, "ids").size() == 1);
+    CHECK(at(p, "ids")[0].as_string() == k_left);
+    CHECK(at(p, "dropped").as_int() == 0);
+    // Each change moves the document's revision on; an event carries the one after it.
+    CHECK(at(p, "revision").as_int() > revision);
+    revision = at(p, "revision").as_int();
+  }
+  // The writer subscribed to nothing and was sent nothing.
+  CHECK(a.events.empty());
+  // Nothing reached stdout but answers: the next line on stdio is the ping's.
+  CHECK(at(host.stdio("engine.ping", "null"), "result").find("pid") != nullptr);
+
+  // `session` events: a lease taken and released, by the writer.
+  const JsonValue lease = a.call(
+      "lease.acquire", R"({"session":")" + session +
+                           R"(","layer":"base","object_types":["engine.scene.MeshPlacement"]})");
+  REQUIRE_MESSAGE(error_code(lease) == 0, write_json(lease));
+  const JsonValue taken = b.next_event();
+  CHECK(at(taken, "method").as_string() == "event.session");
+  CHECK(at(at(taken, "params"), "change").as_string() == "lease_acquired");
+  CHECK(at(at(taken, "params"), "actor").as_string() == "writer");
+  CHECK(at(at(taken, "params"), "lease").as_int() == at(at(lease, "result"), "id").as_int());
+
+  // Unsubscribed, the next commit is not sent: the answer to b's own call comes, and nothing else.
+  const JsonValue left = b.call("session.unsubscribe", R"({"session":")" + session + "\"}");
+  CHECK(at(at(left, "result"), "kinds").size() == 0);
+  apply(set_translation(k_left, 3), "unseen");
+  CHECK(error_code(b.call("session.subscriptions", "null")) == 0);
+  CHECK(error_code(b.call("engine.ping", "null")) == 0);
+  CHECK(b.events.empty());
+}
+
+TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
+  test::TempDir tmp("engine_host_listen_slow");
+  ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "busy"});
+  const std::string session = host.session;
+  // A small bound, so the queue fills soon after the socket's own buffers do.
+  const JsonValue set = host.stdio("tunables.set", R"({"name":"protocol.events.queue","value":4})");
+  REQUIRE_MESSAGE(error_code(set) == 0, write_json(set));
+
+  Client writer;
+  Client slow;
+  REQUIRE(writer.connect(host.port, host.token));
+  REQUIRE(slow.connect(host.port, host.token));
+  const JsonValue subscribed =
+      slow.call("session.subscribe", R"({"session":")" + session + R"(","kinds":["journal"]})");
+  REQUIRE_MESSAGE(error_code(subscribed) == 0, write_json(subscribed));
+  CHECK(at(at(subscribed, "result"), "queue").as_int() == 4);
+  const i64 slow_connection = at(at(subscribed, "result"), "connection").as_int();
+  REQUIRE(slow_connection != 0);
+
+  // Sixty-four records, then transactions that touch all of them: each event names 64 ids, a few
+  // kilobytes, so the socket's buffers fill in hundreds of events rather than tens of thousands.
+  constexpr int k_records = 64;
+  std::string make;
+  std::string touch_all;
+  std::vector<std::string> ids;
+  for (int i = 0; i < k_records; ++i) {
+    char id[33];
+    std::snprintf(id, sizeof(id), "000000000000004000000000%08x", i + 1);
+    ids.emplace_back(id);
+    make += (i == 0 ? "" : ",") + create_placement(id, "r", "[0,0,0]");
+  }
+  const auto apply = [&](const std::string& commands) {
+    const JsonValue r =
+        writer.call("doc.apply", R"({"session":")" + session + R"(","commands":[)" + commands +
+                                     R"(],"attribution":{"rationale":"busy"}})");
+    REQUIRE_MESSAGE(at(at(r, "result"), "committed").as_bool(), write_json(r));
+  };
+  apply(make);
+  // Until the host reports the slow connection dropping: it never reads, so its socket's buffers
+  // fill, then its queue, and the host keeps answering the writer all the while — the lock is
+  // never held on the slow one's socket.
+  i64 dropped = 0;
+  int x = 0;
+  for (int round = 0; round < 400 && dropped == 0; ++round) {
+    for (int k = 0; k < 25; ++k) {
+      touch_all.clear();
+      ++x;
+      for (int i = 0; i < k_records; ++i)
+        touch_all += (i == 0 ? "" : ",") + set_translation(ids[i].c_str(), x);
+      apply(touch_all);
+    }
+    const JsonValue subs = writer.call("session.subscriptions", "null");
+    for (usize i = 0; i < at(at(subs, "result"), "subscribers").size(); ++i) {
+      const JsonValue& s = at(at(subs, "result"), "subscribers")[i];
+      if (at(s, "connection").as_int() == slow_connection) dropped = at(s, "dropped").as_int();
+    }
+  }
+  REQUIRE_MESSAGE(dropped > 0,
+                  "the slow connection never dropped an event in " << x << " transactions");
+  const i64 last_stalled = x;  // patch index of the last transaction made while it stalled
+
+  // Now it reads, on a thread of its own, until an event after the stall reaches it; the writer
+  // commits one more transaction at a time until one does, since the first may meet a full queue.
+  std::vector<JsonValue> seen;
+  std::atomic<bool> caught_up{false};
+  std::thread reader([&] {
+    for (;;) {
+      net::Message m;
+      if (!slow.ws.receive(m, 600000)) return;
+      JsonValue event;
+      if (!parse_json(m.data, event).ok) return;
+      const JsonValue* p = event.find("params");
+      const bool after =
+          p != nullptr && p->find("index") != nullptr && p->find("index")->as_int() > last_stalled;
+      seen.push_back(std::move(event));
+      if (after) {
+        caught_up = true;
+        return;
+      }
+    }
+  });
+  for (int tries = 0; tries < 200 && !caught_up; ++tries) {
+    apply(set_translation(ids[0].c_str(), 1000 + tries));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  reader.join();
+  REQUIRE(caught_up);
+  // In order, nothing twice, and every gap in the indices is exactly the count the event after it
+  // carries: the subscriber knows what it missed and lost nothing silently.
+  i64 previous = -1;
+  i64 dropped_total = 0;
+  bool reported = false;
+  for (const JsonValue& event : seen) {
+    const JsonValue& p = at(event, "params");
+    const i64 index = at(p, "index").as_int();
+    const i64 count = at(p, "dropped").as_int();
+    CHECK(index > previous);
+    CHECK(index - previous - 1 == count);
+    if (count > 0) reported = true;
+    dropped_total += count;
+    previous = index;
+  }
+  CHECK(reported);
+  CHECK(dropped_total >= dropped);
+  MESSAGE("a stalled subscriber dropped " << dropped_total << " of " << previous + 1
+                                          << " events after " << last_stalled
+                                          << " transactions with a queue of 4");
+}
+
 TEST_CASE("listen: render.load of a session, the camera it framed, records, a kept capture") {
   test::TempDir tmp("engine_host_listen_render");
   const std::string doc = tmp.file("doc");
@@ -513,6 +755,12 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
                      "?token=" + host.token);
   CHECK(png2.body == png.body);
 
+  // A second connection follows the scene through its events.
+  Client watcher;
+  REQUIRE(watcher.connect(host.port, host.token));
+  REQUIRE(error_code(watcher.call("session.subscribe",
+                                  R"({"session":")" + session + R"(","kinds":["scene"]})")) == 0);
+
   // A transform edit moves the instance in place: the same scene id, one moved, no rebuild.
   const JsonValue moved = c.call(
       "doc.apply",
@@ -530,6 +778,11 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
       host.port, "/capture/" + std::string(at(at(after, "result"), "capture").as_string()) +
                      "?token=" + host.token);
   CHECK(png3.body != png.body);  // the right cube is somewhere else now
+  const JsonValue moved_event = watcher.next_event();
+  CHECK(at(moved_event, "method").as_string() == "event.scene");
+  CHECK(at(at(moved_event, "params"), "scene").as_string() == scene);
+  CHECK(at(at(moved_event, "params"), "change").as_string() == "moved");
+  CHECK(at(at(moved_event, "params"), "moved").as_int() == 1);
 
   // A new placement is a rebuild into the same scene id.
   const JsonValue third = c.call(
@@ -542,4 +795,9 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   CHECK(at(at(rebuilt, "result"), "scene").as_string() == scene);
   CHECK(at(at(rebuilt, "result"), "rebuilt").as_bool());
   CHECK(at(at(rebuilt, "result"), "instances").as_int() == 3);
+  const JsonValue rebuilt_event = watcher.next_event();
+  CHECK(at(at(rebuilt_event, "params"), "change").as_string() == "rebuilt");
+  CHECK(at(at(rebuilt_event, "params"), "instances").as_int() == 3);
+  CHECK(at(at(rebuilt_event, "params"), "revision").as_int() >
+        at(at(moved_event, "params"), "revision").as_int());
 }

@@ -286,6 +286,57 @@ TEST_CASE("mcp: --help, --version, and a host that cannot start") {
   }
 }
 
+TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of a spawned host") {
+  const test::TempDir tmp("mcp_bridge_connect_usage");
+  const std::string ws = tmp.file("ws");
+  const auto exit_of = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    CHECK(out.empty());  // stdout is MCP's, even for a refusal
+    return p.wait();
+  };
+  // A host the bridge would start is configured by flags an attached bridge must not take: the
+  // running host's roles and mounts are its own.
+  for (const char* flag : {"--host", "--host-arg", "--mount", "--roles"}) {
+    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t",
+                                     flag,         "x"};
+    CHECK_MESSAGE(exit_of(argv) == 2, flag);
+  }
+  {
+    // Loopback only, as the listener binds.
+    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://10.0.0.1:9/", "--token", "t"};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://127.0.0.1:9/"};
+    CHECK(exit_of(argv) == 2);  // no token
+  }
+  {
+    const std::string_view argv[] = {bridge_exe(), "--token", "t"};
+    CHECK(exit_of(argv) == 2);  // a token with nothing to connect to
+  }
+  {
+    // --connect-from reads the announcement; a file that is not one is refused.
+    const std::string file = tmp.file("announcement.json");
+    {
+      std::ofstream out(file, std::ios::binary);
+      out << "not the host's first line\n";
+    }
+    const std::string_view argv[] = {bridge_exe(), "--connect-from", file, "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    // Nobody listening on that port: the bridge says it cannot connect and exits 2, as it does
+    // when it cannot start a host.
+    const std::string_view argv[] = {
+        bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t", "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+}
+
 TEST_CASE("mcp: initialize agrees a protocol version and advertises tools") {
   const test::TempDir tmp("mcp_bridge_init");
   Mcp mcp(tmp.file("ws"));
@@ -297,7 +348,10 @@ TEST_CASE("mcp: initialize agrees a protocol version and advertises tools") {
   const JsonValue& r = at(init, "result");
   CHECK(str(r, "protocolVersion") == "2025-06-18");
   CHECK(at(r, "capabilities").find("tools") != nullptr);
-  CHECK(at(r, "capabilities").find("resources") == nullptr);
+  // Resources (each session's journal, each scene) always; subscribing to their updates only when
+  // attached to a running host, which is when the host can push them (`--connect`).
+  const JsonValue& resources = at(at(r, "capabilities"), "resources");
+  CHECK_FALSE(at(resources, "subscribe").as_bool());
   CHECK(str(at(r, "serverInfo"), "name") == "engine-mcp");
   CHECK_FALSE(str(at(r, "serverInfo"), "version").empty());
   CHECK(str(r, "instructions").find("open_session") != std::string::npos);
@@ -800,7 +854,7 @@ TEST_CASE("mcp: bad messages get JSON-RPC errors and the bridge keeps serving") 
   REQUIRE(at(at(batch, "error"), "code").get_i64(code));
   CHECK(code == -32600);
 
-  const JsonValue no_method = mcp.request("resources/list", "{}");
+  const JsonValue no_method = mcp.request("prompts/list", "{}");
   REQUIRE(at(at(no_method, "error"), "code").get_i64(code));
   CHECK(code == -32601);
 

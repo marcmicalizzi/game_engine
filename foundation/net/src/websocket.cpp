@@ -234,6 +234,9 @@ void WebSocket::fail(u16 code, std::string_view reason) {
 }
 
 bool WebSocket::send_frame(Opcode opcode, std::string_view payload, bool fin) {
+  if (send_lock_ == nullptr) return false;
+  // One frame at a time on the wire, whichever thread sends it (websocket.h).
+  std::lock_guard<std::mutex> lock(*send_lock_);
   if (!socket_.valid() || closed_ || close_sent_) return false;
   std::string bytes;
   bytes.reserve(payload.size() + 14);

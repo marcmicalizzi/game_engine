@@ -446,6 +446,24 @@ void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
 // how many moved; anything else (a placement created, deleted or pointed at another mesh, or a feed
 // that no longer reaches back) reads the document again into the same scene id and says `rebuilt`.
 // A client therefore holds one scene id per session for the session's life.
+//
+// A load that moved or rebuilt something publishes `event.scene` (domain/protocol/events.h) to the
+// session's subscribers, so a second client showing the same scene — another shell, an agent —
+// learns it changed without asking; a load that found nothing to do publishes nothing.
+void publish_scene(protocol::Context& ctx, const protocol::RenderSceneInfo& info,
+                   std::string_view session) {
+  if (!info.rebuilt && info.moved == 0) return;
+  if (ctx.events == nullptr || !ctx.events->wanted(protocol::EventKind::Scene, session)) return;
+  protocol::SceneEvent event;
+  event.session = std::string(session);
+  event.scene = info.scene;
+  event.change = info.rebuilt ? "rebuilt" : "moved";
+  event.moved = info.moved;
+  event.instances = info.instances;
+  event.revision = info.revision;
+  ctx.events->publish(protocol::EventKind::Scene, session, schema::to_json(event));
+}
+
 bool load_session(protocol::Context& ctx, RenderHost& host,
                   const protocol::RenderLoadParams& params, const renderer::RenderRequest& request,
                   gfx::Device& device, protocol::RenderSceneInfo& out, protocol::RpcError& error) {
@@ -502,6 +520,7 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
       fill_scene_info(*scene, device, out);
       out.moved = static_cast<u32>(changes.moved.size());
       out.rebuilt = false;
+      publish_scene(ctx, out, params.session);
       return true;
     }
   }
@@ -553,6 +572,7 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   ENGINE_LOG_INFO(log_render, "session scene loaded", log::field("scene", scene->id),
                   log::field("session", scene->session), log::field("instances", out.instances),
                   log::field("revision", out.revision));
+  publish_scene(ctx, out, params.session);
   return true;
 }
 

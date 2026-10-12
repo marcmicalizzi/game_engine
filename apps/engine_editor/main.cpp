@@ -470,7 +470,14 @@ struct Host {
     policy.identity = document.caller().who;
     protocol::add_builtin_methods(dispatcher);
     editor::add_editor_methods(dispatcher);
+    // A click in the viewport reaches the shell's outliner as `event.selection`.
+    document.set_events(&listener.events());
   }
+  ~Host() {
+    listener.stop();
+    if (state.document != nullptr) state.document->set_events(nullptr);
+  }
+  ENGINE_NON_COPYABLE(Host);
 };
 
 int run_window(const Options& options, editor::EditorDocument& document) {

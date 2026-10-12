@@ -222,11 +222,22 @@ export class Viewport {
     }
   }
 
+  // Another client loaded the same session's scene after a change (`event.scene`): the scene this
+  // panel shows has moved on, so the picture is taken again — unless this panel's own load already
+  // showed that revision, which is the usual case, since a journal event made it load.
+  onScene(event) {
+    if (!this.scene || event.scene !== this.scene) return;
+    if (event.revision !== undefined && event.revision <= (this.revision || 0)) return;
+    this.revision = event.revision;
+    this.capture("final");
+  }
+
   // After a transaction: the same session loaded again moves its instances in place, or rebuilds
   // when the bridge says it must, and then the picture is taken again.
   async sync() {
     const info = await this.load();
     if (info) {
+      if (info.revision !== undefined) this.revision = info.revision;
       if (info.rebuilt === false && info.moved) this.meta.textContent += ` · moved ${info.moved}`;
       await this.capture("final");
     }

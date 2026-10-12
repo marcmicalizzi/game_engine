@@ -2319,3 +2319,108 @@ struct EditorStateResult @version(1) {
   width: u32 = 0
   height: u32 = 0
 }
+
+// ---- subscriptions and events (roadmap A2; docs/subsystems/protocol.md, "Events") -------------
+// A client on a socket connection subscribes to kinds of event and the host pushes each one to it
+// as a JSON-RPC notification, `method: "event.<kind>"` with one of the types below as `params`, on
+// that connection, in order, after the change it reports is committed. An event names what changed
+// — ids, indices, revisions, attribution — and never carries document content: a subscriber reads
+// what it needs through the methods, under its role. stdio has no channel to push on, so
+// `session.subscribe` there is refused. Every event carries `dropped`: how many of this
+// connection's events were dropped since the last one it was sent, because its queue was full (the
+// subscriber stopped reading); a subscriber that sees a non-zero count reads the state again.
+
+/// Parameters of `session.subscribe` and `session.unsubscribe`.
+struct SubscribeParams @version(1) {
+  /// The session whose events to send; empty for every session the host has, including ones
+  /// opened later.
+  session: string
+  /// Any of "journal", "selection", "scene" and "session"; empty for all four (subscribe) or for
+  /// every kind subscribed (unsubscribe).
+  kinds: string[]
+}
+
+/// What the connection is subscribed to for that session after the call.
+struct SubscribeResult @version(1) {
+  session: string
+  kinds: string[]
+  /// The bound of the connection's event queue (the tunable `protocol.events.queue`): past it an
+  /// event is dropped and counted rather than queued.
+  queue: u32 = 0
+  /// This connection's number, as `session.subscriptions` names it.
+  connection: u64 = 0
+}
+
+/// One connection's subscription to one session (or to every session, `session` empty).
+struct SubscriberInfo @version(1) {
+  connection: u64 = 0
+  session: string
+  kinds: string[]
+  /// Events dropped since the connection was last sent one: non-zero while it is not reading.
+  dropped: u64 = 0
+}
+
+/// `session.subscriptions`: who is subscribed to what, and who has fallen behind.
+struct SubscriptionsResult @version(1) {
+  subscribers: SubscriberInfo[]
+  queue: u32 = 0
+}
+
+/// `event.journal`: a transaction was committed, undone or redone.
+struct JournalEvent @version(1) {
+  session: string
+  /// "commit", "undo" or "redo".
+  action: string
+  /// The patch's index in the journal: the one committed, undone or redone.
+  index: u32 = 0
+  /// The layer the patch edits.
+  layer: string
+  attribution: engine.doc.Attribution
+  /// The records the patch touches, each once, in the order of its commands; at most 1024.
+  ids: id128[]
+  /// How many records it touches; more than `ids` holds when the list was cut short.
+  ids_total: u32 = 0
+  /// The document's revision after the change (the change feed's stamp, doc.md).
+  revision: u64 = 0
+  journal_length: u32 = 0
+  undo_position: u32 = 0
+  dropped: u64 = 0
+}
+
+/// `event.selection`: the editor's selection changed (engine-editor only: a click in its viewport,
+/// `editor.select`, a delete that cleared it).
+struct SelectionEvent @version(1) {
+  session: string
+  /// The selected record; null when nothing is.
+  selected: id128?
+  dropped: u64 = 0
+}
+
+/// `event.scene`: a `render.load {session}` scene followed the document after a transaction.
+struct SceneEvent @version(1) {
+  session: string
+  scene: string
+  /// "moved" (instances placed again in place) or "rebuilt" (the document read again).
+  change: string
+  /// Instances moved; 0 for a rebuild.
+  moved: u32 = 0
+  instances: u32 = 0
+  /// The document revision the scene now shows.
+  revision: u64 = 0
+  dropped: u64 = 0
+}
+
+/// `event.session`: a session opened or closed, or a lease on it was taken or released. (Not
+/// `SessionEvent`, which is one entry of `session.events`' log.)
+struct SessionChangeEvent @version(1) {
+  session: string
+  /// "opened", "closed", "lease_acquired" or "lease_released".
+  change: string
+  /// The document's directory.
+  path: string
+  /// For a lease change: the lease's id, its holder and its layer.
+  lease: u64 = 0
+  actor: string
+  layer: string
+  dropped: u64 = 0
+}

@@ -248,6 +248,17 @@ bool EditorDocument::redo(std::string& error) {
   return true;
 }
 
+void EditorDocument::select(Id128 id) {
+  if (id == selection_) return;
+  selection_ = id;
+  if (events_ == nullptr || session_ == nullptr) return;
+  if (!events_->wanted(protocol::EventKind::Selection, session_->id())) return;
+  protocol::SelectionEvent event;
+  event.session = session_->id();
+  if (!id.is_null()) event.selected = id;
+  events_->publish(protocol::EventKind::Selection, session_->id(), schema::to_json(event));
+}
+
 bool EditorDocument::can_undo() const {
   return session_ != nullptr && session_->undo_position() > 0;
 }

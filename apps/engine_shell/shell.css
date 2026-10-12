@@ -1133,6 +1133,23 @@ textarea.input {
   flex: 1;
 }
 
+/* The "updates" badge: events pushed by the host (a quiet green dot), or the fallback poll (amber),
+   so whoever is looking knows whether the panels are live or ten seconds behind at worst. */
+.status-events::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--s-1);
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--warn, #c9a227);
+}
+
+.status-events[data-mode="events"]::before {
+  background: var(--ok, #3fb68b);
+}
+
 .status-error {
   color: var(--danger);
   overflow: hidden;

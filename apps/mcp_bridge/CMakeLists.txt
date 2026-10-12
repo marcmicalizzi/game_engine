@@ -1,11 +1,12 @@
 # engine-mcp: the MCP bridge (docs/plan/06-agent-tooling.md §6.3, docs/subsystems/apps.md). A
 # Model Context Protocol server over stdio that spawns one engine-host and speaks the engine
-# protocol to it, as engine-cli does. It links no protocol or schema library: every tool's input
-# schema is generated at startup from the host's own `schema.describe`, so the host is the one
-# source of truth and the bridge cannot drift from it.
+# protocol to it, as engine-cli does — or, with --connect, attaches to a running host over its
+# loopback WebSocket, which is what `net` (the client half of foundation/net) is for. It links no
+# protocol or schema library: every tool's input schema is generated at startup from the host's
+# own `schema.describe`, so the host is the one source of truth and the bridge cannot drift from it.
 engine_app(NAME mcp_bridge OUTPUT engine-mcp
   SOURCES main.cpp bridge.cpp host_client.cpp schema_gen.cpp tools.cpp
-  DEPS base containers json ids log platform
+  DEPS base containers json ids log platform hash net
   E2E_TESTS tests/mcp_tests.cpp)
 target_compile_definitions(engine_mcp_bridge PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 # The bridge finds engine-host beside itself, so building one builds the other.
@@ -28,5 +29,15 @@ if(TARGET engine_mcp_bridge_tests)
       WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     set_tests_properties(mcp_bridge.mcp_check PROPERTIES LABELS "mcp_bridge;tools")
     engine_test_waits_for_gpu(mcp_bridge.mcp_check)
+    # The same loop with the bridge attached to a running engine-host --listen (`-Connect`,
+    # roadmap A6), and a second, plain WebSocket client on that host that must see the bridge's
+    # journal entries arrive as events and read them: the shared-session proof.
+    add_test(NAME mcp_bridge.mcp_check_connect
+      COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/mcp-check.ps1"
+              -Mcp "$<TARGET_FILE:engine_mcp_bridge>" -Connect
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(mcp_bridge.mcp_check_connect PROPERTIES LABELS "mcp_bridge;tools")
+    engine_test_waits_for_gpu(mcp_bridge.mcp_check_connect)
   endif()
 endif()

@@ -1,19 +1,23 @@
 // engine-mcp (docs/plan/06-agent-tooling.md §6.3, docs/subsystems/apps.md "engine-mcp"): a Model
-// Context Protocol server over stdio that spawns one engine-host and turns curated tools into
-// engine protocol calls. stdout belongs to MCP alone; every diagnostic goes to stderr, which an
-// MCP client keeps as the server's log. The bridge never opens a socket.
+// Context Protocol server over stdio that spawns one engine-host — or, with --connect, attaches to
+// a running one over its loopback WebSocket — and turns curated tools into engine protocol calls.
+// stdout belongs to MCP alone; every diagnostic goes to stderr, which an MCP client keeps as the
+// server's log. The bridge listens on nothing: attached, it is a client of the host's listener.
 #include "bridge.h"
 
 #include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
+#include <foundation/net/socket.h>
 
 #include <charconv>
 #include <cstdio>
 #include <engine_build_stamp.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -33,10 +37,24 @@ const char* k_usage =
     "                  [--workspace <dir>] [--actor <name>] [--role <name>] [--task <id>]\n"
     "                  [--roles <file.json>]\n"
     "                  [--call-timeout <seconds>] [--long-call-timeout <seconds>] [--log <spec>]\n"
+    "       engine-mcp --connect ws://127.0.0.1:<port>/ --token <token> [--workspace <dir>]\n"
+    "                  [--actor <name>] [--role <name>] [--task <id>] [--call-timeout ...] ...\n"
+    "       engine-mcp --connect-from <file> ...\n"
     "\n"
     "A Model Context Protocol server on stdin/stdout (newline-delimited JSON-RPC 2.0) over one\n"
-    "engine-host it starts and owns. Register it with an MCP client; see docs/subsystems/apps.md.\n"
+    "engine-host it starts and owns, or over a running host it attaches to. Register it with an\n"
+    "MCP client; see docs/subsystems/apps.md.\n"
     "\n"
+    "  --connect <url>      attach to a running host's loopback WebSocket (engine-editor, or\n"
+    "                       engine-host --listen) instead of starting one: the same tools, on the\n"
+    "                       document its owner has open; the host's journal and scene events "
+    "reach\n"
+    "                       the MCP client as notifications/resources/updated. Needs --token.\n"
+    "                       --host, --host-arg, --mount and --roles configure a host the bridge\n"
+    "                       starts, so they are refused with it: the host's own roles govern\n"
+    "  --token <token>      the host's session token (its first line on stdout says it)\n"
+    "  --connect-from <file>  the host's first stdout line saved to a file, {\"listen\":...,\n"
+    "                       \"token\":...,\"session\":...}: --connect and --token from it\n"
     "  --host <path>        engine-host executable (default: beside engine-mcp)\n"
     "  --host-arg <arg>     appended to engine-host's command line; repeatable\n"
     "  --mount <spec>       forwarded to engine-host; repeatable\n"
@@ -85,6 +103,11 @@ int main(int argc, char** argv) {
   options.actor = "mcp";
   std::string workspace;
   std::string log_spec;
+  std::string connect_url;
+  std::string connect_from;
+  bool token_given = false;
+  // The flags that configure a host the bridge starts, which an attached bridge does not.
+  std::string host_flag;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
     auto value = [&](std::string& out) {
@@ -102,7 +125,15 @@ int main(int argc, char** argv) {
       std::printf("{\"tool\":\"engine-mcp\",\"commit\":\"%s\",\"dirty\":%s}\n",
                   build_stamp::commit(), build_stamp::dirty() ? "true" : "false");
       return 0;
+    } else if (a == "--connect") {
+      if (!value(connect_url)) return 2;
+    } else if (a == "--token") {
+      if (!value(options.connect_token)) return 2;
+      token_given = true;
+    } else if (a == "--connect-from") {
+      if (!value(connect_from)) return 2;
     } else if (a == "--host") {
+      host_flag = "--host";
       if (!value(options.host_path)) return 2;
     } else if (a == "--workspace") {
       if (!value(workspace)) return 2;
@@ -113,6 +144,7 @@ int main(int argc, char** argv) {
     } else if (a == "--task") {
       if (!value(options.task)) return 2;
     } else if (a == "--roles") {
+      host_flag = "--roles";
       if (!value(options.roles)) return 2;
     } else if (a == "--call-timeout" || a == "--long-call-timeout") {
       std::string text;
@@ -127,10 +159,12 @@ int main(int argc, char** argv) {
     } else if (a == "--log") {
       if (!value(log_spec)) return 2;
     } else if (a == "--mount") {
+      host_flag = "--mount";
       std::string m;
       if (!value(m)) return 2;
       options.mounts.push_back(m);
     } else if (a == "--host-arg") {
+      host_flag = "--host-arg";
       std::string h;
       if (!value(h)) return 2;
       options.host_args.push_back(h);
@@ -141,6 +175,66 @@ int main(int argc, char** argv) {
   }
   if (options.actor.empty()) {
     std::fprintf(stderr, "engine-mcp: --actor must not be empty\n");
+    return 2;
+  }
+  // --connect-from: the host's announcement, the one JSON line it printed first.
+  if (!connect_from.empty()) {
+    if (!connect_url.empty() || token_given) {
+      std::fprintf(stderr,
+                   "engine-mcp: --connect-from gives the address and the token; do not "
+                   "also pass --connect or --token\n");
+      return 2;
+    }
+    std::ifstream in(std::filesystem::path(std::u8string_view(
+        reinterpret_cast<const char8_t*>(connect_from.data()), connect_from.size())));
+    std::string line;
+    JsonValue announcement;
+    if (!in || !std::getline(in, line) || !parse_json(line, announcement).ok ||
+        announcement.find("listen") == nullptr || announcement.find("token") == nullptr) {
+      std::fprintf(stderr,
+                   "engine-mcp: --connect-from %s: expected the host's first stdout line, "
+                   "{\"listen\":\"ws://127.0.0.1:<port>/\",\"token\":\"...\"}\n",
+                   connect_from.c_str());
+      return 2;
+    }
+    connect_url = std::string(announcement.find("listen")->as_string());
+    options.connect_token = std::string(announcement.find("token")->as_string());
+    if (const JsonValue* s = announcement.find("session"); s != nullptr && s->is_string()) {
+      options.connect_session = std::string(s->as_string());
+    }
+    token_given = true;
+  }
+  if (!connect_url.empty()) {
+    if (!host_flag.empty()) {
+      std::fprintf(stderr,
+                   "engine-mcp: %s configures a host the bridge starts; with --connect the host is "
+                   "already running, with its own roles and mounts\n",
+                   host_flag.c_str());
+      return 2;
+    }
+    if (!token_given || options.connect_token.empty()) {
+      std::fprintf(stderr, "engine-mcp: --connect needs --token, the token the host printed\n");
+      return 2;
+    }
+    // ws://127.0.0.1:<port>/ and nothing else: the listener binds loopback only, and so the bridge
+    // connects to loopback only.
+    std::string_view url = connect_url;
+    std::string why;
+    u16 port = 0;
+    const bool shaped = url.starts_with("ws://") && url.size() > 5;
+    if (shaped) {
+      url.remove_prefix(5);
+      while (!url.empty() && url.back() == '/')
+        url.remove_suffix(1);
+    }
+    if (!shaped || !net::parse_loopback_address(url, port, why) || port == 0) {
+      std::fprintf(stderr, "engine-mcp: --connect %s: %s\n", connect_url.c_str(),
+                   why.empty() ? "expected ws://127.0.0.1:<port>/" : why.c_str());
+      return 2;
+    }
+    options.connect_port = port;
+  } else if (token_given) {
+    std::fprintf(stderr, "engine-mcp: --token goes with --connect\n");
     return 2;
   }
 
@@ -195,11 +289,23 @@ int main(int argc, char** argv) {
   }
 
   mcp::Bridge bridge(std::move(options));
+  // One writer at a time on stdout: the main loop's answers and, attached, the notifications the
+  // socket's reader thread passes on.
+  static std::mutex stdout_lock;
+  static const auto emit = [](const JsonValue& message) {
+    std::string out = write_json(message, JsonWriteOptions{.pretty = false});
+    out.push_back('\n');
+    const std::lock_guard<std::mutex> lock(stdout_lock);
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fflush(stdout);
+  };
+  bridge.set_notify([](const JsonValue& message) { emit(message); });
   std::string error;
   if (!bridge.start(error)) {
     std::fprintf(stderr, "engine-mcp: %s\n", error.c_str());
     log::remove_sink(&stderr_sink);
-    return error.starts_with("cannot start engine-host") ? 2 : 1;
+    return error.starts_with("cannot start engine-host") || error.starts_with("cannot connect") ? 2
+                                                                                                : 1;
   }
 
   std::string line;
@@ -208,10 +314,7 @@ int main(int argc, char** argv) {
     if (line.find_first_not_of(" \t") == std::string::npos) continue;
     const JsonValue response = bridge.handle_text(line);
     if (response.is_null()) continue;
-    std::string out = write_json(response, JsonWriteOptions{.pretty = false});
-    out.push_back('\n');
-    std::fwrite(out.data(), 1, out.size(), stdout);
-    std::fflush(stdout);
+    emit(response);
   }
   // The client closed our input: the session is over. The host exits when its own input ends.
   bridge.shutdown();

@@ -16,7 +16,8 @@
     2. With the token: engine.ping answers; a 200 KB doc.apply sent as fifty-one fragments is one
        request and commits; doc.objects answers with that 200 KB value back in one message (the
        server's 64-bit length, read by .NET); doc.journal carries the rationale and the actor.
-    3. Two connections at once are both answered.
+    3. Two connections at once are both answered, and the second, subscribed to the session's
+       journal, is pushed the first's next commit as an `event.journal` notification.
     4. The close handshake: .NET's CloseAsync gets the server's echo (NormalClosure).
     5. GET / is the shell's index page, and GET /capture/... without the token is a 403.
     6. Closing the host's standard input ends it with exit code 0.
@@ -161,6 +162,21 @@ try {
   $a = Invoke-Rpc $ws2 'engine.ping' $null
   $b = Invoke-Rpc $ws 'engine.ping' $null
   Expect ($a.Response.result.pid -eq $b.Response.result.pid) 'two connections are both answered, by the same host'
+
+  # 3b. An event: the second connection subscribes to the session's journal and is pushed the
+  # first's next commit as a JSON-RPC notification — read by a client nobody here wrote.
+  $sub = Invoke-Rpc $ws2 'session.subscribe' @{ session = $session; kinds = @('journal') }
+  Expect (@($sub.Response.result.kinds) -contains 'journal') 'the second connection subscribes to the journal'
+  $edit = Invoke-Rpc $ws 'doc.apply' @{
+    session = $session
+    commands = @(@{ kind = 'SetProperty'; id = '00000000000000300000000000000001'; name = 'mesh'; value = 'cube2.glb' })
+    attribution = @{ rationale = 'an event for .NET' }
+  }
+  Expect ($edit.Response.result.committed -eq $true) 'a second commit on the first connection'
+  $pushed = Receive-Message $ws2
+  $event = $pushed.Text | ConvertFrom-Json -Depth 20
+  Expect ($event.method -eq 'event.journal' -and -not ($event.PSObject.Properties.Name -contains 'id')) "the second connection is pushed a notification ($($event.method))"
+  Expect ($event.params.index -eq 1 -and $event.params.attribution.rationale -eq 'an event for .NET') "naming the commit: index 1, its rationale ($($pushed.Text.Substring(0, [Math]::Min(160, $pushed.Text.Length))))"
 
   # 4. The close handshake.
   $null = $ws2.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', (New-Token)).GetAwaiter().GetResult()

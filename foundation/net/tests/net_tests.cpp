@@ -10,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <thread>
 
@@ -219,4 +220,82 @@ TEST_CASE("net: a server and a client on loopback") {
 
   server.stop();
   CHECK(server.connections() == 0);
+}
+
+namespace {
+
+// Answers "ok" and remembers which connection asked, so a test can push to it.
+class PushHandler final : public ServerHandler {
+ public:
+  void http(const HttpRequest&, HttpResponse& response) override { response.body = "no"; }
+  bool accept(const HttpRequest&, u16&, std::string&) override { return true; }
+  std::string message(u64 connection, std::string_view) override {
+    last.store(connection);
+    return "ok";
+  }
+  void closed(u64) override { closed_count.fetch_add(1); }
+  std::atomic<u64> last{0};
+  std::atomic<u32> closed_count{0};
+};
+
+}  // namespace
+
+TEST_CASE("net: a server pushes to a connection, bounded, and never waits on a peer") {
+  PushHandler handler;
+  Server server;
+  std::string error;
+  REQUIRE_MESSAGE(server.start(0, handler, error), error);
+  const auto hello = [&](WebSocket& ws) {
+    REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, ws, error), error);
+    REQUIRE(ws.send_text("hi"));
+    Message m;
+    REQUIRE(ws.receive(m, 10000));
+    CHECK(m.data == "ok");
+    return handler.last.load();
+  };
+
+  // A connection that reads: what is posted to it arrives, in order.
+  WebSocket reader;
+  const u64 id = hello(reader);
+  CHECK(server.post(id, "first", 4) == Post::Queued);
+  CHECK(server.post(id, "second", 4) == Post::Queued);
+  Message m;
+  REQUIRE(reader.receive(m, 10000));
+  CHECK(m.data == "first");
+  REQUIRE(reader.receive(m, 10000));
+  CHECK(m.data == "second");
+  CHECK(server.post(id + 1000, "nobody", 4) == Post::Gone);
+
+  // A connection that never reads: its writer blocks once the socket's buffers are full, the
+  // outbox fills to the bound, and a post is then refused at once rather than queued or waited on.
+  WebSocket stalled;
+  const u64 sid = hello(stalled);
+  const std::string chunk(256 * 1024, 'x');
+  // Posted until the outbox has stayed full for a fifth of a second: the writer is then blocked in
+  // its send, not merely behind.
+  u32 queued = 0;
+  u32 full_in_a_row = 0;
+  while (queued < 4000 && full_in_a_row < 10) {
+    if (server.post(sid, chunk, 2) == Post::Queued) {
+      ++queued;
+      full_in_a_row = 0;
+    } else {
+      ++full_in_a_row;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  CHECK(full_in_a_row == 10);
+  MESSAGE("a stalled connection took " << queued
+                                       << " posts of 256 KB before its outbox of 2 stayed full");
+  // The other connection is served all the while.
+  REQUIRE(reader.send_text("again"));
+  REQUIRE(reader.receive(m, 10000));
+  CHECK(m.data == "ok");
+  reader.close(close_code::k_normal, "done");
+
+  // Stopping with the stalled writer blocked in its send returns: the send is woken (shutdown, and
+  // on Windows the cancel), the writer joined, and every connection's end reported to the handler.
+  server.stop();
+  CHECK(server.connections() == 0);
+  CHECK(handler.closed_count.load() == 2);
 }

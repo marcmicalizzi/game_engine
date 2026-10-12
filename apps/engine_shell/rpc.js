@@ -3,6 +3,8 @@
 // closes, with a growing pause, and every listener hears the state change so the page can say so.
 // A request made while the socket is down waits for it to come back rather than failing at once;
 // one that was in flight when it went down is rejected, since the host may or may not have run it.
+// A message from the host with a method and no id is a notification — an event the page subscribed
+// to (`session.subscribe`; protocol.md, "Events") — and is handed to listeners of "notification".
 
 export class RpcError extends Error {
   constructor(error) {
@@ -88,6 +90,10 @@ export class Rpc extends EventTarget {
     }
     const answers = Array.isArray(message) ? message : [message];
     for (const answer of answers) {
+      if (answer && answer.id === undefined && typeof answer.method === "string") {
+        this.dispatchEvent(new CustomEvent("notification", { detail: answer }));
+        continue;
+      }
       const entry = this.pending.get(answer.id);
       if (!entry) continue;
       this.pending.delete(answer.id);

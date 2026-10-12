@@ -20,6 +20,7 @@
 #include <foundation/net/websocket.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,6 +46,16 @@ class ServerHandler {
     (void)bytes;
     return false;
   }
+  // The WebSocket connection `connection` has ended (after its last `message`, before its socket is
+  // closed): whatever the handler keeps per connection — the protocol's subscriptions — goes.
+  virtual void closed(u64 connection) { (void)connection; }
+};
+
+// What `Server::post` did with a message.
+enum class Post : u8 {
+  Queued,  // in the connection's outbox; its writer sends it in order
+  Full,    // the outbox already held `bound` messages: not queued
+  Gone,    // no open WebSocket connection by that id
 };
 
 class Server {
@@ -68,16 +79,35 @@ class Server {
   // Connections open now.
   u32 connections() const;
 
+  // **Pushing to a connection** (docs/subsystems/net.md): queues `text` as one text message on
+  // WebSocket connection `connection`, to be sent after everything queued before it by a writer
+  // thread of that connection's own — started on its first post — so the caller never waits on the
+  // socket. A connection whose peer has stopped reading fills its socket's buffers, then its
+  // outbox; past `bound` messages a post is refused (`Full`) rather than queued or waited on, and
+  // the caller decides what a refused message means (the protocol counts it and says so in the next
+  // one). Safe from any thread; never waits on a peer.
+  Post post(u64 connection, std::string text, u32 bound);
+
  private:
   struct Connection {
     u64 id = 0;
     std::intptr_t handle = Socket::k_invalid;  // for stop(), valid while `done` is false
     std::atomic<bool> done{false};
     std::thread thread;
+    // The outbox (post), guarded by `out_mutex`. `ws` is the connection's WebSocket while its
+    // message loop runs, and null before and after, which is what makes a post `Gone`.
+    std::mutex out_mutex;
+    std::condition_variable out_ready;
+    Vector<std::string> outbox;
+    u32 out_head = 0;  // the next message to send; the outbox is cleared when it catches up
+    bool out_stop = false;
+    WebSocket* ws = nullptr;
+    std::thread writer;
   };
 
   void listen_loop();
   void serve(Connection& connection, Socket socket);
+  void write_loop(Connection& connection);
   void reap(bool all);
 
   Listener listener_;

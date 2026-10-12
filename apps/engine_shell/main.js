@@ -3,6 +3,13 @@
 // protocol call, and after one, every panel asks the host again. Nothing here reads a file or
 // knows a type; the page's only source of truth is the host it was served from.
 //
+// The page learns of changes from **events** (`session.subscribe`; protocol.md, "Events"): on every
+// connect it subscribes to the session's journal, selection, scene and session events, and a
+// journal event — anyone's commit, undo or redo: this page's, an agent's through engine-mcp, the
+// editor's viewport — is what refreshes the panels, a selection event what moves the outliner's
+// highlight. When the host cannot push (an older host), the page polls `session.info` every ten
+// seconds instead, and the status strip's "events" badge says which it is doing.
+//
 // The URL carries the host's token and, when the host was started with --doc, the session:
 // http://127.0.0.1:<port>/?token=<token>&session=<id>, which is the `shell` the host printed.
 import { Console } from "./console.js";
@@ -37,6 +44,8 @@ class App extends EventTarget {
     this.viewport = this.embedded ? new EmbeddedViewport(this) : new Viewport(this);
     this.refreshing = null;
     this.refreshAgain = false;
+    // True while the host pushes this page its events; false polls (see the badge).
+    this.subscribed = false;
   }
 
   start() {
@@ -58,22 +67,59 @@ class App extends EventTarget {
       e.preventDefault();
       this.step(e.shiftKey ? "doc.redo" : "doc.undo");
     });
-    // No subscriptions yet (roadmap A2): the page looks at the session's journal length every two
-    // seconds while it is visible, so an edit an agent or stdin makes shows up here too. Embedded in
-    // the editor it also reads `editor.state` — the selection a click in the native viewport made —
-    // and does so four times as often, because a person who clicked the viewport is looking at the
-    // outliner for the answer: one small read-only call on loopback, which the editor answers
-    // between two of its frames.
-    if (this.embedded) {
-      let ticks = 0;
-      setInterval(() => {
-        this.pollEditor();
-        if (++ticks % 4 === 0) this.poll();
-      }, 500);
-    } else {
-      setInterval(() => this.poll(), 2000);
-    }
+    // Events drive the panels; the poll is the fallback for a host that cannot push, and looks
+    // only while no subscription stands (`poll` returns at once otherwise).
+    this.rpc.addEventListener("notification", (e) => this.onEvent(e.detail));
+    setInterval(() => this.poll(), 10000);
     this.properties.refresh();
+  }
+
+  // Subscribes this connection to the session's events, on every (re)connect: a subscription is
+  // the connection's and goes with it.
+  async subscribe() {
+    this.subscribed = false;
+    if (this.session) {
+      try {
+        await this.rpc.call("session.subscribe", {
+          session: this.session,
+          kinds: ["journal", "selection", "scene", "session"],
+        });
+        this.subscribed = true;
+      } catch (err) {
+        this.eventsWhy = err && err.message ? err.message : String(err);
+      }
+    }
+    this.status();
+  }
+
+  onEvent(message) {
+    const p = message.params || {};
+    if (p.session && p.session !== this.session) return;
+    // A full queue dropped some: what was missed is unknown, so everything is read again.
+    if (p.dropped) {
+      this.changed();
+      return;
+    }
+    switch (message.method) {
+      case "event.journal":
+        if (p.journal_length !== this.journalLength || p.undo_position !== this.undoPosition) {
+          this.changed();
+        }
+        break;
+      case "event.selection":
+        this.select(p.selected || "", true);
+        break;
+      case "event.scene":
+        if (this.viewport.onScene) this.viewport.onScene(p);
+        break;
+      case "event.session":
+        if (p.change === "closed") this.reportError({ message: `session ${p.session} was closed` });
+        else if (p.change === "lease_acquired") toast(`${p.actor} leased ${p.layer || "a layer"}`);
+        else if (p.change === "lease_released") toast(`${p.actor} released a lease on ${p.layer || "a layer"}`);
+        break;
+      default:
+        break;
+    }
   }
 
   call(method, params) {
@@ -89,6 +135,9 @@ class App extends EventTarget {
       if (this.started) toast("Reconnected to the host");
       this.started = true;
       this.init();
+    } else {
+      this.subscribed = false;
+      this.status();
     }
   }
 
@@ -115,6 +164,7 @@ class App extends EventTarget {
       this.engine = info;
       this.identity = { actor: roles.actor, role: roles.role || roles.default_role };
       this.status();
+      await this.subscribe();
       await this.useSession(this.session, true);
     } catch {
       /* reported */
@@ -123,7 +173,9 @@ class App extends EventTarget {
 
   async useSession(session, force = false) {
     if (!force && session === this.session) return;
+    const switched = session !== this.session;
     this.session = session;
+    if (switched && this.rpc.state === "open") await this.subscribe();
     if (session) {
       const url = new URL(location.href);
       url.searchParams.set("session", session);
@@ -174,7 +226,9 @@ class App extends EventTarget {
     return this.refreshAll(true);
   }
 
+  // The fallback: only while the host pushes nothing (the badge says "poll 10 s").
   async poll() {
+    if (this.subscribed) return;
     if (!this.session || this.rpc.state !== "open" || document.visibilityState !== "visible") return;
     if (this.refreshing) return;
     try {
@@ -182,18 +236,6 @@ class App extends EventTarget {
       if (info.journal_length !== this.journalLength || info.undo_position !== this.undoPosition) {
         await this.changed();
       }
-    } catch {
-      /* the next look will say */
-    }
-  }
-
-  // Embedded: the selection the native viewport made, which the page did not.
-  async pollEditor() {
-    if (this.rpc.state !== "open" || document.visibilityState !== "visible") return;
-    try {
-      const state = await this.rpc.call("editor.state", null);
-      const id = state.selected || "";
-      if (id !== this.selection) this.select(id, true);
     } catch {
       /* the next look will say */
     }
@@ -226,7 +268,9 @@ class App extends EventTarget {
         return false;
       }
       this.clearError();
-      await this.changed();
+      // Subscribed, the commit's own journal event refreshes the panels (one refresh, whoever made
+      // the change); without events the page refreshes now.
+      if (!this.subscribed) await this.changed();
       return true;
     } catch {
       return false;
@@ -238,7 +282,7 @@ class App extends EventTarget {
     try {
       const result = await this.call(method, { session: this.session });
       if (result.stepped === 0) toast(method === "doc.undo" ? "Nothing to undo" : "Nothing to redo");
-      await this.changed();
+      if (!this.subscribed) await this.changed();
     } catch {
       /* reported */
     }
@@ -273,6 +317,13 @@ class App extends EventTarget {
     item("st-actor", "actor", this.identity.actor || "—");
     item("st-role", "role", this.identity.role || "unrestricted");
     item("st-token", "token", this.token ? "present" : "missing");
+    // Which way the page learns of changes: pushed events, or the ten-second poll and why.
+    const events = $("st-events");
+    events.dataset.mode = this.subscribed ? "events" : "poll";
+    item("st-events", "updates", this.subscribed ? "events" : "poll 10 s");
+    events.title = this.subscribed
+      ? "The host pushes this page every commit, undo, redo, selection and scene change as it happens"
+      : `No subscription: the page asks the host every ten seconds${this.eventsWhy ? ` (${this.eventsWhy})` : ""}`;
   }
 }
 

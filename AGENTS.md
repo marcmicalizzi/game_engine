@@ -82,6 +82,7 @@ build/msvc-debug/bin/engine-host --listen 127.0.0.1:0 --doc <dir> --actor <name>
 build/msvc-debug/bin/engine-editor --doc <dir>                                  # one window: the web shell in WebView2 beside the live Vulkan viewport, both clients of the editor's in-process listener (--no-shell: the viewport alone)
 build/msvc-debug/bin/engine-cli gpu.adapters                                   # Vulkan devices, extensions, capability tier
 build/msvc-debug/bin/engine-mcp --workspace <dir> --actor <name>               # MCP server over stdio for agents' clients; starts its own engine-host
+build/msvc-debug/bin/engine-mcp --connect-from <host.json> --actor <name>      # the same, attached to a running engine-editor or engine-host --listen (its first stdout line saved); or --connect ws://127.0.0.1:<port>/ --token <t>
 build/msvc-debug/bin/engine-cli --console script.luau -- ./world                # a Luau script against one host: engine.doc.apply{...}, engine.call, print; exit 0/1/2
 build/msvc-debug/bin/engine-host --console --script script.luau -- ./world      # the same in the host itself (stdin without --script); every call a request
 ```

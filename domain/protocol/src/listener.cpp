@@ -2,6 +2,7 @@
 #include <core/json/json.h>
 #include <core/platform/random.h>
 #include <domain/protocol/listener.h>
+#include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
 
 namespace engine::protocol {
@@ -21,6 +22,27 @@ bool same_secret(std::string_view a, std::string_view b) noexcept {
 
 }  // namespace
 
+Listener::Listener(Dispatcher& dispatcher, std::mutex& dispatch_lock, CaptureSource* captures)
+    : dispatcher_(&dispatcher), lock_(&dispatch_lock), captures_(captures) {
+  Context& ctx = dispatcher.context();
+  ctx.events = &events_;
+  if (ctx.sessions != nullptr) ctx.sessions->set_events(&events_);
+}
+
+Listener::~Listener() {
+  stop();
+  Context& ctx = dispatcher_->context();
+  if (ctx.events == &events_) ctx.events = nullptr;
+  if (ctx.sessions != nullptr && ctx.sessions->events() == &events_) {
+    ctx.sessions->set_events(nullptr);
+  }
+}
+
+void Listener::stop() {
+  events_.attach(nullptr);
+  server_.stop();
+}
+
 bool Listener::start(u16 port, std::string shell_dir, std::string session, std::string& error) {
   u8 secret[16] = {};
   if (!platform::secure_random(std::span<u8>(secret, sizeof(secret)))) {
@@ -30,7 +52,10 @@ bool Listener::start(u16 port, std::string shell_dir, std::string session, std::
   token_ = base64_encode(std::span<const u8>(secret, sizeof(secret)), Base64Alphabet::Url, false);
   shell_dir_ = std::move(shell_dir);
   session_ = std::move(session);
-  return server_.start(port, *this, error);
+  events_.attach(this);
+  if (server_.start(port, *this, error)) return true;
+  events_.attach(nullptr);
+  return false;
 }
 
 std::string Listener::shell_url() const {
@@ -163,12 +188,28 @@ bool Listener::accept(const net::HttpRequest& request, u16& close, std::string& 
   return true;
 }
 
-std::string Listener::message(u64, std::string_view text) {
+std::string Listener::message(u64 connection, std::string_view text) {
   // The one lock the host's own loop takes too: a request over the socket and a line on stdin (or
   // the editor's frame) go through the same dispatcher, one at a time, with the same attribution,
   // roles and journal.
   std::lock_guard<std::mutex> lock(*lock_);
-  return dispatcher_->dispatch_text(text);
+  // Which connection this request came on, for `session.subscribe`, and only for this request.
+  Context& ctx = dispatcher_->context();
+  ctx.connection = connection;
+  std::string reply = dispatcher_->dispatch_text(text);
+  ctx.connection = 0;
+  return reply;
+}
+
+void Listener::closed(u64 connection) { events_.forget(connection); }
+
+EventTransport::Post Listener::post(u64 connection, std::string text, u32 bound) {
+  switch (server_.post(connection, std::move(text), bound)) {
+    case net::Post::Queued: return Post::Queued;
+    case net::Post::Full: return Post::Full;
+    case net::Post::Gone: break;
+  }
+  return Post::Gone;
 }
 
 }  // namespace engine::protocol

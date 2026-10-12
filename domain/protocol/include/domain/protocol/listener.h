@@ -24,9 +24,17 @@
 // from using DNS rebinding to reach the port. This is loopback and a shared secret, **not
 // authentication of a user**: whoever holds the token is whoever the roles file says a call is, as
 // on stdin (protocol.md, "Roles, leases and proposals").
+//
+// **Events.** The listener owns the host's subscriptions (events.h) and is their transport: it
+// wires them into the dispatcher's context and its session manager when it is made, tells each
+// dispatch which connection it came on (so `session.subscribe` knows its subscriber), posts each
+// event to the subscriber's connection, where the server's writer for that connection sends it
+// outside every lock (foundation/net/server.h, `Server::post`), and forgets a connection's
+// subscriptions when it closes. A host that never starts the listener publishes nothing.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <domain/protocol/events.h>
 #include <domain/protocol/rpc.h>
 #include <foundation/net/server.h>
 
@@ -47,20 +55,20 @@ class CaptureSource {
   virtual bool capture(std::string_view id, std::string_view part, net::HttpResponse& response) = 0;
 };
 
-class Listener final : public net::ServerHandler {
+class Listener final : public net::ServerHandler, public EventTransport {
  public:
-  // `dispatch_lock` is the host's own: every request runs under it. `captures` may be null.
-  Listener(Dispatcher& dispatcher, std::mutex& dispatch_lock,
-           CaptureSource* captures = nullptr) noexcept
-      : dispatcher_(&dispatcher), lock_(&dispatch_lock), captures_(captures) {}
+  // `dispatch_lock` is the host's own: every request runs under it. `captures` may be null. The
+  // dispatcher's context gets the listener's subscriptions (`events`), and so does its session
+  // manager, for as long as the listener lives.
+  Listener(Dispatcher& dispatcher, std::mutex& dispatch_lock, CaptureSource* captures = nullptr);
   ENGINE_NON_COPYABLE(Listener);
-  ~Listener() override { stop(); }
+  ~Listener() override;
 
   // Makes the token and starts serving on 127.0.0.1:`port` (0: a free port). `shell_dir` is the
   // directory the shell's static files are served from (empty or missing: `GET /` is a 404 that
   // says so); `session` is the session the host opened at start, named in the shell's URL.
   bool start(u16 port, std::string shell_dir, std::string session, std::string& error);
-  void stop() { server_.stop(); }
+  void stop();
   bool running() const noexcept { return server_.port() != 0; }
 
   u16 port() const noexcept { return server_.port(); }
@@ -73,9 +81,15 @@ class Listener final : public net::ServerHandler {
   // {"listen":"ws://127.0.0.1:<port>/","token":"...","session":"...","shell":"http://..."}.
   std::string announcement() const;
 
+  // The host's subscriptions: what engine-editor publishes its selection through, and what a
+  // handler reaches as `Context::events`.
+  Subscriptions& events() noexcept { return events_; }
+
   void http(const net::HttpRequest& request, net::HttpResponse& response) override;
   bool accept(const net::HttpRequest& request, u16& close, std::string& reason) override;
   std::string message(u64 connection, std::string_view text) override;
+  void closed(u64 connection) override;
+  Post post(u64 connection, std::string text, u32 bound) override;
 
  private:
   bool host_allowed(const net::HttpRequest& request) const;
@@ -86,6 +100,7 @@ class Listener final : public net::ServerHandler {
   Dispatcher* dispatcher_;
   std::mutex* lock_;
   CaptureSource* captures_;
+  Subscriptions events_;
   net::Server server_;
   std::string token_;
   std::string shell_dir_;

@@ -470,7 +470,54 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
     return false;
   }
   if (!persist(error)) return false;
+  publish_journal("commit", static_cast<u32>(doc_.journal().size() - 1));
   return note_proposal_touches(doc_.journal().back(), error);
+}
+
+void Session::publish_journal(std::string_view action, u32 index) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Journal, id_)) return;
+  if (index >= doc_.journal().size()) return;
+  const doc::Patch& patch = doc_.journal()[index];
+  JournalEvent event;
+  event.session = id_;
+  event.action = std::string(action);
+  event.index = index;
+  event.layer = patch.layer;
+  event.attribution = patch.attribution;
+  // Each record once, in the order the commands name them: a patch is short, and the ids are what
+  // a subscriber reads again, so a linear check is the right cost.
+  u32 total = 0;
+  for (const doc::Command& c : patch.forward) {
+    bool seen = false;
+    for (const Id128& id : event.ids) {
+      if (id == c.id) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    ++total;
+    if (event.ids.size() < k_event_max_ids) event.ids.push_back(c.id);
+  }
+  event.ids_total = total;
+  event.revision = doc_.revision();
+  event.journal_length = static_cast<u32>(doc_.journal().size());
+  event.undo_position = manifest_.undo_position;
+  events_->publish(EventKind::Journal, id_, schema::to_json(event));
+}
+
+void Session::publish_session(std::string_view change, const LeaseInfo* lease) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
+  SessionChangeEvent event;
+  event.session = id_;
+  event.change = std::string(change);
+  event.path = dir_;
+  if (lease != nullptr) {
+    event.lease = lease->id;
+    event.actor = lease->actor;
+    event.layer = lease->layer;
+  }
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
 }
 
 bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& error) {
@@ -585,16 +632,21 @@ bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& 
                    RpcError& error) {
   u32 done = 0;
   const i64 now = time::wall_unix_ms();
+  // The patches stepped, in order, for their events once the step is saved.
+  Vector<u32> stepped;
   const auto finish = [&](bool ok) {
     result.position = manifest_.undo_position;
     result.stepped = done;
     // Whatever stepped before a refusal stays stepped, and is saved.
     if (done > 0) {
       RpcError save_error;
-      if (!persist(save_error) && ok) {
+      if (!persist(save_error)) {
+        if (!ok) return false;
         error = std::move(save_error);
         return false;
       }
+      for (const u32 at : stepped)
+        publish_journal(backwards ? "undo" : "redo", at);
     }
     return ok;
   };
@@ -627,6 +679,7 @@ bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& 
       return finish(false);
     }
     manifest_.undo_position = backwards ? at : at + 1;
+    stepped.push_back(at);
     ++done;
   }
   return finish(true);
@@ -835,6 +888,7 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
   const u64 id = leases_.add(std::move(wanted));
   if (!save_leases(error)) return false;
   out = *leases_.find(id);
+  publish_session("lease_acquired", &out);
   return true;
 }
 
@@ -884,7 +938,9 @@ bool Session::release_lease(u64 lease, const Caller& caller, i64 now_ms, LeaseIn
   out = *held;
   leases_.remove(lease);
   (void)leases_.expire(now_ms);
-  return save_leases(error);
+  if (!save_leases(error)) return false;
+  publish_session("lease_released", &out);
+  return true;
 }
 
 bool Session::list_leases(std::string_view layer, std::string_view actor, i64 now_ms,
@@ -1277,8 +1333,16 @@ Session* SessionManager::open(const SessionOpenParams& params, RpcError& error) 
     return nullptr;
   }
   ++next_id_;
+  session->set_events(events_);
   sessions_.push_back(std::move(session));
+  sessions_.back()->publish_session("opened");
   return sessions_.back().get();
+}
+
+void SessionManager::set_events(Subscriptions* events) noexcept {
+  events_ = events;
+  for (const auto& s : sessions_)
+    s->set_events(events);
 }
 
 Session* SessionManager::find(std::string_view id) noexcept {
@@ -1300,6 +1364,7 @@ Session* SessionManager::require(std::string_view id, RpcError& error) noexcept 
 bool SessionManager::close(std::string_view id) {
   for (u32 i = 0; i < sessions_.size(); ++i) {
     if (sessions_[i]->id() == id) {
+      sessions_[i]->publish_session("closed");
       sessions_.erase_at(i);
       return true;
     }

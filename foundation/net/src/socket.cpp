@@ -154,6 +154,10 @@ void shutdown_socket(std::intptr_t handle) noexcept {
   if (handle == Socket::k_invalid) return;
 #if ENGINE_PLATFORM_WINDOWS
   (void)::shutdown(native_of(handle), SD_BOTH);
+  // shutdown wakes a thread blocked in recv on Windows, but not one blocked in send to a peer that
+  // stopped reading (a stalled subscriber, Server::post); cancelling the handle's pending I/O does,
+  // for any thread. Linux's shutdown wakes both.
+  (void)::CancelIoEx(reinterpret_cast<HANDLE>(native_of(handle)), nullptr);
 #else
   (void)::shutdown(native_of(handle), SHUT_RDWR);
 #endif

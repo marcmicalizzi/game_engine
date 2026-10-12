@@ -8,6 +8,7 @@
 #include <core/containers/vector.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
+#include <domain/protocol/events.h>
 #include <domain/protocol/leases.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/proposals.h>
@@ -80,6 +81,12 @@ class Session {
   SessionInfo info() const;
   void layers(Vector<LayerInfo>& out) const;
 
+  // Where this session's `journal` and `session` events go (events.h); null publishes none. Set by
+  // the SessionManager that opened it.
+  void set_events(Subscriptions* events) noexcept { events_ = events; }
+  // `event.session` for this session: "opened", "closed", or a lease's change with the lease.
+  void publish_session(std::string_view change, const LeaseInfo* lease = nullptr) const;
+
   // --- leases (leases.h) ---------------------------------------------------------------------
   // Every change is written to `leases.json` before the answer. `now_ms` is the host's clock.
 
@@ -125,6 +132,9 @@ class Session {
   bool clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
                    RpcError& error);
 
+  // `event.journal` for the patch at `index`, after it was committed, undone or redone and saved.
+  void publish_journal(std::string_view action, u32 index) const;
+
   bool load_side_files(RpcError& error);
   bool save_leases(RpcError& error);
   bool save_proposals(RpcError& error);
@@ -137,6 +147,7 @@ class Session {
   doc::DocumentManifest manifest_;
   LeaseTable leases_;
   ProposalTable proposals_;
+  Subscriptions* events_ = nullptr;
 };
 
 class SessionManager {
@@ -152,6 +163,10 @@ class SessionManager {
   Session* require(std::string_view id, RpcError& error) noexcept;
   bool close(std::string_view id);
   usize count() const noexcept { return sessions_.size(); }
+  // Where every session's events go (events.h): the sessions open now and every one opened later.
+  // A session opened or closed with events set publishes `event.session`.
+  void set_events(Subscriptions* events) noexcept;
+  Subscriptions* events() const noexcept { return events_; }
   std::span<const std::unique_ptr<Session>> sessions() const noexcept {
     return {sessions_.data(), sessions_.size()};
   }
@@ -161,6 +176,7 @@ class SessionManager {
   io::Vfs* vfs_;
   Vector<std::unique_ptr<Session>> sessions_;
   u32 next_id_ = 1;
+  Subscriptions* events_ = nullptr;
 };
 
 }  // namespace engine::protocol

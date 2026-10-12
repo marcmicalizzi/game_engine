@@ -8,7 +8,8 @@
 // at the display's rate, and the page speaks only when its layout changes.
 //
 // The same object stands where the slideshow's `Viewport` stands in main.js (`capture`, `load`,
-// `sync`), so nothing else in the shell knows which mode it is in.
+// `sync`), so nothing else in the shell knows which mode it is in. The selection a click in the
+// native viewport makes reaches the page as `event.selection` (main.js), not through this cell.
 import { $ } from "./dom.js";
 
 export class EmbeddedViewport {

@@ -6,7 +6,7 @@ engine_module(NAME protocol LAYER domain
   DEPS base containers ids json schema log time platform profiling tunables io schemas doc gfx
        hash net
   SOURCES src/rpc.cpp src/session.cpp src/methods.cpp src/policy.cpp src/leases.cpp
-          src/proposals.cpp src/policy_methods.cpp src/listener.cpp)
+          src/proposals.cpp src/policy_methods.cpp src/listener.cpp src/events.cpp)
 target_compile_definitions(engine_protocol PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 
 # Types the roles, leases and proposals tests and experiment E12 place in a world: a prop that

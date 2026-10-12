@@ -16,6 +16,9 @@
 #include <foundation/net/http.h>
 #include <foundation/net/socket.h>
 
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -91,14 +94,35 @@ struct Message {
   std::string data;
 };
 
+// **One reader, any number of senders.** `receive` belongs to one thread; every send — a message,
+// the pong `receive` answers a ping with, a close — goes out under a lock of the connection's own,
+// so a second thread may push messages while the first is blocked reading (`Server::post`, the
+// protocol's events; docs/subsystems/net.md, "Pushing to a connection"). A frame is never
+// interleaved with another, and nothing is sent after the close frame.
 class WebSocket {
  public:
   WebSocket() noexcept = default;
   // A connection whose handshake is done. `leftover` is what arrived after the handshake's head.
-  WebSocket(Socket socket, Role role, std::string leftover = {}) noexcept
-      : socket_(std::move(socket)), role_(role), buffer_(std::move(leftover)) {}
-  WebSocket(WebSocket&&) noexcept = default;
-  WebSocket& operator=(WebSocket&&) noexcept = default;
+  WebSocket(Socket socket, Role role, std::string leftover = {})
+      : socket_(std::move(socket)),
+        role_(role),
+        buffer_(std::move(leftover)),
+        send_lock_(std::make_unique<std::mutex>()) {}
+  WebSocket(WebSocket&& other) noexcept { *this = std::move(other); }
+  WebSocket& operator=(WebSocket&& other) noexcept {
+    if (this != &other) {
+      socket_ = std::move(other.socket_);
+      role_ = other.role_;
+      buffer_ = std::move(other.buffer_);
+      max_message_ = other.max_message_;
+      close_sent_.store(other.close_sent_.load());
+      closed_.store(other.closed_.load());
+      close_code_ = other.close_code_;
+      close_reason_ = std::move(other.close_reason_);
+      send_lock_ = std::move(other.send_lock_);
+    }
+    return *this;
+  }
   WebSocket(const WebSocket&) = delete;
   WebSocket& operator=(const WebSocket&) = delete;
 
@@ -116,7 +140,8 @@ class WebSocket {
   bool send_binary(std::string_view bytes) { return send_message(Opcode::Binary, bytes); }
   bool send_ping(std::string_view payload = {}) { return send_frame(Opcode::Ping, payload, true); }
   // One message as frames of at most `fragment` bytes, with a ping between every two when
-  // `ping_between`: what the tests use to prove reassembly, and nothing else needs.
+  // `ping_between`: what the tests use to prove reassembly, and nothing else needs. Each frame
+  // takes the send lock on its own, so it is not for a connection another thread also sends on.
   bool send_fragmented(Opcode opcode, std::string_view data, usize fragment, bool ping_between);
   // Sends a close frame with `code` and `reason` (at most 123 bytes of it), once, and waits up to
   // `linger_ms` for the peer's close before the socket is shut. `close_code()` is then `code`.
@@ -138,10 +163,13 @@ class WebSocket {
   Role role_ = Role::Server;
   std::string buffer_;
   u64 max_message_ = u64{64} << 20;
-  bool close_sent_ = false;
-  bool closed_ = false;
+  // Atomic because a sender on another thread reads them; written by the reading thread.
+  std::atomic<bool> close_sent_{false};
+  std::atomic<bool> closed_{false};
   u16 close_code_ = close_code::k_abnormal;
   std::string close_reason_;
+  // Allocated with the socket, so a default WebSocket (which can send nothing) costs nothing.
+  std::unique_ptr<std::mutex> send_lock_;
 };
 
 // A client's opening handshake on a fresh loopback connection: GET `target` (path and query) with

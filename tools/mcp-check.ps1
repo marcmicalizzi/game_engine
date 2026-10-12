@@ -39,8 +39,19 @@
 
   Exit codes: 0 every step passed or skipped, 1 a step failed, 2 engine-mcp could not be started.
 
+  -Connect runs the same loop with the bridge attached to a running host (roadmap A6): it starts
+  `engine-host --listen 127.0.0.1:0 --doc <scratch>/world --create` (the engine-host beside
+  engine-mcp), saves the host's first stdout line and starts `engine-mcp --connect-from` it. A
+  second, plain WebSocket client (.NET's ClientWebSocket, nothing of the bridge's) subscribes to
+  the session's journal before the loop and, after the edits, must have been pushed an
+  `event.journal` for each of the bridge's commits and must read the bridge's entries — actor,
+  rationale — in `doc.journal` over its own connection: the agent and the owner are on one
+  session of one host. The bridge's MCP client subscribes to the journal resource and must be sent
+  `notifications/resources/updated` for it. The roles steps skip: an attached bridge is governed by
+  the host's roles, and the spawned run covers them.
+
       pwsh tools/mcp-check.ps1 [-Mcp build/msvc-debug/bin/engine-mcp.exe] [-Scratch <dir>]
-                               [-Report <file.json>] [-NoRender] [-KeepScratch]
+                               [-Report <file.json>] [-NoRender] [-KeepScratch] [-Connect]
 
   docs/subsystems/apps.md ("The conformance client") has what the first run found.
 #>
@@ -58,7 +69,9 @@ param(
   [double]$CallTimeout = 300,
   [double]$RenderTimeout = 2700,
   [switch]$NoRender,
-  [switch]$KeepScratch
+  [switch]$KeepScratch,
+  # Attach the bridge to a running engine-host --listen instead of letting it start one.
+  [switch]$Connect
 )
 
 $ErrorActionPreference = 'Stop'
@@ -102,7 +115,7 @@ function Start-Mcp([string]$label, [string[]]$extra) {
     $psi.FileName = $Mcp
   }
   $ws = Join-Path $Scratch 'workspace'
-  foreach ($a in @('--workspace', $ws, '--actor', 'mcp-check') + $extra) { $psi.ArgumentList.Add($a) }
+  foreach ($a in @('--workspace', $ws, '--actor', 'mcp-check') + @($extra | Where-Object { $_ })) { $psi.ArgumentList.Add($a) }
   $psi.UseShellExecute = $false
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
@@ -259,6 +272,70 @@ function Render-Result($call, [string]$what) {
 
 function Rationale([string]$why) { return @{ rationale = $why } }
 
+# ---- -Connect: the running host, and a second client on it ----------------------------------
+
+$hostProcess = $null
+$watch = $null
+function New-WsToken { [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(120)).Token }
+
+# One whole text message from the plain client, or $null when the connection closed.
+function Receive-Ws($ws) {
+  $buffer = [byte[]]::new(65536)
+  $stream = [IO.MemoryStream]::new()
+  while ($true) {
+    $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buffer), (New-WsToken)).GetAwaiter().GetResult()
+    if ($r.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { return $null }
+    $stream.Write($buffer, 0, $r.Count)
+    if ($r.EndOfMessage) { break }
+  }
+  return $utf8.GetString($stream.ToArray())
+}
+
+# A request on the plain client; the events pushed meanwhile are kept, with when they came.
+function Invoke-Ws($method, $params) {
+  $id = $watch.NextId; $watch.NextId++
+  $line = [ordered]@{ jsonrpc = '2.0'; id = $id; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 32
+  $bytes = $utf8.GetBytes($line)
+  $null = $watch.Ws.SendAsync([ArraySegment[byte]]::new($bytes), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, (New-WsToken)).GetAwaiter().GetResult()
+  while ($true) {
+    $text = Receive-Ws $watch.Ws
+    if ($null -eq $text) { throw "the host closed the plain client's connection" }
+    $m = $text | ConvertFrom-Json -Depth 64
+    if ($null -eq (Get-Prop $m 'id')) { $watch.Events.Add([pscustomobject]@{ At = $watch.Clock.Elapsed.TotalMilliseconds; Message = $m }); continue }
+    return $m
+  }
+}
+
+if ($Connect) {
+  $hostExe = Join-Path (Split-Path -Parent $Mcp) $(if ($IsWindows) { 'engine-host.exe' } else { 'engine-host' })
+  if (-not (Test-Path -LiteralPath $hostExe)) {
+    Write-Host "mcp-check: -Connect needs engine-host beside engine-mcp ($hostExe)"
+    exit 2
+  }
+  $psi = [Diagnostics.ProcessStartInfo]::new($hostExe)
+  foreach ($a in @('--listen', '127.0.0.1:0', '--doc', (Join-Path $Scratch 'world'), '--create', '--actor', 'owner')) { $psi.ArgumentList.Add($a) }
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $hostProcess = [Diagnostics.Process]::Start($psi)
+  $hostErr = $hostProcess.StandardError.ReadToEndAsync()
+  $announcementLine = $hostProcess.StandardOutput.ReadLine()
+  $announcementFile = Join-Path $Scratch 'host.json'
+  [IO.File]::WriteAllText($announcementFile, "$announcementLine`n", $utf8)
+  $announcement = $announcementLine | ConvertFrom-Json
+  $null = $announcement.listen -match ':(\d+)/$'
+  $watch = @{ Ws = [System.Net.WebSockets.ClientWebSocket]::new(); NextId = 1
+              Events = [Collections.Generic.List[object]]::new(); Clock = [Diagnostics.Stopwatch]::StartNew()
+              Session = [string]$announcement.session; Port = [int]$Matches[1] }
+  $watch.Ws.Options.KeepAliveInterval = [TimeSpan]::Zero
+  $watch.Ws.Options.SetRequestHeader('X-Engine-Token', [string]$announcement.token)
+  $null = $watch.Ws.ConnectAsync([Uri]"ws://127.0.0.1:$($watch.Port)/", (New-WsToken)).GetAwaiter().GetResult()
+  $sub = Invoke-Ws 'session.subscribe' @{ session = $watch.Session; kinds = @('journal') }
+  if ($null -eq (Get-Prop $sub 'result')) { Write-Host "mcp-check: the plain client could not subscribe: $($sub | ConvertTo-Json -Compress -Depth 8)"; exit 2 }
+  Write-Host "mcp-check: attached to engine-host on 127.0.0.1:$($watch.Port), session $($watch.Session)"
+}
+
 # ---- the session ------------------------------------------------------------------------------
 
 $bridge = $null
@@ -267,7 +344,7 @@ try {
   Write-Host "mcp-check: $Mcp"
   Write-Host "mcp-check: scratch $Scratch"
   try {
-    $bridge = Start-Mcp 'agent' @()
+    $bridge = Start-Mcp 'agent' $(if ($Connect) { @('--connect-from', $announcementFile) } else { @() })
   } catch {
     Write-Host "mcp-check: engine-mcp did not start: $($_.Exception.Message)"
     exit 2
@@ -362,6 +439,12 @@ try {
     $ctx.Session = $s
     $ctx.Doc = $doc
     Assert ((Journal-Total $bridge $s) -eq 0) 'a new document has a journal'
+    if ($Connect) {
+      # The host's own document, joined rather than opened again.
+      Assert ($s -eq $watch.Session) "open_session made $s beside the host's $($watch.Session)"
+      $r = Send-Rpc $bridge 'resources/subscribe' @{ uri = "engine://session/$s/journal" }
+      Assert ($null -ne (Get-Prop $r.Answer 'result')) "resources/subscribe: $($r.Text)"
+    }
     "session $s"
   }
 
@@ -410,12 +493,47 @@ try {
     "object $id"
   }
 
+  if ($Connect) {
+    Step 'the shared session: a plain client on the host was pushed each commit and reads them' {
+      $s = Need 'Session'
+      # One more edit through the bridge, timed from the tools/call to the plain client's event.
+      $id = Need 'Object'
+      $sent = $watch.Clock.Elapsed.TotalMilliseconds
+      $before = $watch.Events.Count
+      $receive = $watch.Ws.ReceiveAsync([ArraySegment[byte]]::new([byte[]]::new(65536)), (New-WsToken))
+      $e = Invoke-Tool $bridge 'set_property' @{ session = $s; id = $id; name = 'generator'; value = 'shared'; attribution = (Rationale 'the owner should see this arrive') }
+      Assert-Ok $e 'set_property through the attached bridge'
+      $null = $receive.GetAwaiter().GetResult()
+      $ctx.EventMs = $watch.Clock.Elapsed.TotalMilliseconds - $sent
+      # What the shell does on that event: read the objects again, over its own connection.
+      $t0 = $watch.Clock.Elapsed.TotalMilliseconds
+      $objects = Invoke-Ws 'doc.objects' @{ session = $s }
+      $ctx.OutlinerMs = $watch.Clock.Elapsed.TotalMilliseconds - $t0
+      Assert ($null -ne (Get-Prop $objects 'result')) 'doc.objects over the plain client'
+      $journal = Invoke-Ws 'doc.journal' @{ session = $s }
+      $patches = @(Get-Prop $journal 'result.patches')
+      Assert ($patches.Count -ge 3) "the plain client reads $($patches.Count) patches"
+      $mine = @($patches | Where-Object { (Get-Prop $_ 'attribution.actor') -eq 'mcp-check' })
+      Assert ($mine.Count -eq $patches.Count) 'a patch on the shared session is not the bridge''s'
+      Assert ((Get-Prop $patches[-1] 'attribution.rationale') -eq 'the owner should see this arrive') 'the last rationale'
+      # Events: the receive above took one (the last commit's); the rest were kept by Invoke-Ws.
+      $pushed = @($watch.Events | Where-Object { (Get-Prop $_.Message 'method') -eq 'event.journal' })
+      Assert (($pushed.Count + 1) -ge $patches.Count) "pushed $($pushed.Count + 1) journal events for $($patches.Count) commits"
+      # And the bridge's own MCP client, which subscribed to the journal resource.
+      $updated = @($bridge.Stray | Where-Object { $_ -match 'notifications/resources/updated' -and $_ -match "engine://session/$s/journal" })
+      Assert ($updated.Count -ge 1) "the MCP client was sent no notifications/resources/updated (stray: $(@($bridge.Stray) -join ' | '))"
+      "{0} patches by the bridge read by a second client; event {1:N1} ms after the tools/call, doc.objects {2:N1} ms; {3} resources/updated to the MCP client" -f $patches.Count, $ctx.EventMs, $ctx.OutlinerMs, $updated.Count
+    }
+  }
+
   Step 'journal: every patch carries the actor and its rationale' {
     $s = Need 'Session'
     $j = Invoke-Tool $bridge 'journal' @{ session = $s }
     Assert-Ok $j 'journal'
     $patches = @(Get-Prop $j.Data 'patches')
-    Assert ($patches.Count -eq 2) "expected 2 patches, read $($patches.Count)"
+    # Attached, the shared-session step above made a third.
+    $expected = if ($Connect) { 3 } else { 2 }
+    Assert ($patches.Count -eq $expected) "expected $expected patches, read $($patches.Count)"
     $want = @('the conformance client needs an object to edit', 'a property change to undo later')
     for ($i = 0; $i -lt 2; $i++) {
       $a = Get-Prop $patches[$i] 'attribution'
@@ -512,7 +630,9 @@ try {
     $g = Invoke-Tool $bridge 'get' @{ session = $s; id = $id }
     Assert-Ok $g 'get'
     $value = Get-Prop $g.Data 'properties.generator'
-    Assert ($value -eq 'mcp-check-2') "after undo the property is '$value', not the base layer's 'mcp-check-2'"
+    # Attached, the shared-session step's edit is the base layer's latest.
+    $base = if ($Connect) { 'shared' } else { 'mcp-check-2' }
+    Assert ($value -eq $base) "after undo the property is '$value', not the base layer's '$base'"
   }
 
   Step 'close_session; the id names nothing afterwards' {
@@ -536,6 +656,7 @@ try {
   # ---- a role that may not write ------------------------------------------------------------
 
   Step 'under qa: read-only tools offered and answering, writing tools withheld and refused' {
+    if ($Connect) { Skip 'an attached bridge is governed by the host''s roles (--roles is refused with --connect); the spawned run covers them' }
     $doc = Need 'Doc'
     $qa = Start-Mcp 'qa' @('--roles', $Roles, '--role', 'qa')
     $ctx.QaServer = $qa
@@ -576,6 +697,7 @@ try {
   if ($ctx.ContainsKey('QaServer')) { $null = Stop-Mcp $ctx.QaServer; $ctx.Remove('QaServer') }
 
   Step 'under designer: a direct edit is refused by the host (1008) with a hint to propose' {
+    if ($Connect) { Skip 'an attached bridge is governed by the host''s roles; the spawned run covers them' }
     $doc = Need 'Doc'
     $id = Need 'Object'
     $designer = Start-Mcp 'designer' @('--roles', $Roles, '--role', 'designer')
@@ -594,6 +716,17 @@ try {
 } finally {
   if ($null -ne $bridge) { $null = Stop-Mcp $bridge }
   foreach ($k in @('QaServer', 'DesignerServer')) { if ($ctx.ContainsKey($k)) { $null = Stop-Mcp $ctx[$k] } }
+  if ($null -ne $watch) {
+    try { $null = $watch.Ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', (New-WsToken)).GetAwaiter().GetResult() } catch { }
+    $watch.Ws.Dispose()
+  }
+  if ($null -ne $hostProcess) {
+    # Our own child: its input closed ends it, as it ends every engine-host.
+    try { $hostProcess.StandardInput.Close() } catch { }
+    if (-not $hostProcess.WaitForExit(60000)) { $hostProcess.Kill($true) }
+    $log = if ($hostErr.Wait(5000)) { $hostErr.Result } else { '' }
+    [IO.File]::WriteAllText((Join-Path $Scratch 'host.stderr.log'), $log, $utf8)
+  }
 }
 
 # ---- the table --------------------------------------------------------------------------------
@@ -618,6 +751,9 @@ if ($ctx.ContainsKey('ListBytes')) {
 }
 if ($ctx.ContainsKey('QaListBytes')) {
   Write-Host ("tools/list under qa: {0} tools, {1} bytes" -f $ctx.QaTools, $ctx.QaListBytes)
+}
+if ($ctx.ContainsKey('EventMs')) {
+  Write-Host ("attached: an edit through the bridge reached a second client as event.journal {0:N1} ms after the tools/call; the outliner's doc.objects took {1:N1} ms more" -f $ctx.EventMs, $ctx.OutlinerMs)
 }
 
 $failed = @($steps | Where-Object Status -eq 'FAIL')

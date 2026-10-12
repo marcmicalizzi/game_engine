@@ -521,11 +521,11 @@ The engine as a server, its clients, and what agents and the human director work
 | # | Item | State | Depends on | Effort | Reasoning | Where |
 |---|---|---|---|---|---|---|
 | A1 | Engine protocol: JSON-RPC over stdio, sessions | done (ADR-0001, 834d4bc4) | D4 | L | routine | [protocol](subsystems/protocol.md) |
-| A2 | WebSocket transport, bulk channel, subscriptions | in progress (2026-10-10: the transport half, `engine-host --listen` on loopback with a session token, A36; the bulk channel and subscriptions open) | A1 | L | design | [06 §6.2](plan/06-agent-tooling.md#62-engine-protocol) |
+| A2 | WebSocket transport, bulk channel, subscriptions | in progress (2026-10-10: the transport half, `engine-host --listen` on loopback with a session token, A36; 2026-10-11: subscriptions done — `session.subscribe` pushes journal, selection, scene and session events as notifications with a bounded per-connection queue, [protocol](subsystems/protocol.md#events); the bulk channel open, since on loopback a kept capture's GET costs one round trip and no client yet needs more) | A1 | L | design | [06 §6.2](plan/06-agent-tooling.md#62-engine-protocol) |
 | A3 | One host shared by several clients | open | A2 | L | design | [06 §6.3](plan/06-agent-tooling.md#63-mcp-bridge) |
 | A4 | Protocol authentication | open | A3 | M | design | [protocol](subsystems/protocol.md#roles-leases-and-proposals) |
 | A5 | MCP bridge (engine-mcp) | done (589795a8) | A1 | L | design | [apps](subsystems/apps.md#engine-mcp-the-mcp-bridge) |
-| A6 | engine-mcp remainder | open | A5 | M | design | [apps](subsystems/apps.md#not-yet) |
+| A6 | engine-mcp remainder | open (2026-10-11: attaching to a running host done — `--connect`, events as `notifications/resources/updated`, [apps](subsystems/apps.md#attached-to-a-running-host---connect); progress notifications, prompts and a per-call deadline open) | A5 | M | design | [apps](subsystems/apps.md#not-yet) |
 | A7 | Day-one operations | done (9a34cca1) | A1 | L | routine | [protocol](subsystems/protocol.md#the-day-one-operations) |
 | A8 | render.capture, benchmark, compare, evaluate | done (da851a1a, eb0a4b47) | R34 | L | routine | [protocol](subsystems/protocol.md#methods-an-app-registers-and-render) |
 | A9 | More capture channels and a contact sheet | open | A8 | M | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
