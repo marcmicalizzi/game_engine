@@ -14,10 +14,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// `interface` and the COM base types, which WIN32_LEAN_AND_MEAN leaves out and the header below
+// needs first: kept in a block of its own, so the include sorter does not put it after.
+#include <objbase.h>
+
 // The runtime's controller interface, for `focus()`: the SDK's MIDL header, the same one the
 // library's implementation is built with (cmake/EngineWebview.cmake), declarations only.
 #include <WebView2.h>
-#include <objbase.h>  // `interface` and the COM base types, which WIN32_LEAN_AND_MEAN leaves out
 #endif
 
 #include <string>

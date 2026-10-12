@@ -583,6 +583,7 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
   return code;
 }
 
+#if defined(ENGINE_EDITOR_WEBVIEW)
 // The web view's profile for a person: beside the document, in `.editor/`, a directory that
 // ignores itself (its own `.gitignore` is "*"), so a document kept in git never picks up a
 // browser cache whatever the repository's own rules say. Inside a test's scratch directory when the
@@ -598,6 +599,7 @@ std::string webview_profile(const Options& options, const editor::EditorDocument
   }
   return dir + "/webview";
 }
+#endif
 
 // The protocol in process (editor_methods.h): a dispatcher over the editor's own session, with the
 // built-in methods every host has and the editor's three, and the listener over it.
