@@ -14,7 +14,7 @@
       },
       "p99": {
         "pct": 20,
-        "ms": 0.1
+        "ms": 0.4
       }
     },
     "cpu": {
@@ -168,57 +168,57 @@
       ],
       "gpu_ms": {
         "blas": {
-          "median": 0.202,
-          "p99": 0.441
+          "median": 0.205,
+          "p99": 0.266
         },
         "clas": {
-          "median": 0.225,
-          "p99": 0.489
+          "median": 0.227,
+          "p99": 0.234
         },
         "cull": {
-          "median": 0.098,
-          "p99": 0.295
+          "median": 0.1,
+          "p99": 0.104
         },
         "deform": {
           "median": 0.034,
-          "p99": 0.037
+          "p99": 0.038
         },
         "hw": {
-          "median": 0.287,
-          "p99": 0.351
+          "median": 0.281,
+          "p99": 0.348
         },
         "resolve": {
-          "median": 2.342,
-          "p99": 2.669
+          "median": 2.326,
+          "p99": 2.644
         },
         "rt": {
-          "median": 0.616,
-          "p99": 1.029
+          "median": 0.618,
+          "p99": 0.69
         },
         "sky": {
           "median": 0.088,
-          "p99": 0.09
+          "p99": 0.088
         },
         "total": {
-          "median": 3.482,
-          "p99": 4.01
+          "median": 3.444,
+          "p99": 3.887
         }
       },
       "baseline": {
-        "date": "2026-10-07",
-        "by": "Claude (agent, roadmap T46), for the owner",
-        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
-        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "date": "2026-10-12",
+        "by": "Marc Micalizzi",
+        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds), and endless-1080p-csm total median 3.08-3.2 against the 2026-10-07 seed 2.916 after the HDR encode, F18 and the fold guard each landed within tolerance; the 1080p cull/sky/resolve p99 tails spike about 2x on main too (one of three quiet flights), so the p99 absolute slack goes from 0.1 to 0.4 ms in the same change",
+        "commit": "9b17dafb (with uncommitted changes)",
         "device": "NVIDIA GeForce RTX 5090",
-        "quiet": false,
-        "machine_state": "busy (start 6.0% others, GPU 6%; end 11.5% others, GPU 71%)",
+        "quiet": true,
+        "machine_state": "quiet (start 2.3% others, GPU 0%; end 5.9% others, GPU 0%)",
         "identity": "33d911d95096f28e",
         "frames": 1201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.202,
-        "p99": 0.575
+        "median": 0.22,
+        "p99": 0.554
       },
       "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
     },
@@ -237,53 +237,53 @@
       ],
       "gpu_ms": {
         "cull": {
-          "median": 0.3,
-          "p99": 0.335
+          "median": 0.296,
+          "p99": 0.425
         },
         "deform": {
-          "median": 0.1,
-          "p99": 0.134
+          "median": 0.107,
+          "p99": 0.136
         },
         "hiz": {
           "median": 0.033,
-          "p99": 0.042
+          "p99": 0.044
         },
         "hw": {
-          "median": 0.047,
-          "p99": 0.055
+          "median": 0.048,
+          "p99": 0.063
         },
         "resolve": {
-          "median": 0.467,
-          "p99": 0.597
+          "median": 0.491,
+          "p99": 0.837
         },
         "shadow": {
-          "median": 0.805,
-          "p99": 2.35
+          "median": 0.811,
+          "p99": 2.318
         },
         "sky": {
-          "median": 0.187,
-          "p99": 0.199
+          "median": 0.197,
+          "p99": 0.345
         },
         "total": {
-          "median": 2.916,
-          "p99": 5.06
+          "median": 3.161,
+          "p99": 5.545
         }
       },
       "baseline": {
-        "date": "2026-10-07",
-        "by": "Fable, merging batch 11",
-        "reason": "The first seed (1.625 / 2.756 ms, cull 0.047) was measured on a tree with the F1 time-lapse wait bug (commit 'renderer: an offscreen frame takes every ready terrain field'), which let an offscreen flight stop a pair of fields short and drew a fraction of the ground; the fixed tree measures 2.92 / 5.06 ms on a quiet machine, twice within 1%, which is what docs/experiments/far-ground-2026-10-03.md recorded (2.98 / 5.10 ms, cull 0.306), so the budget is re-seeded from the fixed tree at the merge of batch 11.",
-        "commit": "2b1ac147 (with uncommitted changes)",
+        "date": "2026-10-12",
+        "by": "Marc Micalizzi",
+        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds), and endless-1080p-csm total median 3.08-3.2 against the 2026-10-07 seed 2.916 after the HDR encode, F18 and the fold guard each landed within tolerance; the 1080p cull/sky/resolve p99 tails spike about 2x on main too (one of three quiet flights), so the p99 absolute slack goes from 0.1 to 0.4 ms in the same change",
+        "commit": "9b17dafb (with uncommitted changes)",
         "device": "NVIDIA GeForce RTX 5090",
         "quiet": true,
-        "machine_state": "quiet (start 9.8% others, GPU 0%; end 9.9% others, GPU 0%)",
+        "machine_state": "quiet (start 1.6% others, GPU 0%; end 4.4% others, GPU 14%)",
         "identity": "a73c20e15926dafa",
         "frames": 7201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.382,
-        "p99": 0.515
+        "median": 0.335,
+        "p99": 0.883
       },
       "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
     },
@@ -303,56 +303,56 @@
       "gpu_ms": {
         "blas": {
           "median": 0.293,
-          "p99": 0.845
+          "p99": 0.297
         },
         "clas": {
-          "median": 0.284,
-          "p99": 0.799
+          "median": 0.279,
+          "p99": 0.308
         },
         "cull": {
-          "median": 0.06,
-          "p99": 0.25
+          "median": 0.085,
+          "p99": 0.091
         },
         "deform": {
-          "median": 0.037,
-          "p99": 0.043
+          "median": 0.041,
+          "p99": 0.046
         },
         "hw": {
-          "median": 0.303,
-          "p99": 0.353
+          "median": 0.427,
+          "p99": 0.503
         },
         "resolve": {
-          "median": 1.829,
-          "p99": 2.231
+          "median": 1.885,
+          "p99": 2.249
         },
         "rt": {
-          "median": 0.961,
-          "p99": 1.628
+          "median": 0.951,
+          "p99": 0.989
         },
         "sky": {
-          "median": 0.083,
-          "p99": 0.286
+          "median": 0.092,
+          "p99": 0.092
         },
         "total": {
-          "median": 4.454,
-          "p99": 5.571
+          "median": 4.436,
+          "p99": 5.418
         }
       },
       "baseline": {
-        "date": "2026-10-07",
-        "by": "Claude (agent, roadmap T46), for the owner",
-        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
-        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+        "date": "2026-10-12",
+        "by": "Marc Micalizzi",
+        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds); nothing in the engine changed between those runs",
+        "commit": "9b17dafb (with uncommitted changes)",
         "device": "NVIDIA GeForce RTX 5090",
-        "quiet": false,
-        "machine_state": "busy (start 9.0% others, GPU 6%; end 12.7% others, GPU 9%)",
+        "quiet": true,
+        "machine_state": "quiet (start 2.4% others, GPU 0%; end 3.3% others, GPU 0%)",
         "identity": "a73c20e15926dafa",
         "frames": 7201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.455,
-        "p99": 1.305
+        "median": 0.401,
+        "p99": 0.98
       },
       "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
     }
