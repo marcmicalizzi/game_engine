@@ -48,7 +48,7 @@ std::string scene_text() {
          R"("terrain":{"size":65,"extent":32,"seed":3,"dune_height":1.0,"dune_wavelength":20},)"
          R"("placements":[{"generator":"scatter","params":{"name":"pebbles","seed":11,)"
          R"("tile_size":16,"region":{"kind":"Tiles","tile_min":[-2,-2],"tile_max":[1,1]},)"
-         R"("density":{"per_m2":0.08},)"
+         R"("density":{"per_m2":0.08},"meshes":"rocks",)"
          R"("kinds":[{"name":"rock","spacing":1.5,"scale_min":0.8,"scale_max":1.2,)"
          R"("rock":{"seed":4,"size_x":0.45,"size_y":0.3,"size_z":0.4,"detail":2}}]}}]})";
 }

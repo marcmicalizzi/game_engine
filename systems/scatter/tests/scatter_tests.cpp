@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -533,6 +534,7 @@ TEST_CASE("scatter: the generator through the registry: tiles are the whole read
   REQUIRE(generator != nullptr);
   Layer layer = pinned_layer();
   layer.budget.per_tile = 0;
+  layer.meshes = "rocks";  // in the scratch directory, whatever is above it
   const JsonValue params = schema::to_json(layer);
   const std::string dir = tmp.path();
   scene_gen::Context context;
@@ -545,11 +547,12 @@ TEST_CASE("scatter: the generator through the registry: tiles are the whole read
   REQUIRE_MESSAGE(generator->open(params, context, &state, &error), error);
   scene_gen::Placements whole;
   REQUIRE_MESSAGE(generator->expand(state, context, whole, &error), error);
-  // One mesh a kind: the procedural rock, written once into `scatter` beside the scene.
+  // One mesh a kind: the procedural rock, written once into the layer's `meshes` directory.
   REQUIRE(whole.meshes.size() == 2);
   CHECK(whole.meshes[0].path == whole.meshes[1].path);  // the same rock, one file
   CHECK(std::ifstream(whole.meshes[0].path).good());
   CHECK(whole.meshes[0].path.find(rock_file_name(Rock{})) != std::string::npos);
+  CHECK(whole.meshes[0].path.find("rocks") != std::string::npos);
   // Tile by tile, in the whole read's order, outside a world: the same instances.
   scene_gen::Placements tiled;
   for (i32 z = -2; z <= 1; ++z) {
@@ -617,4 +620,27 @@ TEST_CASE("scatter: a polygon region places inside it, on the tiles it reaches")
   const f64 want = 0.05 * 20000.0;
   MESSAGE("polygon: " << points.size() << " placed, " << want << " expected");
   CHECK(std::fabs(static_cast<f64>(points.size()) - want) < 0.1 * want);
+}
+
+TEST_CASE("scatter: the procedural rock goes to the checkout's derived data, or where it is told") {
+  // A checkout is a directory holding AGENTS.md: a scene inside one writes its rocks into its
+  // `ddc/scatter`, never beside itself in the tree; a layer naming `meshes` writes them there.
+  const test::TempDir tmp("scatter_rock_dir");
+  REQUIRE(write_text(tmp.file("AGENTS.md"), "a checkout"));
+  REQUIRE(std::filesystem::create_directories(tmp.file("content/scenes")));
+  Layer layer;
+  layer.kinds.push_back(rock_kind("a", 2.0f));
+  Vector<scene_gen::PlacementMesh> meshes;
+  std::string error;
+  REQUIRE_MESSAGE(kind_meshes(layer, tmp.file("content/scenes"), meshes, &error), error);
+  REQUIRE(meshes.size() == 1);
+  const std::filesystem::path rock(meshes[0].path);
+  CHECK(std::filesystem::exists(rock));
+  CHECK(std::filesystem::equivalent(rock.parent_path(), tmp.file("ddc/scatter")));
+  CHECK_FALSE(std::filesystem::exists(tmp.file("content/scenes/scatter")));
+  layer.meshes = "here";
+  meshes.clear();
+  REQUIRE_MESSAGE(kind_meshes(layer, tmp.file("content/scenes"), meshes, &error), error);
+  CHECK(std::filesystem::equivalent(std::filesystem::path(meshes[0].path).parent_path(),
+                                    tmp.file("content/scenes/here")));
 }
