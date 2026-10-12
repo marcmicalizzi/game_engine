@@ -92,6 +92,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R60 | HDR output (E39) | blocked (a measurement on the owner's surround) | R58, R79, R80 | M | research | [E39](experiments/hdr-output-proposal.md) |
 | R79 | HDR output paths: colour-space extensions, PQ encode, scRGB chain, EXR capture, the probe | done (2026-10-09: stage 1 59a99ffd, the EXR capture, linear radiance and ramp in the commit after 998830a1) | R58 | M | design | [renderer](subsystems/renderer.md#hdr-output) |
 | R80 | The HDR measurement script for E39 | done (2026-10-09, tools/hdr-measure.ps1, dd2c097f) | R79 | S | routine | [E39](experiments/hdr-output-proposal.md#what-the-owner-measures) |
+| R81 | One bottom-level structure per mesh shared by its rigid instances, so a scattered desert's rocks do not build a structure each per frame (the scattered variant breaks both endless budgets on BLAS, CLAS and the trace) | open | R62 | L | design | [renderer](subsystems/renderer.md#the-ray-tracing-chains-memory) |
 | R61 | Top-level structure over occupied instances only | open | R51 | S | routine | [frame-thread spikes](experiments/frame-thread-spikes-2026-10-04.md#what-is-open) |
 | R62 | BLAS budget manager | open | R51 | L | design | [04 §4.4](plan/04-renderer.md#44-ray-tracing) |
 | R63 | Cluster structures shared across rigid instances | open | R50 | S | design | [gfx](subsystems/gfx.md#what-a-device-has-to-have) |
@@ -441,6 +442,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G56 | Phase 5 exit | open | G15, G28, G32, G37 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | G57 | Degenerate-triangle repair in the content build | done (geometry.md "Zero-area triangles: the repair", 2026-10-10) | G17 | S | routine | [geometry](subsystems/geometry.md#zero-area-triangles-the-repair) |
 | G58 | Tripo smart-mesh A/B against September's triangle exports | blocked (the owner's exports: wooden-crate and cart-wheel as smart mesh and as triangles, at 2K and 4K PBR, from Tripo Studio by hand) | G57 | S | research | [E10](experiments/e10-generated-props.md) |
+| G59 | Scatter remainder: streaming beside ground tiles (the dynamic tail with the pool and the ray tracing chain), placement records, footprint exclusions, placements that follow moving dunes | open | G37, R81 | M | design | [scatter](subsystems/scatter.md#not-yet) |
 
 ## T — Tooling and CI
 
