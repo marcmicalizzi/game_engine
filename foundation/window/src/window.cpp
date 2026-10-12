@@ -965,6 +965,18 @@ bool Window::desktop_center(i32& x, i32& y) const noexcept {
   return true;
 }
 
+f32 Window::display_scale() const noexcept {
+  if (handle_ == nullptr) return 1.0f;
+  const f32 scale = SDL_GetWindowDisplayScale(static_cast<SDL_Window*>(handle_));
+  return scale > 0.0f ? scale : 1.0f;
+}
+
+bool Window::set_size(u32 width, u32 height) noexcept {
+  if (handle_ == nullptr || child_) return false;
+  return SDL_SetWindowSize(static_cast<SDL_Window*>(handle_), static_cast<int>(width),
+                           static_cast<int>(height));
+}
+
 bool Window::poll(Event& out) {
   SDL_Event e;
   while (SDL_PollEvent(&e)) {
@@ -1081,6 +1093,11 @@ bool Window::poll(Event& out) {
           pixel_width_ = e.window.data1 > 0 ? static_cast<u32>(e.window.data1) : 0;
           pixel_height_ = e.window.data2 > 0 ? static_cast<u32>(e.window.data2) : 0;
         }
+        return true;
+      case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        if (!route(id_, e.window.windowID, out)) continue;
+        out.kind = EventKind::ScaleChanged;
+        out.value = SDL_GetWindowDisplayScale(SDL_GetWindowFromID(e.window.windowID));
         return true;
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
         if (!route(id_, e.window.windowID, out)) continue;
@@ -1199,6 +1216,101 @@ bool Window::push_event(const Event& event) noexcept {
   }
   // SDL stamps a zero timestamp with its own clock as the event goes on the queue.
   return SDL_PushEvent(&e);
+}
+
+namespace {
+
+#if defined(_WIN32)
+// The virtual key for the keys `post_os_event` takes; 0 for any other.
+UINT virtual_key(Key key) noexcept {
+  switch (key) {
+    case Key::Control: return VK_CONTROL;
+    case Key::Shift: return VK_SHIFT;
+    case Key::Alt: return VK_MENU;
+    case Key::Escape: return VK_ESCAPE;
+    case Key::Delete: return VK_DELETE;
+    default: break;
+  }
+  const u16 k = static_cast<u16>(key);
+  if (k >= static_cast<u16>(Key::A) && k <= static_cast<u16>(Key::Z))
+    return 'A' + (k - static_cast<u16>(Key::A));
+  if (k >= static_cast<u16>(Key::Digit1) && k <= static_cast<u16>(Key::Digit9))
+    return '1' + (k - static_cast<u16>(Key::Digit1));
+  if (key == Key::Digit0) return '0';
+  return 0;
+}
+
+// One event as the window message the platform would have sent, to `hwnd`.
+bool post_message(HWND hwnd, const Event& event) noexcept {
+  if (hwnd == nullptr) return false;
+  const LPARAM at = MAKELPARAM(static_cast<i16>(event.x), static_cast<i16>(event.y));
+  switch (event.kind) {
+    case EventKind::KeyDown:
+    case EventKind::KeyUp: {
+      const UINT vk = virtual_key(event.key);
+      if (vk == 0) return false;
+      // The scancode in bits 16 to 23 is what SDL reads the key from; bits 30 and 31 are the
+      // previous state and the transition, as a real key's message carries them.
+      const UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+      const bool down = event.kind == EventKind::KeyDown;
+      const LPARAM bits = static_cast<LPARAM>(1u | (scan << 16) | (down ? 0u : 0xC0000000u));
+      return PostMessageW(hwnd, down ? WM_KEYDOWN : WM_KEYUP, vk, bits) != 0;
+    }
+    case EventKind::MouseButtonDown:
+    case EventKind::MouseButtonUp: {
+      const bool down = event.kind == EventKind::MouseButtonDown;
+      UINT msg = 0;
+      WPARAM held = 0;
+      switch (event.button) {
+        case 1:
+          msg = down ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+          held = down ? MK_LBUTTON : 0;
+          break;
+        case 2:
+          msg = down ? WM_MBUTTONDOWN : WM_MBUTTONUP;
+          held = down ? MK_MBUTTON : 0;
+          break;
+        case 3:
+          msg = down ? WM_RBUTTONDOWN : WM_RBUTTONUP;
+          held = down ? MK_RBUTTON : 0;
+          break;
+        default: return false;
+      }
+      return PostMessageW(hwnd, msg, held, at) != 0;
+    }
+    case EventKind::MouseMove: return PostMessageW(hwnd, WM_MOUSEMOVE, 0, at) != 0;
+    default: return false;
+  }
+}
+#endif
+
+}  // namespace
+
+bool Window::post_os_event(const Event& event) noexcept {
+#if defined(_WIN32)
+  return post_message(hwnd_of(handle_), event);
+#else
+  (void)event;
+  return false;
+#endif
+}
+
+bool Window::post_to_focus(const Event& event) noexcept {
+#if defined(_WIN32)
+  return post_message(GetFocus(), event);
+#else
+  (void)event;
+  return false;
+#endif
+}
+
+bool Window::has_os_focus() const noexcept {
+#if defined(_WIN32)
+  const HWND own = hwnd_of(handle_);
+  return own != nullptr && GetFocus() == own;
+#else
+  return false;
+#endif
 }
 
 }  // namespace engine::window

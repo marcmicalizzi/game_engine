@@ -211,6 +211,10 @@ enum class EventKind : u8 {
   JoystickButtonDown,
   JoystickButtonUp,
   JoystickHat,
+  // The display's scale under the window changed (it was dragged to a monitor of another scale,
+  // or the scale was changed in the system's settings): `value` holds the new scale, 1.5 at
+  // 150 % (`Window::display_scale`). Reported for a top-level window; its children follow it.
+  ScaleChanged,
 };
 
 struct Event {
@@ -234,7 +238,9 @@ struct Event {
   // The event is a child window's (`WindowDesc::parent`), reported through its parent's `poll`:
   // pointer coordinates are then the child's own, and Resized is the child's size.
   bool child = false;
-  f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1
+  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1. ScaleChanged: the
+  // display's new scale.
+  f32 value = 0.0f;
   // When the platform reported it, nanoseconds on SDL's clock (`SDL_GetTicksNS`), which is also the
   // clock of `Window::relative_mouse_since_ns`: what tells motion reported before relative mode
   // came on from motion after it. Zero for an event nothing stamped.
@@ -408,6 +414,12 @@ class Window {
   // a host that asks the display what it can show (HDR output's peak and paper white, E39). False
   // without a window or where the platform does not say (Wayland).
   bool desktop_center(i32& x, i32& y) const noexcept;
+  // The scale of the display the window is on, as the system's settings give it (1.5 at 150 %),
+  // which `EventKind::ScaleChanged` reports when it changes; 1 without a window.
+  f32 display_scale() const noexcept;
+  // A top-level window's new size in its own coordinates (the platform answers with `Resized`).
+  // False for a child (its parent places it: `set_rect`) or with no window.
+  bool set_size(u32 width, u32 height) noexcept;
 
   // Pulls the next pending event for this window (and process-wide Quit). False when none
   // is left; call until it returns false once per frame.
@@ -455,6 +467,19 @@ class Window {
   // shared desktop — without handing keystrokes to whatever window the OS has focused, which is
   // what synthesizing them at the OS level would do (docs/subsystems/apps.md, `--inject-input`).
   bool push_event(const Event& event) noexcept;
+  // Posts an event to the **platform's** queue for this window (Windows: `PostMessageW` to its
+  // HWND), so it takes the path a real one takes from there — the window procedure, the
+  // platform's keyboard focus, SDL's translation — where `push_event` starts after all of it.
+  // Keys (`key`: Control, Shift, Alt, Escape, Delete, letters, digits), mouse buttons 1 to 3 at
+  // (`x`, `y`) and motion only. It is how a test proves a key reaches whoever has the platform's
+  // focus and a click moves that focus (engine-editor's `--test-keys`), still without handing a
+  // keystroke to whatever window the OS has in front. False elsewhere, for any other kind, or with
+  // no window. `post_to_focus` posts to the window that has this thread's keyboard focus instead,
+  // whichever it is — this window, a child, or another module's (a web view's).
+  bool post_os_event(const Event& event) noexcept;
+  static bool post_to_focus(const Event& event) noexcept;
+  // Whether this window has the platform's keyboard focus in this thread (Windows: `GetFocus`).
+  bool has_os_focus() const noexcept;
 
  private:
   void* handle_ = nullptr;

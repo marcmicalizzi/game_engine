@@ -28,6 +28,7 @@
 
 #include <core/json/json.h>
 #include <core/json/json_value.h>
+#include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
@@ -39,6 +40,7 @@
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
+#include <foundation/io/vfs.h>
 #include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
 #include <foundation/window/backend/vulkan/surface.h>
@@ -62,6 +64,8 @@ using namespace engine;
 
 namespace {
 
+ENGINE_LOG_CATEGORY_DEFINE(log_editor, "editor");
+
 tunables::Int present_max_hz{"editor.present.max_hz", 120, 1, 1000,
                              "The most frames a second the editor's window draws: it shares the "
                              "desktop, so it never runs unthrottled"};
@@ -69,12 +73,16 @@ tunables::Int present_max_hz{"editor.present.max_hz", 120, 1, 1000,
 // How long an embedded window waits for the page's first `editor.layout` before it gives up: the
 // web view's first start on a machine makes its profile, which takes seconds, not minutes.
 constexpr i64 k_layout_timeout_ns = 60'000'000'000;
+// How long `--test-page` waits for the page's checks (and a reconnect) once its frames are drawn.
+constexpr i64 k_page_checks_timeout_ns = 120'000'000'000;
 
 constexpr const char* k_usage =
     "engine-editor --doc <dir> [--create] [--actor <name>] [--width N] [--height N]\n"
     "              [--embedded | --no-shell] [--listen 127.0.0.1:<port>] [--shell <dir>]\n"
     "              [--offscreen] [--frames N] [--pick X,Y|center] [--move X,Y,Z]\n"
-    "              [--drag X0,Y0 X1,Y1] [--capture out.png] [--ddc <dir>]\n"
+    "              [--drag X0,Y0 X1,Y1] [--look DX,DY] [--capture out.png] [--ddc <dir>]\n"
+    "              [--webview-profile <dir>] [--resize-to W,H] [--test-keys] [--test-page]\n"
+    "              [--test-drop-socket-at N] [--test-relayout-at N]\n"
     "engine-editor --version\n"
     "  --doc        the document directory (protocol::Session opens it)\n"
     "  --create     create the document when the directory holds none\n"
@@ -100,7 +108,18 @@ constexpr const char* k_usage =
     "  --drag X0,Y0 X1,Y1  after picking, press at the first point, move to the second over\n"
     "               three frames and release, as a pointer would (frames 3 to 8): on a gizmo\n"
     "               handle that is one transaction; needs --pick and --frames 10 or more\n"
+    "  --look DX,DY after picking, hold the right button over the viewport and move the pointer\n"
+    "               by (DX, DY) over three frames, as the look gesture does (frames 3 to 7)\n"
     "  --capture    offscreen: the last frame, overlay and all, as a PNG\n"
+    "  --webview-profile  where the web view keeps its profile (default <doc>/.editor/webview,\n"
+    "               in a directory that ignores itself: <doc>/.editor/.gitignore is \"*\")\n"
+    "  Test flags, the embedded window's (frames counted since the page last moved the viewport,\n"
+    "  as --pick's are): --resize-to W,H resizes the window at frame 4; --test-keys (with --move\n"
+    "  and --frames 32 or more) clicks the viewport and posts Ctrl+Z to it through the platform's\n"
+    "  queue, then gives the page the keyboard and posts Ctrl+Z again; --test-page loads the page\n"
+    "  with its test hook (?test=1) and waits for its checks; --test-drop-socket-at N shuts every\n"
+    "  connection, and --test-relayout-at N sends editor.relayout, from frame N once the page's\n"
+    "  checks are in.\n"
     "  --version    the commit this binary was built from, as one JSON line\n"
     "In the viewport: left click picks; drag a gizmo handle to move the selection along it "
     "(Escape\n"
@@ -133,6 +152,15 @@ struct Options {
   f64 drag_to[2] = {0.0, 0.0};
   std::string capture;
   std::string ddc;
+  bool look = false;
+  f64 look_by[2] = {0.0, 0.0};
+  std::string webview_profile;  // empty: <doc>/.editor/webview
+  bool resize = false;
+  f64 resize_to[2] = {0.0, 0.0};
+  bool test_keys = false;
+  bool test_page = false;
+  u32 drop_at = 0;      // 0: never
+  u32 relayout_at = 0;  // 0: never
 };
 
 bool parse_u32(std::string_view s, u32& out) {
@@ -232,6 +260,45 @@ struct Summary {
   u32 layouts = 0;                // editor.layout notifications received
   editor::ViewportRect viewport;  // where the last layout put the viewport, in window coordinates
   editor::EditorInput::Stats input;
+  // Every placement a layout made (the first 16): the window's client size, the child's
+  // rectangle, whether it had to be clamped, and whether the page was in its narrow layout.
+  struct Placed {
+    u32 client_width = 0;
+    u32 client_height = 0;
+    editor::ViewportRect rect;
+    bool clamped = false;
+    bool narrow = false;
+    bool from_page = true;  // a layout the page sent; false: the editor's own re-placement of the
+                            // last one (a resize, a change of scale) before the page's answer
+  };
+  Vector<Placed> placements;
+  f32 display_scale = 1.0f;  // the display's scale under the window, last read
+  u32 scale_changes = 0;     // ScaleChanged events
+  u32 relayouts = 0;         // editor.relayout notifications sent
+  u32 relayout_reached = 0;  // connections the last one reached
+  u32 layouts_at_relayout = 0;
+  u32 drops = 0;  // --test-drop-socket-at: connections shut
+  i64 frames_at_drop = -1;
+  i64 frames_at_reconnect = -1;
+  // --look: the camera's yaw and pitch before and after the gesture, and whether SDL said the
+  // child was in relative mode while the button was held.
+  bool looked = false;
+  f32 look_yaw[2] = {0.0f, 0.0f};
+  f32 look_pitch[2] = {0.0f, 0.0f};
+  bool look_relative = false;
+  // --test-keys: whose the keyboard was at each step, and what each Ctrl+Z did.
+  u32 sdl_keys = 0;  // KeyDown events SDL delivered to the editor, all run
+  bool keys_tested = false;
+  bool viewport_focus = false;  // after the posted click into the viewport
+  bool posted_to_viewport = false;
+  u32 undos_from_viewport = 0;  // the editor's undos after Ctrl+Z went to the viewport
+  bool page_focus = false;      // after the web view was given the keyboard
+  bool posted_to_page = false;  // the platform had a focused window in this thread to post to
+  u32 sdl_keys_from_page = 0;   // KeyDown events SDL delivered after the page had the keyboard
+  u32 undos_after_page = 0;
+  u32 undo_position_before_page = 0;
+  u32 undo_position_after_page = 0;
+  Vector<editor::EditorState::Report> reports;  // --test-page: the page's own checks
 };
 
 void print_summary(const Summary& s, const Options& o) {
@@ -276,6 +343,69 @@ void print_summary(const Summary& s, const Options& o) {
   } else {
     out["drag"] = JsonValue();
   }
+  JsonValue placements = JsonValue::array();
+  for (const Summary::Placed& p : s.placements) {
+    JsonValue one = JsonValue::object();
+    JsonValue client = JsonValue::array();
+    client.push_back(JsonValue(p.client_width));
+    client.push_back(JsonValue(p.client_height));
+    one["client"] = std::move(client);
+    JsonValue rect = JsonValue::array();
+    rect.push_back(JsonValue(static_cast<i64>(p.rect.x)));
+    rect.push_back(JsonValue(static_cast<i64>(p.rect.y)));
+    rect.push_back(JsonValue(p.rect.width));
+    rect.push_back(JsonValue(p.rect.height));
+    one["viewport"] = std::move(rect);
+    one["clamped"] = JsonValue(p.clamped);
+    one["narrow"] = JsonValue(p.narrow);
+    one["from_page"] = JsonValue(p.from_page);
+    placements.push_back(std::move(one));
+  }
+  out["placements"] = std::move(placements);
+  out["display_scale"] = JsonValue(static_cast<f64>(s.display_scale));
+  out["scale_changes"] = JsonValue(s.scale_changes);
+  out["relayouts"] = JsonValue(s.relayouts);
+  out["relayout_reached"] = JsonValue(s.relayout_reached);
+  out["layouts_at_relayout"] = JsonValue(s.layouts_at_relayout);
+  out["drops"] = JsonValue(s.drops);
+  out["frames_at_drop"] = JsonValue(s.frames_at_drop);
+  out["frames_at_reconnect"] = JsonValue(s.frames_at_reconnect);
+  if (s.looked) {
+    JsonValue look = JsonValue::object();
+    look["yaw_deg"] =
+        JsonValue(static_cast<f64>(s.look_yaw[1] - s.look_yaw[0]) * 57.29577951308232);
+    look["pitch_deg"] =
+        JsonValue(static_cast<f64>(s.look_pitch[1] - s.look_pitch[0]) * 57.29577951308232);
+    look["relative"] = JsonValue(s.look_relative);
+    out["look"] = std::move(look);
+  } else {
+    out["look"] = JsonValue();
+  }
+  out["sdl_keys"] = JsonValue(s.sdl_keys);
+  if (s.keys_tested) {
+    JsonValue keys = JsonValue::object();
+    keys["viewport_focus"] = JsonValue(s.viewport_focus);
+    keys["posted_to_viewport"] = JsonValue(s.posted_to_viewport);
+    keys["undos_from_viewport"] = JsonValue(s.undos_from_viewport);
+    keys["page_focus"] = JsonValue(s.page_focus);
+    keys["posted_to_page"] = JsonValue(s.posted_to_page);
+    keys["sdl_keys_from_page"] = JsonValue(s.sdl_keys_from_page);
+    keys["undos_after_page"] = JsonValue(s.undos_after_page);
+    keys["undo_position_before_page"] = JsonValue(s.undo_position_before_page);
+    keys["undo_position_after_page"] = JsonValue(s.undo_position_after_page);
+    out["keys"] = std::move(keys);
+  } else {
+    out["keys"] = JsonValue();
+  }
+  JsonValue reports = JsonValue::array();
+  for (const editor::EditorState::Report& r : s.reports) {
+    JsonValue one = JsonValue::object();
+    one["name"] = JsonValue(r.name);
+    one["ok"] = JsonValue(r.ok);
+    one["detail"] = JsonValue(r.detail);
+    reports.push_back(std::move(one));
+  }
+  out["page"] = std::move(reports);
   out["undos"] = JsonValue(s.input.undos);
   out["redos"] = JsonValue(s.input.redos);
   out["deletes"] = JsonValue(s.input.deletes);
@@ -453,6 +583,22 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
   return code;
 }
 
+// The web view's profile for a person: beside the document, in `.editor/`, a directory that
+// ignores itself (its own `.gitignore` is "*"), so a document kept in git never picks up a
+// browser cache whatever the repository's own rules say. Inside a test's scratch directory when the
+// document is, which is every test's.
+std::string webview_profile(const Options& options, const editor::EditorDocument& document) {
+  if (!options.webview_profile.empty()) return options.webview_profile;
+  const std::string dir = document.directory() + "/.editor";
+  if (io::make_directories(dir) == io::Status::Ok) {
+    std::string existing;
+    if (io::read_file(dir + "/.gitignore", existing) != io::Status::Ok)
+      (void)io::write_file(dir + "/.gitignore",
+                           "# engine-editor's own state: never committed\n*\n");
+  }
+  return dir + "/webview";
+}
+
 // The protocol in process (editor_methods.h): a dispatcher over the editor's own session, with the
 // built-in methods every host has and the editor's three, and the listener over it.
 struct Host {
@@ -511,6 +657,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   }
 
   Host host(document);
+  if (options.test_page) editor::add_editor_test_methods(host.dispatcher);
   const bool listening = options.shell != Shell::None || !options.listen.empty();
   if (listening) {
     std::string shell_dir = options.shell_dir;
@@ -572,12 +719,16 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       u32 logical_w = 0;
       u32 logical_h = 0;
       if (!window.logical_size(logical_w, logical_h)) logical_w = logical_h = 0;
-      if (!web.create(window.os_handle(), webview::WebviewOptions{}, &error)) {
+      webview::WebviewOptions wo;
+      wo.profile_dir = webview_profile(options, document);
+      if (!web.create(window.os_handle(), wo, &error)) {
         code = options.shell == Shell::Embedded ? unavailable("no web view", error) : 1;
         if (code == 1) std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
       } else {
         web.set_rect(0, 0, logical_w, logical_h);
-        if (!web.navigate(host.listener.shell_url() + "&embedded=1")) {
+        // `test=1` only with --test-page: the page's test hook exists only then (engine_shell.md).
+        if (!web.navigate(host.listener.shell_url() + "&embedded=1" +
+                          (options.test_page ? "&test=1" : ""))) {
           error = "the web view refused the shell's address";
           code = 1;
         }
@@ -613,6 +764,15 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     // layout that lands between two frames resizes the picture, and the frame before it is gone).
     // Without the shell nothing resets it, and it is the run's frame count.
     u64 settled = 0;
+    u64 acted_frame = ~u64{0};  // the frame whose test actions ran
+    bool replace = false;       // place the child again from the (possibly rescaled) layout
+    f32 scale_now = window.display_scale();
+    summary.display_scale = scale_now;
+    bool resized = false;
+    bool dropped = false;
+    bool relayout_sent = false;
+    u32 keys_before_page = 0;
+    i64 checks_since_ns = -1;  // --test-page: when the frames were done and the wait began
     if (code == 0) {
       if (!window::vulkan::create_surface(*view_window, device.handles().instance, surface,
                                           &error)) {
@@ -697,6 +857,27 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           if (!event.child) running = false;
           continue;
         }
+        if (event.kind == window::EventKind::KeyDown) ++summary.sdl_keys;
+        if (event.kind == window::EventKind::ScaleChanged) {
+          // The display's scale under the window changed (dragged to a monitor of another scale,
+          // or the setting changed): the child goes where the last layout would put it at the new
+          // ratio at once, and the page is asked to lay itself out again (`editor.relayout`) and
+          // send what it really has; picking follows the child's new size on the next frame,
+          // since the pointer's scale is read from the child each frame.
+          ++summary.scale_changes;
+          const f32 to = event.value > 0.0f ? event.value : window.display_scale();
+          if (embedded && host.state.layouts > 0 && to != scale_now) {
+            host.state.layout = editor::rescaled_layout(
+                host.state.layout, static_cast<f64>(scale_now), static_cast<f64>(to));
+            replace = true;
+            summary.relayout_reached =
+                host.listener.notify_all(editor::relayout_notification("display scale"));
+            ++summary.relayouts;
+          }
+          scale_now = to;
+          summary.display_scale = to;
+          continue;
+        }
         if (embedded && !event.child) {
           // The top-level window's own: its size is the web view's. Its keys are the viewport's —
           // a key the page has never reaches the platform's event queue, and one that reaches it
@@ -707,6 +888,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
             u32 h = 0;
             if (window.logical_size(w, h)) web.set_rect(0, 0, w, h);
 #endif
+            // The child is clamped into the new client area at once; the page's own layout for
+            // the new size follows.
+            replace = placed;
             continue;
           }
           if (is_pointer(event)) continue;
@@ -723,20 +907,41 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       // The page's layout, when it moved: the viewport's child window goes where the cell is, and
       // is shown the first time.
-      if (embedded && host.state.layouts != applied_layouts) {
+      if (embedded && (host.state.layouts != applied_layouts || replace)) {
+        const bool from_page = host.state.layouts != applied_layouts;
         applied_layouts = host.state.layouts;
-        u32 pw = 0;
+        replace = false;
         u32 lw = 0;
         u32 lh = 0;
-        pw = window.pixel_width();
-        if (!window.logical_size(lw, lh)) lw = 0;
+        const u32 pw = window.pixel_width();
+        if (!window.logical_size(lw, lh)) lw = lh = 0;
         host.state.pixels_per_unit =
             lw > 0 && pw > 0 ? static_cast<f64>(pw) / static_cast<f64>(lw) : 1.0;
-        const editor::ViewportRect rect =
-            editor::layout_rect(host.state.layout, host.state.pixels_per_unit);
+        // Never past the client area: a page wider than its window would put the cell's far edge
+        // under the frame (the narrow layout is the page's answer; this is the editor's).
+        const editor::Placement placement =
+            editor::place_viewport(host.state.layout, host.state.pixels_per_unit, lw, lh);
+        const editor::ViewportRect rect = placement.rect;
+        if (placement.clamped) {
+          const editor::ViewportRect asked =
+              editor::layout_rect(host.state.layout, host.state.pixels_per_unit);
+          ENGINE_LOG_WARN(log_editor, "viewport clamped to the window's client area",
+                          log::field("asked_x", asked.x), log::field("asked_y", asked.y),
+                          log::field("asked_width", asked.width),
+                          log::field("asked_height", asked.height), log::field("client_width", lw),
+                          log::field("client_height", lh),
+                          log::field("narrow", host.state.layout.narrow));
+        }
+        const bool moved = !placed || !(rect == summary.viewport);
         summary.viewport = rect;
         summary.layouts = host.state.layouts;
-        if (!child.set_rect(rect.x, rect.y, rect.width, rect.height)) {
+        if (moved && summary.placements.size() < 16) {
+          summary.placements.push_back(Summary::Placed{lw, lh, rect, placement.clamped,
+                                                       host.state.layout.narrow, from_page});
+        }
+        if (!moved) {
+          // The same rectangle again (a reconnect, an answer to editor.relayout): nothing moves.
+        } else if (!child.set_rect(rect.x, rect.y, rect.width, rect.height)) {
           error = "the viewport's child window could not be placed";
           failed = true;
         } else {
@@ -747,11 +952,119 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           resize = true;
           settled = 0;
           scripted_frame = ~u64{0};
+          acted_frame = ~u64{0};
         }
       }
       if (!placed && time::monotonic_ns() - started_ns > k_layout_timeout_ns) {
         error = "the page sent no editor.layout within a minute of starting";
         failed = true;
+      }
+      // The test flags' actions, once each at their frame (counted as --pick's are).
+      if (embedded && placed && settled != acted_frame) {
+        acted_frame = settled;
+        const u64 f = settled;
+        u32 cw = 0;
+        u32 ch = 0;
+        if (!child.logical_size(cw, ch)) cw = ch = 0;
+        window::Event e;
+        e.x = static_cast<f32>(cw) * 0.5f;
+        e.y = static_cast<f32>(ch) * 0.5f;
+        if (options.resize && !resized && f == 4) {
+          resized = true;
+          (void)window.set_size(static_cast<u32>(options.resize_to[0]),
+                                static_cast<u32>(options.resize_to[1]));
+        }
+        // --look: the right button held over the viewport and the pointer moved, through SDL's
+        // queue as the child's own events, so relative mode is asked of the adopted child as a
+        // person's gesture asks it.
+        if (options.look && f >= 3 && f <= 9) {
+          if (f == 3) {
+            summary.look_yaw[0] = camera.state.yaw;
+            summary.look_pitch[0] = camera.state.pitch;
+          }
+          e.button = 3;
+          if (f == 3 || f == 7) {
+            e.kind = f == 3 ? window::EventKind::MouseButtonDown : window::EventKind::MouseButtonUp;
+            (void)child.push_event(e);
+          } else if (f <= 6) {
+            e.kind = window::EventKind::MouseMove;
+            e.dx = static_cast<f32>(options.look_by[0] / 3.0);
+            e.dy = static_cast<f32>(options.look_by[1] / 3.0);
+            (void)child.push_event(e);
+            if (f == 5) summary.look_relative = child.relative_mouse();
+          } else if (f == 9) {
+            summary.look_yaw[1] = camera.state.yaw;
+            summary.look_pitch[1] = camera.state.pitch;
+            summary.looked = true;
+          }
+        }
+        // --test-keys: a click in the viewport through the platform's queue gives it the
+        // keyboard, and Ctrl+Z posted to whoever has it undoes --move's transaction; then the page
+        // is given the keyboard and Ctrl+Z goes to it, which SDL must never see.
+        const auto ctrl_z = [](window::Event k, bool to_focus, window::Window& w) {
+          bool ok = true;
+          const window::Key keys[4] = {window::Key::Control, window::Key::Z, window::Key::Z,
+                                       window::Key::Control};
+          for (u32 i = 0; i < 4; ++i) {
+            k.kind = i < 2 ? window::EventKind::KeyDown : window::EventKind::KeyUp;
+            k.key = keys[i];
+            ok = (to_focus ? window::Window::post_to_focus(k) : w.post_os_event(k)) && ok;
+          }
+          return ok;
+        };
+        if (options.test_keys) {
+          if (f == 10) {
+            e.button = 1;
+            e.kind = window::EventKind::MouseButtonDown;
+            (void)child.post_os_event(e);
+            e.kind = window::EventKind::MouseButtonUp;
+            (void)child.post_os_event(e);
+          } else if (f == 14) {
+            summary.viewport_focus = child.has_os_focus();
+            summary.posted_to_viewport = ctrl_z(e, true, child);
+          } else if (f == 18) {
+            summary.undos_from_viewport = input.stats().undos;
+            summary.undo_position_before_page = document.session().undo_position();
+#if defined(ENGINE_EDITOR_WEBVIEW)
+            (void)web.focus();
+#endif
+          } else if (f == 22) {
+            summary.page_focus = !child.has_os_focus() && !window.has_os_focus();
+            keys_before_page = summary.sdl_keys;
+            summary.posted_to_page = ctrl_z(e, true, child);
+          } else if (f == 30) {
+            summary.sdl_keys_from_page = summary.sdl_keys - keys_before_page;
+            summary.undos_after_page = input.stats().undos;
+            summary.undo_position_after_page = document.session().undo_position();
+            summary.keys_tested = true;
+          }
+        }
+        // The relayout and the drop wait for the page's own checks, so a report is never sent
+        // into a socket that is down, and the drop waits for the relayout's answer.
+        bool page_done = false;
+        for (const editor::EditorState::Report& report : host.state.reports)
+          page_done = page_done || report.name == "done";
+        if (options.relayout_at > 0 && !relayout_sent && f >= options.relayout_at && page_done) {
+          relayout_sent = true;
+          summary.layouts_at_relayout = host.state.layouts;
+          summary.relayout_reached = host.listener.notify_all(
+              editor::relayout_notification("asked by --test-relayout-at"));
+          ++summary.relayouts;
+        }
+        const bool relayout_answered =
+            options.relayout_at == 0 ||
+            (relayout_sent && host.state.layouts > summary.layouts_at_relayout);
+        if (options.drop_at > 0 && !dropped && f >= options.drop_at && page_done &&
+            relayout_answered) {
+          dropped = true;
+          summary.drops = host.listener.drop_connections();
+          summary.frames_at_drop = static_cast<i64>(summary.frames);
+        }
+      }
+      if (summary.frames_at_reconnect < 0 && dropped) {
+        for (const editor::EditorState::Report& r : host.state.reports) {
+          if (r.name == "reconnect") summary.frames_at_reconnect = static_cast<i64>(summary.frames);
+        }
       }
       // Once a frame: an iteration that draws nothing (an out-of-date swapchain) keeps the count.
       scripted.clear();
@@ -837,7 +1150,23 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       if (presented == gfx::PresentStatus::OutOfDate) resize = true;
       ++summary.frames;
       ++settled;
-      if (options.frames > 0 && settled >= options.frames) running = false;
+      if (options.frames > 0 && settled >= options.frames) {
+        bool done = !options.test_page;
+        if (!done) {
+          bool checks = false;
+          for (const editor::EditorState::Report& report : host.state.reports)
+            checks = checks || report.name == "done";
+          done = checks && (options.drop_at == 0 || summary.frames_at_reconnect >= 0);
+          const i64 t = time::monotonic_ns();
+          if (checks_since_ns < 0) checks_since_ns = t;
+          if (!done && t - checks_since_ns > k_page_checks_timeout_ns) {
+            error = "--test-page: the page's checks did not finish within two minutes";
+            code = 1;
+            break;
+          }
+        }
+        if (done) running = false;
+      }
     }
     // Nothing the listener dispatches reaches into the window, the viewport or the device, but it
     // stops before they go so that the page's last call is answered by a whole editor.
@@ -848,6 +1177,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       summary.width = swapchain.extent().width;
       summary.height = swapchain.extent().height;
       summary.layouts = host.state.layouts;
+      summary.reports = host.state.reports;
       print_summary(summary, options);
     } else if (!error.empty()) {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
@@ -943,6 +1273,25 @@ int main(int argc, char** argv) {
           !parse_list(to, options.drag_to, 2))
         return usage("--drag needs X0,Y0 X1,Y1");
       options.drag = true;
+    } else if (a == "--look") {
+      if (!value(v) || !parse_list(v, options.look_by, 2)) return usage("--look needs DX,DY");
+      options.look = true;
+    } else if (a == "--webview-profile") {
+      if (!value(options.webview_profile)) return usage("--webview-profile needs a directory");
+    } else if (a == "--resize-to") {
+      if (!value(v) || !parse_list(v, options.resize_to, 2) || options.resize_to[0] < 64.0 ||
+          options.resize_to[1] < 64.0 || options.resize_to[0] > 16384.0 ||
+          options.resize_to[1] > 16384.0)
+        return usage("--resize-to needs W,H, each 64 to 16384");
+      options.resize = true;
+    } else if (a == "--test-keys") {
+      options.test_keys = true;
+    } else if (a == "--test-page") {
+      options.test_page = true;
+    } else if (a == "--test-drop-socket-at" || a == "--test-relayout-at") {
+      u32 n = 0;
+      if (!value(v) || !parse_u32(v, n) || n < 3) return usage("a frame number of 3 or more");
+      (a == "--test-drop-socket-at" ? options.drop_at : options.relayout_at) = n;
     } else if (a == "--capture") {
       if (!value(options.capture)) return usage("--capture needs a path");
     } else if (a == "--ddc") {
@@ -962,6 +1311,17 @@ int main(int argc, char** argv) {
     return usage("--drag releases at the eighth frame: --frames 10 or more");
   if (options.offscreen && (options.shell == Shell::Embedded || !options.listen.empty()))
     return usage("--offscreen draws the viewport alone: no --embedded, no --listen");
+  if (options.look && options.drag) return usage("--look and --drag use the same frames");
+  if (options.look && options.frames > 0 && options.frames < 10)
+    return usage("--look releases at the seventh frame: --frames 10 or more");
+  if (options.test_keys && (!options.move || (options.frames > 0 && options.frames < 32)))
+    return usage("--test-keys undoes what --move did: --move, and --frames 32 or more");
+  const bool test_window = options.resize || options.test_keys || options.test_page ||
+                           options.drop_at > 0 || options.relayout_at > 0;
+  if (test_window && (options.offscreen || options.shell != Shell::Embedded))
+    return usage("--resize-to, --test-keys and the --test-* flags are the embedded window's");
+  if ((options.drop_at > 0 || options.relayout_at > 0) && !options.test_page)
+    return usage("--test-drop-socket-at and --test-relayout-at need --test-page to see the page");
 
   editor::EditorDocument document;
   std::string error;

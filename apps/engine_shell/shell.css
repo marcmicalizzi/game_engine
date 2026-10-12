@@ -106,11 +106,16 @@ select {
 .app {
   display: grid;
   grid-template-rows: 44px 1fr 26px;
+  /* One column no wider than the window, whatever a panel's content would like: a page wider
+     than its window scrolls when an input takes focus, and embedded, the native viewport would
+     then sit where the cell no longer is. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
 }
 
 .titlebar {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: var(--s-4);
   padding: 0 var(--s-3) 0 var(--s-4);
@@ -158,6 +163,7 @@ select {
 .workspace {
   display: grid;
   grid-template-columns: var(--col-left, 280px) 5px minmax(320px, 1fr) 5px var(--col-right, 340px);
+  min-width: 0;
   min-height: 0;
   background: var(--bg-sunken);
 }
@@ -178,6 +184,62 @@ select {
 
 .column-right {
   grid-template-rows: 1fr;
+}
+
+/* The narrow layout (layout.js, below 960 CSS pixels of width): two columns, the outliner over the
+   properties on the left with the journal a drawer under them, and the viewport over the command
+   line on the right. The viewport cell is one rectangle in both layouts; the splits keep working
+   (the left one sizes the column, the row split the properties). */
+.narrow .workspace {
+  grid-template-columns: minmax(180px, min(var(--col-left, 280px), 42%)) 5px minmax(160px, 1fr);
+}
+
+.narrow #col-right,
+.narrow [data-split="right"] {
+  display: none;
+}
+
+.narrow .column-left {
+  grid-template-rows: minmax(72px, 1fr) 5px minmax(96px, var(--row-left-bottom, 45%)) auto;
+}
+
+.narrow .brand-name {
+  display: none;
+}
+
+.narrow #panel-journal {
+  border-top: 1px solid var(--border);
+}
+
+.narrow #panel-journal > .panel-head {
+  cursor: pointer;
+}
+
+.narrow #panel-journal > .panel-head::after {
+  content: "\25B8";
+  margin-left: auto;
+  color: var(--faint);
+  transition: transform 120ms var(--ease);
+}
+
+.narrow #panel-journal.open > .panel-head::after {
+  transform: rotate(90deg);
+}
+
+.narrow #panel-journal:not(.open) > .panel-body {
+  display: none;
+}
+
+.narrow #panel-journal.open {
+  height: min(38vh, 240px);
+}
+
+/* Embedded, the viewport is what the window is for: the command line under it takes a quarter of
+   the column by default rather than a fixed 210 pixels, which at 150 % in a 720-pixel window left
+   the viewport a strip a quarter of its width high (seen 2026-10-11, the first look at the
+   window). */
+.embedded .column-center {
+  grid-template-rows: minmax(120px, 1fr) 5px minmax(72px, var(--row-center-bottom, 26%));
 }
 
 /* ---- splits ---------------------------------------------------------------------------------- */
@@ -1113,6 +1175,8 @@ textarea.input {
 
 .statusbar {
   display: flex;
+  min-width: 0;
+  overflow: hidden;
   align-items: center;
   gap: var(--s-4);
   padding: 0 var(--s-3);
@@ -1186,4 +1250,51 @@ textarea.input {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* An enum's list (properties.js, `enumList`): drawn by the page, not the platform, so it can be
+   kept inside its panel (`fitPopup`) and the test hook can prove it stays out of the viewport. */
+.combo {
+  position: relative;
+}
+
+.combo-button {
+  text-align: left;
+  cursor: pointer;
+}
+
+.combo-button::after {
+  content: "\25BE";
+  float: right;
+  color: var(--faint);
+}
+
+.combo-list {
+  /* Fixed, not absolute: the properties scroll, and a list inside a scrolling panel is clipped by
+     it. fitPopup places it against its button in the window's coordinates, inside the panel. */
+  position: fixed;
+  overflow: auto;
+  margin: 0;
+  padding: var(--s-1);
+  list-style: none;
+  background: var(--panel-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 10;
+}
+
+.combo-item {
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.combo-item.selected {
+  color: var(--accent-strong);
+}
+
+.combo-item:hover,
+.combo-item.active {
+  background: var(--accent-soft);
 }

@@ -218,6 +218,34 @@ TEST_CASE("net: a server and a client on loopback") {
     CHECK(websocket_connect(server.port(), "/", wrong, ws, error, &status));  // extra headers ok
   }
 
+  SUBCASE("a message to every connection, then every connection dropped and the port kept") {
+    // What engine-editor does to its page: `editor.relayout` to every connection between the
+    // replies, and `--test-drop-socket-at` shutting them all while it goes on listening.
+    WebSocket a;
+    WebSocket b;
+    REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, a, error), error);
+    REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, b, error), error);
+    Message m;
+    REQUIRE(a.send_text("a"));  // a round trip each: both connections are in their loops
+    REQUIRE(a.receive(m, 10000));
+    REQUIRE(b.send_text("b"));
+    REQUIRE(b.receive(m, 10000));
+    const std::string note = R"({"jsonrpc":"2.0","method":"editor.relayout"})";
+    CHECK(server.send_text_all(note) == 2);
+    REQUIRE(a.receive(m, 10000));
+    CHECK(m.data == note);
+    REQUIRE(b.receive(m, 10000));
+    CHECK(m.data == note);
+    CHECK(server.drop_connections() == 2);
+    CHECK_FALSE(a.receive(m, 10000));
+    CHECK_FALSE(b.receive(m, 10000));
+    WebSocket c;
+    REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, c, error), error);
+    REQUIRE(c.send_text("again"));
+    REQUIRE(c.receive(m, 10000));
+    CHECK(m.data == "echo:5:again");
+  }
+
   server.stop();
   CHECK(server.connections() == 0);
 }

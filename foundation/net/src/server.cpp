@@ -83,6 +83,36 @@ void Server::write_loop(Connection& c) {
   }
 }
 
+u32 Server::drop_connections() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  u32 dropped = 0;
+  for (const auto& c : connections_) {
+    if (c->done.load()) continue;
+    shutdown_socket(c->handle);  // the connection's thread sees its read fail and ends
+    ++dropped;
+  }
+  return dropped;
+}
+
+u32 Server::send_text_all(std::string_view text) {
+  // Through each connection's outbox (post), so a broadcast keeps its place among the pushes the
+  // connection's writer sends, never interleaves with a reply, and never waits on a peer. The ids
+  // are taken under the server's lock and posted after it, because post() takes that lock itself.
+  constexpr u32 k_broadcast_bound = 64;
+  Vector<u64> ids;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& c : connections_) {
+      if (!c->done.load()) ids.push_back(c->id);
+    }
+  }
+  u32 reached = 0;
+  for (u64 id : ids) {
+    if (post(id, std::string(text), k_broadcast_bound) == Post::Queued) ++reached;
+  }
+  return reached;
+}
+
 void Server::reap(bool all) {
   Vector<std::unique_ptr<Connection>> finished;
   {
@@ -172,7 +202,12 @@ void Server::serve(Connection& connection, Socket socket) {
       while (!stopping_.load() && ws.receive(message)) {
         if (message.opcode == Opcode::Text) {
           const std::string reply = handler_->message(connection.id, message.data);
-          if (!reply.empty() && !ws.send_text(reply)) break;
+          bool sent = true;
+          if (!reply.empty()) {
+            std::lock_guard<std::mutex> lock(connection.send);
+            sent = ws.send_text(reply);
+          }
+          if (!sent) break;
         } else if (!handler_->binary(connection.id, message.data)) {
           ws.close(close_code::k_unsupported_data, "this server takes text messages");
           break;
@@ -196,6 +231,7 @@ void Server::serve(Connection& connection, Socket socket) {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  connection.ws = nullptr;
   if (upgraded) {
     ws.socket().close();
   } else {

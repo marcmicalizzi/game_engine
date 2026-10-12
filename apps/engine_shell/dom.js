@@ -94,3 +94,28 @@ export function toast(text) {
   document.body.append(el);
   setTimeout(() => el.remove(), 2600);
 }
+
+// Keeps a popup inside its panel (`container`): the popup is placed against its anchor (absolutely
+// against the anchor's wrapper, or fixed in the window's coordinates), opens below the anchor, or
+// above it when there is more room there, and its height is capped to the room it has, so it never
+// reaches past the panel. In engine-editor's window
+// a popup that did would be drawn under the native viewport's child window and hidden by it
+// (engine_shell.md, "Popups stay in their panels"); in a browser it would cover the next panel.
+export function fitPopup(popup, anchor, container, gap = 6) {
+  const a = anchor.getBoundingClientRect();
+  const c = container.getBoundingClientRect();
+  const below = c.bottom - a.bottom - gap;
+  const above = a.top - c.top - gap;
+  const down = below >= above;
+  if (getComputedStyle(popup).position === "fixed") {
+    // In the window's coordinates (a popup in a scrolling panel, which would clip an absolute one).
+    popup.style.left = `${Math.round(a.left)}px`;
+    popup.style.width = `${Math.round(a.width)}px`;
+    popup.style.top = down ? `${Math.round(a.bottom + gap)}px` : "auto";
+    popup.style.bottom = down ? "auto" : `${Math.round(innerHeight - a.top + gap)}px`;
+  } else {
+    popup.style.top = down ? `calc(100% + ${gap}px)` : "auto";
+    popup.style.bottom = down ? "auto" : `calc(100% + ${gap}px)`;
+  }
+  popup.style.maxHeight = `${Math.max(0, Math.floor(down ? below : above))}px`;
+}

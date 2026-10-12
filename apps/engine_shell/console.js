@@ -3,7 +3,7 @@
 // engine's own method catalogue (`engine.methods`), with each method's documentation and whether
 // it is a write; Tab or Enter on a completion takes it. Up and Down walk the history, which the
 // browser remembers. A write sent here refreshes the panels like any other.
-import { $, clear, h, prettyJson, store } from "./dom.js";
+import { $, clear, fitPopup, h, prettyJson, store } from "./dom.js";
 
 export class Console {
   constructor(app) {
@@ -59,6 +59,8 @@ export class Console {
       }, name, h("span", { class: "completion-doc", title: m.doc }, m.doc)));
     });
     this.list.hidden = false;
+    // Up from the input, never past the top of the command line's own panel.
+    fitPopup(this.list, this.input, $("panel-console"));
   }
 
   hide() {

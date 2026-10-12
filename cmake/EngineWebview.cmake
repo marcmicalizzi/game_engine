@@ -71,3 +71,11 @@ if(MSVC)
 else()
   target_compile_options(engine_webview_core PRIVATE -w)
 endif()
+
+# The SDK's headers again, for foundation/webview's own `Webview::focus()`, which calls the
+# runtime's controller (`ICoreWebView2Controller::MoveFocus`) because the library's C API has no
+# focus call: declarations only, the same files the library's implementation is built with.
+add_library(engine_webview2_headers INTERFACE)
+add_library(engine::webview2_headers ALIAS engine_webview2_headers)
+target_include_directories(engine_webview2_headers SYSTEM INTERFACE
+  "${webview2_sdk_SOURCE_DIR}/build/native/include")

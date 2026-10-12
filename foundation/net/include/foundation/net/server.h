@@ -78,6 +78,15 @@ class Server {
   void stop();
   // Connections open now.
   u32 connections() const;
+  // Shuts every open connection down and goes on listening: what a peer sees when the network
+  // drops under it, and how engine-editor's `--test-drop-socket-at` proves the shell reconnects.
+  // Returns how many it shut.
+  u32 drop_connections();
+  // Sends one text message to every open WebSocket connection, between the messages their own
+  // threads send (a lock per connection), and returns how many it reached: a host's notification
+  // to its pages (engine-editor's `editor.relayout`). Small and rare by contract — it is sent on
+  // the caller's thread — so a slow peer is the caller's wait, never a frame's queue.
+  u32 send_text_all(std::string_view text);
 
   // **Pushing to a connection** (docs/subsystems/net.md): queues `text` as one text message on
   // WebSocket connection `connection`, to be sent after everything queued before it by a writer
@@ -103,6 +112,7 @@ class Server {
     bool out_stop = false;
     WebSocket* ws = nullptr;
     std::thread writer;
+    std::mutex send;  // one direct sender at a time on `ws` (replies); pushes go through the outbox
   };
 
   void listen_loop();

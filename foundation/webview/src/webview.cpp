@@ -14,13 +14,23 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// The runtime's controller interface, for `focus()`: the SDK's MIDL header, the same one the
+// library's implementation is built with (cmake/EngineWebview.cmake), declarations only.
+#include <WebView2.h>
+#include <objbase.h>  // `interface` and the COM base types, which WIN32_LEAN_AND_MEAN leaves out
 #endif
+
+#include <string>
 
 namespace engine::webview {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_webview, "webview");
 
 namespace {
+
+#if defined(_WIN32)
+constexpr const wchar_t* k_profile_variable = L"WEBVIEW2_USER_DATA_FOLDER";
+#endif
 
 #if defined(_WIN32)
 // Microsoft's documented detection of the Evergreen WebView2 runtime: its client key's `pv` value,
@@ -80,9 +90,34 @@ bool Webview::create(void* parent, const WebviewOptions& options, std::string* e
     if (error != nullptr) *error = "a web view needs a parent window";
     return false;
   }
+#if defined(_WIN32)
+  // The profile's folder: the runtime reads WEBVIEW2_USER_DATA_FOLDER when it makes the view's
+  // environment and prefers it to the folder webview/webview passes (%APPDATA%\<exe>, shared by
+  // every instance), so it is set for exactly as long as the view takes to make and put back.
+  std::wstring previous;
+  bool had_previous = false;
+  std::wstring profile;
+  if (!options.profile_dir.empty()) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, options.profile_dir.c_str(), -1, nullptr, 0);
+    profile.resize(n > 0 ? static_cast<usize>(n) : 0);
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, options.profile_dir.c_str(), -1, profile.data(), n);
+    while (!profile.empty() && profile.back() == L'\0')
+      profile.pop_back();
+    wchar_t old[4096];
+    const DWORD got = GetEnvironmentVariableW(k_profile_variable, old, 4096);
+    had_previous = got > 0 && got < 4096;
+    if (had_previous) previous.assign(old, got);
+    (void)CreateDirectoryW(profile.c_str(), nullptr);  // the runtime makes what is below it
+    SetEnvironmentVariableW(k_profile_variable, profile.c_str());
+  }
+#endif
   // The library takes the parent's HWND itself (or a pointer to one) and makes its own child
   // widget inside it, hidden until it is given a size.
   handle_ = webview_create(options.devtools ? 1 : 0, parent);
+#if defined(_WIN32)
+  if (!options.profile_dir.empty())
+    SetEnvironmentVariableW(k_profile_variable, had_previous ? previous.c_str() : nullptr);
+#endif
   if (handle_ == nullptr) {
     if (error != nullptr)
       *error = "the WebView2 runtime refused to make a web view (webview_create failed)";
@@ -95,8 +130,22 @@ bool Webview::create(void* parent, const WebviewOptions& options, std::string* e
     SetWindowLongPtrW(w, GWL_STYLE, GetWindowLongPtrW(w, GWL_STYLE) | WS_CLIPSIBLINGS);
   }
 #endif
-  ENGINE_LOG_INFO(log_webview, "web view created");
+  ENGINE_LOG_INFO(log_webview, "web view created",
+                  log::field("profile", options.profile_dir.empty() ? std::string("(library's)")
+                                                                    : options.profile_dir));
   return true;
+}
+
+bool Webview::focus() noexcept {
+  if (handle_ == nullptr) return false;
+#if defined(_WIN32)
+  auto* controller = static_cast<ICoreWebView2Controller*>(webview_get_native_handle(
+      static_cast<webview_t>(handle_), WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER));
+  return controller != nullptr &&
+         SUCCEEDED(controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+#else
+  return false;
+#endif
 }
 
 void Webview::destroy() noexcept {

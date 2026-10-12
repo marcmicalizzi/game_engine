@@ -14,8 +14,8 @@ engine_module(NAME webview LAYER foundation
   EXTERNAL_DEPS engine::webview_core
   SOURCES src/webview.cpp)
 if(TARGET engine_webview AND WIN32)
-  # RegGetValueW: the runtime check (webview.h, `runtime_available`).
-  target_link_libraries(engine_webview PRIVATE advapi32)
+  # RegGetValueW: the runtime check (webview.h, `runtime_available`); the SDK headers: `focus()`.
+  target_link_libraries(engine_webview PRIVATE advapi32 engine::webview2_headers)
 endif()
 
 engine_module_tests(NAME webview

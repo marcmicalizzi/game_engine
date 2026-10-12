@@ -2280,12 +2280,30 @@ struct RejectParams @version(1) {
 
 /// Parameters of `editor.layout`, which the page sends as a notification: its viewport cell's
 /// rectangle in CSS pixels from the page's top-left corner, and the page's device pixel ratio.
-struct EditorLayoutParams @version(1) {
+struct EditorLayoutParams @version(2) {
   x: f64 = 0
   y: f64 = 0
   width: f64 = 0
   height: f64 = 0
   device_pixel_ratio: f64 = 1
+  /// The page's narrow layout is on (engine_shell.md, "The narrow layout"): too narrow for three
+  /// columns, so the outliner and the properties are stacked and the journal is a drawer.
+  narrow: bool = false @since(2)
+}
+
+/// Parameters of `editor.test_report`, a notification the embedded page sends only when it was
+/// loaded with `?embedded=1&test=1` and the editor registered the method (`--test-page`): one of
+/// the page's own checks (a popup kept out of the viewport cell, a reconnect), for the editor's
+/// summary.
+struct EditorTestReportParams @version(1) {
+  name: string
+  ok: bool = false
+  detail: string
+}
+
+/// What `editor.test_report` answers when sent as a request: how many reports the editor holds.
+struct EditorTestReportResult @version(1) {
+  reports: u32 = 0
 }
 
 /// What `editor.layout` placed, for a caller that sent it as a request rather than a notification:

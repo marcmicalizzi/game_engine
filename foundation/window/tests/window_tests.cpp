@@ -379,8 +379,21 @@ TEST_CASE("window: a child window sits in its parent, moves, and reports through
     }
     CHECK(seen);
   }
+  // A38: the platform's queue takes keys, buttons and motion and nothing else; the display's
+  // scale is a positive number; a top-level window is resized with set_size, a child is not.
+  window::Event pad;
+  pad.kind = window::EventKind::GamepadButtonDown;
+  CHECK_FALSE(child.post_os_event(pad));
+  window::Event unnamed;
+  unnamed.kind = window::EventKind::KeyDown;  // Key::Unknown: no virtual key to post
+  CHECK_FALSE(child.post_os_event(unnamed));
+  CHECK(parent.display_scale() > 0.0f);
+  CHECK_FALSE(child.set_size(10, 10));
+  CHECK(parent.set_size(220, 160));
   child.destroy();
   CHECK_FALSE(child.valid());
+  CHECK_FALSE(child.post_os_event(press));  // no window, nothing posted
+  CHECK(child.display_scale() == 1.0f);
 #else
   CHECK_FALSE(made);
   CHECK_FALSE(error.empty());

@@ -32,6 +32,14 @@ bool runtime_available(std::string* why = nullptr);
 struct WebviewOptions {
   // DevTools on a right click (F12): for a person working on the shell, never in a test.
   bool devtools = false;
+  // Where the runtime keeps the view's profile — its cache, cookies, local storage — created if
+  // absent. Empty is the library's own choice, `%APPDATA%\<executable name>`, which every
+  // instance of the executable shares, tests included; a host names one of its own (engine-editor:
+  // beside the document, or inside a test's scratch directory). On Windows it is passed as the
+  // runtime's documented `WEBVIEW2_USER_DATA_FOLDER`, set for this process while the view is made
+  // and put back after, because webview/webview has no option for it and the runtime honours the
+  // variable over the folder the library passes (docs/subsystems/webview.md, "The profile").
+  std::string profile_dir;
 };
 
 class Webview {
@@ -55,6 +63,9 @@ class Webview {
   // The platform's handle of the view's own window (an HWND on Windows): a sibling of whatever else
   // the parent holds, for a host that orders its children.
   void* widget() const noexcept;
+  // Gives the page the keyboard, as a click in it would (the runtime's own programmatic focus
+  // move). False without a view.
+  bool focus() noexcept;
 
  private:
   void* handle_ = nullptr;  // webview_t

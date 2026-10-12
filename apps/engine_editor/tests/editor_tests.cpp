@@ -22,6 +22,7 @@
 #include <domain/protocol/listener.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
+#include <foundation/io/vfs.h>
 #include <foundation/net/websocket.h>
 #include <systems/renderer/capture.h>
 
@@ -31,8 +32,10 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace engine;
@@ -1172,6 +1175,304 @@ TEST_CASE("engine-editor: --embedded puts the shell beside the viewport, and the
   const bool named = selected != nullptr && selected->is_string();
   REQUIRE_MESSAGE(named, output);
   CHECK(std::string(selected->as_string()) == editor::hex(k_left));
+}
+
+TEST_CASE("engine-editor: a change of the display's scale moves the child and the pick scale") {
+  // No window and no device: the editor's dispatcher fed a synthetic change of the page's ratio,
+  // as `ScaleChanged` and the page's answer to `editor.relayout` bring one, and the placement and
+  // the pointer's scale computed from what it recorded, as the frame loop computes them.
+  const test::TempDir tmp("engine_editor_dpi");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  editor::EditorState state;
+  state.document = &document;
+  protocol::Dispatcher d(
+      protocol::Context{&document.sessions(), nullptr, nullptr, &state, nullptr});
+  protocol::add_builtin_methods(d);
+  editor::add_editor_methods(d);
+  const auto layout = [&](f64 ratio, bool narrow) {
+    const std::string text =
+        std::string(R"({"jsonrpc":"2.0","method":"editor.layout","params":{"x":300,"y":48,)") +
+        R"("width":400,"height":300,"device_pixel_ratio":)" + std::to_string(ratio) +
+        R"(,"narrow":)" + (narrow ? "true" : "false") + "}}";
+    CHECK(d.dispatch_text(text).empty());
+  };
+  // The child's pointer scale as main.cpp reads it each frame: its size in the window's
+  // coordinates against the swapchain's pixels, which are the window's coordinates times its
+  // pixels per unit.
+  const auto pick_scale = [](const editor::ViewportRect& r, f64 pixels_per_unit) {
+    return editor::pointer_scale(r.width, r.height,
+                                 static_cast<u32>(std::lround(r.width * pixels_per_unit)),
+                                 static_cast<u32>(std::lround(r.height * pixels_per_unit)));
+  };
+
+  // **Windows' model**: the window's coordinates are pixels at every scale (pixels per unit 1). At
+  // 100 % the cell is where the page says; the display goes to 150 %, the page answers with the
+  // same CSS rectangle at ratio 1.5, and the child moves and grows by half.
+  layout(1.0, false);
+  REQUIRE(state.layouts == 1);
+  const editor::Placement before = editor::place_viewport(state.layout, 1.0, 1600, 900);
+  CHECK_FALSE(before.clamped);
+  CHECK(before.rect == editor::ViewportRect{300, 48, 400, 300});
+  // Between ScaleChanged and the page's answer the editor places the child by the scaled ratio,
+  // and the page's answer lands on the same rectangle.
+  const protocol::EditorLayoutParams interim = editor::rescaled_layout(state.layout, 1.0, 1.5);
+  CHECK(interim.device_pixel_ratio == doctest::Approx(1.5));
+  layout(1.5, false);
+  REQUIRE(state.layouts == 2);
+  const editor::Placement after = editor::place_viewport(state.layout, 1.0, 2400, 1350);
+  CHECK(after.rect == editor::ViewportRect{450, 72, 600, 450});
+  CHECK(editor::place_viewport(interim, 1.0, 2400, 1350).rect == after.rect);
+  CHECK(pick_scale(after.rect, 1.0).x == doctest::Approx(1.0f));
+
+  // **A platform whose coordinates are points** (pixels per unit follows the display, as on a
+  // Mac): the same change keeps the child's rectangle in the window's coordinates and doubles
+  // what one of them is in pixels, so the pick scale moves from 1 to 1.5 and a click still lands
+  // on the pixel under it.
+  const editor::Placement points_before = editor::place_viewport(state.layout, 1.5, 1600, 900);
+  layout(1.0, false);
+  const editor::Placement points_at_1 = editor::place_viewport(state.layout, 1.0, 1600, 900);
+  CHECK(points_at_1.rect == points_before.rect);
+  CHECK(pick_scale(points_at_1.rect, 1.0).x == doctest::Approx(1.0f));
+  CHECK(pick_scale(points_before.rect, 1.5).x == doctest::Approx(1.5f));
+  CHECK(pick_scale(points_before.rect, 1.5).y == doctest::Approx(1.5f));
+
+  // The narrow layout's flag is recorded with the rectangle.
+  layout(1.5, true);
+  CHECK(state.layout.narrow);
+
+  // **The clamp.** A cell past the window's client area is cut to it and says so; a cell whose
+  // far edge is the window's (853.33 CSS pixels at 1.5 is 1280 pixels, not 1281) is not.
+  protocol::EditorLayoutParams wide;
+  wide.x = 284.6666666666667;
+  wide.width = 568.6666666666666;
+  wide.height = 300;
+  wide.device_pixel_ratio = 1.5;
+  const editor::Placement edge = editor::place_viewport(wide, 1.0, 1280, 720);
+  CHECK_FALSE(edge.clamped);
+  CHECK(edge.rect.x + static_cast<i32>(edge.rect.width) == 1280);
+  // The page's viewport is whole CSS pixels (854 of them in a 1280-pixel window at 1.5), so a
+  // cell at its edge reaches a pixel past the window: cut, and not called a clamp.
+  wide.width = 569.3333333333333;
+  const editor::Placement rounded = editor::place_viewport(wide, 1.0, 1280, 720);
+  CHECK_FALSE(rounded.clamped);
+  CHECK(rounded.rect.x + static_cast<i32>(rounded.rect.width) == 1280);
+  wide.width = 900.0;
+  const editor::Placement cut = editor::place_viewport(wide, 1.0, 1280, 720);
+  CHECK(cut.clamped);
+  CHECK(cut.rect.x + static_cast<i32>(cut.rect.width) == 1280);
+  CHECK(editor::place_viewport(wide, 1.0, 0, 0).rect.width > 1280);  // no client size: no clamp
+
+  // `editor.relayout` is a notification (no id) the page answers with a layout.
+  JsonValue relayout;
+  REQUIRE(parse_json(editor::relayout_notification("display scale"), relayout).ok);
+  CHECK(std::string(relayout.find("method")->as_string()) == "editor.relayout");
+  CHECK(relayout.find("id") == nullptr);
+  CHECK(std::string(relayout.find("params")->find("reason")->as_string()) == "display scale");
+
+  // The test page's channel exists only where --test-page registered it.
+  JsonValue refused;
+  REQUIRE(parse_json(d.dispatch_text(R"({"jsonrpc":"2.0","id":1,"method":"editor.test_report",)"
+                                     R"("params":{"name":"x","ok":true,"detail":""}})"),
+                     refused)
+              .ok);
+  REQUIRE(refused.find("error") != nullptr);
+  CHECK(write_json(*refused.find("error")->find("code")) == "-32601");
+  editor::add_editor_test_methods(d);
+  CHECK(d.dispatch_text(R"({"jsonrpc":"2.0","method":"editor.test_report",)"
+                        R"("params":{"name":"enum","ok":true,"detail":"{}"}})")
+            .empty());
+  REQUIRE(state.reports.size() == 1);
+  CHECK(state.reports[0].name == "enum");
+  CHECK(state.reports[0].ok);
+}
+
+namespace {
+
+// The embedded runs' document: one cube three metres across at the origin, and with `provenance`
+// an AssetProvenance record, whose `license_class` is an enum the properties panel lists.
+std::string embedded_fixture(const test::TempDir& tmp, bool provenance) {
+  editor::EditorDocument document;
+  std::string error;
+  REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
+  REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+  Vector<doc::Command> commands;
+  commands.push_back(doc::cmd_create(
+      k_left, k_placement, Id128{},
+      json(R"({"name":"only","mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})")));
+  if (provenance) {
+    commands.push_back(doc::cmd_create(
+        k_yard, "engine.content.AssetProvenance", Id128{},
+        json(R"({"generator":"hand","license":"CC0-1.0","license_class":"Permissive",)"
+             R"("operator_id":"00000000000000200000000000000009"})")));
+  }
+  REQUIRE_MESSAGE(document.apply(std::span<const doc::Command>(commands.data(), commands.size()),
+                                 "the fixture", error),
+                  error);
+  return tmp.path();
+}
+
+const JsonValue* page_report(const JsonValue& summary, std::string_view name) {
+  const JsonValue* page = summary.find("page");
+  if (page == nullptr || !page->is_array()) return nullptr;
+  for (u32 i = 0; i < page->size(); ++i) {
+    const JsonValue* n = (*page)[i].find("name");
+    if (n != nullptr && n->is_string() && std::string_view(n->as_string()) == name)
+      return &(*page)[i];
+  }
+  return nullptr;
+}
+
+bool report_ok(const JsonValue* report) {
+  if (report == nullptr) return false;
+  const JsonValue* ok = report->find("ok");
+  return ok != nullptr && write_json(*ok) == "true";
+}
+
+}  // namespace
+
+TEST_CASE("engine-editor: the page's narrow layout keeps the viewport inside a resized window") {
+  const test::TempDir tmp("engine_editor_layout");
+  const std::string doc_dir = embedded_fixture(tmp, false);
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string ddc = tmp.file("ddc");
+  // 1280 x 720, then 800 x 600 at the fourth frame: whatever the display's scale, every layout
+  // the page sends must put the child inside the client area without the editor's clamp, and
+  // the narrow layout must be on exactly when the page is under 960 CSS pixels wide. Vsynced and
+  // under the editor's ceiling; the profile is inside this test's directory (<doc>/.editor).
+  const std::vector<std::string_view> argv = {
+      exe,        "--doc", doc_dir, "--width", "1280",        "--height", "720",
+      "--frames", "8",     "--ddc", ddc,       "--resize-to", "800,600",  "--embedded"};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  const f64 scale = number(summary.find("display_scale"));
+  REQUIRE_MESSAGE(scale > 0.0, output);
+  const JsonValue* placements = summary.find("placements");
+  REQUIRE_MESSAGE((placements != nullptr && placements->is_array()), output);
+  bool large = false;
+  bool small = false;
+  for (u32 i = 0; i < placements->size(); ++i) {
+    const JsonValue& p = (*placements)[i];
+    const JsonValue* client = p.find("client");
+    const JsonValue* rect = p.find("viewport");
+    REQUIRE((client != nullptr && rect != nullptr && client->size() == 2 && rect->size() == 4));
+    const f64 cw = number(&(*client)[0]);
+    const f64 ch = number(&(*client)[1]);
+    const f64 x = number(&(*rect)[0]);
+    const f64 y = number(&(*rect)[1]);
+    // The page's own layouts never need the clamp; the editor's re-placement of the old layout in
+    // the resized window, before the page answers, is what the clamp is for.
+    const bool from_page = write_json(*p.find("from_page")) == "true";
+    if (from_page) CHECK_MESSAGE(write_json(*p.find("clamped")) == "false", output);
+    CHECK(x >= 0.0);
+    CHECK(y >= 0.0);
+    CHECK(x + number(&(*rect)[2]) <= cw);
+    CHECK(y + number(&(*rect)[3]) <= ch);
+    // The page decides by its own width in CSS pixels: the client's over the display's scale.
+    const bool narrow = cw / scale < 960.0;
+    if (from_page)
+      CHECK_MESSAGE(write_json(*p.find("narrow")) == (narrow ? "true" : "false"), output);
+    large = large || (from_page && cw == 1280.0);
+    small = small || (from_page && cw == 800.0);
+  }
+  CHECK_MESSAGE(large, output);
+  CHECK_MESSAGE(small, output);
+  // The web view's profile is the document's, not %APPDATA%'s, and it ignores itself.
+  std::string ignore;
+  CHECK(io::read_file(doc_dir + "/.editor/.gitignore", ignore) == io::Status::Ok);
+  CHECK(ignore.find('*') != std::string::npos);
+  std::error_code ec;
+  CHECK(std::filesystem::is_directory(doc_dir + "/.editor/webview", ec));
+}
+
+TEST_CASE("engine-editor: the viewport's keys, the page's keys, and the look gesture") {
+  const test::TempDir tmp("engine_editor_keys");
+  const std::string doc_dir = embedded_fixture(tmp, false);
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string ddc = tmp.file("ddc");
+  // The pick selects the cube and --move commits a transaction; the look gesture (frames 3 to 7)
+  // turns the camera through the adopted child's own events; then a click posted to the child
+  // through the platform's queue gives it the keyboard, Ctrl+Z posted to whoever has the
+  // keyboard undoes the move, the page is given the keyboard, and Ctrl+Z posted again must not
+  // reach SDL. Nothing is sent to the desktop's own foreground window.
+  const std::vector<std::string_view> argv = {
+      exe,        "--doc",       doc_dir,  "--width", "900",       "--height", "560",
+      "--frames", "34",          "--pick", "center",  "--move",    "0,0.25,0", "--look",
+      "90,-45",   "--test-keys", "--ddc",  ddc,       "--embedded"};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  CHECK(write_json(*summary.find("moved")) == "true");
+  const JsonValue* look = summary.find("look");
+  REQUIRE_MESSAGE((look != nullptr && look->is_object()), output);
+  // Pointer right turns the camera right (yaw falls) and pointer up raises it (pitch rises), as
+  // engine-view flies; the amounts are the fly camera's sensitivity's.
+  CHECK_MESSAGE(number(look->find("yaw_deg")) != 0.0, output);
+  CHECK_MESSAGE(number(look->find("pitch_deg")) != 0.0, output);
+  CHECK_MESSAGE(write_json(*look->find("relative")) == "true", output);
+  const JsonValue* keys = summary.find("keys");
+  REQUIRE_MESSAGE((keys != nullptr && keys->is_object()), output);
+  CHECK_MESSAGE(write_json(*keys->find("viewport_focus")) == "true", output);
+  CHECK_MESSAGE(write_json(*keys->find("posted_to_viewport")) == "true", output);
+  // Ctrl+Z in the viewport undid the move: one undo, the editor's.
+  CHECK_MESSAGE(write_json(*keys->find("undos_from_viewport")) == "1", output);
+  // With the page holding the keyboard SDL saw no key at all, and the editor undid nothing more.
+  CHECK_MESSAGE(write_json(*keys->find("page_focus")) == "true", output);
+  CHECK_MESSAGE(write_json(*keys->find("sdl_keys_from_page")) == "0", output);
+  CHECK_MESSAGE(write_json(*keys->find("undos_after_page")) == "1", output);
+  // Whether the page itself acted on the posted keys is the browser's affair; say what happened.
+  MESSAGE("page: posted " << write_json(*keys->find("posted_to_page")) << ", undo position "
+                          << write_json(*keys->find("undo_position_before_page")) << " -> "
+                          << write_json(*keys->find("undo_position_after_page")));
+}
+
+TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, and reconnects") {
+  const test::TempDir tmp("engine_editor_page");
+  const std::string doc_dir = embedded_fixture(tmp, true);
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string ddc = tmp.file("ddc");
+  // The page's test hook (?test=1, only with --test-page) opens the command line's completions
+  // and the properties panel's enum list by DOM events and reports whether each stays in its panel
+  // and off the cell; then the editor sends editor.relayout (the page answers with a layout) and
+  // shuts every connection under the page, which must show its pill, reconnect and say so, while
+  // the viewport goes on drawing.
+  const std::vector<std::string_view> argv = {exe,
+                                              "--doc",
+                                              doc_dir,
+                                              "--width",
+                                              "900",
+                                              "--height",
+                                              "560",
+                                              "--frames",
+                                              "40",
+                                              "--ddc",
+                                              ddc,
+                                              "--test-page",
+                                              "--test-relayout-at",
+                                              "10",
+                                              "--test-drop-socket-at",
+                                              "20",
+                                              "--embedded"};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  CHECK_MESSAGE(report_ok(page_report(summary, "completions")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "enum")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "done")), output);
+  // editor.relayout reached the page, which answered with a layout.
+  CHECK(write_json(*summary.find("relayouts")) == "1");
+  CHECK_MESSAGE(number(summary.find("relayout_reached")) >= 1.0, output);
+  CHECK_MESSAGE(number(summary.find("layouts")) > number(summary.find("layouts_at_relayout")),
+                output);
+  // The drop: the pill said so, the page came back, and frames went on being drawn throughout.
+  CHECK_MESSAGE(number(summary.find("drops")) >= 1.0, output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "reconnect")), output);
+  const f64 dropped_at = number(summary.find("frames_at_drop"));
+  const f64 back_at = number(summary.find("frames_at_reconnect"));
+  CHECK_MESSAGE(dropped_at > 0.0, output);
+  CHECK_MESSAGE(back_at > dropped_at, output);
+  CHECK_MESSAGE(number(summary.find("frames")) > back_at, output);
 }
 
 TEST_CASE("engine-editor: --version prints the build stamp with no window") {

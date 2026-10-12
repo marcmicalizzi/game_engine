@@ -4,7 +4,7 @@
 // `SetProperty` and the rationale typed below the panel, which defaults to naming the change, so
 // the journal says why. Nothing here knows a type: the fields, their kinds, their documentation and
 // their defaults all come from the host.
-import { $, clear, h } from "./dom.js";
+import { $, clear, fitPopup, h } from "./dom.js";
 
 const AXES = { vec2: 2, vec3: 3, vec4: 4, dvec3: 3, worldpos: 3, quat: 4 };
 const AXIS_NAMES = ["x", "y", "z", "w"];
@@ -189,11 +189,9 @@ export class Properties {
     if (/^[A-Za-z_][\w.]*$/.test(kind) && kind.includes(".")) {
       this.describe(kind).then((d) => {
         if (!d || d.kind !== "enum" || !Array.isArray(d.values) || !area.isConnected) return;
-        const select = h("select", { class: "input" },
-          d.values.map((v) => h("option", { value: v.name, title: v.doc || "" }, v.name)));
-        select.value = typeof value === "string" ? value : "";
-        select.addEventListener("change", () => commit(select.value, select));
-        area.replaceWith(select);
+        const combo = enumList(d.values, typeof value === "string" ? value : "", (name, button) =>
+          commit(name, button), this.el);
+        area.replaceWith(combo);
       });
     }
   }
@@ -224,4 +222,79 @@ export class Properties {
     if (ok) this.rationale.value = "";
     return ok;
   }
+}
+
+// An enum's values as a list the page draws itself, not a native <select>: a native list is the
+// platform's own popup, which a test cannot open or measure, and the page's own can be kept inside
+// the panel (`fitPopup`) and proven to stay out of engine-editor's viewport cell (engine_shell.md,
+// "Popups stay in their panels"). A button shows the value; a click, Enter, Space or Alt+Down opens
+// the list; the arrow keys walk it, Enter or a click takes a value, Escape or a click elsewhere
+// closes it.
+function enumList(values, current, onPick, panel) {
+  const button = h("button", { class: "input combo-button", type: "button", "aria-haspopup": "listbox" },
+    current || "unset");
+  const list = h("ul", { class: "combo-list", role: "listbox", hidden: true });
+  const wrap = h("div", { class: "combo" }, button, list);
+  let active = -1;
+  const items = values.map((v, i) => h("li", {
+    class: "combo-item" + (v.name === current ? " selected" : ""),
+    role: "option",
+    title: v.doc || "",
+    onmousedown: (e) => {
+      e.preventDefault();
+      take(i);
+    },
+  }, v.name));
+  list.append(...items);
+  const mark = (i) => {
+    active = i;
+    items.forEach((li, k) => li.classList.toggle("active", k === active));
+    // The list's own scroll only: scrollIntoView would scroll the panel under a fixed list too.
+    const li = items[active];
+    if (!li) return;
+    if (li.offsetTop < list.scrollTop) list.scrollTop = li.offsetTop;
+    else if (li.offsetTop + li.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = li.offsetTop + li.offsetHeight - list.clientHeight;
+  };
+  const open = () => {
+    list.hidden = false;
+    fitPopup(list, button, panel.closest(".panel") || panel);
+    mark(Math.max(0, values.findIndex((v) => v.name === current)));
+  };
+  const close = () => {
+    list.hidden = true;
+    if (!wrap.isConnected) panel.removeEventListener("scroll", close);  // the panel was redrawn
+  };
+  const take = (i) => {
+    close();
+    if (!values[i] || values[i].name === current) return;
+    current = values[i].name;
+    button.textContent = current;
+    items.forEach((li, k) => li.classList.toggle("selected", k === i));
+    onPick(current, button);
+  };
+  button.addEventListener("click", () => (list.hidden ? open() : close()));
+  // A fixed list stays where it opened, so it closes when the panel under it scrolls.
+  panel.addEventListener("scroll", close, { passive: true });
+  button.addEventListener("blur", () => setTimeout(close, 120));
+  button.addEventListener("keydown", (e) => {
+    if (list.hidden) {
+      if (e.key === "Enter" || e.key === " " || (e.altKey && e.key === "ArrowDown")) {
+        e.preventDefault();
+        open();
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      mark((active + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      take(active);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
+  return wrap;
 }

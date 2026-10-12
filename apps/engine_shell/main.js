@@ -21,6 +21,7 @@ import { Rpc } from "./rpc.js";
 import { installSplits } from "./splits.js";
 import { Viewport } from "./viewport.js";
 import { EmbeddedViewport } from "./embedded.js";
+import { Layout } from "./layout.js";
 
 class App extends EventTarget {
   constructor() {
@@ -49,6 +50,8 @@ class App extends EventTarget {
   }
 
   start() {
+    // Two columns below the three's width (layout.js); the viewport cell moves when it flips.
+    this.layout = new Layout(() => this.viewport.capture("final"));
     installSplits((done) => {
       if (done) this.viewport.capture("final");
     });

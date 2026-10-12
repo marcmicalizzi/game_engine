@@ -70,6 +70,12 @@ class Listener final : public net::ServerHandler, public EventTransport {
   bool start(u16 port, std::string shell_dir, std::string session, std::string& error);
   void stop();
   bool running() const noexcept { return server_.port() != 0; }
+  // Every connection shut under its peer, the port and the token kept, so a page reconnects to
+  // the same address: engine-editor's `--test-drop-socket-at` (net::Server::drop_connections).
+  u32 drop_connections() { return server_.drop_connections(); }
+  // One JSON-RPC notification to every connection, outside any request: engine-editor's
+  // `editor.relayout` (net::Server::send_text_all). Not a subscription — every page hears it.
+  u32 notify_all(std::string_view notification) { return server_.send_text_all(notification); }
 
   u16 port() const noexcept { return server_.port(); }
   const std::string& token() const noexcept { return token_; }
