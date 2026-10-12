@@ -732,18 +732,38 @@ bool Placer::occupies(scene_gen::TileCoord tile) const noexcept {
       return tile.x >= region.tile_min[0] && tile.x <= region.tile_max[0] &&
              tile.z >= region.tile_min[1] && tile.z <= region.tile_max[1];
     case RegionKind::Polygon: {
-      // The polygon's bounding box against the tile: a tile it may reach.
-      f64 lo_x = im.poly_x[0], hi_x = im.poly_x[0], lo_z = im.poly_z[0], hi_z = im.poly_z[0];
-      for (u32 i = 1; i < im.poly_x.size(); ++i) {
-        lo_x = std::min(lo_x, im.poly_x[i]);
-        hi_x = std::max(hi_x, im.poly_x[i]);
-        lo_z = std::min(lo_z, im.poly_z[i]);
-        hi_z = std::max(hi_z, im.poly_z[i]);
-      }
+      // Whether the polygon reaches the tile: one of its corners in the tile, the tile's centre in
+      // it, or one of its edges crossing one of the tile's — inclusive, so a tile it only touches
+      // is asked and its points decided one by one. A bent corridor's bounding box is mostly
+      // tiles it does not reach (desert-endless's: 62,000 tiles for 12,700).
       const f64 t = static_cast<f64>(im.tile_mm) / 1000.0;
       const f64 x0 = static_cast<f64>(tile.x) * t;
       const f64 z0 = static_cast<f64>(tile.z) * t;
-      return x0 + t >= lo_x && x0 <= hi_x && z0 + t >= lo_z && z0 <= hi_z;
+      const f64 x1 = x0 + t;
+      const f64 z1 = z0 + t;
+      const u32 n = im.poly_x.size();
+      for (u32 i = 0; i < n; ++i) {
+        if (im.poly_x[i] >= x0 && im.poly_x[i] <= x1 && im.poly_z[i] >= z0 && im.poly_z[i] <= z1)
+          return true;
+      }
+      if (im.in_region(scene_gen::nearest_mm(0.5 * (x0 + x1)), scene_gen::nearest_mm(0.5 * (z0 + z1))))
+        return true;
+      const auto side = [](f64 px, f64 pz, f64 qx, f64 qz, f64 rx, f64 rz) {
+        return (qx - px) * (rz - pz) - (qz - pz) * (rx - px);
+      };
+      const auto apart = [](f64 a, f64 b) { return (a < 0.0 && b < 0.0) || (a > 0.0 && b > 0.0); };
+      const f64 rx[4] = {x0, x1, x1, x0};
+      const f64 rz[4] = {z0, z0, z1, z1};
+      for (u32 i = 0, j = n - 1; i < n; j = i++) {
+        for (u32 e = 0; e < 4; ++e) {
+          const u32 f = (e + 1) & 3u;
+          const f64 ax = im.poly_x[j], az = im.poly_z[j], bx = im.poly_x[i], bz = im.poly_z[i];
+          if (!apart(side(rx[e], rz[e], rx[f], rz[f], ax, az), side(rx[e], rz[e], rx[f], rz[f], bx, bz)) &&
+              !apart(side(ax, az, bx, bz, rx[e], rz[e]), side(ax, az, bx, bz, rx[f], rz[f])))
+            return true;
+        }
+      }
+      return false;
     }
   }
   return false;
@@ -789,8 +809,10 @@ bool Placer::region_tiles(Vector<scene_gen::TileCoord>& out, std::string* error)
     return false;
   }
   for (i64 z = tz0; z <= tz1; ++z) {
-    for (i64 x = tx0; x <= tx1; ++x)
-      out.push_back(scene_gen::TileCoord{static_cast<i32>(x), static_cast<i32>(z)});
+    for (i64 x = tx0; x <= tx1; ++x) {
+      const scene_gen::TileCoord tile{static_cast<i32>(x), static_cast<i32>(z)};
+      if (occupies(tile)) out.push_back(tile);
+    }
   }
   return true;
 }

@@ -588,3 +588,33 @@ TEST_CASE("scatter: the generator through the registry: tiles are the whole read
   CHECK_FALSE(generator->open(params, context, &state, &error));
   CHECK(error.find("one grid") != std::string::npos);
 }
+
+TEST_CASE("scatter: a polygon region places inside it, on the tiles it reaches") {
+  Layer layer;
+  layer.seed = 8;
+  layer.density.per_m2 = 0.05;
+  layer.kinds.push_back(rock_kind("a", 2.0f));
+  layer.region.kind = RegionKind::Polygon;
+  layer.region.polygon.push_back({0.0, 0.0});
+  layer.region.polygon.push_back({200.0, 0.0});
+  layer.region.polygon.push_back({0.0, 200.0});
+  const Placer placer = open_layer(layer);
+  Vector<scene_gen::TileCoord> tiles;
+  std::string error;
+  REQUIRE(placer.region_tiles(tiles, &error));
+  // The triangle's bounding box is 7 x 7 tiles of 32 m; it reaches those on or under its diagonal.
+  MESSAGE("polygon: " << tiles.size() << " of 49 tiles");
+  CHECK(tiles.size() < 40);
+  CHECK(tiles.size() > 20);
+  Vector<Point> points;
+  for (const scene_gen::TileCoord& t : tiles)
+    placer.place_tile(t, scene_gen::Ground{}, ~0u, points);
+  for (const Point& p : points) {
+    CHECK(p.x_mm >= 0);
+    CHECK(p.z_mm >= 0);
+    CHECK(p.x_mm + p.z_mm <= 200000);
+  }
+  const f64 want = 0.05 * 20000.0;
+  MESSAGE("polygon: " << points.size() << " placed, " << want << " expected");
+  CHECK(std::fabs(static_cast<f64>(points.size()) - want) < 0.1 * want);
+}
