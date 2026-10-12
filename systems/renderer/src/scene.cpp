@@ -725,6 +725,9 @@ struct PlacementRef {
   std::string generator;
   JsonValue params;
   std::string where;
+  // In a streamed world, whether the world streams it (`PlacementEntry::stream`); a `ruins` entry
+  // always is.
+  bool stream = true;
 };
 
 // The job system's performance pool, made the first time a generator asks for it: a read of a few
@@ -788,7 +791,8 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
                                    path + ": ruins " + std::to_string(r)});
   for (u32 p = 0; p < file.placements.size(); ++p) {
     entries.push_back(PlacementRef{file.placements[p].generator, file.placements[p].params,
-                                   path + ": placements " + std::to_string(p)});
+                                   path + ": placements " + std::to_string(p),
+                                   file.placements[p].stream});
   }
   if (entries.empty()) return true;
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
@@ -800,7 +804,6 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.tile_size = out.world.enabled ? out.world.tile_size : 32.0f;
   context.dir = dir;
   if (out.terrain.enabled) context.ground = ground.provider().view();
-  context.world = out.world.enabled ? &world : nullptr;
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;
   Vector<std::pair<MeshKey, u32>> seen;
@@ -811,6 +814,10 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       return false;
     }
     context.where = entry.where;
+    // An entry the world does not stream (`PlacementEntry::stream` false) is a whole read, opened
+    // as one outside a world is: its instances are the scene's own.
+    const bool world_streams = out.world.enabled && entry.stream;
+    context.world = world_streams ? &world : nullptr;
     void* state = nullptr;
     if (!generator->open(entry.params, context, &state, &error)) return false;
     // Closed however this entry ends.
@@ -819,7 +826,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       void* state;
       ~Close() { generator->close(state); }
     } close{generator, state};
-    if (out.world.enabled) {
+    if (world_streams) {
       if (generator->meshes == nullptr || generator->tile == nullptr) {
         error = entry.where + ": the placement generator \"" + entry.generator +
                 "\" has no tiles, so a streamed world cannot hold it";

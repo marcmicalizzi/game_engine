@@ -419,7 +419,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G34 | Shipping attribution report, ship-right check | open | G32 | S | routine | [07 §7.5](plan/07-content-pipeline.md#75-provenance-and-licensing-metadata) |
 | G35 | Scene-generator registry | done (ADR-0046) | | L | design | [scene_gen](subsystems/scene_gen.md#adding-a-generator) |
 | G36 | Heightfield terrain: erosion, hydrology, biomes | open | G35 | L | research | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
-| G37 | Scatter generator | open | G35 | M | design | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
+| G37 | Scatter generator | done (07 §7.6 status note, 2026-10-11) | G35 | M | design | [scatter](subsystems/scatter.md) |
 | G38 | Roads and rivers as spline networks | open | G36 | L | design | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
 | G39 | Ruin assembler and block layer | done (15b32ade, f36f1d94) | G35 | L | design | [ruins](subsystems/ruins.md#the-block-layer) |
 | G40 | Hard-surface kits in Blender (E33) | done (10 §10.5 2026-09-24) | | L | research | [E33](experiments/e33-hard-surface-kits.md) |

@@ -792,9 +792,15 @@ struct WorldRings @version(2) {
 /// reader expands each entry where it stands in the list, standing on the terrain; a streamed world
 /// (`world`) streams it a tile at a time instead. A name the executable does not carry is refused
 /// with a sentence naming it.
-struct PlacementEntry @version(1) {
+struct PlacementEntry @version(2) {
   generator: string
   params: json
+  /// In a streamed world (`world`): true, the world streams the entry a tile at a time; false, the
+  /// reader expands it whole with the scene and its instances are the scene's own, which is what a
+  /// bounded layer on a world whose ground is drawn from tiles uses — that world has no pool for
+  /// instances that come and go, so it cannot stream one (docs/subsystems/scatter.md, "Where it
+  /// enters the renderer"). Ignored outside a world. Version 2.
+  stream: bool = true @since(2)
 }
 
 /// How a sky's exposure is chosen (docs/subsystems/renderer.md, "Exposure").

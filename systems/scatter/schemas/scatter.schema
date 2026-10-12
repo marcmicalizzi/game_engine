@@ -1,0 +1,180 @@
+// The scatter capability's types (docs/subsystems/scatter.md; ADR-0007, ADR-0027). A scatter layer
+// is scene data: the parameters of a `placements` entry naming the generator "scatter"
+// (`engine.scene.PlacementEntry.params`), read with `schema::from_json` so an unknown field is
+// refused with its path. They are the capability's own, so ENGINE_WITH_SCATTER=OFF takes them out of
+// the build with everything else it owns.
+//
+// Not a document record: a layer is a function from (layer, seed, tile, ground) to placements, and
+// what an editor edits one by one is `engine.scene.MeshPlacement` (docs/subsystems/doc_scene.md). A
+// layer's output is never written back as records (docs/subsystems/scatter.md, "Not yet").
+namespace engine.scatter
+
+/// Which part of the world a layer places over.
+enum RegionKind : u8 {
+  /// Every tile a streamed world asks for, without end. A scene read whole (no `world`, or an entry
+  /// with `stream` false) refuses it: there is no whole to read.
+  Scene = 0
+  /// The tiles `tile_min` to `tile_max` of the layer's grid, both included.
+  Tiles = 1
+  /// Inside `polygon`, x and z in world metres, by the even-odd rule.
+  Polygon = 2
+}
+
+struct Region @version(1) {
+  kind: RegionKind = Scene
+  tile_min: i32[2]
+  tile_max: i32[2]
+  /// At least three corners, [x, z] world metres, in order.
+  polygon: f64[2][]
+}
+
+/// What the density is a function of.
+enum DensityKind : u8 {
+  /// `per_m2` everywhere.
+  Constant = 0
+  /// `per_m2` times a value noise of world position in [0, 1]: `octaves` octaves from `wavelength`
+  /// metres, each `lacunarity` times finer and `gain` times weaker, the sum mapped from
+  /// [`low`, `high`] to [0, 1].
+  Noise = 1
+  /// `per_m2` times the red channel of a `.tex` file (domain/texture) stretched over the world
+  /// rectangle `mask_min`..`mask_max`; zero outside it.
+  Mask = 2
+}
+
+/// Placements per square metre as a function of world position, shared by the kinds by weight.
+/// The kinds' spacings cap it: a kind of spacing r places at most about 0.48 / r² a square metre
+/// (`k_packing`, docs/subsystems/scatter.md, "Density").
+struct Density @version(1) {
+  kind: DensityKind = Constant
+  per_m2: f64 = 0.01
+  octaves: u32 = 4
+  wavelength: f64 = 200 @unit(m)
+  gain: f64 = 0.5
+  lacunarity: f64 = 2
+  low: f64 = 0
+  high: f64 = 1
+  /// Mask: the `.tex` file, relative to the scene (or absolute).
+  mask: string
+  /// Mask: the world rectangle it covers, [x, z] metres.
+  mask_min: f64[2]
+  mask_max: f64[2]
+}
+
+/// How a placement is turned about +y.
+enum YawRule : u8 {
+  /// Uniform in [0, 360°), plus `yaw_deg`.
+  Random = 0
+  /// The mesh's +z up the ground's slope, plus `yaw_deg` (random where the ground is level).
+  Uphill = 1
+  /// `yaw_deg` exactly.
+  Fixed = 2
+}
+
+/// Which of the scene ground's two heights a kind stands on (docs/subsystems/scene_gen.md, "The two
+/// kinds"): the surface at the ground's own time, or the floor that does not move under it (the
+/// dunes' interdune floor; the same as the surface for the waves).
+enum Stand : u8 {
+  Surface = 0
+  Floor = 1
+}
+
+/// A rock the capability makes itself, when a kind names no mesh: an icosphere subdivided `detail`
+/// times, stretched to `size` and displaced by a seeded value noise of `roughness`, written once as
+/// a GLB whose name is the hash of these fields (docs/subsystems/scatter.md, "The procedural rock").
+struct Rock @version(1) {
+  seed: u32 = 1
+  /// Half-extents along x, y and z, metres, before the noise.
+  size_x: f32 = 1 @unit(m)
+  size_y: f32 = 0.6 @unit(m)
+  size_z: f32 = 0.8 @unit(m)
+  roughness: f32 = 0.2
+  /// Subdivisions, 0 to 5: 20 triangles times four to the power of it.
+  detail: u32 = 3
+  /// Linear base colour.
+  red: f32 = 0.35
+  green: f32 = 0.3
+  blue: f32 = 0.26
+  /// The share of the height below the origin, which a kind's `sink` and the ground hide.
+  buried: f32 = 0.25
+}
+
+/// One kind of thing a layer places, and the rules it is placed by.
+struct Kind @version(1) {
+  name: string
+  /// A glTF, GLB or .clusters file relative to the scene, as `engine.scene.MeshPlacement` names one.
+  /// Empty: `rock`.
+  mesh: string
+  rock: Rock?
+  /// This kind's share of the layer's density, against the other kinds' weights.
+  weight: f64 = 1
+  /// No two placements of this kind are closer than this.
+  spacing: f32 = 2 @unit(m)
+  /// And none closer than this to a placement of an earlier kind of the layer.
+  clearance: f32 = 0 @unit(m)
+  slope_min_deg: f32 = 0 @unit(deg)
+  slope_max_deg: f32 = 90 @unit(deg)
+  height_min: f64 = -100000 @unit(m)
+  height_max: f64 = 100000 @unit(m)
+  stand: Stand = Surface
+  yaw: YawRule = Random
+  yaw_deg: f32 = 0 @unit(deg)
+  /// A uniform scale in [scale_min, scale_max].
+  scale_min: f32 = 1
+  scale_max: f32 = 1
+  /// Turn the mesh's +y to the ground's normal before the yaw; otherwise it stands upright.
+  align: bool = false
+  /// How far below the ground the mesh's origin stands, metres at scale 1.
+  sink: f32 = 0 @unit(m)
+  /// The budget (the LOD policy): in a streamed world, a ring whose nearest tile is farther from the
+  /// camera than this places none of this kind. 0: every ring.
+  far: f32 = 0 @unit(m)
+}
+
+/// A circle nothing of the layer is placed in: a landmark, a placement an editor made.
+struct ExcludeCircle @version(1) {
+  at: worldpos @unit(m)
+  radius: f32 = 1 @unit(m)
+}
+
+/// Another layer, by file (an `engine.scatter.Layer` as JSON, relative to the scene): nothing of
+/// this layer within `clearance` of one of its placements. It is evaluated here, from its own file,
+/// seed and rules, never asked of another entry (ADR-0046 decision 4); it may not exclude by layers
+/// itself.
+struct ExcludeLayer @version(1) {
+  layer: string
+  clearance: f32 = 1 @unit(m)
+}
+
+struct Exclusions @version(1) {
+  circles: ExcludeCircle[]
+  /// A `.tex` mask over `mask_min`..`mask_max`: nothing where its red channel is at least
+  /// `mask_threshold`.
+  mask: string
+  mask_min: f64[2]
+  mask_max: f64[2]
+  mask_threshold: f32 = 0.5
+  layers: ExcludeLayer[]
+}
+
+/// The layer's budget besides each kind's `far`: the most placements one tile keeps, of every kind,
+/// the rest dropped by a priority that does not depend on the order they were made in. 0: no cap.
+struct Budget @version(1) {
+  per_tile: u32 = 0
+}
+
+/// A scatter layer (docs/subsystems/scatter.md): what is placed, where, how densely and by which
+/// rules, tile by tile, as a function of the layer, the seed and the tile alone.
+struct Layer @version(1) {
+  name: string
+  /// 0: the world's seed (the scene terrain's).
+  seed: u64 = 0
+  /// The layer's tile edge: a streamed world's must be the same.
+  tile_size: f32 = 32 @unit(m)
+  region: Region
+  density: Density
+  kinds: Kind[]
+  exclude: Exclusions
+  budget: Budget
+  /// Where the procedural rocks' GLBs are written, relative to the scene. Empty: `scatter` beside it.
+  meshes: string
+}

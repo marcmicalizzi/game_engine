@@ -50,7 +50,7 @@ endif()
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
 # ruins and city, and `--world` stream them. Nothing here calls one: the renderer's scene reader and
 # the world's placements consumer find each by the name a scene gives.
-foreach(_gen city ruins sky terrain)
+foreach(_gen city ruins scatter sky terrain)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()
