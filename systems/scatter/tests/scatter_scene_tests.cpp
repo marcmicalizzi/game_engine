@@ -4,10 +4,13 @@
 // appended as one mesh, a few hundred instances of it standing on the terrain's own ground — to the
 // bit against the ground's surface, and within a cell of the drawn grid's corners — and, on a GPU,
 // the capture's ids channel naming most of them on the picture.
+#include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <core/schema/json_reflect.h>
 #include <domain/gfx/device.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -16,9 +19,6 @@
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/view_set.h>
 #include <systems/scatter/scatter.h>
-#include <core/json/json.h>
-#include <core/schema/json_reflect.h>
-#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>

@@ -746,7 +746,8 @@ bool Placer::occupies(scene_gen::TileCoord tile) const noexcept {
         if (im.poly_x[i] >= x0 && im.poly_x[i] <= x1 && im.poly_z[i] >= z0 && im.poly_z[i] <= z1)
           return true;
       }
-      if (im.in_region(scene_gen::nearest_mm(0.5 * (x0 + x1)), scene_gen::nearest_mm(0.5 * (z0 + z1))))
+      if (im.in_region(scene_gen::nearest_mm(0.5 * (x0 + x1)),
+                       scene_gen::nearest_mm(0.5 * (z0 + z1))))
         return true;
       const auto side = [](f64 px, f64 pz, f64 qx, f64 qz, f64 rx, f64 rz) {
         return (qx - px) * (rz - pz) - (qz - pz) * (rx - px);
@@ -758,7 +759,8 @@ bool Placer::occupies(scene_gen::TileCoord tile) const noexcept {
         for (u32 e = 0; e < 4; ++e) {
           const u32 f = (e + 1) & 3u;
           const f64 ax = im.poly_x[j], az = im.poly_z[j], bx = im.poly_x[i], bz = im.poly_z[i];
-          if (!apart(side(rx[e], rz[e], rx[f], rz[f], ax, az), side(rx[e], rz[e], rx[f], rz[f], bx, bz)) &&
+          if (!apart(side(rx[e], rz[e], rx[f], rz[f], ax, az),
+                     side(rx[e], rz[e], rx[f], rz[f], bx, bz)) &&
               !apart(side(ax, az, bx, bz, rx[e], rz[e]), side(ax, az, bx, bz, rx[f], rz[f])))
             return true;
         }
