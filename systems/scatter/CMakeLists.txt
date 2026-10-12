@@ -19,7 +19,7 @@ engine_schema_library(NAME scatter_schemas SCHEMAS schemas/scatter.schema CAPABI
 # makes is `scene_gen::Placements`, which the scene reader and the world's placements consumer turn
 # into instances.
 engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash json schema schemas io log jobs time scene_gen texture
+  DEPS base containers math hash json schema schemas io log jobs time geometry scene_gen texture
        scatter_schemas
   SOURCES src/placer.cpp src/rock.cpp src/scene_generator.cpp)
 
@@ -30,3 +30,8 @@ engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE
 engine_module_tests(NAME scatter
   SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/size_table.cpp
   DEPS renderer gfx)
+
+# The scattered variant of desert-endless is held field for field to the scene beside it.
+if(TARGET engine_scatter_tests)
+  target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()

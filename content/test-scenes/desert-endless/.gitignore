@@ -1,3 +1,0 @@
-# The scatter layer's procedural rocks are written here when the scene is read, never committed:
-# docs/subsystems/scatter.md, "The procedural rock".
-scatter/

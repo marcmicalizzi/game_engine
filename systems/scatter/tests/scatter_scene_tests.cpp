@@ -16,8 +16,12 @@
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/view_set.h>
 #include <systems/scatter/scatter.h>
+#include <core/json/json.h>
+#include <core/schema/json_reflect.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
@@ -49,7 +53,59 @@ std::string scene_text() {
          R"("rock":{"seed":4,"size_x":0.45,"size_y":0.3,"size_z":0.4,"detail":2}}]}}]})";
 }
 
+bool read_json_file(const std::string& path, JsonValue& out) {
+  std::string text;
+  if (io::read_file(path, text) != io::Status::Ok) return false;
+  return parse_json(text, out).ok;
+}
+
 }  // namespace
+
+TEST_CASE("scatter: desert-endless's scattered variant is the scene and a layer") {
+  // `scattered.json` is `scene.json` field for field but its name, its description and its
+  // placements: a second copy of the erg's bands and sand that nothing held equal would drift, as
+  // desert-endless's own copy of the erg's detail once did (its README). Its layer is read and
+  // opened as the generator opens it; nothing is placed or written.
+  const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-endless",
+                                          "content/test-scenes/desert-endless");
+  JsonValue scene;
+  JsonValue scattered;
+  if (!read_json_file(dir + "/scene.json", scene) ||
+      !read_json_file(dir + "/scattered.json", scattered)) {
+    MESSAGE("the endless desert is not here; skipped");
+    return;
+  }
+  REQUIRE(scene.is_object());
+  REQUIRE(scattered.is_object());
+  for (const auto& [key, value] : scattered.as_object()) {
+    if (key == "name" || key == "description" || key == "placements") continue;
+    const JsonValue* original = scene.find(key);
+    REQUIRE_MESSAGE(original != nullptr, "scattered.json has a field scene.json has not: " << key);
+    CHECK_MESSAGE(*original == value, "scattered.json's " << key << " is not scene.json's");
+  }
+  for (const auto& [key, value] : scene.as_object()) {
+    (void)value;
+    if (key == "name" || key == "description") continue;
+    CHECK_MESSAGE(scattered.find(key) != nullptr, "scattered.json lacks scene.json's " << key);
+  }
+  const JsonValue* placements = scattered.find("placements");
+  REQUIRE(placements != nullptr);
+  REQUIRE(placements->size() == 1);
+  const JsonValue& entry = (*placements)[usize{0}];
+  REQUIRE(entry.find("generator") != nullptr);
+  CHECK(entry.find("generator")->as_string() == scatter::k_placement_generator);
+  scatter::Layer layer;
+  schema::ReadContext ctx;
+  REQUIRE(schema::from_json(layer, *entry.find("params"), ctx));
+  REQUIRE(ctx.ok());
+  scatter::Placer placer;
+  std::string error;
+  REQUIRE_MESSAGE(placer.open(layer, dir, 7, &error), error);
+  Vector<scene_gen::TileCoord> tiles;
+  REQUIRE(placer.region_tiles(tiles, &error));
+  MESSAGE("the scattered variant's layer covers " << tiles.size() << " tiles");
+  CHECK(tiles.size() < 16000);
+}
 
 TEST_CASE("scatter: a scene's layer is read as instances of one rock standing on its ground") {
   const test::TempDir tmp("scatter_scene");

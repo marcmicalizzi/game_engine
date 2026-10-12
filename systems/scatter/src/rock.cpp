@@ -11,6 +11,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 #include <systems/scatter/scatter.h>
 
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 namespace engine::scatter {
@@ -266,8 +268,20 @@ std::string rock_file_name(const Rock& rock) {
 
 bool kind_meshes(const Layer& layer, std::string_view dir, Vector<scene_gen::PlacementMesh>& out,
                  std::string* error) {
-  const std::string rock_dir =
-      layer.meshes.empty() ? resolve(dir, "scatter") : resolve(dir, layer.meshes);
+  // Where the rocks go: where the layer says; else the repository's derived-data root
+  // (`<repo>/ddc/scatter`, found from the scene's directory as the renderer's cache is, so a
+  // committed scene writes nothing into the tree); else `scatter` beside the scene, which is where
+  // a scene outside any checkout — a test's scratch directory — keeps them.
+  std::string rock_dir;
+  if (!layer.meshes.empty()) {
+    rock_dir = resolve(dir, layer.meshes);
+  } else {
+    std::error_code ec;
+    const std::filesystem::path from =
+        std::filesystem::absolute(std::filesystem::path(dir.empty() ? "." : std::string(dir)), ec);
+    const std::string ddc = ec ? std::string() : geometry::find_ddc_root(from.generic_string());
+    rock_dir = !ddc.empty() ? io::join_path(ddc, "scatter") : resolve(dir, "scatter");
+  }
   for (const Kind& kind : layer.kinds) {
     scene_gen::PlacementMesh mesh;
     if (!kind.mesh.empty()) {
