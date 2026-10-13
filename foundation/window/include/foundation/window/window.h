@@ -215,6 +215,9 @@ enum class EventKind : u8 {
   // or the scale was changed in the system's settings): `value` holds the new scale, 1.5 at
   // 150 % (`Window::display_scale`). Reported for a top-level window; its children follow it.
   ScaleChanged,
+  // A file was dropped on the window from the platform's file manager: `text` is its path (UTF-8,
+  // valid until the next `poll`), `x`/`y` where it was dropped. One event per file.
+  DropFile,
 };
 
 struct Event {
@@ -245,6 +248,9 @@ struct Event {
   // clock of `Window::relative_mouse_since_ns`: what tells motion reported before relative mode
   // came on from motion after it. Zero for an event nothing stamped.
   u64 timestamp_ns = 0;
+  // DropFile: the dropped file's path, owned by the window that polled it and valid until its next
+  // `poll` (for `push_event`, owned by the caller until the event is polled). Null otherwise.
+  const char* text = nullptr;
 };
 
 // --- device names ---------------------------------------------------------------------------
@@ -449,8 +455,21 @@ class Window {
   // by default. SDL keeps the mode per window and suspends it while the window has no focus, so a
   // player who switches away gets the cursor back. False when there is no window or the platform
   // refused; `relative_mouse()` reads back what SDL says is in effect for this window.
+  //
+  // **A child window** (`WindowDesc::parent`) gets this module's own relative mode, because SDL
+  // runs its mode only for the window holding its keyboard focus, which a child never is, and
+  // swallows a flagged child's motion (docs/subsystems/window.md, "Relative mode on an adopted
+  // child"): on the platform's pointer messages, the cursor hidden and confined to the child, each
+  // motion's `dx`/`dy` read from the child's pointer and the cursor put back where the gesture
+  // began (`x`/`y` stay there), and shown there again when the mode ends or the window loses focus.
+  // That only for a real pointer — the cursor over the child, its window in front; a posted
+  // gesture on a window in the background is reported as it comes, the same deltas, and the
+  // desktop's cursor is left alone. One child at a time; asking again for the mode it already has
+  // does nothing. For a child, `relative_mouse()` is whether the cursor is held, and
+  // `relative_mouse_asked()` whether the mode was asked for.
   bool set_relative_mouse(bool enabled) noexcept;
   bool relative_mouse() const noexcept;
+  bool relative_mouse_asked() const noexcept;
   // When relative mode last came on (`set_relative_mouse(true)` returning true), on the events'
   // clock (`Event::timestamp_ns`); 0 while it is off. Motion queued before it is the absolute
   // pointer's, whose `dx`/`dy` run from wherever the cursor last was and can be a screen's width in
@@ -459,7 +478,8 @@ class Window {
 
   // Puts an event on this window's queue as if the platform had delivered it, so the next
   // `poll()` returns it through exactly the path a real one takes. Keys (`scancode`), mouse
-  // buttons, motion (`dx`/`dy`) and the wheel only: a gamepad or joystick event names a device
+  // buttons, motion (`dx`/`dy`), the wheel and a dropped file (`text`, kept alive by the caller
+  // until it is polled) only: a gamepad or joystick event names a device
   // slot this module assigned to a real device, so there is nothing to fake it for. False for any
   // other kind, with no window, or when SDL's queue refuses it.
   //
@@ -480,6 +500,39 @@ class Window {
   static bool post_to_focus(const Event& event) noexcept;
   // Whether this window has the platform's keyboard focus in this thread (Windows: `GetFocus`).
   bool has_os_focus() const noexcept;
+
+  // SDL's id for the window, the one its events name; 0 with no window.
+  u32 id() const noexcept { return id_; }
+
+  // **What the platform and SDL say about the pointer and this window, now**: for a trace of a
+  // gesture on a real pointer (engine-editor's `--trace-input`), where what went wrong is a
+  // disagreement between the two — whose the keyboard is, where the window is, where the cursor
+  // went (docs/subsystems/window.md, "Relative mode on an adopted child"). Read on demand, never
+  // in a frame that does not trace.
+  struct PointerReport {
+    bool relative_asked = false;  // this window asked for relative mode (`relative_mouse_asked`)
+    bool sdl_flag = false;        // SDL's own per-window flag on this window (never on a child)
+    bool relative_on = false;     // SDL's relative mode is in effect, for whichever window
+    u32 keyboard_focus = 0;  // SDL's keyboard focus (the window relative motion goes to), 0 none
+    u32 mouse_focus = 0;     // SDL's mouse focus, 0 none
+    i32 cursor_x = 0;        // the platform's cursor, in this window's client coordinates
+    i32 cursor_y = 0;
+    bool cursor_inside = false;  // ... inside the client area
+    i32 sdl_x = 0;               // SDL's idea of the window's place (desktop) and size
+    i32 sdl_y = 0;
+    i32 sdl_width = 0;
+    i32 sdl_height = 0;
+    i32 os_x = 0;  // the platform's: the client area's corner on the desktop, and its size
+    i32 os_y = 0;
+    i32 os_width = 0;
+    i32 os_height = 0;
+    bool clipped = false;  // the cursor is confined (ClipCursor) to less than the desktop
+    i32 clip_left = 0;     // ... to this rectangle, desktop coordinates
+    i32 clip_top = 0;
+    i32 clip_right = 0;
+    i32 clip_bottom = 0;
+  };
+  PointerReport pointer_report() const noexcept;
 
  private:
   void* handle_ = nullptr;

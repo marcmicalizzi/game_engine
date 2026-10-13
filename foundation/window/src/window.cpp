@@ -57,6 +57,34 @@ void remove_child(u32 child) noexcept {
 
 // Whether an event for `window_id` is the polling window's (`own`): its own, or a child's, which is
 // marked as such.
+// **Relative mode on an adopted child** (window.md, "Relative mode on an adopted child"). SDL's
+// relative mode belongs to its keyboard focus — the mode is on only while that window carries the
+// flag — and SDL gives its keyboard focus only to the platform's foreground window, which a
+// WS_CHILD never is; worse, SDL drops the absolute motion of a window that carries the flag while
+// the mode is off, so a child that asked for it got no motion at all (engine-editor's look,
+// 2026-10-12). Asked through the top-level parent instead, the mode came on and SDL's raw-input
+// thread then delivered nothing — no motion and no release — beside the web view's
+// cross-process child window. So a child's relative mode is this module's, on the platform's own
+// pointer messages: the cursor is hidden and confined to the child, each motion's delta is read
+// from the child's absolute pointer and the cursor put back where the gesture began, and it is
+// shown there again when the mode ends. That only when the gesture is a real pointer's — the
+// cursor is over the child and the child's window is the platform's foreground window — and
+// otherwise (a test posting to a window in the background) the child's motion is reported as it
+// comes, which is the same delta. One pointer, so one such child at a time; main-thread only.
+struct RelativeChild {
+  u32 child = 0;      // 0: no child holds relative mode
+  bool held = false;  // the cursor is hidden, confined and re-centred (a real gesture)
+  f32 x = 0.0f;       // where the gesture began, in the child's coordinates
+  f32 y = 0.0f;
+  i32 desktop_x = 0;  // ... and on the desktop, where the cursor is put back
+  i32 desktop_y = 0;
+};
+RelativeChild g_relative;
+
+// The last dropped file's path, which `Event::text` points at until the next poll: SDL's own copy
+// lives only until then too, and one queue serves every window of the process.
+std::string g_dropped;
+
 bool route(u32 own, u32 window_id, Event& out) noexcept {
   if (window_id == own) return true;
   for (const ChildEntry& e : g_children) {
@@ -850,6 +878,7 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
 
 void Window::destroy() noexcept {
   if (handle_ == nullptr) return;
+  if (child_ && g_relative.child == id_) (void)set_relative_mouse(false);
 #if defined(_WIN32)
   // SDL lets go of a window it adopted without destroying it; the child is ours to destroy.
   HWND own = child_ ? hwnd_of(handle_) : nullptr;
@@ -1105,6 +1134,14 @@ bool Window::poll(Event& out) {
         return true;
       case SDL_EVENT_WINDOW_FOCUS_LOST:
         if (!route(id_, e.window.windowID, out)) continue;
+#if defined(_WIN32)
+        // Switching away gives the cursor back, as SDL's own relative mode does.
+        if (g_relative.held) {
+          (void)ClipCursor(nullptr);
+          (void)SDL_ShowCursor();
+          g_relative.held = false;
+        }
+#endif
         out.kind = EventKind::FocusLost;
         return true;
       case SDL_EVENT_KEY_DOWN:
@@ -1122,6 +1159,19 @@ bool Window::poll(Event& out) {
         out.y = e.motion.y;
         out.dx = e.motion.xrel;
         out.dy = e.motion.yrel;
+#if defined(_WIN32)
+        // A child holding the pointer (g_relative): the delta is from where the cursor was put
+        // back, and it is put back again at once, so the platform's next motion message — made
+        // from the cursor's position when it is read — runs from there too.
+        if (g_relative.held && e.motion.windowID == g_relative.child) {
+          out.dx = e.motion.x - g_relative.x;
+          out.dy = e.motion.y - g_relative.y;
+          out.x = g_relative.x;
+          out.y = g_relative.y;
+          if (out.dx == 0.0f && out.dy == 0.0f) continue;  // the cursor put back, or no motion
+          SDL_WarpMouseInWindow(SDL_GetWindowFromID(g_relative.child), g_relative.x, g_relative.y);
+        }
+#endif
         return true;
       case SDL_EVENT_MOUSE_BUTTON_DOWN:
       case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -1139,6 +1189,17 @@ bool Window::poll(Event& out) {
         out.y = e.wheel.mouse_y;
         out.dx = e.wheel.x;
         out.dy = e.wheel.y;
+        return true;
+      // A file dropped from the platform's file manager (SDL's drop events; a drop's text and
+      // the drag's progress are not reported). The path is copied: SDL's string lives only until
+      // the next poll, and so does `text`.
+      case SDL_EVENT_DROP_FILE:
+        if (e.drop.data == nullptr || !route(id_, e.drop.windowID, out)) continue;
+        g_dropped = e.drop.data;
+        out.kind = EventKind::DropFile;
+        out.x = e.drop.x;
+        out.y = e.drop.y;
+        out.text = g_dropped.c_str();
         return true;
       default: continue;
     }
@@ -1158,6 +1219,49 @@ void Window::show() noexcept {
 
 bool Window::set_relative_mouse(bool enabled) noexcept {
   if (handle_ == nullptr) return false;
+#if defined(_WIN32)
+  if (child_) {
+    // This module's, on the platform's pointer messages (g_relative, above); SDL's flag never
+    // goes on the child.
+    if (enabled == (g_relative.child == id_)) return true;  // asked on a change only
+    if (enabled && g_relative.child != 0) return false;     // another child holds the pointer
+    const HWND own = hwnd_of(handle_);
+    if (!enabled) {
+      if (g_relative.held) {
+        (void)ClipCursor(nullptr);
+        (void)SetCursorPos(g_relative.desktop_x, g_relative.desktop_y);
+        (void)SDL_ShowCursor();
+      }
+      g_relative = RelativeChild{};
+      relative_since_ns_ = 0;
+      return true;
+    }
+    POINT cursor{};
+    (void)GetCursorPos(&cursor);
+    POINT local = cursor;
+    (void)ScreenToClient(own, &local);
+    RECT client{};
+    (void)GetClientRect(own, &client);
+    RECT on_desktop = client;
+    (void)MapWindowPoints(own, nullptr, reinterpret_cast<POINT*>(&on_desktop), 2);
+    g_relative = RelativeChild{};
+    g_relative.child = id_;
+    g_relative.x = static_cast<f32>(local.x);
+    g_relative.y = static_cast<f32>(local.y);
+    g_relative.desktop_x = cursor.x;
+    g_relative.desktop_y = cursor.y;
+    // A real gesture: the cursor is over the child, and the child's window is in front. A posted
+    // press on a window in the background (a test) leaves the desktop's cursor alone.
+    g_relative.held =
+        PtInRect(&client, local) != 0 && GetForegroundWindow() == GetAncestor(own, GA_ROOT);
+    if (g_relative.held) {
+      (void)SDL_HideCursor();
+      (void)ClipCursor(&on_desktop);
+    }
+    relative_since_ns_ = SDL_GetTicksNS();
+    return true;
+  }
+#endif
   if (!SDL_SetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_), enabled)) {
     ENGINE_LOG_WARN(log_window, "relative mouse mode refused", log::field("enabled", enabled),
                     log::field("reason", SDL_GetError()));
@@ -1169,7 +1273,16 @@ bool Window::set_relative_mouse(bool enabled) noexcept {
 }
 
 bool Window::relative_mouse() const noexcept {
-  return handle_ != nullptr && SDL_GetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_));
+  if (handle_ == nullptr) return false;
+  // A child: in effect, not merely asked — the cursor is hidden, confined and re-centred.
+  if (child_) return g_relative.child == id_ && g_relative.held;
+  return SDL_GetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_));
+}
+
+bool Window::relative_mouse_asked() const noexcept {
+  if (handle_ == nullptr) return false;
+  return child_ ? g_relative.child == id_
+                : SDL_GetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_));
 }
 
 bool Window::push_event(const Event& event) noexcept {
@@ -1211,6 +1324,15 @@ bool Window::push_event(const Event& event) noexcept {
       e.wheel.y = event.dy;
       e.wheel.mouse_x = event.x;
       e.wheel.mouse_y = event.y;
+      break;
+    case EventKind::DropFile:
+      // SDL keeps the pointer as given; the caller keeps the string until the event is polled.
+      if (event.text == nullptr) return false;
+      e.type = SDL_EVENT_DROP_FILE;
+      e.drop.windowID = id_;
+      e.drop.x = event.x;
+      e.drop.y = event.y;
+      e.drop.data = event.text;
       break;
     default: return false;
   }
@@ -1311,6 +1433,54 @@ bool Window::has_os_focus() const noexcept {
 #else
   return false;
 #endif
+}
+
+Window::PointerReport Window::pointer_report() const noexcept {
+  PointerReport r;
+  if (handle_ == nullptr) return r;
+  SDL_Window* window = static_cast<SDL_Window*>(handle_);
+  r.relative_asked = relative_mouse_asked();
+  r.sdl_flag = SDL_GetWindowRelativeMouseMode(window);
+  SDL_Window* keyboard = SDL_GetKeyboardFocus();
+  SDL_Window* mouse = SDL_GetMouseFocus();
+  r.keyboard_focus = keyboard != nullptr ? SDL_GetWindowID(keyboard) : 0u;
+  r.mouse_focus = mouse != nullptr ? SDL_GetWindowID(mouse) : 0u;
+  // SDL's mode is on exactly when its keyboard focus carries the flag
+  // (SDL_UpdateRelativeMouseMode).
+  r.relative_on = keyboard != nullptr && SDL_GetWindowRelativeMouseMode(keyboard);
+  (void)SDL_GetWindowPosition(window, &r.sdl_x, &r.sdl_y);
+  (void)SDL_GetWindowSize(window, &r.sdl_width, &r.sdl_height);
+#if defined(_WIN32)
+  const HWND hwnd = hwnd_of(handle_);
+  RECT client{};
+  POINT corner{0, 0};
+  if (hwnd != nullptr && GetClientRect(hwnd, &client) && ClientToScreen(hwnd, &corner)) {
+    r.os_x = corner.x;
+    r.os_y = corner.y;
+    r.os_width = client.right - client.left;
+    r.os_height = client.bottom - client.top;
+  }
+  POINT cursor{};
+  if (GetCursorPos(&cursor)) {
+    r.cursor_x = cursor.x - r.os_x;
+    r.cursor_y = cursor.y - r.os_y;
+    r.cursor_inside =
+        r.cursor_x >= 0 && r.cursor_y >= 0 && r.cursor_x < r.os_width && r.cursor_y < r.os_height;
+  }
+  RECT clip{};
+  if (GetClipCursor(&clip)) {
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    r.clipped = clip.left > vx || clip.top > vy ||
+                clip.right < vx + GetSystemMetrics(SM_CXVIRTUALSCREEN) ||
+                clip.bottom < vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    r.clip_left = clip.left;
+    r.clip_top = clip.top;
+    r.clip_right = clip.right;
+    r.clip_bottom = clip.bottom;
+  }
+#endif
+  return r;
 }
 
 }  // namespace engine::window

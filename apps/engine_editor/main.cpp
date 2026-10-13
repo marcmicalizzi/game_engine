@@ -52,6 +52,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <engine_build_stamp.h>
@@ -82,7 +83,7 @@ constexpr const char* k_usage =
     "              [--offscreen] [--frames N] [--pick X,Y|center] [--move X,Y,Z]\n"
     "              [--drag X0,Y0 X1,Y1] [--look DX,DY] [--capture out.png] [--ddc <dir>]\n"
     "              [--webview-profile <dir>] [--resize-to W,H] [--test-keys] [--test-page]\n"
-    "              [--test-drop-socket-at N] [--test-relayout-at N]\n"
+    "              [--test-drop-socket-at N] [--test-relayout-at N] [--trace-input <file>]\n"
     "engine-editor --version\n"
     "  --doc        the document directory (protocol::Session opens it)\n"
     "  --create     create the document when the directory holds none\n"
@@ -110,13 +111,19 @@ constexpr const char* k_usage =
     "               handle that is one transaction; needs --pick and --frames 10 or more\n"
     "  --look DX,DY after picking, hold the right button over the viewport and move the pointer\n"
     "               by (DX, DY) over three frames, as the look gesture does (frames 3 to 7)\n"
+    "  --trace-input <file>  one JSON line per pointer event the window gives the editor (with\n"
+    "               what SDL and the platform said about relative mode, focus and the cursor) and\n"
+    "               per frame (the camera's yaw and pitch), written when the run ends\n"
     "  --capture    offscreen: the last frame, overlay and all, as a PNG\n"
     "  --webview-profile  where the web view keeps its profile (default <doc>/.editor/webview,\n"
     "               in a directory that ignores itself: <doc>/.editor/.gitignore is \"*\")\n"
     "  Test flags, the embedded window's (frames counted since the page last moved the viewport,\n"
     "  as --pick's are): --resize-to W,H resizes the window at frame 4; --test-keys (with --move\n"
     "  and --frames 32 or more) clicks the viewport and posts Ctrl+Z to it through the platform's\n"
-    "  queue, then gives the page the keyboard and posts Ctrl+Z again; --test-page loads the page\n"
+    "  queue, then gives the page the keyboard and posts Ctrl+Z again; --test-look-os DX,DY posts\n"
+    "  the look gesture to the viewport through the platform's queue (frames 3 to 10); "
+    "--test-page\n"
+    "  loads the page\n"
     "  with its test hook (?test=1) and waits for its checks; --test-drop-socket-at N shuts every\n"
     "  connection, and --test-relayout-at N sends editor.relayout, from frame N once the page's\n"
     "  checks are in.\n"
@@ -159,8 +166,11 @@ struct Options {
   f64 resize_to[2] = {0.0, 0.0};
   bool test_keys = false;
   bool test_page = false;
-  u32 drop_at = 0;      // 0: never
-  u32 relayout_at = 0;  // 0: never
+  u32 drop_at = 0;          // 0: never
+  u32 relayout_at = 0;      // 0: never
+  std::string trace_input;  // --trace-input: one JSON line per pointer event and per frame
+  bool look_os = false;     // --test-look-os
+  f64 look_os_by[2] = {0.0, 0.0};
 };
 
 bool parse_u32(std::string_view s, u32& out) {
@@ -243,6 +253,95 @@ struct Camera {
   renderer::Camera view() const { return view::fly_view(state, 0.9599310886f, 0.05f); }
 };
 
+// --trace-input: one JSON line per pointer event the window's queue gives the editor, before
+// anything filters it — its kind, where, how far, SDL's timestamp, whether SDL said it was the
+// child's — with what SDL and the platform said at that moment about relative mode, the keyboard's
+// owner, the mouse's owner and the cursor (`Window::PointerReport`), and one line per frame that
+// had pointer events or was looking, with the camera's yaw and pitch after the frame's ticks. It is
+// how the look gesture's failure on a real pointer was found (window.md, "Relative mode on an
+// adopted child"), and the first thing to turn on when a gesture misbehaves on someone's machine.
+struct InputTrace {
+  // The lines are kept and written when the run ends (a gesture's trace is a few hundred lines),
+  // so tracing costs a frame no file write.
+  std::string path;
+  std::string text;
+  bool file = false;
+  u32 events = 0;  // this frame's
+
+  bool open(const std::string& to) {
+    path = to;
+    file = !to.empty();
+    return !file || io::write_file(path, "") == io::Status::Ok;
+  }
+  ~InputTrace() {
+    if (file) (void)io::write_file(path, text);
+  }
+  static const char* kind_name(window::EventKind k) noexcept {
+    switch (k) {
+      case window::EventKind::MouseMove: return "move";
+      case window::EventKind::MouseButtonDown: return "down";
+      case window::EventKind::MouseButtonUp: return "up";
+      case window::EventKind::MouseWheel: return "wheel";
+      case window::EventKind::FocusGained: return "focus_gained";
+      case window::EventKind::FocusLost: return "focus_lost";
+      default: return nullptr;
+    }
+  }
+  void line(const JsonValue& v) {
+    text += write_json(v);
+    text += '\n';
+  }
+  void event(const window::Event& e, u64 frame, const window::Window& view) {
+    const char* kind = kind_name(e.kind);
+    if (!file || kind == nullptr) return;
+    ++events;
+    const window::Window::PointerReport r = view.pointer_report();
+    JsonValue v = JsonValue::object();
+    v["frame"] = JsonValue(static_cast<f64>(frame));
+    v["kind"] = JsonValue(kind);
+    v["button"] = JsonValue(static_cast<f64>(e.button));
+    v["x"] = JsonValue(static_cast<f64>(e.x));
+    v["y"] = JsonValue(static_cast<f64>(e.y));
+    v["dx"] = JsonValue(static_cast<f64>(e.dx));
+    v["dy"] = JsonValue(static_cast<f64>(e.dy));
+    v["t_ns"] = JsonValue(static_cast<f64>(e.timestamp_ns));
+    v["child"] = JsonValue(e.child);
+    v["view_id"] = JsonValue(static_cast<f64>(view.id()));
+    v["relative_asked"] = JsonValue(r.relative_asked);
+    v["relative_on"] = JsonValue(r.relative_on);
+    v["keyboard_focus"] = JsonValue(static_cast<f64>(r.keyboard_focus));
+    v["mouse_focus"] = JsonValue(static_cast<f64>(r.mouse_focus));
+    v["cursor"] = JsonValue::array();
+    v["cursor"].push_back(JsonValue(static_cast<f64>(r.cursor_x)));
+    v["cursor"].push_back(JsonValue(static_cast<f64>(r.cursor_y)));
+    v["cursor_inside"] = JsonValue(r.cursor_inside);
+    v["sdl_rect"] = JsonValue::array();
+    for (const i32 n : {r.sdl_x, r.sdl_y, r.sdl_width, r.sdl_height})
+      v["sdl_rect"].push_back(JsonValue(static_cast<f64>(n)));
+    v["os_rect"] = JsonValue::array();
+    for (const i32 n : {r.os_x, r.os_y, r.os_width, r.os_height})
+      v["os_rect"].push_back(JsonValue(static_cast<f64>(n)));
+    v["clipped"] = JsonValue(r.clipped);
+    if (r.clipped) {
+      v["clip"] = JsonValue::array();
+      for (const i32 n : {r.clip_left, r.clip_top, r.clip_right, r.clip_bottom})
+        v["clip"].push_back(JsonValue(static_cast<f64>(n)));
+    }
+    line(v);
+  }
+  void frame(u64 frame, f32 yaw, f32 pitch, bool looking) {
+    if (!file || (events == 0 && !looking)) return;
+    events = 0;
+    JsonValue v = JsonValue::object();
+    v["frame"] = JsonValue(static_cast<f64>(frame));
+    v["kind"] = JsonValue("frame");
+    v["looking"] = JsonValue(looking);
+    v["yaw_deg"] = JsonValue(static_cast<f64>(yaw) * 57.29577951308232);
+    v["pitch_deg"] = JsonValue(static_cast<f64>(pitch) * 57.29577951308232);
+    line(v);
+  }
+};
+
 struct Summary {
   u64 frames = 0;
   u32 records = 0;
@@ -285,7 +384,21 @@ struct Summary {
   bool looked = false;
   f32 look_yaw[2] = {0.0f, 0.0f};
   f32 look_pitch[2] = {0.0f, 0.0f};
-  bool look_relative = false;
+  bool look_relative = false;        // in effect (the parent holds SDL's keyboard focus)
+  bool look_relative_asked = false;  // asked for, whether or not in effect
+  // --test-look-os: the gesture through the platform's queue (window.md, "Relative mode on an
+  // adopted child"): the yaw it turned and the yaw the posted motion should turn, whether relative
+  // mode was in effect, whether SDL's flag ever sat on the child itself (what swallowed every
+  // motion before 2026-10-12), and where the cursor was held while the button was down.
+  bool looked_os = false;
+  f32 look_os_yaw[2] = {0.0f, 0.0f};
+  f64 look_os_expected_deg = 0.0;
+  bool look_os_asked = false;
+  bool look_os_in_effect = false;
+  bool look_os_child_flag = false;
+  bool look_os_clip_inside = false;
+  bool look_os_cursor_inside = false;
+  bool look_os_released_by_test = false;
   // --test-keys: whose the keyboard was at each step, and what each Ctrl+Z did.
   u32 sdl_keys = 0;  // KeyDown events SDL delivered to the editor, all run
   bool keys_tested = false;
@@ -377,9 +490,25 @@ void print_summary(const Summary& s, const Options& o) {
     look["pitch_deg"] =
         JsonValue(static_cast<f64>(s.look_pitch[1] - s.look_pitch[0]) * 57.29577951308232);
     look["relative"] = JsonValue(s.look_relative);
+    look["relative_asked"] = JsonValue(s.look_relative_asked);
     out["look"] = std::move(look);
   } else {
     out["look"] = JsonValue();
+  }
+  if (s.looked_os) {
+    JsonValue look = JsonValue::object();
+    look["yaw_deg"] =
+        JsonValue(static_cast<f64>(s.look_os_yaw[1] - s.look_os_yaw[0]) * 57.29577951308232);
+    look["expected_yaw_deg"] = JsonValue(s.look_os_expected_deg);
+    look["asked"] = JsonValue(s.look_os_asked);
+    look["in_effect"] = JsonValue(s.look_os_in_effect);
+    look["child_flag"] = JsonValue(s.look_os_child_flag);
+    look["clip_inside"] = JsonValue(s.look_os_clip_inside);
+    look["cursor_inside"] = JsonValue(s.look_os_cursor_inside);
+    look["released_by_test"] = JsonValue(s.look_os_released_by_test);
+    out["look_os"] = std::move(look);
+  } else {
+    out["look_os"] = JsonValue();
   }
   out["sdl_keys"] = JsonValue(s.sdl_keys);
   if (s.keys_tested) {
@@ -759,6 +888,12 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     Summary summary;
     summary.embedded = embedded;
     summary.listen = listening ? host.listener.port() : u16{0};
+    InputTrace trace;
+    if (!trace.open(options.trace_input)) {
+      std::fprintf(stderr, "engine-editor: --trace-input: cannot write %s\n",
+                   options.trace_input.c_str());
+      code = 1;
+    }
     Vector<window::Event> scripted;
     u64 scripted_frame = ~u64{0};  // the frame whose scripted events were sent
     // Frames drawn since the page last moved the viewport: what the scripted pick and gesture and
@@ -810,6 +945,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     const i64 started_ns = time::monotonic_ns();
     i64 last_ns = started_ns;
     bool resize = false;
+    bool relative_asked = false;  // what the viewport's window was last asked for
     bool running = code == 0;
     while (running) {
       // The ceiling: a window on the owner's desktop never draws faster than this.
@@ -854,6 +990,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       bool failed = false;
       window::Event event;
       while (!failed && window.poll(event)) {
+        trace.event(event, summary.frames, *view_window);
         if (event.kind == window::EventKind::Quit ||
             event.kind == window::EventKind::CloseRequested) {
           if (!event.child) running = false;
@@ -993,11 +1130,66 @@ int run_window(const Options& options, editor::EditorDocument& document) {
             e.dx = static_cast<f32>(options.look_by[0] / 3.0);
             e.dy = static_cast<f32>(options.look_by[1] / 3.0);
             (void)child.push_event(e);
-            if (f == 5) summary.look_relative = child.relative_mouse();
+            if (f == 5) {
+              summary.look_relative = child.relative_mouse();
+              summary.look_relative_asked = child.relative_mouse_asked();
+            }
           } else if (f == 9) {
             summary.look_yaw[1] = camera.state.yaw;
             summary.look_pitch[1] = camera.state.pitch;
             summary.looked = true;
+          }
+        }
+        // --test-look-os: the same gesture through the **platform's** queue — the window
+        // procedure, SDL's translation, relative mode asked of the adopted child — posted to the
+        // child and never to the desktop's foreground window: a move to the centre, the right
+        // button down, three moves of (DX, DY) / 3, the button up. A posted move is absolute
+        // motion, which is what SDL reads while relative mode is not in effect (the editor's
+        // window is not the platform's foreground window, as under a test runner); in effect, SDL
+        // reads the device's raw motion, which nothing but a device (or SendInput, which moves the
+        // desktop's real cursor) makes, so the run then checks where the cursor was held instead,
+        // and ends the gesture itself (window.md, "Relative mode on an adopted child").
+        if (options.look_os && f >= 3 && f <= 10) {
+          e.button = 3;
+          const f32 cx = e.x;
+          const f32 cy = e.y;
+          if (f == 3) {
+            summary.look_os_yaw[0] = camera.state.yaw;
+            summary.look_os_expected_deg =
+                -options.look_os_by[0] * static_cast<f64>(camera.params.look) * 57.29577951308232;
+            e.kind = window::EventKind::MouseMove;
+            (void)child.post_os_event(e);
+            e.kind = window::EventKind::MouseButtonDown;
+            (void)child.post_os_event(e);
+          } else if (f <= 6) {
+            const f32 k = static_cast<f32>(f - 3) / 3.0f;
+            e.kind = window::EventKind::MouseMove;
+            e.x = cx + static_cast<f32>(options.look_os_by[0]) * k;
+            e.y = cy + static_cast<f32>(options.look_os_by[1]) * k;
+            (void)child.post_os_event(e);
+            if (f == 5) {
+              const window::Window::PointerReport r = child.pointer_report();
+              summary.look_os_asked = r.relative_asked;
+              summary.look_os_in_effect = child.relative_mouse();
+              summary.look_os_child_flag = r.sdl_flag;
+              summary.look_os_clip_inside =
+                  r.clipped && r.clip_left >= r.os_x && r.clip_top >= r.os_y &&
+                  r.clip_right <= r.os_x + r.os_width && r.clip_bottom <= r.os_y + r.os_height;
+              summary.look_os_cursor_inside = r.cursor_inside;
+            }
+          } else if (f == 7) {
+            e.kind = window::EventKind::MouseButtonUp;
+            e.x = cx + static_cast<f32>(options.look_os_by[0]);
+            e.y = cy + static_cast<f32>(options.look_os_by[1]);
+            (void)child.post_os_event(e);
+          } else if (f == 8 && camera.looking) {
+            // In effect, SDL reads the buttons from the device too, and the posted release is not
+            // one: the run lets go of the pointer itself rather than hold it to the end.
+            camera.looking = false;
+            summary.look_os_released_by_test = true;
+          } else if (f == 10) {
+            summary.look_os_yaw[1] = camera.state.yaw;
+            summary.looked_os = true;
           }
         }
         // --test-keys: a click in the viewport through the platform's queue gives it the
@@ -1082,8 +1274,13 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       if (!running) break;
       if (!placed) continue;  // nothing to draw until the page says where
-      view_window->set_relative_mouse(camera.looking);
+      // Asked on a change only: the window holds the mode until told otherwise.
+      if (camera.looking != relative_asked) {
+        relative_asked = camera.looking;
+        (void)view_window->set_relative_mouse(camera.looking);
+      }
       camera.advance(dt_ns);
+      trace.frame(summary.frames, camera.state.yaw, camera.state.pitch, camera.looking);
       if (resize) {
         resize = false;
         if (!swapchain.resize(view_window->pixel_width(), view_window->pixel_height(), &error)) {
@@ -1278,6 +1475,13 @@ int main(int argc, char** argv) {
     } else if (a == "--look") {
       if (!value(v) || !parse_list(v, options.look_by, 2)) return usage("--look needs DX,DY");
       options.look = true;
+    } else if (a == "--test-look-os") {
+      if (!value(v) || !parse_list(v, options.look_os_by, 2) ||
+          std::fabs(options.look_os_by[0]) > 300.0 || std::fabs(options.look_os_by[1]) > 300.0)
+        return usage("--test-look-os needs DX,DY, each within 300");
+      options.look_os = true;
+    } else if (a == "--trace-input") {
+      if (!value(options.trace_input)) return usage("--trace-input needs a file");
     } else if (a == "--webview-profile") {
       if (!value(options.webview_profile)) return usage("--webview-profile needs a directory");
     } else if (a == "--resize-to") {
@@ -1314,6 +1518,10 @@ int main(int argc, char** argv) {
   if (options.offscreen && (options.shell == Shell::Embedded || !options.listen.empty()))
     return usage("--offscreen draws the viewport alone: no --embedded, no --listen");
   if (options.look && options.drag) return usage("--look and --drag use the same frames");
+  if (options.look_os && (options.look || options.drag))
+    return usage("--test-look-os, --look and --drag use the same frames");
+  if (options.look_os && options.frames > 0 && options.frames < 12)
+    return usage("--test-look-os reads the camera at the tenth frame: --frames 12 or more");
   if (options.look && options.frames > 0 && options.frames < 10)
     return usage("--look releases at the seventh frame: --frames 10 or more");
   if (options.test_keys && (!options.move || (options.frames > 0 && options.frames < 32)))

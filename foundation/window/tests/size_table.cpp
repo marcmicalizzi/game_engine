@@ -9,7 +9,9 @@ using namespace engine;
 // word's last byte and start another, so `value` lands at 40 and the record is 44. One Event
 // exists at a time per poll(), so the twelve bytes buy clarity at no cost. Since 2026-10-03 the
 // platform's timestamp (`timestamp_ns`, a u64) follows at 48 and the record is 56, aligned to 8:
-// it is what tells motion reported before relative mode came on from motion after it.
-ENGINE_EXPECT_SIZE(56, 8, window::Event);
+// it is what tells motion reported before relative mode came on from motion after it. Since
+// 2026-10-12 a dropped file's path (`text`, a pointer the window owns until the next poll) follows
+// at 56 and the record is 64.
+ENGINE_EXPECT_SIZE(64, 8, window::Event);
 // `relative_since_ns_`, the moment relative mode came on, took the window from 24 bytes to 32.
 ENGINE_EXPECT_SIZE(32, 8, window::Window);

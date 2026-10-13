@@ -1410,7 +1410,10 @@ TEST_CASE("engine-editor: the viewport's keys, the page's keys, and the look ges
   // engine-view flies; the amounts are the fly camera's sensitivity's.
   CHECK_MESSAGE(number(look->find("yaw_deg")) != 0.0, output);
   CHECK_MESSAGE(number(look->find("pitch_deg")) != 0.0, output);
-  CHECK_MESSAGE(write_json(*look->find("relative")) == "true", output);
+  // Asked for; in effect only where the editor's window is the platform's foreground window, which
+  // a test cannot arrange (window.md, "Relative mode on an adopted child").
+  CHECK_MESSAGE(write_json(*look->find("relative_asked")) == "true", output);
+  MESSAGE("relative mode in effect: " << write_json(*look->find("relative")));
   const JsonValue* keys = summary.find("keys");
   REQUIRE_MESSAGE((keys != nullptr && keys->is_object()), output);
   CHECK_MESSAGE(write_json(*keys->find("viewport_focus")) == "true", output);
@@ -1425,6 +1428,46 @@ TEST_CASE("engine-editor: the viewport's keys, the page's keys, and the look ges
   MESSAGE("page: posted " << write_json(*keys->find("posted_to_page")) << ", undo position "
                           << write_json(*keys->find("undo_position_before_page")) << " -> "
                           << write_json(*keys->find("undo_position_after_page")));
+}
+
+TEST_CASE("engine-editor: the look gesture through the platform's queue turns the camera") {
+  const test::TempDir tmp("engine_editor_look_os");
+  const std::string doc_dir = embedded_fixture(tmp, false);
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string ddc = tmp.file("ddc");
+  // The right button, three moves and the release posted to the adopted child through the
+  // platform's queue (window procedure, SDL's translation), never to the desktop's foreground
+  // window. Before 2026-10-12 the child carried SDL's relative flag itself, which SDL honours only
+  // for its keyboard focus (a top-level window) and which made it drop every absolute motion of
+  // the child: the camera did not turn at all, here or under a person's mouse.
+  const std::vector<std::string_view> argv = {
+      exe,  "--doc", doc_dir, "--width",        "900",  "--height",  "560", "--frames",
+      "14", "--ddc", ddc,     "--test-look-os", "90,0", "--embedded"};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  const JsonValue* look = summary.find("look_os");
+  REQUIRE_MESSAGE((look != nullptr && look->is_object()), output);
+  CHECK_MESSAGE(write_json(*look->find("asked")) == "true", output);
+  // SDL's own flag never sits on the child: it is asked through the parent.
+  CHECK_MESSAGE(write_json(*look->find("child_flag")) == "false", output);
+  const f64 expected = number(look->find("expected_yaw_deg"));
+  CHECK(expected < -1.0);  // pointer right turns right: yaw falls
+  if (write_json(*look->find("in_effect")) == "false") {
+    // Not the foreground window: the posted moves are the absolute pointer's, and they turn the
+    // camera by exactly the fly camera's sensitivity.
+    CHECK_MESSAGE(number(look->find("yaw_deg")) == doctest::Approx(expected).epsilon(1.0e-3),
+                  output);
+  } else {
+    // In effect, SDL reads the device and a posted move is not one; what is checked is that the
+    // hidden cursor was held inside the viewport, where a release is the viewport's.
+    CHECK_MESSAGE(write_json(*look->find("clip_inside")) == "true", output);
+    CHECK_MESSAGE(write_json(*look->find("cursor_inside")) == "true", output);
+    MESSAGE(
+        "relative mode was in effect (the editor's window was in front): the posted moves "
+        "were not read, by design; turned "
+        << number(look->find("yaw_deg")) << " degrees");
+  }
 }
 
 TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, and reconnects") {
