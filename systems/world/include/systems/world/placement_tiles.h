@@ -82,6 +82,9 @@ struct PlacementTilesStats {
   u64 handed = 0;    // tails handed to the sink
   i64 sink_ns = 0;   // the renderer taking the tail: the device wait and the tables' upload
   i64 max_sink_ns = 0;
+  // Tiles built again for a moving ground (`restand`), and their wall time.
+  u64 restood = 0;
+  i64 restand_ns = 0;
   // Now: the things (buildings) the drawn tiles hold, and the tail's instances and pairs; the tiles
   // held but not drawn, for the budget.
   u32 buildings = 0;
@@ -137,6 +140,13 @@ class PlacementTiles {
   void tile_ranges(Vector<TileRange>& out) const;
   // Whether the pair budget left an active tile's placements out of the tail at the last commit.
   bool withheld(TileCoord tile) const noexcept;
+  // **A moving ground** (world.md, "The consumers"; scatter.md, "A moving ground"): the time the
+  // host's surface stands at. When it is not the one the held tiles were stood on, up to `budget`
+  // of them — innermost ring first, then nearest, then in tile order — are built again with the
+  // surface at that time as `scene_gen::Context::stand`, the same places, turns and scales standing
+  // on the sand where it now is, and the tail is handed on. Returns how many were built.
+  u32 restand(f64 surface_time_s, u32 budget);
+  f64 stand_time() const noexcept { return stand_time_; }
 
  private:
   struct Entry;
@@ -147,6 +157,7 @@ class PlacementTiles {
     u32 buildings = 0;
     Vector<renderer::SceneInstance> instances;
     Vector<u8> tags;  // parallel to `instances`
+    f64 stood = 0.0;  // the surface time it was built standing on
   };
 
   static bool activate(void* context, const TileEvent& event);
@@ -180,6 +191,13 @@ class PlacementTiles {
   InstanceSink sink_ = nullptr;
   void* sink_context_ = nullptr;
   PlacementTilesStats stats_;
+  // Each scene mesh's reach on the ground (`renderer::ground_radius`), for the footprints a later
+  // entry is handed; and the footprints of the entries before the one being built, one tile's.
+  Vector<f32> radius_of_;
+  Vector<scene_gen::Footprint> earlier_;
+  // The surface the tiles stand on now, when the host's ground has moved on from the scene's time.
+  std::unique_ptr<renderer::TerrainSampler> stand_;
+  f64 stand_time_ = 0.0;
 };
 
 }  // namespace engine::world

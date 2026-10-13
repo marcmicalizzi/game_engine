@@ -59,52 +59,87 @@ bool read_json_file(const std::string& path, JsonValue& out) {
   return parse_json(text, out).ok;
 }
 
-}  // namespace
-
-TEST_CASE("scatter: desert-endless's scattered variant is the scene and a layer") {
-  // `scattered.json` is `scene.json` field for field but its name, its description and its
-  // placements: a second copy of the erg's bands and sand that nothing held equal would drift, as
-  // desert-endless's own copy of the erg's detail once did (its README). Its layer is read and
-  // opened as the generator opens it; nothing is placed or written.
-  const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-endless",
-                                          "content/test-scenes/desert-endless");
-  JsonValue scene;
-  JsonValue scattered;
-  if (!read_json_file(dir + "/scene.json", scene) ||
-      !read_json_file(dir + "/scattered.json", scattered)) {
-    MESSAGE("the endless desert is not here; skipped");
-    return;
-  }
-  REQUIRE(scene.is_object());
-  REQUIRE(scattered.is_object());
-  for (const auto& [key, value] : scattered.as_object()) {
+// A variant of desert-endless with a layer: `scene.json` field for field but its name, its
+// description and its placements — a second copy of the erg's bands and sand that nothing held
+// equal would drift, as desert-endless's own copy of the erg's detail once did (its README) — and
+// its one layer, opened as the generator opens it. Nothing is placed or written.
+bool read_variant(const std::string& dir, const char* file, const JsonValue& scene,
+                  scatter::Layer& layer, bool& stream) {
+  JsonValue variant;
+  if (!read_json_file(dir + "/" + file, variant)) return false;
+  REQUIRE(variant.is_object());
+  for (const auto& [key, value] : variant.as_object()) {
     if (key == "name" || key == "description" || key == "placements") continue;
     const JsonValue* original = scene.find(key);
-    REQUIRE_MESSAGE(original != nullptr, "scattered.json has a field scene.json has not: " << key);
-    CHECK_MESSAGE(*original == value, "scattered.json's " << key << " is not scene.json's");
+    REQUIRE_MESSAGE(original != nullptr, file << " has a field scene.json has not: " << key);
+    CHECK_MESSAGE(*original == value, file << "'s " << key << " is not scene.json's");
   }
   for (const auto& [key, value] : scene.as_object()) {
     (void)value;
     if (key == "name" || key == "description") continue;
-    CHECK_MESSAGE(scattered.find(key) != nullptr, "scattered.json lacks scene.json's " << key);
+    CHECK_MESSAGE(variant.find(key) != nullptr, file << " lacks scene.json's " << key);
   }
-  const JsonValue* placements = scattered.find("placements");
+  const JsonValue* placements = variant.find("placements");
   REQUIRE(placements != nullptr);
   REQUIRE(placements->size() == 1);
   const JsonValue& entry = (*placements)[usize{0}];
   REQUIRE(entry.find("generator") != nullptr);
   CHECK(entry.find("generator")->as_string() == scatter::k_placement_generator);
-  scatter::Layer layer;
+  stream = entry.find("stream") == nullptr || entry.find("stream")->as_bool();
   schema::ReadContext ctx;
   REQUIRE(schema::from_json(layer, *entry.find("params"), ctx));
   REQUIRE(ctx.ok());
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("scatter: desert-endless's scattered variants are the scene and a layer") {
+  const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-endless",
+                                          "content/test-scenes/desert-endless");
+  JsonValue scene;
+  if (!read_json_file(dir + "/scene.json", scene)) {
+    MESSAGE("the endless desert is not here; skipped");
+    return;
+  }
+  REQUIRE(scene.is_object());
+  // `scattered.json`, the one engine-view flies (since 2026-10-12): the layer streamed beside the
+  // ground's tiles over the whole erg, the boulders to the second ring and the tufts in the first.
+  scatter::Layer streamed;
+  bool stream = false;
+  REQUIRE(read_variant(dir, "scattered.json", scene, streamed, stream));
+  CHECK(stream);
+  CHECK(streamed.region.kind == scatter::RegionKind::Scene);
+  REQUIRE(streamed.kinds.size() == 2);
+  // `far` against the scene's rings (1.5, 8, 24, 64 tiles of 32 m): a ring places a kind when its
+  // nearest tile is within the kind's `far` — the boulder in the first two rings (inner radii 0 and
+  // 48 m), the tuft in the first alone.
+  CHECK(streamed.kinds[0].far >= 48.0f);
+  CHECK(streamed.kinds[0].far < 256.0f);
+  CHECK(streamed.kinds[1].far > 0.0f);
+  CHECK(streamed.kinds[1].far < 48.0f);
   scatter::Placer placer;
   std::string error;
-  REQUIRE_MESSAGE(placer.open(layer, dir, 7, &error), error);
+  REQUIRE_MESSAGE(placer.open(streamed, dir, 7, &error), error);
   Vector<scene_gen::TileCoord> tiles;
-  REQUIRE(placer.region_tiles(tiles, &error));
-  MESSAGE("the scattered variant's layer covers " << tiles.size() << " tiles");
+  CHECK_FALSE(placer.region_tiles(tiles, &error));  // a region of the whole scene has no whole
+  // `scattered-bounded.json`: the same layer read whole over a polygon along the camera path.
+  scatter::Layer bounded;
+  REQUIRE(read_variant(dir, "scattered-bounded.json", scene, bounded, stream));
+  CHECK_FALSE(stream);
+  CHECK(bounded.region.kind == scatter::RegionKind::Polygon);
+  scatter::Placer whole;
+  REQUIRE_MESSAGE(whole.open(bounded, dir, 7, &error), error);
+  REQUIRE(whole.region_tiles(tiles, &error));
+  MESSAGE("the bounded variant's layer covers " << tiles.size() << " tiles");
   CHECK(tiles.size() < 16000);
+  // The two place the same kinds by the same rules: only the region, `stream` and `far` differ.
+  REQUIRE(bounded.kinds.size() == streamed.kinds.size());
+  for (u32 k = 0; k < bounded.kinds.size(); ++k) {
+    CHECK(bounded.kinds[k].spacing == streamed.kinds[k].spacing);
+    CHECK(bounded.kinds[k].weight == streamed.kinds[k].weight);
+    CHECK(bounded.kinds[k].slope_max_deg == streamed.kinds[k].slope_max_deg);
+  }
 }
 
 TEST_CASE("scatter: a scene's layer is read as instances of one rock standing on its ground") {

@@ -9,7 +9,7 @@
     "turbidity": 1.6,
     "ground_albedo": 0.38
   },
-  "description": "desert-endless with a scatter layer (docs/subsystems/scatter.md): the same scene field for field but `name`, this description and `placements`, which the scatter tests hold equal to scene.json. Procedural boulders and low dark tufts standing in for dry scrub, over a polygon a kilometre wide along the camera path's 12 km, read whole with the scene (`stream` false: a world drawing its ground from tiles cannot stream placements yet). README.md, 'The scattered variant', says what it shows and what it costs.",
+  "description": "desert-endless with a scatter layer streamed beside the ground's tiles (docs/subsystems/scatter.md): the same scene field for field but `name`, this description and `placements`, which the scatter tests hold equal to scene.json. Procedural boulders and low dark tufts standing in for dry scrub over the whole erg, placed tile by tile as the rings activate them: the boulders to the second ring (`far` 200 m) and the tufts in the first (`far` 40 m), so the far rings place none. scattered-bounded.json is the same layer read whole over a polygon. README.md, 'The scattered variant', says what it shows and what it costs.",
   "world": {
     "ground": true,
     "tile_size": 32,
@@ -23,14 +23,13 @@
   "placements": [
     {
       "generator": "scatter",
-      "stream": false,
+      "stream": true,
       "params": {
         "name": "erg-rocks-and-scrub",
         "seed": 31,
         "tile_size": 32,
         "region": {
-          "kind": "Polygon",
-          "polygon": [[-2400, -500], [3792.8, -500], [8346.4, -5053.6], [9053.6, -4346.4], [4207.2, 500], [-2400, 500]]
+          "kind": "Scene"
         },
         "density": { "kind": "Noise", "per_m2": 0.006, "octaves": 3, "wavelength": 300, "low": 0.3, "high": 0.8 },
         "kinds": [
@@ -43,7 +42,7 @@
             "scale_max": 1.8,
             "align": true,
             "sink": 0.1,
-            "far": 512,
+            "far": 200,
             "rock": { "seed": 7, "size_x": 1.1, "size_y": 0.7, "size_z": 0.9, "roughness": 0.22, "detail": 2, "red": 0.36, "green": 0.27, "blue": 0.2, "buried": 0.25 }
           },
           {
@@ -54,7 +53,7 @@
             "slope_max_deg": 24,
             "scale_min": 0.7,
             "scale_max": 1.3,
-            "far": 256,
+            "far": 40,
             "rock": { "seed": 19, "size_x": 0.8, "size_y": 0.4, "size_z": 0.8, "roughness": 0.45, "detail": 2, "red": 0.13, "green": 0.12, "blue": 0.06, "buried": 0.1 }
           }
         ],

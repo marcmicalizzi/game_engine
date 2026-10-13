@@ -412,6 +412,13 @@ void update_scene_bounds(SceneData& out);
 void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
                  f32& radius);
 
+// **How far a mesh reaches on the ground from its own origin**, metres at scale 1: the largest
+// distance in x and z from the origin to any cluster sphere's edge of a range of its clusters. What
+// a placement's footprint is — the circle a later placement entry keeps clear of (scene_gen.md,
+// "Earlier placements"; ADR-0046 decision 4, as built) — measured the same way by the scene reader
+// for a whole read and by the world's placements consumer for a streamed one.
+f32 ground_radius(const geometry::ClusterLodMesh& lod, u32 first, u32 count) noexcept;
+
 // The canonical vertex ids of mesh `mesh`'s cluster vertices, read-only: entry i is the id of
 // `scene.lod.mesh.vertices[scene.parts[mesh].first_vertex + i]`, and
 // `scene.parts[mesh].vertex_id_source` says what id space it is in. This is what a binding step

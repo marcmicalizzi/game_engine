@@ -807,7 +807,30 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;
   Vector<std::pair<MeshKey, u32>> seen;
-  for (const PlacementRef& entry : entries) {
+  // **Earlier placements** (ADR-0046 decision 4, as built 2026-10-12; scene_gen.md): every entry
+  // read whole is handed the footprints of the entries read whole before it, in the scene's order —
+  // where each placement stands and how far its mesh reaches on the ground, measured from the
+  // mesh as loaded (`ground_radius`), once a mesh and only when a later entry is there to read it.
+  Vector<scene_gen::Footprint> earlier;
+  Vector<f32> radius_of;  // by scene mesh; < 0 not measured yet
+  const auto measure = [&](u32 mesh, f32& radius, std::string& why) {
+    if (mesh < radius_of.size() && radius_of[mesh] >= 0.0f) {
+      radius = radius_of[mesh];
+      return true;
+    }
+    SourceMesh source;
+    geometry::ClusterLodMesh lod;
+    geometry::ClusterPages pages;
+    const u64 hash = mesh < out.mesh_info.size() ? out.mesh_info[mesh].hash : 0;
+    if (!load_source_mesh(out.meshes[mesh], out, hash, source, lod, pages, why)) return false;
+    radius = ground_radius(lod, 0, lod.mesh.clusters.size());
+    if (radius_of.size() <= mesh) radius_of.resize(mesh + 1, -1.0f);
+    radius_of[mesh] = radius;
+    return true;
+  };
+  for (u32 e = 0; e < entries.size(); ++e) {
+    const PlacementRef& entry = entries[e];
+    context.earlier = std::span<const scene_gen::Footprint>(earlier.data(), earlier.size());
     const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement(entry.generator);
     if (generator == nullptr) {
       error = entry.where + " " + registry.unknown_placement(entry.generator);
@@ -865,6 +888,25 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       instance.origin = p.position;
       out.instances.push_back(instance);
     }
+    // What the entries after this one are handed: only when there is one to hand it to.
+    if (e + 1 < entries.size()) {
+      earlier.reserve(earlier.size() + placed.instances.size());
+      for (const scene_gen::Placement& p : placed.instances) {
+        f32 radius = 0.0f;
+        std::string why;
+        if (!measure(meshes[p.mesh], radius, why)) {
+          error = entry.where +
+                  ": a placement's mesh could not be measured for the entries after "
+                  "it: " +
+                  why;
+          return false;
+        }
+        const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
+        earlier.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
+                                               scene_gen::nearest_mm(p.position.z),
+                                               static_cast<f64>(radius * scale)});
+      }
+    }
     out.placed_buildings += placed.things;
     out.placed_instances += placed.instances.size();
   }
@@ -894,6 +936,16 @@ void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3
     const geometry::ClusterDesc& c = lod.mesh.clusters[i];
     radius = std::max(radius, length(c.center - center) + c.radius);
   }
+}
+
+f32 ground_radius(const geometry::ClusterLodMesh& lod, u32 first, u32 count) noexcept {
+  f32 radius = 0.0f;
+  for (u32 i = first; i < first + count && i < lod.mesh.clusters.size(); ++i) {
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    radius =
+        std::max(radius, std::sqrt(c.center.x * c.center.x + c.center.z * c.center.z) + c.radius);
+  }
+  return radius;
 }
 
 std::string hash_hex(u64 hash) {
@@ -1283,16 +1335,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // The placement entries — the ruins, and any generator by name — through the scene-generator
   // registry, after the ground they stand on: expanded here, or in a streamed world left for the
   // world to expand tile by tile.
+  // Ground tiles beside streamed placements were refused here until 2026-10-12: the tiles are
+  // terrain levels drawn through the deformed-vertex pool, and a scene whose instances come and go
+  // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
+  // (renderer.md, "Instances that come and go").
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
-  // Ground tiles are terrain levels, drawn through the deformed-vertex pool, which a scene whose
-  // instances come and go does not have yet (ADR-0050): the two are refused together.
-  if (out.world.enabled && out.world.ground && !out.streamed.empty()) {
-    error = path +
-            ": a world drawing its ground from tiles cannot stream placements yet (its ruins or "
-            "placements entries): a scene whose instances come and go has no deformed-vertex pool, "
-            "which the tiles are drawn through";
-    return false;
-  }
   if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
       file.placements.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)

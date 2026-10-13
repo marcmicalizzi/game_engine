@@ -27,11 +27,21 @@ engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE
 # rules, density, exclusions, budget, the pinned hash) and through the registry.
 # scatter_scene_tests.cpp: a scene naming a layer read by the renderer's reader, and on a GPU the
 # placed rocks in the capture's ids channel standing on the drawn ground.
+# scatter_seam_tests.cpp: the exclusion by earlier placements and the moving ground, on the placer
+# and through the world's placements consumer (world: a non-capability module).
 engine_module_tests(NAME scatter
-  SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/size_table.cpp
-  DEPS renderer gfx)
+  SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/scatter_seam_tests.cpp
+          tests/size_table.cpp
+  DEPS renderer gfx world)
 
 # The scattered variant of desert-endless is held field for field to the scene beside it.
 if(TARGET engine_scatter_tests)
   target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
+# The moving ground's case through the world's consumer stands its layers on the dunes, which are
+# the terrain capability's: linked as a host links it (its registrar names the provider), and the
+# case compiled only where it is.
+if(TARGET engine_scatter_tests AND TARGET engine::terrain)
+  target_link_libraries(engine_scatter_tests PRIVATE engine::terrain)
+  target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SCATTER_TESTS_DUNES=1)
 endif()

@@ -24,6 +24,10 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_view_world, "view.world");
 
+// Tiles of placements stood on the moving sand again an update: a full pass over the held tiles
+// takes their count over this many updates, nearest first (scatter.md, "A moving ground").
+constexpr u32 k_restand_tiles = 4;
+
 }  // namespace
 
 ViewWorld::~ViewWorld() { close_log(); }
@@ -49,12 +53,14 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   // last one in one go. The default budget of eight activations an update fell behind the flow of
   // desert-endless's rings at 100 m/s (about ten a frame, counting the tiles moving inwards), and
   // its horizon thinned: 8,971 of 12,900 tiles held after 12 km (renderer.md, "Which tiles").
+  // **Nor with streamed placements beside them** (2026-10-12): the placements' cost is the tiles
+  // their kinds reach — a scatter layer's `far` leaves every outer ring's tile empty at the cost
+  // of a mask (scatter.md, "The budget is the LOD policy") — so the ring that draws to the horizon
+  // is not held to a budget a few near tiles would be.
   if (tiles != nullptr) {
     params = world::DrawnTiles::ring_params(tiles->tiles_desc());
-    if (data.streamed.empty()) {
-      params.max_activations = 0;
-      params.max_deactivations = 0;
-    }
+    params.max_activations = 0;
+    params.max_deactivations = 0;
   }
   const char* why = nullptr;
   if (!world_.configure(params, &why)) {
@@ -68,7 +74,7 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
       placements_config_.ruins[r] = static_cast<world::RingRuins>(data.world.ruins[r]);
   }
   // The drawn ground first: a tile is drawn before anything is placed on it (world.md, "The
-  // order"). The reader refuses ground tiles beside streamed placements, so today it is alone.
+  // order"), then what stands on it.
   if (tiles != nullptr) {
     drawn_.create(*tiles);
     world_.add_consumer(drawn_.consumer());
@@ -76,10 +82,12 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   // The scene's streamed placement entries, whatever generators they name: the reader has already
   // refused a name this executable does not carry, and the consumer finds each by it again.
   if (!data.streamed.empty()) {
+    // In the declared order, through the one function that states it; the drawn ground, when the
+    // world draws one, is registered above. The pair budget is the renderer's own: with the ray
+    // tracing chain, what the device's geometry indices name over the views.
+    placements_config_.max_pairs = renderer.scene().pair_limit();
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_sink(&ViewWorld::hand_over, this);
-    // In the declared order, through the one function that states it. No ground consumer: a
-    // streamed world draws the scene's one terrain mesh, and no renderer takes ground tiles yet.
     world::add_scene_consumers(world_, nullptr, &placements_);
   }
   ENGINE_LOG_INFO(log_view_world, "world", log::field("tile_size", params.tile_size),
@@ -153,6 +161,12 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     log_.before(world_);
   }
   world_.update(observers_, tick, mode != Mode::Budgeted);
+  // **A moving ground** (scatter.md, "A moving ground"): the sand the renderer draws stands at its
+  // surface time, and the placements standing on it follow, a few tiles an update, nearest first
+  // (`world::PlacementTiles::restand`). Nothing when the ground does not move.
+  if (!data_->streamed.empty() && data_->terrain.enabled) {
+    (void)placements_.restand(renderer_->scene().ground_time_s(), k_restand_tiles);
+  }
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
   // draws what the scene has, so nothing here fails the run. `error` is for the hook's contract.
   (void)error;

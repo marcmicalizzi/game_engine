@@ -44,6 +44,8 @@ scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring) cons
   context.dir = entry.source->dir;
   context.where = entry.source->where;
   if (ground_ != nullptr) context.ground = ground_->provider().view();
+  if (stand_ != nullptr) context.stand = stand_->provider().view();
+  context.earlier = std::span<const scene_gen::Footprint>(earlier_.data(), earlier_.size());
   context.world = &world_rings_;
   context.ring = ring;
   return context;
@@ -71,7 +73,15 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
     world_rings_.rings.push_back(ring);
   }
   ground_.reset();
+  stand_.reset();
+  stand_time_ = scene.terrain.enabled ? scene.terrain.time_s : 0.0;
+  earlier_.clear();
   if (scene.terrain.enabled) ground_ = std::make_unique<renderer::TerrainSampler>(scene.terrain);
+  // Each mesh's reach on the ground, measured as the reader measures it for a whole read.
+  radius_of_.clear();
+  for (const geometry::ClusterMeshPart& part : scene.parts)
+    radius_of_.push_back(
+        renderer::ground_radius(scene.lod, part.first_cluster, part.cluster_count));
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
   for (const renderer::StreamedPlacements& source : scene.streamed) {
     auto entry = std::make_unique<Entry>();
@@ -159,11 +169,15 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
   out.instances.clear();
   out.tags.clear();
   out.buildings = 0;
+  out.stood = stand_time_;
   const scene_gen::TileCoord at{tile.x, tile.z};
   bool ok = true;
   scene_gen::Placements placed;
-  for (const std::unique_ptr<Entry>& entry_ptr : entries_) {
-    const Entry& entry = *entry_ptr;
+  // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
+  // 4, as built): the tile is a function of the entries, the seed, the tile, the ground and those.
+  earlier_.clear();
+  for (u32 e = 0; e < entries_.size(); ++e) {
+    const Entry& entry = *entries_[e];
     if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
       continue;
     placed.clear();
@@ -193,6 +207,13 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
       instance.origin = p.position;
       out.instances.push_back(instance);
       out.tags.push_back(p.tag);
+      if (e + 1 < entries_.size()) {
+        const f32 reach = instance.mesh < radius_of_.size() ? radius_of_[instance.mesh] : 0.0f;
+        const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
+        earlier_.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
+                                                scene_gen::nearest_mm(p.position.z),
+                                                static_cast<f64>(reach * scale)});
+      }
     }
     const u32 kind = placed.kind < k_placement_kinds ? placed.kind : k_placement_kinds - 1;
     stats_.build_ns[kind] += time::monotonic_ns() - start;
@@ -213,6 +234,51 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
 // the budget's, decided at the commit over every tile held (`admit`), not here: deciding per event
 // would give the budget to whichever tiles come first in tile order, and a first fill would then
 // refuse a building beside the camera for one at the horizon.
+u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
+  if (scene_ == nullptr || !scene_->terrain.enabled || entries_.empty() || budget == 0) return 0;
+  if (surface_time_s != stand_time_) {
+    // The surface where it stands now: the terrain's own function at that time, a provider made
+    // once a time the host hands over (the dunes' is a closed form of time; terrain.md).
+    renderer::TerrainDesc at = scene_->terrain;
+    at.time_s = surface_time_s;
+    stand_ = std::make_unique<renderer::TerrainSampler>(at);
+    stand_time_ = surface_time_s;
+  }
+  // The tiles still standing on another time, innermost ring first, then nearest, then in tile
+  // order — the order the pair budget draws them in — so a frame's budget goes where it is seen.
+  ranks_.clear();
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    if (tiles_.value_at(i).stood == stand_time_) continue;
+    Rank rank;
+    rank.ring = tiles_.value_at(i).ring;
+    rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(tiles_.key_at(i))) : 0.0f;
+    rank.key = tiles_.key_at(i);
+    rank.index = i;
+    ranks_.push_back(rank);
+  }
+  if (ranks_.empty()) return 0;
+  std::sort(ranks_.begin(), ranks_.end(), [](const Rank& a, const Rank& b) {
+    if (a.ring != b.ring) return a.ring < b.ring;
+    if (a.score != b.score) return a.score < b.score;
+    return a.key < b.key;
+  });
+  const i64 start = time::monotonic_ns();
+  u32 built = 0;
+  for (const Rank& rank : ranks_) {
+    if (built >= budget) break;
+    TileBlock& held = tiles_.value_at(rank.index);
+    TileBlock fresh;
+    if (!build(tile_of_key(rank.key), held.ring, fresh)) ++stats_.failures;
+    fresh.withheld = held.withheld;
+    held = std::move(fresh);
+    ++built;
+  }
+  stats_.restood += built;
+  stats_.restand_ns += time::monotonic_ns() - start;
+  commit(this);
+  return built;
+}
+
 bool PlacementTiles::take(const TileEvent& event) {
   TileBlock block;
   const bool built = build(event.tile, event.to, block);

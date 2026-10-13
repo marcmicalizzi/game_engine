@@ -106,6 +106,18 @@ struct Mask {
   f64 sample(f64 x_m, f64 z_m) const noexcept;
 };
 
+// What one call stands on and what came before it, from `scene_gen::Context`: `ground` decides —
+// the slope and height limits and the uphill yaw, at the scene's time — `stand` is where a kind
+// standing on the surface stands now, its height and its normal (absent: `ground`; scatter.md, "A
+// moving ground"), and `earlier` the placements the scene's earlier entries made near the call's
+// tiles, which a kind keeps its `clear` from beyond each one's radius (scatter.md, "Exclusion by
+// earlier placements").
+struct Site {
+  scene_gen::Ground ground;
+  scene_gen::Ground stand;
+  std::span<const scene_gen::Footprint> earlier;
+};
+
 // The layer read, checked and turned into the integers it decides in: what every query runs
 // against. Immutable once opened, so `place` may run on as many threads as there are tiles.
 class Placer {
@@ -139,10 +151,16 @@ class Placer {
   // kind, so the mask only leaves some out: a far ring draws a subset of a near ring's placements.
   void place_tile(scene_gen::TileCoord tile, const scene_gen::Ground& ground, u32 kind_mask,
                   Vector<Point>& out) const;
+  void place_tile(scene_gen::TileCoord tile, const Site& site, u32 kind_mask,
+                  Vector<Point>& out) const;
   // The density field at a point, placements a square metre before the kinds share it.
   f64 density_at(i64 x_mm, i64 z_mm) const noexcept;
   // Every placement of every kind in `rect`, before the budget (the budget is per tile), sorted.
   void place_rect(const RectMm& rect, const scene_gen::Ground& ground, Vector<Point>& out) const;
+  void place_rect(const RectMm& rect, const Site& site, Vector<Point>& out) const;
+  // How far an earlier placement's footprint can keep this layer's candidates away, beyond its
+  // radius: the largest `clear` of the kinds, millimetres.
+  i64 earlier_reach_mm() const noexcept;
 
   // The kinds a ring places: those whose `far` is 0 or past the ring's nearest tile.
   u32 ring_kind_mask(const scene_gen::Context& context) const noexcept;

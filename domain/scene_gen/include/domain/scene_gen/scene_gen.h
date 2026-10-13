@@ -97,9 +97,20 @@ struct Ground {
 
 // ---- what a generator sees ----------------------------------------------------------------------
 
+// **An earlier entry's placement, as a later one is handed it** (ADR-0046 decision 4, "the
+// placements it is handed in the declared order"; scene_gen.md, "Earlier placements"): where it
+// stands, in whole millimetres of the world, and how far its mesh reaches on the ground there — the
+// radius of the mesh's bounds in the ground's plane, times its scale — which the host computes from
+// the meshes it loaded, since a generator names its meshes by path and never reads another's.
+struct Footprint {
+  i64 x_mm = 0;
+  i64 z_mm = 0;
+  f64 radius = 0.0;  // metres
+};
+
 // Everything a generator is handed besides its entry, and nothing of any other generator (ADR-0046
 // decision 4). A generator that wants another's output asks the ground it is handed, never the
-// registry.
+// registry — or reads `earlier`, which the host fills in the scene's order.
 struct Context {
   // The scene's seed: its terrain's `seed`, 0 for a scene with none. An entry with a seed of its
   // own (a ruins scatter's) uses that; this is the one a generator with none of its own draws from.
@@ -112,6 +123,16 @@ struct Context {
   // Where the entry is, for a sentence: "scene.json: ruins 0".
   std::string_view where;
   Ground ground;
+  // **The moving ground** (scene_gen.md, "A moving ground"): the surface as it stands now, when a
+  // host's ground has moved on from the scene's time (the dunes under a time-lapse). A generator
+  // decides on `ground` — so a placement's place, turn and scale do not move with the sand — and
+  // stands what stands on the surface on this: its height and its normal. Absent: `ground`.
+  Ground stand;
+  // **The placements the entries before this one made**, in the scene's order (ADR-0046 decision
+  // 4, as built 2026-10-12): for `tile`, the earlier entries' placements of the same tile; for
+  // `expand`, every earlier entry's whole read. Read-only, and part of what the generator's output
+  // is a function of. Empty for the first entry, and for a host that hands none.
+  std::span<const Footprint> earlier;
   // A streamed world's block (its rings, innermost first, and what each draws) and the ring a
   // `tile` call is for: what a generator with a representation per ring (the ruins' blocks near,
   // sections far) decides it by. Null and `k_no_ring` outside a streamed world, and for `expand`.

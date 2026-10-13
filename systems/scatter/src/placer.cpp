@@ -203,8 +203,9 @@ struct KindRt {
   i64 cell_mm = 0;
   i64 clear_mm = 0;
   i64 clear2 = 0;
-  f64 share = 0.0;  // weight over the weights' sum
-  f64 rho = 0.0;    // the lattice's packing at this spacing, points a square metre
+  i64 earlier_mm = 0;  // `clear`: beyond an earlier entry's footprint
+  f64 share = 0.0;     // weight over the weights' sum
+  f64 rho = 0.0;       // the lattice's packing at this spacing, points a square metre
   f64 tan2_min = 0.0;
   f64 tan2_max = 0.0;  // < 0: no upper limit
   bool needs_gradient = false;
@@ -319,10 +320,9 @@ struct Placer::Impl {
   bool in_region(i64 x, i64 z) const noexcept;
   f64 density(i64 x, i64 z) const noexcept;
   void lattice(u32 k, const RectMm& rect, Vector<Cand>& out) const;
-  void place_kind(u32 k, const RectMm& rect, const scene_gen::Ground& ground,
-                  std::span<const Point> earlier, Vector<Point>& out) const;
-  void place_upto(u32 k, const RectMm& rect, const scene_gen::Ground& ground,
+  void place_kind(u32 k, const RectMm& rect, const Site& site, std::span<const Point> earlier,
                   Vector<Point>& out) const;
+  void place_upto(u32 k, const RectMm& rect, const Site& site, Vector<Point>& out) const;
 };
 
 bool Placer::Impl::in_region(i64 x, i64 z) const noexcept {
@@ -453,10 +453,11 @@ void Placer::Impl::lattice(u32 k, const RectMm& rect, Vector<Cand>& out) const {
   }
 }
 
-void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground& ground,
+void Placer::Impl::place_kind(u32 k, const RectMm& rect, const Site& site,
                               std::span<const Point> earlier, Vector<Point>& out) const {
   const KindRt& rt = kinds[k];
   const Kind& kind = layer.kinds[k];
+  const scene_gen::Ground& ground = site.ground;
   Vector<Cand> kept;
   lattice(k, rect, kept);
   if (kept.empty()) return;
@@ -464,9 +465,36 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground
   Vector<Vector<Point>> others(excluded.size());
   for (u32 e = 0; e < excluded.size(); ++e)
     excluded[e].placer->place_rect(rect.grown(excluded[e].clear_mm), ground, others[e]);
+  // **The earlier entries' footprints that reach the rectangle** (ADR-0046 decision 4, as built):
+  // each one's radius plus this kind's `clear`, as integer millimetres; a candidate within it is
+  // not placed. Gathered once per call, so a whole read handing every earlier placement of the
+  // scene costs each tile the ones near it.
+  struct Reach {
+    i64 x = 0;
+    i64 z = 0;
+    i64 r = 0;
+    i64 r2 = 0;
+  };
+  Vector<Reach> reaches;
+  for (const scene_gen::Footprint& f : site.earlier) {
+    const i64 r = scene_gen::nearest_mm(f.radius) + rt.earlier_mm;
+    if (r <= 0) continue;
+    if (f.x_mm + r <= rect.x0 || f.x_mm - r >= rect.x1 || f.z_mm + r <= rect.z0 ||
+        f.z_mm - r >= rect.z1)
+      continue;
+    reaches.push_back(Reach{f.x_mm, f.z_mm, r, r * r});
+  }
   const auto height = [&](i64 x, i64 z) {
     if (!ground.present()) return 0.0;
     return kind.stand == Stand::Floor ? ground.floor_mm(x, z) : ground.surface_mm(x, z);
+  };
+  // **Where it stands now** (scatter.md, "A moving ground"): a kind on the surface stands on the
+  // host's surface as it is now, its height and its normal, while everything above was decided on
+  // the scene's ground — so the sand moving under a rock moves it up and down and tilts it, and
+  // never moves it across, turns it or takes it away. The floor does not move.
+  const bool restand = kind.stand == Stand::Surface && site.stand.present();
+  const auto stand_height = [&](i64 x, i64 z) {
+    return restand ? site.stand.surface_mm(x, z) : height(x, z);
   };
   const auto near_any = [](std::span<const Point> points, i64 x, i64 z, i64 r, i64 r2,
                            u32 kind_filter) {
@@ -506,6 +534,15 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground
     }
     if (excluded_here) continue;
     if (rt.clear_mm > 0 && near_any(earlier, c.x, c.z, rt.clear_mm, rt.clear2, k)) continue;
+    for (const Reach& f : reaches) {
+      const i64 dx = c.x - f.x;
+      const i64 dz = c.z - f.z;
+      if (dx < f.r && dx > -f.r && dz < f.r && dz > -f.r && dx * dx + dz * dz < f.r2) {
+        excluded_here = true;
+        break;
+      }
+    }
+    if (excluded_here) continue;
     // The ground: its height, and its slope where a rule asks for it.
     const f64 y = height(c.x, c.z);
     if (y < kind.height_min || y > kind.height_max) continue;
@@ -534,6 +571,18 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground
       case YawRule::Fixed: yaw = offset; break;
     }
     QuatD q = about_y(yaw);
+    // Standing on the surface as it is now: its height, and its normal for the alignment.
+    f64 stand_y = y;
+    if (restand) {
+      stand_y = stand_height(c.x, c.z);
+      if (kind.align) {
+        const f64 step = 2.0 * static_cast<f64>(k_slope_step_mm) / 1000.0;
+        gx = (stand_height(c.x + k_slope_step_mm, c.z) - stand_height(c.x - k_slope_step_mm, c.z)) /
+             step;
+        gz = (stand_height(c.x, c.z + k_slope_step_mm) - stand_height(c.x, c.z - k_slope_step_mm)) /
+             step;
+      }
+    }
     if (kind.align) {
       // The shortest arc from +y to the normal (-gx, 1, -gz) / |...|, then the yaw before it.
       const f64 len = std::sqrt(gx * gx + 1.0 + gz * gz);
@@ -548,7 +597,7 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground
     Point p;
     p.x_mm = c.x;
     p.z_mm = c.z;
-    p.y = y - static_cast<f64>(kind.sink) * scale;
+    p.y = stand_y - static_cast<f64>(kind.sink) * scale;
     p.rotation = Quat{static_cast<f32>(q.x), static_cast<f32>(q.y), static_cast<f32>(q.z),
                       static_cast<f32>(q.w)};
     p.yaw = static_cast<f32>(yaw);
@@ -562,16 +611,23 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const scene_gen::Ground
 // Kinds 0 .. k-1 over `rect`: each kind after the earlier ones it keeps its clearance from, which
 // are placed over the rectangle grown by that clearance, so a point's clearance sees every earlier
 // point near it whichever rectangle asked.
-void Placer::Impl::place_upto(u32 k, const RectMm& rect, const scene_gen::Ground& ground,
+void Placer::Impl::place_upto(u32 k, const RectMm& rect, const Site& site,
                               Vector<Point>& out) const {
   if (k == 0) return;
   const i64 grow = kinds[k - 1].clear_mm;
   Vector<Point> earlier;
-  place_upto(k - 1, grow > 0 ? rect.grown(grow) : rect, ground, earlier);
+  place_upto(k - 1, grow > 0 ? rect.grown(grow) : rect, site, earlier);
   for (const Point& p : earlier) {
     if (rect.contains(p.x_mm, p.z_mm)) out.push_back(p);
   }
-  place_kind(k - 1, rect, ground, std::span<const Point>(earlier.data(), earlier.size()), out);
+  place_kind(k - 1, rect, site, std::span<const Point>(earlier.data(), earlier.size()), out);
+}
+
+i64 Placer::earlier_reach_mm() const noexcept {
+  i64 reach = 0;
+  for (const KindRt& rt : impl_->kinds)
+    reach = std::max(reach, rt.earlier_mm);
+  return reach;
 }
 
 Placer::Placer() : impl_(std::make_unique<Impl>()) {}
@@ -630,6 +686,7 @@ bool Placer::open(const Layer& desc, std::string_view dir, u64 world_seed, std::
     rt.cell_mm = std::max<i64>(1, static_cast<i64>(static_cast<f64>(rt.r_mm) / std::sqrt(2.0)));
     rt.clear_mm = to_mm(static_cast<f64>(kind.clearance));
     rt.clear2 = rt.clear_mm * rt.clear_mm;
+    rt.earlier_mm = to_mm(static_cast<f64>(kind.clear));
     rt.share = kind.weight / weights;
     const f64 r_m = static_cast<f64>(rt.r_mm) / 1000.0;
     rt.rho = k_packing / (r_m * r_m);
@@ -821,9 +878,15 @@ bool Placer::region_tiles(Vector<scene_gen::TileCoord>& out, std::string* error)
 
 void Placer::place_rect(const RectMm& rect, const scene_gen::Ground& ground,
                         Vector<Point>& out) const {
+  Site site;
+  site.ground = ground;
+  place_rect(rect, site, out);
+}
+
+void Placer::place_rect(const RectMm& rect, const Site& site, Vector<Point>& out) const {
   const Impl& im = *impl_;
   const u32 first = out.size();
-  im.place_upto(im.kinds.size(), rect, ground, out);
+  im.place_upto(im.kinds.size(), rect, site, out);
   std::sort(out.begin() + first, out.end(), [](const Point& a, const Point& b) {
     if (a.kind != b.kind) return a.kind < b.kind;
     if (a.z_mm != b.z_mm) return a.z_mm < b.z_mm;
@@ -833,13 +896,21 @@ void Placer::place_rect(const RectMm& rect, const scene_gen::Ground& ground,
 
 void Placer::place_tile(scene_gen::TileCoord tile, const scene_gen::Ground& ground, u32 kind_mask,
                         Vector<Point>& out) const {
+  Site site;
+  site.ground = ground;
+  place_tile(tile, site, kind_mask, out);
+}
+
+void Placer::place_tile(scene_gen::TileCoord tile, const Site& site, u32 kind_mask,
+                        Vector<Point>& out) const {
   const Impl& im = *impl_;
-  if (!occupies(tile)) return;
+  // A ring that places none of the kinds (every `far` short of it) costs a mask, not a tile.
+  if (kind_mask == 0 || !occupies(tile)) return;
   const RectMm rect{static_cast<i64>(tile.x) * im.tile_mm, static_cast<i64>(tile.z) * im.tile_mm,
                     (static_cast<i64>(tile.x) + 1) * im.tile_mm,
                     (static_cast<i64>(tile.z) + 1) * im.tile_mm};
   Vector<Point> all;
-  place_rect(rect, ground, all);
+  place_rect(rect, site, all);
   const u32 cap = im.layer.budget.per_tile;
   if (cap > 0 && all.size() > cap) {
     // The budget keeps the placements of lowest rank, a hash of each one's own candidate, so which
