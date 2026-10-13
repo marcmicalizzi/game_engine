@@ -328,8 +328,6 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // whose instances come and go starts there too and grows when a tail passes it.
   pair_stride_ = pair_count_;
   dynamic_ = data.dynamic;
-  static_instances_ = instance_count_;
-  static_pairs_ = pair_count_;
   resolved_ = resolved;
   triangles_per_cluster_ = geometry::ClusterLodOptions{}.max_triangles;
   instance_table_ = data.instances;
@@ -340,13 +338,18 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // The terrain rings' slots, beside the scene's own meshes and instances: more clusters, pairs,
   // instances and arena room than the scene has, reserved now so that nothing about the scene's
   // layout ever has to move for a ring (renderer.md, "The rings in the scene").
-  if (rings != nullptr && resolved.terrain_levels && rings->valid() && !dynamic_ && !streamed_) {
+  // A scene whose instances come and go takes them too: they are its load's prefix, and the tail's
+  // blocks follow them (renderer.md, "Instances that come and go").
+  if (rings != nullptr && resolved.terrain_levels && rings->valid() && !streamed_) {
     if (!lay_out_rings(resolved, *rings, error)) {
       destroy();
       return false;
     }
     pair_stride_ = pair_count_;
   }
+  // The prefix a dynamic scene's tail follows: the load's instances and the levels' slots.
+  static_instances_ = instance_count_;
+  static_pairs_ = pair_count_;
   // The visibility id is `pair << 8 | triangle` in 32 bits (gfx.md, "The tie rule"), so a scene
   // names at most 2^24 pairs; past that two pairs would share an id and the picture would be wrong
   // without a word, so refuse the scene instead.
@@ -358,19 +361,38 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
-  // Instances that come and go are rigid and untraced in v0: the ray tracing chain's top-level
-  // records and bottom-level set, and the deformed-vertex pool's table, are laid out once per
-  // instance, and nothing rewrites them for a tail (renderer.md, "Instances that come and go").
-  if (dynamic_ && (ray_tracing_ || deform_)) {
+  // Instances that come and go are rigid: the deformed-vertex pool's table is laid out once, for
+  // the load's prefix (the terrain levels'), and a tail instance has no entry in it. The pool's
+  // per-frame blocks and the ray tracing chain follow the tail (renderer.md, "Instances that come
+  // and go"); a deformed tail does not, nor do cluster templates (`resolve_settings` turns
+  // `--deform` and `--rt-templates` off for such a scene).
+  if (dynamic_ && (skinned_ || data.morphed() || resolved.settings.deform ||
+                   (ray_tracing_ && resolved.settings.rt_templates))) {
     if (error != nullptr) {
-      *error = ray_tracing_ ? "a scene whose instances come and go between frames has no ray "
-                              "tracing chain yet: draw it with --shadows off or csm and a raster "
-                              "path"
-                            : "a scene whose instances come and go between frames draws rigid "
-                              "instances only: no --deform, skinning or morph channels yet";
+      *error = resolved.settings.rt_templates && ray_tracing_
+                   ? "a scene whose instances come and go between frames builds no cluster "
+                     "templates yet: draw it without --rt-templates"
+                   : "a scene whose instances come and go between frames draws rigid "
+                     "instances only: no --deform, skinning or morph channels yet";
     }
     destroy();
     return false;
+  }
+  if (dynamic_) {
+    // The instance tables' capacity before anything per instance is sized by it (the chain's
+    // tables are), in pages of 1,024 slots with half as much again.
+    instance_capacity_ =
+        static_cast<u32>((u64{instance_count_} + u64{instance_count_} / 2 + 1024) / 1024 * 1024);
+    // With the chain, the tail may reach no more pairs than the device's cluster geometry
+    // indices name over the views' runs (renderer.md, "The ray tracing chain's index space").
+    pair_limit_ = k_max_pairs;
+    gfx::ClusterAsProperties props;
+    if (ray_tracing_ && gfx::cluster_as_properties(device, props) && props.max_geometry_index > 0) {
+      const u64 per_pair =
+          u64{view_count_} * (resolved.casters ? u64{gfx::k_caster_run + 1} : u64{1});
+      const u64 limit = (u64{props.max_geometry_index} + 1) / per_pair;
+      if (limit < pair_limit_) pair_limit_ = static_cast<u32>(limit);
+    }
   }
 
   if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
@@ -407,7 +429,8 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
         const u32 instance = ring.first_instance + s;
         gfx::set_terrain_corner(instance_table_[instance], chunk.corner_x_mm, chunk.corner_z_mm);
         instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
-        pending_instance_writes_.push_back(instance);
+        // A dynamic scene's sets are written whole by their first frames, from the table.
+        if (!dynamic_) pending_instance_writes_.push_back(instance);
       }
     }
   }
@@ -459,50 +482,68 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
+  // The rings' first chunks, copied in now and waited for: this is `create`, where uploads are
+  // one-shot, and the first frame draws them. Their records are in `meshes` already.
+  if (!pending_geometry_.empty()) {
+    const bool copied = gfx::submit_immediate(
+        device,
+        [&](gfx::CommandList cb) {
+          for (const TerrainUpdate::GeometryCopy& copy : pending_geometry_)
+            cb.copy_buffer(copy.src, copy.dst, copy.region);
+        },
+        error);
+    for (gfx::BufferResource& staging : pending_staging_)
+      gfx::destroy_buffer(device, staging);
+    pending_staging_.clear();
+    pending_geometry_.clear();
+    pending_geometry_bytes_ = 0;
+    if (!copied) {
+      destroy();
+      return false;
+    }
+  }
+  // The first fill went through buffers of its own, once; every upload from here on is staged
+  // through the ring.
+  if (!ring_slots_.empty() && !create_staging_ring(error)) {
+    destroy();
+    return false;
+  }
+  rings_ = nullptr;
   if (!dynamic_) {
     if (!upload_pair_table(error)) {
       destroy();
       return false;
     }
-    // The rings' first chunks, copied in now and waited for: this is `create`, where uploads are
-    // one-shot, and the first frame draws them. Their records are in `meshes` already.
-    if (!pending_geometry_.empty()) {
-      const bool copied = gfx::submit_immediate(
-          device,
-          [&](gfx::CommandList cb) {
-            for (const TerrainUpdate::GeometryCopy& copy : pending_geometry_)
-              cb.copy_buffer(copy.src, copy.dst, copy.region);
-          },
-          error);
-      for (gfx::BufferResource& staging : pending_staging_)
-        gfx::destroy_buffer(device, staging);
-      pending_staging_.clear();
-      pending_geometry_.clear();
-      pending_geometry_bytes_ = 0;
-      if (!copied) {
-        destroy();
-        return false;
-      }
-    }
-    // The first fill went through buffers of its own, once; every upload from here on is staged
-    // through the ring.
-    if (!ring_slots_.empty() && !create_staging_ring(error)) {
-      destroy();
-      return false;
-    }
-    rings_ = nullptr;
     return true;
   }
   // A dynamic scene's tables are sets, one per frame in flight (two until a renderer asks for
   // more), each kept at a capacity — the instance table in pages of 1,024 slots, the pair table as
   // long as the stride — and each written by the first frame that reads it: everything here is
   // pending, so the first frame flips to a set and uploads the load's instances and expands their
-  // pairs, as it would a change. Nothing is written from the CPU at all.
+  // pairs, as it would a change. Nothing is written from the CPU at all — but the terrain levels'
+  // slots' pairs, which are the slot's whatever chunk it draws (a slot's mesh record counts only
+  // the chunk's clusters, which is what the expansion reads): those are uploaded here once and
+  // copied into each set when it is written whole.
   layout_.reset(static_instances_, static_pairs_);
   compact_pct_ = tile_compact_pct_tunable();
   tail_keys_.assign(instance_count_, InstanceKey{});
-  instance_capacity_ =
-      static_cast<u32>((u64{instance_count_} + u64{instance_count_} / 2 + 1024) / 1024 * 1024);
+  if (!ring_slots_.empty()) {
+    ring_pair_begin_ = instance_table_[ring_slots_[0].first_instance].first_pair;
+    Vector<u32> table(u64{static_pairs_ - ring_pair_begin_} * 2u, 0u);
+    for (u32 i = ring_slots_[0].first_instance; i < static_instances_; ++i) {
+      const gfx::InstanceDesc& instance = instance_table_[i];
+      const geometry::ClusterMeshPart& part = part_of(instance.mesh);
+      for (u32 c = 0; c < part.cluster_count; ++c) {
+        table[u64{instance.first_pair - ring_pair_begin_ + c} * 2u] = i;
+        table[u64{instance.first_pair - ring_pair_begin_ + c} * 2u + 1u] = part.first_cluster + c;
+      }
+    }
+    if (!gfx::upload_buffer(device, table.data(), u64{table.size()} * sizeof(u32),
+                            gfx::BufferUsage::TransferSrc, ring_pairs_, error)) {
+      destroy();
+      return false;
+    }
+  }
   sets_.resize(2);
   for (TableSet& set : sets_) {
     if (!create_table_set(set, error)) {
@@ -536,6 +577,61 @@ void GpuScene::retire(gfx::BufferResource& buffer, Vector<gfx::BufferResource>* 
     gfx::destroy_buffer(*device_, buffer);
   }
   buffer = gfx::BufferResource{};
+}
+
+gfx::TlasInstance GpuScene::tlas_record(u32 slot) const noexcept {
+  gfx::TlasInstance record;
+  // The prefix is always live; a tail slot is when it names one of the scene's meshes (a hole's
+  // null instance names the null mesh, past them).
+  const bool live =
+      slot < instance_table_.size() &&
+      (!dynamic_ || slot < static_instances_ || instance_table_[slot].mesh < data_->parts.size());
+  if (slot < instance_table_.size())
+    record.transform = gfx::instance_matrix(instance_table_[slot], WorldEye{});
+  record.custom_index = slot;
+  record.mask = live ? 0xffu : 0u;
+  record.blas = 0;
+  return record;
+}
+
+void GpuScene::mark_instance_written(u32 instance) {
+  if (!dynamic_) {
+    pending_instance_writes_.push_back(instance);
+    return;
+  }
+  // Through the table sets, as a tail's slot is: the frame that flips to a set copies it, and the
+  // chain's top-level record with it. The caller is between frames, before the next one's
+  // `prepare_tables`, so the slot's mesh record (`pending_mesh_writes_`) lands in the same frame.
+  for (TableSet& set : sets_) {
+    if (!set.all) set.pending.push_back(InstanceRange{instance, instance + 1});
+  }
+  tables_changed_ = true;
+}
+
+bool GpuScene::relayout(std::string* error) {
+  if (!relayout_pending_) return true;
+  relayout_pending_ = false;
+  // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
+  if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
+    gfx::destroy_buffer(*device_, deform_slots);
+    if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
+                            deform_slots, error)) {
+      return false;
+    }
+    for (gfx::MeshDesc& desc : mesh_descs_)
+      desc.deform_slots = deform_slots.address;
+    for (RingSlots& ring : ring_slots_) {
+      for (TerrainSlot& slot : ring.slots)
+        slot.desc.deform_slots = deform_slots.address;
+    }
+    gfx::destroy_buffer(*device_, meshes);
+    if (!gfx::upload_buffer(*device_, mesh_descs_.data(),
+                            mesh_descs_.size() * sizeof(gfx::MeshDesc), k_storage, meshes, error)) {
+      return false;
+    }
+  }
+  if (ray_tracing_ && !lay_out_ray_tracing(error)) return false;
+  return true;
 }
 
 gfx::InstanceDesc GpuScene::null_instance(u32 first_pair) const noexcept {
@@ -643,7 +739,7 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     request.pairs = pairs > k_max_pairs ? k_max_pairs + 1u : static_cast<u32>(pairs);
   }
   if (!layout_.apply(std::span<const TileLayout::Request>(requests_.data(), requests_.size()),
-                     compact_pct_, compact, k_max_pairs, writes_, change.layout, error)) {
+                     compact_pct_, compact, pair_limit_, writes_, change.layout, error)) {
     return false;
   }
   // Committed: the slots the layout wrote, then the buffers grown to hold them.
@@ -709,7 +805,7 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
   if (pair_end > pair_stride_) {
     u64 stride = u64{pair_end} + u64{pair_end} / 2;
     stride = (stride + 4095) / 4096 * 4096;
-    if (stride > k_max_pairs) stride = k_max_pairs;
+    if (stride > pair_limit_) stride = pair_limit_;
     retire(visible, retired);
     retire(shadow_args, retired);
     retire(pair_entries, retired);
@@ -737,6 +833,11 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     instance_capacity_ = static_cast<u32>(capacity);
     sets_again = true;
   }
+  // The pool's per-entry slots follow the stride and the chain's tables the stride and the
+  // instance capacity; both are read by the frames in flight by address, so they are made again
+  // with the device idle (`relayout`, which the caller runs before the next frame). Rare: the
+  // stride and the capacity grow half as much again each time.
+  if (sets_again && (deform_ || ray_tracing_)) relayout_pending_ = true;
   if (sets_again) {
     // `instances` and `pair_table` still name the current set's old buffers, which the frames in
     // flight read; the next frame flips to a new set.
@@ -781,6 +882,9 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.slots = out.expand = 0;
   out.pairs = 0;
   out.copies.clear();
+  out.rt_copies.clear();
+  out.pair_copies.clear();
+  out.pair_source = gfx::BufferResource{};
   out.set = current_set_;
   if (!dynamic_ || !tables_changed_ || sets_.empty()) return true;
   tables_changed_ = false;
@@ -794,6 +898,13 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     runs.clear();
     runs.push_back(InstanceRange{0, instance_count_});
     set.all = false;
+    // The terrain levels' slots' pairs, written once into a set that is written whole.
+    if (ring_pairs_.buffer.valid()) {
+      out.pair_source = ring_pairs_;
+      out.pair_copies.push_back(
+          gfx::BufferCopy{0, u64{ring_pair_begin_} * 2u * sizeof(u32),
+                          u64{static_pairs_ - ring_pair_begin_} * 2u * sizeof(u32)});
+    }
   }
   std::sort(runs.begin(), runs.end(),
             [](const InstanceRange& a, const InstanceRange& b) { return a.begin < b.begin; });
@@ -821,7 +932,13 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     return true;
   }
   const u64 instance_bytes = u64{slot_count} * sizeof(gfx::InstanceDesc);
-  const u64 bytes = instance_bytes + u64{expand} * sizeof(u32);
+  // With the chain, the same slots' top-level records after the list (renderer.md, "Instances that
+  // come and go"): a block's arrival, rewrite or departure writes its own records and no other.
+  const u64 records_at = (instance_bytes + u64{expand} * sizeof(u32) + 63) / 64 * 64;
+  const u64 record_bytes = ray_tracing_ && rt_instances.buffer.valid()
+                               ? u64{slot_count} * gfx::k_instance_record_bytes
+                               : 0;
+  const u64 bytes = records_at + record_bytes;
   if (slot >= table_staging_.size()) table_staging_.resize(slot + 1);
   gfx::BufferResource& staging = table_staging_[slot];
   if (staging.size < bytes) {
@@ -838,6 +955,7 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   auto* base = static_cast<u8*>(staging.mapped);
   auto* list = reinterpret_cast<u32*>(base + instance_bytes);
   u64 at = 0;
+  u64 record_at = records_at;
   u32 listed = 0;
   u64 pairs = 0;
   for (const InstanceRange& run : runs) {
@@ -846,6 +964,17 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     out.copies.push_back(
         gfx::BufferCopy{at, u64{run.begin} * sizeof(gfx::InstanceDesc), run_bytes});
     at += run_bytes;
+    if (record_bytes > 0) {
+      const u64 run_records = u64{run.end - run.begin} * gfx::k_instance_record_bytes;
+      for (u32 i = run.begin; i < run.end; ++i) {
+        const gfx::TlasInstance record = tlas_record(i);
+        gfx::write_instances(std::span<const gfx::TlasInstance>(&record, 1),
+                             base + record_at + u64{i - run.begin} * gfx::k_instance_record_bytes);
+      }
+      out.rt_copies.push_back(
+          gfx::BufferCopy{record_at, u64{run.begin} * gfx::k_instance_record_bytes, run_records});
+      record_at += run_records;
+    }
     for (u32 i = run.begin; i < run.end; ++i) {
       const u32 mesh = instance_table_[i].mesh;
       if (mesh >= data_->parts.size()) continue;
@@ -2083,7 +2212,7 @@ void GpuScene::terrain_chunk_show(u32 level, u32 s, bool on) noexcept {
       const u32 instance = ring.first_instance + s;
       gfx::set_terrain_corner(instance_table_[instance], slot.corner_x_mm, slot.corner_z_mm);
       instance_table_[instance].flags |= gfx::k_instance_uv_from_corner;
-      pending_instance_writes_.push_back(instance);
+      mark_instance_written(instance);
     }
     if (!on && slot.loaded) {
       // Nothing recorded from the next frame on reads it, and the copy that reuses its ranges is
@@ -2666,7 +2795,10 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   // 2026-09-24 that was the union too, 6,144 bytes of cluster structure reserved for every pair in
   // every view — 16.2 GB for the desert overlook's landmarks on a surround, whose frames build at
   // most 43,291 clusters. Now it is what `SceneRenderer` measures the frames to need.
-  rt_union_clusters_ = pair_count_ * view_count_;
+  //
+  // This half is the scene's — the 8-bit indices, the record count, the templates — and is made
+  // once; the half laid out by the instances and the pairs is `lay_out_ray_tracing`'s, which a
+  // dynamic scene makes again when its tail outgrows it (`relayout`).
   Vector<u8> packed;
   // Under streaming the 8-bit indices are one more page-pool stream, filled a page at a time
   // beside the float positions, because a CLAS record addresses them at the same slot-relative
@@ -2676,83 +2808,17 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
         std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), packed);
   }
   gfx::ClusterSetLimits limits;
-  limits.max_clusters = rt_union_clusters_;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  // A shadow caster's geometry index is its visible index too, and the casters are the list's run
-  // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
-  // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
-  // runs still holds at most `views * pair_count` clusters.
-  //
-  // **The device bounds that index, and the frame's size does not move it** (renderer.md, "The
-  // ray tracing chain's index space"). `resolve_settings` drops the casters, or the chain, when
-  // the scene's pairs in every view would pass `cluster_max_geometry_index`; a caller that went
-  // around it is refused here with both numbers, where it used to learn only that "the driver gave
-  // no sizes" — which is what the ashlar ruins on a three-view surround said, at any resolution.
-  const u64 max_index = rt_max_geometry_index(pair_count_, view_count_, resolved.casters);
-  gfx::ClusterAsProperties cluster_props;
-  const u32 device_max =
-      gfx::cluster_as_properties(device, cluster_props) ? cluster_props.max_geometry_index : 0u;
-  if (max_index > device_max) {
-    if (error != nullptr) {
-      *error = "the scene's " + std::to_string(pair_count_) + " pairs in " +
-               std::to_string(view_count_) + " view(s)" +
-               (resolved.casters ? " with shadow casters" : "") +
-               " name cluster geometry indices up to " + std::to_string(max_index) +
-               "; the device allows " + std::to_string(device_max) +
-               " (resolve_settings drops the casters or the chain for such a scene)";
-    }
-    return false;
-  }
-  limits.max_geometry_index = static_cast<u32>(max_index);
   limits.instantiate = resolved.settings.rt_templates;
   rt_limits_ = limits;
-  // One instance's structure can reference at most its mesh's clusters in every view (a ring
-  // slot's: the clusters it has room for).
-  rt_max_per_instance_ = 0;
-  for (const gfx::InstanceDesc& instance : instance_table_) {
-    rt_max_per_instance_ =
-        std::max(rt_max_per_instance_, part_of(instance.mesh).cluster_count * view_count_);
-  }
-
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
-  // The top-level instance records, once: the instance as the custom index, and a bottom-level
-  // address of zero and a transform, both of which the frame's `tlas_references` dispatch
-  // overwrites — the address from `blas_set.addresses`, the transform from the instance's cell and
-  // the frame's eye (ADR-0053) — before every top-level build. An instance whose structure a frame
-  // did not build keeps a zero address, which the top-level build treats as an inactive instance.
-  // The transform written here is the one at the world's origin, which no frame reads.
-  Vector<gfx::TlasInstance> tlas_records;
-  tlas_records.reserve(instance_count_);
-  for (u32 i = 0; i < instance_count_; ++i) {
-    gfx::TlasInstance record;
-    record.transform = gfx::instance_matrix(instance_table_[i], WorldEye{});
-    record.custom_index = i;
-    record.blas = 0;
-    tlas_records.push_back(record);
-  }
-  Vector<u8> tlas_bytes(u64{instance_count_} * gfx::k_instance_record_bytes, u8{0});
-  gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
-                       tlas_bytes.data());
   bool ok = (streamed_ || upload_room(device, packed.data(), packed.size(),
                                       ring_slots_.empty() ? 0 : triangle_capacity_ * 3 + 4,
                                       gfx::k_build_input_usage, indices8, error)) &&
             gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
                                k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
-                               error) &&
-            gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
-                               slots, error) &&
-            // Three words an instance: its drawn clusters, its casters, then its dense record base
-            // (`gfx::ClusterRecordParams::instance_counts`).
-            gfx::create_buffer(device, u64{instance_count_} * 3 * sizeof(u32),
-                               k_address | gfx::BufferUsage::TransferDst, false, instance_counts,
-                               error) &&
-            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_,
-                               k_record_usage, false, blas_records, error) &&
-            gfx::create_tlas(device, instance_count_, gfx::k_build_fast_trace, tlas, error) &&
-            gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
-                               gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
-                               rt_instances, error);
+                               error);
   // One template per cluster of the scene, built from the rest pose, with cluster id and base
   // geometry index zero so an instantiate record's offsets are the visible entry outright. Built
   // once, **packed to the size each one is** rather than to the driver's worst case (about 2.2 KB
@@ -2792,6 +2858,116 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
         template_bytes_ += sizes[c];
     }
   }
+  if (!ok) return false;
+  return lay_out_ray_tracing(error);
+}
+
+void GpuScene::destroy_ray_tracing_layout() noexcept {
+  if (device_ == nullptr) return;
+  const gfx::Device& device = *device_;
+  if (tlas_slot_ != gfx::BindlessSet::k_invalid_slot) {
+    // Only ever with no frame in flight (create, destroy, `relayout`), so the slot is free at once.
+    bindless_.release_acceleration_structure(tlas_slot_, 0);
+    tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
+  }
+  gfx::destroy_acceleration_structure(device, tlas);
+  gfx::destroy_buffer(device, rt_instances);
+  gfx::destroy_buffer(device, slots);
+  gfx::destroy_buffer(device, instance_counts);
+  gfx::destroy_buffer(device, blas_records);
+  gfx::destroy_buffer(device, records);
+  gfx::destroy_cluster_set(device, clas_set);
+  gfx::destroy_cluster_blas_set(device, blas_set);
+  gfx::destroy_buffer(device, rt_scratch);
+}
+
+// The chain's half that is laid out by the instances and the pairs. For a scene read whole that is
+// its instances and its pairs, as it always was. For one whose instances come and go it is the
+// instance capacity and the stride (renderer.md, "Instances that come and go"): every slot has a
+// top-level record from the start — a hole's inactive — and a tail's change copies its own slots'
+// records with their instances (`prepare_tables`), so the chain is rewritten only when the tail
+// outgrows the capacity or the stride (`relayout`).
+bool GpuScene::lay_out_ray_tracing(std::string* error) {
+  const gfx::Device& device = *device_;
+  const u32 keep_capacity = rt_capacity_;
+  destroy_ray_tracing_layout();
+  rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
+  rt_union_clusters_ = pair_stride_ * view_count_;
+  gfx::ClusterSetLimits limits = rt_limits_;
+  limits.max_clusters = rt_union_clusters_;
+  // A shadow caster's geometry index is its visible index too, and the casters are the list's run
+  // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
+  // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
+  // runs still holds at most `views * pair_count` clusters. A dynamic scene's visible list is laid
+  // out by its stride, which `pair_limit_` keeps under the device's limit.
+  //
+  // **The device bounds that index, and the frame's size does not move it** (renderer.md, "The
+  // ray tracing chain's index space"). `resolve_settings` drops the casters, or the chain, when
+  // the scene's pairs in every view would pass `cluster_max_geometry_index`; a caller that went
+  // around it is refused here with both numbers, where it used to learn only that "the driver gave
+  // no sizes" — which is what the ashlar ruins on a three-view surround said, at any resolution.
+  const u64 max_index = rt_max_geometry_index(pair_stride_, view_count_, resolved_.casters);
+  gfx::ClusterAsProperties cluster_props;
+  const u32 device_max =
+      gfx::cluster_as_properties(device, cluster_props) ? cluster_props.max_geometry_index : 0u;
+  if (max_index > device_max) {
+    if (error != nullptr) {
+      *error = "the scene's " + std::to_string(pair_stride_) + " pairs in " +
+               std::to_string(view_count_) + " view(s)" +
+               (resolved_.casters ? " with shadow casters" : "") +
+               " name cluster geometry indices up to " + std::to_string(max_index) +
+               "; the device allows " + std::to_string(device_max) +
+               " (resolve_settings drops the casters or the chain for such a scene)";
+    }
+    return false;
+  }
+  limits.max_geometry_index = static_cast<u32>(max_index);
+  rt_limits_ = limits;
+  // One instance's structure can reference at most its mesh's clusters in every view (a ring
+  // slot's: the clusters it has room for). A tail may place any of the scene's meshes.
+  rt_max_per_instance_ = 0;
+  if (dynamic_) {
+    for (const geometry::ClusterMeshPart& part : data_->parts)
+      rt_max_per_instance_ = std::max(rt_max_per_instance_, part.cluster_count * view_count_);
+    for (const geometry::ClusterMeshPart& part : slot_parts_)
+      rt_max_per_instance_ = std::max(rt_max_per_instance_, part.cluster_count * view_count_);
+  } else {
+    for (const gfx::InstanceDesc& instance : instance_table_) {
+      rt_max_per_instance_ =
+          std::max(rt_max_per_instance_, part_of(instance.mesh).cluster_count * view_count_);
+    }
+  }
+
+  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  // The top-level instance records, once: the instance as the custom index, and a bottom-level
+  // address of zero and a transform, both of which the frame's `tlas_references` dispatch
+  // overwrites — the address from `blas_set.addresses`, the transform from the instance's cell and
+  // the frame's eye (ADR-0053) — before every top-level build. An instance whose structure a frame
+  // did not build keeps a zero address, which the top-level build treats as an inactive instance.
+  // The transform written here is the one at the world's origin, which no frame reads.
+  Vector<gfx::TlasInstance> tlas_records;
+  tlas_records.reserve(rt_instance_slots_);
+  for (u32 i = 0; i < rt_instance_slots_; ++i)
+    tlas_records.push_back(tlas_record(i));
+  Vector<u8> tlas_bytes(u64{rt_instance_slots_} * gfx::k_instance_record_bytes, u8{0});
+  gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
+                       tlas_bytes.data());
+  bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
+                               slots, error) &&
+            // Three words an instance: its drawn clusters, its casters, then its dense record base
+            // (`gfx::ClusterRecordParams::instance_counts`).
+            gfx::create_buffer(device, u64{rt_instance_slots_} * 3 * sizeof(u32),
+                               k_address | gfx::BufferUsage::TransferDst, false, instance_counts,
+                               error) &&
+            // A dynamic scene's set is built over every slot of the capacity, so the records past
+            // the frame's instances are cleared to empty structures every frame.
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+                               k_record_usage | gfx::BufferUsage::TransferDst, false, blas_records,
+                               error) &&
+            gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
+            gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
+                               gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
+                               rt_instances, error);
   if (ok) {
     tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
     if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -2816,43 +2992,46 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   gfx::ClusterBuildSizes set_sizes;
   gfx::ClusterBuildSizes blas_sizes;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
-      !gfx::cluster_blas_set_build_sizes(device, instance_count_, k_probe,
+      !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, k_probe,
                                          std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
     if (error != nullptr) {
       *error = "the driver gave no cluster acceleration structure sizes for " +
-               std::to_string(k_probe) + " clusters over " + std::to_string(instance_count_) +
+               std::to_string(k_probe) + " clusters over " + std::to_string(rt_instance_slots_) +
                " bottom-level structures of at most " +
                std::to_string(std::min(rt_max_per_instance_, k_probe)) + " each";
     }
     return false;
   }
-  const u64 record_bytes = resolved.settings.rt_templates ? gfx::k_cluster_instantiate_record_bytes
-                                                          : gfx::k_cluster_build_record_bytes;
+  const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
+                                              : gfx::k_cluster_build_record_bytes;
   const u64 probe_bytes = set_sizes.data_bytes + blas_sizes.data_bytes +
                           std::max(set_sizes.scratch_bytes, blas_sizes.scratch_bytes) +
                           u64{k_probe} * (record_bytes + sizeof(u64) + sizeof(u32));
   rt_bytes_per_cluster_ = (probe_bytes + k_probe - 1) / k_probe;
-  const u32 budget_mib = resolved.settings.rt_budget_mib != 0 ? resolved.settings.rt_budget_mib
-                                                              : rt_budget_mib_tunable();
+  const u32 budget_mib = resolved_.settings.rt_budget_mib != 0 ? resolved_.settings.rt_budget_mib
+                                                               : rt_budget_mib_tunable();
   const u64 budget_clusters = u64{budget_mib} * 1024 * 1024 / rt_bytes_per_cluster_;
   rt_capacity_limit_ =
       static_cast<u32>(std::max<u64>(1, std::min<u64>(budget_clusters, u64{rt_union_clusters_})));
   // The first capacity, before any frame has said what it builds: the whole union when that fits
   // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
-  // otherwise. The renderer grows or shrinks it from the frames' own demand.
+  // otherwise. The renderer grows or shrinks it from the frames' own demand; a relayout keeps the
+  // capacity the frames had grown it to.
   const u32 initial = std::min(rt_capacity_limit_, k_initial_rt_clusters);
-  if (!resize_ray_tracing(rt_union_clusters_ <= initial ? rt_union_clusters_ : initial, error)) {
-    return false;
-  }
+  const u32 first = keep_capacity != 0              ? keep_capacity
+                    : rt_union_clusters_ <= initial ? rt_union_clusters_
+                                                    : initial;
+  if (!resize_ray_tracing(first, error)) return false;
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
-      log::field("views", view_count_), log::field("union_clusters", rt_union_clusters_),
-      log::field("instances", instance_count_), log::field("capacity", rt_capacity_),
+      log::field("stride", pair_stride_), log::field("views", view_count_),
+      log::field("union_clusters", rt_union_clusters_), log::field("instances", instance_count_),
+      log::field("instance_slots", rt_instance_slots_), log::field("capacity", rt_capacity_),
       log::field("capacity_limit", rt_capacity_limit_), log::field("budget_mib", budget_mib),
       log::field("bytes_per_cluster", rt_bytes_per_cluster_),
       log::field("clas_bytes", clas_set.data.size), log::field("blas_bytes", blas_set.data.size),
       log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
-      log::field("templates", resolved.settings.rt_templates ? cluster_count_ : 0u),
+      log::field("templates", limits.instantiate ? cluster_count_ : 0u),
       log::field("template_bytes", template_bytes_),
       log::field("template_storage", clas_templates.data.size));
   return true;
@@ -2877,7 +3056,7 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   bool ok =
       gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, records, error) &&
       gfx::create_cluster_set(device, limits, clas_set, error) &&
-      gfx::create_cluster_blas_set(device, instance_count_, capacity,
+      gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity,
                                    std::min(rt_max_per_instance_, capacity), blas_set, error);
   if (ok) {
     u64 scratch_bytes = clas_set.build_scratch_bytes;
@@ -2943,6 +3122,11 @@ void GpuScene::destroy() noexcept {
   writes_.clear();
   compactions_ = 0;
   null_mesh_ = 0;
+  pair_limit_ = k_max_pairs;
+  relayout_pending_ = false;
+  ring_pair_begin_ = 0;
+  rt_instance_slots_ = 0;
+  gfx::destroy_buffer(device, ring_pairs_);
   gfx::destroy_buffer(device, meshes);
   gfx::destroy_cluster_templates(device, clas_templates);
   gfx::destroy_acceleration_structure(device, tlas);

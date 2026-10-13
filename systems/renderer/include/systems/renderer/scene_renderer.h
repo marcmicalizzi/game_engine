@@ -240,6 +240,10 @@ struct TileStats {
   u64 freed = 0;
   u64 compactions = 0;
   u64 grows = 0;  // changes that made the per-pair buffers again
+  // Of those, the ones whose pool or ray tracing chain had to follow, with the device idle
+  // (`GpuScene::relayout`), and the wall time they took, the wait included.
+  u64 relayouts = 0;
+  f64 relayout_ns = 0.0;
   u64 table_frames = 0;
   u64 table_slots = 0;
   u64 table_pairs = 0;

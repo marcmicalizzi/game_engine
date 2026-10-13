@@ -861,6 +861,17 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   for (const gfx::BufferResource& buffer : retired_)
     frames_.defer_destroy(buffer);
   retired_.clear();
+  // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
+  // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
+  // again, which every frame in flight reads by address (renderer.md, "Instances that come and
+  // go"). Rare by construction — both grow half as much again — like the chain's own resize.
+  if (scene_->relayout_pending()) {
+    const i64 waited = time::monotonic_ns();
+    frames_.wait_idle();
+    if (!scene_->relayout(error)) return false;
+    ++stats_.tiles.relayouts;
+    stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
+  }
   // Made again, the flags hold whatever the allocator left: the next frame fills both, which is
   // what a first frame does. Every block that did not move keeps its pairs and so its history, and
   // a pair whose block is new has a flag that only decides which occlusion pass tests it (the
@@ -2382,6 +2393,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
         if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
         if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
+        if (rt_chain && scene.dynamic()) b.write(rt.blas_records, gfx::Access::TransferWrite);
         if (deform_on) b.write(rg_deform_args, gfx::Access::TransferWrite);
         if (vertex_indexed) b.write(rg_vertex_headers, gfx::Access::TransferWrite);
         if (streaming) {  // the page feedback is per frame, so it starts every frame empty
@@ -2437,6 +2449,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_flags) cb.fill_buffer(scene.flags[prev_flags].buffer, 0, gfx::k_whole_size, 0);
         if (fill_hiz) cb.fill_buffer(targets.hiz.buffer, 0, gfx::k_whole_size, 0);
         if (rt_chain) cb.fill_buffer(scene.instance_counts.buffer, 0, gfx::k_whole_size, 0);
+        // A dynamic scene builds its bottom-level set over every slot of its capacity, and the
+        // records pass writes the frame's instances' only: the rest are empty structures.
+        if (rt_chain && scene.dynamic())
+          cb.fill_buffer(scene.blas_records.buffer, 0, gfx::k_whole_size, 0);
         if (deform_on) {  // {groups = 0, 1, 1}; the copy below fills in the count
           for (u32 i = 0; i < views * k_visible_runs + cascade_runs; ++i) {
             const u64 at = u64{i} * gfx::k_draw_args_bytes;
@@ -2508,18 +2524,41 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // slots the change wrote (every change since this set was last current), then one workgroup per
   // live instance among them writing its pairs (pair_expand.slang). The frames in flight read the
   // other sets, so nothing here waits for them.
+  // With the ray tracing chain the same slots' top-level records go with them (the fields the load
+  // writes: a hole's inactive), before the frame's `tlas_references` writes their transforms and
+  // addresses; and a set written whole takes the terrain levels' slots' pairs, which no expansion
+  // writes (GpuScene::prepare_tables).
+  const bool rt_records = write_tables && rt_chain && !tables_.rt_copies.empty();
+  const bool level_pairs = write_tables && !tables_.pair_copies.empty();
+  gfx::RgBuffer rg_level_pairs{};
+  if (level_pairs) rg_level_pairs = graph.import_buffer("level pairs", tables_.pair_source);
   if (write_tables) {
     graph.add_pass(
         "table copy", gfx::PassKind::Transfer,
-        [&](gfx::PassBuilder& b) {
+        [&, rt_records, level_pairs](gfx::PassBuilder& b) {
           b.read(rg_table_staging, gfx::Access::TransferRead);
           b.write(rg_instances, gfx::Access::TransferWrite);
+          if (rt_records) b.write(rt.instances, gfx::Access::TransferWrite);
+          if (level_pairs) {
+            b.read(rg_level_pairs, gfx::Access::TransferRead);
+            b.write(rg_pair_table, gfx::Access::TransferWrite);
+          }
         },
-        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        [&, rt_records, level_pairs](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "table copy");
           cb.copy_buffer(
               tables_.staging.buffer, scene.instances.buffer,
               std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          if (rt_records) {
+            cb.copy_buffer(tables_.staging.buffer, scene.rt_instances.buffer,
+                           std::span<const gfx::BufferCopy>(tables_.rt_copies.data(),
+                                                            tables_.rt_copies.size()));
+          }
+          if (level_pairs) {
+            cb.copy_buffer(tables_.pair_source.buffer, scene.pair_table.buffer,
+                           std::span<const gfx::BufferCopy>(tables_.pair_copies.data(),
+                                                            tables_.pair_copies.size()));
+          }
           timer.end(cb);
         });
     if (tables_.expand > 0) {

@@ -627,7 +627,7 @@ TEST_CASE("dynamic instances: the pair expansion's push constants are the shader
   CHECK(entry->local_size[0] == k_pair_expand_workgroup);
 }
 
-TEST_CASE("dynamic instances: a scene read whole refuses a tail, and a dynamic one is not traced") {
+TEST_CASE("dynamic instances: a scene read whole refuses a tail, and a dynamic one is traced") {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE(gpu.why);
@@ -647,7 +647,9 @@ TEST_CASE("dynamic instances: a scene read whole refuses a tail, and a dynamic o
   CHECK(error.find("not loaded to take instances") != std::string::npos);
   CHECK(whole.scene.instance_count() == head.size());
 
-  // The ray path and traced shadows are resolved away for a dynamic scene, with a warning.
+  // Since 2026-10-12 a dynamic scene is traced (its tail's blocks write their own top-level
+  // records; streamed_tail_tests.cpp holds the pictures): the ray path and traced shadows stay.
+  // What is resolved away, with a warning, is a deformed tail (`--deform`) and cluster templates.
   SceneData data;
   REQUIRE(make_scene(std::span<const SceneInstance>(head.data(), head.size()), true, data, error));
   gfx::DeviceFeatures traced = gpu.device.features();
@@ -656,11 +658,15 @@ TEST_CASE("dynamic instances: a scene read whole refuses a tail, and a dynamic o
   RenderSettings rt;
   rt.raster = RasterMode::RayTrace;
   rt.shadows = ShadowMode::RayTraced;
+  rt.deform = true;
+  rt.rt_templates = true;
   ResolvedSettings resolved;
   resolve_settings(rt, traced, &data, resolved);
-  CHECK_FALSE(resolved.ray_path);
-  CHECK_FALSE(resolved.rt_chain);
-  CHECK_FALSE(resolved.shadows);
+  CHECK(resolved.ray_path);
+  CHECK(resolved.rt_chain);
+  CHECK(resolved.shadows);
+  CHECK_FALSE(resolved.settings.deform);
+  CHECK_FALSE(resolved.settings.rt_templates);
 }
 
 TEST_CASE("dynamic instances: the pair cap and the placement need no device") {

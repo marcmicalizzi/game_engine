@@ -45,7 +45,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
-                    tests/dynamic_instances_tests.cpp tests/tile_layout_tests.cpp
+                    tests/dynamic_instances_tests.cpp tests/streamed_tail_tests.cpp
+                    tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
                     # One request, two hosts: every RenderSettings and FrameDesc field named with
                     # the protocol field that reaches it or the reason none does, by a structured

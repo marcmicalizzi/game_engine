@@ -183,10 +183,32 @@ class GpuScene {
   // outgrown by a change are handed to the caller in `retired` rather than destroyed, for the same
   // reason. Refused, with a sentence and nothing changed: a scene that is not dynamic, blocks that
   // do not cover the tail in order or repeat a key, a tail past the 2^24 pairs the visibility id
-  // names, a mesh the scene has not, and a skinned tail instance. A dynamic scene has no ray
-  // tracing chain and no deformed-vertex pool (`create` refuses both): the chain's top-level
-  // records and the pool's table are laid out once per instance, and nothing rewrites them.
+  // names (or `pair_limit()`), a mesh the scene has not, and a skinned tail instance.
+  //
+  // **The pool and the chain over the tail** (since 2026-10-12): the pool's per-frame blocks are
+  // suballocated over the visible list, which no hole reaches, and a tail instance is rigid (no
+  // pool table entry), so the pool needs nothing per block; the chain's per-instance tables are
+  // sized by the instance capacity, and a written slot's top-level record — the fields the load
+  // writes, through `tlas_record` — is copied with the slot by the frame that flips its set
+  // (`TableUpdate::rt_copies`), a hole's inactive (mask 0). What still waits for the device is a
+  // change that grows the stride or the instance capacity of a scene with the pool or the chain:
+  // `relayout_pending()`, which the caller answers with an idle device and `relayout`.
   bool dynamic() const noexcept { return dynamic_; }
+  // The most pairs the tail's layout may reach: the visibility id's 2^24, or with the ray tracing
+  // chain the most the device's cluster geometry indices name over the views' runs (renderer.md,
+  // "The ray tracing chain's index space"). What a world's placements consumer budgets against.
+  u32 pair_limit() const noexcept { return pair_limit_; }
+  // A change grew the stride or the instance capacity of a scene whose pool or ray tracing chain
+  // is laid out by them: `relayout` makes them again, and must be called with no frame in flight
+  // before the next frame is recorded (`SceneRenderer::set_dynamic_instances` waits for the device
+  // and calls it).
+  bool relayout_pending() const noexcept { return relayout_pending_; }
+  bool relayout(std::string* error = nullptr);
+  // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
+  // copies it: the instance's transform at the world's origin (the frame overwrites it from the
+  // eye), the slot as the custom index, and a mask of 0xff for a live instance and 0 for a hole's
+  // null instance, whose structure is empty anyway. The bottom-level address is the frame's.
+  gfx::TlasInstance tlas_record(u32 slot) const noexcept;
   u32 static_instance_count() const noexcept { return static_instances_; }
   u32 static_pair_count() const noexcept { return static_pairs_; }
   // The tail's instances and pairs — what the blocks hold, not the slots and pairs they reserve.
@@ -248,6 +270,13 @@ class GpuScene {
     u32 expand = 0;                  // instances whose pairs the GPU writes
     u64 pairs = 0;                   // the pairs they hold
     Vector<gfx::BufferCopy> copies;  // staging -> `instances`, one per run of changed slots
+    // With the ray tracing chain: staging -> `rt_instances`, the same runs' top-level records
+    // (`tlas_record`), which follow the expansion list in the staging.
+    Vector<gfx::BufferCopy> rt_copies;
+    // With terrain levels in the prefix: `pair_source` -> the set's pair table, the levels' slots'
+    // pairs, which are a function of the slot alone and are written whole with the set.
+    gfx::BufferResource pair_source;
+    Vector<gfx::BufferCopy> pair_copies;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -1021,6 +1050,21 @@ class GpuScene {
   bool tables_changed_ = false;           // a change since the last frame flipped
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
+  u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
+  bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
+  // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
+  // to the prefix's end: device-local, written once, copied into a set written whole.
+  gfx::BufferResource ring_pairs_;
+  u32 ring_pair_begin_ = 0;
+  u32 rt_instance_slots_ = 0;  // what the chain's per-instance tables hold: the instance capacity
+  // Marks one instance slot written: through the table sets for a dynamic scene, the next frame's
+  // own copy for one read whole.
+  void mark_instance_written(u32 instance);
+  // The chain's per-instance and per-pair half: the bucketing scratch, the per-instance counts and
+  // bottom-level records, the top-level records and structure, the limits and the budget, and the
+  // per-frame sets (`resize_ray_tracing`). Made at create and again by `relayout`.
+  bool lay_out_ray_tracing(std::string* error);
+  void destroy_ray_tracing_layout() noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
   u32 triangles_per_cluster_ = 0;

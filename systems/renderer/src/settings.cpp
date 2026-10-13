@@ -218,22 +218,14 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                                 s.raster == RasterMode::Hardware || s.raster == RasterMode::Auto)) {
     s.raster = RasterMode::Vertex;  // the baseline tier
   }
-  // **A scene whose instances come and go between frames** — a streamed world's — has no ray
-  // tracing chain in v0 and no deformed-vertex pool: both are laid out once per instance, and
-  // nothing rewrites them for a tail (GpuScene, renderer.md "Instances that come and go"). So the
-  // ray path draws with the rasterizer, traced shadows are the maps, and `--deform` is off, each
-  // with a warning; a skinned or morphed scene is refused by the GPU scene.
+  // **A scene whose instances come and go between frames** — a streamed world's — is traced and
+  // has the deformed-vertex pool since 2026-10-12: a block of the tail writes its own slots of the
+  // chain's per-instance tables, and the pool's per-frame suballocation walks the visible list,
+  // which a hole never reaches (GpuScene, renderer.md "Instances that come and go"). What it still
+  // has not is a deformed *tail*: `--deform` deforms every instance and a tail instance has no
+  // entry in the pool's table, so it is off with a warning; a skinned or morphed scene is refused
+  // by the GPU scene, and cluster templates are off below.
   const bool dynamic = scene != nullptr && scene->dynamic;
-  if (dynamic && s.raster == RasterMode::RayTrace) {
-    s.raster = features.mesh_shader ? RasterMode::Hardware : RasterMode::Vertex;
-    ENGINE_LOG_WARN(log_renderer, "the ray path is off",
-                    log::field("reason", "a scene whose instances come and go is not traced yet"));
-  }
-  if (dynamic && s.shadows == ShadowMode::RayTraced) {
-    s.shadows = ShadowMode::Cascaded;
-    ENGINE_LOG_WARN(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
-                    log::field("reason", "a scene whose instances come and go is not traced yet"));
-  }
   if (dynamic && s.deform) {
     s.deform = false;
     ENGINE_LOG_WARN(log_renderer, "deformation off",
@@ -272,8 +264,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // the direct path, and they are built from one visible list, which rules out the modes that
   // produce more than one: the software split's second list, and occlusion culling's second
   // pass.
-  const bool shadow_device =
-      features.cluster_acceleration_structure && features.ray_query && !dynamic;
+  const bool shadow_device = features.cluster_acceleration_structure && features.ray_query;
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
   out.shadows = (s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto) &&
                 shadow_device && shadow_mode;
@@ -372,7 +363,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): a terrain
   // whose ground provider moves with game time (the dunes; `terrain_moves`, from the registry)
   // under a time-lapse draws its heights out of the pool, blended between two evaluated fields.
-  // Not for a scene whose instances come and go, which has no pool. A rate that may change while
+  // A scene whose instances come and go has them too since 2026-10-12: the levels are its load's
+  // prefix and the tail's blocks follow them. A rate that may change while
   // it runs (`time_rate_live`) needs the levels at zero too; a scene that cannot have them is only
   // warned about when something asked for motion now.
   // **The world's tiles** (renderer.md, "The ground from the world's tiles") are terrain levels
@@ -382,13 +374,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
       s.terrain_tiles || (scene != nullptr && scene->world.enabled && scene->world.ground);
   out.terrain_levels = scene != nullptr &&
                        (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live || tiles_asked) &&
-                       !dynamic && scene->terrain.enabled && scene->terrain_mesh != ~0u &&
+                       scene->terrain.enabled && scene->terrain_mesh != ~0u &&
                        terrain_moves(scene->terrain);
-  if (scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !out.terrain_levels &&
-      dynamic) {
-    ENGINE_LOG_WARN(log_renderer, "the terrain does not move",
-                    log::field("reason", "a scene whose instances come and go has no pool"));
-  }
   // The rings and the tiles are more meshes in the scene, laid out once beside its own: not for a
   // streamed scene, whose clusters live in pages, and not with cluster templates, which are built
   // once per mesh from a rest pose a slot does not have.
@@ -403,8 +390,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.terrain_tiles = out.terrain_levels && tiles_asked && !paged && millimetres;
   if (tiles_asked && !out.terrain_tiles && scene != nullptr) {
     ENGINE_LOG_WARN(log_renderer, "the ground is not drawn from the world's tiles",
-                    log::field("reason", dynamic ? "a scene whose instances come and go has no pool"
-                                         : paged ? "a scene streamed in pages"
+                    log::field("reason", paged ? "a scene streamed in pages"
                                          : !out.terrain_levels
                                              ? "its terrain's ground does not move"
                                              : "its terrain's ground provider has no millimetre "
@@ -432,6 +418,14 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   if (s.rt_templates && !out.rt_chain) {
     s.rt_templates = false;
     ENGINE_LOG_WARN(log_renderer, "cluster templates ignored without ray tracing");
+  }
+  // Cluster templates are built once from the load's clusters; a tail's blocks are not laid out
+  // with them yet, so a scene whose instances come and go builds its clusters' structures from the
+  // records every frame (renderer.md, "Instances that come and go").
+  if (s.rt_templates && dynamic) {
+    s.rt_templates = false;
+    ENGINE_LOG_WARN(log_renderer, "cluster templates ignored",
+                    log::field("reason", "a scene whose instances come and go"));
   }
   if (scene != nullptr) {
     if (scene->instances.size() > 1 && !s.cull) {
