@@ -45,7 +45,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
-                    tests/dynamic_instances_tests.cpp tests/streamed_tail_tests.cpp
+                    tests/dynamic_instances_tests.cpp
                     tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
                     # One request, two hosts: every RenderSettings and FrameDesc field named with
@@ -80,7 +80,11 @@ if(TARGET engine::terrain)
        tests/ground_motion_tests.cpp
        # The world's tiles on a GPU: the grid's picture, the seams by the visibility buffer, the
        # time-lapse across tiles, a tile set built ahead, and a long flight.
-       tests/terrain_tiles_gpu_tests.cpp)
+       tests/terrain_tiles_gpu_tests.cpp
+       # A streamed tail beside the world's tiles: placements that come and go on the dunes,
+       # traced like the prefix. Built on the dunes, so only where the terrain capability is: the
+       # minimal build resolves no world tiles (batch 17's gate found it).
+       tests/streamed_tail_tests.cpp)
 endif()
 if(TARGET engine::sky)
   # A scene naming a sky: the entry read and checked through the registry, the lights, the sky the
