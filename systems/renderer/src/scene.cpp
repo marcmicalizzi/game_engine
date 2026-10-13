@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <optional>
 #include <renderer_log.h>
 #include <schemas/scene.h>
@@ -822,8 +823,19 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
     geometry::ClusterLodMesh lod;
     geometry::ClusterPages pages;
     const u64 hash = mesh < out.mesh_info.size() ? out.mesh_info[mesh].hash : 0;
-    if (!load_source_mesh(out.meshes[mesh], out, hash, source, lod, pages, why)) return false;
-    radius = ground_radius(lod, 0, lod.mesh.clusters.size());
+    // A path relative to the scene is the scene directory's, as the load resolves it. A mesh that
+    // cannot be read here is not this read's to refuse — the load says why, with its own sentence —
+    // so its footprint is its point alone until then.
+    std::string mesh_path = out.meshes[mesh];
+    if (!mesh_path.empty() && !dir.empty() && !std::filesystem::path(mesh_path).is_absolute())
+      mesh_path = dir + "/" + mesh_path;
+    radius = 0.0f;
+    if (load_source_mesh(mesh_path, out, hash, source, lod, pages, why)) {
+      radius = ground_radius(lod, 0, lod.mesh.clusters.size());
+    } else {
+      ENGINE_LOG_WARN(log_renderer, "a placement's mesh was not measured for the entries after it",
+                      log::field("mesh", mesh_path), log::field("error", why));
+    }
     if (radius_of.size() <= mesh) radius_of.resize(mesh + 1, -1.0f);
     radius_of[mesh] = radius;
     return true;
