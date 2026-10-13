@@ -47,6 +47,8 @@ class App extends EventTarget {
     this.refreshAgain = false;
     // True while the host pushes this page its events; false polls (see the badge).
     this.subscribed = false;
+    // The editor's gizmo tool (embedded only; `editor.tool`).
+    this.tool = "translate";
   }
 
   start() {
@@ -74,6 +76,26 @@ class App extends EventTarget {
     // only while no subscription stands (`poll` returns at once otherwise).
     this.rpc.addEventListener("notification", (e) => this.onEvent(e.detail));
     setInterval(() => this.poll(), 10000);
+    // Embedded beside engine-editor's viewport: the gizmo's tool and adding a mesh, both the
+    // editor's own methods; hidden in a browser tab, where no editor answers them (engine_shell.md).
+    this.tool = "translate";
+    if (this.embedded) {
+      for (const button of document.querySelectorAll("#tool-toggle [data-tool]")) {
+        button.addEventListener("click", () => {
+          this.call("editor.tool", { tool: button.dataset.tool })
+            .then((state) => this.setTool(state.tool))
+            .catch(() => {});
+        });
+      }
+      $("btn-add").addEventListener("click", () => this.addMesh());
+      // A file dropped on the page is not navigated to (that would leave the shell); a drop on
+      // the viewport, beside it, imports.
+      window.addEventListener("dragover", (e) => e.preventDefault());
+      window.addEventListener("drop", (e) => {
+        e.preventDefault();
+        toast("Drop the file on the viewport to import it");
+      });
+    }
     this.properties.refresh();
   }
 
@@ -92,7 +114,38 @@ class App extends EventTarget {
         this.eventsWhy = err && err.message ? err.message : String(err);
       }
     }
+    // The editor's tool as it stands; later changes arrive as `editor.tool` notifications.
+    if (this.embedded) {
+      try {
+        const state = await this.rpc.call("editor.state", {});
+        if (state && state.tool) this.setTool(state.tool);
+      } catch (err) {
+        // An older editor without the method's `tool`: the toggle keeps its default.
+      }
+    }
     this.status();
+  }
+
+  // The gizmo's tool, as the editor reports it: the title bar's toggle and the status strip.
+  setTool(tool) {
+    this.tool = tool === "rotate" ? "rotate" : "translate";
+    for (const button of document.querySelectorAll("#tool-toggle [data-tool]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.tool === this.tool));
+    }
+    this.status();
+  }
+
+  // Add…: the editor's own open-file dialog (editor.pick_file), then the import (one transaction:
+  // the files copied under the document's assets/, a placement in front of the camera, selected).
+  async addMesh() {
+    try {
+      const picked = await this.call("editor.pick_file", { filter: ["gltf", "glb", "clusters"] });
+      if (!picked || !picked.path) return;
+      const made = await this.call("editor.import_mesh", { path: picked.path });
+      toast(`Imported ${made.name} (${made.mesh})`);
+    } catch (err) {
+      // reportError has said why (a missing file, a format the loader refuses, a copy refused).
+    }
   }
 
   onEvent(message) {
@@ -114,6 +167,10 @@ class App extends EventTarget {
         break;
       case "event.scene":
         if (this.viewport.onScene) this.viewport.onScene(p);
+        break;
+      case "editor.tool":
+        // The editor speaks first: T or R in its viewport, or another page's toggle.
+        this.setTool(p.tool);
         break;
       case "event.session":
         if (p.change === "closed") this.reportError({ message: `session ${p.session} was closed` });
@@ -320,6 +377,7 @@ class App extends EventTarget {
     item("st-actor", "actor", this.identity.actor || "—");
     item("st-role", "role", this.identity.role || "unrestricted");
     item("st-token", "token", this.token ? "present" : "missing");
+    if (this.embedded) item("st-tool", "tool", this.tool === "rotate" ? "rotate (R)" : "move (T)");
     // Which way the page learns of changes: pushed events, or the ten-second poll and why.
     const events = $("st-events");
     events.dataset.mode = this.subscribed ? "events" : "poll";

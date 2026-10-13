@@ -182,6 +182,29 @@ void EditorUi::frame(f32 dt, u32 width, u32 height, const EditorDocument& docume
     }
     draw->AddCircleFilled(centre, 3.0f, rgba(240, 240, 240, 255));
   }
+
+  // The rotate gizmo: three rings about world x, y and z through the placement's origin, in the
+  // handles' colours, the one under the pointer (or being turned) lit; a segment is drawn only
+  // where both its ends are in front of the eye.
+  const GizmoRings& rings = input.rings();
+  if (rings.visible) {
+    static constexpr u8 k_ring_rgb[k_axis_count][3] = {
+        {230, 64, 64}, {96, 210, 72}, {72, 128, 240}};
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const u32 lit = input.active() != k_no_axis ? input.active() : input.hovered();
+    for (u32 a = 0; a < k_axis_count; ++a) {
+      const bool hot = a == lit;
+      const ImU32 colour = hot ? rgba(255, 236, 96, 255)
+                               : rgba(k_ring_rgb[a][0], k_ring_rgb[a][1], k_ring_rgb[a][2], 255);
+      for (u32 i = 0; i < k_ring_segments; ++i) {
+        const u32 j = (i + 1) % k_ring_segments;
+        if (!rings.front[a][i] || !rings.front[a][j]) continue;
+        draw->AddLine(ImVec2(rings.px[a][i], rings.py[a][i]),
+                      ImVec2(rings.px[a][j], rings.py[a][j]), colour, hot ? 3.5f : 2.0f);
+      }
+    }
+    draw->AddCircleFilled(ImVec2(rings.cx, rings.cy), 3.0f, rgba(240, 240, 240, 255));
+  }
   ImGui::Render();
 }
 

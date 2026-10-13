@@ -24,6 +24,10 @@
       </div>
       <div class="titlebar-doc" id="doc-title" title="The session's document">no session</div>
       <div class="titlebar-actions">
+        <div class="tool-toggle embedded-only" id="tool-toggle" role="group" aria-label="The viewport gizmo's tool (editor.tool)">
+          <button class="btn btn-ghost" data-tool="translate" aria-pressed="true" title="Move the selection along an axis — T in the viewport">Move</button>
+          <button class="btn btn-ghost" data-tool="rotate" aria-pressed="false" title="Turn the selection about an axis — R in the viewport; Shift snaps to 15°">Rotate</button>
+        </div>
         <button class="btn btn-ghost" id="btn-undo" title="Undo the last transaction (doc.undo) — Ctrl+Z">Undo</button>
         <button class="btn btn-ghost" id="btn-redo" title="Redo (doc.redo) — Ctrl+Shift+Z">Redo</button>
         <span class="pill" id="conn-pill" data-state="connecting">connecting</span>
@@ -36,6 +40,7 @@
           <div class="panel-head">
             <h2 class="panel-title">Outliner</h2>
             <span class="panel-meta" id="outliner-count"></span>
+            <button class="btn btn-ghost btn-small embedded-only" id="btn-add" title="Import a mesh (.gltf, .glb or .clusters) into the document's assets/ and place it (editor.pick_file, editor.import_mesh); or drop the file on the viewport">Add…</button>
           </div>
           <div class="panel-tools">
             <input class="input input-search" id="outliner-filter" type="search" placeholder="Filter by name, type or id" spellcheck="false" autocomplete="off">
@@ -119,6 +124,7 @@
       <span class="status-item" id="st-role" title="The role edits are checked as (the host's --role)"></span>
       <span class="status-item" id="st-token" title="Whether this page has the host's session token"></span>
       <span class="status-item status-events" id="st-events" data-mode="poll"></span>
+      <span class="status-item embedded-only" id="st-tool" title="The viewport gizmo's tool: T moves, R rotates"></span>
       <span class="status-spacer"></span>
       <span class="status-item status-error" id="st-error" title="The last error a method returned"></span>
     </footer>

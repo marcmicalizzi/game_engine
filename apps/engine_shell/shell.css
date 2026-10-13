@@ -1298,3 +1298,25 @@ textarea.input {
 .combo-item.active {
   background: var(--accent-soft);
 }
+
+/* engine-editor's own controls (A39): the gizmo's tool toggle in the title bar, the outliner's
+   Add… button and the tool in the status strip. They call methods only the editor has
+   (editor.tool, editor.pick_file, editor.import_mesh), so a page in a browser tab hides them. */
+.embedded-only {
+  display: none;
+}
+html.embedded .embedded-only {
+  display: inline-flex;
+}
+.tool-toggle {
+  gap: 2px;
+  margin-right: 8px;
+}
+.tool-toggle .btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text-strong);
+}
+#panel-outliner > .panel-head > #btn-add {
+  margin-left: auto;
+}

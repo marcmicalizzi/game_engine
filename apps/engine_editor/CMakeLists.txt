@@ -16,7 +16,7 @@
 # Without ENGINE_VIEW_WALK_PHYSICS the walker follows the scene's ground, as in the minimal build.
 # When a third host wants the camera it should become a module (docs/subsystems/apps.md).
 set(_editor_deps base containers hash ids math time jobs log platform window image io gfx renderer
-                 json schema schemas input tunables doc protocol doc_scene net)
+                 json schema schemas input tunables doc protocol doc_scene net assets geometry)
 set(_editor_defs)
 # The web view is a capability (ENGINE_WITH_WEBVIEW; foundation/webview): linked when this
 # configuration has it, as engine-host links its optional modules. Without it — the minimal build,
@@ -28,7 +28,7 @@ endif()
 set(_editor_camera ${CMAKE_SOURCE_DIR}/apps/engine_view/fly_camera.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/window_input.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/walk.cpp)
-set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp editor_input.cpp
+set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp editor_input.cpp editor_import.cpp
                     editor_methods.cpp viewport_math.cpp)
 
 engine_app(NAME engine_editor OUTPUT engine-editor

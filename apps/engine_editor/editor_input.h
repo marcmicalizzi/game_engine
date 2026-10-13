@@ -32,8 +32,15 @@
 #include <systems/renderer/view_set.h>
 
 #include <string>
+#include <string_view>
 
 namespace engine::editor {
+
+// **The tool the gizmo is** (A39): T moves along the handles, R turns about the rings, while the
+// viewport has the keyboard; the shell's title bar sets it through `editor.tool` too.
+enum class Tool : u8 { Translate, Rotate };
+const char* tool_name(Tool tool) noexcept;  // "translate", "rotate"
+bool tool_from_name(std::string_view name, Tool& out) noexcept;
 
 class EditorInput {
  public:
@@ -67,10 +74,20 @@ class EditorInput {
   // Puts a drag's preview back and forgets the drag.
   bool cancel_drag(Viewport& viewport, std::string& error);
 
+  // The gizmo's tool; a change cancels a drag in progress (its preview goes back).
+  Tool tool() const noexcept { return tool_; }
+  bool set_tool(Tool tool, Viewport& viewport, std::string& error);
+
+  // The translate tool's handles, or the rotate tool's rings (the other is invisible).
   const GizmoHandles& handles() const noexcept { return handles_; }
+  const GizmoRings& rings() const noexcept { return rings_; }
+  const Mat4& view_proj() const noexcept { return view_proj_; }
   u32 hovered() const noexcept { return hovered_; }
-  u32 active() const noexcept { return dragging_ ? drag_.axis : k_no_axis; }
+  u32 active() const noexcept {
+    return !dragging_ ? k_no_axis : (rotating_ ? ring_drag_.axis : drag_.axis);
+  }
   bool dragging() const noexcept { return dragging_; }
+  bool rotating() const noexcept { return dragging_ && rotating_; }
   // The last edit the session refused, or empty.
   const std::string& message() const noexcept { return message_; }
 
@@ -86,12 +103,19 @@ class EditorInput {
     u32 undos = 0;
     u32 redos = 0;
     u32 deletes = 0;
+    u32 rotations = 0;  // turns that committed a transaction
+    u32 last_rotate_axis = k_no_axis;
+    f64 last_degrees = 0.0;
+    i64 last_rotate_transaction = -1;
+    std::string last_rotate_rationale;
   };
   const Stats& stats() const noexcept { return stats_; }
 
  private:
   bool begin_drag(f32 px, f32 py, const EditorDocument& document, Viewport& viewport,
                   std::string& error);
+  bool begin_turn(f32 px, f32 py, const EditorDocument& document, Viewport& viewport);
+  bool end_turn(f32 px, f32 py, EditorDocument& document, Viewport& viewport, std::string& error);
   bool move_drag(f32 px, f32 py);
   bool end_drag(f32 px, f32 py, EditorDocument& document, Viewport& viewport, std::string& error);
 
@@ -104,9 +128,15 @@ class EditorInput {
   u32 instance_ = ~0u;  // the selection's instance, ~0 when it is none
   WorldPos centre_{};   // its box's centre, where the handles stand
   GizmoHandles handles_;
+  GizmoRings rings_;
+  WorldPos pivot_{};  // the placement's origin, where the rings stand and a turn turns about
   u32 hovered_ = k_no_axis;
+  Tool tool_ = Tool::Translate;
 
   bool dragging_ = false;
+  bool rotating_ = false;  // the drag is a turn (RingDrag) rather than a move (AxisDrag)
+  RingDrag ring_drag_;
+  bool preview_snap_ = false;   // whether the preview was last drawn snapped
   bool preview_dirty_ = false;  // the drag moved since the preview was last drawn
   AxisDrag drag_;
   Id128 drag_record_;

@@ -15,6 +15,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// After windows.h, which WIN32_LEAN_AND_MEAN keeps from including it: open_file_dialog.
+#include <commdlg.h>
 #endif
 
 namespace engine::window {
@@ -1431,6 +1433,51 @@ bool Window::has_os_focus() const noexcept {
   const HWND own = hwnd_of(handle_);
   return own != nullptr && GetFocus() == own;
 #else
+  return false;
+#endif
+}
+
+bool open_file_dialog(const Window& owner, std::span<const std::string> extensions,
+                      std::string& path) {
+  path.clear();
+#if defined(_WIN32)
+  // "Files (*.a;*.b)\0*.a;*.b\0All files\0*.*\0\0", in UTF-16.
+  std::wstring patterns;
+  for (const std::string& ext : extensions) {
+    if (!patterns.empty()) patterns += L';';
+    patterns += L"*.";
+    for (const char c : ext)
+      patterns += static_cast<wchar_t>(static_cast<unsigned char>(c));
+  }
+  std::wstring filter;
+  if (!patterns.empty()) {
+    filter += L"Files (" + patterns + L")";
+    filter.push_back(L'\0');
+    filter += patterns;
+    filter.push_back(L'\0');
+  }
+  filter += L"All files";
+  filter.push_back(L'\0');
+  filter += L"*.*";
+  filter.push_back(L'\0');
+  filter.push_back(L'\0');
+  wchar_t file[4096] = {};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = static_cast<HWND>(owner.os_handle());
+  ofn.lpstrFilter = filter.c_str();
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = static_cast<DWORD>(sizeof(file) / sizeof(file[0]));
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+  if (!GetOpenFileNameW(&ofn)) return false;
+  const int bytes = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+  if (bytes <= 1) return false;
+  path.resize(static_cast<usize>(bytes - 1));
+  (void)WideCharToMultiByte(CP_UTF8, 0, file, -1, path.data(), bytes, nullptr, nullptr);
+  return true;
+#else
+  (void)owner;
+  (void)extensions;
   return false;
 #endif
 }

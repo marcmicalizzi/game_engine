@@ -1,5 +1,8 @@
 #include "editor_methods.h"
 
+#include "editor_import.h"
+#include "editor_input.h"
+
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
@@ -7,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <span>
 
 namespace engine::editor {
 
@@ -27,6 +31,98 @@ void fill_state(const EditorState& state, protocol::EditorStateResult& out) {
   out.layouts = state.layouts;
   out.width = state.width;
   out.height = state.height;
+  out.tool = state.tool;
+}
+
+bool editor_tool(protocol::Context& ctx, const protocol::EditorToolParams& p,
+                 protocol::EditorStateResult& r, protocol::RpcError& error) {
+  EditorState& state = state_of(ctx);
+  Tool tool = Tool::Translate;
+  if (!tool_from_name(p.tool, tool)) {
+    error = protocol::make_error(protocol::codes::k_invalid_params,
+                                 "editor.tool: \"translate\" or \"rotate\"");
+    return false;
+  }
+  state.tool = tool_name(tool);
+  fill_state(state, r);
+  return true;
+}
+
+bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMeshParams& p,
+                        protocol::EditorImportMeshResult& r, protocol::RpcError& error) {
+  EditorState& state = state_of(ctx);
+  if (state.document == nullptr || !state.document->valid()) {
+    error = protocol::make_error(protocol::codes::k_unavailable, "the editor has no document");
+    return false;
+  }
+  EditorDocument& document = *state.document;
+  ImportedFiles files;
+  std::string why;
+  if (!import_mesh_files(p.path, document.directory(), files, why)) {
+    error = protocol::make_error(protocol::codes::k_invalid_argument, "editor.import_mesh: " + why);
+    return false;
+  }
+  const WorldPos at = p.at.has_value()
+                          ? *p.at
+                          : default_import_position(state.camera.position, state.camera.target);
+  const std::string name = p.name.has_value() && !p.name->empty() ? *p.name : files.stem;
+  JsonValue properties = JsonValue::object();
+  properties.set("name", JsonValue(name));
+  properties.set("mesh", JsonValue(files.mesh));
+  JsonValue translation = JsonValue::array();
+  translation.push_back(JsonValue(at.x));
+  translation.push_back(JsonValue(at.y));
+  translation.push_back(JsonValue(at.z));
+  properties.set("translation", std::move(translation));
+  const Id128 id = Id128::generate();
+  const doc::Command create =
+      doc::cmd_create(id, "engine.scene.MeshPlacement", Id128{}, std::move(properties));
+  // The file's own name in the rationale, as the person chose it.
+  const usize slash = p.path.find_last_of("/\\");
+  const std::string file = slash == std::string::npos ? p.path : p.path.substr(slash + 1);
+  if (!document.apply(std::span<const doc::Command>(&create, 1), "import " + file, why)) {
+    remove_imported(document.directory(), files);
+    error = protocol::make_error(protocol::codes::k_document_error, "editor.import_mesh: " + why);
+    return false;
+  }
+  // Selected now, so the page's outliner shows it; the frame keeps the selection once the
+  // viewport has rebuilt with it.
+  document.select(id);
+  state.imported = id;
+  r.id = id;
+  r.name = name;
+  r.mesh = files.mesh;
+  r.translation = at;
+  for (const std::string& c : files.copied)
+    r.copied.push_back(c);
+  for (const std::string& c : files.reused)
+    r.reused.push_back(c);
+  return true;
+}
+
+bool editor_pick_file(protocol::Context& ctx, const protocol::EditorPickFileParams& p,
+                      protocol::EditorPickFileResult& r, protocol::RpcError& error) {
+  EditorState& state = state_of(ctx);
+  r.path.reset();
+  if (!state.dialogs || state.lock == nullptr || state.closing) return true;
+  if (state.pick_pending) {
+    error = protocol::make_error(protocol::codes::k_unavailable,
+                                 "editor.pick_file: a dialog is already open");
+    return false;
+  }
+  state.pick_filter.clear();
+  for (const std::string& f : p.filter)
+    state.pick_filter.push_back(f);
+  state.pick_pending = true;
+  state.pick_answered = false;
+  // The dispatch lock is this thread's (the listener took it); waiting releases it, so the frame
+  // goes on drawing and shows the dialog, and takes it back before the answer is read.
+  std::unique_lock<std::mutex> held(*state.lock, std::adopt_lock);
+  state.pick_done.wait(held, [&] { return state.pick_answered || state.closing; });
+  held.release();
+  state.pick_pending = false;
+  if (state.pick_answered && !state.pick_path.empty()) r.path = state.pick_path;
+  return true;
 }
 
 bool editor_layout(protocol::Context& ctx, const protocol::EditorLayoutParams& p,
@@ -204,8 +300,42 @@ void add_editor_methods(protocol::Dispatcher& d) {
           "native viewport outlines it and its gizmo attaches. UI state, never the document.")));
   d.add(protocol::read_only(protocol::method_no_params<protocol::EditorStateResult, &editor_state>(
       "editor.state",
-      "engine-editor only: the selection, the viewport's camera (render.capture's shape) and the "
-      "last layout, so a click in the native viewport reaches the shell's outliner.")));
+      "engine-editor only: the selection, the viewport's camera (render.capture's shape), the "
+      "last layout and the gizmo's tool, so a click in the native viewport reaches the shell's "
+      "outliner.")));
+  d.add(protocol::read_only(
+      protocol::method<protocol::EditorToolParams, protocol::EditorStateResult, &editor_tool>(
+          "editor.tool",
+          "engine-editor only: the viewport gizmo's tool, \"translate\" or \"rotate\" (the T and R "
+          "keys in the viewport). UI state, never the document.")));
+  d.add(protocol::read_only(protocol::method<protocol::EditorPickFileParams,
+                                             protocol::EditorPickFileResult, &editor_pick_file>(
+      "editor.pick_file",
+      "engine-editor only: the platform's open-file dialog on the editor's window, answering "
+      "the chosen path or null; null at once in a test or an editor with no window. Reads "
+      "nothing and writes nothing.")));
+  // A write: it changes the document, so roles govern it (protocol.md, "Roles, leases and
+  // proposals").
+  d.add(protocol::method<protocol::EditorImportMeshParams, protocol::EditorImportMeshResult,
+                         &editor_import_mesh>(
+      "editor.import_mesh",
+      "engine-editor only: copy a .gltf (with its buffers and images), .glb or .clusters file into "
+      "the document's assets/<stem>/ and create one engine.scene.MeshPlacement naming it, in one "
+      "transaction, at `at` or on the ground under the viewport's centre; the viewport rebuilds "
+      "and selects it. Refused, with nothing written, for a missing file, a format the loader "
+      "refuses, or a copy that would overwrite other bytes."));
+}
+
+std::string tool_notification(std::string_view tool) {
+  JsonValue params = JsonValue::object();
+  params.set("tool", JsonValue(std::string(tool)));
+  JsonValue n = JsonValue::object();
+  n.set("jsonrpc", JsonValue("2.0"));
+  n.set("method", JsonValue("editor.tool"));
+  n.set("params", std::move(params));
+  JsonWriteOptions compact;
+  compact.pretty = false;
+  return write_json(n, compact);
 }
 
 void add_editor_test_methods(protocol::Dispatcher& d) {

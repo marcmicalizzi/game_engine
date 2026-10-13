@@ -56,6 +56,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <engine_build_stamp.h>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -111,6 +112,8 @@ constexpr const char* k_usage =
     "               handle that is one transaction; needs --pick and --frames 10 or more\n"
     "  --look DX,DY after picking, hold the right button over the viewport and move the pointer\n"
     "               by (DX, DY) over three frames, as the look gesture does (frames 3 to 7)\n"
+    "  --rotate AXIS,DEGREES  after picking, press R, hold Shift and turn the selection's AXIS\n"
+    "               ring (x, y or z) by DEGREES over three frames and release (frames 3 to 8)\n"
     "  --trace-input <file>  one JSON line per pointer event the window gives the editor (with\n"
     "               what SDL and the platform said about relative mode, focus and the cursor) and\n"
     "               per frame (the camera's yaw and pitch), written when the run ends\n"
@@ -128,9 +131,11 @@ constexpr const char* k_usage =
     "  connection, and --test-relayout-at N sends editor.relayout, from frame N once the page's\n"
     "  checks are in.\n"
     "  --version    the commit this binary was built from, as one JSON line\n"
-    "In the viewport: left click picks; drag a gizmo handle to move the selection along it "
-    "(Escape\n"
-    "cancels); Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes the selection.\n"
+    "  --test-drop-file <path>  a file dropped on the viewport through SDL's queue at frame 10\n"
+    "In the viewport: left click picks; T is the move gizmo (drag a handle to move the selection\n"
+    "along it), R the rotate gizmo (drag a ring to turn it, Shift snaps to 15 degrees); Escape\n"
+    "cancels; Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes the selection; a mesh file\n"
+    "dropped on the viewport is imported (editor.import_mesh).\n"
     "Exit codes: 0 ok, 1 runtime error, 2 usage, 3 no display, no device or (--embedded) no web\n"
     "view.\n";
 
@@ -171,6 +176,16 @@ struct Options {
   std::string trace_input;  // --trace-input: one JSON line per pointer event and per frame
   bool look_os = false;     // --test-look-os
   f64 look_os_by[2] = {0.0, 0.0};
+  bool rotate = false;  // --rotate AXIS,DEGREES
+  u32 rotate_axis = 1;
+  f64 rotate_degrees = 0.0;
+  std::string drop_file;  // --test-drop-file: pushed as a drop on the viewport at frame 10
+  // Any test flag: the editor never opens the platform's file dialog then (editor.pick_file).
+  bool testing() const noexcept {
+    return frames > 0 || pick || move || drag || look || look_os || rotate || resize || test_keys ||
+           test_page || drop_at > 0 || relayout_at > 0 || !drop_file.empty() || !capture.empty() ||
+           offscreen;
+  }
 };
 
 bool parse_u32(std::string_view s, u32& out) {
@@ -288,7 +303,9 @@ struct InputTrace {
     }
   }
   void line(const JsonValue& v) {
-    text += write_json(v);
+    JsonWriteOptions compact;
+    compact.pretty = false;
+    text += write_json(v, compact);
     text += '\n';
   }
   void event(const window::Event& e, u64 frame, const window::Window& view) {
@@ -399,6 +416,11 @@ struct Summary {
   bool look_os_clip_inside = false;
   bool look_os_cursor_inside = false;
   bool look_os_released_by_test = false;
+  // Files dropped on the window, how many `editor.import_mesh` took, and the last refusal.
+  u32 drops_seen = 0;
+  u32 drops_imported = 0;
+  std::string drop_error;
+  std::string gizmo_tool = "translate";
   // --test-keys: whose the keyboard was at each step, and what each Ctrl+Z did.
   u32 sdl_keys = 0;  // KeyDown events SDL delivered to the editor, all run
   bool keys_tested = false;
@@ -456,6 +478,21 @@ void print_summary(const Summary& s, const Options& o) {
   } else {
     out["drag"] = JsonValue();
   }
+  out["gizmo_tool"] = JsonValue(s.gizmo_tool);
+  out["rotations"] = JsonValue(s.input.rotations);
+  if (s.input.last_rotate_transaction >= 0) {
+    JsonValue turn = JsonValue::object();
+    turn["axis"] = JsonValue(editor::axis_name(s.input.last_rotate_axis));
+    turn["degrees"] = JsonValue(s.input.last_degrees);
+    turn["transaction"] = JsonValue(s.input.last_rotate_transaction);
+    turn["rationale"] = JsonValue(s.input.last_rotate_rationale);
+    out["rotate"] = std::move(turn);
+  } else {
+    out["rotate"] = JsonValue();
+  }
+  out["drops_seen"] = JsonValue(s.drops_seen);
+  out["drops_imported"] = JsonValue(s.drops_imported);
+  out["drop_error"] = s.drop_error.empty() ? JsonValue() : JsonValue(s.drop_error);
   JsonValue placements = JsonValue::array();
   for (const Summary::Placed& p : s.placements) {
     JsonValue one = JsonValue::object();
@@ -561,6 +598,69 @@ void scripted_events(const Options& o, u64 frame, Vector<window::Event>& out) {
   out.push_back(e);
 }
 
+// --rotate AXIS,DEGREES: R at frame 3 (the rings appear with the next frame's view) and Shift
+// held, so the turn snaps to 15 degrees and lands exactly; at frame 4 a press on the AXIS ring
+// where it is the ring the pointer hovers, three moves along it by DEGREES / 3 at frames 5 to 7,
+// and the release at 8. The ring's points come from the frame's own rings and view, in the
+// picture's pixels, and are sent in window coordinates (over `scale`) as a pointer reports them.
+void scripted_turn(const Options& o, u64 frame, const editor::EditorInput& input, u32 width,
+                   u32 height, editor::PointerScale scale, f32& t0, Vector<window::Event>& out) {
+  if (!o.rotate || frame < 3 || frame > 8) return;
+  window::Event e;
+  if (frame == 3) {
+    for (const window::Key k : {window::Key::R, window::Key::Shift}) {
+      e.kind = window::EventKind::KeyDown;
+      e.key = k;
+      out.push_back(e);
+    }
+    e.kind = window::EventKind::KeyUp;
+    e.key = window::Key::R;
+    out.push_back(e);
+    return;
+  }
+  const editor::GizmoRings& rings = input.rings();
+  const f32 turn = static_cast<f32>(o.rotate_degrees * (3.14159265358979323846 / 180.0));
+  f32 px = 0.0f;
+  f32 py = 0.0f;
+  if (frame == 4) {
+    // The first point of the ring, every 15 degrees round it, that hovers this ring and whose
+    // turned point is in front of the eye too.
+    t0 = -1.0f;
+    for (u32 i = 0; i < 24 && t0 < 0.0f; ++i) {
+      const f32 t = 6.28318530717958647692f * static_cast<f32>(i) / 24.0f;
+      f32 qx = 0.0f;
+      f32 qy = 0.0f;
+      if (!editor::ring_point(input.view_proj(), rings, o.rotate_axis, t, width, height, px, py) ||
+          !editor::ring_point(input.view_proj(), rings, o.rotate_axis, t + turn, width, height, qx,
+                              qy))
+        continue;
+      if (editor::hover_ring(rings, px, py, editor::k_hover_pixels * scale.y) == o.rotate_axis)
+        t0 = t;
+    }
+    if (t0 < 0.0f) return;
+  }
+  if (t0 < 0.0f) return;
+  const f32 k = frame <= 4 ? 0.0f : (frame >= 7 ? 1.0f : static_cast<f32>(frame - 4) / 3.0f);
+  if (!editor::ring_point(input.view_proj(), rings, o.rotate_axis, t0 + turn * k, width, height, px,
+                          py))
+    return;
+  e.button = 1;
+  e.x = px / scale.x;
+  e.y = py / scale.y;
+  e.kind = window::EventKind::MouseMove;
+  out.push_back(e);
+  if (frame == 4) {
+    e.kind = window::EventKind::MouseButtonDown;
+    out.push_back(e);
+  } else if (frame == 8) {
+    e.kind = window::EventKind::MouseButtonUp;
+    out.push_back(e);
+    e.kind = window::EventKind::KeyUp;
+    e.key = window::Key::Shift;
+    out.push_back(e);
+  }
+}
+
 bool is_pointer(const window::Event& e) noexcept {
   return e.kind == window::EventKind::MouseMove || e.kind == window::EventKind::MouseButtonDown ||
          e.kind == window::EventKind::MouseButtonUp || e.kind == window::EventKind::MouseWheel;
@@ -615,6 +715,7 @@ void finish(Summary& summary, editor::EditorDocument& document, const editor::Vi
   summary.transactions = static_cast<u32>(document.document().journal().size());
   summary.undo_position = document.session().undo_position();
   summary.input = input.stats();
+  summary.gizmo_tool = editor::tool_name(input.tool());
   summary.records = 0;
   for (const Id128 id : viewport.scene().records)
     summary.records += id.is_null() ? 0u : 1u;
@@ -649,8 +750,10 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
     // No window: the scripted coordinates are the picture's own pixels.
     const editor::PointerScale scale;
     const u32 frames = options.frames > 0 ? options.frames : 3u;
+    f32 turn_t0 = -1.0f;
     for (u64 f = 0; f < frames && code == 0; ++f) {
       scripted_events(options, f, scripted);
+      scripted_turn(options, f, input, options.width, options.height, scale, turn_t0, scripted);
       for (window::Event e : scripted) {
         to_pixels(e, scale);
         ui.feed(e);
@@ -743,6 +846,7 @@ struct Host {
       : dispatcher(protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy}),
         listener(dispatcher, lock) {
     state.document = &document;
+    state.lock = &lock;
     // The shell's edits are the editor's: the same actor, the director, as the viewport's.
     policy.identity = document.caller().who;
     protocol::add_builtin_methods(dispatcher);
@@ -946,6 +1050,11 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     i64 last_ns = started_ns;
     bool resize = false;
     bool relative_asked = false;  // what the viewport's window was last asked for
+    f32 turn_t0 = -1.0f;          // --rotate: where on the ring the press was
+    std::string notified_tool = editor::tool_name(input.tool());
+    bool picking = false;  // editor.pick_file's dialog is open
+    // The dialog only for a person: never with a test flag, whatever the shell.
+    host.state.dialogs = !options.testing();
     bool running = code == 0;
     while (running) {
       // The ceiling: a window on the owner's desktop never draws faster than this.
@@ -1036,6 +1145,34 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         }
         if (event.kind == window::EventKind::Resized) {
           resize = true;
+          continue;
+        }
+        // A file dropped on the viewport is imported through the editor's own method, as the
+        // shell's Add button imports one (editor.import_mesh): one transaction, or the reason.
+        if (event.kind == window::EventKind::DropFile && event.text != nullptr) {
+          JsonValue request = JsonValue::object();
+          request.set("jsonrpc", JsonValue("2.0"));
+          request.set("id", JsonValue(u64{1}));
+          request.set("method", JsonValue("editor.import_mesh"));
+          JsonValue params = JsonValue::object();
+          params.set("path", JsonValue(std::string(event.text)));
+          request.set("params", std::move(params));
+          JsonWriteOptions compact;
+          compact.pretty = false;
+          JsonValue response;
+          const std::string answer = host.dispatcher.dispatch_text(write_json(request, compact));
+          ++summary.drops_seen;
+          if (parse_json(answer, response).ok && response.find("result") != nullptr) {
+            ++summary.drops_imported;
+          } else {
+            const JsonValue* why = response.find("error");
+            summary.drop_error = why != nullptr && why->find("message") != nullptr
+                                     ? std::string(why->find("message")->as_string())
+                                     : answer;
+            ENGINE_LOG_WARN(log_editor, "a dropped file was not imported",
+                            log::field("path", event.text),
+                            log::field("reason", summary.drop_error.c_str()));
+          }
           continue;
         }
         // A press in the viewport gives it the keyboard: a child window is not activated by a
@@ -1265,9 +1402,52 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       if (placed && settled != scripted_frame) {
         scripted_frame = settled;
         scripted_events(options, settled, scripted);
+        scripted_turn(options, settled, input, swapchain.extent().width, swapchain.extent().height,
+                      scale, turn_t0, scripted);
+        // --test-drop-file: a drop on the viewport through SDL's queue, as a file manager's is.
+        if (!options.drop_file.empty() && settled == 10) {
+          window::Event drop;
+          drop.kind = window::EventKind::DropFile;
+          drop.text = options.drop_file.c_str();
+          (void)view_window->push_event(drop);
+        }
       }
       for (const window::Event& e : scripted)
         failed = failed || !on_event(e);
+      // The gizmo's tool: a method's choice is applied, a key's is recorded, and either reaches
+      // every page as an `editor.tool` notification.
+      if (!failed) {
+        editor::Tool asked = input.tool();
+        if (host.state.tool != notified_tool && editor::tool_from_name(host.state.tool, asked) &&
+            asked != input.tool())
+          failed = !input.set_tool(asked, viewport, error);
+        host.state.tool = editor::tool_name(input.tool());
+        if (host.state.tool != notified_tool) {
+          notified_tool = host.state.tool;
+          (void)host.listener.notify_all(editor::tool_notification(notified_tool));
+        }
+      }
+      // `editor.pick_file`: the platform's dialog on this thread, outside the dispatch lock, while
+      // the method waits for the answer (EditorState).
+      if (!failed && host.state.pick_pending && !host.state.pick_answered && !picking) {
+        picking = true;
+        Vector<std::string> filter;
+        for (const std::string& f : host.state.pick_filter)
+          filter.push_back(f);
+        if (filter.empty()) {
+          for (const char* f : {"gltf", "glb", "clusters"})
+            filter.push_back(f);
+        }
+        lock.unlock();
+        std::string chosen;
+        const bool ok = window::open_file_dialog(
+            window, std::span<const std::string>(filter.data(), filter.size()), chosen);
+        lock.lock();
+        host.state.pick_path = ok ? chosen : std::string();
+        host.state.pick_answered = true;
+        host.state.pick_done.notify_all();
+        picking = false;
+      }
       if (failed) {
         code = 1;
         break;
@@ -1368,7 +1548,13 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
     }
     // Nothing the listener dispatches reaches into the window, the viewport or the device, but it
-    // stops before they go so that the page's last call is answered by a whole editor.
+    // stops before they go so that the page's last call is answered by a whole editor; a method
+    // waiting for a file dialog is answered with null first, or its connection would never end.
+    {
+      std::lock_guard<std::mutex> closing(host.lock);
+      host.state.closing = true;
+    }
+    host.state.pick_done.notify_all();
     host.listener.stop();
     if (viewport.valid()) viewport.renderer().wait_idle();
     if (code == 0) {
@@ -1475,6 +1661,17 @@ int main(int argc, char** argv) {
     } else if (a == "--look") {
       if (!value(v) || !parse_list(v, options.look_by, 2)) return usage("--look needs DX,DY");
       options.look = true;
+    } else if (a == "--rotate") {
+      if (!value(v) || v.size() < 3 || v[1] != ',' || (v[0] != 'x' && v[0] != 'y' && v[0] != 'z'))
+        return usage("--rotate needs AXIS,DEGREES with AXIS x, y or z");
+      f64 degrees = 0.0;
+      if (!parse_list(v.substr(2), &degrees, 1) || std::fabs(degrees) > 170.0)
+        return usage("--rotate's degrees are within 170");
+      options.rotate = true;
+      options.rotate_axis = static_cast<u32>(v[0] - 'x');
+      options.rotate_degrees = degrees;
+    } else if (a == "--test-drop-file") {
+      if (!value(options.drop_file)) return usage("--test-drop-file needs a path");
     } else if (a == "--test-look-os") {
       if (!value(v) || !parse_list(v, options.look_os_by, 2) ||
           std::fabs(options.look_os_by[0]) > 300.0 || std::fabs(options.look_os_by[1]) > 300.0)
@@ -1520,6 +1717,10 @@ int main(int argc, char** argv) {
   if (options.look && options.drag) return usage("--look and --drag use the same frames");
   if (options.look_os && (options.look || options.drag))
     return usage("--test-look-os, --look and --drag use the same frames");
+  if (options.rotate && (options.look || options.drag || options.look_os || !options.pick))
+    return usage("--rotate turns what --pick selected, in the frames --drag and --look use");
+  if (options.rotate && options.frames > 0 && options.frames < 10)
+    return usage("--rotate releases at the eighth frame: --frames 10 or more");
   if (options.look_os && options.frames > 0 && options.frames < 12)
     return usage("--test-look-os reads the camera at the tenth frame: --frames 12 or more");
   if (options.look && options.frames > 0 && options.frames < 10)

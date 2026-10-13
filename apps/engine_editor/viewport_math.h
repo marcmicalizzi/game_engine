@@ -116,4 +116,80 @@ bool update_axis_drag(AxisDrag& drag, WorldPos eye, const Ray& ray) noexcept;
 // along the axis in f64, and on the other two axes not at all, to the bit.
 WorldPos dragged_translation(WorldPos start, const AxisDrag& drag) noexcept;
 
+// ---- the rotate gizmo
+// -------------------------------------------------------------------------
+//
+// Three rings about world x, y and z through the placement's origin — the point a change of the
+// record's `rotation` turns it about (the mesh's fit goes through the rotation; renderer/scene.h)
+// — `k_ring_pixels` in radius at the origin's depth, so a pebble and a building are turned by the
+// same rings. Each ring is drawn and hovered as a polyline of its projected points, so hover is a
+// few dozen segments tested on the CPU, as the handles are.
+
+inline constexpr f32 k_ring_pixels = 70.0f;
+inline constexpr u32 k_ring_segments = 64;
+// Shift snaps a turn to this many degrees.
+inline constexpr f64 k_rotate_snap_degrees = 15.0;
+
+// The ring about `axis`: two unit vectors spanning its plane, `u` x `v` = the axis, so a point at
+// parameter t is centre + radius (cos t u + sin t v) and growing t turns the right-handed way
+// about the axis (counter-clockwise seen from its tip), which is the sign a turn's degrees have.
+void ring_basis(u32 axis, Vec3& u, Vec3& v) noexcept;
+
+struct GizmoRings {
+  bool visible = false;  // the centre is in front of the eye
+  Vec3 centre;           // frame space
+  f32 radius = 0.0f;     // metres
+  f32 cx = 0.0f;         // the centre in the picture
+  f32 cy = 0.0f;
+  // Each ring's points in the picture, and whether each is in front of the eye; a segment is
+  // drawn and hovered only when both its ends are.
+  f32 px[k_axis_count][k_ring_segments] = {};
+  f32 py[k_axis_count][k_ring_segments] = {};
+  bool front[k_axis_count][k_ring_segments] = {};
+};
+GizmoRings gizmo_rings(const Mat4& view_proj, Vec3 centre, f32 fov_y, u32 width, u32 height,
+                       f32 pixels) noexcept;
+
+// The ring under (`px`, `py`): within `tolerance` pixels of its projected polyline. **y is the
+// primary ring**: where it and another are both within reach (where they cross, and wherever they
+// overlap seen from above or below), y wins; otherwise the nearest. `k_no_axis` over none.
+u32 hover_ring(const GizmoRings& rings, f32 px, f32 py, f32 tolerance) noexcept;
+// Where the ring about `axis` passes at parameter `t` (radians, `ring_basis`'s), in the picture;
+// false when that point is at or behind the eye. What a scripted turn aims the pointer at.
+bool ring_point(const Mat4& view_proj, const GizmoRings& rings, u32 axis, f32 t, u32 width,
+                u32 height, f32& px, f32& py) noexcept;
+
+// **A turn about one axis.** The pointer's ray meets the ring's plane (through `pivot`, normal to
+// the axis); the turn is the angle in that plane from where it met at the press to where it meets
+// now, summed step by step so a gesture can go past half a turn. Computed in f64 in the world
+// about the pivot, so the eye's place rounds nothing: two rays that are the same line in the world
+// give the same angle to the bit wherever the eye stood. A plane seen within a degree of edge-on
+// is refused, as `closest_on_axis` refuses an axis within a degree of the line of sight, and so is
+// a ray through the pivot itself, where the angle means nothing.
+struct RingDrag {
+  u32 axis = k_no_axis;
+  WorldPos pivot{};
+  DVec3 last{0.0, 0.0, 0.0};  // the unit direction in the plane, pivot to the last good hit
+  f64 radians = 0.0;          // turned since the press, right-handed about the axis
+};
+bool ray_on_ring_plane(WorldPos pivot, u32 axis, WorldPos eye, const Ray& ray,
+                       DVec3& direction) noexcept;
+bool begin_ring_drag(u32 axis, WorldPos pivot, WorldPos eye, const Ray& ray,
+                     RingDrag& out) noexcept;
+// Updates `radians` from a later ray; false, keeping the last answer, when the ray is refused.
+bool update_ring_drag(RingDrag& drag, WorldPos eye, const Ray& ray) noexcept;
+// The turn in degrees, snapped to `k_rotate_snap_degrees` steps when `snap`.
+f64 ring_drag_degrees(const RingDrag& drag, bool snap) noexcept;
+
+// The unit quaternion turning `degrees` about world `axis`, from the half angle's sine and cosine
+// in f64, so a multiple of 90 degrees is as exact as a float can hold it.
+Quat axis_quat(u32 axis, f64 degrees) noexcept;
+// **What a record's `rotation` becomes** once its placement has turned `degrees` about world
+// `axis`, with `yaw_deg` (applied after `rotation`, doc_scene.md) left as the author wrote it: the
+// placement stands at Y R, and turned it is G Y R = Y (Y^-1 G Y R), so the new `rotation` is
+// Y^-1 G Y R — G R when the axis is y, which Y commutes with. In f64, normalised, and in the
+// canonical sign (w > 0, or w = 0 and the first non-zero of x, y, z positive; no negative zero),
+// so a quarter turn and back, or four, gives back the bits it started from.
+Quat turned_rotation(Quat rotation, f32 yaw_deg, u32 axis, f64 degrees) noexcept;
+
 }  // namespace engine::editor

@@ -1518,6 +1518,512 @@ TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, a
   CHECK_MESSAGE(number(summary.find("frames")) > back_at, output);
 }
 
+namespace {
+
+// The fixture's cube as a .gltf with its buffer in a separate .bin beside it: the GLB's two chunks
+// split, and the JSON's buffer given the file's name.
+bool write_cube_gltf(const std::string& dir, const std::string& stem) {
+  const std::string glb = dir + "/" + stem + ".tmp.glb";
+  if (!write_cube_glb(glb)) return false;
+  std::string bytes;
+  if (io::read_file(glb, bytes) != io::Status::Ok || bytes.size() < 28) return false;
+  (void)io::remove_file(glb);
+  u32 json_length = 0;
+  std::memcpy(&json_length, bytes.data() + 12, 4);
+  const std::string json_text = bytes.substr(20, json_length);
+  u32 bin_length = 0;
+  std::memcpy(&bin_length, bytes.data() + 20 + json_length, 4);
+  const std::string bin = bytes.substr(28 + json_length, bin_length);
+  JsonValue gltf;
+  if (!parse_json(json_text, gltf).ok) return false;
+  JsonValue* buffers = gltf.find("buffers");
+  if (buffers == nullptr || !buffers->is_array() || buffers->size() != 1) return false;
+  (*buffers)[0].set("uri", JsonValue(stem + ".bin"));
+  return io::write_file(dir + "/" + stem + ".gltf", write_json(gltf)) == io::Status::Ok &&
+         io::write_file(dir + "/" + stem + ".bin", bin) == io::Status::Ok;
+}
+
+// A record's `rotation` as four floats.
+bool rotation_of(const doc::Document& d, Id128 id, f32 out[4]) {
+  const JsonValue* q = d.property(id, "rotation");
+  if (q == nullptr || !q->is_array() || q->size() != 4) return false;
+  for (u32 i = 0; i < 4; ++i) {
+    f64 v = 0.0;
+    if (!(*q)[i].get_f64(v)) return false;
+    out[i] = static_cast<f32>(v);
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("engine-editor: the rotate gizmo's maths, with no window and no device") {
+  using namespace editor;
+  const u32 w = 1920;
+  const u32 h = 1080;
+  const f32 fov = radians(55.0f);
+  const Mat4 vp = perspective_reversed_z(fov, static_cast<f32>(w) / static_cast<f32>(h), 0.05f) *
+                  look_at(Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, -0.5f, -1.0f}, Vec3{0.0f, 1.0f, 0.0f});
+  // **The rings**: k_ring_pixels across the view at the centre's depth, each a closed polyline;
+  // the pointer on a ring hovers it, the middle and the outside hover none, and where y crosses
+  // another ring y wins.
+  const Vec3 centre{0.5f, -4.0f, -8.0f};
+  const GizmoRings rings = gizmo_rings(vp, centre, fov, w, h, 100.0f);
+  REQUIRE(rings.visible);
+  f32 px = 0.0f;
+  f32 py = 0.0f;
+  for (u32 a = 0; a < k_axis_count; ++a) {
+    // A quarter of the way round, where the three rings are apart.
+    REQUIRE(ring_point(vp, rings, a, 0.9f, w, h, px, py));
+    CHECK(hover_ring(rings, px + 1.0f, py, k_hover_pixels) == a);
+  }
+  CHECK(hover_ring(rings, rings.cx + 400.0f, rings.cy, k_hover_pixels) == k_no_axis);
+  CHECK(hover_ring(rings, rings.cx + 60.0f, rings.cy - 200.0f, k_hover_pixels) == k_no_axis);
+  // t = 0 on x's ring is +y, and t = pi/2 on y's ring is +x... the points where x and y cross
+  // are +-z: y's ring at t = 0 is +z, x's ring at t = pi/2 is +z too, and there y wins.
+  REQUIRE(ring_point(vp, rings, 1, 0.0f, w, h, px, py));
+  CHECK(hover_ring(rings, px, py, k_hover_pixels) == 1u);
+  const GizmoRings behind = gizmo_rings(vp, Vec3{0.0f, 0.0f, 3.0f}, fov, w, h, 100.0f);
+  CHECK_FALSE(behind.visible);
+
+  // **A turn about y far from the world's origin**: the pointer a quarter of the way round the
+  // ring from where it pressed is 90 degrees, signed the right-handed way about +y.
+  const WorldPos eye{250000.0, 30.0, -70000.0};
+  const WorldPos pivot = eye + DVec3{centre};
+  Ray ray;
+  RingDrag turn;
+  REQUIRE(ring_point(vp, rings, 1, 0.3f, w, h, px, py));
+  REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+  REQUIRE(begin_ring_drag(1, pivot, eye, ray, turn));
+  REQUIRE(ring_point(vp, rings, 1, 0.3f + 1.57079632679f, w, h, px, py));
+  REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+  REQUIRE(update_ring_drag(turn, eye, ray));
+  CHECK(ring_drag_degrees(turn, false) == doctest::Approx(90.0).epsilon(0.002));
+  CHECK(ring_drag_degrees(turn, true) == 90.0);
+  // Past half a turn the steps add up: three more quarters is 360.
+  for (u32 q = 2; q <= 4; ++q) {
+    REQUIRE(ring_point(vp, rings, 1, 0.3f + 1.57079632679f * static_cast<f32>(q), w, h, px, py));
+    REQUIRE(pixel_ray(vp, px, py, w, h, ray));
+    REQUIRE(update_ring_drag(turn, eye, ray));
+  }
+  CHECK(ring_drag_degrees(turn, true) == 360.0);
+  // **The eye's place rounds nothing**: the same line in the world, from an eye flown three metres
+  // (exactly representable, so the two origins are the same point), gives the same angle to the
+  // bit — the second ray adds nothing to the first.
+  const Ray from_here{Vec3{0.5f, 0.25f, -0.125f}, ray.direction};
+  REQUIRE(update_ring_drag(turn, eye, from_here));
+  const f64 here = turn.radians;
+  const WorldPos flown = eye + DVec3{3.0, 0.0, 0.0};
+  const Ray from_flown{Vec3{-2.5f, 0.25f, -0.125f}, ray.direction};
+  REQUIRE(update_ring_drag(turn, flown, from_flown));
+  CHECK(turn.radians == here);
+  // A ring seen edge-on is refused, as a parallel axis is, and the last answer stands.
+  const Ray grazing{Vec3{0.0f, 0.0f, 0.0f}, normalize(Vec3{0.3f, 0.0f, -1.0f})};
+  CHECK_FALSE(update_ring_drag(turn, eye, grazing));
+  CHECK(turn.radians == here);
+  RingDrag none;
+  CHECK_FALSE(begin_ring_drag(1, pivot, eye, grazing, none));
+  CHECK_FALSE(begin_ring_drag(k_no_axis, pivot, eye, ray, none));
+
+  // **The record's rotation**: a quarter turn about y from the identity and back gives back the
+  // identity's bits; four quarter turns do too; with `yaw_deg` authored, a turn about y is G R
+  // (the yaw commutes with it), and a turn about x lands the placement where G (Y R) would.
+  const Quat id = Quat::identity();
+  const Quat quarter = turned_rotation(id, 0.0f, 1, 90.0);
+  CHECK(quarter.y == quarter.w);
+  CHECK(quarter.x == 0.0f);
+  CHECK(quarter.z == 0.0f);
+  CHECK(quarter.w > 0.0f);
+  const Quat back = turned_rotation(quarter, 0.0f, 1, -90.0);
+  CHECK(back == id);
+  Quat round = id;
+  for (u32 i = 0; i < 4; ++i)
+    round = turned_rotation(round, 0.0f, 1, 90.0);
+  CHECK(round == id);  // 360 degrees is -identity, and the canonical sign makes it the identity
+  const Quat yawed = turned_rotation(id, 30.0f, 1, 45.0);
+  const Quat y45 = axis_quat(1, 45.0);
+  CHECK(std::fabs(yawed.y - y45.y) < 1.0e-7f);
+  const Quat y30 = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(30.0f));
+  const Quat r0 = normalize(quat_from_axis_angle(Vec3{1.0f, 0.0f, 0.0f}, 0.4f));
+  const Quat turned = turned_rotation(r0, 30.0f, 0, 60.0);
+  const Quat placed = normalize(y30 * turned);
+  const Quat expected = normalize(axis_quat(0, 60.0) * normalize(y30 * r0));
+  CHECK(std::fabs(std::fabs(dot(placed, expected)) - 1.0f) < 1.0e-6f);
+  CHECK(std::string(tool_name(Tool::Rotate)) == "rotate");
+  Tool tool = Tool::Translate;
+  CHECK(tool_from_name("rotate", tool));
+  CHECK(tool == Tool::Rotate);
+  CHECK_FALSE(tool_from_name("scale", tool));
+}
+
+TEST_CASE("engine-editor: a rotate drag previews, then commits one turn; keys switch the tool") {
+  const test::TempDir tmp("engine_editor_rotate");
+  gfx::Device device;
+  std::string why;
+  if (!device.create(gfx::DeviceOptions{}, &why)) {
+    MESSAGE("no Vulkan device here: " << why);
+    return;
+  }
+  {
+    using window::EventKind;
+    using window::Key;
+    editor::EditorDocument document;
+    make_fixture(document, tmp.path());
+    editor::Viewport viewport;
+    editor::Viewport::Options options;
+    options.width = 320;
+    options.height = 200;
+    options.ddc = tmp.file("ddc");
+    std::string error;
+    if (!viewport.build(device, document.document(), document.directory(), options, error)) {
+      MESSAGE("the viewport cannot draw here: " << error);
+      return;
+    }
+    const renderer::Camera camera = test_camera();
+    const u32 left = viewport.scene().instance_of(k_left);
+    REQUIRE(left != ~0u);
+    editor::EditorInput input;
+    document.select(k_left);
+    // R, while the viewport has the keyboard, is the rotate tool; T goes back.
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::R), false, true, document, viewport, error));
+    CHECK(input.tool() == editor::Tool::Rotate);
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::T), false, true, document, viewport, error));
+    CHECK(input.tool() == editor::Tool::Translate);
+    REQUIRE(input.set_tool(editor::Tool::Rotate, viewport, error));
+    input.set_view(document, viewport, camera, 320, 200, 1.0f);
+    CHECK_FALSE(input.handles().visible);
+    const editor::GizmoRings& rings = input.rings();
+    REQUIRE(rings.visible);
+    // The y ring, where it is the ring the pointer hovers, and a quarter turn round it.
+    f32 t0 = -1.0f;
+    f32 px = 0.0f;
+    f32 py = 0.0f;
+    for (u32 i = 0; i < 24 && t0 < 0.0f; ++i) {
+      const f32 t = 6.2831853f * static_cast<f32>(i) / 24.0f;
+      if (editor::ring_point(input.view_proj(), rings, 1, t, 320, 200, px, py) &&
+          editor::hover_ring(rings, px, py, editor::k_hover_pixels) == 1u)
+        t0 = t;
+    }
+    REQUIRE(t0 >= 0.0f);
+    REQUIRE(editor::ring_point(input.view_proj(), rings, 1, t0, 320, 200, px, py));
+    REQUIRE(
+        input.handle(key(EventKind::KeyDown, Key::Shift), false, true, document, viewport, error));
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, px, py), false, true, document, viewport,
+                         error));
+    CHECK(input.hovered() == 1u);
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, px, py), false, true, document,
+                         viewport, error));
+    CHECK(input.rotating());
+    CHECK(input.active() == 1u);
+    CHECK(document.selection() == k_left);
+    for (u32 k = 1; k <= 3; ++k) {
+      REQUIRE(editor::ring_point(input.view_proj(), rings, 1,
+                                 t0 + 1.5707963f * static_cast<f32>(k) / 3.0f, 320, 200, px, py));
+      REQUIRE(input.handle(pointer(EventKind::MouseMove, px, py), false, true, document, viewport,
+                           error));
+    }
+    // The preview turns the instance; the document has not changed.
+    REQUIRE_MESSAGE(input.flush(viewport, error), error);
+    CHECK(viewport.previewing());
+    const Quat previewed = viewport.placement(left)->transform.rotation;
+    CHECK(std::fabs(previewed.y) > 0.5f);
+    CHECK(document.document().journal().size() == 1);
+    CHECK(document.document().property(k_left, "rotation") == nullptr);
+    // Release: one transaction of one command, the rotation a quarter turn about y, translation
+    // and scale untouched.
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonUp, px, py), false, true, document, viewport,
+                         error));
+    CHECK_FALSE(input.dragging());
+    Vector<editor::JournalRow> journal;
+    document.journal(journal, 10);
+    REQUIRE(journal.size() == 2);
+    CHECK(journal[0].commands == 1);
+    CHECK(journal[0].rationale == "rotate left about y by 90\xC2\xB0");
+    f32 q[4] = {};
+    REQUIRE(rotation_of(document.document(), k_left, q));
+    const Quat quarter = editor::turned_rotation(Quat::identity(), 0.0f, 1, 90.0);
+    CHECK(q[0] == quarter.x);
+    CHECK(q[1] == quarter.y);
+    CHECK(q[2] == quarter.z);
+    CHECK(q[3] == quarter.w);
+    f64 t[3] = {};
+    REQUIRE(translation_of(document.document(), k_left, t));
+    CHECK(t[0] == -1.5);
+    CHECK(t[1] == 0.0);
+    CHECK(t[2] == 0.0);
+    CHECK(input.stats().rotations == 1);
+    CHECK(input.stats().last_degrees == 90.0);
+    // A rotation is a move, not a rebuild, and the viewport stands where the preview did.
+    bool rebuilt = true;
+    REQUIRE_MESSAGE(viewport.sync(document.document(), rebuilt, error), error);
+    CHECK_FALSE(rebuilt);
+    CHECK(std::fabs(dot(viewport.placement(left)->transform.rotation, previewed)) > 0.99999f);
+    // Escape restores a second turn's preview and writes nothing.
+    input.set_view(document, viewport, camera, 320, 200, 1.0f);
+    REQUIRE(editor::ring_point(input.view_proj(), input.rings(), 1, t0, 320, 200, px, py));
+    REQUIRE(input.handle(pointer(EventKind::MouseButtonDown, px, py), false, true, document,
+                         viewport, error));
+    REQUIRE(input.rotating());
+    REQUIRE(editor::ring_point(input.view_proj(), input.rings(), 1, t0 + 0.8f, 320, 200, px, py));
+    REQUIRE(input.handle(pointer(EventKind::MouseMove, px, py), false, true, document, viewport,
+                         error));
+    REQUIRE(input.flush(viewport, error));
+    REQUIRE(
+        input.handle(key(EventKind::KeyDown, Key::Escape), false, true, document, viewport, error));
+    CHECK_FALSE(viewport.previewing());
+    CHECK(document.document().journal().size() == 2);
+    // Ctrl+Z undoes the turn as a move (Shift let go: Ctrl+Shift+Z is redo); Ctrl+Y redoes it.
+    REQUIRE(
+        input.handle(key(EventKind::KeyUp, Key::Shift), false, true, document, viewport, error));
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Control), false, true, document, viewport,
+                         error));
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Z), false, true, document, viewport, error));
+    CHECK(input.stats().undos == 1);
+    // Back to what it was: no rotation, or the identity the record's restore writes out.
+    const bool unturned = !rotation_of(document.document(), k_left, q) ||
+                          (q[0] == 0.0f && q[1] == 0.0f && q[2] == 0.0f && q[3] == 1.0f);
+    CHECK(unturned);
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK_FALSE(rebuilt);
+    REQUIRE(input.handle(key(EventKind::KeyDown, Key::Y), false, true, document, viewport, error));
+    REQUIRE(rotation_of(document.document(), k_left, q));
+    CHECK(q[1] == quarter.y);
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK_FALSE(rebuilt);
+  }
+  device.destroy();
+}
+
+TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh") {
+  const test::TempDir tmp("engine_editor_import");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  editor::EditorState state;
+  state.document = &document;
+  state.camera.position = WorldPos{0.0, 2.0, 8.0};
+  state.camera.target = WorldPos{0.0, 0.0, 0.0};
+  protocol::Policy policy;
+  policy.identity = document.caller().who;
+  protocol::Dispatcher d(
+      protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
+  protocol::add_builtin_methods(d);
+  editor::add_editor_methods(d);
+  const auto call = [&](const std::string& method, const JsonValue& params) {
+    JsonValue request = JsonValue::object();
+    request.set("jsonrpc", JsonValue("2.0"));
+    request.set("id", JsonValue(u64{7}));
+    request.set("method", JsonValue(method));
+    request.set("params", params);
+    JsonValue response;
+    const std::string out = d.dispatch_text(write_json(request));
+    REQUIRE_MESSAGE(parse_json(out, response).ok, out);
+    return response;
+  };
+  // The tool: UI state through editor.state's shape, and an unknown tool refused.
+  JsonValue tool = JsonValue::object();
+  tool.set("tool", JsonValue("rotate"));
+  JsonValue answer = call("editor.tool", tool);
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  CHECK(std::string(answer.find("result")->find("tool")->as_string()) == "rotate");
+  CHECK(state.tool == "rotate");
+  tool.set("tool", JsonValue("scale"));
+  CHECK(call("editor.tool", tool).find("error") != nullptr);
+  // No dialog in a test: the method answers null at once.
+  JsonValue pick = JsonValue::object();
+  pick.set("filter", JsonValue::array());
+  answer = call("editor.pick_file", pick);
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  CHECK(answer.find("result")->find("path")->is_null());
+
+  // A .gltf with its buffer beside it: both copied under assets/<stem>/, one transaction made the
+  // record, named for the file, on the ground in front of the camera, and selected it.
+  const std::string source_dir = tmp.file("source");
+  REQUIRE(io::make_directories(source_dir) == io::Status::Ok);
+  REQUIRE(write_cube_gltf(source_dir, "crate"));
+  JsonValue import = JsonValue::object();
+  import.set("path", JsonValue(source_dir + "/crate.gltf"));
+  const usize before = document.document().journal().size();
+  answer = call("editor.import_mesh", import);
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  const JsonValue& result = *answer.find("result");
+  CHECK(std::string(result.find("mesh")->as_string()) == "assets/crate/crate.gltf");
+  CHECK(std::string(result.find("name")->as_string()) == "crate");
+  CHECK(result.find("copied")->size() == 2);
+  CHECK(io::exists(tmp.path() + "/assets/crate/crate.gltf"));
+  CHECK(io::exists(tmp.path() + "/assets/crate/crate.bin"));
+  CHECK(document.document().journal().size() == before + 1);
+  Vector<editor::JournalRow> journal;
+  document.journal(journal, 10);
+  CHECK(journal[0].rationale == "import crate.gltf");
+  Id128 created;
+  REQUIRE(Id128::from_hex(std::string(result.find("id")->as_string()), created));
+  CHECK(document.selection() == created);
+  f64 at[3] = {};
+  REQUIRE(translation_of(document.document(), created, at));
+  CHECK(at[1] == 0.0);  // on the ground, where the line of sight meets it
+  CHECK(at[2] > -1.0);
+  // The same bytes again are reused, not copied, and make a second record.
+  answer = call("editor.import_mesh", import);
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  CHECK(answer.find("result")->find("copied")->size() == 0);
+  CHECK(answer.find("result")->find("reused")->size() == 2);
+  CHECK(document.document().journal().size() == before + 2);
+  // Other bytes under the same name are refused, the document untouched.
+  REQUIRE(io::write_file(source_dir + "/crate.bin", "not the cube") == io::Status::Ok);
+  answer = call("editor.import_mesh", import);
+  CHECK(answer.find("error") != nullptr);
+  CHECK(document.document().journal().size() == before + 2);
+  // A missing file, and a format the importer does not take, are refused the same way.
+  import.set("path", JsonValue(source_dir + "/nothing.glb"));
+  answer = call("editor.import_mesh", import);
+  REQUIRE(answer.find("error") != nullptr);
+  CHECK(std::string(answer.find("error")->find("message")->as_string()).find("no file") !=
+        std::string::npos);
+  REQUIRE(io::write_file(source_dir + "/notes.txt", "hello") == io::Status::Ok);
+  import.set("path", JsonValue(source_dir + "/notes.txt"));
+  CHECK(call("editor.import_mesh", import).find("error") != nullptr);
+  REQUIRE(io::write_file(source_dir + "/broken.glb", "glTF but not really") == io::Status::Ok);
+  import.set("path", JsonValue(source_dir + "/broken.glb"));
+  CHECK(call("editor.import_mesh", import).find("error") != nullptr);
+  CHECK_FALSE(io::exists(tmp.path() + "/assets/broken/broken.glb"));
+  CHECK(document.document().journal().size() == before + 2);
+
+  // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
+  // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.
+  std::string root = __FILE__;
+  for (u32 i = 0; i < 4; ++i)
+    root = root.substr(0, root.find_last_of("/\\"));
+  const std::string sample = root + "/content/samples/Suzanne/Suzanne.gltf";
+  if (!io::exists(sample)) {
+    MESSAGE("no " << sample << ": run tools/fetch-samples.ps1 for the sample import");
+    return;
+  }
+  gfx::Device device;
+  std::string why;
+  if (!device.create(gfx::DeviceOptions{}, &why)) {
+    MESSAGE("no Vulkan device here: " << why);
+    return;
+  }
+  {
+    editor::Viewport viewport;
+    editor::Viewport::Options options;
+    options.width = 320;
+    options.height = 200;
+    options.ddc = tmp.file("ddc");
+    std::string error;
+    if (!viewport.build(device, document.document(), document.directory(), options, error)) {
+      MESSAGE("the viewport cannot draw here: " << error);
+      device.destroy();
+      return;
+    }
+    const usize instances = viewport.scene().records.size();
+    import = JsonValue::object();
+    import.set("path", JsonValue(sample));
+    JsonValue where = JsonValue::array();
+    for (const f64 v : {0.0, 0.0, 0.0})
+      where.push_back(JsonValue(v));
+    import.set("at", where);
+    answer = call("editor.import_mesh", import);
+    REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+    Id128 monkey;
+    REQUIRE(Id128::from_hex(std::string(answer.find("result")->find("id")->as_string()), monkey));
+    CHECK(answer.find("result")->find("copied")->size() == 4);  // the .gltf, .bin, two images
+    bool rebuilt = false;
+    REQUIRE_MESSAGE(viewport.sync(document.document(), rebuilt, error), error);
+    CHECK(rebuilt);
+    CHECK(viewport.scene().records.size() == instances + 1);
+    renderer::FrameDesc frame;
+    frame.camera = test_camera();
+    REQUIRE_MESSAGE(viewport.renderer().render_offscreen(frame, &error), error);
+    u32 x = 0;
+    u32 y = 0;
+    REQUIRE(project(viewport, frame.camera, WorldPos{0.0, 0.0, 0.0}, x, y));
+    Id128 picked;
+    REQUIRE(viewport.pick(x, y, picked, error));
+    CHECK(picked == monkey);
+    REQUIRE(document.undo(error));
+    CHECK_FALSE(document.document().exists(monkey));
+    REQUIRE(viewport.sync(document.document(), rebuilt, error));
+    CHECK(viewport.scene().records.size() == instances);
+    viewport.destroy();
+  }
+  device.destroy();
+}
+
+TEST_CASE("engine-editor: the window's rotate gizmo turns a record, and a dropped file imports") {
+  const test::TempDir tmp("engine_editor_window_rotate");
+  {
+    editor::EditorDocument document;
+    std::string error;
+    REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
+    REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+    const doc::Command add = doc::cmd_create(
+        k_left, k_placement, Id128{},
+        json(R"({"name":"only","mesh":"cube.glb","translation":[0.25,0,-0.5],"scale":[3,3,3]})"));
+    REQUIRE_MESSAGE(document.apply(std::span<const doc::Command>(&add, 1), "", error), error);
+  }
+  const std::string source_dir = tmp.file("source");
+  REQUIRE(io::make_directories(source_dir) == io::Status::Ok);
+  REQUIRE(write_cube_glb(source_dir + "/dropped.glb"));
+  const std::string dropped = source_dir + "/dropped.glb";
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  const std::string doc_dir = tmp.path();
+  const std::string ddc = tmp.file("ddc");
+  // Small, vsynced and under the editor's 120 Hz ceiling. R, Shift held, the y ring turned a
+  // quarter by a scripted pointer; then a file dropped on the window through SDL's queue.
+  const std::vector<std::string_view> argv = {exe,
+                                              "--doc",
+                                              doc_dir,
+                                              "--width",
+                                              "320",
+                                              "--height",
+                                              "240",
+                                              "--frames",
+                                              "14",
+                                              "--pick",
+                                              "160,120",
+                                              "--rotate",
+                                              "y,90",
+                                              "--ddc",
+                                              ddc,
+                                              "--no-shell",
+                                              "--test-drop-file",
+                                              dropped};
+  JsonValue summary;
+  std::string output;
+  if (!run_editor(argv, summary, output)) return;
+  CHECK_MESSAGE(write_json(*summary.find("rotations")) == "1", output);
+  const JsonValue* turn = summary.find("rotate");
+  REQUIRE_MESSAGE((turn != nullptr && turn->is_object()), output);
+  CHECK(std::string(turn->find("axis")->as_string()) == "y");
+  CHECK(number(turn->find("degrees")) == 90.0);
+  CHECK(std::string(turn->find("rationale")->as_string()) == "rotate only about y by 90\xC2\xB0");
+  CHECK(std::string(summary.find("gizmo_tool")->as_string()) == "rotate");
+  CHECK_MESSAGE(write_json(*summary.find("drops_imported")) == "1", output);
+
+  // Read back: the rotation is a quarter turn about y, the translation exactly as it was, and the
+  // dropped file was copied and placed in a transaction of its own.
+  editor::EditorDocument document;
+  std::string error;
+  REQUIRE_MESSAGE(document.open(doc_dir, false, "editor-test", error), error);
+  f32 q[4] = {};
+  REQUIRE(rotation_of(document.document(), k_left, q));
+  const Quat quarter = editor::turned_rotation(Quat::identity(), 0.0f, 1, 90.0);
+  CHECK(q[1] == quarter.y);
+  CHECK(q[3] == quarter.w);
+  f64 t[3] = {};
+  REQUIRE(translation_of(document.document(), k_left, t));
+  CHECK(t[0] == 0.25);
+  CHECK(t[1] == 0.0);
+  CHECK(t[2] == -0.5);
+  CHECK(io::exists(doc_dir + "/assets/dropped/dropped.glb"));
+  Vector<editor::JournalRow> journal;
+  document.journal(journal, 10);
+  REQUIRE(journal.size() == 3);
+  CHECK(journal[0].rationale == "import dropped.glb");
+  CHECK(journal[1].rationale == "rotate only about y by 90\xC2\xB0");
+}
+
 TEST_CASE("engine-editor: --version prints the build stamp with no window") {
   const std::string exe = test::app_path(ENGINE_APP_PATH);
   const std::vector<std::string_view> argv = {exe, "--version"};

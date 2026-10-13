@@ -157,6 +157,20 @@ export class Properties {
         });
         editor.append(h("span", { class: "axis", dataset: { axis: AXIS_NAMES[i] } }, input));
       }
+      // A quaternion is read in degrees beside it: yaw about y, pitch about x, roll about -z, the
+      // order core/math's quat_from_euler composes (derived, never written; A39).
+      if (kind === "quat") {
+        const [x, y, z, w] = values.map((n) => (typeof n === "number" ? n : 0));
+        const deg = 180 / Math.PI;
+        const pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (w * x - y * z))));
+        const yaw = Math.atan2(2 * (w * y + x * z), 1 - 2 * (x * x + y * y));
+        const roll = Math.atan2(2 * (w * z + x * y), 1 - 2 * (x * x + z * z));
+        const f = (v) => (Math.round(v * deg * 10) / 10 + 0).toFixed(1);
+        editor.append(
+          h("span", { class: "quat-euler", title: "yaw, pitch, roll in degrees (derived from the quaternion)" },
+            `${f(yaw)}° ${f(pitch)}° ${f(-roll)}°`),
+        );
+      }
       return;
     }
     if (kind === "string" || kind === "id128") {

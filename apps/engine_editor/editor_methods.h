@@ -31,6 +31,8 @@
 #include <domain/protocol/rpc.h>
 #include <systems/renderer/view_set.h>
 
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -100,7 +102,30 @@ struct EditorState {
     std::string detail;
   };
   Vector<Report> reports;
+  // The viewport gizmo's tool, "translate" or "rotate" (`editor.tool`, the T and R keys): the
+  // frame applies what a method set and sets what a key chose, and tells the page (`editor.tool`
+  // notification) when it changed.
+  std::string tool = "translate";
+  // The record `editor.import_mesh` created last, which the frame selects once the viewport has
+  // it (null: none pending).
+  Id128 imported;
+  // **`editor.pick_file`'s dialog runs on the editor's thread**, never the listener's: the method
+  // asks (`pick_pending`) and waits on `pick_done` with the dispatch lock released; the frame sees
+  // the request, shows the platform's dialog outside the lock, and answers. Only a window run with
+  // no test flag sets `dialogs`; without it the method answers null at once, so a test never opens
+  // a dialog. `closing` answers a pending request with null when the editor stops.
+  bool dialogs = false;
+  bool closing = false;
+  std::mutex* lock = nullptr;  // the dispatch lock the methods run under
+  bool pick_pending = false;
+  bool pick_answered = false;
+  Vector<std::string> pick_filter;
+  std::string pick_path;  // empty: cancelled
+  std::condition_variable pick_done;
 };
+
+// The notification the editor sends every connection when the gizmo's tool changed.
+std::string tool_notification(std::string_view tool);
 
 // Registers editor.layout, editor.select and editor.state. The dispatcher's `Context::app` must be
 // the `EditorState`.

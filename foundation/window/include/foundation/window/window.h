@@ -545,4 +545,13 @@ class Window {
   u64 relative_since_ns_ = 0;      // set_relative_mouse(true)'s moment, SDL_GetTicksNS
 };
 
+// **The platform's open-file dialog**, modal on `owner` (a top-level window): the files with one of
+// `extensions` (without dots; empty offers every file), the chosen path in `path` (UTF-8). False
+// when it was cancelled, or where the platform has none here (every platform but Windows so far).
+// It is a dialog a person asked for in a desktop tool, never an error dialog (AGENTS.md: no
+// engine binary opens a dialog when it fails), and a host never shows it in a test: engine-editor
+// calls it only for `editor.pick_file` in a window run with no test flag (docs/subsystems/apps.md).
+bool open_file_dialog(const Window& owner, std::span<const std::string> extensions,
+                      std::string& path);
+
 }  // namespace engine::window

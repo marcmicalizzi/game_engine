@@ -2322,8 +2322,52 @@ struct EditorSelectParams @version(1) {
   id: id128?
 }
 
+/// Parameters of `editor.tool`: the viewport gizmo's tool, "translate" or "rotate" (engine-editor's
+/// T and R keys set the same). UI state, never the document.
+struct EditorToolParams @version(1) {
+  tool: string
+}
+
+/// Parameters of `editor.import_mesh`, a write: copy a mesh file into the document's `assets/`
+/// directory and place it in one transaction (docs/subsystems/apps.md, "Adding assets").
+struct EditorImportMeshParams @version(1) {
+  /// A `.gltf`, `.glb` or `.clusters` file, absolute or relative to the editor's working directory.
+  path: string
+  /// The new record's `name`; absent: the file's stem.
+  name: string?
+  /// Where to place it; absent: on the ground under the viewport's centre, or 10 m in front.
+  at: worldpos?
+}
+
+/// What `editor.import_mesh` did: the record it created and selected, the mesh path the record
+/// names (relative to the document), and the files it copied or found already there.
+struct EditorImportMeshResult @version(1) {
+  id: id128
+  name: string
+  mesh: string
+  translation: worldpos
+  /// Files written under the document's directory, relative to it.
+  copied: string[]
+  /// Files already there with the same bytes, used as they were.
+  reused: string[]
+}
+
+/// Parameters of `editor.pick_file`: the extensions the platform's open-file dialog offers,
+/// without dots; empty for the meshes `editor.import_mesh` takes.
+struct EditorPickFileParams @version(1) {
+  filter: string[]
+}
+
+/// What `editor.pick_file` answers: the chosen file's path, or null when the dialog was cancelled
+/// or there is none to show (a test, an editor without a window).
+struct EditorPickFileResult @version(1) {
+  path: string?
+}
+
 /// The editor's UI state, as `editor.state` and `editor.select` report it.
-struct EditorStateResult @version(1) {
+///
+/// Version 2: `tool`.
+struct EditorStateResult @version(2) {
   /// The editor's session, which `session.*` and `doc.*` take.
   session: string
   /// The selected record; null when nothing is selected.
@@ -2336,6 +2380,8 @@ struct EditorStateResult @version(1) {
   /// The viewport's picture in pixels as of its last frame.
   width: u32 = 0
   height: u32 = 0
+  /// The viewport gizmo's tool, "translate" or "rotate".
+  tool: string @since(2)
 }
 
 // ---- subscriptions and events (roadmap A2; docs/subsystems/protocol.md, "Events") -------------
