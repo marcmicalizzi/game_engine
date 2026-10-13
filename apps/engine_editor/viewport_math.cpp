@@ -287,12 +287,40 @@ f64 ring_drag_degrees(const RingDrag& drag, bool snap) noexcept {
   return std::round(degrees / k_rotate_snap_degrees) * k_rotate_snap_degrees + 0.0;
 }
 
+namespace {
+
+// The sine and cosine of `degrees`: exact at every multiple of 45 degrees (0, +-1, +-sqrt(1/2),
+// and sqrt is correctly rounded, so every compiler and C library gives the same bits) and the C
+// library's elsewhere. A quarter turn's half angle then has its sine equal to its cosine on every
+// toolchain — glibc's sin and cos of pi/4 differ in the last place where MSVC's agree, which made
+// a quarter turn and back miss the identity on Linux (2026-10-12) — and that equality is what
+// makes the turn and its inverse cancel to the bit.
+void sin_cos_degrees(f64 degrees, f64& s, f64& c) noexcept {
+  const f64 eighths = degrees / 45.0;
+  const f64 k = std::round(eighths);
+  if (eighths == k && std::fabs(k) < 1.0e9) {
+    const f64 h = std::sqrt(0.5);
+    const f64 sines[8] = {0.0, h, 1.0, h, 0.0, -h, -1.0, -h};
+    const i64 n = ((static_cast<i64>(k) % 8) + 8) % 8;
+    s = sines[n];
+    c = sines[(n + 2) % 8];
+    return;
+  }
+  const f64 r = degrees * (3.14159265358979323846 / 180.0);
+  s = std::sin(r);
+  c = std::cos(r);
+}
+
+}  // namespace
+
 Quat axis_quat(u32 axis, f64 degrees) noexcept {
-  const f64 half = degrees * (3.14159265358979323846 / 360.0);
-  const f64 s = std::sin(half);
+  f64 s = 0.0;
+  f64 c = 1.0;
+  sin_cos_degrees(degrees * 0.5, s, c);
   const Vec3 a = axis_direction(axis < k_axis_count ? axis : 1u);
-  return Quat{static_cast<f32>(a.x * s), static_cast<f32>(a.y * s), static_cast<f32>(a.z * s),
-              static_cast<f32>(std::cos(half))};
+  return Quat{static_cast<f32>(static_cast<f64>(a.x) * s),
+              static_cast<f32>(static_cast<f64>(a.y) * s),
+              static_cast<f32>(static_cast<f64>(a.z) * s), static_cast<f32>(c)};
 }
 
 namespace {
@@ -306,15 +334,18 @@ DQuat mul(DQuat a, DQuat b) noexcept {
       a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
 DQuat about(Vec3 axis, f64 degrees) noexcept {
-  const f64 half = degrees * (3.14159265358979323846 / 360.0);
-  const f64 s = std::sin(half);
-  return DQuat{axis.x * s, axis.y * s, axis.z * s, std::cos(half)};
+  f64 s = 0.0;
+  f64 c = 1.0;
+  sin_cos_degrees(degrees * 0.5, s, c);
+  return DQuat{static_cast<f64>(axis.x) * s, static_cast<f64>(axis.y) * s,
+               static_cast<f64>(axis.z) * s, c};
 }
 
 }  // namespace
 
 Quat turned_rotation(Quat rotation, f32 yaw_deg, u32 axis, f64 degrees) noexcept {
-  DQuat r{rotation.x, rotation.y, rotation.z, rotation.w};
+  DQuat r{static_cast<f64>(rotation.x), static_cast<f64>(rotation.y), static_cast<f64>(rotation.z),
+          static_cast<f64>(rotation.w)};
   f64 len = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
   if (!(len > 1.0e-12) || !std::isfinite(len)) {
     r = DQuat{};

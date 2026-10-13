@@ -182,7 +182,8 @@ bool update_ring_drag(RingDrag& drag, WorldPos eye, const Ray& ray) noexcept;
 f64 ring_drag_degrees(const RingDrag& drag, bool snap) noexcept;
 
 // The unit quaternion turning `degrees` about world `axis`, from the half angle's sine and cosine
-// in f64, so a multiple of 90 degrees is as exact as a float can hold it.
+// in f64 — exact at every multiple of 90 degrees (no C library's sine: glibc's sin and cos of
+// pi/4 differ in the last place), so such a turn is the same bits on every toolchain.
 Quat axis_quat(u32 axis, f64 degrees) noexcept;
 // **What a record's `rotation` becomes** once its placement has turned `degrees` about world
 // `axis`, with `yaw_deg` (applied after `rotation`, doc_scene.md) left as the author wrote it: the

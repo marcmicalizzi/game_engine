@@ -119,7 +119,7 @@ bool editor_pick_file(protocol::Context& ctx, const protocol::EditorPickFilePara
   // goes on drawing and shows the dialog, and takes it back before the answer is read.
   std::unique_lock<std::mutex> held(*state.lock, std::adopt_lock);
   state.pick_done.wait(held, [&] { return state.pick_answered || state.closing; });
-  held.release();
+  (void)held.release();
   state.pick_pending = false;
   if (state.pick_answered && !state.pick_path.empty()) r.path = state.pick_path;
   return true;
