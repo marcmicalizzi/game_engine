@@ -168,57 +168,57 @@
       ],
       "gpu_ms": {
         "blas": {
-          "median": 0.205,
-          "p99": 0.266
+          "median": 0.172,
+          "p99": 0.227
         },
         "clas": {
           "median": 0.227,
           "p99": 0.234
         },
         "cull": {
-          "median": 0.1,
-          "p99": 0.104
+          "median": 0.089,
+          "p99": 0.286
         },
         "deform": {
-          "median": 0.034,
-          "p99": 0.038
+          "median": 0.021,
+          "p99": 0.024
         },
         "hw": {
-          "median": 0.281,
+          "median": 0.282,
           "p99": 0.348
         },
         "resolve": {
-          "median": 2.326,
-          "p99": 2.644
+          "median": 2.318,
+          "p99": 2.62
         },
         "rt": {
-          "median": 0.618,
-          "p99": 0.69
+          "median": 0.632,
+          "p99": 1.131
         },
         "sky": {
-          "median": 0.088,
-          "p99": 0.088
+          "median": 0.056,
+          "p99": 0.068
         },
         "total": {
-          "median": 3.444,
-          "p99": 3.887
+          "median": 3.373,
+          "p99": 4.127
         }
       },
       "baseline": {
-        "date": "2026-10-12",
+        "date": "2026-10-13",
         "by": "Marc Micalizzi",
-        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds), and endless-1080p-csm total median 3.08-3.2 against the 2026-10-07 seed 2.916 after the HDR encode, F18 and the fold guard each landed within tolerance; the 1080p cull/sky/resolve p99 tails spike about 2x on main too (one of three quiet flights), so the p99 absolute slack goes from 0.1 to 0.4 ms in the same change",
-        "commit": "9b17dafb (with uncommitted changes)",
+        "reason": "Re-seeded for a tail the day's builds carry, not a change under test: on 2026-10-13 every msvc-release build made in the gate's build directory, of the batch 17 trees and of main itself (4a05b432), measures gpu_ms.rt at 0.59-0.63 median and 1.24-1.27 p99 on this run, a contiguous window of about 60 frames at 1.25 ms where the rest of the walk is 0.55; the engine-view built from the same main commit on 2026-10-12 and installed measures 0.589 / 0.653 back to back on the same quiet machine. Not the shaders (the gate binary with embedded shaders only shows it), not the machine (paired runs), not a driver or Windows update (none since 2026-09-15); blas and clas p99s are flat at 0.23, so the extra time is in the records passes or the top-level build. Roadmap R82 holds the question; the medians are within 3 percent of the 2026-10-12 seed.",
+        "commit": "a1bc848f (with uncommitted changes)",
         "device": "NVIDIA GeForce RTX 5090",
         "quiet": true,
-        "machine_state": "quiet (start 2.3% others, GPU 0%; end 5.9% others, GPU 0%)",
+        "machine_state": "quiet (start 8.8% others, GPU 0%; end 2.8% others, GPU 0%)",
         "identity": "33d911d95096f28e",
         "frames": 1201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.22,
-        "p99": 0.554
+        "median": 0.187,
+        "p99": 0.63
       },
       "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
     },
