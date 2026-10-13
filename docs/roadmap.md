@@ -442,7 +442,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G56 | Phase 5 exit | open | G15, G28, G32, G37 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | G57 | Degenerate-triangle repair in the content build | done (geometry.md "Zero-area triangles: the repair", 2026-10-10) | G17 | S | routine | [geometry](subsystems/geometry.md#zero-area-triangles-the-repair) |
 | G58 | Tripo smart-mesh A/B against September's triangle exports | blocked (the owner's exports: wooden-crate and cart-wheel as smart mesh and as triangles, at 2K and 4K PBR, from Tripo Studio by hand) | G57 | S | research | [E10](experiments/e10-generated-props.md) |
-| G59 | Scatter remainder: streaming beside ground tiles (the dynamic tail with the pool and the ray tracing chain), placement records, footprint exclusions, placements that follow moving dunes | open | G37, R81 | M | design | [scatter](subsystems/scatter.md#not-yet) |
+| G59 | Scatter remainder: streaming beside ground tiles (the dynamic tail with the pool and the ray tracing chain), placement records, footprint exclusions, placements that follow moving dunes | in progress: the first half landed 2026-10-12 — the renderer's tail carries the pool and the ray tracing chain and desert-endless's `scattered.json` streams beside the tiles; the exclusion by earlier placements (`scene_gen::Context::earlier`, ADR-0046's as-built note); placements that follow the moving dunes (`PlacementTiles::restand`). Left: placements as document records, footprints as shapes, roads and water | G37, R81 | M | design | [scatter](subsystems/scatter.md#not-yet) |
 
 ## T — Tooling and CI
 

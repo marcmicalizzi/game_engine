@@ -189,7 +189,7 @@ TerrainTilesDesc small_tiles() {
 
 constexpr u32 k_width = 256;
 constexpr u32 k_height = 160;
-constexpr f32 k_tile = 8.0f;
+constexpr f64 k_tile = 8.0;  // the tiles' edge, metres
 
 struct Rig {
   SceneData data;

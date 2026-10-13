@@ -3806,15 +3806,15 @@ int main(int argc, char** argv) {
                  "ENGINE_MINIMAL=ON)\n");
     return k_exit_usage;
 #else
-    if (options.settings.raster == renderer::RasterMode::RayTrace ||
-        options.settings.shadows == renderer::ShadowMode::RayTraced || options.settings.deform ||
-        options.reference != 0 || options.verify_occlusion || options.animate ||
-        options.morph_animate) {
-      std::fprintf(
-          stderr,
-          "engine-view: a streamed world's instances come and go between frames, which "
-          "v0 rasterizes rigid: --raster rt, --shadows rt, --deform, --animate, --morph-animate, "
-          "--reference and --verify-occlusion are refused with --world\n");
+    // The ray path and traced shadows follow a streamed world's tail since 2026-10-12 (renderer.md,
+    // "Instances that come and go"); a deformed or animated tail does not, nor do the reference
+    // renderer and the occlusion check, which compare against a scene loaded whole.
+    if (options.settings.deform || options.reference != 0 || options.verify_occlusion ||
+        options.animate || options.morph_animate) {
+      std::fprintf(stderr,
+                   "engine-view: a streamed world's instances come and go between frames, which "
+                   "are drawn rigid: --deform, --animate, --morph-animate, --reference and "
+                   "--verify-occlusion are refused with --world\n");
       return k_exit_usage;
     }
     if (!options.world_handover.empty() && (!options.offscreen || options.camera_path.empty())) {
@@ -4517,7 +4517,7 @@ int main(int argc, char** argv) {
       if (!time_lapse.active()) {
         std::fprintf(stderr,
                      "engine-view: the dunes cannot move here: the scene's terrain does not name "
-                     "the dune generator, or its instances come and go\n");
+                     "the dune generator\n");
         return false;
       }
       const f64 was = time_lapse.config().rate;

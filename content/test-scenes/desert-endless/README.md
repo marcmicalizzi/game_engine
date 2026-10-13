@@ -34,7 +34,16 @@ Nothing should show where two tiles meet — no crack, no line of light or shade
 
 ## The scattered variant
 
-`scattered.json` is this scene field for field — the scatter tests hold every other field equal to `scene.json`'s — plus one **scatter layer** ([scatter](../../../docs/subsystems/scatter.md), roadmap G37), `erg-rocks-and-scrub`:
+**Streamed since 2026-10-12** (roadmap G59): `scattered.json` now streams its layer beside the ground's tiles over the whole erg (`"stream": true`, `region` `Scene`), the boulders to the second ring (`far` 200 m) and the tufts in the first (`far` 40 m), so the far rings place none — the renderer's dynamic tail carries the deformed-vertex pool and the ray tracing chain ([renderer](../../../docs/subsystems/renderer.md#instances-that-come-and-go)). The polygon read whole described below is `scattered-bounded.json`. **What the streamed layer costs** (2026-10-12, the RTX 5090, `msvc-release`, `tools/frame-budget.ps1 -Run endless-1080p-csm,endless-surround3-rt` with a copy of the budget file whose two endless runs fly `scattered.json`, against the committed file flying `scene.json` from the same build; nothing re-baselined; every run **busy** — other agents' builds and GPU tests beside it — so every number is an upper bound):
+
+| run | `scene.json` (before) | `scattered.json`, streamed (after) |
+|---|---|---|
+| `endless-1080p-csm`, total median / p99 | 1.523 / 3.820 ms (others 7.6–11.7% of the CPU, GPU 17–24%) | 1.605 / 4.354 ms (others 18.9–7.2%, GPU 22–30%) — over: sky p99 0.888 (a tail the sky pass has without the layer too) |
+| `endless-surround3-rt`, total median / p99 | 4.499 / 7.502 ms (others 13.6–16.7%, GPU 23–47%) — over: blas, clas, rt and total p99 | 4.992 / 7.922 ms (others 50.7–34.5%, GPU 21–23%) — over: blas median 0.401 (0.293), rt median 1.116 (0.951), total median 4.992 (limit 4.930), and the p99s as before |
+
+Both numbers of today's 1080p run are half the committed budget's (3.161 ms): the machine and main moved, not the layer, which the two columns from one build compare. **The layer costs 0.08 ms at the median at 1080p and 0.49 ms over three traced views** — against the bounded variant's 0.39 and 0.83 ms on 2026-10-11 (below), because the far rings place nothing. **The tiles' activation cost**: over the 12 km flight at 1080p the placements consumer took 156,769 tile events (activations and ring moves, every ring) in 2,801 ms — 0.018 ms an event on average, an outer ring's empty mask most of them, and **2.04 ms at most for one tile** with placements — against [the flight experiment's](../../../docs/experiments/world-tiles-flight-2026-09-30.md) 38 ms a frame of ground rebuilds; its 9,111 commits handing the tail on took 390 ms in all. The world ring took no activation budget (the drawn ground's rule, now beside placements too). **Not measured**: the process's memory over the path (the budget script keeps no engine-view summary line, where `host_memory` is); a flight with `engine-view --scene scattered.json --camera-path camera-path.json --offscreen --benchmark` reads it.
+
+**The bounded variant** (`scattered-bounded.json`, which `scattered.json` was until 2026-10-12) is this scene field for field — the scatter tests hold every other field equal to `scene.json`'s — plus one **scatter layer** ([scatter](../../../docs/subsystems/scatter.md), roadmap G37), `erg-rocks-and-scrub`:
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-endless/scattered.json --interactive --time-of-day 10
