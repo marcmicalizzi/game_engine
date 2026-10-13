@@ -219,8 +219,9 @@ TEST_CASE("engine-view: a streamed world draws the ruins its ring holds, as a wh
   MESSAGE("streamed against whole: " << differing << " of " << pixels << " pixels differ");
   CHECK(differing == 0);
 
-  // A streamed world is rasterized and rigid in v0: the ray path is refused with the flag.
-  const Run traced = draw("streamed.json", "rt.png", {"--world", "--raster", "rt"});
-  CHECK(traced.exit_code == 2);
+  // A streamed world's tail is rigid: deforming it is refused with the flag. (The ray path and
+  // traced shadows are not, since 2026-10-12: the tail carries the ray tracing chain.)
+  const Run deformed = draw("streamed.json", "deform.png", {"--world", "--deform", "wave"});
+  CHECK(deformed.exit_code == 2);
 }
 #endif
