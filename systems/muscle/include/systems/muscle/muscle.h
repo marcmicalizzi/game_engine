@@ -33,7 +33,9 @@
 //   [x] bench             bench/muscle_bench.cpp
 
 #include <systems/muscle/law.h>
+#include <systems/muscle/schedule.h>
 #include <systems/muscle/scheme.h>
+#include <systems/muscle/store.h>
 
 #include <core/base/types.h>
 #include <core/math/deterministic.h>
