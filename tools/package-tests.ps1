@@ -36,6 +36,8 @@
                         one save game per version of the save format, which
                         engine-cli's corpus test loads and holds to its
                         state hashes (about 110 KB a save).
+    content/muscle      the muscle line tier's qualification corpus, which its
+                        corpus test replays against the held oracle (2.1 MB).
     content/test-scenes the reference-scene definitions (17 KB), for a later
                         job that wants them.
     content/samples     the Khronos glTF models, with -WithSamples only. They
@@ -254,11 +256,11 @@ foreach ($path in $exeFiles) {
   }
 }
 
-# Data the tests open. `content/input-logs`, `content/input-maps`, `content/roles`, `content/console` and
-# `content/migration-corpus` are the ones the suite needs; the rest is small and useful to have on
+# Data the tests open. `content/input-logs`, `content/input-maps`, `content/roles`, `content/console`,
+# `content/migration-corpus` and `content/muscle` are the ones the suite needs; the rest is small and useful to have on
 # the far end.
 $dataDirs = @('content/input-logs', 'content/input-maps', 'content/roles', 'content/test-scenes',
-              'content/migration-corpus', 'content/console')
+              'content/migration-corpus', 'content/console', 'content/muscle')
 if ($WithSamples) { $dataDirs += 'content/samples' }
 $data = @()
 foreach ($rel in $dataDirs) {
