@@ -189,7 +189,8 @@ inline double exp(double x) noexcept {
     return 1.0 + x;
   }
   const double t = x * x;
-  const double c = x - t * (k_exp_p1 + t * (k_exp_p2 + t * (k_exp_p3 + t * (k_exp_p4 + t * k_exp_p5))));
+  const double c =
+      x - t * (k_exp_p1 + t * (k_exp_p2 + t * (k_exp_p3 + t * (k_exp_p4 + t * k_exp_p5))));
   if (k == 0) return 1.0 - ((x * c) / (c - 2.0) - x);
   const double y = 1.0 - ((lo - (x * c) / (2.0 - c)) - hi);
   return std::ldexp(y, k);
@@ -234,7 +235,8 @@ inline double expm1(double x) noexcept {
   const double hfx = 0.5 * x;
   const double hxs = x * hfx;
   const double r1 =
-      1.0 + hxs * (k_expm1_q1 + hxs * (k_expm1_q2 + hxs * (k_expm1_q3 + hxs * (k_expm1_q4 + hxs * k_expm1_q5))));
+      1.0 + hxs * (k_expm1_q1 +
+                   hxs * (k_expm1_q2 + hxs * (k_expm1_q3 + hxs * (k_expm1_q4 + hxs * k_expm1_q5))));
   double t = 3.0 - r1 * hfx;
   double e = hxs * ((r1 - t) / (6.0 - x * t));
   if (k == 0) return x - (x * e - hxs);
@@ -331,9 +333,9 @@ inline double tanh(double x) noexcept {
     return with_sign_of(1.0, jx);
   }
   double z = 1.0;
-  if (ix < 0x40360000u) {                  // |x| < 22
-    if (ix < 0x3c800000u) return x;        // |x| < 2^-55
-    if (ix >= 0x3ff00000u) {               // |x| >= 1
+  if (ix < 0x40360000u) {            // |x| < 22
+    if (ix < 0x3c800000u) return x;  // |x| < 2^-55
+    if (ix >= 0x3ff00000u) {         // |x| >= 1
       const double t = expm1(2.0 * abs(x));
       z = 1.0 - 2.0 / (t + 2.0);
     } else {
@@ -368,8 +370,8 @@ inline double asinh(double x) noexcept {
 inline double sin(double x) noexcept {
   using namespace detail;
   const u32 ix = high_word(x) & 0x7fffffffu;
-  if (ix <= 0x3fe921fbu) {               // |x| ~<= pi/4
-    if (ix < 0x3e400000u) return x;      // |x| < 2^-27
+  if (ix <= 0x3fe921fbu) {           // |x| ~<= pi/4
+    if (ix < 0x3e400000u) return x;  // |x| < 2^-27
     return sin_kernel(x, 0.0, false);
   }
   if (ix >= 0x7ff00000u) return x - x;  // inf or NaN
@@ -389,8 +391,8 @@ inline double sin(double x) noexcept {
 inline double cos(double x) noexcept {
   using namespace detail;
   const u32 ix = high_word(x) & 0x7fffffffu;
-  if (ix <= 0x3fe921fbu) {               // |x| ~<= pi/4
-    if (ix < 0x3e400000u) return 1.0;    // |x| < 2^-27
+  if (ix <= 0x3fe921fbu) {             // |x| ~<= pi/4
+    if (ix < 0x3e400000u) return 1.0;  // |x| < 2^-27
     return cos_kernel(x, 0.0);
   }
   if (ix >= 0x7ff00000u) return x - x;

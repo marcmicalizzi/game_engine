@@ -312,17 +312,17 @@ TEST_CASE("schemac: materialize rows are checked field by field") {
 TEST_CASE("schemac: force, energy and power units") {
   TempDir tmp("schemac");
   constexpr std::string_view k_types =
-      "struct Load @kind(component) {\n"        // 2
-      "  force: f64 @unit(N)\n"                 // 3
-      "  energy: f64 @unit(J)\n"                // 4
-      "  power: f64 @unit(W)\n"                 // 5
-      "}\n"                                     // 6
-      "struct Spec @kind(record) {\n"           // 7
-      "  force: f64 @unit(kN)\n"                // 8
-      "  energy: f64 @unit(kJ)\n"               // 9
-      "  power: f64 @unit(kW)\n"                // 10
-      "  pull: f64 @unit(N)\n"                  // 11
-      "}\n";                                    // 12
+      "struct Load @kind(component) {\n"  // 2
+      "  force: f64 @unit(N)\n"           // 3
+      "  energy: f64 @unit(J)\n"          // 4
+      "  power: f64 @unit(W)\n"           // 5
+      "}\n"                               // 6
+      "struct Spec @kind(record) {\n"     // 7
+      "  force: f64 @unit(kN)\n"          // 8
+      "  energy: f64 @unit(kJ)\n"         // 9
+      "  power: f64 @unit(kW)\n"          // 10
+      "  pull: f64 @unit(N)\n"            // 11
+      "}\n";                              // 12
   auto with = [&](std::string_view ns, std::string_view tail) {
     return "namespace " + std::string(ns) + "\n" + std::string(k_types) + std::string(tail);
   };
