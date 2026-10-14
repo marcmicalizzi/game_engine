@@ -1,10 +1,11 @@
 // The store's lifecycle with the real law: static initialisation against the archived starts,
 // whole-tick rollback, and the startup marker through save, JSON and restore (store.h).
-#include <systems/muscle/muscle.h>
-#include <systems/muscle/store.h>
+#include "rows.h"
 
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <systems/muscle/muscle.h>
+#include <systems/muscle/store.h>
 
 #include <doctest/doctest.h>
 
@@ -13,8 +14,6 @@
 #include <limits>
 #include <string>
 
-#include "rows.h"
-
 using namespace engine;
 using namespace engine::muscle;
 using namespace engine::muscle::test_rows;
@@ -22,7 +21,9 @@ using namespace engine::muscle::test_rows;
 namespace {
 
 // The `step` row's path: constant, taut, no crossing.
-AnalyticPath constant_path(const Row& r) { return AnalyticPath{AnalyticPath::Kind::Constant, r.length, 0.0, 0.0, 0.0}; }
+AnalyticPath constant_path(const Row& r) {
+  return AnalyticPath{AnalyticPath::Kind::Constant, r.length, 0.0, 0.0, 0.0};
+}
 
 // A path that becomes invalid at `bad_after`: what a late failure in a tick looks like.
 struct LatePath {
@@ -55,9 +56,12 @@ bool same_bytes(const LineState& a, const LineState& b) {
          a.last_commit_tick == b.last_commit_tick && bits(a.activation) == bits(b.activation) &&
          bits(a.fiber_length) == bits(b.fiber_length) &&
          bits(a.committed_forces.tendon_force) == bits(b.committed_forces.tendon_force) &&
-         bits(a.committed_forces.active_fiber_force) == bits(b.committed_forces.active_fiber_force) &&
-         bits(a.committed_forces.passive_fiber_force) == bits(b.committed_forces.passive_fiber_force) &&
-         bits(a.committed_forces.damping_fiber_force) == bits(b.committed_forces.damping_fiber_force) &&
+         bits(a.committed_forces.active_fiber_force) ==
+             bits(b.committed_forces.active_fiber_force) &&
+         bits(a.committed_forces.passive_fiber_force) ==
+             bits(b.committed_forces.passive_fiber_force) &&
+         bits(a.committed_forces.damping_fiber_force) ==
+             bits(b.committed_forces.damping_fiber_force) &&
          bits(a.committed_forces.passive_energy) == bits(b.committed_forces.passive_energy) &&
          bits(a.committed_forces.tendon_energy) == bits(b.committed_forces.tendon_energy) &&
          a.initialized == b.initialized && a.startup_pending == b.startup_pending;
@@ -111,13 +115,15 @@ TEST_CASE("muscle lifecycle: a late failure rolls back the whole tick") {
   CHECK(store.counters[i].probes > 24);  // it failed late, not at the start
   // The next tick retries from the retained state with its own inputs.
   const AnalyticPath good[] = {constant_path(r)};
-  CHECK(tick(store, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(good)) == 0);
+  CHECK(tick(store, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(good)) ==
+        0);
   CHECK(store.outcome[i].committed);
   CHECK(store.last_commit_tick[i] == 2);
   CHECK(store.startup_pending[i] == 0);
   CHECK(store.activation[i] > 0.0);
   // A tick at or before the last committed one is refused by name.
-  CHECK(tick(store, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(good)) == 1);
+  CHECK(tick(store, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(good)) ==
+        1);
   CHECK(store.outcome[i].failed_test == ValidationTest::TickOrder);
 }
 
@@ -151,23 +157,28 @@ TEST_CASE("muscle lifecycle: startup_pending through save, JSON and restore") {
   REQUIRE(other.add(spec_of(r, 7), j));
   round_trip(i, other, j);
   CHECK(other.startup_pending[j] == 1);
-  CHECK(tick(other, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 0);
+  CHECK(tick(other, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        0);
   CHECK(other.counters[j].probes == 32);  // the startup schedule
   CHECK(other.startup_pending[j] == 0);   // cleared by the first committed tick
-  CHECK(tick(other, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 0);
+  CHECK(tick(other, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        0);
   CHECK(other.counters[j].probes == 8);
 
   // The original store runs its first tick.
-  CHECK(tick(store, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 0);
+  CHECK(tick(store, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        0);
   // A restore after the first tick keeps the marker cleared: a restart is not a new lifetime.
   round_trip(i, other, j);
   CHECK(other.startup_pending[j] == 0);
-  CHECK(tick(other, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 0);
+  CHECK(tick(other, 2, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        0);
   CHECK(other.counters[j].probes == 8);
   // Only a static reinitialisation re-arms it.
   REQUIRE(initialize_static(other, j, 2, 0.5, r.length, f));
   CHECK(other.startup_pending[j] == 1);
-  CHECK(tick(other, 3, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 0);
+  CHECK(tick(other, 3, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        0);
   CHECK(other.counters[j].probes == 32);
 
   // A record of another parameter set or another law is refused.
@@ -188,6 +199,7 @@ TEST_CASE("muscle lifecycle: the store refuses past its capacity and an uninitia
   CHECK_FALSE(store.add(spec_of(k_rows[0], 2), i));
   const double excitation[] = {0.0};
   const AnalyticPath path[] = {constant_path(k_rows[0])};
-  CHECK(tick(store, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) == 1);
+  CHECK(tick(store, 1, std::span<const double>(excitation), std::span<const AnalyticPath>(path)) ==
+        1);
   CHECK(store.outcome[0].failed_test == ValidationTest::NotInitialized);
 }

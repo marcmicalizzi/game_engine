@@ -30,6 +30,7 @@ if(TARGET engine_muscle_tests)
   target_compile_definitions(engine_muscle_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
 
-# The cost of a probe (plan 11 §11.8).
+# The cost of a tick at 64 and 256 actuators, each stage root, and of one probe (plan 11 §11.8;
+# docs/experiments/muscle-line-tier-cost.md).
 engine_module_bench(NAME muscle
   SOURCES bench/muscle_bench.cpp)

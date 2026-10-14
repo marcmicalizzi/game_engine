@@ -1,7 +1,6 @@
 // The validator (validator.h): the qualified domain is the corpus's, and every refusal is by name.
-#include <systems/muscle/validator.h>
-
 #include <core/json/json.h>
+#include <systems/muscle/validator.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -114,7 +113,8 @@ TEST_CASE("muscle validator: synthetic-study-only version 1 is the corpus's iden
   CHECK(cases == 39u);
 }
 
-TEST_CASE("muscle validator: an unknown law, an unqualified set, and a changed parameter are refused") {
+TEST_CASE(
+    "muscle validator: an unknown law, an unqualified set, and a changed parameter are refused") {
   const QualifiedSet& q = first_set();
   const SeriesParameters series = series_of(q);
   CHECK(validate(k_model_sha256, q.identity, FiberParameters{}, series).ok());
@@ -135,7 +135,8 @@ TEST_CASE("muscle validator: an unknown law, an unqualified set, and a changed p
   CHECK(r.value == 0.15);
   FiberParameters stiffer{};
   stiffer.passive_shape = 5.0;
-  CHECK(validate(k_model_sha256, q.identity, stiffer, series).refusal == Refusal::DomainUnqualified);
+  CHECK(validate(k_model_sha256, q.identity, stiffer, series).refusal ==
+        Refusal::DomainUnqualified);
 }
 
 TEST_CASE("muscle validator: a value outside the law's domain names field, value, unit and rule") {
@@ -144,7 +145,8 @@ TEST_CASE("muscle validator: a value outside the law's domain names field, value
   FiberParameters f{};
   f.force_scale = -1000.0;
   ValidationResult r = validate(k_model_sha256, q.identity, f, series);
-  check_refusal(r, Refusal::ParameterOutsideDomain, "fiber.force_scale", "N", "finite and positive");
+  check_refusal(r, Refusal::ParameterOutsideDomain, "fiber.force_scale", "N",
+                "finite and positive");
   CHECK(r.value == -1000.0);
   CHECK(std::strcmp(refusal_code(r.refusal), "parameter_outside_domain") == 0);
   f = FiberParameters{};
@@ -162,16 +164,18 @@ TEST_CASE("muscle validator: a value outside the law's domain names field, value
   SeriesParameters s = series;
   s.pennation_at_optimal = 0.5;
   r = validate(k_model_sha256, q.identity, FiberParameters{}, s);
-  check_refusal(r, Refusal::ParameterOutsideDomain, "series.pennation_at_optimal", "rad", "finite and in [0, 0.4]");
+  check_refusal(r, Refusal::ParameterOutsideDomain, "series.pennation_at_optimal", "rad",
+                "finite and in [0, 0.4]");
   CHECK(r.value == 0.5);
   s = series;
   s.minimum_cosine = 1.0;
-  check_refusal(validate(k_model_sha256, q.identity, FiberParameters{}, s), Refusal::ParameterOutsideDomain,
-                "series.minimum_cosine", "ratio", "below 1");
+  check_refusal(validate(k_model_sha256, q.identity, FiberParameters{}, s),
+                Refusal::ParameterOutsideDomain, "series.minimum_cosine", "ratio", "below 1");
   s = series;
   s.tendon_slack_length = std::numeric_limits<double>::quiet_NaN();
-  check_refusal(validate(k_model_sha256, q.identity, FiberParameters{}, s), Refusal::ParameterOutsideDomain,
-                "series.tendon_slack_length", "m", "finite and positive");
+  check_refusal(validate(k_model_sha256, q.identity, FiberParameters{}, s),
+                Refusal::ParameterOutsideDomain, "series.tendon_slack_length", "m",
+                "finite and positive");
 }
 
 TEST_CASE("muscle validator: an actuator the validator refuses is never added") {

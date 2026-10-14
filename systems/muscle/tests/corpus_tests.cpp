@@ -2,11 +2,10 @@
 // every case from its archived static start through 36 ticks against the reference's held oracle,
 // the three D20 gates per case against expectations.json, a batch of all 39 against each alone,
 // and a pinned hash of every case's final state and work that every toolchain must reproduce.
-#include <systems/muscle/muscle.h>
-#include <systems/muscle/store.h>
-
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <systems/muscle/muscle.h>
+#include <systems/muscle/store.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -68,7 +67,7 @@ struct Control {
     if (s->kind == 0) return s->value;
     if (s->kind == 1) {
       const double r = (t - s->start) / (s->end - s->start);
-      const double lower = r > 0.0 ? r : 0.0;  // Python's max(0., r)
+      const double lower = r > 0.0 ? r : 0.0;      // Python's max(0., r)
       const double x = lower < 1.0 ? lower : 1.0;  // and min(1., ...)
       return s->start_value + (s->end_value - s->start_value) * x;
     }
@@ -95,7 +94,8 @@ struct Case {
   double r009_force = 0.0, r009_work = 0.0;
 };
 
-void load_case(const std::string& root, const JsonValue& index_row, const JsonValue& expectation, Case& c) {
+void load_case(const std::string& root, const JsonValue& index_row, const JsonValue& expectation,
+               Case& c) {
   c.name = str(index_row, "case");
   JsonValue doc;
   const std::string text = read_text(root + "/cases/" + c.name + ".json");
@@ -129,7 +129,8 @@ void load_case(const std::string& root, const JsonValue& index_row, const JsonVa
   if (kind == "constant") {
     c.path = AnalyticPath{AnalyticPath::Kind::Constant, num(path, "length_m"), 0.0, 0.0, 0.0};
   } else if (kind == "linear") {
-    c.path = AnalyticPath{AnalyticPath::Kind::Linear, num(path, "origin_m"), num(path, "rate_m_s"), 0.0, 0.0};
+    c.path = AnalyticPath{AnalyticPath::Kind::Linear, num(path, "origin_m"), num(path, "rate_m_s"),
+                          0.0, 0.0};
   } else {
     REQUIRE(kind == "sine");
     c.path = AnalyticPath{AnalyticPath::Kind::Sine, num(path, "center_m"), num(path, "amplitude_m"),
@@ -159,8 +160,8 @@ void load_case(const std::string& root, const JsonValue& index_row, const JsonVa
   CHECK(num(initial, "activation") == c.a0);
   c.l0 = num(initial, "fiber_length_m");
   const JsonValue& out = *initial.find("output");
-  c.cache0 = Cache{num(out, "tendon_force_N"),        num(out, "active_fiber_force_N"),
-                   num(out, "passive_fiber_force_N"), num(out, "damping_fiber_force_N"),
+  c.cache0 = Cache{num(out, "tendon_force_N"),         num(out, "active_fiber_force_N"),
+                   num(out, "passive_fiber_force_N"),  num(out, "damping_fiber_force_N"),
                    num(out, "passive_fiber_energy_J"), num(out, "tendon_energy_J")};
 
   // The oracle's nominal samples are t = 0 and every parent's end, matched within 1e-13 s (r010
@@ -213,15 +214,16 @@ void arm(LineStore& store, u32 i, const Case& c) {
   s.last_commit_tick = 0;
   s.activation = c.a0;
   s.fiber_length = c.l0;
-  s.committed_forces = ForceCache{c.cache0.tendon_force,  c.cache0.active_force,
-                                  c.cache0.passive_force, c.cache0.damping_force,
-                                  c.cache0.passive_energy, c.cache0.tendon_energy};
+  s.committed_forces =
+      ForceCache{c.cache0.tendon_force,  c.cache0.active_force,   c.cache0.passive_force,
+                 c.cache0.damping_force, c.cache0.passive_energy, c.cache0.tendon_energy};
   s.initialized = true;
   s.startup_pending = true;  // the archived start is a static initialisation
   REQUIRE(restore(store, i, s) == RestoreStatus::Restored);
 }
 
 // Runs the cases [first, first + count) in one store; one replay each.
+template <StageRoot R>
 void replay(const Case* cases, u32 count, Replay* out) {
   LineStore store;
   store.reserve(count);
@@ -245,8 +247,9 @@ void replay(const Case* cases, u32 count, Replay* out) {
     // The excitation is sampled at the tick's start and held (study.held_segments).
     for (u32 i = 0; i < count; ++i)
       excitation[i] = cases[i].control.at(static_cast<double>(k - 1) / 60.0);
-    tick(store, k, std::span<const double>(excitation, count), std::span<const AnalyticPath>(paths, count),
-         std::span<ParentSample>(samples, static_cast<usize>(count) * k_parents));
+    tick<AnalyticPath, R>(store, k, std::span<const double>(excitation, count),
+                          std::span<const AnalyticPath>(paths, count),
+                          std::span<ParentSample>(samples, static_cast<usize>(count) * k_parents));
     for (u32 i = 0; i < count; ++i) {
       Replay& r = out[i];
       const TickOutcome& o = store.outcome[i];
@@ -289,6 +292,101 @@ bool same_bits(double x, double y) { return std::bit_cast<u64>(x) == std::bit_ca
 
 }  // namespace
 
+namespace {
+
+// One stage root's replay of the whole corpus: the gates per case, the batch against each alone,
+// and the hash of every case's final (a, l) and work channels.
+template <StageRoot R>
+u64 check_corpus(const char* label, Case* cases) {
+  // Each case alone.
+  static Replay alone[39];
+  for (u32 i = 0; i < 39; ++i)
+    replay<R>(&cases[i], 1, &alone[i]);
+
+  std::printf(
+      "muscle corpus (r010 schedule, %s stage root): case, max |F - oracle| / limit N, max |l - "
+      "oracle| / limit mm, "
+      "|R| / limit, events, class, result\n",
+      label);
+  u32 qualified = 0;
+  for (u32 i = 0; i < 39; ++i) {
+    const Case& c = cases[i];
+    const Replay& r = alone[i];
+    INFO(c.name);
+    const bool force_ok = r.force <= c.force_limit;
+    const bool fiber_ok = r.fiber <= c.fiber_limit;
+    const double work_ratio = std::fabs(r.residual) / c.work_limit;
+    const bool work_ok = work_ratio <= 1.0;
+    const bool all = r.complete && force_ok && fiber_ok && work_ok;
+    if (all) ++qualified;
+    const char* result = "FAIL";
+    if (c.expected_class == "qualified") {
+      result = all ? "pass" : "FAIL";
+      CHECK(r.complete);
+      CHECK(force_ok);
+      CHECK(fiber_ok);
+      CHECK(work_ok);
+    } else if (c.expected_class == "known_limit_work") {
+      const bool within = work_ratio <= 1.5 * c.r009_work;
+      result = all ? "pass (labelled, passes all)" : within ? "known limit, within 1.5x" : "FAIL";
+      CHECK(r.complete);
+      CHECK(force_ok);
+      CHECK(fiber_ok);
+      CHECK(within);
+    } else {
+      REQUIRE(c.expected_class == "known_limit_force");
+      const bool within = r.force <= 1.5 * c.r009_force;
+      result = all ? "pass (labelled, passes all)" : within ? "known limit, within 1.5x" : "FAIL";
+      CHECK(r.complete);
+      CHECK(fiber_ok);
+      CHECK(work_ok);
+      CHECK(within);
+    }
+    std::printf("  %-18s %8.4f / %7.4f  %8.5f / %6.3f  %7.4f  %3u  %-17s %s%s\n", c.name.c_str(),
+                r.force, c.force_limit, r.fiber * 1e3, c.fiber_limit * 1e3, work_ratio, r.events,
+                c.expected_class.c_str(), result, r.complete ? "" : " (incomplete)");
+    if (!r.complete)
+      std::printf("    failed at tick %u: test %u\n", r.failed_tick,
+                  static_cast<unsigned>(r.failed_test));
+  }
+  std::printf("muscle corpus (%s): %u of 39 pass all three gates\n", label, qualified);
+  for (const char* name : {"corner_04_passive", "corner_06_passive"}) {
+    for (u32 i = 0; i < 39; ++i) {
+      if (cases[i].name == name)
+        std::printf(
+            "muscle corpus: %s at t = 1/480 s: |F - oracle| = %.4f N (r009 S: %.4f N over the "
+            "run)\n",
+            name, alone[i].force_first, cases[i].r009_force);
+    }
+  }
+
+  // All 39 in one store: per-actuator bytes identical to each alone.
+  static Replay batch[39];
+  replay<R>(cases, 39, batch);
+  for (u32 i = 0; i < 39; ++i) {
+    INFO(cases[i].name);
+    CHECK(batch[i].complete == alone[i].complete);
+    CHECK(same_bits(batch[i].a, alone[i].a));
+    CHECK(same_bits(batch[i].l, alone[i].l));
+    CHECK(same_bits(batch[i].cache.tendon_force, alone[i].cache.tendon_force));
+    for (u32 ch = 0; ch < k_work_channels; ++ch)
+      CHECK(same_bits(batch[i].work[ch], alone[i].work[ch]));
+  }
+
+  u64 h = k_hash_seed;
+  for (u32 i = 0; i < 39; ++i) {
+    h = hash_combine(h, std::bit_cast<u64>(alone[i].a));
+    h = hash_combine(h, std::bit_cast<u64>(alone[i].l));
+    for (const double w : alone[i].work)
+      h = hash_combine(h, std::bit_cast<u64>(w));
+  }
+  std::printf("muscle corpus (%s): final state and work hash 0x%016llx\n", label,
+              static_cast<unsigned long long>(h));
+  return h;
+}
+
+}  // namespace
+
 TEST_CASE("muscle corpus: 39 cases against the held oracle, three gates, known limits labelled") {
   const std::string root = test::data_path(ENGINE_SOURCE_DIR "/content/muscle", "content/muscle");
   if (!test::path_exists(root + "/corpus.json")) {
@@ -328,97 +426,27 @@ TEST_CASE("muscle corpus: 39 cases against the held oracle, three gates, known l
     double passive = 0.0;
     REQUIRE(passive_energy(p, c.l0, passive, f));
     const double unit = 1.0;  // a 1 N (or 1 J) floor under the relative tolerance
-    CHECK(std::fabs(forces.tendon - c.cache0.tendon_force) <= 1e-9 * std::fmax(std::fabs(c.cache0.tendon_force), unit));
-    CHECK(std::fabs(forces.active - c.cache0.active_force) <= 1e-9 * std::fmax(std::fabs(c.cache0.active_force), unit));
-    CHECK(std::fabs(forces.passive - c.cache0.passive_force) <= 1e-9 * std::fmax(std::fabs(c.cache0.passive_force), unit));
-    CHECK(std::fabs(passive - c.cache0.passive_energy) <= 1e-9 * std::fmax(std::fabs(c.cache0.passive_energy), unit));
-    CHECK(std::fabs(terms.tendon.energy - c.cache0.tendon_energy) <= 1e-9 * std::fmax(std::fabs(c.cache0.tendon_energy), unit));
+    CHECK(std::fabs(forces.tendon - c.cache0.tendon_force) <=
+          1e-9 * std::fmax(std::fabs(c.cache0.tendon_force), unit));
+    CHECK(std::fabs(forces.active - c.cache0.active_force) <=
+          1e-9 * std::fmax(std::fabs(c.cache0.active_force), unit));
+    CHECK(std::fabs(forces.passive - c.cache0.passive_force) <=
+          1e-9 * std::fmax(std::fabs(c.cache0.passive_force), unit));
+    CHECK(std::fabs(passive - c.cache0.passive_energy) <=
+          1e-9 * std::fmax(std::fabs(c.cache0.passive_energy), unit));
+    CHECK(std::fabs(terms.tendon.energy - c.cache0.tendon_energy) <=
+          1e-9 * std::fmax(std::fabs(c.cache0.tendon_energy), unit));
   }
 
-  // Each case alone.
-  static Replay alone[39];
-  for (u32 i = 0; i < 39; ++i)
-    replay(&cases[i], 1, &alone[i]);
-
-  std::printf("muscle corpus (r010 schedule): case, max |F - oracle| / limit N, max |l - oracle| / limit mm, "
-              "|R| / limit, events, class, result\n");
-  u32 qualified = 0;
-  for (u32 i = 0; i < 39; ++i) {
-    const Case& c = cases[i];
-    const Replay& r = alone[i];
-    INFO(c.name);
-    const bool force_ok = r.force <= c.force_limit;
-    const bool fiber_ok = r.fiber <= c.fiber_limit;
-    const double work_ratio = std::fabs(r.residual) / c.work_limit;
-    const bool work_ok = work_ratio <= 1.0;
-    const bool all = r.complete && force_ok && fiber_ok && work_ok;
-    if (all) ++qualified;
-    const char* result = "FAIL";
-    if (c.expected_class == "qualified") {
-      result = all ? "pass" : "FAIL";
-      CHECK(r.complete);
-      CHECK(force_ok);
-      CHECK(fiber_ok);
-      CHECK(work_ok);
-    } else if (c.expected_class == "known_limit_work") {
-      const bool within = work_ratio <= 1.5 * c.r009_work;
-      result = all ? "pass (labelled, passes all)" : within ? "known limit, within 1.5x" : "FAIL";
-      CHECK(r.complete);
-      CHECK(force_ok);
-      CHECK(fiber_ok);
-      CHECK(within);
-    } else {
-      REQUIRE(c.expected_class == "known_limit_force");
-      const bool within = r.force <= 1.5 * c.r009_force;
-      result = all ? "pass (labelled, passes all)" : within ? "known limit, within 1.5x" : "FAIL";
-      CHECK(r.complete);
-      CHECK(fiber_ok);
-      CHECK(work_ok);
-      CHECK(within);
-    }
-    std::printf("  %-18s %8.4f / %7.4f  %8.5f / %6.3f  %7.4f  %3u  %-17s %s%s\n", c.name.c_str(), r.force,
-                c.force_limit, r.fiber * 1e3, c.fiber_limit * 1e3, work_ratio, r.events,
-                c.expected_class.c_str(), result,
-                r.complete ? "" : " (incomplete)");
-    if (!r.complete)
-      std::printf("    failed at tick %u: test %u\n", r.failed_tick, static_cast<unsigned>(r.failed_test));
-  }
-  std::printf("muscle corpus: %u of 39 pass all three gates\n", qualified);
-  for (const char* name : {"corner_04_passive", "corner_06_passive"}) {
-    for (u32 i = 0; i < 39; ++i) {
-      if (cases[i].name == name)
-        std::printf("muscle corpus: %s at t = 1/480 s: |F - oracle| = %.4f N (r009 S: %.4f N over the run)\n",
-                    name, alone[i].force_first, cases[i].r009_force);
-    }
-  }
-
-  // All 39 in one store: per-actuator bytes identical to each alone.
-  static Replay batch[39];
-  replay(cases, 39, batch);
-  for (u32 i = 0; i < 39; ++i) {
-    INFO(cases[i].name);
-    CHECK(batch[i].complete == alone[i].complete);
-    CHECK(same_bits(batch[i].a, alone[i].a));
-    CHECK(same_bits(batch[i].l, alone[i].l));
-    CHECK(same_bits(batch[i].cache.tendon_force, alone[i].cache.tendon_force));
-    for (u32 ch = 0; ch < k_work_channels; ++ch)
-      CHECK(same_bits(batch[i].work[ch], alone[i].work[ch]));
-  }
-
-  // The pinned hash of every case's final (a, l) and work channels. Taken on MSVC; GCC and
-  // Clang must reproduce it (core/math/deterministic.h, ADR-0035). A difference on one toolchain
-  // is a determinism bug, not a value to replace; a change of the law or the schedule changes it
-  // on purpose, and says so.
-  u64 h = k_hash_seed;
-  for (u32 i = 0; i < 39; ++i) {
-    h = hash_combine(h, std::bit_cast<u64>(alone[i].a));
-    h = hash_combine(h, std::bit_cast<u64>(alone[i].l));
-    for (const double w : alone[i].work)
-      h = hash_combine(h, std::bit_cast<u64>(w));
-  }
-  std::printf("muscle corpus: final state and work hash 0x%016llx\n", static_cast<unsigned long long>(h));
-  constexpr u64 k_pinned = 0x19968103c9d00becull;
-  CHECK(h == k_pinned);
+  const u64 brent = check_corpus<StageRoot::Brent>("Brent", cases);
+  const u64 newton = check_corpus<StageRoot::Newton>("Newton", cases);
+  // Taken on MSVC; GCC and Clang must reproduce them (core/math/deterministic.h, ADR-0035). A
+  // difference on one toolchain is a determinism bug, not a value to replace; a change of the law,
+  // the scheme or the schedule changes them on purpose, and says so.
+  constexpr u64 k_pinned_brent = 0x19968103c9d00becull;
+  constexpr u64 k_pinned_newton = 0x340a836aefb50dd1ull;
+  CHECK(brent == k_pinned_brent);
+  CHECK(newton == k_pinned_newton);
 }
 
 // The corpus's numbers survive a parse-print-parse through core/json bit for bit: they are the

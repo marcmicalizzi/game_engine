@@ -32,17 +32,15 @@
 //   [x] docs, tests, size table
 //   [x] bench             bench/muscle_bench.cpp
 
+#include <core/base/types.h>
+#include <core/math/deterministic.h>
 #include <systems/muscle/law.h>
 #include <systems/muscle/schedule.h>
 #include <systems/muscle/scheme.h>
 #include <systems/muscle/store.h>
 
-#include <core/base/types.h>
-#include <core/math/deterministic.h>
-
-#include <schemas/muscle.h>
-
 #include <array>
+#include <schemas/muscle.h>
 #include <string>
 #include <string_view>
 
@@ -64,7 +62,7 @@ inline constexpr u32 k_lod_tiers = 0b0001u;
 using Sha256 = std::array<u8, 32>;
 
 constexpr u8 hex_nibble(char c) noexcept {
-  return c >= '0' && c <= '9' ? static_cast<u8>(c - '0')
+  return c >= '0' && c <= '9'   ? static_cast<u8>(c - '0')
          : c >= 'a' && c <= 'f' ? static_cast<u8>(c - 'a' + 10)
          : c >= 'A' && c <= 'F' ? static_cast<u8>(c - 'A' + 10)
                                 : static_cast<u8>(0xff);
@@ -96,7 +94,8 @@ inline constexpr usize k_model_text_bytes = 1983;
 inline constexpr Sha256 k_reference_model_sha256 =
     sha256_literal("3096e5ff70d2d2ff7156b29ec409ec4db917ffb427d3e4a6f833f86eb5ac5288");
 
-// ---- paths -----------------------------------------------------------------------------------------
+// ---- paths
+// -----------------------------------------------------------------------------------------
 //
 // The musculotendon path is a template parameter of the tick, never an indirect call per sample.
 // A path has `void sample(double t, double tick_start, double& length, double& rate) const`, with
@@ -134,9 +133,9 @@ struct HermitePath {
 struct AnalyticPath {
   enum class Kind : u8 { Constant, Linear, Sine };
   Kind kind = Kind::Constant;
-  double base = 0.0;       // constant: the length; linear: the origin; sine: the centre (m)
-  double slope = 0.0;      // linear: the rate (m/s); sine: the amplitude (m)
-  double omega = 0.0;      // sine: rad/s
+  double base = 0.0;            // constant: the length; linear: the origin; sine: the centre (m)
+  double slope = 0.0;           // linear: the rate (m/s); sine: the amplitude (m)
+  double omega = 0.0;           // sine: rad/s
   double rate_amplitude = 0.0;  // sine: the rate's amplitude (m/s), as the corpus states it
 
   void sample(double t, double, double& length, double& rate) const noexcept {

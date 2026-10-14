@@ -5,8 +5,8 @@
 //
 // Tick k advances [(k-1)/60, k/60] through eight parents of H = 1/480 s. Parent j starts at its
 // canonical time ((k-1) + j/8)/60 with the state carried from parent j-1 (no accumulated clock).
-// While `startup_pending`, a parent is four pieces of h = H/4; otherwise one piece of h = H. A piece
-// is one S probe from its incoming state, read by the locator:
+// While `startup_pending`, a parent is four pieces of h = H/4; otherwise one piece of h = H. A
+// piece is one S probe from its incoming state, read by the locator:
 //
 //   - the gap g = L - projected(l) - Ls at the start, both internal stages and the end;
 //   - the start's phase is the sign of its gap, or at an exact zero the sign of the outgoing gap
@@ -33,10 +33,9 @@
 //   bool gap(const State& s, double& g, Failure& f);
 //   bool gap_rate(const State& s, double& r, Failure& f);
 
-#include <systems/muscle/scheme.h>
-
 #include <core/base/assert.h>
 #include <core/base/types.h>
+#include <systems/muscle/scheme.h>
 
 #include <cmath>
 
@@ -76,7 +75,8 @@ template <class Prober>
 inline bool counted_probe(Prober& pr, ParentContext& ctx, const State& start, double d, Probe& out,
                           Failure& f) noexcept {
   ++ctx.probes;
-  ENGINE_ASSERT(ctx.probes <= ctx.ceiling, "muscle: the schedule exceeded its structural probe ceiling");
+  ENGINE_ASSERT(ctx.probes <= ctx.ceiling,
+                "muscle: the schedule exceeded its structural probe ceiling");
   return pr.probe(start, d, out, f);
 }
 
@@ -101,7 +101,8 @@ inline bool start_phase(Prober& pr, ParentContext& ctx, const State& s, int& sid
   ++n.zero_boundary_queries;
   double rate = 0.0;
   if (!pr.gap_rate(s, rate, f)) return false;
-  if (rate == 0.0 || !std::isfinite(rate)) return fail(f, ValidationTest::EventTangentUnresolved, rate);
+  if (rate == 0.0 || !std::isfinite(rate))
+    return fail(f, ValidationTest::EventTangentUnresolved, rate);
   side = sign_of(rate);
   ctx.query_state[ctx.queries] = s;
   ctx.query_side[ctx.queries] = side;
@@ -123,9 +124,14 @@ inline bool inspect(Prober& pr, ParentContext& ctx, const State& start, const Pr
   if (end_gap != 0.0 && sign_of(end_gap) == side) {
     for (const double g : internal) {
       if (g != 0.0 && sign_of(g) != side)
-        return fail(f, remainder ? ValidationTest::EventBudgetExceeded : ValidationTest::EventUnresolved, g);
+        return fail(
+            f, remainder ? ValidationTest::EventBudgetExceeded : ValidationTest::EventUnresolved,
+            g);
       if (g == 0.0)
-        return fail(f, remainder ? ValidationTest::EventBudgetExceeded : ValidationTest::EventTangentUnresolved, g);
+        return fail(f,
+                    remainder ? ValidationTest::EventBudgetExceeded
+                              : ValidationTest::EventTangentUnresolved,
+                    g);
     }
   }
   detected = end_gap == 0.0 || sign_of(end_gap) != side;
@@ -188,7 +194,8 @@ inline bool run_piece(Prober& pr, ParentContext& ctx, State& s, double h, Accept
   if (!pr.gap(high.stage[2], g_high, f)) return false;
   const double width = h * static_cast<double>(hi - lo) / cells;
   if (width > h / cells) return fail(f, ValidationTest::EventLocationUnresolved, width);
-  if (std::fabs(g_high) > k_gap_limit) return fail(f, ValidationTest::EventLocationUnresolved, g_high);
+  if (std::fabs(g_high) > k_gap_limit)
+    return fail(f, ValidationTest::EventLocationUnresolved, g_high);
   ++n.events;
   ctx.event_used = true;
   accept(high);
@@ -204,7 +211,8 @@ inline bool run_piece(Prober& pr, ParentContext& ctx, State& s, double h, Accept
       int tail_side = 0;
       bool tail_detected = false;
       double tail_gap = 0.0;
-      if (!inspect(pr, ctx, start, tail, true, tail_side, tail_detected, tail_gap, n, f)) return false;
+      if (!inspect(pr, ctx, start, tail, true, tail_side, tail_detected, tail_gap, n, f))
+        return false;
       accept(tail);
       s = tail.stage[2];
     }
@@ -258,7 +266,7 @@ inline bool run_tick(Prober& pr, u64 tick, bool startup, double a, double l, Tic
 }
 
 // The law's prober: the S probe, the gap and its rate for one actuator on one path in one tick.
-template <class Path>
+template <class Path, StageRoot R = k_stage_root>
 struct LineProber {
   const LawRow& law;
   const Path& path;
@@ -279,7 +287,7 @@ struct LineProber {
   }
 
   bool probe(const State& start, double d, Probe& out, Failure& f) noexcept {
-    return probe_s(law, path, tick_start, excitation, start, d, out, n, f);
+    return probe_s<R>(law, path, tick_start, excitation, start, d, out, n, f);
   }
 
   // arm_a.gap: L - projected(l) - Ls.

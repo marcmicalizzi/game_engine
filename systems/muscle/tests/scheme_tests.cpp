@@ -66,12 +66,12 @@ struct Scalar {
 Scalar step(Scalar s, double lambda, double d) {
   double k[3] = {0.0, 0.0, 0.0};
   double y_stage[3] = {0.0, 0.0, 0.0};
-  const bool ok = stage_loop(s.y, 0.0, d, k, [&](u32 i, double base, double, double diagonal,
-                                                   double& k_i) {
-    k_i = lambda * base / (1.0 - diagonal * lambda);
-    y_stage[i] = base + diagonal * k_i;
-    return true;
-  });
+  const bool ok =
+      stage_loop(s.y, 0.0, d, k, [&](u32 i, double base, double, double diagonal, double& k_i) {
+        k_i = lambda * base / (1.0 - diagonal * lambda);
+        y_stage[i] = base + diagonal * k_i;
+        return true;
+      });
   REQUIRE(ok);
   double w = s.w;
   for (u32 i = 0; i < 3; ++i)
@@ -96,8 +96,9 @@ TEST_CASE("muscle scheme: third order on y' = -y, w' = y, with y + w conserved")
   const double e16 = error_after(16);
   const double e32 = error_after(32);
   const double e64 = error_after(64);
-  std::printf("muscle scheme: |error| at n = 8, 16, 32, 64: %.3e %.3e %.3e %.3e; ratios %.3f %.3f %.3f\n",
-              e8, e16, e32, e64, e8 / e16, e16 / e32, e32 / e64);
+  std::printf(
+      "muscle scheme: |error| at n = 8, 16, 32, 64: %.3e %.3e %.3e %.3e; ratios %.3f %.3f %.3f\n",
+      e8, e16, e32, e64, e8 / e16, e16 / e32, e32 / e64);
   for (const double ratio : {e8 / e16, e16 / e32, e32 / e64}) {
     CHECK(ratio >= 7.0);
     CHECK(ratio <= 10.0);

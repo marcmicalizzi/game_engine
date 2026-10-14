@@ -9,17 +9,15 @@
 // actuator's tick is a trial on locals that is committed into the store only when the whole tick
 // succeeded, so a failure leaves the committed bytes untouched by never having written them.
 
+#include <core/base/types.h>
+#include <core/containers/vector.h>
+#include <core/ids/id128.h>
 #include <systems/muscle/law.h>
 #include <systems/muscle/schedule.h>
 #include <systems/muscle/scheme.h>
 
-#include <core/base/types.h>
-#include <core/containers/vector.h>
-#include <core/ids/id128.h>
-
-#include <schemas/muscle.h>
-
 #include <array>
+#include <schemas/muscle.h>
 #include <span>
 
 namespace engine::muscle {
@@ -99,7 +97,8 @@ bool static_initial_length(const LawRow& p, double a, double total, double& l, C
 // `length`, as of `tick` (its last committed tick): the length, the cache at the equilibrium
 // velocity, and `startup_pending` armed. The only way to arm it (r010 review, "Mapping 4"). On a
 // failure the actuator is unchanged.
-bool initialize_static(LineStore& store, u32 i, u64 tick, double a, double length, Failure& f) noexcept;
+bool initialize_static(LineStore& store, u32 i, u64 tick, double a, double length,
+                       Failure& f) noexcept;
 
 // The committed record of actuator i, and back. `restore` keeps `startup_pending` as saved and
 // refuses a record of another law (model id) or another parameter set than the actuator's.
@@ -112,11 +111,12 @@ RestoreStatus restore(LineStore& store, u32 i, const LineState& in) noexcept;
 // `startup_pending`; a failure commits nothing. `outcome[i]` says which. When `samples` is not
 // empty it holds 8 entries an actuator, written for actuators that committed: the state and cache
 // at each parent's end, for the corpus replay. Returns the number of actuators that failed.
-template <class Path>
+template <class Path, StageRoot R = k_stage_root>
 u32 tick(LineStore& store, u64 tick_index, std::span<const double> excitation,
          std::span<const Path> paths, std::span<ParentSample> samples = {}) noexcept {
   const u32 count = store.size();
-  ENGINE_ASSERT(excitation.size() >= count && paths.size() >= count, "muscle: an input per actuator");
+  ENGINE_ASSERT(excitation.size() >= count && paths.size() >= count,
+                "muscle: an input per actuator");
   ENGINE_ASSERT(samples.empty() || samples.size() >= static_cast<usize>(count) * k_parents,
                 "muscle: eight samples per actuator");
   const double tick_start = parent_start(tick_index, 0);
@@ -137,7 +137,7 @@ u32 tick(LineStore& store, u64 tick_index, std::span<const double> excitation,
     } else if (tick_index <= store.last_commit_tick[i]) {
       fail(f, ValidationTest::TickOrder, static_cast<double>(tick_index));
     } else {
-      LineProber<Path> prober{store.law[i], paths[i], tick_start, excitation[i], n};
+      LineProber<Path, R> prober{store.law[i], paths[i], tick_start, excitation[i], n};
       ok = run_tick(prober, tick_index, store.startup_pending[i] != 0, store.activation[i],
                     store.fiber_length[i], trial, n, f,
                     [&](u32 j, const State& s, const Cache& c) noexcept {
@@ -170,8 +170,10 @@ u32 tick(LineStore& store, u64 tick_index, std::span<const double> excitation,
 inline double elastic_energy(const Cache& c) noexcept { return c.passive_energy + c.tendon_energy; }
 
 // The trajectory's work residual R = W_ext + W_active_output - (E_end - E_0) - W_diss.
-inline double work_residual(const double (&work)[k_work_channels], double e0, double e_end) noexcept {
-  return work[k_work_external] + work[k_work_active_output] - (e_end - e0) - work[k_work_dissipation];
+inline double work_residual(const double (&work)[k_work_channels], double e0,
+                            double e_end) noexcept {
+  return work[k_work_external] + work[k_work_active_output] - (e_end - e0) -
+         work[k_work_dissipation];
 }
 
 }  // namespace engine::muscle

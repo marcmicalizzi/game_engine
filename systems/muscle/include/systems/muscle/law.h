@@ -16,9 +16,8 @@
 #include <core/base/types.h>
 #include <core/math/deterministic.h>
 
-#include <schemas/muscle.h>
-
 #include <cmath>
+#include <schemas/muscle.h>
 
 namespace engine::muscle {
 
@@ -27,6 +26,9 @@ struct Failure {
   ValidationTest test = ValidationTest::None;
   double value = 0.0;
 };
+
+// How a root solve ended: converged, out of iterations, or failed a domain test in a residual.
+enum class RootStatus : u8 { Converged, NotConverged, Failed };
 
 inline bool fail(Failure& f, ValidationTest test, double value) noexcept {
   f.test = test;
@@ -53,36 +55,36 @@ inline constexpr double k_velocity[4] = {-0.3211346127989808, -8.149, -0.374, 0.
 // it once gives the same bits.
 struct LawRow {
   // Fiber.
-  double force_scale;          // F0, N
-  double lopt;                 // optimal fiber length, m
-  double vmax_lopt;            // vmax in optimal lengths per second
-  double tau_activation;       // s
-  double tau_deactivation;     // s
-  double smoothing;            // the activation switch's gain
-  double passive_e;            // passive strain at unit force
-  double passive_k;            // passive shape
-  double passive_x0;           // passive zero normalized length
-  double min_norm;             // normalized length domain
+  double force_scale;       // F0, N
+  double lopt;              // optimal fiber length, m
+  double vmax_lopt;         // vmax in optimal lengths per second
+  double tau_activation;    // s
+  double tau_deactivation;  // s
+  double smoothing;         // the activation switch's gain
+  double passive_e;         // passive strain at unit force
+  double passive_k;         // passive shape
+  double passive_x0;        // passive zero normalized length
+  double min_norm;          // normalized length domain
   double max_norm;
   double min_snap;             // 4 ulp(min_norm): the endpoint snap
   double max_snap;             // 4 ulp(max_norm)
   double passive_offset;       // exp(k * (x0 - 1) / e)
   double passive_denominator;  // exp(k) - offset
   // Series.
-  double slack;                // tendon slack length Ls, m
-  double tendon_e1;            // tendon strain at unit force
-  double tendon_k;             // ln 6 / e1
-  double tendon_scale;         // 0.2 * F0
-  double damping;              // normalized damping beta
-  double min_cos;              // minimum pennation cosine
-  double height;               // lopt * sin(alpha0), m
+  double slack;         // tendon slack length Ls, m
+  double tendon_e1;     // tendon strain at unit force
+  double tendon_k;      // ln 6 / e1
+  double tendon_scale;  // 0.2 * F0
+  double damping;       // normalized damping beta
+  double min_cos;       // minimum pennation cosine
+  double height;        // lopt * sin(alpha0), m
   // Derived bounds.
-  double vmax;                 // vmax_lopt * lopt, m/s
-  double lmin;                 // lopt * min_norm, m
-  double lmax;                 // lopt * max_norm, m
-  double cap;                  // Ls * (1 + 2 e1): the trial extension cap, m
-  double damping_scale;        // F0 * beta
-  double energy_scale;         // F0 * lopt
+  double vmax;           // vmax_lopt * lopt, m/s
+  double lmin;           // lopt * min_norm, m
+  double lmax;           // lopt * max_norm, m
+  double cap;            // Ls * (1 + 2 e1): the trial extension cap, m
+  double damping_scale;  // F0 * beta
+  double energy_scale;   // F0 * lopt
 };
 
 // The law's row from its parameters. The parameters are the validator's to check (validate());
@@ -121,7 +123,8 @@ inline LawRow make_law_row(const FiberParameters& p, const SeriesParameters& s) 
   return r;
 }
 
-// ---- the fiber (model.py) ------------------------------------------------------------------------
+// ---- the fiber (model.py)
+// ------------------------------------------------------------------------
 
 // da/dt for activation a under excitation u.
 inline bool activation_rate(const LawRow& p, double a, double u, double& out, Failure& f) noexcept {
@@ -160,14 +163,16 @@ inline double active_length(double x) noexcept {
 
 inline bool force_velocity(double w, double& out, Failure& f) noexcept {
   if (!bounded(w, -1.0, 1.0)) return fail(f, ValidationTest::NormalizedVelocityOutOfRange, w);
-  const double result = k_velocity[0] * det::asinh(k_velocity[1] * w + k_velocity[2]) + k_velocity[3];
+  const double result =
+      k_velocity[0] * det::asinh(k_velocity[1] * w + k_velocity[2]) + k_velocity[3];
   // Only a floating-point endpoint residual is erased, never an input violation.
   out = (-1e-14 < result && result < 0.0) ? 0.0 : result;
   return true;
 }
 
 inline double passive_length(const LawRow& p, double x) noexcept {
-  return (det::exp(p.passive_k * (x - 1.0) / p.passive_e) - p.passive_offset) / p.passive_denominator;
+  return (det::exp(p.passive_k * (x - 1.0) / p.passive_e) - p.passive_offset) /
+         p.passive_denominator;
 }
 
 // The fiber length over the optimal one, snapped to an endpoint within 4 ulp of it, else bounded.
@@ -181,7 +186,8 @@ inline bool normalized_fiber_length(const LawRow& p, double l, double& x, Failur
     x = p.max_norm;
     return true;
   }
-  if (!bounded(x, p.min_norm, p.max_norm)) return fail(f, ValidationTest::NormalizedLengthOutOfRange, x);
+  if (!bounded(x, p.min_norm, p.max_norm))
+    return fail(f, ValidationTest::NormalizedLengthOutOfRange, x);
   return true;
 }
 
@@ -196,7 +202,8 @@ inline bool passive_energy(const LawRow& p, double l, double& out, Failure& f) n
   return true;
 }
 
-// ---- the series side (compliant.py) --------------------------------------------------------------
+// ---- the series side (compliant.py)
+// --------------------------------------------------------------
 
 struct Geometry {
   double projected;  // the belly's length along the line of action, m
@@ -219,7 +226,8 @@ struct Tendon {
 };
 
 inline bool tendon(const LawRow& p, double length, Tendon& t, Failure& f) noexcept {
-  if (!std::isfinite(length) || length <= 0.0) return fail(f, ValidationTest::TendonLengthInvalid, length);
+  if (!std::isfinite(length) || length <= 0.0)
+    return fail(f, ValidationTest::TendonLengthInvalid, length);
   const double strain = length / p.slack - 1.0;
   if (strain <= 0.0) {
     t.force = 0.0;

@@ -18,13 +18,11 @@
 // not qualified by it. A named-muscle calibration with provenance is what widens the domain, as a
 // new domain version.
 
+#include <core/base/types.h>
 #include <systems/muscle/muscle.h>
 #include <systems/muscle/store.h>
 
-#include <core/base/types.h>
-
 #include <schemas/muscle.h>
-
 #include <span>
 
 namespace engine::muscle {
@@ -43,8 +41,8 @@ struct ValidationResult {
   Refusal refusal = Refusal::None;
   const char* field = "";  // "series.pennation_at_optimal"
   double value = 0.0;
-  const char* unit = "";   // "rad"
-  const char* rule = "";   // "finite and in [0, 0.4]"
+  const char* unit = "";  // "rad"
+  const char* rule = "";  // "finite and in [0, 0.4]"
 
   bool ok() const noexcept { return refusal == Refusal::None; }
 };
@@ -68,7 +66,8 @@ const QualifiedDomain& qualified_domain() noexcept;
 /// The law's own domain (the reference's `Parameters` and `SeriesParameters` checks): every fiber
 /// value finite and positive, x0 < x_min < x_max; the series lengths, strain, damping and minimum
 /// cosine finite and positive, the minimum cosine below one, the pennation in [0, 0.4] rad.
-ValidationResult validate_law_domain(const FiberParameters& fiber, const SeriesParameters& series) noexcept;
+ValidationResult validate_law_domain(const FiberParameters& fiber,
+                                     const SeriesParameters& series) noexcept;
 
 /// The validator, in the order the decisions list its refusals.
 ValidationResult validate(const Sha256& model_id, const Sha256& parameter_identity,

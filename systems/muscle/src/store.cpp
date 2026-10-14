@@ -105,11 +105,13 @@ bool static_cache(const LawRow& p, double a, double l, double total, Cache& out,
 
 }  // namespace
 
-bool initialize_static(LineStore& store, u32 i, u64 tick, double a, double length, Failure& f) noexcept {
+bool initialize_static(LineStore& store, u32 i, u64 tick, double a, double length,
+                       Failure& f) noexcept {
   Counters n{};
   const LawRow& p = store.law[i];
   if (!bounded(a, 0.0, 1.0)) return fail(f, ValidationTest::ActivationOutOfRange, a);
-  if (!std::isfinite(length) || length <= 0.0) return fail(f, ValidationTest::PathSampleInvalid, length);
+  if (!std::isfinite(length) || length <= 0.0)
+    return fail(f, ValidationTest::PathSampleInvalid, length);
   double l = 0.0;
   if (!static_initial_length(p, a, length, l, n, f)) return false;
   Cache c{};
@@ -133,7 +135,7 @@ void save(const LineStore& store, u32 i, LineState& out) noexcept {
   out.activation = store.activation[i];
   out.fiber_length = store.fiber_length[i];
   const Cache& c = store.cache[i];
-  out.committed_forces = ForceCache{c.tendon_force, c.active_force, c.passive_force,
+  out.committed_forces = ForceCache{c.tendon_force,  c.active_force,   c.passive_force,
                                     c.damping_force, c.passive_energy, c.tendon_energy};
   out.initialized = store.initialized[i] != 0;
   out.startup_pending = store.startup_pending[i] != 0;
@@ -159,8 +161,8 @@ RestoreStatus restore(LineStore& store, u32 i, const LineState& in) noexcept {
   store.activation[i] = in.activation;
   store.fiber_length[i] = in.fiber_length;
   const ForceCache& c = in.committed_forces;
-  store.cache[i] = Cache{c.tendon_force,      c.active_fiber_force, c.passive_fiber_force,
-                         c.damping_fiber_force, c.passive_energy,   c.tendon_energy};
+  store.cache[i] = Cache{c.tendon_force,        c.active_fiber_force, c.passive_fiber_force,
+                         c.damping_fiber_force, c.passive_energy,     c.tendon_energy};
   store.initialized[i] = in.initialized ? 1 : 0;
   store.startup_pending[i] = in.startup_pending ? 1 : 0;
   Supervisory& s = store.supervisory[i];

@@ -1,13 +1,13 @@
 // The law against the reference's archived initial states, the law's identity, and the rule that
 // the kernel calls no C library transcendental (docs/subsystems/muscle.md, "Tests").
+#include "rows.h"
+
 #include <systems/muscle/law.h>
 #include <systems/muscle/muscle.h>
 #include <systems/muscle/scheme.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
-
-#include "rows.h"
 
 #include <cmath>
 #include <cstdio>
@@ -97,8 +97,7 @@ TEST_CASE("muscle law: each domain test fails by name with the value it read") {
 }
 
 TEST_CASE("muscle law: the model identity is the hash of model.txt") {
-  const std::string root =
-      test::data_path(ENGINE_SOURCE_DIR "/systems/muscle", "systems/muscle");
+  const std::string root = test::data_path(ENGINE_SOURCE_DIR "/systems/muscle", "systems/muscle");
   const std::string text_path = root + "/tests/model.txt";
   if (!test::path_exists(text_path)) {
     MESSAGE("not in this bundle: " << text_path);
@@ -123,15 +122,14 @@ TEST_CASE("muscle law: the model identity is the hash of model.txt") {
 // The kernel's bytes are the same on every toolchain only if no C library transcendental reaches
 // them (core/math/deterministic.h). A grep is cheap and says where.
 TEST_CASE("muscle law: no std:: transcendental in the kernel") {
-  const std::string root =
-      test::data_path(ENGINE_SOURCE_DIR "/systems/muscle", "systems/muscle");
+  const std::string root = test::data_path(ENGINE_SOURCE_DIR "/systems/muscle", "systems/muscle");
   if (!test::path_exists(root + "/include")) {
     MESSAGE("not in this bundle: " << root);
     return;
   }
-  const char* const banned[] = {"std::exp", "std::expm1", "std::log", "std::log1p", "std::pow",
-                                "std::tanh", "std::asinh", "std::sinh", "std::cosh", "std::sin(",
-                                "std::cos(", "std::tan(", "std::asin", "std::acos", "std::atan"};
+  const char* const banned[] = {"std::exp",  "std::expm1", "std::log",  "std::log1p", "std::pow",
+                                "std::tanh", "std::asinh", "std::sinh", "std::cosh",  "std::sin(",
+                                "std::cos(", "std::tan(",  "std::asin", "std::acos",  "std::atan"};
   u32 files = 0;
   for (const char* dir : {"/include/systems/muscle", "/src"}) {
     for (const auto& entry : std::filesystem::directory_iterator(root + dir)) {

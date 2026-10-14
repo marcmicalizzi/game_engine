@@ -106,7 +106,8 @@ struct ScriptProber {
     }
     ++log.probes;
     for (u32 i = 0; i < 3; ++i)
-      out.stage[i] = State{s.t + k_tableau_c[i] * d, static_cast<double>(p), static_cast<double>(i)};
+      out.stage[i] =
+          State{s.t + k_tableau_c[i] * d, static_cast<double>(p), static_cast<double>(i)};
     for (auto& row : out.terms)
       for (double& w : row)
         w = 0.0;
@@ -202,7 +203,8 @@ TEST_CASE("muscle locator: same-phase ends with an opposite internal stage are u
   Run r = run(dip, false);
   CHECK_FALSE(r.ok);
   CHECK(r.failure.test == ValidationTest::EventUnresolved);
-  auto touch = time_prober([t1](double t) { return (t - t1) * (t - t1); }, [](double) { return 1.0; });
+  auto touch =
+      time_prober([t1](double t) { return (t - t1) * (t - t1); }, [](double) { return 1.0; });
   r = run(touch, false);
   CHECK_FALSE(r.ok);
   CHECK(r.failure.test == ValidationTest::EventTangentUnresolved);
@@ -231,7 +233,8 @@ TEST_CASE("muscle locator: the gap bound refuses a fast crossing the width bound
   CHECK(slow.log.duration[21] == dt);
   CHECK(slow.log.start[22] == slow.log.start[21] + dt);
   // At 100 m/s the same bracket leaves 1.3e-7 m: past 1e-8, refused.
-  auto fast = time_prober([](double t) { return 100.0 * (t - H / 3.0); }, [](double) { return 100.0; });
+  auto fast =
+      time_prober([](double t) { return 100.0 * (t - H / 3.0); }, [](double) { return 100.0; });
   r = run(fast, false);
   CHECK_FALSE(r.ok);
   CHECK(r.failure.test == ValidationTest::EventLocationUnresolved);
@@ -274,7 +277,7 @@ TEST_CASE("muscle locator: a second crossing in any remainder step is refused, n
     const Run r = run_script(pr, false);
     CHECK_FALSE(r.ok);
     CHECK(r.failure.test == ValidationTest::EventBudgetExceeded);
-    CHECK(pr.log.probes == 22 + k);   // the full probe, 20 bisections, k + 1 remainder steps
+    CHECK(pr.log.probes == 22 + k);     // the full probe, 20 bisections, k + 1 remainder steps
     CHECK(r.n.bisection_probes == 20);  // no second search
     CHECK(r.n.events == 1);
   }
