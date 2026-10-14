@@ -1,0 +1,264 @@
+// The muscle line tier's state, events and tick work (ADR-0027, ADR-0055;
+// docs/subsystems/muscle.md). The authoring track's proposal (r008/d001 muscle.schema, the r007
+// state contract) with D21 (5) and the r010 review applied: the units N, J and W in the registry so
+// the name suffixes drop, `failed_test` an enumerated `ValidationTest` instead of a string,
+// `FreezeAccountingStatus.Inert = 3`, `TickWork.transition_elastic_jump` the tick's sum, and the
+// `startup_pending` lifecycle marker in the committed state ("Mapping 4").
+//
+// This is the engine's first registration of these types, so every struct is version 1: the
+// proposal's own version 2 numbered its review rounds, not a format anything ever wrote.
+//
+// Stage 1 (the kernel, C53 on the roadmap) reads and writes the mechanical fields only. The
+// supervisory fields — the tier, the pending transition, the streaks, the freeze accounting — are
+// declared now so that the committed record is complete from the first commit, and are written by
+// stage 2 (the supervisor, C54). No `materialize` yet: records are stage 2's too.
+namespace engine.muscle
+
+/// The tier an actuator is integrated in (D20). Stage 1 integrates `Compliant` (tier 0) only.
+enum LineTier : u8 {
+  /// Tier 0: compliant tendon, pennation, persistent fiber length, fiber damping.
+  Compliant = 0
+  /// Tier 1: rigid tendon, activation dynamics only.
+  Rigid = 1
+  /// Tier 2: inert; the pose comes from animation and no force is output.
+  Animation = 2
+}
+
+/// What a validation event reports (the r008 proposal's thirteen kinds).
+enum ValidationKind : u8 {
+  DomainFailure = 0
+  RootFailure = 1
+  SlackEntered = 2
+  TautEntered = 3
+  TierDegraded = 4
+  TierPromoted = 5
+  ProjectionFailure = 6
+  TierInert = 7
+  TierResumed = 8
+  TierChanged = 9
+  PromotionScheduled = 10
+  PromotionRejected = 11
+  FreezeAccountingUndefined = 12
+}
+
+/// A tier change decided at one tick's end and applied at the next tick's start (D20, D21 (4)).
+enum PendingTransition : u8 {
+  None = 0
+  ToRigid = 1
+  ToCompliant = 2
+}
+
+/// What a tick's freeze ledger claims (D21 (4)).
+enum FreezeAccountingStatus : u8 {
+  /// The tick integrated; there is no freeze to account for.
+  NotFrozen = 0
+  /// A frozen tick whose path endpoints were finite: the stale-force work is booked.
+  Valid = 1
+  /// A frozen tick with a nonfinite or invalid path: no freeze work is claimed.
+  UndefinedPath = 2
+  /// An Animation-tier tick: no force output, the freeze ledger does not apply, and zero
+  /// external work is not a conservation claim.
+  Inert = 3
+}
+
+/// Every test the line tier's law, scheme, locator and schedule can fail, named so that a failure
+/// says which one (D20: "which actuator, which test, the inputs that failed it"). The reference
+/// raised these as exceptions with a message; the engine reports the enumerator and the value.
+enum ValidationTest : u16 {
+  /// No failure.
+  None = 0
+  /// A tick at or before the last committed tick.
+  TickOrder = 1
+  /// A state time that is not finite.
+  TimeNotFinite = 2
+  /// A step duration that is not finite and positive.
+  TimeStepInvalid = 3
+  /// An activation outside [0, 1] where the law reads it.
+  ActivationOutOfRange = 4
+  /// An excitation outside [0, 1].
+  ExcitationOutOfRange = 5
+  /// An RK4 activation step that ended outside [0, 1].
+  IntegratedActivationOutOfRange = 6
+  /// A stage's activation outside [0, 1] at the mechanical stage.
+  StageActivationOutOfRange = 7
+  /// A fiber length whose normalized value is outside [min, max] (after the 4-ulp endpoint snap).
+  NormalizedLengthOutOfRange = 8
+  /// A fiber velocity whose normalized value is outside [-1, 1].
+  NormalizedVelocityOutOfRange = 9
+  /// A fiber length at or below the pennation height.
+  FiberAtPennationHeight = 10
+  /// A pennation cosine below the declared minimum.
+  PennationCosineBelowMinimum = 11
+  /// A tendon length that is not finite and positive.
+  TendonLengthInvalid = 12
+  /// A tendon strain whose exponent k * strain exceeds 100.
+  TendonExtensionBeyondDomain = 13
+  /// A path sample whose length is not finite and positive or whose rate is not finite.
+  PathSampleInvalid = 14
+  /// An implicit stage whose velocity bracket is empty.
+  StageBracketEmpty = 15
+  /// An implicit stage whose residual does not change sign over its bracket.
+  StageRootNotBracketed = 16
+  /// An implicit stage whose root did not converge in 64 iterations.
+  StageRootNotConverged = 17
+  /// No series equilibrium velocity inside [-vmax, vmax].
+  EquilibriumNotBracketed = 18
+  /// The equilibrium velocity's root did not converge in 100 iterations.
+  EquilibriumNotConverged = 19
+  /// Static initialisation found no admissible fiber length interval.
+  StaticIntervalEmpty = 20
+  /// Static initialisation found no sign change of the static residual.
+  StaticRootNotBracketed = 21
+  /// Static initialisation's root did not converge in 100 iterations.
+  StaticRootNotConverged = 22
+  /// The static root's restoring slope is not positive.
+  StaticSlopeNotRestoring = 23
+  /// Same-phase piece endpoints with an opposite-phase internal stage.
+  EventUnresolved = 24
+  /// A zero-gap internal stage, or a zero or nonfinite outgoing gap rate at a zero boundary.
+  EventTangentUnresolved = 25
+  /// A located crossing whose bracket width or gap exceeds its bound.
+  EventLocationUnresolved = 26
+  /// A second crossing in one parent interval, or a third zero-boundary query.
+  EventBudgetExceeded = 27
+  /// A root solver's residual evaluated to NaN.
+  ResidualNotANumber = 28
+  /// An actuator that was never initialised.
+  NotInitialized = 29
+}
+
+/// The fiber's parameters: the r005 reference law's `Parameters`, with its defaults.
+struct FiberParameters @version(1) {
+  force_scale: f64 = 1000 @unit(N)
+  optimal_fiber_length: f64 = 0.1 @unit(m)
+  rigid_tendon_length: f64 = 0.05 @unit(m)
+  /// Maximum contraction velocity in optimal fiber lengths per second.
+  vmax_lopt_per_s: f64 = 10
+  tau_activation: f64 = 0.015 @unit(s)
+  tau_deactivation: f64 = 0.06 @unit(s)
+  /// The gain of the activation/deactivation switch's tanh.
+  activation_smoothing: f64 = 10
+  passive_strain_at_unit_force: f64 = 0.6 @unit(ratio)
+  passive_shape: f64 = 4
+  passive_zero_normalized_length: f64 = 0.2 @unit(ratio)
+  min_normalized_length: f64 = 0.5 @unit(ratio)
+  max_normalized_length: f64 = 1.6 @unit(ratio)
+  /// Square metres (the unit table has no area); active volume only, unused by the line tier.
+  reference_area_m2: f64 = 0.004
+  reference_fiber_length: f64 = 0.1 @unit(m)
+}
+
+/// The series side's parameters: the r005 reference law's `SeriesParameters`, with its defaults.
+struct SeriesParameters @version(1) {
+  tendon_slack_length: f64 = 0.05 @unit(m)
+  tendon_strain_at_unit_force: f64 = 0.049 @unit(ratio)
+  pennation_at_optimal: f64 = 0.2 @unit(rad)
+  /// Fiber damping as a fraction of the force scale at the maximum velocity.
+  normalized_damping: f64 = 0.1
+  minimum_cosine: f64 = 0.2 @unit(ratio)
+}
+
+/// The forces and elastic energies of the committed state, from the final stage of the tick's last
+/// step; a failed tick keeps them as they were.
+struct ForceCache @version(1) {
+  tendon_force: f64 @unit(N)
+  active_fiber_force: f64 @unit(N)
+  passive_fiber_force: f64 @unit(N)
+  damping_fiber_force: f64 @unit(N)
+  passive_energy: f64 @unit(J)
+  tendon_energy: f64 @unit(J)
+}
+
+/// One actuator's committed record: what a save holds and a restore gives back, bit for bit. No
+/// pointer, solver history or accumulated clock is in it: a tick's times are canonical.
+struct LineState @version(1) @kind(component) {
+  /// The document record's identity, from the normal materialization mechanism (stage 2).
+  actuator_id: id128
+  /// The parameter set's identity: an opaque 32-byte value, the SHA-256 the authoring side
+  /// computed over its canonical parameters. The engine carries it and recomputes none.
+  parameter_sha256: u8[32]
+  path_id: id128
+  /// The law's identity: the SHA-256 of `systems/muscle/tests/model.txt`, separate from the
+  /// schema version.
+  model_sha256: u8[32]
+  last_commit_tick: u64
+  activation: f64 @unit(ratio)
+  fiber_length: f64 @unit(m)
+  committed_forces: ForceCache
+  /// A default-constructed record is not a usable mechanical state.
+  initialized: bool = false
+  /// Set by static initialisation, cleared only by the first committed tick, re-armed only by an
+  /// explicit static reinitialisation, restored as saved (r010 review, "Mapping 4"). While set,
+  /// each of a tick's eight parents is four pieces instead of one.
+  startup_pending: bool = false
+  // The supervisory fields below are stage 2's (C54): declared now, written by the supervisor.
+  last_attempt_tick: u64
+  consecutive_frozen_ticks: u32
+  tier: LineTier = Compliant
+  forces_stale: bool = false
+  pending_transition: PendingTransition = None
+  /// Saturated at 60, reset on a failed promotion (D21 (4)).
+  consecutive_rigid_success_ticks: u32 = 0
+  /// The scheduler's endpoint for freeze accounting, not a recomputed mechanical cache.
+  last_path_length: f64 = 0 @unit(m)
+  last_path_length_valid: bool = false
+}
+
+/// A validation event: a cold payload, delivered with the enclosing simulation transaction.
+struct ValidationEvent @version(1) @kind(event) {
+  actuator_id: id128
+  path_id: id128
+  parameter_sha256: u8[32]
+  scheduler_tick: u64
+  last_commit_tick: u64
+  kind: ValidationKind
+  excitation: f64 @unit(ratio)
+  path_length: f64 @unit(m)
+  path_velocity: f64 @unit("m/s")
+  /// The specific test that failed.
+  failed_test: ValidationTest = None
+  /// The value the failed test read (the activation, the normalized length, the gap...).
+  failed_value: f64
+  /// A failed tick's event carries the retained committed forces, which are now stale.
+  forces_stale: bool
+  consecutive_frozen_ticks: u32
+  tier_before: LineTier
+  /// The actual tier after this event, not the intended future tier.
+  tier_after: LineTier
+  /// Meaningful only when a transition is pending.
+  requested_tier: LineTier = Compliant
+  pending_transition: PendingTransition = None
+  consecutive_rigid_success_ticks: u32 = 0
+  path_inputs_finite: bool = false
+  /// E_after - E_before of an instantaneous successful projection, tendon energy drop included.
+  transition_elastic_jump: f64 @unit(J)
+}
+
+/// One actuator's work over one tick: the five ledger channels integrated with the scheme's signed
+/// stage weights, plus the supervisor's freeze accounting (stage 2).
+struct TickWork @version(1) @kind(event) {
+  actuator_id: id128
+  scheduler_tick: u64
+  /// The integral of tendon force times path rate.
+  external_input: f64 @unit(J)
+  /// The integral of -active force times fiber velocity.
+  active_output: f64 @unit(J)
+  /// The integral of damping force times fiber velocity.
+  dissipated: f64 @unit(J)
+  active_throughput: f64 @unit(J)
+  external_throughput: f64 @unit(J)
+  /// The tick's sum of E_after - E_before over its projections (D21 (5)).
+  transition_elastic_jump: f64 @unit(J)
+  /// False on a frozen tick: zero committed integrals do not claim zero approximation error.
+  mechanically_integrated: bool
+  active_net_on: f64 = 0 @unit(J)
+  freeze_status: FreezeAccountingStatus = NotFrozen
+  freeze_external_input: f64 = 0 @unit(J)
+  freeze_external_input_valid: bool = false
+  freeze_elastic_change: f64 = 0 @unit(J)
+  freeze_approximation_error: f64 = 0 @unit(J)
+  /// Valid only when freeze_status is Valid; not the old cache energy.
+  resume_initial_elastic: f64 = 0 @unit(J)
+  freeze_path_start: f64 = 0 @unit(m)
+  freeze_path_end: f64 = 0 @unit(m)
+}

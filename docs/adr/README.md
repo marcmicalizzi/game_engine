@@ -58,3 +58,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0052](0052-the-picture-is-quantized-once-with-dither.md) | The picture is quantized once, with dither, at the depth the display takes | Accepted |
 | [0053](0053-world-positions-are-f64-and-the-gpu-sees-none.md) | World positions are f64 on the CPU, and the GPU never sees an absolute one: a cell and a local in memory, eye-relative in a frame | Accepted |
 | [0054](0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) | The in-engine tools UI is Dear ImGui, drawn by the renderer's overlay pass | Proposed |
+| [0055](0055-the-muscle-line-tier-scheme-schedule-and-failure-semantics.md) | The muscle line tier: the adopted scheme, the fixed schedule and the failure semantics | Proposed |

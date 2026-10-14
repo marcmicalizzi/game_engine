@@ -378,6 +378,8 @@ The character standard and the tissue program: [ADR-0032](adr/0032-characters-ar
 | C50 | Enforce `limits.max_velocity` | open | S58 | S | routine | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
 | C51 | Edge compliance converted and measured | open | S58 | S | research | [tissue](subsystems/tissue.md#not-yet) |
 | C52 | Tetrahedralizer for the tetrahedral cage kind | open | | M | research | [ADR-0026](adr/0026-deformable-volumes-first-class.md) |
+| C53 | Muscle line tier, stage 1: kernel, corpus, validator | in progress | | L | design | [muscle](subsystems/muscle.md) |
+| C54 | Muscle line tier, stage 2: supervisor, scheduler entry, records | open | C53 | L | design | [muscle](subsystems/muscle.md#not-yet) |
 
 ## G — Content and generation
 

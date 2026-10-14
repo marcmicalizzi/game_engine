@@ -76,5 +76,6 @@ One page per module, created in the same change that creates the module. Templat
 | scene_collision (capability) | systems | [scene_collision.md](scene_collision.md) |
 | doc_scene | systems | [doc_scene.md](doc_scene.md) |
 | scatter | systems | [scatter.md](scatter.md) |
+| muscle | systems | [muscle.md](muscle.md) |
 | engine_host, engine_cli, engine_view, engine_editor, engine_content, engine_input, engine_image, mcp_bridge (engine-mcp) | apps | [apps.md](apps.md) |
 | engine_shell (static files served by engine-host --listen) | apps | [engine_shell.md](engine_shell.md) |

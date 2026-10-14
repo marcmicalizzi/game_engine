@@ -1,0 +1,19 @@
+engine.muscle line tier law, version 1: the r005 reference law (model sha256 3096e5ff70d2d2ff7156b29ec409ec4db917ffb427d3e4a6f833f86eb5ac5288) as systems/muscle computes it
+parameters: F0 lopt vmax_lopt tau_act tau_deact s_act e_p k_p x0_p x_min x_max Ls e1 alpha0 beta cos_min
+gaussian 1: b = (0.8150671134243542, 1.055033428970575, 0.162384573599574, 0.063303448465465)
+gaussian 2: b = (0.433004984392647, 0.716775413397760, -0.029947116970696, 0.200356847296188)
+gaussian 3: b = (0.1, 1.0, 0.353553390593274, 0.0)
+force-velocity constants: d = (-0.3211346127989808, -8.149, -0.374, 0.8825327733249912)
+activation rate: z = 0.5 + 1.5 a; s = 0.5 tanh(s_act (u - a)); da/dt = (u - a) ((s + 0.5) / (tau_act z) + (0.5 - s) z / tau_deact); a, u in [0, 1]
+activation step: classical RK4 over c_i d from a, u held; result in [0, 1]
+normalized length: x = l / lopt; x snaps to x_min or x_max within 4 ulp of it; else x in [x_min, x_max]
+active force-length: fl(x) = sum_i b1_i exp(-0.5 ((x - b2_i) / (b3_i + b4_i x))^2)
+force-velocity: w = v / (vmax_lopt lopt) in [-1, 1]; fv(w) = d1 asinh(d2 w + d3) + d4; a value in (-1e-14, 0) is 0
+passive force-length: off = exp(k_p (x0_p - 1) / e_p); fp(x) = (exp(k_p (x - 1) / e_p) - off) / (exp(k_p) - off)
+passive energy: E_p = F0 lopt ((e_p / k_p) (exp(k_p (x - 1) / e_p) - off) - off (x - x0_p)) / (exp(k_p) - off)
+fiber forces: F_a = F0 a fl(x) fv(w); F_p = F0 fp(x); F_d = F0 beta v / (vmax_lopt lopt)
+geometry: h = lopt sin(alpha0); l > h; l_proj = sqrt(l^2 - h^2); cos = l_proj / l >= cos_min
+tendon: l_t = L - l_proj finite and > 0; strain = l_t / Ls - 1; strain <= 0: F_t = 0, E_t = 0; k = ln 6 / e1; k strain <= 100; F_t = 0.2 F0 expm1(k strain); E_t = 0.2 F0 Ls (expm1(k strain) / k - strain)
+series residual: r = (F_a + F_p + F_d) cos - F_t
+gap: g = L - l_proj - Ls; gap rate: dL/dt - v_eq / cos, v_eq the root of r(v) = 0 on [-vmax, vmax]
+transcendentals: engine::det exp expm1 log log1p tanh asinh sin cos (core/math/deterministic.h)
