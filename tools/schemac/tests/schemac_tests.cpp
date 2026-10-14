@@ -307,6 +307,55 @@ TEST_CASE("schemac: materialize rows are checked field by field") {
                   "has no number to measure");
 }
 
+// Force, energy and power (the muscle line tier's units): each converts within its dimension and
+// never across, so a joule cannot fill a newton and a kilowatt fills a watt by a factor of 1000.
+TEST_CASE("schemac: force, energy and power units") {
+  TempDir tmp("schemac");
+  constexpr std::string_view k_types =
+      "struct Load @kind(component) {\n"        // 2
+      "  force: f64 @unit(N)\n"                 // 3
+      "  energy: f64 @unit(J)\n"                // 4
+      "  power: f64 @unit(W)\n"                 // 5
+      "}\n"                                     // 6
+      "struct Spec @kind(record) {\n"           // 7
+      "  force: f64 @unit(kN)\n"                // 8
+      "  energy: f64 @unit(kJ)\n"               // 9
+      "  power: f64 @unit(kW)\n"                // 10
+      "  pull: f64 @unit(N)\n"                  // 11
+      "}\n";                                    // 12
+  auto with = [&](std::string_view ns, std::string_view tail) {
+    return "namespace " + std::string(ns) + "\n" + std::string(k_types) + std::string(tail);
+  };
+  const Run run = compile(tmp, "loads",
+                          with("t.u1",
+                               "materialize Spec {\n"
+                               "  Load.force = force\n"
+                               "  Load.energy = energy\n"
+                               "  Load.power = power\n"
+                               "}\n"));
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  std::string source;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/src/loads.cpp"), source) == io::Status::Ok);
+  CHECK(source.find("\"force\", \"force\", 1000.0, 0.0") != std::string::npos);
+  CHECK(source.find("\"energy\", \"energy\", 1000.0, 0.0") != std::string::npos);
+  CHECK(source.find("\"power\", \"power\", 1000.0, 0.0") != std::string::npos);
+  std::string docs;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/docs/loads.md"), docs) == io::Status::Ok);
+  CHECK(docs.find("unit N") != std::string::npos);
+  CHECK(docs.find("unit J") != std::string::npos);
+  CHECK(docs.find("unit W") != std::string::npos);
+  expect_rejected(tmp, "force_from_energy",
+                  with("t.u2", "materialize Spec {\n  Load.force = energy\n}\n"), 14,
+                  "a unit converts only within its dimension");
+  expect_rejected(tmp, "energy_from_power",
+                  with("t.u3", "materialize Spec {\n  Load.energy = power\n}\n"), 14,
+                  "a unit converts only within its dimension");
+  expect_rejected(tmp, "power_from_force",
+                  with("t.u4", "materialize Spec {\n  Load.power = pull\n}\n"), 14,
+                  "a unit converts only within its dimension");
+}
+
 TEST_CASE("schemac: usage errors exit 2") {
   platform::Process p;
   const std::string_view argv[] = {schemac_exe()};

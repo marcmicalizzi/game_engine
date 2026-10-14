@@ -209,6 +209,15 @@ const UnitInfo k_units[] = {
     {"degC", "temperature", 1.0, 273.15},
     {"ratio", "ratio", 1.0, 0.0},
     {"percent", "ratio", 0.01, 0.0},
+    // Force, energy and power: the muscle line tier's tendon force, elastic energies and work
+    // ledger (systems/muscle, ADR-0055), which named their units in field-name suffixes until the
+    // table had them.
+    {"N", "force", 1.0, 0.0},
+    {"kN", "force", 1000.0, 0.0},
+    {"J", "energy", 1.0, 0.0},
+    {"kJ", "energy", 1000.0, 0.0},
+    {"W", "power", 1.0, 0.0},
+    {"kW", "power", 1000.0, 0.0},
 };
 
 // The kinds a `@unit` can sit on: a number, or a vector of them. A quaternion is not a quantity
