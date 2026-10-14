@@ -17,11 +17,12 @@ engine_schema_library(NAME muscle_schemas SCHEMAS schemas/muscle.schema CAPABILI
 
 engine_module(NAME muscle LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math log ids hash json schema muscle_schemas
-  SOURCES src/muscle.cpp src/store.cpp)
+  SOURCES src/muscle.cpp src/store.cpp src/validator.cpp)
 
 engine_module_tests(NAME muscle
   SOURCES tests/law_tests.cpp tests/scheme_tests.cpp tests/schedule_tests.cpp
-          tests/lifecycle_tests.cpp tests/corpus_tests.cpp tests/size_table.cpp
+          tests/lifecycle_tests.cpp tests/corpus_tests.cpp tests/validator_tests.cpp
+          tests/size_table.cpp
   DEPS json schema)
 
 # The law's identity test re-reads tests/model.txt and the kernel's sources from the checkout.
