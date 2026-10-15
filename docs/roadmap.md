@@ -380,6 +380,7 @@ The character standard and the tissue program: [ADR-0032](adr/0032-characters-ar
 | C52 | Tetrahedralizer for the tetrahedral cage kind | open | | M | research | [ADR-0026](adr/0026-deformable-volumes-first-class.md) |
 | C53 | Muscle line tier, stage 1: kernel, corpus, validator | done (202bdbb6) | | L | design | [muscle](subsystems/muscle.md) |
 | C54 | Muscle line tier, stage 2: supervisor, scheduler entry, records | open | C53 | L | design | [muscle](subsystems/muscle.md#not-yet) |
+| C55 | Muscle qualified domain version 2: the corpus importer takes a list of sources and writes a domain version with per-case provenance, the validator's table holds a full nineteen-value parameter set per identity under a domain id and version (today the 17 synthetic identities carry five series values and the fiber values are compared to the defaults), and the corpus test gains a tabulated path kind (length and rate at every tick boundary, through the same `HermitePath` the runtime uses) beside the analytic kinds, so a named muscle's calibration and reference trajectories from the authoring track qualify in the engine without engine edits on their side; the record shape, the gates and the model identity do not change | open | C53 | M | routine | [muscle](subsystems/muscle.md#the-validator) |
 
 ## G — Content and generation
 
