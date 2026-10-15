@@ -29,7 +29,9 @@
     {"file": "r010-20261013/declarations/d001/CASES.json", "sha256": "acb1f8bf97b5a8534459afbb208d2fae4ce817b2e2409c2ec54ca61fecd81462"},
     {"file": "r007-20261011/_handoff/corpus.json", "sha256": "16b43ddac1bb32805970a06e183ac1cfffebc1fe5f8cf44e1d36758f66e3b3f0"},
     {"file": "r009-20261013/results/s001/summary.json", "sha256": "c92c3e02e7583419e0af0c4dddadff4b1acba8229f6d90f0b9d99a22b8a59e5d"},
-    {"file": "r009-20261013/results/s001/MANIFEST.json", "sha256": "86f0e6e5ffa58f6bb4177e5f6dd36847b1c331c9456c7c571a65d24eb0260b3a"}
+    {"file": "r009-20261013/results/s001/MANIFEST.json", "sha256": "86f0e6e5ffa58f6bb4177e5f6dd36847b1c331c9456c7c571a65d24eb0260b3a"},
+    {"file": "r010-20261013/results/a001/summary.json", "sha256": "c6189e525e238532a7487de72a6c383c8c85eb9d8c9fc4266cc4b644e31105ad"},
+    {"file": "r010-20261013/results/a001/MANIFEST.json", "sha256": "3c6612d6af87f1ccadf8870081dbfa9911e9db04ef01ef1da8bd91e14154d79e"}
   ],
   "cases": [
     {"case": "step", "parameter_sha256": "9665d9f3c53dfae5861a5318536d6625b973eaed432fd67c533d4627cd5c1ed6", "force_N": 7.93677977175305, "fiber_m": 0.0005, "work_J": 0.0012402912012682032, "reference_throughput_J": 1.2402912012682032, "held_sample_count": 289, "held_samples_sha256": "87025d95e6d1a610e057386a3e153020be780ed877513c5e1ce9624caf92264a"},

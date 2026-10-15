@@ -11,8 +11,10 @@
                                                  limits, reference throughput and hashes
     r007-20261011\_handoff\corpus.json           the same 39 trajectories with their 289
                                                  held-reference oracle samples each
-  and, for the known-limit labels' provenance, r009-20261013\results\s001\summary.json (the
-  adopted scheme's per-row numbers).
+  and, for the labels and their provenance, r009-20261013\results\s001\summary.json (r009 S's
+  per-row numbers, which the four step rows' tolerance is measured against) and
+  r010-20261013\results\a001\summary.json (r010's, whose review, D25, set the labels; its
+  declaration, execution manifest and result manifest are checked against the reviewed ones).
 
   Writes, under -Out (default content/muscle beside this script's repository):
     corpus.json          the index: case names in order, the qualified domain's parameter
@@ -20,7 +22,7 @@
     cases/<case>.json    a case's inputs and archived initial state, copied whole, and its 289
                          samples as rows of eleven columns
     expectations.json    each case's class (qualified, known_limit_work, known_limit_force) with
-                         r009 S's numbers, and the provenance
+                         r009 S's numbers and r010's, and the provenance
   README.md is written by hand and not by this script.
 
   **Numbers are copied as text, never recomputed**: every number is the source file's own token
@@ -43,7 +45,9 @@ $casesPath = Join-Path $Authoring 'r010-20261013/declarations/d001/CASES.json'
 $corpusPath = Join-Path $Authoring 'r007-20261011/_handoff/corpus.json'
 $summaryPath = Join-Path $Authoring 'r009-20261013/results/s001/summary.json'
 $manifestPath = Join-Path $Authoring 'r009-20261013/results/s001/MANIFEST.json'
-foreach ($p in @($casesPath, $corpusPath, $summaryPath, $manifestPath)) {
+$r010SummaryPath = Join-Path $Authoring 'r010-20261013/results/a001/summary.json'
+$r010ManifestPath = Join-Path $Authoring 'r010-20261013/results/a001/MANIFEST.json'
+foreach ($p in @($casesPath, $corpusPath, $summaryPath, $manifestPath, $r010SummaryPath, $r010ManifestPath)) {
   if (-not (Test-Path -LiteralPath $p)) { throw "not found: $p" }
 }
 
@@ -105,22 +109,45 @@ function Read-Json([string]$path) {
 $casesDoc = Read-Json $casesPath
 $corpusDoc = Read-Json $corpusPath
 $summaryDoc = Read-Json $summaryPath
+$r010Doc = Read-Json $r010SummaryPath
 $sources = [ordered]@{
   'r010-20261013/declarations/d001/CASES.json' = Get-Sha256 $casesPath
   'r007-20261011/_handoff/corpus.json' = Get-Sha256 $corpusPath
   'r009-20261013/results/s001/summary.json' = Get-Sha256 $summaryPath
   'r009-20261013/results/s001/MANIFEST.json' = Get-Sha256 $manifestPath
+  'r010-20261013/results/a001/summary.json' = Get-Sha256 $r010SummaryPath
+  'r010-20261013/results/a001/MANIFEST.json' = Get-Sha256 $r010ManifestPath
 }
 # The summary is the one the S result's manifest lists: the labels' numbers are the reviewed ones.
 if (-not ([IO.File]::ReadAllText($manifestPath)).Contains($sources['r009-20261013/results/s001/summary.json'])) {
   throw 'the r009 S result manifest does not list this summary.json'
 }
+# r010's result as D25 reviewed it (2026-10-14): its result manifest, the summary that manifest
+# lists, and the declaration and execution manifest the summary names. Another r010 file changes the
+# labels' evidence, which only a review does.
+$r010Reviewed = @{
+  result_manifest = '3c6612d6af87f1ccadf8870081dbfa9911e9db04ef01ef1da8bd91e14154d79e'
+  declaration = '295c4b55f12d580ec0ee3d5e6e3c3207fb71961c7184a3f5dd8613a911d333c3'
+  execution_manifest = 'bcbafc7d7a206cb403e1027f50bdd4846ca8817f034c25fe9fa778749ae92ce4'
+}
+if ($sources['r010-20261013/results/a001/MANIFEST.json'] -ne $r010Reviewed.result_manifest) {
+  throw "the r010 result manifest is not the one D25 reviewed: $($sources['r010-20261013/results/a001/MANIFEST.json'])"
+}
+if (-not ([IO.File]::ReadAllText($r010ManifestPath)).Contains($sources['r010-20261013/results/a001/summary.json'])) {
+  throw 'the r010 result manifest does not list this summary.json'
+}
+$r010Root = $r010Doc.RootElement
+if ($r010Root.GetProperty('declaration_sha256').GetString() -ne $r010Reviewed.declaration -or
+    $r010Root.GetProperty('execution_manifest_sha256').GetString() -ne $r010Reviewed.execution_manifest) {
+  throw 'the r010 summary names another declaration or execution manifest than D25 reviewed'
+}
 
 $rows = @($casesDoc.RootElement.GetProperty('rows').EnumerateArray())
 $trajectories = @($corpusDoc.RootElement.GetProperty('trajectories').EnumerateArray())
 $summaryRows = @($summaryDoc.RootElement.GetProperty('rows').EnumerateArray())
-if ($rows.Count -ne 39 -or $trajectories.Count -ne 39 -or $summaryRows.Count -ne 39) {
-  throw "expected 39 rows in each source: $($rows.Count), $($trajectories.Count), $($summaryRows.Count)"
+$r010Rows = @($r010Root.GetProperty('rows').EnumerateArray())
+if ($rows.Count -ne 39 -or $trajectories.Count -ne 39 -or $summaryRows.Count -ne 39 -or $r010Rows.Count -ne 39) {
+  throw "expected 39 rows in each source: $($rows.Count), $($trajectories.Count), $($summaryRows.Count), $($r010Rows.Count)"
 }
 
 # The eleven columns of a sample row, and where each comes from in a held-reference sample.
@@ -130,9 +157,13 @@ $columns = @('time_s', 'activation', 'fiber_length_m', 'tendon_force_N', 'passiv
 $ledgerColumns = @('external_work_J', 'active_output_work_J', 'dissipation_J', 'active_throughput_J',
   'external_throughput_J')
 
-# The labels: D23 (4) and the owner's r009 results review. r009 S's numbers come from its summary.
+# The labels: D25, the review of r010's result (2026-10-14). The four step rows stay known limits,
+# work only, order-limited at either order; the two first-sample rows (`corner_04_passive`,
+# `corner_06_passive`, force-only known limits at r009 S under D23 (4)) are qualified, r010's
+# first-tick schedule having removed their start-up transient. r009 S's numbers stay beside r010's
+# as the history the labels came from, and the step rows' tolerance is still measured from them.
 $knownWork = @('corner_00_step', 'corner_02_step', 'corner_04_step', 'corner_06_step')
-$knownForce = @('corner_04_passive', 'corner_06_passive')
+$knownForce = @()
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Out 'cases') | Out-Null
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -148,6 +179,8 @@ for ($i = 0; $i -lt 39; $i++) {
   if ($traj.GetProperty('inputs').GetProperty('case').GetString() -ne $name) { throw "row $i order differs: $name" }
   $summary = $summaryRows[$i]
   if ($summary.GetProperty('case').GetString() -ne $name) { throw "summary row $i order differs: $name" }
+  $r010 = $r010Rows[$i]
+  if ($r010.GetProperty('case').GetString() -ne $name) { throw "r010 summary row $i order differs: $name" }
   $inputs = $row.GetProperty('inputs')
   $initial = $row.GetProperty('initial_state')
   $samples = $traj.GetProperty('held_reference_samples')
@@ -193,13 +226,20 @@ for ($i = 0; $i -lt 39; $i++) {
     "`"held_samples_sha256`": `"$($row.GetProperty('held_samples_sha256').GetString())`"}")
 
   $metrics = $summary.GetProperty('metrics')
+  $r010Metrics = $r010.GetProperty('metrics')
   $class = if ($knownWork -contains $name) { 'known_limit_work' } elseif ($knownForce -contains $name) { 'known_limit_force' } else { 'qualified' }
   $expect.Add("    {`"case`": `"$name`", `"class`": `"$class`", " +
     "`"r009_force_error_N`": $($metrics.GetProperty('tendon_force_N').GetRawText()), " +
     "`"r009_fiber_error_m`": $($metrics.GetProperty('fiber_length_m').GetRawText()), " +
     "`"r009_work_over_limit`": $($metrics.GetProperty('work_over_reference_limit').GetRawText()), " +
     "`"r009_classification`": `"$($summary.GetProperty('classification').GetString())`", " +
-    "`"r009_located_crossings`": $($summary.GetProperty('located_crossings').GetRawText())}")
+    "`"r009_located_crossings`": $($summary.GetProperty('located_crossings').GetRawText()), " +
+    "`"r010_force_error_N`": $($r010Metrics.GetProperty('tendon_force_N').GetRawText()), " +
+    "`"r010_first_sample_force_error_N`": $($r010.GetProperty('first_nominal_force').GetProperty('error_N').GetRawText()), " +
+    "`"r010_fiber_error_m`": $($r010Metrics.GetProperty('fiber_length_m').GetRawText()), " +
+    "`"r010_work_over_limit`": $($r010Metrics.GetProperty('work_over_reference_limit').GetRawText()), " +
+    "`"r010_classification`": `"$($r010.GetProperty('classification').GetString())`", " +
+    "`"r010_located_crossings`": $($r010.GetProperty('located_crossings').GetRawText())}")
 }
 
 $sourceLines = foreach ($k in $sources.Keys) { "    {`"file`": `"$k`", `"sha256`": `"$($sources[$k])`"}" }
@@ -216,11 +256,16 @@ $corpusText = "{`n" +
 $expectText = "{`n" +
   "  `"format_version`": 1,`n" +
   "  `"provenance`": {`n" +
-  "    `"labels`": `"D23 (4) and the owner's r009 results review: the four step rows are work-only misses and the two first-sample rows force-only misses at r009 S, carried as known limits until r010's result review changes them`",`n" +
+  "    `"labels`": `"D25, the review of r010's result (2026-10-14): corner_04_passive and corner_06_passive are qualified (force-only misses at r009 S under D23 (4), a start-up transient r010's first-tick schedule removed); the four step rows stay work-only known limits, order-limited at either order, with r010's numbers beside r009 S's`",`n" +
+  "    `"decision`": `"D25`",`n" +
   "    `"r009_s_summary_sha256`": `"$($sources['r009-20261013/results/s001/summary.json'])`",`n" +
   "    `"r009_s_result_manifest_sha256`": `"$($sources['r009-20261013/results/s001/MANIFEST.json'])`",`n" +
   "    `"r009_declaration_sha256`":`"$($summaryDoc.RootElement.GetProperty('declaration_sha256').GetString())`",`n" +
   "    `"r009_execution_manifest_sha256`": `"$($summaryDoc.RootElement.GetProperty('execution_manifest_sha256').GetString())`",`n" +
+  "    `"r010_summary_sha256`": `"$($sources['r010-20261013/results/a001/summary.json'])`",`n" +
+  "    `"r010_result_manifest_sha256`": `"$($sources['r010-20261013/results/a001/MANIFEST.json'])`",`n" +
+  "    `"r010_declaration_sha256`": `"$($r010Root.GetProperty('declaration_sha256').GetString())`",`n" +
+  "    `"r010_execution_manifest_sha256`": `"$($r010Root.GetProperty('execution_manifest_sha256').GetString())`",`n" +
   "    `"tolerance`": `"a labelled case's failing metric may be at most 1.5 times its r009 number`"`n  },`n" +
   "  `"cases`": [`n" + ($expect -join ",`n") + "`n  ]`n}`n"
 [IO.File]::WriteAllText((Join-Path $Out 'expectations.json'), $expectText, $utf8)
