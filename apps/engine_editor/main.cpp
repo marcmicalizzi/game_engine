@@ -416,6 +416,7 @@ struct Summary {
   bool look_os_clip_inside = false;
   bool look_os_cursor_inside = false;
   bool look_os_released_by_test = false;
+  window::DesktopState look_os_desktop;  // what the desktop was doing during the gesture (A40)
   // Files dropped on the window, how many `editor.import_mesh` took, and the last refusal.
   u32 drops_seen = 0;
   u32 drops_imported = 0;
@@ -432,9 +433,22 @@ struct Summary {
   u32 sdl_keys_from_page = 0;   // KeyDown events SDL delivered after the page had the keyboard
   u32 undos_after_page = 0;
   u32 undo_position_before_page = 0;
+  window::DesktopState keys_desktop;  // ... and when Ctrl+Z went to the viewport
   u32 undo_position_after_page = 0;
   Vector<editor::EditorState::Report> reports;  // --test-page: the page's own checks
 };
+
+// What the desktop was doing (window::desktop_state): a failed input case says whose window was in
+// front, whether the session was locked, and which desktop the editor was on (an end-to-end test's
+// private one, tests/support/test_desktop.h).
+JsonValue desktop_json(const window::DesktopState& d) {
+  JsonValue v = JsonValue::object();
+  v["desktop"] = JsonValue(d.desktop);
+  v["foreground"] = d.foreground.empty() ? JsonValue() : JsonValue(d.foreground);
+  v["foreground_own"] = JsonValue(d.foreground_own);
+  v["locked"] = d.locked < 0 ? JsonValue() : JsonValue(d.locked == 1);
+  return v;
+}
 
 void print_summary(const Summary& s, const Options& o) {
   JsonValue out = JsonValue::object();
@@ -543,6 +557,7 @@ void print_summary(const Summary& s, const Options& o) {
     look["clip_inside"] = JsonValue(s.look_os_clip_inside);
     look["cursor_inside"] = JsonValue(s.look_os_cursor_inside);
     look["released_by_test"] = JsonValue(s.look_os_released_by_test);
+    look["desktop"] = desktop_json(s.look_os_desktop);
     out["look_os"] = std::move(look);
   } else {
     out["look_os"] = JsonValue();
@@ -559,6 +574,7 @@ void print_summary(const Summary& s, const Options& o) {
     keys["undos_after_page"] = JsonValue(s.undos_after_page);
     keys["undo_position_before_page"] = JsonValue(s.undo_position_before_page);
     keys["undo_position_after_page"] = JsonValue(s.undo_position_after_page);
+    keys["desktop"] = desktop_json(s.keys_desktop);
     out["keys"] = std::move(keys);
   } else {
     out["keys"] = JsonValue();
@@ -1281,11 +1297,14 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         // procedure, SDL's translation, relative mode asked of the adopted child — posted to the
         // child and never to the desktop's foreground window: a move to the centre, the right
         // button down, three moves of (DX, DY) / 3, the button up. A posted move is absolute
-        // motion, which is what SDL reads while relative mode is not in effect (the editor's
-        // window is not the platform's foreground window, as under a test runner); in effect, SDL
-        // reads the device's raw motion, which nothing but a device (or SendInput, which moves the
-        // desktop's real cursor) makes, so the run then checks where the cursor was held instead,
-        // and ends the gesture itself (window.md, "Relative mode on an adopted child").
+        // motion, which is what the camera reads while relative mode is not in effect (the
+        // editor's window is not the platform's foreground window, as under a test runner, and
+        // never on a test's private desktop) — wherever the desktop's cursor is, since the window
+        // module stopped SDL letting go of the posted press by reading the device (window.md,
+        // "What the child's messages say"); in effect, the cursor is held and re-centred, and a
+        // posted move is not where the cursor is, so the run then checks where the cursor was
+        // held instead, and ends the gesture itself (window.md, "Relative mode on an adopted
+        // child").
         if (options.look_os && f >= 3 && f <= 10) {
           e.button = 3;
           const f32 cx = e.x;
@@ -1313,6 +1332,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
                   r.clipped && r.clip_left >= r.os_x && r.clip_top >= r.os_y &&
                   r.clip_right <= r.os_x + r.os_width && r.clip_bottom <= r.os_y + r.os_height;
               summary.look_os_cursor_inside = r.cursor_inside;
+              summary.look_os_desktop = window::desktop_state();
             }
           } else if (f == 7) {
             e.kind = window::EventKind::MouseButtonUp;
@@ -1352,6 +1372,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
             (void)child.post_os_event(e);
           } else if (f == 14) {
             summary.viewport_focus = child.has_os_focus();
+            summary.keys_desktop = window::desktop_state();
             summary.posted_to_viewport = ctrl_z(e, true, child);
           } else if (f == 18) {
             summary.undos_from_viewport = input.stats().undos;

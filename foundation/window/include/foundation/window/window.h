@@ -545,6 +545,21 @@ class Window {
   u64 relative_since_ns_ = 0;      // set_relative_mouse(true)'s moment, SDL_GetTicksNS
 };
 
+// **What the desktop is doing, now** (roadmap A40): the desktop this thread's windows are on,
+// whose window the platform has in front, and whether the session is locked — what the platform's
+// focus and pointer rules depend on, so that a report of a gesture or a key that went wrong says
+// what the desktop was doing at the time (engine-editor's `--test-look-os` and `--test-keys`;
+// docs/subsystems/window.md, "What the child's messages say"). Windows only; elsewhere every field
+// is empty or unknown. Cheap enough for a test's frame, not for every frame.
+struct DesktopState {
+  std::string desktop;     // this thread's: "WinSta0\Default", or a test's private one
+  std::string foreground;  // the executable whose window is in front; "" when no window is (always
+                           // so off the input desktop) or its process cannot be read
+  bool foreground_own = false;  // ... and it is this process
+  i32 locked = -1;              // the session is locked: 1, it is not: 0, unknown: -1
+};
+DesktopState desktop_state();
+
 // **The platform's open-file dialog**, modal on `owner` (a top-level window): the files with one of
 // `extensions` (without dots; empty offers every file), the chosen path in `path` (UTF-8). False
 // when it was cancelled, or where the platform has none here (every platform but Windows so far).

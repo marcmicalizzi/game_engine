@@ -6,9 +6,10 @@ engine_module(NAME window LAYER foundation
   SOURCES src/window.cpp)
 target_include_directories(engine_window SYSTEM PRIVATE
   $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>)
-# open_file_dialog: the platform's own open-file dialog (GetOpenFileNameW, comdlg32).
+# open_file_dialog: the platform's own open-file dialog (GetOpenFileNameW, comdlg32); desktop_state:
+# whether the session is locked (WTSQuerySessionInformationW, wtsapi32).
 if(WIN32)
-  target_link_libraries(engine_window PRIVATE comdlg32)
+  target_link_libraries(engine_window PRIVATE comdlg32 wtsapi32)
 endif()
 
 engine_module_tests(NAME window

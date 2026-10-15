@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace engine;
 
@@ -397,6 +398,134 @@ TEST_CASE("window: a child window sits in its parent, moves, and reports through
 #else
   CHECK_FALSE(made);
   CHECK_FALSE(error.empty());
+#endif
+  parent.destroy();
+  window::shutdown();
+}
+
+TEST_CASE("window: a child's pointer and keys are what its messages say, wherever the cursor is") {
+  // window.md, "What the child's messages say" (A40). A right-button drag and Ctrl+Z posted to a
+  // child through the platform's queue, a step at a time as a host's frames post them, in a hidden
+  // window: the desktop's cursor is never over it and its window is never the foreground window,
+  // the two things SDL consults besides the messages. Before A40, SDL let go of the button on the
+  // first move after the press (it read the device, whose button is up) and then reported a
+  // motion to wherever the desktop's cursor was, and the keys came with no window and were dropped.
+  std::string error;
+  if (!window::init(&error)) {
+    MESSAGE("no display: " << error);
+    return;
+  }
+  window::WindowDesc pd;
+  pd.title = "engine child messages test";
+  pd.width = 200;
+  pd.height = 150;
+  pd.hidden = true;
+  pd.vulkan = false;
+  window::Window parent;
+  if (!parent.create(pd, &error)) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
+  window::WindowDesc cd;
+  cd.parent = &parent;
+  cd.x = 10;
+  cd.y = 20;
+  cd.width = 120;
+  cd.height = 90;
+  cd.vulkan = false;
+  window::Window child;
+  const bool made = child.create(cd, &error);
+#if defined(_WIN32)
+  REQUIRE_MESSAGE(made, error);
+  struct Seen {
+    window::EventKind kind;
+    u8 button;
+    f32 x;
+    f32 dx;
+    bool child;
+    window::Key key;
+  };
+  std::vector<Seen> seen;
+  const auto drain = [&] {
+    window::Event e;
+    while (parent.poll(e)) {
+      const bool pointer = e.kind == window::EventKind::MouseMove ||
+                           e.kind == window::EventKind::MouseButtonDown ||
+                           e.kind == window::EventKind::MouseButtonUp;
+      const bool key = e.kind == window::EventKind::KeyDown || e.kind == window::EventKind::KeyUp;
+      if ((pointer && e.child) || key)
+        seen.push_back(Seen{e.kind, e.button, e.x, e.dx, e.child, e.key});
+    }
+  };
+  const auto post = [&](window::EventKind kind, f32 x) {
+    window::Event e;
+    e.kind = kind;
+    e.button = 3;
+    e.x = x;
+    e.y = 40.0f;
+    REQUIRE(child.post_os_event(e));
+    drain();
+  };
+  drain();
+  post(window::EventKind::MouseMove, 20.0f);
+  post(window::EventKind::MouseButtonDown, 20.0f);
+  for (const f32 x : {30.0f, 40.0f, 50.0f})
+    post(window::EventKind::MouseMove, x);
+  post(window::EventKind::MouseButtonUp, 50.0f);
+  // The press, three moves of 10 pixels from the press, and the release, in that order and
+  // nothing else of the right button's: no release between, no motion to the desktop's cursor.
+  std::string order;
+  f32 moved = 0.0f;
+  bool pressed = false;
+  bool released = false;
+  for (const Seen& s : seen) {
+    if (s.kind == window::EventKind::MouseButtonDown && s.button == 3) {
+      order += 'D';
+      pressed = true;
+    } else if (s.kind == window::EventKind::MouseButtonUp && s.button == 3) {
+      order += 'U';
+      released = true;
+    } else if (s.kind == window::EventKind::MouseMove && pressed && !released) {
+      order += 'M';
+      CHECK(s.dx == 10.0f);
+      moved += s.dx;
+    }
+  }
+  CHECK(order == "DMMMU");
+  CHECK(moved == 30.0f);
+  // Ctrl+Z posted to the child: SDL has no keyboard focus (the window is not in front), and the
+  // keys are the parent's, unmarked, as keys SDL gives its focus are.
+  seen.clear();
+  for (const window::EventKind kind : {window::EventKind::KeyDown, window::EventKind::KeyUp}) {
+    for (const window::Key k : {window::Key::Control, window::Key::Z}) {
+      window::Event e;
+      e.kind = kind;
+      e.key = k;
+      REQUIRE(child.post_os_event(e));
+    }
+  }
+  drain();
+  std::string keys;
+  for (const Seen& s : seen) {
+    if (s.kind != window::EventKind::KeyDown && s.kind != window::EventKind::KeyUp) continue;
+    CHECK_FALSE(s.child);
+    keys += s.kind == window::EventKind::KeyDown ? 'd' : 'u';
+    keys += s.key == window::Key::Control ? 'C' : (s.key == window::Key::Z ? 'Z' : '?');
+  }
+  CHECK(keys == "dCdZuCuZ");
+  // What the desktop was doing, for a report: a desktop by name, and never this process's hidden
+  // window in front.
+  const window::DesktopState desk = window::desktop_state();
+  CHECK_FALSE(desk.desktop.empty());
+  CHECK_FALSE(desk.foreground_own);
+  CHECK(desk.locked >= -1);
+  CHECK(desk.locked <= 1);
+  MESSAGE("desktop " << desk.desktop << ", in front: " << desk.foreground << ", locked "
+                     << desk.locked);
+  child.destroy();
+#else
+  CHECK_FALSE(made);
 #endif
   parent.destroy();
   window::shutdown();

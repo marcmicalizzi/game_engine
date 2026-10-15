@@ -17,6 +17,8 @@
 #include <windows.h>
 // After windows.h, which WIN32_LEAN_AND_MEAN keeps from including it: open_file_dialog.
 #include <commdlg.h>
+// The session's lock state, for desktop_state().
+#include <wtsapi32.h>
 #endif
 
 namespace engine::window {
@@ -82,6 +84,224 @@ struct RelativeChild {
   i32 desktop_y = 0;
 };
 RelativeChild g_relative;
+
+#if defined(_WIN32)
+// **A child's pointer and keys are its own messages** (window.md, "What the child's messages say",
+// roadmap A40). SDL's translation of the child's messages stays, with three things corrected, each
+// a place where SDL consults the device or the desktop rather than the message it was handed:
+//
+// - SDL arms TrackMouseEvent on the first motion after each WM_MOUSELEAVE, and the platform posts
+//   the leave at once when the desktop's cursor is not over the window; SDL then reads the buttons
+//   from the device (WIN_CheckAsyncMouseRelease, GetAsyncKeyState) on the next motion and releases
+//   any the device says are up. A press the platform delivered to the child (a test's, posted, or a
+//   person's whose release message is still queued) is let go of there. While the child's own
+//   messages hold the button and the child holds the capture — under which every release is
+//   delivered to it as a message — that release is not reported (`forgotten`), and the release the
+//   message brings later is, by this module if SDL, already up, makes none.
+// - While SDL has let go of a button that way, the motion SDL makes up from the desktop's cursor on
+//   WM_MOUSELEAVE is not the child's; and a motion's delta is from the child's previous pointer
+//   message, not from SDL's last position, which that made-up motion moved.
+// - SDL gives a key its keyboard focus's window id, and its keyboard focus only to the platform's
+//   foreground window; a key the child's procedure handles while SDL has no keyboard focus (the
+//   desktop locked, another desktop, the window behind another) came with no window id and was
+//   dropped. It is the child's parent's, as a key SDL attributes to its focus is.
+//
+// The child's procedure is ours, in front of SDL's (which adopted the window), so that whatever SDL
+// makes while handling one of the child's messages is known to be from that message; an event
+// filter applies the three rules. Main thread only: the filter leaves events made on other threads
+// alone.
+struct ChildProc {
+  HWND hwnd = nullptr;
+  WNDPROC sdl = nullptr;  // SDL's procedure, which ours calls
+  u32 id = 0;
+  u32 parent = 0;
+  u32 held = 0;       // SDL button masks the child's button messages hold
+  u32 forgotten = 0;  // ... of which SDL let go by reading the device (above)
+  f32 last_x = 0.0f;  // the child's last pointer message's position, for a motion's delta
+  f32 last_y = 0.0f;
+  bool has_last = false;
+};
+ChildProc g_child_procs[16];
+// The id SDL gives the system's cursor's events (its internal SDL_GLOBAL_MOUSE_ID): the window
+// messages' pointer, as against a raw device's, a touch's or a pen's.
+constexpr SDL_MouseID k_sdl_system_mouse = 0;
+// The child whose procedure is running, and the message it is handling; a message sent while
+// another is handled saves and restores both.
+ChildProc* g_handling = nullptr;
+UINT g_handling_msg = 0;
+LPARAM g_handling_lp = 0;
+SDL_EventFilter g_prev_filter = nullptr;
+void* g_prev_filter_data = nullptr;
+
+ChildProc* child_proc_of(HWND hwnd) noexcept {
+  for (ChildProc& c : g_child_procs) {
+    if (c.hwnd != nullptr && c.hwnd == hwnd) return &c;
+  }
+  return nullptr;
+}
+
+ChildProc* child_proc_by_id(u32 id) noexcept {
+  for (ChildProc& c : g_child_procs) {
+    if (c.hwnd != nullptr && c.id == id) return &c;
+  }
+  return nullptr;
+}
+
+// The SDL button a button message is about, as SDL reads it (swapped buttons swap left and right).
+u8 sdl_button_of(UINT msg, WPARAM wp) noexcept {
+  const bool swap = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+  switch (msg) {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK: return swap ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK: return swap ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK: return SDL_BUTTON_MIDDLE;
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+      return GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? SDL_BUTTON_X1 : SDL_BUTTON_X2;
+    default: return 0;
+  }
+}
+
+bool is_button_down(UINT msg) noexcept {
+  return msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN ||
+         msg == WM_XBUTTONDOWN || msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDBLCLK ||
+         msg == WM_MBUTTONDBLCLK || msg == WM_XBUTTONDBLCLK;
+}
+
+bool is_button_up(UINT msg) noexcept {
+  return msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP;
+}
+
+bool is_key_message(UINT msg) noexcept {
+  return msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP;
+}
+
+LRESULT CALLBACK child_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  ChildProc* const c = child_proc_of(hwnd);
+  if (c == nullptr || c->sdl == nullptr) return DefWindowProcW(hwnd, msg, wp, lp);
+  const WNDPROC sdl = c->sdl;
+  const u8 button = sdl_button_of(msg, wp);
+  if (button != 0 && is_button_down(msg)) c->held |= SDL_BUTTON_MASK(button);
+  ChildProc* const outer = g_handling;
+  const UINT outer_msg = g_handling_msg;
+  const LPARAM outer_lp = g_handling_lp;
+  g_handling = c;
+  g_handling_msg = msg;
+  g_handling_lp = lp;
+  const LRESULT r = CallWindowProcW(sdl, hwnd, msg, wp, lp);
+  if (button != 0 && is_button_up(msg) && c->hwnd == hwnd) {
+    const u32 mask = SDL_BUTTON_MASK(button);
+    c->held &= ~mask;
+    if ((c->forgotten & mask) != 0) {
+      // SDL let go of this button already and made no release now; the message's is reported.
+      c->forgotten &= ~mask;
+      SDL_Event e;
+      SDL_zero(e);
+      e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+      e.button.windowID = c->id;
+      e.button.which = k_sdl_system_mouse;
+      e.button.button = button;
+      e.button.down = false;
+      e.button.clicks = 1;
+      e.button.x = static_cast<f32>(static_cast<i16>(LOWORD(lp)));
+      e.button.y = static_cast<f32>(static_cast<i16>(HIWORD(lp)));
+      (void)SDL_PushEvent(&e);
+    }
+  }
+  g_handling = outer;
+  g_handling_msg = outer_msg;
+  g_handling_lp = outer_lp;
+  return r;
+}
+
+bool SDLCALL child_event_filter(void* userdata, SDL_Event* e) {
+  (void)userdata;
+  if (g_prev_filter != nullptr && !g_prev_filter(g_prev_filter_data, e)) return false;
+  if (!SDL_IsMainThread()) return true;
+  ChildProc* const handling = g_handling;
+  switch (e->type) {
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+      if (e->key.windowID == 0 && handling != nullptr && is_key_message(g_handling_msg))
+        e->key.windowID = handling->parent;
+      return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+      if (e->button.which != k_sdl_system_mouse) return true;  // touch and pen are SDL's
+      ChildProc* const c = child_proc_by_id(e->button.windowID);
+      if (c == nullptr || c != handling) return true;
+      const u32 mask = SDL_BUTTON_MASK(e->button.button);
+      if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && g_handling_msg == WM_MOUSEMOVE &&
+          (c->held & mask) != 0 && GetCapture() == c->hwnd) {
+        c->forgotten |= mask;  // read from the device, not delivered: the message's comes later
+        return false;
+      }
+      if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) c->forgotten &= ~mask;
+      // Where the message says the button went, not SDL's last position (which a made-up motion
+      // may have moved).
+      if (sdl_button_of(g_handling_msg, 0) != 0) {  // a button message (any of its buttons)
+        e->button.x = static_cast<f32>(static_cast<i16>(LOWORD(g_handling_lp)));
+        e->button.y = static_cast<f32>(static_cast<i16>(HIWORD(g_handling_lp)));
+      }
+      c->last_x = e->button.x;
+      c->last_y = e->button.y;
+      c->has_last = true;
+      return true;
+    }
+    case SDL_EVENT_MOUSE_MOTION: {
+      if (e->motion.which != k_sdl_system_mouse) return true;
+      ChildProc* const c = child_proc_by_id(e->motion.windowID);
+      if (c == nullptr || c != handling) return true;  // a pushed event, or made outside
+      if (g_handling_msg != WM_MOUSEMOVE && c->forgotten != 0) return false;  // the leave's
+      if (c->has_last) {
+        e->motion.xrel = e->motion.x - c->last_x;
+        e->motion.yrel = e->motion.y - c->last_y;
+      }
+      c->last_x = e->motion.x;
+      c->last_y = e->motion.y;
+      c->has_last = true;
+      return true;
+    }
+    default: return true;
+  }
+}
+
+// The child's procedure in front of SDL's, and the filter, once SDL has adopted the window.
+void adopt_child_proc(HWND hwnd, u32 id, u32 parent) noexcept {
+  for (ChildProc& c : g_child_procs) {
+    if (c.hwnd != nullptr) continue;
+    c = ChildProc{};
+    c.hwnd = hwnd;
+    c.id = id;
+    c.parent = parent;
+    c.sdl = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&child_proc)));
+    break;
+  }
+  SDL_EventFilter current = nullptr;
+  void* data = nullptr;
+  if (SDL_GetEventFilter(&current, &data) && current == &child_event_filter) return;
+  g_prev_filter = current;
+  g_prev_filter_data = data;
+  SDL_SetEventFilter(&child_event_filter, nullptr);
+}
+
+// SDL's procedure back before SDL lets go of the window, which puts back what it found.
+void release_child_proc(HWND hwnd) noexcept {
+  ChildProc* const c = child_proc_of(hwnd);
+  if (c == nullptr) return;
+  if (c->sdl != nullptr)
+    (void)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(c->sdl));
+  if (g_handling == c) g_handling = nullptr;
+  *c = ChildProc{};
+}
+#endif
 
 // The last dropped file's path, which `Event::text` points at until the next poll: SDL's own copy
 // lives only until then too, and one queue serves every window of the process.
@@ -837,6 +1057,7 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
     id_ = SDL_GetWindowID(window);
     child_ = true;
     add_child(id_, desc.parent->id_);
+    adopt_child_proc(hwnd, id_, desc.parent->id_);
     // Above the parent's other children (a webview made before it), so where they overlap the
     // pointer and the picture are this window's.
     SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -884,6 +1105,7 @@ void Window::destroy() noexcept {
 #if defined(_WIN32)
   // SDL lets go of a window it adopted without destroying it; the child is ours to destroy.
   HWND own = child_ ? hwnd_of(handle_) : nullptr;
+  if (own != nullptr) release_child_proc(own);
 #endif
   SDL_DestroyWindow(static_cast<SDL_Window*>(handle_));
 #if defined(_WIN32)
@@ -1528,6 +1750,59 @@ Window::PointerReport Window::pointer_report() const noexcept {
   }
 #endif
   return r;
+}
+
+DesktopState desktop_state() {
+  DesktopState s;
+#if defined(_WIN32)
+  const auto narrow = [](const wchar_t* w) {
+    std::string out;
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return out;
+    out.resize(static_cast<usize>(n - 1));
+    (void)WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr);
+    return out;
+  };
+  wchar_t name[256] = {};
+  DWORD needed = 0;
+  if (GetUserObjectInformationW(GetProcessWindowStation(), UOI_NAME, name, sizeof(name), &needed))
+    s.desktop = narrow(name) + "\\";
+  if (GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, name,
+                                sizeof(name), &needed))
+    s.desktop += narrow(name);
+  // GetForegroundWindow is NULL for a thread whose desktop is not the input desktop.
+  const HWND front = GetForegroundWindow();
+  DWORD pid = 0;
+  if (front != nullptr) (void)GetWindowThreadProcessId(front, &pid);
+  s.foreground_own = pid != 0 && pid == GetCurrentProcessId();
+  if (pid != 0) {
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (process != nullptr) {
+      wchar_t path[MAX_PATH] = {};
+      DWORD size = MAX_PATH;
+      if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+        const wchar_t* base = path;
+        for (const wchar_t* p = path; *p != L'\0'; ++p) {
+          if (*p == L'\\' || *p == L'/') base = p + 1;
+        }
+        s.foreground = narrow(base);
+      }
+      CloseHandle(process);
+    }
+  }
+  WTSINFOEXW* info = nullptr;
+  DWORD bytes = 0;
+  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSSessionInfoEx,
+                                  reinterpret_cast<LPWSTR*>(&info), &bytes) &&
+      info != nullptr) {
+    if (info->Level == 1) {
+      const LONG flags = info->Data.WTSInfoExLevel1.SessionFlags;
+      s.locked = flags == WTS_SESSIONSTATE_LOCK ? 1 : (flags == WTS_SESSIONSTATE_UNLOCK ? 0 : -1);
+    }
+    WTSFreeMemory(info);
+  }
+#endif
+  return s;
 }
 
 }  // namespace engine::window

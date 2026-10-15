@@ -27,6 +27,7 @@
 #include <systems/renderer/capture.h>
 
 #include <doctest/doctest.h>
+#include <test_desktop.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -34,6 +35,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -223,17 +225,37 @@ window::Event key(window::EventKind kind, window::Key k) {
   return e;
 }
 
-// Runs a test program and returns its summary line, or skips (false) where it has no window.
-bool run_editor(const std::vector<std::string_view>& argv, JsonValue& summary,
-                std::string& output) {
-  platform::Process p;
+// Runs a test program and returns its summary line, or skips (false) where it has no window. On
+// Windows it runs on this test process's own desktop (tests/support/test_desktop.h; roadmap A40):
+// its window is on nobody's screen, nothing the owner does reaches it, and what it does with input
+// posted through the platform's queue never depends on which window the owner's desktop has in
+// front, where the owner's cursor is, or whether the session is locked. `on_private` says whether
+// it ran there (a window station that refuses a desktop runs it on this one, and says why).
+bool run_editor(const std::vector<std::string_view>& argv, JsonValue& summary, std::string& output,
+                bool* on_private = nullptr) {
+  const std::span<const std::string_view> args(argv.data(), argv.size());
   std::string error;
-  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-                          /*merge_stderr=*/true),
-                  error);
-  p.close_stdin();
-  p.read_all(output);
-  const i32 code = p.wait();
+  i32 code = -1;
+  bool ran = false;
+#if defined(_WIN32)
+  const test::PrivateDesktop& desktop = test::private_desktop();
+  if (desktop.valid()) {
+    int exit_code = -1;
+    REQUIRE_MESSAGE(test::run_on_desktop(desktop, args, output, exit_code, error), error);
+    code = static_cast<i32>(exit_code);
+    ran = true;
+  } else {
+    MESSAGE("no desktop of its own here, so engine-editor runs on this one: " << desktop.error());
+  }
+#endif
+  if (on_private != nullptr) *on_private = ran;
+  if (!ran) {
+    platform::Process p;
+    REQUIRE_MESSAGE(p.spawn(args, &error, /*merge_stderr=*/true), error);
+    p.close_stdin();
+    p.read_all(output);
+    code = p.wait();
+  }
   if (code == 3) {
     MESSAGE("engine-editor has no window here: " << output);
     return false;
@@ -1395,14 +1417,19 @@ TEST_CASE("engine-editor: the viewport's keys, the page's keys, and the look ges
   // turns the camera through the adopted child's own events; then a click posted to the child
   // through the platform's queue gives it the keyboard, Ctrl+Z posted to whoever has the
   // keyboard undoes the move, the page is given the keyboard, and Ctrl+Z posted again must not
-  // reach SDL. Nothing is sent to the desktop's own foreground window.
+  // reach SDL. Nothing is sent to the desktop's own foreground window. On the test's own desktop
+  // (run_editor) the editor's window is never the platform's foreground window, so SDL never gives
+  // it its keyboard focus: the posted keys reach the editor because the window module gives a key
+  // its child's procedure handled to the child's parent (window.md, "What the child's messages
+  // say"), and before A40 they were dropped whenever the editor was not in front.
   const std::vector<std::string_view> argv = {
       exe,        "--doc",       doc_dir,  "--width", "900",       "--height", "560",
       "--frames", "34",          "--pick", "center",  "--move",    "0,0.25,0", "--look",
       "90,-45",   "--test-keys", "--ddc",  ddc,       "--embedded"};
   JsonValue summary;
   std::string output;
-  if (!run_editor(argv, summary, output)) return;
+  bool on_private = false;
+  if (!run_editor(argv, summary, output, &on_private)) return;
   CHECK(write_json(*summary.find("moved")) == "true");
   const JsonValue* look = summary.find("look");
   REQUIRE_MESSAGE((look != nullptr && look->is_object()), output);
@@ -1411,11 +1438,15 @@ TEST_CASE("engine-editor: the viewport's keys, the page's keys, and the look ges
   CHECK_MESSAGE(number(look->find("yaw_deg")) != 0.0, output);
   CHECK_MESSAGE(number(look->find("pitch_deg")) != 0.0, output);
   // Asked for; in effect only where the editor's window is the platform's foreground window, which
-  // a test cannot arrange (window.md, "Relative mode on an adopted child").
+  // it never is on a desktop that is not the input desktop (window.md, "Relative mode on an
+  // adopted child").
   CHECK_MESSAGE(write_json(*look->find("relative_asked")) == "true", output);
-  MESSAGE("relative mode in effect: " << write_json(*look->find("relative")));
+  if (on_private) CHECK_MESSAGE(write_json(*look->find("relative")) == "false", output);
   const JsonValue* keys = summary.find("keys");
   REQUIRE_MESSAGE((keys != nullptr && keys->is_object()), output);
+  const JsonValue* desktop = keys->find("desktop");
+  REQUIRE_MESSAGE((desktop != nullptr && desktop->is_object()), output);
+  MESSAGE("the desktop at the keys: " << write_json(*desktop));
   CHECK_MESSAGE(write_json(*keys->find("viewport_focus")) == "true", output);
   CHECK_MESSAGE(write_json(*keys->find("posted_to_viewport")) == "true", output);
   // Ctrl+Z in the viewport undid the move: one undo, the editor's.
@@ -1439,20 +1470,30 @@ TEST_CASE("engine-editor: the look gesture through the platform's queue turns th
   // platform's queue (window procedure, SDL's translation), never to the desktop's foreground
   // window. Before 2026-10-12 the child carried SDL's relative flag itself, which SDL honours only
   // for its keyboard focus (a top-level window) and which made it drop every absolute motion of
-  // the child: the camera did not turn at all, here or under a person's mouse.
+  // the child: the camera did not turn at all, here or under a person's mouse. Until A40 the
+  // camera did not turn either wherever the desktop's cursor was not over the child — under a
+  // test runner, always: SDL read the right button from the device on the first move after the
+  // press and let go of it (window.md, "What the child's messages say").
   const std::vector<std::string_view> argv = {
       exe,  "--doc", doc_dir, "--width",        "900",  "--height",  "560", "--frames",
       "14", "--ddc", ddc,     "--test-look-os", "90,0", "--embedded"};
   JsonValue summary;
   std::string output;
-  if (!run_editor(argv, summary, output)) return;
+  bool on_private = false;
+  if (!run_editor(argv, summary, output, &on_private)) return;
   const JsonValue* look = summary.find("look_os");
   REQUIRE_MESSAGE((look != nullptr && look->is_object()), output);
+  const JsonValue* desktop = look->find("desktop");
+  REQUIRE_MESSAGE((desktop != nullptr && desktop->is_object()), output);
+  MESSAGE("the desktop during the gesture: " << write_json(*desktop));
   CHECK_MESSAGE(write_json(*look->find("asked")) == "true", output);
   // SDL's own flag never sits on the child: it is asked through the parent.
   CHECK_MESSAGE(write_json(*look->find("child_flag")) == "false", output);
   const f64 expected = number(look->find("expected_yaw_deg"));
   CHECK(expected < -1.0);  // pointer right turns right: yaw falls
+  // On the test's own desktop no window is ever in front, so the cursor is never held and the
+  // case always takes the first branch below; the second is for a run on a shared desktop.
+  if (on_private) CHECK_MESSAGE(write_json(*look->find("in_effect")) == "false", output);
   if (write_json(*look->find("in_effect")) == "false") {
     // Not the foreground window: the posted moves are the absolute pointer's, and they turn the
     // camera by exactly the fly camera's sensitivity.
