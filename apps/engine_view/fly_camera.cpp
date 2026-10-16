@@ -24,6 +24,7 @@ constexpr u32 k_key_w = 26;
 constexpr u32 k_key_escape = 41;
 constexpr u32 k_key_space = 44;
 constexpr u32 k_key_0 = 39;
+constexpr u32 k_key_1 = 30;  // 1 to 4 are 30 to 33
 constexpr u32 k_key_minus = 45;
 constexpr u32 k_key_equals = 46;
 constexpr u32 k_key_left_bracket = 47;
@@ -44,6 +45,7 @@ constexpr u32 k_pad_right_y = 3;
 constexpr u32 k_pad_left_trigger = 4;
 constexpr u32 k_pad_right_trigger = 5;
 constexpr u32 k_pad_south = 1;
+constexpr u32 k_pad_west = 3;
 constexpr u32 k_pad_north = 4;
 constexpr u32 k_pad_back = 5;
 constexpr u32 k_pad_left_stick = 8;
@@ -238,6 +240,23 @@ input::ActionMap default_fly_map(u32 revision) {
     const input::ActionId id =
         map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
     map.bind(id, Binding{Source::Key, exposure_keys[c - k_rate_controls]});
+  }
+  if (revision < 5) return map;
+
+  // Revision 5 (2026-10-16): the game actions a module run by `--game` may ask for (apps.md, "The
+  // game contract"), which the camera itself never reads. `interact` is E and `use` Q: a flying
+  // camera reads both as `lift`, a walking one never reads `lift`, so as with Space and `jump` one
+  // key means the obvious thing in each mode; on a pad `interact` is West, the face button nothing
+  // else takes. `game_1`..`game_4` are the number row's 1 to 4, bound to nothing before.
+  const input::ActionId interact = map.add_action("interact", input::ActionKind::Button);
+  map.bind(interact, Binding{Source::Key, k_key_e});
+  map.bind(interact, Binding{Source::GamepadButton, k_pad_west});
+  const input::ActionId use = map.add_action("use", input::ActionKind::Button);
+  map.bind(use, Binding{Source::Key, k_key_q});
+  const char* const numbered[4] = {"game_1", "game_2", "game_3", "game_4"};
+  for (u32 n = 0; n < 4; ++n) {
+    const input::ActionId id = map.add_action(numbered[n], input::ActionKind::Button);
+    map.bind(id, Binding{Source::Key, k_key_1 + n});
   }
   return map;
 }
@@ -711,6 +730,7 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   if (state.pressed(self.actions_.marker)) {
     self.trajectory_.markers.push_back(FlyMarker{tick.value, self.state_});
   }
+  if (self.observer_ != nullptr) self.observer_(self.observer_user_, self, state);
 }
 
 u32 FlySession::run(std::span<const input::RawEvent> events, u32 cursor, SimTick to) {

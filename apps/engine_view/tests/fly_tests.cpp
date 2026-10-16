@@ -200,8 +200,16 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);
   // The camera's eight, the time-lapse's four keys appended after them (revision 2), the walk
   // mode's two after those (revision 3): `walk` on F and `jump` on Space, and a sky's exposure
-  // keys after those (revision 4): `-`, `=` and `0`.
-  CHECK(map.action_count() == 17);
+  // keys after those (revision 4): `-`, `=` and `0`; and the six game actions a `--game` module may
+  // read after those (revision 5), which the camera never resolves.
+  CHECK(map.action_count() == 23);
+  CHECK(view::default_fly_map(4).action_count() == 17);
+  CHECK(map.find_action("interact") != input::k_invalid_action);
+  CHECK(map.find_action("game_4") != input::k_invalid_action);
+  CHECK(view::default_fly_map(4).find_action("interact") == input::k_invalid_action);
+  input::ActionMap fourth;
+  CHECK(view::default_fly_map_for(view::default_fly_map(4).hash(), fourth));
+  CHECK(fourth.action_count() == 17);  // a session recorded before the game actions replays
   CHECK(view::default_fly_map(3).action_count() == 14);
   CHECK(view::default_fly_map(2).action_count() == 12);
   for (u32 c = 0; c < view::k_view_controls; ++c)

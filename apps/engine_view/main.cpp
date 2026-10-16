@@ -24,6 +24,7 @@
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
 #include "pacing.h"
+#include "report.h"
 #include "time_controls.h"
 #include "window_input.h"
 #include "world_view.h"  // empty without the world capability (ENGINE_VIEW_WORLD)
@@ -82,6 +83,7 @@
 #endif
 
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -162,6 +164,7 @@ constexpr const char* k_usage =
     "                   [--record-input <log.jsonl>]\n"
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
+    "                   [--report <report.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
     "                   [--present-bits auto|8|10] [--present-format auto|sdr8|sdr10|hdr10|scrgb]\n"
@@ -442,6 +445,10 @@ constexpr const char* k_usage =
     "                   at one frame per four ticks; --marker-captures draws every marker. Names\n"
     "                   its own scene unless --scene or --mesh is given; refuses a log recorded\n"
     "                   against another action map or another camera integration version\n"
+    "  --report <f>     at exit, whether the run succeeded or not, write one JSON file a tester\n"
+    "                   sends back: the summary line, the machine (adapter, driver, tier, OS,\n"
+    "                   CPU baseline), frame times (median, p95, p99, worst), the walk, a\n"
+    "                   --game module's result or error, and why the run ended\n"
     "  --windowed       --replay-input: fly the replay in the window at its recorded pace even\n"
     "                   with --benchmark, which then writes a record per presented frame like a\n"
     "                   live session's: the fair before and after of a presentation change;\n"
@@ -1329,15 +1336,75 @@ bool reference_progress(u32 done, u32 total, void*) {
   return true;
 }
 
+// `--report` (report.h): what the run fills as it goes and `main` writes at exit, whichever way the
+// run ended. One per process, so the two refusals below can note the first failure in it without
+// every caller passing it along.
+view::RunReport g_report;
+
+// printf into a string: the windowed summary is formatted once and both printed and kept for the
+// report, so the report holds the same bytes the console got.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 1, 2)))
+#endif
+std::string format_text(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  va_list again;
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out;
+  if (n > 0) {
+    out.resize(static_cast<usize>(n) + 1);
+    (void)std::vsnprintf(out.data(), out.size(), format, again);
+    out.resize(static_cast<usize>(n));
+  }
+  va_end(again);
+  return out;
+}
+
+void note_failure(const std::string& line) {
+  if (g_report.error.empty()) g_report.error = line;
+}
+
 int fail(const char* what, const std::string& error) {
   std::fprintf(stderr, "engine-view: %s: %s\n", what, error.c_str());
+  note_failure(std::string(what) + ": " + error);
   return k_exit_error;
 }
 
 int unavailable(const char* what, const std::string& error) {
   std::fprintf(stderr, "engine-view: unavailable: %s%s%s\n", what, error.empty() ? "" : ": ",
                error.c_str());
+  note_failure(std::string("unavailable: ") + what + (error.empty() ? "" : ": ") + error);
   return k_exit_unavailable;
+}
+
+// The device's half of the report's `machine` block, once a device exists.
+void report_device(const gfx::Device& device, const renderer::ResolvedSettings& resolved, u32 width,
+                   u32 height) {
+  const gfx::AdapterInfo& a = device.adapter();
+  g_report.have_device = true;
+  g_report.adapter = a.name;
+  g_report.driver = a.driver_name + (a.driver_info.empty() ? "" : " " + a.driver_info);
+  g_report.vulkan = a.api_version;
+  g_report.tier = a.verdict.tier;
+  g_report.raster = renderer::raster_name(resolved.settings.raster);
+  g_report.shadows = renderer::resolved_shadow_name(resolved);
+  g_report.width = width;
+  g_report.height = height;
+}
+
+// The walk's half, at the end of a session that had a walker.
+void report_walk(const view::FlySession& session) {
+  const view::Walker* walker = session.walker();
+  if (walker == nullptr || !walker->available()) return;
+  const view::WalkStats& s = walker->stats();
+  const u32 hz = session.header().params.tick_hz > 0 ? session.header().params.tick_hz : 1u;
+  g_report.have_walk = s.ticks > 0;
+  g_report.walk_distance_m = s.distance_m;
+  g_report.walk_seconds = static_cast<f64>(s.ticks) / static_cast<f64>(hz);
+  g_report.walk_drops = s.drops;
 }
 
 // ---- the interactive camera: what main prepares, and what both frame loops share ------------
@@ -2264,6 +2331,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       break;
     }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+    report_device(device, resolved, options.width, options.height);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
     if (availability != renderer::RenderAvailability::Ok) {
@@ -2939,6 +3007,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
     }
   }
+  // `--report`: the frames as the records have them, the walk, and the summary as printed.
+  for (const scene::FrameRecord& r : records)
+    g_report.frames.add(r.frame_ms);
+  if (interactive.on) report_walk(session);
+  g_report.summary_line = summary_line;
+  if (g_report.reason.empty() && exit_code == 0)
+    g_report.reason = interactive.on ? "session" : "frames";
   census.destroy();
 #if ENGINE_VIEW_WORLD
   view_world.close_log();  // the summary line, while the world it summarizes is still whole
@@ -2966,10 +3041,29 @@ int run_offscreen(Options& options, Interactive& interactive) {
   return exit_code;
 }
 
+int run_view(int argc, char** argv);
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement
+  const int code = run_view(argc, argv);
+  // `--report`: written whichever way the run ended, as long as the process can still write.
+  if (!g_report.path.empty()) {
+    g_report.exit_code = code;
+    if (g_report.reason.empty()) g_report.reason = code == 0 ? "done" : "error";
+    std::string error;
+    if (!view::write_report(g_report, &error))
+      std::fprintf(stderr, "engine-view: report: %s\n", error.c_str());
+    else
+      std::fprintf(stderr, "engine-view: the report is in %s\n", g_report.path.c_str());
+  }
+  return code;
+}
+
+namespace {
+
+int run_view(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -3397,6 +3491,9 @@ int main(int argc, char** argv) {
       options.start_pitch_deg = static_cast<f32>(yp[1]);
     } else if (a == "--record-input") {
       if (!next_value(argc, argv, i, a, options.record_input)) return k_exit_usage;
+    } else if (a == "--report") {
+      if (!next_value(argc, argv, i, a, g_report.path)) return k_exit_usage;
+      g_report.frames.enable();
     } else if (a == "--replay-input") {
       if (!next_value(argc, argv, i, a, options.replay_input)) return k_exit_usage;
       options.interactive = true;
@@ -4230,6 +4327,7 @@ int main(int argc, char** argv) {
       break;
     }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+    report_device(device, resolved, options.width, options.height);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
     if (availability != renderer::RenderAvailability::Ok) {
@@ -4622,6 +4720,9 @@ int main(int argc, char** argv) {
         }
       }
       const i64 frame_start = time::monotonic_ns();
+      // `--report`'s frame times: start to start, as `FrameRecord::frame_ms` is (no-op unasked).
+      if (last_frame_start_ns != 0)
+        g_report.frames.add(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
       last_frame_start_ns = frame_start;
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
@@ -4637,12 +4738,18 @@ int main(int argc, char** argv) {
       while (window.poll(event)) {
         switch (event.kind) {
           case window::EventKind::Quit:
-          case window::EventKind::CloseRequested: running = false; break;
+          case window::EventKind::CloseRequested:
+            running = false;
+            g_report.reason = "closed";
+            break;
           case window::EventKind::Resized: resize_pending = true; break;
           case window::EventKind::KeyDown:
             // In an interactive session Escape is an action (`capture`), read at its tick below:
             // it gives the pointer back, or with the pointer already free ends the session.
-            if (!interactive.on && event.key == window::Key::Escape) running = false;
+            if (!interactive.on && event.key == window::Key::Escape) {
+              running = false;
+              g_report.reason = "escape";
+            }
             break;
           case window::EventKind::FocusGained:
             // Switching to the window is switching to fly it: it takes the pointer. Not in an
@@ -5070,9 +5177,18 @@ int main(int argc, char** argv) {
         break;
       }
       if (presented == gfx::PresentStatus::OutOfDate) resize_pending = true;
-      if (last || exit_code != 0 || exit_requested) running = false;
+      if (last || exit_code != 0 || exit_requested) {
+        running = false;
+        if (g_report.reason.empty()) {
+          g_report.reason = exit_code != 0   ? "error"
+                            : exit_requested ? "escape"
+                            : session_done   ? (path_in_window ? "path" : "session")
+                                             : "frames";
+        }
+      }
     }
     finished_ns = time::monotonic_ns();
+    if (interactive.on) report_walk(session);
     if (window_records && view_renderer.valid() && exit_code == 0) {
       // The last frames' GPU numbers fold in when their slots come around again: bring those
       // around with nothing drawn and nothing presented, and the session's last frames have
@@ -5223,7 +5339,7 @@ int main(int argc, char** argv) {
     // into its middle.
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
                               stderr);
-    std::printf(
+    const std::string summary_text = format_text(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
         "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
@@ -5294,8 +5410,12 @@ int main(int argc, char** argv) {
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
         sun_text.c_str(), output_text.c_str());
+    std::fputs(summary_text.c_str(), stdout);
+    g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);
   }
   log::remove_sink(&stderr_sink);
   return exit_code;
 }
+
+}  // namespace

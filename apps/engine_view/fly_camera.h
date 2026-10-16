@@ -160,21 +160,25 @@ struct FlyActions {
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
 // four viewer controls (2026-09-27); 3 appends the walk mode's two, `walk` (F) and `jump` (Space,
 // the pad's South) (2026-09-28); 4 appends a sky's three exposure keys, `-`, `=` and `0`
-// (2026-09-30). A revision appends and never reorders, and a log names the hash
+// (2026-09-30); 5 appends the six game actions a `--game` module may read, `interact` (E, the
+// pad's West), `use` (Q) and `game_1`..`game_4` (1 to 4) (2026-10-16), which the camera itself
+// never reads. A revision appends and never reorders, and a log names the hash
 // of the map it was recorded against, so a log recorded against an earlier revision is replayed
 // with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
 // means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
 // before it meant anything, an F pressed before it walked — does nothing, as it did then.
-inline constexpr u32 k_fly_map_revision = 4;
+inline constexpr u32 k_fly_map_revision = 5;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
 // pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
 // slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking, `-`
-// `=` a sky's exposure darker and brighter and `0` to hold it; and
+// `=` a sky's exposure darker and brighter and `0` to hold it, E to interact and Q to use while
+// walking and 1 to 4 a game's own four; and
 // on a gamepad the left stick to move, the triggers up and down, the right stick to turn, the stick
-// clicks fast and slow, Back as Escape, North to mark and South to jump. `revision` 1 is the map
-// without the four time-lapse keys, 2 the map without the walk mode's, 3 without the exposure's.
+// clicks fast and slow, Back as Escape, North to mark, South to jump and West to interact.
+// `revision` 1 is the map without the four time-lapse keys, 2 the map without the walk mode's, 3
+// without the exposure's, 4 without the game actions.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).
@@ -305,6 +309,17 @@ class FlySession {
   // the session. A session with none, or with one that has no ground to walk on, only flies, and
   // its `walk` presses change nothing.
   void set_walker(Walker* walker) noexcept { walker_ = walker; }
+  // **Something that runs on every tick after the camera's** — the game runner (game_runner.h):
+  // called at the end of each tick with the session (its state, mode and tick already this tick's)
+  // and the tick's input state, in a live session, a replay and an injected run alike, so what it
+  // computes is a function of the ticks as the trajectory is. It may read; it never moves the
+  // camera, so a session with one and without one fly the same trajectory.
+  using TickObserver = void (*)(void* user, const FlySession& session,
+                                const input::InputState& input);
+  void set_tick_observer(TickObserver observer, void* user) noexcept {
+    observer_ = observer;
+    observer_user_ = user;
+  }
   // The map must outlive the session. False when it lacks an action the camera reads. A header
   // that starts walking (`walking`) puts the walker on the ground under the start camera here, at
   // tick 0, as a replay of it does.
@@ -374,6 +389,8 @@ class FlySession {
   Walker* walker_ = nullptr;
   bool walking_ = false;
   u32 mode_changes_ = 0;
+  TickObserver observer_ = nullptr;
+  void* observer_user_ = nullptr;
 };
 
 }  // namespace engine::view

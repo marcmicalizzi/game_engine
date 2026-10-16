@@ -292,6 +292,77 @@
       ],
       "kind": "button",
       "name": "exposure_hold"
+    },
+    {
+      "bindings": [
+        {
+          "code": 8,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 3,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "interact"
+    },
+    {
+      "bindings": [
+        {
+          "code": 20,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "use"
+    },
+    {
+      "bindings": [
+        {
+          "code": 30,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "game_1"
+    },
+    {
+      "bindings": [
+        {
+          "code": 31,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "game_2"
+    },
+    {
+      "bindings": [
+        {
+          "code": 32,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "game_3"
+    },
+    {
+      "bindings": [
+        {
+          "code": 33,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "game_4"
     }
   ],
   "version": 1

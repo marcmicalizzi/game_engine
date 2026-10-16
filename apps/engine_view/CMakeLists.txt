@@ -38,6 +38,7 @@ endif()
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
+                tests/game_view_tests.cpp
                 ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
@@ -72,7 +73,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp ${_view_interactive} ${_view_world}
+  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
