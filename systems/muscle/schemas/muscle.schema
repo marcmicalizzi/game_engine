@@ -8,17 +8,17 @@
 // This is the engine's first registration of these types, so every struct is version 1: the
 // proposal's own version 2 numbered its review rounds, not a format anything ever wrote.
 //
-// Stage 1 (the kernel, C53 on the roadmap) reads and writes the mechanical fields only. The
-// supervisory fields — the tier, the pending transition, the streaks, the freeze accounting — are
-// declared now so that the committed record is complete from the first commit, and are written by
-// stage 2 (the supervisor, C54). No `materialize` yet: records are stage 2's too.
+// Stage 1 (the kernel, C53 on the roadmap) reads and writes the mechanical fields; stage 2 (the
+// supervisor, C54, supervisor.h) writes the supervisory ones — the tier, the pending transition,
+// the streaks, the freeze accounting — which were declared from the first commit so that the
+// committed record was complete from it. Enumerators are appended, never renumbered.
 namespace engine.muscle
 
-/// The tier an actuator is integrated in (D20). Stage 1 integrates `Compliant` (tier 0) only.
+/// The tier an actuator is integrated in (D20, the supervisor).
 enum LineTier : u8 {
   /// Tier 0: compliant tendon, pennation, persistent fiber length, fiber damping.
   Compliant = 0
-  /// Tier 1: rigid tendon, activation dynamics only.
+  /// Tier 1: rigid tendon: the activation integrates and the fiber is the path's projection.
   Rigid = 1
   /// Tier 2: inert; the pose comes from animation and no force is output.
   Animation = 2
@@ -125,6 +125,9 @@ enum ValidationTest : u16 {
   ResidualNotANumber = 28
   /// An actuator that was never initialised.
   NotInitialized = 29
+  /// A rigid-tendon projection whose belly, the path length less the tendon slack, is not
+  /// positive (the supervisor's tier 1, D20; the value is the belly).
+  RigidProjectionInvalid = 30
 }
 
 /// The fiber's parameters: the r005 reference law's `Parameters`, with its defaults.

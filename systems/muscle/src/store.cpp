@@ -20,6 +20,9 @@ void LineStore::reserve(u32 capacity) {
   supervisory.reserve(capacity);
   outcome.reserve(capacity);
   counters.reserve(capacity);
+  work.reserve(capacity);
+  events.reserve(static_cast<usize>(capacity) * k_event_slots);
+  event_count.reserve(capacity);
 }
 
 bool LineStore::add(const ActuatorSpec& spec, u32& index) {
@@ -38,6 +41,12 @@ bool LineStore::add(const ActuatorSpec& spec, u32& index) {
   supervisory.push_back(Supervisory{});
   outcome.push_back(TickOutcome{});
   counters.push_back(Counters{});
+  TickWork w{};
+  w.actuator_id = spec.actuator_id;
+  work.push_back(w);
+  for (u32 e = 0; e < k_event_slots; ++e)
+    events.push_back(ValidationEvent{});
+  event_count.push_back(0);
   return true;
 }
 

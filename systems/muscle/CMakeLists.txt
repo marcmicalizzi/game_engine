@@ -7,8 +7,10 @@
 # WHOLE_ARCHIVE keeps the module's static registration objects — the schema types — from being
 # dropped by the linker because nothing references them.
 #
-# Stage 1 is a batch kernel over the capability's own store, with no ECS and no scheduler entry,
-# so it requires no other capability (no engine_capability_requires).
+# This module is the batch kernel and its supervisor over the capability's own store, with no ECS
+# and no scheduler entry, so it requires no other capability (no engine_capability_requires) and
+# its tests run in the no-ECS build. The scheduler entry, the components' registration and the path
+# from the skeleton are `systems/muscle_sim`'s, a second capability that requires this one.
 
 # The capability's own state, event and work types (ADR-0007). They live here, not in the shared
 # schemas/ directory, so that adding them touches no file this capability does not own;
@@ -17,12 +19,12 @@ engine_schema_library(NAME muscle_schemas SCHEMAS schemas/muscle.schema CAPABILI
 
 engine_module(NAME muscle LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math log ids hash json schema muscle_schemas
-  SOURCES src/muscle.cpp src/store.cpp src/validator.cpp)
+  SOURCES src/muscle.cpp src/store.cpp src/supervisor.cpp src/validator.cpp)
 
 engine_module_tests(NAME muscle
   SOURCES tests/law_tests.cpp tests/scheme_tests.cpp tests/schedule_tests.cpp
-          tests/lifecycle_tests.cpp tests/corpus_tests.cpp tests/validator_tests.cpp
-          tests/size_table.cpp
+          tests/lifecycle_tests.cpp tests/supervisor_tests.cpp tests/corpus_tests.cpp
+          tests/validator_tests.cpp tests/size_table.cpp
   DEPS json schema)
 
 # The law's identity test re-reads tests/model.txt and the kernel's sources from the checkout.

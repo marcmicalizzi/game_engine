@@ -33,7 +33,11 @@ struct ActuatorSpec {
   SeriesParameters series{};
 };
 
-// The supervisory half of the committed record: stage 2's, carried through save and restore.
+// The most `ValidationEvent`s one actuator's supervised tick can emit (supervisor.h): a transition
+// at the tick's start, a failure and an undefined freeze ledger in its body, a decision at its end.
+inline constexpr u32 k_event_slots = 4;
+
+// The supervisory half of the committed record (supervisor.h), carried through save and restore.
 struct Supervisory {
   u64 last_attempt_tick = 0;
   u32 consecutive_frozen_ticks = 0;
@@ -73,7 +77,7 @@ struct LineStore {
   Vector<u8> startup_pending;
   Vector<u8> initialized;
   Vector<Cache> cache;
-  // Cold: identities and stage 2's fields.
+  // Cold: identities and the supervisor's fields (supervisor.h).
   Vector<Id128> actuator_id;
   Vector<Id128> path_id;
   Vector<Sha256> parameter_sha256;
@@ -81,6 +85,12 @@ struct LineStore {
   // Per tick, fixed slots.
   Vector<TickOutcome> outcome;
   Vector<Counters> counters;
+  // The supervisor's per-tick slots (supervisor.h), drained by the caller after a tick: one
+  // `TickWork` an actuator, and `k_event_slots` `ValidationEvent`s an actuator of which the first
+  // `event_count[i]` are this tick's.
+  Vector<TickWork> work;
+  Vector<ValidationEvent> events;
+  Vector<u8> event_count;
 
  private:
   u32 capacity_ = 0;
@@ -106,11 +116,61 @@ enum class RestoreStatus : u8 { Restored, ModelUnrecognized, ParameterSetMismatc
 void save(const LineStore& store, u32 i, LineState& out) noexcept;
 RestoreStatus restore(LineStore& store, u32 i, const LineState& in) noexcept;
 
-// One tick over every actuator: actuator i reads `excitation[i]` (held for the tick) and
-// `paths[i]`. A success commits the actuator's activation, fiber length, cache, tick and clears
-// `startup_pending`; a failure commits nothing. `outcome[i]` says which. When `samples` is not
-// empty it holds 8 entries an actuator, written for actuators that committed: the state and cache
-// at each parent's end, for the corpus replay. Returns the number of actuators that failed.
+// One tier-0 tick of actuator i: it reads `excitation` (held for the tick) and `path`. A success
+// commits the actuator's activation, fiber length, cache, tick and clears `startup_pending`; a
+// failure commits nothing. `outcome[i]` says which. When `samples` is not empty it holds the
+// actuator's 8 entries, written on a commit: the state and cache at each parent's end. The
+// supervisor (supervisor.h) calls this for an actuator in the compliant tier.
+template <class Path, StageRoot R = k_stage_root>
+bool tick_actuator(LineStore& store, u32 i, u64 tick_index, double excitation, const Path& path,
+                   std::span<ParentSample> samples = {}) noexcept {
+  const double tick_start = parent_start(tick_index, 0);
+  TickOutcome& outcome = store.outcome[i];
+  outcome = TickOutcome{};
+  outcome.tick = tick_index;
+  outcome.excitation = excitation;
+  Counters& n = store.counters[i];
+  n = Counters{};
+  Failure f{};
+  TickTrial trial{};
+  ParentSample local[k_parents] = {};
+  bool ok = false;
+  if (store.initialized[i] == 0) {
+    fail(f, ValidationTest::NotInitialized, 0.0);
+  } else if (tick_index <= store.last_commit_tick[i]) {
+    fail(f, ValidationTest::TickOrder, static_cast<double>(tick_index));
+  } else {
+    LineProber<Path, R> prober{store.law[i], path, tick_start, excitation, n};
+    ok = run_tick(prober, tick_index, store.startup_pending[i] != 0, store.activation[i],
+                  store.fiber_length[i], trial, n, f,
+                  [&](u32 j, const State& s, const Cache& c) noexcept {
+                    local[j] = ParentSample{parent_start(tick_index, j + 1), s.a, s.l, c};
+                  });
+  }
+  if (!ok) {
+    outcome.failed_test = f.test;
+    outcome.failed_value = f.value;
+    return false;
+  }
+  store.activation[i] = trial.end.a;
+  store.fiber_length[i] = trial.end.l;
+  store.cache[i] = trial.cache;
+  store.last_commit_tick[i] = tick_index;
+  store.startup_pending[i] = 0;
+  for (u32 c = 0; c < k_work_channels; ++c)
+    outcome.work[c] = trial.work[c];
+  outcome.committed = true;
+  if (!samples.empty()) {
+    for (u32 j = 0; j < k_parents; ++j)
+      samples[j] = local[j];
+  }
+  return true;
+}
+
+// One tier-0 tick over every actuator, whatever its supervisory tier: actuator i reads
+// `excitation[i]` and `paths[i]` (tick_actuator above). When `samples` is not empty it holds 8
+// entries an actuator, for the corpus replay. Returns the number of actuators that failed. This is
+// stage 1's kernel API, which the corpus replays; a runtime calls `supervise` (supervisor.h).
 template <class Path, StageRoot R = k_stage_root>
 u32 tick(LineStore& store, u64 tick_index, std::span<const double> excitation,
          std::span<const Path> paths, std::span<ParentSample> samples = {}) noexcept {
@@ -119,49 +179,12 @@ u32 tick(LineStore& store, u64 tick_index, std::span<const double> excitation,
                 "muscle: an input per actuator");
   ENGINE_ASSERT(samples.empty() || samples.size() >= static_cast<usize>(count) * k_parents,
                 "muscle: eight samples per actuator");
-  const double tick_start = parent_start(tick_index, 0);
   u32 failures = 0;
   for (u32 i = 0; i < count; ++i) {
-    TickOutcome& outcome = store.outcome[i];
-    outcome = TickOutcome{};
-    outcome.tick = tick_index;
-    outcome.excitation = excitation[i];
-    Counters& n = store.counters[i];
-    n = Counters{};
-    Failure f{};
-    TickTrial trial{};
-    ParentSample local[k_parents] = {};
-    bool ok = false;
-    if (store.initialized[i] == 0) {
-      fail(f, ValidationTest::NotInitialized, 0.0);
-    } else if (tick_index <= store.last_commit_tick[i]) {
-      fail(f, ValidationTest::TickOrder, static_cast<double>(tick_index));
-    } else {
-      LineProber<Path, R> prober{store.law[i], paths[i], tick_start, excitation[i], n};
-      ok = run_tick(prober, tick_index, store.startup_pending[i] != 0, store.activation[i],
-                    store.fiber_length[i], trial, n, f,
-                    [&](u32 j, const State& s, const Cache& c) noexcept {
-                      local[j] = ParentSample{parent_start(tick_index, j + 1), s.a, s.l, c};
-                    });
-    }
-    if (!ok) {
-      outcome.failed_test = f.test;
-      outcome.failed_value = f.value;
-      ++failures;
-      continue;
-    }
-    store.activation[i] = trial.end.a;
-    store.fiber_length[i] = trial.end.l;
-    store.cache[i] = trial.cache;
-    store.last_commit_tick[i] = tick_index;
-    store.startup_pending[i] = 0;
-    for (u32 c = 0; c < k_work_channels; ++c)
-      outcome.work[c] = trial.work[c];
-    outcome.committed = true;
-    if (!samples.empty()) {
-      for (u32 j = 0; j < k_parents; ++j)
-        samples[static_cast<usize>(i) * k_parents + j] = local[j];
-    }
+    const std::span<ParentSample> mine =
+        samples.empty() ? std::span<ParentSample>{}
+                        : samples.subspan(static_cast<usize>(i) * k_parents, k_parents);
+    if (!tick_actuator<Path, R>(store, i, tick_index, excitation[i], paths[i], mine)) ++failures;
   }
   return failures;
 }
