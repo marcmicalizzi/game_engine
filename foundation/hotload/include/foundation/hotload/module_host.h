@@ -81,8 +81,6 @@ struct HostConfig {
   // The host's clock, as the module reads it (HostApi::tick, fixed_step).
   u64 tick = 0;
   f64 fixed_step = 1.0 / 60.0;
-  // The game runner's services, when this host runs a game (engine-view's `--game`).
-  GameServices game;
 };
 
 // What the last successful load or reload did to the state.
@@ -170,6 +168,11 @@ class ModuleHost {
   // The state as its descriptor writes it (what a reload hands across).
   bool state_json(JsonValue& out) const;
 
+  // The game runner's services, when this host runs a game (engine-view's `--game`): set before
+  // `load`, so the module's `on_load` can declare its actions. A setter rather than a `HostConfig`
+  // field, so the configuration stays the aggregate every existing host initializes.
+  void set_game_services(const GameServices& services) noexcept { game_ = services; }
+
   void set_time(u64 tick, f64 fixed_step) noexcept {
     config_.tick = tick;
     config_.fixed_step = fixed_step;
@@ -207,6 +210,7 @@ class ModuleHost {
   friend struct HostCallbacks;
 
   HostConfig config_;
+  GameServices game_;
   HostApi api_{};
   ModuleContext context_{};
   std::unique_ptr<Module> module_;

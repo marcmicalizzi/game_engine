@@ -290,7 +290,7 @@ struct HostCallbacks {
     ModuleHost& h = self(host);
     if (out_bit == nullptr || name == nullptr) return Result::InvalidArgument;
     const std::string_view wanted(name, static_cast<usize>(length));
-    const GameServices& g = h.config_.game;
+    const GameServices& g = h.game_;
     if (g.action == nullptr) {
       h.pending_unresolved_.push_back("game action '" + std::string(wanted) +
                                       "': this host runs no game");
@@ -305,23 +305,23 @@ struct HostCallbacks {
     return r;
   }
   static void hud_text(void* host, u32 line, const char* text, u64 length) {
-    const GameServices& g = self(host).config_.game;
+    const GameServices& g = self(host).game_;
     if (g.hud_text == nullptr || text == nullptr) return;
     g.hud_text(g.user, line, std::string_view(text, static_cast<usize>(length)));
   }
   static void hud_meter(void* host, const char* name, u64 length, f64 value, f64 max) {
-    const GameServices& g = self(host).config_.game;
+    const GameServices& g = self(host).game_;
     if (g.hud_meter == nullptr || name == nullptr) return;
     g.hud_meter(g.user, std::string_view(name, static_cast<usize>(length)), value, max);
   }
   static void end_run(void* host, const char* json, u64 length) {
-    const GameServices& g = self(host).config_.game;
+    const GameServices& g = self(host).game_;
     if (g.end_run == nullptr || json == nullptr) return;
     g.end_run(g.user, std::string_view(json, static_cast<usize>(length)));
   }
   static Result nearest_placement(void* host, const char* kind, u64 length, f64 radius,
                                   f64* out_position, f64* out_distance) {
-    const GameServices& g = self(host).config_.game;
+    const GameServices& g = self(host).game_;
     if (kind == nullptr || out_position == nullptr || out_distance == nullptr)
       return Result::InvalidArgument;
     if (g.nearest_placement == nullptr) return Result::Unsupported;

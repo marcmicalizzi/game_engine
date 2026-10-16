@@ -219,14 +219,16 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   hotload::HostConfig host_config;
   host_config.shadow_directory = config.shadow_directory;
   host_config.fixed_step = g.dt;
-  host_config.game.user = &g;
-  host_config.game.action = &Impl::action;
-  host_config.game.hud_text = &Impl::hud_text;
-  host_config.game.hud_meter = &Impl::hud_meter;
-  host_config.game.end_run = &Impl::end_run;
-  host_config.game.nearest_placement = &Impl::nearest;
   g.host = std::make_unique<hotload::ModuleHost>(std::move(host_config));
   hotload::ModuleHost& host = *g.host;
+  hotload::GameServices services;
+  services.user = &g;
+  services.action = &Impl::action;
+  services.hud_text = &Impl::hud_text;
+  services.hud_meter = &Impl::hud_meter;
+  services.end_run = &Impl::end_run;
+  services.nearest_placement = &Impl::nearest;
+  host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
     if (error != nullptr) *error = why;
