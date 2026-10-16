@@ -1477,6 +1477,24 @@ void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 #endif
 
+#if ENGINE_VIEW_WORLD
+// A streamed world answers the game's `nearest_placement` (world_view.h): without one, the game
+// hears `NotFound` and the fixture drinks at its spring.
+void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
+#if ENGINE_VIEW_GAME
+  if (g_game == nullptr) return;
+  struct Query {
+    static bool nearest(void* user, std::string_view kind, const WorldPos& from, f64 radius,
+                        WorldPos& out, f64& distance) {
+      return static_cast<const view::ViewWorld*>(user)->nearest_placement(kind, from, radius, out,
+                                                                          distance);
+    }
+  };
+  g_game->set_placements(&Query::nearest, &world);
+#endif
+}
+#endif
+
 // The walk's half, at the end of a session that had a walker.
 void report_walk(const view::FlySession& session) {
   const view::Walker* walker = session.walker();
@@ -2527,6 +2545,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("world", error);
         break;
       }
+      attach_world_to_game(view_world);
       if (!options.world_log.empty() && !view_world.open_log(options.world_log, &error)) {
         exit_code = fail("world-log", error);
         break;
@@ -4613,6 +4632,7 @@ int run_view(int argc, char** argv) {
         exit_code = fail("world", error);
         break;
       }
+      attach_world_to_game(view_world);
       if (!options.world_log.empty() && !view_world.open_log(options.world_log, &error)) {
         exit_code = fail("world-log", error);
         break;

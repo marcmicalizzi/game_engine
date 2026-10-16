@@ -198,3 +198,74 @@ TEST_CASE("engine-view: a walk into a ruin's wall is stopped at the wall") {
   CHECK(write_json(*replay_interactive->find("trajectory")) == write_json(*trajectory));
   CHECK(text(replay_interactive->find("walk"), "hash") == text(walk, "hash"));
 }
+
+#if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD && defined(WALK_POC_PATH)
+TEST_CASE("engine-view: a --game module finds the water at a streamed ruin") {
+  // The fixture game (game/walk_poc) asks the session for the nearest `ruins` placement within 6 m
+  // every tick (nearest_placement, docs/subsystems/apps.md "The game contract"). Over the
+  // ruins-walk scene streamed with --world, a walker standing beside the building's wall is at the
+  // water: the query is answered from the placements consumer's tiles, and the meter fills.
+  const test::TempDir tmp("engine_view_game_ruins");
+  const std::string committed =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/ruins-walk/scene.json",
+                      "content/test-scenes/ruins-walk/scene.json");
+  if (!test::path_exists(committed)) return;
+  std::string source;
+  REQUIRE(io::read_file(committed, source) == io::Status::Ok);
+  const std::string scene = tmp.file("scene.json");
+  REQUIRE(io::write_file(scene, source) == io::Status::Ok);
+  std::string error;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, nullptr),
+      error);
+  renderer::SceneDesc desc;
+  REQUIRE_MESSAGE(renderer::read_scene_file(scene, desc, error), error);
+  REQUIRE(!desc.instances.empty());
+  const WorldPos piece = desc.instances[0].origin;  // a piece of the building, by the origin
+
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  view::SessionHeader header;
+  header.ticks = 240;
+  header.scene = scene;
+  header.start.position = WorldPos{piece.x + 2.0, piece.y + 15.0, piece.z + 2.0};
+  header.start.pitch = -0.3f;
+  header.has_walk = true;
+  header.walking = true;  // standing beside the wall: no keys
+  keys.set_session(view::session_to_json(header));
+  const std::string session = tmp.file("stand.jsonl");
+  REQUIRE(keys.save(session) == io::Status::Ok);
+  const std::string built = WALK_POC_PATH;
+  const std::string module = tmp.file("walk_poc" + built.substr(built.rfind('.')));
+  {
+    std::string bytes;
+    REQUIRE(io::read_file(built, bytes) == io::Status::Ok);
+    REQUIRE(io::write_file(module, bytes) == io::Status::Ok);
+  }
+  const Run run =
+      run_view({"--replay-input", session, "--scene", scene, "--world", "--offscreen", "--game",
+                module, "--width", "160", "--height", "96", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* interactive = summary.find("interactive");
+  REQUIRE(interactive != nullptr);
+  const JsonValue* game = interactive->find("game");
+  REQUIRE_MESSAGE(game != nullptr, run.output);
+  const JsonValue* placements = game->find("placements");
+  REQUIRE(placements != nullptr);
+  f64 found = 0.0;
+  f64 drinking = 0.0;
+  REQUIRE(placements->find("found")->get_f64(found));
+  REQUIRE(game->find("state")->find("drinking_ticks")->get_f64(drinking));
+  MESSAGE("beside the ruin: " << write_json(*placements) << ", " << drinking
+                              << " ticks drinking; HUD " << write_json(*game->find("hud")));
+  CHECK(placements->find("world")->as_bool());
+  CHECK(found > 200.0);     // nearly every tick's query, from the first frames on
+  CHECK(drinking > 200.0);  // and the fixture drank
+}
+#endif

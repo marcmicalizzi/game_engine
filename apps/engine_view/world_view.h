@@ -28,6 +28,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace engine::view {
 
@@ -69,6 +70,14 @@ class ViewWorld {
 
   world::World& world() noexcept { return world_; }
   world::PlacementTiles& placements() noexcept { return placements_; }
+  // **The nearest placement of a kind** (a `--game` module's `nearest_placement`, game_runner.h):
+  // the streamed entries' generator names are the kinds ("ruins", "scatter"), and the answer is the
+  // nearest instance of one, over the ground, within `radius` of `from`, among the tiles the
+  // placements consumer holds. False when nothing of the kind is held that near. The tiles round
+  // the camera are the innermost ring's, built first by every update, so a few metres round the
+  // walker is always answered from what the ground's generators make there.
+  bool nearest_placement(std::string_view kind, const WorldPos& from, f64 radius, WorldPos& out,
+                         f64& distance) const;
   const world::DrawnTiles& drawn() const noexcept { return drawn_; }
   // Whether a ring change of `tile` changes what its placements are drawn as (and it has any).
   bool is_handover(const world::TileEvent& event) const noexcept;
@@ -90,7 +99,9 @@ class ViewWorld {
   std::string log_text_;
   world::PlacementTiles placements_;
   world::PlacementTilesConfig placements_config_;
-  world::DrawnTiles drawn_;  // the drawn ground, when the renderer draws the world's tiles
+  Vector<std::string> kinds_;  // the streamed entries' generator names
+  Vector<u32> mesh_kind_;      // per scene mesh, its index in `kinds_` (~0: placed by none)
+  world::DrawnTiles drawn_;    // the drawn ground, when the renderer draws the world's tiles
   Vector<world::PlacementTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
   Vector<renderer::DynamicBlock> blocks_;            // and the blocks they are
   bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)

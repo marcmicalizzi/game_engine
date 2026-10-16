@@ -89,6 +89,21 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_sink(&ViewWorld::hand_over, this);
     world::add_scene_consumers(world_, nullptr, &placements_);
+    // Each scene mesh's kind for `nearest_placement`: the generator of the streamed entry whose
+    // resident meshes it is (`StreamedPlacements::meshes`), by the generator's registered name.
+    mesh_kind_.clear();
+    kinds_.clear();
+    for (const renderer::StreamedPlacements& entry : data.streamed) {
+      u32 k = 0;
+      while (k < kinds_.size() && kinds_[k] != entry.generator)
+        ++k;
+      if (k == kinds_.size()) kinds_.push_back(entry.generator);
+      for (const u32 mesh : entry.meshes) {
+        while (mesh_kind_.size() <= mesh)
+          mesh_kind_.push_back(~u32{0});
+        mesh_kind_[mesh] = k;
+      }
+    }
   }
   ENGINE_LOG_INFO(log_view_world, "world", log::field("tile_size", params.tile_size),
                   log::field("rings", params.ring_count), log::field("inner", params.radius[0]),
@@ -123,6 +138,40 @@ bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance
 // The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,
 // a flythrough a few thousand updates — so writing it costs the timed frames nothing. Opening it
 // writes the file empty at once, so a path that cannot be written is refused before the run.
+bool ViewWorld::nearest_placement(std::string_view kind, const WorldPos& from, f64 radius,
+                                  WorldPos& out, f64& distance) const {
+  if (!valid() || !(radius > 0.0)) return false;
+  u32 wanted = ~u32{0};
+  for (u32 k = 0; k < kinds_.size(); ++k) {
+    if (kinds_[k] == kind) wanted = k;
+  }
+  if (wanted == ~u32{0}) return false;
+  // The tiles the radius reaches, and in each the instances it holds: a ruin's pieces, a
+  // scatter's rocks, each at `origin + transform.position` (ADR-0053), measured over the ground.
+  const f32 tile_size = placements_config_.tile_size;
+  const i32 reach = static_cast<i32>(std::ceil(radius / static_cast<f64>(tile_size)));
+  const world::TileCoord centre = world::tile_at(from, tile_size);
+  f64 best = radius * radius;
+  bool found = false;
+  for (i32 dz = -reach; dz <= reach; ++dz) {
+    for (i32 dx = -reach; dx <= reach; ++dx) {
+      const world::TileCoord tile{centre.x + dx, centre.z + dz};
+      for (const renderer::SceneInstance& instance : placements_.tile_instances(tile)) {
+        if (instance.mesh >= mesh_kind_.size() || mesh_kind_[instance.mesh] != wanted) continue;
+        const f64 x = instance.origin.x + static_cast<f64>(instance.transform.position.x);
+        const f64 z = instance.origin.z + static_cast<f64>(instance.transform.position.z);
+        const f64 d2 = (x - from.x) * (x - from.x) + (z - from.z) * (z - from.z);
+        if (d2 > best || (found && d2 == best)) continue;
+        best = d2;
+        found = true;
+        out = WorldPos{x, instance.origin.y + static_cast<f64>(instance.transform.position.y), z};
+      }
+    }
+  }
+  if (found) distance = std::sqrt(best);
+  return found;
+}
+
 bool ViewWorld::open_log(const std::string& path, std::string* error) {
   close_log();
   if (io::write_file(path, std::string_view()) != io::Status::Ok) {
