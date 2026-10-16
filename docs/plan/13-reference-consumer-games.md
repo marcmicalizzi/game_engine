@@ -11,6 +11,8 @@ Where the desert asks how cheaply the engine can represent enormous sparse space
 
 ## 13.1 Consumer A — Desert Survival
 
+> **Status note (2026-10-16, roadmap P41):** the engine can now run a game from the walking session — a hot-reloadable module loaded by `engine-view --game`, ticked every tick with an `engine.game.GameTick` view, drawing a provisional HUD, ending a run with a result, writing a `--report` a tester sends back, and shipped by `tools/package-game.ps1` ([apps](../subsystems/apps.md#--game-running-a-game-module)). Desert Survival itself is still written in its own repository against that contract (ADR-0047, P18); `game/walk_poc` is a fixture that proves the contract, not this design.
+
 ### Concept
 
 Single player. The game begins immediately after a plane crash in a procedurally generated, effectively infinite desert. There is no conventional narrative campaign; the objective is to survive as long as possible, and survival time is the primary score. It is simultaneously the engine's first substantial technical demonstration, a proof of concept for agent and procedural content generation, and a small but potentially viable niche survival game. Its deliberately small content and narrative requirements let effort concentrate on engine capabilities.

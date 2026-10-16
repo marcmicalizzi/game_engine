@@ -591,9 +591,9 @@ Desert Survival first, Island City second ([ADR-0022](adr/0022-consumer-game-ord
 | P15 | Optional cosmetic character creator | open | C7, C12 | L | design | [13 §13.1](plan/13-reference-consumer-games.md#player-character-creator-optional) |
 | P16 | Scored seeded runs, run database, leaderboards | open | S17, W11 | L | design | [13 §13.1](plan/13-reference-consumer-games.md#seeds-and-scoring) |
 | P17 | Accept ADR-0047: licences, trademark, counsel | blocked (the owner's reading, trademark and counsel) | | S | design | [ADR-0047](adr/0047-reference-games-are-licensed-apart-from-the-engine.md) |
-| P18 | Desert Survival's repository, pinning the engine | open | P17 | M | routine | [ADR-0047](adr/0047-reference-games-are-licensed-apart-from-the-engine.md) |
+| P18 | Desert Survival's repository, pinning the engine | open (2026-10-16: P41 gives it what to build against — the module ABI 2, `engine.game.GameTick`, the map's game actions, the exported build command — and a runner, a HUD path, a report and `tools/package-game.ps1` to ship a build of it with; [game/README.md](../game/README.md)) | P17 | M | routine | [ADR-0047](adr/0047-reference-games-are-licensed-apart-from-the-engine.md) |
 | P19 | Desert Survival's open design questions | blocked (the owner's answers) | | S | design | [13 §13.8](plan/13-reference-consumer-games.md#138-open-design-questions-for-the-owner) |
-| P20 | Phase 6 exit demo, made playable | open | P1, P5, P16, S85, W39 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
+| P20 | Phase 6 exit demo, made playable | open (2026-10-16: P41 gives it the means — a game module run from the walking session, its HUD, a report from the tester's machine and a package to send — and none of the gameplay) | P1, P5, P16, S85, W39 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | P21 | A 1–3 hour game, shipped with telemetry | open | P20, A29, A30, T4 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | P22 | Whole-island plan and building grammar | done (a973f39f, a0920873) | G35 | L | design | [city](subsystems/city.md) |
 | P23 | E18: the building grammar's yield | done (10 §10.5 2026-09-25) | P22 | M | research | [E18](experiments/e18-island-city-yield.md) |
@@ -614,7 +614,7 @@ Desert Survival first, Island City second ([ADR-0022](adr/0022-consumer-game-ord
 | P38 | E17: ray-traced relevance through 2,000 windows | open | P31, P34 | M | research | [13 §13.6](plan/13-reference-consumer-games.md#136-additional-experiments) |
 | P39 | Island City's open design questions | blocked (the owner's answers) | | S | design | [13 §13.8](plan/13-reference-consumer-games.md#138-open-design-questions-for-the-owner) |
 | P40 | R1: reaching into a cavity, as a scene | open | S83 | L | research | [13 §13.7](plan/13-reference-consumer-games.md#r1--reaching-into-a-fleshy-cavity-third-party-reference-lovecraftian-horror) |
-| P41 | Playable proof of concept, engine side: the game runner, its contract, a HUD path, the report and the package | in progress (2026-10-16: the action map's fifth revision and `--report`; `--game` with the contract, `--game-state` and the fixture `game/walk_poc`; the provisional HUD through the overlay; `nearest_placement` over the streamed world; `tools/package-game.ps1`) | P13 | M | design | [apps](subsystems/apps.md#--game-running-a-game-module) |
+| P41 | Playable proof of concept, engine side: the game runner, its contract, a HUD path, the report and the package | done (04147c5e, caebcf73, 977d5387, fafea229, 5d173969, bf0fef75: the map's fifth revision and `--report`; `--game` with its contract, `--game-state` and the fixture `game/walk_poc`; the provisional HUD through the overlay; `nearest_placement` over the streamed world; `tools/package-game.ps1`) | P13 | M | design | [apps](subsystems/apps.md#--game-running-a-game-module) |
 
 ## F — Found along the way
 
