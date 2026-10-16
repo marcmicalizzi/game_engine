@@ -1,0 +1,30 @@
+{
+  "format_version": 1,
+  "description": "The source packets tools/muscle-corpus.ps1 builds content/muscle/ and systems/muscle/src/qualified_domains.inc from: each packet's files relative to the authoring track's 06-muscle-activation, with the SHA-256 each must have, the qualified domain its rows belong to, and its labels. The script stops on any other bytes. A named muscle's calibration is a new packet here, not an engine edit.",
+  "reference_model_sha256": "3096e5ff70d2d2ff7156b29ec409ec4db917ffb427d3e4a6f833f86eb5ac5288",
+  "packets": [
+    {
+      "id": "synthetic-r010",
+      "description": "r010's 39 rows, their archived static starts and the r007 held-reference oracle at t = 0 and every 1/480 s parent endpoint.",
+      "domain": {"id": "synthetic-study-only", "version": 1},
+      "sources": [
+        {"role": "cases", "path": "r010-20261013/declarations/d001/CASES.json", "sha256": "acb1f8bf97b5a8534459afbb208d2fae4ce817b2e2409c2ec54ca61fecd81462"},
+        {"role": "samples", "path": "r007-20261011/_handoff/corpus.json", "sha256": "16b43ddac1bb32805970a06e183ac1cfffebc1fe5f8cf44e1d36758f66e3b3f0"},
+        {"role": "labels", "result": "r009", "path": "r009-20261013/results/s001/summary.json", "sha256": "c92c3e02e7583419e0af0c4dddadff4b1acba8229f6d90f0b9d99a22b8a59e5d",
+         "manifest": "r009-20261013/results/s001/MANIFEST.json", "manifest_sha256": "86f0e6e5ffa58f6bb4177e5f6dd36847b1c331c9456c7c571a65d24eb0260b3a"},
+        {"role": "labels", "result": "r010", "path": "r010-20261013/results/a001/summary.json", "sha256": "c6189e525e238532a7487de72a6c383c8c85eb9d8c9fc4266cc4b644e31105ad",
+         "manifest": "r010-20261013/results/a001/MANIFEST.json", "manifest_sha256": "3c6612d6af87f1ccadf8870081dbfa9911e9db04ef01ef1da8bd91e14154d79e",
+         "declaration_sha256": "295c4b55f12d580ec0ee3d5e6e3c3207fb71961c7184a3f5dd8613a911d333c3",
+         "execution_manifest_sha256": "bcbafc7d7a206cb403e1027f50bdd4846ca8817f034c25fe9fa778749ae92ce4"}
+      ],
+      "labels": {
+        "decision": "D25",
+        "description": "D25, the review of r010's result (2026-10-14): corner_04_passive and corner_06_passive are qualified (force-only misses at r009 S under D23 (4), a start-up transient r010's first-tick schedule removed); the four step rows stay work-only known limits, order-limited at either order, with r010's numbers beside r009 S's",
+        "known_limit_work": ["corner_00_step", "corner_02_step", "corner_04_step", "corner_06_step"],
+        "known_limit_force": [],
+        "tolerance_result": "r009",
+        "tolerance": "a labelled case's failing metric may be at most 1.5 times its r009 number"
+      }
+    }
+  ]
+}

@@ -5,18 +5,23 @@
 //
 //   validate(model_id, parameter_identity, fiber, series):
 //     model_unrecognized        the model id is not this law's (k_model_sha256)
-//     domain_unqualified        the parameter-set identity is not in the qualified domain, or the
-//                               parameters are not the ones that identity was qualified with
+//     domain_unqualified        the parameter-set identity is in no qualified domain, or the
+//                               parameters are not the nineteen that identity was qualified with
+//                               (naming the first field that differs, its value and unit, and the
+//                               domain and version the identity was found in)
 //     parameter_outside_domain  a value outside the law's own domain, naming the field, the value,
 //                               its unit and the rule
 //
-// The only qualified domain is `synthetic-study-only` version 1: the 17 distinct parameter
-// identities of the corpus's 39 rows (content/muscle/corpus.json), each with the parameters it
-// was qualified with. Identities are opaque 32-byte values carried as data; the engine recomputes
-// none of them (it has no SHA-256 outside the tissue capability). Since it cannot hash, it checks
-// the other way round: an identity names one parameter set, and parameters that differ from it are
-// not qualified by it. A named-muscle calibration with provenance is what widens the domain, as a
-// new domain version.
+// The qualified domains are data: content/muscle/corpus.json's `qualified_domains`, written by
+// tools/muscle-corpus.ps1 from the source packets content/muscle/sources.json names, and compiled
+// in from the table the same script generates (src/qualified_domains.inc, held to the corpus by
+// tests/validator_tests.cpp). Today there is one, `synthetic-study-only` version 1: the 17
+// distinct parameter identities of the corpus's 39 rows, each with the nineteen values it was
+// qualified with. Identities are opaque 32-byte values carried as data; the engine recomputes none
+// of them (it has no SHA-256 outside the tissue capability). Since it cannot hash, it checks the
+// other way round: an identity names one parameter set, and parameters that differ from it in any
+// of the nineteen values are not qualified by it. A named-muscle calibration with provenance
+// widens the domains as a new packet in the sources and a regenerated table, not as code.
 
 #include <core/base/types.h>
 #include <systems/muscle/muscle.h>
@@ -43,15 +48,19 @@ struct ValidationResult {
   double value = 0.0;
   const char* unit = "";  // "rad"
   const char* rule = "";  // "finite and in [0, 0.4]"
+  // The qualified domain the identity was found in, for a `domain_unqualified` refusal of its
+  // values (and an accepted set); empty and zero when the identity is in none.
+  const char* domain = "";  // "synthetic-study-only"
+  u32 domain_version = 0;
 
   bool ok() const noexcept { return refusal == Refusal::None; }
 };
 
-/// One qualified parameter set: its identity and the series parameters it was qualified with. The
-/// fiber parameters of every corpus row are the reference law's defaults (`FiberParameters{}`).
+/// One qualified parameter set: its identity and the nineteen values it was qualified with.
 struct QualifiedSet {
   Sha256 identity;
-  double slack, e1, alpha0, beta, min_cos;
+  FiberParameters fiber;
+  SeriesParameters series;
 };
 
 struct QualifiedDomain {
@@ -60,8 +69,13 @@ struct QualifiedDomain {
   std::span<const QualifiedSet> sets;
 };
 
-/// `synthetic-study-only` version 1.
-const QualifiedDomain& qualified_domain() noexcept;
+/// Every qualified domain, in content/muscle/corpus.json's order.
+std::span<const QualifiedDomain> qualified_domains() noexcept;
+
+/// The domain and set an identity names, or false. An identity is in at most one set of a domain;
+/// the first domain that holds it answers.
+bool find_qualified(const Sha256& identity, const QualifiedDomain*& domain,
+                    const QualifiedSet*& set) noexcept;
 
 /// The law's own domain (the reference's `Parameters` and `SeriesParameters` checks): every fiber
 /// value finite and positive, x0 < x_min < x_max; the series lengths, strain, damping and minimum
