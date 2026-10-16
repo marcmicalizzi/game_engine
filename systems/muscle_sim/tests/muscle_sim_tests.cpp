@@ -122,7 +122,9 @@ struct World {
   ~World() { ecs::stop_workers(sim.world()); }
 
   const muscle::LineOutput& output(const Id128& id) {
-    return ecs::entity_for(sim.world(), id).get<muscle::LineOutput>();
+    // A named entity: GCC 13 reads a reference through a temporary flecs handle as dangling.
+    const flecs::entity e = ecs::entity_for(sim.world(), id);
+    return e.get<muscle::LineOutput>();
   }
 };
 
@@ -176,11 +178,11 @@ TEST_CASE(
   CHECK_FALSE(forged.has<muscle::LineOutput>());
   CHECK(w.muscles.slot_of(k_forged) == MuscleSimSystem::k_no_slot);
   CHECK(w.muscles.slot_of(k_flexor) != MuscleSimSystem::k_no_slot);
-  const muscle::LineActuatorSpec& spec =
-      ecs::entity_for(w.sim.world(), k_extensor).get<muscle::LineActuatorSpec>();
+  const flecs::entity extensor = ecs::entity_for(w.sim.world(), k_extensor);
+  const muscle::LineActuatorSpec& spec = extensor.get<muscle::LineActuatorSpec>();
   CHECK(spec.via.size() == 1);
   CHECK(spec.insertion.bone == "lower");
-  CHECK(ecs::entity_for(w.sim.world(), k_extensor).get<muscle::LineExcitation>().value == 0.6);
+  CHECK(extensor.get<muscle::LineExcitation>().value == 0.6);
 }
 
 TEST_CASE(

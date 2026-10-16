@@ -211,7 +211,7 @@ TEST_CASE("muscle_sim path: animation's posed skeleton, through the pose source"
     sim.step();
     Mat4 model[4];
     u32 joints = 0;
-    REQUIRE(source.model_transforms(source.context, character, model, joints));
+    REQUIRE(source.model_transforms(source.context, character, std::span<Mat4>(model, 4), joints));
     REQUIRE(joints == 2);
     const double routed = route_length(std::span<const Mat4>(model, joints), route);
     // The pose pool's pose composed into model space, by the library's own clip at the playhead:
