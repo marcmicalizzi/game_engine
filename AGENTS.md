@@ -31,6 +31,7 @@ tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.j
 
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
 tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
+tools/package-game.ps1   -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>]   # engine-view + a game module + a scene, a zip a tester double-clicks and sends report.json back from (docs/subsystems/apps.md)
 tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock, for heavy GPU work that is not a test run (docs/subsystems/bench.md); tests take it themselves
 tools/generate.ps1       image|3d|pipeline|manifest|ingest|balance ...  # generated images and meshes with provenance sidecars, outside the repo (docs/content-generation.md)
 tools/e10-harness.ps1    -Folder <dir of .glb>                          # content build + coarse-vs-finest picture check over generated meshes (E10)

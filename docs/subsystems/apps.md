@@ -867,6 +867,23 @@ Everything a game shares with the engine is the hotload ABI's vocabulary ([modul
 
 **Testing** (`tests/game_view_tests.cpp`): a windowed run of eight frames on the test's desktop writes a report whose exit is `frames`, whose machine block names the adapter, driver, tier, raster mode, OS and baseline, whose frames count seven intervals in order (median ≤ p99, worst ≥ p95) and whose summary is the printed line's eight frames; and an offscreen run of a scene that does not exist exits non-zero and still writes one, its `exit.error` naming the `scene` stage and its summary null.
 
+## package-game: a zip somebody else double-clicks
+
+**`tools/package-game.ps1 -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>]`** (roadmap P41) makes the zip a proof of concept reaches other hardware in, on `tools/package-tests.ps1`'s pattern: a machine with no toolchain, no checkout and no PowerShell 7 unzips it, double-clicks `run.cmd`, plays, and sends back the one `report.json` ([above](#--report-what-a-tester-sends-back)). It holds:
+
+| Path | What |
+|---|---|
+| `engine-view.exe` | the preset's build — statically linked, shaders embedded; the build's `shaders/manifest.json` stays out for package-tests' reason (absolute paths into the build tree and a compiler) |
+| `game/<name>.dll` | the game module, `build/<preset>/bin/game/<name>.dll` |
+| `content/…` | the scene and every file it names, resolved against the file naming it (a string value of the JSON that is a relative path to an existing file or directory), recursively through the JSON files it names, at their paths under the repository so the scene's own relative paths resolve |
+| `run.cmd` | `engine-view --scene <scene> [--world] --walk --game game\<name>.dll --report report.json --ddc ddc --width W --height H`, every path under the folder (`%~dp0`), then where the report is and a pause; `--world` only for a scene that streams (a `world` block or `ruins`), since engine-view refuses it otherwise; extra arguments pass through |
+| `README.txt` | what it is, how to run it, the keys of the action map's fifth revision, what to send back, and that it writes nothing outside its folder |
+| `package.json` | `engine.game.package` 1: the commit, the preset, the module, the scene, the files with their sizes, the runtime it needs, and `args`, run.cmd's arguments with `{dir}` for the folder (what the test runs) |
+
+**What it refuses**: anything under the owner's `game_engine_local` (generated assets and workflow files are never shipped) and anything outside the repository's `content/` — the scene itself or anything it names — exit 2 with the path; a missing `engine-view` or module, with how to build it. **What a run writes**, all inside the folder: `report.json`, `ddc\` (the derived-data cache, which `--ddc` keeps there rather than in a checkout the far end does not have) and the module host's per-load copies in `game\<name>.dll.hotload\`. The far end needs the Visual C++ 2015–2022 x64 redistributable and a Vulkan driver, as a test bundle does. **Size**: `walk_poc` over `desert-endless` from `msvc-debug` is 7.3 MB zipped, 31 MB unpacked (a 32 MB Debug engine-view, two content files); a release engine-view is a fraction of that.
+
+**Testing** (`tests/game_view_tests.cpp`, `package-game: …`): the script packs this build's engine-view and `walk_poc` over `desert-endless` into the test's scratch directory, refuses a scene there (outside `content/`, exit 2, naming why), and the zip is unpacked with `Expand-Archive` and played with `package.json`'s arguments and `--frames 20` in a window on the test's desktop: exit 0, and `report.json` in the folder with the exit `frames`, the adapter and the OS, nineteen frame intervals, the game `walk_poc` ticked and the summary; the cache is in the folder too. About a minute in `msvc-debug`.
+
 ## What else the machine was doing, in both hosts' numbers
 
 A frame time from this project's development box is not a frame time from an idle machine: it renders beside GPU jobs that hold most of the card and beside several agent builds. So **engine-view's JSON summary and `render.benchmark`'s result both carry the load they were taken under**, in the same shape and against the same thresholds the CPU benchmark harness uses ([bench](bench.md#measuring-on-a-shared-machine)).

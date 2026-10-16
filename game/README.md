@@ -37,6 +37,10 @@ the state starts at its default. A module built outside the tree uses the export
 cmake -DCONFIG=build/<preset>/game_modules/build_config.cmake -DSOURCE_DIR=<dir> -DOUTPUT=<file> -P cmake/EngineGameModuleBuild.cmake
 ```
 
+`tools/package-game.ps1 -Preset msvc-release -Module walk_poc -Scene content/test-scenes/desert-endless/scene.json`
+makes the zip a tester double-clicks and sends one `report.json` back from
+([apps](../docs/subsystems/apps.md#package-game-a-zip-somebody-else-double-clicks)).
+
 ## Where a real game lives
 
 **Not here.** A game the project ships — Desert Survival first ([ADR-0022](../docs/adr/0022-consumer-game-order.md)) —

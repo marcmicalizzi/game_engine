@@ -140,6 +140,12 @@ if(TARGET engine::hotload)
   target_link_libraries(engine_engine_view PRIVATE imgui)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_GAME=1)
+    # tools/package-game.ps1's test packs this build's engine-view and walk_poc with PowerShell 7
+    # and plays the zip where it is unpacked (tests/game_view_tests.cpp).
+    if(ENGINE_PWSH)
+      target_compile_definitions(engine_engine_view_tests PRIVATE
+        ENGINE_PWSH_PATH="${ENGINE_PWSH}" ENGINE_BUILD_DIR_PATH="${CMAKE_BINARY_DIR}")
+    endif()
   endif()
 endif()
 # The mesh end-to-end test also drives engine-content; apps/engine_content/CMakeLists.txt adds

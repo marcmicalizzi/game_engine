@@ -10,6 +10,7 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <core/platform/process.h>
 #include <foundation/image/decode.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
@@ -490,5 +491,107 @@ TEST_CASE("engine-view: a live --game walk replays to the same module state") {
         write_json(*at(b, {"interactive", "trajectory", "hash"})));
   MESSAGE("live and replayed: " << live_state);
 }
+
+#if defined(_WIN32) && defined(ENGINE_PWSH_PATH) && defined(ENGINE_BUILD_DIR_PATH)
+namespace {
+
+i32 run_pwsh(const std::vector<std::string>& args, std::string& output) {
+  std::vector<std::string_view> argv = {ENGINE_PWSH_PATH, "-NoProfile", "-ExecutionPolicy",
+                                        "Bypass"};
+  for (const std::string& a : args)
+    argv.push_back(a);
+  platform::Process process;
+  std::string error;
+  if (!process.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, true)) {
+    output = "cannot start pwsh: " + error;
+    return -1;
+  }
+  process.close_stdin();
+  process.read_all(output);
+  return process.wait();
+}
+
+}  // namespace
+
+TEST_CASE("package-game: the zip plays where it is unpacked and leaves its report there") {
+  if (!test::bundle_root().empty()) {
+    MESSAGE("package-game needs the build tree and PowerShell 7; not in a test bundle");
+    return;
+  }
+  const test::TempDir tmp("engine_view_package_game");
+  const std::string script = std::string(ENGINE_SOURCE_DIR) + "/tools/package-game.ps1";
+  const std::string preset = std::filesystem::path(ENGINE_BUILD_DIR_PATH).filename().string();
+  const std::string scene =
+      std::string(ENGINE_SOURCE_DIR) + "/content/test-scenes/desert-endless/scene.json";
+  const std::string zip = tmp.file("game.zip");
+  std::string output;
+  REQUIRE_MESSAGE(run_pwsh({"-File", script, "-Preset", preset, "-Module", "walk_poc", "-Scene",
+                            scene, "-Out", zip, "-Width", "320", "-Height", "180"},
+                           output) == 0,
+                  output);
+  MESSAGE(output);
+
+  // Nothing from outside the repository's content: a scene in the test's own directory is refused.
+  const std::string stray = tmp.file("stray.json");
+  REQUIRE(io::write_file(stray, "{}") == io::Status::Ok);
+  std::string refused;
+  CHECK(run_pwsh({"-File", script, "-Preset", preset, "-Module", "walk_poc", "-Scene", stray,
+                  "-Out", tmp.file("stray.zip")},
+                 refused) == 2);
+  CHECK(refused.find("not under the repository's content/ directory") != std::string::npos);
+
+  // Unpacked where a tester would, and played with run.cmd's own arguments, for 20 frames.
+  const std::string unpacked = tmp.file("unpacked");
+  REQUIRE_MESSAGE(run_pwsh({"-Command", "Expand-Archive -LiteralPath '" + zip +
+                                            "' -DestinationPath '" + unpacked + "'"},
+                           output) == 0,
+                  output);
+  std::string folder;
+  for (const auto& entry : std::filesystem::directory_iterator(unpacked))
+    if (entry.is_directory()) folder = entry.path().string();
+  REQUIRE(!folder.empty());
+  CHECK(test::path_exists(folder + "/run.cmd"));
+  CHECK(test::path_exists(folder + "/README.txt"));
+  CHECK(test::path_exists(folder + "/game/walk_poc.dll"));
+  JsonValue manifest;
+  REQUIRE(read_json_file(folder + "/package.json", manifest));
+  const JsonValue* args = manifest.find("args");
+  REQUIRE(args != nullptr);
+  REQUIRE(args->is_array());
+  std::vector<std::string> command;
+  command.push_back(folder + "/engine-view.exe");
+  for (usize i = 0; i < args->size(); ++i) {
+    std::string a((*args)[static_cast<u32>(i)].as_string());
+    const usize at_dir = a.find("{dir}");
+    if (at_dir != std::string::npos) a.replace(at_dir, 5, folder);
+    command.push_back(a);
+  }
+  command.push_back("--frames");
+  command.push_back("20");
+  std::vector<std::string_view> argv(command.begin(), command.end());
+  std::string played;
+  const i32 code =
+      view_test::run_program(std::span<const std::string_view>(argv.data(), argv.size()), played);
+  if (code == 3) {
+    MESSAGE("engine-view unavailable here: " << played);
+    return;
+  }
+  CHECK_MESSAGE(code == 0, played);
+  JsonValue r;
+  REQUIRE_MESSAGE(read_json_file(folder + "/report.json", r), played);
+  CHECK(number_at(r, {"exit", "code"}) == 0.0);
+  CHECK(text_at(r, {"exit", "reason"}) == "frames");
+  CHECK(!text_at(r, {"machine", "adapter"}).empty());
+  CHECK(!text_at(r, {"machine", "os"}).empty());
+  CHECK(number_at(r, {"frames", "count"}) == 19.0);
+  CHECK(text_at(r, {"game", "name"}) == "walk_poc");
+  CHECK(number_at(r, {"game", "ticks"}) > 0.0);
+  CHECK(at(r, {"summary"}) != nullptr);
+  CHECK(at(r, {"walk"}) != nullptr);
+  // It wrote nothing outside its folder: the cache and the module's copies are inside it.
+  CHECK(test::path_exists(folder + "/ddc"));
+  MESSAGE("the package's report: " << write_json(*at(r, {"game"})).substr(0, 400));
+}
+#endif  // _WIN32 && ENGINE_PWSH_PATH
 
 #endif  // ENGINE_VIEW_GAME && WALK_POC_PATH
