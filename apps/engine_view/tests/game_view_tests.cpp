@@ -10,6 +10,7 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <foundation/image/decode.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 
@@ -17,6 +18,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -258,6 +260,54 @@ TEST_CASE("engine-view: --game ticks the fixture every tick of a walk and report
   CHECK(number_at(r, {"walk", "seconds"}) > 1.0);
   MESSAGE("120 frames of walking: " << write_json(*at(*game, {"state"})) << " HUD "
                                     << write_json(*at(*game, {"hud"})));
+}
+
+TEST_CASE("engine-view: --game draws its HUD over the picture, top left, and nowhere else") {
+  // The same replay captured with the game and without: the HUD's panel is the only difference,
+  // and it is in the top-left quarter (renderer.md "The overlay"; game_hud.h).
+  const test::TempDir tmp("engine_view_game_hud");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string session = walk_session(tmp, scene, 120);
+  const std::string with = tmp.file("with.png");
+  const std::string without = tmp.file("without.png");
+  const std::vector<std::string> common = {
+      "--replay-input", session, "--scene", scene,          "--offscreen", "--width", "800",
+      "--height",       "450",   "--ddc",   tmp.file("ddc")};
+  std::vector<std::string> args = common;
+  args.insert(args.end(), {"--game", fixture(tmp, WALK_POC_PATH), "--capture", with});
+  const Run game = run_view(args);
+  if (game.exit_code == 3 || refused_without_dunes(game)) return;
+  REQUIRE_MESSAGE(game.exit_code == 0, game.output);
+  args = common;
+  args.insert(args.end(), {"--capture", without});
+  const Run plain = run_view(args);
+  REQUIRE_MESSAGE(plain.exit_code == 0, plain.output);
+  image::Image a;
+  image::Image b;
+  REQUIRE(image::read_image(with, a) == io::Status::Ok);
+  REQUIRE(image::read_image(without, b) == io::Status::Ok);
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  u64 top_left = 0;
+  u64 elsewhere = 0;
+  for (u32 y = 0; y < a.height; ++y) {
+    for (u32 x = 0; x < a.width; ++x) {
+      const u32 i = (y * a.width + x) * 4;
+      const bool differs = std::memcmp(&a.pixels[i], &b.pixels[i], 3) != 0;
+      if (!differs) continue;
+      if (x < a.width / 2 && y < a.height / 2) {
+        ++top_left;
+      } else {
+        ++elsewhere;
+      }
+    }
+  }
+  MESSAGE("the HUD changed " << top_left << " pixels in the top-left quarter, " << elsewhere
+                             << " elsewhere");
+  CHECK(top_left > 2000);          // a panel with a meter and three lines of text
+  CHECK(elsewhere == 0);           // the rest of the picture is the same picture, to the byte
+  if (elsewhere != 0) tmp.keep();  // the two pictures, for a human to look at
 }
 
 TEST_CASE("engine-view: a --game run that drains the meter ends through end_run") {

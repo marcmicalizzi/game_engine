@@ -26,6 +26,7 @@
 #include "pacing.h"
 #include "report.h"
 #if ENGINE_VIEW_GAME
+#include "game_hud.h"
 #include "game_runner.h"
 #endif
 #include "time_controls.h"
@@ -1442,10 +1443,38 @@ void finish_game() {
     g_report.reason = "end_run";
   }
 }
+// The HUD the game said on its last tick, as this frame's overlay (game_hud.h): null — no overlay,
+// nothing drawn — without a game, with nothing said, or on an HDR target, which the overlay pass
+// refuses until the UI's HDR seam is built (renderer.md, "The overlay"; said once).
+view::GameHudOverlay* g_hud = nullptr;
+renderer::OverlayDrawData g_hud_data;
+const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& renderer) {
+  if (g_game == nullptr || g_hud == nullptr || !g_hud->valid()) return nullptr;
+  static bool said = false;
+  if (renderer.display() != gfx::DisplayEncoding::Sdr) {
+    if (!said) {
+      said = true;
+      std::fprintf(stderr,
+                   "engine-view: game: no HUD on an HDR target (the overlay is SDR only)\n");
+    }
+    return nullptr;
+  }
+  std::string error;
+  if (!g_hud->build(g_game->hud(), renderer.width(), renderer.height(), renderer, g_hud_data,
+                    error)) {
+    if (!said) {
+      said = true;
+      std::fprintf(stderr, "engine-view: game: the HUD cannot be drawn: %s\n", error.c_str());
+    }
+    return nullptr;
+  }
+  return g_hud_data.commands.empty() ? nullptr : &g_hud_data;
+}
 #else
 void poll_game() {}
 bool game_over() { return false; }
 void finish_game() {}
+const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 #endif
 
 // The walk's half, at the end of a session that had a walker.
@@ -2590,6 +2619,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
         frame.sun_time_s = sun_at(frame.frame_index);
+        frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         if (view_renderer.submit_frame(frame, &error) == 0) {
           ok = false;
           break;
@@ -3006,6 +3036,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.frame_index = session.frame_index();
       }
       frame.sun_time_s = sun_at(frame.frame_index);
+      frame.overlay = game_hud_overlay(view_renderer);
       renderer::CapturedFrame shot;
       if (!world_before(frame.camera, WorldStep::complete, 0, static_cast<u32>(frame.frame_index),
                         false) ||
@@ -4079,9 +4110,15 @@ int run_view(int argc, char** argv) {
     g_game = &game;
     std::fprintf(stderr, "engine-view: game: %s loaded\n", options.game.c_str());
   }
+  // The HUD's ImGui context, for a game only: without one nothing of it exists.
+  view::GameHudOverlay hud;
+  if (g_game != nullptr && hud.create()) g_hud = &hud;
   // Whatever way the run below ends, the game is finished with it and forgotten before it goes.
   struct GameScope {
-    ~GameScope() { g_game = nullptr; }
+    ~GameScope() {
+      g_hud = nullptr;
+      g_game = nullptr;
+    }
   } game_scope;
 #endif
 
@@ -5110,6 +5147,7 @@ int run_view(int argc, char** argv) {
             sun.rate * static_cast<f64>(rendered) / static_cast<f64>(view::k_frame_index_hz);
       }
       frame.sun_time_s = sky_offset + sun.time_s;
+      frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
       frame.exposure = exposure_keys;
       terrain_camera = frame.camera;  // the next frame's rings follow this one
 #if ENGINE_VIEW_WORLD
