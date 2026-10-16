@@ -38,7 +38,7 @@ tools/frame-budget.ps1   [-Run <id>] [-Rebaseline -Reason "<why>"]      # the fr
 tools/license-check.ps1  [-BuildDir build/<preset>]                     # third_party/LICENSES.md against ADR-0014 and every FetchContent_Declare; part of `dev.ps1 lint`
 tools/blender-run.ps1    -Script <file.py> [-Out <dir>] [-GpuLock] -- <script args>   # headless Blender for a bpy script outside the repo; sidecars like generate.ps1's (E33)
 tools/hdr-measure.ps1    [-Out <dir>] [-Preset msvc-release] [-DryRun]          # E39's HDR measurement under the GPU lock: the probe, ramp and skies through sdr10/hdr10/scrgb, EXRs, histograms, a README (docs/experiments/hdr-output-proposal.md)
-tools/muscle-corpus.ps1  -Authoring <06-muscle-activation> [-Out <dir>]       # content/muscle/ from the authoring track's files, numbers copied as text (docs/subsystems/muscle.md)
+tools/muscle-corpus.ps1  -Authoring <06-muscle-activation> [-Sources <sources.json>] [-Out <dir>] [-Table <qualified_domains.inc>]  # content/muscle/ and the validator's domain table from the source packets, numbers copied as text (docs/subsystems/muscle.md)
 tools/mcp-check.ps1      [-Mcp <engine-mcp>] [-Scratch <dir>] [-Report <file.json>]  # the MCP conformance client: plan 06 §6.10's loop over engine-mcp as a client drives it, a time and a size per tool (docs/subsystems/apps.md)
 ```
 
