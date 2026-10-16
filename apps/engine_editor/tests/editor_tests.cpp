@@ -1370,6 +1370,18 @@ TEST_CASE("engine-editor: the page's narrow layout keeps the viewport inside a r
   if (!run_editor(argv, summary, output)) return;
   const f64 scale = number(summary.find("display_scale"));
   REQUIRE_MESSAGE(scale > 0.0, output);
+  // The run waited for the page's layout of the resized window, not for a count of frames (A41):
+  // the editor ends --resize-to only after that answer, eight frames on, and fails (exit 1, the
+  // reason on stderr) when it has not come a minute after the resize.
+  const f64 resized_at = number(summary.find("frames_at_resize"));
+  const f64 answered_at = number(summary.find("frames_at_resize_answer"));
+  MESSAGE("resized at frame " << resized_at << ", the page's layout for it placed at frame "
+                              << answered_at << ", " << number(summary.find("resize_answer_ms"))
+                              << " ms after the resize, of " << number(summary.find("frames"))
+                              << " frames");
+  CHECK_MESSAGE(resized_at >= 0.0, output);
+  CHECK_MESSAGE(answered_at >= resized_at, output);
+  CHECK_MESSAGE(number(summary.find("frames")) >= answered_at + 8.0, output);
   const JsonValue* placements = summary.find("placements");
   REQUIRE_MESSAGE((placements != nullptr && placements->is_array()), output);
   bool large = false;

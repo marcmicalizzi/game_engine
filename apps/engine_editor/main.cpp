@@ -77,6 +77,8 @@ tunables::Int present_max_hz{"editor.present.max_hz", 120, 1, 1000,
 constexpr i64 k_layout_timeout_ns = 60'000'000'000;
 // How long `--test-page` waits for the page's checks (and a reconnect) once its frames are drawn.
 constexpr i64 k_page_checks_timeout_ns = 120'000'000'000;
+// How long `--resize-to` waits, from the resize, for the page's layout of the resized window.
+constexpr i64 k_resize_answer_timeout_ns = 60'000'000'000;
 
 constexpr const char* k_usage =
     "engine-editor --doc <dir> [--create] [--actor <name>] [--width N] [--height N]\n"
@@ -121,7 +123,8 @@ constexpr const char* k_usage =
     "  --webview-profile  where the web view keeps its profile (default <doc>/.editor/webview,\n"
     "               in a directory that ignores itself: <doc>/.editor/.gitignore is \"*\")\n"
     "  Test flags, the embedded window's (frames counted since the page last moved the viewport,\n"
-    "  as --pick's are): --resize-to W,H resizes the window at frame 4; --test-keys (with --move\n"
+    "  as --pick's are): --resize-to W,H resizes the window at frame 4 and the run ends only once\n"
+    "  the page has laid out the resized window (exit 1 after a minute); --test-keys (with --move\n"
     "  and --frames 32 or more) clicks the viewport and posts Ctrl+Z to it through the platform's\n"
     "  queue, then gives the page the keyboard and posts Ctrl+Z again; --test-look-os DX,DY posts\n"
     "  the look gesture to the viewport through the platform's queue (frames 3 to 10); "
@@ -396,6 +399,12 @@ struct Summary {
   u32 drops = 0;  // --test-drop-socket-at: connections shut
   i64 frames_at_drop = -1;
   i64 frames_at_reconnect = -1;
+  // --resize-to: the frame the window was resized at, the frame the page's layout of the resized
+  // window was placed at (from the page, inside the client area without the clamp), and how long
+  // that answer took in milliseconds; -1 when it did not happen.
+  i64 frames_at_resize = -1;
+  i64 frames_at_resize_answer = -1;
+  f64 resize_answer_ms = -1.0;
   // --look: the camera's yaw and pitch before and after the gesture, and whether SDL said the
   // child was in relative mode while the button was held.
   bool looked = false;
@@ -534,6 +543,9 @@ void print_summary(const Summary& s, const Options& o) {
   out["drops"] = JsonValue(s.drops);
   out["frames_at_drop"] = JsonValue(s.frames_at_drop);
   out["frames_at_reconnect"] = JsonValue(s.frames_at_reconnect);
+  out["frames_at_resize"] = JsonValue(s.frames_at_resize);
+  out["frames_at_resize_answer"] = JsonValue(s.frames_at_resize_answer);
+  out["resize_answer_ms"] = JsonValue(s.resize_answer_ms);
   if (s.looked) {
     JsonValue look = JsonValue::object();
     look["yaw_deg"] =
@@ -1026,6 +1038,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     f32 scale_now = window.display_scale();
     summary.display_scale = scale_now;
     bool resized = false;
+    bool resize_seen = false;  // the top-level window has said it was resized since
+    i64 resized_at_ns = -1;    // when --resize-to resized it
     bool dropped = false;
     bool relayout_sent = false;
     u32 keys_before_page = 0;
@@ -1155,6 +1169,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
             // The child is clamped into the new client area at once; the page's own layout for
             // the new size follows.
             replace = placed;
+            if (resized) resize_seen = true;
             continue;
           }
           if (is_pointer(event)) continue;
@@ -1227,6 +1242,14 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         const bool moved = !placed || !(rect == summary.viewport);
         summary.viewport = rect;
         summary.layouts = host.state.layouts;
+        // --resize-to's answer: the first layout from the page after the window said it was
+        // resized that fits the new client area without the clamp. A layout the page sent for the
+        // old size and that arrived late does not fit it, and is not the answer.
+        if (resize_seen && from_page && !placement.clamped && summary.frames_at_resize_answer < 0) {
+          summary.frames_at_resize_answer = static_cast<i64>(summary.frames);
+          summary.resize_answer_ms =
+              static_cast<f64>(time::monotonic_ns() - resized_at_ns) / 1'000'000.0;
+        }
         if (moved && summary.placements.size() < 16) {
           summary.placements.push_back(Summary::Placed{lw, lh, rect, placement.clamped,
                                                        host.state.layout.narrow, from_page});
@@ -1263,6 +1286,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
         e.y = static_cast<f32>(ch) * 0.5f;
         if (options.resize && !resized && f == 4) {
           resized = true;
+          resized_at_ns = time::monotonic_ns();
+          summary.frames_at_resize = static_cast<i64>(summary.frames);
           (void)window.set_size(static_cast<u32>(options.resize_to[0]),
                                 static_cast<u32>(options.resize_to[1]));
         }
@@ -1561,6 +1586,16 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           if (checks_since_ns < 0) checks_since_ns = t;
           if (!done && t - checks_since_ns > k_page_checks_timeout_ns) {
             error = "--test-page: the page's checks did not finish within two minutes";
+            code = 1;
+            break;
+          }
+        }
+        // --resize-to ends only once the page has laid itself out for the resized window (A41):
+        // a count of frames is no wait on a loaded machine, where the answer can come after it.
+        if (done && resized && summary.frames_at_resize_answer < 0) {
+          done = false;
+          if (time::monotonic_ns() - resized_at_ns > k_resize_answer_timeout_ns) {
+            error = "--resize-to: the page sent no layout for the resized window within a minute";
             code = 1;
             break;
           }
