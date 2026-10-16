@@ -48,3 +48,16 @@ None of these changes the law, the tableau, the schedule or a gate, so each is t
 - The Hermite path through the tick's endpoints is not the corpus's analytic path; the passive case's crossings land at slightly different times, which does not change the per-tick counts by more than the crossing's own share.
 
 The raw output: `muscle_bench.exe --require-quiet --json=...`, the four `muscle.tick.*` rows and `muscle.probe`, with the harness's JSON header holding the machine state quoted above.
+
+## Tier 1, the supervisor's rigid tendon (2026-10-15)
+
+`muscle.tick.rigid` (added with the supervisor, roadmap C54): the `step` case's 64 and 256 actuators taken into tier 1 by the supervisor itself — eight frozen ticks under an excitation outside [0, 1], the projection at the ninth's start — and then ticks 10 to 59 through `supervise`, fifty, so that no promotion (at the sixtieth success) falls inside; an iteration restores every actuator to its first rigid tick's record, untimed. A tick is the activation over the schedule's eight parents (one RK4 step of H each: 32 activation right-hand sides, each a `tanh`), the rigid projection of the path's end (one square root), the rigid forces there (the active curve's three `exp`, the passive curve's, the force-velocity `asinh`, the passive energy's `exp`), the path's two end samples, and the supervisor's per-tick bookkeeping (the actuator's `TickWork` and outcome reset, its streaks and decisions).
+
+| Case | n = 64 | n = 256 | D20's target |
+|---|---|---|---|
+| tier 1, `step` | **2.40 µs** | **2.40 µs** | 0.3 µs |
+| tier 0, `step`, Newton (the same run) | 41.8 µs | 41.8 µs | 2 µs |
+
+Nanoseconds per actuator per tick at the median of seven repeats, spread under 0.4%; `build/msvc-release`, `--wait-quiet=900`. **Machine state**: i9-10980XE (36 threads), RTX 5090; other processes used 5.6% of the CPU at the start and 4.0% at the end, the GPU 0% (7.0 GB of 32 GB in use), no GPU lock held, session unlocked. Tier 0's rows in the same run reproduce the table above to 0.5%.
+
+**Tier 1 is 8 times D20's target**, and by count the activation is most of it: 32 of the tick's 38 transcendentals are the eight RK4 steps' `tanh`. One RK4 step over the whole tick — the cheaper reading of "one step per tick" — would be four, but it leaves the activation's domain on an ordinary step from rest (its first half-step reaches `a = 1.11` for `u = 1`, and overshoots below zero for `u = 0.8`), which tier 1 would then report as a failure every time; so tier 1 integrates in the schedule's parents, which also makes its activation tier 0's to the bit on a tick with no crossing. A cheaper activation for tier 1 — an exponential integrator per parent, or a step that holds the domain by construction — changes tier 1's activation and is an authoring-side declaration, not an engine edit. Tier 1 is a seventeenth of tier 0.

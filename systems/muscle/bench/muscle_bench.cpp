@@ -12,10 +12,17 @@
 // benchmark runs those ticks once untimed and prints what a tick spends — probes, implicit stages,
 // residual evaluations and root iterations per stage, activation rates, equilibrium solves,
 // crossings — which is what the time is made of.
+//
+//   muscle.tick.rigid    tier 1 (the supervisor's rigid tendon, D20's 0.3 us target): the `step`
+//                        case's actuators taken into tier 1 by the supervisor itself (eight frozen
+//                        ticks, the projection at the ninth), then ticks 10 to 59 through
+//                        `supervise` — fifty, so that no promotion falls inside — each the
+//                        activation over eight parents, the projection and the rigid forces
 #include <core/containers/vector.h>
 #include <foundation/bench/bench.h>
 #include <systems/muscle/muscle.h>
 #include <systems/muscle/store.h>
+#include <systems/muscle/supervisor.h>
 
 #include <cstdio>
 #include <span>
@@ -196,6 +203,68 @@ ENGINE_BENCH_ARGS(muscle_tick_step_newton, "muscle.tick.step.newton", 64, 256) {
 ENGINE_BENCH_ARGS(muscle_tick_passive_newton, "muscle.tick.passive.newton", 64, 256) {
   static bool printed = false;
   measure<StageRoot::Newton>(state, passive_case(), printed);
+}
+
+// Tier 1: see the header. The setup's frozen ticks and the projection are untimed; an iteration
+// restores every actuator to its first rigid tick's record and runs the fifty after it.
+ENGINE_BENCH_ARGS(muscle_tick_rigid, "muscle.tick.rigid", 64, 256) {
+  constexpr u64 k_rigid_first = 10;
+  constexpr u32 k_rigid_ticks = 50;
+  const u32 n = static_cast<u32>(state.arg());
+  const Scenario sc = step_case();
+  LineStore store;
+  store.reserve(n);
+  double length = 0.0;
+  double rate = 0.0;
+  sc.path.sample(0.0, 0.0, length, rate);
+  for (u32 i = 0; i < n; ++i) {
+    ActuatorSpec spec{};
+    spec.series = sc.series;
+    u32 index = 0;
+    store.add(spec, index);
+    Failure f{};
+    initialize_static(store, index, 0, 0.0, length, f);
+  }
+  Vector<HermitePath> paths(n, hermite_for(sc.path, 1));
+  Vector<double> u(n, 2.0);  // outside [0, 1]: eight frozen ticks
+  for (u64 k = 1; k <= 9; ++k) {
+    for (u32 i = 0; i < n; ++i) {
+      paths[i] = hermite_for(sc.path, k);
+      u[i] = k < 9 ? 2.0 : sc.excitation(static_cast<double>(k - 1) / 60.0);
+    }
+    supervise(store, k, std::span<const double>(u.data(), n),
+              std::span<const HermitePath>(paths.data(), n));
+  }
+  if (store.supervisory[0].tier != LineTier::Rigid)
+    std::printf("muscle.tick.rigid: the setup did not reach tier 1\n");
+  Vector<LineState> rigid(n);
+  for (u32 i = 0; i < n; ++i)
+    save(store, i, rigid[i]);
+  Vector<HermitePath> tick_paths(static_cast<usize>(n) * k_rigid_ticks);
+  Vector<double> tick_u(static_cast<usize>(n) * k_rigid_ticks);
+  for (u32 k = 0; k < k_rigid_ticks; ++k) {
+    const u64 t = k_rigid_first + k;
+    for (u32 i = 0; i < n; ++i) {
+      tick_paths[static_cast<usize>(k) * n + i] = hermite_for(sc.path, t);
+      tick_u[static_cast<usize>(k) * n + i] = sc.excitation(static_cast<double>(t - 1) / 60.0);
+    }
+  }
+  while (state.keep_running()) {
+    state.pause_timing();
+    for (u32 i = 0; i < n; ++i)
+      restore(store, i, rigid[i]);
+    state.resume_timing();
+    u32 frozen = 0;
+    for (u32 k = 0; k < k_rigid_ticks; ++k) {
+      frozen +=
+          supervise(store, k_rigid_first + k,
+                    std::span<const double>(tick_u.data() + static_cast<usize>(k) * n, n),
+                    std::span<const HermitePath>(tick_paths.data() + static_cast<usize>(k) * n, n));
+    }
+    bench::keep(frozen);
+    bench::keep(store.activation[0]);
+  }
+  state.set_items(static_cast<u64>(n) * k_rigid_ticks);
 }
 
 // One S probe at the `step` case's static start: three RK4 activations and three implicit stages.
