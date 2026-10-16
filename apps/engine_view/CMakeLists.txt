@@ -63,6 +63,19 @@ if(TARGET engine::world)
   list(APPEND _view_deps world sim)
   set(_view_world world_view.cpp)
 endif()
+# `--game`: a hot-reloadable game module run from the walking session (game_runner.cpp,
+# docs/subsystems/apps.md "--game: running a game module"). The module host is the hotload
+# capability (ADR-0027), so this is `--animate`'s hand-made switch again: linked where it is
+# configured, and without it `--game` says the build has no module host. The tick a module reads is
+# a schema type of this app's (game_tick.schema), registered so a module can resolve its fields by
+# name. The runner is compiled into the tests too: its hot reload and its refusals are checked with
+# no GPU and no window (tests/game_runner_tests.cpp).
+engine_schema_library(NAME game_runner_schemas SCHEMAS game_tick.schema CAPABILITY hotload)
+if(TARGET engine::hotload)
+  list(APPEND _view_deps hotload game_runner_schemas)
+  set(_view_game game_runner.cpp)
+  list(APPEND _view_tests tests/game_runner_tests.cpp game_runner.cpp)
+endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
   # it, because it is the pattern a game copies and because it is worth testing on its own: the
@@ -73,7 +86,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world}
+  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world} ${_view_game}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
@@ -119,6 +132,12 @@ if(TARGET engine::scene_collision)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
+  endif()
+endif()
+if(TARGET engine::hotload)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_GAME=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_GAME=1)
   endif()
 endif()
 # The mesh end-to-end test also drives engine-content; apps/engine_content/CMakeLists.txt adds

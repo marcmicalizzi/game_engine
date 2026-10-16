@@ -10,7 +10,7 @@ using namespace engine;
 ENGINE_EXPECT_SIZE(8, 4, hotload::View);
 ENGINE_EXPECT_SIZE(4, 4, hotload::FieldRef);
 ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
-ENGINE_EXPECT_SIZE(96, 8, hotload::HostApi);
+ENGINE_EXPECT_SIZE(136, 8, hotload::HostApi);  // ABI 2: the game runner's five services
 ENGINE_EXPECT_SIZE(16, 8, hotload::ModuleContext);
 ENGINE_EXPECT_SIZE(24, 8, hotload::Export);
 ENGINE_EXPECT_SIZE(56, 8, hotload::ModuleDesc);

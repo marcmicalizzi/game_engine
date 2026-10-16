@@ -284,6 +284,50 @@ struct HostCallbacks {
   static void fail(void* host, const char* message, u64 length) {
     self(host).pending_failure_.assign(message, static_cast<usize>(length));
   }
+
+  // ---- the game runner's services (ABI 2): forwarded to HostConfig::game ----
+  static Result game_action(void* host, const char* name, u64 length, u32* out_bit) {
+    ModuleHost& h = self(host);
+    if (out_bit == nullptr || name == nullptr) return Result::InvalidArgument;
+    const std::string_view wanted(name, static_cast<usize>(length));
+    const GameServices& g = h.config_.game;
+    if (g.action == nullptr) {
+      h.pending_unresolved_.push_back("game action '" + std::string(wanted) +
+                                      "': this host runs no game");
+      return Result::Unsupported;
+    }
+    std::string why;
+    const Result r = g.action(g.user, wanted, out_bit, &why);
+    if (r != Result::Ok) {
+      h.pending_unresolved_.push_back(why.empty() ? "no game action '" + std::string(wanted) + "'"
+                                                  : why);
+    }
+    return r;
+  }
+  static void hud_text(void* host, u32 line, const char* text, u64 length) {
+    const GameServices& g = self(host).config_.game;
+    if (g.hud_text == nullptr || text == nullptr) return;
+    g.hud_text(g.user, line, std::string_view(text, static_cast<usize>(length)));
+  }
+  static void hud_meter(void* host, const char* name, u64 length, f64 value, f64 max) {
+    const GameServices& g = self(host).config_.game;
+    if (g.hud_meter == nullptr || name == nullptr) return;
+    g.hud_meter(g.user, std::string_view(name, static_cast<usize>(length)), value, max);
+  }
+  static void end_run(void* host, const char* json, u64 length) {
+    const GameServices& g = self(host).config_.game;
+    if (g.end_run == nullptr || json == nullptr) return;
+    g.end_run(g.user, std::string_view(json, static_cast<usize>(length)));
+  }
+  static Result nearest_placement(void* host, const char* kind, u64 length, f64 radius,
+                                  f64* out_position, f64* out_distance) {
+    const GameServices& g = self(host).config_.game;
+    if (kind == nullptr || out_position == nullptr || out_distance == nullptr)
+      return Result::InvalidArgument;
+    if (g.nearest_placement == nullptr) return Result::Unsupported;
+    return g.nearest_placement(g.user, std::string_view(kind, static_cast<usize>(length)), radius,
+                               out_position, out_distance);
+  }
 };
 
 const char* status_name(Status status) noexcept {
@@ -320,11 +364,22 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.read = &HostCallbacks::read;
   api_.read_element = &HostCallbacks::read_element;
   api_.fail = &HostCallbacks::fail;
+  api_.game_action = &HostCallbacks::game_action;
+  api_.hud_text = &HostCallbacks::hud_text;
+  api_.hud_meter = &HostCallbacks::hud_meter;
+  api_.end_run = &HostCallbacks::end_run;
+  api_.nearest_placement = &HostCallbacks::nearest_placement;
   context_.api = &api_;
   context_.state = nullptr;
 }
 
 ModuleHost::~ModuleHost() { unload(); }
+
+std::string ModuleHost::take_failure() {
+  std::string out;
+  out.swap(pending_failure_);
+  return out;
+}
 
 const std::string& ModuleHost::module_name() const noexcept {
   static const std::string none;

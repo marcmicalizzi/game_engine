@@ -25,6 +25,9 @@
 #include "fly_camera.h"
 #include "pacing.h"
 #include "report.h"
+#if ENGINE_VIEW_GAME
+#include "game_runner.h"
+#endif
 #include "time_controls.h"
 #include "window_input.h"
 #include "world_view.h"  // empty without the world capability (ENGINE_VIEW_WORLD)
@@ -164,7 +167,7 @@ constexpr const char* k_usage =
     "                   [--record-input <log.jsonl>]\n"
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
-    "                   [--report <report.json>]\n"
+    "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
     "                   [--present-bits auto|8|10] [--present-format auto|sdr8|sdr10|hdr10|scrgb]\n"
@@ -445,6 +448,12 @@ constexpr const char* k_usage =
     "                   at one frame per four ticks; --marker-captures draws every marker. Names\n"
     "                   its own scene unless --scene or --mesh is given; refuses a log recorded\n"
     "                   against another action map or another camera integration version\n"
+    "  --game <module>  run a hot-reloadable game module (engine_game_module) from the session:\n"
+    "                   implies --interactive; ticked every tick after the walker, rebuilt and\n"
+    "                   swapped in while it runs, its HUD drawn, its result or error in the\n"
+    "                   summary's interactive.game. A replay of a --game recording plays it again\n"
+    "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
+    "                   save it there at exit, so a run can be left and resumed\n"
     "  --report <f>     at exit, whether the run succeeded or not, write one JSON file a tester\n"
     "                   sends back: the summary line, the machine (adapter, driver, tier, OS,\n"
     "                   CPU baseline), frame times (median, p95, p99, worst), the walk, a\n"
@@ -649,6 +658,9 @@ struct Options {
   std::string record_input;
   std::string replay_input;
   std::string inject_input;
+  // `--game`: a game module run from the session (game_runner.h); `--game-state`: its state file.
+  std::string game;
+  std::string game_state;
   std::string input_map;
   std::string tunables_file;
   std::string tunable_overrides;
@@ -1395,6 +1407,47 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
   g_report.height = height;
 }
 
+// ---- --game: the session's game module (game_runner.h) ---------------------------------------
+// One per process, like the report: started in `main` before any device (so a module the host
+// refuses is refused at once, in the host's words), hung on whichever session the run flies, polled
+// between frames, and finished — its state saved, its block in the summary and the report — when
+// the session ends.
+#if ENGINE_VIEW_GAME
+view::GameRunner* g_game = nullptr;
+
+// Hooks the game onto a session about to start: the observer that ticks it after the walker, and
+// the sky's clock as the session runs it (the offset, the day's rate, the ground's time).
+void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate,
+                 const renderer::SceneData& scene) {
+  if (g_game == nullptr) return;
+  session.set_tick_observer(&view::GameRunner::observe, g_game);
+  g_game->set_clock(sun_offset_s, sun_rate, scene.terrain.enabled ? scene.terrain.time_s : 0.0);
+}
+// Between frames: a rebuilt module swapped in with its state carried (hotload's poll).
+void poll_game() {
+  if (g_game != nullptr) (void)g_game->poll();
+}
+bool game_over() { return g_game != nullptr && g_game->ended(); }
+// At the session's end: the state saved, the report's block and reason, the failure said.
+void finish_game() {
+  if (g_game == nullptr || !g_game->started()) return;
+  std::string error;
+  if (!g_game->finish(&error)) std::fprintf(stderr, "engine-view: game: %s\n", error.c_str());
+  g_report.game = g_game->summary_json();
+  if (g_game->failed()) {
+    std::fprintf(stderr, "engine-view: game: %s\n", g_game->error().c_str());
+    g_report.reason = "game_error";
+    note_failure("game: " + g_game->error());
+  } else if (g_game->ended()) {
+    g_report.reason = "end_run";
+  }
+}
+#else
+void poll_game() {}
+bool game_over() { return false; }
+void finish_game() {}
+#endif
+
 // The walk's half, at the end of a session that had a walker.
 void report_walk(const view::FlySession& session) {
   const view::Walker* walker = session.walker();
@@ -1691,6 +1744,9 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   }
   out.set("trajectory", std::move(trajectory));
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
+#if ENGINE_VIEW_GAME
+  if (g_game != nullptr && g_game->started()) out.set("game", g_game->summary_json());
+#endif
   return out;
 }
 
@@ -2486,6 +2542,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       walker.set_drawn(drawn_ground(time_lapse, scene_data));
       session.set_walker(&walker);
+#if ENGINE_VIEW_GAME
+      attach_game(session, clock.offset_s, clock.sun_rate, scene_data);
+#endif
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("replay", error);
         break;
@@ -2525,6 +2584,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
+        poll_game();  // a rebuilt game module, between this frame's ticks and the last's
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
         renderer::FrameDesc frame;
         frame.camera = session.camera();
@@ -2545,7 +2605,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
         previous_start = start;
         ++submissions;
         ++rendered;
+        // The game ended the run (end_run, or an export that failed): this frame was its last.
+        if (game_over()) break;
       }
+      if (game_over()) frames = static_cast<u32>(rendered);
+      finish_game();
       if (!ok) {
         exit_code = fail("frame", error);
         break;
@@ -3494,6 +3558,11 @@ int run_view(int argc, char** argv) {
     } else if (a == "--report") {
       if (!next_value(argc, argv, i, a, g_report.path)) return k_exit_usage;
       g_report.frames.enable();
+    } else if (a == "--game") {
+      if (!next_value(argc, argv, i, a, options.game)) return k_exit_usage;
+      options.interactive = true;  // a game is played from the session, live or replayed
+    } else if (a == "--game-state") {
+      if (!next_value(argc, argv, i, a, options.game_state)) return k_exit_usage;
     } else if (a == "--replay-input") {
       if (!next_value(argc, argv, i, a, options.replay_input)) return k_exit_usage;
       options.interactive = true;
@@ -3746,6 +3815,18 @@ int run_view(int argc, char** argv) {
                  "give one\n");
     return k_exit_usage;
   }
+  if (!options.game_state.empty() && options.game.empty()) {
+    std::fprintf(stderr, "engine-view: --game-state is a --game module's state; name the module\n");
+    return k_exit_usage;
+  }
+#if !ENGINE_VIEW_GAME
+  if (!options.game.empty()) {
+    return unavailable(
+        "--game runs a game module through the module host, and this build has "
+        "none (ENGINE_WITH_HOTLOAD is off, as in the minimal build)",
+        "");
+  }
+#endif
   if (options.walk && !live) {
     std::fprintf(stderr,
                  "engine-view: --walk starts a live --interactive session walking; a replay "
@@ -3982,6 +4063,27 @@ int run_view(int argc, char** argv) {
       return prepared;
     }
   }
+#if ENGINE_VIEW_GAME
+  // --game: the module loaded before any window or device, so one the host refuses — no entry
+  // point, another ABI, an action no map has, a state file of another type — is refused at once.
+  view::GameRunner game;
+  if (!options.game.empty()) {
+    view::GameRunner::Config config;
+    config.module = options.game;
+    config.state_file = options.game_state;
+    std::string game_error;
+    if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
+      log::remove_sink(&stderr_sink);
+      return fail("game", game_error);
+    }
+    g_game = &game;
+    std::fprintf(stderr, "engine-view: game: %s loaded\n", options.game.c_str());
+  }
+  // Whatever way the run below ends, the game is finished with it and forgotten before it goes.
+  struct GameScope {
+    ~GameScope() { g_game = nullptr; }
+  } game_scope;
+#endif
 
   // The reference path never opens a window, so it comes before the display is even asked for,
   // and neither does the offscreen one.
@@ -4532,6 +4634,13 @@ int run_view(int argc, char** argv) {
         std::fprintf(stderr, "engine-view: nothing to walk on here (%s); flying\n",
                      walker.why().c_str());
       }
+#if ENGINE_VIEW_GAME
+      // The day's rate as the window's sun starts it (below), so a live game and its offscreen
+      // replay keep the same clock.
+      attach_game(session, sky_offset,
+                  renderer::frame_clock(request_of(options).clock, scene_data).sun_rate,
+                  scene_data);
+#endif
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("interactive", error);
         break;
@@ -4890,6 +4999,7 @@ int run_view(int argc, char** argv) {
         // The ground as this frame draws it, for the walker's ticks (the time-lapse moved it
         // above).
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
+        poll_game();  // a rebuilt game module, between the last frame's ticks and this one's
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -5129,8 +5239,9 @@ int run_view(int argc, char** argv) {
       ++rendered;
 
       // A windowed path flight ends on the path's last frame by its own clock, not on a count.
-      const bool last =
-          (options.frames != 0 && rendered >= options.frames && !path_in_window) || session_done;
+      // A game that ended the run (end_run, or an export that failed) ends it after this frame.
+      const bool last = (options.frames != 0 && rendered >= options.frames && !path_in_window) ||
+                        session_done || game_over();
       if (last && !options.capture.empty()) {
         view_renderer.wait(value);
         view_renderer.collect_visible();
@@ -5189,6 +5300,7 @@ int run_view(int argc, char** argv) {
     }
     finished_ns = time::monotonic_ns();
     if (interactive.on) report_walk(session);
+    finish_game();
     if (window_records && view_renderer.valid() && exit_code == 0) {
       // The last frames' GPU numbers fold in when their slots come around again: bring those
       // around with nothing drawn and nothing presented, and the session's last frames have

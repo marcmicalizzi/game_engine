@@ -151,6 +151,10 @@ class Walker {
   WorldPos step(const WalkInput& input);
   WorldPos eye() const noexcept;
   WorldPos feet() const noexcept;
+  // Whether the feet stand on something after the last step: the character's `OnGround`, or the
+  // ground-follow's not being in a jump. False before the first drop. Read only: a game asks it
+  // (game_runner.h), and nothing the walker computes depends on it being asked.
+  bool on_ground() const noexcept;
 
   const WalkStats& stats() const noexcept;
   // The summary's block (apps.md, "Walking"): the collision and its counts beside the stats.

@@ -1,0 +1,26 @@
+// The state of walk_poc, the fixture game module that proves engine-view's game runner
+// (game/walk_poc/README.md; docs/subsystems/apps.md "--game: running a game module"). One struct of
+// fixed-layout values, so the host carries it across a rebuild and `--game-state` saves it.
+namespace engine.walk_poc
+
+/// What the fixture remembers between ticks and runs.
+struct Survivor @version(1) {
+  /// Thirst, 100 full and 0 the end of the run.
+  thirst: f64 = 100
+  /// Game seconds survived, a tick's dt at a time, and metres walked.
+  seconds: f64 = 0
+  walked_m: f64 = 0
+  /// Whole days survived: midnights the world's clock has passed since the run began.
+  days: u32 = 0
+  /// The world's time when the run began (set on its first tick), for the day counter.
+  start_world_s: f64 = 0
+  started: bool = false
+  /// The water the run drinks at when no ruin is near: fixed on the first tick, 25 m ahead of
+  /// where the walker stood.
+  spring: dvec3
+  /// Times `interact` was pressed, and ticks spent drinking.
+  interactions: u32 = 0
+  drinking_ticks: u64 = 0
+  /// Whether the run has ended (end_run said once).
+  over: bool = false
+}

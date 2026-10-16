@@ -60,12 +60,29 @@ struct FunctionId {
   bool valid() const noexcept { return index != 0xFFFFFFFFu; }
 };
 
+// A game runner's answers to `HostApi`'s game services (ABI 2; module_abi.h, and
+// docs/subsystems/apps.md "The game contract"): the host forwards a module's call to these, with
+// `user` first. A null function — every one, for a host that runs no game — answers `Unsupported`
+// (`action`, `nearest_placement`) or does nothing. `action` returning anything but `Ok` is a name
+// the load is refused for, with `why`, listed beside any field path that did not resolve.
+struct GameServices {
+  void* user = nullptr;
+  Result (*action)(void* user, std::string_view name, u32* out_bit, std::string* why) = nullptr;
+  void (*hud_text)(void* user, u32 line, std::string_view text) = nullptr;
+  void (*hud_meter)(void* user, std::string_view name, f64 value, f64 max) = nullptr;
+  void (*end_run)(void* user, std::string_view json) = nullptr;
+  Result (*nearest_placement)(void* user, std::string_view kind, f64 radius, f64* out_position,
+                              f64* out_distance) = nullptr;
+};
+
 struct HostConfig {
   // Where per-load copies of the library go. Empty: "<library>.hotload" beside the library.
   std::string shadow_directory;
   // The host's clock, as the module reads it (HostApi::tick, fixed_step).
   u64 tick = 0;
   f64 fixed_step = 1.0 / 60.0;
+  // The game runner's services, when this host runs a game (engine-view's `--game`).
+  GameServices game;
 };
 
 // What the last successful load or reload did to the state.
@@ -116,6 +133,10 @@ class ModuleHost {
   // The per-load copy the current build was loaded from (empty when nothing is loaded).
   const std::string& loaded_copy_path() const noexcept;
   const std::string& last_error() const noexcept { return last_error_; }
+  // The line a module handed `HostApi::fail` from an export since the last call (empty: none),
+  // cleared by the call. A load's `describe` and `on_load` failures are not here: they refuse the
+  // load and are in `last_error()`. A game runner reads it after each tick (apps.md).
+  std::string take_failure();
   const ReloadReport& last_report() const noexcept { return report_; }
   HostStats stats() const noexcept { return stats_; }
 

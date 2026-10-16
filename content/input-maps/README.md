@@ -16,7 +16,7 @@ then the walk mode's two (`walk` on F and `jump` on Space and a pad's South, rev
 [renderer](../../docs/subsystems/renderer.md#exposure)), then the six game actions a `--game`
 module may read and the camera never does (`interact` on E and a pad's West, `use` on Q, `game_1`
 to `game_4` on 1 to 4, revision 5, 2026-10-16;
-[apps](../../docs/subsystems/apps.md#--report-what-a-tester-sends-back)) — E and Q are `lift` too,
+[apps](../../docs/subsystems/apps.md#--game-running-a-game-module)) — E and Q are `lift` too,
 which a flying camera reads and a walking one does not, as Space is both `lift` and `jump` — on
 the keyboard and mouse and on a gamepad. Key
 codes are SDL scancodes, gamepad codes `window::GamepadButton` and `window::GamepadAxis`, and a

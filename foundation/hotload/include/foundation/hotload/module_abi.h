@@ -37,7 +37,13 @@ namespace engine::hotload {
 
 // Bumped whenever anything in this header changes shape or meaning. A module built against
 // another number is refused before any of its code but `describe` runs.
-inline constexpr u32 k_abi_version = 1;
+//
+// **2** (2026-10-16): `HostApi` gained the game runner's five services at its end (`game_action`,
+// `hud_text`, `hud_meter`, `end_run`, `nearest_placement`; docs/subsystems/apps.md, "The game
+// contract"). Nothing before them moved, but a module built against 1 would hand the host a
+// `ModuleDesc` it reads the same and call a table it believes is shorter, so it is refused all the
+// same: one number, one layout.
+inline constexpr u32 k_abi_version = 2;
 
 // The one symbol the host looks up.
 inline constexpr const char* k_entry_point = "engine_hotload_describe";
@@ -134,8 +140,34 @@ struct HostApi {
   // Element `index` of an array field (scalar elements only).
   Result (*read_element)(void* host, View view, FieldRef field, u64 index, Value* out);
 
-  // The line a failing `describe` or `on_load` leaves for the host to report.
+  // The line a failing `describe` or `on_load` leaves for the host to report. Called from any
+  // other export, it is that export's failure: a game runner ends its session with the line
+  // (docs/subsystems/apps.md, "The game contract"), and a host that runs no game ignores it.
   void (*fail)(void* host, const char* message, u64 length);
+
+  // ---- a game runner's services (ABI 2; docs/subsystems/apps.md, "The game contract") ----
+  // engine-view's `--game` answers them; a host that runs no game answers `Unsupported` and
+  // ignores the rest. Everything is by value or into the caller's memory: nothing the host
+  // returns needs freeing, and nothing a module passes is kept past the call.
+
+  // Declares a game action the module reads (`interact`, `use`, `game_1`..`game_4`): `out_bit` is
+  // its bit in `GameTick`'s `actions_pressed`, `actions_held` and `actions_released`. In `on_load`
+  // only; an unknown name is remembered like a field path that does not resolve, so the load is
+  // refused naming it.
+  Result (*game_action)(void* host, const char* name, u64 length, u32* out_bit);
+  // This tick's HUD: text line `line` (0 at the top), and a horizontal meter `value` of `max`
+  // under a name. The host clears both at the start of every tick, so a module says each tick
+  // what the HUD shows; the last tick before a frame is what the frame draws.
+  void (*hud_text)(void* host, u32 line, const char* text, u64 length);
+  void (*hud_meter)(void* host, const char* name, u64 length, f64 value, f64 max);
+  // Ends the run after this tick's frame, with `json` (an object, as text) as the run's result in
+  // the summary and the report. Text that is not a JSON object ends the run with an error.
+  void (*end_run)(void* host, const char* json, u64 length);
+  // The nearest placement of a kind (a scatter's or the ruins', by name) within `radius` metres
+  // of the walker's feet: its position (world, three f64) and its distance. `NotFound` when the
+  // session streams no world, or nothing of that kind is that near.
+  Result (*nearest_placement)(void* host, const char* kind, u64 length, f64 radius,
+                              f64* out_position, f64* out_distance);
 };
 
 // What every exported function receives first. Owned by the host, at the same address for the
@@ -253,6 +285,42 @@ inline void log(const ModuleContext* context, LogLevel level, const char* messag
   while (message[n] != '\0')
     ++n;
   context->api->log(context->api->host, level, message, n);
+}
+
+// ---- the game runner's services (ABI 2) ----
+
+inline u64 text_length(const char* text) noexcept {
+  u64 n = 0;
+  while (text[n] != '\0')
+    ++n;
+  return n;
+}
+
+inline Result game_action(const ModuleContext* context, const char* name, u32& bit) noexcept {
+  return context->api->game_action(context->api->host, name, text_length(name), &bit);
+}
+
+// Whether action `bit` (from `game_action`) is set in one of `GameTick`'s three masks.
+inline bool action_set(const Value& mask, u32 bit) noexcept {
+  return bit < 64 && ((mask.u >> bit) & 1u) != 0;
+}
+
+inline void hud_text(const ModuleContext* context, u32 line, const char* text) noexcept {
+  context->api->hud_text(context->api->host, line, text, text_length(text));
+}
+
+inline void hud_meter(const ModuleContext* context, const char* name, f64 value, f64 max) noexcept {
+  context->api->hud_meter(context->api->host, name, text_length(name), value, max);
+}
+
+inline void end_run(const ModuleContext* context, const char* json) noexcept {
+  context->api->end_run(context->api->host, json, text_length(json));
+}
+
+inline Result nearest_placement(const ModuleContext* context, const char* kind, f64 radius,
+                                f64 (&position)[3], f64& distance) noexcept {
+  return context->api->nearest_placement(context->api->host, kind, text_length(kind), radius,
+                                         position, &distance);
 }
 
 template <class State>

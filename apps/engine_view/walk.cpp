@@ -447,6 +447,15 @@ WorldPos Walker::eye() const noexcept {
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
 
+bool Walker::on_ground() const noexcept {
+  const Impl& w = *impl_;
+  if (w.ground == nullptr || !w.placed) return false;
+#if ENGINE_VIEW_WALK_PHYSICS
+  if (w.physical) return w.body.state().ground == physics::Ground::OnGround;
+#endif
+  return !w.airborne;
+}
+
 WorldPos Walker::drop(WorldPos camera) {
   Impl& w = *impl_;
   if (w.ground == nullptr) return camera;

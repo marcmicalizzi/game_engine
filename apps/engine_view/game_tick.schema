@@ -1,0 +1,40 @@
+// What a game module run by `engine-view --game` reads every tick (docs/subsystems/apps.md, "The
+// game contract"; roadmap P41). The host binds one `GameTick` and hands its view to the module's
+// `game_tick` export; the module resolves the fields it reads by these names in `on_load` and reads
+// them through `HostApi::read` (foundation/hotload/module_abi.h), so it never depends on this
+// struct's layout. A field may be added here; renaming or removing one breaks every module that
+// resolves it, which a module hears about when it loads, naming the path.
+namespace engine.game
+
+/// One tick of the walking session, as a game sees it: no engine types, only values.
+struct GameTick @version(1) {
+  /// The session's tick (the first is 1) and its length in seconds (1 / the tick rate).
+  tick: u64 = 0
+  dt: f64 = 0
+  /// The camera's eye, world metres (f64: a walk 10,000 km out reads as one by the origin).
+  eye: dvec3
+  /// The walker's feet, world metres; the eye when the session is flying.
+  feet: dvec3
+  /// The look: heading (yaw) about +y counter-clockwise from above, 0 looking along -z, and
+  /// pitch, up positive; radians.
+  heading: f32 = 0
+  pitch: f32 = 0
+  /// Whether the camera is on the walker, and whether the walker's feet stand on something.
+  walking: bool = false
+  on_ground: bool = false
+  /// Whether the walker is sprinting (the `fast` action held while walking).
+  sprinting: bool = false
+  /// Metres the walker moved over the ground this tick (0 while flying).
+  moved_m: f64 = 0
+  /// The sky's clock: `FrameDesc::sun_time_s` as the session runs it (the --time-of-day offset
+  /// plus the day's game seconds at the session's sun rate), the world's time (the ground's
+  /// surface time plus that), and where in its day the world is, 0 at midnight to 1.
+  sun_time_s: f64 = 0
+  world_time_s: f64 = 0
+  day_fraction: f64 = 0
+  /// The declared game actions (HostApi::game_action) by bit: pressed on this tick, held now,
+  /// released on this tick.
+  actions_pressed: u64 = 0
+  actions_held: u64 = 0
+  actions_released: u64 = 0
+}
