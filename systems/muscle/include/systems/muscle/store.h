@@ -68,6 +68,9 @@ struct LineStore {
   // Adds an actuator, uninitialised; false when the store is full. The parameters must have
   // passed validate() (validator.h); `add_validated` there does both.
   bool add(const ActuatorSpec& spec, u32& index);
+  // Rewrites slot i as the fresh, uninitialised actuator `add` would make: for a caller that reuses
+  // the slot of an actuator it let go (muscle_sim's free list). Never allocates.
+  void assign(u32 i, const ActuatorSpec& spec);
 
   // Hot, read per tick.
   Vector<LawRow> law;

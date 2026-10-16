@@ -265,3 +265,83 @@ struct TickWork @version(1) @kind(event) {
   freeze_path_start: f64 = 0 @unit(m)
   freeze_path_end: f64 = 0 @unit(m)
 }
+
+// ---- records and components (stage 2's engine wiring, systems/muscle_sim) ----------------------
+//
+// Declared here, beside the parameter structs they carry, and registered with the entity store by
+// `systems/muscle_sim` ("declared in one module, registered by another", schemas/README.md): a
+// second capability's schema cannot import this file (imports resolve against the shared schemas/
+// directory and the listed files), and the record needs `FiberParameters` and `SeriesParameters`.
+// With muscle_sim off the mapping is still registered and its records are skipped by the driver,
+// naming the components no world registered.
+
+/// One end or via point of a line actuator's routed path: a joint of the skeleton its character
+/// rides, by name, and a point in that joint's frame.
+struct LineAttachment @version(1) {
+  bone: string
+  offset: vec3 @unit(m)
+}
+
+/// A line actuator as a document authors it: its parameter set (the identity the validator's
+/// qualified domain names, as 64 hex digits, and the values that identity was qualified with), the
+/// path's two attachments and any fixed via points between them, in order, and the excitation it
+/// is driven by — a property until a controller drives it. Its document parent is the character
+/// whose skeleton the attachments name.
+struct LineActuator @version(1) @kind(record) {
+  name: string
+  parameter_sha256: string
+  fiber: FiberParameters
+  series: SeriesParameters
+  origin: LineAttachment
+  insertion: LineAttachment
+  via: LineAttachment[]
+  excitation: f64 = 0 @unit(ratio)
+}
+
+/// The authored half of a line actuator on its entity: what the validator reads and the path is
+/// routed from.
+struct LineActuatorSpec @version(1) @kind(component) {
+  parameter_sha256: string
+  fiber: FiberParameters
+  series: SeriesParameters
+  origin: LineAttachment
+  insertion: LineAttachment
+  via: LineAttachment[]
+}
+
+/// The excitation in [0, 1] the next tick holds: what a controller writes.
+struct LineExcitation @version(1) @kind(component) {
+  value: f64 = 0 @unit(ratio)
+}
+
+/// What an actuator's last tick produced, for the rest of the engine to read: rewritten every
+/// tick, so never saved. Only an actuator the validator accepted has one.
+struct LineOutput @version(1) @kind(component) @transient {
+  /// The tendon force output this tick: the committed cache's, stale when `forces_stale`, zero
+  /// when `force_output` is false (the inert tier, or not yet initialised).
+  tendon_force: f64 = 0 @unit(N)
+  force_output: bool = false
+  forces_stale: bool = false
+  tier: LineTier = Compliant
+  /// The routed path's length at the tick's end.
+  path_length: f64 = 0 @unit(m)
+  /// The tick's failed test, or None.
+  failed_test: ValidationTest = None
+  /// The actuator's slot in muscle_sim's store.
+  slot: u32 = 4294967295
+}
+
+/// A line actuator is its authored parameters and path and its excitation; its document parent,
+/// the character, is its `ChildOf`. Nothing is written back: the committed line state is runtime
+/// integration state (`LineState`, saved through muscle_sim), not an authored property. Only at
+/// LOD0 and LOD1: a farther character's muscles are not entities at all.
+materialize LineActuator @tiers(0, 1) {
+  LineActuatorSpec.parameter_sha256 = parameter_sha256
+  LineActuatorSpec.fiber = fiber
+  LineActuatorSpec.series = series
+  LineActuatorSpec.origin = origin
+  LineActuatorSpec.insertion = insertion
+  LineActuatorSpec.via = via
+  LineExcitation.value = excitation
+  parent = ChildOf
+}

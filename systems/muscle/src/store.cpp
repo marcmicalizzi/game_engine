@@ -50,6 +50,28 @@ bool LineStore::add(const ActuatorSpec& spec, u32& index) {
   return true;
 }
 
+void LineStore::assign(u32 i, const ActuatorSpec& spec) {
+  law[i] = make_law_row(spec.fiber, spec.series);
+  last_commit_tick[i] = 0;
+  activation[i] = 0.0;
+  fiber_length[i] = 0.0;
+  startup_pending[i] = 0;
+  initialized[i] = 0;
+  cache[i] = Cache{};
+  actuator_id[i] = spec.actuator_id;
+  path_id[i] = spec.path_id;
+  parameter_sha256[i] = spec.parameter_sha256;
+  supervisory[i] = Supervisory{};
+  outcome[i] = TickOutcome{};
+  counters[i] = Counters{};
+  TickWork w{};
+  w.actuator_id = spec.actuator_id;
+  work[i] = w;
+  for (u32 e = 0; e < k_event_slots; ++e)
+    events[static_cast<usize>(i) * k_event_slots + e] = ValidationEvent{};
+  event_count[i] = 0;
+}
+
 bool static_initial_length(const LawRow& p, double a, double total, double& l, Counters& n,
                            Failure& f) noexcept {
   double lo = p.lmin;

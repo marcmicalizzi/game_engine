@@ -13,20 +13,22 @@
 //
 // Stage 1 (roadmap C53) is the kernel: the law, the scheme, the schedule, the ledger, static
 // initialisation, the validator, the schema, a batch API over the capability's own SoA store. It
-// owns no entity and runs from no scheduler. Stage 2 (C54) adds the supervisor (tier degradation,
-// the rigid and inert tiers, freeze accounting, promotion), the scheduler entry, document records
-// and the path's source in the skeleton.
+// owns no entity and runs from no scheduler. Stage 2 (C54) adds the supervisor (supervisor.h: tier
+// degradation, the rigid and inert tiers, freeze accounting, promotion), still ECS-free; the
+// scheduler entry, the records' materialization and the path's source in the skeleton are a second
+// capability's, systems/muscle_sim.
 //
 // Scaffolded by tools/new-capability.ps1; ENGINE_WITH_MUSCLE=OFF (or ENGINE_MINIMAL=ON) removes
 // it. The registration points (ADR-0027 decision 2):
 //
-//   [x] schema types      schemas/muscle.schema, engine_schema_library
-//   [ ] scheduler entry   stage 2: the kernel is a batch API the test drives (see the docs page)
+//   [x] schema types      schemas/muscle.schema, engine_schema_library (muscle_sim registers the
+//                         components and the LineActuator mapping declared there)
+//   [ ] scheduler entry   none here: muscle_sim's `muscle_sim.tick` calls the supervisor
 //   [ ] render passes     none: a muscle draws nothing
 //   [ ] derived data      none yet; the corpus is test data, not content the build derives
 //   [ ] protocol methods  none
 //   [ ] tunables          none: the schedule is fixed by D20-D23, not tuned at run time
-//   [x] LOD policy        tier 0 only in stage 1; the tiers are the supervisor's (stage 2)
+//   [x] LOD policy        the supervisor's three tiers are failure-driven; distance is muscle_sim's
 //   [x] determinism       k_determinism below; core/math/deterministic.h for the transcendentals
 //   [x] zero cost unused  an empty store runs nothing; no other module names this one
 //   [x] docs, tests, size table
@@ -46,8 +48,8 @@
 
 namespace engine::muscle {
 
-/// Tick phase the stage-2 system will run in (plan 05 §5.2).
-inline constexpr const char* k_phase = "systems";
+/// Tick phase the scheduler entry runs in (plan 05 §5.2): muscle_sim's, `TickPhase::Physics`.
+inline constexpr const char* k_phase = "physics";
 
 /// Determinism stance (ADR-0010): "hashed". The committed state is integration state that the
 /// next tick reads back, and it is the same bytes on MSVC, GCC and Clang: the law calls only
@@ -56,8 +58,9 @@ inline constexpr const char* k_phase = "systems";
 /// states that every toolchain reproduces.
 inline constexpr const char* k_determinism = "hashed";
 
-/// LOD tiers integrated, one bit per tier: tier 0 only in stage 1.
-inline constexpr u32 k_lod_tiers = 0b0001u;
+/// The supervisor's tiers integrated, one bit per `LineTier`: compliant and rigid (the inert tier
+/// integrates nothing). Which simulation LOD tiers an actuator exists at is muscle_sim's.
+inline constexpr u32 k_lod_tiers = 0b0011u;
 
 using Sha256 = std::array<u8, 32>;
 
