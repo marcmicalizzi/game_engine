@@ -13,9 +13,9 @@
 // time as committed — and walks on exactly the ground the whole scene has there.
 
 #include "../fly_camera.h"
+#include "view_process.h"
 
 #include <core/json/json.h>
-#include <core/platform/process.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 
@@ -42,17 +42,9 @@ Run run_view(const std::vector<std::string>& args) {
   argv.push_back(exe);
   for (const std::string& a : args)
     argv.push_back(a);
-  platform::Process p;
-  std::string error;
   Run run;
-  if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-               /*merge_stderr=*/true)) {
-    FAIL("cannot spawn engine-view: " << error);
-    return run;
-  }
-  p.close_stdin();
-  p.read_all(run.output);
-  run.exit_code = p.wait();
+  run.exit_code = view_test::run_program(
+      std::span<const std::string_view>(argv.data(), argv.size()), run.output);
   return run;
 }
 

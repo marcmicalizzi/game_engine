@@ -10,6 +10,8 @@
 // (`CreateDesktopW`, named after the process id so that two copies of a test never share one), and
 // `run_on_desktop` starts a child there, so its windows are on nobody's screen and nothing the
 // owner does reaches them. The desktop is never switched to and is closed when the process exits.
+// Its users: engine-editor's end-to-end tests (`run_editor`) and engine-view's
+// (apps/engine_view/tests/view_process.h, every program those tests start).
 //
 // What a desktop that is not the input desktop is, measured on 2026-10-14 (window.md has the
 // list): Vulkan presents and WebView2 makes its window there; GetForegroundWindow() is NULL, so no

@@ -5,9 +5,10 @@
 // with a 4x4 checker PNG in the BIN chunk), so nothing binary lives in the tree, and every run
 // gets its own `--ddc` directory so the cache in the repository is neither read nor written here.
 // Without a display or device the app exits 3 and the test records the skip.
+#include "view_process.h"
+
 #include <core/json/json.h>
 #include <core/math/math.h>
-#include <core/platform/process.h>
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
@@ -34,17 +35,9 @@ Run run_app(const std::string& app, const std::vector<std::string>& args) {
   argv.push_back(app);
   for (const std::string& a : args)
     argv.push_back(a);
-  platform::Process p;
-  std::string error;
   Run run;
-  if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-               /*merge_stderr=*/true)) {
-    FAIL("cannot spawn " << app << ": " << error);
-    return run;
-  }
-  p.close_stdin();
-  p.read_all(run.output);
-  run.exit_code = p.wait();
+  run.exit_code = view_test::run_program(
+      std::span<const std::string_view>(argv.data(), argv.size()), run.output);
   return run;
 }
 

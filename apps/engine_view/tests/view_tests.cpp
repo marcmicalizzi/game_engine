@@ -1,8 +1,9 @@
 // End to end: engine-view renders a few frames into a real window and writes a capture. On a
 // machine without a display, a Vulkan device, or mesh shaders the app exits 3 and the test
 // records the skip; usage errors are checked everywhere.
+#include "view_process.h"
+
 #include <core/json/json.h>
-#include <core/platform/process.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -33,17 +34,9 @@ Run view(std::vector<std::string> args) {
   argv.push_back(view_exe());
   for (const std::string& a : args)
     argv.push_back(a);
-  platform::Process p;
-  std::string error;
   Run run;
-  if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
-               /*merge_stderr=*/true)) {
-    FAIL("cannot spawn engine-view: " << error);
-    return run;
-  }
-  p.close_stdin();
-  p.read_all(run.output);
-  run.exit_code = p.wait();
+  run.exit_code = view_test::run_program(
+      std::span<const std::string_view>(argv.data(), argv.size()), run.output);
   return run;
 }
 
