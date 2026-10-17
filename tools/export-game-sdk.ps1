@@ -84,9 +84,9 @@ $repoPrefix = $Root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
 if ($OutDir.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or $OutDir -eq $Root.TrimEnd('\', '/')) {
   Refuse "the output $OutDir is inside the repository; an SDK is a copy the author takes elsewhere, never a directory of the tree"
 }
-if (Test-UnderLocalWorkspace $OutDir) {
-  Refuse "the output $OutDir is under the owner's local workspace, whose files are never shipped and never mixed with an SDK"
-}
+# The owner's local workspace (D:workspacegame_engine_local) is where generated outputs live, so an SDK
+# may be exported there; what is refused is content *from* it inside a package or an SDK, which the
+# scene resolver and package-game.ps1 enforce on their inputs.
 $config = Join-Path $BuildDir 'game_modules/build_config.cmake'
 if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
   Refuse "no ${config}: the build at $BuildDir was configured without the hotload capability (ENGINE_WITH_HOTLOAD=OFF, or a minimal preset), so it builds no game module and exports no build command; export from a preset that has it, such as msvc-release"
