@@ -736,6 +736,14 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     fly_tick(self.state_, state, self.actions_, self.header_.params);
   }
   self.tick_ = tick;
+  // The capture and view-control presses are counted before the observer runs, so the game runner
+  // reads this tick's presses (its sun ladder steps at the tick a key was pressed on, as the
+  // window's does); the counts are input bookkeeping and depend on nothing the tick computes.
+  if (state.pressed(self.actions_.capture)) ++self.capture_presses_;
+  for (u32 c = 0; c < k_view_controls; ++c) {
+    const input::ActionId id = self.actions_.controls[c];
+    if (id != input::k_invalid_action && state.pressed(id)) ++self.control_presses_[c];
+  }
   // The observer — the game runner — sees this tick's camera and mode, and may ask for a teleport
   // or a walk scale (above); the teleport lands now, inside the tick, so the chain below hashes
   // where the tick ended. A session with no observer, or one that asks nothing, is untouched.
@@ -759,11 +767,6 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   // camera still hash apart; a session that never walks hashes as it always did.
   if (self.walking_) self.trajectory_.hash = hash_combine(self.trajectory_.hash, 0x57414c4bull);
   self.trajectory_.last = self.state_;
-  if (state.pressed(self.actions_.capture)) ++self.capture_presses_;
-  for (u32 c = 0; c < k_view_controls; ++c) {
-    const input::ActionId id = self.actions_.controls[c];
-    if (id != input::k_invalid_action && state.pressed(id)) ++self.control_presses_[c];
-  }
   if (state.pressed(self.actions_.marker)) {
     self.trajectory_.markers.push_back(FlyMarker{tick.value, self.state_});
   }
