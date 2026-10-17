@@ -130,6 +130,10 @@ class GameRunner {
   // The loaded module's name and build (the host's generation), for a recording's header.
   const std::string& module_name() const noexcept;
   u32 build() const noexcept;
+  // **The session the walker's services act on** (`walker_set`, `walker_teleport`;
+  // fly_camera.h, "A game's requests at a tick"): set by whoever attaches the runner to a session.
+  // Without one the two answer `Unsupported`.
+  void set_session(FlySession* session) noexcept;
 
   // **The session's tick observer** (`FlySession::set_tick_observer`): one `tick` a session tick.
   static void observe(void* user, const FlySession& session, const input::InputState& input);

@@ -174,7 +174,12 @@ TEST_CASE(
   const test::TempDir tmp("engine_view_props_tail");
   const std::string scene = props_scene(tmp);
   const std::string session = walk_session(tmp, scene, 120);
+  // The build that places nothing itself, so the state file's can is the only prop.
+#if defined(WALK_POC_NO_PROPS_PATH)
+  const std::string module = fixture(tmp, WALK_POC_NO_PROPS_PATH);
+#else
   const std::string module = fixture(tmp, WALK_POC_PATH);
+#endif
   const std::string state = tmp.file("state.json");
   REQUIRE(io::write_file(state, R"({"format":"engine.game.state","version":1,"module":"walk_poc",
       "type":"engine.walk_poc.Survivor","state":{},
@@ -284,4 +289,131 @@ TEST_CASE(
   CHECK(number_at(*game_of(summary), {"props", "live"}) == 0.0);
 }
 
+#if defined(WALK_POC_NO_PROPS_PATH) && defined(WALK_POC_TELEPORT_PATH)
+
+TEST_CASE(
+    "engine-view: the fixture's can is drawn at the spring, on the frames it changed, and "
+    "the state file carries it") {
+  // The 120-tick replay with the fixture: the can placed on the first tick 25 m ahead is the only
+  // difference, outside the HUD's corner, from the same replay with the build that places nothing;
+  // the block went over once; and a second run from the state file has the can without placing it.
+  const test::TempDir tmp("engine_view_props_fixture");
+  const std::string scene = props_scene(tmp);
+  const std::string session = walk_session(tmp, scene, 120);
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+  const std::string quiet = fixture(tmp, WALK_POC_NO_PROPS_PATH, "walk_poc_quiet");
+  const std::string state = tmp.file("state.json");
+  const std::vector<std::string> common = {
+      "--replay-input", session, "--scene", scene,          "--offscreen", "--width", "800",
+      "--height",       "450",   "--ddc",   tmp.file("ddc")};
+  std::vector<std::string> args = common;
+  args.insert(args.end(),
+              {"--game", module, "--game-state", state, "--capture", tmp.file("can.png")});
+  const Run with_can = run_view(args);
+  if (with_can.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << with_can.output);
+    return;
+  }
+  REQUIRE_MESSAGE(with_can.exit_code == 0, with_can.output);
+  args = common;
+  args.insert(args.end(), {"--game", quiet, "--capture", tmp.file("none.png")});
+  const Run without = run_view(args);
+  REQUIRE_MESSAGE(without.exit_code == 0, without.output);
+  const Diff can = diff_images(tmp.file("can.png"), tmp.file("none.png"));
+  MESSAGE("the can changed " << can.top_left + can.elsewhere << " pixels, in x " << can.min_x
+                             << ".." << can.max_x << " y " << can.min_y << ".." << can.max_y);
+  CHECK(can.elsewhere > 20);  // a metre of box 25 m ahead
+  CHECK(can.max_x - can.min_x < 800 / 2);
+  CHECK(can.max_y - can.min_y < 450 / 2);
+  JsonValue a;
+  REQUIRE(summary_of(with_can, a));
+  REQUIRE(game_of(a) != nullptr);
+  CHECK(number_at(*game_of(a), {"props", "placed"}) == 1.0);
+  CHECK(number_at(*game_of(a), {"props", "live"}) == 1.0);
+  CHECK(number_at(*game_of(a), {"props", "rewrites"}) == 1.0);  // one tick changed a prop
+  CHECK(number_at(*game_of(a), {"state", "can_placed"}) == 1.0);
+  // The state file: the can beside the state; a second run has it without placing it again.
+  const Run resumed = run_view(args = [&] {
+    std::vector<std::string> r = common;
+    r.insert(r.end(), {"--game", module, "--game-state", state});
+    return r;
+  }());
+  REQUIRE_MESSAGE(resumed.exit_code == 0, resumed.output);
+  JsonValue b;
+  REQUIRE(summary_of(resumed, b));
+  REQUIRE(game_of(b) != nullptr);
+  CHECK(at(*game_of(b), {"restored"})->as_bool());
+  CHECK(number_at(*game_of(b), {"props", "placed"}) == 0.0);
+  CHECK(number_at(*game_of(b), {"props", "live"}) == 1.0);
+  CHECK(number_at(*game_of(b), {"props", "rewrites"}) == 1.0);  // the restore, before frame 1
+}
+
+TEST_CASE(
+    "engine-view: a live --game walk with a teleport replays to its trajectory with the "
+    "same module, and is refused without it or with another") {
+  // A window on the test's desktop, walking from an injected log with the teleporting build and
+  // recording itself; the recording replayed offscreen with the same module reaches the same
+  // trajectory hash, without --game it is refused, and with the plain fixture it is refused too.
+  const test::TempDir tmp("engine_view_props_teleport");
+  const std::string scene = props_scene(tmp);
+  const std::string inject = walk_session(tmp, scene, 240, "inject.jsonl");
+  const std::string recorded = tmp.file("recorded.jsonl");
+  const std::string teleporter = fixture(tmp, WALK_POC_TELEPORT_PATH, "walk_poc_teleport");
+  const std::string plain = fixture(tmp, WALK_POC_PATH);
+  const std::string ddc = tmp.file("ddc");
+  const Run live = run_view({"--interactive", "--walk",         "--start", "0,3,10",
+                             "0,-8.6",        "--inject-input", inject,    "--record-input",
+                             recorded,        "--scene",        scene,     "--game",
+                             teleporter,      "--width",        "320",     "--height",
+                             "180",           "--no-vsync",     "--ddc",   ddc});
+  if (live.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  JsonValue a;
+  REQUIRE_MESSAGE(summary_of(live, a), live.output);
+  REQUIRE(game_of(a) != nullptr);
+  CHECK(number_at(*game_of(a), {"walker", "teleports"}) == 1.0);
+  CHECK(number_at(a, {"interactive", "walk", "teleports"}) == 1.0);
+  // The header names the module.
+  input::InputLog log;
+  std::string error;
+  REQUIRE(log.load(recorded, &error) == io::Status::Ok);
+  view::SessionHeader header;
+  REQUIRE_MESSAGE(view::session_from_json(log.session(), header, &error), error);
+  CHECK(header.has_game);
+  CHECK(header.game_module == "walk_poc_teleport");
+  CHECK(header.game_build == 1);
+
+  const Run replay = run_view({"--replay-input", recorded, "--offscreen", "--game", teleporter,
+                               "--width", "320", "--height", "180", "--ddc", ddc});
+  REQUIRE_MESSAGE(replay.exit_code == 0, replay.output);
+  JsonValue b;
+  REQUIRE_MESSAGE(summary_of(replay, b), replay.output);
+  REQUIRE(at(a, {"interactive", "trajectory", "hash"}) != nullptr);
+  REQUIRE(at(b, {"interactive", "trajectory", "hash"}) != nullptr);
+  CHECK(write_json(*at(a, {"interactive", "trajectory", "hash"})) ==
+        write_json(*at(b, {"interactive", "trajectory", "hash"})));
+  CHECK(number_at(*game_of(b), {"walker", "teleports"}) == 1.0);
+  // The walker stands ten metres further on than it would have: the live walk covers more ground
+  // than the teleporter's own distance count (a teleport is not walking).
+  CHECK(number_at(a, {"interactive", "walk", "distance_m"}) ==
+        doctest::Approx(number_at(b, {"interactive", "walk", "distance_m"})));
+  MESSAGE("live and replayed: " << write_json(*at(a, {"interactive", "trajectory", "hash"})));
+
+  const Run without = run_view({"--replay-input", recorded, "--offscreen", "--ddc", ddc});
+  CHECK(without.exit_code == 1);
+  CHECK(without.output.find("was recorded with the game module 'walk_poc_teleport' (build 1), "
+                            "whose calls can move the walker; replay it with --game and that "
+                            "module") != std::string::npos);
+  const Run other =
+      run_view({"--replay-input", recorded, "--offscreen", "--game", plain, "--ddc", ddc});
+  CHECK(other.exit_code == 1);
+  CHECK(other.output.find("was recorded with the game module 'walk_poc_teleport' and --game "
+                          "names 'walk_poc'; another module would walk the recording somewhere "
+                          "else, so it is refused") != std::string::npos);
+}
+
+#endif  // WALK_POC_NO_PROPS_PATH && WALK_POC_TELEPORT_PATH
 #endif  // ENGINE_VIEW_GAME && WALK_POC_PATH

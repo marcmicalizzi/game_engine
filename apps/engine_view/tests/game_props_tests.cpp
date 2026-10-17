@@ -5,16 +5,20 @@
 // end-to-end cases (game_props_view_tests.cpp) draw them.
 
 #include "../game_props.h"
+#include "../game_runner.h"
 
 #include <core/json/json.h>
+#include <foundation/input/input.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -350,3 +354,206 @@ TEST_CASE("scene file: props are meshes loaded with the scene and placed by noth
   CHECK_FALSE(renderer::read_scene_file(scene_path, desc, error));
   CHECK(error.find("no \"mesh\"") != std::string::npos);
 }
+
+// ---- the services through the runner and the fixture (ABI 3), no GPU
+// -----------------------------
+#if defined(WALK_POC_PATH) && defined(WALK_POC_NO_PROPS_PATH)
+
+namespace {
+
+bool in_bundle() {
+  if (test::bundle_root().empty()) return false;
+  MESSAGE("game props: game modules are not part of a test bundle; skipped");
+  return true;
+}
+
+std::string place_module(const test::TempDir& dir, const char* built, std::string_view name) {
+  const std::filesystem::path from(built);
+  const std::string to = dir.file(std::string(name) + from.extension().string());
+  std::error_code ec;
+  std::filesystem::copy_file(from, std::filesystem::path(to),
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_MESSAGE(!ec, "copying " << built << ": " << ec.message());
+  return to;
+}
+
+view::GameRunner::Config config_for(const std::string& module, const test::TempDir& tmp,
+                                    const char* shadow = "shadow") {
+  view::GameRunner::Config c;
+  c.module = module;
+  c.shadow_directory = tmp.file(shadow);
+  return c;
+}
+
+f64 state_number(const view::GameRunner& runner, const char* field) {
+  const JsonValue state = runner.state_json();
+  const JsonValue* v = state.find(field);
+  f64 out = -1.0;
+  return v != nullptr && v->get_f64(out) ? out : -1.0;
+}
+
+// A bool field of the state: 1, 0, or -1 when it is not there or not a bool.
+i32 state_flag(const view::GameRunner& runner, const char* field) {
+  const JsonValue state = runner.state_json();
+  const JsonValue* v = state.find(field);
+  bool out = false;
+  return v != nullptr && v->get_bool(out) ? (out ? 1 : 0) : -1;
+}
+
+// One tick with the walker's feet at `feet`, looking along -z, on the ground, `input` for the
+// actions.
+void tick_at(view::GameRunner& runner, u64& tick, WorldPos feet, f64 moved = 1.5 / 240.0,
+             const input::InputState* input = nullptr) {
+  view::GameTickInput in;
+  in.tick = ++tick;
+  in.feet = feet;
+  in.eye = WorldPos{feet.x, feet.y + 1.65, feet.z};
+  in.walking = true;
+  in.on_ground = true;
+  in.moved_m = moved;
+  in.input = input;
+  runner.tick(in);
+}
+
+// A press of key `code` on tick `at`, and its release, as `state` sees them.
+void press(input::InputState& state, u64 at, u32 code) {
+  state.begin_tick(SimTick{at});
+  state.feed(input::RawEvent{SimTick{at}, input::Source::Key, code, 1.0f, 0});
+  state.end_tick();
+}
+void release(input::InputState& state, u64 at, u32 code) {
+  state.begin_tick(SimTick{at});
+  state.feed(input::RawEvent{SimTick{at}, input::Source::Key, code, 0.0f, 0});
+  state.end_tick();
+}
+
+constexpr u32 k_key_e = 8;   // interact
+constexpr u32 k_key_q = 20;  // use
+
+}  // namespace
+
+TEST_CASE("game props: the fixture places the can at the spring, picks it up in reach, and marks") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_props_fixture");
+  const input::ActionMap map = view::default_fly_map();
+  view::GameRunner runner;
+  runner.props().declare(declared({"can", "marker"}));
+  std::string error;
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place_module(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error),
+      error);
+  REQUIRE(runner.props().attach(attached_scene({"can", "marker"}), &error));
+  u64 tick = 0;
+  // The first tick, standing at the origin looking along -z: the spring is 25 m along -z, and the
+  // can is placed there at the feet's height.
+  tick_at(runner, tick, WorldPos{0.0, 0.5, 0.0}, 0.0);
+  CHECK(runner.props().live() == 1);
+  CHECK(state_flag(runner, "can_placed") == 1);
+  CHECK(state_number(runner, "can") >= static_cast<f64>(view::k_max_props));
+  const Vector<renderer::SceneInstance>& tail = runner.props().tail();
+  REQUIRE(tail.size() == 1);
+  CHECK(tail[0].mesh == 10);
+  CHECK(tail[0].origin.z == doctest::Approx(-25.0));
+  CHECK(tail[0].origin.y == 0.5);
+  // E far from it: "nothing here", the can stays.
+  input::InputState state(map);
+  press(state, 2, k_key_e);
+  tick_at(runner, tick, WorldPos{0.0, 0.5, -1.0}, 0.0, &state);
+  release(state, 3, k_key_e);
+  tick_at(runner, tick, WorldPos{0.0, 0.5, -1.0}, 0.0, &state);
+  CHECK(runner.props().live() == 1);
+  CHECK(state_number(runner, "interactions") == 1.0);
+  // Within two metres of it, thirsty: the HUD says so, and E picks it up and fills the meter.
+  tick_at(runner, tick, WorldPos{0.0, 0.5, -23.5}, 22.5);
+  CHECK(std::string_view(runner.hud().lines[1].text) == "a water can: E to pick it up");
+  // (The can stands at the spring, so the walker is at the water here too; what the pick-up proves
+  // is the removal and the full meter.)
+  press(state, 5, k_key_e);
+  tick_at(runner, tick, WorldPos{0.0, 0.5, -23.5}, 0.0, &state);
+  release(state, 6, k_key_e);
+  CHECK(runner.props().live() == 0);
+  CHECK(state_number(runner, "can") == 0.0);
+  CHECK(state_flag(runner, "can_taken") == 1);
+  CHECK(state_number(runner, "thirst") == 100.0);
+  CHECK(std::string_view(runner.hud().lines[3].text).find("can taken") == 0);
+  // Q places a marker where the walker stands.
+  press(state, 7, k_key_q);
+  tick_at(runner, tick, WorldPos{3.0, 0.5, -20.0}, 0.0, &state);
+  release(state, 8, k_key_q);
+  CHECK(state_number(runner, "markers") == 1.0);
+  REQUIRE(runner.props().live() == 1);
+  CHECK(runner.props().tail()[0].mesh == 11);
+  CHECK(runner.props().tail()[0].origin.x == 3.0);
+  const JsonValue summary = runner.summary_json();
+  f64 n = 0.0;
+  REQUIRE(summary.find("props")->find("placed")->get_f64(n));
+  CHECK(n == 2.0);
+  REQUIRE(summary.find("props")->find("removed")->get_f64(n));
+  CHECK(n == 1.0);
+  REQUIRE(summary.find("props")->find("found")->get_f64(n));
+  CHECK(n >= 2.0);
+
+  // The walker's scale, from a run saved at a quarter of its water: a session with no walker takes
+  // the call, and the summary says what was set.
+  view::FlySession session;
+  const std::string state_file = tmp.file("thirsty.json");
+  REQUIRE(io::write_file(state_file,
+                         R"({"format":"engine.game.state","version":1,"module":"walk_poc",
+      "type":"engine.walk_poc.Survivor","state":{"thirst":25.0,"started":true,"can_placed":true}})") ==
+          io::Status::Ok);
+  view::GameRunner thirsty;
+  thirsty.props().declare(declared({"can", "marker"}));
+  view::GameRunner::Config c = config_for(place_module(tmp, WALK_POC_PATH, "walk_poc2"), tmp, "s2");
+  c.state_file = state_file;
+  REQUIRE_MESSAGE(thirsty.start(c, map, 240, &error), error);
+  REQUIRE(thirsty.props().attach(attached_scene({"can", "marker"}), &error));
+  thirsty.set_session(&session);
+  u64 t2 = 0;
+  tick_at(thirsty, t2, WorldPos{100.0, 0.0, 100.0});  // away from the saved spring
+  const JsonValue s2 = thirsty.summary_json();
+  f64 scale = 0.0;
+  REQUIRE(s2.find("walker")->find("speed_scale")->get_f64(scale));
+  CHECK(scale == doctest::Approx(0.75).epsilon(1e-3));  // 0.5 + 0.5 * 25 / 50, a tick walked
+  REQUIRE(s2.find("walker")->find("sets")->get_f64(n));
+  CHECK(n == 1.0);
+}
+
+TEST_CASE(
+    "game props: a scene with no props runs the fixture, which places nothing; a scene with "
+    "other props refuses it by name") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_props_none");
+  const input::ActionMap map = view::default_fly_map();
+  // No props declared: prop_mesh answers Unsupported, the load goes through, nothing is placed.
+  view::GameRunner none;
+  std::string error;
+  REQUIRE_MESSAGE(
+      none.start(config_for(place_module(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error),
+      error);
+  REQUIRE(none.props().attach(renderer::SceneData{}, &error));
+  u64 tick = 0;
+  tick_at(none, tick, WorldPos{0.0, 0.0, 0.0});
+  CHECK(none.props().live() == 0);
+  CHECK(state_flag(none, "can_placed") == 0);
+  // Props declared but not the fixture's: refused when it loads, naming the prop and the scene's.
+  view::GameRunner other;
+  other.props().declare(declared({"can", "cup"}));
+  CHECK_FALSE(other.start(config_for(place_module(tmp, WALK_POC_PATH, "walk_poc_b"), tmp, "s2"),
+                          map, 240, &error));
+  CHECK(error.find("no prop 'marker' in the scene (it declares can cup)") != std::string::npos);
+  CHECK_FALSE(other.started());
+  // The no-props build on a scene with props: declared, never placed.
+  view::GameRunner quiet;
+  quiet.props().declare(declared({"can", "marker"}));
+  REQUIRE_MESSAGE(
+      quiet.start(config_for(place_module(tmp, WALK_POC_NO_PROPS_PATH, "walk_poc_c"), tmp, "s3"),
+                  map, 240, &error),
+      error);
+  REQUIRE(quiet.props().attach(attached_scene({"can", "marker"}), &error));
+  tick = 0;
+  tick_at(quiet, tick, WorldPos{0.0, 0.0, 0.0});
+  CHECK(quiet.props().live() == 0);
+  CHECK(quiet.props().declared_count() == 2);
+}
+
+#endif  // WALK_POC_PATH && WALK_POC_NO_PROPS_PATH

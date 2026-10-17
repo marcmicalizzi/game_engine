@@ -191,6 +191,9 @@ struct Walker::Impl {
   WalkStats stats;
   WorldPos feet{};
   bool placed = false;
+  // A game's scales on the speeds (walk.h, `set_speed_scale`); 1 leaves every float as it was.
+  f32 speed_scale = 1.0f;
+  f32 sprint_scale = 1.0f;
 
   // Following the ground.
   f32 vy = 0.0f;
@@ -456,6 +459,20 @@ bool Walker::on_ground() const noexcept {
   return !w.airborne;
 }
 
+void Walker::set_speed_scale(f32 walk, f32 sprint) noexcept {
+  const auto held = [](f32 s) { return s < 0.0f ? 0.0f : s > 4.0f ? 4.0f : s; };
+  impl_->speed_scale = held(walk);
+  impl_->sprint_scale = held(sprint);
+}
+
+f32 Walker::speed_scale() const noexcept { return impl_->speed_scale; }
+f32 Walker::sprint_scale() const noexcept { return impl_->sprint_scale; }
+
+WorldPos Walker::teleport(WorldPos at) {
+  if (impl_->ground != nullptr) ++impl_->stats.teleports;
+  return drop(at);
+}
+
 WorldPos Walker::drop(WorldPos camera) {
   Impl& w = *impl_;
   if (w.ground == nullptr) return camera;
@@ -525,6 +542,8 @@ WorldPos Walker::step(const WalkInput& input) {
     in.move = direction;
     in.sprint = input.sprint;
     in.jump = input.jump;
+    // A game's scale (walk.h): the character's speed times it; 1, the same floats.
+    in.speed_scale = input.sprint ? w.sprint_scale : w.speed_scale;
     (void)w.body.step(in);
     w.feet = w.body.feet();
     f32 held = std::numeric_limits<f32>::quiet_NaN();
@@ -540,7 +559,9 @@ WorldPos Walker::step(const WalkInput& input) {
   // Following the ground: along the heading at the speed, the feet on the ground's height, and a
   // jump an arc of the header's gravity back down onto it. A tick's step is float32, as it always
   // was, and is added to the feet in f64 (ADR-0053).
-  const f32 speed = input.sprint ? w.params.sprint : w.params.speed;
+  // A game's scale on the speed (walk.h): at 1 the product is the header's number to the bit.
+  const f32 speed =
+      input.sprint ? w.params.sprint * w.sprint_scale : w.params.speed * w.speed_scale;
   w.feet.x = w.feet.x + static_cast<f64>(direction.x * speed * w.dt);
   w.feet.z = w.feet.z + static_cast<f64>(direction.z * speed * w.dt);
   const f32 ground = w.ground_at(w.feet.x, w.feet.z);
@@ -578,6 +599,9 @@ JsonValue Walker::summary_json() const {
   out.set("distance_m", w.stats.distance_m);
   out.set("climb_m", w.stats.climb_m);
   out.set("drops", static_cast<u64>(w.stats.drops));
+  out.set("teleports", static_cast<u64>(w.stats.teleports));
+  out.set("speed_scale", JsonValue(w.speed_scale));
+  out.set("sprint_scale", JsonValue(w.sprint_scale));
   out.set("max_ground_error_m", JsonValue(w.stats.max_ground_error_m));
   out.set("hash", hex16(w.stats.hash));
   JsonValue bodies = JsonValue::object();

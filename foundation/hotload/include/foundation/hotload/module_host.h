@@ -73,6 +73,24 @@ struct GameServices {
   void (*end_run)(void* user, std::string_view json) = nullptr;
   Result (*nearest_placement)(void* user, std::string_view kind, f64 radius, f64* out_position,
                               f64* out_distance) = nullptr;
+  // ABI 3 (module_abi.h): a game acts on the world. The two `on_load` lookups, `prop_mesh` and
+  // `sound_clip`, are refusals when they return `NotFound` (with `why`, listed beside the field
+  // paths that did not resolve) and plain answers when they return `Unsupported` (the session has
+  // no props, or no sound), so a module runs on any scene. Null, each answers `Unsupported`.
+  Result (*prop_mesh)(void* user, std::string_view name, u32* out_mesh, std::string* why) = nullptr;
+  Result (*prop_place)(void* user, u32 mesh, const f64* position, f32 yaw, f32 scale,
+                       u32* out_prop) = nullptr;
+  Result (*prop_move)(void* user, u32 prop, const f64* position, f32 yaw) = nullptr;
+  Result (*prop_remove)(void* user, u32 prop) = nullptr;
+  Result (*nearest_prop)(void* user, u32 mesh, f64 radius, u32* out_prop, f64* out_position,
+                         f64* out_distance) = nullptr;
+  Result (*walker_set)(void* user, f32 speed_scale, f32 sprint_scale) = nullptr;
+  Result (*walker_teleport)(void* user, const f64* position, f32 heading, f32 pitch) = nullptr;
+  Result (*sound_clip)(void* user, std::string_view name, u32* out_clip,
+                       std::string* why) = nullptr;
+  Result (*sound_play)(void* user, u32 clip, const f64* position, f32 gain,
+                       u32* out_voice) = nullptr;
+  Result (*sound_stop)(void* user, u32 voice) = nullptr;
 };
 
 struct HostConfig {

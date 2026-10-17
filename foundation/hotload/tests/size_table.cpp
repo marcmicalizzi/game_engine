@@ -10,7 +10,9 @@ using namespace engine;
 ENGINE_EXPECT_SIZE(8, 4, hotload::View);
 ENGINE_EXPECT_SIZE(4, 4, hotload::FieldRef);
 ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
-ENGINE_EXPECT_SIZE(136, 8, hotload::HostApi);  // ABI 2: the game runner's five services
+// ABI 2 added the game runner's five services (136); ABI 3 the ten through which a game acts on the
+// world (props, the walker, sound), 80 bytes of function pointers after them.
+ENGINE_EXPECT_SIZE(216, 8, hotload::HostApi);
 ENGINE_EXPECT_SIZE(16, 8, hotload::ModuleContext);
 ENGINE_EXPECT_SIZE(24, 8, hotload::Export);
 ENGINE_EXPECT_SIZE(56, 8, hotload::ModuleDesc);

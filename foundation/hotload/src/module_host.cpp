@@ -328,6 +328,87 @@ struct HostCallbacks {
     return g.nearest_placement(g.user, std::string_view(kind, static_cast<usize>(length)), radius,
                                out_position, out_distance);
   }
+
+  // ---- a game acts on the world (ABI 3): forwarded the same way ----
+  // The two `on_load` lookups: `NotFound` is remembered with the service's sentence, so the load is
+  // refused naming it beside the field paths; `Unsupported` (no props, no sound in this session; or
+  // a host that runs no game, which says so) is an answer the module acts on.
+  static Result prop_mesh(void* host, const char* name, u64 length, u32* out_mesh) {
+    ModuleHost& h = self(host);
+    if (out_mesh == nullptr || name == nullptr) return Result::InvalidArgument;
+    const std::string_view wanted(name, static_cast<usize>(length));
+    const GameServices& g = h.game_;
+    if (g.prop_mesh == nullptr) return Result::Unsupported;
+    std::string why;
+    const Result r = g.prop_mesh(g.user, wanted, out_mesh, &why);
+    if (r == Result::NotFound) {
+      h.pending_unresolved_.push_back(
+          why.empty() ? "no prop '" + std::string(wanted) + "' in the scene" : why);
+    }
+    return r;
+  }
+  static Result prop_place(void* host, u32 mesh, const f64* position, f32 yaw, f32 scale,
+                           u32* out_prop) {
+    const GameServices& g = self(host).game_;
+    if (position == nullptr || out_prop == nullptr) return Result::InvalidArgument;
+    if (g.prop_place == nullptr) return Result::Unsupported;
+    return g.prop_place(g.user, mesh, position, yaw, scale, out_prop);
+  }
+  static Result prop_move(void* host, u32 prop, const f64* position, f32 yaw) {
+    const GameServices& g = self(host).game_;
+    if (position == nullptr) return Result::InvalidArgument;
+    if (g.prop_move == nullptr) return Result::Unsupported;
+    return g.prop_move(g.user, prop, position, yaw);
+  }
+  static Result prop_remove(void* host, u32 prop) {
+    const GameServices& g = self(host).game_;
+    if (g.prop_remove == nullptr) return Result::Unsupported;
+    return g.prop_remove(g.user, prop);
+  }
+  static Result nearest_prop(void* host, u32 mesh, f64 radius, u32* out_prop, f64* out_position,
+                             f64* out_distance) {
+    const GameServices& g = self(host).game_;
+    if (out_prop == nullptr || out_position == nullptr || out_distance == nullptr)
+      return Result::InvalidArgument;
+    if (g.nearest_prop == nullptr) return Result::Unsupported;
+    return g.nearest_prop(g.user, mesh, radius, out_prop, out_position, out_distance);
+  }
+  static Result walker_set(void* host, f32 speed_scale, f32 sprint_scale) {
+    const GameServices& g = self(host).game_;
+    if (g.walker_set == nullptr) return Result::Unsupported;
+    return g.walker_set(g.user, speed_scale, sprint_scale);
+  }
+  static Result walker_teleport(void* host, const f64* position, f32 heading, f32 pitch) {
+    const GameServices& g = self(host).game_;
+    if (position == nullptr) return Result::InvalidArgument;
+    if (g.walker_teleport == nullptr) return Result::Unsupported;
+    return g.walker_teleport(g.user, position, heading, pitch);
+  }
+  static Result sound_clip(void* host, const char* name, u64 length, u32* out_clip) {
+    ModuleHost& h = self(host);
+    if (out_clip == nullptr || name == nullptr) return Result::InvalidArgument;
+    const std::string_view wanted(name, static_cast<usize>(length));
+    const GameServices& g = h.game_;
+    if (g.sound_clip == nullptr) return Result::Unsupported;
+    std::string why;
+    const Result r = g.sound_clip(g.user, wanted, out_clip, &why);
+    if (r == Result::NotFound) {
+      h.pending_unresolved_.push_back(
+          why.empty() ? "no sound '" + std::string(wanted) + "' in the scene" : why);
+    }
+    return r;
+  }
+  static Result sound_play(void* host, u32 clip, const f64* position, f32 gain, u32* out_voice) {
+    const GameServices& g = self(host).game_;
+    if (out_voice == nullptr) return Result::InvalidArgument;
+    if (g.sound_play == nullptr) return Result::Unsupported;
+    return g.sound_play(g.user, clip, position, gain, out_voice);
+  }
+  static Result sound_stop(void* host, u32 voice) {
+    const GameServices& g = self(host).game_;
+    if (g.sound_stop == nullptr) return Result::Unsupported;
+    return g.sound_stop(g.user, voice);
+  }
 };
 
 const char* status_name(Status status) noexcept {
@@ -369,6 +450,16 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.hud_meter = &HostCallbacks::hud_meter;
   api_.end_run = &HostCallbacks::end_run;
   api_.nearest_placement = &HostCallbacks::nearest_placement;
+  api_.prop_mesh = &HostCallbacks::prop_mesh;
+  api_.prop_place = &HostCallbacks::prop_place;
+  api_.prop_move = &HostCallbacks::prop_move;
+  api_.prop_remove = &HostCallbacks::prop_remove;
+  api_.nearest_prop = &HostCallbacks::nearest_prop;
+  api_.walker_set = &HostCallbacks::walker_set;
+  api_.walker_teleport = &HostCallbacks::walker_teleport;
+  api_.sound_clip = &HostCallbacks::sound_clip;
+  api_.sound_play = &HostCallbacks::sound_play;
+  api_.sound_stop = &HostCallbacks::sound_stop;
   context_.api = &api_;
   context_.state = nullptr;
 }

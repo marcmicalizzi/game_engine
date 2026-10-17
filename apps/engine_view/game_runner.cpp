@@ -99,6 +99,13 @@ struct GameRunner::Impl {
   void* placements_user = nullptr;
   WorldPos feet{};  // this tick's, for `nearest_placement` and `nearest_prop`
   GameProps props;  // the module's objects (game_props.h)
+  // The walker's services (ABI 3): the session they go to, and what they did.
+  FlySession* session = nullptr;
+  u64 walker_sets = 0;
+  u64 teleports = 0;
+  f32 speed_scale = 1.0f;
+  f32 sprint_scale = 1.0f;
+  bool sound_said = false;
 
   GameHud hud;
   u64 ticks = 0;
@@ -194,6 +201,77 @@ struct GameRunner::Impl {
     *out_distance = distance;
     return hotload::Result::Ok;
   }
+
+  // ---- ABI 3: a game acts on the world (game_props.h, fly_camera.h) ----
+  static hotload::Result prop_mesh(void* user, std::string_view name, u32* out, std::string* why) {
+    Impl& self = *static_cast<Impl*>(user);
+    const hotload::Result r = self.props.mesh_of(name, *out);
+    if (r == hotload::Result::NotFound && why != nullptr) {
+      *why = "no prop '" + std::string(name) + "' in the scene (it declares";
+      for (u32 p = 0; p < self.props.declared_count(); ++p)
+        *why += " " + self.props.name_of(p);
+      *why += ")";
+    }
+    return r;
+  }
+  static hotload::Result prop_place(void* user, u32 mesh, const f64* position, f32 yaw, f32 scale,
+                                    u32* out_prop) {
+    return static_cast<Impl*>(user)->props.place(mesh, position, yaw, scale, *out_prop);
+  }
+  static hotload::Result prop_move(void* user, u32 prop, const f64* position, f32 yaw) {
+    return static_cast<Impl*>(user)->props.move(prop, position, yaw);
+  }
+  static hotload::Result prop_remove(void* user, u32 prop) {
+    return static_cast<Impl*>(user)->props.remove(prop);
+  }
+  static hotload::Result nearest_prop(void* user, u32 mesh, f64 radius, u32* out_prop,
+                                      f64* out_position, f64* out_distance) {
+    Impl& self = *static_cast<Impl*>(user);
+    WorldPos at{};
+    const hotload::Result r =
+        self.props.nearest(mesh, self.feet, radius, *out_prop, at, *out_distance);
+    if (r != hotload::Result::Ok) return r;
+    out_position[0] = at.x;
+    out_position[1] = at.y;
+    out_position[2] = at.z;
+    return r;
+  }
+  // The scales are held to [0, 4] here and again in the walker; the summary says what stands.
+  static hotload::Result walker_set(void* user, f32 speed_scale, f32 sprint_scale) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(speed_scale) || !std::isfinite(sprint_scale))
+      return hotload::Result::InvalidArgument;
+    if (self.session == nullptr) return hotload::Result::Unsupported;
+    const auto held = [](f32 s) { return s < 0.0f ? 0.0f : s > 4.0f ? 4.0f : s; };
+    self.speed_scale = held(speed_scale);
+    self.sprint_scale = held(sprint_scale);
+    self.session->set_walk_scale(self.speed_scale, self.sprint_scale);
+    ++self.walker_sets;
+    return hotload::Result::Ok;
+  }
+  static hotload::Result walker_teleport(void* user, const f64* position, f32 heading, f32 pitch) {
+    Impl& self = *static_cast<Impl*>(user);
+    const WorldPos at{position[0], position[1], position[2]};
+    if (!std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z) ||
+        !std::isfinite(heading) || !std::isfinite(pitch) || !world_cell_valid(at)) {
+      return hotload::Result::InvalidArgument;
+    }
+    if (self.session == nullptr) return hotload::Result::Unsupported;
+    self.session->request_teleport(at, heading, pitch);
+    ++self.teleports;
+    return hotload::Result::Ok;
+  }
+  // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
+  static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!self.sound_said) {
+      self.sound_said = true;
+      std::fprintf(stderr,
+                   "engine-view: game: the module asks for sound, which engine-view does not "
+                   "play yet (roadmap P43); its sound calls hear Unsupported\n");
+    }
+    return hotload::Result::Unsupported;
+  }
 };
 
 GameRunner::GameRunner() : impl_(std::make_unique<Impl>()) {}
@@ -229,6 +307,14 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.hud_meter = &Impl::hud_meter;
   services.end_run = &Impl::end_run;
   services.nearest_placement = &Impl::nearest;
+  services.prop_mesh = &Impl::prop_mesh;
+  services.prop_place = &Impl::prop_place;
+  services.prop_move = &Impl::prop_move;
+  services.prop_remove = &Impl::prop_remove;
+  services.nearest_prop = &Impl::nearest_prop;
+  services.walker_set = &Impl::walker_set;
+  services.walker_teleport = &Impl::walker_teleport;
+  services.sound_clip = &Impl::sound_clip;  // sound_play and sound_stop: null, Unsupported
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -315,6 +401,8 @@ const std::string& GameRunner::module_name() const noexcept {
 }
 
 u32 GameRunner::build() const noexcept { return impl_->host ? impl_->host->generation() : 0u; }
+
+void GameRunner::set_session(FlySession* session) noexcept { impl_->session = session; }
 
 void GameRunner::observe(void* user, const FlySession& session, const input::InputState& input) {
   GameRunner& self = *static_cast<GameRunner*>(user);
@@ -510,6 +598,13 @@ JsonValue GameRunner::summary_json() const {
   placements.set("world", g.placements != nullptr);
   out.set("placements", std::move(placements));
   out.set("props", g.props.summary_json());
+  JsonValue walker = JsonValue::object();
+  walker.set("sets", g.walker_sets);
+  walker.set("teleports", g.teleports);
+  walker.set("speed_scale", JsonValue(g.speed_scale));
+  walker.set("sprint_scale", JsonValue(g.sprint_scale));
+  walker.set("session", g.session != nullptr);
+  out.set("walker", std::move(walker));
   return out;
 }
 

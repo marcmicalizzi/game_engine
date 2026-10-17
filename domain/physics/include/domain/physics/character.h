@@ -75,6 +75,11 @@ struct CharacterInput {
   Vec3 move{};
   bool sprint = false;
   bool jump = false;  // pressed on this tick: a jump starts only from ground it can stand on
+  // The speed's multiplier for this step: `walk_speed` (or `sprint_speed`) times it, so a game can
+  // slow a tired character or hurry one past the configured speeds, which `move` cannot (it is held
+  // to unit length). 1, the default, is the configured speed to the bit (`x * 1.0f` is `x`), so
+  // every step before this field existed is the same step.
+  f32 speed_scale = 1.0f;
 };
 
 // A character between two steps. `position` is the feet: the bottom of the capsule, which on flat

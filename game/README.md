@@ -12,7 +12,7 @@ build's descriptors when the module is rebuilt.
 | Module | What |
 |---|---|
 | [`sandbox_npc/`](sandbox_npc/) | E7's C++ arm: the Luau fixtures as C++ and a 200-line body for the rebuild measurement ([E7](../docs/experiments/e7-luau-spike.md#the-c-hot-reload-arm)) |
-| [`walk_poc/`](walk_poc/README.md) | the fixture of engine-view's game runner: thirst, water at the ruins, a day counter, a HUD and `end_run` ([apps](../docs/subsystems/apps.md#--game-running-a-game-module)) |
+| [`walk_poc/`](walk_poc/README.md) | the fixture of engine-view's game runner: thirst, water at the ruins, a day counter, a HUD, `end_run`, and since ABI 3 a water can and markers as props and a walker that slows with thirst ([apps](../docs/subsystems/apps.md#--game-running-a-game-module)) |
 
 ## Building and running one
 
@@ -47,7 +47,9 @@ makes the zip a tester double-clicks and sends one `report.json` back from
 lives in its own repository, licensed apart from the engine and pinning an engine commit
 ([ADR-0047](../docs/adr/0047-reference-games-are-licensed-apart-from-the-engine.md), roadmap P18).
 What it builds against is the contract: the module ABI (`foundation/hotload/include/foundation/hotload/module_abi.h`,
-ABI 2), the tick it reads (`engine.game.GameTick`, `apps/engine_view/game_tick.schema`), the game
-actions of engine-view's map (`content/input-maps/engine-view.json`, revision 5), and the build
-command above. Everything in this directory is a fixture: small, owned by the engine's tests, and
+ABI 3: the tick's services, props, the walker, and sound once it is built), the tick it reads
+(`engine.game.GameTick`, `apps/engine_view/game_tick.schema`), the game actions of engine-view's
+map (`content/input-maps/engine-view.json`, revision 5), the scene file's `props` block for the
+meshes it places ([renderer](../docs/subsystems/renderer.md#scenes-camera-paths-and-flythroughs)),
+and the build command above. Everything in this directory is a fixture: small, owned by the engine's tests, and
 changed with them.

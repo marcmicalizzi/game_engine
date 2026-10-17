@@ -656,7 +656,12 @@ rate. Nothing in it is a tunable: a host fills it from its own (engine-view's `v
 the module stays a function of what it is handed. `step(CharacterInput)` advances exactly
 `1 / step_hz`: the simulation's tick, never a frame's duration, so the same inputs over the same
 bodies land on the same floats at any frame rate. The input is a horizontal direction in **world
-space**, at most unit length (a half-pushed stick walks at half speed), a sprint flag and a jump
+space**, at most unit length (a half-pushed stick walks at half speed), a sprint flag, a jump
+flag, and since 2026-10-17 a `speed_scale` the configured speed is multiplied by (1 by default, the
+configured speed to the bit; a game slows a tired character or hurries one past the configured
+speeds through it, which the direction cannot, being held to unit length — engine-view's
+`walker_set`, [apps](apps.md#the-game-contract)); the direction is a horizontal direction in world
+space, at most unit length (a half-pushed stick walks at half speed), a sprint flag and a jump
 press. It is not a heading: turning a yaw into a direction takes a sine and a cosine, and the C
 library's are not the same function on MSVC and glibc, so that is the caller's (engine-view's
 `fly_sin_cos`, a polynomial every compiler evaluates to the same bits).

@@ -545,6 +545,12 @@ JsonValue session_to_json(const SessionHeader& header) {
     walk.set("start_walking", header.walking);
     out.set("walk", std::move(walk));
   }
+  if (header.has_game) {
+    JsonValue game = JsonValue::object();
+    game.set("module", header.game_module);
+    game.set("build", static_cast<u64>(header.game_build));
+    out.set("game", std::move(game));
+  }
   return out;
 }
 
@@ -620,6 +626,14 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
     }
     h.has_walk = true;
   }
+  // The game block, from 2026-10-17: the module whose calls the recording's walk may depend on.
+  if (const JsonValue* game = value.find("game"); game != nullptr) {
+    if (!game->is_object() || !read_string(*game, "module", h.game_module) ||
+        !read_u32(*game, "build", h.game_build)) {
+      return fail("the game block does not name its module and build");
+    }
+    h.has_game = true;
+  }
   out = std::move(h);
   return true;
 }
@@ -678,6 +692,8 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
     presses = 0;
   walking_ = false;
   mode_changes_ = 0;
+  teleport_pending_ = false;
+  teleports_ = 0;
   // A session that starts walking (`--walk`) stands on the ground under its start camera before
   // its first tick: the camera it starts from is the eye, and the trajectory's seed stays the
   // header's start, so a replay seeds the same chain and drops the walker the same way.
@@ -691,6 +707,10 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
 }
 
 bool FlySession::can_walk() const noexcept { return walker_ != nullptr && walker_->available(); }
+
+void FlySession::set_walk_scale(f32 speed, f32 sprint) noexcept {
+  if (walker_ != nullptr) walker_->set_speed_scale(speed, sprint);
+}
 
 void FlySession::on_tick(void* user, SimTick tick, const input::InputState& state) {
   FlySession& self = *static_cast<FlySession*>(user);
@@ -716,6 +736,23 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     fly_tick(self.state_, state, self.actions_, self.header_.params);
   }
   self.tick_ = tick;
+  // The observer — the game runner — sees this tick's camera and mode, and may ask for a teleport
+  // or a walk scale (above); the teleport lands now, inside the tick, so the chain below hashes
+  // where the tick ended. A session with no observer, or one that asks nothing, is untouched.
+  if (self.observer_ != nullptr) self.observer_(self.observer_user_, self, state);
+  if (self.teleport_pending_) {
+    self.teleport_pending_ = false;
+    ++self.teleports_;
+    const f32 limit = self.header_.params.pitch_limit;
+    self.state_.yaw = self.teleport_heading_;
+    self.state_.pitch = self.teleport_pitch_ > limit    ? limit
+                        : self.teleport_pitch_ < -limit ? -limit
+                                                        : self.teleport_pitch_;
+    self.state_.position = self.walking_ && self.can_walk()
+                               ? self.walker_->teleport(self.teleport_position_)
+                               : self.teleport_position_;
+    self.previous_ = self.state_;  // the frame cuts to the new place rather than smearing across
+  }
   self.trajectory_.ticks = tick.value;
   self.trajectory_.hash = hash_fly_state(self.trajectory_.hash, self.state_);
   // A walking tick is marked in the chain, so a walk and a flight that happened to reach the same
@@ -730,7 +767,6 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   if (state.pressed(self.actions_.marker)) {
     self.trajectory_.markers.push_back(FlyMarker{tick.value, self.state_});
   }
-  if (self.observer_ != nullptr) self.observer_(self.observer_user_, self, state);
 }
 
 u32 FlySession::run(std::span<const input::RawEvent> events, u32 cursor, SimTick to) {

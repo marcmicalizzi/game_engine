@@ -223,7 +223,7 @@ Status CharacterBody::step(const CharacterInput& input) {
     mx = mx * inverse;
     mz = mz * inverse;
   }
-  const f32 speed = input.sprint ? config.sprint_speed : config.walk_speed;
+  const f32 speed = (input.sprint ? config.sprint_speed : config.walk_speed) * input.speed_scale;
   const JPH::Vec3 desired(mx * speed, 0.0f, mz * speed);
   impl.listener.allow_sliding = length2 > 0.0f;
 

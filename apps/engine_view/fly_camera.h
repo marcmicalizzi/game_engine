@@ -257,6 +257,16 @@ struct SessionHeader {
   bool has_walk = false;
   bool walking = false;
   WalkParams walk;
+  // **The game module** a `--game` session ran (game_runner.h; apps.md, "The game contract"),
+  // written as the header's `game` block when `has_game`: the module's name and the build it
+  // started with. A module's calls can move the walker (`walker_set`, `walker_teleport`), so a
+  // replay of such a recording is the same walk only with the same module: engine-view refuses a
+  // replay without
+  // `--game`, or with a module of another name (main.cpp). A header without the block — every
+  // recording before 2026-10-17, and every session with no game — replays as it always did.
+  bool has_game = false;
+  std::string game_module;
+  u32 game_build = 0;
 };
 
 JsonValue session_to_json(const SessionHeader& header);
@@ -373,6 +383,24 @@ class FlySession {
   u32 mode_changes() const noexcept { return mode_changes_; }
   const Walker* walker() const noexcept { return walker_; }
 
+  // **A game's requests at a tick** (game_runner.h, `walker_teleport` and `walker_set`): made from
+  // the tick observer and applied by the session right after it, inside the same tick and before
+  // the tick is hashed, so the trajectory holds what the module did and a recording replays to it
+  // with the same module (the header's `game` block says which). `request_teleport` puts the
+  // walker's feet at `position` on the ground under it when the session walks — the camera at its
+  // eye — and the camera itself at `position` when it flies, looking along `heading` at `pitch`
+  // (held to the header's limit), and cuts the frame's interpolation to the new place. The last
+  // request of a tick stands. `set_walk_scale` goes to the walker (walk.h) and takes effect from
+  // the next step.
+  void request_teleport(const WorldPos& position, f32 heading, f32 pitch) noexcept {
+    teleport_pending_ = true;
+    teleport_position_ = position;
+    teleport_heading_ = heading;
+    teleport_pitch_ = pitch;
+  }
+  void set_walk_scale(f32 speed, f32 sprint) noexcept;
+  u32 teleports() const noexcept { return teleports_; }
+
  private:
   static void on_tick(void* user, SimTick tick, const input::InputState& state);
   bool can_walk() const noexcept;
@@ -391,6 +419,11 @@ class FlySession {
   u32 mode_changes_ = 0;
   TickObserver observer_ = nullptr;
   void* observer_user_ = nullptr;
+  bool teleport_pending_ = false;
+  WorldPos teleport_position_{};
+  f32 teleport_heading_ = 0.0f;
+  f32 teleport_pitch_ = 0.0f;
+  u32 teleports_ = 0;
 };
 
 }  // namespace engine::view

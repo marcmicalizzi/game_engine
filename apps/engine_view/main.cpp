@@ -1423,6 +1423,7 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate,
                  const renderer::SceneData& scene) {
   if (g_game == nullptr) return;
   session.set_tick_observer(&view::GameRunner::observe, g_game);
+  g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, scene.terrain.enabled ? scene.terrain.time_s : 0.0);
 }
 // Between frames: a rebuilt module swapped in with its state carried (hotload's poll).
@@ -1766,6 +1767,15 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.has_walk = true;
   h.walking = options.walk;
   h.walk = view::walk_params_from_tunables();
+#if ENGINE_VIEW_GAME
+  // The game module whose calls this walk may depend on (fly_camera.h, the `game` block): a
+  // replay of the recording needs the same module, and is refused without it.
+  if (g_game != nullptr && g_game->started()) {
+    h.has_game = true;
+    h.game_module = g_game->module_name();
+    h.game_build = g_game->build();
+  }
+#endif
   return h;
 }
 
@@ -4171,6 +4181,18 @@ int run_view(int argc, char** argv) {
       return prepared;
     }
   }
+  // **A recording made with a game module replays only with one** (fly_camera.h, the header's
+  // `game` block): the module's calls can move the walker, so without it the replay would walk
+  // somewhere else without saying so, and it is refused instead — in every build, before anything
+  // is loaded. The module's name is checked below, once it is loaded.
+  if (interactive.replay && interactive.header.has_game && options.game.empty()) {
+    log::remove_sink(&stderr_sink);
+    return fail("replay", options.replay_input + " was recorded with the game module '" +
+                              interactive.header.game_module + "' (build " +
+                              std::to_string(interactive.header.game_build) +
+                              "), whose calls can move the walker; replay it with --game and that "
+                              "module, or it would walk somewhere else without saying so");
+  }
 #if ENGINE_VIEW_GAME
   // --game: the module loaded before any window or device, so one the host refuses — no entry
   // point, another ABI, an action no map has, a state file of another type — is refused at once.
@@ -4196,6 +4218,16 @@ int run_view(int argc, char** argv) {
     }
     g_game = &game;
     std::fprintf(stderr, "engine-view: game: %s loaded\n", options.game.c_str());
+    if (interactive.replay && interactive.header.has_game &&
+        interactive.header.game_module != game.module_name()) {
+      log::remove_sink(&stderr_sink);
+      g_game = nullptr;
+      return fail("replay", options.replay_input + " was recorded with the game module '" +
+                                interactive.header.game_module + "' and --game names '" +
+                                game.module_name() +
+                                "'; another module would walk the recording somewhere else, so "
+                                "it is refused");
+    }
   }
   // The HUD's ImGui context, for a game only: without one nothing of it exists.
   view::GameHudOverlay hud;

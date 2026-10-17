@@ -4,7 +4,7 @@
 namespace engine.walk_poc
 
 /// What the fixture remembers between ticks and runs.
-struct Survivor @version(1) {
+struct Survivor @version(2) {
   /// Thirst, 100 full and 0 the end of the run.
   thirst: f64 = 100
   /// Game seconds survived, a tick's dt at a time, and metres walked.
@@ -23,4 +23,11 @@ struct Survivor @version(1) {
   drinking_ticks: u64 = 0
   /// Whether the run has ended (end_run said once).
   over: bool = false
+  /// The water can (a prop, when the scene declares one): its id while it stands at the spring,
+  /// 0 once it was picked up or never placed; and whether it has been.
+  can: u32 = 0 @since(2)
+  can_placed: bool = false @since(2)
+  can_taken: bool = false @since(2)
+  /// Markers placed with `use`.
+  markers: u32 = 0 @since(2)
 }

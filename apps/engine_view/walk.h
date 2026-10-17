@@ -110,7 +110,8 @@ struct WalkStats {
   u64 ticks = 0;         // ticks walked
   f64 distance_m = 0.0;  // horizontal distance walked
   f64 climb_m = 0.0;     // height gained, summed over every tick that gained any
-  u32 drops = 0;         // times put on the ground (a switch to walking)
+  u32 drops = 0;         // times put on the ground (a switch to walking, or a teleport)
+  u32 teleports = 0;     // of which a game's `walker_teleport`
   // The largest distance, at the walker's feet, between the ground it stands on — the collision
   // heightfield, or the provider's height when it follows the ground — and the ground as drawn (the
   // scene's grid, or the finest level of the world's tiles, as the renderer triangulates it, at the
@@ -144,6 +145,18 @@ class Walker {
 
   // Before a frame's ticks: the ground as that frame draws it.
   void set_drawn(const DrawnGround& drawn) noexcept;
+  // **A game's scales on the speeds** (game_runner.h, `walker_set`): the header's `speed` and
+  // `sprint` times these, each held to [0, 4], from the next step on. 1 is the header's number to
+  // the bit — `x * 1.0f` is `x`, and contraction is off tree-wide (ADR-0035) — so a walk with no
+  // game and a walk whose game never set them are the same floats, and every walk recorded before
+  // the scales existed replays as it did.
+  void set_speed_scale(f32 walk, f32 sprint) noexcept;
+  f32 speed_scale() const noexcept;
+  f32 sprint_scale() const noexcept;
+  // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
+  // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
+  // and as a teleport; the eye returned.
+  WorldPos teleport(WorldPos at);
   // A switch to walking: the feet on the ground under `camera` — the highest surface below it, or
   // the ground's own height where there is none — and the eye returned.
   WorldPos drop(WorldPos camera);

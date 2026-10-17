@@ -43,7 +43,13 @@ namespace engine::hotload {
 // contract"). Nothing before them moved, but a module built against 1 would hand the host a
 // `ModuleDesc` it reads the same and call a table it believes is shorter, so it is refused all the
 // same: one number, one layout.
-inline constexpr u32 k_abi_version = 2;
+//
+// **3** (2026-10-17): `HostApi` gained, at its end, the services through which a game acts on the
+// world (roadmap P43; apps.md, "The game contract"): props (`prop_mesh`, `prop_place`, `prop_move`,
+// `prop_remove`, `nearest_prop`), the walker (`walker_set`, `walker_teleport`) and sound
+// (`sound_clip`, `sound_play`, `sound_stop`). Additive again — nothing before them moved — and
+// refused again for a module built against 2, for the same reason.
+inline constexpr u32 k_abi_version = 3;
 
 // The one symbol the host looks up.
 inline constexpr const char* k_entry_point = "engine_hotload_describe";
@@ -168,7 +174,60 @@ struct HostApi {
   // session streams no world, or nothing of that kind is that near.
   Result (*nearest_placement)(void* host, const char* kind, u64 length, f64 radius,
                               f64* out_position, f64* out_distance);
+
+  // ---- a game acts on the world (ABI 3; apps.md, "The game contract"; roadmap P43) ----
+  // The same style: `host` first, by value or into the caller's memory, nothing kept past the call.
+  // A host that runs no game answers `Unsupported` to every one.
+
+  // **Props**: instances of the meshes the scene file declared as `props` (`engine.scene.Prop`),
+  // loaded with the scene and placed by nothing but the module. `prop_mesh`, in `on_load` only, is
+  // the index of a declared prop by name: `NotFound` is remembered like a field path that does not
+  // resolve, so the load is refused naming it; `Unsupported` — the session's scene declares no
+  // props at all, as `nearest_placement` has no world — is not, so a module runs on any scene and
+  // places nothing there. `prop_place` makes a new prop of that mesh at `position` (world metres,
+  // three f64), turned `yaw` radians about +y, at uniform `scale`, and hands back its id:
+  // `OutOfRange` when the table is full (1,024 props; `view::k_max_props`), `InvalidArgument` for a
+  // non-finite number, a scale at or below zero or a position outside the world. `prop_move` and
+  // `prop_remove` take the id, and `NotFound` is an id that is not placed (a removed prop's id
+  // stays dead). `nearest_prop` is the nearest placed prop of a mesh (or of any, `k_any_prop`)
+  // within `radius` metres of the walker's feet over the ground, like `nearest_placement`: its id,
+  // its position and its distance. A prop is visual — the walker walks through it — and reaches the
+  // picture on the frame after the tick that changed it.
+  Result (*prop_mesh)(void* host, const char* name, u64 length, u32* out_mesh);
+  Result (*prop_place)(void* host, u32 mesh, const f64* position, f32 yaw, f32 scale,
+                       u32* out_prop);
+  Result (*prop_move)(void* host, u32 prop, const f64* position, f32 yaw);
+  Result (*prop_remove)(void* host, u32 prop);
+  Result (*nearest_prop)(void* host, u32 mesh, f64 radius, u32* out_prop, f64* out_position,
+                         f64* out_distance);
+  // **The walker.** `walker_set` scales its walking and sprinting speeds — each clamped to [0, 4],
+  // 1 the recording's own `WalkParams` to the bit — from the next tick on; `InvalidArgument` for a
+  // non-finite number. `walker_teleport` puts the walker's feet at `position` on this tick,
+  // standing on the ground under it, the camera with it at `heading` and `pitch` (radians, as
+  // `GameTick` gives them; the pitch held to the session's limit); flying, the camera itself goes
+  // there. `InvalidArgument` for a non-finite number or a position outside the world. Both are
+  // module calls at a tick and so in the recording as what they are: a recorded `--game` session
+  // replays to the same trajectory **with the same module**, and is refused without it. A module
+  // reads the effect through `feet` and `moved_m` next tick; `GameTick` gains nothing.
+  Result (*walker_set)(void* host, f32 speed_scale, f32 sprint_scale);
+  Result (*walker_teleport)(void* host, const f64* position, f32 heading, f32 pitch);
+  // **Sound**: clips the scene file declared as `sounds` (`engine.scene.Sound`), decoded with the
+  // scene. `sound_clip`, in `on_load` only, is a declared clip's index by name, remembered and
+  // refused like `prop_mesh` (`Unsupported`, not remembered, on a scene with none or in a build
+  // without audio). `sound_play` plays it at `position` (world, three f64), or on the listener with
+  // `k_sound_2d`, at `gain`, and hands back a voice; `sound_stop` stops one. The commands are
+  // output: nothing flows back into the module, so a replay is the same replay with or without a
+  // device.
+  // **Answered `Unsupported` by every host until the audio half of P43 lands**; the entries are
+  // here so that landing it does not change the ABI again.
+  Result (*sound_clip)(void* host, const char* name, u64 length, u32* out_clip);
+  Result (*sound_play)(void* host, u32 clip, const f64* position, f32 gain, u32* out_voice);
+  Result (*sound_stop)(void* host, u32 voice);
 };
+
+// `nearest_prop`'s "a prop of any mesh", and `sound_play`'s "on the listener".
+inline constexpr u32 k_any_prop = 0xFFFFFFFFu;
+inline constexpr const f64* k_sound_2d = nullptr;
 
 // What every exported function receives first. Owned by the host, at the same address for the
 // module's whole life across reloads; `state` points at the module's state object (null for a
@@ -321,6 +380,54 @@ inline Result nearest_placement(const ModuleContext* context, const char* kind, 
                                 f64 (&position)[3], f64& distance) noexcept {
   return context->api->nearest_placement(context->api->host, kind, text_length(kind), radius,
                                          position, &distance);
+}
+
+// ---- a game acts on the world (ABI 3) ----
+
+inline Result prop_mesh(const ModuleContext* context, const char* name, u32& mesh) noexcept {
+  return context->api->prop_mesh(context->api->host, name, text_length(name), &mesh);
+}
+
+inline Result prop_place(const ModuleContext* context, u32 mesh, const f64 (&position)[3], f32 yaw,
+                         f32 scale, u32& prop) noexcept {
+  return context->api->prop_place(context->api->host, mesh, position, yaw, scale, &prop);
+}
+
+inline Result prop_move(const ModuleContext* context, u32 prop, const f64 (&position)[3],
+                        f32 yaw) noexcept {
+  return context->api->prop_move(context->api->host, prop, position, yaw);
+}
+
+inline Result prop_remove(const ModuleContext* context, u32 prop) noexcept {
+  return context->api->prop_remove(context->api->host, prop);
+}
+
+inline Result nearest_prop(const ModuleContext* context, u32 mesh, f64 radius, u32& prop,
+                           f64 (&position)[3], f64& distance) noexcept {
+  return context->api->nearest_prop(context->api->host, mesh, radius, &prop, position, &distance);
+}
+
+inline Result walker_set(const ModuleContext* context, f32 speed_scale, f32 sprint_scale) noexcept {
+  return context->api->walker_set(context->api->host, speed_scale, sprint_scale);
+}
+
+inline Result walker_teleport(const ModuleContext* context, const f64 (&position)[3], f32 heading,
+                              f32 pitch) noexcept {
+  return context->api->walker_teleport(context->api->host, position, heading, pitch);
+}
+
+inline Result sound_clip(const ModuleContext* context, const char* name, u32& clip) noexcept {
+  return context->api->sound_clip(context->api->host, name, text_length(name), &clip);
+}
+
+// `position` null (`k_sound_2d`) plays on the listener.
+inline Result sound_play(const ModuleContext* context, u32 clip, const f64* position, f32 gain,
+                         u32& voice) noexcept {
+  return context->api->sound_play(context->api->host, clip, position, gain, &voice);
+}
+
+inline Result sound_stop(const ModuleContext* context, u32 voice) noexcept {
+  return context->api->sound_stop(context->api->host, voice);
 }
 
 template <class State>
