@@ -331,7 +331,8 @@ TEST_CASE(
   CHECK(number_at(*game_of(a), {"props", "placed"}) == 1.0);
   CHECK(number_at(*game_of(a), {"props", "live"}) == 1.0);
   CHECK(number_at(*game_of(a), {"props", "rewrites"}) == 1.0);  // one tick changed a prop
-  CHECK(number_at(*game_of(a), {"state", "can_placed"}) == 1.0);
+  REQUIRE(at(*game_of(a), {"state", "can_placed"}) != nullptr);
+  CHECK(at(*game_of(a), {"state", "can_placed"})->as_bool());
   // The state file: the can beside the state; a second run has it without placing it again.
   const Run resumed = run_view(args = [&] {
     std::vector<std::string> r = common;
