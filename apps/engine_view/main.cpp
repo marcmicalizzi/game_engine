@@ -1487,6 +1487,10 @@ void finish_game() {
 // refuses until the UI's HDR seam is built (renderer.md, "The overlay"; said once).
 view::GameHudOverlay* g_hud = nullptr;
 renderer::OverlayDrawData g_hud_data;
+// The display's scale under the window (1.5 at 150 %), which sizes the HUD's font with the
+// picture's height (game_hud.h `hud_font_px`); 1 offscreen, and set by the windowed loop.
+f32 g_hud_display_scale = 1.0f;
+void set_hud_display_scale(f32 scale) { g_hud_display_scale = scale > 0.0f ? scale : 1.0f; }
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& renderer) {
   if (g_game == nullptr || g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
@@ -1500,7 +1504,7 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
   }
   std::string error;
   if (!g_hud->build(g_game->hud(), game_result_panel(), renderer.width(), renderer.height(),
-                    renderer, g_hud_data, error)) {
+                    g_hud_display_scale, renderer, g_hud_data, error)) {
     if (!said) {
       said = true;
       std::fprintf(stderr, "engine-view: game: the HUD cannot be drawn: %s\n", error.c_str());
@@ -1515,6 +1519,7 @@ bool game_over() { return false; }
 bool game_failed() { return false; }
 bool game_clock(view::SunDay&) { return false; }
 void game_new_run() {}
+void set_hud_display_scale(f32) {}
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 #endif
@@ -1834,7 +1839,13 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   out.set("trajectory", std::move(trajectory));
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
 #if ENGINE_VIEW_GAME
-  if (g_game != nullptr && g_game->started()) out.set("game", g_game->summary_json());
+  if (g_game != nullptr && g_game->started()) {
+    JsonValue game = g_game->summary_json();
+    // The HUD's overlay as drawn (game_hud.h): the font it was sized to, the panel, the atlas's
+    // uploads and their cost.
+    if (g_hud != nullptr && g_hud->valid()) game.set("overlay", g_hud->summary_json());
+    out.set("game", std::move(game));
+  }
 #endif
   return out;
 }
@@ -4789,6 +4800,9 @@ int run_view(int argc, char** argv) {
     g_hud_end_panel = end_panel;
 #endif
     bool end_announced = false;
+    // The HUD's font follows the picture's height and the display's scale (game_hud.h): read here
+    // and again when the window is resized or moved to another display, never per frame.
+    set_hud_display_scale(window.display_scale());
     bool title_dirty = true;
     char shown_title[256] = "";
     sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
@@ -4973,7 +4987,13 @@ int run_view(int argc, char** argv) {
             running = false;
             g_report.reason = "closed";
             break;
-          case window::EventKind::Resized: resize_pending = true; break;
+          case window::EventKind::Resized:
+            resize_pending = true;
+            set_hud_display_scale(window.display_scale());
+            break;
+          case window::EventKind::ScaleChanged:
+            set_hud_display_scale(event.value > 0.0f ? event.value : window.display_scale());
+            break;
           case window::EventKind::KeyDown:
             // In an interactive session Escape is an action (`capture`), read at its tick below:
             // it gives the pointer back, or with the pointer already free ends the session.
