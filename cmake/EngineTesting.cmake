@@ -194,6 +194,21 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/frame-budget.Tests.ps1"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.frame_budget PROPERTIES LABELS "tools")
+
+  # The game author's kit (tools/export-game-sdk.ps1, tools/new-game-repo.ps1, templates/game-repo;
+  # docs/game-authoring.md, roadmap P42), end to end from this build: an SDK exported into the
+  # test's scratch directory, the template instantiated from it, its module built with the SDK's
+  # relocatable command, run offscreen for 20 frames with a report, and packed with the SDK's
+  # package-game.ps1. It runs engine-view, which takes the GPU lock itself, so it has the
+  # end-to-end tests' lock, timeout and skip code; it skips by itself where the build has no
+  # hotload capability (no module, no SDK) and off Windows.
+  math(EXPR _game_sdk_timeout "${ENGINE_TEST_WORK_TIMEOUT_S} + ${ENGINE_TEST_GPU_LOCK_WAIT_S}")
+  add_test(NAME tools.game_sdk
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/export-game-sdk.Tests.ps1" -BuildDir "${CMAKE_BINARY_DIR}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e" RESOURCE_LOCK "e2e_apps"
+    TIMEOUT ${_game_sdk_timeout} SKIP_RETURN_CODE 75)
 else()
   message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.frame_budget, and tools.linux_build tests not registered")
   message(WARNING "pwsh not found; lint.banned_patterns, lint.licenses, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.license_check and tools.frame_budget tests not registered")
