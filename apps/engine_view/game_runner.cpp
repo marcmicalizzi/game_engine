@@ -96,6 +96,7 @@ struct GameRunner::Impl {
   u32 last_faster = 0;
 
   PlacementQuery placements = nullptr;
+  PlacementStats placement_stats = nullptr;
   void* placements_user = nullptr;
   WorldPos feet{};  // this tick's, for `nearest_placement`
 
@@ -116,6 +117,7 @@ struct GameRunner::Impl {
   std::string last_refusal;
   u64 placement_queries = 0;
   u64 placement_hits = 0;
+  u64 placement_refused = 0;  // radii past k_max_placement_query_m
 
   // ---- HostApi's game services (GameServices) ----
   static hotload::Result action(void* user, std::string_view name, u32* out_bit, std::string* why) {
@@ -183,6 +185,10 @@ struct GameRunner::Impl {
                                  f64* out_distance) {
     Impl& self = *static_cast<Impl*>(user);
     ++self.placement_queries;
+    if (radius > k_max_placement_query_m) {
+      ++self.placement_refused;
+      return hotload::Result::InvalidArgument;
+    }
     if (self.placements == nullptr || !(radius > 0.0)) return hotload::Result::NotFound;
     WorldPos at{};
     f64 distance = 0.0;
@@ -313,9 +319,10 @@ f64 GameRunner::day_s() const noexcept { return impl_->day_s; }
 f64 GameRunner::sun_rate() const noexcept { return impl_->sun_rate; }
 u32 GameRunner::rate_changes() const noexcept { return impl_->rate_changes; }
 
-void GameRunner::set_placements(PlacementQuery query, void* user) noexcept {
+void GameRunner::set_placements(PlacementQuery query, void* user, PlacementStats stats) noexcept {
   impl_->placements = query;
   impl_->placements_user = user;
+  impl_->placement_stats = stats;
 }
 
 void GameRunner::observe(void* user, const FlySession& session, const input::InputState& input) {
@@ -515,6 +522,13 @@ JsonValue GameRunner::summary_json() const {
   JsonValue placements = JsonValue::object();
   placements.set("queries", g.placement_queries);
   placements.set("found", g.placement_hits);
+  placements.set("refused", g.placement_refused);
+  placements.set("max_radius_m", k_max_placement_query_m);
+  u64 generated = 0;
+  f64 generate_ms = 0.0;
+  if (g.placement_stats != nullptr) g.placement_stats(g.placements_user, generated, generate_ms);
+  placements.set("generated", generated);
+  placements.set("generate_ms", generate_ms);
   placements.set("world", g.placements != nullptr);
   out.set("placements", std::move(placements));
   return out;

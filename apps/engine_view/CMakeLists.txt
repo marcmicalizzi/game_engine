@@ -46,6 +46,9 @@ if(TARGET engine::ruins)
   # the assembler. The walk into one of a ruin's walls writes the same kit beside the committed
   # ruins-walk scene (docs/subsystems/apps.md, "Walking").
   list(APPEND _view_tests tests/ruins_view_tests.cpp tests/walk_ruins_view_tests.cpp)
+  # A --game module's `nearest_placement` answered from the scene, whatever the ring holds (roadmap
+  # P44; tests/game_placements_tests.cpp): compiled with the ruins, which the proof streams.
+  list(APPEND _view_tests tests/game_placements_tests.cpp)
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's

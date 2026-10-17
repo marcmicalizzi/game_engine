@@ -97,6 +97,15 @@ struct GameTickInput {
 // (world_view.h); false when there is none within `radius` of `from`, or no world.
 using PlacementQuery = bool (*)(void* user, std::string_view kind, const WorldPos& from, f64 radius,
                                 WorldPos& out, f64& distance);
+// The query's cost so far, for the summary: tiles generated from the scene for queries, and their
+// wall time (world_view.h `query_stats`).
+using PlacementStats = void (*)(void* user, u64& generated_tiles, f64& generate_ms);
+// **The cap on a query's radius** (apps.md "The game contract"; roadmap P44): a query past it is
+// `InvalidArgument` — a `Result` a module already handles — because the answer is a function of the
+// scene (world.md "The consumers"): every tile the search reaches that the cache does not hold is
+// generated, which at this cap over 32 m tiles is up to 33² tiles cold when nothing of the kind
+// is near. The fixture looks 400 m for its HUD line.
+inline constexpr f64 k_max_placement_query_m = 512.0;
 
 class GameRunner {
  public:
@@ -130,7 +139,7 @@ class GameRunner {
   f64 day_s() const noexcept;         // the day's game seconds so far
   f64 sun_rate() const noexcept;      // the rate now
   u32 rate_changes() const noexcept;  // ladder steps taken
-  void set_placements(PlacementQuery query, void* user) noexcept;
+  void set_placements(PlacementQuery query, void* user, PlacementStats stats = nullptr) noexcept;
 
   // **The session's tick observer** (`FlySession::set_tick_observer`): one `tick` a session tick.
   static void observe(void* user, const FlySession& session, const input::InputState& input);

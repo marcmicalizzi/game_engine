@@ -1533,11 +1533,14 @@ void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
   struct Query {
     static bool nearest(void* user, std::string_view kind, const WorldPos& from, f64 radius,
                         WorldPos& out, f64& distance) {
-      return static_cast<const view::ViewWorld*>(user)->nearest_placement(kind, from, radius, out,
-                                                                          distance);
+      return static_cast<view::ViewWorld*>(user)->nearest_placement(kind, from, radius, out,
+                                                                    distance);
+    }
+    static void stats(void* user, u64& generated, f64& generate_ms) {
+      static_cast<const view::ViewWorld*>(user)->query_stats(generated, generate_ms);
     }
   };
-  g_game->set_placements(&Query::nearest, &world);
+  g_game->set_placements(&Query::nearest, &world, &Query::stats);
 #endif
 }
 #endif

@@ -37,14 +37,15 @@ struct PlacementTiles::Entry {
 PlacementTiles::PlacementTiles() = default;
 PlacementTiles::~PlacementTiles() = default;
 
-scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring) const noexcept {
+scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
+                                               bool scene_ground) const noexcept {
   scene_gen::Context context;
   context.world_seed = scene_->terrain.enabled ? scene_->terrain.seed : 0;
   context.tile_size = config_.tile_size;
   context.dir = entry.source->dir;
   context.where = entry.source->where;
   if (ground_ != nullptr) context.ground = ground_->provider().view();
-  if (stand_ != nullptr) context.stand = stand_->provider().view();
+  if (stand_ != nullptr && !scene_ground) context.stand = stand_->provider().view();
   context.earlier = std::span<const scene_gen::Footprint>(earlier_.data(), earlier_.size());
   context.world = &world_rings_;
   context.ring = ring;
@@ -164,26 +165,28 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
 // The tile's placements in `ring`'s representation: every entry's, in the scene's order, each
 // exactly what the whole read put on the tile. False when a generator refused the tile (a kit whose
 // footprints do not fit it); what did build is kept.
-bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
+bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries, bool for_query) {
   out.ring = ring;
   out.instances.clear();
   out.tags.clear();
   out.buildings = 0;
-  out.stood = stand_time_;
+  out.stood = for_query ? (scene_->terrain.enabled ? scene_->terrain.time_s : 0.0) : stand_time_;
   const scene_gen::TileCoord at{tile.x, tile.z};
   bool ok = true;
   scene_gen::Placements placed;
   // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
   // 4, as built): the tile is a function of the entries, the seed, the tile, the ground and those.
   earlier_.clear();
-  for (u32 e = 0; e < entries_.size(); ++e) {
+  const u32 run = entries < entries_.size() ? entries : entries_.size();
+  for (u32 e = 0; e < run; ++e) {
     const Entry& entry = *entries_[e];
     if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
       continue;
     placed.clear();
     std::string why;
     const i64 start = time::monotonic_ns();
-    if (!entry.generator->tile(entry.state, at, context_for(entry, ring), placed, &why)) {
+    if (!entry.generator->tile(entry.state, at, context_for(entry, ring, for_query), placed,
+                               &why)) {
       ok = false;
       ENGINE_LOG_WARN(log_world_placements, "a tile's placements were not made",
                       log::field("entry", entry.source->where), log::field("x", tile.x),
@@ -215,10 +218,18 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
                                                 static_cast<f64>(reach * scale)});
       }
     }
-    const u32 kind = placed.kind < k_placement_kinds ? placed.kind : k_placement_kinds - 1;
-    stats_.build_ns[kind] += time::monotonic_ns() - start;
-    ++stats_.built[kind];
+    if (for_query) {
+      stats_.query_ns += time::monotonic_ns() - start;
+    } else {
+      const u32 kind = placed.kind < k_placement_kinds ? placed.kind : k_placement_kinds - 1;
+      stats_.build_ns[kind] += time::monotonic_ns() - start;
+      ++stats_.built[kind];
+    }
     out.buildings += placed.things;
+  }
+  if (for_query) {
+    out.pairs = 0;  // never drawn: nothing to budget
+    return ok;
   }
   u32 end = 0;
   out.pairs = renderer::pairs_after(*scene_, 0,
@@ -228,6 +239,46 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
                   ? end
                   : renderer::k_max_pairs + 1u;
   return ok;
+}
+
+// ---- queries --------------------------------------------------------------------------------------
+
+u32 PlacementTiles::entries_for(std::string_view generator) const noexcept {
+  u32 through = 0;
+  for (u32 e = 0; e < entries_.size(); ++e) {
+    if (entries_[e]->source->generator == generator) through = e + 1;
+  }
+  return through;
+}
+
+std::span<const renderer::SceneInstance> PlacementTiles::query_tile(TileCoord tile, u32 entries) {
+  const u32 want = entries < entries_.size() ? entries : entries_.size();
+  const u64 key = tile_key(tile);
+  QueryTile* cached = query_tiles_.find_value(key);
+  if (cached != nullptr && cached->entries >= want)
+    return {cached->instances.data(), cached->instances.size()};
+  // The innermost ring's representation (ring 0), the scene's own ground: a function of the scene
+  // and the tile. What did not build is logged by `build` and left out, as a streamed tile's is.
+  ++stats_.queried;
+  (void)build(tile, 0, query_scratch_, want, true);
+  QueryTile& slot = query_tiles_[key];
+  slot.entries = want;
+  slot.instances.assign(query_scratch_.instances.begin(), query_scratch_.instances.end());
+  return {slot.instances.data(), slot.instances.size()};
+}
+
+void PlacementTiles::trim_query_tiles(TileCoord centre, i32 reach) {
+  for (u32 i = 0; i < query_tiles_.size();) {
+    const TileCoord t = tile_of_key(query_tiles_.key_at(i));
+    const i32 dx = t.x > centre.x ? t.x - centre.x : centre.x - t.x;
+    const i32 dz = t.z > centre.z ? t.z - centre.z : centre.z - t.z;
+    if (dx > reach || dz > reach) {
+      const u64 key = query_tiles_.key_at(i);  // a copy: erase moves the element it names
+      query_tiles_.erase(key);
+    } else {
+      ++i;
+    }
+  }
 }
 
 // A tile activated or moved: its placements in the ring's representation. Whether it is drawn is

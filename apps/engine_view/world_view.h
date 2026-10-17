@@ -70,14 +70,21 @@ class ViewWorld {
 
   world::World& world() noexcept { return world_; }
   world::PlacementTiles& placements() noexcept { return placements_; }
-  // **The nearest placement of a kind** (a `--game` module's `nearest_placement`, game_runner.h):
-  // the streamed entries' generator names are the kinds ("ruins", "scatter"), and the answer is the
-  // nearest instance of one, over the ground, within `radius` of `from`, among the tiles the
-  // placements consumer holds. False when nothing of the kind is held that near. The tiles round
-  // the camera are the innermost ring's, built first by every update, so a few metres round the
-  // walker is always answered from what the ground's generators make there.
+  // **The nearest placement of a kind** (a `--game` module's `nearest_placement`, game_runner.h;
+  // roadmap P44): the streamed entries' generator names are the kinds ("ruins", "scatter"), and the
+  // answer is the nearest instance of one, over the ground, within `radius` of `from` — **a function
+  // of the scene, not of what has streamed in**: every tile the search reaches is asked of the
+  // placements consumer's query cache (`PlacementTiles::query_tile`: generated from the scene in the
+  // innermost ring's representation on the first ask, kept until the walker leaves the runner's cap
+  // of it), never of the ring's held blocks, so the recording, its replay and a capture answer
+  // alike whatever the ring holds. The search goes out one square of tiles at a time and stops at
+  // the first square that cannot hold anything nearer than what it found, so a query with a ruin
+  // 50 m away generates the tiles within about 80 m and no more. False when nothing of the kind is
+  // within `radius`. Not const: the cache.
   bool nearest_placement(std::string_view kind, const WorldPos& from, f64 radius, WorldPos& out,
-                         f64& distance) const;
+                         f64& distance);
+  // The query cache's cost so far: tiles generated for queries, and their wall time.
+  void query_stats(u64& generated_tiles, f64& generate_ms) const noexcept;
   const world::DrawnTiles& drawn() const noexcept { return drawn_; }
   // Whether a ring change of `tile` changes what its placements are drawn as (and it has any).
   bool is_handover(const world::TileEvent& event) const noexcept;
