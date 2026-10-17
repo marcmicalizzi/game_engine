@@ -1,7 +1,9 @@
 #include "game_hud.h"
 
+#include <core/json/json.h>
 #include <systems/renderer/scene_renderer.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <imgui.h>
@@ -39,14 +41,39 @@ void GameHudOverlay::destroy() noexcept {
   context_ = nullptr;
 }
 
-bool GameHudOverlay::build(const GameHud& hud, u32 width, u32 height,
+namespace {
+
+// A result field's value as the panel prints it: a whole number plainly, a fraction to one
+// decimal, a string as it is, a bool as yes or no, anything else as its JSON.
+void format_value(const JsonValue& v, char* out, usize size) {
+  f64 number = 0.0;
+  if (v.is_bool()) {
+    std::snprintf(out, size, "%s", v.as_bool() ? "yes" : "no");
+  } else if (v.is_string()) {
+    std::snprintf(out, size, "%.*s", static_cast<int>(v.as_string().size()), v.as_string().data());
+  } else if (v.get_f64(number)) {
+    if (number == std::floor(number) && std::fabs(number) < 1.0e15) {
+      std::snprintf(out, size, "%.0f", number);
+    } else {
+      std::snprintf(out, size, "%.1f", number);
+    }
+  } else {
+    const std::string json = write_json(v, JsonWriteOptions{.pretty = false});
+    std::snprintf(out, size, "%s", json.c_str());
+  }
+}
+
+}  // namespace
+
+bool GameHudOverlay::build(const GameHud& hud, const JsonValue* result, u32 width, u32 height,
                            renderer::SceneRenderer& renderer, renderer::OverlayDrawData& out,
                            std::string& error) {
   out = renderer::OverlayDrawData{};
   vertices_.clear();
   indices_.clear();
   commands_.clear();
-  if (context_ == nullptr || hud.empty() || width == 0 || height == 0) return true;
+  const bool panel = result != nullptr && result->is_object();
+  if (context_ == nullptr || (hud.empty() && !panel) || width == 0 || height == 0) return true;
   ImGui::SetCurrentContext(context_);
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<f32>(width), static_cast<f32>(height));
@@ -82,6 +109,32 @@ bool GameHudOverlay::build(const GameHud& hud, u32 width, u32 height,
     }
   }
   ImGui::End();
+
+  // **The result panel** (apps.md "--game", "Ending"; roadmap P44): a live window whose module
+  // called `end_run` stays here until a key says otherwise. Centred, where a tester's eye goes;
+  // the HUD above keeps the run's last lines and meters, since the module is not ticked again and
+  // the runner keeps what it last said. The fields are the result object's, in its order, each a
+  // key and a formatted value; the last line is the keys.
+  if (panel) {
+    ImGui::SetNextWindowPos(ImVec2(static_cast<f32>(width) * 0.5f, static_cast<f32>(height) * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    if (ImGui::Begin("game result", nullptr, flags)) {
+      ImGui::TextUnformatted("The run is over");
+      ImGui::Separator();
+      const JsonValue::Object& fields = result->as_object();
+      char value[96];
+      for (u32 i = 0; i < fields.size(); ++i) {
+        format_value(fields.value_at(i), value, sizeof(value));
+        ImGui::TextUnformatted(fields.key_at(i).c_str());
+        ImGui::SameLine(96.0f);
+        ImGui::TextUnformatted(value);
+      }
+      ImGui::Separator();
+      ImGui::TextUnformatted("Enter to quit \xC2\xB7 R for a new run \xC2\xB7 Esc to quit");
+    }
+    ImGui::End();
+  }
   ImGui::Render();
 
   ImDrawData* data = ImGui::GetDrawData();

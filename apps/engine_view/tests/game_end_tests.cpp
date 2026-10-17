@@ -6,6 +6,7 @@
 // Every run is offscreen or on the test's own desktop (view_process.h).
 
 #include "../fly_camera.h"
+#include "../game_runner.h"
 #include "view_process.h"
 
 #include <core/json/json.h>
@@ -234,6 +235,198 @@ TEST_CASE("engine-view: a --game replay draws the sky where the runner's clock s
                                                      << " pixels differ");
   CHECK(differ > 500);
   CHECK(text_at(sa, {"interactive", "game", "error"}).empty());
+}
+
+// ---- the run's end -------------------------------------------------------------------------------
+
+namespace {
+
+// A saved run with a quarter of a second's walking left in it: the fixture ends it 60 ticks after
+// W goes down.
+std::string nearly_over(const test::TempDir& tmp) {
+  const std::string state = tmp.file("state.json");
+  REQUIRE(io::write_file(state, R"({"format":"engine.game.state","version":1,"module":"walk_poc",
+      "type":"engine.walk_poc.Survivor","state":{"thirst":0.0625,"seconds":30,"walked_m":40}})") ==
+          io::Status::Ok);
+  return state;
+}
+
+f64 state_number(const view::GameRunner& runner, const char* field) {
+  const JsonValue state = runner.state_json();
+  const JsonValue* v = state.find(field);
+  f64 out = -1.0;
+  return v != nullptr && v->get_f64(out) ? out : -1.0;
+}
+
+}  // namespace
+
+TEST_CASE("game runner: a new run puts the state back at its defaults and keeps the result") {
+  // No GPU and no window: the fixture loaded by the runner from a run nearly out of water, walked
+  // to its end, then `new_run` (what the result panel's R does): the state is the descriptor's
+  // defaults again in the same object, the ended run's result is kept in `results`, the run is
+  // counted, and the next second of walking drains from 100.
+  if (!test::bundle_root().empty()) {
+    MESSAGE("game modules are not part of a test bundle; skipped");
+    return;
+  }
+  const test::TempDir tmp("game_runner_new_run");
+  const input::ActionMap map = view::default_fly_map();
+  view::GameRunner::Config config;
+  config.module = fixture(tmp, WALK_POC_PATH);
+  config.shadow_directory = tmp.file("shadow");
+  config.state_file = nearly_over(tmp);
+  view::GameRunner runner;
+  std::string error;
+  REQUIRE_MESSAGE(runner.start(config, map, 240, &error), error);
+  CHECK_FALSE(runner.new_run());  // nothing has ended
+  u64 tick = 0;
+  const auto walk = [&](u32 n) {
+    for (u32 i = 0; i < n; ++i) {
+      view::GameTickInput in;
+      in.tick = ++tick;
+      in.feet = WorldPos{0.0, 0.0, -static_cast<f64>(tick) * 1.5 / 240.0};
+      in.eye = WorldPos{in.feet.x, 1.65, in.feet.z};
+      in.walking = true;
+      in.on_ground = true;
+      in.moved_m = 1.5 / 240.0;
+      runner.tick(in);
+    }
+  };
+  walk(240);
+  REQUIRE(runner.ended());
+  CHECK_FALSE(runner.failed());
+  CHECK(runner.runs() == 1);
+  const u64 ended_at = runner.ticks();
+  const f64 seconds = state_number(runner, "seconds");
+  CHECK(seconds > 30.0);
+  REQUIRE(runner.result().is_object());
+  // The clock stepped on through the ticks after the end, the module did not.
+  CHECK(runner.ticks() < 240);
+  CHECK(runner.day_s() == doctest::Approx(0.0));  // no rate was set: still
+
+  REQUIRE(runner.new_run());
+  CHECK_FALSE(runner.ended());
+  CHECK(runner.runs() == 2);
+  CHECK(runner.hud().empty());
+  CHECK(state_number(runner, "thirst") == 100.0);
+  CHECK(state_number(runner, "seconds") == 0.0);
+  CHECK(state_number(runner, "walked_m") == 0.0);
+  JsonValue summary = runner.summary_json();
+  REQUIRE(summary.find("results") != nullptr);
+  CHECK(summary.find("results")->size() == 1);
+  CHECK(number_at(summary, {"runs"}) == 2.0);
+  CHECK(number_at((*summary.find("results"))[0u], {"seconds"}) == doctest::Approx(seconds));
+  walk(240);
+  CHECK(runner.ticks() == ended_at + 240);  // ticked again
+  CHECK_FALSE(runner.ended());
+  CHECK(state_number(runner, "thirst") == doctest::Approx(99.75).epsilon(1e-9));
+  CHECK(state_number(runner, "seconds") == doctest::Approx(1.0).epsilon(1e-9));
+}
+
+namespace {
+
+// A live window on the test's desktop, walking from an injected log with `--on-end panel`: W held
+// from tick 10, `code` pressed at tick 200 (the run has ended by tick 70), the session's log
+// `ticks` long.
+Run injected_end(const test::TempDir& tmp, const std::string& scene, u32 code, u64 ticks,
+                 const std::string& report) {
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  const auto key = [&](u64 tick, u32 c, bool down) {
+    keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, c, down ? 1.0f : 0.0f, 0});
+  };
+  key(10, k_w, true);
+  key(200, code, true);
+  key(201, code, false);
+  view::SessionHeader header;
+  header.ticks = ticks;
+  keys.set_session(view::session_to_json(header));
+  const std::string inject = tmp.file("inject.jsonl");
+  REQUIRE(keys.save(inject) == io::Status::Ok);
+  return run_view({"--interactive", "--walk", "--start", "20,40,10", "28.6,-11.5",
+                   "--inject-input", inject, "--scene", scene, "--game",
+                   fixture(tmp, WALK_POC_PATH), "--game-state", nearly_over(tmp), "--on-end",
+                   "panel", "--report", report, "--width", "160", "--height", "96", "--no-vsync",
+                   "--ddc", tmp.file("ddc")});
+}
+
+constexpr u32 k_r = 21;
+constexpr u32 k_enter = 40;
+
+}  // namespace
+
+TEST_CASE("engine-view: a live --game window stays on the result panel until Enter") {
+  const test::TempDir tmp("engine_view_game_panel_enter");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string report = tmp.file("report.json");
+  // 480 ticks of log; the run ends about tick 70, Enter at tick 200 ends the session there.
+  const Run run = injected_end(tmp, scene, k_enter, 480, report);
+  if (run.exit_code == 3 || refused_without_dunes(run)) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* game = at(summary, {"interactive", "game"});
+  REQUIRE(game != nullptr);
+  CHECK(at(*game, {"ended"})->as_bool());
+  CHECK(number_at(*game, {"runs"}) == 1.0);
+  CHECK(number_at(*game, {"result", "seconds"}) > 30.0);
+  // The session went on past the run's end — ticks ran, frames were drawn — and stopped at Enter,
+  // well short of the log's end: the walker's seconds are the session's ticks at 240 Hz.
+  JsonValue r;
+  REQUIRE(read_json_file(report, r));
+  const f64 walked_s = number_at(r, {"walk", "seconds"});
+  MESSAGE("the run ended at module tick " << number_at(*game, {"last_tick"}) << "; the session at "
+                                          << walked_s * 240.0 << " of 480 ticks, "
+                                          << number_at(summary, {"frames"}) << " frames");
+  CHECK(walked_s >= 200.0 / 240.0);
+  CHECK(walked_s < 400.0 / 240.0);
+  CHECK(number_at(*game, {"last_tick"}) < 100.0);
+  CHECK(run.output.find("the run is over; Enter or Esc quits") != std::string::npos);
+  CHECK(text_at(r, {"exit", "reason"}) == "end_run");
+  CHECK(number_at(r, {"game", "runs"}) == 1.0);
+}
+
+TEST_CASE("engine-view: R on the result panel starts a new run from the defaults") {
+  const test::TempDir tmp("engine_view_game_panel_r");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string report = tmp.file("report.json");
+  // The run ends about tick 70; R at tick 200 starts the second, which walks (W is still held) to
+  // the log's end at 480: 280 ticks, a bit over a second, 0.29 of thirst.
+  const Run run = injected_end(tmp, scene, k_r, 480, report);
+  if (run.exit_code == 3 || refused_without_dunes(run)) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* game = at(summary, {"interactive", "game"});
+  REQUIRE(game != nullptr);
+  CHECK_FALSE(at(*game, {"ended"})->as_bool());
+  CHECK(number_at(*game, {"runs"}) == 2.0);
+  const JsonValue* results = at(*game, {"results"});
+  REQUIRE(results != nullptr);
+  REQUIRE(results->size() == 1);
+  CHECK(number_at((*results)[0u], {"seconds"}) > 30.0);
+  CHECK(at(*game, {"result"})->is_null());  // the second run has not ended
+  const f64 thirst = number_at(*game, {"state", "thirst"});
+  MESSAGE("the second run after " << number_at(*game, {"state", "seconds"}) << " s: thirst "
+                                  << thirst << ", HUD " << write_json(*at(*game, {"hud"})));
+  CHECK(thirst > 99.0);
+  CHECK(thirst < 100.0);
+  CHECK(number_at(*game, {"state", "seconds"}) > 1.0);
+  CHECK(number_at(*game, {"state", "seconds"}) < 1.3);
+  CHECK(run.output.find("run 2 started") != std::string::npos);
+  JsonValue r;
+  REQUIRE(read_json_file(report, r));
+  CHECK(number_at(r, {"walk", "seconds"}) == doctest::Approx(2.0));  // to the log's end, 480 ticks
+  CHECK(text_at(r, {"exit", "reason"}) == "session");
+  CHECK(number_at(r, {"game", "runs"}) == 2.0);
 }
 
 #endif  // ENGINE_VIEW_GAME && WALK_POC_PATH

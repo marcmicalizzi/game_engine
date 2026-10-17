@@ -455,6 +455,10 @@ constexpr const char* k_usage =
     "                   summary's interactive.game. A replay of a --game recording plays it again\n"
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
+    "  --on-end panel|quit  --game, in a live window: when the module ends the run, stay on a\n"
+    "                   result panel (Enter or Esc quit, R starts a new run; the default for\n"
+    "                   somebody at the window) or end the session as a replay does (the\n"
+    "                   default for an injected session)\n"
     "  --report <f>     at exit, whether the run succeeded or not, write one JSON file a tester\n"
     "                   sends back: the summary line, the machine (adapter, driver, tier, OS,\n"
     "                   CPU baseline), frame times (median, p95, p99, worst), the walk, a\n"
@@ -662,6 +666,10 @@ struct Options {
   // `--game`: a game module run from the session (game_runner.h); `--game-state`: its state file.
   std::string game;
   std::string game_state;
+  // `--on-end panel|quit` (brief P44): what a live window does when the module calls `end_run` —
+  // stays on the result panel, or ends the session as a replay does. Empty: the panel for a
+  // session somebody is at, and quit for an injected one (the tests depend on it).
+  std::string on_end;
   std::string input_map;
   std::string tunables_file;
   std::string tunable_overrides;
@@ -1429,6 +1437,24 @@ void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
 }
 bool game_over() { return g_game != nullptr && g_game->ended(); }
+bool game_failed() { return g_game != nullptr && g_game->failed(); }
+// **The run's end, seen** (apps.md "--game", "Ending"; roadmap P44). A live window whose module
+// called `end_run` stays on a result panel — the HUD's last lines, the result's fields, the keys —
+// for as long as the tester likes: the session keeps ticking (the camera is theirs, the sky's
+// clock runs on), the module is not ticked again, and Enter or Escape ends the session as a closed
+// window does, with the report's reason `end_run`, while R starts a new run. `g_hud_end_panel` is
+// whether this session does that (the windowed loop decides from `--on-end`); a replay, an
+// injected session and an offscreen run end at `end_run` as they did.
+bool g_hud_end_panel = false;
+const JsonValue* game_result_panel() {
+  if (!g_hud_end_panel || g_game == nullptr || !g_game->ended() || g_game->failed()) return nullptr;
+  return &g_game->result();
+}
+void game_new_run() {
+  if (g_game == nullptr || !g_game->new_run()) return;
+  std::fprintf(stderr, "engine-view: game: run %u started (the state at its defaults)\n",
+               g_game->runs());
+}
 // **A `--game` session's frames are lit by the runner's clock** (game_runner.h `sun_time_s`;
 // renderer.md "One clock"; roadmap P44): the day as the ticks stepped it, at the rate the keys had
 // set by each tick, copied into the host's `SunDay` — so the frame's `sun_time_s`, the title's rate
@@ -1473,8 +1499,8 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
     return nullptr;
   }
   std::string error;
-  if (!g_hud->build(g_game->hud(), renderer.width(), renderer.height(), renderer, g_hud_data,
-                    error)) {
+  if (!g_hud->build(g_game->hud(), game_result_panel(), renderer.width(), renderer.height(),
+                    renderer, g_hud_data, error)) {
     if (!said) {
       said = true;
       std::fprintf(stderr, "engine-view: game: the HUD cannot be drawn: %s\n", error.c_str());
@@ -1486,7 +1512,9 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
 #else
 void poll_game() {}
 bool game_over() { return false; }
+bool game_failed() { return false; }
 bool game_clock(view::SunDay&) { return false; }
+void game_new_run() {}
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 #endif
@@ -3634,6 +3662,13 @@ int run_view(int argc, char** argv) {
       options.interactive = true;  // a game is played from the session, live or replayed
     } else if (a == "--game-state") {
       if (!next_value(argc, argv, i, a, options.game_state)) return k_exit_usage;
+    } else if (a == "--on-end") {  // brief P44: the run's end, seen
+      if (!next_value(argc, argv, i, a, options.on_end)) return k_exit_usage;
+      if (options.on_end != "panel" && options.on_end != "quit") {
+        std::fprintf(stderr, "engine-view: --on-end takes panel or quit, not %s\n",
+                     options.on_end.c_str());
+        return k_exit_usage;
+      }
     } else if (a == "--replay-input") {
       if (!next_value(argc, argv, i, a, options.replay_input)) return k_exit_usage;
       options.interactive = true;
@@ -4745,6 +4780,15 @@ int run_view(int argc, char** argv) {
     u32 control_seen[view::k_view_controls] = {};
     u32 modes_seen = 0;  // the walk mode's switches acted on (a console line and the title)
     bool exit_requested = false;
+    // **The run's end, seen** (`--on-end`, game_result_panel above): a live window stays on the
+    // result panel when its module ends the run — the default for somebody at the window; an
+    // injected session ends at `end_run` as a replay does unless `--on-end panel` says otherwise.
+    const bool end_panel = interactive.on && !interactive.replay && options.on_end != "quit" &&
+                           (options.on_end == "panel" || interactive.injected.events().empty());
+#if ENGINE_VIEW_GAME
+    g_hud_end_panel = end_panel;
+#endif
+    bool end_announced = false;
     bool title_dirty = true;
     char shown_title[256] = "";
     sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
@@ -4936,6 +4980,15 @@ int run_view(int argc, char** argv) {
             if (!interactive.on && event.key == window::Key::Escape) {
               running = false;
               g_report.reason = "escape";
+            } else if (end_panel && game_over() && !game_failed()) {
+              // The result panel's keys, read from the window and not the session's map: the run
+              // is over and nothing of the game is bound. Enter and Escape end the session (the
+              // report's reason is `end_run`, finish_game's); R starts a new run.
+              if (event.key == window::Key::Enter || event.key == window::Key::Escape) {
+                exit_requested = true;
+              } else if (event.key == window::Key::R) {
+                game_new_run();
+              }
             }
             break;
           case window::EventKind::FocusGained:
@@ -5320,9 +5373,17 @@ int run_view(int argc, char** argv) {
       ++rendered;
 
       // A windowed path flight ends on the path's last frame by its own clock, not on a count.
-      // A game that ended the run (end_run, or an export that failed) ends it after this frame.
+      // A game that ended the run (end_run, or an export that failed) ends it after this frame —
+      // unless this is a live window on the result panel (`end_panel`), which stays until Enter,
+      // Escape or the window's close, or R starts a new run; a failure ends it either way.
+      const bool stays = end_panel && game_over() && !game_failed();
+      if (stays && !end_announced) {
+        end_announced = true;
+        std::fprintf(stderr,
+                     "engine-view: game: the run is over; Enter or Esc quits, R starts a new run\n");
+      }
       const bool last = (options.frames != 0 && rendered >= options.frames && !path_in_window) ||
-                        session_done || game_over();
+                        session_done || (game_over() && !stays);
       if (last && !options.capture.empty()) {
         view_renderer.wait(value);
         view_renderer.collect_visible();

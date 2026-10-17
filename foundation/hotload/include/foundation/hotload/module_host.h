@@ -167,6 +167,13 @@ class ModuleHost {
   const void* state() const noexcept { return context_.state; }
   // The state as its descriptor writes it (what a reload hands across).
   bool state_json(JsonValue& out) const;
+  // **A new run** (engine-view's result panel, apps.md "--game": R; roadmap P44): the state object
+  // destroyed and constructed again at its descriptor's defaults, **in place** — the same address
+  // `context()->state` names, so a module keeps reading where it did — with nothing reloaded and
+  // `on_load` not called again (its field paths and actions are the host's and still resolve).
+  // Host-side only: no ABI change, a module sees a state at its defaults on its next call. False
+  // when nothing is loaded or the module keeps no state.
+  bool reset_state();
 
   // The game runner's services, when this host runs a game (engine-view's `--game`): set before
   // `load`, so the module's `on_load` can declare its actions. A setter rather than a `HostConfig`

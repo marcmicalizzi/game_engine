@@ -42,6 +42,8 @@ Changing anything in the header changes `k_abi_version`, and `tests/size_table.c
 | `LoadHookFailed` | `on_load` returned non-zero, or a field path or an enumerator did not resolve (all of them listed) |
 | `MissingFunction`, `SignatureMismatch` | the new build drops, or retypes, a function the host holds |
 
+**`ModuleHost::reset_state` (2026-10-17, host side only; roadmap P44).** A game runner's new run ([apps](apps.md#--game-running-a-game-module), the result panel's R) puts the loaded module's state object back at its descriptor's defaults **in place**: the build's own `destroy` and `construct` on the same address `context()->state` names, so a module keeps reading where it did, nothing is reloaded, and `on_load` is not called again (its field paths and actions are the host's and still resolve). No ABI change: a module sees a state at its defaults on its next call, as it would after a first load. False when nothing is loaded or the module keeps no state. engine-view's `game_end_tests.cpp` drives it through the runner: the fixture walked to its end, reset, at 100 again and draining from there.
+
 ## What a module's state may hold
 
 Fixed-layout values only: booleans, integers, floats, `vec2`–`vec4`, `quat`, `worldpos`, `dvec3`, `id128`, enums, fixed arrays and nested structs of those. A string, bytes, JSON, an optional, an array or a map is refused when the module loads, naming the field: its memory would be allocated by the module's code, possibly from its own copy of the C runtime, and freed by whoever destroys the state, after the library that owned the allocator is gone. A module that needs a string keeps an id, or a fixed array of `u8`.

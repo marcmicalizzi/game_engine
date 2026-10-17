@@ -141,10 +141,20 @@ class GameRunner {
   u32 poll();
 
   // Whether the module ended the run (`end_run`) or failed (`fail` from an export, or a result
-  // that is not a JSON object): the session ends after this frame.
+  // that is not a JSON object). A replay, an injected session and an offscreen run end after this
+  // frame; a live window stays on the result panel (apps.md "--game", "Ending").
   bool ended() const noexcept;
   bool failed() const noexcept;
   const std::string& error() const noexcept;
+  // `end_run`'s object (null until it is called), and the runs this session has started.
+  const JsonValue& result() const noexcept;
+  u32 runs() const noexcept;
+  // **A new run** (the result panel's R; roadmap P44): after `end_run`, the module's state object
+  // is put back at its descriptor's defaults through the host (`ModuleHost::reset_state`), the HUD
+  // cleared, the run counted and the ended run's result kept in the summary's `results`. Nothing
+  // else moves: the walker stands where it stands, the clock runs on, the module is not reloaded.
+  // False when the run has not ended, or ended by a failure.
+  bool new_run();
   const GameHud& hud() const noexcept;
   u64 ticks() const noexcept;
   // The module's state as its descriptor writes it.

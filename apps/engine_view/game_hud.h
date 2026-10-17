@@ -21,6 +21,7 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/json/json_value.h>
 #include <systems/renderer/overlay.h>
 
 #include <string>
@@ -46,9 +47,12 @@ class GameHudOverlay {
 
   // This frame's draw lists for `hud` over a `width` x `height` target, into `out` (valid until the
   // next call). Makes and retires the font atlas's overlay texture as ImGui asks. An empty HUD
-  // draws nothing (`out` names no commands). False with `error` when a texture could not be made.
-  bool build(const GameHud& hud, u32 width, u32 height, renderer::SceneRenderer& renderer,
-             renderer::OverlayDrawData& out, std::string& error);
+  // draws nothing (`out` names no commands). With `result` — `end_run`'s object, in a live window
+  // that stays on the run's end (apps.md "--game", "Ending") — a **result panel** is drawn in the
+  // picture's centre beside the HUD: the result's fields formatted, and the keys that quit or start
+  // a new run. False with `error` when a texture could not be made.
+  bool build(const GameHud& hud, const JsonValue* result, u32 width, u32 height,
+             renderer::SceneRenderer& renderer, renderer::OverlayDrawData& out, std::string& error);
   // Commands drawn by the last `build`.
   u32 commands() const noexcept { return commands_.size(); }
 

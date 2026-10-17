@@ -107,7 +107,9 @@ struct GameRunner::Impl {
   bool ended = false;
   bool failed = false;
   std::string error;
-  JsonValue result;  // end_run's object
+  JsonValue result;                       // end_run's object
+  u32 runs = 1;                           // this session's runs, the first included
+  JsonValue results = JsonValue::array();  // the ended runs' results, in order (`new_run`)
   bool restored = false;
   u32 reloads = 0;
   u32 refused_reloads = 0;
@@ -204,7 +206,21 @@ bool GameRunner::started() const noexcept { return impl_->host != nullptr; }
 bool GameRunner::ended() const noexcept { return impl_->ended; }
 bool GameRunner::failed() const noexcept { return impl_->failed; }
 const std::string& GameRunner::error() const noexcept { return impl_->error; }
+const JsonValue& GameRunner::result() const noexcept { return impl_->result; }
+u32 GameRunner::runs() const noexcept { return impl_->runs; }
 const GameHud& GameRunner::hud() const noexcept { return impl_->hud; }
+
+bool GameRunner::new_run() {
+  Impl& g = *impl_;
+  if (!g.host || !g.ended || g.failed) return false;
+  if (!g.host->reset_state()) return false;
+  g.results.push_back(std::move(g.result));
+  g.result = JsonValue();
+  g.ended = false;
+  g.hud.clear();  // the next tick says the new run's
+  ++g.runs;
+  return true;
+}
 u64 GameRunner::ticks() const noexcept { return impl_->ticks; }
 
 bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 tick_hz,
@@ -482,6 +498,8 @@ JsonValue GameRunner::summary_json() const {
   out.set("actions", std::move(actions));
   out.set("ended", g.ended);
   out.set("result", g.result);
+  out.set("runs", g.runs);
+  out.set("results", g.results);
   out.set("error", g.error);
   out.set("state_file", g.config.state_file);
   out.set("restored", g.restored);
