@@ -292,6 +292,11 @@ void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) no
   impl_->ground_time_s = ground_time_s;
 }
 
+f64 GameRunner::sun_time_s() const noexcept { return impl_->sun_offset_s + impl_->day_s; }
+f64 GameRunner::day_s() const noexcept { return impl_->day_s; }
+f64 GameRunner::sun_rate() const noexcept { return impl_->sun_rate; }
+u32 GameRunner::rate_changes() const noexcept { return impl_->rate_changes; }
+
 void GameRunner::set_placements(PlacementQuery query, void* user) noexcept {
   impl_->placements = query;
   impl_->placements_user = user;
@@ -326,10 +331,12 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
 
 void GameRunner::tick(const GameTickInput& in) {
   Impl& g = *impl_;
-  if (!g.host || g.ended) return;
+  if (!g.host) return;
   // The time-lapse keys at the ticks they were pressed on: a rung of the sun's ladder each, as the
   // window's `step_rate` does (time_controls.h); then the day moves by this tick at the rate now.
-  // The presses arrive as running counts; anything past the count already acted on is new.
+  // The presses arrive as running counts; anything past the count already acted on is new. The
+  // clock steps whether or not the run has ended: the frame draws the sky from it (`sun_time_s`),
+  // and a result panel's sky keeps turning; only the module is not ticked past `end_run`.
   const u32 slower = in.sun_slower;
   const u32 faster = in.sun_faster;
   while (g.last_slower < slower) {
@@ -345,6 +352,13 @@ void GameRunner::tick(const GameTickInput& in) {
   g.day_s += g.sun_rate * g.dt;
 
   game::GameTick& t = g.state;
+  // The clock's fields first, so the summary's `clock` is the frame's whether or not the module
+  // is ticked below.
+  t.sun_time_s = g.sun_offset_s + g.day_s;
+  t.world_time_s = g.ground_time_s + t.sun_time_s;
+  const f64 days = t.world_time_s / 86'400.0;
+  t.day_fraction = days - std::floor(days);
+  if (g.ended) return;  // the run is over: the module said so, or failed
   t.tick = in.tick;
   t.dt = g.dt;
   t.eye = DVec3{in.eye.x, in.eye.y, in.eye.z};
@@ -355,10 +369,6 @@ void GameRunner::tick(const GameTickInput& in) {
   t.on_ground = in.on_ground;
   t.sprinting = in.sprinting;
   t.moved_m = in.moved_m;
-  t.sun_time_s = g.sun_offset_s + g.day_s;
-  t.world_time_s = g.ground_time_s + t.sun_time_s;
-  const f64 days = t.world_time_s / 86'400.0;
-  t.day_fraction = days - std::floor(days);
   u64 pressed = 0;
   u64 held = 0;
   u64 released = 0;

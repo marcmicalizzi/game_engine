@@ -75,6 +75,9 @@ if(TARGET engine::hotload)
   list(APPEND _view_deps hotload game_runner_schemas)
   set(_view_game game_runner.cpp game_hud.cpp)
   list(APPEND _view_tests tests/game_runner_tests.cpp game_runner.cpp)
+  # How a run ends and what clock its frames are drawn by (roadmap P44): the result panel, the new
+  # run, and the drawn sun on the runner's clock, end to end (tests/game_end_tests.cpp).
+  list(APPEND _view_tests tests/game_end_tests.cpp)
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside

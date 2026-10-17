@@ -1429,6 +1429,19 @@ void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
 }
 bool game_over() { return g_game != nullptr && g_game->ended(); }
+// **A `--game` session's frames are lit by the runner's clock** (game_runner.h `sun_time_s`;
+// renderer.md "One clock"; roadmap P44): the day as the ticks stepped it, at the rate the keys had
+// set by each tick, copied into the host's `SunDay` — so the frame's `sun_time_s`, the title's rate
+// and the summary's `sun` block come from one place, in the window, in an offscreen replay and in a
+// `--capture`. False, and `sun` untouched, without a game: a session without `--game` draws what it
+// drew, from the window's own clock or the frame index.
+bool game_clock(view::SunDay& sun) {
+  if (g_game == nullptr || !g_game->started()) return false;
+  sun.time_s = g_game->day_s();
+  sun.rate = g_game->sun_rate();
+  sun.changes = g_game->rate_changes();
+  return true;
+}
 // At the session's end: the state saved, the report's block and reason, the failure said.
 void finish_game() {
   if (g_game == nullptr || !g_game->started()) return;
@@ -1473,6 +1486,7 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
 #else
 void poll_game() {}
 bool game_over() { return false; }
+bool game_clock(view::SunDay&) { return false; }
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 #endif
@@ -2384,6 +2398,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::FrameClock clock;
   static_assert(view::k_frame_index_hz == renderer::k_frame_hz);
   const auto sun_at = [&](u64 frame_index) { return clock.at(frame_index); };
+  // A `--game` replay's frames are lit by the runner's clock instead (`game_clock`): the day as the
+  // ticks stepped it, so a recording in which `]` was pressed replays to the sky the live session
+  // drew. Without a game it is `sun_at`, and the frame draws what it drew.
+  const auto frame_sun = [&](u64 frame_index) {
+    return game_clock(sun) ? clock.offset_s + sun.time_s : sun_at(frame_index);
+  };
   do {
     renderer::SceneDesc desc;
     desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
@@ -2637,7 +2657,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
-        frame.sun_time_s = sun_at(frame.frame_index);
+        frame.sun_time_s = frame_sun(frame.frame_index);
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         if (view_renderer.submit_frame(frame, &error) == 0) {
           ok = false;
@@ -3054,7 +3074,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
       }
-      frame.sun_time_s = sun_at(frame.frame_index);
+      frame.sun_time_s = frame_sun(frame.frame_index);
       frame.overlay = game_hud_overlay(view_renderer);
       renderer::CapturedFrame shot;
       if (!world_before(frame.camera, WorldStep::complete, 0, static_cast<u32>(frame.frame_index),
@@ -3089,8 +3109,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
     time_lapse.finish();
     summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
     // The day where the last frame drew it: the path's last frame, or where the replay ended —
-    // the frame the final --capture draws too.
-    sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
+    // the frame the final --capture draws too; a game's is its runner's.
+    if (!game_clock(sun))
+      sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
     summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
@@ -5117,8 +5138,10 @@ int run_view(int argc, char** argv) {
             std::fprintf(stderr, "engine-view: flying\n");
           }
         }
-        // The sun's day moves by the frame's simulated seconds — its ticks — at the rate now.
+        // The sun's day moves by the frame's simulated seconds — its ticks — at the rate now; a
+        // game's frame takes the runner's clock, stepped by those same ticks at the rate each had.
         sun.advance(static_cast<f64>(ticks_this_frame) / static_cast<f64>(session_hz));
+        (void)game_clock(sun);
         session_done = session_end != 0 && session.tick().value >= session_end;
         // **The camera between the last two ticks**, at the fraction of a tick the clock holds
         // past the last one it ran: a frame's camera then moves by the frame's own time, where

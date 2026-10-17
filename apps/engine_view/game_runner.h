@@ -120,6 +120,16 @@ class GameRunner {
   // The sky's clock at the session's start: `FrameDesc::sun_time_s`'s offset, the day's rate in
   // game seconds a second, and the ground's surface time the sky stands on.
   void set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept;
+  // **The clock as the frame draws it** (renderer.md "One clock"; roadmap P44): a `--game` session's
+  // frames take `FrameDesc::sun_time_s` from here — the offset plus the day's game seconds so far,
+  // stepped a tick at a time by the ticks that ran, at the rate the keys had set by each — in the
+  // window, in an offscreen replay and in a `--capture` alike, so a replay of a recording in which
+  // `]` was pressed draws the sky where the live session drew it. The clock runs on after
+  // `end_run`: the result panel's sky keeps turning while the module is no longer ticked.
+  f64 sun_time_s() const noexcept;
+  f64 day_s() const noexcept;         // the day's game seconds so far
+  f64 sun_rate() const noexcept;      // the rate now
+  u32 rate_changes() const noexcept;  // ladder steps taken
   void set_placements(PlacementQuery query, void* user) noexcept;
 
   // **The session's tick observer** (`FlySession::set_tick_observer`): one `tick` a session tick.
