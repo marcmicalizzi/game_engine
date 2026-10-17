@@ -84,7 +84,7 @@ $repoPrefix = $Root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
 if ($OutDir.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or $OutDir -eq $Root.TrimEnd('\', '/')) {
   Refuse "the output $OutDir is inside the repository; an SDK is a copy the author takes elsewhere, never a directory of the tree"
 }
-# The owner's local workspace (D:workspacegame_engine_local) is where generated outputs live, so an SDK
+# The owner's local workspace (D:\workspace\game_engine_local) is where generated outputs live, so an SDK
 # may be exported there; what is refused is content *from* it inside a package or an SDK, which the
 # scene resolver and package-game.ps1 enforce on their inputs.
 $config = Join-Path $BuildDir 'game_modules/build_config.cmake'
