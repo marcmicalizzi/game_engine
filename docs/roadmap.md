@@ -614,6 +614,7 @@ Desert Survival first, Island City second ([ADR-0022](adr/0022-consumer-game-ord
 | P38 | E17: ray-traced relevance through 2,000 windows | open | P31, P34 | M | research | [13 §13.6](plan/13-reference-consumer-games.md#136-additional-experiments) |
 | P39 | Island City's open design questions | blocked (the owner's answers) | | S | design | [13 §13.8](plan/13-reference-consumer-games.md#138-open-design-questions-for-the-owner) |
 | P40 | R1: reaching into a cavity, as a scene | open | S83 | L | research | [13 §13.7](plan/13-reference-consumer-games.md#r1--reaching-into-a-fleshy-cavity-third-party-reference-lovecraftian-horror) |
+| P42 | The game author's kit: an exported SDK, a repository template, the package tool from either | in progress (2026-10-17: `tools/package-game.ps1` runs from the tree or an SDK and takes `-ModuleDll`; the resolver shared in `tools/lib/GameContent.psm1`) | P41 | M | routine | [apps](subsystems/apps.md#package-game-a-zip-somebody-else-double-clicks) |
 | P41 | Playable proof of concept, engine side: the game runner, its contract, a HUD path, the report and the package | done (04147c5e, caebcf73, 977d5387, fafea229, 5d173969, bf0fef75: the map's fifth revision and `--report`; `--game` with its contract, `--game-state` and the fixture `game/walk_poc`; the provisional HUD through the overlay; `nearest_placement` over the streamed world; `tools/package-game.ps1`) | P13 | M | design | [apps](subsystems/apps.md#--game-running-a-game-module) |
 
 ## F — Found along the way
