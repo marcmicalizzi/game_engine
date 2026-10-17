@@ -37,10 +37,10 @@ constexpr const char* k_tick = "engine.game.GameTick";
 // game action it listens to. A field that does not resolve refuses the load naming it, which is
 // how an engine-side rename reaches a game: loudly, never as a wrong read.
 struct Fields {
-  FieldRef dt;             // this tick's length in game seconds (read this, not the f32 argument)
-  FieldRef world_time_s;   // the world's clock, game seconds
+  FieldRef dt;               // this tick's length in game seconds (read this, not the f32 argument)
+  FieldRef world_time_s;     // the world's clock, game seconds
   FieldRef actions_pressed;  // the game actions pressed on this tick, as a mask of bits
-  u32 interact = 0;        // the bit `game_action` hands out for "interact" (E on the keyboard)
+  u32 interact = 0;          // the bit `game_action` hands out for "interact" (E on the keyboard)
 } g_fields;
 
 // Called when the module is loaded, and again after every rebuild. Resolve, declare, return 0.
@@ -90,10 +90,11 @@ void game_tick(ModuleContext* context, View tick, f32 /*dt_f32*/) {
   // The HUD is cleared by the host at the start of every tick: say each tick what it shows.
   // 16 lines of 95 characters and 8 meters at most; more is dropped.
   char line[96];
-  std::snprintf(line, sizeof(line), "day %u of %.0f   %.0f s survived   E pressed %u times", day + 1,
-                k_days_to_survive, run.seconds, run.interactions);
+  std::snprintf(line, sizeof(line), "day %u of %.0f   %.0f s survived   E pressed %u times",
+                day + 1, k_days_to_survive, run.seconds, run.interactions);
   hud_text(context, 0, line);
-  hud_meter(context, "days", days < k_days_to_survive ? days : k_days_to_survive, k_days_to_survive);
+  hud_meter(context, "days", days < k_days_to_survive ? days : k_days_to_survive,
+            k_days_to_survive);
 
   // Ending the run: one JSON object as the result. The host draws this tick's frame, ends the
   // session, and puts the object in the report's `game.result`; game_tick is not called again.
@@ -107,7 +108,8 @@ void game_tick(ModuleContext* context, View tick, f32 /*dt_f32*/) {
 }  // namespace
 
 // The one exported symbol: how the host learns the module's name, its ABI, its exports, its load
-// hook and its state type. `game_tick` is the export the game runner calls; the rest is boilerplate.
+// hook and its state type. `game_tick` is the export the game runner calls; the rest is
+// boilerplate.
 ENGINE_HOTLOAD_DESCRIBE(api, out) {
   (void)api;
   static const Export exports[] = {

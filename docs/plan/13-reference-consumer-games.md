@@ -11,7 +11,7 @@ Where the desert asks how cheaply the engine can represent enormous sparse space
 
 ## 13.1 Consumer A — Desert Survival
 
-> **Status note (2026-10-16, roadmap P41):** the engine can now run a game from the walking session — a hot-reloadable module loaded by `engine-view --game`, ticked every tick with an `engine.game.GameTick` view, drawing a provisional HUD, ending a run with a result, writing a `--report` a tester sends back, and shipped by `tools/package-game.ps1` ([apps](../subsystems/apps.md#--game-running-a-game-module)). Desert Survival itself is still written in its own repository against that contract (ADR-0047, P18); `game/walk_poc` is a fixture that proves the contract, not this design.
+> **Status note (2026-10-16, roadmap P41):** the engine can now run a game from the walking session — a hot-reloadable module loaded by `engine-view --game`, ticked every tick with an `engine.game.GameTick` view, drawing a provisional HUD, ending a run with a result, writing a `--report` a tester sends back, and shipped by `tools/package-game.ps1` ([apps](../subsystems/apps.md#--game-running-a-game-module)). Desert Survival itself is still written in its own repository against that contract (ADR-0047, P18); `game/walk_poc` is a fixture that proves the contract, not this design. *2026-10-17, P42:* that repository's engine side is now a folder the author copies — `tools/export-game-sdk.ps1` writes the SDK (headers, schemac, the relocatable build command, engine-view, the scenes, the package tool) and `tools/new-game-repo.ps1` a repository that builds, runs and packages against it ([game-authoring](../game-authoring.md)).
 
 ### Concept
 

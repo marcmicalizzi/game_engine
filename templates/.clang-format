@@ -1,0 +1,6 @@
+# The templates are text with @@NAME@@ placeholders that tools/new-game-repo.ps1 substitutes, and
+# clang-format reads `@@NAME@@::Run` as tokens and spaces them apart (`@ @NAME @ @ ::Run`), which
+# `tools/dev.ps1 format` did on 2026-10-17. A template is formatted by hand, as the engine's code
+# is, and left alone by the formatter.
+DisableFormat: true
+SortIncludes: false

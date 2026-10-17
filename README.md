@@ -9,6 +9,7 @@ An engine built from first principles around four priorities: rendering efficien
 - **Modules**: [docs/subsystems/README.md](docs/subsystems/README.md) has one page per module — purpose, owned data, invariants, public API, how to test.
 - **Measurements**: [docs/experiments/README.md](docs/experiments/README.md) holds the numbers the decisions rest on.
 - **Working in this repo**: [AGENTS.md](AGENTS.md) covers build, test, layering and conventions for humans and agents alike. It is the entry point every session reads first.
+- **Writing a game on it**: [docs/game-authoring.md](docs/game-authoring.md) is the author's guide — a game module, the exported SDK, the repository template, packaging a build for a tester — for a game in a repository of its own.
 
 ## Layout
 

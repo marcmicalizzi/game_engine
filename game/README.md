@@ -51,3 +51,11 @@ ABI 2), the tick it reads (`engine.game.GameTick`, `apps/engine_view/game_tick.s
 actions of engine-view's map (`content/input-maps/engine-view.json`, revision 5), and the build
 command above. Everything in this directory is a fixture: small, owned by the engine's tests, and
 changed with them.
+
+The engine side of that repository is a folder, not a checkout (roadmap P42;
+[game-authoring](../docs/game-authoring.md), the author's guide):
+
+```powershell
+tools/export-game-sdk.ps1 -Preset msvc-release -Out D:\games\engine-sdk [-Zip D:\games\engine-sdk.zip]   # headers, schemac, the relocatable build command, engine-view, the scenes, the package tool
+tools/new-game-repo.ps1   -Name dunes -Out D:\games\dunes -Sdk D:\games\engine-sdk -RelativeSdk        # a repository from templates/game-repo/ that builds, runs and packages against it
+```
