@@ -97,7 +97,8 @@ struct GameRunner::Impl {
 
   PlacementQuery placements = nullptr;
   void* placements_user = nullptr;
-  WorldPos feet{};  // this tick's, for `nearest_placement`
+  WorldPos feet{};  // this tick's, for `nearest_placement` and `nearest_prop`
+  GameProps props;  // the module's objects (game_props.h)
 
   GameHud hud;
   u64 ticks = 0;
@@ -281,6 +282,14 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
                                                  : context.diagnostics.front().path + ": " +
                                                        context.diagnostics.front().message));
     }
+    // The props the last run left placed (game_props.h), back in their slots at their ids before
+    // the first tick, so the module's state — which may hold those ids — means what it meant.
+    if (const JsonValue* props = file.find("props"); props != nullptr) {
+      std::string why;
+      if (!g.props.from_json(*props, &why)) {
+        return refuse("--game-state " + config.state_file + ": " + why);
+      }
+    }
     g.restored = true;
   }
   return true;
@@ -296,6 +305,16 @@ void GameRunner::set_placements(PlacementQuery query, void* user) noexcept {
   impl_->placements = query;
   impl_->placements_user = user;
 }
+
+GameProps& GameRunner::props() noexcept { return impl_->props; }
+const GameProps& GameRunner::props() const noexcept { return impl_->props; }
+
+const std::string& GameRunner::module_name() const noexcept {
+  static const std::string none;
+  return impl_->host ? impl_->host->module_name() : none;
+}
+
+u32 GameRunner::build() const noexcept { return impl_->host ? impl_->host->generation() : 0u; }
 
 void GameRunner::observe(void* user, const FlySession& session, const input::InputState& input) {
   GameRunner& self = *static_cast<GameRunner*>(user);
@@ -436,6 +455,7 @@ bool GameRunner::finish(std::string* error) {
     file.set("type", g.host->state_type()->qualified_name);
     file.set("tick", g.last_tick);
     file.set("state", state_json());
+    file.set("props", g.props.to_json());
     const io::Status status = io::write_file(
         g.config.state_file, write_json(file, JsonWriteOptions{.pretty = true}) + "\n");
     if (status != io::Status::Ok) {
@@ -489,6 +509,7 @@ JsonValue GameRunner::summary_json() const {
   placements.set("found", g.placement_hits);
   placements.set("world", g.placements != nullptr);
   out.set("placements", std::move(placements));
+  out.set("props", g.props.summary_json());
   return out;
 }
 

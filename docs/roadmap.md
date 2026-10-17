@@ -615,6 +615,8 @@ Desert Survival first, Island City second ([ADR-0022](adr/0022-consumer-game-ord
 | P39 | Island City's open design questions | blocked (the owner's answers) | | S | design | [13 §13.8](plan/13-reference-consumer-games.md#138-open-design-questions-for-the-owner) |
 | P40 | R1: reaching into a cavity, as a scene | open | S83 | L | research | [13 §13.7](plan/13-reference-consumer-games.md#r1--reaching-into-a-fleshy-cavity-third-party-reference-lovecraftian-horror) |
 | P41 | Playable proof of concept, engine side: the game runner, its contract, a HUD path, the report and the package | done (04147c5e, caebcf73, 977d5387, fafea229, 5d173969, bf0fef75: the map's fifth revision and `--report`; `--game` with its contract, `--game-state` and the fixture `game/walk_poc`; the provisional HUD through the overlay; `nearest_placement` over the streamed world; `tools/package-game.ps1`) | P13 | M | design | [apps](subsystems/apps.md#--game-running-a-game-module) |
+| P43 | A game acts on the world: props, the walker, sound — hotload ABI 3 | in progress (2026-10-17: the scene's `props` block, loaded unplaced, and a game's props as one block of the renderer's tail, saved with the state) | P41 | M | design | [apps](subsystems/apps.md#the-game-contract) |
+| P44 | Props collide: a placed prop as a static body the walker stops at | open | P43, S26 | M | design | [apps](subsystems/apps.md#props-the-objects-a-game-places) |
 
 ## F — Found along the way
 

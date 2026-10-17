@@ -31,6 +31,7 @@
 // on a tick, by the host or (the module ABI's rule) by the module.
 
 #include "fly_camera.h"
+#include "game_props.h"
 
 #include <core/base/types.h>
 #include <core/json/json_value.h>
@@ -121,6 +122,14 @@ class GameRunner {
   // game seconds a second, and the ground's surface time the sky stands on.
   void set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept;
   void set_placements(PlacementQuery query, void* user) noexcept;
+  // **The props the module places** (game_props.h): declare the scene's before `start`, since the
+  // module's `on_load` names them, and `attach` the loaded scene after it. The host hands the live
+  // props to the renderer's tail (main.cpp) and this holds the table.
+  GameProps& props() noexcept;
+  const GameProps& props() const noexcept;
+  // The loaded module's name and build (the host's generation), for a recording's header.
+  const std::string& module_name() const noexcept;
+  u32 build() const noexcept;
 
   // **The session's tick observer** (`FlySession::set_tick_observer`): one `tick` a session tick.
   static void observe(void* user, const FlySession& session, const input::InputState& input);

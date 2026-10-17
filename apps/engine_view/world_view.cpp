@@ -120,10 +120,28 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
 bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance> tail,
                           std::string* error) {
   auto* self = static_cast<ViewWorld*>(context);
-  self->placements_.tile_ranges(self->ranges_);
   self->blocks_.clear();
-  for (const world::PlacementTiles::TileRange& range : self->ranges_)
-    self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
+  if (!self->data_->streamed.empty()) {
+    self->placements_.tile_ranges(self->ranges_);
+    for (const world::PlacementTiles::TileRange& range : self->ranges_)
+      self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
+  }
+  // The appended block (game_props.h): after the tiles, under its own key. Both runs are copied
+  // into one tail because the renderer takes one span; the copy is the tail's size, kept between
+  // hand-overs, and happens only on a frame something changed. With no extra block the tail goes
+  // over as it came.
+  std::span<const renderer::SceneInstance> whole = tail;
+  if (self->extra_ != nullptr && !self->extra_->empty()) {
+    self->combined_.clear();
+    for (const renderer::SceneInstance& instance : tail)
+      self->combined_.push_back(instance);
+    for (const renderer::SceneInstance& instance : *self->extra_)
+      self->combined_.push_back(instance);
+    self->blocks_.push_back(renderer::DynamicBlock{self->extra_key_, static_cast<u32>(tail.size()),
+                                                   static_cast<u32>(self->extra_->size())});
+    whole =
+        std::span<const renderer::SceneInstance>(self->combined_.data(), self->combined_.size());
+  }
   // A world started over (a flythrough's repeat) is laid out again from scratch, as its first fill
   // was: without it each repeat would inherit where the last one's tiles ended up, and the repeats'
   // occlusion histories — and so their visible pair counts — would differ where their pictures
@@ -131,8 +149,15 @@ bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance
   const bool compact = self->compact_next_;
   self->compact_next_ = false;
   return self->renderer_->set_dynamic_instances(
-      tail, std::span<const renderer::DynamicBlock>(self->blocks_.data(), self->blocks_.size()),
+      whole, std::span<const renderer::DynamicBlock>(self->blocks_.data(), self->blocks_.size()),
       error, compact);
+}
+
+bool ViewWorld::hand_over_now(std::string* error) {
+  if (!valid()) return true;
+  const std::span<const renderer::SceneInstance> tail =
+      data_->streamed.empty() ? std::span<const renderer::SceneInstance>() : placements_.tail();
+  return hand_over(this, tail, error);
 }
 
 // The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,

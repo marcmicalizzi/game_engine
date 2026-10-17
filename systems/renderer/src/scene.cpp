@@ -990,6 +990,31 @@ bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error
   return read_scene_file(path, SceneFileOptions{}, out, error);
 }
 
+bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::string& error) {
+  out.clear();
+  std::string text;
+  const io::Status status = io::read_file(path, text);
+  if (status != io::Status::Ok) {
+    error = std::string("cannot read ") + path + ": " + io::status_name(status);
+    return false;
+  }
+  JsonValue root;
+  const JsonParseResult parsed = parse_json(text, root);
+  if (!parsed.ok) {
+    error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    return false;
+  }
+  scene::Scene file;
+  schema::ReadContext ctx;
+  if (!schema::from_json(file, root, ctx) || !ctx.ok()) {
+    error = path + ": " + schema_errors(ctx);
+    return false;
+  }
+  for (const scene::Prop& prop : file.props)
+    out.push_back(SceneProp{prop.name, 0});
+  return true;
+}
+
 bool read_scene_file(const std::string& path, const SceneFileOptions& options, SceneDesc& out,
                      std::string& error) {
   std::string text;
@@ -1125,6 +1150,44 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       }
     }
     out.meshes.push_back(std::move(resolved));
+    out.mesh_info.push_back(std::move(info));
+  }
+  // The props (`engine.scene.Prop`): meshes a game module places, loaded like the file's own and
+  // placed by nothing here. After the file's meshes, so every index the file's instances use still
+  // names what it named, and before the placement generators' and the terrain's, which count the
+  // meshes before them.
+  for (u32 i = 0; i < file.props.size(); ++i) {
+    const scene::Prop& prop = file.props[i];
+    const std::string where = path + ": props " + std::to_string(i);
+    if (prop.name.empty()) {
+      error = where + " has no \"name\"";
+      return false;
+    }
+    if (prop.mesh.empty()) {
+      error = where + " (\"" + prop.name + "\") has no \"mesh\"";
+      return false;
+    }
+    for (const SceneProp& earlier : out.props) {
+      if (earlier.name == prop.name) {
+        error = where + ": a second prop named \"" + prop.name + "\"";
+        return false;
+      }
+    }
+    SceneMeshInfo info;
+    info.name = prop.name;
+    info.origin = "prop";
+    if (!prop.hash.empty() && !parse_hash_hex(prop.hash, info.hash)) {
+      error = where + ": hash '" + prop.hash + "' is not 16 lower-case hex digits";
+      return false;
+    }
+    if (prop.fit.has_value()) {
+      info.fit.height = prop.fit->height;
+      info.fit.extent = prop.fit->extent;
+      info.fit.ground = prop.fit->ground;
+    }
+    out.props.push_back(SceneProp{prop.name, out.meshes.size()});
+    out.meshes.push_back(
+        io::is_absolute_path(prop.mesh) || dir.empty() ? prop.mesh : io::join_path(dir, prop.mesh));
     out.mesh_info.push_back(std::move(info));
   }
   // A ground time asked of a file with no terrain is a question with nothing to answer it, and
@@ -1597,6 +1660,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // tiles, which are terrain levels in fixed slots, not instances of the tail).
   out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
   out.sky = resolved.sky;
+  out.props = resolved.props;
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;

@@ -78,6 +78,17 @@ class ViewWorld {
   // walker is always answered from what the ground's generators make there.
   bool nearest_placement(std::string_view kind, const WorldPos& from, f64 radius, WorldPos& out,
                          f64& distance) const;
+  // **A block appended to the tail** (game_props.h, the game's props): instances every hand-over
+  // adds after the tiles' blocks, as one `DynamicBlock` under `key`, so the renderer keeps them in
+  // a block of their own beside the tiles and rewrites it only when they changed. Null: none, and
+  // the hand-over is exactly what it was. `instances` must outlive this.
+  void set_extra_block(const Vector<renderer::SceneInstance>* instances, u64 key) noexcept {
+    extra_ = instances;
+    extra_key_ = key;
+  }
+  // Hands the tail over again as it stands — the placements' tiles and the extra block — for a
+  // frame on which only the extra block changed and no tile did. Between frames only.
+  bool hand_over_now(std::string* error);
   const world::DrawnTiles& drawn() const noexcept { return drawn_; }
   // Whether a ring change of `tile` changes what its placements are drawn as (and it has any).
   bool is_handover(const world::TileEvent& event) const noexcept;
@@ -105,6 +116,9 @@ class ViewWorld {
   Vector<world::PlacementTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
   Vector<renderer::DynamicBlock> blocks_;            // and the blocks they are
   bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)
+  const Vector<renderer::SceneInstance>* extra_ = nullptr;  // the appended block's instances
+  u64 extra_key_ = 0;
+  Vector<renderer::SceneInstance> combined_;  // the tiles' tail and the extra block, kept
 };
 
 }  // namespace engine::view

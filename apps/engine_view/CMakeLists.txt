@@ -73,8 +73,12 @@ endif()
 engine_schema_library(NAME game_runner_schemas SCHEMAS game_tick.schema CAPABILITY hotload)
 if(TARGET engine::hotload)
   list(APPEND _view_deps hotload game_runner_schemas)
-  set(_view_game game_runner.cpp game_hud.cpp)
-  list(APPEND _view_tests tests/game_runner_tests.cpp game_runner.cpp)
+  # The props a module places (game_props.cpp; apps.md "The game contract", roadmap P43) are the
+  # runner's table and the renderer's tail; the table is checked with no GPU (game_props_tests.cpp)
+  # and the tail end to end (game_props_view_tests.cpp).
+  set(_view_game game_runner.cpp game_hud.cpp game_props.cpp)
+  list(APPEND _view_tests tests/game_runner_tests.cpp tests/game_props_tests.cpp
+                          tests/game_props_view_tests.cpp game_runner.cpp game_props.cpp)
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside

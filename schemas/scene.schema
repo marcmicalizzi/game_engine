@@ -853,9 +853,23 @@ struct Sky @version(1) {
   exposure_ev100: f32 = 15
 }
 
+/// A mesh a scene loads and places nowhere, so that a game module running over the scene
+/// (engine-view `--game`; docs/subsystems/apps.md "The game contract") can place, move and remove
+/// instances of it between frames without the renderer ever loading a mesh mid-run: the meshes stay,
+/// only instances change. A module names a prop by `name` in its `on_load` (`prop_mesh`).
+struct Prop @version(1) {
+  /// The name a module asks for. Unique among the scene's props.
+  name: string
+  /// A glTF, GLB or .clusters file, relative to the scene file.
+  mesh: string
+  /// `assets::source_mesh_hash` of `mesh`, 16 lower-case hex digits; empty: not checked.
+  hash: string
+  fit: Fit?
+}
+
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
-/// version 6 `sky`.
-struct Scene @version(6) {
+/// version 6 `sky`, version 7 `props`.
+struct Scene @version(7) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -884,6 +898,10 @@ struct Scene @version(6) {
   placements: PlacementEntry[] @since(5)
   /// The sky (ADR-0048). Null: the renderer's stand-in sky and sun, as before the field existed.
   sky: Sky? @since(6)
+  /// Meshes a game module places (`Prop`): loaded with the scene, after the file's own meshes and
+  /// before every placement generator's, and placed by nothing but the module. A scene with none
+  /// reads exactly as it did.
+  props: Prop[] @since(7)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

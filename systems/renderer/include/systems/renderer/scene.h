@@ -164,6 +164,16 @@ struct StreamedPlacements {
   Vector<u32> meshes;
 };
 
+// A prop of a scene file (`engine.scene.Prop`): a mesh the load places nowhere, kept for a game
+// module to place instances of between frames (docs/subsystems/apps.md, "The game contract"). The
+// renderer's rule for instances that come and go is that the meshes stay and only the instances
+// change, so a module's objects have to be meshes the scene loaded; this is how a scene says which.
+// `mesh` is the scene mesh index the prop's file became.
+struct SceneProp {
+  std::string name;
+  u32 mesh = 0;
+};
+
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
 struct SceneDesc {
   Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
@@ -230,6 +240,9 @@ struct SceneDesc {
   // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
   // as before the field existed.
   std::optional<scene::Sky> sky;
+  // The file's `props` (`engine.scene.Prop`): meshes appended after the file's own, in the file's
+  // order, with no instance of any of them. Empty for a scene with none.
+  Vector<SceneProp> props;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -266,6 +279,13 @@ struct SceneFileOptions {
 bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error);
 bool read_scene_file(const std::string& path, const SceneFileOptions& options, SceneDesc& out,
                      std::string& error);
+
+// The names of a scene file's `props`, in the file's order, and nothing else of the file read:
+// one schema read of the file (the same grammar as `read_scene_file`'s), no generator opened and
+// no mesh loaded. For a host that has to know a scene's props before it loads the scene —
+// engine-view's game runner loads its module, whose `on_load` names props, before any device
+// (apps.md, "--game"). `mesh` is left zero: the prop's index in the list is what a module gets.
+bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::string& error);
 
 // A 64-bit content hash as the scene format writes it: 16 lower-case hex digits.
 std::string hash_hex(u64 hash);
@@ -359,6 +379,9 @@ struct SceneData {
   Vector<StreamedPlacements> streamed;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
+  // Carried from the `SceneDesc`: the props a game module may place (`SceneProp`), each naming its
+  // mesh among `parts`. The load placed none of them.
+  Vector<SceneProp> props;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

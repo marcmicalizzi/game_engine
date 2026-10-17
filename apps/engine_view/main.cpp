@@ -96,6 +96,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 
 using namespace engine;
 
@@ -1429,6 +1430,42 @@ void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
 }
 bool game_over() { return g_game != nullptr && g_game->ended(); }
+// The loaded scene and the game's props (game_props.h): the props' meshes, and the scene made
+// dynamic so the renderer takes the props as a tail — **only when the scene lists props**, so a
+// scene with none stays exactly the scene it was (its frame loop allocates nothing, and the
+// budgets flown over it hold). Before `resolve_settings` and the GPU scene, which read `dynamic`.
+bool attach_game_scene(renderer::SceneData& scene, std::string& error) {
+  if (g_game == nullptr) return true;
+  if (!g_game->props().attach(scene, &error)) return false;
+  if (g_game->props().declared()) scene.dynamic = true;
+  return true;
+}
+// The game's props to the renderer, on a frame a prop changed and on no other: through the
+// streamed world's hand-over where there is one (`World` is `view::ViewWorld`), so the tiles'
+// blocks and the game's go over as one tail; otherwise the props are the whole tail, one block.
+template <class World>
+bool hand_over_game_props([[maybe_unused]] World* world, renderer::SceneRenderer& renderer,
+                          std::string* error) {
+  if (g_game == nullptr || !g_game->props().changed()) return true;
+  view::GameProps& props = g_game->props();
+  bool ok = false;
+  bool via_world = false;
+  if constexpr (!std::is_same_v<World, void>) {
+    if (world != nullptr && world->valid()) {
+      via_world = true;
+      ok = world->hand_over_now(error);
+    }
+  }
+  if (!via_world) {
+    const Vector<renderer::SceneInstance>& tail = props.tail();
+    const renderer::DynamicBlock block{view::k_game_block_key, 0, static_cast<u32>(tail.size())};
+    ok = renderer.set_dynamic_instances(
+        std::span<const renderer::SceneInstance>(tail.data(), tail.size()),
+        std::span<const renderer::DynamicBlock>(&block, tail.empty() ? 0u : 1u), error);
+  }
+  if (ok) props.handed();
+  return ok;
+}
 // At the session's end: the state saved, the report's block and reason, the failure said.
 void finish_game() {
   if (g_game == nullptr || !g_game->started()) return;
@@ -1475,6 +1512,11 @@ void poll_game() {}
 bool game_over() { return false; }
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
+bool attach_game_scene(renderer::SceneData&, std::string&) { return true; }
+template <class World>
+bool hand_over_game_props(World*, renderer::SceneRenderer&, std::string*) {
+  return true;
+}
 #endif
 
 #if ENGINE_VIEW_WORLD
@@ -1491,6 +1533,8 @@ void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
     }
   };
   g_game->set_placements(&Query::nearest, &world);
+  // The game's props ride the world's hand-over as a block after the tiles' (game_props.h).
+  world.set_extra_block(&g_game->props().tail(), view::k_game_block_key);
 #endif
 }
 #endif
@@ -2423,6 +2467,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
       exit_code = fail("mesh", error);
       break;
     }
+    if (!attach_game_scene(scene_data, error)) {
+      exit_code = fail("game", error);
+      break;
+    }
     // The frames' clock: `--time-of-day`'s offset and `--sun-rate`, through the renderer's
     // `frame_clock`, which `render.*`'s `clock` goes through too.
     clock = renderer::frame_clock(request_of(options).clock, scene_data);
@@ -2623,6 +2671,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
         // this frame's camera is only known once its ticks have run, after `begin_frame`.
         if (!world_before(session.camera(), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
                           true)) {
+          ok = false;
+          break;
+        }
+        // The game's props, on a frame a prop changed (game_props.h): a tail change is between
+        // frames, like the world's.
+#if ENGINE_VIEW_WORLD
+        if (!hand_over_game_props(&view_world, view_renderer, &error)) {
+#else
+        if (!hand_over_game_props<void>(nullptr, view_renderer, &error)) {
+#endif
           ok = false;
           break;
         }
@@ -4122,6 +4180,16 @@ int run_view(int argc, char** argv) {
     config.module = options.game;
     config.state_file = options.game_state;
     std::string game_error;
+    // The scene's props by name (game_props.h), before the module loads: its `on_load` names them,
+    // and the scene itself is loaded only once there is a device. One schema read of the file.
+    if (!options.scene.empty()) {
+      Vector<renderer::SceneProp> props;
+      if (!renderer::read_scene_props(options.scene, props, game_error)) {
+        log::remove_sink(&stderr_sink);
+        return fail("scene", game_error);
+      }
+      game.props().declare(props);
+    }
     if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
       return fail("game", game_error);
@@ -4428,6 +4496,10 @@ int run_view(int argc, char** argv) {
 
     if (!renderer::load_scene(desc, scene_data, error)) {
       exit_code = fail("mesh", error);
+      break;
+    }
+    if (!attach_game_scene(scene_data, error)) {
+      exit_code = fail("game", error);
       break;
     }
     sky_offset = sky_offset_s(options, scene_data);
@@ -4994,6 +5066,16 @@ int run_view(int argc, char** argv) {
 #else
       ground.follow_tiles(terrain_camera.position);
 #endif
+      // The game's props, on a frame a prop changed (game_props.h): between frames, after the
+      // world's own update so the two go over as one tail where there is a world.
+#if ENGINE_VIEW_WORLD
+      if (!hand_over_game_props(&view_world, view_renderer, &error)) {
+#else
+      if (!hand_over_game_props<void>(nullptr, view_renderer, &error)) {
+#endif
+        exit_code = fail("game", error);
+        break;
+      }
       // The CPU's share of the frame is everything but the waits: for a free frame slot (the GPU),
       // for a swapchain image and in the present (the display), and the pacer's own. Each is
       // timed on its own, because which of them a frame's time went to is the whole question
