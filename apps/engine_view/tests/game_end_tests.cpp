@@ -1,9 +1,10 @@
-// End to end: how a `--game` run ends and what clock its frames are drawn by (docs/subsystems/apps.md,
+// End to end: how a `--game` run ends and what clock its frames are drawn by
+// (docs/subsystems/apps.md,
 // "--game: running a game module", "Ending"; renderer.md "One clock"; roadmap P44). The drawn sun
 // follows the runner's clock — a recording in which `]` was pressed replays offscreen to a sky the
 // no-key replay does not draw, and the summary's clock is the sky's — and a live session whose
-// module called `end_run` stays on its result panel until Enter or Escape, or starts a new run on R.
-// Every run is offscreen or on the test's own desktop (view_process.h).
+// module called `end_run` stays on its result panel until Enter or Escape, or starts a new run on
+// R. Every run is offscreen or on the test's own desktop (view_process.h).
 
 #include "../fly_camera.h"
 #include "../game_runner.h"
@@ -195,8 +196,8 @@ TEST_CASE("engine-view: a --game replay draws the sky where the runner's clock s
   const std::string module = fixture(tmp, WALK_POC_PATH);
   const auto replay = [&](const std::string& session, const std::string& capture) {
     return run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--game", module,
-                     "--sun-rate", "3600", "--capture", capture, "--width", "160", "--height",
-                     "96", "--ddc", tmp.file("ddc")});
+                     "--sun-rate", "3600", "--capture", capture, "--width", "160", "--height", "96",
+                     "--ddc", tmp.file("ddc")});
   };
   const Run a = replay(pressed, tmp.file("pressed.png"));
   if (a.exit_code == 3 || refused_without_dunes(a)) {
@@ -232,12 +233,13 @@ TEST_CASE("engine-view: a --game replay draws the sky where the runner's clock s
   // And the two captures, drawn where each replay ended, show different skies.
   const u64 differ = differing_pixels(tmp.file("pressed.png"), tmp.file("plain.png"));
   MESSAGE("the press moved the sun by 77 minutes: " << differ << " of " << 160 * 96
-                                                     << " pixels differ");
+                                                    << " pixels differ");
   CHECK(differ > 500);
   CHECK(text_at(sa, {"interactive", "game", "error"}).empty());
 }
 
-// ---- the run's end -------------------------------------------------------------------------------
+// ---- the run's end
+// -------------------------------------------------------------------------------
 
 namespace {
 
@@ -343,11 +345,30 @@ Run injected_end(const test::TempDir& tmp, const std::string& scene, u32 code, u
   keys.set_session(view::session_to_json(header));
   const std::string inject = tmp.file("inject.jsonl");
   REQUIRE(keys.save(inject) == io::Status::Ok);
-  return run_view({"--interactive", "--walk", "--start", "20,40,10", "28.6,-11.5",
-                   "--inject-input", inject, "--scene", scene, "--game",
-                   fixture(tmp, WALK_POC_PATH), "--game-state", nearly_over(tmp), "--on-end",
-                   "panel", "--report", report, "--width", "160", "--height", "96", "--no-vsync",
-                   "--ddc", tmp.file("ddc")});
+  return run_view({"--interactive",
+                   "--walk",
+                   "--start",
+                   "20,40,10",
+                   "28.6,-11.5",
+                   "--inject-input",
+                   inject,
+                   "--scene",
+                   scene,
+                   "--game",
+                   fixture(tmp, WALK_POC_PATH),
+                   "--game-state",
+                   nearly_over(tmp),
+                   "--on-end",
+                   "panel",
+                   "--report",
+                   report,
+                   "--width",
+                   "160",
+                   "--height",
+                   "96",
+                   "--no-vsync",
+                   "--ddc",
+                   tmp.file("ddc")});
 }
 
 constexpr u32 k_r = 21;

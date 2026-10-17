@@ -195,8 +195,8 @@ bool ViewWorld::nearest_placement(std::string_view kind, const WorldPos& from, f
   // the cap, whatever radii the module alternates between (the fixture asks 6 m every tick and
   // 400 m once a second; trimming to each query's own reach would regenerate the far tiles every
   // second).
-  placements_.trim_query_tiles(
-      centre, static_cast<i32>(std::ceil(k_max_placement_query_m / size)) + 1);
+  placements_.trim_query_tiles(centre,
+                               static_cast<i32>(std::ceil(k_max_placement_query_m / size)) + 1);
   if (found) distance = std::sqrt(best);
   return found;
 }

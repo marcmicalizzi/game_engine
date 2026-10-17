@@ -108,8 +108,8 @@ struct GameRunner::Impl {
   bool ended = false;
   bool failed = false;
   std::string error;
-  JsonValue result;                       // end_run's object
-  u32 runs = 1;                           // this session's runs, the first included
+  JsonValue result;                        // end_run's object
+  u32 runs = 1;                            // this session's runs, the first included
   JsonValue results = JsonValue::array();  // the ended runs' results, in order (`new_run`)
   bool restored = false;
   u32 reloads = 0;

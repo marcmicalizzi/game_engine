@@ -241,7 +241,8 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   return ok;
 }
 
-// ---- queries --------------------------------------------------------------------------------------
+// ---- queries
+// --------------------------------------------------------------------------------------
 
 u32 PlacementTiles::entries_for(std::string_view generator) const noexcept {
   u32 through = 0;

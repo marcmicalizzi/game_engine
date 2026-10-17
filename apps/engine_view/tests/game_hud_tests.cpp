@@ -73,7 +73,8 @@ bool inside(const view::HudRect& r, f32 x0, f32 y0, f32 x1, f32 y1) {
 
 }  // namespace
 
-TEST_CASE("game hud: the panel stays inside the safe region at every size, and the result panel too") {
+TEST_CASE(
+    "game hud: the panel stays inside the safe region at every size, and the result panel too") {
   view::GameHudOverlay overlay;
   REQUIRE(overlay.create());
   const view::GameHud hud = fixture_hud();
@@ -121,8 +122,8 @@ TEST_CASE("game hud: a size change bakes the font again; a frame at the same siz
     REQUIRE(overlay.layout(hud, nullptr, width, height, 1.0f));
     return static_cast<f64>(time::monotonic_ns() - start) / 1.0e6;
   };
-  const f64 first = timed(1920, 1080);   // the first frame: the atlas and the font at 18 px
-  const f64 same = timed(1920, 1080);    // the same size: no bake
+  const f64 first = timed(1920, 1080);  // the first frame: the atlas and the font at 18 px
+  const f64 same = timed(1920, 1080);   // the same size: no bake
   const f64 same2 = timed(1920, 1080);
   const f64 resized = timed(3840, 2160);  // 36 px: a bake
   const f64 after = timed(3840, 2160);
@@ -228,7 +229,8 @@ std::string erg_window(const test::TempDir& tmp) {
   return scene;
 }
 
-// game_view_tests.cpp's walk: W from tick 10, E at tick 100, so the HUD has a meter and three lines.
+// game_view_tests.cpp's walk: W from tick 10, E at tick 100, so the HUD has a meter and three
+// lines.
 std::string walk_session(const test::TempDir& tmp, const std::string& scene, u64 ticks) {
   input::InputLog keys;
   keys.set_map(view::default_fly_map());
@@ -272,11 +274,16 @@ HudPixels capture_hud(const test::TempDir& tmp, u32 width, u32 height, const u32
   const std::string session = walk_session(tmp, scene, 120);
   const std::string with = tmp.file("with.png");
   const std::string without = tmp.file("without.png");
-  const std::vector<std::string> common = {"--replay-input",       session,
-                                           "--scene",              scene,
-                                           "--offscreen",          "--width",
-                                           std::to_string(width),  "--height",
-                                           std::to_string(height), "--ddc",
+  const std::vector<std::string> common = {"--replay-input",
+                                           session,
+                                           "--scene",
+                                           scene,
+                                           "--offscreen",
+                                           "--width",
+                                           std::to_string(width),
+                                           "--height",
+                                           std::to_string(height),
+                                           "--ddc",
                                            tmp.file("ddc")};
   std::vector<std::string> args = common;
   args.insert(args.end(), {"--game", fixture(tmp, WALK_POC_PATH), "--capture", with});
@@ -338,7 +345,8 @@ TEST_CASE("engine-view: the HUD at 1600x900 is 15 px and stays in the top-left q
   CHECK(hud.min_x >= 80);
   CHECK(hud.min_y >= 45);
   CHECK(hud.atlas_uploads >= 1.0);
-  CHECK(hud.atlas_uploads <= 4.0);  // the first frame's, and a glyph or two baked later; not a frame's
+  CHECK(hud.atlas_uploads <=
+        4.0);  // the first frame's, and a glyph or two baked later; not a frame's
 }
 
 TEST_CASE("engine-view: the HUD at 320x180 is 10 px, inside the safe region, nothing clipped") {

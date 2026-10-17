@@ -52,7 +52,8 @@ HudRect window_rect() {
 f32 hud_font_px(u32 height, f32 display_scale) noexcept {
   const f32 scale = display_scale > 0.0f ? display_scale : 1.0f;
   const f32 px = std::round(k_hud_font_px * (static_cast<f32>(height) / 1080.0f) * scale);
-  return px < k_hud_font_min_px ? k_hud_font_min_px : (px > k_hud_font_max_px ? k_hud_font_max_px : px);
+  return px < k_hud_font_min_px ? k_hud_font_min_px
+                                : (px > k_hud_font_max_px ? k_hud_font_max_px : px);
 }
 
 GameHudOverlay::~GameHudOverlay() { destroy(); }

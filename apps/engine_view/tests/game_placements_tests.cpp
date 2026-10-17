@@ -160,8 +160,9 @@ TEST_CASE("engine-view: nearest_placement answers from the scene, whatever the r
     REQUIRE(io::write_file(module, bytes) == io::Status::Ok);
   }
   const auto play = [&](const std::string& scene) {
-    return run_view({"--replay-input", session, "--scene", scene, "--world", "--offscreen", "--game",
-                     module, "--width", "160", "--height", "96", "--ddc", tmp.file("ddc")});
+    return run_view({"--replay-input", session, "--scene", scene, "--world", "--offscreen",
+                     "--game", module, "--width", "160", "--height", "96", "--ddc",
+                     tmp.file("ddc")});
   };
   const Run a = play(small);
   if (a.exit_code == 3) {

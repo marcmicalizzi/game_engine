@@ -1,11 +1,11 @@
 #pragma once
 
-// **A game's HUD, provisional** (docs/subsystems/apps.md, "The HUD, provisional"; roadmap P41, P44):
-// the lines and meters a `--game` module said on its last tick (game_runner.h `GameHud`), laid out
-// by Dear ImGui as one fixed panel at the top left of the picture's safe region and handed to the
-// renderer's overlay pass (`FrameDesc::overlay`, ADR-0054) — the same path engine-editor's tools UI
-// takes to the screen. Text lines and horizontal meters, no input, nothing interactive; and, in a
-// live window whose module ended the run, the result panel in the picture's centre.
+// **A game's HUD, provisional** (docs/subsystems/apps.md, "The HUD, provisional"; roadmap P41,
+// P44): the lines and meters a `--game` module said on its last tick (game_runner.h `GameHud`),
+// laid out by Dear ImGui as one fixed panel at the top left of the picture's safe region and handed
+// to the renderer's overlay pass (`FrameDesc::overlay`, ADR-0054) — the same path engine-editor's
+// tools UI takes to the screen. Text lines and horizontal meters, no input, nothing interactive;
+// and, in a live window whose module ended the run, the result panel in the picture's centre.
 //
 // **This is a proof-of-concept HUD, not the game UI framework.** ADR-0054 decided the *tools* UI is
 // ImGui through the overlay and said in so many words that a tool's overlay is not a HUD; plan 04

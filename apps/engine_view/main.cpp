@@ -5402,8 +5402,8 @@ int run_view(int argc, char** argv) {
       const bool stays = end_panel && game_over() && !game_failed();
       if (stays && !end_announced) {
         end_announced = true;
-        std::fprintf(stderr,
-                     "engine-view: game: the run is over; Enter or Esc quits, R starts a new run\n");
+        std::fprintf(
+            stderr, "engine-view: game: the run is over; Enter or Esc quits, R starts a new run\n");
       }
       const bool last = (options.frames != 0 && rendered >= options.frames && !path_in_window) ||
                         session_done || (game_over() && !stays);

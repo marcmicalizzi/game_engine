@@ -157,8 +157,8 @@ class PlacementTiles {
   // representation, standing on the scene's own ground at its own time — generated on the first ask
   // into a cache keyed by the tile and kept until `trim_query_tiles` drops it; a tile cached with
   // fewer entries than asked is generated again with more. **Never the streamed block**: a held
-  // tile is in whatever ring it is in and re-stood on the moving sand a few tiles an update, so what
-  // it holds depends on how the ring got there and when; this does not, so a module's
+  // tile is in whatever ring it is in and re-stood on the moving sand a few tiles an update, so
+  // what it holds depends on how the ring got there and when; this does not, so a module's
   // `nearest_placement` answers the same in a recording, its replay and a capture. Empty for a tile
   // no entry occupies. `entries_for` is how many entries a kind needs: through the last entry of
   // that generator, since a later entry is handed the earlier ones' footprints and none after.
