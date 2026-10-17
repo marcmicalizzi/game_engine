@@ -31,6 +31,10 @@
 
 .EXAMPLE
   tools/package-game.ps1 -Preset msvc-release -Module walk_poc -Scene content/test-scenes/desert-endless/scene.json
+
+  run.cmd starts the dunes at -TimeRate game seconds a real second (1: real time; passed only
+  where the scene's terrain has dunes) and the sun's day at -SunRate (60: a game day in 24
+  minutes); the [ ] and , . keys step either a rung, and 1 is a rung above still.
 #>
 [CmdletBinding()]
 param(
@@ -39,7 +43,9 @@ param(
   [Parameter(Mandatory = $true)][string]$Scene,
   [string]$Out,
   [int]$Width = 1600,
-  [int]$Height = 900
+  [int]$Height = 900,
+  [double]$TimeRate = 1,
+  [double]$SunRate = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,6 +137,9 @@ Add-Named $scenePath
 # since engine-view refuses it for a scene with nothing to stream.
 $sceneJson = Get-Content -LiteralPath $scenePath -Raw | ConvertFrom-Json -Depth 64
 $streams = ($null -ne $sceneJson.PSObject.Properties['world']) -or ($null -ne $sceneJson.PSObject.Properties['ruins'])
+# Whether the scene's terrain has dunes (a `terrain` block with `bands`): `--time-rate` is passed only
+# then, since the dunes' time-lapse needs the dune generator.
+$dunes = ($null -ne $sceneJson.PSObject.Properties['terrain']) -and ($null -ne $sceneJson.terrain) -and ($null -ne $sceneJson.terrain.PSObject.Properties['bands'])
 
 # ---- the build's identity --------------------------------------------------------------------
 
@@ -166,6 +175,8 @@ $sceneRel = [System.IO.Path]::GetRelativePath($Root, $scenePath).Replace('/', '\
 # The arguments run.cmd passes, every path inside the folder: `{dir}` is the folder.
 $runArgs = @('--scene', "{dir}\$sceneRel")
 if ($streams) { $runArgs += '--world' }
+if ($dunes -and $TimeRate -gt 0) { $runArgs += @('--time-rate', ([string]$TimeRate)) }
+if ($SunRate -gt 0) { $runArgs += @('--sun-rate', ([string]$SunRate)) }
 $runArgs += @('--walk', '--game', "{dir}\game\$Module$ModuleSuffix", '--report', '{dir}\report.json',
               '--ddc', '{dir}\ddc', '--width', "$Width", '--height', "$Height")
 $quoted = ($runArgs | ForEach-Object { if ($_ -match '\{dir\}') { '"' + $_.Replace('{dir}\', '%~dp0') + '"' } else { $_ } }) -join ' '
@@ -204,7 +215,8 @@ Keys (engine-view's action map, revision 5):
   E              interact        Q               use
   1 2 3 4        the game's own  F               fly / walk
   Escape         give the mouse back; again to end
-  [ ]            the sun's day slower / faster
+  [ ]            the sun's day slower / faster (starts at x${SunRate}: a game day in $([math]::Round(86400 / [math]::Max($SunRate, 1) / 60)) minutes)
+  , .            the dunes' time-lapse slower / faster (starts at x${TimeRate}; 1 is real time, 0 still)
   - = 0          exposure darker / brighter / hold
   A gamepad: left stick walks, right stick looks, South jumps, West interacts.
 
@@ -236,6 +248,9 @@ $manifest = [ordered]@{
   module = $Module
   scene = $sceneRel.Replace('\', '/')
   world = [bool]$streams
+  dunes = [bool]$dunes
+  time_rate = $TimeRate
+  sun_rate = $SunRate
   args = $runArgs
   files = $shipped
   runtime = [ordered]@{

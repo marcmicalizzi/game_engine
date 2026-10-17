@@ -796,9 +796,9 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   // never two presses swallowed into one.
   constexpr u32 k_escape = 41;
   press(3, input::Source::Key, k_escape);     // captured at the start: gives the pointer back
-  press(83, input::Source::Key, 55);          // .  dunes 0 -> 60
-  press(163, input::Source::Key, 48);         // ]  sun 0 -> 60
-  press(243, input::Source::Key, 48);         // ]  sun 60 -> 600
+  press(83, input::Source::Key, 55);          // .  dunes 0 -> 1 (the rung at 1 is real time)
+  press(163, input::Source::Key, 48);         // ]  sun 0 -> 1
+  press(243, input::Source::Key, 48);         // ]  sun 1 -> 60
   press(323, input::Source::MouseButton, 1);  // a click takes the pointer
   press(403, input::Source::Key, k_escape);   // gives it back
   press(483, input::Source::Key, k_escape);   // and with it given back, ends the session
@@ -822,17 +822,17 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   REQUIRE_MESSAGE(lapse != nullptr, live.output);
   REQUIRE_MESSAGE(lapse->is_object(), live.output);
   CHECK(number_of(lapse, "start_rate") == 0.0);
-  CHECK(number_of(lapse, "rate") == 60.0);
+  CHECK(number_of(lapse, "rate") == 1.0);
   CHECK(number_of(lapse, "rate_changes") == 1.0);
   const JsonValue* sun = summary.find("sun");
   REQUIRE(sun != nullptr);
   CHECK(number_of(sun, "start_rate") == 0.0);
-  CHECK(number_of(sun, "rate") == 600.0);
+  CHECK(number_of(sun, "rate") == 60.0);
   CHECK(number_of(sun, "rate_changes") == 2.0);
   CHECK(number_of(sun, "time_s") > 0.0);
   // The console said so, a line a change.
-  CHECK(live.output.find("dunes x60 game s a real s (was x0)") != std::string::npos);
-  CHECK(live.output.find("sun x600 game s a real s (was x60)") != std::string::npos);
+  CHECK(live.output.find("dunes x1 game s a real s (was x0)") != std::string::npos);
+  CHECK(live.output.find("sun x60 game s a real s (was x1)") != std::string::npos);
   // Esc with the pointer free ended it: the recording stops at the last Escape, not at 800.
   input::InputLog recording;
   std::string error;

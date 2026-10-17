@@ -39,8 +39,8 @@ TEST_CASE("time controls: a key steps its ladder a rung, from anywhere, and stop
   const std::span<const f64> sun(view::k_sun_ladder);
   const std::span<const f64> dunes(view::k_dune_ladder);
   // The ladders the owner asked for.
-  const f64 sun_rungs[] = {0.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0};
-  const f64 dune_rungs[] = {0.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0, 604'800.0};
+  const f64 sun_rungs[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0};
+  const f64 dune_rungs[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0, 604'800.0};
   REQUIRE(sun.size() == std::size(sun_rungs));
   REQUIRE(dunes.size() == std::size(dune_rungs));
   for (usize i = 0; i < sun.size(); ++i)
@@ -66,7 +66,11 @@ TEST_CASE("time controls: a key steps its ladder a rung, from anywhere, and stop
   CHECK(view::ladder_step(dunes, 5'000.0, false) == 3'600.0);
   CHECK(view::ladder_step(sun, 1.0e6, false) == 86'400.0);
   CHECK(view::ladder_step(sun, 1.0e6, true) == 86'400.0);
-  CHECK(view::ladder_step(dunes, 30.0, false) == 0.0);
+  // The rung at 1 (2026-10-16, the owner): a tester can step back to real time, not only to still.
+  CHECK(view::ladder_step(dunes, 30.0, false) == 1.0);
+  CHECK(view::ladder_step(dunes, 1.0, false) == 0.0);
+  CHECK(view::ladder_step(sun, 0.0, true) == 1.0);
+  CHECK(view::ladder_step(sun, 1.0, true) == 60.0);
 }
 
 TEST_CASE("time controls: the sun's day moves by the rate and never jumps when it changes") {

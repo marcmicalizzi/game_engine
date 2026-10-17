@@ -683,7 +683,7 @@ engine-view --replay-input session.jsonl --benchmark replay.jsonl          # off
 | `slow` | Button (×`view.fly.slow`, 0.25) | Alt | right stick click |
 | `capture` | Button | Escape: give the pointer back; with it already given back, end the session (below) | Back |
 | `marker` | Button | M: remember this tick's camera | North (Y on an Xbox pad) |
-| `sun_slower`, `sun_faster` | Button | `[` and `]`: the sun's day a rung down or up its ladder (0, 60, 600, 3,600, 8,640, 86,400 game s a real s) | — |
+| `sun_slower`, `sun_faster` | Button | `[` and `]`: the sun's day a rung down or up its ladder (0, 1, 60, 600, 3,600, 8,640, 86,400 game s a real s; the rung at 1 is real time, so a tester can come back to it from a time-lapse) | — |
 | `dunes_slower`, `dunes_faster` | Button | `,` and `.`: the dunes' time-lapse a rung down or up its ladder (the same and 604,800) | — |
 | `walk` | Button | F: walk on the ground under the camera, or fly from where it stands ([Walking](#walking)) | — |
 | `jump` | Button | Space, while walking (flying, Space is `lift`) | South (A on an Xbox pad) |
@@ -869,7 +869,7 @@ Everything a game shares with the engine is the hotload ABI's vocabulary ([modul
 
 ## package-game: a zip somebody else double-clicks
 
-**`tools/package-game.ps1 -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>]`** (roadmap P41) makes the zip a proof of concept reaches other hardware in, on `tools/package-tests.ps1`'s pattern: a machine with no toolchain, no checkout and no PowerShell 7 unzips it, double-clicks `run.cmd`, plays, and sends back the one `report.json` ([above](#--report-what-a-tester-sends-back)). It holds:
+**`tools/package-game.ps1 -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>] [-TimeRate <r>] [-SunRate <r>]`** (roadmap P41) makes the zip a proof of concept reaches other hardware in, on `tools/package-tests.ps1`'s pattern: a machine with no toolchain, no checkout and no PowerShell 7 unzips it, double-clicks `run.cmd`, plays, and sends back the one `report.json` ([above](#--report-what-a-tester-sends-back)). The run script starts the dunes at `-TimeRate` (1, real time; only where the scene's terrain has dunes) and the sun's day at `-SunRate` (60, a game day in 24 minutes), so a tester sees the day turn without the sand racing, and `[` `]` and `,` `.` step either a rung, where 1 is a rung above still. It holds:
 
 | Path | What |
 |---|---|
