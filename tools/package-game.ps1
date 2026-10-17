@@ -2,7 +2,7 @@
 .SYNOPSIS
   Packs engine-view, a game module and a scene into a zip a tester unzips, double-clicks and sends
   one report.json back from (docs/subsystems/apps.md, "package-game: a zip somebody else
-  double-clicks"; roadmap P41).
+  double-clicks"; roadmap P41, P42).
 
 .DESCRIPTION
   tools/package-tests.ps1's pattern for a game rather than a test suite: everything a machine with
@@ -12,9 +12,10 @@
     engine-view.exe     the preset's own build: statically linked, its shaders embedded (the
                         build's shaders/manifest.json names absolute paths into the build tree and
                         a compiler, so it stays out, as package-tests leaves it out)
-    game/<Module>.dll   the game module (engine_game_module), loaded with --game
-    content/...         the scene and every file it names, resolved, at their paths under the
-                        repository, so the scene's relative paths still resolve
+    game/<Module>.dll   the game module (engine_game_module, or a module built from a game
+                        repository with the SDK's build-module.ps1), loaded with --game
+    content/...         the scene and every file it names, resolved, at paths that keep the scene's
+                        own relative paths resolving
     run.cmd             double-click: starts the walking session with the game and a report,
                         and says where report.json is
     README.txt          what it is, how to run it, the keys, what to send back, and that it writes
@@ -22,9 +23,16 @@
     package.json        the commit, the preset, the module, the scene, the files, and the exact
                         arguments run.cmd passes (what the package test runs)
 
-  It refuses anything under the owner's local workspace (D:\workspace\game_engine_local: generated
-  assets and workflow files are never shipped, AGENTS.md) and anything outside the repository's
-  content/ directory: a package carries the repository's fixtures, nothing else.
+  **Two layouts, one script.** Run from the engine tree (tools/package-game.ps1) it packs
+  build/<Preset>/bin/engine-view and build/<Preset>/bin/game/<Module>.dll, and the scene must be
+  under the repository's content/. Run from an exported game SDK (<sdk>/tools/package-game.ps1,
+  tools/export-game-sdk.ps1; the marker is <sdk>/sdk.json) it packs the SDK's bin/engine-view, the
+  module from -ModuleDll (a game repository's build) or bin/game/<Module>.dll, and the scene may be
+  the SDK's (under <sdk>/content) or the game repository's own (anywhere else), whose content is
+  resolved against the scene's own directory and carried under content/<its directory's name>/.
+  In both layouts it refuses anything under the owner's local workspace
+  (D:\workspace\game_engine_local: generated assets and workflow files are never shipped, AGENTS.md).
+  The resolver is tools/lib/GameContent.psm1, shared with the exporter.
 
   The far end needs the Microsoft Visual C++ 2015-2022 Redistributable (x64), which almost every
   Windows machine has, and a Vulkan driver, which the display driver installs.
@@ -35,11 +43,17 @@
   run.cmd starts the dunes at -TimeRate game seconds a real second (1: real time; passed only
   where the scene's terrain has dunes) and the sun's day at -SunRate (60: a game day in 24
   minutes); the [ ] and , . keys step either a rung, and 1 is a rung above still.
+
+.EXAMPLE
+  <sdk>/tools/package-game.ps1 -ModuleDll build/my_game.dll -Scene scenes/start/scene.json -Out my_game.zip
+
+  From an SDK, for a game repository's own module and scene.
 #>
 [CmdletBinding()]
 param(
-  [string]$Preset = 'msvc-release',
-  [Parameter(Mandatory = $true)][string]$Module,
+  [string]$Preset,
+  [string]$Module,
+  [string]$ModuleDll,
   [Parameter(Mandatory = $true)][string]$Scene,
   [string]$Out,
   [int]$Width = 1600,
@@ -51,107 +65,117 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$BuildDir = Join-Path $Root "build/$Preset"
-$Bin = Join-Path $BuildDir 'bin'
+Import-Module (Join-Path $PSScriptRoot 'lib/GameContent.psm1') -Force
+
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 $ExeSuffix = if ($IsWin) { '.exe' } else { '' }
 $ModuleSuffix = if ($IsWin) { '.dll' } else { '.so' }
-$ContentRoot = [System.IO.Path]::GetFullPath((Join-Path $Root 'content'))
-$Local = 'game_engine_local'
 
 function Refuse([string]$why) {
   Write-Error "package-game: $why" -ErrorAction Continue
   exit 2
 }
 
-# A path is shippable when it is under the repository's content/ and nowhere near the owner's
-# local workspace, whatever the spelling (a relative climb, a drive letter's case, a junction's
-# name).
-function Test-Shippable([string]$path) {
-  $full = [System.IO.Path]::GetFullPath($path)
-  if ($full -match [regex]::Escape($Local)) { return $false }
-  $prefix = $ContentRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-  return $full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+# ---- which layout this script is running from ------------------------------------------------
+
+$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$sdkMarker = Join-Path $Root 'sdk.json'
+$FromSdk = Test-Path -LiteralPath $sdkMarker -PathType Leaf
+$sdk = $null
+if ($FromSdk) {
+  $sdk = Get-Content -LiteralPath $sdkMarker -Raw | ConvertFrom-Json -Depth 16
+  if (-not $Preset) { $Preset = [string]$sdk.preset }
+  $Bin = Join-Path $Root 'bin'
+  $BuildDir = $Root
 }
+else {
+  if (-not $Preset) { $Preset = 'msvc-release' }
+  $BuildDir = Join-Path $Root "build/$Preset"
+  $Bin = Join-Path $BuildDir 'bin'
+}
+$ContentRoot = [System.IO.Path]::GetFullPath((Join-Path $Root 'content'))
 
 # ---- what is shipped -------------------------------------------------------------------------
 
 $exe = Join-Path $Bin "engine-view$ExeSuffix"
 if (-not (Test-Path -LiteralPath $exe)) {
+  if ($FromSdk) { Refuse "no $exe; the SDK is incomplete (tools/export-game-sdk.ps1 writes it)" }
   Refuse "no $exe; build it first (tools/dev.ps1 build -Preset $Preset)"
 }
-$moduleFile = Join-Path $Bin "game/$Module$ModuleSuffix"
-if (-not (Test-Path -LiteralPath $moduleFile)) {
-  Refuse "no game module $moduleFile; it is built by engine_game_module(NAME $Module) with the hotload capability on"
+if ($ModuleDll) {
+  $moduleFile = if ([System.IO.Path]::IsPathRooted($ModuleDll)) { $ModuleDll } else { Join-Path (Get-Location).Path $ModuleDll }
+  $moduleFile = [System.IO.Path]::GetFullPath($moduleFile)
+  if (-not (Test-Path -LiteralPath $moduleFile -PathType Leaf)) { Refuse "no game module $ModuleDll" }
+  if (Test-UnderLocalWorkspace $moduleFile) { Refuse "$ModuleDll is under game_engine_local, which is never shipped" }
+  $fromFile = [System.IO.Path]::GetFileNameWithoutExtension($moduleFile)
+  if ($Module -and $Module -ne $fromFile) { Refuse "-Module $Module does not name -ModuleDll $ModuleDll; give one or the other" }
+  $Module = $fromFile
+  $ModuleSuffix = [System.IO.Path]::GetExtension($moduleFile)
 }
+elseif ($Module) {
+  $moduleFile = Join-Path $Bin "game/$Module$ModuleSuffix"
+  if (-not (Test-Path -LiteralPath $moduleFile)) {
+    if ($FromSdk) { Refuse "no game module $moduleFile in the SDK; a module built from a game repository is given as -ModuleDll <file>" }
+    Refuse "no game module $moduleFile; it is built by engine_game_module(NAME $Module) with the hotload capability on"
+  }
+}
+else {
+  Refuse 'name the module: -Module <name> (built by this tree or carried by the SDK) or -ModuleDll <file> (built elsewhere)'
+}
+if ($Module -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Refuse "the module's name '$Module' is not an identifier" }
+
 $scenePath = if ([System.IO.Path]::IsPathRooted($Scene)) { $Scene } else { Join-Path (Get-Location).Path $Scene }
 if (-not (Test-Path -LiteralPath $scenePath -PathType Leaf)) { Refuse "no scene file $Scene" }
 $scenePath = [System.IO.Path]::GetFullPath($scenePath)
-if (-not (Test-Shippable $scenePath)) {
-  Refuse "$Scene is not under the repository's content/ directory (or is under $Local): a package ships the repository's fixtures and nothing else"
+if (Test-UnderLocalWorkspace $scenePath) { Refuse "$Scene is under game_engine_local, which is never shipped" }
+
+# Where the scene's content may come from, and the path each root's files keep in the package.
+#   tree layout:  the repository's content/, kept at content/<path under it>
+#   SDK layout:   the SDK's content/ the same way; a scene anywhere else is a game repository's,
+#                 its directory is its root, kept at content/<the directory's name>/<path under it>
+$roots = @()
+$keep = @{}
+$sceneUnderContent = $null -ne (Get-ContentRoot -Path $scenePath -Roots @($ContentRoot))
+if ($sceneUnderContent) {
+  $roots += $ContentRoot
+  $keep[$ContentRoot] = 'content'
+}
+elseif ($FromSdk) {
+  $sceneDir = [System.IO.Path]::GetFullPath((Split-Path $scenePath -Parent))
+  $roots += $sceneDir
+  $keep[$sceneDir] = 'content/' + (Split-Path $sceneDir -Leaf)
+}
+else {
+  Refuse "$Scene is not under the repository's content/ directory: from the engine tree a package ships the repository's fixtures and nothing else (a game repository's scene is packaged from its SDK, docs/game-authoring.md)"
 }
 
-# The scene and every file it names, resolved against the file naming it: each string value of the
-# JSON that is a relative path to an existing file or directory beside it. A JSON file it names
-# (a camera path, a placements file) is read for its own names in turn.
-$files = [System.Collections.Generic.List[string]]::new()
-$seen = @{}
-function Add-Named([string]$path) {
-  $full = [System.IO.Path]::GetFullPath($path)
-  if ($seen.ContainsKey($full)) { return }
-  $seen[$full] = $true
-  if (-not (Test-Shippable $full)) {
-    Refuse "the scene names $full, which is outside the repository's content/ directory (or under $Local)"
-  }
-  if (Test-Path -LiteralPath $full -PathType Container) {
-    foreach ($f in Get-ChildItem -LiteralPath $full -Recurse -File) { Add-Named $f.FullName }
-    return
-  }
-  $files.Add($full)
-  if ($full.EndsWith('.json', [System.StringComparison]::OrdinalIgnoreCase)) {
-    $dir = Split-Path $full -Parent
-    $json = Get-Content -LiteralPath $full -Raw | ConvertFrom-Json -Depth 64
-    foreach ($s in (Get-Strings $json)) {
-      if ($s.Length -eq 0 -or $s.Length -gt 400 -or $s -match '[\*\?"<>|]' -or $s.Contains("`n")) { continue }
-      if ([System.IO.Path]::IsPathRooted($s)) { continue }
-      $candidate = Join-Path $dir $s
-      if (Test-Path -LiteralPath $candidate) { Add-Named $candidate }
-    }
-  }
+try {
+  $resolved = @(Resolve-SceneContent -Scene $scenePath -Roots $roots)
 }
-function Get-Strings($value) {
-  if ($null -eq $value) { return }
-  if ($value -is [string]) { $value; return }
-  if ($value -is [System.Collections.IEnumerable]) {
-    foreach ($v in $value) { Get-Strings $v }
-    return
-  }
-  if ($value -is [psobject]) {
-    foreach ($p in $value.PSObject.Properties) { Get-Strings $p.Value }
-  }
+catch {
+  Refuse $_.Exception.Message
 }
-Add-Named $scenePath
-
-# Whether the scene streams a world (a `world` block or `ruins`): `--world` is passed only then,
-# since engine-view refuses it for a scene with nothing to stream.
-$sceneJson = Get-Content -LiteralPath $scenePath -Raw | ConvertFrom-Json -Depth 64
-$streams = ($null -ne $sceneJson.PSObject.Properties['world']) -or ($null -ne $sceneJson.PSObject.Properties['ruins'])
-# Whether the scene's terrain has dunes (a `terrain` block with `bands`): `--time-rate` is passed only
-# then, since the dunes' time-lapse needs the dune generator.
-$dunes = ($null -ne $sceneJson.PSObject.Properties['terrain']) -and ($null -ne $sceneJson.terrain) -and ($null -ne $sceneJson.terrain.PSObject.Properties['bands'])
+$traits = Get-SceneTraits -Scene $scenePath
+$streams = $traits.Streams
+$dunes = $traits.Dunes
 
 # ---- the build's identity --------------------------------------------------------------------
 
 $commit = ''
 $dirty = $false
-try {
-  Push-Location $Root
-  $commit = (& git rev-parse HEAD 2>$null | Out-String).Trim()
-  $dirty = -not [string]::IsNullOrEmpty((& git status --porcelain 2>$null | Out-String).Trim())
+if ($FromSdk) {
+  $commit = [string]$sdk.commit
+  $dirty = [bool]$sdk.dirty
 }
-catch { }
-finally { Pop-Location }
+else {
+  try {
+    Push-Location $Root
+    $commit = (& git rev-parse HEAD 2>$null | Out-String).Trim()
+    $dirty = -not [string]::IsNullOrEmpty((& git status --porcelain 2>$null | Out-String).Trim())
+  }
+  catch { }
+  finally { Pop-Location }
+}
 $commitShort = if ($commit.Length -ge 7) { $commit.Substring(0, 7) } else { 'nocommit' }
 
 # ---- lay it out ------------------------------------------------------------------------------
@@ -161,16 +185,17 @@ $stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("engine-game-" + [Syst
 $stage = Join-Path $stageRoot $stageName
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'game') | Out-Null
 Copy-Item -LiteralPath $exe -Destination $stage -Force
-Copy-Item -LiteralPath $moduleFile -Destination (Join-Path $stage 'game') -Force
+Copy-Item -LiteralPath $moduleFile -Destination (Join-Path $stage "game/$Module$ModuleSuffix") -Force
 $shipped = @()
-foreach ($f in $files) {
-  $rel = [System.IO.Path]::GetRelativePath($Root, $f)
+$sceneRel = $null
+foreach ($f in $resolved) {
+  $rel = $keep[$f.Root] + '/' + [System.IO.Path]::GetRelativePath($f.Root, $f.Path).Replace('\', '/')
   $target = Join-Path $stage $rel
   New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
-  Copy-Item -LiteralPath $f -Destination $target -Force
-  $shipped += [ordered]@{ path = $rel.Replace('\', '/'); bytes = (Get-Item -LiteralPath $f).Length }
+  Copy-Item -LiteralPath $f.Path -Destination $target -Force
+  $shipped += [ordered]@{ path = $rel; bytes = (Get-Item -LiteralPath $f.Path).Length }
+  if ($f.Path -eq $scenePath) { $sceneRel = $rel.Replace('/', '\') }
 }
-$sceneRel = [System.IO.Path]::GetRelativePath($Root, $scenePath).Replace('/', '\')
 
 # The arguments run.cmd passes, every path inside the folder: `{dir}` is the folder.
 $runArgs = @('--scene', "{dir}\$sceneRel")
@@ -232,7 +257,7 @@ It needs a graphics card with a Vulkan driver (any recent NVIDIA, AMD or Intel d
 Microsoft Visual C++ 2015-2022 Redistributable (x64), which almost every Windows machine has:
 https://aka.ms/vs/17/release/vc_redist.x64.exe
 
-Built from commit $commitShort$(if ($dirty) { ' (with local changes)' } else { '' }), preset $Preset.
+Built from engine commit $commitShort$(if ($dirty) { ' (with local changes)' } else { '' }), preset $Preset.
 "@
 [System.IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme.Replace("`r`n", "`n").Replace("`n", "`r`n"),
                                (New-Object System.Text.UTF8Encoding($false)))
@@ -245,7 +270,9 @@ $manifest = [ordered]@{
   commit = $commit
   dirty = $dirty
   preset = $Preset
+  layout = $(if ($FromSdk) { 'sdk' } else { 'tree' })
   module = $Module
+  module_source = $(if ($ModuleDll) { $moduleFile.Replace('\', '/') } else { "bin/game/$Module$ModuleSuffix" })
   scene = $sceneRel.Replace('\', '/')
   world = [bool]$streams
   dunes = [bool]$dunes
@@ -265,7 +292,7 @@ $manifest = [ordered]@{
 # ---- zip -------------------------------------------------------------------------------------
 
 $stageBytes = (Get-ChildItem -Path $stage -Recurse -File | Measure-Object Length -Sum).Sum
-if (-not $Out) { $Out = Join-Path $BuildDir "$stageName.zip" }
+if (-not $Out) { $Out = Join-Path $(if ($FromSdk) { (Get-Location).Path } else { $BuildDir }) "$stageName.zip" }
 if (-not [System.IO.Path]::IsPathRooted($Out)) { $Out = Join-Path (Get-Location).Path $Out }
 New-Item -ItemType Directory -Force -Path (Split-Path $Out -Parent) | Out-Null
 if (Test-Path -LiteralPath $Out) { Remove-Item -Force -LiteralPath $Out }
@@ -276,5 +303,5 @@ Remove-Item -Recurse -Force $stageRoot -ErrorAction SilentlyContinue
 
 $zipBytes = (Get-Item -LiteralPath $Out).Length
 Write-Host "package:  $Out"
-Write-Host ("size:     {0:N1} MB zipped, {1:N1} MB unpacked; {2} content files" -f ($zipBytes / 1MB), ($stageBytes / 1MB), $files.Count)
+Write-Host ("size:     {0:N1} MB zipped, {1:N1} MB unpacked; {2} content files" -f ($zipBytes / 1MB), ($stageBytes / 1MB), $resolved.Count)
 Write-Host "folder:   $stageName (unzip, double-click run.cmd, send back report.json)"

@@ -11,7 +11,13 @@
 # writes. The compiler's diagnostics are printed; a failed compile or link exits non-zero.
 #
 # It exists for the tests: a test of reloading has to compile a second build of a module, and a
-# test owns nothing outside its scratch directory (AGENTS.md, "Test hygiene").
+# test owns nothing outside its scratch directory (AGENTS.md, "Test hygiene"). It is also the build
+# command of an exported game SDK (tools/export-game-sdk.ps1, docs/game-authoring.md), whose
+# `cmake/build_config.cmake` names the SDK's own headers, schemac and schema root relative to
+# itself and the exporting machine's compiler and MSVC environment. On a machine without that
+# compiler the SDK's build-module.ps1 finds one through vswhere, imports its developer environment
+# and passes it as -DCOMPILER=<cl.exe>; the recorded environment is then left aside in favour of
+# the caller's, which is the one that matches the compiler.
 
 cmake_minimum_required(VERSION 3.28)
 
@@ -19,6 +25,18 @@ if(NOT CONFIG OR NOT SOURCE_DIR OR NOT OUTPUT)
   message(FATAL_ERROR "EngineGameModuleBuild: CONFIG, SOURCE_DIR and OUTPUT are required")
 endif()
 include("${CONFIG}")
+
+if(COMPILER)
+  set(GM_CXX "${COMPILER}")
+  set(GM_ENV_INCLUDE "")
+  set(GM_ENV_LIB "")
+  set(GM_ENV_PATH "")
+endif()
+if(NOT EXISTS "${GM_CXX}")
+  message(FATAL_ERROR "EngineGameModuleBuild: the compiler the configuration records, ${GM_CXX}, "
+    "is not on this machine. A game SDK's tools/build-module.ps1 finds Visual Studio through vswhere "
+    "and passes its compiler as -DCOMPILER=<cl.exe>; from a build tree, configure it again.")
+endif()
 
 file(GLOB _sources "${SOURCE_DIR}/*.cpp")
 file(GLOB _schemas "${SOURCE_DIR}/*.schema")
