@@ -750,6 +750,16 @@ void ModuleHost::unload() {
   context_.state = nullptr;
 }
 
+bool ModuleHost::reset_state() {
+  if (!module_ || module_->state == nullptr || module_->state_type == nullptr) return false;
+  // The build's own code destroys and constructs the object, as a load does: a state is
+  // fixed-layout values only (`check_state_type`), so neither call reaches past it.
+  const TypeInfo& type = *module_->state_type;
+  type.ops->destroy(module_->state);
+  type.ops->construct(module_->state);
+  return true;
+}
+
 // ---- exports ------------------------------------------------------------------------------------
 
 Status ModuleHost::find_function(std::string_view name, u32 signature, FunctionId& out) {

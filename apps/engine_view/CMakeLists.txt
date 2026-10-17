@@ -46,6 +46,9 @@ if(TARGET engine::ruins)
   # the assembler. The walk into one of a ruin's walls writes the same kit beside the committed
   # ruins-walk scene (docs/subsystems/apps.md, "Walking").
   list(APPEND _view_tests tests/ruins_view_tests.cpp tests/walk_ruins_view_tests.cpp)
+  # A --game module's `nearest_placement` answered from the scene, whatever the ring holds (roadmap
+  # P44; tests/game_placements_tests.cpp): compiled with the ruins, which the proof streams.
+  list(APPEND _view_tests tests/game_placements_tests.cpp)
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
@@ -79,6 +82,11 @@ if(TARGET engine::hotload)
   set(_view_game game_runner.cpp game_hud.cpp game_props.cpp)
   list(APPEND _view_tests tests/game_runner_tests.cpp tests/game_props_tests.cpp
                           tests/game_props_view_tests.cpp game_runner.cpp game_props.cpp)
+  # How a run ends and what clock its frames are drawn by (roadmap P44): the result panel, the new
+  # run, and the drawn sun on the runner's clock, end to end (tests/game_end_tests.cpp). The HUD's
+  # sizing (tests/game_hud_tests.cpp) lays ImGui's frame out with no device, so the overlay is
+  # compiled into the tests too and they link imgui below.
+  list(APPEND _view_tests tests/game_end_tests.cpp tests/game_hud_tests.cpp game_hud.cpp)
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
@@ -144,6 +152,7 @@ if(TARGET engine::hotload)
   target_link_libraries(engine_engine_view PRIVATE imgui)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_GAME=1)
+    target_link_libraries(engine_engine_view_tests PRIVATE imgui)  # game_hud.cpp, in the tests
     # tools/package-game.ps1's test packs this build's engine-view and walk_poc with PowerShell 7
     # and plays the zip where it is unpacked (tests/game_view_tests.cpp).
     if(ENGINE_PWSH)

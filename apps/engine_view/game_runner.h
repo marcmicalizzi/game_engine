@@ -98,6 +98,15 @@ struct GameTickInput {
 // (world_view.h); false when there is none within `radius` of `from`, or no world.
 using PlacementQuery = bool (*)(void* user, std::string_view kind, const WorldPos& from, f64 radius,
                                 WorldPos& out, f64& distance);
+// The query's cost so far, for the summary: tiles generated from the scene for queries, and their
+// wall time (world_view.h `query_stats`).
+using PlacementStats = void (*)(void* user, u64& generated_tiles, f64& generate_ms);
+// **The cap on a query's radius** (apps.md "The game contract"; roadmap P44): a query past it is
+// `InvalidArgument` — a `Result` a module already handles — because the answer is a function of the
+// scene (world.md "The consumers"): every tile the search reaches that the cache does not hold is
+// generated, which at this cap over 32 m tiles is up to 33² tiles cold when nothing of the kind
+// is near. The fixture looks 400 m for its HUD line.
+inline constexpr f64 k_max_placement_query_m = 512.0;
 
 class GameRunner {
  public:
@@ -121,7 +130,18 @@ class GameRunner {
   // The sky's clock at the session's start: `FrameDesc::sun_time_s`'s offset, the day's rate in
   // game seconds a second, and the ground's surface time the sky stands on.
   void set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept;
-  void set_placements(PlacementQuery query, void* user) noexcept;
+  // **The clock as the frame draws it** (renderer.md "One clock"; roadmap P44): a `--game`
+  // session's frames take `FrameDesc::sun_time_s` from here — the offset plus the day's game
+  // seconds so far, stepped a tick at a time by the ticks that ran, at the rate the keys had set by
+  // each — in the window, in an offscreen replay and in a `--capture` alike, so a replay of a
+  // recording in which
+  // `]` was pressed draws the sky where the live session drew it. The clock runs on after
+  // `end_run`: the result panel's sky keeps turning while the module is no longer ticked.
+  f64 sun_time_s() const noexcept;
+  f64 day_s() const noexcept;         // the day's game seconds so far
+  f64 sun_rate() const noexcept;      // the rate now
+  u32 rate_changes() const noexcept;  // ladder steps taken
+  void set_placements(PlacementQuery query, void* user, PlacementStats stats = nullptr) noexcept;
   // **The props the module places** (game_props.h): declare the scene's before `start`, since the
   // module's `on_load` names them, and `attach` the loaded scene after it. The host hands the live
   // props to the renderer's tail (main.cpp) and this holds the table.
@@ -144,10 +164,20 @@ class GameRunner {
   u32 poll();
 
   // Whether the module ended the run (`end_run`) or failed (`fail` from an export, or a result
-  // that is not a JSON object): the session ends after this frame.
+  // that is not a JSON object). A replay, an injected session and an offscreen run end after this
+  // frame; a live window stays on the result panel (apps.md "--game", "Ending").
   bool ended() const noexcept;
   bool failed() const noexcept;
   const std::string& error() const noexcept;
+  // `end_run`'s object (null until it is called), and the runs this session has started.
+  const JsonValue& result() const noexcept;
+  u32 runs() const noexcept;
+  // **A new run** (the result panel's R; roadmap P44): after `end_run`, the module's state object
+  // is put back at its descriptor's defaults through the host (`ModuleHost::reset_state`), the HUD
+  // cleared, the run counted and the ended run's result kept in the summary's `results`. Nothing
+  // else moves: the walker stands where it stands, the clock runs on, the module is not reloaded.
+  // False when the run has not ended, or ended by a failure.
+  bool new_run();
   const GameHud& hud() const noexcept;
   u64 ticks() const noexcept;
   // The module's state as its descriptor writes it.

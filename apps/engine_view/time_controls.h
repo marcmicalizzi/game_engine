@@ -20,7 +20,8 @@ namespace engine::view {
 // week, where a day of the sun's would turn seven times a second.
 // The rung at 1 is real time: a tester steps back to it from a time-lapse, not only to still.
 inline constexpr f64 k_sun_ladder[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0};
-inline constexpr f64 k_dune_ladder[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0, 604'800.0};
+inline constexpr f64 k_dune_ladder[] = {0.0,     1.0,     60.0,     600.0,
+                                        3'600.0, 8'640.0, 86'400.0, 604'800.0};
 
 // The rung after `rate` going up (`up`) or down: from a rate between two rungs (a `--time-rate
 // 5000`), the rung on that side of it; past an end, that end; at an end going outwards, the same

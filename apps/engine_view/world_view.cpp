@@ -2,6 +2,7 @@
 #include "world_view.h"
 
 #include "anim_lod.h"
+#include "game_runner.h"  // k_max_placement_query_m: what the query cache is bounded by
 
 #if ENGINE_VIEW_WORLD
 
@@ -160,42 +161,79 @@ bool ViewWorld::hand_over_now(std::string* error) {
   return hand_over(this, tail, error);
 }
 
-// The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,
-// a flythrough a few thousand updates — so writing it costs the timed frames nothing. Opening it
-// writes the file empty at once, so a path that cannot be written is refused before the run.
 bool ViewWorld::nearest_placement(std::string_view kind, const WorldPos& from, f64 radius,
-                                  WorldPos& out, f64& distance) const {
+                                  WorldPos& out, f64& distance) {
   if (!valid() || !(radius > 0.0)) return false;
   u32 wanted = ~u32{0};
   for (u32 k = 0; k < kinds_.size(); ++k) {
     if (kinds_[k] == kind) wanted = k;
   }
   if (wanted == ~u32{0}) return false;
-  // The tiles the radius reaches, and in each the instances it holds: a ruin's pieces, a
-  // scatter's rocks, each at `origin + transform.position` (ADR-0053), measured over the ground.
+  const u32 entries = placements_.entries_for(kind);
+  // The tiles the radius reaches, one square of them at a time out from the walker's, and in each
+  // the instances the scene puts there (`query_tile`): a ruin's pieces, a scatter's rocks, each at
+  // `origin + transform.position` (ADR-0053), measured over the ground. Square k's tiles are at
+  // least `(k - 1/2) · tile - off` away — the square's inner edge less how far the walker stands
+  // from its own tile's centre — so the search stops at the first square that cannot hold anything
+  // nearer than the best so far, or anything within the radius at all. Ties go to the first met,
+  // and the order is fixed (square by square, then z, then x), so the answer is the scene's.
   const f32 tile_size = placements_config_.tile_size;
-  const i32 reach = static_cast<i32>(std::ceil(radius / static_cast<f64>(tile_size)));
+  const f64 size = static_cast<f64>(tile_size);
+  const i32 reach = static_cast<i32>(std::ceil(radius / size));
   const world::TileCoord centre = world::tile_at(from, tile_size);
+  const WorldPos centre_at = world::tile_center(centre, tile_size);
+  const f64 off = std::max(std::fabs(from.x - centre_at.x), std::fabs(from.z - centre_at.z));
   f64 best = radius * radius;
   bool found = false;
-  for (i32 dz = -reach; dz <= reach; ++dz) {
-    for (i32 dx = -reach; dx <= reach; ++dx) {
-      const world::TileCoord tile{centre.x + dx, centre.z + dz};
-      for (const renderer::SceneInstance& instance : placements_.tile_instances(tile)) {
-        if (instance.mesh >= mesh_kind_.size() || mesh_kind_[instance.mesh] != wanted) continue;
-        const f64 x = instance.origin.x + static_cast<f64>(instance.transform.position.x);
-        const f64 z = instance.origin.z + static_cast<f64>(instance.transform.position.z);
-        const f64 d2 = (x - from.x) * (x - from.x) + (z - from.z) * (z - from.z);
-        if (d2 > best || (found && d2 == best)) continue;
-        best = d2;
-        found = true;
-        out = WorldPos{x, instance.origin.y + static_cast<f64>(instance.transform.position.y), z};
+  const auto visit = [&](i32 dx, i32 dz) {
+    const world::TileCoord tile{centre.x + dx, centre.z + dz};
+    for (const renderer::SceneInstance& instance : placements_.query_tile(tile, entries)) {
+      if (instance.mesh >= mesh_kind_.size() || mesh_kind_[instance.mesh] != wanted) continue;
+      const f64 x = instance.origin.x + static_cast<f64>(instance.transform.position.x);
+      const f64 z = instance.origin.z + static_cast<f64>(instance.transform.position.z);
+      const f64 d2 = (x - from.x) * (x - from.x) + (z - from.z) * (z - from.z);
+      if (d2 > best || (found && d2 == best)) continue;
+      best = d2;
+      found = true;
+      out = WorldPos{x, instance.origin.y + static_cast<f64>(instance.transform.position.y), z};
+    }
+  };
+  for (i32 k = 0; k <= reach; ++k) {
+    const f64 nearest_possible = k == 0 ? 0.0 : (static_cast<f64>(k) - 0.5) * size - off;
+    if (nearest_possible > radius) break;
+    if (found && best <= nearest_possible * nearest_possible) break;
+    if (k == 0) {
+      visit(0, 0);
+      continue;
+    }
+    for (i32 dz = -k; dz <= k; ++dz) {
+      if (dz == -k || dz == k) {
+        for (i32 dx = -k; dx <= k; ++dx)
+          visit(dx, dz);
+      } else {
+        visit(-k, dz);
+        visit(k, dz);
       }
     }
   }
+  // The cache keeps the tiles within the runner's cap of the walker and drops the rest: bounded by
+  // the cap, whatever radii the module alternates between (the fixture asks 6 m every tick and
+  // 400 m once a second; trimming to each query's own reach would regenerate the far tiles every
+  // second).
+  placements_.trim_query_tiles(centre,
+                               static_cast<i32>(std::ceil(k_max_placement_query_m / size)) + 1);
   if (found) distance = std::sqrt(best);
   return found;
 }
+
+void ViewWorld::query_stats(u64& generated_tiles, f64& generate_ms) const noexcept {
+  generated_tiles = placements_.stats().queried;
+  generate_ms = static_cast<f64>(placements_.stats().query_ns) / 1.0e6;
+}
+
+// The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,
+// a flythrough a few thousand updates — so writing it costs the timed frames nothing. Opening it
+// writes the file empty at once, so a path that cannot be written is refused before the run.
 
 bool ViewWorld::open_log(const std::string& path, std::string* error) {
   close_log();

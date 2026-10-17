@@ -85,6 +85,9 @@ struct PlacementTilesStats {
   // Tiles built again for a moving ground (`restand`), and their wall time.
   u64 restood = 0;
   i64 restand_ns = 0;
+  // Tiles generated for queries (`query_tile`: cache misses), and their wall time.
+  u64 queried = 0;
+  i64 query_ns = 0;
   // Now: the things (buildings) the drawn tiles hold, and the tail's instances and pairs; the tiles
   // held but not drawn, for the budget.
   u32 buildings = 0;
@@ -148,6 +151,24 @@ class PlacementTiles {
   u32 restand(f64 surface_time_s, u32 budget);
   f64 stand_time() const noexcept { return stand_time_; }
 
+  // **A query's tile** (world.md "The consumers", "Placements answered from the scene"; apps.md
+  // "The game contract"; roadmap P44): the tile's placements as a function of the scene alone — the
+  // first `entries` streamed entries in the scene's order, in the **innermost ring's**
+  // representation, standing on the scene's own ground at its own time — generated on the first ask
+  // into a cache keyed by the tile and kept until `trim_query_tiles` drops it; a tile cached with
+  // fewer entries than asked is generated again with more. **Never the streamed block**: a held
+  // tile is in whatever ring it is in and re-stood on the moving sand a few tiles an update, so
+  // what it holds depends on how the ring got there and when; this does not, so a module's
+  // `nearest_placement` answers the same in a recording, its replay and a capture. Empty for a tile
+  // no entry occupies. `entries_for` is how many entries a kind needs: through the last entry of
+  // that generator, since a later entry is handed the earlier ones' footprints and none after.
+  std::span<const renderer::SceneInstance> query_tile(TileCoord tile, u32 entries);
+  u32 entries_for(std::string_view generator) const noexcept;
+  // Drops the cached query tiles farther than `reach` tiles (Chebyshev) from `centre`, which is
+  // what bounds the cache: (2 · reach + 1)² tiles at most.
+  void trim_query_tiles(TileCoord centre, i32 reach);
+  u32 query_tile_count() const noexcept { return query_tiles_.size(); }
+
  private:
   struct Entry;
   struct TileBlock {
@@ -164,10 +185,20 @@ class PlacementTiles {
   static bool change_ring(void* context, const TileEvent& event);
   static void deactivate(void* context, const TileEvent& event);
   static void commit(void* context);
-  scene_gen::Context context_for(const Entry& entry, u8 ring) const noexcept;
-  bool build(TileCoord tile, u8 ring, TileBlock& out);
+  // `scene_ground`: stand on the scene's own ground at its own time, never the re-stood surface
+  // (a query's tile). `entries`: how many of the entries to run, in the scene's order.
+  scene_gen::Context context_for(const Entry& entry, u8 ring,
+                                 bool scene_ground = false) const noexcept;
+  bool build(TileCoord tile, u8 ring, TileBlock& out, u32 entries = ~0u, bool for_query = false);
   bool take(const TileEvent& event);
   void admit();
+  // The query cache: a tile's instances and how many entries made them.
+  struct QueryTile {
+    u32 entries = 0;
+    Vector<renderer::SceneInstance> instances;
+  };
+  FlatMap<u64, QueryTile> query_tiles_;
+  TileBlock query_scratch_;
 
   const renderer::SceneData* scene_ = nullptr;
   PlacementTilesConfig config_;
