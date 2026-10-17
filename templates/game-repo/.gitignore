@@ -1,0 +1,12 @@
+# Build output of build.ps1 (the module and its intermediate files).
+build/
+*.dll
+*.so
+
+# What a run writes: the report, the engine's derived-data cache, the module host's per-load copies.
+report.json
+ddc/
+*.hotload/
+
+# Packages made by package.ps1.
+*.zip
