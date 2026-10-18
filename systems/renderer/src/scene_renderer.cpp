@@ -2016,6 +2016,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // morph channels, and the resolve then reads the rest attribute stream exactly as it did.
     resolve.normal_pool = scene.normal_pool_address();
     resolve.sun = lighting.sun;
+    // The water's clock (water.slang, `ResolveParams::water_time_s`): the ground's surface time plus
+    // the frame's sun time, the one clock the sky reads (renderer.md, "One clock"), wrapped by
+    // `water_clock` so a long session's phase never jumps.
+    resolve.water_time_s = gfx::water_clock(scene.ground_time_s() + frame.sun_time_s);
     // The ground below the hemisphere's horizon: the scene's, shared with the reference like the
     // sun and the sky, so its escaped rays see the ground this term stands for.
     resolve.ground = lighting.ground;

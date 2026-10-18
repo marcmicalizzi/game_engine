@@ -229,6 +229,7 @@ scene::Terrain terrain_entry(const TerrainDesc& desc) {
     t.storm_gains.push_back(sg);
   }
   t.provider = std::string(terrain_provider(desc));
+  t.tiles = desc.tiles;
   if (desc.has_detail) t.detail = desc.detail;
   return t;
 }

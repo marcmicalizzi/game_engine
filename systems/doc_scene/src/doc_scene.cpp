@@ -189,6 +189,7 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   out.desc.terrain.size = entry.size;
   out.desc.terrain.extent = entry.extent;
   out.desc.terrain.seed = 0;
+  out.desc.terrain.tiles = entry.tiles;
   out.terrain_record = id;
   out.heightfield = record;
   out.terrain = std::move(entry);

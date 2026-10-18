@@ -1235,6 +1235,25 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.terrain.provider = t.provider;
+    // An authored tile set (`Terrain.tiles`, docs/subsystems/tileset.md): its paths resolved against
+    // the file's directory, and the provider it implies; beside another provider it is two answers
+    // to one question.
+    if (t.tiles.has_value()) {
+      if (!t.provider.empty() && t.provider != "tiles") {
+        error = path + ": the terrain carries a tile set and names the ground provider \"" +
+                t.provider + "\"; a tile set is the tiles provider's";
+        return false;
+      }
+      scene::TerrainTileSet tiles = *t.tiles;
+      const auto resolve_path = [&](std::string& p) {
+        if (!p.empty() && !dir.empty() && !io::is_absolute_path(p)) p = io::join_path(dir, p);
+      };
+      resolve_path(tiles.manifest);
+      resolve_path(tiles.heightfield);
+      resolve_path(tiles.ddc);
+      out.terrain.tiles = std::move(tiles);
+      if (out.terrain.provider.empty()) out.terrain.provider = "tiles";
+    }
     out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes || t.provider == "dunes"
                                 ? TerrainGenerator::dunes
                                 : TerrainGenerator::waves;

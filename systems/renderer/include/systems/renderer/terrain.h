@@ -35,6 +35,7 @@
 #include <domain/scene_gen/scene_gen.h>
 
 #include <schemas/scene.h>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -93,6 +94,10 @@ struct TerrainDesc {
   // (terrain.md, "Storms"). None by default, and none leaves the hash as it was.
   u32 storms_per_year = 0;
   f32 storm_strength = 2.5f;
+  // With the `tiles` provider: an authored tile set's parameters (`Terrain.tiles`, version 7;
+  // docs/subsystems/tileset.md), carried to the provider with its paths resolved against the scene
+  // file's directory. Empty for every other ground.
+  std::optional<scene::TerrainTileSet> tiles;
   // With `dunes`: the wind's day and the storms' transport gains (terrain.md, "The day's wind",
   // "A storm scales transport"; `engine.scene.Terrain` version 5). The defaults are the record as
   // it was and leave the hash as it was.
