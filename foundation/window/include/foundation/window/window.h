@@ -426,6 +426,20 @@ class Window {
   // A top-level window's new size in its own coordinates (the platform answers with `Resized`).
   // False for a child (its parent places it: `set_rect`) or with no window.
   bool set_size(u32 width, u32 height) noexcept;
+  // **Fullscreen without a mode change** (docs/subsystems/window.md, "Borderless windows and
+  // presentation"): SDL's borderless desktop fullscreen — `SDL_SetWindowFullscreenMode` with no
+  // mode, then `SDL_SetWindowFullscreen` — so the window takes the bounds of the display it is on
+  // and the display mode never changes, for the reason `WindowDesc::borderless` gives: covering
+  // the display is what earns the flip, and an exclusive mode would only add a mode switch and
+  // keep other windows from coming over it. The platform answers with `Resized` (the display's
+  // pixels on the way in; on the way back SDL restores the windowed size and place itself), and
+  // `pixel_width()`/`pixel_height()` follow it as they do for `set_size`. On a hidden window SDL
+  // keeps the request and applies it when the window is shown. False for a child or with no
+  // window.
+  bool set_fullscreen(bool on) noexcept;
+  // The state last asked for, or that SDL last reported (its enter- and leave-fullscreen events,
+  // read in `poll`); false with no window.
+  bool fullscreen() const noexcept { return fullscreen_; }
 
   // Pulls the next pending event for this window (and process-wide Quit). False when none
   // is left; call until it returns false once per frame.
@@ -542,6 +556,7 @@ class Window {
   gpu_lock::DeviceHold gpu_hold_;  // a Vulkan window's share of the GPU lock (WindowDesc::vulkan)
   bool vulkan_ = false;            // created with WindowDesc::vulkan: show() takes the hold
   bool child_ = false;             // created with WindowDesc::parent
+  bool fullscreen_ = false;        // set_fullscreen's state, followed by SDL's events
   u64 relative_since_ns_ = 0;      // set_relative_mouse(true)'s moment, SDL_GetTicksNS
 };
 

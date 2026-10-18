@@ -312,6 +312,88 @@ TEST_CASE("window: a borderless window is created at the size asked") {
   window::shutdown();
 }
 
+TEST_CASE("window: fullscreen round-trips on a hidden window and is refused for a child") {
+  // Window::set_fullscreen (window.md, "Borderless windows and presentation"): SDL's desktop
+  // fullscreen, no mode change. On a hidden window SDL keeps the request for when the window is
+  // shown, so the flag round-trips and nothing appears on anybody's desktop — which is checked,
+  // since a fullscreen window that showed itself would cover the display of whoever is at it.
+  std::string error;
+  if (!window::init(&error)) {
+    MESSAGE("no display: " << error);
+    return;
+  }
+  window::WindowDesc desc;
+  desc.title = "engine fullscreen test";
+  desc.width = 96;
+  desc.height = 64;
+  desc.hidden = true;
+  desc.vulkan = false;
+  window::Window window;
+  if (!window.create(desc, &error)) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
+#if ENGINE_PLATFORM_WINDOWS
+  auto visible_windows = [] {
+    struct Count {
+      DWORD pid;
+      int visible;
+    } count{::GetCurrentProcessId(), 0};
+    ::EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+          auto* c = reinterpret_cast<Count*>(param);
+          DWORD owner = 0;
+          ::GetWindowThreadProcessId(hwnd, &owner);
+          if (owner == c->pid && ::IsWindowVisible(hwnd)) ++c->visible;
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&count));
+    return count.visible;
+  };
+  CHECK(visible_windows() == 0);
+#endif
+  CHECK_FALSE(window.fullscreen());
+  CHECK(window.set_fullscreen(true));
+  CHECK(window.fullscreen());
+  window::Event e;
+  while (window.poll(e)) {
+  }
+  CHECK(window.fullscreen());  // SDL sent no leave-fullscreen of its own
+#if ENGINE_PLATFORM_WINDOWS
+  CHECK(visible_windows() == 0);
+#endif
+  CHECK(window.set_fullscreen(false));
+  CHECK_FALSE(window.fullscreen());
+  while (window.poll(e)) {
+  }
+  // Still the size it was made at: a hidden window's request never reached the platform.
+  CHECK(window.pixel_width() >= 96);
+  CHECK(window.pixel_height() >= 64);
+#if ENGINE_PLATFORM_WINDOWS
+  CHECK(visible_windows() == 0);
+#endif
+#if defined(_WIN32)
+  window::WindowDesc cd;
+  cd.parent = &window;
+  cd.width = 32;
+  cd.height = 24;
+  cd.hidden = true;
+  cd.vulkan = false;
+  window::Window child;
+  REQUIRE_MESSAGE(child.create(cd, &error), error);
+  CHECK_FALSE(child.set_fullscreen(true));  // its parent places it
+  CHECK_FALSE(child.fullscreen());
+  child.destroy();
+#endif
+  CHECK(window.set_fullscreen(true));
+  window.destroy();
+  CHECK_FALSE(window.fullscreen());
+  CHECK_FALSE(window.set_fullscreen(true));
+  CHECK_FALSE(window.set_fullscreen(false));
+  window::shutdown();
+}
+
 TEST_CASE("window: a child window sits in its parent, moves, and reports through its parent") {
   // WindowDesc::parent (window.md, "Child windows"): a rectangle inside the parent's client area,
   // movable with set_rect, whose events come out of the parent's poll marked `child`. Both hidden
