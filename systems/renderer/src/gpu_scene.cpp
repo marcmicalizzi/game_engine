@@ -2695,6 +2695,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     instance.material_base = mesh_material_base[instance.mesh];
   mesh_material_base_ = mesh_material_base;
   material_count_ = material_table.size();
+  has_water_ = false;
+  for (const gfx::ResolveMaterial& material : material_table)
+    if ((material.flags & gfx::k_material_water) != 0) has_water_ = true;
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
   return gfx::upload_buffer(device, material_table.data(),

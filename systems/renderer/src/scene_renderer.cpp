@@ -30,6 +30,8 @@
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <shaders/visibility_resolve_rt.spv.h>
+#include <shaders/visibility_resolve_rt_water.spv.h>
+#include <shaders/visibility_resolve_water.spv.h>
 
 namespace engine::renderer {
 
@@ -152,6 +154,16 @@ bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u
   }
   gfx::destroy_buffer(device, staging);
   return ok;
+}
+
+// The resolve module a pipeline is made from: the shadow rays where the device traces them, and
+// the water branch only where the scene has a water material (water.md, "Shading"). The branch
+// raises the fragment shader's register allocation for every pixel, water or not — 0.48 ms of
+// resolve on a ray-traced surround frame with no water in it (2026-10-18) — so a scene without
+// water draws with the module that has none, which is the bytes the resolve was before water.
+const char* resolve_module(bool shadows, bool water) noexcept {
+  if (water) return shadows ? "visibility_resolve_rt_water" : "visibility_resolve_water";
+  return shadows ? "visibility_resolve_rt" : "visibility_resolve";
 }
 
 }  // namespace
@@ -436,6 +448,13 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   // draw with it, because its `g_scenes[]` is binding 3 of the bindless set.
   shaders_.add_embedded("visibility_resolve_rt", shaders::k_visibility_resolve_rt_spirv,
                         shaders::k_visibility_resolve_rt_spirv_size);
+  // The same two with the water branch (water.md, "Shading"), drawn with only by a scene that has a
+  // water material (`resolve_module`, above): a branch in every resolve costs every pixel
+  // registers.
+  shaders_.add_embedded("visibility_resolve_water", shaders::k_visibility_resolve_water_spirv,
+                        shaders::k_visibility_resolve_water_spirv_size);
+  shaders_.add_embedded("visibility_resolve_rt_water", shaders::k_visibility_resolve_rt_water_spirv,
+                        shaders::k_visibility_resolve_rt_water_spirv_size);
   shaders_.add_embedded("clas_records", shaders::k_clas_records_spirv,
                         shaders::k_clas_records_spirv_size);
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
@@ -563,7 +582,7 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   if (pipelines_.encode.valid()) gfx::destroy_pipeline(device, pipelines_.encode);
   pipelines_.resolve_linear = pipelines_.encode = {};
   const gfx::Shader* resolve =
-      shaders_.get(resolved_.shadows ? "visibility_resolve_rt" : "visibility_resolve", error);
+      shaders_.get(resolve_module(resolved_.shadows, scene_->has_water()), error);
   const gfx::Shader* encode = resolve != nullptr ? shaders_.get("frame_encode", error) : nullptr;
   if (encode == nullptr) return false;
   gfx::BindlessSet& bindless = scene_->bindless();
@@ -693,9 +712,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   const gfx::Shader* hiz = sw != nullptr ? shaders_.get("hiz_build", error) : nullptr;
   const gfx::Shader* vertex = hiz != nullptr ? shaders_.get("cluster_vertex", error) : nullptr;
   const gfx::Shader* resolve =
-      hiz != nullptr
-          ? shaders_.get(resolved_.shadows ? "visibility_resolve_rt" : "visibility_resolve", error)
-          : nullptr;
+      hiz != nullptr ? shaders_.get(resolve_module(resolved_.shadows, scene_->has_water()), error)
+                     : nullptr;
   if (resolve == nullptr || vertex == nullptr) return false;
   gfx::BindlessSet& bindless = scene_->bindless();
   if (resolved_.deform_pass) {

@@ -161,6 +161,7 @@ bool gpu_here() {
 struct Shot {
   CapturedFrame frame;
   u32 water_instance = ~0u;
+  bool has_water = false;  // the GPU scene's answer, which picks the resolve module
 };
 
 // One capture of a scene file from above the pool's west shore, towards the sun's reflection.
@@ -197,6 +198,7 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
   for (u32 s = 0; s < shots; ++s) {
     REQUIRE_MESSAGE(renderer.capture(frame, channels, out[s].frame, &error), error);
     out[s].water_instance = water_instance;
+    out[s].has_water = scene.has_water();
   }
 }
 
@@ -266,6 +268,10 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
   REQUIRE(a.width == b.width);
   REQUIRE(a.color.size() == b.color.size());
   REQUIRE(with[0].water_instance != ~0u);
+  // The scene with the block draws with the resolve's water module and the one without it with the
+  // plain module, which has no water branch to pay for (water.md, "Shading").
+  CHECK(with[0].has_water);
+  CHECK_FALSE(without[0].has_water);
   // The same frame twice: the same bytes.
   CHECK(std::equal(a.color.begin(), a.color.end(), with[1].frame.color.begin()));
   // With and without: every pixel that differs is a pixel of the pool, or within the sun's shadow

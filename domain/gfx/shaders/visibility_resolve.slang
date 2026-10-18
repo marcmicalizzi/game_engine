@@ -42,6 +42,15 @@
 // because `g_scenes[]` is binding 3 of the bindless set, which a device without acceleration
 // structures does not have: visibility_resolve_rt.slang is this file with the rays, and the
 // plain module is what every other device draws with.
+//
+// Water (docs/subsystems/water.md, "Shading"): with RESOLVE_WATER a pixel whose material carries
+// `k_material_water` is shaded by `water_pixel` (water.slang) in place of the BSDF. It is a second
+// pair of modules — visibility_resolve_water.slang and visibility_resolve_rt_water.slang — rather
+// than a branch every module carries, because a fragment shader's registers are allocated for its
+// largest path whether or not a pixel takes it: the branch compiled into every resolve cost the
+// ray-traced surround budgets 0.48 ms of resolve with no water on screen (2026-10-18). The renderer
+// draws with the water module only when its scene has a water material (`GpuScene::has_water`),
+// and the plain module compiles to the bytes it did before water existed.
 
 #include "brdf.slang"
 #include "display.slang"
@@ -49,7 +58,9 @@
 #include "material.slang"
 #include "scene.slang"
 #include "sky.slang"
+#ifdef RESOLVE_WATER
 #include "water.slang"
+#endif
 
 #ifdef RESOLVE_RAY_SHADOWS
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
@@ -121,8 +132,14 @@ struct ResolveParams {
   uint display_encoding;
   float display_paper_white_nits;
   float display_peak_nits;
-  // The water's clock (water.slang): the frame's world time modulo k_water_period_s, seconds.
+  // The water's clock (water.slang): the frame's world time modulo k_water_period_s, seconds. Only
+  // the water modules read it; the plain ones keep the word's old name, which is in the SPIR-V's
+  // debug names, so that they are the bytes they were before the water (RESOLVE_WATER, above).
+#ifdef RESOLVE_WATER
   float water_time_s;
+#else
+  uint display_pad;
+#endif
 };
 
 // The output encode's target, gathered from the block (display.slang's `DisplayTarget`).
@@ -414,7 +431,9 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // (the reconstruction's own derivatives, as the ground's detail takes them); the sun as the opaque
 // path takes it, through the same shadow query on the flat surface; the ambient of a level
 // surface; the sky along the reflected view, or the stand-in's clear colour without a sky. What it
-// returns is the surface's radiance, before the air between it and the eye.
+// returns is the surface's radiance, before the air between it and the eye. Only the water modules
+// have it (RESOLVE_WATER, above).
+#ifdef RESOLVE_WATER
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                    uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
                    float3 from_eye, ResolveMaterial material, float ray_bias) {
@@ -453,6 +472,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   }
   return water_radiance(w, n, view, s.uv, params->sun.xyz, sun, ambient, reflected);
 }
+#endif
 
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
@@ -662,10 +682,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float3 color = float3(0.0);
   // A water surface (k_material_water; water.slang, docs/subsystems/water.md) is shaded by its
   // own model in place of the BSDF; every other material takes the path below exactly as before.
+  // The plain modules have no branch at all (RESOLVE_WATER, above), and draw a water material, as
+  // every reader but this one does, as an untextured dielectric of its shallow colour.
+#ifdef RESOLVE_WATER
   if ((material.flags & k_material_water) != 0) {
     color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
                         from_eye, material, ray_bias);
-  } else {
+  } else
+#endif
+  {
     if (dot(surface.normal, params->sun.xyz) > 0.0) {
       const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
                                         params->sun.xyz, 1e30);
