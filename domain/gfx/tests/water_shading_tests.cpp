@@ -28,7 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <shaders/visibility_resolve.spv.h>
+#include <shaders/visibility_resolve_water.spv.h>
 #include <string>
 
 using namespace engine;
@@ -147,8 +147,8 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   gfx::ShaderModuleHandle resolve_module =
-      gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
-                                shaders::k_visibility_resolve_spirv_size, &error);
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_water_spirv,
+                                shaders::k_visibility_resolve_water_spirv_size, &error);
   REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),

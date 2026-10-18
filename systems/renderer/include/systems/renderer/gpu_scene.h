@@ -293,6 +293,10 @@ class GpuScene {
   // slot is where the layout says: what the cull pass's binary search needs. For the tests.
   bool validate_tables(std::string* why = nullptr) const;
   u32 material_count() const noexcept { return material_count_; }
+  // Whether any material of the table is the water class (`gfx::k_material_water`): the renderer
+  // then draws with the resolve module that has the water branch, and otherwise with the one that
+  // has none, since the branch costs every pixel of every frame (water.md, "Shading").
+  bool has_water() const noexcept { return has_water_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
   // from the visible list, so what a frame actually uses is `Stats::deform_vertices`.
@@ -1067,6 +1071,7 @@ class GpuScene {
   void destroy_ray_tracing_layout() noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
+  bool has_water_ = false;  // a material of the table carries gfx::k_material_water
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u32 cascade_count_ = 0;  // shadow cascades whose runs follow the views'

@@ -5,10 +5,13 @@
 # engine_shaders_gfx_tests below.
 # No DEPENDS: engine_shaders() walks each source's #include graph itself, so brdf.slang,
 # scene.slang, and visibility_resolve.slang (which visibility_resolve_rt.slang includes with the
-# shadow rays defined in) reach exactly the shaders that include them (cmake/EngineShaders.cmake).
+# shadow rays defined in, and the two _water modules with the water branch) reach exactly the
+# shaders that include them (cmake/EngineShaders.cmake).
 engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.slang
                              shaders/cluster_sw_raster.slang shaders/visibility_resolve.slang
                              shaders/visibility_resolve_rt.slang
+                             shaders/visibility_resolve_water.slang
+                             shaders/visibility_resolve_rt_water.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
