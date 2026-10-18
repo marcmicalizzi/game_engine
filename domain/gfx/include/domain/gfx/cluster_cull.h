@@ -49,6 +49,7 @@
 #include <core/math/world.h>
 
 #include <cmath>
+#include <cstddef>
 
 namespace engine::gfx {
 
@@ -132,6 +133,13 @@ inline constexpr u32 k_draw_args_bytes = 16;
 // `(k_caster_run * views + v) * pair_count` and their visible indices never collide with a drawn
 // entry's. `clas_records.slang` mirrors the number, because it builds that run beside run 0.
 inline constexpr u32 k_caster_run = 2;
+
+// The off-frustum casters' volumes (`CullParams::caster_planes`): a frustum swept towards a
+// directional light is at most its six planes, a plane through each of the at most six edges of its
+// silhouette, and one cap; a point light's hull at most five kept planes and six through the light.
+// Five volumes: the key light's and up to four point lights' (renderer.md, "Shadows").
+inline constexpr u32 k_caster_volume_planes = 13;
+inline constexpr u32 k_max_caster_volumes = 5;
 
 // Mirrors CullParams in cluster_cull.slang. 528 bytes.
 //
@@ -885,6 +893,8 @@ inline constexpr u32 k_hiz_workgroup_size = 16;   // numthreads in hiz_build.sla
 inline constexpr u32 k_hiz_tile = 32;             // source texels one workgroup folds, per side
 // 32 -> 16 -> 8 -> 4 -> 2 -> 1: the halvings a 16 x 16 workgroup can do in shared memory.
 inline constexpr u32 k_hiz_levels_per_dispatch = 5;
+
+static_assert(offsetof(CullParams, eye) == k_cull_params_eye_offset);
 
 inline void set_frustum(CullParams& params, const Frustum& frustum) noexcept {
   params.plane_count = frustum.plane_count;

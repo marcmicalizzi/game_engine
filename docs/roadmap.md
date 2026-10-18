@@ -83,7 +83,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R51 | Ray tracing chain sized by the frame | done (e77ea198, c4011921) | R50 | M | design | [renderer](subsystems/renderer.md#the-ray-tracing-chains-memory) |
 | R52 | Ray-traced hard shadows | done (47a97be6, c5d23997) | R50 | M | design | [renderer](subsystems/renderer.md#ray-traced) |
 | R53 | Shadow default for the RTX class | blocked (the owner's choice of rt or csm) | R48, R52 | S | design | [flythrough](experiments/flythrough-desert-overlook.md) |
-| R54 | Off-frustum casters under traced shadows | open | R51 | M | design | [renderer](subsystems/renderer.md#shadows) |
+| R54 | Off-frustum casters under traced shadows | in progress | R51 | M | design | [renderer](subsystems/renderer.md#shadows) |
 | R55 | Sky from a provider's model | done (97c4b018) | R20 | L | design | [renderer](subsystems/renderer.md#the-sky) |
 | R56 | Accept ADR-0048 | blocked (the owner's review) | R55 | S | design | [ADR-0048](adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md) |
 | R57 | Eye adaptation, bloom and the post chain | open | R55 | M | design | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |
