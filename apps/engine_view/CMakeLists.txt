@@ -50,6 +50,11 @@ if(TARGET engine::ruins)
   # P44; tests/game_placements_tests.cpp): compiled with the ruins, which the proof streams.
   list(APPEND _view_tests tests/game_placements_tests.cpp)
 endif()
+if(TARGET engine::water AND TARGET engine::terrain AND TARGET engine::scatter AND TARGET engine::sky)
+  # A walk into the committed oasis pool (docs/subsystems/water.md, "Wading"): slowed by the depth,
+  # stopped at the chest, replayed offscreen to the same trajectory. Its scene needs all four.
+  list(APPEND _view_tests tests/walk_water_view_tests.cpp)
+endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
 # ruins and city, and `--world` stream them. Nothing here calls one: the renderer's scene reader and
@@ -144,6 +149,15 @@ if(TARGET engine::scene_collision)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
+  endif()
+endif()
+# Wading (docs/subsystems/water.md, "Wading"): the walker asks the water capability for the depth
+# at its feet, the same hand-made switch as `--animate`'s. Without it a scene with water is refused
+# by the reader, and the walker has nothing to wade in.
+if(TARGET engine::water)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WATER=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WATER=1)
   endif()
 endif()
 if(TARGET engine::hotload)

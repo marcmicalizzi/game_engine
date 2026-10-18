@@ -106,6 +106,25 @@ struct DrawnGround {
   f64 blend = 0.0;
 };
 
+// **Wading** (docs/subsystems/water.md, "Wading"; roadmap S63): the depth of water at the walker's
+// feet scales its speed by a declared curve — full speed to the ankle (0.3 m), halving by the waist
+// (1 m), a slow wade to the chest (1.4 m) at a quarter — and **at the chest the water is a wall**:
+// a step whose heading leads deeper (the depth a quarter metre ahead along it is greater than at
+// the feet) is not taken, so the walker stops there and wades back the way it came. No swimming
+// this stage (roadmap S86). The depth comes from whoever owns the water (engine-view asks the water
+// capability, `water::depth_at`), as a plain function of a position, so a walk through water
+// replays bit for bit; a walker with no depth function, or at a depth of 0, takes the speeds it
+// always did, to the bit (`x * 1.0f` is `x`).
+inline constexpr f32 k_wade_ankle_m = 0.3f;
+inline constexpr f32 k_wade_waist_m = 1.0f;
+inline constexpr f32 k_wade_chest_m = 1.4f;
+inline constexpr f32 k_wade_probe_m = 0.25f;  // how far ahead "deeper" is asked
+// The curve: 1 to the ankle, falling linearly to 0.5 at the waist and to 0.25 at the chest, and
+// 0.25 beyond (where only a step back is taken).
+f32 wade_scale(f32 depth) noexcept;
+// The depth of water at a world position, metres; 0 where there is none.
+using DepthFn = f32 (*)(const void* context, WorldPos at) noexcept;
+
 struct WalkStats {
   u64 ticks = 0;         // ticks walked
   f64 distance_m = 0.0;  // horizontal distance walked
@@ -118,6 +137,11 @@ struct WalkStats {
   // drawn time), metres.
   f32 max_ground_error_m = 0.0f;
   u64 hash = 0;  // the walker's own state chain: the character's, or the ground-follow's
+  // Wading (`Walker::set_water`): the deepest water the feet stood in, the ticks they stood in any,
+  // and the ticks the chest's wall stopped a step.
+  f32 max_depth_m = 0.0f;
+  u64 wading_ticks = 0;
+  u64 stopped_ticks = 0;
 };
 
 class Walker {
@@ -153,6 +177,10 @@ class Walker {
   void set_speed_scale(f32 walk, f32 sprint) noexcept;
   f32 speed_scale() const noexcept;
   f32 sprint_scale() const noexcept;
+  // **The water the walker wades in** (above, "Wading"): asked at the feet before every step, and a
+  // quarter metre ahead along the heading at the chest. `context` must outlive the walker. Null:
+  // no water, the walker as it always was.
+  void set_water(DepthFn depth, const void* context) noexcept;
   // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
   // and as a teleport; the eye returned.
