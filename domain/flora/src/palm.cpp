@@ -1,6 +1,7 @@
 // The date palm's solver (palm.h; docs/subsystems/flora.md, "The date palm").
 #include <core/math/deterministic.h>
 #include <domain/flora/palm.h>
+#include <domain/geometry/cluster.h>
 
 #include <cmath>
 #include <string>
@@ -12,8 +13,7 @@ namespace {
 constexpr f64 k_pi = 3.14159265358979323846;
 constexpr f64 k_degree = k_pi / 180.0;
 
-// ---- arithmetic
-// -----------------------------------------------------------------------------------
+// ---- arithmetic ---------------------------------------------------------------------------------
 //
 // f64 throughout, rounded to the f32 the mesh stores once, at the end: every operation is IEEE and
 // contraction is off tree-wide, so a position is a function of the parameters' bits alone.
@@ -63,13 +63,17 @@ Rng stream(const Palm& p, Stream s) {
   return Rng(mix.next());
 }
 
-// ---- the plan: how much detail the budget buys
-// ----------------------------------------------------
+// ---- the plan: how much detail the budget buys --------------------------------------------------
 
 struct Plan {
   u32 rings = 1;
   u32 rows_per_ring = 4;
   u32 segments = 16;
+  u32 rachis_sides = 3;      // a trough (two edges and a keel), or a ribbon of 2
+  u32 leaflet_segments = 3;  // along a leaflet
+  u32 leaflets = 0;          // per side of a frond
+  f64 leaflet_width = 0.0;   // a leaflet's base, metres
+  u32 petiole_rows = 5;      // along the rachis below the first leaflet
 };
 
 // The rows each ring's profile is drawn with, at these phases of the ring, and how far below the
@@ -97,7 +101,18 @@ u32 trunk_triangles(const Plan& plan) {
   return (rows - 1) * plan.segments * 2 + plan.segments;  // the wall and the apex's cap
 }
 
-u32 count_triangles(const Plan& plan) { return trunk_triangles(plan); }
+// A frond's rows: the petiole's, a pair round each leaflet's base, and the tip; between two rows
+// the rachis is two triangles a side of its cross-section, and a leaflet of `leaflet_segments` is
+// 2 * segments - 1 (a quad a segment, the last one a triangle to the point).
+u32 frond_triangles(const Plan& plan) {
+  const u32 rows = plan.petiole_rows + 2 * plan.leaflets + 1;
+  return (rows - 1) * 2 * (plan.rachis_sides - 1) +
+         2 * plan.leaflets * (2 * plan.leaflet_segments - 1);
+}
+
+u32 count_triangles(const Palm& p, const Plan& plan) {
+  return trunk_triangles(plan) + (p.frond_count + p.dead_skirt_fronds) * frond_triangles(plan);
+}
 
 // The rings the trunk's length holds at the spacing asked: the spacing is kept to the nearest
 // whole ring, so the scars are evenly spaced from the ground to the apex.
@@ -112,27 +127,43 @@ u32 rings_of(const Palm& p, f64 length) {
 bool plan_palm(const Palm& p, f64 length, Plan& plan, u32& steps) {
   plan = Plan{};
   plan.rings = rings_of(p, length);
+  plan.leaflets = p.leaflet_count;
+  plan.leaflet_width = static_cast<f64>(p.leaflet_width_m);
   steps = 0;
   const u32 budget = p.triangle_budget;
-  auto fits = [&] { return count_triangles(plan) <= budget; };
+  auto fits = [&] { return count_triangles(p, plan) <= budget; };
   if (fits()) return true;
   const auto step = [&](auto&& change) {
     change();
     ++steps;
     return fits();
   };
+  // Detail inside a leaflet and a scar ring first: neither changes the outline.
+  if (step([&] { plan.leaflet_segments = 2; })) return true;
   if (step([&] { plan.rows_per_ring = 2; })) return true;
+  if (step([&] { plan.leaflet_segments = 1; })) return true;
   if (step([&] { plan.segments = 12; })) return true;
+  if (step([&] { plan.rachis_sides = 2; })) return true;
+  if (step([&] { plan.petiole_rows = 2; })) return true;
   if (step([&] { plan.segments = 8; })) return true;
   if (step([&] { plan.rows_per_ring = 1; })) return true;
+  // Then fewer, wider leaflets, keeping the frond's leaf area: the crown's outline is the fronds',
+  // and a frond of half the leaflets twice as wide reads as the same frond from a distance.
+  while (plan.leaflets > 1) {
+    if (step([&] {
+          plan.leaflets = (plan.leaflets + 1) / 2;
+          plan.leaflet_width *= 2.0;
+        })) {
+      return true;
+    }
+  }
   while (plan.rings > 1) {
     if (step([&] { plan.rings = (plan.rings + 1) / 2; })) return true;
   }
   return step([&] { plan.segments = 6; });
 }
 
-// ---- the trunk
-// ------------------------------------------------------------------------------------
+// ---- the trunk ----------------------------------------------------------------------------------
 //
 // The spine leans by `lean_deg` towards an azimuth drawn from the seed and bends back towards the
 // vertical as it rises: its angle from vertical falls linearly with arc length, from the lean at
@@ -293,6 +324,257 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
     out.triangle(ring_first + i, centre, ring_first + (i + 1) % segs);
 }
 
+// ---- the crown and the skirt --------------------------------------------------------------------
+//
+// A frond is one connected surface: the rachis a strip of rows along a curve, and on each side of
+// it a comb of leaflets whose bases are the rachis's own edge vertices. One surface rather than a
+// rachis and a few hundred loose strips because the LOD builder can only collapse what is
+// connected — a loose leaflet keeps its last triangle at every level, and a crown of them does not
+// coarsen — and one UV island for the same reason the other way round: an island's edge is a seam
+// the simplifier may not collapse across (geometry.md, "What the simplifier is given").
+
+struct FrondShape {
+  D3 base;           // where the rachis starts
+  D3 axis;           // the crown's up: a frond's angle from vertical is measured from it
+  D3 out;            // across `axis`, towards the frond's azimuth
+  D3 across;         // the frond's lateral, so that cross(across, out) is `axis`
+  f64 length = 0.0;  // of the rachis
+  f64 start = 0.0;   // angle from `axis` at the base, radians
+  f64 bend = 0.0;    // further angle by the tip; it grows with the square of the arc
+  f64 leaflet_angle = 0.0;
+  f64 vee = 0.0;  // how far a leaflet rises out of the rachis's plane, radians
+  f64 leaflet_scale = 1.0;
+  f64 sag = 0.0;  // a leaflet's droop under its own weight, in its lengths
+};
+
+constexpr f64 k_max_frond_angle = 178.0 * k_degree;
+constexpr f64 k_petiole = 0.22;  // the share of the rachis below the first leaflet
+constexpr f64 k_golden_angle = 2.39996322972865332;  // pi (3 - sqrt 5): phyllotaxis
+
+f64 frond_angle(const FrondShape& f, f64 arc) {
+  const f64 t = arc / f.length;
+  const f64 a = f.start + f.bend * t * t;
+  return a < k_max_frond_angle ? a : k_max_frond_angle;
+}
+
+D3 frond_direction(const FrondShape& f, f64 angle) {
+  return f.out * det::sin(angle) + f.axis * det::cos(angle);
+}
+
+// The rachis's half-width: a petiole's at the base, a few millimetres at the tip, in proportion to
+// the frond's length.
+f64 rachis_half_width(const FrondShape& f, f64 arc) {
+  const f64 scale = f.length / 3.8;
+  return lerp(0.035 * scale, 0.004 * scale, clamp01(arc / f.length));
+}
+
+// A leaflet's length at `x` along the leaflet-bearing part: longest a little past the middle,
+// shorter towards the base and the tip, as a date palm's pinnae are; at most a ninth of the frond.
+f64 leaflet_length(const FrondShape& f, f64 x) {
+  return f.length * 0.11 * f.leaflet_scale * (0.3 + 0.7 * det::sin(k_pi * (0.12 + 0.76 * x)));
+}
+
+// Emits one frond. Every triangle is wound to face the frond's upper side at its station, so the
+// area-weighted normals the crown gets are a surface's and not a cancellation.
+void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
+  const u32 n = plan.leaflets;
+  const f64 first_leaflet = f.length * k_petiole;
+  const f64 spacing = (f.length - first_leaflet) / static_cast<f64>(n);
+  const f64 half = 0.5 * (plan.leaflet_width < 0.9 * spacing ? plan.leaflet_width : 0.9 * spacing);
+
+  // The rows along the rachis: the petiole's, then a pair round each leaflet's base, then the tip.
+  Vector<f64> arcs;
+  for (u32 i = 0; i < plan.petiole_rows; ++i)
+    arcs.push_back(first_leaflet * static_cast<f64>(i) / static_cast<f64>(plan.petiole_rows));
+  for (u32 i = 0; i < n; ++i) {
+    const f64 centre = first_leaflet + (static_cast<f64>(i) + 0.5) * spacing;
+    arcs.push_back(centre - half);
+    arcs.push_back(centre + half);
+  }
+  arcs.push_back(f.length);
+  const u32 rows = arcs.size();
+
+  // The centre line, integrated row to row at each step's middle angle, and each row's frame.
+  Vector<D3> centre(rows);
+  Vector<D3> tangent(rows);
+  Vector<D3> up(rows);
+  D3 at = f.base;
+  for (u32 r = 0; r < rows; ++r) {
+    if (r > 0) {
+      const f64 mid = 0.5 * (arcs[r - 1] + arcs[r]);
+      at = at + frond_direction(f, frond_angle(f, mid)) * (arcs[r] - arcs[r - 1]);
+    }
+    centre[r] = at;
+    tangent[r] = frond_direction(f, frond_angle(f, arcs[r]));
+    up[r] = cross(f.across, tangent[r]);
+  }
+
+  const auto face = [&](u32 a, u32 b, u32 c, D3 hint) {
+    const Vec3 pa = out.mesh.positions[a];
+    const Vec3 pb = out.mesh.positions[b];
+    const Vec3 pc = out.mesh.positions[c];
+    const Vec3 nf = cross(pb - pa, pc - pa);
+    const f64 facing = static_cast<f64>(nf.x) * hint.x + static_cast<f64>(nf.y) * hint.y +
+                       static_cast<f64>(nf.z) * hint.z;
+    if (facing >= 0.0) {
+      out.triangle(a, b, c);
+    } else {
+      out.triangle(a, c, b);
+    }
+  };
+  // The chart: metres along the rachis and across it at one scale, so a frond texture is not
+  // stretched; every frond shares it. The normal is a placeholder the crown's pass replaces.
+  const f64 to_uv = 1.0 / f.length;
+  const auto vertex = [&](D3 p, D3 normal, f64 along, f64 lateral) {
+    return out.vertex(p, normal, along * to_uv, 0.5 + lateral * to_uv);
+  };
+
+  // The rachis: a trough of three vertices across (two edges and a keel below), or a ribbon of two.
+  Vector<u32> left(rows);
+  Vector<u32> right(rows);
+  Vector<u32> keel(rows);
+  for (u32 r = 0; r < rows; ++r) {
+    const f64 w = rachis_half_width(f, arcs[r]);
+    left[r] = vertex(centre[r] + f.across * w, up[r], arcs[r], w);
+    right[r] = vertex(centre[r] - f.across * w, up[r], arcs[r], -w);
+    if (plan.rachis_sides == 3)
+      keel[r] = vertex(centre[r] - up[r] * (0.6 * w), up[r], arcs[r], 0.0);
+  }
+  for (u32 r = 0; r + 1 < rows; ++r) {
+    if (plan.rachis_sides == 3) {
+      face(left[r], keel[r], keel[r + 1], up[r]);
+      face(left[r], keel[r + 1], left[r + 1], up[r]);
+      face(keel[r], right[r], right[r + 1], up[r]);
+      face(keel[r], right[r + 1], keel[r + 1], up[r]);
+    } else {
+      face(left[r], right[r], right[r + 1], up[r]);
+      face(left[r], right[r + 1], left[r + 1], up[r]);
+    }
+  }
+
+  // The leaflets: each from its two base vertices on the rachis's edge, out at the leaflet angle
+  // and up out of the rachis's plane by the vee, tapering to a point and sagging a little.
+  const f64 ca = det::cos(f.leaflet_angle);
+  const f64 sa = det::sin(f.leaflet_angle);
+  const f64 cv = det::cos(f.vee);
+  const f64 sv = det::sin(f.vee);
+  for (u32 i = 0; i < n; ++i) {
+    const u32 r0 = plan.petiole_rows + 2 * i;
+    const u32 r1 = r0 + 1;
+    const f64 length = leaflet_length(f, (static_cast<f64>(i) + 0.5) / static_cast<f64>(n));
+    const f64 mid_arc = 0.5 * (arcs[r0] + arcs[r1]);
+    const f64 base_half = 0.5 * (arcs[r1] - arcs[r0]);
+    const f64 w = rachis_half_width(f, mid_arc);
+    const D3 t = normalized(tangent[r0] + tangent[r1]);
+    const D3 u = normalized(up[r0] + up[r1]);
+    for (const f64 side : {1.0, -1.0}) {
+      const u32 b0 = side > 0.0 ? left[r0] : right[r0];
+      const u32 b1 = side > 0.0 ? left[r1] : right[r1];
+      const D3 p0 = centre[r0] + f.across * (side * rachis_half_width(f, arcs[r0]));
+      const D3 p1 = centre[r1] + f.across * (side * rachis_half_width(f, arcs[r1]));
+      const D3 mid = (p0 + p1) * 0.5;
+      const D3 dir = normalized(t * ca + (f.across * (side * cv) + u * sv) * sa);
+      const D3 edge = normalized(p1 - p0);
+      D3 hint = normalized(cross(edge, dir));
+      if (dot(hint, u) < 0.0) hint = hint * -1.0;
+      u32 prev0 = b0;
+      u32 prev1 = b1;
+      for (u32 j = 1; j <= plan.leaflet_segments; ++j) {
+        const f64 s = static_cast<f64>(j) / static_cast<f64>(plan.leaflet_segments);
+        const D3 along = mid + dir * (length * s) - D3{0.0, 1.0, 0.0} * (f.sag * length * s * s);
+        const f64 chart_along = mid_arc + length * s * ca;
+        const f64 chart_across = side * (w + length * s * sa);
+        if (j == plan.leaflet_segments) {
+          const u32 tip = vertex(along, hint, chart_along, chart_across);
+          face(prev0, prev1, tip, hint);
+        } else {
+          const f64 h = base_half * (1.0 - s);
+          const u32 v0 = vertex(along - edge * h, hint, chart_along - h, chart_across);
+          const u32 v1 = vertex(along + edge * h, hint, chart_along + h, chart_across);
+          face(prev0, prev1, v1, hint);
+          face(prev0, v1, v0, hint);
+          prev0 = v0;
+          prev1 = v1;
+        }
+      }
+    }
+  }
+}
+
+// The apex's frame: where the crown stands and which way is its up.
+struct Apex {
+  D3 point;
+  D3 axis;
+  D3 normal;
+  D3 side;
+  f64 radius = 0.0;
+};
+
+Apex apex_of(const Palm& p, const Spine& spine) {
+  Apex a;
+  a.point = spine_point(spine, spine.length);
+  a.axis = spine_tangent(spine, spine.length);
+  a.normal = spine_normal(spine, spine.length);
+  a.side = spine.side;
+  a.radius = static_cast<f64>(p.trunk_top_radius_m);
+  return a;
+}
+
+void orient(FrondShape& f, const Apex& apex, f64 azimuth) {
+  const f64 c = det::cos(azimuth);
+  const f64 s = det::sin(azimuth);
+  f.axis = apex.axis;
+  f.out = apex.normal * c + apex.side * s;
+  f.across = apex.side * c - apex.normal * s;
+}
+
+// The green fronds, youngest (k = 0) up the middle and the oldest at the cone's edge, round the
+// apex on the golden angle as a palm's leaves come, and the older ones springing a little lower.
+void build_crown(const Palm& p, const Apex& apex, const Plan& plan, Rng& rng, Emitter& out) {
+  const f64 turn = rng.unit() * 2.0 * k_pi;
+  const u32 count = p.frond_count;
+  for (u32 k = 0; k < count; ++k) {
+    const f64 x = std::sqrt((static_cast<f64>(k) + 0.5) / static_cast<f64>(count));
+    FrondShape f;
+    orient(f, apex, turn + static_cast<f64>(k) * k_golden_angle + rng.symmetric() * 0.1);
+    f.start = static_cast<f64>(p.frond_spread_deg) * k_degree * x * (1.0 + 0.08 * rng.symmetric());
+    f.bend = static_cast<f64>(p.frond_droop) * 100.0 * k_degree * (0.5 + 0.5 * x);
+    f.length =
+        static_cast<f64>(p.frond_length_m) * (0.8 + 0.2 * x) * (1.0 + 0.05 * rng.symmetric());
+    f.base = apex.point + f.out * (0.5 * apex.radius * x) - f.axis * (1.5 * apex.radius * x);
+    f.leaflet_angle = static_cast<f64>(p.leaflet_angle_deg) * k_degree;
+    f.vee = 28.0 * k_degree;
+    f.sag = 0.12;
+    build_frond(f, plan, out);
+  }
+}
+
+// The dead fronds: below the crown, round the trunk, hanging down along it with their leaflets
+// folded in.
+void build_skirt(const Palm& p, const Spine& spine, const Apex& apex, const Plan& plan, Rng& rng,
+                 Emitter& out) {
+  const f64 turn = rng.unit() * 2.0 * k_pi;
+  const u32 count = p.dead_skirt_fronds;
+  const f64 frond = static_cast<f64>(p.frond_length_m);
+  for (u32 j = 0; j < count; ++j) {
+    const f64 x = (static_cast<f64>(j) + 0.5) / static_cast<f64>(count);
+    FrondShape f;
+    orient(f, apex, turn + static_cast<f64>(j) * k_golden_angle + rng.symmetric() * 0.1);
+    const f64 drop = 1.5 * apex.radius + (0.15 + 0.85 * x) * 0.25 * frond;
+    f64 arc = spine.length - drop;
+    if (arc < 0.3 * spine.length) arc = 0.3 * spine.length;
+    f.base = spine_point(spine, arc) + f.out * (0.9 * taper(p, spine, arc));
+    f.start = (120.0 + 25.0 * rng.unit()) * k_degree;
+    f.bend = 40.0 * k_degree;
+    f.length = 0.85 * frond * (1.0 + 0.05 * rng.symmetric());
+    f.leaflet_angle = 0.6 * static_cast<f64>(p.leaflet_angle_deg) * k_degree;
+    f.vee = -15.0 * k_degree;
+    f.leaflet_scale = 0.85;
+    f.sag = 0.3;
+    build_frond(f, plan, out);
+  }
+}
+
 assets::Material material(const char* name, Vec4 colour, f32 roughness, bool two_sided) {
   assets::Material m;
   m.name = name;
@@ -355,28 +637,64 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
     if (error != nullptr) {
       *error = "engine.flora.Palm.triangle_budget " + std::to_string(p.triangle_budget) +
                " cannot hold this palm: its coarsest form needs " +
-               std::to_string(count_triangles(plan)) + " triangles";
+               std::to_string(count_triangles(p, plan)) + " triangles";
     }
     return false;
   }
 
+  // Flat PBR constants, in linear colour, until the textures (roadmap G60): bark brown, the
+  // fronds' grey green, and the dead fronds' tan.
   out.materials.push_back(material("bark", Vec4{0.33f, 0.24f, 0.16f, 1.0f}, 0.9f, false));
+  out.materials.push_back(material("frond", Vec4{0.13f, 0.21f, 0.07f, 1.0f}, 0.55f, true));
+  out.materials.push_back(material("dead frond", Vec4{0.45f, 0.33f, 0.18f, 1.0f}, 0.85f, true));
   Emitter emit{out};
+  const auto primitive = [&](u32 first, i32 material_index) {
+    assets::Primitive part;
+    part.first_index = first;
+    part.index_count = out.indices.size() - first;
+    part.material = material_index;
+    if (part.index_count > 0) out.primitives.push_back(part);
+    return part.index_count / 3;
+  };
   build_trunk(p, spine, plan, trunk_rng, emit);
-  assets::Primitive trunk;
-  trunk.first_index = 0;
-  trunk.index_count = out.indices.size();
-  trunk.material = 0;
-  out.primitives.push_back(trunk);
+  const u32 trunk_tris = primitive(0, 0);
+
+  const Apex apex = apex_of(p, spine);
+  const u32 fronds_vertex = out.positions.size();
+  const u32 crown_first = out.indices.size();
+  Rng crown_rng = stream(p, Stream::crown);
+  build_crown(p, apex, plan, crown_rng, emit);
+  const u32 crown_tris = primitive(crown_first, 1);
+  const u32 skirt_first = out.indices.size();
+  Rng skirt_rng = stream(p, Stream::skirt);
+  build_skirt(p, spine, apex, plan, skirt_rng, emit);
+  const u32 skirt_tris = primitive(skirt_first, 2);
+
+  // The fronds' normals: area-weighted over their own faces (the trunk's are analytic, and its
+  // seam column would not survive the average).
+  {
+    Vector<Vec3> normals;
+    const std::span<const u32> fronds(out.indices.data() + crown_first,
+                                      out.indices.size() - crown_first);
+    geometry::compute_vertex_normals(out.positions, fronds, normals);
+    for (u32 v = fronds_vertex; v < out.positions.size(); ++v)
+      out.normals[v] = normals[v];
+  }
 
   if (report != nullptr) {
     *report = PalmReport{};
-    report->trunk_triangles = trunk.index_count / 3;
+    report->trunk_triangles = trunk_tris;
+    report->crown_triangles = crown_tris;
+    report->skirt_triangles = skirt_tris;
     report->triangles = out.indices.size() / 3;
     report->vertices = out.positions.size();
     report->rings = plan.rings;
     report->rows_per_ring = plan.rows_per_ring;
     report->trunk_segments = plan.segments;
+    report->rachis_sides = plan.rachis_sides;
+    report->leaflet_segments = plan.leaflet_segments;
+    report->leaflets_per_side = plan.leaflets;
+    report->leaflet_width_m = static_cast<f32>(plan.leaflet_width);
     report->steps = steps;
   }
   return true;

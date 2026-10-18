@@ -43,13 +43,24 @@ a 9 m palm. A parameter out of its range is refused with its name (`palm_in_rang
 
 ### The budget
 
-The solver builds the full detail when it fits `triangle_budget` and otherwise walks down a fixed
-ladder, one rung at a time, until it does: fewer rows a scar ring (four, then two), fewer segments
-round the trunk (16, 12, 8), one row a ring, rings merged two by two, and six segments last. The
-silhouette goes last because it is what a palm is recognized by. A budget that cannot hold even
-the bottom rung is refused with the count it would need; inside the documented ranges that does
-not happen (the test builds everything at its most expensive on 2,000). `PalmReport` says what
-the solver chose.
+The solver counts the triangles a plan makes before it builds anything (the count is exact: the
+test holds `PalmReport::triangles` to the index buffer), builds the full detail when it fits
+`triangle_budget`, and otherwise walks down a fixed ladder one rung at a time until it does:
+
+1. detail that does not change the outline — leaflets of two segments, scar rings of two rows,
+   leaflets of one segment (a single triangle each);
+2. then the trunk's and the rachis's cross-sections — 12 segments round the trunk, a ribbon
+   rachis instead of a keeled trough, two petiole rows, 8 segments, one row a ring;
+3. then fewer, wider leaflets, halved repeatedly with their width doubled so a frond keeps its
+   leaf area (a frond of half the leaflets twice as wide reads as the same frond from a distance);
+4. then rings merged two by two, and six segments round the trunk last.
+
+The fronds themselves are never dropped: the crown's outline is what a palm is recognized by. A
+budget that cannot hold even the bottom rung is refused with the count it would need; inside the
+documented ranges that does not happen (the test builds everything at its most expensive on
+2,000). The default palm is 52,704 triangles at full detail — trunk 10,512, crown 30,472, skirt
+11,720 — under its 60,000; on 20,000 it is 18,132 (one-segment leaflets, 12 segments, two rows a
+ring), and on 2,000, 1,896 (two leaflets a side).
 
 ### The trunk
 
@@ -65,6 +76,46 @@ against the one below it, from the seed, interpolated through the ring so the wa
 what makes the scars read as grown rather than lathed. The apex is closed by a low cone. One UV
 island: *u* once round with one seam column, *v* up the trunk at the same scale so a bark texture is
 not stretched; the cap is a small disc of its own beside it.
+
+### The crown and the skirt
+
+`frond_count` green fronds spring from the apex, round the trunk's own axis there, on the golden
+angle as a palm's leaves come; frond *k* of *n* leaves at `frond_spread_deg` × √((*k* + ½)/*n*) from
+the axis (so the youngest stands up the middle and the oldest at the cone's edge, the cone filled
+evenly by area), the older ones springing a little lower and outward, and every frond is turned and
+tilted a little from the seed. A frond's **rachis** is a curve whose angle from the axis grows with
+the square of its arc length — by `frond_droop` × 100° at the tip, more for the outer fronds — so a
+frond rises, arches and droops; its cross-section is a trough (two edges and a keel below, a ribbon
+when the budget asks), a petiole's width at the base and millimetres at the tip. Below the first
+leaflet is a bare petiole (22% of the rachis). On each side, `leaflet_count` **leaflets** stand on
+the rachis's own edge vertices — each a strip from two base corners, out at `leaflet_angle_deg`
+towards the tip and 28° up out of the rachis's plane (a date palm's fronds are V-shaped in
+section), tapering to a point and sagging a little; longest a little past the middle of the frond
+and at most a ninth of its length.
+
+**Why a frond is one connected surface.** The LOD builder can only collapse what is connected: a
+leaflet made as a loose strip keeps its last triangle at every level, and a crown of a few thousand
+of them does not coarsen at all. Standing every leaflet on the rachis's edge makes a frond one
+surface whose leaflets collapse into the rachis and whose rachis then collapses along itself.
+Every triangle is wound to face the frond's upper side, so the area-weighted normals the crown gets
+are a surface's and not a cancellation.
+
+**Why leaflets are geometry and the crown is two-sided.** Alpha-tested cards are roadmap R65 and
+open, so a leaflet is triangles, seen from both faces: the crown's material is `double_sided`, and
+`build_flora_container` builds that primitive's clusters with `normal_cones = false` and the
+trunk's with cones on — two primitives, two cone settings, one mesh (geometry.md, "Normal cones").
+The resolve turns a shading normal that ended up behind the surface to the camera's side, which is
+what makes one sheet of triangles read from below as well as above.
+
+`dead_skirt_fronds` **dead fronds** hang below the crown in tan, from the trunk's surface between
+one and two of its radii below the apex down to a quarter of a frond's length, pointing down at
+120°–145° from the axis and bending 40° further, their leaflets folded in (60% of the angle, 15°
+down out of the plane) and sagging more.
+
+**The UV layout.** One island a frond: *u* along the rachis and *v* across it, both in the frond's
+own length, so the chart is the frond laid flat — rachis down the middle and the leaflets at their
+angle either side, never overlapping each other — and every frond shares the same chart, so one
+frond texture serves them all. The trunk is one strip and its cap a disc beside it.
 
 ## Determinism
 
@@ -86,6 +137,10 @@ data, rebuilt from its parameters.
 - the mesh holds its `triangle_budget`, down to everything at its most expensive on 2,000;
 - the trunk's apex stands at `height_m` and its radii at the base and the apex are the ones asked,
   to 1%; every trunk face looks outwards (the column's signed volume is the taper's);
+- each green and each dead frond is one connected surface (the components of the crown are its
+  fronds), wound consistently with its normals; the crown stands above the apex and the skirt
+  below it; no skirt is asked, no skirt primitive;
+- a smaller budget walks down the ladder and holds, and keeps every frond;
 - one seed is one palm, and another seed another;
 - a parameter out of range is refused with its name;
 - the default palm hashes to the committed number.

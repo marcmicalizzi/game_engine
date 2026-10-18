@@ -174,6 +174,89 @@ TEST_CASE("flora: the trunk's radii are the radii asked, and every wall face loo
   CHECK(volume < 1.05 * column);
 }
 
+TEST_CASE("flora: each frond is one connected, consistently wound surface above the trunk") {
+  const flora::Palm p = default_palm();
+  const assets::MeshData mesh = solve(p);
+  REQUIRE(mesh.materials.size() == 3);
+  CHECK(mesh.materials[1].double_sided);
+  CHECK(mesh.materials[2].double_sided);
+  CHECK(mesh.materials[1].base_color.y > mesh.materials[1].base_color.x);  // green
+  CHECK(mesh.materials[2].base_color.x > mesh.materials[2].base_color.z);  // tan
+  for (const i32 material : {1, 2}) {
+    CAPTURE(material);
+    const assets::Primitive* part = primitive_of(mesh, material);
+    REQUIRE(part != nullptr);
+    // Connected components over shared vertices: one per frond, since a frond's leaflets stand on
+    // its rachis's own edge vertices. A loose leaflet would be a component of its own, and the LOD
+    // builder could never collapse it away.
+    Vector<u32> parent(mesh.positions.size());
+    for (u32 v = 0; v < parent.size(); ++v)
+      parent[v] = v;
+    const auto find = [&](u32 v) {
+      while (parent[v] != v)
+        v = parent[v] = parent[parent[v]];
+      return v;
+    };
+    u32 inconsistent = 0;
+    for (u32 i = part->first_index; i < part->first_index + part->index_count; i += 3) {
+      const u32 a = mesh.indices[i];
+      const u32 b = mesh.indices[i + 1];
+      const u32 c = mesh.indices[i + 2];
+      parent[find(a)] = find(b);
+      parent[find(b)] = find(c);
+      const Vec3 n =
+          cross(mesh.positions[b] - mesh.positions[a], mesh.positions[c] - mesh.positions[a]);
+      if (dot(n, mesh.normals[a] + mesh.normals[b] + mesh.normals[c]) <= 0.0f) ++inconsistent;
+    }
+    Vector<u32> roots;
+    for (u32 i = part->first_index; i < part->first_index + part->index_count; ++i) {
+      const u32 root = find(mesh.indices[i]);
+      if (std::find(roots.begin(), roots.end(), root) == roots.end()) roots.push_back(root);
+    }
+    CHECK(roots.size() == (material == 1 ? p.frond_count : p.dead_skirt_fronds));
+    // A face whose winding disagrees with its corners' area-weighted normals is a fold or a flip;
+    // a few where a leaflet's base turns against the rachis are tolerated, not a whole side.
+    CHECK(inconsistent * 100 <= part->index_count / 3);
+  }
+  // The crown stands at the apex: its highest point above the trunk's, and every dead frond's
+  // highest point below the apex.
+  const assets::Primitive* crown = primitive_of(mesh, 1);
+  f32 crown_top = -1e30f;
+  for (u32 i = crown->first_index; i < crown->first_index + crown->index_count; ++i)
+    crown_top = std::max(crown_top, mesh.positions[mesh.indices[i]].y);
+  CHECK(crown_top > p.height_m + 0.5f);
+  const assets::Primitive* skirt = primitive_of(mesh, 2);
+  f32 skirt_top = -1e30f;
+  for (u32 i = skirt->first_index; i < skirt->first_index + skirt->index_count; ++i)
+    skirt_top = std::max(skirt_top, mesh.positions[mesh.indices[i]].y);
+  CHECK(skirt_top < p.height_m);
+  // No skirt asked, no skirt primitive.
+  flora::Palm bare = p;
+  bare.dead_skirt_fronds = 0;
+  const assets::MeshData bare_mesh = solve(bare);
+  CHECK(primitive_of(bare_mesh, 2) == nullptr);
+}
+
+TEST_CASE("flora: a smaller budget walks down the ladder and holds") {
+  for (const u32 budget : {40000u, 20000u, 8000u, 2000u}) {
+    flora::Palm p = default_palm();
+    p.triangle_budget = budget;
+    flora::PalmReport report;
+    const assets::MeshData mesh = solve(p, &report);
+    CAPTURE(budget);
+    check_valid(p, mesh);
+    CHECK(report.steps > 0);
+    CHECK(report.triangles <= budget);
+    // The fronds are kept whatever the budget: the crown's outline is what a palm is.
+    const assets::Primitive* crown = primitive_of(mesh, 1);
+    REQUIRE(crown != nullptr);
+    MESSAGE(budget << ": " << report.triangles << " triangles after " << report.steps
+                   << " steps; leaflets " << report.leaflets_per_side << " of "
+                   << report.leaflet_segments << " segments, " << report.trunk_segments
+                   << " segments x " << report.rows_per_ring << " rows a ring");
+  }
+}
+
 TEST_CASE("flora: one seed is one palm, and another seed is another") {
   const flora::Palm p = default_palm();
   const u64 a = mesh_hash(solve(p));
@@ -262,7 +345,7 @@ TEST_CASE("flora: a parameter out of range is refused with its name") {
 // `k_flora_version` and the number in the same commit.
 TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
-  constexpr u64 k_golden = 0x2031f9ed8096f6edull;
+  constexpr u64 k_golden = 0x4cc41ceec26376f5ull;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
