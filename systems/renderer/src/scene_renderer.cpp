@@ -5,6 +5,7 @@
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/caster_volume.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
 
@@ -1859,6 +1860,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 sizeof(maps));
   }
 
+  // ---- the off-frustum shadow casters (caster_volume.h, renderer.md "Shadows") -----------------
+  //
+  // What every view's volume is swept towards: the key light the maps would follow — the sun, or
+  // on a sky's night the moon, light 0 — unless it has set: a sun past the end of its twilight
+  // lights nothing a shadow could take away, and its volume would be all ground. The scene's bounds
+  // close each frustum and cap each sweep, measured from the eye like everything in the frame's
+  // space.
+  const Vec3 key_light =
+      frame_sky_.moon_key ? lighting.lights[0].position_radius.xyz() : lighting.sun.xyz();
+  const bool key_light_casts =
+      frame_sky_.moon_key ||
+      (sky_on ? normalize(lighting.sun.xyz()).y >
+                    -static_cast<f32>(std::sin(k_sun_twilight_deg * 3.14159265358979323846 / 180.0))
+              : lighting.sun.w > 0.0f);
+  const CasterBounds caster_bounds{relative(data.center, frame.camera.position), data.radius};
+
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
     const ViewTarget& target = targets_.views[v];
@@ -1962,6 +1979,33 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (casters) {
       cull.casters = vf.run_address[gfx::k_caster_run];
       cull.caster_count = scene.sw_args.address + vf.args_offset;
+      // And what its frustum rejects but a ray towards a shadowed light could still meet:
+      // this view's caster volumes (caster_volume.h), fit from its own frustum, since every view's
+      // cull run has its own planes.
+      if (settings.off_frustum_casters) {
+        CasterVolume volumes[gfx::k_max_caster_volumes];
+        u32 count = 0;
+        if (key_light_casts &&
+            fit_directional_caster_volume(view.view_proj, key_light, settings.shadow_distance,
+                                          caster_bounds, volumes[count])) {
+          ++count;
+        }
+        // Every light of the array casts a traced shadow too, so a point or spot light's caster
+        // outside the frustum is the same gap: its volume is the hull of the frustum and the
+        // light, within the light's reach — none at all for a light inside the frustum. The
+        // array's directional light (the moon) is the key light's volume or casts no off-frustum
+        // shadow. At most four, the block's room behind the key light's.
+        for (u32 l = 0; l < lighting.light_count && count < gfx::k_max_caster_volumes; ++l) {
+          const gfx::ResolveLight& light = lighting.lights[l];
+          if (light.direction_type.w == gfx::k_light_directional) continue;
+          if (!(light.color_intensity.w > 0.0f)) continue;
+          if (fit_point_caster_volume(view.view_proj, light.position_radius.xyz(),
+                                      light.position_radius.w, caster_bounds, volumes[count])) {
+            ++count;
+          }
+        }
+        set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
+      }
     }
     if (occlusion) {
       // This view's own pyramid, at its own mip offsets into the shared buffer, and its own slice

@@ -32,6 +32,7 @@
 #include <domain/gfx/device.h>
 #include <foundation/image/png.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/caster_volume.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene.h>
@@ -640,63 +641,262 @@ TEST_CASE("renderer: the cascaded maps cast what a CPU ray finds, on every caste
   }
 }
 
-TEST_CASE("renderer: a caster outside the camera's frustum casts into the maps") {
-  // Straight down at the card's shadow from 0.6 units, the card beside and above: every cluster of
-  // it is outside the frustum, so the camera's cut — which is what the ray-traced shadows are built
-  // from — does not hold it, and the cascades, culled from the light, do.
-  const Vec3 eye{-0.85f, 0.6f, 0.0f};
-  const Vec3 target{-0.85f, 0.0f, 0.05f};
-  {
-    SceneData data;
-    std::string error;
-    REQUIRE_MESSAGE(make_scene(Caster::card, data, error), error);
-    const Mat4 frame = fixture_frame();
-    Camera camera;
-    camera.position = absolute(WorldPos::origin(), to_world(frame, eye));
-    camera.target = absolute(WorldPos::origin(), to_world(frame, target));
-    const Mat4 view_proj =
-        perspective_reversed_z(camera.fov_y, static_cast<f32>(k_width) / k_height, camera.znear) *
-        look_at(relative(camera.position, WorldPos::origin()),
-                relative(camera.target, WorldPos::origin()), Vec3{0.0f, 1.0f, 0.0f});
-    const Frustum frustum = frustum_from_view_proj(view_proj);
-    const geometry::ClusterMeshPart& part = data.parts[1];
-    u32 inside = 0;
+// ---- casters outside the camera's frustum (renderer.md, "Shadows"; roadmap R54) ----------------
+//
+// Straight down at the card's shadow from 0.6 units, the card beside and above: every cluster of
+// it is outside the frustum. The cascades, culled from the light, hold it; the ray-traced shadows
+// hold it because the cull pass keeps a pair its frustum rejects when the pair is inside the view's
+// frustum swept towards the sun (caster_volume.h). Until 2026-10-18 the traced shadow of this card
+// was 0 pixels.
+namespace {
+
+const Vec3 k_off_eye{-0.85f, 0.6f, 0.0f};
+const Vec3 k_off_target{-0.85f, 0.0f, 0.05f};
+
+// On the CPU, with the renderer's own layout and fit: which of the scene's pairs are outside the
+// camera's frustum, and of those which are inside the volume the cull pass keeps casters in.
+struct OffFrustum {
+  u32 caster_clusters = 0;   // the caster's
+  u32 caster_outside = 0;    // of them, outside the frustum
+  u32 caster_in_volume = 0;  // of those, inside the volume
+  u32 in_volume = 0;         // every pair outside the frustum and inside the volume
+};
+
+OffFrustum off_frustum(Caster caster, Vec3 eye_local, Vec3 target_local, Vec3 caster_offset,
+                       bool lights = false) {
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(make_scene(caster, data, error, 0.0f, caster_offset), error);
+  const Mat4 frame = fixture_frame();
+  Camera camera;
+  camera.position = absolute(WorldPos::origin(), to_world(frame, eye_local));
+  camera.target = absolute(WorldPos::origin(), to_world(frame, target_local));
+  ViewSet views;
+  REQUIRE(views.build(ViewSetDesc{}, k_width, k_height, &error));
+  views.update(camera);
+  const Mat4& view_proj = views[0].view_proj;  // the frame's space: the eye at the origin
+  const Frustum frustum = frustum_from_view_proj(view_proj);
+  const CasterBounds bounds{relative(data.center, camera.position), data.radius};
+  CasterVolume volumes[gfx::k_max_caster_volumes];
+  u32 volume_count = 0;
+  REQUIRE(fit_directional_caster_volume(view_proj, k_sun, 0.0f, bounds, volumes[volume_count++]));
+  if (lights) {
+    // The renderer's stand-in point lights, where the frame puts them (lighting.h).
+    RenderSettings settings;
+    FrameLighting lighting;
+    frame_lighting(data, 0, lighting_options(settings), lighting, camera.position);
+    for (u32 l = 0; l < lighting.light_count; ++l) {
+      const gfx::ResolveLight& light = lighting.lights[l];
+      if (fit_point_caster_volume(view_proj, light.position_radius.xyz(), light.position_radius.w,
+                                  bounds, volumes[volume_count])) {
+        ++volume_count;
+      }
+    }
+  }
+  const Vec3 eye = relative(camera.position, WorldPos::origin());
+  OffFrustum out;
+  for (u32 i = 0; i < 2; ++i) {
+    const geometry::ClusterMeshPart& part = data.parts[i];
+    const Vec3 offset = i == 1 ? to_world(frame, caster_offset) : Vec3{};
     for (u32 c = 0; c < part.cluster_count; ++c) {
       const geometry::ClusterDesc& desc = data.lod.mesh.clusters[part.first_cluster + c];
-      const Vec3 center = to_world(frame, desc.center);
-      inside += frustum_contains_sphere(frustum, center, desc.radius) ? 1u : 0u;
+      const Vec3 center = to_world(frame, desc.center) + offset - eye;
+      const bool outside = !frustum_contains_sphere(frustum, center, desc.radius);
+      bool kept = false;
+      for (u32 v = 0; v < volume_count && outside && !kept; ++v)
+        kept = caster_volume_contains_sphere(volumes[v], center, desc.radius);
+      out.in_volume += kept ? 1u : 0u;
+      if (i == 1) {
+        ++out.caster_clusters;
+        out.caster_outside += outside ? 1u : 0u;
+        out.caster_in_volume += kept ? 1u : 0u;
+      }
     }
-    MESSAGE("the card's " << part.cluster_count << " clusters: " << inside
-                          << " inside the camera's frustum");
-    REQUIRE(inside == 0);  // the witness: without it the case below proves nothing
   }
+  return out;
+}
+
+u32 shadowed_ground(const Shot& shot) {
+  u32 out = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p)
+    out += is_ground(shot, p) && shadowed(shot, p) ? 1u : 0u;
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("renderer: a caster outside the camera's frustum casts into the maps and the rays") {
+  const OffFrustum cpu = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{});
+  MESSAGE("the card's " << cpu.caster_clusters << " clusters: " << cpu.caster_outside
+                        << " outside the camera's frustum, " << cpu.caster_in_volume
+                        << " of them inside its volume; " << cpu.in_volume
+                        << " pairs of the scene outside the frustum and inside the volume");
+  // The witnesses: without them the case below proves nothing.
+  REQUIRE(cpu.caster_outside == cpu.caster_clusters);
+  REQUIRE(cpu.caster_in_volume == cpu.caster_clusters);
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE("renderer unavailable here: " << gpu.why);
     return;
   }
   ShotOptions options;
-  options.eye = eye;
-  options.target = target;
+  options.eye = k_off_eye;
+  options.target = k_off_target;
   options.shadows = ShadowMode::Cascaded;
   const Shot mapped = render(gpu.device, Caster::card, options);
   REQUIRE(mapped.available);
-  const Vector<i8> reference = cpu_shadow(Caster::card, eye, target, mapped);
+  const Vector<i8> reference = cpu_shadow(Caster::card, k_off_eye, k_off_target, mapped);
   const Agreement a = agree(mapped, reference, k_edge_pixels);
-  u32 traced_shadowed = 0;
-  options.shadows = ShadowMode::RayTraced;
-  const Shot traced = render(gpu.device, Caster::card, options);
-  if (traced.available) {
-    for (u32 p = 0; p < k_width * k_height; ++p)
-      traced_shadowed += is_ground(traced, p) && shadowed(traced, p) ? 1u : 0u;
-  }
-  MESSAGE("the card outside the frustum: maps shadow "
-          << a.shadowed << " interior ground pixels (" << a.differ << " differ from a CPU ray, "
-          << a.band << " edge pixels); ray-traced: "
-          << (traced.available ? std::to_string(traced_shadowed) + " shadowed ground pixels"
-                               : "unavailable here (" + traced.why + ")"));
+  MESSAGE("the card outside the frustum: maps shadow " << a.shadowed << " interior ground pixels ("
+                                                       << a.differ << " differ from a CPU ray, "
+                                                       << a.band << " edge pixels)");
   CHECK(a.shadowed > 1000);
   CHECK(a.differ == 0);
+
+  options.shadows = ShadowMode::RayTraced;
+  const Shot traced = render(gpu.device, Caster::card, options);
+  if (!traced.available) {
+    MESSAGE("part skipped: ray-traced shadows: " << traced.why);
+    return;
+  }
+  // The rays now cast it: the maps' shadow within the filter's band, and a CPU ray's.
+  CHECK(id_differences(traced, mapped) == 0);  // the same picture, shadowed two ways
+  const Agreement rays = agree(mapped, picture_classes(traced), k_edge_pixels);
+  const Agreement cpu_rays = agree(traced, reference, k_edge_pixels);
+  options.off_frustum_casters = false;
+  const Shot before = render(gpu.device, Caster::card, options);
+  MESSAGE("ray-traced: " << shadowed_ground(traced) << " shadowed ground pixels, " << traced.casters
+                         << " casters (" << cpu.in_volume
+                         << " on the CPU); the maps differ from it on " << rays.differ << " of "
+                         << rays.compared << " interior pixels (" << rays.shadowed
+                         << " shadowed), a CPU ray on " << cpu_rays.differ
+                         << "; without the volumes " << shadowed_ground(before)
+                         << " shadowed ground pixels and " << before.casters << " casters");
+  CHECK(rays.shadowed > 1000);
+  CHECK(rays.differ == 0);
+  CHECK(cpu_rays.shadowed > 1000);
+  CHECK(cpu_rays.differ == 0);
+  // Every caster is one the CPU's volume holds: the card's clusters and the ground's beyond the
+  // view towards the sun, and nothing the cone test adds from this camera.
+  CHECK(traced.casters == cpu.in_volume);
+  // And without the volumes the camera's cut alone casts, which is nothing: the old answer.
+  CHECK(shadowed_ground(before) == 0);
+  CHECK(before.casters == 0);
+  CHECK(id_differences(traced, before) == 0);
+}
+
+TEST_CASE("renderer: a caster outside the frustum on the side away from the light casts nothing") {
+  // The same card moved 0.85 units the other way from the view, away from the sun: outside the
+  // frustum, and behind the view's receivers as the sun sees them, so no ray from the view towards
+  // the sun can meet it. It must not be a caster — which is what says the volume is tight and not
+  // the whole scene — and it casts nothing, with the volumes or without them.
+  const Vec3 away{-1.7f, 0.0f, 0.0f};
+  const OffFrustum cpu = off_frustum(Caster::card, k_off_eye, k_off_target, away);
+  MESSAGE("the card away from the light: "
+          << cpu.caster_outside << " of its " << cpu.caster_clusters
+          << " clusters outside the frustum, " << cpu.caster_in_volume << " inside the volume; "
+          << cpu.in_volume << " pairs of the scene in the volume");
+  REQUIRE(cpu.caster_outside == cpu.caster_clusters);
+  CHECK(cpu.caster_in_volume == 0);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  ShotOptions options;
+  options.eye = k_off_eye;
+  options.target = k_off_target;
+  options.caster_offset = away;
+  options.shadows = ShadowMode::RayTraced;
+  const Shot traced = render(gpu.device, Caster::card, options);
+  if (!traced.available) {
+    MESSAGE("skipped: " << traced.why);
+    return;
+  }
+  // The ground's pairs beyond the view towards the sun are casters; the card's are not.
+  CHECK(traced.casters == cpu.in_volume);
+  CHECK(shadowed_ground(traced) == 0);
+}
+
+TEST_CASE("renderer: a point light's casters outside the frustum are its hull's") {
+  // With the stand-in point lights on, every light of the array casts a traced shadow, and each
+  // one's volume — the hull of the frustum and the light, within its reach — keeps its own
+  // off-frustum casters. The GPU's casters are the CPU's own fit over the sun's volume and the
+  // lights', and the sun's shadow is the same bytes with the lights' volumes or without them:
+  // a caster outside the sun's sweep cannot meet a ray from the view towards the sun.
+  const OffFrustum sun = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{});
+  const OffFrustum all = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{}, true);
+  MESSAGE("outside the frustum and inside a volume: " << sun.in_volume << " pairs for the sun, "
+                                                      << all.in_volume << " with the lights");
+  CHECK(all.in_volume > sun.in_volume);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  ShotOptions options;
+  options.eye = k_off_eye;
+  options.target = k_off_target;
+  options.lights = true;
+  const Shot lit = render(gpu.device, Caster::card, options);
+  if (!lit.available) {
+    MESSAGE("skipped: " << lit.why);
+    return;
+  }
+  options.lights = false;
+  const Shot alone = render(gpu.device, Caster::card, options);
+  MESSAGE(lit.casters << " casters with the point lights, " << alone.casters << " without; "
+                      << colour_differences(lit, alone)
+                      << " colour bytes of the sun's shadow differ");
+  CHECK(lit.casters == all.in_volume);
+  CHECK(alone.casters == sun.in_volume);
+  CHECK(colour_differences(lit, alone) == 0);
+  CHECK(id_differences(lit, alone) == 0);
+}
+
+TEST_CASE("renderer: the off-frustum casters change no pixel's surface on any path") {
+  // Casters are never drawn: with the volumes on and off the same pairs are under the same pixels
+  // on the mesh path, the vertex path and the ray path, whose primary rays pass through a caster;
+  // only the shadow differs, and in a view that does not ask for it nothing does. The off-frustum
+  // card's camera, where the card and the ground beyond the view towards the sun are casters.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("skipped: " << unavailable_reason(RenderAvailability::NoAccelerationStructures,
+                                              gpu.device));
+    return;
+  }
+  const RasterMode modes[3] = {RasterMode::Hardware, RasterMode::Vertex, RasterMode::RayTrace};
+  for (const RasterMode mode : modes) {
+    if (mode == RasterMode::Hardware && !gpu.device.features().mesh_shader) continue;
+    for (const u32 view : {static_cast<u32>(gfx::ResolveMode::Shadow),
+                           static_cast<u32>(gfx::ResolveMode::Normals)}) {
+      ShotOptions options;
+      options.raster = mode;
+      options.view_mode = view;
+      options.eye = k_off_eye;
+      options.target = k_off_target;
+      const Shot on = render(gpu.device, Caster::card, options);
+      options.off_frustum_casters = false;
+      const Shot off = render(gpu.device, Caster::card, options);
+      REQUIRE(on.available);
+      const u32 ids = id_differences(on, off);
+      const u32 colour = colour_differences(on, off);
+      MESSAGE(std::string(raster_name(mode))
+              << " " << std::string(view_mode_name(view)) << ": " << on.casters << " casters with "
+              << "the volumes, " << off.casters << " without; " << on.visible << " and "
+              << off.visible << " drawn pairs; " << ids << " id words and " << colour
+              << " colour bytes differ");
+      CHECK(on.casters > off.casters);
+      CHECK(on.visible == off.visible);
+      CHECK(ids == 0);
+      if (view == static_cast<u32>(gfx::ResolveMode::Normals)) CHECK(colour == 0);
+      if (view == static_cast<u32>(gfx::ResolveMode::Shadow)) CHECK(colour > 0);
+    }
+  }
 }
 
 TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {

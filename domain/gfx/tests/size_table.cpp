@@ -126,7 +126,14 @@ ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
 // keep the block a whole number of float4 rows.
 // 528, not 480: the frame's eye (`FrameEye`), which every instance is measured from before any
 // test, and which the rasterizers read through `ClusterDrawParams::eye` (ADR-0053, 2026-10-05).
-ENGINE_EXPECT_SIZE(528, 8, gfx::CullParams);
+// 1680, not 528: the off-frustum shadow casters' volumes (roadmap R54, renderer.md "Shadows") —
+// five convex volumes of up to thirteen planes each (the view's frustum swept towards the key
+// light, and the hulls of the frustum and up to four point lights), a reach sphere and a plane
+// count each, and the volume count. Appended behind `eye`, so every field before it keeps its
+// offset
+// (`k_cull_params_eye_offset`); the block is read through an address, and the pass reads the
+// volumes only for a pair the frustum rejected in a frame that keeps casters.
+ENGINE_EXPECT_SIZE(1680, 8, gfx::CullParams);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
 // expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads

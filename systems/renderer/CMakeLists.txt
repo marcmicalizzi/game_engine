@@ -34,7 +34,8 @@ engine_module(NAME renderer LAYER systems
   SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
-          src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
+          src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/tile_layout.cpp
+          src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
@@ -54,6 +55,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/dynamic_instances_tests.cpp
                     tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
+                    # The off-frustum shadow casters' volumes against a brute-force membership, on
+                    # the CPU (caster_volume.h).
+                    tests/caster_volume_tests.cpp
                     # The frame-pass registration point: a null pass, its context, and the frame
                     # without one to the byte (frame_pass.h).
                     tests/frame_pass_tests.cpp

@@ -81,6 +81,13 @@ struct RenderSettings {
   // (docs/subsystems/renderer.md, "Shadows"). Off is the old behaviour, in which a card seen from
   // behind throws no shadow; it exists to measure what the casters cost and what they restore.
   bool shadow_casters = true;
+  // With the casters on, a pair **outside the camera's frustum** from which a ray towards a
+  // shadowed light can reach the view is a caster too: the cull pass tests what its frustum
+  // rejects against each view's caster volumes (caster_volume.h), so an object that leaves the
+  // picture keeps casting into it. `shadow_distance` bounds the volume along the light. Off is the
+  // old behaviour — the camera's cut alone casts — for the test that the picture is unchanged and
+  // to measure what the volumes cost; it has no flag.
+  bool off_frustum_casters = true;
   // The cascaded shadow maps (`ShadowMode::Cascaded`): how many cascades (1..4), how many texels a
   // side each, and how far from the camera they reach — 0 is the far side of the scene's bounds.
   // They size the depth atlas, which is why they are here where a change forces a rebuild.
