@@ -90,8 +90,7 @@ TEST_CASE("engine-content terrain-synth: each shape is the library's") {
   CHECK(run({"terrain-synth", tmp.file("x.json"), "--kind", "flat", "--size", "1", "--spacing-mm",
              "1000"})
             .exit_code == 2);
-  CHECK(run({"terrain-synth", tmp.file("x.json"), "--kind", "flat", "--size", "9"}).exit_code ==
-        2);
+  CHECK(run({"terrain-synth", tmp.file("x.json"), "--kind", "flat", "--size", "9"}).exit_code == 2);
   // An origin off the lattice is the library's refusal.
   CHECK(run({"terrain-synth", tmp.file("x.json"), "--kind", "flat", "--size", "9", "--spacing-mm",
              "1000", "--origin-mm", "1,0"})
@@ -133,11 +132,11 @@ TEST_CASE("engine-content terrain-tiles: a set built, a hit the second time, thr
   CHECK_FALSE(flag(c, "hit"));
   CHECK(text(c, "key") == text(a, "key"));
   CHECK(text(c, "manifest") == ddc + "/tilesets/" + text(a, "key") + "/manifest.json");
-  CHECK(flag(line(run({"terrain-tiles", source, "--ddc", ddc, "--cells", "16", "--far-levels",
-                       "3"})),
-             "hit"));
-  CHECK_FALSE(flag(line(run({"terrain-tiles", source, "--ddc", ddc, "--cells", "16",
-                             "--far-levels", "3", "--force"})),
+  CHECK(
+      flag(line(run({"terrain-tiles", source, "--ddc", ddc, "--cells", "16", "--far-levels", "3"})),
+           "hit"));
+  CHECK_FALSE(flag(line(run({"terrain-tiles", source, "--ddc", ddc, "--cells", "16", "--far-levels",
+                             "3", "--force"})),
                    "hit"));
   // Another option, another key.
   const JsonValue lifted = line(run({"terrain-tiles", source, "--ddc", ddc, "--cells", "16",
@@ -150,7 +149,7 @@ TEST_CASE("engine-content terrain-tiles: a set built, a hit the second time, thr
   CHECK(run({"terrain-tiles", source, dir, "--offset-mm", "1,2"}).exit_code == 2);
   CHECK(run({"terrain-tiles", tmp.file("missing.json"), dir}).exit_code == 1);
   CHECK(run({"terrain-tiles", source, tmp.file("o"), "--offset-mm", "500,0,0"}).exit_code == 1);
-  CHECK(run({"terrain-tiles", source, tmp.file("o"), "--ring-spacing-mm", "1500", "--far-ratio",
-             "1"})
-            .exit_code == 1);
+  CHECK(
+      run({"terrain-tiles", source, tmp.file("o"), "--ring-spacing-mm", "1500", "--far-ratio", "1"})
+          .exit_code == 1);
 }

@@ -144,8 +144,8 @@ struct TileRig {
 };
 
 // **The heightfield computed directly**: its quantized millimetres in memory, a point the finest's
-// (every r-th at a coarser spacing), a filtered lattice the trapezoid rule over each point's cell in
-// one loop — nothing of the set's tiles, reader or separable sums — the edge held past the data.
+// (every r-th at a coarser spacing), a filtered lattice the trapezoid rule over each point's cell
+// in one loop — nothing of the set's tiles, reader or separable sums — the edge held past the data.
 struct DirectSource {
   Vector<i32> mm;
   i64 w = 0, h = 0, ox = 0, oz = 0, s = 0;
@@ -171,8 +171,8 @@ struct DirectSource {
   static bool heights(const void* state, f64, i64 spacing, i64 filter, i32 i0, i32 j0, u32 nx,
                       u32 nz, u32 begin, u32 end, std::span<f32> out) noexcept {
     const auto& self = *static_cast<const DirectSource*>(state);
-    if (filter > 0 && (filter != spacing ||
-                       std::find(self.chain.begin(), self.chain.end(), spacing) == self.chain.end()))
+    if (filter > 0 && (filter != spacing || std::find(self.chain.begin(), self.chain.end(),
+                                                      spacing) == self.chain.end()))
       return false;
     if (filter == 0 && spacing % self.s != 0) return false;
     const i64 r = spacing / self.s;
@@ -204,7 +204,8 @@ TEST_CASE("authored ground: a built tile set draws its heightfield, pixel for pi
   }
   test::TempDir tmp{"engine_doc_scene_authored_gpu"};
   // A seeded ridge 481 points a side at 50 cm — 240 m, its corner 120 m west and north of the
-  // origin — scaled to a tenth, so a 4 m ridge on a 60 cm slope with a few centimetres of roughness.
+  // origin — scaled to a tenth, so a 4 m ridge on a 60 cm slope with a few centimetres of
+  // roughness.
   const tileset::Heightfield field =
       tileset::synth_heightfield(tileset::SynthKind::ridge, 481, 500, 11, -120000, -120000);
   std::string error;

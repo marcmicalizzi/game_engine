@@ -7,4 +7,5 @@ engine_schema_library(NAME schemas
     scene.schema
     protocol.schema
     tissue.schema
-    world.schema)
+    world.schema
+    heightfield.schema)

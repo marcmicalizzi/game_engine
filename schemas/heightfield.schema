@@ -1,0 +1,25 @@
+// An authored heightfield as a document record (docs/subsystems/tileset.md, "The record";
+// docs/subsystems/doc_scene.md). The engine's, not the tile-set capability's: a document holds the
+// record whatever the executable carries, `systems/doc_scene` maps it, and a build without the
+// capability refuses the scene it maps to with the registry's sentence rather than failing to read
+// the document. The file is not `terrain.schema` because the terrain capability's own schema
+// (domain/terrain/schemas/terrain.schema) already generates <schemas/terrain.h>, and a target that
+// links both would include whichever it found first.
+namespace engine.terrain
+
+/// **An authored heightfield in the world** (`@kind(record)`): the ground a document's scene stands
+/// on, drawn by the `tiles` ground provider from the set `engine-content terrain-tiles` builds from
+/// `source`. One live record per document (two are refused, naming both). A change of `source`,
+/// `origin` or `vertical_scale` rebuilds the scene's ground; a change of `name` changes nothing
+/// drawn.
+struct Heightfield @version(1) @kind(record) {
+  name: string
+  /// The `engine.terrain.heightfield/1` header (a JSON file beside its raw float32 grid), relative to
+  /// the document's directory (or absolute).
+  source: string
+  /// Added to the heightfield's own origin (`origin_mm` in its header; y to every height): x and z
+  /// whole millimetres and a whole number of its spacings. Axis-aligned on the world's grid: no turn.
+  origin: worldpos @unit(m)
+  /// The heights times this, (0, 1000].
+  vertical_scale: f32 = 1
+}

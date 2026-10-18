@@ -16,9 +16,8 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
-#include <string>
-
 #include <schemas/scene.h>
+#include <string>
 
 using namespace engine;
 using namespace engine::scene_collision;
@@ -93,7 +92,8 @@ TEST_CASE("scene_collision: a walker stands on a tiles ground, the set's surface
   for (i32 j = -30; j <= 30; j += 3) {
     for (i32 i = -30; i <= 30; i += 3) {
       f32 held = 0.0f;
-      REQUIRE(collision.ground_height(WorldPos{static_cast<f64>(i), 0.0, static_cast<f64>(j)}, held));
+      REQUIRE(
+          collision.ground_height(WorldPos{static_cast<f64>(i), 0.0, static_cast<f64>(j)}, held));
       off += held == set->height_mm(i64{i} * 1000, i64{j} * 1000) ? 0u : 1u;
       REQUIRE(collision.ground_height(
           WorldPos{static_cast<f64>(i) + 0.375, 0.0, static_cast<f64>(j) + 0.625}, held));
@@ -125,7 +125,8 @@ TEST_CASE("scene_collision: a walker stands on a tiles ground, the set's surface
     REQUIRE(body.step(east) == physics::Status::Ok);
     const DVec3 feet = body.feet() - WorldPos::origin();
     if (k > 240) {
-      const f32 surface = set->height_mm(scene_gen::nearest_mm(feet.x), scene_gen::nearest_mm(feet.z));
+      const f32 surface =
+          set->height_mm(scene_gen::nearest_mm(feet.x), scene_gen::nearest_mm(feet.z));
       farthest = std::max(farthest, std::fabs(static_cast<f32>(feet.y) - surface));
     }
   }
