@@ -38,7 +38,7 @@ struct Palm @version(1) {
   /// Leaflets on each side of a frond: 2 to 160.
   leaflet_count: u32 = 64
   /// A leaflet's width at its base: 0.005 to 0.12 m, and never wider than the gap between two.
-  leaflet_width_m: f32 = 0.032 @unit(m)
+  leaflet_width_m: f32 = 0.04 @unit(m)
   /// The angle a leaflet makes with the rachis, towards the frond's tip: 10 to 85 degrees.
   leaflet_angle_deg: f32 = 38.0 @unit(deg)
   /// Dead brown fronds hanging below the crown, 0 for none: 0 to 64.

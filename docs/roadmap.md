@@ -441,7 +441,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G51 | E8: a runtime model on spare capacity | deferred (10 §10.6) | G50 | L | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | G52 | Player-facing strings and localization | open | | M | design | [07 §7.9](plan/07-content-pipeline.md#79-text-and-localization) |
 | G53 | Build-time TTS | open | G52 | M | research | [07 §7.7](plan/07-content-pipeline.md#77-ml-asset-generation-novelty-content) |
-| G54 | Procedural tree solver | in progress: the flora capability and the date palm — trunk, crown and dead skirt under the triangle budget, and `engine-content flora` through the cache (flora.md, 2026-10-17); the scene's `.flora.json` mesh and the oasis scene next | R65, S66 | L | research | [flora](subsystems/flora.md) |
+| G54 | Procedural tree solver | in progress: the flora capability and the date palm — trunk, crown and dead skirt under the triangle budget, and `engine-content flora` through the cache, a scene's `.flora.json` mesh through the mesh-generator registry and the oasis-palms scene (flora.md, 2026-10-17); the harness measurements next | R65, S66 | L | research | [flora](subsystems/flora.md) |
 | G55 | Vegetation growth, ecology and placement | open | G37, S7 | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | G56 | Phase 5 exit | open | G15, G28, G32, G37 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | G57 | Degenerate-triangle repair in the content build | done (geometry.md "Zero-area triangles: the repair", 2026-10-10) | G17 | S | routine | [geometry](subsystems/geometry.md#zero-area-triangles-the-repair) |

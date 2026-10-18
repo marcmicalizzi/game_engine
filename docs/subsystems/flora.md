@@ -36,7 +36,7 @@ a 9 m palm. A parameter out of its range is refused with its name (`palm_in_rang
 | `frond_droop` | 0–1 | 0.45 | how far a rachis curves down (1: its tip 100° further from vertical than its base) |
 | `frond_spread_deg` | 5–120° | 75 | the crown's cone: the outermost frond's angle from vertical at the apex |
 | `leaflet_count` | 2–160 | 64 | leaflets on each side of a frond |
-| `leaflet_width_m` | 0.005–0.12 m | 0.032 | a leaflet's base, never wider than the gap between two |
+| `leaflet_width_m` | 0.005–0.12 m | 0.04 | a leaflet's base, never wider than the gap between two |
 | `leaflet_angle_deg` | 10–85° | 38 | a leaflet's angle to the rachis, towards the tip |
 | `dead_skirt_fronds` | 0–64 | 10 | dead brown fronds hanging below the crown |
 | `triangle_budget` | 2,000–2,000,000 | 60,000 | the most triangles the mesh may have ([the budget](#the-budget)) |
@@ -137,6 +137,32 @@ addresses, skipped when it already records that source hash and key. It is the s
 renderer reaches through the mesh-generator registry ([assets](assets.md#generated-meshes)), under
 the same default LOD options and page target, so either finds what the other built.
 
+## In a scene
+
+A scene's mesh table names a flora file as it names a glTF — `{"name": "palm", "path":
+"../../flora/date-palm.flora.json"}` — and its instances place it. The renderer's scene reader
+cannot link this capability (ADR-0027), so it finds the solver through the **mesh-generator
+registry** (`domain/assets/mesh_generator.h`), which `src/flora.cpp` registers "flora" into: a path
+ending in `.flora.json` names it, and the reader builds the container through the derived-data cache
+under the key `engine-content flora` uses, or reads the entry either of them wrote
+([renderer](renderer.md), "A generated mesh in the mesh table"). A host carries the generator by
+linking this capability. A build without it refuses the path with the registry's sentence, which
+names `ENGINE_WITH_FLORA`.
+
+`content/flora/` holds the default palm (`date-palm.flora.json`, every parameter spelled out) and
+four variants — `-tall` (14 m), `-young` (3.5 m, a heavy skirt), `-leaning` (22°), `-old` (sparse,
+drooping, no skirt). [`content/test-scenes/oasis-palms/`](../../content/test-scenes/oasis-palms/README.md)
+stands twelve of them round a basin on a small dune field with a camera path that circles the grove
+and walks in under the crowns: a scene to fly that needs no sample asset.
+
+**What the first pictures taught.** The first oasis capture read as sticks: a leaflet 3 cm wide
+tapering linearly to its tip is under a pixel from 25 m at 640 x 400, and a crown of them vanished
+into its rachises. A date palm's pinna is linear — nearly its full width most of its length — so a
+leaflet now narrows as 1 − s³ along its length, and the default width went from 3.2 to 4 cm (never
+more than 0.9 of the gap between two); the same frame went from 1,101 frond pixels to 3,812. Thin
+geometry still aliases at a distance where a leaflet is a fraction of a pixel; alpha-tested cards
+(R65) are what fixes that properly.
+
 ## Determinism
 
 The same parameters give the same bytes on every toolchain and at either CPU baseline: the solver
@@ -163,6 +189,10 @@ data, rebuilt from its parameters.
 - a smaller budget walks down the ladder and holds, and keeps every frond;
 - one seed is one palm, and another seed another;
 - a parameter out of range is refused with its name;
+- a `.flora.json` in a scene's mesh table becomes a mesh with the three materials through the
+  cache — a hit the second time, the same clusters built in memory — and the oasis scene's first
+  frame, captured offscreen, has its crowns' pixels green and its trunks' brown, the crowns above
+  (`systems/renderer/tests/flora_scene_tests.cpp`);
 - the default palm hashes to the committed number, and so does its container
   (`geometry::cluster_file_hash`, whose clusters are the other half of a palm's bytes); the
   trunk's clusters carry cones and no frond's does; the container records its identity and the

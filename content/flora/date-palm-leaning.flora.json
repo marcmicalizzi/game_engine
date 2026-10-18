@@ -1,0 +1,11 @@
+{
+  "species": "date_palm",
+  "palm": {
+    "seed": 4,
+    "height_m": 8.0,
+    "lean_deg": 22.0,
+    "curve": 0.75,
+    "frond_count": 24,
+    "frond_droop": 0.55
+  }
+}

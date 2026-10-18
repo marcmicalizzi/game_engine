@@ -488,7 +488,10 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
           const u32 tip = vertex(along, hint, chart_along, chart_across);
           face(prev0, prev1, tip, hint);
         } else {
-          const f64 h = base_half * (1.0 - s);
+          // A pinna is linear: nearly its full width for most of its length, narrowing only
+          // towards the tip (1 - s^3), which is also what keeps a crown from reading as sticks
+          // at the distance where a leaflet is a pixel wide.
+          const f64 h = base_half * (1.0 - s * s * s);
           const u32 v0 = vertex(along - edge * h, hint, chart_along - h, chart_across);
           const u32 v1 = vertex(along + edge * h, hint, chart_along + h, chart_across);
           face(prev0, prev1, v1, hint);

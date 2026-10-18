@@ -36,7 +36,7 @@ engine_module(NAME renderer LAYER systems
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp)
+          src/overlay.cpp src/scene_flora.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -59,7 +59,10 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/ground_detail_tests.cpp
                     # The world's tiles on the CPU: the first fill, a tile's mesh and its seams,
                     # the set's keys, rebuilds and windows, from a tile source of the test's own.
-                    tests/terrain_tiles_tests.cpp)
+                    tests/terrain_tiles_tests.cpp
+                    # A scene's `.flora.json` mesh through the mesh-generator registry: built and
+                    # read back where the flora capability is, refused with its sentence where not.
+                    tests/flora_scene_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.
@@ -115,6 +118,15 @@ foreach(_gen ruins sky terrain)
     target_link_libraries(engine_renderer_tests PRIVATE engine::${_gen})
   endif()
 endforeach()
+# The flora capability the same way (docs/subsystems/flora.md, "In a scene"): linked for its mesh
+# generator's registrar, and the oasis scene's capture where the dunes it stands on are built too.
+if(TARGET engine_renderer_tests AND TARGET engine::flora)
+  target_link_libraries(engine_renderer_tests PRIVATE engine::flora)
+  target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA=1)
+  if(TARGET engine::terrain)
+    target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA_TERRAIN=1)
+  endif()
+endif()
 # ENGINE_SOURCE_DIR is where the shadow caster measurement looks for the Khronos samples
 # tools/fetch-samples.ps1 fetches into content/samples (through tests/support/test_paths.h). That
 # case is skipped by default, and says so for a sample that is not there.

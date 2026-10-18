@@ -381,7 +381,7 @@ TEST_CASE(
   const u64 hash = geometry::cluster_file_hash(data);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(hash));
-  constexpr u64 k_golden = 0x14886598fe121174ull;
+  constexpr u64 k_golden = 0x0445bc2db316a945ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -401,7 +401,7 @@ TEST_CASE(
 // `k_flora_version` and the number in the same commit.
 TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
-  constexpr u64 k_golden = 0x4cc41ceec26376f5ull;
+  constexpr u64 k_golden = 0x18e8664d0644461full;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
