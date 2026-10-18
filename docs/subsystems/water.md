@@ -43,7 +43,20 @@ Checked when the scene is read; a body that cannot be drawn (no shape or both, a
 
 ## Shading
 
-*(Stage 1, this commit: the material class and its packing; the surface draws its shallow colour as a plain dielectric. The branch below is stage 2.)*
+**The branch** (`domain/gfx/shaders/water.slang`, called as `water_pixel` from `visibility_resolve.slang` where the material carries `gfx::k_material_water`, in place of the BSDF; every other material takes the opaque path exactly as before, which the shading and attributes tests hold at 0 of 255). Per pixel:
+
+- **The normal**: four directional sines over the **body-local point** — the reconstructed surface point less `instance_from_eye`, the instance's own place in the frame, so the waves belong to the body and never to the eye or a world coordinate (ADR-0053), and do not swim as the eye crosses cells. Wave *i* has the body's wavelength and amplitude times {1, 0.62, 0.38, 0.24} and {1, 0.55, 0.32, 0.18}, is turned from the main direction by `chop` × {0, 0.55, −0.8, 0.35} × 90°, starts at a phase hashed from the seed, and travels at the deep-water speed √(g k) **rounded to a whole number of cycles per 1024 s** (`k_water_period_s`), so the frame's clock may be reduced modulo the period in double (`gfx::water_clock`) with no jump at the wrap, and each term of the phase is reduced to a fraction of a cycle before it is added, so `cos` is asked a small angle. Only the slope is evaluated — the mesh stays flat. A wave shorter than twice the pixel's footprint (the larger of the reconstruction's position derivatives, as the ground's detail takes them) is faded out rather than aliased into sparkle, whole at four footprints; every wave dies over the last 0.25 m of depth, so the shore is calm.
+- **Fresnel**: Schlick at water's F0 = ((1.33 − 1)/(1.33 + 1))² = 0.0201 on the wave normal and the view.
+- **The reflection**: the sky's radiance along the view reflected off the wave normal, folded above the horizon (`sky_environment`: the scattered sky and the night's glow; never the sun's disc, which the glitter is), or the stand-in's clear colour (`ResolveParams::sky`) in a scene with no sky.
+- **The glitter**: the BSDF's own GGX lobe (`brdf_d_ggx`, `brdf_v_smith`, Schlick at F0) on the wave normal at the body's roughness, times the sun's irradiance as the opaque path takes it — through the air with a sky, and through the same shadow query on the flat surface, so a rock's shadow lies on the pool.
+- **The bottom**: `shallow` fading to `deep` by the depth over `depth_fade_m`, lit as a level surface by the sun (E/π) and the ambient of a level surface (the sky's harmonics, or the stand-in's hemisphere), darkened by `exp(−3 · slant / depth_fade_m)` where `slant = depth · (1/cos θt − 1)` is the extra path of the refracted view (θt by Snell at 1.33) — so looking straight down shows the authored colours and a grazing view sinks into the deep.
+- **The shore**: `k = clamp(edge distance / shore_m, 0, 1)`; colour = bottom · (1 − F k) + (sky · F + glitter) · k, so the very edge is the bottom alone — wet sand — and the reflection comes in over the shore band. Then the resolve's aerial perspective and exposure, as for every surface.
+
+**The clock.** `ResolveParams::water_time_s` (the block's last pad word) is the frame's world time — the ground's surface time plus `FrameDesc::sun_time_s`, the one clock the sky reads — reduced modulo the period in double. It is filled where the resolve's block is written, `scene_renderer.cpp`, which another change of this batch owns, so **until that one line lands the waves stand still at their phase at time zero** (the sun still moves the glitter, which the GPU case holds); a replay draws the same water either way.
+
+**The reference** (`domain/gfx/tests/water_reference.h`, the branch again in double; `water_shading_tests.cpp`): a level quad with the water mesh's UVs under a known sun and the stand-in sky, five blocks — waves at two clocks and two roughnesses, a mirror, the shore — every fourth pixel of the middle half against the reference: **worst 1 of 255** on the RTX 5090's mesh path (2026-10-17), within the BSDF's 2. The clock moves the picture. The phase hash and the cycle rounding are integers and are mirrored exactly.
+
+**What it costs** (`engine-view --benchmark` over a five-second path looking down on the pool, the water about 70% of a 1920 × 1080 frame, `msvc-debug`, RTX 5090, 2026-10-17, `machine_state` start: GPU 0%, others' CPU 6–10%; end: GPU 90–94% — this run's own): the resolve's median **0.178 ms with the water drawn as a plain dielectric (stage 1) and 0.189 ms with the branch**, +0.010 ms, about 7 ps a water pixel and 6% of the resolve. The footprint's derivatives and the four waves are most of it.
 
 The material entry (`gfx::set_water_material`): `albedo` = shallow, roughness; `emissive` = 0; `uv_transform` = deep, `depth_fade_m`; `uv_offset` = amplitude, wavelength, chop, `shore_m`; `normal_scale`, `occlusion_strength` = the waves' direction (x, z); `sampler` = the seed; `flags` = `k_material_water`. Those are the slots an untextured material with no UV transform never reads, so every reader that is not the branch — the reference path tracer, the albedo view — sees an untextured dielectric of the shallow colour, the UVs passing through unscaled.
 
@@ -53,7 +66,7 @@ The material entry (`gfx::set_water_material`): `albedo` = shallow, roughness; `
 
 ## Determinism
 
-The mesh is a function of the block and the ground in f32/f64 + − × ÷ and sqrt (the GLB bytes are pinned by `water_tests.cpp`'s hash, taken on MSVC). The waves will be a function of the body-local point and the frame's clock. `depth_at` is a function of the position and the scene.
+The mesh is a function of the block and the ground in f32/f64 + − × ÷ and sqrt (the GLB bytes are pinned by `water_tests.cpp`'s hash, taken on MSVC). The waves are a function of the body-local point and the frame's clock reduced in double: a replay draws the same water, and a picture is the same bytes twice (the GPU case). `depth_at` is a function of the position and the scene.
 
 **Public API.** `include/systems/water/water.h`.
 
