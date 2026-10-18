@@ -34,7 +34,7 @@ namespace {
 struct D3 {
   double x = 0, y = 0, z = 0;
 };
-D3 d3(Vec3 v) { return {v.x, v.y, v.z}; }
+D3 d3(Vec3 v) { return {double(v.x), double(v.y), double(v.z)}; }
 D3 operator+(D3 a, D3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 D3 operator-(D3 a, D3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 D3 operator*(D3 a, double s) { return {a.x * s, a.y * s, a.z * s}; }
@@ -274,7 +274,7 @@ TEST_CASE("caster volume: the directional sweep against a brute-force membership
     double lowest = 0.0;
     const double cap = cap_of(frame, light, distance, cam.bounds, lowest);
     const double sweep = cap - lowest;
-    double scale = lengthd(d3(cam.bounds.scene_center)) + cam.bounds.scene_radius;
+    double scale = lengthd(d3(cam.bounds.scene_center)) + double(cam.bounds.scene_radius);
     for (const D3& c : frame.corners)
       scale = std::max(scale, lengthd(c));
     scale = std::max(scale, std::fabs(cap));
@@ -375,7 +375,7 @@ TEST_CASE("caster volume: a point light's hull against a brute-force membership"
     const Camera3 cam = random_camera(rng);
     Frame frame;
     REQUIRE(frame_of(cam.view_proj, cam.bounds, frame));
-    double scale = lengthd(d3(cam.bounds.scene_center)) + cam.bounds.scene_radius;
+    double scale = lengthd(d3(cam.bounds.scene_center)) + double(cam.bounds.scene_radius);
     const D3 light = rng.direction() * (rng.uniform(0.0, 2.0) * scale);
     const f32 reach =
         trial % 2 == 0 ? static_cast<f32>(rng.uniform(0.2, 3.0) * scale) : 0.0f;  // 0: unbounded
