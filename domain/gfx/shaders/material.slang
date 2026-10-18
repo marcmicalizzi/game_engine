@@ -36,6 +36,9 @@ static const uint k_material_uv_transform = 4u;  // the UVs go through uv_transf
 // The material carries the ground's detail (ground_detail.slang), its sand share in the
 // metallic-roughness map's alpha: a terrain's, when its scene asks for the detail.
 static const uint k_material_ground_detail = 8u;
+// The material is a water surface, shaded by the resolve's water branch (water.slang) from the
+// numbers gfx::set_water_material packed into slots an untextured material never reads.
+static const uint k_material_water = 16u;
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 

@@ -403,3 +403,75 @@ TEST_CASE("walk: walking back and forth over the same ground is the same walk ea
   const Walked b = walk_session(header, map, events, 1000, [](const auto&, const auto&) {});
   CHECK(a.hash == b.hash);
 }
+
+namespace {
+
+// Water deepening eastwards from x = 2 at half a metre a metre: the chest's 1.4 m at x = 4.8.
+f32 shelving(const void*, WorldPos at) noexcept {
+  return std::max(0.0f, 0.5f * (static_cast<f32>(at.x) - 2.0f));
+}
+f32 dry(const void*, WorldPos) noexcept { return 0.0f; }
+
+struct Waded {
+  WorldPos feet{};
+  view::WalkStats stats;
+};
+
+// A walker dropped at the origin of the waves, walking east for `east` ticks and then west for
+// `west`, with the water `depth` (none when null).
+Waded wade(view::DepthFn depth, u32 east, u32 west) {
+  const renderer::SceneData scene = waves_scene();
+  view::Walker walker;
+  std::string error;
+  REQUIRE_MESSAGE(walker.start(view::WalkParams{}, 240, scene, &error), error);
+  if (depth != nullptr) walker.set_water(depth, nullptr);
+  (void)walker.drop(WorldPos{0.0, 10.0, 0.0});
+  view::WalkInput in;
+  in.move = Vec2{0.0f, 1.0f};
+  in.yaw = -1.5707963f;  // forward (-sin yaw, 0, -cos yaw): +x
+  for (u32 t = 0; t < east; ++t)
+    (void)walker.step(in);
+  in.yaw = 1.5707963f;  // -x
+  for (u32 t = 0; t < west; ++t)
+    (void)walker.step(in);
+  return Waded{walker.feet(), walker.stats()};
+}
+
+}  // namespace
+
+TEST_CASE("walk: wading slows the walker by the declared curve, and the chest's water stops it") {
+  // The curve: full speed to the ankle, half by the waist, a quarter at the chest and beyond.
+  CHECK(view::wade_scale(0.0f) == 1.0f);
+  CHECK(view::wade_scale(0.3f) == 1.0f);
+  CHECK(view::wade_scale(0.65f) == doctest::Approx(0.75f));
+  CHECK(view::wade_scale(1.0f) == doctest::Approx(0.5f));
+  CHECK(view::wade_scale(1.2f) == doctest::Approx(0.375f));
+  CHECK(view::wade_scale(1.4f) == doctest::Approx(0.25f));
+  CHECK(view::wade_scale(3.0f) == 0.25f);
+  // Twenty seconds east at a walk, 30 m on dry ground: into the water, slower and slower, and
+  // stopped where it reaches the chest — and no further however long W is held.
+  const Waded in_water = wade(&shelving, 4800, 0);
+  MESSAGE("waded east to x = " << in_water.feet.x << ", " << in_water.stats.max_depth_m
+                               << " m deep, " << in_water.stats.stopped_ticks << " ticks stopped");
+  CHECK(in_water.feet.x > 4.7);
+  CHECK(in_water.feet.x < 4.9);
+  CHECK(in_water.stats.max_depth_m >= view::k_wade_chest_m);
+  CHECK(in_water.stats.max_depth_m < view::k_wade_chest_m + 0.05f);
+  CHECK(in_water.stats.stopped_ticks > 3000u);
+  CHECK(in_water.stats.wading_ticks > in_water.stats.stopped_ticks);
+  // The wall is one way: a walker at the chest wades back out.
+  const Waded back = wade(&shelving, 4800, 960);
+  CHECK(back.feet.x < in_water.feet.x - 0.5);
+  // The same walk twice is the same walk.
+  const Waded again = wade(&shelving, 4800, 960);
+  CHECK(again.feet == back.feet);
+  CHECK(again.stats.hash == back.stats.hash);
+  // Where there is no water the walker is the one it always was, to the bit: no depth function,
+  // and a depth function that answers 0 everywhere, walk the same floats.
+  const Waded none = wade(nullptr, 4800, 0);
+  const Waded zero = wade(&dry, 4800, 0);
+  CHECK(none.feet.x > 25.0);
+  CHECK(zero.feet == none.feet);
+  CHECK(zero.stats.hash == none.stats.hash);
+  CHECK(none.stats.wading_ticks == 0u);
+}

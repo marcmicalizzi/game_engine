@@ -297,7 +297,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S60 | Cosmetic GPU cloth | open | | L | design | [05 §5.13](plan/05-simulation.md#513-deformable-surfaces-and-soft-bodies) |
 | S61 | Ropes and cables | open | S59 | M | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S62 | Particle fluids | deferred (ADR-0020) | | L | research | [05 §5.13](plan/05-simulation.md#513-deformable-surfaces-and-soft-bodies) |
-| S63 | Water surfaces, fluids and buoyancy | open | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
+| S63 | Water surfaces, fluids and buoyancy | in progress (2026-10-17, 77210a8f, 013af698, 47eee464 and the docs commit after them — the oasis pool: the scene's `water` block, the water capability's mesh with the depth under every vertex through the placement generator "water", the material table's water class and the resolve's water branch — waves, Fresnel between the sky and the bottom, the sun's glitter — held to a double-precision reference at 1 of 255, `content/test-scenes/oasis-pool`; and wading — slowed by the depth, stopped chest deep, a walk replayed bit for bit; remaining: the frame's clock into `ResolveParams::water_time_s` (one line of `scene_renderer.cpp`), and stage 2 as S86; [water](subsystems/water.md)) | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S64 | World fields: drag, heat and fire, weather | open | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S65 | Vehicles | open | S23 | M | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S66 | Trees under wind as rooted bodies | open | S58, R23 | M | research | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
@@ -320,6 +320,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S83 | E26: a cavity reached into at hero distance | open | S69, S73 | L | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | S84 | ADR-0029's thresholds on a quiet machine and the Titan X | blocked (the Maxwell machine is down) | S67 | S | routine | [ADR-0029](adr/0029-deformable-volume-budgets.md) |
 | S85 | Phase 6 exit | open | S48, S49, S53, S57, S83, W29, W41 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
+| S86 | Water, stage 2: refraction of what is under the surface, swimming, buoyancy, the ripple map | open | S63, R65 | L | design | [water](subsystems/water.md#not-yet) |
 
 ## C — Characters and tissue
 
@@ -582,7 +583,7 @@ Desert Survival first, Island City second ([ADR-0022](adr/0022-consumer-game-ord
 | P5 | Sand slides under the player | open | W29, W39 | L | research | [13 §13.1](plan/13-reference-consumer-games.md#dynamic-sand-the-defining-system) |
 | P6 | Storm dust as gameplay visibility | open | W34 | M | design | [13 §13.1](plan/13-reference-consumer-games.md#day-night-and-weather) |
 | P7 | Wreck fire, clouds and storm as one medium | open | R47 | L | research | [13 §13.1](plan/13-reference-consumer-games.md#day-night-and-weather) |
-| P8 | Oases as rendering islands | open | R65, S63 | L | research | [13 §13.1](plan/13-reference-consumer-games.md#oases) |
+| P8 | Oases as rendering islands | open (2026-10-17: the first oasis water stands — S63's pool in `content/test-scenes/oasis-pool`, sky, glitter and bottom drawn by the resolve, waded in; the island itself, its vegetation, wet materials and refraction remain, the last with S86) | R65, S63 | L | research | [13 §13.1](plan/13-reference-consumer-games.md#oases) |
 | P9 | Desert creatures | open | | L | design | [13 §13.5](plan/13-reference-consumer-games.md#135-mapping-to-the-roadmap) |
 | P10 | Ruins' gameplay roles | open | G39, P2 | M | design | [13 §13.1](plan/13-reference-consumer-games.md#ruins) |
 | P11 | The game's seeded oases, ruins and climate | open | G35, P18 | M | design | [13 §13.1](plan/13-reference-consumer-games.md#concept) |

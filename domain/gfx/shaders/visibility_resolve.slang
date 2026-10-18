@@ -49,6 +49,7 @@
 #include "material.slang"
 #include "scene.slang"
 #include "sky.slang"
+#include "water.slang"
 
 #ifdef RESOLVE_RAY_SHADOWS
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
@@ -120,7 +121,8 @@ struct ResolveParams {
   uint display_encoding;
   float display_paper_white_nits;
   float display_peak_nits;
-  uint display_pad;
+  // The water's clock (water.slang): the frame's world time modulo k_water_period_s, seconds.
+  float water_time_s;
 };
 
 // The output encode's target, gathered from the block (display.slang's `DisplayTarget`).
@@ -406,6 +408,52 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
   return shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
 }
 
+// **A water pixel** (water.slang; docs/subsystems/water.md, "Shading"): the waves' normal at the
+// body-local point — the surface point less the instance's own place in the frame, so the waves
+// belong to the body and not to the eye or the world (ADR-0053) — faded by this pixel's footprint
+// (the reconstruction's own derivatives, as the ground's detail takes them); the sun as the opaque
+// path takes it, through the same shadow query on the flat surface; the ambient of a level
+// surface; the sky along the reflected view, or the stand-in's clear colour without a sky. What it
+// returns is the surface's radiance, before the air between it and the eye.
+float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                   uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
+                   float3 from_eye, ResolveMaterial material, float ray_bias) {
+  const WaterParams w = water_of(material);
+  const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, cluster, triangle);
+  float3 dp_dx;
+  float3 dp_dy;
+  screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
+                            params->height, dp_dx, dp_dy);
+  const float footprint = max(length(dp_dx), length(dp_dy));
+  const float3 local = s.position - instance_from_eye(instance, params->eye);
+  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, s.uv.y);
+  const float3 view = normalize(-from_eye);
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
+  float3 sun = float3(0.0);
+  if (dot(s.normal, params->sun.xyz) > 0.0) {
+    const float lit = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
+                                        ray_bias, params->sun.xyz, 1e30);
+    if (lit > 0.0) {
+      sun = float3(params->sun.w);
+      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+      sun *= lit;
+    }
+  }
+  float3 ambient;
+  float3 reflected;
+  const float3 r = water_reflected(n, view);
+  if (has_sky) {
+    ambient = sky_ambient((SkyFrame*)sky->frame, s.normal);
+    reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+  } else {
+    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+    ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
+    reflected = params->sky.rgb;
+  }
+  return water_radiance(w, n, view, s.uv, params->sun.xyz, sun, ambient, reflected);
+}
+
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
@@ -612,75 +660,82 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // and a filtered map removes the fraction it covers. A visibility of 1 multiplies nothing, so a
   // ray-traced or unshadowed pixel is the bytes it always was.
   float3 color = float3(0.0);
-  if (dot(surface.normal, params->sun.xyz) > 0.0) {
-    const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
-                                      params->sun.xyz, 1e30);
-    if (v > 0.0) {
-      float3 sun = float3(params->sun.w);
-      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-      color = brdf_direct(surface, params->sun.xyz, sun * v);
-    }
-  }
-  // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
-  // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
-  // falloff nor end. The cascaded maps shadow only the light they were drawn from.
-  ResolveLight* lights = (ResolveLight*)params->lights;
-  for (uint i = 0; i < params->light_count; ++i) {
-    float3 light_dir;
-    float3 radiance;
-    float light_distance;
-    if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
-    float v = 1.0;
-    if (dot(surface.normal, light_dir) > 0.0) {
-      v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric, ray_bias,
-                            light_dir, light_distance - ray_bias);
-      if (v <= 0.0) continue;
-    }
-    if (has_sky && lights[i].direction_type.w >= 1.5) {
-      radiance = sky_light_at(sky, s.position, light_dir, radiance);
-    }
-    // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
-    // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
-    color += brdf_direct(surface, light_dir, v < 1.0 ? radiance * v : radiance);
-  }
-  // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
-  // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
-  // `ground_radiance` — blended by how much of the normal's cosine lobe each half fills
-  // (`ambient_radiance`, brdf.slang's `brdf_hemisphere_ambient`), so a face turned towards the
-  // ground is lit by the ground: a dune's slip face in shade by the sand around it. The diffuse
-  // albedo takes it, and the specular lobe takes the part of it `brdf_env_specular` says a lobe of
-  // this roughness reflects at this view angle — which keeps metals, which have no diffuse lobe,
-  // from going black, and keeps rough stone matte at grazing (it was bare Schlick at n.v until
-  // 2026-09-25, a mirror's sheen at every roughness; brdf.slang has why). The path tracer picks
-  // the same two halves up as the radiance an escaped ray carries (`environment_radiance`), which
-  // is what makes the two comparable.
-  // The material's ambient occlusion multiplies this term and nothing else — not the sun, not the
-  // point lights, not the emission — because it stands in for the part of the hemisphere the
-  // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
-  // map multiplies nothing.
-  //
-  // **With a sky** the hemisphere is the sky's own: the environment of the frame's sky-view table
-  // above the horizon and the ground it lights below, projected on nine spherical harmonics once a
-  // frame and convolved with the cosine lobe (`sky_ambient`), so a face towards the low sun's side
-  // of the sky takes its glow and one towards the ground the sand the sun and the sky light.
-  float3 ambient;
-  if (has_sky) {
-    ambient = sky_ambient((SkyFrame*)sky->frame, surface.normal);
+  // A water surface (k_material_water; water.slang, docs/subsystems/water.md) is shaded by its
+  // own model in place of the BSDF; every other material takes the path below exactly as before.
+  if ((material.flags & k_material_water) != 0) {
+    color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
+                        from_eye, material, ray_bias);
   } else {
-    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-    ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
+    if (dot(surface.normal, params->sun.xyz) > 0.0) {
+      const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
+                                        params->sun.xyz, 1e30);
+      if (v > 0.0) {
+        float3 sun = float3(params->sun.w);
+        if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+        color = brdf_direct(surface, params->sun.xyz, sun * v);
+      }
+    }
+    // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
+    // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
+    // falloff nor end. The cascaded maps shadow only the light they were drawn from.
+    ResolveLight* lights = (ResolveLight*)params->lights;
+    for (uint i = 0; i < params->light_count; ++i) {
+      float3 light_dir;
+      float3 radiance;
+      float light_distance;
+      if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
+      float v = 1.0;
+      if (dot(surface.normal, light_dir) > 0.0) {
+        v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric, ray_bias,
+                              light_dir, light_distance - ray_bias);
+        if (v <= 0.0) continue;
+      }
+      if (has_sky && lights[i].direction_type.w >= 1.5) {
+        radiance = sky_light_at(sky, s.position, light_dir, radiance);
+      }
+      // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
+      // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
+      color += brdf_direct(surface, light_dir, v < 1.0 ? radiance * v : radiance);
+    }
+    // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
+    // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
+    // `ground_radiance` — blended by how much of the normal's cosine lobe each half fills
+    // (`ambient_radiance`, brdf.slang's `brdf_hemisphere_ambient`), so a face turned towards the
+    // ground is lit by the ground: a dune's slip face in shade by the sand around it. The diffuse
+    // albedo takes it, and the specular lobe takes the part of it `brdf_env_specular` says a lobe of
+    // this roughness reflects at this view angle — which keeps metals, which have no diffuse lobe,
+    // from going black, and keeps rough stone matte at grazing (it was bare Schlick at n.v until
+    // 2026-09-25, a mirror's sheen at every roughness; brdf.slang has why). The path tracer picks
+    // the same two halves up as the radiance an escaped ray carries (`environment_radiance`), which
+    // is what makes the two comparable.
+    // The material's ambient occlusion multiplies this term and nothing else — not the sun, not the
+    // point lights, not the emission — because it stands in for the part of the hemisphere the
+    // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
+    // map multiplies nothing.
+    //
+    // **With a sky** the hemisphere is the sky's own: the environment of the frame's sky-view table
+    // above the horizon and the ground it lights below, projected on nine spherical harmonics once a
+    // frame and convolved with the cosine lobe (`sky_ambient`), so a face towards the low sun's side
+    // of the sky takes its glow and one towards the ground the sand the sun and the sky light.
+    float3 ambient;
+    if (has_sky) {
+      ambient = sky_ambient((SkyFrame*)sky->frame, surface.normal);
+    } else {
+      const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+      ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
+    }
+    const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
+    float3 indirect =
+        ambient * (albedo * (1.0 - surface.metallic) +
+                   brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v));
+    if (material.occlusion_texture != k_no_texture) {
+      indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
+    }
+    color += indirect;
+    // Emission — the factor times the emissive texture — is radiance the surface gives off, added
+    // after the lighting and touched by no shadow and no occlusion.
+    color += sampled.emissive;
   }
-  const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
-  float3 indirect =
-      ambient * (albedo * (1.0 - surface.metallic) +
-                 brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v));
-  if (material.occlusion_texture != k_no_texture) {
-    indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
-  }
-  color += indirect;
-  // Emission — the factor times the emissive texture — is radiance the surface gives off, added
-  // after the lighting and touched by no shadow and no occlusion.
-  color += sampled.emissive;
   if (has_sky) {
     // The air between the eye and the surface: what it takes out of the surface's light on the way
     // and what it scatters in, out of the frame's aerial table, which is the sky-view table's

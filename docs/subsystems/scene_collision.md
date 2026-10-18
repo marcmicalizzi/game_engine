@@ -53,6 +53,8 @@ The far case (`scene_collision: the ground at 419 km, 10,000 km and 1e8 m is the
 
 The tiles it holds (a heightfield body and shape, a compound body and shape, and the heights and fields a tile was built with), the proxies (one shape per mesh and scale, kept for the consumer's life), the open placement generators of a streamed scene, and a scene read whole's bins of instances by tile. The bodies and shapes are the physics world's; this consumer is the only thing that makes or destroys them.
 
+**What gets no body.** The terrain's mesh (`SceneData::terrain_mesh`: the ground is the heightfield), a skinned instance (it moves), and since 2026-10-17 **a water body's mesh** — one whose `renderer::SceneMeshInfo::water` is set ([water](water.md#wading)): the walker stands on the ground under the surface and wades by the depth the water capability answers, so the surface is never something to stand on. Meshes are keyed by their index in the scene, and these are the marks read beside it.
+
 ## Invariants
 
 Each is a test in `tests/scene_collision_tests.cpp` (no device, no generator capability: a ground provider and a placement generator of the test's own, meshes whose DAGs the geometry module builds) unless it says otherwise.

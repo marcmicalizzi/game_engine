@@ -85,6 +85,11 @@
 #include <domain/sim/tiers.h>
 #include <systems/animation/animation.h>
 #endif
+#if ENGINE_VIEW_WATER
+// Wading (brief-water, roadmap S63; docs/subsystems/water.md, "Wading").
+#include <systems/renderer/terrain.h>
+#include <systems/water/water.h>
+#endif
 
 #include <cmath>
 #include <cstdarg>
@@ -1858,6 +1863,40 @@ view::DrawnGround drawn_ground(const renderer::TerrainMotion& lapse,
   return d;
 }
 
+#if ENGINE_VIEW_WATER
+// ---- wading (brief-water: roadmap S63; docs/subsystems/water.md, "Wading") --------------------
+// The scene's water bodies, as the reader left them on their meshes' info, and the scene's ground
+// at its own time: the walker asks the depth at its feet each tick (walk.h, "Wading"), and the
+// water capability answers it (`water::depth_at`) — a function of the position and the scene, so a
+// walk through water replays bit for bit. A scene with no water attaches nothing, and its walker is
+// the one it always was. Declared before the walker, so it outlives it.
+struct Wading {
+  Vector<water::Body> bodies;
+  std::unique_ptr<renderer::TerrainSampler> terrain;
+  scene_gen::Ground ground;
+
+  static f32 depth(const void* self, WorldPos at) noexcept {
+    const Wading& w = *static_cast<const Wading*>(self);
+    return water::depth_at(std::span<const water::Body>(w.bodies.data(), w.bodies.size()), w.ground,
+                           at);
+  }
+  void attach(const renderer::SceneData& scene, view::Walker& walker) {
+    bodies.clear();
+    for (const renderer::SceneMeshInfo& info : scene.mesh_info) {
+      if (!info.water.has_value()) continue;
+      water::Body body;
+      if (water::read_body(info.water->body, body, nullptr)) bodies.push_back(std::move(body));
+    }
+    if (bodies.empty()) return;
+    if (scene.terrain.enabled) {
+      terrain = std::make_unique<renderer::TerrainSampler>(scene.terrain);
+      if (terrain->ok()) ground = terrain->provider().view();
+    }
+    walker.set_water(&Wading::depth, this);
+  }
+};
+#endif
+
 // The session's walk block, beside the walker's own (apps.md, "Walking"): how it started, where it
 // is now, and how often F switched it.
 JsonValue walk_summary(const view::FlySession& session, const view::Walker& walker) {
@@ -2481,6 +2520,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // A replay is flown once: its frames are a function of its ticks, and a second pass over them
   // would measure the same frames again, which `--repeat` exists to do for a path's.
   const u32 repeats = options.benchmark.empty() || interactive.on ? 1u : options.repeats;
+#if ENGINE_VIEW_WATER
+  Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
+#endif
   view::Walker walker;  // a recorded walk's (walk.h): outlives the session, which points at it
   view::FlySession session;
   const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
@@ -2710,6 +2752,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
       walker.set_drawn(drawn_ground(time_lapse, scene_data));
+#if ENGINE_VIEW_WATER
+      wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
+#endif
       session.set_walker(&walker);
 #if ENGINE_VIEW_GAME
       attach_game(session, clock.offset_s, clock.sun_rate, scene_data);
@@ -4460,6 +4505,9 @@ int run_view(int argc, char** argv) {
   u32 joint_matrices = 0;
   std::string clip_text;
   // ---- the interactive camera (fly_camera.h), with --interactive or --replay-input ----------
+#if ENGINE_VIEW_WATER
+  Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
+#endif
   view::Walker walker;  // the walk mode (walk.h): outlives the session, which points at it
   view::FlySession session;
   view::EdgeEvents edge;               // live: converted this frame, fed at the next tick
@@ -4861,6 +4909,9 @@ int run_view(int argc, char** argv) {
         break;
       }
       walker.set_drawn(drawn_ground(time_lapse, scene_data));
+#if ENGINE_VIEW_WATER
+      wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
+#endif
       session.set_walker(&walker);
       if (interactive.header.walking && !walker.available()) {
         std::fprintf(stderr, "engine-view: nothing to walk on here (%s); flying\n",

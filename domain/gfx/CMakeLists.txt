@@ -76,7 +76,8 @@ if(TARGET engine_gfx_tests)
                                           tests/ground_detail_tests.cpp
                                           tests/ground_detail_preview_tests.cpp
                                           tests/sky_tests.cpp tests/reconstruct_tests.cpp
-                                          tests/world_eye_tests.cpp)
+                                          tests/world_eye_tests.cpp
+                                          tests/water_shading_tests.cpp)
   # ENGINE_SOURCE_DIR is where the morph test looks for the Khronos samples tools/fetch-samples.ps1
   # fetches into content/samples (through tests/support/test_paths.h, so a bundle made with
   # -WithSamples finds its own copy); without them that case says so and passes.

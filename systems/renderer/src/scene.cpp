@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <optional>
 #include <renderer_log.h>
+#include <scene_water.h>
 #include <schemas/scene.h>
 #include <utility>
 
@@ -1415,6 +1416,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
   // (renderer.md, "Instances that come and go").
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  if (!read_scene_water(file, path, dir, ground, out, error)) return false;  // water.md
   if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
       file.placements.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)

@@ -1,0 +1,112 @@
+# water (systems)
+
+**Purpose.** Water surfaces in a scene — the oases of Desert Survival first ([plan 13 §13.1](../plan/13-reference-consumer-games.md#oases), "water with reflection and refraction"; roadmap S63, P8) and the "Fluids and water surfaces" row of the capability inventory ([plan 05 §5.15](../plan/05-simulation.md#515-capability-inventory)). A scene's `water` block (`engine.scene.WaterBody`) names bodies — a circle or a star-shaped polygon at a level — and each becomes **an opaque mesh with a water material**, drawn by the rasterizers like any instance and shaded by the material resolve's water branch; a walker wades in it and stops at the chest. It deliberately does not yet refract what stands under the surface, let anyone swim, float anything, or run a ripple simulation: that is stage 2, roadmap S86.
+
+**Why this shape: opaque with a branch, not a forward pass.** The renderer is a visibility buffer: every surface is a triangle id in one 64-bit word per pixel, shaded once by the resolve, and the plan's forward and transparent pass (plan 04 §4.3 step 7) is not built. A water surface that is transparent needs that pass, a second depth, and an order — weeks of renderer for one material. But what the eye sees of a shallow pool is three things the resolve can evaluate at the pixel with what it already has: the **sky** reflected along the view (the sky's model is a function of a direction, `sky.slang`), the **sun's glitter** (the GGX lobe the resolve already evaluates, at a low roughness on a wave normal), and the **bottom's colour fading with depth** (which a vertex attribute can carry: the depth under every vertex is known when the mesh is built). So a body is a flat mesh in the visibility buffer, and a material class tells the resolve to shade it as water. Everything downstream is unchanged: the cull, the four rasterizers, the occlusion, the shadows (the surface receives the sun's shadow as any surface does; it also casts one, onto the ground under itself, which nobody sees), the LOD DAG and the ray path. What it costs is what opaque water cannot show — the rocks and the bottom's own texture under the surface, seen bent through it — which is refraction and needs the forward pass; S86 rows it.
+
+**Why a capability, and how it reaches the renderer.** The renderer is not a capability and the water is (ADR-0027), so the renderer may not call it. The registration point is the scene-generator registry (ADR-0046): the capability registers the **placement generator `"water"`**, and the renderer's scene reader (`systems/renderer/src/scene_water.cpp`, one call in `read_scene_file`, after the placement entries and before the terrain, which stays the last mesh) hands it the block as `{"bodies": [...]}`. Its `expand` returns one mesh and one placement per body, in the block's order — mesh *k* and instance *k* are body *k*, the one contract the reader relies on. A build without the capability (`ENGINE_WITH_WATER=OFF`, `msvc-minimal`) refuses a scene with a `water` block with a sentence naming the switch; a scene without the block is read exactly as before, byte for byte. The **material** is the renderer's and gfx's, not the capability's: `gfx::k_material_water` is a class of the material table, `gfx::set_water_material` packs a body's numbers into it, and the resolve's branch is `domain/gfx/shaders/water.slang`.
+
+**Owned data.** A body as read and checked (`water::Body`, `read_body`); its mesh (`build_mesh`) and the GLB file it is written to; the depth at a point (`depth_at`). Nothing at run time: no state per tick, no GPU resource.
+
+## The block
+
+`engine.scene.WaterBody` (schemas/scene.schema, `Scene.water`, scene version 8):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `name` | | what the mesh is called (`water/<name>`) |
+| `level_m` | 0 | the surface's height, a world y (f64) |
+| `shape` | | exactly one of `circle: {center, radius_m}` and `polygon: [worldpos...]` (x and z read); a polygon must be star-shaped from its centroid, in either winding |
+| `shore_m` | 2 | how far in from the edge the surface fades from the bottom alone to reflecting |
+| `shallow`, `deep` | pale green-blue, dark blue-green | linear RGB over a shallow bottom and where the bottom is gone |
+| `depth_fade_m` | 3 | the depth at which the bottom has faded to `deep` |
+| `wave_amplitude_m`, `wave_length_m` | 0.02, 2.5 | the largest wave; 0 amplitude is a mirror |
+| `chop` | 0.5 | how far the shorter waves turn from the main direction, [0, 1] |
+| `wind_follow` | true | the waves travel along the ground's wind (`GroundProvider::wind` at the scene's time) when it has one |
+| `direction_deg` | 0 | otherwise, about +y from +x towards +z |
+| `roughness` | 0.08 | the surface's GGX roughness, [0.02, 1] |
+| `seed` | 1 | the waves' phases |
+
+Checked when the scene is read; a body that cannot be drawn (no shape or both, a radius of 0, a polygon of two points or not star-shaped, a roughness or chop out of range) refuses the file with a sentence naming the body.
+
+## The mesh
+
+**Rings to a fan.** The outline is sampled every `spacing` metres along its edge — a circle at angles from a polynomial sine of the module's own (`water::sin_cos`, + − × ÷ only, so the points are the same bits on every toolchain), a polygon along each edge — and copies of that edge scaled towards the centre stand `spacing` apart along the ray through each sample, closed by a fan at the centre. Every ring has the edge's vertex count, so the strips between rings are quads with no stitching, and a vertex's distance from the edge is `(1 - t) |b|`: exact for a circle, and for a star-shaped polygon the distance along the ray from the centre, which is what the shore fade is drawn by. A grid clipped to the outline was the alternative; it puts slivers or snapped vertices along the shore, which is exactly where the fade needs clean triangles. The rings' cost is density near the centre (every ring has the edge's count), which the LOD DAG simplifies away.
+
+**Spacing and budget.** `spacing = clamp(shore_m / 3, 0.25, 1)` m: three vertices across the shore fade. **A 20 m pool** with the default shore: 0.667 m, 95 samples a ring, 15 rings, **1,426 vertices and 2,755 triangles**; the oasis pool (shore 1.5 m, 0.5 m): 126 a ring, 20 rings, 2,521 vertices, 4,914 triangles, 111 clusters. A body whose mesh would pass `k_max_vertices` (65,536) has its spacing grown by a quarter until it fits — a 4 km lake is 45,136 vertices at 23.7 m — which the fade then draws coarser; no limit is hidden.
+
+**What a vertex carries.** Positions are metres from the body's centre at height 0; the instance stands at the centre and the level (`SceneInstance::origin`, ADR-0053), unrotated. The normal is +y and every triangle is wound to face it (the mesh is built with normal cones on: a pool faces up). **The UV is (the distance from the edge, the depth under the vertex)**, metres: the depth is the level less the ground's surface under the vertex (`scene_gen::Ground::surface`, the provider's heights at the whole millimetre), clamped at zero where the ground stands above the water — the shore. The UV, not a vertex colour, because the glTF import carries `TEXCOORD_0` and no colours (AGENTS.md, glTF import), and the half-float UV holds a depth of a few metres to a millimetre.
+
+**Stored through the derived-data cache.** The mesh is written as a GLB (positions, normals, `TEXCOORD_0`, one material named `water` whose base colour is `shallow`) under `water-<hash of its bytes>.glb` in `<repo>/ddc/water` (found from the scene's directory, as the scatter capability's rocks are), or `water/` beside a scene outside any checkout; a file already there under its name is the right one, and the renderer's cluster cache builds and keys the `.clusters` from it like any mesh. The name is the bytes' hash, so it covers the body's parameters, the ground under it and `k_mesh_version` alike. **The depth is the load's**: a body over migrating dunes keeps the depths of the moment the scene was read (the moving ground's `stand`, when a host has one) until it is read again.
+
+**LOD.** The mesh is cluster geometry, so the DAG applies: far away a pool is a few clusters of large flat triangles, whose interpolated depth is coarser — the fade is the near field's.
+
+## Shading
+
+**The branch** (`domain/gfx/shaders/water.slang`, called as `water_pixel` from `visibility_resolve.slang` where the material carries `gfx::k_material_water`, in place of the BSDF; every other material takes the opaque path exactly as before, which the shading and attributes tests hold at 0 of 255). Per pixel:
+
+- **The normal**: four directional sines over the **body-local point** — the reconstructed surface point less `instance_from_eye`, the instance's own place in the frame, so the waves belong to the body and never to the eye or a world coordinate (ADR-0053), and do not swim as the eye crosses cells. Wave *i* has the body's wavelength and amplitude times {1, 0.62, 0.38, 0.24} and {1, 0.55, 0.32, 0.18}, is turned from the main direction by `chop` × {0, 0.55, −0.8, 0.35} × 90°, starts at a phase hashed from the seed, and travels at the deep-water speed √(g k) **rounded to a whole number of cycles per 1024 s** (`k_water_period_s`), so the frame's clock may be reduced modulo the period in double (`gfx::water_clock`) with no jump at the wrap, and each term of the phase is reduced to a fraction of a cycle before it is added, so `cos` is asked a small angle. Only the slope is evaluated — the mesh stays flat. A wave shorter than twice the pixel's footprint (the larger of the reconstruction's position derivatives, as the ground's detail takes them) is faded out rather than aliased into sparkle, whole at four footprints; every wave dies over the last 0.25 m of depth, so the shore is calm.
+- **Fresnel**: Schlick at water's F0 = ((1.33 − 1)/(1.33 + 1))² = 0.0201 on the wave normal and the view.
+- **The reflection**: the sky's radiance along the view reflected off the wave normal, folded above the horizon (`sky_environment`: the scattered sky and the night's glow; never the sun's disc, which the glitter is), or the stand-in's clear colour (`ResolveParams::sky`) in a scene with no sky.
+- **The glitter**: the BSDF's own GGX lobe (`brdf_d_ggx`, `brdf_v_smith`, Schlick at F0) on the wave normal at the body's roughness, times the sun's irradiance as the opaque path takes it — through the air with a sky, and through the same shadow query on the flat surface, so a rock's shadow lies on the pool.
+- **The bottom**: `shallow` fading to `deep` by the depth over `depth_fade_m`, lit as a level surface by the sun (E/π) and the ambient of a level surface (the sky's harmonics, or the stand-in's hemisphere), darkened by `exp(−3 · slant / depth_fade_m)` where `slant = depth · (1/cos θt − 1)` is the extra path of the refracted view (θt by Snell at 1.33) — so looking straight down shows the authored colours and a grazing view sinks into the deep.
+- **The shore**: `k = clamp(edge distance / shore_m, 0, 1)`; colour = bottom · (1 − F k) + (sky · F + glitter) · k, so the very edge is the bottom alone — wet sand — and the reflection comes in over the shore band. Then the resolve's aerial perspective and exposure, as for every surface.
+
+**The clock.** `ResolveParams::water_time_s` (the block's last pad word) is the frame's world time — the ground's surface time plus `FrameDesc::sun_time_s`, the one clock the sky reads — reduced modulo the period in double. It is filled where the resolve's block is written, `scene_renderer.cpp`, which another change of this batch owns, so **until that one line lands the waves stand still at their phase at time zero** (the sun still moves the glitter, which the GPU case holds); a replay draws the same water either way.
+
+**The reference** (`domain/gfx/tests/water_reference.h`, the branch again in double; `water_shading_tests.cpp`): a level quad with the water mesh's UVs under a known sun and the stand-in sky, five blocks — waves at two clocks and two roughnesses, a mirror, the shore — every fourth pixel of the middle half against the reference: **worst 1 of 255** on the RTX 5090's mesh path (2026-10-17), within the BSDF's 2. The clock moves the picture. The phase hash and the cycle rounding are integers and are mirrored exactly.
+
+**What it costs** (`engine-view --benchmark` over a five-second path looking down on the pool, the water about 70% of a 1920 × 1080 frame, `msvc-debug`, RTX 5090, 2026-10-17, `machine_state` start: GPU 0%, others' CPU 6–10%; end: GPU 90–94% — this run's own): the resolve's median **0.178 ms with the water drawn as a plain dielectric (stage 1) and 0.189 ms with the branch**, +0.010 ms, about 7 ps a water pixel and 6% of the resolve. The footprint's derivatives and the four waves are most of it.
+
+The material entry (`gfx::set_water_material`): `albedo` = shallow, roughness; `emissive` = 0; `uv_transform` = deep, `depth_fade_m`; `uv_offset` = amplitude, wavelength, chop, `shore_m`; `normal_scale`, `occlusion_strength` = the waves' direction (x, z); `sampler` = the seed; `flags` = `k_material_water`. Those are the slots an untextured material with no UV transform never reads, so every reader that is not the branch — the reference path tracer, the albedo view — sees an untextured dielectric of the shallow colour, the UVs passing through unscaled.
+
+**What it looks like** (the oasis pool's markers, `engine-view --marker-captures`, 2026-10-17). From the east shore with the sun behind (`east`), the pool reads as water: blue-green and dark over its 2.3 m middle, pale where the sand comes up through the shallows, a thin bright rim of wet sand at the edge, the waves a fine regular chop that catches the sky's paler blue at grazing; the near rocks stand at the shore. Looking down from nine metres (the cost path below) the sun's glitter is a scatter of bright crescents on the wave crests where the reflected view meets the sun, the bottom darkening from the shore to the middle. Low across the middle (`across`) the waves fill the foreground, lighter where they face the sky, under the far shore's rocks. What does not look right yet: four sines make a visibly regular pattern overhead, the waves stand still until the clock is wired (above), the rocks do not reflect (the sky's model has no geometry in it; a reflected rock needs the forward pass or a ray, S86), and nothing is seen through the surface.
+
+## Wading
+
+**The depth at the feet.** `water::depth_at(bodies, ground, at)`: the deepest body whose outline holds the point's x and z, of its level less the ground's surface there, never below zero; 0 outside every body. engine-view's walker asks it at its feet before every step (`view::Walker::set_water`, attached in `main.cpp` from the bodies on the scene's mesh infos and the scene's ground at its own time, `ENGINE_VIEW_WATER`), and scales the step by **the declared curve** (`view::wade_scale`, `walk.h`): full speed to the ankle (0.3 m), falling linearly to half at the waist (1 m) and to a quarter at the chest (1.4 m). **At the chest the water is a wall**: a step whose heading leads deeper — the depth a quarter metre ahead along it greater than at the feet — is not taken (a scale of 0, counted as a stopped tick), so the walker stops chest deep and wades back out the way it came. No swimming: S86.
+
+**The water's mesh is not a collision surface**: `scene_collision` gives no body to a mesh whose `renderer::SceneMeshInfo::water` is set (it keys meshes by their index in the scene, and this is the mark it reads beside `terrain_mesh`), so the physical walker stands on the ground under the surface, and the ground-follower on the provider's height as always.
+
+**Determinism.** The depth is a function of the position and the scene, so a walk through water replays bit for bit (the end-to-end case replays one to the same trajectory, walker hash and wading block). A walker with no water, or at a depth of 0, scales by exactly 1 — `x * 1.0f` is `x`, contraction is off (ADR-0035) — so every walk recorded before water existed replays as it did, and a scene with no water attaches nothing. The summary's `walk` block gains `wading` — `max_depth_m`, `ticks` in water, `stopped_ticks` — only where there is water.
+
+**What the tests hold.** `walk_tests.cpp` (no device): the curve's points; a walker over a shore that deepens half a metre a metre walks east for twenty seconds and stops at x = 4.80 (the chest's 1.4 m is at 4.8), 1.400 m deep, stopped 3,717 ticks of 4,800, and wades back west; the same walk twice is the same; no depth function and one that answers 0 walk the same floats and hash. `walk_water_view_tests.cpp` (a window on the tests' private desktop and a device): on the committed oasis pool, a walker started on the east shore facing the middle holds W for twelve seconds and stops chest deep — 1.417 m at the most, 1,184 ticks stopped, the eye at x = 5.26, short of the middle — with physics on (2026-10-17, RTX 5090); its recording replays offscreen to the same trajectory, walker hash and wading block.
+
+## Determinism
+
+The mesh is a function of the block and the ground in f32/f64 + − × ÷ and sqrt (the GLB bytes are pinned by `water_tests.cpp`'s hash, taken on MSVC). The waves are a function of the body-local point and the frame's clock reduced in double: a replay draws the same water, and a picture is the same bytes twice (the GPU case). `depth_at` is a function of the position and the scene.
+
+**Public API.** `include/systems/water/water.h`.
+
+**Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `schemas`, `io`, `log`, `geometry`, `scene_gen`. No renderer.
+
+**Testing.** `tools/dev.ps1 test -Filter water`. `tests/water_tests.cpp`, no device: the sine against the C library's to 1e-14; the block read and every refusal; inside, edge and outside for a circle and a polygon; `depth_at` inside, outside, at the shore and over two bodies; the mesh over a synthetic bowl — vertex and triangle counts, every normal up and every triangle facing +y, every vertex's depth the level less the ground to the bit, its edge distance, the edge ring dry; a 20 m pool's budget and a lake's grown spacing; a polygon's edge on its outline; the GLB as the importer reads it, the same bytes twice and a pinned hash; the generator through the registry; the material's packing. `tests/water_scene_tests.cpp`: a scene's block read by the renderer (one mesh and one instance a body before the terrain, the body and its shading on the mesh's info, a fixed direction, the load carrying it), a scene without the block and with an empty one the scene it was, a polygon body, a refusal's sentence; the oasis pool's ground (the level under every crest 25 m out and under the whole edge, two metres deep at the centre); and on a GPU the oasis pool captured with and without the block — **every differing pixel is a pixel of the pool** (its instance in the ids channel), the same frame twice the same bytes, and two hours of sun on changes the pool's pixels.
+
+**Performance notes.** Nothing per frame on the CPU. The mesh is built once per scene read (a 20 m pool: 1,426 ground heights).
+
+## Capability contract (ADR-0027)
+
+This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way.
+
+| Registration point | This capability | Status |
+|---|---|---|
+| Capabilities it requires | none | stands alone; its tests link the terrain, sky and scatter capabilities for the oasis scene |
+| Component and event types | none | a body is scene data (`engine.scene.WaterBody`, the scene format's), not entity state |
+| Tick scheduler entry | none | nothing ticks: the waves are a function of the frame's clock, drawn by the resolve |
+| Render-graph passes | none | the surface is an instance; its shading is a material class of the resolve |
+| Content-build derived step | the GLB per body, clustered by the renderer's cache | done |
+| Scene generator | placement generator `"water"` | done |
+| Protocol methods | none | not needed |
+| Tunables | none | every number is the body's |
+| LOD policy | the cluster DAG of its mesh | done |
+| Determinism | derived: drawn, and `depth_at` a function of position | done |
+| Zero cost when unused | a scene with no block calls nothing; no material carries the flag | done |
+| Tests and size table | `tests/water_tests.cpp`, `tests/water_scene_tests.cpp`, `tests/size_table.cpp` | done |
+| Bench | none: no hot path on the CPU | |
+| Removal proof | `ENGINE_WITH_WATER`, off in the minimal build | works: a block is refused with a sentence |
+
+**Removing it.** `cmake --preset msvc-minimal` (or `-DENGINE_WITH_WATER=OFF`) drops the module and its tests; the module disappears from `build/<preset>/modules.json` and is listed there under `disabled_capabilities`. Everything else builds and passes, and a scene with a `water` block is refused.
+
+## Not yet
+
+Refraction of what is under the surface (the forward pass, plan 04 §4.3 step 7), swimming, buoyancy (a fluid volume and a submerged-volume query), a ripple map stepped by a wave equation, the moon's and the point lights' glitter, depths that follow a moving ground, polygons that are not star-shaped: roadmap S86.

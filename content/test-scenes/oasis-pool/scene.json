@@ -1,0 +1,62 @@
+{
+  "format": "engine.scene.v1",
+  "name": "oasis-pool",
+  "camera_path": "camera-path.json",
+  "description": "A pool of about 20 m in a hollow of small dunes, its level below the crests round it: the first water (docs/subsystems/water.md, roadmap S63). The sky in it, the sun's glitter on its waves, the sand of its bottom at the shore fading to blue-green where it is deep, and a ring of scattered rocks at the shore that reflect in it and shadow it. A camera path circles the pool low and then crosses it; a walk starts at the shore (README.md).",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "turbidity": 2.2,
+    "ground_albedo": 0.38
+  },
+  "terrain": {
+    "size": 257,
+    "extent": 128,
+    "seed": 5,
+    "dune_height": 3,
+    "dune_wavelength": 40,
+    "basins": [
+      {"center": [0, 0], "radius": 15, "depth": 3.5}
+    ],
+    "generator": "Dunes",
+    "time": 94644000.0
+  },
+  "placements": [
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "shore-rocks",
+        "seed": 3,
+        "tile_size": 32,
+        "region": {"kind": "Polygon", "polygon": [[-22, -22], [22, -22], [22, 22], [-22, 22]]},
+        "density": {"kind": "Constant", "per_m2": 0.012},
+        "kinds": [
+          {
+            "name": "rock",
+            "spacing": 3,
+            "scale_min": 0.6,
+            "scale_max": 1.6,
+            "align": true,
+            "sink": 0.1,
+            "rock": {"seed": 7, "size_x": 1.1, "size_y": 0.8, "size_z": 0.9, "roughness": 0.22, "detail": 2, "red": 0.36, "green": 0.27, "blue": 0.2, "buried": 0.25}
+          }
+        ],
+        "exclude": {"circles": [{"at": [0, 0, 0], "radius": 10.6}]}
+      }
+    }
+  ],
+  "water": [
+    {
+      "name": "oasis",
+      "level_m": -0.45,
+      "shape": {"circle": {"center": [0, 0, 0], "radius_m": 10}},
+      "shore_m": 1.5,
+      "depth_fade_m": 2.5,
+      "wave_amplitude_m": 0.015,
+      "wave_length_m": 1.8,
+      "chop": 0.6,
+      "roughness": 0.06,
+      "seed": 11
+    }
+  ]
+}

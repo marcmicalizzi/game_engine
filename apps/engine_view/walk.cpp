@@ -194,6 +194,27 @@ struct Walker::Impl {
   // A game's scales on the speeds (walk.h, `set_speed_scale`); 1 leaves every float as it was.
   f32 speed_scale = 1.0f;
   f32 sprint_scale = 1.0f;
+  // The water (walk.h, "Wading"): null, none.
+  DepthFn depth = nullptr;
+  const void* depth_context = nullptr;
+  // This step's scale for the depth at the feet, and whether the chest's wall stops it: 1 and false
+  // with no water, which multiplies nothing.
+  f32 wade(WorldPos at, Vec3 direction) {
+    if (depth == nullptr) return 1.0f;
+    const f32 d = depth(depth_context, at);
+    if (!(d > 0.0f)) return 1.0f;
+    ++stats.wading_ticks;
+    stats.max_depth_m = std::max(stats.max_depth_m, d);
+    if (d >= k_wade_chest_m && (direction.x != 0.0f || direction.z != 0.0f)) {
+      const WorldPos ahead{at.x + static_cast<f64>(direction.x * k_wade_probe_m), at.y,
+                           at.z + static_cast<f64>(direction.z * k_wade_probe_m)};
+      if (depth(depth_context, ahead) > d) {
+        ++stats.stopped_ticks;
+        return 0.0f;
+      }
+    }
+    return wade_scale(d);
+  }
 
   // Following the ground.
   f32 vy = 0.0f;
@@ -468,6 +489,20 @@ void Walker::set_speed_scale(f32 walk, f32 sprint) noexcept {
 f32 Walker::speed_scale() const noexcept { return impl_->speed_scale; }
 f32 Walker::sprint_scale() const noexcept { return impl_->sprint_scale; }
 
+void Walker::set_water(DepthFn depth, const void* context) noexcept {
+  impl_->depth = depth;
+  impl_->depth_context = context;
+}
+
+f32 wade_scale(f32 depth) noexcept {
+  if (depth <= k_wade_ankle_m) return 1.0f;
+  if (depth <= k_wade_waist_m)
+    return 1.0f - 0.5f * (depth - k_wade_ankle_m) / (k_wade_waist_m - k_wade_ankle_m);
+  if (depth <= k_wade_chest_m)
+    return 0.5f - 0.25f * (depth - k_wade_waist_m) / (k_wade_chest_m - k_wade_waist_m);
+  return 0.25f;
+}
+
 WorldPos Walker::teleport(WorldPos at) {
   if (impl_->ground != nullptr) ++impl_->stats.teleports;
   return drop(at);
@@ -529,6 +564,9 @@ WorldPos Walker::step(const WalkInput& input) {
   if (w.ground == nullptr || !w.placed) return eye();
   const Vec3 direction = heading_direction(input);
   const WorldPos before = w.feet;
+  // Wading (walk.h): the depth at the feet before the step scales it, and at the chest a step that
+  // leads deeper is not taken. 1 with no water, which leaves every float below as it was.
+  const f32 wade = w.wade(before, direction);
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
     // The ground round the feet as this frame draws it, and the walker with it: carried by what a
@@ -543,7 +581,7 @@ WorldPos Walker::step(const WalkInput& input) {
     in.sprint = input.sprint;
     in.jump = input.jump;
     // A game's scale (walk.h): the character's speed times it; 1, the same floats.
-    in.speed_scale = input.sprint ? w.sprint_scale : w.speed_scale;
+    in.speed_scale = (input.sprint ? w.sprint_scale : w.speed_scale) * wade;
     (void)w.body.step(in);
     w.feet = w.body.feet();
     f32 held = std::numeric_limits<f32>::quiet_NaN();
@@ -561,7 +599,7 @@ WorldPos Walker::step(const WalkInput& input) {
   // was, and is added to the feet in f64 (ADR-0053).
   // A game's scale on the speed (walk.h): at 1 the product is the header's number to the bit.
   const f32 speed =
-      input.sprint ? w.params.sprint * w.sprint_scale : w.params.speed * w.speed_scale;
+      (input.sprint ? w.params.sprint * w.sprint_scale : w.params.speed * w.speed_scale) * wade;
   w.feet.x = w.feet.x + static_cast<f64>(direction.x * speed * w.dt);
   w.feet.z = w.feet.z + static_cast<f64>(direction.z * speed * w.dt);
   const f32 ground = w.ground_at(w.feet.x, w.feet.z);
@@ -604,6 +642,15 @@ JsonValue Walker::summary_json() const {
   out.set("sprint_scale", JsonValue(w.sprint_scale));
   out.set("max_ground_error_m", JsonValue(w.stats.max_ground_error_m));
   out.set("hash", hex16(w.stats.hash));
+  // Wading (walk.h), only where there is water to wade in: a summary of a scene without any is the
+  // one it always was.
+  if (w.depth != nullptr) {
+    JsonValue wading = JsonValue::object();
+    wading.set("max_depth_m", JsonValue(w.stats.max_depth_m));
+    wading.set("ticks", w.stats.wading_ticks);
+    wading.set("stopped_ticks", w.stats.stopped_ticks);
+    out.set("wading", std::move(wading));
+  }
   JsonValue bodies = JsonValue::object();
   JsonValue ground = JsonValue::object();
   JsonValue ms = JsonValue::object();

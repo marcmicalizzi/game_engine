@@ -20,6 +20,13 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_collision, "scene_collision");
 
+// **A water body's surface is not something to stand on** (docs/subsystems/water.md, "Wading"):
+// the walker stands on the ground under it and wades by the depth, so a mesh the scene's `water`
+// block made (`renderer::SceneMeshInfo::water`) gets no body, as the terrain's does not.
+bool water_mesh(const renderer::SceneData& scene, u32 mesh) noexcept {
+  return mesh < scene.mesh_info.size() && scene.mesh_info[mesh].water.has_value();
+}
+
 // Read once by the host that makes the consumer (docs/subsystems/scene_collision.md, "The
 // tunables", where the costs they were chosen by are).
 tunables::Float collision_spacing{"walk.collision.spacing_m", 1.0, 0.125, 8.0,
@@ -254,6 +261,7 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
     for (u32 i = 0; i < scene.instances.size(); ++i) {
       const gfx::InstanceDesc& instance = scene.instances[i];
       if (instance.mesh == scene.terrain_mesh || instance.mesh >= scene.parts.size()) continue;
+      if (water_mesh(scene, instance.mesh)) continue;
       if (i < scene.instance_joints.size() && scene.instance_joints[i] != 0) continue;
       const geometry::ClusterMeshPart& part = scene.parts[instance.mesh];
       Aabb3 local = Aabb3::empty();
@@ -748,6 +756,7 @@ WorldPos SceneCollision::tile_corner(const Tile& tile) const noexcept {
 bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
                                Vector<physics::CompoundChild>& children) {
   if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
+  if (water_mesh(*scene_, mesh)) return false;
   Placement placed;
   if (!decompose(linear, placed)) return false;
   physics::ShapeId shape;
