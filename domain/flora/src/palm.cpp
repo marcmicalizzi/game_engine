@@ -281,14 +281,17 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
     const D3 centre = spine_point(spine, arc[r]);
     const D3 tangent = spine_tangent(spine, arc[r]);
     const D3 normal = spine_normal(spine, arc[r]);
-    // The wall's slope where the profile cuts in or swells out tilts its normal along the spine.
+    // The wall's slope where the profile cuts in or swells out tilts its normal along the spine, at
+    // half its geometric steepness: the scars still shade, and a coarse level that has merged a
+    // ring's rows shades the trunk without the bands a full-strength normal left (flora.md, "What
+    // the harness taught").
     const u32 lo = r > 0 ? r - 1 : r;
     const u32 hi = r + 1 < rows ? r + 1 : r;
     const f64 slope = arc[hi] > arc[lo] ? (radius[hi] - radius[lo]) / (arc[hi] - arc[lo]) : 0.0;
     for (u32 i = 0; i <= segs; ++i) {
       const f64 angle = turn[r] + 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(segs);
       const D3 radial = normal * det::cos(angle) + spine.side * det::sin(angle);
-      out.vertex(centre + radial * radius[r], radial - tangent * slope,
+      out.vertex(centre + radial * radius[r], radial - tangent * (0.5 * slope),
                  static_cast<f64>(i) / static_cast<f64>(segs), arc[r] * v_scale);
     }
   }
@@ -489,9 +492,12 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
           face(prev0, prev1, tip, hint);
         } else {
           // A pinna is linear: nearly its full width for most of its length, narrowing only
-          // towards the tip (1 - s^3), which is also what keeps a crown from reading as sticks
-          // at the distance where a leaflet is a pixel wide.
-          const f64 h = base_half * (1.0 - s * s * s);
+          // towards the tip, which is what keeps a crown from reading as sticks at the distance
+          // where a leaflet is a pixel wide. Its edges are straight — a long, slightly tapering
+          // quad to the last row, then a point — so the rows in between are collinear with it
+          // and the simplifier drops them first at no cost in area (flora.md, "What the
+          // harness taught"); a curved taper lost a quarter of every leaflet at the first level.
+          const f64 h = base_half * (1.0 - 0.27 * s);
           const u32 v0 = vertex(along - edge * h, hint, chart_along - h, chart_across);
           const u32 v1 = vertex(along + edge * h, hint, chart_along + h, chart_across);
           face(prev0, prev1, v1, hint);
@@ -570,9 +576,9 @@ void build_skirt(const Palm& p, const Spine& spine, const Apex& apex, const Plan
     f.start = (120.0 + 25.0 * rng.unit()) * k_degree;
     f.bend = 40.0 * k_degree;
     f.length = 0.85 * frond * (1.0 + 0.05 * rng.symmetric());
-    f.leaflet_angle = 0.6 * static_cast<f64>(p.leaflet_angle_deg) * k_degree;
-    f.vee = -15.0 * k_degree;
-    f.leaflet_scale = 0.85;
+    f.leaflet_angle = 0.75 * static_cast<f64>(p.leaflet_angle_deg) * k_degree;
+    f.vee = -5.0 * k_degree;
+    f.leaflet_scale = 0.95;
     f.sag = 0.3;
     build_frond(f, plan, out);
   }

@@ -158,10 +158,55 @@ and walks in under the crowns: a scene to fly that needs no sample asset.
 **What the first pictures taught.** The first oasis capture read as sticks: a leaflet 3 cm wide
 tapering linearly to its tip is under a pixel from 25 m at 640 x 400, and a crown of them vanished
 into its rachises. A date palm's pinna is linear — nearly its full width most of its length — so a
-leaflet now narrows as 1 − s³ along its length, and the default width went from 3.2 to 4 cm (never
-more than 0.9 of the gap between two); the same frame went from 1,101 frond pixels to 3,812. Thin
-geometry still aliases at a distance where a leaflet is a fraction of a pixel; alpha-tested cards
-(R65) are what fixes that properly.
+leaflet now keeps nearly its width to its last row (1 − s³ at first, straight edges since the
+harness, below), and the default width went from 3.2 to 4 cm (never more than 0.9 of the gap
+between two); the same frame went from 1,101 frond pixels to 3,812, and to 6,205 with the straight edges. Thin geometry still aliases at
+a distance where a leaflet is a fraction of a pixel; alpha-tested cards (R65) are what fixes that
+properly.
+
+## What the harness taught
+
+E10's judge (`tools/e10-harness.ps1`, [e10](../experiments/e10-generated-props.md)) takes GLBs, so
+the palms were judged by the same measurements made by hand over the five files in
+`content/flora/`: `engine-content flora` into a container, `engine-content stats` on it for the
+atlas, and the container's coarse (1 px) and finest (0.05 px) cuts captured offscreen through
+engine-host from one orbit camera at the harness's `-Offscreen` framing (640 x 640, the fit orbit,
+shadows off, hardware raster), the visible pairs from `render.capture` and FLIP from `engine-image
+compare`. msvc-debug, RTX 5090, 2026-10-17; none of it is a timing, so the machine's load does not
+enter. The thresholds: 0 warnings, smallest island ≥ 1 texel of a 4096 atlas, coarse-against-finest
+FLIP ≤ 0.02, coarse cut ≤ 0.75 of the finest's pairs.
+
+| Palm | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
+|---|---|---|---|---|---|---|---|---|
+| `date-palm` (default) | 52,704 | 1,656 / 12 | 38 | 1.6% | 913,029 | 0.196 (148 of 756) | **0.0194** | 27.4 / 0.964 |
+| `-tall` | 58,464 | 1,780 / 12 | 38 | 2.3% | 899,972 | 0.126 | 0.0176 | 27.2 / 0.965 |
+| `-old` | 27,088 | 769 / 10 | 18 | 4.3% | 883,021 | 0.208 | 0.0098 | 29.7 / 0.980 |
+| `-leaning` | 49,464 | 1,548 / 12 | 36 | 1.6% | 913,029 | 0.227 | 0.0250 | 26.5 / 0.953 |
+| `-young` | 40,168 | 1,283 / 11 | 32 | 1.0% | 913,029 | 0.231 | 0.0322 | 25.7 / 0.942 |
+
+**The atlas and the collapse pass everywhere, because of the layout rule.** One island a frond and
+one strip for the trunk is 38 islands for the default palm (26 fronds, 10 dead, the wall, the cap),
+1.6% of its vertices on a seam (the trunk's seam column and the cap's ring), and the coarse cut
+draws a fifth of the finest cut's pairs: the crown collapses. That rule was in the solver from the
+first frond, because the alternative — one island per leaflet strip — puts every leaflet's border on
+a seam the simplifier may not cross (geometry.md), which is the triangle remesh's failure E10's
+second pass measured (coarse cuts 86–100% of the finest).
+
+**The picture passes for the default palm and not for every palm, and the reason is thin
+geometry.** The default, the tall and the old palm are under 0.02; the leaning and the young one are
+not. The heat maps put the error on the leaflets and the dead fronds, not on a seam: a leaflet is
+one to three pixels wide at this framing, the cluster LOD's 1 px threshold lets a coarse level move
+an edge by a pixel, and a pixel is the whole of a leaflet — so a cut that moved no surface by more
+than the threshold still changes how much of a crown is leaf. The whole-frame mean follows the
+crown's share of the frame (the young palm is mostly crown). Two solver changes the measurements
+chose, each worth a little on every palm: **straight-edged leaflets** — a long, slightly tapering
+quad to the last row, then a point, so the rows between are collinear and the simplifier removes
+them first without losing area (a curved 1 − s³ taper lost a quarter of every leaflet at the first
+level; the default's coarse cut went from 180 pairs to 148 and its PSNR from 27.1 to 27.4 dB) — and
+**trunk normals at half the scars' slope**, which took the ring bands off the coarse levels' trunks;
+and the dead fronds open wider and hang less folded, which gave them area to lose gradually. What
+would pass every palm is a coverage-preserving LOD for foliage — alpha-tested cards (R65), or a
+threshold that knows a strip's width — not more tuning of the solver.
 
 ## Determinism
 
