@@ -1,0 +1,58 @@
+// The flora capability's own types (ADR-0007, ADR-0027; docs/subsystems/flora.md). They live with
+// the capability, so ENGINE_WITH_FLORA=OFF takes them out of the build with everything else it owns:
+// a build without the capability refuses a `.flora.json` mesh by the mesh-generator registry's
+// sentence, and never needs to read one.
+namespace engine.flora
+
+/// The date palm (Phoenix dactylifera), the solver's first species (flora.md, "The date palm"):
+/// every parameter the solver reads, with the range it accepts and a default that makes a 9 m palm.
+/// The same parameters give the same mesh, byte for byte, on every toolchain.
+struct Palm @version(1) {
+  /// Everything the parameters leave to chance — the lean's azimuth, each ring's twist, each
+  /// frond's turn and spread — is drawn from this. Any u64.
+  seed: u64 = 1
+  /// The trunk's apex above its base, where the fronds spring: 1 to 30 m.
+  height_m: f32 = 9.0 @unit(m)
+  /// The trunk's radius at the ground, over the ring scars: 0.05 to 1 m.
+  trunk_base_radius_m: f32 = 0.24 @unit(m)
+  /// The trunk's radius at the apex: 0.03 m up to the base radius.
+  trunk_top_radius_m: f32 = 0.18 @unit(m)
+  /// How far from vertical the trunk leaves the ground: 0 to 40 degrees.
+  lean_deg: f32 = 7.0 @unit(deg)
+  /// How much of the lean the spine takes back by the apex: 0 a straight leaning trunk, 1 an apex
+  /// that stands vertical again.
+  curve: f32 = 0.5
+  /// The leaf-scar rings: one ring every this many metres up the trunk, 0.04 to 1 m.
+  ring_spacing_m: f32 = 0.11 @unit(m)
+  /// How deep a scar cuts below the trunk's radius: 0 to a quarter of the top radius, and 0.1 m.
+  ring_depth_m: f32 = 0.014 @unit(m)
+  /// Green fronds in the crown: 1 to 64.
+  frond_count: u32 = 26
+  /// A green frond's length along its rachis: 0.5 to 8 m.
+  frond_length_m: f32 = 3.8 @unit(m)
+  /// How far a frond's rachis curves down along its length: 0 straight, 1 the tip turned 100 degrees
+  /// further from vertical than the base.
+  frond_droop: f32 = 0.45
+  /// The crown's cone: the outermost frond leaves the apex this far from vertical, 5 to 120 degrees.
+  frond_spread_deg: f32 = 75.0 @unit(deg)
+  /// Leaflets on each side of a frond: 2 to 160.
+  leaflet_count: u32 = 64
+  /// A leaflet's width at its base: 0.005 to 0.12 m, and never wider than the gap between two.
+  leaflet_width_m: f32 = 0.032 @unit(m)
+  /// The angle a leaflet makes with the rachis, towards the frond's tip: 10 to 85 degrees.
+  leaflet_angle_deg: f32 = 38.0 @unit(deg)
+  /// Dead brown fronds hanging below the crown, 0 for none: 0 to 64.
+  dead_skirt_fronds: u32 = 10
+  /// The most triangles the mesh may have: 2,000 to 2,000,000. The solver builds the full detail
+  /// when it fits and spends less where it does not (flora.md, "The budget").
+  triangle_budget: u32 = 60000
+}
+
+/// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
+/// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
+/// build is keyed by these values (canonicalized), the species and the solver's version.
+struct FloraFile @version(1) {
+  /// The species: "date_palm" is the one there is.
+  species: string = "date_palm"
+  palm: Palm
+}

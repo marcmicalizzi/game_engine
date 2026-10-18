@@ -441,12 +441,13 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G51 | E8: a runtime model on spare capacity | deferred (10 §10.6) | G50 | L | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | G52 | Player-facing strings and localization | open | | M | design | [07 §7.9](plan/07-content-pipeline.md#79-text-and-localization) |
 | G53 | Build-time TTS | open | G52 | M | research | [07 §7.7](plan/07-content-pipeline.md#77-ml-asset-generation-novelty-content) |
-| G54 | Procedural tree solver | open | R65, S66 | L | research | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
+| G54 | Procedural tree solver | in progress: the flora capability and the date palm's trunk (flora.md, 2026-10-17); the crown, the content build, the scene's `.flora.json` mesh and the oasis scene next | R65, S66 | L | research | [flora](subsystems/flora.md) |
 | G55 | Vegetation growth, ecology and placement | open | G37, S7 | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | G56 | Phase 5 exit | open | G15, G28, G32, G37 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | G57 | Degenerate-triangle repair in the content build | done (geometry.md "Zero-area triangles: the repair", 2026-10-10) | G17 | S | routine | [geometry](subsystems/geometry.md#zero-area-triangles-the-repair) |
 | G58 | Tripo smart-mesh A/B against September's triangle exports | blocked (the owner's exports: wooden-crate and cart-wheel as smart mesh and as triangles, at 2K and 4K PBR, from Tripo Studio by hand) | G57 | S | research | [E10](experiments/e10-generated-props.md) |
 | G59 | Scatter remainder: streaming beside ground tiles (the dynamic tail with the pool and the ray tracing chain), placement records, footprint exclusions, placements that follow moving dunes | in progress: the first half landed 2026-10-12 — the renderer's tail carries the pool and the ray tracing chain and desert-endless's `scattered.json` streams beside the tiles; the exclusion by earlier placements (`scene_gen::Context::earlier`, ADR-0046's as-built note); placements that follow the moving dunes (`PlacementTiles::restand`). Left: placements as document records, footprints as shapes, roads and water | G37, R81 | M | design | [scatter](subsystems/scatter.md#not-yet) |
+| G60 | Flora textures and species after the palm: generated bark and frond textures with provenance (`tools/generate.ps1 image`) on the palm's atlas, then a second species | open | G54 | M | design | [flora](subsystems/flora.md) |
 
 ## T — Tooling and CI
 

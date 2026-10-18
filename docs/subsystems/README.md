@@ -67,6 +67,7 @@ One page per module, created in the same change that creates the module. Templat
 | terrain (capability) | domain | [terrain.md](terrain.md) |
 | sky (capability) | domain | [sky.md](sky.md) |
 | city (capability) | domain | [city.md](city.md) |
+| flora (capability) | domain | [flora.md](flora.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |

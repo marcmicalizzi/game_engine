@@ -35,3 +35,4 @@ add_subdirectory(terrain)
 add_subdirectory(city)
 # The sky capability: the sky provider "earth" (ADR-0048), registered into scene_gen's registry.
 add_subdirectory(sky)
+add_subdirectory(flora)
