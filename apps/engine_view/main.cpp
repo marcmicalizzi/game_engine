@@ -182,7 +182,8 @@ constexpr const char* k_usage =
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
-    "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--no-present-timing]\n"
+    "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--fullscreen]\n"
+    "                   [--no-present-timing]\n"
     "                   [--present-bits auto|8|10] [--present-format auto|sdr8|sdr10|hdr10|scrgb]\n"
     "                   [--peak-nits <n>] [--paper-white-nits <n>]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
@@ -512,6 +513,9 @@ constexpr const char* k_usage =
     "  --borderless     a window with no title bar or border at the primary display's top-left\n"
     "                   corner: --width and --height of the display cover it exactly (not an\n"
     "                   exclusive fullscreen; the display mode never changes)\n"
+    "  --fullscreen     start the window fullscreen on its display, without a mode change;\n"
+    "                   Alt+Enter switches a window between fullscreen and windowed either way\n"
+    "                   (the chord is the window's: the game never sees its Enter)\n"
     "  --pace <m>       when a window's frame samples its input: display (when the frame before\n"
     "                   it has reached the display, one refresh later, at most one frame queued),\n"
     "                   off (as soon as a frame slot and an image are free: the swapchain's own\n"
@@ -569,6 +573,7 @@ struct Options {
   bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
   bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
   bool borderless = false;     // --borderless: no decorations, at the primary display's corner
+  bool fullscreen = false;  // --fullscreen: desktop fullscreen from the start (Alt+Enter toggles)
   // --present-bits: the bits a channel the window's swapchain asks for. 0 is `auto`, 10 where the
   // surface offers A2B10G10R10 in the sRGB non-linear colour space and 8 otherwise; the renderer's
   // colour target follows the swapchain (docs/subsystems/apps.md, "--present-bits").
@@ -2198,7 +2203,8 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
                                                    const gfx::Swapchain& swapchain,
                                                    std::span<const scene::FrameRecord> records,
                                                    u32 recreated, const view::DisplayPacer* pacer,
-                                                   u32 max_hz, u64 ceiling_waits) {
+                                                   u32 max_hz, u64 ceiling_waits,
+                                                   u32 fullscreen_toggles) {
   scene::FlythroughPresentation out;
   out.present_mode = present_mode_name(swapchain.present_mode());
   out.requested_mode =
@@ -2214,6 +2220,8 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
     out.pace_switches = pacer->switches();
   }
   out.borderless = options.borderless;
+  out.fullscreen = options.fullscreen;
+  out.fullscreen_toggles = fullscreen_toggles;
   out.refresh_ms = static_cast<f64>(swapchain.refresh_ns()) / 1.0e6;
   out.present_timing = swapchain.present_timing();
   out.recreated = recreated;
@@ -3747,6 +3755,8 @@ int run_view(int argc, char** argv) {
       options.present_timing = false;
     } else if (a == "--borderless") {
       options.borderless = true;
+    } else if (a == "--fullscreen") {
+      options.fullscreen = true;
     } else if (a == "--no-vsync") {
       options.vsync = false;
     } else if (a == "--no-cull") {
@@ -4242,11 +4252,12 @@ int run_view(int argc, char** argv) {
   // 8-bit picture than a 10-bit one rounded again (renderer.md, "The output encode").
   if (options.offscreen &&
       (!options.present.empty() || options.pace != "auto" || options.swapchain_images != 3 ||
-       options.frames_in_flight != k_frames_in_flight || options.borderless ||
+       options.frames_in_flight != k_frames_in_flight || options.borderless || options.fullscreen ||
        !options.present_timing || options.present_bits != 0)) {
     std::fprintf(stderr,
                  "engine-view: --present, --present-bits, --swapchain-images, --frames-in-flight, "
-                 "--pace, --borderless and --no-present-timing are the window's; an offscreen run "
+                 "--pace, --borderless, --fullscreen and --no-present-timing are the window's; an "
+                 "offscreen run "
                  "has none (its target is 8 bits, as its PNG is)\n");
     return k_exit_usage;
   }
@@ -4494,6 +4505,12 @@ int run_view(int argc, char** argv) {
   if (!window.create(window_desc, &error)) {
     window::shutdown();
     return unavailable("cannot create a window", error);
+  }
+  // --fullscreen: the display's bounds without a mode change (window.md, "Borderless windows and
+  // presentation"). The platform answers with a `Resized` the loop's first poll turns into a
+  // swapchain of the display's size; a platform that refuses leaves the window as it was.
+  if (options.fullscreen && !window.set_fullscreen(true)) {
+    ENGINE_LOG_WARN(log_view, "the window could not go fullscreen; it stays windowed");
   }
 
   gfx::DeviceOptions device_options;
@@ -5192,6 +5209,9 @@ int run_view(int argc, char** argv) {
 
     bool running = true;
     bool resize_pending = false;
+    bool alt_held = false;       // Alt+Enter: Alt's state, from its own key events
+    bool chord_enter = false;    // the chord's Enter is down: its repeats and release are ours
+    u32 fullscreen_toggles = 0;  // the summary's `presentation.fullscreen_toggles`
     i64 last_shader_poll_ns = 0;
     started_ns = time::monotonic_ns();
     clock_ns = started_ns;
@@ -5249,6 +5269,35 @@ int run_view(int argc, char** argv) {
       }
       window::Event event;
       while (window.poll(event)) {
+        // ---- Alt+Enter: the window's, not the game's -----------------------------------------
+        // The event carries no modifier bits, so Alt is followed from its own key events (and
+        // forgotten when the window loses focus, whose Alt-up goes to someone else). The chord's
+        // Enter — its press, its repeats, and the release that ends them, whenever Alt was let
+        // go — is consumed here: it reaches neither the result panel nor the edge below, so the
+        // session's input, its recording and the game never see a press of Enter from it. Alt's
+        // own events pass on as they always did. An injected run takes no chord from its log:
+        // its window's size is the run's.
+        if (event.kind == window::EventKind::KeyDown || event.kind == window::EventKind::KeyUp) {
+          if (event.key == window::Key::Alt) {
+            alt_held = event.kind == window::EventKind::KeyDown;
+          } else if (event.key == window::Key::Enter) {
+            if (event.kind == window::EventKind::KeyDown && alt_held && !event.repeat &&
+                !chord_enter && options.inject_input.empty()) {
+              chord_enter = true;
+              if (window.set_fullscreen(!window.fullscreen())) {
+                ++fullscreen_toggles;
+                ENGINE_LOG_INFO(log_view, "window toggled",
+                                log::field("fullscreen", window.fullscreen()));
+              }
+              continue;
+            }
+            if (chord_enter) {
+              if (event.kind == window::EventKind::KeyUp) chord_enter = false;
+              continue;
+            }
+          }
+        }
+        if (event.kind == window::EventKind::FocusLost) alt_held = false;
         switch (event.kind) {
           case window::EventKind::Quit:
           case window::EventKind::CloseRequested:
@@ -5838,7 +5887,8 @@ int run_view(int argc, char** argv) {
       summary.presentation = presentation_summary(
           options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
           swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0,
-          pace_display ? &pacer : nullptr, static_cast<u32>(ceiling_hz), ceiling_waits);
+          pace_display ? &pacer : nullptr, static_cast<u32>(ceiling_hz), ceiling_waits,
+          fullscreen_toggles);
       summary.output = output_summary(view_renderer, resolved, options, &swapchain,
                                       window_capture_levels, hdr_metadata_set);
       const io::Status status = write_benchmark(

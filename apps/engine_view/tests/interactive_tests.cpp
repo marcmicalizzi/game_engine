@@ -183,6 +183,7 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(run_view({"--offscreen", "--pace", "display"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--present", "mailbox"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--borderless"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--fullscreen"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--no-present-timing"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--pace", "off"}).exit_code == 2);
   CHECK(
