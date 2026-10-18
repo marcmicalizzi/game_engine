@@ -39,6 +39,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/frame_pass.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/overlay.h>
 #include <systems/renderer/rt_capacity.h>
@@ -196,6 +197,10 @@ struct FrameStats {
   f64 gpu_terrain_upload = 0.0;
   // A sky's passes (renderer.md, "The sky"): its tables, the sky from the eye, the air, the sums.
   f64 gpu_sky = 0.0;
+  // The frame passes' zones (frame_pass.h) and the encode that follows them; zero in a frame with
+  // none. `visibility_m` is what they reported (`Stats::visibility_m`), negative for none.
+  f64 gpu_frame_passes = 0.0;
+  f32 visibility_m = -1.0f;
   // Where the frame thread's time went while this frame was begun, recorded and submitted.
   FrameCpu cpu;
 
@@ -337,6 +342,14 @@ struct Stats {
   // adds to the resolve is in `gpu_resolve`.
   f64 gpu_sky = 0.0;
   SkyStats sky;
+  // The frame passes' zones (frame_pass.h, renderer.md "Frame passes") and the encode they end on,
+  // summed: the frame's cost and no view's. Zero in every frame without a pass registered.
+  f64 gpu_frame_passes = 0.0;
+  // **The medium's visibility**, the last recorded frame's: the distance at which the transmittance
+  // of the participating medium a frame pass drew falls to 2%, from the field the pass computed on
+  // the CPU (systems/volumetrics). Gameplay reads it here, never from the picture (plan 04).
+  // Negative when no pass reported one. Not one frame late: the field is the CPU's.
+  f32 visibility_m = -1.0f;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
@@ -374,6 +387,7 @@ struct Stats {
   f64 shadow_ms() const noexcept { return gpu_shadow / timed(); }
   f64 shadow_cull_ms() const noexcept { return gpu_shadow_cull / timed(); }
   f64 sky_ms() const noexcept { return gpu_sky / timed(); }
+  f64 frame_passes_ms() const noexcept { return gpu_frame_passes / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
   f64 view_ms(u32 view) const noexcept {
@@ -448,6 +462,9 @@ struct FrameDesc {
   // ADR-0054): the tools UI. Null draws nothing, which is every frame before the overlay existed.
   // Refused on an HDR target (`Desc::display` other than SDR), where the UI's seam is not built.
   const OverlayDrawData* overlay = nullptr;
+  // The host's step since its last frame, seconds: handed to the frame passes (frame_pass.h), which
+  // draw nothing from it that depends on a previous frame. Nothing else reads it.
+  f64 dt_s = 0.0;
 };
 
 class SceneRenderer {
@@ -625,6 +642,22 @@ class SceneRenderer {
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
   // which this waits for.
   OverlayPass& overlay() noexcept { return overlay_; }
+
+  // **Frame passes** (frame_pass.h, renderer.md "Frame passes"): `fn` is called with `user` inside
+  // every shaded frame's graph build at `stage`, after the resolve and before the encode and the
+  // overlay. `zone` names the GPU timer zone the pass records under (it must outlive the renderer,
+  // a string literal); the renderer sums it into `Stats::gpu_frame_passes`. The first registration
+  // makes the linear colour image the passes draw into and its two pipelines (the resolve into it
+  // and the encode out of it), waiting for the device; a renderer with none never makes them.
+  // False, with `error`, when `k_max_frame_passes` are registered or a resource cannot be made.
+  // Never between `begin_frame` and `submit_frame`.
+  bool add_frame_pass(FramePassStage stage, FramePassFn fn, void* user, const char* zone,
+                      std::string* error = nullptr);
+  // Removes the registration of `fn` with `user`, waiting for the device; the last one's removal
+  // frees the linear image, so the frames after it are exactly what they were before the first.
+  void remove_frame_pass(FramePassFn fn, void* user) noexcept;
+  u32 frame_pass_count() const noexcept { return frame_pass_count_; }
+  u32 frames_in_flight() const noexcept { return desc_.frames_in_flight; }
   void remove_overlay_texture(u32 texture) noexcept {
     frames_.wait_idle();
     overlay_.remove_texture(texture);
@@ -664,6 +697,10 @@ class SceneRenderer {
     gfx::ComputePipeline trace;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
     gfx::ComputePipeline pair_expand;
+    // A frame with a frame pass: the resolve into the linear colour image, and the output encode
+    // out of it into the frame's target (frame_encode.slang). Made by the first `add_frame_pass`.
+    gfx::PipelineHandle resolve_linear;
+    gfx::PipelineHandle encode;
     void destroy(const gfx::Device& device) noexcept;
   };
   // One view's slice of the screen-sized buffers. Every view rasterizes into its own region of
@@ -737,6 +774,23 @@ class SceneRenderer {
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
   OverlayPass overlay_;
+  // The frame passes (frame_pass.h) and the linear colour image they draw into, its view and its
+  // two bindless slots; nothing of it exists while no pass is registered.
+  struct FramePassEntry {
+    FramePassStage stage = FramePassStage::AfterResolve;
+    FramePassFn fn = nullptr;
+    void* user = nullptr;
+    const char* zone = "";
+  };
+  FramePassEntry frame_passes_[k_max_frame_passes];
+  u32 frame_pass_count_ = 0;
+  gfx::ImageResource linear_;
+  gfx::ImageViewHandle linear_view_;
+  u32 linear_storage_slot_ = gfx::BindlessSet::k_invalid_slot;
+  u32 linear_sampled_slot_ = gfx::BindlessSet::k_invalid_slot;
+  bool create_frame_pass_pipelines(std::string* error);
+  bool create_linear_target(std::string* error);
+  void destroy_linear_target() noexcept;
   bool drawn_ = false;  // a frame has been submitted, so the visibility buffer holds one
   FrameSky frame_sky_;
   u64 sky_params_address_ = 0;
@@ -755,6 +809,7 @@ class SceneRenderer {
   Vector<u32> slot_table_pairs_;
   Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
   Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
+  Vector<f32> slot_visibility_;     // per frame slot: what its frame passes reported
   FrameCpu frame_cpu_;              // the frame being begun and recorded's, until submit_frame
   GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
