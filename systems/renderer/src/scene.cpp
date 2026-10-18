@@ -1069,6 +1069,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
     out.sky = *file.sky;
   }
+  // The participating medium (`engine.scene.Medium`): carried as the file gave it, read by the
+  // capability that draws it (systems/volumetrics), as `world` is carried for the world's.
+  out.medium = file.medium;
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -1660,6 +1663,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // tiles, which are terrain levels in fixed slots, not instances of the tail).
   out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
   out.sky = resolved.sky;
+  out.medium = resolved.medium;
   out.props = resolved.props;
 
   update_scene_bounds(out);

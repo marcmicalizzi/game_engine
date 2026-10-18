@@ -76,7 +76,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R44 | UI coordinate model and HUD-safe region | open | | M | design | [04 §4.7](plan/04-renderer.md#47-ui-coordinate-architecture) |
 | R45 | Game UI framework | deferred (10 §10.6) | R44 | L | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |
 | R46 | Forward and transparent pass | open | R19 | L | design | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |
-| R47 | Participating media (E32) | in progress (2026-10-17: the renderer's frame-pass registration point, `frame_pass.h`) | R46 | L | research | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |
+| R47 | Participating media (E32) | in progress (1dc73668: the renderer's frame-pass registration point, `frame_pass.h`; 2026-10-17: the volumetrics capability's mid tier, froxels and the dust haze from the wind record with `visibility_m`; remaining: the brick field and the near solve, the baseline tier's flipbooks, E32's measurement) | R46 | L | research | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |
 | R48 | Cascaded shadow maps | done (385c41ec, 874c7a20) | R10 | M | design | [renderer](subsystems/renderer.md#cascaded-shadow-maps) |
 | R49 | Cascaded map follow-ups | open | R48 | M | design | [cascaded maps](experiments/cascaded-shadow-maps.md#follow-ups) |
 | R50 | Cluster AS and KHR fallback (E2) | done (ADR-0025, 683286af) | R10 | L | research | [ADR-0025](adr/0025-cluster-acceleration-structures.md) |

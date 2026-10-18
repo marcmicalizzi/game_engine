@@ -1,0 +1,224 @@
+#pragma once
+
+// **The participating medium's mid tier** (docs/subsystems/volumetrics.md; plan 04 §4.2, the
+// 2026-09-24 direction note "one field rendered three ways"; roadmap R47, W45, R83, P7): the dust
+// the wind holds over the ground, the sand blowing off the dune crests, and the far-field clouds,
+// drawn by one frame pass registered at the renderer's `AfterResolve` (frame_pass.h) — view-aligned
+// froxels filled from the sources, integrated front to back and applied to the frame's linear
+// colour, and a ray-marched cloud layer composited into the sky before them.
+//
+// **The sources are functions of the frame's state** — the scene's `medium` block, the wind
+// record at the world's clock, the eye — and never of a previous frame: no history, no
+// reprojection, so the same frame is the same bytes. The CPU half of each is here, with no device,
+// so the tests hold the functions themselves; the shader (shaders/medium.slang) is the same
+// arithmetic.
+//
+// **A capability** (ADR-0027): `ENGINE_WITH_VOLUMETRICS`, off with the terrain capability it reads
+// the wind and the crests from. The renderer names nothing of it; a host registers the pass.
+
+#include <core/base/macros.h>
+#include <core/base/types.h>
+#include <core/containers/vector.h>
+#include <core/json/json.h>
+#include <core/math/math.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
+#include <systems/renderer/frame_pass.h>
+
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace engine::gfx {
+class Device;
+struct ComputePipeline;
+}  // namespace engine::gfx
+
+namespace engine::terrain {
+class DuneField;
+}
+
+namespace engine::renderer {
+class SceneRenderer;
+struct SceneData;
+class TerrainSampler;
+}  // namespace engine::renderer
+
+namespace engine::volumetrics {
+
+// ---- the scene's block (`engine.scene.Medium`, schemas/volumetrics.schema) ---------------------
+
+struct MediumDesc {
+  // The far-field cloud layer (R83): between two altitudes above the world's y = 0, its coverage
+  // (0 clear, 1 overcast), its type (0 a thin flat layer, 1 tall heaped cloud) and its seed.
+  bool clouds = false;
+  f32 cloud_base_m = 1800.0f;
+  f32 cloud_top_m = 4200.0f;
+  f32 cloud_coverage = 0.3f;
+  f32 cloud_type = 0.5f;
+  u32 cloud_seed = 1;
+  // The dust haze: a multiplier on its density and its scale height at the record's mean wind.
+  bool dust = true;
+  f32 dust_scale = 1.0f;
+  f32 dust_height_m = 15.0f;
+  // The crest plumes (W45): on, and a multiplier on their density.
+  bool plumes = true;
+  f32 plume_strength = 1.0f;
+};
+
+// Reads a scene's `medium` block (`SceneData::medium`, carried by the renderer uninterpreted):
+// false with a sentence naming the field for anything `engine.scene.Medium` refuses. A null block
+// is no medium: `present` false and true returned.
+bool read_medium(const JsonValue& block, MediumDesc& out, bool& present, std::string* error);
+
+// `--medium-debug`: one source alone, for a look.
+enum class MediumDebug : u8 { none = 0, dust, plumes, clouds };
+bool parse_medium_debug(std::string_view text, MediumDebug& out) noexcept;
+const char* medium_debug_name(MediumDebug debug) noexcept;
+
+// ---- the wind --------------------------------------------------------------------------------
+
+// The wind in the hour holding a time, as the medium reads it: `terrain::WindRecord::wind_at`, the
+// one wind (terrain.md, "Storms"), turned into the numbers the sources take.
+struct MediumWind {
+  Vec2 direction{1.0f, 0.0f};  // unit, horizontal: where the sand moves to
+  f32 strength = 1.0f;         // the hour's wind over the record's mean (`speed_q16 / 2^16`)
+  f32 speed_mps = 8.0f;        // `strength * terrain::k_mean_wind_mps`
+  f32 flux_m2_per_day = 0.0f;  // the hour's sand flux per metre of width, as a daily rate
+  bool storm = false;
+};
+// `field` null (no dunes: the waves, or no terrain): the record's mean wind towards +x.
+MediumWind wind_now(const terrain::DuneField* field, f64 time_s) noexcept;
+
+// ---- the dust haze -----------------------------------------------------------------------------
+
+// Its numbers, named: what the functions below are built from (volumetrics.md, "The dust haze").
+inline constexpr f32 k_dust_clear_per_m = 3.9e-5f;  // a calm's floor: 100 km of visibility
+inline constexpr f32 k_dust_haze_per_m = 4.0e-4f;   // times strength^2: the day's wind's haze
+inline constexpr f32 k_dust_wall_per_m = 0.08f;     // a storm hour's wall at its peak strength
+inline constexpr f32 k_dust_storm_peak = 2.5f;      // the strength the wall is quoted at
+inline constexpr f32 k_dust_phase_g = 0.75f;        // sand scatters strongly forward
+inline constexpr f32 k_dust_multiple = 0.35f;       // the constant share scattered more than once
+// The transmittance that defines visibility (the meteorological contrast threshold).
+inline constexpr f32 k_visibility_contrast = 0.02f;
+inline constexpr f32 k_max_visibility_m = 1.0e6f;
+
+struct DustState {
+  f32 extinction_per_m = 0.0f;  // at the ground
+  f32 height_m = 1.0f;          // the scale height it falls off over
+};
+// The haze's density at the ground and its scale height for a wind: calm nearly clear, the day's
+// wind a faint haze, a storm hour a wall; the height a few metres in a calm and tens in a storm,
+// since saltation stays low and suspension rises. `desc.dust` off is no dust.
+DustState dust_state(const MediumDesc& desc, const MediumWind& wind) noexcept;
+// The extinction `height_m` above the dust's ground: the ground's below it.
+f32 dust_extinction(const DustState& dust, f32 height_m) noexcept;
+// The dust's optical depth along a ray from a point `eye_height_m` above the dust's ground, of
+// vertical direction component `dy`, between distances `a` and `b` (shaders/medium.slang's
+// `dust_optical_depth`, the same closed form).
+f32 dust_optical_depth(const DustState& dust, f32 eye_height_m, f32 dy, f32 a, f32 b) noexcept;
+// The distance at which a horizontal ray's transmittance falls to `k_visibility_contrast` through
+// an extinction: -ln(0.02) / sigma, never past `k_max_visibility_m`.
+f32 visibility_m(f32 extinction_per_m) noexcept;
+
+// ---- the pass
+// ------------------------------------------------------------------------------------
+
+struct MediumOptions {
+  MediumDebug debug = MediumDebug::none;
+  // The froxel grid and its slices; zero takes the tunables (`volumetrics.froxels.*`).
+  u32 froxels_x = 0;
+  u32 froxels_y = 0;
+  u32 froxels_z = 0;
+  f32 near_m = 0.0f;
+  f32 far_m = 0.0f;
+};
+
+// What the last recorded frame drew, for a summary.
+struct MediumStats {
+  bool active = false;
+  f32 visibility_m = -1.0f;
+  f32 dust_extinction_per_m = 0.0f;  // at the eye's height
+  f32 dust_height_m = 0.0f;
+  f32 eye_height_m = 0.0f;  // above the dust's ground
+  MediumWind wind;
+  u32 froxels_x = 0;
+  u32 froxels_y = 0;
+  u32 froxels_z = 0;
+  f32 near_m = 0.0f;
+  f32 far_m = 0.0f;
+};
+
+// The GPU-mirrored blocks (shaders/medium.slang), pinned by tests/size_table.cpp.
+struct MediumParams {
+  Mat4 clip_to_eye;
+  Mat4 clip_to_ray;
+  u32 grid[4] = {};  // froxels x, y, z, the sources
+  Vec4 slices;
+  Vec4 sun;
+  Vec4 sun_light;
+  Vec4 ambient;
+  Vec4 dust;
+  Vec4 dust_albedo;
+  Vec4 terms;
+  u32 rect[4] = {};
+  u32 source[4] = {};
+  Vec4 plume_grid;
+  Vec4 cloud;
+  Vec4 cloud_origin;
+  Vec4 cloud_size;
+  Vec4 cloud_shadow;
+  u64 visibility = 0;
+  u64 froxels = 0;
+  u64 sky = 0;
+  u64 shadow_maps = 0;
+  u64 plumes = 0;
+  u64 plume_cells = 0;
+  u64 clouds = 0;
+  u64 cloud_shadow_map = 0;
+  u32 pad[20] = {};
+};
+
+inline constexpr u32 k_source_dust = 1u;
+inline constexpr u32 k_source_plumes = 2u;
+inline constexpr u32 k_source_clouds = 4u;
+inline constexpr u32 k_source_shadows = 8u;
+
+// The medium of one scene, drawn by one renderer: `create` registers the frame pass, `destroy`
+// removes it. Both between frames. The pass draws only while the renderer draws shaded frames.
+class MediumPass {
+ public:
+  MediumPass() noexcept;
+  ~MediumPass();
+  ENGINE_NON_COPYABLE(MediumPass);
+
+  bool create(const gfx::Device& device, renderer::SceneRenderer& renderer,
+              const renderer::SceneData& scene, const MediumDesc& desc,
+              const MediumOptions& options = {}, std::string* error = nullptr);
+  void destroy() noexcept;
+  bool valid() const noexcept { return renderer_ != nullptr; }
+  const MediumDesc& desc() const noexcept { return desc_; }
+  const MediumStats& stats() const noexcept { return stats_; }
+
+ private:
+  static bool record_thunk(const renderer::FramePassContext& context, void* user,
+                           std::string* error);
+  bool record(const renderer::FramePassContext& context, std::string* error);
+  bool ensure_buffers(const renderer::FramePassContext& context, std::string* error);
+
+  const gfx::Device* device_ = nullptr;
+  renderer::SceneRenderer* renderer_ = nullptr;
+  MediumDesc desc_;
+  MediumOptions options_;
+  MediumStats stats_;
+  u32 sources_ = 0;
+  struct Pipelines;
+  std::unique_ptr<Pipelines> pipelines_;
+  Vector<gfx::BufferResource> params_;  // per frame slot: one MediumParams per view
+  gfx::BufferResource froxels_;         // every view's grid, four halves a cell
+  u32 views_ = 0;
+  std::unique_ptr<renderer::TerrainSampler> ground_;
+  const terrain::DuneField* field_ = nullptr;
+};
+
+}  // namespace engine::volumetrics

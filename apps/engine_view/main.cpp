@@ -71,6 +71,12 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_tiles.h>
+// The participating medium (brief-volumetrics: systems/volumetrics, roadmap R47 and W45): linked
+// where the capability is configured, and without it a scene's `medium` block is carried and not
+// drawn.
+#if ENGINE_VIEW_VOLUMETRICS
+#include <systems/volumetrics/volumetrics.h>
+#endif
 #include <systems/renderer/terrain_time.h>
 
 #include <engine_build_stamp.h>
@@ -249,6 +255,9 @@ constexpr const char* k_usage =
     "  --shadow-map <texels>  csm: texels a side per cascade, a power of two (default 2048)\n"
     "  --shadow-distance <d>  csm: how far from the camera the cascades reach (default: the far\n"
     "                   side of the scene's bounds)\n"
+    "  --no-medium     do not draw the scene's participating medium (its `medium` block: the dust\n"
+    "                   haze, the crest plumes, the far clouds; docs/subsystems/volumetrics.md)\n"
+    "  --medium-debug <froxels|plumes|clouds>  draw one of the medium's sources alone, for a look\n"
     "  --no-shadow-casters  with rt shadows, drop what the normal-cone test culls from the\n"
     "                   shadows too. By default a cluster that faces away from the camera is\n"
     "                   kept out of the picture but still built into the frame's acceleration\n"
@@ -647,6 +656,10 @@ struct Options {
   bool world = false;
   std::string world_log;
   std::string world_handover;
+  // The participating medium (brief-volumetrics; systems/volumetrics): `--no-medium` leaves a
+  // scene's `medium` block undrawn, `--medium-debug` draws one source alone.
+  bool no_medium = false;
+  std::string medium_debug;
   // The interactive camera (fly_camera.h). `--replay-input` implies `interactive`; `offscreen`
   // is resolved after parsing, because `--benchmark` means "offscreen" for a flythrough and a
   // replay and "measure the window" for a live session somebody is flying.
@@ -1387,6 +1400,82 @@ std::string format_text(const char* format, ...) {
 
 void note_failure(const std::string& line) {
   if (g_report.error.empty()) g_report.error = line;
+}
+
+// ---- the participating medium (brief-volumetrics: systems/volumetrics, roadmap R47 and W45) -----
+//
+// One frame pass the scene's `medium` block asks for (renderer.md, "Frame passes"), registered on
+// the renderer once it is made, unless `--no-medium`; it unregisters itself before the renderer
+// goes. A build without the capability draws none and says so, and refuses `--medium-debug`.
+struct ViewMedium {
+#if ENGINE_VIEW_VOLUMETRICS
+  volumetrics::MediumPass pass;
+#endif
+  bool named = false;  // the scene has a medium block
+};
+
+bool start_medium(ViewMedium& medium, const gfx::Device& device, renderer::SceneRenderer& view,
+                  const renderer::SceneData& scene, const Options& options, std::string& error) {
+  medium.named = !scene.medium.is_null();
+#if ENGINE_VIEW_VOLUMETRICS
+  volumetrics::MediumOptions medium_options;
+  if (!options.medium_debug.empty() &&
+      !volumetrics::parse_medium_debug(options.medium_debug, medium_options.debug)) {
+    error = "--medium-debug expects froxels, plumes or clouds";
+    return false;
+  }
+  if (!medium.named || options.no_medium) return true;
+  volumetrics::MediumDesc desc;
+  bool present = false;
+  if (!volumetrics::read_medium(scene.medium, desc, present, &error)) return false;
+  return medium.pass.create(device, view, scene, desc, medium_options, &error);
+#else
+  (void)device;
+  (void)view;
+  if (!options.medium_debug.empty()) {
+    error = "--medium-debug: this build has no medium (ENGINE_WITH_VOLUMETRICS is off)";
+    return false;
+  }
+  if (medium.named && !options.no_medium) {
+    ENGINE_LOG_WARN(log_view, "the scene names a medium this build has no capability to draw",
+                    log::field("switch", "ENGINE_WITH_VOLUMETRICS"));
+  }
+  return true;
+#endif
+}
+
+// The summary's `medium` block: null for a scene that names none.
+JsonValue medium_summary(const ViewMedium& medium, const renderer::Stats& stats) {
+  if (!medium.named) return JsonValue{};
+  JsonValue out = JsonValue::object();
+#if ENGINE_VIEW_VOLUMETRICS
+  out.set("built", true);
+  out.set("drawn", medium.pass.valid());
+  if (medium.pass.valid()) {
+    const volumetrics::MediumStats& s = medium.pass.stats();
+    out.set("visibility_m", static_cast<f64>(stats.visibility_m));
+    JsonValue grid = JsonValue::array();
+    grid.push_back(JsonValue(s.froxels_x));
+    grid.push_back(JsonValue(s.froxels_y));
+    grid.push_back(JsonValue(s.froxels_z));
+    out.set("froxels", std::move(grid));
+    out.set("near_m", static_cast<f64>(s.near_m));
+    out.set("far_m", static_cast<f64>(s.far_m));
+    out.set("eye_height_m", static_cast<f64>(s.eye_height_m));
+    out.set("dust_extinction_per_m", static_cast<f64>(s.dust_extinction_per_m));
+    out.set("dust_height_m", static_cast<f64>(s.dust_height_m));
+    JsonValue wind = JsonValue::object();
+    wind.set("strength", static_cast<f64>(s.wind.strength));
+    wind.set("speed_mps", static_cast<f64>(s.wind.speed_mps));
+    wind.set("storm", s.wind.storm);
+    out.set("wind", std::move(wind));
+    out.set("gpu_ms", stats.frame_passes_ms());
+  }
+#else
+  (void)stats;
+  out.set("built", false);
+#endif
+  return out;
 }
 
 int fail(const char* what, const std::string& error) {
@@ -2454,6 +2543,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::ResolvedSettings resolved_off;
   renderer::GpuScene scene_off;
   renderer::SceneRenderer renderer_off;
+  ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
   renderer::VisibleCensus census;
 #if ENGINE_VIEW_WORLD
   view::ViewWorld view_world;  // a streamed world, when the scene is one (world_view.h)
@@ -2641,6 +2731,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer_desc.color_format = gfx::display_encoding_format(renderer_desc.display);
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
+      break;
+    }
+    if (!start_medium(medium, device, view_renderer, scene_data, options, error)) {
+      exit_code = fail("medium", error);  // brief-volumetrics
       break;
     }
     auto camera_at = [&](u32 f) {
@@ -3224,6 +3318,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (!game_clock(sun))
       sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
     summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
+    summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -3263,6 +3358,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   census.destroy();
 #if ENGINE_VIEW_WORLD
   view_world.close_log();  // the summary line, while the world it summarizes is still whole
+#endif
+#if ENGINE_VIEW_VOLUMETRICS
+  medium.pass.destroy();  // brief-volumetrics: its frame pass and buffers, before the renderer
 #endif
   renderer_off.destroy();
   view_renderer.destroy();
@@ -3614,6 +3712,11 @@ int run_view(int argc, char** argv) {
       options.settings.cone = false;
     } else if (a == "--no-shadow-casters") {
       options.settings.shadow_casters = false;
+    } else if (a == "--no-medium") {  // brief-volumetrics
+      options.no_medium = true;
+    } else if (a == "--medium-debug") {  // brief-volumetrics
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      options.medium_debug = value;
     } else if (a == "--no-texture-sharing") {
       options.settings.share_textures = false;
     } else if (a == "--no-lights") {
@@ -4391,6 +4494,7 @@ int run_view(int argc, char** argv) {
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
+  ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
 #if ENGINE_VIEW_WORLD
   // A streamed world, following the camera a frame behind: the loop below knows a frame's camera
   // only after it has begun the frame, and the tail changes between frames (world_view.h).
@@ -4452,6 +4556,7 @@ int run_view(int argc, char** argv) {
   // frame's simulated seconds at a rate `[` and `]` change in an interactive window.
   view::SunDay sun;
   std::string sun_text = "null";
+  std::string medium_text = "null";  // brief-volumetrics
   // A sky's clock and exposure (renderer.md, "One clock", "Exposure"): `--time-of-day`'s offset,
   // and what `-`, `=` and `0` asked of the exposure on top of the run's.
   f64 sky_offset = 0.0;
@@ -4793,6 +4898,10 @@ int run_view(int argc, char** argv) {
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
+      break;
+    }
+    if (!start_medium(medium, device, view_renderer, scene_data, options, error)) {
+      exit_code = fail("medium", error);  // brief-volumetrics
       break;
     }
     // In a window the fields are never waited for: a late one holds the surface where it is, and
@@ -5617,6 +5726,8 @@ int run_view(int argc, char** argv) {
     sun_text =
         write_json(renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats()),
                    JsonWriteOptions{.pretty = false});
+    medium_text = write_json(medium_summary(medium, view_renderer.stats()),  // brief-volumetrics
+                             JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_ANIMATION
     if (animated)
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
@@ -5669,6 +5780,7 @@ int run_view(int argc, char** argv) {
       summary.interactive = interactive_summary(interactive, session, options);
       summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
       summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
+      summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
@@ -5704,6 +5816,9 @@ int run_view(int argc, char** argv) {
                  JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_WORLD
   view_world.close_log();  // the world log's summary line, while the world is still whole
+#endif
+#if ENGINE_VIEW_VOLUMETRICS
+  medium.pass.destroy();  // brief-volumetrics: its frame pass and buffers, before the renderer
 #endif
   view_renderer.destroy();
   page_source.destroy();
@@ -5760,7 +5875,7 @@ int run_view(int argc, char** argv) {
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
-        "\"output\":%s}\n",
+        "\"output\":%s,\"medium\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -5801,7 +5916,7 @@ int run_view(int argc, char** argv) {
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str(), output_text.c_str());
+        sun_text.c_str(), output_text.c_str(), medium_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);
