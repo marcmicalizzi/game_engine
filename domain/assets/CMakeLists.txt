@@ -3,11 +3,11 @@
 engine_module(NAME assets LAYER domain
   DEPS base containers math hash io geometry
   EXTERNAL_DEPS cgltf
-  SOURCES src/gltf.cpp)
+  SOURCES src/gltf.cpp src/mesh_generator.cpp)
 
 engine_module_tests(NAME assets
   SOURCES tests/gltf_tests.cpp tests/skin_tests.cpp tests/uv_repair_tests.cpp tests/weld_tests.cpp
-          tests/zero_area_repair_tests.cpp
+          tests/zero_area_repair_tests.cpp tests/mesh_generator_tests.cpp
           tests/vertex_id_tests.cpp tests/sampler_tests.cpp tests/size_table.cpp)
 # ENGINE_SOURCE_DIR is where the weld and vertex id tests look for the Khronos skinned and morph
 # samples tools/fetch-samples.ps1 fetches into content/samples (through tests/support/

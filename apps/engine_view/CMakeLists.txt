@@ -57,9 +57,10 @@ if(TARGET engine::water AND TARGET engine::terrain AND TARGET engine::scatter AN
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
-# ruins and city, and `--world` stream them. Nothing here calls one: the renderer's scene reader and
-# the world's placements consumer find each by the name a scene gives.
-foreach(_gen city ruins scatter sky terrain water)
+# ruins and city, and `--world` stream them, and the flora capability for its mesh generator, which
+# makes a scene's `.flora.json` mesh (and `--mesh x.flora.json`) a palm. Nothing here calls one: the
+# renderer's scene reader and the world's placements consumer find each by the name a scene gives.
+foreach(_gen city flora ruins scatter sky terrain water)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()

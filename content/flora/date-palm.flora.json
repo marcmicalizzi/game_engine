@@ -1,0 +1,22 @@
+{
+  "species": "date_palm",
+  "palm": {
+    "seed": 1,
+    "height_m": 9.0,
+    "trunk_base_radius_m": 0.24,
+    "trunk_top_radius_m": 0.18,
+    "lean_deg": 7.0,
+    "curve": 0.5,
+    "ring_spacing_m": 0.11,
+    "ring_depth_m": 0.014,
+    "frond_count": 26,
+    "frond_length_m": 3.8,
+    "frond_droop": 0.45,
+    "frond_spread_deg": 75.0,
+    "leaflet_count": 64,
+    "leaflet_width_m": 0.04,
+    "leaflet_angle_deg": 38.0,
+    "dead_skirt_fronds": 10,
+    "triangle_budget": 60000
+  }
+}

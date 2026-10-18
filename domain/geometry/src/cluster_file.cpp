@@ -232,6 +232,18 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   add_section(payloads, ClusterSection::MaterialSampling,
               static_cast<u32>(sizeof(ClusterFileMaterialSampling)), data.material_sampling.size(),
               data.material_sampling.data());
+  // What generated the mesh, and only when something did: an imported mesh's container keeps the
+  // bytes it had before the section existed.
+  Vector<u8> generator;
+  if (!data.generator.empty()) {
+    for (const std::string* text :
+         {&data.generator, &data.generator_kind, &data.generator_params}) {
+      for (const char c : *text)
+        generator.push_back(static_cast<u8>(c));
+      generator.push_back(0);
+    }
+    add_section(payloads, ClusterSection::Generator, 1u, generator.size(), generator.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -403,6 +415,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::VertexIdScalars: return "vertex_id_scalars";
     case ClusterSection::Textures: return "textures";
     case ClusterSection::MaterialSampling: return "material_sampling";
+    case ClusterSection::Generator: return "generator";
   }
   return "unknown";
 }
@@ -686,6 +699,26 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     result.source_path.assign(text, static_cast<usize>(static_cast<const char*>(nul) - text));
   }
 
+  // What generated the mesh: three strings, or none for an imported mesh or an older file. A
+  // section that does not hold three is refused rather than half read.
+  if (const ClusterFileSection* generated = found[static_cast<u32>(ClusterSection::Generator)];
+      generated != nullptr && generated->element_count != 0) {
+    if (generated->element_size != 1) {
+      return fail(error, "cluster file section generator has " +
+                             std::to_string(generated->element_size) +
+                             "-byte elements, expected 1");
+    }
+    const char* text = reinterpret_cast<const char*>(bytes.data() + generated->offset);
+    const char* end = text + generated->element_count;
+    std::string* fields[3] = {&result.generator, &result.generator_kind, &result.generator_params};
+    for (std::string* field : fields) {
+      const void* nul = std::memchr(text, 0, static_cast<usize>(end - text));
+      if (nul == nullptr) return fail(error, "cluster file generator section is not three strings");
+      field->assign(text, static_cast<usize>(static_cast<const char*>(nul) - text));
+      text = static_cast<const char*>(nul) + 1;
+    }
+  }
+
   // The source's identity; zero when the file records none, which reads as "rebuild it".
   if (!read_identity(bytes, std::span<const ClusterFileSection>(sections.data(), sections.size()),
                      result.source_hash, result.build_key, error)) {
@@ -960,6 +993,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::Textures,
     // 128 bytes a material: how its slots sample their images, read with the materials.
     ClusterSection::MaterialSampling,
+    // A few hundred bytes, and only in a generated mesh's container: what made it.
+    ClusterSection::Generator,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

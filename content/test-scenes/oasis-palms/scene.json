@@ -1,0 +1,215 @@
+{
+  "format": "engine.scene.v1",
+  "name": "oasis-palms",
+  "camera_path": "camera-path.json",
+  "description": "A dozen generated date palms (domain/flora, five parameter sets from content/flora/, each instance turned and some sized) standing round a shallow basin on a small dune field, and a camera path that circles them at 38 m and then walks in under the crowns. It needs no sample asset: the palms are solved from their parameters and built through the derived-data cache like any glTF (README.md).",
+  "meshes": [
+    {
+      "name": "date-palm",
+      "path": "../../flora/date-palm.flora.json"
+    },
+    {
+      "name": "date-palm-tall",
+      "path": "../../flora/date-palm-tall.flora.json"
+    },
+    {
+      "name": "date-palm-young",
+      "path": "../../flora/date-palm-young.flora.json"
+    },
+    {
+      "name": "date-palm-leaning",
+      "path": "../../flora/date-palm-leaning.flora.json"
+    },
+    {
+      "name": "date-palm-old",
+      "path": "../../flora/date-palm-old.flora.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "palm 1: date-palm",
+      "translation": [
+        2.0,
+        -0.2,
+        -3.0
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 1,
+      "name": "palm 2: date-palm-tall",
+      "translation": [
+        -9.0,
+        -0.2,
+        4.0
+      ],
+      "ground": true,
+      "yaw_deg": 70
+    },
+    {
+      "mesh": 2,
+      "name": "palm 3: date-palm-young",
+      "translation": [
+        7.5,
+        -0.2,
+        6.0
+      ],
+      "ground": true,
+      "yaw_deg": 140
+    },
+    {
+      "mesh": 3,
+      "name": "palm 4: date-palm-leaning",
+      "translation": [
+        -4.0,
+        -0.2,
+        -12.0
+      ],
+      "ground": true,
+      "yaw_deg": 200
+    },
+    {
+      "mesh": 4,
+      "name": "palm 5: date-palm-old",
+      "translation": [
+        13.0,
+        -0.2,
+        -6.0
+      ],
+      "ground": true,
+      "yaw_deg": 260
+    },
+    {
+      "mesh": 0,
+      "name": "palm 6: date-palm",
+      "translation": [
+        -15.0,
+        -0.2,
+        -4.0
+      ],
+      "ground": true,
+      "yaw_deg": 310,
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "palm 7: date-palm-tall",
+      "translation": [
+        4.0,
+        -0.2,
+        15.0
+      ],
+      "ground": true,
+      "yaw_deg": 30,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "palm 8: date-palm-young",
+      "translation": [
+        -11.0,
+        -0.2,
+        13.0
+      ],
+      "ground": true,
+      "yaw_deg": 100,
+      "scale": [
+        1.15,
+        1.15,
+        1.15
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "palm 9: date-palm-leaning",
+      "translation": [
+        16.0,
+        -0.2,
+        9.0
+      ],
+      "ground": true,
+      "yaw_deg": 170,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "palm 10: date-palm-old",
+      "translation": [
+        -2.0,
+        -0.2,
+        22.0
+      ],
+      "ground": true,
+      "yaw_deg": 230,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 0,
+      "name": "palm 11: date-palm",
+      "translation": [
+        21.0,
+        -0.2,
+        -15.0
+      ],
+      "ground": true,
+      "yaw_deg": 290,
+      "scale": [
+        1.12,
+        1.12,
+        1.12
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "palm 12: date-palm-young",
+      "translation": [
+        -20.0,
+        -0.2,
+        -16.0
+      ],
+      "ground": true,
+      "yaw_deg": 350,
+      "scale": [
+        0.95,
+        0.95,
+        0.95
+      ]
+    }
+  ],
+  "terrain": {
+    "size": 257,
+    "extent": 160,
+    "seed": 31,
+    "dune_height": 3.5,
+    "dune_wavelength": 55,
+    "basins": [
+      {
+        "center": [
+          0,
+          0
+        ],
+        "radius": 40,
+        "depth": 2.5
+      }
+    ],
+    "generator": "Dunes"
+  }
+}

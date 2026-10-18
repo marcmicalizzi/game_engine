@@ -1,3 +1,5 @@
+#include "scene_flora.h"
+
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
@@ -540,6 +542,18 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
       return false;
     }
     page_layout("heightfield", desc.page_bytes);
+    return true;
+  }
+  // A mesh a generator makes (`<name>.flora.json`): built into its container through the cache by
+  // the generator its name gives, then read as any container is (scene_flora.cpp).
+  if (is_generated_mesh(path)) {
+    geometry::ClusterFileData generated;
+    std::string where;
+    if (!load_generated_mesh(path, desc, expected_hash, generated, where, out.cache,
+                             out.source_hash, error)) {
+      return false;
+    }
+    adopt_container(generated, where, desc, out, lod, pages);
     return true;
   }
   // Where a built mesh may already be: a container named outright, or the cache entry this

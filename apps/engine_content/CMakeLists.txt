@@ -60,11 +60,19 @@ if(TARGET engine::audio)
   list(APPEND _content_deps audio)
   list(APPEND _content_tests tests/clip_tests.cpp)
 endif()
+# `flora` the same way, with the flora capability (docs/subsystems/flora.md): a flora file solved
+# and built into a container through the cache. Its test runs either way, and without the
+# capability checks the refusal.
+list(APPEND _content_tests tests/flora_tests.cpp)
+if(TARGET engine::flora)
+  list(APPEND _content_deps flora flora_schemas schema)
+endif()
 list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
+          flora_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -117,6 +125,12 @@ endif()
 # write the container it then renders.
 if(TARGET engine_engine_view_tests)
   add_dependencies(engine_engine_view_tests engine_engine_content)
+endif()
+if(TARGET engine::flora)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_FLORA=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_FLORA=1)
+  endif()
 endif()
 if(TARGET engine::npc)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_NPC=1)

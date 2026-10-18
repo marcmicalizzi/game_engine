@@ -1,0 +1,16 @@
+{
+  "species": "date_palm",
+  "palm": {
+    "seed": 3,
+    "height_m": 3.5,
+    "trunk_base_radius_m": 0.2,
+    "trunk_top_radius_m": 0.17,
+    "lean_deg": 3.0,
+    "ring_spacing_m": 0.09,
+    "frond_count": 18,
+    "frond_length_m": 3.0,
+    "frond_droop": 0.3,
+    "frond_spread_deg": 85.0,
+    "dead_skirt_fronds": 12
+  }
+}
