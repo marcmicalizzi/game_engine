@@ -637,8 +637,8 @@ u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWi
   PlumeCache& cache = *plumes_;
   const WorldPos eye = c.eye_world;
   const i64 hour = static_cast<i64>(std::floor(c.world_time_s / 3600.0));
-  const f64 longest = 3.0 * k_plume_decay_s * std::max(wind.speed_mps, 0.0f);
-  const f64 reach = k_plume_radius_m + longest;
+  const f64 longest = 3.0 * static_cast<f64>(k_plume_decay_s * std::max(wind.speed_mps, 0.0f));
+  const f64 reach = static_cast<f64>(k_plume_radius_m) + longest;
   const f64 tile_m = static_cast<f64>(k_plume_tile_mm) / 1000.0;
   const i64 tx0 = static_cast<i64>(std::floor((eye.x - reach) / tile_m));
   const i64 tx1 = static_cast<i64>(std::floor((eye.x + reach) / tile_m));
