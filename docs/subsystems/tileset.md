@@ -1,0 +1,107 @@
+# tileset (domain, capability)
+
+**Purpose.** An authored terrain ([world](world.md#an-authored-world), roadmap W23, W24): a heightfield somebody made — a DEM, an editor's sculpt, Island City's mountain ([13 §13.2](../plan/13-reference-consumer-games.md)), a flat test range — turned into a **tile set** the renderer and the collision read through the tile source they already ask ([scene_gen](scene_gen.md#the-tile-source), [ADR-0050](../adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md)), with the **far mip chain** the renderer's far levels ask for ([renderer](renderer.md#ground-to-the-horizon), [ADR-0051](../adr/0051-the-far-ground-is-the-renderers.md)), and the **`tiles` ground provider** that opens a set from a scene's terrain entry, registered through the scene-generator registry as the dunes are ([ADR-0046](../adr/0046-scene-generators-register-themselves.md)).
+
+**Why a capability of its own.** Until it, every ground the engine drew was a generator's: a function of seed, tile and time. The renderer's tests already drew a world from a set built ahead and read back (`terrain_tiles_gpu_tests.cpp`, "a tile set built ahead"), so the drawing half of an authored world worked; what nothing did was read an authored heightfield, write the set, answer a filter from a chain, or let a scene name one. That is data and arithmetic with no GPU and no generator behind it, so it lives in `domain/`, below every reader, and is removable ([ADR-0027](../adr/0027-additive-capabilities.md)): `ENGINE_WITH_TILESET=OFF` and the minimal build take it out, and a scene naming the provider `tiles` is then refused with the registry's sentence (`unknown_ground`).
+
+## The source: `engine.terrain.heightfield/1`
+
+A JSON header (`engine.tileset.HeightfieldHeader`, `schemas/tileset.schema`) beside a raw grid:
+
+```json
+{"format": "engine.terrain.heightfield", "version": 1, "width": 4001, "height": 4001,
+ "spacing_mm": 1000, "origin_mm": [-2000000, -2000000], "vertical_mm_per_unit": 1000,
+ "data": "mountain.f32", "data_hash": "0123456789abcdef"}
+```
+
+The grid is little-endian float32, row-major, z then x (`width` points a row, `height` rows), each value `vertical_mm_per_unit` millimetres (1000: metres). `origin_mm` is point (0, 0) in millimetres from the world's origin and must be a whole number of spacings, so the grid **is** a window of the world's lattice at its spacing (`ring_lattice`), which is what lets a set answer a window by index without resampling. `data_hash` is `hash_bytes` over the grid's bytes (16 hex digits); a grid that does not hash to it is refused, so the header's own bytes — the build's key starts from them — cover the grid.
+
+**Why raw, not EXR or a 16-bit PNG.** The engine's image decoder reads 8 bits a channel ([image](image.md)), and EXR sources are roadmap G9's ([texture](texture.md#not-yet)); a raw grid with a hash is readable today, the same bytes on every machine, and what a DEM converter or an editor writes without a codec. EXR and 16-bit PNG heightfields arrive with G9, as another reader of the same header's fields. **Why not SHA-256** in the header: the tree's one SHA-256 is the tissue capability's, which nothing here may depend on; `hash_bytes` is the hash every derived node starts from (`content_build`).
+
+`synth_heightfield` (and `engine-content terrain-synth`) writes four analytic shapes for tests and for a person without a DEM — `ridge` (a 40 m ridge along a diagonal on ground rising 6 m), `basin` (a bowl 20 m deep inside a rim), `steps` (eight 2 m terraces: cliffs a filter must smear), `flat` — with an optional seed adding a quarter-metre of roughness. Polynomials and integer hashes only, never libm, so a seed is the same grid on every toolchain.
+
+## The set
+
+`build_tileset` / `ensure_tileset` write, into one directory:
+
+- **`manifest.json`** (`engine.tileset.TileSetManifest`), written last, so a set whose manifest is there is whole: the build key, the source's hash, the finest lattice (spacing, origin, size), the vertical scale and offset, the far parameters it was built for (`ring_spacing_mm`, `far_ratio`, `far_levels`), the chain's spacings, and per level its spacing and filter, the lattice indices and tiles it stores, and a hash over its tile files; and the set's hash over the levels'.
+- **A directory a level** (`<spacing_mm>/`) of tile files `<x>_<z>.tile`: a 32-byte header (`ETIL`, the version, the cells, the level's spacing, the tile) and `(cells + 3)²` little-endian i32 millimetres, rows of x in order of z — the tile's own `cells + 1` points a side and **a point of apron** round them, the layout the renderer's test set has (`BuiltTileSet`), so a consumer reading one tile alone has its neighbours' edge.
+
+**Files under a directory, not one container.** The renderer's test set is per-tile files under keys, and so is this: a level of a 64 km world is tens of thousands of tiles, of which a camera reads the few round it, and a file a tile is read on first ask with no index to seek or map; a container of append-only sections would win only for a set small enough to read whole. The set's identity is still one thing — the manifest's key and hash — so an incremental build never decides from a timestamp.
+
+**Where it goes.** `ensure_tileset` builds into a directory it is given, or into the derived-data cache at `<ddc>/tilesets/<key>/` (`tileset_cache_dir`), and skips the build when the manifest there records this build's key (a hit). The key is `tileset_key`: the source header's bytes' hash, every option, and `k_tileset_version`, bumped whenever a build's output for the same source and options changes.
+
+### Integer millimetres, from the build on
+
+Following the terrain's rule ([terrain](terrain.md#integer-in-every-decision)), the float32 source becomes **whole millimetres once, when the set is built** (`quantize_heights`): the unit times `vertical_mm_per_unit` times the vertical scale, plus the offset, in f64, rounded half up (`floor(x + 0.5)`), refused when it is not finite or does not fit an i32 (±2,147 km). Everything after is integers: the tiles hold i32 millimetres, the box filter sums them in i64 and rounds once, and the reader turns a millimetre into a float32 metre by one correctly rounded division (`f32(mm / 1000.0)`). A point between lattice points is the bilinear surface in f64 over the integer corners (`TileSet::point_mm`), whose weights are exact at a lattice point, so a lattice point asked as a point is the lattice's own height to the bit. Why there and not at read: the build is where a toolchain could disagree only once, and from then on two readers on two machines turn the same integers into the same floats.
+
+### The far mip chain and its filter
+
+The renderer's far levels ask the source for a lattice **filtered to** each far spacing (`TileSourceOps::heights`' `filter_mm`): the first far level's spacing is `far_ratio` times the outermost ring's, and each one after doubles it ([renderer](renderer.md#ground-to-the-horizon), `terrain_far_level`). The build takes those parameters as options (`BuildOptions::ring_spacing_mm`, `far_ratio`, `far_levels`; the renderer's defaults are 2 m rings — 32 m tiles at 16 cells — a ratio of 4 and six levels: 8, 16, 32, 64, 128 and 256 m), records them, and writes a level for every spacing.
+
+**A level's point is the surface box-filtered over its own cell**: the mean of the finest's bilinear surface over the square one level spacing wide centred on the point. On the finest's points that mean is exactly the trapezoid rule — weights 1, 2, …, 2, 1 along each side of the `r + 1` points the square spans, `r` the level's spacing over the finest's — so the build sums the integers with those weights, separably (each row's sum, then the rows'), in i64, and rounds once, half up. It is exact: `tileset_tests.cpp` holds every level against the same sum done in one loop, and a tilted plane's chain against the plane itself. A level's spacing must be a whole number of twice the finest's, so the square's edges land on the finest's points; one no coarser than the finest is its bilinear surface's points (it carries everything the source has); any other is refused at the build with a sentence naming the spacing. Each level is a quarter of the one before it, so the chain is about a third more than the finest — of the data's extent, not the far windows' (below).
+
+**Past the data the edge is held**: a point outside the heightfield is the nearest edge point's height, flat beyond it, at every level. Each level stores the points whose cell touches the data and one more a side whose cell lies wholly past it; past those a point's cell sees only the edge held, which is that outermost point's value, so the reader clamps the index to what is stored and answers the filtered field of the held surface exactly. This is the choice over refusing outside the extent: a far level's window is kilometres to tens of kilometres, so a renderer's far square reaches past any authored map, and refusing would leave it unable to draw at all, where holding the edge draws a plain to the horizon.
+
+## The reader
+
+`TileSet::open(manifest)` checks the format, version and levels and reads no tile; a tile is read on first ask and kept (behind a lock for the read; once read it never moves and a lookup takes no lock), since a source is asked from several jobs at once. `TileSet::source()` is the set as a `scene_gen::TileSource`:
+
+- at `filter_mm` 0, **the ground at each point of any spacing**: the finest's own points where the spacing is a multiple of its own (every r-th, as the renderer's test set answers), and its bilinear surface at a spacing finer than or between them — so a renderer's 50 cm finest ring over a 1 m heightfield draws the surface between its points rather than being refused;
+- at a filter, **the chain level of that spacing**, point for point; a filter it was not built with, or one that is not its spacing, is **refused** (false), not answered with the wrong lattice;
+- no time: every time is the one surface, and `travel_m` is null, so a time-lapse never re-evaluates it.
+
+`point_mm`/`height_mm(x_mm, z_mm)` are the bilinear surface at whole millimetres, the edge held: what placement and a camera key stand on.
+
+## The provider: `tiles`
+
+Registered from `src/ground.cpp` through the registry (`k_ground_provider`, flags `k_ground_millimetres` only). A scene's terrain names it with `"provider": "tiles"` and a `tiles` block (`engine.scene.TerrainTileSet`, `Terrain` version 7): `manifest`, a built set's manifest; or `heightfield`, a source the provider builds into the derived-data cache on a miss through `ensure_tileset` — **the content step as a library call**, as a scene mesh's clusters are built on a miss — with the block's `origin` (x, z added to the source's origin in whole spacings; y added to every height), `vertical_scale`, `ddc` (empty: the repository's, found from the heightfield's directory) and build options. Paths resolve against the scene's directory (`Context::dir`).
+
+- **Every point entry is the set's surface**: `height`, `height_mm` (at any time), `surface_mm`, and `floor` and `floor_mm` (an authored ground does not move, so what a building stands on is its surface).
+- **`grid`** is the set's window on the world's lattice — a chain level at a filter it holds — and the bilinear surface on the scene's grid. **A grid cannot refuse** (`GroundOps::grid` returns nothing), so a filter the chain lacks is answered there with the points' heights; the set's own source refuses it, and a host hands that one to the renderer and the collision through the capability's typed accessor, `tile_set_of(provider)->source()` (below, "What the seam lacks").
+- **No time function**: no `evaluate`, `travel_m`, `wind` or `transport`. A set that does not move is a level whose fields never change, so the time-lapse keys do nothing to it and its surface time is constant. With no wind the renderer lays no ripples across it (`wind` absent); its sand share is the renderer's own maps' (no map says otherwise: maps are W25, below). No rings (`make_rings`, which builds cluster DAGs, is the terrain capability's) and no world tiles of its own (`open_tiles`): the world's tile ring draws it through the tile source.
+- **Refused**, each with a sentence: a terrain with no `tiles` block, one naming neither a manifest nor a heightfield, one with ridges or basins (an authored terrain carries its own), a set that will not open, a heightfield that will not build (an origin between its points, a far spacing its points cannot filter onto).
+
+### What the seam lacks
+
+Two things outside this module stop a scene file naming `tiles` from reaching the provider with its parameters, and stop the renderer drawing the world's tiles from it; this capability adds neither, because both are the renderer's and the registry's to change.
+
+1. **The renderer's terrain description does not carry the `tiles` block.** `load_scene` copies `engine.scene.Terrain` field by field into `renderer::TerrainDesc` (`systems/renderer/src/scene.cpp`), and `terrain_entry` copies it back into the entry a provider is made from (`terrain.cpp`); neither knows `tiles`, and `TerrainSampler` makes the provider with a `Context` whose `dir` is empty. So a scene file naming `"provider": "tiles"` is refused today with the provider's own sentence ("the terrain has no \"tiles\" block"). What it needs: a `std::optional<scene::TerrainTileSet> tiles` in `TerrainDesc`, its paths resolved against the scene's directory in `load_scene`, and `terrain_entry` copying it back — three lines and a field.
+2. **The renderer draws the world's tiles only from a ground that moves**, and the provider's own `tiles()` (`GroundProvider::tiles`, registry.cpp) goes through `grid` for a still ground, which cannot refuse a filter. A host that wants the far levels refused rather than answered with points hands `tile_set_of(provider)->source()` instead, as the renderer's test hands its own set; and `resolve_settings` would need to accept a still ground with a tile source ([renderer](renderer.md#the-ground-from-the-worlds-tiles), "What is refused"). Until then an authored ground is drawn as the scene's grid round the origin, the waves' way, and the world's tiles draw it only in a host that passes the set's source.
+
+## What an authored world still lacks after this
+
+Items 1, 2 and 4 of [world](world.md#an-authored-world)'s list are this module; 3, 5 and 6 are not:
+
+- **Maps** (W25): a tile's colour, roughness and sand share per tile, over the set's own UV frame, and a material or a texture array per slot to draw them — a level a set writes beside its heights, keyed as they are, which the renderer has no reader for yet.
+- **Holes and overhangs**: a placement generator reading its own authored set of placements per tile.
+- **The world's persistent layers**: the overlay's mechanism taken unchanged; an authored set has no lag.
+- **Erosion, hydrology and biomes** (G36) would write this format: a generator's heightfield is an authored one to the set.
+
+## Invariants
+
+Each is a test in `tests/tileset_tests.cpp` unless it says otherwise.
+
+- A heightfield round-trips through its header and grid, bit for bit; a grid that does not hash to its header, an unknown field and an origin off its lattice are refused with a sentence.
+- Every stored point of every level reads back as the build computed it — the finest the quantized source, a chain level the box filter summed directly in one loop — and so do three points past each level's stored window a side, where the edge is held; every tile the manifest lists is a file, and every one is read.
+- The box filter of a tilted plane is the plane at each point; a cliff is smeared over the cell.
+- A filter the set was not built with, and a filter that is not its spacing, are refused; a spacing finer than the set's is its bilinear surface, a multiple its every r-th point; a point is the corner at a corner, the four's mean at a cell's centre, and the edge's past the data.
+- A second build is a hit with the same key and hash; a forced build writes the same hash; another option or another grid is another key; a far spacing the source's points cannot filter onto is refused.
+- The provider through the registry: its point entries are the set's surface at any time; its tile source is the set's chain where it has one and the points where it does not, where the set's own source refuses; its refusals are sentences. A terrain naming a heightfield builds the set the content step builds, keyed the same, with its origin, scale and lift; an origin between the source's points is refused.
+- **The same bytes everywhere** (`tests/determinism_tests.cpp`): a seeded synthetic ridge's set, built with an offset, a scale and a lift, hashes level by level and as a whole to the pinned values, taken on MSVC and reproduced by GCC and Clang at v3.
+
+## Public API
+
+`include/domain/tileset/tileset.h`: `k_heightfield_format`, `k_tileset_version`, `k_ground_provider`, `Heightfield`, `write_heightfield`, `read_heightfield`, `SynthKind`, `parse_synth_kind`, `synth_heightfield`, `BuildOptions`, `chain_spacings`, `tileset_key`, `tileset_cache_dir`, `quantize_heights`, `BuildResult`, `build_tileset`, `ensure_tileset`, `TileSet` (`open`, `source`, `heights`, `has_filter`, `point_mm`, `height_mm`, `reads`, `failures`), `tile_file`, `tile_set_of`. `schemas/tileset.schema`: `engine.tileset.HeightfieldHeader`, `TileSetLevel`, `TileSetManifest`, `TileSetReport`.
+
+## Depends on
+
+`base`, `containers`, `math`, `hash`, `json`, `schema`, `schemas` (the scene's terrain entry and its `tiles` block), `tileset_schemas`, `io`, `geometry` (`find_ddc_root`), `scene_gen` (the registry and the tile source). No GPU, no ECS, no renderer, no other capability.
+
+## Testing
+
+`tools/dev.ps1 test -Filter tileset`: the module's own tests above, with no device. **The capability contract**: `ENGINE_WITH_TILESET=OFF` and `msvc-minimal`/`linux-clang-minimal` build without it.
+
+## Performance notes
+
+A 4 km × 4 km heightfield at 1 m is 16 million points; its build quantizes them, writes the finest's tiles and filters each chain level from the finest separably (a level costs about one pass over the finest), then writes the far levels' few tiles. The reader reads a tile on first ask and never again.

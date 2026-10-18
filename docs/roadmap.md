@@ -141,8 +141,8 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W20 | Cheaper tile rebuilds at speed | open | W14 | M | design | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
 | W21 | One staging ring for tile uploads | open | W14 | S | routine | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
 | W22 | Retire the terrain rings | open | W12 | S | routine | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
-| W23 | Tile-set ground provider for an authored world | open | W12 | M | routine | [world](subsystems/world.md#an-authored-world) |
-| W24 | Content build of a tile set and its far lattices | open | W23 | M | design | [world](subsystems/world.md#an-authored-world) |
+| W23 | Tile-set ground provider for an authored world | in progress (the `tiles` provider, `domain/tileset`; [tileset](subsystems/tileset.md)) | W12 | M | routine | [world](subsystems/world.md#an-authored-world) |
+| W24 | Content build of a tile set and its far lattices | in progress (the set and its chain, `domain/tileset`) | W23 | M | design | [world](subsystems/world.md#an-authored-world) |
 | W25 | Per-tile maps for tile sources | open | W24 | M | design | [world](subsystems/world.md#an-authored-world) |
 | W26 | Dunes as a function of time, bounded overlay (E36) | done (fd288496, 32e89ce2, 8be5df1a) | | L | design | [ADR-0043](adr/0043-dunes-as-a-function-of-time.md) |
 | W27 | Accept ADR-0043 | blocked (the owner's fly-through) | W26 | S | design | [ADR-0043](adr/0043-dunes-as-a-function-of-time.md) |

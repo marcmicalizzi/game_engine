@@ -663,6 +663,37 @@ struct TerrainDetail @version(4) {
   flatten_end: f32 = 0 @since(3)
 }
 
+/// The `tiles` ground provider's parameters (`Terrain.tiles`; docs/subsystems/tileset.md): an
+/// authored terrain — a tile set built ahead by `engine-content terrain-tiles`, its finest tiles
+/// and its far mip chain — or the heightfield to build one from on a miss, through the
+/// derived-data cache, as a scene mesh's clusters are built. A ground with no time: the set does
+/// not move, so a time-lapse moves nothing of it. Paths are relative to the scene's directory (or
+/// absolute).
+struct TerrainTileSet @version(1) {
+  /// A built set's `manifest.json` (`engine.tileset.TileSetManifest`). Empty: `heightfield`.
+  manifest: string
+  /// An `engine.terrain.heightfield/1` header (`engine.tileset.HeightfieldHeader`) to build a set
+  /// from when `manifest` is empty: a hit when the cache already holds the build's key.
+  heightfield: string
+  /// With `heightfield`: added to the source's own origin (its header's `origin_mm`, and y to every
+  /// height), metres: x and z whole millimetres and a whole number of the source's spacings, so the
+  /// set stays on the world's lattice (refused otherwise). A heightfield is axis-aligned on the
+  /// world's grid: there is no turn.
+  origin: worldpos @unit(m)
+  /// With `heightfield`: the heights times this, (0, 1000].
+  vertical_scale: f32 = 1
+  /// With `heightfield`: the derived-data root. Empty: the repository's (`<repo>/ddc`), found from
+  /// the heightfield's directory.
+  ddc: string
+  /// With `heightfield`: the build's options (`engine-content terrain-tiles`'s flags): points a
+  /// tile side, the outermost ring's spacing the far levels start from, the first far level's
+  /// ratio to it and how many doublings the chain holds.
+  cells: u32 = 64
+  ring_spacing_mm: i64 = 2000
+  far_ratio: u32 = 4
+  far_levels: u32 = 6
+}
+
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
@@ -670,8 +701,9 @@ struct TerrainDetail @version(4) {
 /// added `provider`, the ground provider's name (ADR-0046), which `generator` is read as when it is
 /// empty. Version 5 added the wind's day (`diurnal_*`) and the storms' transport gains
 /// (`storm_gain`, `storm_gains`); their defaults are the record as it was, to the bit. Version 6
-/// added `detail`, the sand's ripples and grain; absent, the terrain draws as it did.
-struct Terrain @version(6) {
+/// added `detail`, the sand's ripples and grain; absent, the terrain draws as it did. Version 7
+/// added `tiles`, the `tiles` provider's authored set (`TerrainTileSet`); absent, as before.
+struct Terrain @version(7) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -735,6 +767,10 @@ struct Terrain @version(6) {
   /// default, draws no detail: the terrain exactly as it was. The ripples lie across the wind the
   /// ground provider says blows at the surface's time, and fade out where its material is not sand.
   detail: TerrainDetail? @since(6)
+  /// The `tiles` ground provider's parameters (docs/subsystems/tileset.md): the authored tile set it
+  /// opens, or the heightfield it builds one from through the derived-data cache. Null for every
+  /// other provider, and refused beside one.
+  tiles: TerrainTileSet? @since(7)
 }
 
 
