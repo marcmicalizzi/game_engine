@@ -819,6 +819,9 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.world_seed = out.terrain.enabled ? out.terrain.seed : 0;
   context.tile_size = out.world.enabled ? out.world.tile_size : 32.0f;
   context.dir = dir;
+  // The host's derived-data root, which both hosts set on the description before they read the
+  // file (`SceneDesc::ddc`); empty when none was named, and the generator finds one itself.
+  context.ddc = out.ddc;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;

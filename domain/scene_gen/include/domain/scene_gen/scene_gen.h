@@ -122,6 +122,12 @@ struct Context {
   std::string_view dir;
   // Where the entry is, for a sentence: "scene.json: ruins 0".
   std::string_view where;
+  // **The host's derived-data root** (`--ddc`, `render.load`'s `ddc`): where a generator that
+  // writes what it builds (the water's meshes) keeps it. Empty when the host named none; a
+  // generator then finds the repository's from the scene's directory, as it did before the field
+  // (scene_gen.md, "The derived-data root"), so a game repository's `--ddc` is honoured and a
+  // committed scene read with no root still writes into the checkout's `ddc/`.
+  std::string_view ddc;
   Ground ground;
   // **The moving ground** (scene_gen.md, "A moving ground"): the surface as it stands now, when a
   // host's ground has moved on from the scene's time (the dunes under a time-lapse). A generator

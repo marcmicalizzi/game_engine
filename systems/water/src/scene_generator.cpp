@@ -77,12 +77,17 @@ void close(void* state) noexcept { delete static_cast<Entry*>(state); }
 bool expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,
             std::string* error) {
   const Entry& entry = *static_cast<const Entry*>(state);
-  // Where the meshes go (rock.cpp's rule): the repository's derived-data root, else `water` beside
-  // the scene, which is where a scene outside any checkout — a test's scratch directory — keeps it.
-  std::error_code ec;
-  const std::filesystem::path from = std::filesystem::absolute(
-      std::filesystem::path(entry.dir.empty() ? std::string(".") : entry.dir), ec);
-  const std::string ddc = ec ? std::string() : geometry::find_ddc_root(from.generic_string());
+  // Where the meshes go: the host's derived-data root (`Context::ddc`, `--ddc`), so a scene in a
+  // game repository writes them where its host keeps derived data; with none named, rock.cpp's
+  // rule — the repository's root found from the scene's directory, else `water` beside the scene,
+  // which is where a scene outside any checkout (a test's scratch directory) keeps it.
+  std::string ddc(context.ddc);
+  if (ddc.empty()) {
+    std::error_code ec;
+    const std::filesystem::path from = std::filesystem::absolute(
+        std::filesystem::path(entry.dir.empty() ? std::string(".") : entry.dir), ec);
+    if (!ec) ddc = geometry::find_ddc_root(from.generic_string());
+  }
   const std::string mesh_dir =
       !ddc.empty() ? io::join_path(ddc, "water") : resolve(entry.dir, "water");
   // The depth is the surface's as the ground stands now: the moving ground's, when the host's has
