@@ -163,7 +163,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W42 | Sand close up: ripples, grain, grainflow | done (bb577f1a, a40d6960, e5e4aeaf) | W26 | L | design | [renderer](subsystems/renderer.md#the-sand-close-up) |
 | W43 | Sand detail leftovers | open | W42 | M | design | [fifth pass](experiments/sand-fifth-pass-2026-10-04.md#seen-and-not-fixed) |
 | W44 | The sand's shelter channel | open | W42 | M | design | [terrain](subsystems/terrain.md#what-the-effect-needs) |
-| W45 | Blowing-sand volumetric pass | open | W34, R47 | L | research | [terrain](subsystems/terrain.md#what-the-effect-needs) |
+| W45 | Blowing-sand volumetric pass | in progress (2026-10-17: the crest plumes in the volumetrics capability's froxels from `terrain::tile_crests`, and the dust haze from the wind record; remaining: the brick field and the near solve, the baseline tier's flipbooks) | W34, R47 | L | research | [terrain](subsystems/terrain.md#what-the-effect-needs) |
 | W46 | Ripple celerity setting | blocked (the owner's judgement, against W45) | W45 | S | design | [renderer](subsystems/renderer.md#the-sand-close-up) |
 | W47 | One residency manager for three page types | open | R9 | L | design | [04 §4.9](plan/04-renderer.md#49-streaming-and-residency) |
 | W48 | Texture page streaming | open | W47 | L | design | [04 §4.9](plan/04-renderer.md#49-streaming-and-residency) |

@@ -32,7 +32,7 @@ if(TARGET engine_volumetrics_impl AND TARGET engine_shaders_volumetrics)
 endif()
 
 engine_module_tests(NAME volumetrics
-  SOURCES tests/volumetrics_tests.cpp tests/size_table.cpp tests/volumetrics_gpu_tests.cpp)
+  SOURCES tests/volumetrics_tests.cpp tests/size_table.cpp tests/volumetrics_gpu_tests.cpp tests/plume_tests.cpp)
 # The GPU cases draw a scene naming a sky where the sky capability is linked, as the renderer's own
 # sky tests do: its registrar is what makes "earth" a sky the reader knows.
 if(TARGET engine_volumetrics_tests AND TARGET engine::sky)

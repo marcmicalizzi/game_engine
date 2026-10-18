@@ -2,6 +2,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/shader_library.h>
+#include <domain/terrain/crests.h>
 #include <domain/terrain/dunes.h>
 #include <domain/terrain/fixed.h>
 #include <domain/terrain/scene_ground.h>
@@ -184,6 +185,158 @@ f32 visibility_m(f32 extinction_per_m) noexcept {
 // ---- the pass
 // ------------------------------------------------------------------------------------
 
+// ---- the crest plumes (W45) ---------------------------------------------------------------------
+
+f32 plume_peak(f32 saltation_m2_per_day, f32 sharpness, f32 strength) noexcept {
+  if (saltation_m2_per_day <= 0.0f || sharpness < k_plume_min_sharpness) return 0.0f;
+  return k_plume_peak_per_m * strength * sharpness * sharpness *
+         std::sqrt(saltation_m2_per_day / k_plume_mean_saltation);
+}
+
+u32 crest_plume_segments(const terrain::CrestLine& crest, const terrain::TileWind& wind,
+                         const WorldPos& eye, f32 strength, PlumeSegment* out,
+                         u32 capacity) noexcept {
+  if (crest.height_m < k_plume_min_height_m) return 0;
+  const f32 peak = plume_peak(wind.saltation_m2_per_day, crest.sharpness, strength);
+  if (peak <= 0.0f || wind.speed_mps <= 0.0f) return 0;
+  const f32 decay = k_plume_decay_s * wind.speed_mps;
+  u32 written = 0;
+  for (u32 k = 0; k + 1 < terrain::k_crest_points && written < capacity; ++k) {
+    // The crest's world metres less the eye's, in f64, and only then a float: the frame's space.
+    auto rel = [&](const Vec3& p) {
+      return Vec3{static_cast<f32>(static_cast<f64>(p.x) - eye.x),
+                  static_cast<f32>(static_cast<f64>(p.y) - eye.y),
+                  static_cast<f32>(static_cast<f64>(p.z) - eye.z)};
+    };
+    PlumeSegment& s = out[written++];
+    s.a = Vec4{rel(crest.points[k]), peak};
+    s.b = Vec4{rel(crest.points[k + 1]), decay};
+    s.shape = Vec4{wind.direction.x, wind.direction.y, k_plume_spread_m, k_plume_spread_per_m};
+  }
+  return written;
+}
+
+f32 plume_density(const PlumeSegment& s, const Vec3& x) noexcept {
+  // Where the point is in the ribbon: x - a = u (b - a) + t w over the ground, u along the brink
+  // and t downwind of it.
+  const f32 ex = s.b.x - s.a.x;
+  const f32 ez = s.b.z - s.a.z;
+  const f32 dx = x.x - s.a.x;
+  const f32 dz = x.z - s.a.z;
+  const f32 wx = s.shape.x;
+  const f32 wz = s.shape.y;
+  const f32 det = ex * wz - ez * wx;
+  const f32 len = std::sqrt(ex * ex + ez * ez);
+  if (std::fabs(det) < 1.0e-3f * len || len <= 0.0f) return 0.0f;  // a brink along the wind
+  const f32 u = (dx * wz - dz * wx) / det;
+  const f32 t = (ex * dz - ez * dx) / det;
+  if (t < 0.0f) return 0.0f;
+  const f32 sigma = s.shape.z + s.shape.w * t;
+  const f32 over = (u < 0.0f ? -u : (u > 1.0f ? u - 1.0f : 0.0f)) * len;
+  const f32 lateral = std::exp(-0.5f * (over / sigma) * (over / sigma));
+  const f32 uc = std::clamp(u, 0.0f, 1.0f);
+  const f32 centre = s.a.y + (s.b.y - s.a.y) * uc + k_plume_lift * t;
+  const f32 dy = x.y - centre;
+  const f32 spread = dy >= 0.0f ? sigma : sigma * k_plume_floor;
+  const f32 vertical = std::exp(-0.5f * (dy / spread) * (dy / spread));
+  return s.a.w * (s.shape.z / sigma) * std::exp(-t / s.b.w) * lateral * vertical;
+}
+
+// The tiles' crest lines, by tile and hour, and the query's scratch: kept so a frame queries only
+// the tiles it has not seen this hour, and grown once, so a frame that has seen them all allocates
+// nothing. An entry's lines are the hour's start's: a function of the tile and the hour.
+struct MediumPass::PlumeCache {
+  struct Entry {
+    i64 x = 0;
+    i64 z = 0;
+    i64 hour = -1;
+    u64 used = 0;
+    Vector<terrain::CrestLine> crests;
+    terrain::TileWind wind;
+  };
+  static constexpr u32 k_entries = 4096;
+  static constexpr u32 k_slots = 8192;
+  Vector<Entry> entries;
+  Vector<i32> slots;  // open addressing over (x, z, hour) -> entry, -1 empty
+  u64 clock = 0;
+  terrain::CrestScratch scratch;
+  Vector<PlumeSegment> segments;                // the frame's, before binning
+  Vector<u32> counts;                           // per cell
+  Vector<gfx::BufferResource> segment_buffers;  // per frame slot
+  Vector<gfx::BufferResource> cell_buffers;     // per frame slot: offsets, then indices
+
+  PlumeCache() {
+    entries.resize(k_entries);
+    slots.resize(k_slots);
+    for (i32& s : slots)
+      s = -1;
+    segments.reserve(k_plume_max_segments);
+    counts.resize(k_plume_cells * k_plume_cells + 1);
+    scratch.gather.primitives.reserve(8192);
+    scratch.gather.grid.reserve(65536);
+  }
+  static u32 hash(i64 x, i64 z, i64 hour) {
+    u64 h = static_cast<u64>(x) * 0x9E3779B97F4A7C15ull ^
+            static_cast<u64>(z) * 0xC2B2AE3D27D4EB4Full ^
+            static_cast<u64>(hour) * 0x165667B19E3779F9ull;
+    h ^= h >> 29;
+    return static_cast<u32>(h % k_slots);
+  }
+  // The entry for a tile at an hour, queried if it is not held. The least recently used goes when
+  // every entry is taken (its lines' capacity is reused).
+  const Entry& at(const terrain::DuneField& field, i64 x, i64 z, i64 hour) {
+    ++clock;
+    u32 slot = hash(x, z, hour);
+    for (u32 probe = 0; probe < k_slots; ++probe, slot = (slot + 1) % k_slots) {
+      const i32 e = slots[slot];
+      if (e < 0) break;
+      Entry& entry = entries[static_cast<u32>(e)];
+      if (entry.x == x && entry.z == z && entry.hour == hour) {
+        entry.used = clock;
+        return entry;
+      }
+    }
+    // Not held: the first free entry, or the least recently used one, whose slot is rebuilt.
+    u32 pick = 0;
+    for (u32 i = 0; i < k_entries; ++i) {
+      if (entries[i].hour < 0) {
+        pick = i;
+        break;
+      }
+      if (entries[i].used < entries[pick].used) pick = i;
+    }
+    Entry& entry = entries[pick];
+    if (entry.hour >= 0) rebuild_slots_without(pick);
+    entry.x = x;
+    entry.z = z;
+    entry.hour = hour;
+    entry.used = clock;
+    terrain::TileOptions options;
+    options.tile_mm = k_plume_tile_mm;
+    options.cells = 4;  // the sand share over 25 vertices: the plume's flux, not the tile's mesh
+    options.normals = false;
+    terrain::tile_crests(field, terrain::TileCoord{static_cast<i32>(x), static_cast<i32>(z)},
+                         hour * 3'600'000'000ll, options, nullptr, scratch, entry.crests,
+                         entry.wind);
+    slot = hash(x, z, hour);
+    while (slots[slot] >= 0)
+      slot = (slot + 1) % k_slots;
+    slots[slot] = static_cast<i32>(pick);
+    return entry;
+  }
+  void rebuild_slots_without(u32 gone) {
+    for (i32& s : slots)
+      s = -1;
+    for (u32 i = 0; i < k_entries; ++i) {
+      if (i == gone || entries[i].hour < 0) continue;
+      u32 slot = hash(entries[i].x, entries[i].z, entries[i].hour);
+      while (slots[slot] >= 0)
+        slot = (slot + 1) % k_slots;
+      slots[slot] = static_cast<i32>(i);
+    }
+  }
+};
+
 struct MediumPass::Pipelines {
   gfx::ComputePipeline fill;
   gfx::ComputePipeline integrate;
@@ -211,6 +364,7 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
   // The sources this pass draws: the block's, or the one the debug view asks for alone.
   sources_ = 0;
   if (desc_.dust) sources_ |= k_source_dust;
+  // The plumes need the dunes' crest lines: a scene whose ground is not the dune field has none.
   switch (options_.debug) {
     case MediumDebug::dust: sources_ &= k_source_dust; break;
     case MediumDebug::plumes: sources_ &= k_source_plumes; break;
@@ -226,6 +380,11 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
     } else {
       ground_.reset();
     }
+  }
+  if (desc_.plumes && field_ != nullptr) {
+    plumes_ = std::make_unique<PlumeCache>();
+    if (options_.debug == MediumDebug::none || options_.debug == MediumDebug::plumes)
+      sources_ |= k_source_plumes;
   }
   gfx::ShaderLibrary& shaders = renderer.shaders();
   shaders.add_embedded("medium", shaders::k_medium_spirv, shaders::k_medium_spirv_size);
@@ -275,7 +434,14 @@ void MediumPass::destroy() noexcept {
     for (gfx::BufferResource& b : params_)
       gfx::destroy_buffer(*device_, b);
     if (froxels_.buffer.valid()) gfx::destroy_buffer(*device_, froxels_);
+    if (plumes_ != nullptr) {
+      for (gfx::BufferResource& b : plumes_->segment_buffers)
+        gfx::destroy_buffer(*device_, b);
+      for (gfx::BufferResource& b : plumes_->cell_buffers)
+        gfx::destroy_buffer(*device_, b);
+    }
   }
+  plumes_.reset();
   pipelines_.reset();
   params_.clear();
   froxels_ = gfx::BufferResource{};
@@ -288,6 +454,103 @@ void MediumPass::destroy() noexcept {
 bool MediumPass::record_thunk(const renderer::FramePassContext& context, void* user,
                               std::string* error) {
   return static_cast<MediumPass*>(user)->record(context, error);
+}
+
+// The crest plumes of the frame (volumetrics.md, "The crest plumes"): every crest line of every
+// dune tile whose plumes can reach within `k_plume_radius_m` of the eye, at the hour's start, as
+// brink segments in the frame's space; then binned into a grid of `k_plume_cells` cells a side
+// centred on the eye, so a froxel visits only the plumes over its own cell. Into this slot's
+// buffers.
+u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWind& wind,
+                             Vec4& grid) {
+  PlumeCache& cache = *plumes_;
+  const WorldPos eye = c.eye_world;
+  const i64 hour = static_cast<i64>(std::floor(c.world_time_s / 3600.0));
+  const f64 longest = 3.0 * k_plume_decay_s * std::max(wind.speed_mps, 0.0f);
+  const f64 reach = k_plume_radius_m + longest;
+  const f64 tile_m = static_cast<f64>(k_plume_tile_mm) / 1000.0;
+  const i64 tx0 = static_cast<i64>(std::floor((eye.x - reach) / tile_m));
+  const i64 tx1 = static_cast<i64>(std::floor((eye.x + reach) / tile_m));
+  const i64 tz0 = static_cast<i64>(std::floor((eye.z - reach) / tile_m));
+  const i64 tz1 = static_cast<i64>(std::floor((eye.z + reach) / tile_m));
+  cache.segments.clear();
+  u32 tiles = 0;
+  const f32 radius2 = static_cast<f32>(reach * reach);
+  for (i64 tz = tz0; tz <= tz1; ++tz) {
+    for (i64 tx = tx0; tx <= tx1; ++tx) {
+      const PlumeCache::Entry& entry = cache.at(*field_, tx, tz, hour);
+      ++tiles;
+      for (const terrain::CrestLine& crest : entry.crests) {
+        PlumeSegment made[terrain::k_crest_points - 1];
+        const u32 n = crest_plume_segments(crest, entry.wind, eye, desc_.plume_strength, made,
+                                           terrain::k_crest_points - 1);
+        for (u32 i = 0; i < n; ++i) {
+          if (cache.segments.size() >= k_plume_max_segments) break;
+          const Vec4& a = made[i].a;
+          if (a.x * a.x + a.z * a.z > radius2) continue;
+          cache.segments.push_back(made[i]);
+        }
+      }
+    }
+  }
+  // The binning: each segment's footprint over the ground — its brink and the brink moved three
+  // decay lengths downwind, widened by the spread there — counted into the cells it covers.
+  const f32 half = 0.5f * static_cast<f32>(k_plume_cells) * k_plume_cell_m;
+  grid = Vec4{-half, -half, k_plume_cell_m, static_cast<f32>(k_plume_cells)};
+  const u32 cells = k_plume_cells * k_plume_cells;
+  for (u32& n : cache.counts)
+    n = 0;
+  auto footprint = [&](const PlumeSegment& s, i32& c0x, i32& c0z, i32& c1x, i32& c1z) {
+    const f32 run = 3.0f * s.b.w;
+    const f32 widen = s.shape.z + s.shape.w * run;
+    const f32 xs[4] = {s.a.x, s.b.x, s.a.x + s.shape.x * run, s.b.x + s.shape.x * run};
+    const f32 zs[4] = {s.a.z, s.b.z, s.a.z + s.shape.y * run, s.b.z + s.shape.y * run};
+    f32 lo_x = xs[0], hi_x = xs[0], lo_z = zs[0], hi_z = zs[0];
+    for (u32 i = 1; i < 4; ++i) {
+      lo_x = std::min(lo_x, xs[i]);
+      hi_x = std::max(hi_x, xs[i]);
+      lo_z = std::min(lo_z, zs[i]);
+      hi_z = std::max(hi_z, zs[i]);
+    }
+    const i32 last = static_cast<i32>(k_plume_cells) - 1;
+    c0x = std::clamp(static_cast<i32>(std::floor((lo_x - widen + half) / k_plume_cell_m)), 0, last);
+    c1x = std::clamp(static_cast<i32>(std::floor((hi_x + widen + half) / k_plume_cell_m)), 0, last);
+    c0z = std::clamp(static_cast<i32>(std::floor((lo_z - widen + half) / k_plume_cell_m)), 0, last);
+    c1z = std::clamp(static_cast<i32>(std::floor((hi_z + widen + half) / k_plume_cell_m)), 0, last);
+  };
+  u32 kept = 0;
+  u32 refs = 0;
+  for (; kept < cache.segments.size(); ++kept) {
+    i32 c0x, c0z, c1x, c1z;
+    footprint(cache.segments[kept], c0x, c0z, c1x, c1z);
+    const u32 adds = static_cast<u32>((c1x - c0x + 1) * (c1z - c0z + 1));
+    if (refs + adds > k_plume_max_refs) break;
+    refs += adds;
+    for (i32 z = c0z; z <= c1z; ++z)
+      for (i32 x = c0x; x <= c1x; ++x)
+        ++cache.counts[static_cast<u32>(z) * k_plume_cells + static_cast<u32>(x)];
+  }
+  u32* out = static_cast<u32*>(cache.cell_buffers[c.slot].mapped);
+  u32 running = cells + 1;
+  for (u32 i = 0; i < cells; ++i) {
+    out[i] = running;
+    running += cache.counts[i];
+    cache.counts[i] = out[i];  // now each cell's cursor
+  }
+  out[cells] = running;
+  for (u32 s = 0; s < kept; ++s) {
+    i32 c0x, c0z, c1x, c1z;
+    footprint(cache.segments[s], c0x, c0z, c1x, c1z);
+    for (i32 z = c0z; z <= c1z; ++z)
+      for (i32 x = c0x; x <= c1x; ++x)
+        out[cache.counts[static_cast<u32>(z) * k_plume_cells + static_cast<u32>(x)]++] = s;
+  }
+  if (kept > 0) {
+    std::memcpy(cache.segment_buffers[c.slot].mapped, cache.segments.data(),
+                sizeof(PlumeSegment) * kept);
+  }
+  stats_.plume_tiles = tiles;
+  return kept;
 }
 
 // The first frame makes the per-slot blocks and the grids; a frame after it makes nothing, so the
@@ -303,6 +566,23 @@ bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::
   for (gfx::BufferResource& b : params_) {
     if (!gfx::create_buffer(*device_, u64{k_params_bytes} * views_, k_address, true, b, error))
       return false;
+  }
+  if (plumes_ != nullptr) {
+    for (gfx::BufferResource& b : plumes_->segment_buffers)
+      gfx::destroy_buffer(*device_, b);
+    for (gfx::BufferResource& b : plumes_->cell_buffers)
+      gfx::destroy_buffer(*device_, b);
+    plumes_->segment_buffers.resize(context.frames_in_flight);
+    plumes_->cell_buffers.resize(context.frames_in_flight);
+    for (u32 s = 0; s < context.frames_in_flight; ++s) {
+      if (!gfx::create_buffer(*device_, sizeof(PlumeSegment) * k_plume_max_segments, k_address,
+                              true, plumes_->segment_buffers[s], error) ||
+          !gfx::create_buffer(*device_,
+                              sizeof(u32) * (k_plume_cells * k_plume_cells + 1 + k_plume_max_refs),
+                              k_address, true, plumes_->cell_buffers[s], error)) {
+        return false;
+      }
+    }
   }
   const u64 cells = u64{options_.froxels_x} * options_.froxels_y * options_.froxels_z;
   return gfx::create_buffer(*device_, cells * 8 * views_, k_address, false, froxels_, error);
@@ -327,6 +607,9 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
   stats_.dust_height_m = dust.height_m;
   stats_.visibility_m = visibility_m(at_eye);
   c.report->visibility_m = stats_.visibility_m;
+  Vec4 plume_grid{};
+  stats_.plume_segments =
+      (sources_ & k_source_plumes) != 0 ? build_plumes(c, wind, plume_grid) : 0u;
 
   // ---- one block per view ----------------------------------------------------------------------
   u8* bytes = static_cast<u8*>(params_[c.slot].mapped);
@@ -363,6 +646,11 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
     p.froxels = froxels_.address + cells * 8 * v;
     p.sky = c.sky_params;
     p.shadow_maps = c.cascades ? c.shadow_maps : 0;
+    if (stats_.plume_segments > 0) {
+      p.plumes = plumes_->segment_buffers[c.slot].address;
+      p.plume_cells = plumes_->cell_buffers[c.slot].address;
+      p.plume_grid = plume_grid;
+    }
     std::memcpy(bytes + u64{k_params_bytes} * v, &p, sizeof(p));
     pipelines_->push[v] = params_[c.slot].address + u64{k_params_bytes} * v;
   }

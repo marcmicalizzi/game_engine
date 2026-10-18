@@ -36,7 +36,9 @@ struct ComputePipeline;
 
 namespace engine::terrain {
 class DuneField;
-}
+struct CrestLine;
+struct TileWind;
+}  // namespace engine::terrain
 
 namespace engine::renderer {
 class SceneRenderer;
@@ -121,6 +123,50 @@ f32 dust_optical_depth(const DustState& dust, f32 eye_height_m, f32 dy, f32 a, f
 // an extinction: -ln(0.02) / sigma, never past `k_max_visibility_m`.
 f32 visibility_m(f32 extinction_per_m) noexcept;
 
+// ---- the crest plumes (W45) ---------------------------------------------------------------------
+
+// The sand blowing off a brink (volumetrics.md, "The crest plumes"): for each crest line of each
+// dune tile within `k_plume_radius_m` of the eye, a plume leaving each of its four segments
+// downwind along the tile's wind, its density the tile's saltation flux times the crest's
+// sharpness, spread as a half-Gaussian ribbon that grows downwind and decays over a length tied to
+// the wind's speed.
+inline constexpr f32 k_plume_radius_m = 160.0f;       // plumes reaching within this of the eye
+inline constexpr f32 k_plume_min_sharpness = 0.3f;    // a rounded crest sheds no plume
+inline constexpr f32 k_plume_min_height_m = 0.5f;     // nor does a ripple-sized one
+inline constexpr f32 k_plume_peak_per_m = 0.03f;      // at the brink: mean saltation, sharpness 1
+inline constexpr f32 k_plume_mean_saltation = 0.55f;  // m^2 a day: the record's mean (5,479 cm^2)
+inline constexpr f32 k_plume_decay_s = 2.5f;          // the decay length: this times the wind speed
+inline constexpr f32 k_plume_spread_m = 0.4f;         // the ribbon's spread at the brink
+inline constexpr f32 k_plume_spread_per_m = 0.12f;    // and its growth per metre downwind
+inline constexpr f32 k_plume_lift = 0.04f;            // its centre rises this per metre downwind
+inline constexpr f32 k_plume_floor = 0.35f;           // its spread below the centre, of above
+inline constexpr u32 k_plume_cells = 64;              // the binning grid round the eye, a side
+inline constexpr f32 k_plume_cell_m = 6.0f;
+inline constexpr u32 k_plume_max_segments = 4096;
+inline constexpr u32 k_plume_max_refs = 131072;
+inline constexpr i64 k_plume_tile_mm = 32000;  // the world's tiles, the crest query's unit
+
+// One segment of a brink and its plume, in the frame's space (GPU-mirrored, 48 bytes).
+struct PlumeSegment {
+  Vec4 a;      // xyz the segment's first end, w the plume's peak extinction /m
+  Vec4 b;      // xyz its second end, w its decay length downwind, m
+  Vec4 shape;  // xy downwind (unit, horizontal), z the spread at the brink, w per metre downwind
+};
+
+// The peak extinction of a plume leaving a brink of `sharpness` in a saltation flux: zero in a
+// calm, `k_plume_peak_per_m` at the record's mean and a sharp brink, growing as the flux's square
+// root.
+f32 plume_peak(f32 saltation_m2_per_day, f32 sharpness, f32 strength) noexcept;
+// A crest line's four segments in the frame of the eye `eye` (the crest's world metres less the
+// eye, in f64), under a tile wind: at most `capacity` written, how many returned; none for a crest
+// too rounded or too low, or in a calm.
+u32 crest_plume_segments(const terrain::CrestLine& crest, const terrain::TileWind& wind,
+                         const WorldPos& eye, f32 strength, PlumeSegment* out,
+                         u32 capacity) noexcept;
+// A segment's plume's extinction at a point of the frame's space (shaders/medium.slang's
+// `plume_density`, the same arithmetic).
+f32 plume_density(const PlumeSegment& segment, const Vec3& x) noexcept;
+
 // ---- the pass
 // ------------------------------------------------------------------------------------
 
@@ -147,6 +193,8 @@ struct MediumStats {
   u32 froxels_z = 0;
   f32 near_m = 0.0f;
   f32 far_m = 0.0f;
+  u32 plume_segments = 0;  // the brink segments the frame drew plumes from
+  u32 plume_tiles = 0;     // the dune tiles round the eye they came from
 };
 
 // The GPU-mirrored blocks (shaders/medium.slang), pinned by tests/size_table.cpp.
@@ -219,6 +267,11 @@ class MediumPass {
   u32 views_ = 0;
   std::unique_ptr<renderer::TerrainSampler> ground_;
   const terrain::DuneField* field_ = nullptr;
+  // The crest plumes: the tiles' crest lines by tile and hour, the query's scratch, and per frame
+  // slot the segments and their binning grid (host-visible, read by the fill).
+  struct PlumeCache;
+  std::unique_ptr<PlumeCache> plumes_;
+  u32 build_plumes(const renderer::FramePassContext& context, const MediumWind& wind, Vec4& grid);
 };
 
 }  // namespace engine::volumetrics

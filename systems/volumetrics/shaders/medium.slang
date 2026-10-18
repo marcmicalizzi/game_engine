@@ -149,6 +149,52 @@ float dust_optical_depth(MediumParams* p, float dy, float a, float b) {
   return tau;
 }
 
+// ---- the crest plumes (W45) ---------------------------------------------------------------------
+
+// volumetrics.cpp's `plume_density`, the same arithmetic: where the point is in the ribbon, x - a =
+// u (b - a) + t w over the ground; nothing upwind of the brink; a half-Gaussian about a centre that
+// rises downwind, wider above than below, falling off past the brink's ends, spread and decaying.
+static const float k_plume_lift = 0.04;
+static const float k_plume_floor = 0.35;
+float plume_density(PlumeSegment s, float3 x) {
+  const float ex = s.b.x - s.a.x;
+  const float ez = s.b.z - s.a.z;
+  const float dx = x.x - s.a.x;
+  const float dz = x.z - s.a.z;
+  const float wx = s.shape.x;
+  const float wz = s.shape.y;
+  const float det = ex * wz - ez * wx;
+  const float len = sqrt(ex * ex + ez * ez);
+  if (abs(det) < 1.0e-3 * len || len <= 0.0) return 0.0;
+  const float u = (dx * wz - dz * wx) / det;
+  const float t = (ex * dz - ez * dx) / det;
+  if (t < 0.0) return 0.0;
+  const float sigma = s.shape.z + s.shape.w * t;
+  const float over = (u < 0.0 ? -u : (u > 1.0 ? u - 1.0 : 0.0)) * len;
+  const float lateral = exp(-0.5 * (over / sigma) * (over / sigma));
+  const float uc = clamp(u, 0.0, 1.0);
+  const float centre = s.a.y + (s.b.y - s.a.y) * uc + k_plume_lift * t;
+  const float dy = x.y - centre;
+  const float spread = dy >= 0.0 ? sigma : sigma * k_plume_floor;
+  const float vertical = exp(-0.5 * (dy / spread) * (dy / spread));
+  return s.a.w * (s.shape.z / sigma) * exp(-t / s.b.w) * lateral * vertical;
+}
+
+// Every plume over the point's cell of the binning grid.
+float plumes_at(MediumParams* p, float3 x) {
+  if ((p->grid.w & k_source_plumes) == 0 || p->plumes == 0) return 0.0;
+  const float n = p->plume_grid.w;
+  const float2 c = (x.xz - p->plume_grid.xy) / p->plume_grid.z;
+  if (c.x < 0.0 || c.y < 0.0 || c.x >= n || c.y >= n) return 0.0;
+  const uint index = uint(c.y) * uint(n) + uint(c.x);
+  uint* cells = (uint*)p->plume_cells;
+  PlumeSegment* segments = (PlumeSegment*)p->plumes;
+  const uint end = cells[index + 1];
+  float sum = 0.0;
+  for (uint i = cells[index]; i < end; ++i) sum += plume_density(segments[cells[i]], x);
+  return sum;
+}
+
 // ---- light at a point --------------------------------------------------------------------------
 
 // The sun's visibility through the cascaded maps at a froxel: one gather of the 2 x 2 texels round
@@ -231,6 +277,13 @@ void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
   float3 scatter = float3(0.0);
   if ((p->grid.w & k_source_dust) != 0) {
     const float s = dust_extinction(p, x);
+    if (s > 0.0) {
+      sigma += s;
+      scatter += s * p->dust_albedo.rgb;
+    }
+  }
+  {
+    const float s = plumes_at(p, x);
     if (s > 0.0) {
       sigma += s;
       scatter += s * p->dust_albedo.rgb;
