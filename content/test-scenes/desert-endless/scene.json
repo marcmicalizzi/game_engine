@@ -1,6 +1,7 @@
 {
   "format": "engine.scene.v1",
   "name": "desert-endless",
+  "medium": {"clouds": {"coverage": 0.3, "type": 0.5, "seed": 7}},
   "camera_path": "camera-path.json",
   "sky": {
     "latitude_deg": 31.1,
