@@ -109,6 +109,11 @@ TEST_CASE("engine-view: a ground provider no build has is refused, naming tiles 
   REQUIRE(io::write_file(scene, scene_text("nonesuch", "")) == io::Status::Ok);
   const Run refused = run_app(view_exe(), {"--offscreen", "--scene", scene, "--frames", "1",
                                            "--width", "64", "--height", "64"});
+  // The device is made before the scene is read, so a machine with none says so first.
+  if (refused.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << refused.output);
+    return;
+  }
   CHECK(refused.exit_code == 1);
   CHECK_MESSAGE(refused.output.find("names the ground provider \"nonesuch\", which this build "
                                     "does not have") != std::string::npos,
