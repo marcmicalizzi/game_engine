@@ -1235,9 +1235,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.terrain.provider = t.provider;
-    // An authored tile set (`Terrain.tiles`, docs/subsystems/tileset.md): its paths resolved against
-    // the file's directory, and the provider it implies; beside another provider it is two answers
-    // to one question.
+    // An authored tile set (`Terrain.tiles`, docs/subsystems/tileset.md): its paths resolved
+    // against the file's directory, and the provider it implies; beside another provider it is two
+    // answers to one question.
     if (t.tiles.has_value()) {
       if (!t.provider.empty() && t.provider != "tiles") {
         error = path + ": the terrain carries a tile set and names the ground provider \"" +

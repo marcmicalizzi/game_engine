@@ -25,6 +25,7 @@
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -267,12 +268,33 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
   REQUIRE(with[0].water_instance != ~0u);
   // The same frame twice: the same bytes.
   CHECK(std::equal(a.color.begin(), a.color.end(), with[1].frame.color.begin()));
-  // With and without: every pixel that differs is a pixel of the pool, and the pool is there.
+  // With and without: every pixel that differs is a pixel of the pool, or within the sun's shadow
+  // filter of one, and the pool is there. The band: on a device that shadows the sun with the
+  // cascaded maps (the Titan Xp, which has no ray queries), the maps' 3x3 filter lets the pool's
+  // own shadow touch the shore's last texels just past the pool's edge — gate b23 measured 33 such
+  // pixels of 153,600 — where traced shadows stop at the edge itself. So pixels within
+  // `k_shore_band` of a pool pixel count as the pool's here, and anything farther still may not
+  // change.
+  constexpr u32 k_shore_band = 3;
+  const u32 pixels = a.width * a.height;
+  std::vector<u8> by_pool(pixels, 0);
+  for (u32 y = 0; y < a.height; ++y) {
+    for (u32 x = 0; x < a.width; ++x) {
+      if (a.ids[(y * a.width + x) * k_id_words] != with[0].water_instance) continue;
+      const u32 y0 = y > k_shore_band ? y - k_shore_band : 0u;
+      const u32 y1 = std::min(a.height - 1, y + k_shore_band);
+      const u32 x0 = x > k_shore_band ? x - k_shore_band : 0u;
+      const u32 x1 = std::min(a.width - 1, x + k_shore_band);
+      for (u32 yy = y0; yy <= y1; ++yy) {
+        for (u32 xx = x0; xx <= x1; ++xx)
+          by_pool[yy * a.width + xx] = 1;
+      }
+    }
+  }
   u32 pool = 0;
   u32 differ = 0;
   u32 differ_outside = 0;
   u32 moved = 0;
-  const u32 pixels = a.width * a.height;
   for (u32 p = 0; p < pixels; ++p) {
     const bool in_pool = a.ids[p * k_id_words] == with[0].water_instance;
     pool += in_pool ? 1u : 0u;
@@ -284,7 +306,7 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
     }
     if (!same) {
       ++differ;
-      if (!in_pool) ++differ_outside;
+      if (by_pool[p] == 0) ++differ_outside;
     }
     if (in_pool && !same_later) ++moved;
   }

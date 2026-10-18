@@ -34,8 +34,8 @@
 #include <domain/gfx/ground_detail.h>
 #include <domain/scene_gen/scene_gen.h>
 
-#include <schemas/scene.h>
 #include <optional>
+#include <schemas/scene.h>
 #include <span>
 #include <string>
 #include <string_view>
