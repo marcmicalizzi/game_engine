@@ -100,8 +100,8 @@ Each is a test in `tests/tileset_tests.cpp` unless it says otherwise.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter tileset`: the module's own tests above, with no device. **The capability contract**: `ENGINE_WITH_TILESET=OFF` and `msvc-minimal`/`linux-clang-minimal` build without it.
+`tools/dev.ps1 test -Filter tileset`: the module's own tests above, with no device. `apps/engine_content/tests/tileset_tests.cpp` runs the two commands end to end: each synthetic shape written by `terrain-synth` is the library's grid to the bit, and refused with a bad kind, size, missing spacing or an origin off the lattice; `terrain-tiles` builds a set into a directory and into a cache at `tilesets/<key>/`, the same key either way, a hit the second time and not with `--force` or another offset, and the library opens what it wrote; its usage errors exit 2 and a source or a build the source cannot have exits 1 ([apps](apps.md#engine-content-terrain-synth-and-terrain-tiles-an-authored-terrain)). **The capability contract**: `ENGINE_WITH_TILESET=OFF` and `msvc-minimal`/`linux-clang-minimal` build without it.
 
 ## Performance notes
 
-A 4 km × 4 km heightfield at 1 m is 16 million points; its build quantizes them, writes the finest's tiles and filters each chain level from the finest separably (a level costs about one pass over the finest), then writes the far levels' few tiles. The reader reads a tile on first ask and never again.
+A 4 km × 4 km heightfield at 1 m is 16 million points; its build quantizes them, writes the finest's tiles and filters each chain level from the finest separably (a level costs about one pass over the finest), then writes the far levels' few tiles. The reader reads a tile on first ask and never again. Measured (2026-10-17, `msvc-debug`, the shared desktop with its CPU 35% busy beside the run, so an upper bound): a 4 km × 4 km ridge at 1 m, 4001 points a side and 64 MB of float32, builds with the renderer's default chain in 7.2 s into seven levels, 4,197 tiles and 75.5 MB — the finest's 3,969 tiles of 67² points are 71 MB of it, the six far levels' 228 tiles the rest. A hit reads one manifest.

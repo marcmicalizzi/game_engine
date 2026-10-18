@@ -222,6 +222,8 @@ engine-content ruins <kit.json> <world seed> <x,z | - --region ...> --blocks <bl
 engine-content ruins-kit <directory> [--e33-sizes] [--inside-corner]
 engine-content ruins-block-kit <directory> [--fidelity low|mid|high] [--thickness <m>] [--course <m>] [--stretcher <m>]
 engine-content terrain <scene.json> --tile <x,z> [--time <s>] [--cells <n>] [--detail full|dunes|coarse|floor] [--tile-size <m>] [--crests] [--storms] [--stats [--stats-side <m>] [--stats-spacing <m>] [--jobs <n>]]
+engine-content terrain-synth <out.json> --kind ridge|basin|steps|flat --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]
+engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--cells <n>] [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>] [--vertical-scale <v>] [--offset-mm <x,y,z>] [--force]
 engine-content city params <params.json>
 engine-content city plan <params.json> (--out <dir> | --cache [--ddc <dir>] | --no-write) [--jobs <n>]
 engine-content city building --plan <dir|plan.json> --lot <id> [--stage massing|floors|rooms] [--out <building.json>]
@@ -319,6 +321,20 @@ The line: `format` (`engine.terrain.tile`), `tile_x`, `tile_z`, `time_s`, `tile_
 
 ```
 engine-content terrain content/test-scenes/desert-dunes/scene.json --tile 0,0 --cells 32 --crests
+```
+
+## engine-content terrain-synth and terrain-tiles: an authored terrain
+
+Present with the tile-set capability ([tileset](tileset.md)); without it (`ENGINE_WITH_TILESET=OFF`, the minimal build) both are refused with a sentence, exit 1.
+
+- `terrain-synth <out.json> --kind <ridge|basin|steps|flat> --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]` writes an `engine.terrain.heightfield/1` header and its float32 grid beside it (`<stem>.f32`): one of the library's analytic shapes, `n` points a side `s` mm apart, for tests and for a terrain without a DEM. Prints `{"heightfield","width","height","spacing_mm"}`.
+- `terrain-tiles <heightfield.json> [<out dir>]` builds the heightfield's tile set — its finest tiles with a point of apron and its far mip chain, each level the surface box-filtered over each point's cell — into `<out dir>`, or with none into the derived-data cache at `<ddc>/tilesets/<key>/` (`--ddc`, or the repository's `ddc/` found from the working directory), and skips the build when the manifest there records this build's key (`"hit": true`; `--force` builds anyway). `--ring-spacing-mm`, `--far-ratio` and `--far-levels` are the far levels the renderer will ask (its defaults: 2000, 4 and 6, so 8 m to 256 m), `--cells` the points a tile side less one (64), `--vertical-scale` and `--offset-mm <x,y,z>` move the grid by whole spacings and scale and lift its heights. Prints one line, `engine.tileset.TileSetReport`: `manifest`, `key`, `hit`, `levels`, `tiles`, `bytes`, `hash`, `ms`. Exit 2 on a usage error, 1 on a source that does not read or a build the source cannot have (an offset between its points, a far spacing its points cannot filter onto).
+
+A 4 km × 4 km ridge at 1 m (4001 points a side, 64 MB of float32) builds in 7.2 s in `msvc-debug` on the shared desktop (CPU 35% busy beside it, 2026-10-17): seven levels, 4,197 tiles, 75.5 MB.
+
+```
+engine-content terrain-synth mountain.json --kind ridge --size 4001 --spacing-mm 1000 --origin-mm -2000000,-2000000
+engine-content terrain-tiles mountain.json --ddc ddc
 ```
 
 ## engine-content tissue: the tissue definition
