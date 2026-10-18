@@ -662,7 +662,8 @@ struct OffFrustum {
   u32 in_volume = 0;         // every pair outside the frustum and inside the volume
 };
 
-OffFrustum off_frustum(Caster caster, Vec3 eye_local, Vec3 target_local, Vec3 caster_offset) {
+OffFrustum off_frustum(Caster caster, Vec3 eye_local, Vec3 target_local, Vec3 caster_offset,
+                       bool lights = false) {
   SceneData data;
   std::string error;
   REQUIRE_MESSAGE(make_scene(caster, data, error, 0.0f, caster_offset), error);
@@ -675,10 +676,23 @@ OffFrustum off_frustum(Caster caster, Vec3 eye_local, Vec3 target_local, Vec3 ca
   views.update(camera);
   const Mat4& view_proj = views[0].view_proj;  // the frame's space: the eye at the origin
   const Frustum frustum = frustum_from_view_proj(view_proj);
-  CasterVolume volume;
-  REQUIRE(fit_directional_caster_volume(
-      view_proj, k_sun, 0.0f, CasterBounds{relative(data.center, camera.position), data.radius},
-      volume));
+  const CasterBounds bounds{relative(data.center, camera.position), data.radius};
+  CasterVolume volumes[gfx::k_max_caster_volumes];
+  u32 volume_count = 0;
+  REQUIRE(fit_directional_caster_volume(view_proj, k_sun, 0.0f, bounds, volumes[volume_count++]));
+  if (lights) {
+    // The renderer's stand-in point lights, where the frame puts them (lighting.h).
+    RenderSettings settings;
+    FrameLighting lighting;
+    frame_lighting(data, 0, lighting_options(settings), lighting, camera.position);
+    for (u32 l = 0; l < lighting.light_count; ++l) {
+      const gfx::ResolveLight& light = lighting.lights[l];
+      if (fit_point_caster_volume(view_proj, light.position_radius.xyz(), light.position_radius.w,
+                                  bounds, volumes[volume_count])) {
+        ++volume_count;
+      }
+    }
+  }
   const Vec3 eye = relative(camera.position, WorldPos::origin());
   OffFrustum out;
   for (u32 i = 0; i < 2; ++i) {
@@ -688,7 +702,9 @@ OffFrustum off_frustum(Caster caster, Vec3 eye_local, Vec3 target_local, Vec3 ca
       const geometry::ClusterDesc& desc = data.lod.mesh.clusters[part.first_cluster + c];
       const Vec3 center = to_world(frame, desc.center) + offset - eye;
       const bool outside = !frustum_contains_sphere(frustum, center, desc.radius);
-      const bool kept = outside && caster_volume_contains_sphere(volume, center, desc.radius);
+      bool kept = false;
+      for (u32 v = 0; v < volume_count && outside && !kept; ++v)
+        kept = caster_volume_contains_sphere(volumes[v], center, desc.radius);
       out.in_volume += kept ? 1u : 0u;
       if (i == 1) {
         ++out.caster_clusters;
@@ -800,6 +816,42 @@ TEST_CASE("renderer: a caster outside the frustum on the side away from the ligh
   // The ground's pairs beyond the view towards the sun are casters; the card's are not.
   CHECK(traced.casters == cpu.in_volume);
   CHECK(shadowed_ground(traced) == 0);
+}
+
+TEST_CASE("renderer: a point light's casters outside the frustum are its hull's") {
+  // With the stand-in point lights on, every light of the array casts a traced shadow, and each
+  // one's volume — the hull of the frustum and the light, within its reach — keeps its own
+  // off-frustum casters. The GPU's casters are the CPU's own fit over the sun's volume and the
+  // lights', and the sun's shadow is the same bytes with the lights' volumes or without them:
+  // a caster outside the sun's sweep cannot meet a ray from the view towards the sun.
+  const OffFrustum sun = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{});
+  const OffFrustum all = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{}, true);
+  MESSAGE("outside the frustum and inside a volume: " << sun.in_volume << " pairs for the sun, "
+                                                      << all.in_volume << " with the lights");
+  CHECK(all.in_volume > sun.in_volume);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  ShotOptions options;
+  options.eye = k_off_eye;
+  options.target = k_off_target;
+  options.lights = true;
+  const Shot lit = render(gpu.device, Caster::card, options);
+  if (!lit.available) {
+    MESSAGE("skipped: " << lit.why);
+    return;
+  }
+  options.lights = false;
+  const Shot alone = render(gpu.device, Caster::card, options);
+  MESSAGE(lit.casters << " casters with the point lights, " << alone.casters << " without; "
+                      << colour_differences(lit, alone)
+                      << " colour bytes of the sun's shadow differ");
+  CHECK(lit.casters == all.in_volume);
+  CHECK(alone.casters == sun.in_volume);
+  CHECK(colour_differences(lit, alone) == 0);
+  CHECK(id_differences(lit, alone) == 0);
 }
 
 TEST_CASE("renderer: the off-frustum casters change no pixel's surface on any path") {

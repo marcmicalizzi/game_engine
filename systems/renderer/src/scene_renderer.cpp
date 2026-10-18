@@ -1990,6 +1990,20 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                           caster_bounds, volumes[count])) {
           ++count;
         }
+        // Every light of the array casts a traced shadow too, so a point or spot light's caster
+        // outside the frustum is the same gap: its volume is the hull of the frustum and the
+        // light, within the light's reach — none at all for a light inside the frustum. The
+        // array's directional light (the moon) is the key light's volume or casts no off-frustum
+        // shadow. At most four, the block's room behind the key light's.
+        for (u32 l = 0; l < lighting.light_count && count < gfx::k_max_caster_volumes; ++l) {
+          const gfx::ResolveLight& light = lighting.lights[l];
+          if (light.direction_type.w == gfx::k_light_directional) continue;
+          if (!(light.color_intensity.w > 0.0f)) continue;
+          if (fit_point_caster_volume(view.view_proj, light.position_radius.xyz(),
+                                      light.position_radius.w, caster_bounds, volumes[count])) {
+            ++count;
+          }
+        }
         set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
       }
     }

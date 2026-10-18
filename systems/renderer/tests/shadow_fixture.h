@@ -309,6 +309,7 @@ struct ShotOptions {
   f32 ground_reach = 0.0f;  // make_scene's
   Vec3 caster_offset{};     // make_scene's
   bool off_frustum_casters = true;
+  bool lights = false;  // the renderer's two stand-in point lights beside the sun
 };
 
 // One picture of the scene, with its ids, under the options given.
@@ -325,7 +326,8 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   settings.shadow_casters = options.shadow_casters;
   settings.off_frustum_casters = options.off_frustum_casters;
   settings.shadow_frustum = options.shadow_frustum;
-  settings.lights = false;  // the sun alone: its shadow is what the shadow view shows
+  // The sun alone, unless a case asks: its shadow is what the shadow view shows.
+  settings.lights = options.lights;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   const RenderAvailability availability = check_availability(resolved, device.features());
