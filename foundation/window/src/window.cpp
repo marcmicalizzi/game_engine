@@ -1117,6 +1117,7 @@ void Window::destroy() noexcept {
   gpu_hold_.release();  // the last of the process's holds (a device's, a window's) lets it go
   vulkan_ = false;
   child_ = false;
+  fullscreen_ = false;
 }
 
 void Window::refresh_pixel_size() noexcept {
@@ -1228,6 +1229,17 @@ bool Window::set_size(u32 width, u32 height) noexcept {
   if (handle_ == nullptr || child_) return false;
   return SDL_SetWindowSize(static_cast<SDL_Window*>(handle_), static_cast<int>(width),
                            static_cast<int>(height));
+}
+
+bool Window::set_fullscreen(bool on) noexcept {
+  if (handle_ == nullptr || child_) return false;
+  auto* w = static_cast<SDL_Window*>(handle_);
+  // A null mode is SDL's borderless desktop fullscreen: the window takes its display's bounds and
+  // the display mode is never changed (window.md, "Borderless windows and presentation").
+  if (on && !SDL_SetWindowFullscreenMode(w, nullptr)) return false;
+  if (!SDL_SetWindowFullscreen(w, on)) return false;
+  fullscreen_ = on;
+  return true;
 }
 
 bool Window::poll(Event& out) {
@@ -1347,6 +1359,12 @@ bool Window::poll(Event& out) {
           pixel_height_ = e.window.data2 > 0 ? static_cast<u32>(e.window.data2) : 0;
         }
         return true;
+      // What SDL says the window is now, whoever changed it; nothing for the caller to act on,
+      // since the size change comes as its own `Resized`.
+      case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+      case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+        if (e.window.windowID == id_) fullscreen_ = e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
+        continue;
       case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
         if (!route(id_, e.window.windowID, out)) continue;
         out.kind = EventKind::ScaleChanged;

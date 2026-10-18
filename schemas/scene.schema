@@ -1480,7 +1480,7 @@ struct FlythroughTextures @version(1) {
 /// and where the frames' waits went. What a frame-time distribution has to be read against,
 /// since the same GPU work paces differently under another present mode or queue depth
 /// (docs/subsystems/apps.md, "Pacing").
-struct FlythroughPresentation @version(2) {
+struct FlythroughPresentation @version(3) {
   /// The present mode the swapchain was created with: "fifo", "fifo_relaxed", "mailbox",
   /// "immediate" or "fifo_latest_ready"; and the one `--present` asked for ("auto" when it
   /// asked for none, which is FIFO with vsync).
@@ -1507,6 +1507,11 @@ struct FlythroughPresentation @version(2) {
   ceiling_waits: u64 = 0 @since(2)
   /// `--borderless`: the window had no decorations and sat at the primary display's corner.
   borderless: bool = false
+  /// `--fullscreen`: the window started in desktop fullscreen (no mode change); and the times
+  /// Alt+Enter switched it between fullscreen and windowed during the run, so a distribution
+  /// that spans a toggle says so (docs/subsystems/apps.md, "Pacing").
+  fullscreen: bool = false @since(3)
+  fullscreen_toggles: u32 = 0 @since(3)
   /// The display's refresh as the swapchain reports it (VK_EXT_present_timing), 0 where it
   /// cannot say; and the median of the presented frames' `shown_ms`.
   refresh_ms: f64 = 0
