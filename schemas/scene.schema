@@ -867,9 +867,62 @@ struct Prop @version(1) {
   fit: Fit?
 }
 
+/// A water body's circle: its centre's x and z (its y is not read; the surface is at the body's
+/// `level_m`) and its radius.
+struct WaterCircle @version(1) {
+  center: worldpos @unit(m)
+  radius_m: f32 = 10 @unit(m)
+}
+
+/// A water body's outline: a circle, or a polygon of world positions (x and z; y is not read) that
+/// is **star-shaped from its centroid** — every edge seen from the centroid turning the same way —
+/// in either winding. Exactly one of the two.
+struct WaterShape @version(1) {
+  circle: WaterCircle?
+  polygon: worldpos[]
+}
+
+/// One water surface (docs/subsystems/water.md; roadmap S63): a flat surface at `level_m` over the
+/// shape, drawn as an opaque mesh whose material the resolve shades as water — the sky reflected
+/// by Fresnel, the sun's glitter on a few waves, and the bottom's colour fading with the depth the
+/// mesh carries under each vertex (the level less the ground there, zero where the ground stands
+/// above the water). The walker wades in it and stops at the chest. Append-only: a field added
+/// later has a default that draws what the block drew before it.
+struct WaterBody @version(1) {
+  name: string
+  /// The surface's height, a world y, metres.
+  level_m: f64 = 0 @unit(m)
+  shape: WaterShape
+  /// How far in from the edge, metres, the surface fades from the bottom's colour alone (at the
+  /// edge: wet ground) to reflecting the sky and the sun. 0: no fade.
+  shore_m: f32 = 2 @unit(m)
+  /// The water over a shallow bottom, linear RGB. Absent: a pale green-blue over sand.
+  shallow: vec3?
+  /// The water where the bottom is gone, linear RGB. Absent: a dark blue-green.
+  deep: vec3?
+  /// The depth, metres, at which the bottom's colour has faded to `deep`.
+  depth_fade_m: f32 = 3 @unit(m)
+  /// The largest wave's amplitude and wavelength, metres; the shorter waves scale from them. An
+  /// amplitude of 0 is a mirror.
+  wave_amplitude_m: f32 = 0.02 @unit(m)
+  wave_length_m: f32 = 2.5 @unit(m)
+  /// How far the shorter waves turn from the main direction, [0, 1]: 0 every wave along it, 1 a
+  /// spread of ninety degrees either side: chop.
+  chop: f32 = 0.5
+  /// The waves travel along the ground's wind when the ground has one; otherwise, or when false,
+  /// along `direction_deg`.
+  wind_follow: bool = true
+  /// Degrees about +y from +x towards +z: the waves' direction without the wind.
+  direction_deg: f32 = 0 @unit(deg)
+  /// The surface's GGX roughness, [0.02, 1]: low is the sun's glitter as a few sharp points.
+  roughness: f32 = 0.08
+  /// What the waves' phases are drawn from.
+  seed: u32 = 1
+}
+
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
-/// version 6 `sky`, version 7 `props`.
-struct Scene @version(7) {
+/// version 6 `sky`, version 7 `props`, version 8 `water`.
+struct Scene @version(8) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -902,6 +955,11 @@ struct Scene @version(7) {
   /// before every placement generator's, and placed by nothing but the module. A scene with none
   /// reads exactly as it did.
   props: Prop[] @since(7)
+  /// Water surfaces (`WaterBody`; docs/subsystems/water.md): each an opaque mesh with a water
+  /// material, built by the water capability when the scene is read, after every placement entry
+  /// and before the terrain. A build without the capability refuses a scene that has any, with a
+  /// sentence. Empty: no water, and the scene reads exactly as it did.
+  water: WaterBody[] @since(8)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

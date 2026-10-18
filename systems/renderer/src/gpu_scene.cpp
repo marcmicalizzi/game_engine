@@ -2643,6 +2643,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           if (conflict) ++transform_conflicts_;
           gfx::set_uv_transform(material, transform.offset, transform.rotation, transform.scale);
         }
+        // A water body's mesh (scene.h, `SceneWater`; docs/subsystems/water.md): its one material
+        // is the water class, the body's shading numbers packed into slots an untextured material
+        // never reads, so every reader but the resolve's water branch draws its shallow colour.
+        if (m < data_->mesh_info.size() && data_->mesh_info[m].water.has_value())
+          gfx::set_water_material(material, data_->mesh_info[m].water->shading);
         material_table.push_back(material);
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];

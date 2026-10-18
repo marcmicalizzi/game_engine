@@ -296,7 +296,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S60 | Cosmetic GPU cloth | open | | L | design | [05 §5.13](plan/05-simulation.md#513-deformable-surfaces-and-soft-bodies) |
 | S61 | Ropes and cables | open | S59 | M | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S62 | Particle fluids | deferred (ADR-0020) | | L | research | [05 §5.13](plan/05-simulation.md#513-deformable-surfaces-and-soft-bodies) |
-| S63 | Water surfaces, fluids and buoyancy | open | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
+| S63 | Water surfaces, fluids and buoyancy | in progress (2026-10-17, stage 1 of the oasis pool: the scene's `water` block, the water capability's mesh with the depth under every vertex through the placement generator "water", the material table's water class drawn flat, `content/test-scenes/oasis-pool`; remaining: the resolve's water branch, wading, and stage 2 as S86; [water](subsystems/water.md)) | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S64 | World fields: drag, heat and fire, weather | open | | L | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S65 | Vehicles | open | S23 | M | design | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
 | S66 | Trees under wind as rooted bodies | open | S58, R23 | M | research | [05 §5.15](plan/05-simulation.md#515-capability-inventory) |
@@ -319,6 +319,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S83 | E26: a cavity reached into at hero distance | open | S69, S73 | L | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | S84 | ADR-0029's thresholds on a quiet machine and the Titan X | blocked (the Maxwell machine is down) | S67 | S | routine | [ADR-0029](adr/0029-deformable-volume-budgets.md) |
 | S85 | Phase 6 exit | open | S48, S49, S53, S57, S83, W29, W41 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
+| S86 | Water, stage 2: refraction of what is under the surface, swimming, buoyancy, the ripple map | open | S63, R65 | L | design | [water](subsystems/water.md#not-yet) |
 
 ## C — Characters and tissue
 

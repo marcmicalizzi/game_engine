@@ -1,0 +1,24 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "oasis-pool",
+  "description": "Twenty-four seconds at 60 fps: once round the pool two metres over the sand 22 m out, looking at its middle, then low across it a metre and a half over the water and up the far shore. README.md says what each marker shows.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {"time": 0, "position": [22, 2, 0], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 3, "position": [15.6, 2, 15.6], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 6, "position": [0, 2, 22], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 9, "position": [-15.6, 2, 15.6], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 12, "position": [-22, 2, 0], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 15, "position": [-15.6, 2, -15.6], "ground": true, "target": [0, -0.45, 0]},
+    {"time": 18, "position": [-8, 1.05, -2], "target": [10, -0.6, 1]},
+    {"time": 21, "position": [8, 1.05, 1], "target": [26, 0.2, 2]},
+    {"time": 24, "position": [22, 2, 2], "ground": true, "target": [40, 1, 2]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "east", "note": "From the east shore, the sun behind: the sky in the pool and the bottom fading from sand at the shore to blue-green in the middle."},
+    {"frame": 900, "name": "sun", "note": "From the south-west shore towards the morning sun: its glitter on the waves, and the rocks of the far shore against it."},
+    {"frame": 1170, "name": "across", "note": "Low over the middle of the pool: the waves close up, the far shore's sand coming up through the shallows."}
+  ]
+}

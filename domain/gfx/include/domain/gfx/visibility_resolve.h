@@ -248,6 +248,52 @@ inline constexpr u32 k_material_uv_transform = 4u;
 // the metallic-roughness map's **alpha** (1 without the map; glTF gives that alpha no meaning). A
 // terrain's material, when its scene asks for the detail (docs/subsystems/renderer.md).
 inline constexpr u32 k_material_ground_detail = 8u;
+// `k_material_water`: the material is a water surface (docs/subsystems/water.md), shaded by the
+// resolve's water branch (`water.slang`) instead of the BSDF: the sky reflected by Fresnel, the
+// sun's glitter on a few waves, the bottom's colour by the depth the mesh's UV.y carries. Its
+// numbers are packed by `set_water_material` (below) into slots a material with no textures and no
+// UV transform never reads, so every other reader of the table — the path tracer, a debug view —
+// sees a plain untextured dielectric of the shallow colour, which is what stage 1 drew.
+inline constexpr u32 k_material_water = 16u;
+
+// One water body's shading numbers (engine.scene.WaterBody, as the renderer's reader resolved
+// them): what `set_water_material` packs and water.slang reads.
+struct WaterShading {
+  Vec3 shallow{0.30f, 0.55f, 0.50f};  // linear, over a shallow bottom
+  Vec3 deep{0.010f, 0.045f, 0.060f};  // linear, where the bottom is gone
+  f32 roughness = 0.08f;
+  f32 depth_fade_m = 3.0f;
+  f32 wave_amplitude_m = 0.02f;
+  f32 wave_length_m = 2.5f;
+  f32 chop = 0.5f;
+  f32 shore_m = 2.0f;
+  Vec2 direction{1.0f, 0.0f};  // the waves' main direction over (x, z), unit
+  u32 seed = 1;
+};
+
+// Water's numbers into a material (mirrored by water.slang's `water_of`):
+//
+//   albedo        shallow.rgb, roughness       (what every reader takes as the base colour)
+//   emissive      0, metallic 0                (nothing glows, nothing is a metal)
+//   uv_transform  deep.rgb, depth_fade_m       (read only with k_material_uv_transform, never set)
+//   uv_offset     amplitude, wavelength, chop, shore_m
+//   normal_scale, occlusion_strength           the direction's x and z (read only with their maps)
+//   sampler                                    the seed (read only with a base colour texture)
+//
+// and `k_material_water` in `flags`. The textures stay `k_no_texture`, the UV scale 1 and the UV
+// transform flag clear, so the UVs reach the branch as the mesh gave them: x the distance from the
+// edge, y the depth, metres.
+inline void set_water_material(ResolveMaterial& material, const WaterShading& water) noexcept {
+  material = ResolveMaterial{};
+  material.albedo = Vec4{water.shallow, water.roughness};
+  material.emissive = Vec4{};
+  material.uv_transform = Vec4{water.deep, water.depth_fade_m};
+  material.uv_offset = Vec4{water.wave_amplitude_m, water.wave_length_m, water.chop, water.shore_m};
+  material.normal_scale = water.direction.x;
+  material.occlusion_strength = water.direction.y;
+  material.sampler = water.seed;
+  material.flags = k_material_water;
+}
 
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
@@ -484,8 +530,21 @@ struct ResolveParams {
   u32 display_encoding = 0;
   f32 display_paper_white_nits = 0.0f;
   f32 display_peak_nits = 0.0f;
-  u32 display_pad = 0;
+  // **The water's clock** (docs/subsystems/water.md, "Waves"): the frame's world time, game
+  // seconds, reduced in double modulo `k_water_period_s`, which every wave's frequency is a whole
+  // number of cycles of — so the waves are a function of the frame's time with no jump at the
+  // wrap, and a replay draws the same water. Zero stands the waves still at their phase at time 0.
+  // It took the block's last pad word (2026-10-17), so the size is unchanged.
+  f32 water_time_s = 0.0f;
 };
+// The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
+// short enough that a float holds a millisecond of it.
+inline constexpr f64 k_water_period_s = 1024.0;
+// The frame's world time as the water's clock.
+inline f32 water_clock(f64 time_s) noexcept {
+  const f64 t = std::fmod(time_s, k_water_period_s);
+  return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
+}
 static_assert(sizeof(ResolveParams) == 416);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

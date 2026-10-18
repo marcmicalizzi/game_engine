@@ -116,13 +116,28 @@ struct MeshFit {
   bool active() const noexcept { return height > 0.0f || extent > 0.0f; }
 };
 
+// **A water body's mesh** (docs/subsystems/water.md; renderer.md, "Materials"): the scene file's
+// block as it gave it, for a host that wades in it (engine-view's walker asks the water capability
+// for the depth at its feet from these), and the shading numbers the reader resolved from it — the
+// colours with their defaults and the waves' direction, the ground's wind where the block follows
+// it — which the GPU scene packs into the mesh's one material with `gfx::k_material_water`
+// (`gfx::set_water_material`). A water mesh is not a collision surface: the walker stands on the
+// ground under it (scene_collision leaves out every mesh that has this).
+struct SceneWater {
+  scene::WaterBody body;
+  gfx::WaterShading shading;
+};
+
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must
 // be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.
 struct SceneMeshInfo {
   std::string name;
-  u64 hash = 0;                  // `assets::source_mesh_hash` the file must have; 0 is unchecked
-  const char* origin = "scene";  // "scene", "overlay" (a manifest's replacement), or "terrain"
+  u64 hash = 0;  // `assets::source_mesh_hash` the file must have; 0 is unchecked
+  // "scene", "overlay" (a manifest's replacement), "prop", "terrain", or "water"
+  const char* origin = "scene";
   MeshFit fit;
+  // A water body's (`SceneWater`): set for a mesh the scene's `water` block made, and only then.
+  std::optional<SceneWater> water{};
 };
 
 // A scene streamed tile by tile (schema `engine.scene.WorldRings`), **carried and never
