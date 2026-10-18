@@ -208,6 +208,23 @@ and the dead fronds open wider and hang less folded, which gave them area to los
 would pass every palm is a coverage-preserving LOD for foliage — alpha-tested cards (R65), or a
 threshold that knows a strip's width — not more tuning of the solver.
 
+## Not yet
+
+- **Textures** (G60): the materials are flat PBR constants. The atlas is laid out for them already —
+  one frond chart every frond shares, the trunk's strip and cap — so generated bark and frond
+  images (`tools/generate.ps1 image`, with provenance) are a material change, not a mesh change.
+- **Wind and sway** (S66): plan 05 §5.15's rods, the wind field and the sway tiers.
+- **Placement** (G55): a scatter layer naming flora files, so an oasis is a rule and not a list.
+- **A coverage-preserving foliage LOD** (R65): alpha-tested cards or a width-aware threshold, for
+  the crowns whose thin leaflets fail E10's FLIP ([above](#what-the-harness-taught)).
+- **A second species** (G60) needs what the palm did not: **branching** — a palm is one unbranched
+  stem, and a tree is a recursive structure (axes, their buds and their order) whose budget has to
+  be spent across orders rather than across parts, which wants the pipe model's radii (a parent's
+  cross-section the sum of its children's) and a solver for where branches go; **leaves that are
+  not fronds** — broad leaves are where cards stop being optional; a **species switch** in
+  `FloraFile` beside `palm` (one struct per species, the solver picked by `species`, the key
+  already mixing the species in); and **bark that is not rings**.
+
 ## Determinism
 
 The same parameters give the same bytes on every toolchain and at either CPU baseline: the solver
