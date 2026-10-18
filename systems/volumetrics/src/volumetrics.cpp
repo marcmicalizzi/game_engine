@@ -337,10 +337,165 @@ struct MediumPass::PlumeCache {
   }
 };
 
+// ---- the far-field clouds (R83) -----------------------------------------------------------------
+
+namespace {
+
+// medium.slang's `cloud_hash`, `value_noise`, `worley`: the same integer hash and lattice
+// arithmetic, so the CPU's field is the GPU's (to the floats the two compilers round alike).
+u32 cloud_hash(i32 x, i32 y, i32 z, u32 seed) noexcept {
+  u32 h = seed * 0x9E3779B9u ^ static_cast<u32>(x) * 0x85EBCA6Bu ^
+          static_cast<u32>(y) * 0xC2B2AE35u ^ static_cast<u32>(z) * 0x27D4EB2Fu;
+  h ^= h >> 15;
+  h *= 0x2C1B3C6Du;
+  h ^= h >> 12;
+  h *= 0x297A2D39u;
+  h ^= h >> 15;
+  return h;
+}
+i32 wrap(i32 v, i32 period) noexcept {
+  const i32 m = v % period;
+  return m < 0 ? m + period : m;
+}
+f32 unit(u32 h) noexcept { return static_cast<f32>(h >> 8) * (1.0f / 16777216.0f); }
+f32 value_noise(f32 x, f32 y, f32 z, i32 period, u32 seed) noexcept {
+  const f32 fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
+  const i32 ix = static_cast<i32>(fx), iy = static_cast<i32>(fy), iz = static_cast<i32>(fz);
+  f32 tx = x - fx, ty = y - fy, tz = z - fz;
+  tx = tx * tx * (3.0f - 2.0f * tx);
+  ty = ty * ty * (3.0f - 2.0f * ty);
+  tz = tz * tz * (3.0f - 2.0f * tz);
+  f32 c[8];
+  for (u32 k = 0; k < 8; ++k) {
+    c[k] = unit(cloud_hash(wrap(ix + static_cast<i32>(k & 1), period),
+                           iy + static_cast<i32>((k >> 1) & 1),
+                           wrap(iz + static_cast<i32>(k >> 2), period), seed));
+  }
+  const f32 x00 = c[0] + (c[1] - c[0]) * tx, x10 = c[2] + (c[3] - c[2]) * tx;
+  const f32 x01 = c[4] + (c[5] - c[4]) * tx, x11 = c[6] + (c[7] - c[6]) * tx;
+  const f32 y0 = x00 + (x10 - x00) * ty, y1 = x01 + (x11 - x01) * ty;
+  return y0 + (y1 - y0) * tz;
+}
+// Inverted Worley: 1 at a cell's feature point, falling to 0 a cell away.
+f32 worley(f32 x, f32 y, f32 z, i32 period, u32 seed) noexcept {
+  const f32 fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
+  const i32 ix = static_cast<i32>(fx), iy = static_cast<i32>(fy), iz = static_cast<i32>(fz);
+  f32 best = 9.0f;
+  for (i32 dz = -1; dz <= 1; ++dz) {
+    for (i32 dy = -1; dy <= 1; ++dy) {
+      for (i32 dx = -1; dx <= 1; ++dx) {
+        const u32 h =
+            cloud_hash(wrap(ix + dx, period), iy + dy, wrap(iz + dz, period), seed ^ 0x5bd1e995u);
+        const f32 px = static_cast<f32>(dx) + unit(h) - (x - fx);
+        const f32 py = static_cast<f32>(dy) + unit(h * 0x27d4eb2du) - (y - fy);
+        const f32 pz = static_cast<f32>(dz) + unit(h * 0x165667b1u) - (z - fz);
+        best = std::min(best, px * px + py * py + pz * pz);
+      }
+    }
+  }
+  return 1.0f - std::min(std::sqrt(best), 1.0f);
+}
+f32 saturate(f32 v) noexcept { return std::clamp(v, 0.0f, 1.0f); }
+f32 smoothstep(f32 a, f32 b, f32 v) noexcept {
+  const f32 t = saturate((v - a) / (b - a));
+  return t * t * (3.0f - 2.0f * t);
+}
+
+}  // namespace
+
+CloudParams cloud_params(const MediumDesc& desc) noexcept {
+  CloudParams p;
+  p.base_m = desc.cloud_base_m;
+  p.top_m = desc.cloud_top_m;
+  p.coverage = desc.cloud_coverage;
+  p.type = desc.cloud_type;
+  p.seed = desc.cloud_seed;
+  return p;
+}
+
+f32 cloud_density(const CloudParams& p, f32 qx, f32 altitude_m, f32 qz) noexcept {
+  const f32 h = (altitude_m - p.base_m) / (p.top_m - p.base_m);
+  if (h <= 0.0f || h >= 1.0f || p.coverage <= 0.0f) return 0.0f;
+  const i32 shape_period = static_cast<i32>(k_cloud_period_m / k_cloud_shape_m);
+  const f32 sx = qx / k_cloud_shape_m, sy = altitude_m / k_cloud_shape_m, sz = qz / k_cloud_shape_m;
+  const f32 fbm =
+      0.625f * value_noise(sx, sy, sz, shape_period, p.seed) +
+      0.25f * value_noise(2.0f * sx, 2.0f * sy, 2.0f * sz, 2 * shape_period, p.seed + 1u) +
+      0.125f * value_noise(4.0f * sx, 4.0f * sy, 4.0f * sz, 4 * shape_period, p.seed + 2u);
+  const i32 cell_period = static_cast<i32>(k_cloud_period_m / k_cloud_cell_m);
+  const f32 w = worley(qx / k_cloud_cell_m, altitude_m / k_cloud_cell_m, qz / k_cloud_cell_m,
+                       cell_period, p.seed);
+  // Perlin-Worley: the fbm remapped from [w - 1, 1] to [0, 1], so a cell's feature point keeps it.
+  const f32 pw = saturate((fbm - (w - 1.0f)) / (2.0f - w));
+  const f32 top = 0.35f + 0.65f * p.type;
+  const f32 profile = smoothstep(0.0f, 0.08f, h) * (1.0f - smoothstep(0.6f * top, top, h));
+  f32 d = saturate((pw * profile - (1.0f - p.coverage)) / p.coverage);
+  if (d <= 0.0f) return 0.0f;
+  const i32 detail_period = static_cast<i32>(k_cloud_period_m / k_cloud_detail_m);
+  const f32 e = worley(qx / k_cloud_detail_m, altitude_m / k_cloud_detail_m, qz / k_cloud_detail_m,
+                       detail_period, p.seed + 7u);
+  d = saturate((d - 0.3f * (1.0f - e)) / (1.0f - 0.3f * (1.0f - e)));
+  return d * k_cloud_extinction_per_m;
+}
+
+namespace {
+Vec2 aloft_velocity(const terrain::WindAt& now) noexcept {
+  const f32 speed =
+      static_cast<f32>(now.speed_q16) / 65536.0f * terrain::k_mean_wind_mps * k_cloud_speed_factor;
+  return Vec2{static_cast<f32>(terrain::fx::cos_q15(now.turn)) / 32768.0f * speed,
+              static_cast<f32>(terrain::fx::sin_q15(now.turn)) / 32768.0f * speed};
+}
+}  // namespace
+
+void CloudDrift::build(const terrain::DuneField* field) {
+  field_ = field;
+  prefix_.clear();
+  hours_ = 0;
+  if (field == nullptr) return;
+  hours_ = static_cast<u32>(terrain::k_record_days) * 24u;
+  prefix_.resize((u64{hours_} + 1) * 2);
+  f64 x = 0.0, z = 0.0;
+  for (u32 h = 0; h < hours_; ++h) {
+    prefix_[u64{h} * 2] = x;
+    prefix_[u64{h} * 2 + 1] = z;
+    const Vec2 v = aloft_velocity(field->wind().wind_at(i64{h} * 3'600'000'000ll + 1));
+    x += static_cast<f64>(v.x) * 3600.0;
+    z += static_cast<f64>(v.y) * 3600.0;
+  }
+  prefix_[u64{hours_} * 2] = x;
+  prefix_[u64{hours_} * 2 + 1] = z;
+}
+
+Vec2 CloudDrift::offset_m(f64 time_s) const noexcept {
+  const f64 period = static_cast<f64>(k_cloud_period_m);
+  f64 x = 0.0, z = 0.0;
+  if (field_ == nullptr || hours_ == 0) {
+    x = static_cast<f64>(terrain::k_mean_wind_mps * k_cloud_speed_factor) * time_s;
+  } else {
+    const f64 span = static_cast<f64>(hours_) * 3600.0;
+    const f64 cycles = std::floor(time_s / span);
+    const f64 within = time_s - cycles * span;
+    const u32 h = std::min(static_cast<u32>(within / 3600.0), hours_ - 1);
+    const Vec2 v =
+        aloft_velocity(field_->wind().wind_at(static_cast<i64>(std::floor(time_s * 1.0e6))));
+    const f64 into = within - static_cast<f64>(h) * 3600.0;
+    // The periods' sums reduced first, so a century of drift stays exact in f64.
+    x = std::fmod(cycles * std::fmod(prefix_[u64{hours_} * 2], period), period) +
+        prefix_[u64{h} * 2] + static_cast<f64>(v.x) * into;
+    z = std::fmod(cycles * std::fmod(prefix_[u64{hours_} * 2 + 1], period), period) +
+        prefix_[u64{h} * 2 + 1] + static_cast<f64>(v.y) * into;
+  }
+  x -= std::floor(x / period) * period;
+  z -= std::floor(z / period) * period;
+  return Vec2{static_cast<f32>(x), static_cast<f32>(z)};
+}
+
 struct MediumPass::Pipelines {
   gfx::ComputePipeline fill;
   gfx::ComputePipeline integrate;
   gfx::ComputePipeline apply;
+  gfx::ComputePipeline cloud_shadow;
+  gfx::ComputePipeline cloud_march;
   // The pass bodies' push blocks, one per view: the graph records them after `record` returns.
   u64 push[renderer::k_max_views] = {};
 };
@@ -381,6 +536,11 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
       ground_.reset();
     }
   }
+  if (desc_.clouds &&
+      (options_.debug == MediumDebug::none || options_.debug == MediumDebug::clouds)) {
+    sources_ |= k_source_clouds;
+    drift_.build(field_);
+  }
   if (desc_.plumes && field_ != nullptr) {
     plumes_ = std::make_unique<PlumeCache>();
     if (options_.debug == MediumDebug::none || options_.debug == MediumDebug::plumes)
@@ -401,7 +561,11 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
       !gfx::create_compute_pipeline(device, shader->module, "froxel_integrate_main", sets,
                                     sizeof(u64), pipelines_->integrate, error) ||
       !gfx::create_compute_pipeline(device, shader->module, "medium_apply_main", sets, sizeof(u64),
-                                    pipelines_->apply, error)) {
+                                    pipelines_->apply, error) ||
+      !gfx::create_compute_pipeline(device, shader->module, "cloud_shadow_main", sets, sizeof(u64),
+                                    pipelines_->cloud_shadow, error) ||
+      !gfx::create_compute_pipeline(device, shader->module, "cloud_march_main", sets, sizeof(u64),
+                                    pipelines_->cloud_march, error)) {
     destroy();
     return false;
   }
@@ -430,10 +594,14 @@ void MediumPass::destroy() noexcept {
       gfx::destroy_compute_pipeline(*device_, pipelines_->fill);
       gfx::destroy_compute_pipeline(*device_, pipelines_->integrate);
       gfx::destroy_compute_pipeline(*device_, pipelines_->apply);
+      gfx::destroy_compute_pipeline(*device_, pipelines_->cloud_shadow);
+      gfx::destroy_compute_pipeline(*device_, pipelines_->cloud_march);
     }
     for (gfx::BufferResource& b : params_)
       gfx::destroy_buffer(*device_, b);
     if (froxels_.buffer.valid()) gfx::destroy_buffer(*device_, froxels_);
+    if (clouds_.buffer.valid()) gfx::destroy_buffer(*device_, clouds_);
+    if (cloud_shadow_.buffer.valid()) gfx::destroy_buffer(*device_, cloud_shadow_);
     if (plumes_ != nullptr) {
       for (gfx::BufferResource& b : plumes_->segment_buffers)
         gfx::destroy_buffer(*device_, b);
@@ -445,6 +613,9 @@ void MediumPass::destroy() noexcept {
   pipelines_.reset();
   params_.clear();
   froxels_ = gfx::BufferResource{};
+  clouds_ = gfx::BufferResource{};
+  cloud_shadow_ = gfx::BufferResource{};
+  cloud_w_ = cloud_h_ = 0;
   views_ = 0;
   ground_.reset();
   field_ = nullptr;
@@ -610,6 +781,40 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
   Vec4 plume_grid{};
   stats_.plume_segments =
       (sources_ & k_source_plumes) != 0 ? build_plumes(c, wind, plume_grid) : 0u;
+  // The far clouds: the march's texels (a quarter of the largest view a side), made on the first
+  // frame and again only when the views change size, and the noise's coordinate at the eye — the
+  // eye less the wind's drift, reduced to the field's period in f64 (ADR-0053).
+  const bool clouds = (sources_ & k_source_clouds) != 0;
+  Vec2 cloud_origin{};
+  if (clouds) {
+    u32 cw = 0, ch = 0;
+    for (u32 v = 0; v < c.view_count; ++v) {
+      cw = std::max(cw, groups(c.views[v].width, k_cloud_scale));
+      ch = std::max(ch, groups(c.views[v].height, k_cloud_scale));
+    }
+    if (cw != cloud_w_ || ch != cloud_h_ || !clouds_.buffer.valid()) {
+      if (clouds_.buffer.valid()) gfx::destroy_buffer(*device_, clouds_);
+      cloud_w_ = cw;
+      cloud_h_ = ch;
+      if (!gfx::create_buffer(*device_, u64{cw} * ch * 8 * c.view_count, k_address, false, clouds_,
+                              error))
+        return false;
+    }
+    if (!cloud_shadow_.buffer.valid() &&
+        !gfx::create_buffer(*device_, u64{k_cloud_shadow_texels} * k_cloud_shadow_texels * 4,
+                            k_address, false, cloud_shadow_, error))
+      return false;
+    const Vec2 drift = drift_.offset_m(c.world_time_s);
+    const f64 period = static_cast<f64>(k_cloud_period_m);
+    f64 ox = eye.x - static_cast<f64>(drift.x);
+    f64 oz = eye.z - static_cast<f64>(drift.y);
+    ox -= std::floor(ox / period) * period;
+    oz -= std::floor(oz / period) * period;
+    cloud_origin = Vec2{static_cast<f32>(ox), static_cast<f32>(oz)};
+    stats_.cloud_drift_m = drift;
+    stats_.cloud_width = cloud_w_;
+    stats_.cloud_height = cloud_h_;
+  }
 
   // ---- one block per view ----------------------------------------------------------------------
   u8* bytes = static_cast<u8*>(params_[c.slot].mapped);
@@ -646,6 +851,19 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
     p.froxels = froxels_.address + cells * 8 * v;
     p.sky = c.sky_params;
     p.shadow_maps = c.cascades ? c.shadow_maps : 0;
+    if (clouds) {
+      const CloudParams cp = cloud_params(desc_);
+      const f32 half = options_.far_m;
+      p.cloud = Vec4{cp.base_m, cp.top_m, cp.coverage, cp.type};
+      p.cloud_origin = Vec4{cloud_origin.x, 0.0f, cloud_origin.y, k_cloud_extinction_per_m};
+      p.cloud_size = Vec4{static_cast<f32>(cloud_w_), static_cast<f32>(cloud_h_),
+                          static_cast<f32>(view.width), static_cast<f32>(view.height)};
+      p.cloud_shadow = Vec4{-half, -half, 2.0f * half / static_cast<f32>(k_cloud_shadow_texels),
+                            static_cast<f32>(k_cloud_shadow_texels)};
+      p.source[3] = cp.seed;
+      p.clouds = clouds_.address + u64{cloud_w_} * cloud_h_ * 8 * v;
+      p.cloud_shadow_map = cloud_shadow_.address;
+    }
     if (stats_.plume_segments > 0) {
       p.plumes = plumes_->segment_buffers[c.slot].address;
       p.plume_cells = plumes_->cell_buffers[c.slot].address;
@@ -684,10 +902,54 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
     rect_h[v] = c.views[v].height;
     skip[v] = c.views[v].panini;  // a resampled view's region is not its picture
   }
+  // The far clouds first: the map of their transmittance towards the sun, which the fill reads, and
+  // each view's march, which the apply composites into its sky pixels.
+  const gfx::RgBuffer sky_aerial = c.sky.aerial;
+  gfx::RgBuffer rg_clouds{};
+  gfx::RgBuffer rg_cloud_shadow{};
+  if (clouds) {
+    rg_clouds = graph.import_buffer("medium clouds", clouds_, gfx::PipelineStage::ComputeShader,
+                                    gfx::MemoryAccess::ShaderRead);
+    rg_cloud_shadow =
+        graph.import_buffer("medium cloud shadow", cloud_shadow_, gfx::PipelineStage::ComputeShader,
+                            gfx::MemoryAccess::ShaderRead);
+    const u32 shadow_groups = groups(k_cloud_shadow_texels, 8);
+    const u32 mx = groups(cloud_w_, 8);
+    const u32 my = groups(cloud_h_, 8);
+    graph.add_pass(
+        "medium clouds", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.write(rg_clouds, gfx::Access::ComputeWrite);
+          b.write(rg_cloud_shadow, gfx::Access::ComputeWrite);
+          if (sky) {
+            b.read(sky_transmittance, gfx::Access::ComputeRead);
+            b.read(sky_aerial, gfx::Access::ComputeRead);
+            b.read(sky_frame, gfx::Access::ComputeRead);
+          }
+        },
+        [pipes, timer, bindless, views, shadow_groups, mx, my, skip](gfx::CommandList cb,
+                                                                     gfx::RenderGraph&) {
+          timer->begin(cb, "medium");
+          bindless->bind(cb, gfx::BindPoint::Compute);
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipes->cloud_shadow.pipeline);
+          cb.push_constants(pipes->cloud_shadow.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &pipes->push[0]);
+          cb.dispatch(shadow_groups, shadow_groups, 1);
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipes->cloud_march.pipeline);
+          for (u32 v = 0; v < views; ++v) {
+            if (skip[v]) continue;
+            cb.push_constants(pipes->cloud_march.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                              &pipes->push[v]);
+            cb.dispatch(mx, my, 1);
+          }
+          timer->end(cb);
+        });
+  }
   graph.add_pass(
       "medium fill", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) {
         b.write(rg_froxels, gfx::Access::ComputeWrite);
+        if (rg_cloud_shadow.valid()) b.read(rg_cloud_shadow, gfx::Access::ComputeRead);
         if (sky) {
           b.read(sky_transmittance, gfx::Access::ComputeRead);
           b.read(sky_frame, gfx::Access::ComputeRead);
@@ -725,6 +987,10 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
       "medium apply", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) {
         b.read(rg_froxels, gfx::Access::ComputeRead);
+        if (rg_clouds.valid()) {
+          b.read(rg_clouds, gfx::Access::ComputeRead);
+          if (sky) b.read(sky_aerial, gfx::Access::ComputeRead);
+        }
         b.read(visibility, gfx::Access::ComputeRead);
         if (sky) {
           b.read(sky_transmittance, gfx::Access::ComputeRead);

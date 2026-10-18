@@ -255,6 +255,256 @@ float3 source_light(MediumParams* p, float3 x, float3 dir, float g, float shadow
   return sun * (hg_phase(mu, g) * shadow + p->terms.x / (4.0 * k_pi)) + ambient_at(p);
 }
 
+// ---- the far-field clouds (R83) ----------------------------------------------------------------
+//
+// volumetrics.cpp's `cloud_density` and its noises, the same arithmetic: value-noise fbm in
+// Perlin's role, remapped by inverted Worley cells, a height profile by the type, the coverage's
+// threshold, a finer Worley erosion. Lattices wrap at the field's period on x and z, so the noise
+// coordinate the CPU reduced (`cloud_origin`) is seamless.
+
+static const float k_cloud_period = 131072.0;
+static const float k_cloud_shape = 4096.0;
+static const float k_cloud_cell = 2048.0;
+static const float k_cloud_detail = 512.0;
+static const uint k_cloud_steps = 48;
+static const float k_cloud_phase_forward = 0.8;
+static const float k_cloud_phase_back = -0.3;
+static const float k_cloud_phase_mix = 0.7;
+static const float k_cloud_multiple = 0.3;
+static const float k_cloud_far = 60000.0;  // the march stops this far along a grazing ray
+
+uint cloud_hash(int x, int y, int z, uint seed) {
+  uint h = seed * 0x9E3779B9u ^ uint(x) * 0x85EBCA6Bu ^ uint(y) * 0xC2B2AE35u ^ uint(z) * 0x27D4EB2Fu;
+  h ^= h >> 15;
+  h *= 0x2C1B3C6Du;
+  h ^= h >> 12;
+  h *= 0x297A2D39u;
+  h ^= h >> 15;
+  return h;
+}
+int cloud_wrap(int v, int period) {
+  const int m = v % period;
+  return m < 0 ? m + period : m;
+}
+float cloud_unit(uint h) { return float(h >> 8) * (1.0 / 16777216.0); }
+float value_noise(float3 q, int period, uint seed) {
+  const float3 f = floor(q);
+  const int3 i = int3(f);
+  float3 t = q - f;
+  t = t * t * (3.0 - 2.0 * t);
+  float c[8];
+  for (uint k = 0; k < 8; ++k) {
+    c[k] = cloud_unit(cloud_hash(cloud_wrap(i.x + int(k & 1), period), i.y + int((k >> 1) & 1),
+                                 cloud_wrap(i.z + int(k >> 2), period), seed));
+  }
+  const float x00 = c[0] + (c[1] - c[0]) * t.x, x10 = c[2] + (c[3] - c[2]) * t.x;
+  const float x01 = c[4] + (c[5] - c[4]) * t.x, x11 = c[6] + (c[7] - c[6]) * t.x;
+  const float y0 = x00 + (x10 - x00) * t.y, y1 = x01 + (x11 - x01) * t.y;
+  return y0 + (y1 - y0) * t.z;
+}
+float worley(float3 q, int period, uint seed) {
+  const float3 f = floor(q);
+  const int3 i = int3(f);
+  float best = 9.0;
+  for (int dz = -1; dz <= 1; ++dz) {
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        const uint h = cloud_hash(cloud_wrap(i.x + dx, period), i.y + dy, cloud_wrap(i.z + dz, period),
+                                  seed ^ 0x5bd1e995u);
+        const float3 d = float3(float(dx) + cloud_unit(h), float(dy) + cloud_unit(h * 0x27d4eb2du),
+                                float(dz) + cloud_unit(h * 0x165667b1u)) -
+                         (q - f);
+        best = min(best, dot(d, d));
+      }
+    }
+  }
+  return 1.0 - min(sqrt(best), 1.0);
+}
+
+// The layer's extinction at noise coordinate (q.x, q.z) and altitude q.y. `detail` off is the
+// coarse shape alone, which the light's march towards the sun reads.
+float cloud_density(MediumParams* p, float3 q, bool detail) {
+  const float base = p->cloud.x;
+  const float top = p->cloud.y;
+  const float coverage = p->cloud.z;
+  const float h = (q.y - base) / (top - base);
+  if (h <= 0.0 || h >= 1.0 || coverage <= 0.0) return 0.0;
+  const uint seed = p->source.w;
+  const int shape_period = int(k_cloud_period / k_cloud_shape);
+  const float3 s = q / k_cloud_shape;
+  const float fbm = 0.625 * value_noise(s, shape_period, seed) +
+                    0.25 * value_noise(2.0 * s, 2 * shape_period, seed + 1u) +
+                    0.125 * value_noise(4.0 * s, 4 * shape_period, seed + 2u);
+  const float w = worley(q / k_cloud_cell, int(k_cloud_period / k_cloud_cell), seed);
+  const float pw = saturate((fbm - (w - 1.0)) / (2.0 - w));
+  const float shape_top = 0.35 + 0.65 * p->cloud.w;
+  const float profile = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(0.6 * shape_top, shape_top, h));
+  float d = saturate((pw * profile - (1.0 - coverage)) / coverage);
+  if (d <= 0.0) return 0.0;
+  if (detail) {
+    const float e = worley(q / k_cloud_detail, int(k_cloud_period / k_cloud_detail), seed + 7u);
+    d = saturate((d - 0.3 * (1.0 - e)) / (1.0 - 0.3 * (1.0 - e)));
+  }
+  return d * p->cloud_origin.w;
+}
+
+// A point of the frame's space as the clouds' noise coordinate: its offset from the eye plus the
+// eye's coordinate the CPU computed, and its altitude.
+float3 cloud_coordinate(MediumParams* p, float3 x) {
+  return float3(p->cloud_origin.x + x.x, p->dust.w + x.y, p->cloud_origin.z + x.z);
+}
+
+// Where a ray from the eye's altitude in direction `dir` is inside the slab: [t0, t1], or false.
+bool cloud_slab(MediumParams* p, float3 dir, out float t0, out float t1) {
+  const float a = p->dust.w;
+  const float base = p->cloud.x;
+  const float top = p->cloud.y;
+  t0 = 0.0;
+  t1 = 0.0;
+  if (abs(dir.y) < 1.0e-4) {
+    if (a <= base || a >= top) return false;
+    t1 = k_cloud_far;
+    return true;
+  }
+  const float tb = (base - a) / dir.y;
+  const float tt = (top - a) / dir.y;
+  t0 = max(min(tb, tt), 0.0);
+  t1 = min(max(tb, tt), t0 + k_cloud_far);
+  return t1 > t0;
+}
+
+float cloud_phase(float mu) {
+  return lerp(hg_phase(mu, k_cloud_phase_back), hg_phase(mu, k_cloud_phase_forward), k_cloud_phase_mix);
+}
+
+// The clouds' transmittance towards the sun from a point on a horizontal plane of the frame's
+// space (the dust's ground), through the slab's coarse shape in eight steps: the map the froxels
+// read, `cloud_shadow` texels a side round the eye.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void cloud_shadow_main(uint3 id : SV_DispatchThreadID) {
+  MediumParams* p = (MediumParams*)g_push.params;
+  const uint n = uint(p->cloud_shadow.w);
+  if (id.x >= n || id.y >= n) return;
+  float transmittance = 1.0;
+  const float3 sun = p->sun.xyz;
+  if (sun.y > 0.02) {
+    const float3 g = float3(p->cloud_shadow.x + (float(id.x) + 0.5) * p->cloud_shadow.z, p->dust.z,
+                            p->cloud_shadow.y + (float(id.y) + 0.5) * p->cloud_shadow.z);
+    const float alt = p->dust.w + g.y;
+    const float t0 = max((p->cloud.x - alt) / sun.y, 0.0);
+    const float t1 = max((p->cloud.y - alt) / sun.y, t0);
+    const float step = (t1 - t0) / 8.0;
+    float tau = 0.0;
+    for (uint i = 0; i < 8; ++i) {
+      const float3 x = g + sun * (t0 + (float(i) + 0.5) * step);
+      tau += cloud_density(p, cloud_coordinate(p, x), false) * step;
+    }
+    transmittance = exp(-tau);
+  }
+  ((float*)p->cloud_shadow_map)[id.y * n + id.x] = transmittance;
+}
+
+// The clouds' transmittance towards the sun at a froxel: where the sun's ray through it crosses the
+// map's plane, bilinear.
+float cloud_sun(MediumParams* p, float3 x) {
+  if ((p->grid.w & k_source_clouds) == 0 || p->cloud_shadow_map == 0 || p->sun.y <= 0.02) return 1.0;
+  const float3 sun = p->sun.xyz;
+  const float2 at = x.xz - sun.xz * ((x.y - p->dust.z) / sun.y);
+  const float n = p->cloud_shadow.w;
+  const float2 c = clamp((at - p->cloud_shadow.xy) / p->cloud_shadow.z - 0.5, float2(0.0), float2(n - 1.0));
+  const uint2 c0 = uint2(c);
+  const uint2 c1 = min(c0 + 1, uint2(uint(n) - 1));
+  const float2 f = c - float2(c0);
+  float* map = (float*)p->cloud_shadow_map;
+  const uint w = uint(n);
+  const float a = lerp(map[c0.y * w + c0.x], map[c0.y * w + c1.x], f.x);
+  const float b = lerp(map[c1.y * w + c0.x], map[c1.y * w + c1.x], f.x);
+  return lerp(a, b, f.y);
+}
+
+// The march through the slab, at a quarter of the view's pixels a side: single scattering with the
+// two-lobe phase, the sun through the air at the sample's altitude and through the cloud above it
+// (four samples towards the sun), one octave of multiple scattering at a quarter of that depth,
+// the sky's ambient; then the air between the eye and the cloud from the aerial table. Each texel
+// marches along its own pixel's direction, whatever the full-resolution pixels under it hold, so no
+// texel carries a surface's depth and the upsample needs no depth weights: the layer is composited
+// into sky pixels only. The samples are offset by a hash of the texel — a fixed pattern, no frame in
+// it.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void cloud_march_main(uint3 id : SV_DispatchThreadID) {
+  MediumParams* p = (MediumParams*)g_push.params;
+  const uint cw = uint(p->cloud_size.x);
+  const uint ch = uint(p->cloud_size.y);
+  if (id.x >= cw || id.y >= ch) return;
+  const float2 pixel = (float2(id.xy) + 0.5) * float(4.0);
+  const float2 ndc = float2(pixel.x / p->cloud_size.z * 2.0 - 1.0, 1.0 - pixel.y / p->cloud_size.w * 2.0);
+  const float3 dir = view_ray_direction(p->clip_to_ray, ndc);
+  float3 light = float3(0.0);
+  float transmittance = 1.0;
+  float t0, t1;
+  if (cloud_slab(p, dir, t0, t1)) {
+    const float step = (t1 - t0) / float(k_cloud_steps);
+    const float jitter = cloud_unit(cloud_hash(int(id.x), int(id.y), 0, 0x68e31da4u));
+    const float mu = dot(p->sun.xyz, dir);
+    const float phase = cloud_phase(mu);
+    const float3 ambient = ambient_at(p);
+    float weighted = 0.0;
+    float weight = 0.0;
+    for (uint i = 0; i < k_cloud_steps && transmittance > 0.003; ++i) {
+      const float t = t0 + (float(i) + jitter) * step;
+      const float3 x = dir * t;
+      const float3 q = cloud_coordinate(p, x);
+      const float s = cloud_density(p, q, true);
+      if (s <= 0.0) continue;
+      float tau_sun = 0.0;
+      if (p->sun.y > -0.1) {
+        float d = 0.0;
+        float l = 120.0;
+        for (uint k = 0; k < 4; ++k) {
+          const float3 xs = x + p->sun.xyz * (d + 0.5 * l);
+          tau_sun += cloud_density(p, cloud_coordinate(p, xs), false) * l;
+          d += l;
+          l *= 2.0;
+        }
+      }
+      const float3 sun = sun_at(p, x);
+      const float3 source = s * (sun * (phase * exp(-tau_sun) +
+                                        k_cloud_multiple * exp(-0.25 * tau_sun) / (4.0 * k_pi)) +
+                                 ambient);
+      const float slice_t = exp(-s * step);
+      light += transmittance * source * (1.0 - slice_t) / s;
+      weighted += transmittance * (1.0 - slice_t) * t;
+      weight += transmittance * (1.0 - slice_t);
+      transmittance *= slice_t;
+    }
+    // The air between the eye and the cloud, at the cloud's mean distance: what it takes out of the
+    // cloud's light and what it scatters in where the cloud now hides the sky behind it.
+    if (weight > 0.0 && p->sun_light.w != 0.0) {
+      float3 inscatter;
+      float air;
+      sky_aerial((SkyParams*)p->sky, dir, weighted / weight, inscatter, air);
+      light = light * air + inscatter * (1.0 - transmittance);
+    }
+  }
+  ((uint2*)p->clouds)[id.y * cw + id.x] = pack_halves(float4(light, transmittance));
+}
+
+// The march's texels at a full-resolution pixel of the view, bilinear.
+float4 clouds_at(MediumParams* p, uint2 pixel) {
+  const uint cw = uint(p->cloud_size.x);
+  const uint ch = uint(p->cloud_size.y);
+  const float2 c = clamp((float2(pixel) + 0.5) / 4.0 - 0.5, float2(0.0), float2(float(cw) - 1.0, float(ch) - 1.0));
+  const uint2 c0 = uint2(c);
+  const uint2 c1 = min(c0 + 1, uint2(cw - 1, ch - 1));
+  const float2 f = c - float2(c0);
+  uint2* t = (uint2*)p->clouds;
+  const float4 a = lerp(unpack_halves(t[c0.y * cw + c0.x]), unpack_halves(t[c0.y * cw + c1.x]), f.x);
+  const float4 b = lerp(unpack_halves(t[c1.y * cw + c0.x]), unpack_halves(t[c1.y * cw + c1.x]), f.x);
+  return lerp(a, b, f.y);
+}
+
 // ---- (a) the froxels ---------------------------------------------------------------------------
 
 float3 froxel_centre(MediumParams* p, uint3 cell, out float3 dir) {
@@ -291,7 +541,7 @@ void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
   }
   float3 light = float3(0.0);
   if (sigma > 0.0) {
-    const float shadow = medium_cascade(p, x);
+    const float shadow = medium_cascade(p, x) * cloud_sun(p, x);
     light = scatter * source_light(p, x, dir, p->dust_albedo.w, shadow);
   }
   const uint index = (id.z * p->grid.y + id.y) * p->grid.x + id.x;
@@ -373,6 +623,13 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
   }
   const float exposure = frame_exposure(p);
   float3 radiance = color.rgb;
+  // The far clouds into the sky's pixels first: they stand behind every froxel.
+  bool touched = false;
+  if (depth <= 0.0 && (p->grid.w & k_source_clouds) != 0 && p->clouds != 0) {
+    const float4 cloud = clouds_at(p, id.xy);
+    radiance = radiance * cloud.a + cloud.rgb * exposure;
+    touched = true;
+  }
   // The froxels to the pixel, or to their far boundary and then the dust in closed form beyond it.
   const float2 uv = float2((float(id.x) + 0.5) / float(p->rect.z) * float(p->grid.x),
                            (float(id.y) + 0.5) / float(p->rect.w) * float(p->grid.y));
@@ -391,7 +648,7 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
     light += transmittance * tail * (1.0 - tail_t);
     transmittance *= tail_t;
   }
-  if (transmittance >= 1.0 && all(light <= float3(0.0))) return;
+  if (!touched && transmittance >= 1.0 && all(light <= float3(0.0))) return;
   radiance = radiance * transmittance + light * exposure;
   g_storage_images[p->source.z][target] = float4(radiance, 1.0);
 }

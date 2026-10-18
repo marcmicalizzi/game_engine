@@ -167,6 +167,54 @@ u32 crest_plume_segments(const terrain::CrestLine& crest, const terrain::TileWin
 // `plume_density`, the same arithmetic).
 f32 plume_density(const PlumeSegment& segment, const Vec3& x) noexcept;
 
+// ---- the far-field clouds (R83, P7's far half) --------------------------------------------------
+
+// A procedural layer between the block's two altitudes (volumetrics.md, "The far-field clouds"):
+// value-noise fbm in Perlin's role remapped by inverted Worley cells, a height profile by the type,
+// the coverage's threshold and a finer Worley erosion, moved by the wind record's wind.
+inline constexpr f32 k_cloud_extinction_per_m = 0.04f;  // a cloud's core
+inline constexpr f32 k_cloud_speed_factor = 2.0f;       // the wind aloft over the surface's
+inline constexpr f32 k_cloud_period_m = 131072.0f;      // the field repeats over this, on x and z
+inline constexpr f32 k_cloud_shape_m = 4096.0f;         // the fbm's coarsest cell
+inline constexpr f32 k_cloud_cell_m = 2048.0f;          // the Worley cells it is carved by
+inline constexpr f32 k_cloud_detail_m = 512.0f;         // the erosion's cells
+inline constexpr f32 k_cloud_phase_forward = 0.8f;      // the two-lobe phase: forward g
+inline constexpr f32 k_cloud_phase_back = -0.3f;        // back g
+inline constexpr f32 k_cloud_phase_mix = 0.7f;          // the forward lobe's share
+inline constexpr f32 k_cloud_multiple = 0.3f;  // one octave more: this share at a quarter depth
+inline constexpr u32 k_cloud_steps = 48;       // the march's samples through the slab
+inline constexpr u32 k_cloud_scale = 4;        // the march's resolution: a quarter of the view's
+inline constexpr u32 k_cloud_shadow_texels = 128;  // the clouds' map towards the sun, a side
+
+struct CloudParams {
+  f32 base_m = 1800.0f;
+  f32 top_m = 4200.0f;
+  f32 coverage = 0.3f;
+  f32 type = 0.5f;
+  u32 seed = 1;
+};
+CloudParams cloud_params(const MediumDesc& desc) noexcept;
+// The layer's extinction at a noise coordinate (metres over the ground, wrapped to the period by
+// the caller) and an altitude above the world's y = 0 (shaders/medium.slang's `cloud_density`).
+f32 cloud_density(const CloudParams& params, f32 qx, f32 altitude_m, f32 qz) noexcept;
+
+// **How far the wind has carried the clouds by a time**, closed form like the record's own flux
+// integral: the wind's velocity aloft summed hour by hour over the record's period once, so the
+// offset at t is the periods' whole sums, the prefix to t's hour and t's hour's velocity times the
+// time into it — continuous, a function of the seed and the time, no history. Without a record, a
+// steady wind of the mean speed aloft towards +x.
+class CloudDrift {
+ public:
+  void build(const terrain::DuneField* field);
+  // The drift in metres (x, z), reduced to the field's period in f64.
+  Vec2 offset_m(f64 time_s) const noexcept;
+
+ private:
+  Vector<f64> prefix_;  // x, z per hour of the period, and the period's total last
+  u32 hours_ = 0;
+  const terrain::DuneField* field_ = nullptr;
+};
+
 // ---- the pass
 // ------------------------------------------------------------------------------------
 
@@ -195,6 +243,9 @@ struct MediumStats {
   f32 far_m = 0.0f;
   u32 plume_segments = 0;  // the brink segments the frame drew plumes from
   u32 plume_tiles = 0;     // the dune tiles round the eye they came from
+  u32 cloud_width = 0;     // the cloud march's texels a view (a quarter of its pixels a side)
+  u32 cloud_height = 0;
+  Vec2 cloud_drift_m;  // how far the wind has carried the layer, reduced to its period
 };
 
 // The GPU-mirrored blocks (shaders/medium.slang), pinned by tests/size_table.cpp.
@@ -269,6 +320,13 @@ class MediumPass {
   const terrain::DuneField* field_ = nullptr;
   // The crest plumes: the tiles' crest lines by tile and hour, the query's scratch, and per frame
   // slot the segments and their binning grid (host-visible, read by the fill).
+  // The far clouds: the drift's hourly sums, and per view the march's texels, and the map of their
+  // transmittance towards the sun the froxels read.
+  CloudDrift drift_;
+  gfx::BufferResource clouds_;
+  gfx::BufferResource cloud_shadow_;
+  u32 cloud_w_ = 0;
+  u32 cloud_h_ = 0;
   struct PlumeCache;
   std::unique_ptr<PlumeCache> plumes_;
   u32 build_plumes(const renderer::FramePassContext& context, const MediumWind& wind, Vec4& grid);
