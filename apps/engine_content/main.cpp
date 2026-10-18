@@ -165,7 +165,11 @@ const char* k_usage =
     "                                          a seeded, partitioned layer of places and\n"
     "                                          residents added to a document (npc.md); present\n"
     "                                          with the npc capability\n"
-    "  --version                              the commit this binary was built from, as JSON\n"
+    "  flora <params.flora.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
+    "                                          solve a flora file (a palm) into a cluster\n"
+    "                                          container through the cache (flora --help);\n"
+    "                                          present with the flora capability\n"
+    "  --version                             the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
@@ -1134,6 +1138,18 @@ int info(const std::string& path) {
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));
+  // What generated the mesh (section 34): a palm's container says what species and parameters it
+  // is; an imported mesh's has none.
+  if (!data.generator.empty()) {
+    JsonValue generator = JsonValue::object();
+    generator.set("name", JsonValue(data.generator));
+    generator.set("kind", JsonValue(data.generator_kind));
+    JsonValue params;
+    generator.set("params", parse_json(data.generator_params, params).ok
+                                ? std::move(params)
+                                : JsonValue(data.generator_params));
+    summary.set("generator", std::move(generator));
+  }
   print_json(summary);
   return k_exit_ok;
 }
@@ -1263,5 +1279,6 @@ int main(int argc, char** argv) {
   if (command == "terrain") return content::terrain_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);
+  if (command == "flora") return content::flora_command(argc, argv);
   return usage("unknown command");
 }

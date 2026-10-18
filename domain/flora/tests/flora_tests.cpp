@@ -2,6 +2,8 @@
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_pages.h>
 
 #include <doctest/doctest.h>
 
@@ -337,6 +339,60 @@ TEST_CASE("flora: a parameter out of range is refused with its name") {
   CHECK(error.find("leaflet_angle_deg") != std::string::npos);
   assets::MeshData mesh;
   CHECK_FALSE(flora::solve_palm(p, mesh, nullptr, &error));
+}
+
+// The default palm's container, as `engine-content flora` and the renderer build it: three
+// primitives with their own cone settings, the identity, the generator section; and its content
+// hash pinned beside the mesh's, since the cluster build is the other half of what a palm's bytes
+// are and is held to the same rule (geometry.md, "The same bytes from every toolchain").
+TEST_CASE(
+    "flora: the default palm's container has its parts, its identity and its committed bytes") {
+  flora::FloraFile file;
+  geometry::ClusterFileData data;
+  flora::PalmReport report;
+  std::string error;
+  const geometry::ClusterLodOptions lod;
+  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, lod, page_bytes, data, &report, error), error);
+  CHECK(data.mesh.leaf_triangle_count == report.triangles);
+  REQUIRE(data.materials.size() == 3);
+  CHECK(data.cluster_material.size() == data.mesh.mesh.clusters.size());
+  CHECK_FALSE(data.pages.pages.empty());
+  CHECK(data.mesh.level_cluster_counts.size() > 3);
+  // The trunk's clusters carry cones; a frond's never do (k_cone_none is a cutoff of 1).
+  u32 coned[3] = {0, 0, 0};
+  for (u32 c = 0; c < data.mesh.mesh.clusters.size(); ++c) {
+    const geometry::NormalCone cone = geometry::decode_cone(data.mesh.mesh.clusters[c].cone);
+    if (cone.cutoff < 1.0f) ++coned[data.cluster_material[c]];
+  }
+  CHECK(coned[0] > 0);
+  CHECK(coned[1] == 0);
+  CHECK(coned[2] == 0);
+  CHECK(data.source_hash == flora::flora_source_hash(file));
+  CHECK(data.build_key == flora::flora_build_key(data.source_hash, lod, page_bytes));
+  CHECK(data.generator == "flora");
+  CHECK(data.generator_kind == "date_palm");
+  CHECK(data.generator_params == flora::canonical_flora_json(file));
+  MESSAGE("default palm: " << data.mesh.mesh.clusters.size() << " clusters, "
+                           << data.mesh.level_cluster_counts.size() << " levels, "
+                           << data.pages.pages.size() << " pages");
+
+  // Written and read back, it is the same container, generator section and all.
+  const u64 hash = geometry::cluster_file_hash(data);
+  char hex[32];
+  std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(hash));
+  constexpr u64 k_golden = 0x14886598fe121174ull;
+  CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
+
+  // The canonical form is the parameters, defaults filled in, whatever the file spelled.
+  flora::FloraFile spelled;
+  REQUIRE_MESSAGE(flora::read_flora_file("{ \"palm\" : { \"seed\" : 1 } }", spelled, error), error);
+  CHECK(flora::canonical_flora_json(spelled) == flora::canonical_flora_json(file));
+  CHECK(flora::flora_source_hash(spelled) == flora::flora_source_hash(file));
+  CHECK_FALSE(flora::read_flora_file("{\"species\":\"oak\"}", spelled, error));
+  CHECK(error.find("oak") != std::string::npos);
+  CHECK_FALSE(flora::read_flora_file("{\"palm\":{\"frond_count\":0}}", spelled, error));
+  CHECK(error.find("frond_count") != std::string::npos);
 }
 
 // The default palm's mesh, pinned (flora.md, "The same palm from every toolchain"): the solver's

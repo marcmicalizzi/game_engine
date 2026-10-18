@@ -20,6 +20,10 @@
 //                                                 scene fragment and E18's yield
 //                                                 (docs/subsystems/city.md), present when this
 //                                                 build has the city capability
+//   flora                                         a flora file (a species and its parameters)
+//                                                 solved and built into a container through the
+//                                                 cache (docs/subsystems/flora.md), present when
+//                                                 this build has the flora capability
 //
 // Each prints one JSON line per result on stdout and returns the process exit code: 0 ok, 1 a file
 // could not be read, written or validated, 2 usage.
@@ -50,5 +54,6 @@ int ruins_block_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
 int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
+int flora_command(int argc, char** argv);
 
 }  // namespace engine::content

@@ -117,6 +117,26 @@ own length, so the chart is the frond laid flat — rachis down the middle and t
 angle either side, never overlapping each other — and every frond shares the same chart, so one
 frond texture serves them all. The trunk is one strip and its cap a disc beside it.
 
+## The build
+
+A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the
+file's palm and builds its container: one cluster LOD DAG per primitive, **each with its material's
+cone setting** — the trunk's cones on, a two-sided frond's off (`build_cluster_lod` takes the option
+per call, so one mesh carries both and the trunk keeps its backface culling) — merged in primitive
+order, laid out in streaming pages, with the three materials, the identity and **section 34**, the
+generator section: `flora`, the species and the canonical parameters, which `engine-content info`
+prints as `generator` ([geometry](geometry.md)). The key is `flora_build_key`:
+`geometry::cluster_cache_key` over `flora_source_hash` — `hash_bytes` of the **canonical
+parameters** (the schema's JSON of the file, defaults filled in, compact and in field order, so two
+files that say the same thing are one key whatever their spacing, order or spelled-out defaults),
+mixed with the species and `k_flora_version` — under the LOD options, no weld, and the page target.
+
+`engine-content flora <params.flora.json> <out.clusters> | --cache [--ddc <dir>] [--force]` is the
+command line over it ([apps](apps.md)): a named output, or the derived-data cache entry the key
+addresses, skipped when it already records that source hash and key. It is the same function the
+renderer reaches through the mesh-generator registry ([assets](assets.md#generated-meshes)), under
+the same default LOD options and page target, so either finds what the other built.
+
 ## Determinism
 
 The same parameters give the same bytes on every toolchain and at either CPU baseline: the solver
@@ -143,10 +163,16 @@ data, rebuilt from its parameters.
 - a smaller budget walks down the ladder and holds, and keeps every frond;
 - one seed is one palm, and another seed another;
 - a parameter out of range is refused with its name;
-- the default palm hashes to the committed number.
+- the default palm hashes to the committed number, and so does its container
+  (`geometry::cluster_file_hash`, whose clusters are the other half of a palm's bytes); the
+  trunk's clusters carry cones and no frond's does; the container records its identity and the
+  generator section; the canonical parameters are the same for every spelling of one file.
 
-**Public API.** `include/domain/flora/palm.h` (the solver), `include/domain/flora/flora.h` (the
-capability: the solver's version and the species).
+**Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
+`PalmReport`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
+`k_species_date_palm`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
+`flora_build_key`, `build_flora_container`). The mesh generator "flora" registers from
+`src/flora.cpp`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `assets`, `geometry`,
 `flora_schemas`.
@@ -167,7 +193,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Component and event types | `domain/flora/schemas/flora.schema`: `Palm`, `FloraFile` | parameters, not components: a palm has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a palm is a cluster mesh like any other |
-| Content-build derived step | none yet | the next stage builds a palm into a container through the cache |
+| Content-build derived step | `engine-content flora`, the mesh generator "flora" | [the build](#the-build): keyed by the canonical parameters, the species and `k_flora_version` |
 | Protocol methods | none | not needed |
 | Tunables | none | everything the solver reads is a parameter of the file |
 | LOD policy | the cluster DAG's | a palm is one mesh; distance is the DAG's |

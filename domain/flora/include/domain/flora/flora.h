@@ -23,6 +23,13 @@
 //   [-] bench             no hot path: the solver runs once per parameter set
 
 #include <core/base/types.h>
+#include <domain/flora/palm.h>
+#include <domain/geometry/cluster_file.h>
+#include <domain/geometry/cluster_lod.h>
+
+#include <schemas/flora.h>
+#include <string>
+#include <string_view>
 
 namespace engine::flora {
 
@@ -34,5 +41,37 @@ inline constexpr u32 k_flora_version = 1;
 
 // The species `engine.flora.FloraFile.species` names.
 inline constexpr const char* k_species_date_palm = "date_palm";
+
+// ---- the flora file and its build (flora.md, "The build")
+// ------------------------------------------
+
+// Reads a `.flora.json`'s text: an `engine.flora.FloraFile`, a species the solver has, and
+// parameters in range. False, with a sentence naming the field, otherwise; `out` is replaced.
+bool read_flora_file(std::string_view text, FloraFile& out, std::string& error);
+
+// The file as the build keys it: the schema's JSON of what it says, defaults filled in, compact
+// and in the schema's field order, so two files that say the same thing — whatever their spacing,
+// key order, or the defaults they spell out — are one parameter set. What a container records in
+// its generator section.
+std::string canonical_flora_json(const FloraFile& file);
+
+// The source hash a flora container records and its cache key is taken over: the canonical
+// parameters' bytes, the species, and `k_flora_version`.
+u64 flora_source_hash(const FloraFile& file);
+
+// The build key over that hash: `geometry::cluster_cache_key(source_hash, lod, false,
+// page_bytes)` — no weld, since the solver's vertices are shared exactly where they are meant to
+// be — which is the key `engine-content flora` and the renderer's scene reader both write under.
+u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes);
+
+// Solves the file's palm and builds its container: one cluster LOD DAG per primitive, each with
+// its material's cone setting (the trunk's on, a two-sided frond's off), merged, laid out in
+// pages of `page_bytes` (0: no page table), with the materials, the identity (source hash and
+// build key) and the generator section (`flora`, the species, the canonical parameters). The
+// source path is left to the caller. Deterministic: the same file gives the same bytes on every
+// toolchain and thread count.
+bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
+                           u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
+                           std::string& error);
 
 }  // namespace engine::flora

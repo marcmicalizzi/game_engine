@@ -162,11 +162,18 @@ enum class ClusterSection : u32 {
   // records, which `cluster_material_sampling` answers with the glTF defaults: repeat in both
   // directions, linear filtering throughout, no transform, strength 1.
   MaterialSampling = 33,
+  // What made a generated mesh (`assets/mesh_generator.h`; docs/subsystems/flora.md): u8, three
+  // NUL-terminated strings back to back — the generator ("flora"), what it made ("date_palm"), and
+  // the parameters it made it from as canonical JSON — so `engine-content info` says what a palm's
+  // container is a palm of. **Written only by a generator**, unlike the sections above: a glTF's
+  // container is the same bytes it was before the section existed, so no cache entry, golden
+  // table or `k_cluster_cache_version` moves for it, and a reader that does not know the kind
+  // skips it.
+  Generator = 34,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds =
-    static_cast<u32>(ClusterSection::MaterialSampling) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Generator) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -348,6 +355,11 @@ struct ClusterFileData {
   std::string source_path;
   u64 source_hash = 0;
   u64 build_key = 0;
+  // What generated the mesh (section 34), all three empty for a mesh that was imported: the
+  // generator, what it made, and the canonical JSON of the parameters it made it from.
+  std::string generator;
+  std::string generator_kind;
+  std::string generator_params;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,
