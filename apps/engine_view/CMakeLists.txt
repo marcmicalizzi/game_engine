@@ -40,6 +40,11 @@ set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.c
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
                 tests/game_view_tests.cpp
                 ${_view_interactive})
+if(TARGET engine::tileset)
+  # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
+  # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).
+  list(APPEND _view_tests tests/tiles_view_tests.cpp)
+endif()
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it through the registry, and the test writes the kit of boxes and counts the pieces with
@@ -58,14 +63,15 @@ endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
 # ruins and city, and `--world` stream them, and the flora capability for its mesh generator, which
-# makes a scene's `.flora.json` mesh (and `--mesh x.flora.json`) a palm. Nothing here calls one: the
-# renderer's scene reader and the world's placements consumer find each by the name a scene gives.
+# makes a scene's `.flora.json` mesh (and `--mesh x.flora.json`) a palm, and the tile set for its
+# `tiles` ground provider, which makes a terrain naming an authored heightfield or a built set draw
+# (docs/subsystems/tileset.md; tests/tiles_view_tests.cpp). Nothing here calls one: the renderer's scene reader and the world's placements consumer find each by the name a scene gives.
 # The participating medium (brief-volumetrics, systems/volumetrics): a scene's `medium` block drawn by its
 # frame pass where the capability is configured; ENGINE_VIEW_VOLUMETRICS below says so to main.cpp.
 if(TARGET engine::volumetrics)
   list(APPEND _view_deps volumetrics)
 endif()
-foreach(_gen city flora ruins scatter sky terrain water)
+foreach(_gen city flora ruins scatter sky terrain tileset water)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()
