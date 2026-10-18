@@ -108,7 +108,7 @@ Read once, by the host, into its walk header (engine-view's `walk.collision` blo
 
 ## Testing
 
-`tools/dev.ps1 test -Filter scene_collision`: the cases above, all without a device; the erg's four where the terrain capability is linked. `tools/dev.ps1 bench -Filter 'scene_collision.*'`: a ring change, a tick that changes nothing and a frame of moving sand (above). engine-view's end-to-end walks ([apps](apps.md#walking)) are this consumer in its host.
+`tools/dev.ps1 test -Filter scene_collision`: the cases above, all without a device; the erg's four where the terrain capability is linked. Where the tile-set capability is linked, `tests/tileset_ground_tests.cpp` walks on an authored ground: the `tiles` provider made through the registry from a built set, the set's own source handed to the collision as the renderer's is, the ring's heightfields the set's heights to the bit on their lattice and never outside the four points round a point between, and a character walked 10 s from a bowl's side across its floor and the tiles' shared edge with its feet within 10 cm of the set's surface (4.4 cm measured, the capsule over 3 cm of roughness at 50 cm; [tileset](tileset.md)). `tools/dev.ps1 bench -Filter 'scene_collision.*'`: a ring change, a tick that changes nothing and a frame of moving sand (above). engine-view's end-to-end walks ([apps](apps.md#walking)) are this consumer in its host.
 
 ## Not yet
 

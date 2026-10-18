@@ -34,7 +34,7 @@ A rebuild reloads through the derived-data cache, so its cost is the GPU scene's
 
 ## Testing
 
-`systems/doc_scene/tests/doc_scene_tests.cpp`, CPU only, on a document built in memory: placements in id order with a `Node` between them ignored, meshes shared by path and resolved against the document's directory (an absolute path kept), placement as `Instance` (the origin in f64 420 km out, the yaw, the scale); a translation is a move and the description follows it, another type's edit is nothing, a new mesh, a new placement and a deletion are rebuilds; a document with no placements is the stand-in ground with nothing to pick; a placement with no mesh is refused naming the record. The GPU half — picking and moving through a real frame — is engine-editor's test.
+`tests/authored_ground_gpu_tests.cpp`, where the tile-set and terrain capabilities are linked, is the authored ground's pixel test ([tileset](tileset.md#the-pixel-test)): offscreen, on the device the GPU lock gives. `systems/doc_scene/tests/doc_scene_tests.cpp`, CPU only, on a document built in memory: placements in id order with a `Node` between them ignored, meshes shared by path and resolved against the document's directory (an absolute path kept), placement as `Instance` (the origin in f64 420 km out, the yaw, the scale); a translation is a move and the description follows it, another type's edit is nothing, a new mesh, a new placement and a deletion are rebuilds; a document with no placements is the stand-in ground with nothing to pick; a placement with no mesh is refused naming the record. The GPU half — picking and moving through a real frame — is engine-editor's test.
 
 ## Over the protocol
 

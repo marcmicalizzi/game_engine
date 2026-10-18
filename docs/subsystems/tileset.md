@@ -78,6 +78,10 @@ Items 1, 2 and 4 of [world](world.md#an-authored-world)'s list are this module; 
 - **The world's persistent layers**: the overlay's mechanism taken unchanged; an authored set has no lag.
 - **Erosion, hydrology and biomes** (G36) would write this format: a generator's heightfield is an authored one to the set.
 
+## The pixel test
+
+**An authored set draws its heightfield, pixel for pixel** (`systems/doc_scene/tests/authored_ground_gpu_tests.cpp`, where the renderer, this capability and the terrain capability meet; offscreen, on the device the GPU lock gives). It is the renderer's own "a tile set built ahead and read back" case with an authored heightfield in place of the dunes' procedural answer: a seeded ridge 481 points a side at 50 cm (240 m, scaled to a tenth) is built by `ensure_tileset` into a derived-data cache with the chain the renderer's test layout asks (8 m tiles, rings at 50 cm, 1 m and 2 m, far levels at 4, 8 and 16 m), read back through `TileSet::source()`, and drawn beside a reference source computed in memory from the same quantized millimetres — the finest's points, each far level's trapezoid sum in one loop, the edge held — that shares nothing with the set's tiles, reader or separable sums. Three views (down at the rings, grazing across the ridge, high over the far levels and past the data's edge 120 m out) compare 125,337 pixels, colour and depth, and **0 differ**; every level's rest-height hash agrees; 175 of the set's 268 tiles are read. The scene is still a dune scene, because the renderer draws the world's tiles only for a ground that moves ("What the seam lacks"); under tiles its grid carries only the material and the UV frame, so every height drawn is the source's.
+
 ## Invariants
 
 Each is a test in `tests/tileset_tests.cpp` unless it says otherwise.
@@ -88,6 +92,7 @@ Each is a test in `tests/tileset_tests.cpp` unless it says otherwise.
 - A filter the set was not built with, and a filter that is not its spacing, are refused; a spacing finer than the set's is its bilinear surface, a multiple its every r-th point; a point is the corner at a corner, the four's mean at a cell's centre, and the edge's past the data.
 - A second build is a hit with the same key and hash; a forced build writes the same hash; another option or another grid is another key; a far spacing the source's points cannot filter onto is refused.
 - The provider through the registry: its point entries are the set's surface at any time; its tile source is the set's chain where it has one and the points where it does not, where the set's own source refuses; its refusals are sentences. A terrain naming a heightfield builds the set the content step builds, keyed the same, with its origin, scale and lift; an origin between the source's points is refused.
+- A walker stands on it (`systems/scene_collision/tests/tileset_ground_tests.cpp`, where the collision is): the collision handed the set's source holds its heights to the bit on its lattice, and a character walks across a bowl and a tile's edge with its feet on the set's surface.
 - **The same bytes everywhere** (`tests/determinism_tests.cpp`): a seeded synthetic ridge's set, built with an offset, a scale and a lift, hashes level by level and as a whole to the pinned values, taken on MSVC and reproduced by GCC and Clang at v3.
 
 ## Public API
