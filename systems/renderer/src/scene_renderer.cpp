@@ -21,6 +21,7 @@
 #include <shaders/cluster_vertex_indexed.spv.h>
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
+#include <shaders/frame_encode.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
@@ -163,6 +164,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (shadow.valid()) gfx::destroy_pipeline(device, shadow);
   if (shadow_fallback.valid()) gfx::destroy_pipeline(device, shadow_fallback);
   if (resolve.valid()) gfx::destroy_pipeline(device, resolve);
+  if (resolve_linear.valid()) gfx::destroy_pipeline(device, resolve_linear);
+  if (encode.valid()) gfx::destroy_pipeline(device, encode);
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, expand);
@@ -177,6 +180,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, pair_expand);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
+  resolve_linear = encode = {};
 }
 
 // The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
@@ -359,8 +363,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // structure zones, the trace and the resolve, with room to spare. The shadow cascades add
       // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
       // allocation, the depth raster), twelve; a streamed world's table update two more; a sky's
-      // tables, sky-view, air and sums four more.
-      !timer_.create(device, desc.frames_in_flight, 47 + 16 * (views - 1), error)) {
+      // tables, sky-view, air and sums four more; the frame passes eight (frame_pass.h), the encode
+      // after them one.
+      !timer_.create(device, desc.frames_in_flight, 56 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -378,6 +383,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_table_pairs_.assign(desc.frames_in_flight, 0);
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
+  slot_visibility_.assign(desc.frames_in_flight, -1.0f);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   // The statistics block ends with the sky's sums (`gfx::SkyFrame`), copied there after the
@@ -435,6 +441,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
                         shaders::k_tlas_references_spirv_size);
   shaders_.add_embedded("overlay", shaders::k_overlay_spirv, shaders::k_overlay_spirv_size);
+  shaders_.add_embedded("frame_encode", shaders::k_frame_encode_spirv,
+                        shaders::k_frame_encode_spirv_size);
   shaders_.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
@@ -543,6 +551,114 @@ void SceneRenderer::destroy_shadow_maps() noexcept {
   shadow_view_ = {};
   shadow_atlas_ = gfx::ImageResource{};
   cascades_ = ShadowCascades{};
+}
+
+// ---- frame passes (frame_pass.h, renderer.md "Frame passes") ------------------------------------
+
+// The resolve into the linear image — the same module and entry point as the frame's own resolve,
+// for a float target — and the encode out of it into the frame's target's format.
+bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
+  const gfx::Device& device = *device_;
+  if (pipelines_.resolve_linear.valid()) gfx::destroy_pipeline(device, pipelines_.resolve_linear);
+  if (pipelines_.encode.valid()) gfx::destroy_pipeline(device, pipelines_.encode);
+  pipelines_.resolve_linear = pipelines_.encode = {};
+  const gfx::Shader* resolve =
+      shaders_.get(resolved_.shadows ? "visibility_resolve_rt" : "visibility_resolve", error);
+  const gfx::Shader* encode = resolve != nullptr ? shaders_.get("frame_encode", error) : nullptr;
+  if (encode == nullptr) return false;
+  gfx::BindlessSet& bindless = scene_->bindless();
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve->module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve->module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = k_frame_pass_format;
+  gfx::GraphicsPipelineDesc encode_desc;
+  encode_desc.vertex = encode->module;
+  encode_desc.vertex_entry = "vs_encode";
+  encode_desc.fragment = encode->module;
+  encode_desc.fragment_entry = "fs_encode";
+  encode_desc.layout = bindless.pipeline_layout();
+  encode_desc.color_format = desc_.color_format;
+  return gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve_linear, error) &&
+         gfx::create_graphics_pipeline(device, encode_desc, pipelines_.encode, error);
+}
+
+// The target's size, a colour attachment for the resolve, a storage image for the passes and a
+// sampled one for the encode; registered in the scene's bindless set at both bindings.
+bool SceneRenderer::create_linear_target(std::string* error) {
+  destroy_linear_target();
+  const gfx::Device& device = *device_;
+  if (!gfx::create_image_2d(
+          device, width_, height_, k_frame_pass_format,
+          gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::Storage | gfx::ImageUsage::Sampled,
+          linear_, error) ||
+      !gfx::create_image_view(device, linear_, linear_view_, error)) {
+    return false;
+  }
+  gfx::BindlessSet& bindless = scene_->bindless();
+  linear_storage_slot_ = bindless.add_storage_image(linear_view_);
+  linear_sampled_slot_ = bindless.add_sampled_image(linear_view_, gfx::ImageLayout::ShaderReadOnly);
+  if (linear_storage_slot_ == gfx::BindlessSet::k_invalid_slot ||
+      linear_sampled_slot_ == gfx::BindlessSet::k_invalid_slot) {
+    if (error != nullptr) *error = "no bindless slot for the frame passes' colour image";
+    return false;
+  }
+  return true;
+}
+
+// The device is idle (every caller waits first), so the slots are released as of now.
+void SceneRenderer::destroy_linear_target() noexcept {
+  if (device_ == nullptr) return;
+  if (scene_ != nullptr && scene_->valid()) {
+    gfx::BindlessSet& bindless = scene_->bindless();
+    if (linear_storage_slot_ != gfx::BindlessSet::k_invalid_slot)
+      bindless.release_storage_image(linear_storage_slot_, 0);
+    if (linear_sampled_slot_ != gfx::BindlessSet::k_invalid_slot)
+      bindless.release_sampled_image(linear_sampled_slot_, 0);
+    bindless.recycle(0);
+  }
+  linear_storage_slot_ = linear_sampled_slot_ = gfx::BindlessSet::k_invalid_slot;
+  gfx::destroy_image_view(*device_, linear_view_);
+  if (linear_.image.valid()) gfx::destroy_image(*device_, linear_);
+  linear_view_ = {};
+  linear_ = gfx::ImageResource{};
+}
+
+bool SceneRenderer::add_frame_pass(FramePassStage stage, FramePassFn fn, void* user,
+                                   const char* zone, std::string* error) {
+  ENGINE_ASSERT(!recording_, "add_frame_pass between begin_frame and submit_frame");
+  if (fn == nullptr || zone == nullptr) {
+    if (error != nullptr) *error = "a frame pass needs a function and a timer zone";
+    return false;
+  }
+  if (frame_pass_count_ >= k_max_frame_passes) {
+    if (error != nullptr) *error = "the renderer holds no more frame passes";
+    return false;
+  }
+  if (frame_pass_count_ == 0) {
+    frames_.wait_idle();
+    if (!create_frame_pass_pipelines(error) || !create_linear_target(error)) {
+      destroy_linear_target();
+      return false;
+    }
+  }
+  frame_passes_[frame_pass_count_++] = FramePassEntry{stage, fn, user, zone};
+  return true;
+}
+
+void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
+  ENGINE_ASSERT(!recording_, "remove_frame_pass between begin_frame and submit_frame");
+  for (u32 i = 0; i < frame_pass_count_; ++i) {
+    if (frame_passes_[i].fn != fn || frame_passes_[i].user != user) continue;
+    frames_.wait_idle();
+    for (u32 j = i + 1; j < frame_pass_count_; ++j)
+      frame_passes_[j - 1] = frame_passes_[j];
+    --frame_pass_count_;
+    if (frame_pass_count_ == 0) destroy_linear_target();
+    return;
+  }
 }
 
 bool SceneRenderer::create_color_target(std::string* error) {
@@ -765,6 +881,8 @@ void SceneRenderer::destroy() noexcept {
     delete graph_;
     graph_ = nullptr;
   }
+  destroy_linear_target();
+  frame_pass_count_ = 0;
   targets_.destroy(device);
   pipelines_.destroy(device);
   // The overlay's textures and sampler live in the scene's bindless set; a scene destroyed first
@@ -831,7 +949,9 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   // because the scene's working set is sized by it, and no layout changes its count with size.
   if (!views_.build(desc_.views, width_, height_, error)) return false;
   fill_view_layout();
-  return targets_.create(*device_, views_, error) && create_color_target(error);
+  if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
+  // The frame passes' linear image is the target's size (frame_pass.h).
+  return frame_pass_count_ == 0 || create_linear_target(error);
 }
 
 bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
@@ -896,7 +1016,7 @@ bool SceneRenderer::poll_shaders(Vector<std::string>& changed, std::string* erro
   if (shaders_.poll_changes(changed, error) == 0) return true;
   frames_.wait_idle();
   pipelines_.destroy(*device_);
-  return create_pipelines(error);
+  return create_pipelines(error) && (frame_pass_count_ == 0 || create_frame_pass_pipelines(error));
 }
 
 // The visible-pair counts of the frame that last used `slot`, per view and summed. The three
@@ -1093,12 +1213,16 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
+    for (u32 p = 0; p < frame_pass_count_; ++p)
+      last.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
+    last.gpu_frame_passes += timer_.ms("frame encode");
     last.gpu_total = timer_.total_ms();
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
   last.terrain_upload_bytes = slot < slot_terrain_bytes_.size() ? slot_terrain_bytes_[slot] : 0;
   last.cpu = slot < slot_cpu_.size() ? slot_cpu_[slot] : FrameCpu{};
+  last.visibility_m = slot < slot_visibility_.size() ? slot_visibility_[slot] : -1.0f;
   stats_.terrain_upload_bytes += last.terrain_upload_bytes;
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
@@ -1134,6 +1258,10 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_terrain_upload += timer_.ms("terrain upload");
     // The sky's passes are drawn once for every view: the frame's cost.
     stats_.gpu_sky += timer_.ms("sky");
+    // The frame passes and their encode, the frame's too.
+    for (u32 p = 0; p < frame_pass_count_; ++p)
+      stats_.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
+    stats_.gpu_frame_passes += timer_.ms("frame encode");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
@@ -1442,6 +1570,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const Vec3 eye{};
   const f32 znear = frame.camera.znear;
   const bool direct = resolved_.direct;
+  // **The frame passes** (frame_pass.h, renderer.md "Frame passes"): with one registered, a shaded
+  // frame of a path with a visibility buffer is resolved into the linear image, the passes draw
+  // into it, and the encode quantizes it into `color`. Every other frame is exactly what it was.
+  const u32 shade_mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
+  const bool frame_passes_on = frame_pass_count_ > 0 && !direct && linear_.image.valid() &&
+                               shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
   const bool vertex_path = resolved_.vertex_path;
   const bool ray_path = resolved_.ray_path;
   const bool shadows = resolved_.shadows;
@@ -1602,6 +1736,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool sky_on = sky_.active();
   frame_sky_ = FrameSky{};
   u64 sky_address = 0;
+  // What the encode after the frame passes needs of the sky: its shoulder (the knee of the
+  // display's curve, 1 for the stand-in), and the sun's light for the passes.
+  f32 frame_knee = 1.0f;
+  Vec3 frame_sun_light{1.0f, 1.0f, 1.0f};
   FrameLighting lighting;
   if (sky_on) {
     sky_.evaluate(scene.ground_time_s() + frame.sun_time_s, frame_sky_);
@@ -1616,6 +1754,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     gfx::SkyParams block;
     sky_.fill(frame_sky_, views_, frame.camera, exposure, block);
+    frame_knee = block.shoulder;
+    frame_sun_light = block.sun_illuminance.xyz();
     std::memcpy(resolve_bytes + sky_params_offset(views), &block, sizeof(block));
     sky_address = resolves_[slot].address + sky_params_offset(views);
     SkyStats& s = stats_.sky;
@@ -1855,6 +1995,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.display_encoding = static_cast<u32>(desc_.display);
       resolve.display_paper_white_nits = levels.paper_white_nits;
       resolve.display_peak_nits = levels.peak_nits;
+    }
+    // Into the frame passes' linear image: the exposed radiance with no curve and no dither, which
+    // the encode after the passes quantizes once (frame_pass.h).
+    if (frame_passes_on) {
+      resolve.display_encoding = static_cast<u32>(gfx::DisplayEncoding::Linear);
+      resolve.dither_steps = 0;
     }
     // Skip the visibility read for a 32 x 32 tile with nothing in it. The mask is exact **only**
     // when the last write to the visibility buffer happened before the last Hi-Z build, and that
@@ -2181,9 +2327,20 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgImage rg_atlas{};
   if (csm) {
     rg_shadow_args = graph.import_buffer("shadow args", scene.shadow_args);
+    // With frame passes registered a compute pass may have read it last (frame_pass.h).
     rg_atlas = graph.import_image("shadow atlas", shadow_atlas_, gfx::ImageLayout::Undefined,
-                                  gfx::PipelineStage::FragmentShader,
+                                  frame_pass_count_ > 0 ? gfx::PipelineStage::FragmentShader |
+                                                              gfx::PipelineStage::ComputeShader
+                                                        : gfx::PipelineStage::FragmentShader,
                                   gfx::MemoryAccess::ShaderSampledRead);
+  }
+  // The frame passes' linear image: the resolve clears it, the passes read and write it, and the
+  // encode samples it last, which this frame's clear has to wait for.
+  gfx::RgImage rg_linear{};
+  if (frame_passes_on) {
+    rg_linear = graph.import_image("frame pass color", linear_, gfx::ImageLayout::Undefined,
+                                   gfx::PipelineStage::FragmentShader,
+                                   gfx::MemoryAccess::ShaderSampledRead);
   }
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
@@ -2361,6 +2518,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   sky.float32[1] = clear_sky.y;
   sky.float32[2] = clear_sky.z;
   sky.float32[3] = clear_sky.w;
+  // The frame passes' image is cleared to the stand-in sky's light — the SDR clear decoded, which
+  // is what every encoding shows it at — with alpha 0, the mark the encode writes `sky` for.
+  gfx::ClearColor linear_clear{};
+  linear_clear.float32[0] = gfx::sdr_decode(k_sky.x);
+  linear_clear.float32[1] = gfx::sdr_decode(k_sky.y);
+  linear_clear.float32[2] = gfx::sdr_decode(k_sky.z);
+  linear_clear.float32[3] = 0.0f;
   // The sky's tables and sums (sky.h). The star table is written once at create and read here only.
   struct SkyBuffers {
     gfx::RgBuffer transmittance, multiscatter, view, aerial, frame;
@@ -3299,7 +3463,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
-          b.color_attachment(color, gfx::LoadOp::Clear, sky);
+          // With frame passes, into their linear image, cleared to the stand-in sky's light with
+          // alpha 0: the encode writes such a pixel as the clear itself (frame_pass.h).
+          if (frame_passes_on) {
+            b.color_attachment(rg_linear, gfx::LoadOp::Clear, linear_clear);
+          } else {
+            b.color_attachment(color, gfx::LoadOp::Clear, sky);
+          }
           b.read(rg_vis, gfx::Access::FragmentRead);
           if (sky_on) {
             b.read(sb_sky.transmittance, gfx::Access::FragmentRead);
@@ -3326,7 +3496,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.resolve);
+          cb.bind_pipeline(gfx::BindPoint::Graphics,
+                           frame_passes_on ? pipelines.resolve_linear : pipelines.resolve);
           bindless.bind(cb, gfx::BindPoint::Graphics);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_resolve][v]);
@@ -3339,6 +3510,120 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         });
   }
+  // ---- the frame passes (frame_pass.h, renderer.md "Frame passes") ---------------------------
+  //
+  // Each registered pass adds its passes to the graph over the linear image the resolve just wrote,
+  // declaring what it reads and writes; then one encode pass quantizes that image into the frame's
+  // target through the output encode the resolve would have applied (display.slang), once, with the
+  // dither at the view's own pixel — so a pass that changes nothing draws the frame the resolve
+  // would have, to the half's precision. The overlay composites after it, as before.
+  FramePassView pass_views[k_max_views];
+  FramePassReport pass_report;
+  struct FrameEncodePush {
+    u32 view_x = 0;
+    u32 view_y = 0;
+    u32 texture = 0;
+    u32 encoding = 0;
+    u32 steps = 0;
+    f32 knee = 1.0f;
+    f32 paper_white_nits = 0.0f;
+    f32 peak_nits = 0.0f;
+  };
+  static_assert(sizeof(FrameEncodePush) == 32, "frame_encode.slang's FrameEncodePush");
+  FrameEncodePush encode_push[k_max_views];
+  if (frame_passes_on) {
+    FramePassContext context;
+    context.graph = &graph;
+    context.timer = &timer;
+    context.bindless = &bindless;
+    context.device = device_;
+    context.scene = &data;
+    context.slot = slot;
+    context.frames_in_flight = desc_.frames_in_flight;
+    context.frame_index = frame.frame_index;
+    context.dt_s = frame.dt_s;
+    context.color = rg_linear;
+    context.color_storage = linear_storage_slot_;
+    context.color_sampled = linear_sampled_slot_;
+    context.width = width_;
+    context.height = height_;
+    context.visibility = rg_vis;
+    for (u32 v = 0; v < views; ++v) {
+      const View& view = views_[v];
+      FramePassView& out = pass_views[v];
+      out.x = view.rect.x;
+      out.y = view.rect.y;
+      out.width = view.rect.width;
+      out.height = view.rect.height;
+      out.source_width = view_frames[v].width;
+      out.source_height = view_frames[v].height;
+      out.visibility = view_frames[v].vis_address;
+      out.view_proj = view.view_proj;
+      out.clip_to_eye = inverse(view.view_proj);
+      out.clip_to_ray = view.clip_to_ray;
+      out.panini = views_.resample();
+    }
+    context.view_count = views;
+    context.views = pass_views;
+    context.camera = &frame.camera;
+    context.eye = frame_origin;
+    context.eye_world = frame.camera.position;
+    context.gpu_eye = gpu_eye;
+    context.znear = znear;
+    context.world_time_s = scene.ground_time_s() + frame.sun_time_s;
+    context.sun_time_s = frame.sun_time_s;
+    context.sun_direction = lighting.sun.xyz();
+    context.sun_light =
+        sky_on ? frame_sun_light : Vec3{lighting.sun.w, lighting.sun.w, lighting.sun.w};
+    // The stand-in's upper hemisphere is 0.35 of its sky (renderer.md, "The sky above").
+    if (!sky_on) context.ambient = lighting.sky.xyz() * 0.35f;
+    context.sky_params = sky_address;
+    context.sky = FramePassSky{sb_sky.transmittance, sb_sky.multiscatter, sb_sky.view,
+                               sb_sky.aerial, sb_sky.frame};
+    context.cascades = csm && cascades_drawn > 0;
+    context.shadow_atlas = rg_atlas;
+    context.shadow_maps = csm ? shadow_maps_address : 0;
+    context.fit = &cascades_;
+    context.report = &pass_report;
+    for (u32 p = 0; p < frame_pass_count_; ++p) {
+      const FramePassEntry& entry = frame_passes_[p];
+      if (entry.stage != FramePassStage::AfterResolve) continue;
+      if (!entry.fn(context, entry.user, error)) return false;
+    }
+    const DisplayLevels levels = display_levels(settings);
+    for (u32 v = 0; v < views; ++v) {
+      FrameEncodePush& push = encode_push[v];
+      push.view_x = views_[v].rect.x;
+      push.view_y = views_[v].rect.y;
+      push.texture = linear_sampled_slot_;
+      push.encoding = static_cast<u32>(desc_.display);
+      push.steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
+      push.knee = frame_knee;
+      push.paper_white_nits = levels.paper_white_nits;
+      push.peak_nits = levels.peak_nits;
+    }
+    graph.add_pass(
+        "frame encode", gfx::PassKind::Raster,
+        [&](gfx::PassBuilder& b) {
+          b.color_attachment(color, gfx::LoadOp::Clear, sky);
+          b.read(rg_linear, gfx::Access::SampledRead);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.encode);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          timer.begin(cb, "frame encode");
+          for (u32 v = 0; v < views; ++v) {
+            const View& view = views_[v];
+            set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
+            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                              sizeof(FrameEncodePush), &encode_push[v]);
+            cb.draw(3, 1, 0, 0);
+          }
+          timer.end(cb);
+        });
+  }
+  if (slot < slot_visibility_.size()) slot_visibility_[slot] = pass_report.visibility_m;
+  stats_.visibility_m = pass_report.visibility_m;
   if (cull_on) {
     const gfx::BufferResource* stat_target = &stat_blocks_[slot];
     graph.add_pass(

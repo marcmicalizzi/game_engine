@@ -1,0 +1,44 @@
+// A scene's participating medium (docs/subsystems/volumetrics.md): the `medium` block of a scene
+// file, which the renderer carries uninterpreted (`SceneData::medium`, `engine.scene.Scene` version
+// 8) and this capability reads. The types are the capability's, so the shared schema names none of
+// them and ENGINE_WITH_VOLUMETRICS=OFF takes them out with everything else it owns; they stand in
+// the scene's namespace because they are a part of the scene file.
+namespace engine.scene
+
+/// The far-field cloud layer (roadmap R83): procedural cloud between two altitudes above the
+/// world's y = 0, moved by the wind record's wind. Absent: a clear sky.
+struct MediumClouds @version(1) {
+  /// The layer's floor and ceiling.
+  base_m: f32 = 1800 @unit(m)
+  top_m: f32 = 4200 @unit(m)
+  /// The share of the sky covered, 0 clear to 1 overcast.
+  coverage: f32 = 0.3
+  /// 0 a thin flat layer, 1 tall heaped cloud.
+  type: f32 = 0.5
+  /// The field's seed: the same seed and time is the same sky.
+  seed: u32 = 1
+}
+
+/// The dust haze the wind holds over the ground.
+struct MediumDust @version(1) {
+  enabled: bool = true
+  /// A multiplier on its density.
+  scale: f32 = 1
+  /// Its scale height at the record's mean wind: a fifth of it in a calm, more in a storm.
+  height_m: f32 = 15 @unit(m)
+}
+
+/// The sand blowing off the dune crests downwind (roadmap W45).
+struct MediumPlumes @version(1) {
+  enabled: bool = true
+  /// A multiplier on their density.
+  strength: f32 = 1
+}
+
+/// A scene's medium. Present, the dust and the plumes are on at their defaults unless a block says
+/// otherwise, and the clouds only where `clouds` is given.
+struct Medium @version(1) {
+  clouds: MediumClouds?
+  dust: MediumDust
+  plumes: MediumPlumes
+}

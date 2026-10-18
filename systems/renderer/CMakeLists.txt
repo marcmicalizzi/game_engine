@@ -37,6 +37,12 @@ engine_module(NAME renderer LAYER systems
           src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp)
+# The renderer's own shader: the output encode after the frame passes (frame_pass.h,
+# shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
+engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
+if(TARGET engine_shaders_renderer)
+  target_link_libraries(engine_renderer PRIVATE engine_shaders_renderer)
+endif()
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -48,6 +54,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/dynamic_instances_tests.cpp
                     tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
+                    # The frame-pass registration point: a null pass, its context, and the frame
+                    # without one to the byte (frame_pass.h).
+                    tests/frame_pass_tests.cpp
                     # One request, two hosts: every RenderSettings and FrameDesc field named with
                     # the protocol field that reaches it or the reason none does, by a structured
                     # binding that stops compiling when a field is added; no device.
@@ -104,7 +113,7 @@ if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrai
 endif()
 # The HDR output test draws its second case under the sky capability's sky (E39).
 if(TARGET engine_renderer_tests AND TARGET engine::sky)
-  target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_HDR_TESTS_SKY=1)
+  target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_HDR_TESTS_SKY=1 ENGINE_FRAME_PASS_TESTS_SKY=1)
 endif()
 # The sand's detail is held to its CPU mirror in double precision, which lives beside the BSDF's
 # in domain/gfx's tests (ground_detail_reference.h, brdf_reference.h): one mirror for both modules.

@@ -957,7 +957,7 @@ struct WaterBody @version(1) {
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
-/// version 6 `sky`, version 7 `props`, version 8 `water`.
+/// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`.
 struct Scene @version(8) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
@@ -996,6 +996,10 @@ struct Scene @version(8) {
   /// and before the terrain. A build without the capability refuses a scene that has any, with a
   /// sentence. Empty: no water, and the scene reads exactly as it did.
   water: WaterBody[] @since(8)
+  /// The participating medium (`engine.scene.Medium`: dust, crest plumes, far clouds), which the
+  /// renderer carries uninterpreted and the volumetrics capability reads (docs/subsystems/
+  /// volumetrics.md). Null: no medium, and the frame is what it was.
+  medium: json @since(8)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.
@@ -1067,8 +1071,8 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-/// Version 5 added `sky`.
-struct PassMs @version(5) {
+/// Version 5 added `sky`. Version 6 added `frame_passes`.
+struct PassMs @version(6) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1097,6 +1101,9 @@ struct PassMs @version(5) {
   /// every frame the sky from the eye, the air to a surface and the frame's sums. What the sky adds
   /// to the resolve is in `resolve`, where it runs. Zero for a scene with no sky.
   sky: f64 = 0 @since(5)
+  /// The frame passes (docs/subsystems/renderer.md, "Frame passes": a medium) and the encode after
+  /// them. Zero in a frame with none.
+  frame_passes: f64 = 0 @since(6)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -1568,7 +1575,7 @@ struct FlythroughOutput @version(2) {
 /// Version 12: `device`, the GPU the run drew on, and `frame_loop`, what the frame loop allocated
 /// (`FrameLoopAllocations`): what a frame budget is checked against and on
 /// (docs/subsystems/bench.md, "Frame budgets").
-struct FlythroughSummary @version(12) {
+struct FlythroughSummary @version(13) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1663,4 +1670,7 @@ struct FlythroughSummary @version(12) {
   /// What the frame loop allocated on the frame's thread over the recorded frames (see
   /// `FrameLoopAllocations`).
   frame_loop: FrameLoopAllocations @since(12)
+  /// The participating medium a frame pass drew (docs/subsystems/volumetrics.md): its visibility, its
+  /// froxel grid, the cloud march's resolution, the wind it read and what it cost. Null without one.
+  medium: json @since(13)
 }

@@ -60,6 +60,11 @@ endif()
 # ruins and city, and `--world` stream them, and the flora capability for its mesh generator, which
 # makes a scene's `.flora.json` mesh (and `--mesh x.flora.json`) a palm. Nothing here calls one: the
 # renderer's scene reader and the world's placements consumer find each by the name a scene gives.
+# The participating medium (brief-volumetrics, systems/volumetrics): a scene's `medium` block drawn by its
+# frame pass where the capability is configured; ENGINE_VIEW_VOLUMETRICS below says so to main.cpp.
+if(TARGET engine::volumetrics)
+  list(APPEND _view_deps volumetrics)
+endif()
 foreach(_gen city flora ruins scatter sky terrain water)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
@@ -111,6 +116,12 @@ engine_app(NAME engine_view OUTPUT engine-view
 # (domain/gfx/backend/vulkan/: the swapchain, the device's instance for the surface); the renderer
 # it drives does not (docs/subsystems/gfx.md, "The RHI surface and the backend surface").
 target_link_libraries(engine_engine_view PRIVATE engine::gfx_vulkan)
+if(TARGET engine::volumetrics)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_VOLUMETRICS=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_VOLUMETRICS=1)
+  endif()
+endif()
 
 if(TARGET engine_engine_view_tests)
   # The frame loop's allocations on the three path scenes (tests/frame_loop_tests.cpp;

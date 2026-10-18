@@ -255,6 +255,9 @@ struct SceneDesc {
   // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
   // as before the field existed.
   std::optional<scene::Sky> sky;
+  // The scene's participating medium (`engine.scene.Medium`, the volumetrics capability's type):
+  // the block as the file gave it, read by nothing here. Null: no medium.
+  JsonValue medium;
   // The file's `props` (`engine.scene.Prop`): meshes appended after the file's own, in the file's
   // order, with no instance of any of them. Empty for a scene with none.
   Vector<SceneProp> props;
@@ -394,6 +397,9 @@ struct SceneData {
   Vector<StreamedPlacements> streamed;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
+  // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
+  // systems/volumetrics), uninterpreted. Null: no medium.
+  JsonValue medium;
   // Carried from the `SceneDesc`: the props a game module may place (`SceneProp`), each naming its
   // mesh among `parts`. The load placed none of them.
   Vector<SceneProp> props;
