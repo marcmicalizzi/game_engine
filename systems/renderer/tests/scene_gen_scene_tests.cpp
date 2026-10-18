@@ -545,3 +545,94 @@ TEST_CASE("renderer: the world's tiles are drawn only from a ground with millime
     }
   }
 }
+
+// An authored tile set's ground enters the terrain's hash by its content, not its paths
+// (tileset.md, "The provider"; terrain.h, `terrain_hash`): a heightfield rewritten behind the same
+// path, or a set rebuilt behind the same manifest, is another hash and another cached render mesh;
+// the same files at another path, or under another derived-data root, are the same hash. The files
+// are written by hand with the fields the tileset capability writes, because this test runs where
+// that capability is not linked. And a terrain without a tile set keeps the hash it had: the waves'
+// and a dunes terrain's are pinned from before the tile set entered it.
+TEST_CASE("renderer: a tile set enters the terrain hash by its content, not its path") {
+  const test::TempDir tmp("renderer_terrain_tiles_hash");
+  const auto header = [](const char* data_hash) {
+    return std::string(R"({"format":"engine.terrain.heightfield","version":1,"width":65,)") +
+           R"("height":65,"spacing_mm":1000,"origin_mm":[0,0],"vertical_mm_per_unit":1000,)" +
+           R"("data":"hf.f32","data_hash":")" + data_hash + "\"}";
+  };
+  const std::string hf = tmp.file("hf.json");
+  REQUIRE(write_text(hf, header("00000000000000a1")));
+  TerrainDesc desc;
+  desc.provider = "tiles";
+  desc.tiles.emplace();
+  desc.tiles->heightfield = hf;
+  const u64 first = terrain_hash(desc);
+  CHECK(terrain_hash(desc) == first);
+  // The grid rewritten (a new ridge pad): the header's data hash moves, and so does the terrain's.
+  REQUIRE(write_text(hf, header("00000000000000b2")));
+  CHECK(terrain_hash(desc) != first);
+  REQUIRE(write_text(hf, header("00000000000000a1")));
+  CHECK(terrain_hash(desc) == first);
+  // The same header elsewhere, and another cache root: the same ground.
+  const test::TempDir elsewhere("renderer_terrain_tiles_hash_moved");
+  const std::string moved = elsewhere.file("hf.json");
+  REQUIRE(write_text(moved, header("00000000000000a1")));
+  TerrainDesc other = desc;
+  other.tiles->heightfield = moved;
+  other.tiles->ddc = tmp.file("ddc");
+  CHECK(terrain_hash(other) == first);
+  // The block's transform and build options are the build key's, so they are the hash's too.
+  other.tiles->vertical_scale = 2.0f;
+  CHECK(terrain_hash(other) != first);
+  other = desc;
+  other.tiles->origin = WorldPos{64.0, 0.0, 0.0};
+  CHECK(terrain_hash(other) != first);
+  other = desc;
+  other.tiles->cells = 32;
+  CHECK(terrain_hash(other) != first);
+  // A built set by its manifest: the build key and the set's hash.
+  const auto manifest = [](const char* hash) {
+    return std::string(R"({"format":"engine.tileset","version":1,"key":"0123456789abcdef",)") +
+           R"("source_hash":"00000000000000a1","source":"hf.json","cells":64,"spacing_mm":1000,)" +
+           R"("origin_mm":[0,0],"width":65,"height":65,"vertical_scale":1,"offset_y_mm":0,)" +
+           R"("ring_spacing_mm":2000,"far_ratio":4,"far_levels":6,"chain":[8000],"levels":[],)" +
+           R"("hash":")" + hash + "\"}";
+  };
+  const std::string built = tmp.file("manifest.json");
+  REQUIRE(write_text(built, manifest("1111111111111111")));
+  TerrainDesc set;
+  set.provider = "tiles";
+  set.tiles.emplace();
+  set.tiles->manifest = built;
+  const u64 by_manifest = terrain_hash(set);
+  CHECK(by_manifest != first);
+  REQUIRE(write_text(built, manifest("2222222222222222")));
+  CHECK(terrain_hash(set) != by_manifest);
+  REQUIRE(write_text(built, manifest("1111111111111111")));
+  CHECK(terrain_hash(set) == by_manifest);
+  // A file that is not there is a hash too (the provider refuses it when it is made).
+  set.tiles->manifest = tmp.file("missing.json");
+  CHECK(terrain_hash(set) != by_manifest);
+
+  // Pinned before the tile set entered the hash (main 856ac545): the waves' default and a dunes
+  // terrain with a ridge and a basin keep their hashes, and so their cached meshes.
+  const TerrainDesc waves;
+  TerrainDesc dunes;
+  dunes.provider = "dunes";
+  dunes.generator = TerrainGenerator::dunes;
+  dunes.seed = 23;
+  dunes.time_s = 86400.0;
+  TerrainRidge ridge;
+  ridge.from = Vec2{-100.0f, 20.0f};
+  ridge.to = Vec2{100.0f, 40.0f};
+  ridge.height = 30.0f;
+  ridge.width = 40.0f;
+  dunes.ridges.push_back(ridge);
+  TerrainBasin basin;
+  basin.center = Vec2{0.0f, -50.0f};
+  basin.radius = 30.0f;
+  basin.depth = 4.0f;
+  dunes.basins.push_back(basin);
+  CHECK(terrain_hash(waves) == 13453624538570071608ull);
+  CHECK(terrain_hash(dunes) == 8709113653536985860ull);
+}

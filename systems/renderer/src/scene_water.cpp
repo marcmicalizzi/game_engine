@@ -76,6 +76,10 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
   context.dir = dir;
   const std::string where = path + ": water";
   context.where = where;
+  // The host's derived-data root, set on the description before the file is read (scene_gen.md,
+  // "The derived-data root"): the pool's mesh is written under it, not under a `ddc/` found from
+  // where the scene is.
+  context.ddc = out.ddc;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   void* state = nullptr;
   if (!generator->open(water_params(file.water), context, &state, &error)) return false;

@@ -299,7 +299,11 @@ void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color
 // never enter it**: they are shading, drawn per frame from the block, and the mesh and its maps do
 // not depend on them. What the detail changes in the maps — the sand share in the
 // metallic-roughness map's alpha — enters it only where it changes their bytes, which is a terrain
-// with a ridge or a basin; the erg has neither, and keeps its hash and its cache entry.
+// with a ridge or a basin; the erg has neither, and keeps its hash and its cache entry. **An
+// authored tile set (`tiles`) enters it by its content, not its paths**: it reads the set's
+// manifest (its build key, its hash and its lattice) or, for a set built on load, the heightfield
+// header (its grid's hash and lattice) and the block's transform and options, so a heightfield
+// rewritten behind the same path is another hash (renderer.md, "Content addressing").
 u64 terrain_hash(const TerrainDesc& desc) noexcept;
 
 // The grid: `size * size` positions, two counter-clockwise (seen from +y) triangles a quad, and

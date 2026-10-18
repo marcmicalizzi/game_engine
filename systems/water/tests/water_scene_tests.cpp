@@ -105,6 +105,33 @@ TEST_CASE("water: a scene's block is one mesh and one instance a body, before th
   }
 }
 
+// The host's derived-data root (`--ddc`, `SceneDesc::ddc` set before the file is read, which the
+// reader hands the generator as `Context::ddc`): the pool's mesh is written under `<root>/water/`
+// and nothing beside the scene, so a game repository's root is honoured wherever its scenes are.
+// With none named, the old rule: a scene outside any checkout keeps `water/` beside it.
+TEST_CASE("water: the meshes go under the host's derived-data root, else beside the scene") {
+  const test::TempDir tmp("water_scene_ddc");
+  const std::string path = tmp.file("scene.json");
+  REQUIRE(write_text(path, scene_text(k_pool)));
+  const std::string root = tmp.file("game-ddc");
+  SceneDesc desc;
+  desc.ddc = root;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  REQUIRE(desc.meshes.size() == 2);
+  CHECK(io::parent_path(desc.meshes[0]) == io::join_path(root, "water"));
+  CHECK(io::exists(desc.meshes[0]));
+  CHECK_FALSE(io::exists(tmp.file("water")));
+
+  SceneDesc bare;
+  REQUIRE_MESSAGE(read_scene_file(path, bare, error), error);
+  REQUIRE(bare.meshes.size() == 2);
+  CHECK(io::parent_path(bare.meshes[0]) == io::join_path(io::parent_path(path), "water"));
+  CHECK(io::exists(bare.meshes[0]));
+  // The same body is the same bytes, so the same file name in either place.
+  CHECK(io::file_name(bare.meshes[0]) == io::file_name(desc.meshes[0]));
+}
+
 TEST_CASE("water: a scene's polygon body, and a body the capability refuses") {
   const test::TempDir tmp("water_scene_polygon");
   const std::string path = tmp.file("scene.json");

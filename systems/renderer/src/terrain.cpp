@@ -1,11 +1,15 @@
 #include <core/hash/hash.h>
+#include <core/json/json.h>
 #include <domain/scene_gen/terrain_features.h>
 #include <domain/texture/texture_build.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/terrain.h>
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <initializer_list>
+#include <string_view>
 
 namespace engine::renderer {
 
@@ -31,6 +35,36 @@ f32 smoothstep(f32 edge0, f32 edge1, f32 x) noexcept {
 }
 
 u64 mix_f32(u64 h, f32 v) noexcept { return hash_combine(h, std::bit_cast<u32>(v)); }
+
+// An authored tile set's file — a built set's manifest, or the heightfield header a set is built
+// from — mixed in by **what it records about its content**, never by where it is: the named fields
+// (each by its name and its compact JSON text), and a field the file does not have as a marker. The
+// manifest's `key` and `hash` and the header's `data_hash` are the build's own content hashes
+// (docs/subsystems/tileset.md), so a rewritten grid behind the same path is another hash and the
+// same set at another path is the same one. The renderer reads them as JSON rather than through the
+// tileset capability's reader, which it may not link (ADR-0027). A file that is not JSON is mixed
+// by its bytes; one that does not read, by a marker (the provider refuses it when it is made).
+u64 mix_tile_file(u64 h, const std::string& path, std::initializer_list<std::string_view> fields) {
+  std::string text;
+  if (path.empty() || io::read_file(path, text) != io::Status::Ok)
+    return hash_combine(h, 0x4E4F46494C45ull);  // "NOFILE"
+  JsonValue root;
+  if (!parse_json(text, root).ok || !root.is_object())
+    return hash_combine(hash_combine(h, 0x4259544553ull), hash_bytes(text.data(), text.size()));
+  JsonWriteOptions compact;
+  compact.pretty = false;
+  for (const std::string_view field : fields) {
+    h = hash_combine(h, hash_bytes(field.data(), field.size()));
+    const JsonValue* value = root.find(field);
+    if (value == nullptr) {
+      h = hash_combine(h, 0x4142534E54ull);  // "ABSNT"
+      continue;
+    }
+    const std::string written = write_json(*value, compact);
+    h = hash_combine(h, hash_bytes(written.data(), written.size()));
+  }
+  return h;
+}
 
 std::span<const scene::Ridge> ridges_of(const Vector<scene::Ridge>& ridges) noexcept {
   return std::span<const scene::Ridge>(ridges.data(), ridges.size());
@@ -505,6 +539,30 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   // another cache entry. Its numbers are shading and never enter (terrain.h says why).
   if (desc.has_detail && (!desc.ridges.empty() || !desc.basins.empty()))
     h = hash_combine(h, 0x53414E444D41534Bull);  // "SANDMASK"
+  // An authored tile set (`TerrainDesc::tiles`): the ground is the set's, so its content identity
+  // enters, never its paths or its derived-data root (where it is, not what it is). Only here, so
+  // every terrain without one keeps its hash. A built set by its manifest's build key, set hash and
+  // the finest lattice it records (spacing, origin, size, vertical scale and offset, chain); a set
+  // built on load by its source header's grid hash and lattice and the block's own transform
+  // (origin, vertical scale) and build options, which are what the build key would be made of.
+  if (desc.tiles.has_value()) {
+    const scene::TerrainTileSet& t = *desc.tiles;
+    h = hash_combine(h, 0x54494C4553455Full);  // "TILESET_"
+    if (!t.manifest.empty()) {
+      h = mix_tile_file(hash_combine(h, 1u), t.manifest,
+                        {"version", "key", "source_hash", "hash", "cells", "spacing_mm",
+                         "origin_mm", "width", "height", "vertical_scale", "offset_y_mm", "chain"});
+    } else {
+      h = mix_tile_file(hash_combine(h, 2u), t.heightfield,
+                        {"version", "data_hash", "width", "height", "spacing_mm", "origin_mm",
+                         "vertical_mm_per_unit"});
+      for (const f64 v : {t.origin.x, t.origin.y, t.origin.z})
+        h = hash_combine(h, std::bit_cast<u64>(v));
+      h = mix_f32(h, t.vertical_scale);
+      h = hash_combine(hash_combine(h, t.cells), std::bit_cast<u64>(t.ring_spacing_mm));
+      h = hash_combine(hash_combine(h, t.far_ratio), t.far_levels);
+    }
+  }
   return h;
 }
 

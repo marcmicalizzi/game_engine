@@ -33,9 +33,11 @@ endforeach()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars alone, which is what makes `render.load` read a scene whose terrain names the
 # dunes or whose entries name the ruins or the city, and the flora capability for its mesh generator,
-# which makes a scene's `.flora.json` mesh a palm. Nothing here calls one: the scene reader finds
+# which makes a scene's `.flora.json` mesh a palm, and the tile set for its `tiles` ground provider,
+# which makes an authored terrain draw (docs/subsystems/tileset.md). Nothing here calls one: the
+# scene reader finds
 # each by the name a scene gives.
-foreach(_gen city flora ruins scatter sky terrain water)
+foreach(_gen city flora ruins scatter sky terrain tileset water)
   if(TARGET engine::${_gen})
     list(APPEND _host_deps ${_gen})
   endif()

@@ -25,6 +25,16 @@ if(TARGET engine::webview)
   list(APPEND _editor_deps webview)
   list(APPEND _editor_defs ENGINE_EDITOR_WEBVIEW=1)
 endif()
+# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md), linked for
+# their registrars exactly as engine-view and engine-host link them: the viewport draws the document
+# scene through the renderer's scene reader, which finds a terrain's ground provider (the dunes, or
+# the tile set's `tiles` for a Heightfield record) and a placement's generator by the name the scene
+# gives, and refuses a name this executable does not carry. Nothing here calls one.
+foreach(_gen city flora ruins scatter sky terrain tileset water)
+  if(TARGET engine::${_gen})
+    list(APPEND _editor_deps ${_gen})
+  endif()
+endforeach()
 set(_editor_camera ${CMAKE_SOURCE_DIR}/apps/engine_view/fly_camera.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/window_input.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/walk.cpp)
