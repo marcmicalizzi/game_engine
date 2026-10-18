@@ -759,6 +759,24 @@ bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::
   return gfx::create_buffer(*device_, cells * 8 * views_, k_address, false, froxels_, error);
 }
 
+f64 MediumPass::corner_height(i64 x, i64 z) {
+  ++corner_clock_;
+  u32 pick = 0;
+  for (u32 i = 0; i < k_corners; ++i) {
+    if (corner_used_[i] != 0 && corner_x_[i] == x && corner_z_[i] == z) {
+      corner_used_[i] = corner_clock_;
+      return corner_h_[i];
+    }
+    if (corner_used_[i] < corner_used_[pick]) pick = i;
+  }
+  corner_x_[pick] = x;
+  corner_z_[pick] = z;
+  corner_used_[pick] = corner_clock_;
+  corner_h_[pick] = static_cast<f64>(ground_->height(static_cast<f32>(static_cast<f64>(x) * 32.0),
+                                                     static_cast<f32>(static_cast<f64>(z) * 32.0)));
+  return corner_h_[pick];
+}
+
 bool MediumPass::record(const renderer::FramePassContext& c, std::string* error) {
   if (!ensure_buffers(c, error)) return false;
   // ---- the frame's medium on the CPU, in f64 where it is the world's --------------------------
@@ -767,7 +785,18 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
   const WorldPos eye = c.eye_world;
   f64 ground_y = 0.0;
   if (ground_ != nullptr) {
-    ground_y = static_cast<f64>(ground_->height(static_cast<f32>(eye.x), static_cast<f32>(eye.z)));
+    // Bilinear between the 32 m lattice's corners round the eye: a function of the eye, and a frame
+    // that has seen its corners allocates nothing (the provider's height query does).
+    const f64 gx = eye.x / 32.0;
+    const f64 gz = eye.z / 32.0;
+    const i64 cx = static_cast<i64>(std::floor(gx));
+    const i64 cz = static_cast<i64>(std::floor(gz));
+    const f64 fx = gx - static_cast<f64>(cx);
+    const f64 fz = gz - static_cast<f64>(cz);
+    const f64 h0 = corner_height(cx, cz) + (corner_height(cx + 1, cz) - corner_height(cx, cz)) * fx;
+    const f64 h1 = corner_height(cx, cz + 1) +
+                   (corner_height(cx + 1, cz + 1) - corner_height(cx, cz + 1)) * fx;
+    ground_y = h0 + (h1 - h0) * fz;
   }
   const f32 eye_height = static_cast<f32>(eye.y - ground_y);
   const f32 at_eye = (sources_ & k_source_dust) != 0 ? dust_extinction(dust, eye_height) : 0.0f;

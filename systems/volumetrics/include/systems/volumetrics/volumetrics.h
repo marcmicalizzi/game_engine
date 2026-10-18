@@ -318,6 +318,15 @@ class MediumPass {
   u32 views_ = 0;
   std::unique_ptr<renderer::TerrainSampler> ground_;
   const terrain::DuneField* field_ = nullptr;
+  // The dust's ground: the terrain's height at the corners of the 32 m lattice round the eye, kept
+  // so a frame asks the provider (whose query allocates) only for corners it has not seen.
+  static constexpr u32 k_corners = 256;
+  i64 corner_x_[k_corners] = {};
+  i64 corner_z_[k_corners] = {};
+  f64 corner_h_[k_corners] = {};
+  u64 corner_used_[k_corners] = {};
+  u64 corner_clock_ = 0;
+  f64 corner_height(i64 x, i64 z);
   // The crest plumes: the tiles' crest lines by tile and hour, the query's scratch, and per frame
   // slot the segments and their binning grid (host-visible, read by the fill).
   // The far clouds: the drift's hourly sums, and per view the march's texels, and the map of their

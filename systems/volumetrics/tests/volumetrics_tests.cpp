@@ -166,7 +166,9 @@ TEST_CASE("volumetrics: the dust's optical depth in closed form is its sum along
       const f64 dt = static_cast<f64>(b - a) / steps;
       for (u32 i = 0; i < steps; ++i) {
         const f64 t = a + (i + 0.5) * dt;
-        sum += dust_extinction(dust, static_cast<f32>(eye + t * dy)) * dt;
+        sum += static_cast<f64>(dust_extinction(
+                   dust, static_cast<f32>(static_cast<f64>(eye) + t * static_cast<f64>(dy)))) *
+               dt;
       }
       const f32 closed = dust_optical_depth(dust, eye, dy, a, b);
       INFO("dy " << dy << ", to " << b << " m");

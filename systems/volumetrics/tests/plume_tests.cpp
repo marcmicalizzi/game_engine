@@ -75,7 +75,7 @@ TEST_CASE("volumetrics: a plume leaves its brink downwind, rises, spreads and fa
   CHECK(s.a.y == doctest::Approx(4.0));
   CHECK(s.a.z == doctest::Approx(100.0));
   CHECK(s.a.w == doctest::Approx(k_plume_peak_per_m));
-  CHECK(s.b.w == doctest::Approx(k_plume_decay_s * 8.0));
+  CHECK(s.b.w == doctest::Approx(static_cast<f64>(k_plume_decay_s) * 8.0));
   auto at = [&](f32 x, f32 y, f32 z) { return plume_density(s, Vec3{x, y, z}); };
   // At the brink, at its height, the peak; nothing upwind of it.
   CHECK(at(-2.0f, 4.0f, 100.0f) == doctest::Approx(k_plume_peak_per_m));

@@ -81,7 +81,7 @@ Measured on the RTX 5090 over the erg's walk path (120 frames, three repeats, 16
 
 ## The scenes
 
-The three desert scenes — `desert-erg` (and its walk), `desert-endless` and `desert-overlook` — name a medium: `{"clouds": {"coverage": 0.3, "type": 0.5, "seed": 7}}`, the dust and the plumes at their defaults, so their flights and `engine_view.frame_loop`'s draw it; `--no-medium` draws them as before. The storm erg names none yet: its storm hour would be a wall of dust over the whole of its README's walk.
+**No committed scene names a medium yet**, though the brief asked the three desert scenes to: the block (`{"clouds": {"coverage": 0.3, "type": 0.5, "seed": 7}}`, the dust and plumes at their defaults) was added and taken out again in this change, because three things have to come with it. engine-host's `render.*` registers no medium, so engine_cli's `render: the dunes three years on, as engine-view draws them, byte for byte` fails once engine-view draws the erg's medium and the protocol does not; the endless desert's `scattered.json` and `scattered-bounded.json` have to carry every key of its `scene.json` (`scatter_scene_tests.cpp`); and `engine_view.frame_loop` found the dust's ground allocating every frame (17 engine allocations a frame on the erg's walk: the dune provider's height query), now fixed by asking it only for the corners of the 32 m lattice round the eye not yet seen and interpolating between them — the endless desert's second flight also allocated 13 more a frame, not traced to their source. Scratch copies of the erg with the block are what [What it costs](#what-it-costs) and the captures used.
 
 ## Determinism
 

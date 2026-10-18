@@ -92,8 +92,8 @@ TEST_CASE("volumetrics: the wind record carries the clouds, continuously and by 
   auto delta = [&](f64 a, f64 b) {
     const Vec2 oa = drift.offset_m(a);
     const Vec2 ob = drift.offset_m(b);
-    f64 dx = static_cast<f64>(ob.x) - oa.x;
-    f64 dz = static_cast<f64>(ob.y) - oa.y;
+    f64 dx = static_cast<f64>(ob.x) - static_cast<f64>(oa.x);
+    f64 dz = static_cast<f64>(ob.y) - static_cast<f64>(oa.y);
     dx -= std::round(dx / period) * period;  // across the period's seam
     dz -= std::round(dz / period) * period;
     return Vec2{static_cast<f32>(dx), static_cast<f32>(dz)};
