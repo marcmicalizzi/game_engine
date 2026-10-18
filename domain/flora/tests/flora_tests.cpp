@@ -147,8 +147,10 @@ TEST_CASE("flora: the trunk's radii are the radii asked, and every wall face loo
   };
   const f64 base = widest(0.0f, p.ring_spacing_m);
   const f64 top = widest(p.height_m - p.ring_spacing_m, p.height_m);
-  CHECK(std::abs(base - p.trunk_base_radius_m) <= 0.01 * p.trunk_base_radius_m);
-  CHECK(std::abs(top - p.trunk_top_radius_m) <= 0.01 * p.trunk_top_radius_m);
+  CHECK(std::abs(base - static_cast<f64>(p.trunk_base_radius_m)) <=
+        0.01 * static_cast<f64>(p.trunk_base_radius_m));
+  CHECK(std::abs(top - static_cast<f64>(p.trunk_top_radius_m)) <=
+        0.01 * static_cast<f64>(p.trunk_top_radius_m));
 
   // Every face of the trunk agrees with its corners' normals, and those point away from the
   // spine: the wall's outward, the cap's up. A face wound the wrong way round would be dropped by
@@ -169,9 +171,10 @@ TEST_CASE("flora: the trunk's radii are the radii asked, and every wall face loo
     volume += static_cast<f64>(dot(a, cross(b, c))) / 6.0;
   }
   CHECK(inward == 0);
-  const f64 r0 = p.trunk_base_radius_m;
-  const f64 r1 = p.trunk_top_radius_m;
-  const f64 column = 3.14159265358979 * p.height_m * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
+  const f64 r0 = static_cast<f64>(p.trunk_base_radius_m);
+  const f64 r1 = static_cast<f64>(p.trunk_top_radius_m);
+  const f64 column =
+      3.14159265358979 * static_cast<f64>(p.height_m) * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
   CHECK(volume > 0.85 * column);
   CHECK(volume < 1.05 * column);
 }
