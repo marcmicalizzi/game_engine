@@ -1,0 +1,100 @@
+// The tile-set capability's own types (docs/subsystems/tileset.md; ADR-0007, ADR-0027): the
+// authored heightfield's header and the built set's manifest, read with `schema::from_json` so an
+// unknown field is refused with its path. They leave the build with the capability.
+namespace engine.tileset
+
+/// **An authored heightfield** (`engine.terrain.heightfield/1`): this JSON header beside a raw
+/// grid of little-endian float32, row-major, z then x (`width` points a row, `height` rows), in
+/// units `vertical_mm_per_unit` millimetres each — metres at 1000. Why raw and not EXR or a 16-bit
+/// PNG: the engine's image decoder reads 8 bits a channel and EXR is roadmap G9; a raw grid with
+/// a hash is readable today, the same bytes on every machine, and what a DEM converter or an
+/// editor writes without a codec.
+struct HeightfieldHeader @version(1) {
+  /// "engine.terrain.heightfield".
+  format: string
+  /// 1.
+  version: u32 = 1
+  /// Points a row (x) and rows (z), each 2 to 65,536.
+  width: u32
+  height: u32
+  /// Between points, whole millimetres, 1 to 1,000,000.
+  spacing_mm: i64 = 1000
+  /// Where point (0, 0) is, millimetres from the world's origin, x and z: a whole number of
+  /// spacings, so the grid is a window of the world's lattice at its spacing.
+  origin_mm: i64[2]
+  /// What one unit of the grid is, millimetres: 1000 for metres.
+  vertical_mm_per_unit: f64 = 1000
+  /// The grid's file, relative to this header.
+  data: string
+  /// `hash_bytes` over the grid's bytes as 16 lower-case hex digits (core/hash; the hash every
+  /// derived node here starts from). A grid whose bytes do not hash to it is refused. Not SHA-256:
+  /// the tree's one SHA-256 is the tissue capability's.
+  data_hash: string
+}
+
+/// One level of a built set: the finest (`filter_mm` 0, the ground at each point) or a level of its
+/// far mip chain (`filter_mm` its own spacing: the surface box-filtered over each point's cell).
+struct TileSetLevel @version(1) {
+  spacing_mm: i64
+  filter_mm: i64
+  /// The lattice indices stored, both ends included, x and z: past them a point is the edge's.
+  index_min: i64[2]
+  index_max: i64[2]
+  /// The tiles stored, both ends included, x and z.
+  tile_min: i32[2]
+  tile_max: i32[2]
+  tiles: u32
+  /// `hash_bytes` over each of the level's tile files, in order of z then x, combined: what the
+  /// determinism test pins.
+  hash: string
+}
+
+/// **A built tile set** (`manifest.json`, beside a directory a level holding its tiles,
+/// `<spacing_mm>/<x>_<z>.tile`): what the `tiles` ground provider opens.
+struct TileSetManifest @version(1) {
+  /// "engine.tileset".
+  format: string
+  version: u32 = 1
+  /// The build key: the source's hash, the options and `k_tileset_version`, 16 hex digits.
+  key: string
+  source_hash: string
+  /// The heightfield header it was built from, as the build was given it (for a person reading).
+  source: string
+  /// Points a tile side less one: a tile holds `cells + 3` points a side, its own `cells + 1` and
+  /// a point of apron round them.
+  cells: u32
+  /// The finest level's lattice: the source's spacing, and its origin and size after the build's
+  /// offset.
+  spacing_mm: i64
+  origin_mm: i64[2]
+  width: u32
+  height: u32
+  /// The build's vertical scale and vertical offset (mm), applied before the heights became whole
+  /// millimetres.
+  vertical_scale: f64 = 1
+  offset_y_mm: i64
+  /// The far levels it was built for: the outermost ring's spacing, the first far level's ratio to
+  /// it, and how many doublings the chain holds.
+  ring_spacing_mm: i64
+  far_ratio: u32
+  far_levels: u32
+  /// The chain's spacings, finest first: every far spacing a renderer of those parameters asks.
+  chain: i64[]
+  /// The finest level, then the chain's, in order.
+  levels: TileSetLevel[]
+  /// Every level's hash combined.
+  hash: string
+}
+
+/// What `engine-content terrain-tiles` prints, one JSON line.
+struct TileSetReport @version(1) {
+  manifest: string
+  key: string
+  /// The cache already held the set: nothing was written.
+  hit: bool
+  levels: u32
+  tiles: u32
+  bytes: u64
+  hash: string
+  ms: f64
+}

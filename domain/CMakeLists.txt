@@ -32,6 +32,7 @@ add_subdirectory(audio)
 add_subdirectory(scene_gen)
 add_subdirectory(ruins)
 add_subdirectory(terrain)
+add_subdirectory(tileset)
 add_subdirectory(city)
 # The sky capability: the sky provider "earth" (ADR-0048), registered into scene_gen's registry.
 add_subdirectory(sky)

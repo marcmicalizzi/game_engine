@@ -48,6 +48,7 @@ int ruins_command(int argc, char** argv);
 int ruins_kit_command(int argc, char** argv);
 int ruins_block_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
+int tileset_command(int argc, char** argv);  // terrain-synth, terrain-tiles
 int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
 

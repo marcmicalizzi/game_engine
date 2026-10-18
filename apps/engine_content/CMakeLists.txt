@@ -38,6 +38,10 @@ endif()
 # `city` the same way, with the city capability (docs/subsystems/city.md): the plan, one lot's
 # building, the proxy fragment and E18's yield. Its golden hashes live in tests/determinism_tests.cpp
 # beside the ruins', and are compiled only where the command exists.
+if(TARGET engine::tileset)
+  list(APPEND _content_deps tileset tileset_schemas schema schemas)
+  list(APPEND _content_tests tests/tileset_tests.cpp)
+endif()
 if(TARGET engine::city)
   list(APPEND _content_deps city schema schemas)
   list(APPEND _content_tests tests/city_tests.cpp)
@@ -60,7 +64,7 @@ list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
-          normal_cases.cpp clip_commands.cpp terrain_commands.cpp npc_commands.cpp
+          normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -81,6 +85,13 @@ if(TARGET engine::terrain)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_TERRAIN=1
       ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  endif()
+endif()
+if(TARGET engine::tileset)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TILESET=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_TILESET=1)
+    target_link_libraries(engine_engine_content_tests PRIVATE engine::tileset)
   endif()
 endif()
 if(TARGET engine::city)

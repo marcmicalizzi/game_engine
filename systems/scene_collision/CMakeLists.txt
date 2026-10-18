@@ -32,12 +32,20 @@ if(TARGET engine::terrain)
   # a host does.
   list(APPEND _collision_tests tests/time_lapse_tests.cpp)
 endif()
+if(TARGET engine::tileset)
+  # A walker on an authored ground: the `tiles` provider reaches the collision through the registry,
+  # so the test links the tile-set capability as a host does.
+  list(APPEND _collision_tests tests/tileset_ground_tests.cpp)
+endif()
 engine_module_tests(NAME scene_collision SOURCES ${_collision_tests})
 if(TARGET engine_scene_collision_tests)
   target_compile_definitions(engine_scene_collision_tests PRIVATE
     ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   if(TARGET engine::terrain)
     target_link_libraries(engine_scene_collision_tests PRIVATE engine::terrain)
+  endif()
+  if(TARGET engine::tileset)
+    target_link_libraries(engine_scene_collision_tests PRIVATE engine::tileset)
   endif()
   # The committed erg names a sky (ADR-0048), which the scene reader finds through the registry too.
   if(TARGET engine::sky)

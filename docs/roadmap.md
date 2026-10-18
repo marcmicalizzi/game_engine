@@ -141,9 +141,9 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W20 | Cheaper tile rebuilds at speed | open | W14 | M | design | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
 | W21 | One staging ring for tile uploads | open | W14 | S | routine | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
 | W22 | Retire the terrain rings | open | W12 | S | routine | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
-| W23 | Tile-set ground provider for an authored world | open | W12 | M | routine | [world](subsystems/world.md#an-authored-world) |
-| W24 | Content build of a tile set and its far lattices | open | W23 | M | design | [world](subsystems/world.md#an-authored-world) |
-| W25 | Per-tile maps for tile sources | open | W24 | M | design | [world](subsystems/world.md#an-authored-world) |
+| W23 | Tile-set ground provider for an authored world | done (65a0875a, f988fb17: the `tiles` provider, its point heights and its set's tile source; a scene file reaches it once the renderer carries the `tiles` block, W66) | W12 | M | routine | [tileset](subsystems/tileset.md#the-provider-tiles) |
+| W24 | Content build of a tile set and its far lattices | done (65a0875a, e5495ca4: `engine-content terrain-tiles`, the far mip chain box-filtered in integers, drawn pixel for pixel in f988fb17) | W23 | M | design | [tileset](subsystems/tileset.md#the-set) |
+| W25 | Per-tile maps for tile sources: a level a set writes beside its heights (colour, roughness, sand share), keyed as they are, and a material or texture array per slot for the renderer to draw them | open | W24 | M | design | [world](subsystems/world.md#an-authored-world) |
 | W26 | Dunes as a function of time, bounded overlay (E36) | done (fd288496, 32e89ce2, 8be5df1a) | | L | design | [ADR-0043](adr/0043-dunes-as-a-function-of-time.md) |
 | W27 | Accept ADR-0043 | blocked (the owner's fly-through) | W26 | S | design | [ADR-0043](adr/0043-dunes-as-a-function-of-time.md) |
 | W28 | E14: dune fast-forward accuracy | done (fd288496) | W26 | M | research | [13 §13.6](plan/13-reference-consumer-games.md#136-additional-experiments) |
@@ -184,6 +184,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W63 | Ring chunks built in their corner's frame | done (2026-10-07, `terrain::RingParams::chunk_frame`) | W58 | S | routine | [renderer](subsystems/renderer.md#the-grounds-tiles-are-placed-at-their-corners) |
 | W64 | World tile index past 6.9e10 m | done (2026-10-07, refused where positions enter: `world::tile_reachable`) | W56 | S | design | [world](subsystems/world.md#where-an-observer-is) |
 | W65 | Lights placed by cell on the GPU | open | W57 | S | routine | [renderer](subsystems/renderer.md#the-frames-origin) |
+| W66 | An authored heightfield in the document and the editor: the record (done here), then the renderer carrying the `tiles` block into its provider, then the editor's brush and write-back | in progress (e81a222a: the `engine.terrain.Heightfield` record and its mapping; next the renderer's pass-through, then the brush) | W23 | M | design | [tileset](subsystems/tileset.md#the-record) |
 
 ## D — The data model and documents
 
@@ -423,7 +424,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G33 | Licence review of generation services and models | blocked (the owner's review) | G31 | S | design | [content generation](content-generation.md#the-local-models-licences-as-published) |
 | G34 | Shipping attribution report, ship-right check | open | G32 | S | routine | [07 §7.5](plan/07-content-pipeline.md#75-provenance-and-licensing-metadata) |
 | G35 | Scene-generator registry | done (ADR-0046) | | L | design | [scene_gen](subsystems/scene_gen.md#adding-a-generator) |
-| G36 | Heightfield terrain: erosion, hydrology, biomes | open | G35 | L | research | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
+| G36 | Heightfield terrain: erosion, hydrology, biomes (their output is an authored heightfield, `engine.terrain.heightfield/1`, which the tile set builds as it is: [tileset](subsystems/tileset.md)) | open | G35 | L | research | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
 | G37 | Scatter generator | done (07 §7.6 status note, 2026-10-11) | G35 | M | design | [scatter](subsystems/scatter.md) |
 | G38 | Roads and rivers as spline networks | open | G36 | L | design | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
 | G39 | Ruin assembler and block layer | done (15b32ade, f36f1d94) | G35 | L | design | [ruins](subsystems/ruins.md#the-block-layer) |
