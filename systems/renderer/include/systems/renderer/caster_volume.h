@@ -91,4 +91,9 @@ bool caster_volume_contains_sphere(const CasterVolume& volume, Vec3 center, f32 
 // far. False when `view_proj` has no near or side planes.
 bool closed_frustum(const Mat4& view_proj, const CasterBounds& bounds, Plane out[6]) noexcept;
 
+// Writes up to `gfx::k_max_caster_volumes` volumes into the cull block, skipping empty ones. None
+// leaves `caster_volume_count` at 0, and the pass then drops what its frustum test rejects, as it
+// always did.
+void set_caster_volumes(gfx::CullParams& params, std::span<const CasterVolume> volumes) noexcept;
+
 }  // namespace engine::renderer

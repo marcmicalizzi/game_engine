@@ -209,4 +209,24 @@ bool caster_volume_contains_sphere(const CasterVolume& volume, Vec3 center, f32 
   return true;
 }
 
+void set_caster_volumes(gfx::CullParams& params, std::span<const CasterVolume> volumes) noexcept {
+  u32 count = 0;
+  for (const CasterVolume& volume : volumes) {
+    if (volume.plane_count == 0 || count >= gfx::k_max_caster_volumes) continue;
+    for (u32 p = 0; p < gfx::k_caster_volume_planes; ++p) {
+      const Plane& plane = volume.planes[p];
+      params.caster_planes[count][p] =
+          p < volume.plane_count ? Vec4{plane.normal, plane.d} : Vec4{};
+    }
+    params.caster_reach[count] = volume.reach;
+    params.caster_plane_counts[count] = volume.plane_count;
+    ++count;
+  }
+  for (u32 v = count; v < gfx::k_max_caster_volumes; ++v) {
+    params.caster_plane_counts[v] = 0;
+    params.caster_reach[v] = Vec4{};
+  }
+  params.caster_volume_count = count;
+}
+
 }  // namespace engine::renderer

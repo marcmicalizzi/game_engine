@@ -141,7 +141,7 @@ inline constexpr u32 k_caster_run = 2;
 inline constexpr u32 k_caster_volume_planes = 13;
 inline constexpr u32 k_max_caster_volumes = 5;
 
-// Mirrors CullParams in cluster_cull.slang. 528 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1680 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -194,7 +194,8 @@ struct CullParams {
   // table's tests like any other pair, and a survivor is appended here instead of to `visible`.
   // Nothing draws this run; the ray tracing chain builds it into the frame's acceleration
   // structures beside the drawn one, so a shadow is cast by the geometry at the picture's own LOD
-  // whichever way it faces. 0 drops such a pair, which is what the pass always did.
+  // whichever way it faces. 0 drops such a pair, which is what the pass always did. A pair outside
+  // the frustum and inside one of the caster volumes (`caster_planes`, below) is a caster too.
   u64 casters = 0;       // u32x2[]: {instance, cluster}, a run of its own
   u64 caster_count = 0;  // u32: the atomic the run is appended under
   // **The vertex path's indexed draw** (`VertexDrawHeader`, below): this run's header, which the
@@ -221,8 +222,22 @@ struct CullParams {
   // The frame's origin (`FrameEye`): every instance is moved into its space before any test.
   // `ClusterDrawParams::eye` points the rasterizers at this field of the view's own block.
   FrameEye eye;
+  // **Shadow casters outside the frustum** (renderer.md, "Shadows"; the renderer's
+  // caster_volume.h fits them). With `casters` set, a pair the frustum test rejects is tested
+  // against these convex volumes — the view's frustum swept towards the key light, and the hull of
+  // the frustum and each shadowed point light — and one inside any of them is a caster: it takes
+  // the cut and the page table like a drawn pair and goes to the caster run. A deformed instance
+  // never does, because the caster run has no pool blocks. Volume v is `caster_plane_counts[v]`
+  // inward planes, `dot(n, p) + w >= 0` inside, in the frame's space, and inside the sphere
+  // `caster_reach[v]` (xyz centre, w radius; w < 0 none). `caster_volume_count` 0 drops the pair
+  // as the pass always did, and the pass reads none of this unless the frustum test failed.
+  Vec4 caster_planes[k_max_caster_volumes][k_caster_volume_planes] = {};
+  Vec4 caster_reach[k_max_caster_volumes] = {};
+  u32 caster_plane_counts[k_max_caster_volumes] = {};
+  u32 caster_volume_count = 0;
+  u32 pad_casters[2] = {};
 };
-static_assert(sizeof(CullParams) == 528);
+static_assert(sizeof(CullParams) == 1680);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

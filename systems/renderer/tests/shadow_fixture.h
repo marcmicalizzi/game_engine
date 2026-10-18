@@ -238,7 +238,9 @@ inline const Vec3 k_target_local{-0.6f, 0.5f, 0.0f};
 // Ground (instance 0) and one caster (instance 1), by hand for the reason the file header gives.
 // `ground_reach` is `ground_mesh`'s: how a case puts the same caster on a ground kilometres across,
 // a scene whose size has nothing to do with the caster's, as a ruin's wall on a 5 km terrain.
-inline bool make_scene(Caster caster, SceneData& out, std::string& error, f32 ground_reach = 0.0f) {
+// `caster_offset` moves the caster, in the fixture's frame (the off-frustum casters' cases).
+inline bool make_scene(Caster caster, SceneData& out, std::string& error, f32 ground_reach = 0.0f,
+                       Vec3 caster_offset = Vec3{}) {
   geometry::ClusterLodMesh parts[2];
   if (!leaves_as_roots(ground_mesh(ground_reach), parts[0], error)) return false;
   if (!leaves_as_roots(caster_mesh(caster), parts[1], error)) return false;
@@ -253,7 +255,9 @@ inline bool make_scene(Caster caster, SceneData& out, std::string& error, f32 gr
     source.part_of_cluster.resize(out.parts[i].cluster_count, 0u);
     out.sources.push_back(std::move(source));
     gfx::InstanceDesc instance{};
-    gfx::set_instance_transform(instance, frame);
+    Mat4 placed = frame;
+    if (i == 1) placed.c[3] = Vec4{to_world(frame, caster_offset), 1.0f};
+    gfx::set_instance_transform(instance, placed);
     instance.mesh = i;
     instance.first_pair = out.pair_count;
     out.pair_count += out.parts[i].cluster_count;
@@ -303,6 +307,8 @@ struct ShotOptions {
   Vec3 eye = k_eye_local;
   Vec3 target = k_target_local;
   f32 ground_reach = 0.0f;  // make_scene's
+  Vec3 caster_offset{};     // make_scene's
+  bool off_frustum_casters = true;
 };
 
 // One picture of the scene, with its ids, under the options given.
@@ -310,12 +316,14 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   Shot shot;
   SceneData data;
   std::string error;
-  REQUIRE_MESSAGE(make_scene(caster, data, error, options.ground_reach), error);
+  REQUIRE_MESSAGE(make_scene(caster, data, error, options.ground_reach, options.caster_offset),
+                  error);
   RenderSettings settings;
   settings.raster = options.raster;
   settings.shadows = options.shadows;
   settings.cone = options.cone;
   settings.shadow_casters = options.shadow_casters;
+  settings.off_frustum_casters = options.off_frustum_casters;
   settings.shadow_frustum = options.shadow_frustum;
   settings.lights = false;  // the sun alone: its shadow is what the shadow view shows
   ResolvedSettings resolved;

@@ -38,7 +38,11 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (528 bytes).
+// The off-frustum casters' volumes: mirrors gfx::k_caster_volume_planes and k_max_caster_volumes.
+static const uint k_caster_volume_planes = 13;
+static const uint k_max_caster_volumes = 5;
+
+// Read through a device address; mirrors gfx::CullParams (1680 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -74,7 +78,8 @@ struct CullParams {
   uint page_count;
   uint max_requests;
   // Shadow casters: the pairs the cone test alone rejected, which face away from the camera and
-  // not necessarily from a light. 0 drops them; otherwise they are appended here (see cull_main).
+  // not necessarily from a light, and the pairs outside the frustum inside a caster volume (below).
+  // 0 drops them; otherwise they are appended here (see cull_pair).
   uint64_t casters;       // uint2[pair_count]: {instance, cluster}, a run of its own
   uint64_t caster_count;  // uint: the atomic the run is appended under
   // The vertex path's indexed draw: this run's header and records (scene.slang). Read by
@@ -95,6 +100,14 @@ struct CullParams {
   // The frame's origin (scene.slang): every instance is moved into its space before any test, and
   // the planes, `camera` and `view_proj` above are in that space.
   FrameEye eye;
+  // Shadow casters outside the frustum (see cull_pair): convex volumes of inward planes in the
+  // frame's space, each also inside the sphere `caster_reach[v]` when its w is not negative. Read
+  // only with `casters` set and only by a pair the frustum test rejected.
+  float4 caster_planes[k_max_caster_volumes][k_caster_volume_planes];
+  float4 caster_reach[k_max_caster_volumes];
+  uint caster_plane_counts[k_max_caster_volumes];
+  uint caster_volume_count;
+  uint pad_casters[2];
 };
 
 struct CullPush {
@@ -260,6 +273,27 @@ float3 cone_axis(ClusterDesc cluster) {
                 int(cluster.cone << 8) >> 24) / 127.0;
 }
 
+// True when the sphere is inside one of the caster volumes, by the frustum test's rule: outside
+// only when wholly outside one plane, or wholly outside the volume's reach (renderer's
+// caster_volume.h, `caster_volume_contains_sphere`, is the same test on the CPU).
+bool in_caster_volume(CullParams* params, float3 center, float radius) {
+  for (uint v = 0; v < params->caster_volume_count; ++v) {
+    bool inside = true;
+    const uint count = params->caster_plane_counts[v];
+    for (uint p = 0; p < count; ++p) {
+      const float4 plane = params->caster_planes[v][p];
+      if (dot(plane.xyz, center) + plane.w < -radius) {
+        inside = false;
+        break;
+      }
+    }
+    const float4 reach = params->caster_reach[v];
+    if (inside && reach.w >= 0.0 && length(center - reach.xyz) > reach.w + radius) inside = false;
+    if (inside) return true;
+  }
+  return false;
+}
+
 // A hardware survivor's share of its run's indexed draw (gfx::VertexDrawHeader): its triangles are
 // allocated under the cursor, its record says where they start, and vertex_expand.slang is given
 // one workgroup for it. A survivor that does not fit is flagged instead, pulls the indexed draw's
@@ -352,10 +386,30 @@ void cull_pair(uint pair, bool vertex_draw) {
   }
   const float radius = cluster.radius * instance.scale_max + padding;
 
+  // **A caster outside the frustum** (renderer.md, "Shadows"). The shadow rays meet only what the
+  // frame builds, so a pair the frustum drops would stop casting into the view the moment its
+  // cluster left it: a tree behind the camera threw no shadow forward, and an object walking out
+  // of the picture had its shadow cut by the frustum's edge, cluster by cluster. With `casters`
+  // set, such a pair is tested against the view's caster volumes — every point from which a ray
+  // towards a shadowed light can reach the view — and inside one it is a caster, which goes on
+  // through the cut and the page table below like any caster. A deformed instance is not: the
+  // caster run has no pool blocks, so its rest pose would cast where its pose does not.
+  bool caster = false;
   if (params->lod.w > 0.0) {
+    bool outside = false;
     for (uint p = 0; p < params->plane_count; ++p) {
       const float4 plane = params->planes[p];
-      if (dot(plane.xyz, center) + plane.w < -radius) return;
+      if (dot(plane.xyz, center) + plane.w < -radius) {
+        outside = true;
+        break;
+      }
+    }
+    if (outside) {
+      if (params->casters == 0 || params->caster_volume_count == 0 ||
+          instance.deform != k_invalid_deform || !in_caster_volume(params, center, radius)) {
+        return;
+      }
+      caster = true;
     }
   }
   // The cone is a promise about the **rest** triangles, moved by a transform that keeps angles, so
@@ -374,9 +428,8 @@ void cull_pair(uint pair, bool vertex_draw) {
   // leaves by its lit side (docs/subsystems/geometry.md, "Normal cones"). With `casters` set the
   // pair is kept as a **shadow caster** instead: it takes every test below exactly as a drawn pair
   // does, so it is in the same cut at the same LOD, and it ends in a run of its own that no
-  // rasterizer reads.
-  bool caster = false;
-  if (params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0 &&
+  // rasterizer reads. A pair already kept as a caster outside the frustum needs no cone.
+  if (!caster && params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0 &&
       instance.deform == k_invalid_deform) {
     const float3 apex = instance_point(instance, from_eye, cluster.cone_apex);
     const float3 axis = normalize(instance_direction(instance, cone_axis(cluster)));
