@@ -33,6 +33,9 @@ roadmap P18); nothing here is its design, and its survival meters are its own (r
   spring), the E count, and the can and markers taken and placed. And, once the can stands, a
   structured element (hotload ABI 4, `hud_element`): `[E] Pick up`, outlined text with no panel
   centred below the picture's middle, shown while the can is in reach and hidden otherwise.
+- **The graphics** (ABI 4): on its first tick it logs the raster path and shadows the session
+  resolved (`graphics_state`), and makes one request the host records (`shadows: csm`) and one it
+  refuses (`raster: warp`), so a test sees both answers.
 
 ## How it is built
 

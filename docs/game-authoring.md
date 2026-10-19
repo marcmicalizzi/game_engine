@@ -166,6 +166,11 @@ to run on an older host checks `ENGINE_HOTLOAD_HAS(api, hud_element)` (the helpe
   pixels of a 1080-pixel-high picture at 100 %**; the host scales them and keeps the font legible,
   so a module never sizes anything to the window. `walk_poc`'s `[E] Pick up` is the example:
   centred, 80 px below the middle, 28 px, a 2 px outline, no panel.
+- **The graphics the session drew with**: `graphics_state(context, state)` names the resolved
+  raster path, shadows, present mode, display, resolution and tier, with the reasons a setting is
+  not what was asked (a device with no ray queries draws cascaded shadow maps), so a game can say
+  so on its options screen; `request_graphics` records a change for the next session and refuses
+  one the machine cannot make. Nothing is applied to a running session.
 - **A saved run resumes where it was** (not an ABI change: the state file's version 2):
   `--game-state` keeps the walker's pose, its speed scales and the clock beside the module's state
   and props, and a live session from it starts there with the sky where it stood; a recording of

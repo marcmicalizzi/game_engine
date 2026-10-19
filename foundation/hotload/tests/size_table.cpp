@@ -16,10 +16,11 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 ENGINE_EXPECT_SIZE(248, 8, hotload::HostApi);
 // ABI 4's structs, each led by its own size so it can grow the way the table does: an element is
 // 56 bytes of fixed fields and the text's pointer and length; the graphics state is six words, five
-// 16-byte names and four 96-byte reasons; a request four words and four names.
+// 24-byte names (the longest present mode, "fifo-latest-ready", is 17) and four 96-byte reasons; a
+// request four words and four names.
 ENGINE_EXPECT_SIZE(72, 8, hotload::HudElement);
-ENGINE_EXPECT_SIZE(488, 4, hotload::GraphicsState);
-ENGINE_EXPECT_SIZE(80, 4, hotload::GraphicsRequest);
+ENGINE_EXPECT_SIZE(528, 4, hotload::GraphicsState);
+ENGINE_EXPECT_SIZE(112, 4, hotload::GraphicsRequest);
 ENGINE_EXPECT_SIZE(16, 8, hotload::ModuleContext);
 ENGINE_EXPECT_SIZE(24, 8, hotload::Export);
 ENGINE_EXPECT_SIZE(56, 8, hotload::ModuleDesc);

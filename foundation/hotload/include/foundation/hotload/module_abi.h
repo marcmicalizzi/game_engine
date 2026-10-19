@@ -198,11 +198,11 @@ struct GraphicsState {
       0;        // 1: the frame builds acceleration structures (traced shadows, the ray path)
   u32 hdr = 0;  // 1: the display is an HDR encoding
   u32 reason_count = 0;
-  char raster[16] = {};   // "mesh", "vertex", "rt", "direct", ...
-  char shadows[16] = {};  // "rt", "csm", "off"
-  char present[16] = {};  // "fifo", "mailbox", "immediate", "offscreen"
-  char display[16] = {};  // "sdr", "hdr10", "scrgb"
-  char tier[16] = {};     // the device's verdict: "raster", "rt", "rt-cluster"
+  char raster[24] = {};   // "hw", "vertex", "rt", "sw", "direct"
+  char shadows[24] = {};  // "rt", "csm", "off"
+  char present[24] = {};  // "fifo", "mailbox", "fifo-latest-ready", "offscreen", ...
+  char display[24] = {};  // "sdr", "hdr10", "scrgb", "linear"
+  char tier[24] = {};     // the device's verdict: "raster", "rt", "rt-cluster"
   char reasons[4][96] = {};
 };
 
@@ -215,10 +215,10 @@ struct GraphicsRequest {
   u32 width = 0;
   u32 height = 0;
   u32 reserved = 0;
-  char raster[16] = {};
-  char shadows[16] = {};
-  char present[16] = {};
-  char display[16] = {};
+  char raster[24] = {};
+  char shadows[24] = {};
+  char present[24] = {};
+  char display[24] = {};
 };
 
 // The engine as a module sees it. Every function takes the table's `host` first. The table and

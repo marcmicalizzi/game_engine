@@ -135,6 +135,24 @@ void game_tick(ModuleContext* context, View tick, f32) {
   }
 #endif
 
+  if (tick_index == 1) {
+    // **The graphics** (ABI 4): what the session draws with, said once in the log, and the two
+    // kinds of answer a request gets — one the host records for its next restart (the sun's
+    // cascaded maps, which every device draws), and one it cannot make (a raster path it has not).
+    GraphicsState graphics;
+    if (graphics_state(context, graphics) == Result::Ok) {
+      char said[96];
+      std::snprintf(said, sizeof(said), "walk_poc: drawn with %s, shadows %s", graphics.raster,
+                    graphics.shadows);
+      log(context, LogLevel::Info, said);
+    }
+    GraphicsRequest maps;
+    std::snprintf(maps.shadows, sizeof(maps.shadows), "csm");
+    request_graphics(context, maps);
+    GraphicsRequest unknown;
+    std::snprintf(unknown.raster, sizeof(unknown.raster), "warp");
+    request_graphics(context, unknown);  // Unsupported: no such path
+  }
   if (!s.started) {
     s.started = true;
     s.start_world_s = world_s;

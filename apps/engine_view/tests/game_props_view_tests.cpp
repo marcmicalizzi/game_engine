@@ -356,6 +356,22 @@ TEST_CASE(
   REQUIRE(at(*game_of(summary), {"hud_elements"}) != nullptr);
   CHECK(at(*game_of(summary), {"hud_elements"})->size() == elements->size());
   CHECK(number_at(*game_of(summary), {"abi"}) == 4.0);
+  // ABI 4's graphics state, as the fixture read it on its first tick, is the session's: the same
+  // raster path and shadows the report's machine block names; its one request the host can make
+  // is recorded, and the one it cannot (no such raster path) refused.
+  const JsonValue* graphics = at(r, {"game", "graphics"});
+  REQUIRE(graphics != nullptr);
+  MESSAGE("graphics: " << write_json(*graphics));
+  CHECK(graphics->find("known")->as_bool());
+  CHECK(graphics->find("raster")->as_string() == at(r, {"machine", "raster"})->as_string());
+  CHECK(graphics->find("shadows")->as_string() == at(r, {"machine", "shadows"})->as_string());
+  CHECK(graphics->find("present")->as_string() == "offscreen");
+  CHECK(graphics->find("display")->as_string() == "sdr");
+  CHECK(number_at(*graphics, {"width"}) == 800.0);
+  CHECK(number_at(*graphics, {"requests"}) == 1.0);
+  CHECK(number_at(*graphics, {"refused_requests"}) == 1.0);
+  REQUIRE(graphics->find("pending") != nullptr);
+  CHECK(at(*graphics, {"pending", "shadows"})->as_string() == "csm");
 }
 
 #if defined(WALK_POC_NO_PROPS_PATH) && defined(WALK_POC_TELEPORT_PATH)

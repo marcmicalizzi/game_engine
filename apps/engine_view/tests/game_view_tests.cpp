@@ -413,10 +413,9 @@ TEST_CASE(
   if (scene.empty()) return;
   const std::string state = tmp.file("state.json");
   const std::string module = fixture(tmp, WALK_POC_PATH);
-  const std::vector<std::string> common = {"--scene", scene,          "--offscreen", "--game",
-                                           module,    "--width",      "160",         "--height",
-                                           "96",      "--sun-rate",   "60",          "--ddc",
-                                           tmp.file("ddc")};
+  const std::vector<std::string> common = {
+      "--scene",  scene, "--offscreen", "--game", module,  "--width",      "160",
+      "--height", "96",  "--sun-rate",  "60",     "--ddc", tmp.file("ddc")};
   std::vector<std::string> args = {"--replay-input", walk_session(tmp, scene, 240), "--game-state",
                                    state};
   args.insert(args.end(), common.begin(), common.end());

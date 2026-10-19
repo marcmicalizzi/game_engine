@@ -228,6 +228,15 @@ struct GameRunner::Impl {
   f64 surface_time_s = 0.0;
   bool have_surface_time = false;
   f64 time_rate = 0.0;
+  // The graphics state and the requests (ABI 4).
+  hotload::GraphicsState graphics;
+  bool have_graphics = false;
+  bool rt_available = false;
+  bool hdr_available = false;
+  hotload::GraphicsRequest last_request;
+  u32 requests = 0;
+  u32 refused_requests = 0;
+  std::string last_refused_request;
   u32 reloads = 0;
   u32 refused_reloads = 0;
   std::string last_refusal;
@@ -509,6 +518,61 @@ struct GameRunner::Impl {
     return r;
   }
 
+  // ---- ABI 4: the graphics state, read-only, and requests recorded ----
+  static hotload::Result graphics_state(void* user, hotload::GraphicsState& out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!self.have_graphics) return hotload::Result::Unsupported;  // no device yet (on_load)
+    out = self.graphics;
+    return hotload::Result::Ok;
+  }
+  static hotload::Result request_graphics(void* user, const hotload::GraphicsRequest& r) {
+    Impl& self = *static_cast<Impl*>(user);
+    // A name is one of the host's words or empty (leave it), NUL-terminated inside its array.
+    const auto name = [](const char (&field)[24], std::string_view& out) {
+      for (u32 i = 0; i < 24; ++i) {
+        if (field[i] == '\0') {
+          out = std::string_view(field, i);
+          return true;
+        }
+      }
+      return false;
+    };
+    std::string_view raster, shadows, present, display;
+    if (!name(r.raster, raster) || !name(r.shadows, shadows) || !name(r.present, present) ||
+        !name(r.display, display) || r.width > 16384 || r.height > 16384) {
+      return hotload::Result::InvalidArgument;
+    }
+    const auto one_of = [](std::string_view v, std::initializer_list<std::string_view> words) {
+      if (v.empty()) return true;
+      for (const std::string_view w : words)
+        if (v == w) return true;
+      return false;
+    };
+    const char* why = nullptr;
+    if (!one_of(raster, {"direct", "hw", "sw", "auto", "vertex", "rt"})) {
+      why = "a raster path engine-view does not have";
+    } else if (!one_of(shadows, {"auto", "off", "rt", "csm"})) {
+      why = "a shadow mode engine-view does not have";
+    } else if (!one_of(present, {"auto", "fifo", "fifo-relaxed", "mailbox", "immediate",
+                                 "fifo-latest-ready"})) {
+      why = "a present mode engine-view does not have";
+    } else if (!one_of(display, {"sdr", "hdr10", "scrgb"})) {
+      why = "a display encoding engine-view does not have";
+    } else if (!self.rt_available && (raster == "rt" || shadows == "rt")) {
+      why = "ray tracing, which this device cannot do";
+    } else if (!self.hdr_available && (display == "hdr10" || display == "scrgb")) {
+      why = "HDR output, which this session's display cannot show";
+    }
+    if (why != nullptr) {
+      ++self.refused_requests;
+      self.last_refused_request = why;
+      return hotload::Result::Unsupported;
+    }
+    self.last_request = r;
+    ++self.requests;
+    return hotload::Result::Ok;
+  }
+
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
@@ -579,6 +643,8 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.sound_clip = &Impl::sound_clip;  // sound_play and sound_stop: null, Unsupported
   services.hud_element = &Impl::hud_element;
   services.hud_remove = &Impl::hud_remove;
+  services.graphics_state = &Impl::graphics_state;
+  services.request_graphics = &Impl::request_graphics;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -706,6 +772,26 @@ void GameRunner::note_surface_time(f64 surface_time_s) noexcept {
 }
 
 void GameRunner::set_time_rate(f64 time_rate) noexcept { impl_->time_rate = time_rate; }
+
+void GameRunner::set_graphics(const hotload::GraphicsState& state, bool ray_tracing_available,
+                              bool hdr_available) noexcept {
+  Impl& g = *impl_;
+  g.graphics = state;
+  g.graphics.size = sizeof(hotload::GraphicsState);
+  g.have_graphics = true;
+  g.rt_available = ray_tracing_available;
+  g.hdr_available = hdr_available;
+}
+
+u32 GameRunner::graphics_requests() const noexcept { return impl_->requests; }
+
+void GameRunner::set_graphics_display(std::string_view name, bool hdr) noexcept {
+  Impl& g = *impl_;
+  if (!g.have_graphics) return;
+  copy_text(g.graphics.display, sizeof(g.graphics.display), name);
+  g.graphics.hdr = hdr ? 1u : 0u;
+  g.hdr_available = hdr;
+}
 
 f64 GameRunner::sun_time_s() const noexcept { return impl_->sun_offset_s + impl_->day_s; }
 f64 GameRunner::day_s() const noexcept { return impl_->day_s; }
@@ -979,6 +1065,40 @@ JsonValue GameRunner::summary_json() const {
   walker.set("sprint_scale", JsonValue(g.sprint_scale));
   walker.set("session", g.session != nullptr);
   out.set("walker", std::move(walker));
+  // The graphics a module reads (ABI 4) and what it asked for: recorded, applied by nothing yet.
+  JsonValue graphics = JsonValue::object();
+  graphics.set("known", g.have_graphics);
+  if (g.have_graphics) {
+    const hotload::GraphicsState& s = g.graphics;
+    graphics.set("raster", std::string_view(s.raster));
+    graphics.set("shadows", std::string_view(s.shadows));
+    graphics.set("present", std::string_view(s.present));
+    graphics.set("display", std::string_view(s.display));
+    graphics.set("tier", std::string_view(s.tier));
+    graphics.set("width", s.width);
+    graphics.set("height", s.height);
+    graphics.set("ray_tracing", s.ray_tracing != 0);
+    graphics.set("hdr", s.hdr != 0);
+    JsonValue reasons = JsonValue::array();
+    for (u32 i = 0; i < s.reason_count && i < 4; ++i)
+      reasons.push_back(JsonValue(std::string_view(s.reasons[i])));
+    graphics.set("reasons", std::move(reasons));
+  }
+  graphics.set("requests", g.requests);
+  graphics.set("refused_requests", g.refused_requests);
+  graphics.set("last_refused", g.last_refused_request);
+  if (g.requests > 0) {
+    const hotload::GraphicsRequest& r = g.last_request;
+    JsonValue pending = JsonValue::object();
+    pending.set("raster", std::string_view(r.raster));
+    pending.set("shadows", std::string_view(r.shadows));
+    pending.set("present", std::string_view(r.present));
+    pending.set("display", std::string_view(r.display));
+    pending.set("width", r.width);
+    pending.set("height", r.height);
+    graphics.set("pending", std::move(pending));
+  }
+  out.set("graphics", std::move(graphics));
   return out;
 }
 

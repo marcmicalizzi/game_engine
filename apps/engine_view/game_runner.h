@@ -180,9 +180,9 @@ class GameRunner {
     bool walking = false;
     f32 speed_scale = 1.0f;
     f32 sprint_scale = 1.0f;
-    f64 sun_time_s = 0.0;  // the sky's clock as the frame drew it: offset plus the day's seconds
-    f64 sun_rate = 0.0;    // game seconds a second, as the keys had left it
-    f64 ground_time_s = 0.0;   // the ground's surface time the world's clock stands on
+    f64 sun_time_s = 0.0;     // the sky's clock as the frame drew it: offset plus the day's seconds
+    f64 sun_rate = 0.0;       // game seconds a second, as the keys had left it
+    f64 ground_time_s = 0.0;  // the ground's surface time the world's clock stands on
     f64 surface_time_s = 0.0;  // the moving ground's time the last frame drew (the time-lapse's)
     bool has_surface_time = false;
     f64 time_rate = 0.0;  // the time-lapse's rate (`--time-rate`)
@@ -201,6 +201,20 @@ class GameRunner {
   // the frame drew it (once a frame), and the time-lapse's rate (once).
   void note_surface_time(f64 surface_time_s) noexcept;
   void set_time_rate(f64 time_rate) noexcept;
+
+  // **The graphics a module reads and asks for** (ABI 4's `graphics_state`, `request_graphics`;
+  // apps.md "The game contract"): the session's resolved settings and the reasons they are not
+  // what was asked, set by whoever made the device, and what that device could draw instead —
+  // traced shadows and the ray path, HDR output — which a request is judged against. Until it is
+  // set (in `on_load`, before any device) `graphics_state` answers `Unsupported`.
+  void set_graphics(const hotload::GraphicsState& state, bool ray_tracing_available,
+                    bool hdr_available) noexcept;
+  // The requests recorded, for the summary; none is applied to a running session (the next safe
+  // point is a restart of the session, and engine-view does not restart one yet).
+  u32 graphics_requests() const noexcept;
+  // The display encoding the frames are drawn for ("sdr", "hdr10", "scrgb", "linear"), known once
+  // there is a renderer: an HDR one makes an HDR request answerable.
+  void set_graphics_display(std::string_view name, bool hdr) noexcept;
   // Loads the module through `hotload::ModuleHost` (refusals in the host's own words), resolves
   // its `game_tick`, and restores the state file when there is one. `map` is the session's, which
   // the declared actions are looked up in; an action the map lacks (a log recorded before revision

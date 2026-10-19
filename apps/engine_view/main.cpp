@@ -1508,6 +1508,11 @@ int unavailable(const char* what, const std::string& error) {
   return k_exit_unavailable;
 }
 
+// The session's graphics for a `--game` module (ABI 4's `graphics_state`), below the game's
+// globals.
+void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSettings& resolved,
+                        u32 width, u32 height);
+
 // The device's half of the report's `machine` block, once a device exists.
 void report_device(const gfx::Device& device, const renderer::ResolvedSettings& resolved, u32 width,
                    u32 height) {
@@ -1521,6 +1526,7 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
   g_report.shadows = renderer::resolved_shadow_name(resolved);
   g_report.width = width;
   g_report.height = height;
+  note_game_graphics(device, resolved, width, height);
 }
 
 // ---- --game: the session's game module (game_runner.h) ---------------------------------------
@@ -1545,6 +1551,45 @@ void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
 }
 bool game_over() { return g_game != nullptr && g_game->ended(); }
+// **The graphics a module reads** (ABI 4, game_runner.h `set_graphics`): the resolved settings by
+// name, and the reasons the device made them what they are — derived here from the device's
+// features and the resolved flags, since `resolve_settings` logs its overrides rather than keeping
+// them (renderer.md, "Settings"): a vertex path on a device with no mesh shaders, cascaded maps on
+// one with no ray queries, casters off under traced shadows. The present mode is the one asked for
+// (`g_game_present`; the swapchain's own is the summary's `presentation`), and the display is
+// filled in by the first frame's overlay hook, which has the renderer.
+std::string g_game_present = "offscreen";
+void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSettings& resolved,
+                        u32 width, u32 height) {
+  if (g_game == nullptr) return;
+  hotload::GraphicsState s;
+  const auto copy = [](char (&to)[24], std::string_view from) {
+    const usize n = from.size() < 23 ? from.size() : 23;
+    std::memcpy(to, from.data(), n);
+    to[n] = '\0';
+  };
+  copy(s.raster, renderer::raster_name(resolved.settings.raster));
+  copy(s.shadows, renderer::resolved_shadow_name(resolved));
+  copy(s.present, g_game_present);
+  copy(s.display, "sdr");
+  copy(s.tier, device.adapter().verdict.tier);
+  s.width = width;
+  s.height = height;
+  s.ray_tracing = resolved.rt_chain ? 1u : 0u;
+  const gfx::DeviceFeatures& f = device.features();
+  const bool rays = f.ray_query && f.acceleration_structure;
+  const auto reason = [&](const char* text) {
+    if (s.reason_count >= 4) return;
+    std::snprintf(s.reasons[s.reason_count++], sizeof(s.reasons[0]), "%s", text);
+  };
+  if (resolved.vertex_path && !f.mesh_shader)
+    reason("raster: no mesh shaders on this device; the vertex-shader baseline tier draws");
+  if (resolved.csm && !rays)
+    reason("shadows: no ray queries on this device; the sun's cascaded shadow maps instead");
+  if (resolved.shadows && !resolved.casters)
+    reason("shadows: back faces cast no shadow (cones off, or templates that cannot mark them)");
+  g_game->set_graphics(s, rays, false);
+}
 // The loaded scene and the game's props (game_props.h): the props' meshes, and the scene made
 // dynamic so the renderer takes the props as a tail — **only when the scene lists props**, so a
 // scene with none stays exactly the scene it was (its frame loop allocates nothing, and the
@@ -1644,6 +1689,8 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
   if (g_game == nullptr) return nullptr;
   // The ground's surface time this frame draws, for the state file's clock (game_runner.h).
   g_game->note_surface_time(renderer.scene().ground_time_s());
+  g_game->set_graphics_display(gfx::display_encoding_name(renderer.display()),
+                               renderer.display() != gfx::DisplayEncoding::Sdr);
   if (g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
   if (renderer.display() != gfx::DisplayEncoding::Sdr) {
@@ -1672,6 +1719,7 @@ JsonValue game_hud_elements() {
                                  g_hud != nullptr && g_hud->valid() ? g_hud : nullptr);
 }
 #else
+void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
 bool game_over() { return false; }
 bool game_failed() { return false; }
@@ -4544,6 +4592,9 @@ int run_view(int argc, char** argv) {
       return fail("game", game_error);
     }
     g_game = &game;
+    g_game_present = options.offscreen         ? std::string("offscreen")
+                     : options.present.empty() ? std::string(options.vsync ? "auto" : "no-vsync")
+                                               : options.present;
     std::fprintf(stderr, "engine-view: game: %s loaded\n", options.game.c_str());
     if (interactive.replay && interactive.header.has_game &&
         interactive.header.game_module != game.module_name()) {
@@ -4557,9 +4608,9 @@ int run_view(int argc, char** argv) {
     }
     // **The restored clock's ground** (game_runner.h `SavedSession`; roadmap P47): the scene's
     // ground at the time the saved run's last frame drew it and the time-lapse at its rate, unless
-    // the command line says otherwise — before the scene is read, which builds the ground at it. The
-    // sky's clock and the walker's scales are the runner's own (`set_clock`, `set_session`), and the
-    // pose is the live header's (`live_header`); a replay's start is its recording's.
+    // the command line says otherwise — before the scene is read, which builds the ground at it.
+    // The sky's clock and the walker's scales are the runner's own (`set_clock`, `set_session`),
+    // and the pose is the live header's (`live_header`); a replay's start is its recording's.
     if (const view::GameRunner::SavedSession* saved = game.restored_session(); saved != nullptr) {
       if (!options.ground_time_s.has_value() && saved->has_surface_time && !options.scene.empty())
         options.ground_time_s = saved->surface_time_s;
