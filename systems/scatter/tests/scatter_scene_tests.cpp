@@ -142,6 +142,40 @@ TEST_CASE("scatter: desert-endless's scattered variants are the scene and a laye
   }
 }
 
+// The host's derived-data root (`--ddc`, `SceneDesc::ddc`, which the reader hands the generator as
+// `scene_gen::Context::ddc`): a layer that names no `meshes` writes its procedural rock under
+// `<root>/scatter/` and nothing beside the scene, so a game repository's root is honoured wherever
+// its scenes are, as the water's meshes are. With no root named, the walk from the scene's
+// directory, and outside any checkout `scatter/` beside the scene. Before the fix the rock went
+// beside the scene whatever root the host named.
+TEST_CASE("scatter: the procedural rock goes under the host's derived-data root, else the walk") {
+  const test::TempDir tmp("scatter_scene_ddc");
+  std::string text = scene_text();
+  const std::string named = R"("meshes":"rocks",)";
+  const usize at = text.find(named);
+  REQUIRE(at != std::string::npos);
+  text.erase(at, named.size());
+  const std::string scene_path = tmp.file("scene.json");
+  REQUIRE(write_text(scene_path, text));
+  const std::string root = tmp.file("game-ddc");
+  SceneDesc desc;
+  desc.ddc = root;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(scene_path, desc, error), error);
+  REQUIRE(desc.meshes.size() == 2);
+  CHECK(io::parent_path(desc.meshes[0]) == io::join_path(root, "scatter"));
+  CHECK(io::exists(desc.meshes[0]));
+  CHECK_FALSE(io::exists(tmp.file("scatter")));
+
+  SceneDesc bare;
+  REQUIRE_MESSAGE(read_scene_file(scene_path, bare, error), error);
+  REQUIRE(bare.meshes.size() == 2);
+  CHECK(io::parent_path(bare.meshes[0]) == io::join_path(io::parent_path(scene_path), "scatter"));
+  CHECK(io::exists(bare.meshes[0]));
+  // The same rock is the same bytes, so the same file name in either place.
+  CHECK(io::file_name(bare.meshes[0]) == io::file_name(desc.meshes[0]));
+}
+
 TEST_CASE("scatter: a scene's layer is read as instances of one rock standing on its ground") {
   const test::TempDir tmp("scatter_scene");
   const std::string scene_path = tmp.file("scene.json");

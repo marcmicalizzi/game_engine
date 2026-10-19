@@ -73,7 +73,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   std::string why;
   if (!entry->placer.open(layer, context.dir, context.world_seed, &why))
     return fail(where + ": " + why);
-  if (!kind_meshes(layer, context.dir, entry->meshes, &why)) return fail(where + ": " + why);
+  if (!kind_meshes(layer, context.dir, entry->meshes, &why, context.ddc))return fail(where + ": " + why);
   *state = entry.release();
   return true;
 }
