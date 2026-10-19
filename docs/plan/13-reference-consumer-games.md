@@ -7,6 +7,8 @@ Status: recorded 15 September 2026 from the project owner's descriptions (the se
 
 [§13.7](#137-reference-interactions) adds **reference interactions**: single moments from games outside the roadmap that the engine must nonetheless support, recorded so that a capability is judged against something specific rather than against its own abstraction.
 
+**Status note (2026-10-19, roadmap P48):** the owner's third game, a fantasy RPG in its own repository on the same terms as Desert Survival ([§13.1](#concept)), is not a reference game here; what it asks of the engine — villages, buildings, and architecture in and between very large trees — is planned in [14 — Structures](14-structures.md), with its proof of concept and roadmap rows.
+
 Where the desert asks how cheaply the engine can represent enormous sparse space, Island City asks how much complexity the engine can manage when almost everything nearby matters. Together they cover the risk row "engine generality without a game" ([10 §10.4](10-roadmap-risks.md#104-major-technical-risks)).
 
 ## 13.1 Consumer A — Desert Survival
