@@ -1574,13 +1574,60 @@ struct FlythroughOutput @version(2) {
   offers: string[] @since(2)
 }
 
+/// One animated instance at a run's end (`FlythroughAnimation.animated`): what a game's test pins.
+/// The three hashes are hex u64s over the player's clip ids, over its playhead (time, rate, fade)
+/// as bits, and over the bytes of the joint matrices the last frame handed the renderer for it — an
+/// empty run (LOD2, LOD3: the rest pose) hashes as nothing. Functions of the clock's ticks alone.
+struct AnimatedInstance @version(1) {
+  /// The scene instance.
+  instance: u32 = 0
+  /// The clip it was attached with, by its library name ("bar/bend").
+  clip: string
+  /// Its animation LOD tier at the end, 0 (finest) to 3.
+  tier: u32 = 0
+  clip_hash: string
+  playhead_hash: string
+  pose_hash: string
+}
+
+/// The animated world's block of a summary (`FlythroughSummary.animation`, and the windowed summary
+/// line's `anim`).
+struct FlythroughAnimation @version(1) {
+  /// Whether the camera drives the tiers (`--anim-lod`), and the band scale (`--anim-lod-scale`).
+  on: bool = true
+  scale: f64 = 1
+  /// Instances animated.
+  instances: u32 = 0
+  /// The population by tier at the end, and the tier changes over the run.
+  tiers: u32[]
+  promotions: u32 = 0
+  demotions: u32 = 0
+  deferred: u32 = 0
+  /// CPU milliseconds a frame: `tick` (the world's steps) and `lod` (the tier assignments).
+  ms: json
+  /// What the world stepped by: "ticks" (a session's simulation tick), "frames" (the frame index,
+  /// one step a frame), or "none" (a flight, which draws its characters at rest).
+  clock: string
+  /// That clock's rate, the last value of it the world was brought up to, and the world's steps of
+  /// 1/60 s by then: `steps = clock_ticks * 60 / clock_hz`.
+  clock_hz: u32 = 0
+  clock_ticks: u64 = 0
+  steps: u64 = 0
+  /// Over every instance's three hashes, in instance order.
+  hash: string
+  animated: AnimatedInstance[]
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
 ///
 /// Version 12: `device`, the GPU the run drew on, and `frame_loop`, what the frame loop allocated
 /// (`FrameLoopAllocations`): what a frame budget is checked against and on
 /// (docs/subsystems/bench.md, "Frame budgets").
-struct FlythroughSummary @version(13) {
+///
+/// Version 14: `animation`, the animated world's block (`FlythroughAnimation`, declared above it
+/// because a type is named after it is declared).
+struct FlythroughSummary @version(14) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1678,4 +1725,8 @@ struct FlythroughSummary @version(13) {
   /// The participating medium a frame pass drew (docs/subsystems/volumetrics.md): its visibility, its
   /// froxel grid, the cloud march's resolution, the wind it read and what it cost. Null without one.
   medium: json @since(13)
+  /// The animated world (`engine-view --animate`, a scene's `animation` blocks; docs/subsystems/apps.md,
+  /// "Animation in a session"): its LOD, its clock, and per animated instance the hashes of its clip,
+  /// playhead and drawn pose at the run's end. Null when nothing animates.
+  animation: FlythroughAnimation? @since(14)
 }

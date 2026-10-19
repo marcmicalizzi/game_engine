@@ -583,6 +583,16 @@ bool AnimationSystem::joint_run(const Id128& entity, u32& first, u32& count) con
   return true;
 }
 
+bool AnimationSystem::player(const Id128& entity, AnimationPlayer& out) const {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  const AnimationPlayer* player = found.try_get<AnimationPlayer>();
+  if (player == nullptr) return false;
+  out = *player;
+  return true;
+}
+
 void AnimationSystem::set_tier(flecs::entity entity, u8 tier) { apply_tier(entity, tier); }
 
 void AnimationSystem::set_tier(const Id128& entity, u8 tier) {

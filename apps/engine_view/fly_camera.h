@@ -330,6 +330,10 @@ class FlySession {
     observer_ = observer;
     observer_user_ = user;
   }
+  // The observer set now, so a second one can chain it: the animated world's clock (animation.h,
+  // `AnimationTicks`) runs after the game's on the same tick, and calls it first.
+  TickObserver tick_observer() const noexcept { return observer_; }
+  void* tick_observer_user() const noexcept { return observer_user_; }
   // The map must outlive the session. False when it lacks an action the camera reads. A header
   // that starts walking (`walking`) puts the walker on the ground under the start camera here, at
   // tick 0, as a replay of it does.

@@ -96,6 +96,9 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
             " meshes for " + std::to_string(file.water.size()) + " bodies";
     return false;
   }
+  // After the authored meshes and instances, and that order is nothing a host may rely on or need
+  // to predict: engine-view's clip loader asks each mesh's `origin` and never opens a generated
+  // one as a clip source (docs/subsystems/apps.md, "Mixed scenes"), whatever its index.
   for (u32 k = 0; k < file.water.size(); ++k) {
     const u32 mesh = out.meshes.size();
     out.meshes.push_back(placed.meshes[k].path);

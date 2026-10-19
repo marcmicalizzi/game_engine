@@ -572,8 +572,8 @@ TEST_CASE("cluster lod: a rigid part first keeps a later part's skin stream in b
   // Rigid alone still merges with no stream, so a rigid scene pays nothing.
   const ClusterLodMesh rigid_only[2] = {rigid, rigid};
   ClusterLodMesh plain;
-  REQUIRE(merge_cluster_meshes(std::span<const ClusterLodMesh>(rigid_only, 2), plain, parts,
-                               &error));
+  REQUIRE(
+      merge_cluster_meshes(std::span<const ClusterLodMesh>(rigid_only, 2), plain, parts, &error));
   CHECK(plain.mesh.skin.empty());
   CHECK(plain.mesh.skin_joint_count == 0);
 }
