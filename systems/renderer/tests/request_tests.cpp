@@ -94,6 +94,7 @@ const Row k_settings_rows[] = {
     ENGINE_ROW(rt_templates, "rt_templates", ""),
     ENGINE_ROW(rt_budget_mib, "rt_budget_mib", ""),
     ENGINE_ROW(share_textures, "share_textures", ""),
+    ENGINE_ROW(water_quality, "water_quality", ""),
     ENGINE_ROW(time_rate, "time_rate", ""),
     ENGINE_ROW(time_rate_live, nullptr,
                "a window's: the levels exist so the , and . keys can set the rate going; a call "
@@ -154,6 +155,7 @@ const WireValue k_wire_values[] = {
     {"shadow_map", R"({"shadow_map":1024})"},
     {"shadow_distance", R"({"shadow_distance":100})"},
     {"share_textures", R"({"share_textures":false})"},
+    {"water_quality", R"({"water_quality":"low"})"},
     {"time_rate", R"({"time_rate":86400})"},
     {"exposure_ev", R"({"exposure_ev":1.5})"},
     {"exposure_ev100", R"({"exposure_ev100":12})"},
@@ -218,8 +220,8 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
                           s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
-                          s45, s46, s47, s48] = settings;
-  static_assert(std::size(k_settings_rows) == 49, "one row per RenderSettings field");
+                          s45, s46, s47, s48, s49] = settings;
+  static_assert(std::size(k_settings_rows) == 50, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;

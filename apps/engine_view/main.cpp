@@ -158,6 +158,7 @@ constexpr const char* k_usage =
     "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
     "                   [--time-of-day <hours>] [--exposure <stops>] [--exposure-ev100 <ev>]\n"
     "                   [--ground-time <game s>] [--no-texture-sharing] [--dither on|off]\n"
+    "                   [--water-quality low|high]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
@@ -244,6 +245,10 @@ constexpr const char* k_usage =
     "                   at its output encode, a function of the pixel alone, so a slow gradient (a\n"
     "                   dusk sky) is a fine grain instead of bands (default on; renderer.md, \"The\n"
     "                   output encode\"). render.*'s settings.dither\n"
+    "  --water-quality low|high  high (the default): water is translucent by volume, the ground\n"
+    "                   under it seen through the surface, dimmed and tinted by each body's\n"
+    "                   absorption and scattering; low: the surface alone, its bottom colour\n"
+    "                   painted by the depth (water.md). render.*'s settings.water_quality\n"
     "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
     "                   they stand where frame 0 puts them)\n"
     "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
@@ -3779,6 +3784,12 @@ int run_view(int argc, char** argv) {
       options.settings.dither = value == "on";
     } else if (a == "--dump-action-map") {
       if (!next_value(argc, argv, i, a, options.dump_action_map)) return k_exit_usage;
+    } else if (a == "--water-quality") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!renderer::parse_water_quality(value, options.settings.water_quality)) {
+        std::fprintf(stderr, "engine-view: --water-quality expects low or high\n");
+        return k_exit_usage;
+      }
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);

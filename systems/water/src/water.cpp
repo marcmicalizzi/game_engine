@@ -183,6 +183,20 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
   if (!(block.roughness >= 0.02f && block.roughness <= 1.0f))
     return fail("its roughness must be within [0.02, 1]");
   if (!finite(block.direction_deg)) return fail("its direction_deg is not a number");
+  // The volume tier's optics (water.md, "Translucent by volume"): rates per metre that cannot be
+  // negative, a share, and a sediment load.
+  const auto per_metre = [](const std::optional<Vec3>& v) {
+    return !v.has_value() || (v->x >= 0.0f && v->y >= 0.0f && v->z >= 0.0f && finite(v->x) &&
+                              finite(v->y) && finite(v->z));
+  };
+  if (!per_metre(block.absorption))
+    return fail("its absorption must be three rates per metre, none negative");
+  if (!per_metre(block.scattering))
+    return fail("its scattering must be three rates per metre, none negative");
+  if (!(block.transmission >= 0.0f && block.transmission <= 1.0f))
+    return fail("its transmission must be within [0, 1]");
+  if (!(block.turbidity >= 0.0f) || !finite(block.turbidity))
+    return fail("its turbidity must not be negative");
   out.shore_m = block.shore_m;
   return true;
 }

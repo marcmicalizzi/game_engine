@@ -131,4 +131,98 @@ inline Dvec3 radiance(const Params& w, Dvec3 n, Dvec3 v, double from_edge, doubl
   return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
 }
 
+// ---- the volume tier (water.slang, "the volume tier") -------------------------------------------
+
+inline constexpr double k_diffuse_path = 1.25;
+
+struct Optics {
+  Dvec3 extinction;
+  Dvec3 scattering;
+  double transmission = 1.0;
+};
+
+// water.slang's `water_optics_of`, of the entry after the water material.
+inline Optics optics_of(const gfx::ResolveMaterial& m) {
+  Optics o;
+  o.extinction = brdf_ref::dvec3(m.albedo);
+  o.transmission = static_cast<double>(m.albedo.w);
+  o.scattering = brdf_ref::dvec3(m.emissive);
+  return o;
+}
+
+struct Path {
+  Dvec3 t;
+  double length = 0.0;
+  double depth = 0.0;
+};
+
+// water.slang's `water_path`: the view refracted at `n`, run down to the bottom's plane, whose
+// depth here is `depth` and whose slope over body-local (x, z) is (`slope_x`, `slope_z`).
+inline Path path(Dvec3 n, Dvec3 v, double depth, double slope_x, double slope_z) {
+  const double cos_i = std::max(brdf_ref::dot(n, v), brdf_ref::k_min_n_dot_v);
+  const double eta = 1.0 / k_ior;
+  const double cos_t = std::sqrt(std::max(1.0 - eta * eta * (1.0 - cos_i * cos_i), 0.0));
+  Path p;
+  p.t = brdf_ref::normalize((-v) * eta + n * (eta * cos_i - cos_t));
+  const double down = std::max(-p.t.y, 1e-3);
+  const double den = std::max(down - (slope_x * p.t.x + slope_z * p.t.z), 0.25 * down);
+  p.length = std::max(depth, 0.0) / den;
+  p.depth = p.length * down;
+  return p;
+}
+
+inline double gather(double a, double s) { return a > 1e-5 ? (1.0 - std::exp(-a * s)) / a : s; }
+inline Dvec3 gather3(Dvec3 a, double s) { return {gather(a.x, s), gather(a.y, s), gather(a.z, s)}; }
+inline Dvec3 exp3(Dvec3 a) { return {std::exp(a.x), std::exp(a.y), std::exp(a.z)}; }
+
+// water.slang's `water_sun_under`.
+inline Dvec3 sun_under(Dvec3 sun_dir, double& cos_l) {
+  const double up = std::max(sun_dir.y, 0.0);
+  const double eta = 1.0 / k_ior;
+  cos_l = std::sqrt(std::max(1.0 - eta * eta * (1.0 - up * up), 1e-4));
+  return {sun_dir.x * eta, cos_l, sun_dir.z * eta};
+}
+
+// water.slang's `water_volume`.
+inline Dvec3 volume(const Optics& o, const Path& p, Dvec3 n_b, Dvec3 albedo, Dvec3 sun_dir,
+                    Dvec3 sun, double sun_surface, double sun_bottom, Dvec3 ambient) {
+  double cos_l = 1.0;
+  const Dvec3 l = sun_under(sun_dir, cos_l);
+  const Dvec3 sun_in = sun * (1.0 - schlick(std::max(sun_dir.y, 0.0)));
+  const Dvec3 sky_in = ambient * (1.0 - k_f0);
+  const Dvec3 down_sun = exp3(o.extinction * (-p.depth / cos_l));
+  const Dvec3 down_sky = exp3(o.extinction * (-p.depth * k_diffuse_path));
+  const Dvec3 lit =
+      sun_in * (sun_bottom * std::max(brdf_ref::dot(n_b, l), 0.0) / brdf_ref::k_pi) * down_sun +
+      sky_in * down_sky;
+  const Dvec3 bottom = albedo * lit * exp3(o.extinction * (-p.length)) * o.transmission;
+  const double mu = p.length > 0.0 ? p.depth / p.length : 1.0;
+  const Dvec3 a_sun = o.extinction * (1.0 + mu / cos_l);
+  const Dvec3 a_sky = o.extinction * (1.0 + mu * k_diffuse_path);
+  const Dvec3 scattered =
+      o.scattering * (sun_in * (sun_surface / (4.0 * brdf_ref::k_pi)) * gather3(a_sun, p.length) +
+                      sky_in * 0.25 * gather3(a_sky, p.length));
+  return bottom + scattered;
+}
+
+// water.slang's `water_radiance_volume`: `radiance` with `under` in place of the painted bottom.
+inline Dvec3 radiance_volume(const Params& w, Dvec3 n, Dvec3 v, double from_edge, Dvec3 sun_dir,
+                             Dvec3 sun, Dvec3 sky, Dvec3 under) {
+  const double shore = w.shore > 0.0 ? brdf_ref::clamp01(from_edge / w.shore) : 1.0;
+  const double n_dot_v = std::max(brdf_ref::dot(n, v), brdf_ref::k_min_n_dot_v);
+  const double fresnel = schlick(n_dot_v);
+  Dvec3 glitter{};
+  const double n_dot_l = brdf_ref::dot(n, sun_dir);
+  if (n_dot_l > 0.0) {
+    const Dvec3 half_sum = sun_dir + v;
+    const Dvec3 h = brdf_ref::dot(half_sum, half_sum) > 1e-12 ? brdf_ref::normalize(half_sum) : n;
+    const double alpha = brdf_ref::alpha_of(w.roughness);
+    const double n_dot_h = brdf_ref::clamp01(brdf_ref::dot(n, h));
+    const double v_dot_h = brdf_ref::clamp01(brdf_ref::dot(v, h));
+    glitter = sun * (schlick(v_dot_h) * brdf_ref::d_ggx(n_dot_h, alpha) *
+                     brdf_ref::v_smith(n_dot_v, n_dot_l, alpha) * n_dot_l);
+  }
+  return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
+}
+
 }  // namespace engine::water_ref
