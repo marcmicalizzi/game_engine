@@ -461,8 +461,11 @@ The same parameters give the same bytes on every toolchain and at either CPU bas
 computes in f64 with IEEE `+ - * /` and `sqrt` only, contraction is off tree-wide (ADR-0035), every
 sine and cosine is `det::sin`/`det::cos` (`core/math/deterministic.h`), its randomness is a
 splitmix64 over the seed with one stream per part (so a draw added to the crown never moves the
-trunk), and it runs on one thread. The default palm's mesh is pinned by hash in
-`tests/flora_tests.cpp` ("the committed bytes on every toolchain"); a change that moves it bumps
+trunk), and it runs on one thread. **Every draw is its own statement**: two draws in one call's
+arguments are taken in the compiler's order — Clang left to right, MSVC and GCC right to left — and
+that is how the first broadleaf hashed one way on Clang and another on the rest until the Linux
+container caught it (2026-10-18). The default palm's mesh, the broadleaf's and the conifer's (mesh
+and motion contract) are pinned by hash in `tests/flora_tests.cpp`; a change that moves one bumps
 `flora::k_flora_version` and the number in the same commit.
 
 **Owned data.** The species' parameter types and the solver. Nothing persistent: a palm is derived
