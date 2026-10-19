@@ -701,6 +701,7 @@ struct Options {
   // or engine-view's own at its latest revision — and its hash, and exit (apps.md, "The game
   // contract"; roadmap P47). How a game repository pins the map it ships with, by the file.
   std::string dump_action_map;
+  bool time_rate_given = false;  // --time-rate was on the command line
   std::string tunables_file;
   std::string tunable_overrides;
   bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
@@ -1640,7 +1641,10 @@ renderer::OverlayDrawData g_hud_data;
 f32 g_hud_display_scale = 1.0f;
 void set_hud_display_scale(f32 scale) { g_hud_display_scale = scale > 0.0f ? scale : 1.0f; }
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& renderer) {
-  if (g_game == nullptr || g_hud == nullptr || !g_hud->valid()) return nullptr;
+  if (g_game == nullptr) return nullptr;
+  // The ground's surface time this frame draws, for the state file's clock (game_runner.h).
+  g_game->note_surface_time(renderer.scene().ground_time_s());
+  if (g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
   if (renderer.display() != gfx::DisplayEncoding::Sdr) {
     if (!said) {
@@ -1940,6 +1944,14 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
     h.has_game = true;
     h.game_module = g_game->module_name();
     h.game_build = g_game->build();
+    // What the session restored (`--game-state`), carried in the recording so its replay restores
+    // the same and not the file this session overwrites at its end; and the restored pose as the
+    // session's start, unless `--start` says where (roadmap P47).
+    if (g_game->restored_json().is_object()) h.game_restored = g_game->restored_json();
+    if (const view::GameRunner::SavedSession* saved = g_game->restored_session();
+        saved != nullptr && !options.start_given) {
+      view::GameRunner::apply_pose(*saved, h);
+    }
   }
 #endif
   return h;
@@ -3579,6 +3591,7 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.time_rate = v;
+      options.time_rate_given = true;  // a restored game state's rate does not override it
     } else if (a == "--terrain-rings") {
       options.settings.terrain_rings = true;
     } else if (a == "--terrain-tiles") {
@@ -4506,6 +4519,15 @@ int run_view(int argc, char** argv) {
     view::GameRunner::Config config;
     config.module = options.game;
     config.state_file = options.game_state;
+    // A replay of a `--game` recording restores what the live session restored — the header's
+    // `game.restored`, or nothing for one that started fresh — and never the state file, which the
+    // live session overwrote at its end (fly_camera.h `SessionHeader::game_restored`).
+    if (interactive.replay && interactive.header.has_game) {
+      config.restore_from_header = true;
+      config.restore = interactive.header.game_restored.is_object()
+                           ? &interactive.header.game_restored
+                           : nullptr;
+    }
     std::string game_error;
     // The scene's props by name (game_props.h), before the module loads: its `on_load` names them,
     // and the scene itself is loaded only once there is a device. One schema read of the file.
@@ -4533,6 +4555,17 @@ int run_view(int argc, char** argv) {
                                 "'; another module would walk the recording somewhere else, so "
                                 "it is refused");
     }
+    // **The restored clock's ground** (game_runner.h `SavedSession`; roadmap P47): the scene's
+    // ground at the time the saved run's last frame drew it and the time-lapse at its rate, unless
+    // the command line says otherwise — before the scene is read, which builds the ground at it. The
+    // sky's clock and the walker's scales are the runner's own (`set_clock`, `set_session`), and the
+    // pose is the live header's (`live_header`); a replay's start is its recording's.
+    if (const view::GameRunner::SavedSession* saved = game.restored_session(); saved != nullptr) {
+      if (!options.ground_time_s.has_value() && saved->has_surface_time && !options.scene.empty())
+        options.ground_time_s = saved->surface_time_s;
+      if (!options.time_rate_given) options.settings.time_rate = saved->time_rate;
+    }
+    game.set_time_rate(options.settings.time_rate);
   }
   // The HUD's ImGui context, for a game only: without one nothing of it exists.
   view::GameHudOverlay hud;

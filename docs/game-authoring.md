@@ -166,6 +166,10 @@ to run on an older host checks `ENGINE_HOTLOAD_HAS(api, hud_element)` (the helpe
   pixels of a 1080-pixel-high picture at 100 %**; the host scales them and keeps the font legible,
   so a module never sizes anything to the window. `walk_poc`'s `[E] Pick up` is the example:
   centred, 80 px below the middle, 28 px, a 2 px outline, no panel.
+- **A saved run resumes where it was** (not an ABI change: the state file's version 2):
+  `--game-state` keeps the walker's pose, its speed scales and the clock beside the module's state
+  and props, and a live session from it starts there with the sky where it stood; a recording of
+  that session carries what it restored, so its replay is a replay whatever the file holds by then.
 - **The report says where each element stood**: `game.hud_elements` lists every element — the
   `hud_text` lines and `hud_meter` meters under the host's reserved ids, then the module's — with
   its last state and `bounds_px`, so a test asserts its prompt was on screen and where without

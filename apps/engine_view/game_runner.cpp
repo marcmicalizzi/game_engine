@@ -216,12 +216,107 @@ struct GameRunner::Impl {
   u32 runs = 1;                            // this session's runs, the first included
   JsonValue results = JsonValue::array();  // the ended runs' results, in order (`new_run`)
   bool restored = false;
+  JsonValue restored_from;  // the object restored from (the file's or the header's), or null
+  // The session block (state file version 2): what was restored, and what the next save writes.
+  SavedSession saved;
+  bool has_saved = false;
+  WorldPos last_eye{};
+  f32 last_yaw = 0.0f;
+  f32 last_pitch = 0.0f;
+  bool last_walking = false;
+  bool have_pose = false;
+  f64 surface_time_s = 0.0;
+  bool have_surface_time = false;
+  f64 time_rate = 0.0;
   u32 reloads = 0;
   u32 refused_reloads = 0;
   std::string last_refusal;
   u64 placement_queries = 0;
   u64 placement_hits = 0;
   u64 placement_refused = 0;  // radii past k_max_placement_query_m
+
+  // ---- the state file's session block ----
+  static JsonValue session_json(const Impl& g) {
+    JsonValue s = JsonValue::object();
+    s.set("version", k_session_version);
+    JsonValue position = JsonValue::array();
+    for (const f64 v : {g.last_eye.x, g.last_eye.y, g.last_eye.z})
+      position.push_back(JsonValue(v));
+    s.set("position", std::move(position));
+    s.set("yaw", JsonValue(g.last_yaw));
+    s.set("pitch", JsonValue(g.last_pitch));
+    s.set("walking", g.last_walking);
+    s.set("speed_scale", JsonValue(g.speed_scale));
+    s.set("sprint_scale", JsonValue(g.sprint_scale));
+    JsonValue clock = JsonValue::object();
+    clock.set("sun_time_s", g.sun_offset_s + g.day_s);
+    clock.set("sun_offset_s", g.sun_offset_s);
+    clock.set("day_s", g.day_s);
+    clock.set("sun_rate", g.sun_rate);
+    clock.set("ground_time_s", g.ground_time_s);
+    if (g.have_surface_time) clock.set("surface_time_s", g.surface_time_s);
+    clock.set("time_rate", g.time_rate);
+    s.set("clock", std::move(clock));
+    return s;
+  }
+  static bool read_session(const JsonValue& s, SavedSession& out, std::string& why) {
+    u64 version = 0;
+    const JsonValue* v = s.find("version");
+    if (!s.is_object() || v == nullptr || !v->get_u64(version)) {
+      why = "not an object with a version";
+      return false;
+    }
+    if (version != k_session_version) {
+      why = "version " + std::to_string(version) + ", and this build reads " +
+            std::to_string(k_session_version);
+      return false;
+    }
+    const auto number = [&](const JsonValue& o, const char* key, f64& to) {
+      const JsonValue* f = o.find(key);
+      return f != nullptr && f->get_f64(to) && std::isfinite(to);
+    };
+    const JsonValue* position = s.find("position");
+    f64 p[3] = {0.0, 0.0, 0.0};
+    if (position == nullptr || !position->is_array() || position->size() != 3) {
+      why = "no position";
+      return false;
+    }
+    for (u32 i = 0; i < 3; ++i) {
+      if (!(*position)[i].get_f64(p[i]) || !std::isfinite(p[i])) {
+        why = "a position that is not three finite numbers";
+        return false;
+      }
+    }
+    f64 yaw = 0.0, pitch = 0.0, speed = 1.0, sprint = 1.0;
+    const JsonValue* walking = s.find("walking");
+    const JsonValue* clock = s.find("clock");
+    if (!number(s, "yaw", yaw) || !number(s, "pitch", pitch) || !number(s, "speed_scale", speed) ||
+        !number(s, "sprint_scale", sprint) || walking == nullptr || !walking->is_bool() ||
+        clock == nullptr || !clock->is_object()) {
+      why = "the yaw, pitch, walking, speed scales or clock are missing";
+      return false;
+    }
+    out.eye = WorldPos{p[0], p[1], p[2]};
+    if (!world_cell_valid(out.eye)) {
+      why = "a position outside the world";
+      return false;
+    }
+    out.yaw = static_cast<f32>(yaw);
+    out.pitch = static_cast<f32>(pitch);
+    out.walking = walking->as_bool();
+    const auto held = [](f64 x) { return static_cast<f32>(x < 0.0 ? 0.0 : x > 4.0 ? 4.0 : x); };
+    out.speed_scale = held(speed);
+    out.sprint_scale = held(sprint);
+    if (!number(*clock, "sun_time_s", out.sun_time_s) ||
+        !number(*clock, "sun_rate", out.sun_rate) ||
+        !number(*clock, "ground_time_s", out.ground_time_s) ||
+        !number(*clock, "time_rate", out.time_rate)) {
+      why = "the clock's sun_time_s, sun_rate, ground_time_s or time_rate is missing";
+      return false;
+    }
+    out.has_surface_time = number(*clock, "surface_time_s", out.surface_time_s);
+    return true;
+  }
 
   // ---- HostApi's game services (GameServices) ----
   static hotload::Result action(void* user, std::string_view name, u32* out_bit, std::string* why) {
@@ -505,25 +600,43 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   g.view = host.bind(g.state);
 
   // --game-state: the state as the last run left it, through the descriptor (unknown fields
-  // ignored, missing ones at their defaults: the reload's rules).
-  if (!config.state_file.empty() && io::exists(config.state_file)) {
+  // ignored, missing ones at their defaults: the reload's rules). A replay of a `--game` recording
+  // restores what its header says the live session restored, and never the file.
+  JsonValue file;
+  bool have_file = false;
+  std::string source = "--game-state " + config.state_file;
+  if (config.restore_from_header) {
+    source = "the recording's restored state";
+    if (config.restore != nullptr && config.restore->is_object()) {
+      file = *config.restore;
+      have_file = true;
+    }
+    if (!config.state_file.empty() && io::exists(config.state_file)) {
+      std::fprintf(stderr,
+                   "engine-view: game: replaying a --game recording restores what the recording "
+                   "restored, not %s (which is written at the end)\n",
+                   config.state_file.c_str());
+    }
+  } else if (!config.state_file.empty() && io::exists(config.state_file)) {
     std::string text;
-    JsonValue file;
     if (io::read_file(config.state_file, text) != io::Status::Ok || !parse_json(text, file).ok ||
         !file.is_object()) {
       return refuse("--game-state " + config.state_file + " is not a JSON object");
     }
+    have_file = true;
+  }
+  if (have_file) {
     const JsonValue* format = file.find("format");
     const JsonValue* type = file.find("type");
     const JsonValue* saved = file.find("state");
     const schema::TypeInfo* state_type = host.state_type();
     if (format == nullptr || !format->is_string() || format->as_string() != k_state_format ||
         saved == nullptr) {
-      return refuse("--game-state " + config.state_file + " is not an " + k_state_format + " file");
+      return refuse(source + " is not an " + k_state_format + " file");
     }
     if (state_type == nullptr || type == nullptr || !type->is_string() ||
         type->as_string() != std::string_view(state_type->qualified_name)) {
-      return refuse("--game-state " + config.state_file + " holds " +
+      return refuse(source + " holds " +
                     (type != nullptr && type->is_string() ? std::string(type->as_string())
                                                           : std::string("no type")) +
                     ", and the module keeps " +
@@ -532,7 +645,7 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
     schema::ReadContext context;
     context.options.ignore_unknown_fields = true;
     if (!schema::from_json(*state_type, host.context()->state, *saved, context) || !context.ok()) {
-      return refuse("--game-state " + config.state_file + ": " +
+      return refuse(source + ": " +
                     (context.diagnostics.empty() ? std::string("the state did not read")
                                                  : context.diagnostics.front().path + ": " +
                                                        context.diagnostics.front().message));
@@ -542,19 +655,57 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
     if (const JsonValue* props = file.find("props"); props != nullptr) {
       std::string why;
       if (!g.props.from_json(*props, &why)) {
-        return refuse("--game-state " + config.state_file + ": " + why);
+        return refuse(source + ": " + why);
       }
     }
+    // The session (version 2): the walker's pose and scales and the clock. A version 1 file has
+    // none, and its session starts where the flags say; a block of a later version is refused
+    // rather than half read.
+    if (const JsonValue* session = file.find("session"); session != nullptr) {
+      std::string why;
+      if (!Impl::read_session(*session, g.saved, why)) return refuse(source + ": session: " + why);
+      g.has_saved = true;
+    }
+    g.restored_from = file;
     g.restored = true;
   }
   return true;
 }
 
 void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept {
-  impl_->sun_offset_s = sun_offset_s;
-  impl_->sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
-  impl_->ground_time_s = ground_time_s;
+  Impl& g = *impl_;
+  g.sun_offset_s = sun_offset_s;
+  g.sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
+  g.ground_time_s = ground_time_s;
+  // A restored clock: the sky where it stood whatever this session's `--time-of-day` offset is
+  // (the day's seconds are what is left of the saved sky time past it), at the rate the keys had
+  // left it, on the ground time the world's clock stood on.
+  if (g.has_saved) {
+    g.day_s = g.saved.sun_time_s - sun_offset_s;
+    g.sun_rate = g.saved.sun_rate > 0.0 ? g.saved.sun_rate : 0.0;
+    g.ground_time_s = g.saved.ground_time_s;
+  }
 }
+
+const GameRunner::SavedSession* GameRunner::restored_session() const noexcept {
+  return impl_->has_saved ? &impl_->saved : nullptr;
+}
+
+const JsonValue& GameRunner::restored_json() const noexcept { return impl_->restored_from; }
+
+void GameRunner::apply_pose(const SavedSession& saved, SessionHeader& header) noexcept {
+  header.start.position = saved.eye;
+  header.start.yaw = saved.yaw;
+  header.start.pitch = saved.pitch;
+  header.walking = saved.walking;
+}
+
+void GameRunner::note_surface_time(f64 surface_time_s) noexcept {
+  impl_->surface_time_s = surface_time_s;
+  impl_->have_surface_time = true;
+}
+
+void GameRunner::set_time_rate(f64 time_rate) noexcept { impl_->time_rate = time_rate; }
 
 f64 GameRunner::sun_time_s() const noexcept { return impl_->sun_offset_s + impl_->day_s; }
 f64 GameRunner::day_s() const noexcept { return impl_->day_s; }
@@ -577,7 +728,19 @@ const std::string& GameRunner::module_name() const noexcept {
 
 u32 GameRunner::build() const noexcept { return impl_->host ? impl_->host->generation() : 0u; }
 
-void GameRunner::set_session(FlySession* session) noexcept { impl_->session = session; }
+void GameRunner::set_session(FlySession* session) noexcept {
+  Impl& g = *impl_;
+  g.session = session;
+  // The restored speed scales, on the walker before the session's first tick, in a live session
+  // and its replay alike (both restore the same block), so the first tick walks as the saved run's
+  // last did. 1 and 1 — every session that restored nothing — leaves the walker untouched.
+  if (session != nullptr && g.has_saved &&
+      (g.saved.speed_scale != 1.0f || g.saved.sprint_scale != 1.0f)) {
+    g.speed_scale = g.saved.speed_scale;
+    g.sprint_scale = g.saved.sprint_scale;
+    session->set_walk_scale(g.speed_scale, g.sprint_scale);
+  }
+}
 
 void GameRunner::observe(void* user, const FlySession& session, const input::InputState& input) {
   GameRunner& self = *static_cast<GameRunner*>(user);
@@ -635,6 +798,12 @@ void GameRunner::tick(const GameTickInput& in) {
   t.world_time_s = g.ground_time_s + t.sun_time_s;
   const f64 days = t.world_time_s / 86'400.0;
   t.day_fraction = days - std::floor(days);
+  // The pose the state file keeps (`SavedSession`), the tick's whether or not the module runs.
+  g.last_eye = in.eye;
+  g.last_yaw = in.heading;
+  g.last_pitch = in.pitch;
+  g.last_walking = in.walking;
+  g.have_pose = true;
   if (g.ended) return;  // the run is over: the module said so, or failed
   t.tick = in.tick;
   t.dt = g.dt;
@@ -719,12 +888,19 @@ bool GameRunner::finish(std::string* error) {
   if (!g.config.state_file.empty() && g.host->state_type() != nullptr) {
     JsonValue file = JsonValue::object();
     file.set("format", k_state_format);
-    file.set("version", static_cast<u32>(1));
+    file.set("version", k_state_version);
     file.set("module", g.host->module_name());
     file.set("type", g.host->state_type()->qualified_name);
     file.set("tick", g.last_tick);
     file.set("state", state_json());
     file.set("props", g.props.to_json());
+    // The session (version 2): only once a tick has said where the walker is, so a run that never
+    // ticked does not save a pose of zeros over a good one.
+    if (g.have_pose) {
+      file.set("session", Impl::session_json(g));
+    } else if (g.has_saved && g.restored_from.find("session") != nullptr) {
+      file.set("session", *g.restored_from.find("session"));
+    }
     const io::Status status = io::write_file(
         g.config.state_file, write_json(file, JsonWriteOptions{.pretty = true}) + "\n");
     if (status != io::Status::Ok) {
@@ -766,6 +942,9 @@ JsonValue GameRunner::summary_json() const {
   out.set("error", g.error);
   out.set("state_file", g.config.state_file);
   out.set("restored", g.restored);
+  out.set("restored_session", g.has_saved);
+  // What the next save writes as the session block (state file version 2).
+  if (g.have_pose) out.set("session", Impl::session_json(g));
   out.set("state", state_json());
   JsonValue hud = g.hud.to_json();
   hud.set("element_sets", g.hud_sets);

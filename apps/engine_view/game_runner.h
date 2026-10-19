@@ -161,7 +161,46 @@ class GameRunner {
     std::string state_file;  // --game-state: restored at start when present, saved at finish
     // Where the per-load copies go; empty: beside the module ("<module>.hotload").
     std::string shadow_directory;
+    // **A replay of a `--game` recording restores from its header**, never from `state_file`
+    // (which the live session overwrote at its end): `restore_from_header` set, and `restore` the
+    // header's `game.restored` object or null for a recording that started fresh. Unset, the state
+    // file restores when it exists.
+    bool restore_from_header = false;
+    const JsonValue* restore = nullptr;
   };
+
+  // **The session as the state file keeps it** (version 2 of `engine.game.state`, 2026-10-18,
+  // roadmap P47): where the walker stood and looked, whether it walked, its speed scales, and the
+  // clock — the sky's time and rate, the ground's time and the time-lapse's rate. A file of
+  // version 1 has none, and a session from it starts where its flags say, as before.
+  struct SavedSession {
+    WorldPos eye{};  // the camera, world metres (the eye: a walker is dropped from it to its feet)
+    f32 yaw = 0.0f;
+    f32 pitch = 0.0f;
+    bool walking = false;
+    f32 speed_scale = 1.0f;
+    f32 sprint_scale = 1.0f;
+    f64 sun_time_s = 0.0;  // the sky's clock as the frame drew it: offset plus the day's seconds
+    f64 sun_rate = 0.0;    // game seconds a second, as the keys had left it
+    f64 ground_time_s = 0.0;   // the ground's surface time the world's clock stands on
+    f64 surface_time_s = 0.0;  // the moving ground's time the last frame drew (the time-lapse's)
+    bool has_surface_time = false;
+    f64 time_rate = 0.0;  // the time-lapse's rate (`--time-rate`)
+  };
+  static constexpr u32 k_state_version = 2;
+  static constexpr u32 k_session_version = 1;
+  // The restored session, or null (no file, a version 1 file, a replay of a fresh recording).
+  const SavedSession* restored_session() const noexcept;
+  // The object the runner restored from (the file's, or the header's), for a live recording's
+  // header (`SessionHeader::game_restored`); null when it restored nothing.
+  const JsonValue& restored_json() const noexcept;
+  // The restored pose onto a live session's header: its start and whether it starts walking. A
+  // replay's header is the recording's and is never changed.
+  static void apply_pose(const SavedSession& saved, SessionHeader& header) noexcept;
+  // What the runner cannot see from a tick and the state file keeps: the ground's surface time as
+  // the frame drew it (once a frame), and the time-lapse's rate (once).
+  void note_surface_time(f64 surface_time_s) noexcept;
+  void set_time_rate(f64 time_rate) noexcept;
   // Loads the module through `hotload::ModuleHost` (refusals in the host's own words), resolves
   // its `game_tick`, and restores the state file when there is one. `map` is the session's, which
   // the declared actions are looked up in; an action the map lacks (a log recorded before revision
