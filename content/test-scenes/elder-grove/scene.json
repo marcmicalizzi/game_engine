@@ -1,0 +1,307 @@
+{
+  "format": "engine.scene.v1",
+  "name": "elder-grove",
+  "camera_path": "camera-path.json",
+  "description": "Two ancient trees of the flora capability's megaflora regime (engine.flora.Ancient) 60 m apart - one with its major limbs near level, one with them rising at 20 degrees - with four willows, eight birches and an orchard row of seven, on a nearly flat ground, and a camera path from the ground up into the canopy. Every tree is solved from its parameters and built through the derived-data cache (README.md).",
+  "terrain": {
+    "size": 129,
+    "extent": 256,
+    "seed": 7,
+    "dune_height": 0.1,
+    "dune_wavelength": 40,
+    "generator": "Waves"
+  },
+  "meshes": [
+    {
+      "name": "ancient",
+      "path": "../../flora/ancient.flora.json"
+    },
+    {
+      "name": "ancient-rising",
+      "path": "../../flora/ancient-rising.flora.json"
+    },
+    {
+      "name": "willow",
+      "path": "../../flora/willow.flora.json"
+    },
+    {
+      "name": "birch",
+      "path": "../../flora/birch.flora.json"
+    },
+    {
+      "name": "birch-single",
+      "path": "../../flora/birch-single.flora.json"
+    },
+    {
+      "name": "orchard-pruned",
+      "path": "../../flora/orchard-pruned.flora.json"
+    },
+    {
+      "name": "orchard-apple",
+      "path": "../../flora/orchard-apple.flora.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "elder A: ancient, limbs near level",
+      "translation": [
+        -30.0,
+        0.0,
+        0.0
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 1,
+      "name": "elder B: ancient-rising, limbs at 20 degrees",
+      "translation": [
+        30.0,
+        0.0,
+        0.0
+      ],
+      "ground": true,
+      "yaw_deg": 200
+    },
+    {
+      "mesh": 2,
+      "name": "willow 1",
+      "translation": [
+        -10.0,
+        0.0,
+        38.0
+      ],
+      "ground": true,
+      "yaw_deg": 30
+    },
+    {
+      "mesh": 2,
+      "name": "willow 2",
+      "translation": [
+        14.0,
+        0.0,
+        44.0
+      ],
+      "ground": true,
+      "yaw_deg": 120,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "willow 3",
+      "translation": [
+        -48.0,
+        0.0,
+        -30.0
+      ],
+      "ground": true,
+      "yaw_deg": 250,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "willow 4",
+      "translation": [
+        52.0,
+        0.0,
+        -34.0
+      ],
+      "ground": true,
+      "yaw_deg": 80
+    },
+    {
+      "mesh": 3,
+      "name": "birch 1",
+      "translation": [
+        -6.0,
+        0.0,
+        -28.0
+      ],
+      "ground": true,
+      "yaw_deg": 10
+    },
+    {
+      "mesh": 4,
+      "name": "birch 2",
+      "translation": [
+        4.0,
+        0.0,
+        -34.0
+      ],
+      "ground": true,
+      "yaw_deg": 70
+    },
+    {
+      "mesh": 3,
+      "name": "birch 3",
+      "translation": [
+        10.0,
+        0.0,
+        -24.0
+      ],
+      "ground": true,
+      "yaw_deg": 140,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "birch 4",
+      "translation": [
+        -58.0,
+        0.0,
+        22.0
+      ],
+      "ground": true,
+      "yaw_deg": 200,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "birch 5",
+      "translation": [
+        60.0,
+        0.0,
+        28.0
+      ],
+      "ground": true,
+      "yaw_deg": 260
+    },
+    {
+      "mesh": 4,
+      "name": "birch 6",
+      "translation": [
+        -20.0,
+        0.0,
+        52.0
+      ],
+      "ground": true,
+      "yaw_deg": 320,
+      "scale": [
+        0.95,
+        0.95,
+        0.95
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "birch 7",
+      "translation": [
+        24.0,
+        0.0,
+        58.0
+      ],
+      "ground": true,
+      "yaw_deg": 20,
+      "scale": [
+        1.05,
+        1.05,
+        1.05
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "birch 8",
+      "translation": [
+        0.0,
+        0.0,
+        -46.0
+      ],
+      "ground": true,
+      "yaw_deg": 100
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 1",
+      "translation": [
+        -24.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 47
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 2",
+      "translation": [
+        -16.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 94
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 3",
+      "translation": [
+        -8.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 141
+    },
+    {
+      "mesh": 6,
+      "name": "orchard row 4",
+      "translation": [
+        0.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 188
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 5",
+      "translation": [
+        8.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 235
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 6",
+      "translation": [
+        16.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 282
+    },
+    {
+      "mesh": 5,
+      "name": "orchard row 7",
+      "translation": [
+        24.0,
+        0.0,
+        78.0
+      ],
+      "ground": true,
+      "yaw_deg": 329
+    }
+  ]
+}

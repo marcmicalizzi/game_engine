@@ -397,6 +397,7 @@ which every row here has (4.2 to 142):
 | `orchard-pruned` | 11,954 | 385 / 10 | 256 | 5.9% | 1,857,452 | 0.597 (95 of 159) | **0.0044** | 37.5 / 0.995 |
 | `orchard-apple` | 15,554 | 521 / 10 | 481 | 4.6% | 2,255,718 | 0.653 (147 of 225) | **0.0026** | 39.9 / 0.998 |
 | `ancient` (300,000) | 196,301 | 5,631 / 13 | 2,179 | 4.3% | 36,909,816 | 0.313 (689 of 2,199) | **0.0100** | 33.9 / 0.987 |
+| `ancient-rising` (300,000) | 176,912 | 5,081 / 13 | 1,961 | 4.3% | 24,434,176 | 0.296 (590 of 1,995) | **0.0074** | 35.2 / 0.991 |
 | `ancient-1m` (1,000,000) | 945,961 | 26,081 / 16 | 5,379 | 1.2% | 27,234,368 | 0.160 (1,892 of 11,859) | **0.0063** | 38.5 / 0.993 |
 
 Every recipe passes every threshold at its default budget. **What failed on the way**: the first
@@ -536,6 +537,42 @@ does not have, or out of order. The default ancient tree's table is 2,179 rows (
 first 19 are what a village plan reads: the trunk (5.0 → 2.0 m), and nine runs and nine limbs past
 them.
 
+### Walking a limb
+
+A flora mesh is a static body of the scene's collision like any other mesh ([scene
+collision](scene_collision.md), "What gets no body": a tree is not in that list), its proxy the
+coarsest cut of its DAG within 5 cm, so a limb is walkable if a walker can get onto it.
+`apps/engine_view/tests/walk_limb_view_tests.cpp` puts one there: on the committed
+[`elder-grove`](../../content/test-scenes/elder-grove/README.md) (copied with its recipes into the
+test's scratch directory), it solves each ancient tree's recipe, takes the lowest run from the
+structural table, and starts a walker standing on it 2.5 m out from the bark, facing along it, W
+held, replayed **offscreen** (msvc-debug, RTX 5090, 2026-10-19; the walker's defaults: capsule 1.8 m
+by 0.3 m, 1.5 m/s, 40° slope limit, 0.35 m step):
+
+- **The near-level run** (elder A, 30.0 m up, 3.7° above level, 24 m long, 3.2 m thick tapering to
+  2.72): the walker walks the whole 19.4 m of it at 1.49 m/s, **its feet within 0.5 mm of the
+  bark** and 1.4 mm aside at its end — the case holds the first 15 m to 15 cm. **At the run's end**
+  it walks on, onto the limb past the run, which turns up: it climbs it for 14 s, its feet 6.4 m
+  over the run's line 45 m out, until the limb steepens and narrows (its radius falling towards
+  the branches), where it slides back a metre and walks **off the side** and falls 33 m to the
+  ground, then walks on across the grove until something stops it.
+- **The 20° run** (elder B, 30.0 m up, 20.0° above level, 2.8 m thick): it climbs at 1.41 m/s
+  along the slope, but **drifts sideways off the crest** — 0.28 m aside after 13 m, 0.76 m after
+  17 m, its feet sinking 0.2 m below the crest line as it moves onto the limb's flank — and, on the
+  limb past the run, walks off its side at 1.3 m aside and falls 39 m.
+
+**What the walker lacks for ramps and platforms.** It has a 40° slope limit and a 0.35 m step and
+**nothing else**: it does not refuse a ledge, so it walks off the end or the side of any limb or
+platform at walking speed, and a structure that must keep it on needs a rail or a lip it cannot
+step (over 0.35 m); a slope under the limit holds a walker standing still but not one walking
+across a curved surface — on a round limb sloped at 20° it slides off the crest by about 5 cm a
+metre, so **a ramp should be a flat-topped deck on the limb, not the bare limb**; a slope over 40°
+(the limb past its run as it turns up) is one it slides back down; and it has no notion of a
+platform moving or a limb swaying (every body is static, [scene collision](scene_collision.md),
+"Nothing moves" — wind on the trees, S66, will need the collision to follow the deform or the
+structures to be anchored to parts that do not sway). A near-level run is a floor as it stands: a
+walker stays on its crest the length of it.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the
@@ -577,8 +614,11 @@ and walks in under the crowns: a scene to fly that needs no sample asset. Beside
 [`content/test-scenes/grove/`](../../content/test-scenes/grove/README.md) stands four oaks, seven
 spruces and a palm on a nearly flat ground with a camera path round and into them. The second
 batch's recipes are `birch.flora.json`, `birch-single.flora.json`, `willow.flora.json`,
-`orchard-pruned.flora.json`, `orchard-apple.flora.json`, `ancient.flora.json` and
-`ancient-1m.flora.json`.
+`orchard-pruned.flora.json`, `orchard-apple.flora.json`, `ancient.flora.json`,
+`ancient-rising.flora.json` (90 m, its limbs' runs rising at 20° and more) and
+`ancient-1m.flora.json`; [`content/test-scenes/elder-grove/`](../../content/test-scenes/elder-grove/README.md)
+stands two ancient trees 60 m apart with four willows, eight birches and an orchard row of seven,
+with a camera path from the ground up into the canopy and a walk start at a hollow.
 
 **What the first pictures taught.** The first oasis capture read as sticks: a leaflet 3 cm wide
 tapering linearly to its tip is under a pixel from 25 m at 640 x 400, and a crown of them vanished
