@@ -1,6 +1,7 @@
 // The mesh-generator registry (docs/subsystems/assets.md, "Generated meshes"): which paths name a
 // generator, and a registry of the test's own refusing, finding and naming.
 #include <domain/assets/mesh_generator.h>
+#include <domain/materials/materials.h>
 
 #include <doctest/doctest.h>
 
@@ -14,8 +15,9 @@ bool fake_hash(std::span<const u8> bytes, u64& out, std::string&) {
   out = bytes.size();
   return true;
 }
-bool fake_build(std::span<const u8>, const geometry::ClusterLodOptions&, u32,
-                geometry::ClusterFileData&, std::string& error) {
+bool fake_build(std::span<const u8>, const assets::MeshGeneratorInputs&,
+                const geometry::ClusterLodOptions&, u32, geometry::ClusterFileData&,
+                std::string& error) {
   error = "not built";
   return false;
 }
@@ -58,4 +60,24 @@ TEST_CASE("assets: the registry finds a generator by name, refuses a second, and
   CHECK(sentence.find("palm.flora.json") != std::string::npos);
   CHECK(sentence.find("ENGINE_WITH_FLORA") != std::string::npos);
   CHECK(sentence.find("alpha, beta") != std::string::npos);
+}
+
+TEST_CASE("assets: a generated mesh's key is the cache key, and a pack with roles moves it") {
+  const geometry::ClusterLodOptions lod;
+  const u64 plain = geometry::cluster_cache_key(0x1234u, lod, false, 65536u);
+  CHECK(assets::generated_mesh_build_key(0x1234u, assets::MeshGeneratorInputs{}, lod, 65536u) ==
+        plain);
+  materials::Pack empty;  // a pack with no roles keys as none: nothing it holds can be drawn
+  empty.hash = 99u;
+  CHECK(assets::generated_mesh_build_key(0x1234u, assets::MeshGeneratorInputs{&empty}, lod,
+                                         65536u) == plain);
+  materials::Pack pack;
+  pack.hash = 99u;
+  pack.roles.push_back(materials::PackRole{"palm/bark", {}});
+  const u64 with_pack =
+      assets::generated_mesh_build_key(0x1234u, assets::MeshGeneratorInputs{&pack}, lod, 65536u);
+  CHECK(with_pack != plain);
+  pack.hash = 100u;
+  CHECK(assets::generated_mesh_build_key(0x1234u, assets::MeshGeneratorInputs{&pack}, lod,
+                                         65536u) != with_pack);
 }

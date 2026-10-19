@@ -320,7 +320,8 @@ bool build_generated(const std::string& input, const std::string& output,
   }
   geometry::ClusterFileData data;
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
-  if (!generator->build(bytes, lod_options_of(options), options.page_bytes, data, message)) {
+  if (!generator->build(bytes, assets::MeshGeneratorInputs{options.materials},
+                        lod_options_of(options), options.page_bytes, data, message)) {
     error.rule = "source.unreadable";
     error.message = input + ": " + message;
     return false;
@@ -336,6 +337,8 @@ bool build_generated(const std::string& input, const std::string& output,
     error.message = message;
     return false;
   }
+  // The images its parts sample (a recipe's sets, a material pack's), for the host's texture step.
+  collect_texture_sources(data, io::parent_path(input), out.texture_sources);
   io::FileInfo info;
   const geometry::ClusterLodMesh& lod = data.mesh;
   out.clusters = lod.mesh.clusters.size();
@@ -376,8 +379,9 @@ u64 mesh_build_key(const std::string& path, u64 source_hash, const MeshOptions& 
   // A generated mesh is keyed as the renderer's scene reader keys it: no weld (the generator's
   // vertices are shared where it means them), no morph or atlas step.
   if (!assets::mesh_generator_of(path).empty())
-    return geometry::cluster_cache_key(source_hash, lod_options_of(options), false,
-                                       options.page_bytes);
+    return assets::generated_mesh_build_key(source_hash,
+                                            assets::MeshGeneratorInputs{options.materials},
+                                            lod_options_of(options), options.page_bytes);
   return build_key_of(source_hash, options);
 }
 

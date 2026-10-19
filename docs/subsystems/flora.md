@@ -10,8 +10,9 @@ need palms before anything else (plan 13 §13.1, "Oases"); after it come a **bro
 **conifer** (`flora::solve_broadleaf`, `solve_conifer`; [the branching species](#the-branching-species)),
 because the next game is a fantasy RPG that needs forests. Every species emits, beside its mesh,
 the **motion contract** a sway stage will read ([motion attributes](#motion-attributes)). It does
-not place what it makes (a scene's instances do, and a scatter layer will — roadmap G55), move it
-in the wind (S66), or texture it yet (G60).
+not place what it makes (a scene's instances do, and a scatter layer will — roadmap G55) or move it
+in the wind (S66). Its parts sample tiled PBR sets — a recipe's own, or a material pack's default
+for the part's role — through [materials](materials.md) ([below](#materials)).
 
 **Why this shape.** A solver's output is a mesh like any other, so it reuses everything a glTF goes
 through rather than growing a path of its own: an `assets::MeshData` into `geometry::build_cluster_lod`
@@ -85,8 +86,10 @@ at the top, as a stem's internodes shorten where it is still growing — the sca
 collar instead of stopping under it. Each ring turns a few degrees against the one below it, from
 the seed, interpolated through the ring so the wall never shears — what makes the scars read as
 grown rather than lathed. The apex is closed by a low dome, hidden inside the youngest fronds'
-bases. One UV island: *u* once round with one seam column, *v* up the trunk at the same scale so a
-bark texture is not stretched; the dome is a small disc of its own beside it.
+bases. One UV island **in metres**: *u* once round at the mean radius with one seam column, *v* the
+arc up the trunk, so a tiled bark set repeats every `tile_m` both ways and is not stretched; the
+dome is a disc of its own at its own size, a hand's width below the wall's island
+([materials](#materials)).
 
 ### The crown: one spiral by age
 
@@ -307,6 +310,54 @@ stylized, because a card is an opaque parallelogram until alpha-tested cards (R6
 outline: the spruce's sprays read as flat green strips close up, the oak's leaves as tiles. The
 shapes are right for the cards an image will be cut into.
 
+## Materials
+
+Every part samples a tiled PBR set, or draws the flat colour it always drew
+([materials](materials.md) has the module, the pack and the container's side of it). A part's set
+is, in this order:
+
+1. **the recipe's**, when its `materials` block (`engine.flora.FloraMaterials`) names an image for
+   the part — `bark` for the trunk, its collar and a tree's tubes; `leaf` for a palm's green fronds
+   and a tree's leaves or needles; `skirt` for a palm's dead fronds; paths relative to the recipe;
+2. else **the material pack's default for the part's role**: `palm/bark`, `palm/frond`,
+   `palm/skirt`; `broadleaf/bark`, `broadleaf/leaf`; `conifer/bark`, `conifer/needles`; a species
+   with no list of its own (the next ones) is `<species>/bark` and `<species>/leaf` for its first
+   two materials (`flora::flora_role`);
+3. else **none**: the flat colour, and one log line naming the role, once per run.
+
+`wood` is recorded and keyed and drawn by nothing ([not yet](#not-yet)).
+
+**The UVs per part**, which decide whether the set's repeat is a transform:
+
+| Part | UVs | Transform |
+|---|---|---|
+| Palm trunk, apex dome, collar of bases | metres: *u* round at the mean radius, *v* up the arc; the dome at its own size | `1 / tile_m` |
+| Palm green and dead fronds | metres: *u* along the rachis, *v* across it (0.5 at the rachis) — the material lab turns its frond sets so the image's *u* runs along the frond | `1 / tile_m` |
+| Broadleaf and conifer bark (`kit.cpp` tubes) | metres: *u* round, *v* along the axis | `1 / tile_m` |
+| Broadleaf leaf and conifer needle cards | the whole card per image (`build_spray`) | none: the image whole |
+
+The palm's fronds are geometric leaflets on one island a frond, not cards, so their set is a tiled
+surface (the lab's frond sets are "longitudinal surface samples" at a `tile_m` of 0.12 m), and they
+are in metres like the bark; a palm frond texture is not one picture of a frond. The trunk's UVs
+were in circumferences and a frond's in its own length until `k_flora_version` 3, which is what
+moved the palm's pins (2026-10-19).
+
+**What a set must be.** Tiled (it wraps), sides powers of two, `tile_m` the surface one repeat
+covers (0.05 to 20 m), the normal map OpenGL (+Y) as the lab writes it, roughness and metallic
+separate greyscale images, height carried and read by nothing yet. A leaf or needle set is one leaf
+per image. Roughness alone goes in glTF's metallic-roughness slot with a metallic factor of 0 —
+bark, leaves and stone are not metal, and packing a metallic channel would need image io the solver
+does not have ([materials](materials.md#what-the-container-records)). `normal_scale` is glTF's
+normal strength (the lab's preview strengths are 0.4 for bark and 0.25 for fronds; the pack carries
+them).
+
+**Precision.** UVs reach the GPU as half floats (geometry.md), so a *v* of 8 to 16 m has a step of
+7.8 mm: above 8 m a trunk row's *v* is off by up to 3.9 mm, the same for the whole row (a row is
+one *v*), which stretches or squeezes the repeat between two rows about 10 cm apart by up to 4% —
+an unevenness of the bark's grain up the top of the 11 and 14 m palms, not a seam. *u* stays under
+4 m (a 2 mm step). Bands in the trunk's *v*, each a whole number of repeats from zero, are the fix
+if a closer look ever needs one.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the
@@ -319,11 +370,18 @@ prints as `generator` ([geometry](geometry.md)). The key is `flora_build_key`:
 `geometry::cluster_cache_key` over `flora_source_hash` — `hash_bytes` of the **canonical
 parameters** (the schema's JSON of the file, defaults filled in, compact and in field order, so two
 files that say the same thing are one key whatever their spacing, order or spelled-out defaults),
-mixed with the species and `k_flora_version` — under the LOD options, no weld, and the page target.
+mixed with the species and `k_flora_version` — under the LOD options, no weld, and the page target,
+and combined with the **material pack's key** when the build was given a pack with roles
+(`assets::generated_mesh_build_key`): a palm drawn with a pack's defaults and one drawn flat are two
+entries, and a build with no pack keys exactly as before packs existed. The source hash stays the
+file's alone, so a scene that names a palm by its hash still finds it.
 
-`engine-content flora <params.flora.json> <out.clusters> | --cache [--ddc <dir>] [--force]` is the
-command line over it ([apps](apps.md)): a named output, or the derived-data cache entry the key
-addresses, skipped when it already records that source hash and key. It is the same function the
+`engine-content flora <params.flora.json> <out.clusters> | --cache [--ddc <dir>] [--force]
+[--materials <dir> | --no-materials]` is the command line over it ([apps](apps.md)): a named output,
+or the derived-data cache entry the key addresses, skipped when it already records that source hash
+and key; with a derived-data root it runs the **texture step** beside the container, so every image
+the parts sample is a block-compressed `.tex` in `<ddc>/textures/` as a glTF's is
+([content_build](content_build.md), [texture](texture.md)). It is the same function the
 renderer reaches through the mesh-generator registry ([assets](assets.md#generated-meshes)), under
 the same default LOD options and page target, so either finds what the other built.
 
@@ -404,6 +462,23 @@ spear (leaflets closed by half, 40° up) cost another 0.002 each, which is why t
 deep and the spear slight. What the spiral costs is thin geometry overlapping, which is R65's
 problem and not the solver's: the conclusion above stands.
 
+**The UVs in metres (`k_flora_version` 3, 2026-10-19)**, the same procedure (msvc-debug, RTX 5090,
+captures under the GPU lock, none of it a timing). Only the UVs moved, and the simplifier weighs
+them (geometry.md, "What the simplifier is given"), so the DAG moved a little:
+
+| Palm | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
+|---|---|---|---|---|---|---|---|---|
+| `date-palm` (default) | 55,312 | 1,752 / 12 | 238 | 4.1% | 59,864 | 0.263 (210 of 799) | 0.0212 | 27.2 / 0.960 |
+| `-tall` | 51,984 | 1,547 / 11 | 238 | 5.7% | 74,104 | 0.144 | **0.0182** | 26.9 / 0.963 |
+| `-old` | 28,624 | 823 / 10 | 146 | 7.6% | 47,306 | 0.247 | **0.0106** | 29.4 / 0.979 |
+| `-leaning` | 52,048 | 1,647 / 11 | 232 | 4.2% | 59,404 | 0.245 | 0.0285 | 25.9 / 0.948 |
+| `-young` | 42,700 | 1,378 / 11 | 198 | 3.8% | 53,550 | 0.350 | 0.0395 | 24.7 / 0.922 |
+
+Every palm passes and fails where it did at version 2, FLIP within 0.001 of it everywhere; the
+smallest island grew because its area is now in square metres of surface rather than in
+circumferences, and no build or stats run warned. The branching species did not move (their UVs
+were already in metres and their pins held), so their table above stands.
+
 **The atlas and the collapse pass everywhere, because of the layout rule.** One island a frond and
 one strip for the trunk is 38 islands for the default palm (26 fronds, 10 dead, the wall, the cap),
 1.6% of its vertices on a seam (the trunk's seam column and the cap's ring), and the coarse cut
@@ -430,13 +505,10 @@ threshold that knows a strip's width — not more tuning of the solver.
 
 ## Not yet
 
-- **Textures** (G60): the materials are flat PBR constants, and the recipe's `materials` block
-  (`engine.flora.FloraMaterials`: a tiled set per part — bark, leaf, skirt, wood — with `tile_m`)
-  is in the schema and the key but not yet read by the solvers. The branching species' UVs are
-  already what a set needs (tubes in metres, cards whole); the palm's trunk is still one
-  circumference-scaled strip. The engine half that is left: lay each set's images into the
-  container's materials (section 32 through the derived-data cache), the palm's trunk UVs in
-  metres, and a stand-in set a test writes; the sets themselves are the material lab's.
+- **The sets themselves** (G60's other half): the engine reads a recipe's block and a pack's
+  roles ([materials](#materials)); the palm's three roles have the lab's candidates, and the oak's,
+  the spruce's and the leaf cards' have nothing yet ([content/materials/README.md](../../content/materials/README.md)
+  says what the lab must make). A leaf card's set wants an alpha mask, which is R65's.
 - **Wind and sway** (S66): the deform stage that reads the motion contract — plan 05 §5.15's rods,
   the wind field and the sway tiers, a slight trunk bend, fronds and branches pushed aside by a
   walker. The contract is emitted and stored; nothing reads it.
@@ -509,17 +581,27 @@ data, rebuilt from its parameters.
 - the default palm hashes to the committed number, and so does its container
   (`geometry::cluster_file_hash`, whose clusters are the other half of a palm's bytes); the
   trunk's clusters carry cones and no frond's does; the container records its identity and the
-  generator section; the canonical parameters are the same for every spelling of one file.
+  generator section; the canonical parameters are the same for every spelling of one file;
+- [materials](#materials), over a stand-in set the test names and a pack it parses in memory: the
+  bark takes the recipe's images as the recipe spelled them, the fronds the pack's role (absolute,
+  at the pack's repeat), the skirt nothing and its flat colour; roughness alone in the
+  metallic-roughness slot with metallic 0; a transform of `1 / tile_m` on the parts in metres and
+  none on a leaf card; a texture record per image; the pack in the build key and not in the source
+  hash; the images and transforms through a file and back; a set's numbers out of range refused;
+  with no block and no pack, no image at all. And through the renderer: the same palm loaded from
+  a scene with a pack directory beside it builds its six images into the cache's textures
+  (`flora_scene_tests.cpp`).
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
 `PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `solve_broadleaf`, `solve_conifer`, `TreeReport`), `include/domain/flora/motion.h` (the motion contract: `Motion`, `MotionPart`,
 `k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
 `k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `solve_flora`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
-`flora_build_key`, `build_flora_container`). The mesh generator "flora" registers from
-`src/flora.cpp`.
+`flora_build_key` (with the pack), `flora_role`, `apply_flora_materials`, `build_flora_container`
+(with the pack)). The mesh generator "flora" registers from `src/flora.cpp` and takes the pack from
+the host's `assets::MeshGeneratorInputs`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `assets`, `geometry`,
-`flora_schemas`.
+`materials` (the sets), `texture` (the records saying how each image is built), `flora_schemas`.
 
 **Testing.** `tools/dev.ps1 test -Filter flora`.
 

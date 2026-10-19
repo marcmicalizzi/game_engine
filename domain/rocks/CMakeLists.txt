@@ -17,7 +17,7 @@
 engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema CAPABILITY rocks)
 
 engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash json schema assets geometry rocks_schemas
+  DEPS base containers math hash json schema assets geometry materials texture rocks_schemas
   SOURCES src/solver.cpp src/rocks.cpp)
 
 engine_module_tests(NAME rocks

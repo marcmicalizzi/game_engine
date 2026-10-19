@@ -27,7 +27,9 @@
     content/      the test scenes a game can start from (desert-endless and ruins-walk by default,
                   -Scenes for others) with every file each names, and a ruins kit generated where
                   a scene names one the tree does not commit; content/sessions/walk-synthetic.jsonl,
-                  a two-second recorded walk for offscreen runs
+                  a two-second recorded walk for offscreen runs; content/materials/, the material
+                  pack with its LICENSES.md, when this checkout has one fetched
+                  (tools/fetch-materials.ps1)
     tools/        build-module.ps1, run-game.ps1 and package-game.ps1 (the tree's own script,
                   which runs from this layout) with tools/lib/
     sdk.json      the engine commit and whether it was dirty, the preset, the CPU baseline, the
@@ -224,6 +226,18 @@ foreach ($scene in $Scenes) {
   Write-Host ("scene:    content/{0} ({1} files{2})" -f $sceneRel, $files.Count, $(if ($kits.Count) { ", kit generated" } else { '' }))
 }
 
+# content/materials/: the material pack, when this checkout has one fetched (tools/fetch-materials.ps1;
+# docs/subsystems/materials.md) — the default sets a generated mesh's parts fall back to, with its
+# LICENSES.md beside them — so a game made from the SDK draws its palms and rocks as the tree does.
+# Nothing else under content/materials is the repository's but its README.md, which goes too.
+$packDir = Join-Path $ContentRoot 'materials'
+$withPack = Test-Path -LiteralPath (Join-Path $packDir 'pack.json')
+if ($withPack) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'content') | Out-Null
+  Copy-Item -LiteralPath $packDir -Destination (Join-Path $OutDir 'content') -Recurse -Force
+  Write-Host ("materials: content/materials ({0} files)" -f @(Get-ChildItem -LiteralPath $packDir -Recurse -File).Count)
+}
+
 # content/input-map.json: the action map this build's sessions fly with, written by the build's own
 # engine-view (`--dump-action-map`, roadmap P47) with its hash. A game pins the map it ships with by
 # this file, not by a number in a test (docs/game-authoring.md, "The action map"): a game's
@@ -305,6 +319,7 @@ $sdkJson = [ordered]@{
   module_suffix = $gm['GM_SUFFIX']
   includes = $includes
   scenes = $carried
+  materials = $(if ($withPack) { 'content/materials' } else { $null })
   session = 'content/sessions/walk-synthetic.jsonl'
   action_map = 'content/input-map.json'
   example_module = "bin/game/walk_poc$($gm['GM_SUFFIX'])"

@@ -19,6 +19,7 @@
 #include <domain/flora/flora.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 #endif
 
@@ -40,7 +41,13 @@ const char* k_flora_usage =
     "                     entry engine-view --mesh and a scene's mesh table read\n"
     "      --ddc <dir>    the cache root (default: <repo>/ddc, found beside AGENTS.md); implies\n"
     "                     --cache when no output is named\n"
-    "      --force        build even when the output is already the answer\n";
+    "      --force        build even when the output is already the answer\n"
+    "      --materials <dir>  the material pack a part with no set of its own takes its role's\n"
+    "                     default from (default: <repo>/content/materials, found beside "
+    "AGENTS.md)\n"
+    "      --no-materials no pack: every part with no set of its own draws its flat colour\n"
+    "  with a derived-data root (--cache or --ddc), the images the parts sample are built into\n"
+    "  <ddc>/textures beside the container, as `build --cache` builds a glTF's\n";
 
 [[maybe_unused]] int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content flora: %s\n", message);
@@ -64,15 +71,24 @@ int flora(int argc, char** argv) {
   std::string input;
   std::string output;
   std::string ddc;
+  std::string materials_dir;
   bool cache = false;
   bool force = false;
+  bool no_materials = false;
+  bool ddc_named = false;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (a == "--cache") {
       cache = true;
     } else if (a == "--force") {
       force = true;
+    } else if (a == "--no-materials") {
+      no_materials = true;
+    } else if (a == "--materials") {
+      if (i + 1 >= argc) return usage("--materials needs a directory");
+      materials_dir = argv[++i];
     } else if (a == "--ddc") {
+      ddc_named = true;
       if (i + 1 >= argc) return usage("--ddc needs a directory");
       ddc = argv[++i];
     } else if (!a.empty() && a[0] == '-') {
@@ -111,8 +127,12 @@ int flora(int argc, char** argv) {
   const geometry::ClusterLodOptions lod =
       content_build::lod_options_of(content_build::MeshOptions{});
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  // The material pack a part with no set of its own falls back to (materials.md).
+  if (!no_materials && materials_dir.empty())
+    materials_dir = materials::default_pack_dir(platform::executable_directory());
+  const materials::Pack* pack = no_materials ? nullptr : materials::pack_at(materials_dir);
   const u64 source_hash = flora::flora_source_hash(file);
-  const u64 build_key = flora::flora_build_key(source_hash, lod, page_bytes);
+  const u64 build_key = flora::flora_build_key(source_hash, lod, page_bytes, pack);
   const std::string path = cache ? geometry::cluster_cache_path(ddc, build_key) : output;
 
   // The identity skip: an output that records this source and this key is already the answer.
@@ -126,7 +146,7 @@ int flora(int argc, char** argv) {
   flora::PalmReport report;
   bool have_report = false;
   if (!cached) {
-    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error))
+    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error, pack))
       return failed(input + ": " + error);
     have_report = true;
     data.source_path = input;
@@ -151,7 +171,13 @@ int flora(int argc, char** argv) {
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));
   summary.set("vertices", JsonValue(data.mesh.mesh.vertices.size()));
   summary.set("materials", JsonValue(data.materials.size()));
+  summary.set("images", JsonValue(data.image_paths.size()));
+  summary.set("pack", pack != nullptr ? JsonValue(pack->name + " " + pack->version) : JsonValue());
   summary.set("pages", JsonValue(data.pages.pages.size()));
+  // The texture step beside the container, when there is a derived-data root to put textures in.
+  u32 texture_failures = 0;
+  summary.set("textures", generated_textures(data, input, cache || ddc_named ? ddc : std::string(),
+                                             texture_failures));
   if (have_report) {
     // What the budget bought (flora.md, "The budget"); a cache hit did not run the solver.
     JsonValue budget = JsonValue::object();
@@ -170,7 +196,7 @@ int flora(int argc, char** argv) {
   }
   summary.set("build_ms", JsonValue(static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6));
   print_json(summary);
-  return k_exit_ok;
+  return texture_failures > 0 ? k_exit_error : k_exit_ok;
 }
 #else
 int refuse() {

@@ -49,6 +49,7 @@ One page per module, created in the same change that creates the module. Templat
 | hotload (capability) | foundation | [hotload.md](hotload.md) |
 | doc | domain | [doc.md](doc.md) |
 | geometry | domain | [geometry.md](geometry.md) |
+| materials | domain | [materials.md](materials.md) |
 | anim | domain | [anim.md](anim.md) |
 | assets | domain | [assets.md](assets.md) |
 | atlas | domain | [atlas.md](atlas.md) |

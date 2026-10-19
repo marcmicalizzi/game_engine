@@ -1,7 +1,7 @@
 # assets: source-asset import (docs/plan/07-content-pipeline.md section 7.2). glTF 2.0 files
 # become a plain merged mesh that domain/geometry's cluster builders consume. No GPU code.
 engine_module(NAME assets LAYER domain
-  DEPS base containers math hash io geometry
+  DEPS base containers math hash io geometry materials
   EXTERNAL_DEPS cgltf
   SOURCES src/gltf.cpp src/mesh_generator.cpp)
 

@@ -2,6 +2,7 @@
 # depend only on core and generated schemas.
 add_subdirectory(doc)
 add_subdirectory(geometry)
+add_subdirectory(materials)
 add_subdirectory(anim)
 add_subdirectory(assets)
 # After assets: the atlas step rewrites an imported mesh (`assets::MeshData`) in place.

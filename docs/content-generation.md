@@ -234,7 +234,47 @@ pwsh tools/blender-run.ps1 -Script D:\workspace\game_engine_local\blender-kits\r
 
 **The GPU lock is not needed for the captures.** Two short captures per asset of one small scene are neither heavy nor a measurement whose numbers depend on load — the picture metrics are the same on a busy card. The build milliseconds do depend on load, so the report carries the `machine_state` engine-view sampled around every capture and who held the lock at the start and the end, and a write-up quotes them ([experiments README](experiments/README.md#the-machine-state-line)). **`-Offscreen`** draws both cuts without a window, so none opens on a desktop someone is using: through `engine-host --stdio` (`render.load`, then `render.capture`, which always draws offscreen) from the camera engine-view's orbit gives the same frame — the arithmetic `-CompareKept` already uses — reading each cut's visible pairs from the capture's `stats`. It is not `engine-view --offscreen`, because a plain offscreen engine-view run prints a flythrough summary with no visible-pair count, and the collapse check is judged on exactly that count (found on the first try: every capture exited 0 and the harness refused the summary). engine-host samples no machine state, so such a report says "not sampled" where it would quote one; its captures line and `settings.offscreen` name the mode. A run on the shared machine takes it, and the GPU lock with it when the owner asks for one.
 
+## Material packs
+
+The tree and rock solvers' default PBR sets ([materials](subsystems/materials.md)) are the one kind
+of generated image the engine **ships**: one tiled set per role (`palm/bark`, `rock/granite`), packed
+by `tools/pack-materials.ps1` into a zip with a manifest and a licence file, fetched by
+`tools/fetch-materials.ps1` into the git-ignored `content/materials/`, carried by
+`export-game-sdk.ps1` and `package-game.ps1` into what a game author and a tester get
+([apps](subsystems/apps.md#material-packs-pack-materials-and-fetch-materials)). The rule above still holds: the
+staging directories and the zips live under the local root (`packages\`), never in the tree, and
+nothing from the local root enters committed content or a test.
+
+**Why these may ship, when a mesh from the same lab is held to a sidecar's grant.** A model's
+licence governs the model; what it says of its **outputs** is what decides whether an output may be
+shipped. The owner's decision of 2026-10-19 rests on two:
+
+- **StableMaterials** (the lab's generator; its metadata declares an OpenRAIL licence, OpenRAIL-M in
+  the model's own terms) claims no rights over the images it makes; its use restrictions bind the
+  use of the model — which is offline inference here — not the images.
+- **PBRify UpscalerV4** (the lab's colour upscale) is CC0: its outputs carry no condition.
+
+So a set made by those two passes — StableMaterials, then PBRify's upscale and the lab's own
+deterministic steps (wrapped resizes, renormalized normals, a colour grade in linear light) — may be
+in a shipped pack. **The Krea pass may not, until its terms are read**: the lab's `02-krea-*` runs
+are a diffusion refinement whose licence nobody here has read for what it says of outputs, and a pack
+ships to every game made with the engine, so a guess is not good enough. `pack-materials.ps1`
+enforces it mechanically: every model a role's `provenance.json` names must be in the script's
+licence table (StableMaterials and PBRify today), or the pack is refused naming the model; adding a
+model is a commit that says whose terms were read and what they say of outputs. `LICENSES.md` in the
+pack lists each role with the models that made it and their licence lines, and lands beside the maps
+wherever the pack goes.
+
+Inference only, as everywhere in this pipeline ([plan 12](plan/12-ai-usage-policy.md)): the sets
+and the lab's scripts are never training data, and the models are run unmodified.
+
 ## Testing
+
+`tools/materials-pack.Tests.ps1`, under CTest as **`tools.materials_pack`**, runs both pack scripts
+offline over stand-in sets (PNG headers of its own; nothing decodes them): a two-role pack with every
+field of its manifest checked, the four refusals, and fetch's refusals (no `-Expect`, a wrong hash, a
+tampered map, no source and nothing pinned) leaving the destination untouched, then a good fetch
+replacing the destination's contents and keeping its README.md.
 
 `tools/generate.Tests.ps1`, under CTest as **`tools.generate`** (`tools/dev.ps1 test -Filter tools`), runs offline — no ComfyUI, no Meshy, no GPU, no credits. It converts a synthetic workflow against a synthetic `/object_info` with one of each case above (seed plus control value, stale placeholder behind a `PrimitiveNode`, `Reroute`, bypassed, muted, `Note`, a lone widget value) and checks every input; plans an image batch with `-DryRun` and checks each override, the templated prompt, the derived seeds, the 1024² default, the date-expanded prefix, `-Only`/`-Seed`/`-Width`/`-Set`, a spec hash that ignores the date, and the refusals (an unknown `-Set` target, a non-portable name, a local root inside the repository); converts and plans a miniature of the TRELLIS.2 workflow for `comfyui-3d` — a dynamic combo's option widgets named and aligned, an option with none taking no slot, the `LOAD_3D` and `COLOR` widgets, a primitive-linked widget; every role found by wiring; the seed on the image sampler only while the reconstruction sampler keeps its own; the prop defaults; the prompt, the model and the prefix recorded against the workflow's values; `pec` for foliage with the reason, `adaptive` on foliage refused and on a leafless tree allowed; `-Model pixal3d`, `-RemeshSignMode sdf` swapping the option's inputs, `-UnwrapResolution` replacing a link, the other post-process flags, `-Set #<id>`, and a spec that changes with the post-process and not with the date; plans the same miniature **image in** — a `LoadImage` on the background removal's and the crop's inputs, the sampler, encoders, decode and the loader that fed only them dropped while the latent a reconstruction sampler shares stays, no prompt, seed or size set, the image recorded with its hash, asset id and sidecar, the prompt copied from its sidecar (and none without one), `-Budget` decimating each subject to its class, a spec that follows the picture's bytes and not its folder or the date, and `-Budget` refused without a list or beside `-FaceCount`; plans the Meshy stage offline (`-DryRun -Offline`: no key, no balance) and checks that without `-Remesh` the request is the first pass's body field for field and its spec hash the one the first pass recorded, that `-Remesh -Subjects` takes each image's polycount from its subject's budget class and records where it came from, that a quad remesh asks for half the budget, that `-TargetPolycount` overrides the budgets, and that `-TargetPolycount` or `-Topology quad` without `-Remesh`, a polycount outside 100–300,000, `-Remesh` with nothing to take a polycount from, and `-Offline` outside a dry run are each refused; and drives the Tripo folder end to end — manifest and README, ingest of the one GLB present and a report of the one missing, the sidecar's fields, its `asset_provenance` against the generated JSON Schema (the schema parsing under the running PowerShell, the sidecar as written validating, an extra field and a wrong type failing as validation failures, a u64 above 2⁶³ still a number; `verify -Schema` passing it, failing the wrong type, and refusing a schema that does not parse), `verify`, a cache hit, a different GLB under the same name refused, and a tampered output failing `verify`.
 

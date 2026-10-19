@@ -386,8 +386,9 @@ f64 taper(const Palm& p, const Spiral& spiral, f64 s) {
   return r * (1.0 + k_sheath_swell * t * t * (3.0 - 2.0 * t));
 }
 
-// One island: u once round (a seam where it closes), v up the trunk at the same scale, so a bark
-// texture is not stretched; and the apex's dome a disc of its own beside it.
+// One island in metres: u once round at the mean radius (a seam where it closes), v the arc up the
+// trunk, so a tiled bark set repeats every `tile_m` both ways and is not stretched (flora.md,
+// "Materials"); and the apex's dome a disc of its own, at its own size, below the wall's island.
 void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const Plan& plan,
                  Rng& rng, Emitter& out) {
   const RingProfile& profile = profile_of(plan.rows_per_ring);
@@ -397,7 +398,7 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
   const f64 depth = static_cast<f64>(p.ring_depth_m);
   const f64 mean_radius =
       0.5 * (static_cast<f64>(p.trunk_base_radius_m) + static_cast<f64>(p.trunk_top_radius_m));
-  const f64 v_scale = 1.0 / (2.0 * k_pi * mean_radius);
+  const f64 circumference = 2.0 * k_pi * mean_radius;
 
   // The ring boundaries this plan draws: every `ring_stride`th of the spiral's, and the apex.
   Vector<f64> bounds(rings + 1);
@@ -446,7 +447,7 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
       const f64 angle = turn[r] + 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(segs);
       const D3 radial = normal * det::cos(angle) + spine.side * det::sin(angle);
       out.vertex(centre + radial * radius[r], radial - tangent * (0.5 * slope),
-                 static_cast<f64>(i) / static_cast<f64>(segs), arc[r] * v_scale);
+                 circumference * static_cast<f64>(i) / static_cast<f64>(segs), arc[r]);
     }
   }
   for (u32 r = 0; r + 1 < rows; ++r) {
@@ -466,9 +467,11 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
   const D3 tangent = spine_tangent(spine, top);
   const D3 normal = spine_normal(spine, top);
   const D3 apex = spine_point(spine, top) + tangent * (0.3 * radius[rows - 1]);
-  const f64 cap_radius = 2.0 * k_pi * radius[rows - 1] * v_scale;  // the disc at the wall's scale
+  const f64 cap_radius = radius[rows - 1];  // the disc at its own size, in metres like the wall
+  const f64 cap_u = 0.5 * circumference;
+  const f64 cap_v = -0.1 - cap_radius;  // a hand's width below the wall's island
   out.weight = 1.0;
-  const u32 centre = out.vertex(apex, tangent, 0.5, -0.5 - cap_radius);
+  const u32 centre = out.vertex(apex, tangent, cap_u, cap_v);
   const u32 ring_first = out.mesh.positions.size();
   for (u32 i = 0; i < segs; ++i) {
     const f64 angle = turn[rows - 1] + 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(segs);
@@ -476,8 +479,7 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
     const f64 s = det::sin(angle);
     const D3 radial = normal * c + spine.side * s;
     const D3 position = spine_point(spine, top) + radial * radius[rows - 1];
-    out.vertex(position, radial + tangent, 0.5 + c * cap_radius,
-               -0.5 - cap_radius + s * cap_radius);
+    out.vertex(position, radial + tangent, cap_u + c * cap_radius, cap_v + s * cap_radius);
   }
   for (u32 i = 0; i < segs; ++i)
     out.triangle(ring_first + i, centre, ring_first + (i + 1) % segs);
@@ -504,7 +506,8 @@ void build_collar(const Palm& p, const Spine& spine, const Spiral& spiral, const
   const f64 top = static_cast<f64>(p.trunk_top_radius_m);
   const f64 mean_radius =
       0.5 * (static_cast<f64>(p.trunk_base_radius_m) + static_cast<f64>(p.trunk_top_radius_m));
-  const f64 v_scale = 1.0 / (2.0 * k_pi * mean_radius);
+  // The bases' chart starts a hand's width past the wall's island, in metres like it.
+  const f64 chart_u = 2.0 * k_pi * mean_radius + 0.1;
   const auto face = [&](u32 a, u32 b, u32 c, D3 hint) {
     const Vec3 nf = cross(out.mesh.positions[b] - out.mesh.positions[a],
                           out.mesh.positions[c] - out.mesh.positions[a]);
@@ -565,9 +568,9 @@ void build_collar(const Palm& p, const Spine& spine, const Spiral& spiral, const
     const u32 tube = out.mesh.positions.size();
     for (u32 i = 0; i <= sides; ++i) {
       const D3 c = corner[i % sides];
-      const f64 u = 1.1 + u_at[i] * v_scale;
+      const f64 u = chart_u + u_at[i];
       out.vertex(root + c, c, u, 0.0);
-      out.vertex(cut + c * 0.75, c, u, length * v_scale);
+      out.vertex(cut + c * 0.75, c, u, length);
     }
     for (u32 i = 0; i < sides; ++i) {
       const u32 a = tube + 2 * i;
@@ -576,13 +579,13 @@ void build_collar(const Palm& p, const Spine& spine, const Spiral& spiral, const
       face(a, a + 3, a + 1, hint);
     }
     // The cut face: a fan, its own small island beside the tube's.
-    const f64 cu = 1.1 + perimeter * v_scale + 0.05 + w0 * v_scale;
-    const f64 cv = t0 * v_scale * 2.0;
+    const f64 cu = chart_u + perimeter + 0.1 + w0;
+    const f64 cv = t0 * 2.0;
     const u32 centre = out.vertex(cut, along, cu, cv);
     const u32 rim = out.mesh.positions.size();
     for (u32 i = 0; i < sides; ++i) {
       const D3 c = corner[i] * 0.75;
-      out.vertex(cut + c, along, cu + dot(c, around) * v_scale, cv + dot(c, thick) * v_scale);
+      out.vertex(cut + c, along, cu + dot(c, around), cv + dot(c, thick));
     }
     for (u32 i = 0; i < sides; ++i)
       face(centre, rim + i, rim + (i + 1) % sides, along);
@@ -686,11 +689,11 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
       out.triangle(a, c, b);
     }
   };
-  // The chart: metres along the rachis and across it at one scale, so a frond texture is not
-  // stretched; every frond shares it. The normal is a placeholder the crown's pass replaces.
-  const f64 to_uv = 1.0 / f.length;
+  // The chart: metres along the rachis (u, which is the way the material lab turns its frond sets)
+  // and across it (v), so a tiled frond set repeats every `tile_m` and is not stretched; every
+  // frond shares it (flora.md, "Materials"). The normal is a placeholder the crown's pass replaces.
   const auto vertex = [&](D3 p, D3 normal, f64 along, f64 lateral) {
-    return out.vertex(p, normal, along * to_uv, 0.5 + lateral * to_uv);
+    return out.vertex(p, normal, along, 0.5 + lateral);
   };
 
   // The rachis: a trough of three vertices across (two edges and a keel below), or a ribbon of two.

@@ -40,6 +40,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::materials {
+struct Pack;
+}
+
 namespace engine::content_build {
 
 // ---- what a build is asked for -----------------------------------------------------------------
@@ -75,6 +79,10 @@ struct MeshOptions {
   // numbers say otherwise (docs/experiments/e10-generated-props.md, "Repack").
   bool repack = false;
   atlas::RepackOptions atlas;
+  // The material pack a generated mesh's parts fall back to (docs/subsystems/materials.md): set by
+  // the host, never by a manifest, and read only for a generated mesh, whose key it moves through
+  // `assets::generated_mesh_build_key`. Null is no pack.
+  const materials::Pack* materials = nullptr;
 };
 
 // Every key a build records: `geometry::cluster_cache_key` over the source hash and the options,

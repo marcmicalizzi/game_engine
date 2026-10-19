@@ -63,4 +63,11 @@ int npcs_command(int argc, char** argv);
 int flora_command(int argc, char** argv);
 int rocks_command(int argc, char** argv);
 
+// The texture step `build --cache` runs, for a generated mesh's container (flora, rocks): every
+// image its records name built into `<ddc>/textures/<key>.tex`, or found there, with the paths
+// resolved beside `source` (the recipe). The step's object for the command's summary; `ddc` empty
+// is the object that says it did not run. `failures` counts the images that failed to build.
+JsonValue generated_textures(const geometry::ClusterFileData& data, const std::string& source,
+                             const std::string& ddc, u32& failures);
+
 }  // namespace engine::content

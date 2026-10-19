@@ -27,7 +27,7 @@
 # everything else as it always did, and the scene reader refuses a scene naming it with the
 # registry's sentence, which the minimal presets prove. ADR-0037's conditional link to `ruins`, and
 # the second one to `terrain` it grew, ended here.
-set(_renderer_deps base containers hash math time jobs log platform io image geometry anim assets
+set(_renderer_deps base containers hash math time jobs log platform io image geometry materials anim assets
                    gfx json texture tunables content_build schema schemas scene_gen)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}

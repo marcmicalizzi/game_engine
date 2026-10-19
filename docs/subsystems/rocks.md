@@ -147,13 +147,19 @@ boulder's vertices (each chart carries its own border; the normals are shared ac
 is invisible in the shading). A large rock with the default `tile_m` (1 m) passes ±16 at about 4 m
 of half-extent; such a recipe sets a larger `tile_m`.
 
-**The material is a flat PBR constant by type** (the table above), one-sided, cones on. The
-`material` block — `base_color`, `normal`, `roughness`, `metallic`, `height` paths and `tile_m` —
-is the shape a tiled set will be given in; only `tile_m` is read today, and **an image path is
-refused** with a sentence until the material lab's tiled sets exist, because a recipe naming a
-texture that silently does not appear is worse than one that is told. The flora agent's material
-block (G60) is the same idea for bark and fronds; the two should converge on one type when either
-wires its images.
+**The material is a tiled set, or the flat PBR constant by type** (the table above), one-sided,
+cones on. The set is chosen as the flora's are, through [materials](materials.md): the shape's
+`material` block (`base_color`, `normal`, `roughness`, `metallic`, `height` paths relative to the
+recipe, `tile_m`, `normal_scale`) when it names an image; else the material pack's
+**`rock/<type>`** — `rock/granite`, `rock/sandstone`, `rock/basalt`, `rock/limestone`
+(`rocks::rock_role`); else the flat colour. **The set is chosen before the solve**, because the
+charts are laid out in whole repeats of its `tile_m`: a pack's set is solved at the pack's repeat
+(the recipe's own `tile_m` belongs to the recipe's own images), so the UVs need no transform and the
+container records none (`UvLayout::repeats`). A recipe with no images and no pack solves and draws
+exactly as before. Roughness alone in the metallic-roughness slot with metallic 0, the normal map at
+the set's strength, metallic and height carried and unread ([materials](materials.md#what-the-container-records)).
+A pack set with a small `tile_m` raises the UVs in proportion: a sandstone boulder at 0.5 m is
+twice the coordinates of one at 1 m, so the ±16 warning is reached at half the size.
 
 ## The build
 
@@ -227,8 +233,9 @@ the UV layout (above).
 
 ## Not yet
 
-- **Tiled textures** from the material lab: the UVs are laid out for them, the material block has
-  the slots, and the paths are refused until the sets exist.
+- **The rock sets themselves** (G60's other half): the engine reads a recipe's block and the pack's
+  `rock/<type>`; the lab has made none of the four yet, only a generic stand-in
+  ([content/materials/README.md](../../content/materials/README.md) says what they need).
 - **Lichen and moss**, by exposure and facing: a second material or a mask over the first.
 - **Erosion by exposure**: weathering that depends on what faces the sky and the wind (upper faces
   rounder, a desert varnish on what the sun sees), rather than one rounding for the whole body.
@@ -248,7 +255,10 @@ boulder's mesh and container and each committed recipe's mesh are pinned by hash
 `tests/rocks_tests.cpp`; a change that moves them bumps `rocks::k_rocks_version` and the numbers in
 the same commit — and **must**, because the version is in the cache key: while the solver was being
 tuned, an unbumped version served the previous solver's containers from the derived-data cache as
-the answer, which is the rule working as written.
+the answer, which is the rule working as written. A change to **what the file says** needs no bump:
+`RockMaterial.normal_scale` (2026-10-19) is spelled out in the canonical parameters, which moved the
+source hash, the key and the container's generator section — so the container's pin — and left the
+solver and every mesh pin where they were.
 
 **Owned data.** The shapes' parameter types and the solver. Nothing persistent: a rock is derived
 data, rebuilt from its parameters.
@@ -265,7 +275,12 @@ data, rebuilt from its parameters.
 - `buried` is the share of the box under y = 0, to 1e-4; scree lies on the ground;
 - one seed is one rock, another seed another, and the type changes the shape;
 - the file canonicalizes (spacing, order, spelled-out defaults, an absent block) and refuses an out
-  of range or unknown field, another shape's block, and an image path, each with its name;
+  of range or unknown field (a material's `tile_m` and `normal_scale` among them) and another
+  shape's block, each with its name;
+- a sandstone boulder with no set draws flat and names no image; with a pack's `rock/sandstone` it
+  names the pack's images at the pack's strength, with a texture record each, no transform, the
+  pack in the key and not in the source hash, and the charts solved at the pack's repeat; a granite
+  with no role in that pack draws flat; a recipe's own image wins over the pack's;
 - the generator `rock` in the registry builds the same container `build_rock_container` does, with
   the identity and the generator section, clusters carrying cones;
 - the default boulder's mesh and container, and each committed recipe's mesh, are their pinned
@@ -279,11 +294,12 @@ reader (the four recipes as meshes, over 300 placed, none inside the outcrops' c
 
 **Public API.** `include/domain/rocks/rocks.h`: `k_rocks_version`, `k_grid_rungs`,
 `triangles_of_grid`, `RockReport`, `rock_type_name`, `rock_shape_name`, `rock_file_in_range`,
-`read_rock_file`, `canonical_rock_json`, `rock_source_hash`, `rock_build_key`, `solve_rock`,
-`build_rock_container`. The mesh generator `rock` registers from `src/rocks.cpp`.
+`read_rock_file`, `canonical_rock_json`, `rock_source_hash`, `rock_build_key` (with the pack),
+`rock_role`, `solve_rock`, `build_rock_container` (with the pack). The mesh generator `rock`
+registers from `src/rocks.cpp` and takes the pack from the host's `assets::MeshGeneratorInputs`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `assets`, `geometry`,
-`rocks_schemas`.
+`materials` (the set), `texture` (the records saying how each image is built), `rocks_schemas`.
 
 **Testing.** `tools/dev.ps1 test -Filter rocks`.
 

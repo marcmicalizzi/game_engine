@@ -6,7 +6,9 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
+#include <domain/materials/materials.h>
 #include <domain/rocks/rocks.h>
+#include <domain/texture/material_textures.h>
 
 #include <string>
 
@@ -31,18 +33,40 @@ struct Check {
 };
 
 bool material_in_range(const RockMaterial& m, Check& c) {
-  const std::optional<std::string>* paths[] = {&m.base_color, &m.normal, &m.roughness, &m.metallic,
-                                               &m.height};
-  const char* names[] = {"base_color", "normal", "roughness", "metallic", "height"};
-  for (u32 i = 0; i < 5; ++i) {
-    if (paths[i]->has_value() && !(*paths[i])->empty()) {
-      c.error = std::string("engine.rocks.") + c.type + ".material." + names[i] +
-                " names an image, and a rock's tiled material set is not wired yet (rocks.md, "
-                "\"Not yet\"): leave it out";
-      return false;
-    }
+  if (!c.f(m.tile_m, 0.05f, 20.0f, "material.tile_m", "0.05 to 20 m")) return false;
+  return c.f(m.normal_scale, 0.0f, 4.0f, "material.normal_scale", "0 to 4");
+}
+
+// The block's set in the shape domain/materials takes.
+materials::MaterialSet set_of(const RockMaterial& m) {
+  materials::MaterialSet out;
+  out.base_color = m.base_color.value_or(std::string());
+  out.normal = m.normal.value_or(std::string());
+  out.roughness = m.roughness.value_or(std::string());
+  out.metallic = m.metallic.value_or(std::string());
+  out.height = m.height.value_or(std::string());
+  out.tile_m = m.tile_m;
+  out.normal_scale = m.normal_scale;
+  return out;
+}
+
+// The shape's block's material and type (the file holds the block, as `read_rock_file` leaves it).
+RockMaterial* material_of(RockFile& file) {
+  switch (file.shape) {
+    case RockShape::Boulder: return file.boulder.has_value() ? &file.boulder->material : nullptr;
+    case RockShape::Outcrop: return file.outcrop.has_value() ? &file.outcrop->material : nullptr;
+    case RockShape::Scree: return file.scree.has_value() ? &file.scree->material : nullptr;
   }
-  return c.f(m.tile_m, 0.05f, 20.0f, "material.tile_m", "0.05 to 20 m");
+  return nullptr;
+}
+
+RockType type_of(const RockFile& file) {
+  switch (file.shape) {
+    case RockShape::Boulder: return file.boulder.value_or(Boulder{}).type;
+    case RockShape::Outcrop: return file.outcrop.value_or(Outcrop{}).type;
+    case RockShape::Scree: return file.scree.value_or(Scree{}).type;
+  }
+  return RockType::Granite;
 }
 
 bool weather_in_range(const std::optional<f32>& rounding, const std::optional<u32>& layers,
@@ -158,14 +182,39 @@ u64 rock_source_hash(const RockFile& file) {
   return hash_combine(hash_bytes(canonical.data(), canonical.size()), k_rocks_version);
 }
 
-u64 rock_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes) {
-  return geometry::cluster_cache_key(source_hash, lod, false, page_bytes);
+u64 rock_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                   const materials::Pack* pack) {
+  return assets::generated_mesh_build_key(source_hash, assets::MeshGeneratorInputs{pack}, lod,
+                                          page_bytes);
 }
 
-bool build_rock_container(const RockFile& file, const geometry::ClusterLodOptions& lod,
+std::string rock_role(RockType type) {
+  std::string role = std::string("rock/") + rock_type_name(type);
+  for (char& c : role)
+    c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  return role;
+}
+
+bool build_rock_container(const RockFile& file_in, const geometry::ClusterLodOptions& lod,
                           u32 page_bytes, geometry::ClusterFileData& out, RockReport* report,
-                          std::string& error) {
+                          std::string& error, const materials::Pack* pack) {
   out = geometry::ClusterFileData{};
+  // The set the rock samples, chosen before the solve: the charts are laid out in whole repeats of
+  // its `tile_m` (rocks.md, "UVs and materials"), so a pack's set, whose repeat is its own, is
+  // solved at that repeat. The recipe's own images keep the recipe's.
+  RockFile file = file_in;
+  if (file.shape == RockShape::Boulder && !file.boulder.has_value()) file.boulder = Boulder{};
+  if (file.shape == RockShape::Outcrop && !file.outcrop.has_value()) file.outcrop = Outcrop{};
+  if (file.shape == RockShape::Scree && !file.scree.has_value()) file.scree = Scree{};
+  if (material_of(file) == nullptr) {
+    error = "engine.rocks.RockFile.shape is not one the solver has";
+    return false;
+  }
+  const materials::MaterialSet recipe = set_of(*material_of(file));
+  bool from_pack = false;
+  const materials::MaterialSet* chosen =
+      materials::resolve_set(&recipe, pack, rock_role(type_of(file)), &from_pack);
+  if (from_pack) material_of(file)->tile_m = chosen->tile_m;
   assets::MeshData mesh;
   if (!solve_rock(file, mesh, report, &error)) return false;
 
@@ -207,11 +256,17 @@ bool build_rock_container(const RockFile& file, const geometry::ClusterLodOption
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
   }
-  out.source_hash = rock_source_hash(file);
-  out.build_key = rock_build_key(out.source_hash, lod, page_bytes);
+  if (chosen != nullptr && !out.materials.empty()) {
+    // The charts are in repeats already: no transform.
+    materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
+    texture::fill_cluster_texture_records(out);
+  }
+  // The identity is the file's as it was given: the pack's repeat is in the key through the pack.
+  out.source_hash = rock_source_hash(file_in);
+  out.build_key = rock_build_key(out.source_hash, lod, page_bytes, pack);
   out.generator = "rock";
-  out.generator_kind = rock_shape_name(file.shape);
-  out.generator_params = canonical_rock_json(file);
+  out.generator_kind = rock_shape_name(file_in.shape);
+  out.generator_params = canonical_rock_json(file_in);
   return true;
 }
 
@@ -233,11 +288,12 @@ bool generator_source_hash(std::span<const u8> bytes, u64& out, std::string& err
   return true;
 }
 
-bool generator_build(std::span<const u8> bytes, const geometry::ClusterLodOptions& lod,
-                     u32 page_bytes, geometry::ClusterFileData& out, std::string& error) {
+bool generator_build(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                     const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                     geometry::ClusterFileData& out, std::string& error) {
   RockFile file;
   if (!read_rock_file(text_of(bytes), file, error)) return false;
-  return build_rock_container(file, lod, page_bytes, out, nullptr, error);
+  return build_rock_container(file, lod, page_bytes, out, nullptr, error, inputs.materials);
 }
 
 constexpr assets::MeshGeneratorDesc k_rock_generator{

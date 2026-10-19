@@ -32,6 +32,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::materials {
+struct Pack;
+}
+
 namespace engine::flora {
 
 // The solver's version: part of every build key over a flora file, so a change to what the solver
@@ -42,7 +46,11 @@ namespace engine::flora {
 // 2: the palm's crown on one leaf spiral by age, the trunk's top a collar of persistent frond bases
 //    and swelling sheaths (flora.md, "The crown"), and the motion contract's sections 35 and 36 in
 //    every container — an entry built at 1 has neither.
-inline constexpr u32 k_flora_version = 2;
+// 3: the palm's bark (the trunk, its cap and the collar of bases) and its fronds and skirt in UVs
+// of
+//    metres, so a tiled set's `tile_m` is its physical repeat (flora.md, "Materials"); the trunk's
+//    were in circumferences, a frond's in its own length.
+inline constexpr u32 k_flora_version = 3;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`).
@@ -67,10 +75,26 @@ std::string canonical_flora_json(const FloraFile& file);
 // parameters' bytes, the species, and `k_flora_version`.
 u64 flora_source_hash(const FloraFile& file);
 
-// The build key over that hash: `geometry::cluster_cache_key(source_hash, lod, false,
-// page_bytes)` — no weld, since the solver's vertices are shared exactly where they are meant to
-// be — which is the key `engine-content flora` and the renderer's scene reader both write under.
-u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes);
+// The build key over that hash: `assets::generated_mesh_build_key` —
+// `cluster_cache_key(source_hash, lod, false, page_bytes)`, no weld, since the solver's vertices
+// are shared exactly where they are meant to be, with the material pack's key when one with roles
+// is given — which is the key `engine-content flora` and the renderer's scene reader both write
+// under.
+u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                    const materials::Pack* pack = nullptr);
+
+// The role a species' material `material` is looked up by in a material pack (flora.md,
+// "Materials"): "palm/bark", "palm/frond", "palm/skirt"; "broadleaf/bark", "broadleaf/leaf";
+// "conifer/bark", "conifer/needles"; and for a species with no list of its own, `<species>/bark`
+// and `<species>/leaf` for its first two. Empty past the species' parts.
+std::string flora_role(const std::string& species, u32 material);
+
+// Writes each part's material set into `out`'s materials (domain/materials): the recipe's set for
+// the part when it names an image, else the pack's for the part's role, else none, which leaves the
+// flat colour. Bark and the palm's fronds and skirt are in metres and take `1 / tile_m`; a leaf or
+// needle card takes its image whole. Then the texture records (section 32) when any image is named.
+void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
+                           geometry::ClusterFileData& out);
 
 // Solves the file's species — the palm, the broadleaf or the conifer, by `species` — into a mesh
 // and its motion contract. The report its species fills, when given; the other is left alone.
@@ -79,12 +103,13 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
 
 // Solves the file's species and builds its container: one cluster LOD DAG per primitive, each with
 // its material's cone setting (the trunk's on, a two-sided frond's off), merged, laid out in
-// pages of `page_bytes` (0: no page table), with the materials, the identity (source hash and
+// pages of `page_bytes` (0: no page table), with the materials and their sets
+// (`apply_flora_materials`, from the recipe's block and `pack`), the identity (source hash and
 // build key) and the generator section (`flora`, the species, the canonical parameters). The
-// source path is left to the caller. Deterministic: the same file gives the same bytes on every
-// toolchain and thread count.
+// source path is left to the caller. Deterministic: the same file and pack give the same bytes on
+// every toolchain and thread count.
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
-                           std::string& error);
+                           std::string& error, const materials::Pack* pack = nullptr);
 
 }  // namespace engine::flora
