@@ -1,6 +1,8 @@
 // The species solvers' shared shapes (kit.h): a grown axis, a tube along it, a spray of cards.
 #include "kit.h"
 
+#include <domain/geometry/cluster.h>
+
 namespace engine::flora::detail {
 
 Axis grow_axis(D3 base, D3 direction, f64 length, u32 rows, D3 pull, f64 pull_per_m, f64 wiggle,
@@ -160,6 +162,113 @@ void build_spray(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 ang
       out.face(mid[k], tips[j][k + 1], tips[j][k], upper[k]);
     }
   }
+}
+
+// ---- the second batch of species (kit.h)
+// ---------------------------------------------------------
+
+Axis grow_axis_after(D3 base, D3 direction, f64 length, u32 rows, D3 pull, f64 pull_per_m,
+                     f64 pull_from, f64 wiggle, Rng& rng) {
+  Axis a;
+  a.length = length;
+  const f64 step = length / static_cast<f64>(rows);
+  D3 t = normalized(direction);
+  D3 n = perpendicular(t, (t.y < 0.9 && t.y > -0.9) ? k_up : D3{1.0, 0.0, 0.0});
+  D3 p = base;
+  a.point.reserve(rows + 1);
+  for (u32 r = 0; r <= rows; ++r) {
+    a.point.push_back(p);
+    a.tangent.push_back(t);
+    a.normal.push_back(n);
+    a.arc.push_back(step * static_cast<f64>(r));
+    if (r == rows) break;
+    D3 next = t;
+    if (step * static_cast<f64>(r) >= pull_from) {
+      const D3 hinge = cross(t, pull);
+      const f64 s = length_of(hinge);
+      if (s > 1e-9) next = rotate(next, hinge * (1.0 / s), pull_per_m * step * s);
+    }
+    if (wiggle > 0.0) {
+      const D3 b = cross(next, n);
+      const f64 first = wiggle * rng.symmetric();
+      next = rotate(next, n, first);
+      const f64 second = wiggle * rng.symmetric();
+      next = rotate(next, normalized(b), second);
+    }
+    next = normalized(next);
+    p = p + normalized(t + next) * step;
+    t = next;
+    n = perpendicular(t, n);
+  }
+  return a;
+}
+
+Axis truncate_axis(const Axis& axis, u32 rows) {
+  Axis r;
+  for (u32 i = 0; i <= rows; ++i) {
+    r.point.push_back(axis.point[i]);
+    r.tangent.push_back(axis.tangent[i]);
+    r.normal.push_back(axis.normal[i]);
+    r.arc.push_back(axis.arc[i]);
+  }
+  r.length = axis.arc[rows];
+  return r;
+}
+
+D3 branch_direction(const Axis& parent, f64 arc, f64 azimuth, f64 angle, D3* radial_out) {
+  const u32 rows = parent.point.size() - 1;
+  const f64 f = arc / parent.length * static_cast<f64>(rows);
+  u32 i = static_cast<u32>(f);
+  if (i > rows) i = rows;
+  const D3 t = axis_tangent(parent, arc);
+  const D3 n = perpendicular(t, parent.normal[i]);
+  const D3 b = cross(t, n);
+  const D3 radial = n * det::cos(azimuth) + b * det::sin(azimuth);
+  if (radial_out != nullptr) *radial_out = radial;
+  return normalized(t * det::cos(angle) + radial * det::sin(angle));
+}
+
+f64 pipe_radius_of(f64 root_radius, f64 tips, f64 total) {
+  return root_radius * det::exp(det::log(tips / total) / 2.5);
+}
+
+u32 begin_structural_part(Emitter& out, D3 pivot, D3 direction, f64 length, u32 parent, f64 r0,
+                          f64 r1, u32 flags) {
+  const u32 part = out.begin_part(pivot, direction, length, parent);
+  geometry::ClusterFileStructuralPart record;
+  record.part = part;
+  record.base_radius = static_cast<f32>(r0);
+  record.tip_radius = static_cast<f32>(r1);
+  record.flags = flags;
+  out.motion.structure.push_back(record);
+  return part;
+}
+
+u32 emit_tube_part(Emitter& out, const Axis& axis, f64 r0, f64 r1, u32 rows, u32 sides, u32 parent,
+                   u32 flags) {
+  const u32 part = begin_structural_part(out, axis.point[0], axis.tangent[0], axis.length, parent,
+                                         r0, r1, flags);
+  build_tube(resample_axis(axis, rows), r0, r1, sides, Vec2{0.0f, 0.0f}, out);
+  return part;
+}
+
+u32 emit_spray_part(Emitter& out, const Axis& axis, u32 parent, u32 cards, f64 card_length,
+                    f64 angle, f64 lift, f64 droop) {
+  const u32 part =
+      begin_structural_part(out, axis.point[0], axis.tangent[0], axis.length, parent, 0.0, 0.0, 0u);
+  D3 side = cross(axis.tangent[0], k_up);
+  if (dot(side, side) < 1e-6) side = D3{1.0, 0.0, 0.0};
+  build_spray(axis, 0.0, cards, card_length, angle, lift, droop, normalized(side), out);
+  return part;
+}
+
+void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index) {
+  Vector<Vec3> normals;
+  const std::span<const u32> range(mesh.indices.data() + first_index,
+                                   mesh.indices.size() - first_index);
+  geometry::compute_vertex_normals(mesh.positions, range, normals);
+  for (u32 v = first_vertex; v < mesh.positions.size(); ++v)
+    mesh.normals[v] = normals[v];
 }
 
 }  // namespace engine::flora::detail

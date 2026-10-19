@@ -49,6 +49,11 @@ inline constexpr u32 k_flora_version = 2;
 inline constexpr const char* k_species_date_palm = "date_palm";
 inline constexpr const char* k_species_broadleaf = "broadleaf";
 inline constexpr const char* k_species_conifer = "conifer";
+inline constexpr const char* k_species_birch = "birch";
+inline constexpr const char* k_species_willow = "willow";
+inline constexpr const char* k_species_orchard = "orchard";
+inline constexpr const char* k_species_ancient =
+    "ancient";  // the megaflora (flora.md, "Megaflora")
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------

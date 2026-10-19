@@ -194,4 +194,46 @@ inline u32 spray_triangles(u32 cards) { return cards * 4; }
 void build_spray(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 angle, f64 lift,
                  f64 droop, D3 side, Emitter& out);
 
+// ---- the second batch of species: the birch, the willow, the orchard tree, the ancient tree ----
+//
+// Added after everything above and changing none of it, so the palm's, the broadleaf's and the
+// conifer's bytes stay pinned (flora.md, "Determinism").
+
+// `grow_axis` whose turn towards `pull` starts only at arc `pull_from`: a shoot that runs straight
+// for a stretch and then bends (the megaflora's limbs, a willow's arch). The wander applies along
+// the whole axis, and the draws are the same two a step as `grow_axis`'s. With `pull_from` 0 it is
+// `grow_axis`.
+Axis grow_axis_after(D3 base, D3 direction, f64 length, u32 rows, D3 pull, f64 pull_per_m,
+                     f64 pull_from, f64 wiggle, Rng& rng);
+
+// The first `rows + 1` points of an axis, its length theirs: a hanging curtain cut where it would
+// reach the ground. The steps stay even, so `axis_point` reads it as it reads any axis.
+Axis truncate_axis(const Axis& axis, u32 rows);
+
+// A child's direction: `angle` from the parent's tangent at `arc`, towards `azimuth` round it, and
+// the unit radial it leaves along (the broadleaf's rule, for the species after it).
+D3 branch_direction(const Axis& parent, f64 arc, f64 azimuth, f64 angle, D3* radial_out);
+
+// The pipe model's radius: the root's times (tips over total)^(1/2.5).
+f64 pipe_radius_of(f64 root_radius, f64 tips, f64 total);
+
+// Opens a part as `Emitter::begin_part` does and records its structural row beside it
+// (structure.h): its radius at the base and at the tip, and its flags.
+u32 begin_structural_part(Emitter& out, D3 pivot, D3 direction, f64 length, u32 parent, f64 r0,
+                          f64 r1, u32 flags);
+
+// A tube along a shoot's grown axis, resampled at `rows`, as its own structural part. Returns the
+// part.
+u32 emit_tube_part(Emitter& out, const Axis& axis, f64 r0, f64 r1, u32 rows, u32 sides, u32 parent,
+                   u32 flags);
+
+// A spray of cards along a shoot's grown axis as its own part, with no wood (radii zero), its plane
+// laid level. Returns the part.
+u32 emit_spray_part(Emitter& out, const Axis& axis, u32 parent, u32 cards, f64 card_length,
+                    f64 angle, f64 lift, f64 droop);
+
+// Replaces the normals of the vertices from `first_vertex` on with the area-weighted normals of
+// the triangles from `first_index` on — how a spray's cards get a surface's normals.
+void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index);
+
 }  // namespace engine::flora::detail

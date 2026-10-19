@@ -135,6 +135,211 @@ struct Conifer @version(1) {
   triangle_budget: u32 = 40000
 }
 
+/// A birch (flora.md, "The birch"): one to three slender white stems from one foot, a narrow crown
+/// of short limbs on the golden angle, and fine twigs that droop at the crown's edge, each a spray
+/// of small leaf cards. Defaults make a 14 m two-stemmed birch.
+struct Birch @version(1) {
+  /// Everything left to chance: the stems' azimuths, every limb's and twig's turn and spread.
+  seed: u64 = 1
+  /// The tallest stem's top above the ground: 3 to 30 m (the others a little shorter).
+  height_m: f32 = 14.0 @unit(m)
+  /// The tallest stem's radius at the ground: 0.03 to 0.5 m (the others thinner).
+  stem_radius_m: f32 = 0.13 @unit(m)
+  /// Stems from the one foot: 1 to 3.
+  stems: u32 = 2
+  /// How far from vertical the second and third stems leave the foot: 0 to 30 degrees.
+  stem_spread_deg: f32 = 12.0 @unit(deg)
+  /// Where the crown begins on a stem, as a share of its height: 0.15 to 0.8.
+  crown_base: f32 = 0.4
+  /// Limbs on every stem: 2 to 16.
+  limbs: u32 = 12
+  /// The lowest limb's angle from its stem: 15 to 80 degrees (the upper limbs a half more upright).
+  limb_angle_deg: f32 = 45.0 @unit(deg)
+  /// The lowest limb's length as a share of the height: 0.08 to 0.5 (the upper limbs shorter).
+  limb_length: f32 = 0.24
+  /// Twigs on every limb, and on every stem's top: 2 to 16.
+  twigs: u32 = 12
+  /// A twig's length: 0.2 to 3 m.
+  twig_length_m: f32 = 1.1 @unit(m)
+  /// How far the twigs hang: 0 not at all, 1 the outermost turned 80 degrees towards the ground
+  /// along their length.
+  droop: f32 = 0.6
+  /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
+  wander_deg: f32 = 6.0 @unit(deg)
+  /// Leaf cards along each side of a twig: 1 to 30.
+  leaves: u32 = 12
+  /// A leaf card's length, out from the twig: 0.02 to 0.25 m.
+  leaf_length_m: f32 = 0.09 @unit(m)
+  /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
+  leaf_angle_deg: f32 = 55.0 @unit(deg)
+  /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The birch").
+  triangle_budget: u32 = 50000
+}
+
+/// A weeping willow (flora.md, "The willow"): a short thick trunk, limbs arching out and up from
+/// its top, branches along their outer half, and from the branches long hanging curtains of twigs —
+/// each a chain of leaf cards drooping under gravity, a part of its own. Defaults make an 11 m
+/// willow.
+struct Willow @version(1) {
+  /// Everything left to chance: every limb's turn, every branch's spread, every curtain's length.
+  seed: u64 = 1
+  /// The crown's top above the ground: 4 to 25 m.
+  height_m: f32 = 11.0 @unit(m)
+  /// The trunk's radius at the ground: 0.08 to 1.5 m.
+  trunk_radius_m: f32 = 0.45 @unit(m)
+  /// Where the trunk divides into its limbs, as a share of the height: 0.15 to 0.6.
+  trunk_height: f32 = 0.3
+  /// Limbs from the trunk's top: 2 to 12.
+  limbs: u32 = 7
+  /// A limb's angle from vertical where it leaves the trunk: 20 to 80 degrees.
+  limb_angle_deg: f32 = 50.0 @unit(deg)
+  /// A limb's length as a share of the height: 0.3 to 1.
+  limb_length: f32 = 0.62
+  /// Branches along the outer half of every limb: 1 to 10.
+  branches: u32 = 5
+  /// A branch's length over its limb's: 0.15 to 0.8.
+  branch_length: f32 = 0.4
+  /// Hanging curtains of twigs along every branch: 1 to 16.
+  curtains: u32 = 6
+  /// A curtain's length, before the ground shortens it: 0.5 to 15 m.
+  curtain_length_m: f32 = 5.0 @unit(m)
+  /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
+  wander_deg: f32 = 5.0 @unit(deg)
+  /// Leaf cards along each side of a curtain: 2 to 40.
+  leaves: u32 = 28
+  /// A leaf card's length, out from the twig: 0.03 to 0.4 m.
+  leaf_length_m: f32 = 0.14 @unit(m)
+  /// A leaf's angle from its twig, towards the tip (down): 5 to 60 degrees. A willow's leaves are
+  /// narrow and hang close along the twig.
+  leaf_angle_deg: f32 = 22.0 @unit(deg)
+  /// The most triangles the mesh may have: 12,000 to 2,000,000 (flora.md, "The willow").
+  triangle_budget: u32 = 60000
+}
+
+/// An orchard tree (flora.md, "The orchard tree"): an apple-like tree of a short trunk, a low broad
+/// crown of scaffold limbs, branches and leafy twigs — pruned to a flat-topped vase, or left free —
+/// and optionally fruit on the twigs. Defaults make a 4.5 m pruned apple without fruit.
+struct Orchard @version(1) {
+  /// Everything left to chance: every limb's turn, every shoot's spread and wander.
+  seed: u64 = 1
+  /// The crown's top above the ground: 2 to 12 m.
+  height_m: f32 = 4.5 @unit(m)
+  /// The trunk's radius at the ground: 0.04 to 0.6 m.
+  trunk_radius_m: f32 = 0.14 @unit(m)
+  /// Where the trunk divides into its scaffold limbs, as a share of the height: 0.12 to 0.5.
+  trunk_height: f32 = 0.25
+  /// Scaffold limbs from the trunk's top: 2 to 8.
+  limbs: u32 = 5
+  /// A limb's angle from vertical: 25 to 80 degrees.
+  limb_angle_deg: f32 = 52.0 @unit(deg)
+  /// A limb's length as a share of the height: 0.3 to 1.2.
+  limb_length: f32 = 0.7
+  /// Branches on every limb: 1 to 8.
+  branches: u32 = 5
+  /// Leafy twigs on every branch: 1 to 12.
+  twigs: u32 = 9
+  /// A twig's length: 0.1 to 1.5 m.
+  twig_length_m: f32 = 0.45 @unit(m)
+  /// Pruned to an open, flat-topped vase: the limbs straight and the branches levelled under the
+  /// crown's top. False lets them grow towards the light into a rounder crown.
+  pruned: bool = true
+  /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
+  wander_deg: f32 = 7.0 @unit(deg)
+  /// Leaf cards along each side of a twig: 1 to 30.
+  leaves: u32 = 10
+  /// A leaf card's length, out from the twig: 0.03 to 0.25 m.
+  leaf_length_m: f32 = 0.1 @unit(m)
+  /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
+  leaf_angle_deg: f32 = 50.0 @unit(deg)
+  /// Fruit hanging from every twig: 0 for none, up to 6.
+  fruit: u32 = 0
+  /// A fruit's radius: 0.02 to 0.08 m.
+  fruit_radius_m: f32 = 0.04 @unit(m)
+  /// The fruit's colour, linear red, green and blue, each 0 to 1.
+  fruit_red: f32 = 0.62
+  fruit_green: f32 = 0.08
+  fruit_blue: f32 = 0.05
+  /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The orchard tree").
+  triangle_budget: u32 = 40000
+}
+
+/// An ancient tree, the megaflora regime (flora.md, "Megaflora"): a trunk metres thick flaring into
+/// buttress roots at its foot, with doorway-sized hollows, and major limbs leaving it high up that
+/// run straight and near-horizontal for their first stretch — where platforms go — before they
+/// turn up and branch as a broadleaf does at a larger scale, carrying a canopy of leaf-cluster
+/// cards. Its parts carry the structural table (section 37). Defaults make a 100 m tree.
+struct Ancient @version(1) {
+  /// Everything left to chance: the buttresses', hollows' and limbs' azimuths, every shoot's turn.
+  seed: u64 = 1
+  /// The crown's top above the ground: 40 to 150 m.
+  height_m: f32 = 100.0 @unit(m)
+  /// The trunk's core radius at the ground, inside the buttresses: 2 to 12.5 m (4 to 25 m across).
+  trunk_radius_m: f32 = 5.0 @unit(m)
+  /// The core's radius at the trunk's top as a share of its radius at the ground: 0.15 to 0.8.
+  taper: f32 = 0.4
+  /// How far from vertical the trunk stands: 0 to 8 degrees. It is straight.
+  lean_deg: f32 = 1.0 @unit(deg)
+  /// Buttress roots flaring from the foot: 0 to 12.
+  buttresses: u32 = 6
+  /// How high up the trunk a buttress runs: 1 to 40 m.
+  buttress_height_m: f32 = 10.0 @unit(m)
+  /// How far a buttress reaches out at the ground, as a share of the core radius: 0 to 2.5.
+  buttress_reach: f32 = 1.1
+  /// Doorway-sized hollows in the trunk, between the buttresses: 0 to 3, the first at
+  /// `hollow_sill_m`, each next one `hollow_spacing_m` above the last.
+  hollows: u32 = 1
+  /// A hollow's doorway width: 0.6 to 5 m.
+  hollow_width_m: f32 = 1.6 @unit(m)
+  /// A hollow's doorway height: 1.2 to 8 m.
+  hollow_height_m: f32 = 2.8 @unit(m)
+  /// How deep a hollow goes into the trunk, as a share of the core radius there: 0.15 to 0.7.
+  hollow_depth: f32 = 0.5
+  /// The first hollow's floor above the ground: 0 to 60 m.
+  hollow_sill_m: f32 = 0.3 @unit(m)
+  /// From one hollow's floor to the next one's: 3 to 60 m.
+  hollow_spacing_m: f32 = 14.0 @unit(m)
+  /// Major limbs: 2 to 12.
+  limbs: u32 = 9
+  /// The lowest major limb leaves the trunk this high: 8 to 110 m.
+  limb_low_m: f32 = 30.0 @unit(m)
+  /// The highest major limb leaves the trunk this high: `limb_low_m` to 0.75 of the height.
+  limb_high_m: f32 = 62.0 @unit(m)
+  /// The lowest limb's radius where it leaves the trunk: 0.5 to 2.5 m (1 to 5 m thick; the upper
+  /// limbs thinner).
+  limb_radius_m: f32 = 1.6 @unit(m)
+  /// A limb's first run's rise above horizontal: -5 to 30 degrees.
+  limb_rise_deg: f32 = 4.0 @unit(deg)
+  /// The lowest limb's first run, straight, from inside the trunk (half its core radius out from
+  /// the axis): 4 to 60 m, and at least 2 m past the core (the upper limbs' shorter).
+  limb_run_m: f32 = 24.0 @unit(m)
+  /// The lowest limb's length past its first run, turning up and branching: 4 to 80 m.
+  limb_reach_m: f32 = 36.0 @unit(m)
+  /// Branches on every limb past its run, and on the trunk's top: 2 to 10.
+  branches: u32 = 6
+  /// A branch's angle from its parent: 15 to 80 degrees.
+  branch_angle_deg: f32 = 40.0 @unit(deg)
+  /// A branch's length over its limb's reach: 0.2 to 0.9.
+  branch_length: f32 = 0.7
+  /// Sub-branches on every branch: 1 to 8.
+  sub_branches: u32 = 5
+  /// Leafy twigs on every sub-branch: 1 to 12.
+  twigs: u32 = 6
+  /// A twig's length: 1 to 10 m.
+  twig_length_m: f32 = 5.0 @unit(m)
+  /// How far each shoot past the runs turns towards the light, as a share of 40 degrees: -1 to 1.
+  upturn: f32 = 0.5
+  /// How far a shoot past the runs wanders from straight at every step: 0 to 20 degrees.
+  wander_deg: f32 = 5.0 @unit(deg)
+  /// Leaf-cluster cards along each side of a twig: 1 to 60.
+  leaves: u32 = 16
+  /// A leaf-cluster card's length, out from the twig: 0.2 to 3 m.
+  leaf_length_m: f32 = 1.4 @unit(m)
+  /// A card's angle from its twig, towards the tip: 10 to 85 degrees.
+  leaf_angle_deg: f32 = 50.0 @unit(deg)
+  /// The most triangles the mesh may have: 12,000 to 2,000,000 (flora.md, "Megaflora").
+  triangle_budget: u32 = 300000
+}
+
 /// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative
 /// to the flora file, any of them empty for none, and the set's physical repeat.
 struct MaterialSet @version(1) {
@@ -166,13 +371,17 @@ struct FloraMaterials @version(1) {
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by these values (canonicalized: the species' own parameters and the materials,
 /// nothing of the species not chosen), the species and the solver's version.
-struct FloraFile @version(2) {
-  /// The species: "date_palm", "broadleaf" or "conifer"; the solver reads the parameters of the
-  /// same name.
+struct FloraFile @version(3) {
+  /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard" or "ancient";
+  /// the solver reads the parameters of the same name.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
   conifer: Conifer @since(2)
   /// The images the parts sample; absent for the flat colours.
   materials: FloraMaterials? @since(2)
+  birch: Birch @since(3)
+  willow: Willow @since(3)
+  orchard: Orchard @since(3)
+  ancient: Ancient @since(3)
 }

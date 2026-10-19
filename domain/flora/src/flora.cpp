@@ -35,9 +35,14 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
   if (out.species == k_species_date_palm) return palm_in_range(out.palm, error);
   if (out.species == k_species_broadleaf) return broadleaf_in_range(out.broadleaf, error);
   if (out.species == k_species_conifer) return conifer_in_range(out.conifer, error);
+  if (out.species == k_species_birch) return birch_in_range(out.birch, error);
+  if (out.species == k_species_willow) return willow_in_range(out.willow, error);
+  if (out.species == k_species_orchard) return orchard_in_range(out.orchard, error);
+  if (out.species == k_species_ancient) return ancient_in_range(out.ancient, error);
   error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
-          k_species_date_palm + "\", \"" + k_species_broadleaf + "\" and \"" + k_species_conifer +
-          "\")";
+          k_species_date_palm + "\", \"" + k_species_broadleaf + "\", \"" + k_species_conifer +
+          "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" + k_species_orchard +
+          "\" and \"" + k_species_ancient + "\")";
   return false;
 }
 
@@ -46,6 +51,10 @@ namespace {
 const char* species_member(const std::string& species) {
   if (species == k_species_broadleaf) return "broadleaf";
   if (species == k_species_conifer) return "conifer";
+  if (species == k_species_birch) return "birch";
+  if (species == k_species_willow) return "willow";
+  if (species == k_species_orchard) return "orchard";
+  if (species == k_species_ancient) return "ancient";
   return "palm";
 }
 }  // namespace
@@ -82,6 +91,14 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_broadleaf(file.broadleaf, mesh, tree_report, &error, &motion);
   if (file.species == k_species_conifer)
     return solve_conifer(file.conifer, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_birch)
+    return solve_birch(file.birch, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_willow)
+    return solve_willow(file.willow, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_orchard)
+    return solve_orchard(file.orchard, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_ancient)
+    return solve_ancient(file.ancient, mesh, tree_report, &error, &motion);
   return solve_palm(file.palm, mesh, palm_report, &error, &motion);
 }
 
@@ -138,6 +155,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     return false;
   }
   out.motion_parts = std::move(motion.parts);
+  out.structural_parts = std::move(motion.structure);  // section 37, where the species emits it
   out.cluster_material.reserve(part_of_cluster.size());
   for (const u32 part : part_of_cluster)
     out.cluster_material.push_back(part_material[part]);

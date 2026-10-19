@@ -254,6 +254,13 @@ u64 encode(const ClusterFileData& data, std::string& out) {
                 static_cast<u32>(sizeof(ClusterFileMotionVertex)), data.motion_vertices.size(),
                 data.motion_vertices.data());
   }
+  // The structural table, and only when a species emitted one (flora.md, "The structural table"):
+  // appended after the motion contract, so every container without it is the bytes it was.
+  if (!data.structural_parts.empty()) {
+    add_section(payloads, ClusterSection::StructuralParts,
+                static_cast<u32>(sizeof(ClusterFileStructuralPart)), data.structural_parts.size(),
+                data.structural_parts.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -428,6 +435,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Generator: return "generator";
     case ClusterSection::MotionParts: return "motion_parts";
     case ClusterSection::MotionVertices: return "motion_vertices";
+    case ClusterSection::StructuralParts: return "structural_parts";
   }
   return "unknown";
 }
@@ -623,6 +631,17 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(sizeof(ClusterFileMotionVertex)));
     }
     copy_section(bytes, *motion, result.motion_vertices);
+  }
+  // The structural table: a file without it, or with an empty one, has none.
+  if (const ClusterFileSection* structure =
+          found[static_cast<u32>(ClusterSection::StructuralParts)];
+      structure != nullptr && structure->element_count != 0) {
+    if (structure->element_size != sizeof(ClusterFileStructuralPart)) {
+      return fail(error, "cluster file section structural_parts has " +
+                             std::to_string(structure->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileStructuralPart)));
+    }
+    copy_section(bytes, *structure, result.structural_parts);
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -906,6 +925,17 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
       }
     }
   }
+  // Every structural record names a part of the motion table, in ascending order.
+  for (u32 i = 0; i < result.structural_parts.size(); ++i) {
+    const u32 part = result.structural_parts[i].part;
+    if (part >= result.motion_parts.size() ||
+        (i > 0 && part <= result.structural_parts[i - 1].part)) {
+      return fail(error, "cluster file structural record " + std::to_string(i) + " names part " +
+                             std::to_string(part) + " of " +
+                             std::to_string(result.motion_parts.size()) +
+                             ", or not after the record before it");
+    }
+  }
   if (!mesh.vertex_ids.empty() && mesh.vertex_ids.size() != mesh.vertices.size()) {
     return fail(error, "cluster file has " + std::to_string(mesh.vertex_ids.size()) +
                            " vertex ids for " + std::to_string(mesh.vertices.size()) + " vertices");
@@ -1042,6 +1072,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::Generator,
     // 32 bytes a part, and only in a generated tree's container: the motion contract's table.
     ClusterSection::MotionParts,
+    // 16 bytes a part, and only where a species emits it: the structural table.
+    ClusterSection::StructuralParts,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
