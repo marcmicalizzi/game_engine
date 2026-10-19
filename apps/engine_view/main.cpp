@@ -2372,7 +2372,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // A timed flight draws its characters at rest (`renderer::fly_camera_path` hands the frames
     // no joints), so the passes after it leave them at rest too and the census still compares
     // like with like.
-    const bool timed_flight = !interactive.on && !options.benchmark.empty();
+    [[maybe_unused]] const bool timed_flight = !interactive.on && !options.benchmark.empty();
     auto animate_frame = [&]([[maybe_unused]] renderer::FrameDesc& frame,
                              [[maybe_unused]] u64 frame_ticks) {
 #if ENGINE_VIEW_ANIMATION

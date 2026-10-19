@@ -388,7 +388,7 @@ u32 advance_animation(AnimatedScene& scene, renderer::SceneRenderer& renderer,
 void AnimationTicks::attach(FlySession& session, AnimatedScene& animated,
                             renderer::SceneRenderer& view_renderer, u32 session_tick_hz) noexcept {
   scene = &animated;
-  renderer = &view_renderer;
+  views_of = &view_renderer;
   tick_hz = session_tick_hz > 0 ? session_tick_hz : 1u;
   next = session.tick_observer();
   next_user = session.tick_observer_user();
@@ -404,7 +404,7 @@ void AnimationTicks::observe(void* user, const FlySession& session,
                              const input::InputState& input) {
   auto* self = static_cast<AnimationTicks*>(user);
   if (self->next != nullptr) self->next(self->next_user, session, input);
-  (void)advance_animation(*self->scene, *self->renderer, session.camera(), "ticks", self->tick_hz,
+  (void)advance_animation(*self->scene, *self->views_of, session.camera(), "ticks", self->tick_hz,
                           session.tick().value);
 }
 

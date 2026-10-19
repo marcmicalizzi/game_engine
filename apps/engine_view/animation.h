@@ -172,7 +172,7 @@ u32 advance_animation(AnimatedScene& scene, renderer::SceneRenderer& renderer,
 // tiers decided from that tick's camera. `attach` installs it; the object must outlive the session.
 struct AnimationTicks {
   AnimatedScene* scene = nullptr;
-  renderer::SceneRenderer* renderer = nullptr;
+  renderer::SceneRenderer* views_of = nullptr;  // whose views a tier is decided from
   u32 tick_hz = 0;
   FlySession::TickObserver next = nullptr;
   void* next_user = nullptr;
