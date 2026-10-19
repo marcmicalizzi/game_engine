@@ -1,0 +1,14 @@
+{
+  "species": "conifer",
+  "conifer": {
+    "seed": 5,
+    "height_m": 4.0,
+    "trunk_radius_m": 0.07,
+    "crown_base": 0.05,
+    "whorls": 9,
+    "branches_per_whorl": 5,
+    "crown_radius_m": 1.3,
+    "needle_length_m": 0.18,
+    "triangle_budget": 20000
+  }
+}

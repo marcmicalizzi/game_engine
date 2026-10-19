@@ -15,7 +15,8 @@ struct Palm @version(1) {
   height_m: f32 = 9.0 @unit(m)
   /// The trunk's radius at the ground, over the ring scars: 0.05 to 1 m.
   trunk_base_radius_m: f32 = 0.24 @unit(m)
-  /// The trunk's radius at the apex: 0.03 m up to the base radius.
+  /// The trunk's radius where the crown's leaf sheaths begin, which swell it by 40% by the apex:
+  /// 0.03 m up to the base radius.
   trunk_top_radius_m: f32 = 0.18 @unit(m)
   /// How far from vertical the trunk leaves the ground: 0 to 40 degrees.
   lean_deg: f32 = 7.0 @unit(deg)
@@ -48,11 +49,130 @@ struct Palm @version(1) {
   triangle_budget: u32 = 60000
 }
 
+/// A deciduous broadleaf (flora.md, "The broadleaf"): an oak-like tree of a trunk, scaffold limbs,
+/// their branches and leafy twigs, grown by seeded self-similar branching — each order's shoots
+/// spaced along their parent on the golden angle, turned towards the light, their radii by the pipe
+/// model — with its leaves as two-sided cards on the twigs. Defaults make a 12 m oak.
+struct Broadleaf @version(1) {
+  /// Everything left to chance: the lean's azimuth, every shoot's turn, spread and wander.
+  seed: u64 = 1
+  /// The leader's top above the ground: 3 to 40 m.
+  height_m: f32 = 12.0 @unit(m)
+  /// The trunk's radius at the ground: 0.05 to 2 m. Every shoot's radius follows from it by the
+  /// pipe model.
+  trunk_radius_m: f32 = 0.35 @unit(m)
+  /// Where the crown begins, as a share of the height: the lowest limb leaves the trunk here,
+  /// 0.1 to 0.8.
+  crown_base: f32 = 0.3
+  /// How far from vertical the trunk leaves the ground: 0 to 30 degrees.
+  lean_deg: f32 = 3.0 @unit(deg)
+  /// Scaffold limbs (order 1) along the trunk in the crown: 1 to 12.
+  limbs: u32 = 8
+  /// A limb's angle from the trunk where it leaves it, the lowest limb's: 15 to 85 degrees (the
+  /// upper limbs a third more upright).
+  limb_angle_deg: f32 = 60.0 @unit(deg)
+  /// The lowest limb's length as a share of the height: 0.15 to 0.9 (the upper limbs shorter).
+  limb_length: f32 = 0.5
+  /// Branches (order 2) on every limb: 1 to 8.
+  branches: u32 = 6
+  /// Leafy twigs (order 3) on every branch, and on the leader's top: 1 to 10.
+  twigs: u32 = 9
+  /// A branch's or a twig's angle from its parent: 15 to 85 degrees.
+  branch_angle_deg: f32 = 45.0 @unit(deg)
+  /// A branch's length over its limb's: 0.2 to 0.9.
+  branch_length: f32 = 0.5
+  /// A twig's length: 0.1 to 3 m.
+  twig_length_m: f32 = 0.9 @unit(m)
+  /// How far each shoot turns towards the light along its length, as a share of 40 degrees:
+  /// -1 (weeping) to 1.
+  upturn: f32 = 0.5
+  /// How far a shoot wanders from straight at every step: 0 to 25 degrees.
+  wander_deg: f32 = 5.0 @unit(deg)
+  /// Leaf cards along each side of a twig: 1 to 40.
+  leaves: u32 = 12
+  /// A leaf card's length, out from the twig: 0.03 to 0.6 m.
+  leaf_length_m: f32 = 0.24 @unit(m)
+  /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
+  leaf_angle_deg: f32 = 50.0 @unit(deg)
+  /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The broadleaf").
+  triangle_budget: u32 = 60000
+}
+
+/// A conifer (flora.md, "The conifer"): a pine or spruce of a straight trunk and whorls of
+/// branches in tiers, longest at the bottom and thinning upward, each branch a woody shoot carrying
+/// a spray of needle-bundle cards. Defaults make a 16 m spruce.
+struct Conifer @version(1) {
+  /// Everything left to chance: the lean's azimuth, every whorl's turn, every branch's spread.
+  seed: u64 = 1
+  /// The leader's top above the ground: 1 to 60 m.
+  height_m: f32 = 16.0 @unit(m)
+  /// The trunk's radius at the ground: 0.03 to 1.5 m.
+  trunk_radius_m: f32 = 0.3 @unit(m)
+  /// Where the lowest whorl is, as a share of the height: 0 to 0.8.
+  crown_base: f32 = 0.12
+  /// How far from vertical the trunk leaves the ground: 0 to 20 degrees.
+  lean_deg: f32 = 1.0 @unit(deg)
+  /// Tiers of branches up the crown: 2 to 60.
+  whorls: u32 = 28
+  /// Branches in the lowest whorl: 2 to 10 (fewer higher up, by `thinning`).
+  branches_per_whorl: u32 = 6
+  /// The share of a whorl's branches the top of the crown has lost: 0 to 0.8.
+  thinning: f32 = 0.4
+  /// The lowest branches' reach from the trunk: 0.2 to 12 m; the crown's cone narrows to the top.
+  crown_radius_m: f32 = 3.2 @unit(m)
+  /// The lowest whorl's angle from vertical: 60 to 130 degrees (more than 90 hangs below level).
+  bottom_angle_deg: f32 = 105.0 @unit(deg)
+  /// The top whorl's angle from vertical: 20 to 100 degrees.
+  top_angle_deg: f32 = 55.0 @unit(deg)
+  /// How far a branch's tip turns back up towards the light: 0 to 1.
+  upturn: f32 = 0.5
+  /// Needle-bundle cards along each side of the longest branch (shorter ones in proportion):
+  /// 2 to 60.
+  needle_cards: u32 = 24
+  /// A needle-bundle card's length, out from its branch: 0.03 to 1 m.
+  needle_length_m: f32 = 0.42 @unit(m)
+  /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The conifer").
+  triangle_budget: u32 = 40000
+}
+
+/// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative
+/// to the flora file, any of them empty for none, and the set's physical repeat.
+struct MaterialSet @version(1) {
+  base_color: string = ""
+  /// Tangent-space normals, OpenGL convention (+Y up), as the material lab writes them.
+  normal: string = ""
+  roughness: string = ""
+  metallic: string = ""
+  /// A height map, carried for parallax and for the lab's provenance; the renderer reads none yet.
+  height: string = ""
+  /// The set's repeat in metres: one tile covers this much surface, 0.05 to 20 m.
+  tile_m: f32 = 1.0 @unit(m)
+}
+
+/// The images a tree's parts sample, any absent for the flat colour (flora.md, "Materials").
+struct FloraMaterials @version(1) {
+  /// The trunk's and the branches' bark, tiled by `tile_m` round and up them.
+  bark: MaterialSet?
+  /// A palm's green fronds, or a tree's leaves and needles: one card per image.
+  leaf: MaterialSet?
+  /// A palm's dead fronds.
+  skirt: MaterialSet?
+  /// The wood inside the bark: no part shows it until environment destruction cuts a trunk and
+  /// needs a cross-section and a cap (flora.md, "Not yet"). Recorded, keyed, and not drawn.
+  wood: MaterialSet?
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
-/// build is keyed by these values (canonicalized), the species and the solver's version.
-struct FloraFile @version(1) {
-  /// The species: "date_palm" is the one there is.
+/// build is keyed by these values (canonicalized: the species' own parameters and the materials,
+/// nothing of the species not chosen), the species and the solver's version.
+struct FloraFile @version(2) {
+  /// The species: "date_palm", "broadleaf" or "conifer"; the solver reads the parameters of the
+  /// same name.
   species: string = "date_palm"
   palm: Palm
+  broadleaf: Broadleaf @since(2)
+  conifer: Conifer @since(2)
+  /// The images the parts sample; absent for the flat colours.
+  materials: FloraMaterials? @since(2)
 }

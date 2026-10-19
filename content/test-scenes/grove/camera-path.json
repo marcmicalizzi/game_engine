@@ -1,0 +1,190 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "grove",
+  "description": "Thirty-two seconds once round the grove at 34 m and 7 m above the ground, looking at its middle, then eighteen walking in among the trunks at eye height.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0.0,
+      "position": [
+        34.0,
+        7.0,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 4.0,
+      "position": [
+        24.04,
+        7.0,
+        24.04
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 8.0,
+      "position": [
+        0.0,
+        7.0,
+        34.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 12.0,
+      "position": [
+        -24.04,
+        7.0,
+        24.04
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 16.0,
+      "position": [
+        -34.0,
+        7.0,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 20.0,
+      "position": [
+        -24.04,
+        7.0,
+        -24.04
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 24.0,
+      "position": [
+        -0.0,
+        7.0,
+        -34.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 28.0,
+      "position": [
+        24.04,
+        7.0,
+        -24.04
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 32.0,
+      "position": [
+        34.0,
+        7.0,
+        -0.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        5.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 38.0,
+      "position": [
+        14.0,
+        1.7,
+        2.0
+      ],
+      "ground": true,
+      "target": [
+        0,
+        4.0,
+        0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 44.0,
+      "position": [
+        1.0,
+        1.7,
+        1.0
+      ],
+      "ground": true,
+      "target": [
+        -6.0,
+        5.0,
+        -4.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 50.0,
+      "position": [
+        -12.0,
+        1.7,
+        -6.0
+      ],
+      "ground": true,
+      "target": [
+        -20.0,
+        4.0,
+        -12.0
+      ],
+      "target_ground": true
+    }
+  ]
+}

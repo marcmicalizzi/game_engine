@@ -6,4 +6,5 @@
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(52, 4, flora::PalmReport);
+// 68: the collar (its triangles and bases) and the leaf spiral (internode, sheath arc) joined it.
+ENGINE_EXPECT_SIZE(68, 4, flora::PalmReport);

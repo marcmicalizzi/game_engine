@@ -1,0 +1,206 @@
+{
+  "format": "engine.scene.v1",
+  "name": "grove",
+  "camera_path": "camera-path.json",
+  "description": "Twelve generated trees of the flora capability's three species - four oaks (engine.flora.Broadleaf), four tall and three young spruces (engine.flora.Conifer) and a date palm - on a nearly flat ground, with a camera path that circles the grove at 34 m and then walks in among the trunks. Every tree is solved from its parameters and built through the derived-data cache; no sample asset is needed (README.md).",
+  "meshes": [
+    {
+      "name": "oak",
+      "path": "../../flora/oak.flora.json"
+    },
+    {
+      "name": "spruce-tall",
+      "path": "../../flora/spruce-tall.flora.json"
+    },
+    {
+      "name": "spruce-young",
+      "path": "../../flora/spruce-young.flora.json"
+    },
+    {
+      "name": "date-palm",
+      "path": "../../flora/date-palm.flora.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "tree 1: oak",
+      "translation": [
+        -6.0,
+        0.0,
+        -4.0
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 0,
+      "name": "tree 2: oak",
+      "translation": [
+        9.0,
+        0.0,
+        6.0
+      ],
+      "ground": true,
+      "yaw_deg": 140,
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "mesh": 0,
+      "name": "tree 3: oak",
+      "translation": [
+        -14.0,
+        0.0,
+        12.0
+      ],
+      "ground": true,
+      "yaw_deg": 250,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 0,
+      "name": "tree 4: oak",
+      "translation": [
+        16.0,
+        0.0,
+        -12.0
+      ],
+      "ground": true,
+      "yaw_deg": 60,
+      "scale": [
+        0.95,
+        0.95,
+        0.95
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 5: spruce-tall",
+      "translation": [
+        2.0,
+        0.0,
+        15.0
+      ],
+      "ground": true,
+      "yaw_deg": 30
+    },
+    {
+      "mesh": 1,
+      "name": "tree 6: spruce-tall",
+      "translation": [
+        -18.0,
+        0.0,
+        -10.0
+      ],
+      "ground": true,
+      "yaw_deg": 200,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 7: spruce-tall",
+      "translation": [
+        20.0,
+        0.0,
+        9.0
+      ],
+      "ground": true,
+      "yaw_deg": 300,
+      "scale": [
+        1.05,
+        1.05,
+        1.05
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 8: spruce-tall",
+      "translation": [
+        -2.0,
+        0.0,
+        -18.0
+      ],
+      "ground": true,
+      "yaw_deg": 110,
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "tree 9: spruce-young",
+      "translation": [
+        5.0,
+        0.0,
+        -6.0
+      ],
+      "ground": true,
+      "yaw_deg": 80
+    },
+    {
+      "mesh": 2,
+      "name": "tree 10: spruce-young",
+      "translation": [
+        -9.0,
+        0.0,
+        4.0
+      ],
+      "ground": true,
+      "yaw_deg": 170,
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "tree 11: spruce-young",
+      "translation": [
+        12.0,
+        0.0,
+        -2.0
+      ],
+      "ground": true,
+      "yaw_deg": 320,
+      "scale": [
+        1.2,
+        1.2,
+        1.2
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "tree 12: date-palm",
+      "translation": [
+        -4.0,
+        0.0,
+        8.0
+      ],
+      "ground": true,
+      "yaw_deg": 45
+    }
+  ],
+  "terrain": {
+    "size": 129,
+    "extent": 96,
+    "seed": 7,
+    "dune_height": 0.15,
+    "dune_wavelength": 40,
+    "generator": "Waves"
+  }
+}

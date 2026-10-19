@@ -1,0 +1,11 @@
+{
+  "species": "conifer",
+  "conifer": {
+    "seed": 3,
+    "height_m": 22.0,
+    "trunk_radius_m": 0.38,
+    "whorls": 28,
+    "crown_radius_m": 3.6,
+    "triangle_budget": 50000
+  }
+}

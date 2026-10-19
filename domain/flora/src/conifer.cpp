@@ -1,0 +1,266 @@
+// The conifer's solver (trees.h; docs/subsystems/flora.md, "The conifer").
+#include "kit.h"
+
+#include <domain/flora/trees.h>
+#include <domain/geometry/cluster.h>
+
+#include <string>
+#include <utility>
+
+namespace engine::flora {
+
+namespace {
+
+using namespace detail;
+
+enum class Stream : u64 { trunk = 21, whorls = 22 };
+
+constexpr u32 k_fine_rows = 12;  // a branch's structure, whatever the budget
+
+struct Branch {
+  Axis axis;
+  f64 r0 = 0.0;
+  f64 r1 = 0.0;
+  u32 cards = 0;  // needle cards a side at full detail, by its length
+};
+
+struct Structure {
+  Axis trunk;
+  f64 trunk_r0 = 0.0;
+  Vector<Branch> branches;
+};
+
+// The whorl's share of the crown, 0 at the lowest and 1 at the top, and how many branches it has:
+// fewer up the crown by `thinning`.
+u32 whorl_branches(const Conifer& p, f64 t) {
+  const f64 n = static_cast<f64>(p.branches_per_whorl) * (1.0 - static_cast<f64>(p.thinning) * t);
+  const u32 c = static_cast<u32>(n + 0.5);
+  return c < 2 ? 2u : c;
+}
+
+Structure grow(const Conifer& p) {
+  Structure s;
+  const f64 height = static_cast<f64>(p.height_m);
+  Rng trunk_rng = stream_of(p.seed, static_cast<u64>(Stream::trunk));
+  const f64 lean = static_cast<f64>(p.lean_deg) * k_degree;
+  const f64 azimuth = trunk_rng.unit() * 2.0 * k_pi;
+  const D3 heading{det::cos(azimuth), 0.0, det::sin(azimuth)};
+  // A conifer's leader is straight: no wander, only the lean taken back towards the vertical.
+  s.trunk = grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean),
+                      height / det::cos(lean), 32, k_up, 0.5 / height, 0.0, trunk_rng);
+  s.trunk_r0 = static_cast<f64>(p.trunk_radius_m);
+
+  Rng rng = stream_of(p.seed, static_cast<u64>(Stream::whorls));
+  const f64 reach = static_cast<f64>(p.crown_radius_m);
+  const f64 base = static_cast<f64>(p.crown_base);
+  const f64 upturn = static_cast<f64>(p.upturn) * 40.0 * k_degree;
+  for (u32 w = 0; w < p.whorls; ++w) {
+    const f64 t = static_cast<f64>(w) / static_cast<f64>(p.whorls - 1);
+    const f64 arc = s.trunk.length * (base + (0.97 - base) * t);
+    const u32 count = whorl_branches(p, t);
+    const f64 turn = rng.unit() * 2.0 * k_pi;
+    // The crown's cone: the lowest branches reach `crown_radius_m`, the top ones a tenth of it.
+    const f64 length = reach * lerp(1.0, 0.1, det::exp(det::log(t + 1e-9) * 0.9));
+    const f64 angle_t =
+        lerp(static_cast<f64>(p.bottom_angle_deg), static_cast<f64>(p.top_angle_deg), t) * k_degree;
+    const D3 tangent = axis_tangent(s.trunk, arc);
+    const D3 normal = perpendicular(tangent, s.trunk.normal[0]);
+    const D3 binormal = cross(tangent, normal);
+    const f64 r_here = lerp(s.trunk_r0, 0.01, arc / s.trunk.length);
+    for (u32 b = 0; b < count; ++b) {
+      const f64 a = turn + 2.0 * k_pi * static_cast<f64>(b) / static_cast<f64>(count) +
+                    0.15 * rng.symmetric();
+      const D3 radial = normal * det::cos(a) + binormal * det::sin(a);
+      const f64 angle = angle_t * (1.0 + 0.05 * rng.symmetric());
+      const D3 dir = normalized(tangent * det::cos(angle) + radial * det::sin(angle));
+      const f64 len = length * (1.0 + 0.1 * rng.symmetric());
+      Branch br;
+      br.axis = grow_axis(axis_point(s.trunk, arc) + radial * (0.5 * r_here), dir, len, k_fine_rows,
+                          k_up, upturn / len, 2.0 * k_degree, rng);
+      br.r0 = 0.03 + 0.25 * r_here * det::exp(det::log(len / reach + 1e-9) * 0.5);
+      if (br.r0 > 0.6 * r_here) br.r0 = 0.6 * r_here;
+      br.r1 = 0.004;
+      const f64 share = len / reach;
+      const u32 cards = static_cast<u32>(static_cast<f64>(p.needle_cards) * share + 0.5);
+      br.cards = cards < 2 ? 2u : cards;
+      s.branches.push_back(std::move(br));
+    }
+  }
+  return s;
+}
+
+struct Plan {
+  u32 trunk_sides = 10;
+  u32 trunk_rows = 24;
+  u32 branch_sides = 4;
+  u32 branch_rows = 4;
+  bool branch_tubes = true;
+  u32 card_divisor = 1;  // a branch's cards over this, at least 1
+};
+
+u32 cards_of(u32 full, const Plan& plan) {
+  const u32 c = (full + plan.card_divisor - 1) / plan.card_divisor;
+  return c < 1 ? 1u : c;
+}
+
+u32 count_triangles(const Conifer& p, const Structure& s, const Plan& plan) {
+  u32 total = tube_triangles(plan.trunk_rows, plan.trunk_sides) +
+              spray_triangles(cards_of(p.needle_cards, plan));  // the leader's tuft
+  for (const Branch& b : s.branches) {
+    if (plan.branch_tubes) total += tube_triangles(plan.branch_rows, plan.branch_sides);
+    total += spray_triangles(cards_of(b.cards, plan));
+  }
+  return total;
+}
+
+// The ladder: the branches' rows and sides, the trunk's, then fewer and wider needle cards, then
+// the branches' woody tubes last (their needle sprays carry them). No rung drops a branch.
+bool plan_conifer(const Conifer& p, const Structure& s, Plan& plan, u32& steps) {
+  plan = Plan{};
+  const u32 rows = static_cast<u32>(static_cast<f64>(p.height_m) / 0.5);
+  plan.trunk_rows = rows < 6 ? 6 : (rows > 40 ? 40 : rows);
+  steps = 0;
+  const auto fits = [&] { return count_triangles(p, s, plan) <= p.triangle_budget; };
+  if (fits()) return true;
+  const auto step = [&](auto&& change) {
+    change();
+    ++steps;
+    return fits();
+  };
+  if (step([&] { plan.branch_rows = 3; })) return true;
+  if (step([&] { plan.branch_rows = 2; })) return true;
+  if (step([&] { plan.trunk_sides = 8; })) return true;
+  if (step([&] { plan.branch_sides = 3; })) return true;
+  if (step([&] { plan.trunk_rows = plan.trunk_rows / 2 < 4 ? 4 : plan.trunk_rows / 2; }))
+    return true;
+  while (cards_of(p.needle_cards, plan) > 1) {
+    if (step([&] { plan.card_divisor *= 2; })) return true;
+  }
+  if (step([&] { plan.branch_rows = 1; })) return true;
+  if (step([&] { plan.trunk_sides = 6; })) return true;
+  return step([&] { plan.branch_tubes = false; });
+}
+
+}  // namespace
+
+bool conifer_in_range(const Conifer& p, std::string& error) {
+  const auto bad = [&](const char* field, const char* range) {
+    error = std::string("engine.flora.Conifer.") + field + " is out of range (" + range + ")";
+    return false;
+  };
+  if (!(p.height_m >= 1.0f && p.height_m <= 60.0f)) return bad("height_m", "1 to 60 m");
+  if (!(p.trunk_radius_m >= 0.03f && p.trunk_radius_m <= 1.5f))
+    return bad("trunk_radius_m", "0.03 to 1.5 m");
+  if (!(p.crown_base >= 0.0f && p.crown_base <= 0.8f)) return bad("crown_base", "0 to 0.8");
+  if (!(p.lean_deg >= 0.0f && p.lean_deg <= 20.0f)) return bad("lean_deg", "0 to 20 degrees");
+  if (!(p.whorls >= 2u && p.whorls <= 60u)) return bad("whorls", "2 to 60");
+  if (!(p.branches_per_whorl >= 2u && p.branches_per_whorl <= 10u))
+    return bad("branches_per_whorl", "2 to 10");
+  if (!(p.thinning >= 0.0f && p.thinning <= 0.8f)) return bad("thinning", "0 to 0.8");
+  if (!(p.crown_radius_m >= 0.2f && p.crown_radius_m <= 12.0f))
+    return bad("crown_radius_m", "0.2 to 12 m");
+  if (!(p.bottom_angle_deg >= 60.0f && p.bottom_angle_deg <= 130.0f))
+    return bad("bottom_angle_deg", "60 to 130 degrees");
+  if (!(p.top_angle_deg >= 20.0f && p.top_angle_deg <= 100.0f))
+    return bad("top_angle_deg", "20 to 100 degrees");
+  if (!(p.upturn >= 0.0f && p.upturn <= 1.0f)) return bad("upturn", "0 to 1");
+  if (!(p.needle_cards >= 2u && p.needle_cards <= 60u)) return bad("needle_cards", "2 to 60");
+  if (!(p.needle_length_m >= 0.03f && p.needle_length_m <= 1.0f))
+    return bad("needle_length_m", "0.03 to 1 m");
+  if (!(p.triangle_budget >= 8000u && p.triangle_budget <= 2000000u))
+    return bad("triangle_budget", "8,000 to 2,000,000");
+  return true;
+}
+
+bool solve_conifer(const Conifer& p, assets::MeshData& out, TreeReport* report, std::string* error,
+                   Motion* motion) {
+  out = assets::MeshData{};
+  std::string message;
+  if (!conifer_in_range(p, message)) {
+    if (error != nullptr) *error = message;
+    return false;
+  }
+  const Structure s = grow(p);
+  Plan plan;
+  u32 steps = 0;
+  if (!plan_conifer(p, s, plan, steps)) {
+    if (error != nullptr) {
+      *error = "engine.flora.Conifer.triangle_budget " + std::to_string(p.triangle_budget) +
+               " cannot hold this tree: its coarsest form needs " +
+               std::to_string(count_triangles(p, s, plan)) + " triangles";
+    }
+    return false;
+  }
+
+  out.materials.push_back(material("bark", Vec4{0.26f, 0.18f, 0.12f, 1.0f}, 0.9f, false));
+  out.materials.push_back(material("needles", Vec4{0.05f, 0.14f, 0.06f, 1.0f}, 0.7f, true));
+  Motion parts;
+  Emitter emit{out, parts};
+
+  // The bark: the trunk (part 0) tapering to the leader's tip, then every branch's woody shoot,
+  // each a part of its own hanging from the trunk.
+  emit.begin_part(s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
+                  geometry::k_motion_no_parent);
+  build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, 0.01, plan.trunk_sides,
+             Vec2{0.0f, 0.0f}, emit);
+  Vector<u32> part_of(s.branches.size());
+  for (u32 i = 0; i < s.branches.size(); ++i) {
+    const Branch& b = s.branches[i];
+    part_of[i] = emit.begin_part(b.axis.point[0], b.axis.tangent[0], b.axis.length, k_trunk_part);
+    if (plan.branch_tubes)
+      build_tube(resample_axis(b.axis, plan.branch_rows), b.r0, b.r1, plan.branch_sides,
+                 Vec2{0.0f, 0.0f}, emit);
+  }
+  assets::Primitive bark;
+  bark.first_index = 0;
+  bark.index_count = out.indices.size();
+  bark.material = 0;
+  out.primitives.push_back(bark);
+
+  // The needles: a spray along every branch from a sixth of the way out, laid level, the cards
+  // splayed forward and a little up; and the leader's tuft on the trunk's top tenth.
+  const u32 leaf_vertex = out.positions.size();
+  const u32 leaf_first = out.indices.size();
+  const f64 needle = static_cast<f64>(p.needle_length_m);
+  for (u32 i = 0; i < s.branches.size(); ++i) {
+    const Branch& b = s.branches[i];
+    emit.part = part_of[i];
+    D3 side = cross(b.axis.tangent[0], k_up);
+    if (dot(side, side) < 1e-6) side = D3{1.0, 0.0, 0.0};
+    build_spray(b.axis, plan.branch_tubes ? b.axis.length / 6.0 : 0.0, cards_of(b.cards, plan),
+                needle, 60.0 * k_degree, 15.0 * k_degree, 0.1, normalized(side), emit);
+  }
+  emit.part = k_trunk_part;
+  build_spray(s.trunk, 0.9 * s.trunk.length, cards_of(p.needle_cards, plan), 0.6 * needle,
+              30.0 * k_degree, 0.0, 0.0, D3{1.0, 0.0, 0.0}, emit);
+  assets::Primitive needles;
+  needles.first_index = leaf_first;
+  needles.index_count = out.indices.size() - leaf_first;
+  needles.material = 1;
+  out.primitives.push_back(needles);
+  {
+    Vector<Vec3> normals;
+    const std::span<const u32> range(out.indices.data() + leaf_first, needles.index_count);
+    geometry::compute_vertex_normals(out.positions, range, normals);
+    for (u32 v = leaf_vertex; v < out.positions.size(); ++v)
+      out.normals[v] = normals[v];
+  }
+  if (report != nullptr) {
+    *report = TreeReport{};
+    report->triangles = out.indices.size() / 3;
+    report->wood_triangles = bark.index_count / 3;
+    report->leaf_triangles = needles.index_count / 3;
+    report->vertices = out.positions.size();
+    report->parts = parts.parts.size();
+    report->shoots = 1 + s.branches.size();
+    report->sprays = s.branches.size() + 1;
+    report->cards_per_side = cards_of(p.needle_cards, plan);
+    report->trunk_sides = plan.trunk_sides;
+    report->shoot_sides = plan.branch_tubes ? plan.branch_sides : 0u;
+    report->steps = steps;
+  }
+  if (motion != nullptr) *motion = std::move(parts);
+  return true;
+}
+
+}  // namespace engine::flora

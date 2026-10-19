@@ -2,11 +2,13 @@
 
 // The date palm (docs/subsystems/flora.md, "The date palm"): `engine.flora.Palm` in, a mesh out.
 //
-// **What comes out.** An `assets::MeshData` with up to three primitives, each its own material:
+// **What comes out.** An `assets::MeshData` with up to four primitives over three materials:
 //
-//   0  the trunk      bark brown, one-sided and closed at the apex, built with normal cones on
-//   1  the crown      frond green, two-sided geometry, built with normal cones off
-//   2  the skirt      dead-frond tan, two-sided, cones off; absent when `dead_skirt_fronds` is 0
+//   trunk    material 0, bark brown, one-sided and closed at the apex, normal cones on
+//   collar   material 0, the persistent frond bases out of the trunk's top, cones on; absent
+//            when the spiral has room for none
+//   crown    material 1, frond green, two-sided geometry, built with normal cones off
+//   skirt    material 2, dead-frond tan, two-sided, cones off; absent when `dead_skirt_fronds` is 0
 //
 // A two-sided material is `double_sided`, which is what `flora::build_flora_container` reads to
 // build that primitive's clusters with `normal_cones = false` (geometry.md, "Normal cones"): a
@@ -20,6 +22,7 @@
 
 #include <core/base/types.h>
 #include <domain/assets/gltf.h>
+#include <domain/flora/motion.h>
 
 #include <schemas/flora.h>
 #include <string>
@@ -30,7 +33,8 @@ namespace engine::flora {
 // each part came to. `steps` is how many rungs of the ladder it went down; 0 is the full detail.
 struct PalmReport {
   u32 triangles = 0;
-  u32 trunk_triangles = 0;
+  u32 trunk_triangles = 0;   // the wall and the apex's dome
+  u32 collar_triangles = 0;  // the persistent frond bases
   u32 crown_triangles = 0;
   u32 skirt_triangles = 0;
   u32 vertices = 0;
@@ -41,6 +45,9 @@ struct PalmReport {
   u32 leaflet_segments = 0;    // along a leaflet: 3, 2 or 1 (5, 3 or 1 triangles)
   u32 leaflets_per_side = 0;   // what was asked, or fewer and wider past the last rung
   f32 leaflet_width_m = 0.0f;  // as built: widened when leaflets were thinned
+  u32 collar_bases = 0;        // persistent frond bases drawn (every one, or fewer on a low rung)
+  f32 internode_m = 0.0f;      // the leaf spiral's spacing along the spine
+  f32 sheath_arc_m = 0.0f;     // spine arc where the sheaths' swelling starts: the top radius's
   u32 steps = 0;
 };
 
@@ -50,8 +57,9 @@ bool palm_in_range(const Palm& params, std::string& error);
 
 // Builds the palm. False, with a sentence, when a parameter is out of range or the budget cannot
 // hold even the solver's coarsest palm with these counts (the sentence says how many it needs).
-// `out` is replaced.
+// `out` is replaced. `motion`, when given, receives the motion contract (motion.h): the trunk is
+// part 0, the green fronds 1 to `frond_count` youngest first, the dead fronds after them.
 bool solve_palm(const Palm& params, assets::MeshData& out, PalmReport* report = nullptr,
-                std::string* error = nullptr);
+                std::string* error = nullptr, Motion* motion = nullptr);
 
 }  // namespace engine::flora

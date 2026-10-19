@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <string>
+#include <utility>
 
 namespace engine::flora {
 
@@ -57,16 +58,114 @@ struct Rng {
 };
 
 // Independent streams for the parts, so adding a draw to one part never moves another's.
-enum class Stream : u64 { trunk = 1, crown = 2, skirt = 3 };
+enum class Stream : u64 { trunk = 1, crown = 2, skirt = 3, collar = 4, spiral = 5 };
 Rng stream(const Palm& p, Stream s) {
   Rng mix(p.seed ^ (static_cast<u64>(s) * 0xD1B54A32D192ED03ull));
   return Rng(mix.next());
 }
 
+// ---- the leaf spiral (flora.md, "The crown") ----------------------------------------------------
+//
+// A date palm's leaves come from the apex one at a time on a spiral, each turned the golden angle
+// from the last and a constant internode below it, so a leaf's place on the stem is its age: the
+// youngest at the top, the oldest green leaf at the crown's foot, the dead leaves below that, and
+// below those the persistent bases of the leaves that were cut or fell. One spiral holds them all.
+
+constexpr f64 k_golden_angle = 2.39996322972865332;  // pi (3 - sqrt 5): 137.5 degrees
+constexpr f64 k_crown_depth_radii = 2.0;  // the green fronds' bases span this many top radii
+constexpr f64 k_min_internode = 0.015;    // metres of stem between two leaves, at least
+constexpr f64 k_boot_zone_radii = 6.0;    // the persistent bases span this many top radii below
+constexpr u32 k_max_boots = 64;
+constexpr f64 k_sheath_swell = 0.4;    // the leaf sheaths widen the stem by this much at the apex
+constexpr f64 k_collar_tighten = 0.4;  // the scar rings' spacing at the apex, of `ring_spacing_m`
+
+struct Spiral {
+  f64 internode = 0.0;       // metres of spine between successive green leaves (and cut bases)
+  f64 dead_internode = 0.0;  // between successive dead fronds: the skirt hangs from a deeper band
+  u32 green = 0;
+  u32 dead = 0;
+  f64 sheath_start = 0.0;  // the arc of the lowest dead frond's base: the sheaths swell above it
+  f64 collar_start = 0.0;  // the arc of the lowest persistent base: the rings tighten above it
+  u32 boots = 0;           // persistent bases, below the dead fronds
+  Vector<f64> rings;       // the scar rings' boundaries along the spine, 0 to the spine's length
+};
+
+Spiral spiral_of(const Palm& p, f64 length) {
+  Spiral s;
+  const f64 top = static_cast<f64>(p.trunk_top_radius_m);
+  s.green = p.frond_count;
+  s.dead = p.dead_skirt_fronds;
+  f64 internode = k_crown_depth_radii * top / static_cast<f64>(s.green);
+  if (internode < k_min_internode) internode = k_min_internode;
+  // The dead fronds hang from a band a quarter of a frond deep below the green crown, as the first
+  // palms' skirt did: a model frond stands for several real leaves, so the spiral's spacing is a
+  // modelling unit, and a skirt packed at the green crown's spacing cost the coarse cut a tenth of
+  // its FLIP (flora.md, "What the harness taught").
+  f64 dead_internode =
+      0.25 * static_cast<f64>(p.frond_length_m) / static_cast<f64>(s.dead > 0 ? s.dead : 1u);
+  if (dead_internode < internode) dead_internode = internode;
+  // A short palm keeps its spiral in the top half of its stem.
+  const f64 band =
+      internode * static_cast<f64>(s.green) + dead_internode * static_cast<f64>(s.dead);
+  if (band > 0.5 * length) {
+    internode *= 0.5 * length / band;
+    dead_internode *= 0.5 * length / band;
+  }
+  s.internode = internode;
+  s.dead_internode = dead_internode;
+  s.sheath_start =
+      length - internode * static_cast<f64>(s.green) - dead_internode * static_cast<f64>(s.dead);
+  f64 boots = std::floor(k_boot_zone_radii * top / internode);
+  const f64 below = std::floor((s.sheath_start - 0.3 * length) / internode);
+  if (boots > below) boots = below;
+  if (boots > static_cast<f64>(k_max_boots)) boots = static_cast<f64>(k_max_boots);
+  s.boots = boots < 0.0 ? 0u : static_cast<u32>(boots);
+  s.collar_start = s.sheath_start - internode * static_cast<f64>(s.boots);
+
+  // The rings: `ring_spacing_m` apart up to the collar, then closer and closer to the apex, as a
+  // stem's internodes shorten where it is still growing; scaled at the end so the last ring closes
+  // exactly at the apex.
+  const f64 spacing = static_cast<f64>(p.ring_spacing_m);
+  s.rings.push_back(0.0);
+  f64 at = 0.0;
+  while (at < length) {
+    const f64 t = clamp01((at - s.collar_start) / (length - s.collar_start));
+    at += spacing * lerp(1.0, k_collar_tighten, t);
+    s.rings.push_back(at);
+  }
+  if (s.rings.size() > 2 && at - length > 0.5 * (at - s.rings[s.rings.size() - 2])) {
+    s.rings.pop_back();
+    at = s.rings.back();
+  }
+  const f64 scale = length / at;
+  for (f64& r : s.rings)
+    r *= scale;
+  s.rings.back() = length;
+  return s;
+}
+
+// The spine arc leaf `age` (0 the youngest) springs from: an internode down the spiral for every
+// leaf younger than it, and never below three tenths of the stem.
+f64 leaf_arc(const Spiral& s, f64 length, u32 age) {
+  f64 depth = 0.0;
+  if (age < s.green) {
+    depth = (static_cast<f64>(age) + 0.5) * s.internode;
+  } else if (age < s.green + s.dead) {
+    depth = static_cast<f64>(s.green) * s.internode +
+            (static_cast<f64>(age - s.green) + 0.5) * s.dead_internode;
+  } else {
+    depth = static_cast<f64>(s.green) * s.internode + static_cast<f64>(s.dead) * s.dead_internode +
+            (static_cast<f64>(age - s.green - s.dead) + 0.5) * s.internode;
+  }
+  const f64 arc = length - depth;
+  return arc < 0.3 * length ? 0.3 * length : arc;
+}
+
 // ---- the plan: how much detail the budget buys --------------------------------------------------
 
 struct Plan {
-  u32 rings = 1;
+  u32 full_rings = 1;  // the spiral's rings; the plan draws every `ring_stride`th boundary
+  u32 ring_stride = 1;
   u32 rows_per_ring = 4;
   u32 segments = 16;
   u32 rachis_sides = 3;      // a trough (two edges and a keel), or a ribbon of 2
@@ -74,7 +173,16 @@ struct Plan {
   u32 leaflets = 0;          // per side of a frond
   f64 leaflet_width = 0.0;   // a leaflet's base, metres
   u32 petiole_rows = 5;      // along the rachis below the first leaflet
+  u32 boots = 0;             // the spiral's persistent bases; the plan draws every `boot_stride`th
+  u32 boot_stride = 1;
+  u32 boot_sides = 4;   // a base's cross-section: a box of 4 sides, or a wedge of 3
+  bool sheaths = true;  // a boot at every frond's base, or none on the last rung
 };
+
+u32 rings_of(const Plan& plan) {
+  return (plan.full_rings + plan.ring_stride - 1) / plan.ring_stride;
+}
+u32 boots_of(const Plan& plan) { return (plan.boots + plan.boot_stride - 1) / plan.boot_stride; }
 
 // The rows each ring's profile is drawn with, at these phases of the ring, and how far below the
 // trunk's radius the scar cuts at each (1: the full `ring_depth_m`). A ring is a leaf base's
@@ -97,8 +205,15 @@ const RingProfile& profile_of(u32 rows_per_ring) {
 }
 
 u32 trunk_triangles(const Plan& plan) {
-  const u32 rows = plan.rings * plan.rows_per_ring + 1;
-  return (rows - 1) * plan.segments * 2 + plan.segments;  // the wall and the apex's cap
+  const u32 rows = rings_of(plan) * plan.rows_per_ring + 1;
+  return (rows - 1) * plan.segments * 2 + plan.segments;  // the wall and the apex's dome
+}
+
+// A persistent base is a tapered tube of `boot_sides` sides out of the wall (two triangles a side)
+// and the cut face that closes it (a fan of one a side).
+u32 collar_triangles(const Palm& p, const Plan& plan) {
+  const u32 sheaths = plan.sheaths ? p.frond_count + p.dead_skirt_fronds : 0u;
+  return (sheaths + boots_of(plan)) * plan.boot_sides * 3;
 }
 
 // A frond's rows: the petiole's, a pair round each leaflet's base, and the tip; between two rows
@@ -111,22 +226,18 @@ u32 frond_triangles(const Plan& plan) {
 }
 
 u32 count_triangles(const Palm& p, const Plan& plan) {
-  return trunk_triangles(plan) + (p.frond_count + p.dead_skirt_fronds) * frond_triangles(plan);
-}
-
-// The rings the trunk's length holds at the spacing asked: the spacing is kept to the nearest
-// whole ring, so the scars are evenly spaced from the ground to the apex.
-u32 rings_of(const Palm& p, f64 length) {
-  const f64 n = std::floor(length / static_cast<f64>(p.ring_spacing_m) + 0.5);
-  return n < 1.0 ? 1u : static_cast<u32>(n);
+  return trunk_triangles(plan) + collar_triangles(p, plan) +
+         (p.frond_count + p.dead_skirt_fronds) * frond_triangles(plan);
 }
 
 // The ladder (flora.md, "The budget"): the full detail first, then each rung in turn until the
 // palm fits — fewer rows per ring before fewer segments round the trunk, because the silhouette is
-// what a palm is recognized by, and a merged ring last of all.
-bool plan_palm(const Palm& p, f64 length, Plan& plan, u32& steps) {
+// what a palm is recognized by, and a merged ring last of all. No rung drops a frond: the motion
+// contract's parts are the same on every rung (flora.md, "Motion attributes").
+bool plan_palm(const Palm& p, const Spiral& spiral, Plan& plan, u32& steps) {
   plan = Plan{};
-  plan.rings = rings_of(p, length);
+  plan.full_rings = spiral.rings.size() - 1;
+  plan.boots = spiral.boots;
   plan.leaflets = p.leaflet_count;
   plan.leaflet_width = static_cast<f64>(p.leaflet_width_m);
   steps = 0;
@@ -138,10 +249,11 @@ bool plan_palm(const Palm& p, f64 length, Plan& plan, u32& steps) {
     ++steps;
     return fits();
   };
-  // Detail inside a leaflet and a scar ring first: neither changes the outline.
+  // Detail inside a leaflet, a scar ring and a persistent base first: none changes the outline.
   if (step([&] { plan.leaflet_segments = 2; })) return true;
   if (step([&] { plan.rows_per_ring = 2; })) return true;
   if (step([&] { plan.leaflet_segments = 1; })) return true;
+  if (step([&] { plan.boot_sides = 3; })) return true;
   if (step([&] { plan.segments = 12; })) return true;
   if (step([&] { plan.rachis_sides = 2; })) return true;
   if (step([&] { plan.petiole_rows = 2; })) return true;
@@ -157,10 +269,17 @@ bool plan_palm(const Palm& p, f64 length, Plan& plan, u32& steps) {
       return true;
     }
   }
-  while (plan.rings > 1) {
-    if (step([&] { plan.rings = (plan.rings + 1) / 2; })) return true;
+  // Then every other persistent base, down to a sparse collar of eight.
+  while (boots_of(plan) > 8) {
+    if (step([&] { plan.boot_stride *= 2; })) return true;
   }
-  return step([&] { plan.segments = 6; });
+  while (rings_of(plan) > 1) {
+    if (step([&] { plan.ring_stride *= 2; })) return true;
+  }
+  if (step([&] { plan.segments = 6; })) return true;
+  // Last, the collar itself: the fronds' sheaths, then the persistent bases.
+  if (step([&] { plan.sheaths = false; })) return true;
+  return step([&] { plan.boots = 0; });
 }
 
 // ---- the trunk ----------------------------------------------------------------------------------
@@ -221,14 +340,32 @@ D3 spine_tangent(const Spine& s, f64 arc) {
 // below is chosen for it, and the tests hold every face to point outwards).
 D3 spine_normal(const Spine& s, f64 arc) { return cross(s.side, spine_tangent(s, arc)) * -1.0; }
 
+// Every vertex is emitted with the part it belongs to and its bend weight (motion.h): the part is
+// set once per part, the weight per station along it.
 struct Emitter {
   assets::MeshData& mesh;
+  Motion& motion;
+  u32 part = k_trunk_part;
+  f64 weight = 0.0;
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));
     mesh.normals.push_back(to_f32(normalized(normal)));
     mesh.uvs.push_back(Vec2{static_cast<f32>(u), static_cast<f32>(v)});
+    motion.vertex_part.push_back(part);
+    motion.vertex_weight.push_back(static_cast<f32>(clamp01(weight)));
     return index;
+  }
+  // Opens a part: its record, and the part every vertex until the next one belongs to.
+  void begin_part(D3 pivot, D3 direction, f64 length, u32 parent) {
+    part = motion.parts.size();
+    geometry::ClusterFileMotionPart record;
+    record.pivot = to_f32(pivot);
+    record.direction = to_f32(normalized(direction));
+    record.length = static_cast<f32>(length);
+    record.parent = parent;
+    motion.parts.push_back(record);
+    weight = 0.0;
   }
   void triangle(u32 a, u32 b, u32 c) {
     mesh.indices.push_back(a);
@@ -237,28 +374,41 @@ struct Emitter {
   }
 };
 
-// The trunk's radius at arc `s` before the scars: a straight taper from the base to the apex.
-f64 taper(const Palm& p, const Spine& spine, f64 s) {
-  return lerp(static_cast<f64>(p.trunk_base_radius_m), static_cast<f64>(p.trunk_top_radius_m),
-              clamp01(s / spine.length));
+// The trunk's radius at arc `s` before the scars: a straight taper from the base to the top
+// radius where the leaf sheaths begin, and above that the sheaths' swelling, which widens the stem
+// by `k_sheath_swell` at the apex (smoothly: no crease where it starts).
+f64 taper(const Palm& p, const Spiral& spiral, f64 s) {
+  const f64 r = lerp(static_cast<f64>(p.trunk_base_radius_m),
+                     static_cast<f64>(p.trunk_top_radius_m), clamp01(s / spiral.sheath_start));
+  const f64 length = spiral.rings.back();
+  if (s <= spiral.sheath_start || length <= spiral.sheath_start) return r;
+  const f64 t = clamp01((s - spiral.sheath_start) / (length - spiral.sheath_start));
+  return r * (1.0 + k_sheath_swell * t * t * (3.0 - 2.0 * t));
 }
 
 // One island: u once round (a seam where it closes), v up the trunk at the same scale, so a bark
-// texture is not stretched; and the cap a disc of its own beside it.
-void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, Emitter& out) {
+// texture is not stretched; and the apex's dome a disc of its own beside it.
+void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const Plan& plan,
+                 Rng& rng, Emitter& out) {
   const RingProfile& profile = profile_of(plan.rows_per_ring);
-  const u32 rows = plan.rings * plan.rows_per_ring + 1;
+  const u32 rings = rings_of(plan);
+  const u32 rows = rings * plan.rows_per_ring + 1;
   const u32 segs = plan.segments;
-  const f64 ring_length = spine.length / static_cast<f64>(plan.rings);
   const f64 depth = static_cast<f64>(p.ring_depth_m);
   const f64 mean_radius =
       0.5 * (static_cast<f64>(p.trunk_base_radius_m) + static_cast<f64>(p.trunk_top_radius_m));
   const f64 v_scale = 1.0 / (2.0 * k_pi * mean_radius);
 
+  // The ring boundaries this plan draws: every `ring_stride`th of the spiral's, and the apex.
+  Vector<f64> bounds(rings + 1);
+  for (u32 k = 0; k < rings; ++k)
+    bounds[k] = spiral.rings[k * plan.ring_stride];
+  bounds[rings] = spine.length;
+
   // Each ring turns a little against the one below it, which is what makes a palm's scars read as
   // grown rather than lathed; the turn is interpolated through a ring so the wall never shears.
-  Vector<f64> twist(plan.rings + 1, 0.0);
-  for (u32 k = 1; k <= plan.rings; ++k)
+  Vector<f64> twist(rings + 1, 0.0);
+  for (u32 k = 1; k <= rings; ++k)
     twist[k] = twist[k - 1] + rng.symmetric() * 4.0 * k_degree;
 
   Vector<f64> arc(rows);
@@ -267,17 +417,21 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
   for (u32 r = 0; r < rows; ++r) {
     const u32 ring = r / plan.rows_per_ring;
     const u32 j = r % plan.rows_per_ring;
-    const f64 phase = ring < plan.rings ? profile.phase[j] : 0.0;
-    const f64 s = r + 1 == rows ? spine.length : (static_cast<f64>(ring) + phase) * ring_length;
+    const f64 phase = ring < rings ? profile.phase[j] : 0.0;
+    const f64 s = r + 1 == rows ? spine.length : lerp(bounds[ring], bounds[ring + 1], phase);
     arc[r] = s;
-    // The apex row is the lip of the last ring: the radius asked for at the top.
+    // The apex row is the lip of the last ring: the radius the taper gives at the top.
     const f64 cut = r + 1 == rows ? 0.0 : profile.cut[j];
-    radius[r] = taper(p, spine, s) - depth * cut;
-    turn[r] = ring < plan.rings ? lerp(twist[ring], twist[ring + 1], phase) : twist[plan.rings];
+    radius[r] = taper(p, spiral, s) - depth * cut;
+    turn[r] = ring < rings ? lerp(twist[ring], twist[ring + 1], phase) : twist[rings];
   }
 
+  // The trunk is part 0: its pivot the spine's foot, its weight the arc up the spine.
+  out.begin_part(spine_point(spine, 0.0), spine_tangent(spine, 0.0), spine.length,
+                 geometry::k_motion_no_parent);
   const u32 first = out.mesh.positions.size();
   for (u32 r = 0; r < rows; ++r) {
+    out.weight = arc[r] / spine.length;
     const D3 centre = spine_point(spine, arc[r]);
     const D3 tangent = spine_tangent(spine, arc[r]);
     const D3 normal = spine_normal(spine, arc[r]);
@@ -306,12 +460,14 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
     }
   }
 
-  // The apex's cap: a low cone over the last row, its own small disc of the atlas beside the wall.
+  // The apex: a low dome over the last row, hidden inside the youngest fronds' bases, its own
+  // small disc of the atlas beside the wall.
   const f64 top = spine.length;
   const D3 tangent = spine_tangent(spine, top);
   const D3 normal = spine_normal(spine, top);
-  const D3 apex = spine_point(spine, top) + tangent * (0.35 * radius[rows - 1]);
+  const D3 apex = spine_point(spine, top) + tangent * (0.3 * radius[rows - 1]);
   const f64 cap_radius = 2.0 * k_pi * radius[rows - 1] * v_scale;  // the disc at the wall's scale
+  out.weight = 1.0;
   const u32 centre = out.vertex(apex, tangent, 0.5, -0.5 - cap_radius);
   const u32 ring_first = out.mesh.positions.size();
   for (u32 i = 0; i < segs; ++i) {
@@ -325,6 +481,112 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
   }
   for (u32 i = 0; i < segs; ++i)
     out.triangle(ring_first + i, centre, ring_first + (i + 1) % segs);
+}
+
+// ---- the collar: the persistent frond bases ----------------------------------------------------
+//
+// Below the dead fronds the spiral goes on as the bases of the leaves that were cut or fell: on a
+// date palm they persist for years, a dense helix of stubs, each the petiole's boot cut a hand's
+// width from the stem, pointing up and out. Each is a tapered tube out of the wall — a box of four
+// sides, or a wedge of three on the cheaper rung — closed by its cut face; its open end is inside
+// the trunk. One-sided like the trunk, and part of the trunk's motion part, weighted at its
+// station.
+
+constexpr f64 k_boot_angle = 50.0 * k_degree;  // from the stem's axis, up and out
+constexpr f64 k_boot_length_radii = 0.8;       // out of the wall, in top radii
+constexpr f64 k_boot_width_radii = 0.9;        // across, where it clasps the stem
+constexpr f64 k_boot_thickness_radii = 0.3;
+
+void build_collar(const Palm& p, const Spine& spine, const Spiral& spiral, const Plan& plan,
+                  f64 turn, Rng& rng, Emitter& out) {
+  const u32 n = boots_of(plan);
+  const u32 sides = plan.boot_sides;
+  const f64 top = static_cast<f64>(p.trunk_top_radius_m);
+  const f64 mean_radius =
+      0.5 * (static_cast<f64>(p.trunk_base_radius_m) + static_cast<f64>(p.trunk_top_radius_m));
+  const f64 v_scale = 1.0 / (2.0 * k_pi * mean_radius);
+  const auto face = [&](u32 a, u32 b, u32 c, D3 hint) {
+    const Vec3 nf = cross(out.mesh.positions[b] - out.mesh.positions[a],
+                          out.mesh.positions[c] - out.mesh.positions[a]);
+    const f64 facing = static_cast<f64>(nf.x) * hint.x + static_cast<f64>(nf.y) * hint.y +
+                       static_cast<f64>(nf.z) * hint.z;
+    if (facing >= 0.0) {
+      out.triangle(a, b, c);
+    } else {
+      out.triangle(a, c, b);
+    }
+  };
+  // Every leaf on the spiral has its boot: a green or dead frond's is the sheath its petiole leaves
+  // from — snug to the stem near the apex, opening with age — and below them the persistent bases.
+  const u32 fronds = p.frond_count + p.dead_skirt_fronds;
+  const u32 first = plan.sheaths ? 0u : fronds;
+  for (u32 b = first; b < fronds + n; ++b) {
+    const bool sheath = b < fronds;
+    const u32 age = sheath ? b : fronds + (b - fronds) * plan.boot_stride;
+    const f64 s = leaf_arc(spiral, spine.length, age);
+    const f64 azimuth = turn + static_cast<f64>(age) * k_golden_angle + rng.symmetric() * 0.05;
+    const f64 size = 1.0 + 0.15 * rng.symmetric();
+    const f64 opening =
+        sheath ? lerp(0.4, 1.0, static_cast<f64>(b) / static_cast<f64>(fronds)) : 1.0;
+    const f64 tilt = k_boot_angle * opening * (1.0 + 0.15 * rng.symmetric());
+    const D3 axis = spine_tangent(spine, s);
+    const D3 radial = spine_normal(spine, s) * det::cos(azimuth) + spine.side * det::sin(azimuth);
+    const D3 around = normalized(cross(axis, radial));
+    const D3 along = normalized(radial * det::sin(tilt) + axis * det::cos(tilt));
+    const D3 thick = normalized(cross(around, along));
+    const f64 r = taper(p, spiral, s);
+    const D3 root = spine_point(spine, s) + radial * (0.8 * r);
+    const f64 length = (0.2 * r + k_boot_length_radii * top) * size;
+    const D3 cut = root + along * length;
+    const f64 w0 = 0.5 * k_boot_width_radii * top * size;
+    const f64 t0 = 0.5 * k_boot_thickness_radii * top * size;
+    out.weight = s / spine.length;
+
+    // The corners round the cross-section, the same at the root and the cut (narrower there).
+    D3 corner[4];
+    if (sides == 4) {
+      corner[0] = around * w0 + thick * t0;
+      corner[1] = around * -w0 + thick * t0;
+      corner[2] = around * -w0 + thick * -t0;
+      corner[3] = around * w0 + thick * -t0;
+    } else {
+      corner[0] = thick * t0 * 1.5;
+      corner[1] = around * -w0 + thick * -t0;
+      corner[2] = around * w0 + thick * -t0;
+    }
+    // The tube: one chart beside the trunk's, every base sharing it; u round, v out along it.
+    f64 perimeter = 0.0;
+    Vector<f64> u_at(sides + 1, 0.0);
+    for (u32 i = 0; i < sides; ++i) {
+      const D3 e = corner[(i + 1) % sides] - corner[i];
+      perimeter += std::sqrt(dot(e, e));
+      u_at[i + 1] = perimeter;
+    }
+    const u32 tube = out.mesh.positions.size();
+    for (u32 i = 0; i <= sides; ++i) {
+      const D3 c = corner[i % sides];
+      const f64 u = 1.1 + u_at[i] * v_scale;
+      out.vertex(root + c, c, u, 0.0);
+      out.vertex(cut + c * 0.75, c, u, length * v_scale);
+    }
+    for (u32 i = 0; i < sides; ++i) {
+      const u32 a = tube + 2 * i;
+      const D3 hint = corner[i] + corner[(i + 1) % sides];
+      face(a, a + 2, a + 3, hint);
+      face(a, a + 3, a + 1, hint);
+    }
+    // The cut face: a fan, its own small island beside the tube's.
+    const f64 cu = 1.1 + perimeter * v_scale + 0.05 + w0 * v_scale;
+    const f64 cv = t0 * v_scale * 2.0;
+    const u32 centre = out.vertex(cut, along, cu, cv);
+    const u32 rim = out.mesh.positions.size();
+    for (u32 i = 0; i < sides; ++i) {
+      const D3 c = corner[i] * 0.75;
+      out.vertex(cut + c, along, cu + dot(c, around) * v_scale, cv + dot(c, thick) * v_scale);
+    }
+    for (u32 i = 0; i < sides; ++i)
+      face(centre, rim + i, rim + (i + 1) % sides, along);
+  }
 }
 
 // ---- the crown and the skirt --------------------------------------------------------------------
@@ -352,7 +614,6 @@ struct FrondShape {
 
 constexpr f64 k_max_frond_angle = 178.0 * k_degree;
 constexpr f64 k_petiole = 0.22;  // the share of the rachis below the first leaflet
-constexpr f64 k_golden_angle = 2.39996322972865332;  // pi (3 - sqrt 5): phyllotaxis
 
 f64 frond_angle(const FrondShape& f, f64 arc) {
   const f64 t = arc / f.length;
@@ -436,7 +697,10 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
   Vector<u32> left(rows);
   Vector<u32> right(rows);
   Vector<u32> keel(rows);
+  // A frond is a part of its own hanging from the trunk; its weight is the arc along the rachis.
+  out.begin_part(f.base, tangent[0], f.length, k_trunk_part);
   for (u32 r = 0; r < rows; ++r) {
+    out.weight = arcs[r] / f.length;
     const f64 w = rachis_half_width(f, arcs[r]);
     left[r] = vertex(centre[r] + f.across * w, up[r], arcs[r], w);
     right[r] = vertex(centre[r] - f.across * w, up[r], arcs[r], -w);
@@ -466,6 +730,7 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
     const u32 r1 = r0 + 1;
     const f64 length = leaflet_length(f, (static_cast<f64>(i) + 0.5) / static_cast<f64>(n));
     const f64 mid_arc = 0.5 * (arcs[r0] + arcs[r1]);
+    out.weight = mid_arc / f.length;  // a leaflet is carried by the rachis where it stands
     const f64 base_half = 0.5 * (arcs[r1] - arcs[r0]);
     const f64 w = rachis_half_width(f, mid_arc);
     const D3 t = normalized(tangent[r0] + tangent[r1]);
@@ -537,42 +802,48 @@ void orient(FrondShape& f, const Apex& apex, f64 azimuth) {
   f.across = apex.side * c - apex.normal * s;
 }
 
-// The green fronds, youngest (k = 0) up the middle and the oldest at the cone's edge, round the
-// apex on the golden angle as a palm's leaves come, and the older ones springing a little lower.
-void build_crown(const Palm& p, const Apex& apex, const Plan& plan, Rng& rng, Emitter& out) {
-  const f64 turn = rng.unit() * 2.0 * k_pi;
+// The green fronds, on the leaf spiral by age (flora.md, "The crown"): frond k of n is k leaves
+// from the apex, so the youngest springs at the top and stands up the middle and the oldest leaves
+// the crown's foot at the cone's edge. Age sets everything a frond's shape owes to it: its angle
+// from the axis grows with the square root of age (fastest just after the leaf opens, and the cone
+// filled evenly by area), its droop from half to the whole of `frond_droop`, its length from 80%
+// to the whole, and the youngest 8% are still unfolding — the spear, its leaflets closed up a
+// little towards the rachis (flora.md, "The crown: one spiral by age").
+void build_crown(const Palm& p, const Spine& spine, const Spiral& spiral, const Apex& apex,
+                 const Plan& plan, f64 turn, Rng& rng, Emitter& out) {
   const u32 count = p.frond_count;
+  const f64 spread = static_cast<f64>(p.frond_spread_deg) * k_degree;
   for (u32 k = 0; k < count; ++k) {
-    const f64 x = std::sqrt((static_cast<f64>(k) + 0.5) / static_cast<f64>(count));
+    const f64 x = (static_cast<f64>(k) + 0.5) / static_cast<f64>(count);  // age
     FrondShape f;
-    orient(f, apex, turn + static_cast<f64>(k) * k_golden_angle + rng.symmetric() * 0.1);
-    f.start = static_cast<f64>(p.frond_spread_deg) * k_degree * x * (1.0 + 0.08 * rng.symmetric());
+    orient(f, apex, turn + static_cast<f64>(k) * k_golden_angle + rng.symmetric() * 0.05);
+    f.start = spread * std::sqrt(x) * (1.0 + 0.06 * rng.symmetric());
     f.bend = static_cast<f64>(p.frond_droop) * 100.0 * k_degree * (0.5 + 0.5 * x);
     f.length =
         static_cast<f64>(p.frond_length_m) * (0.8 + 0.2 * x) * (1.0 + 0.05 * rng.symmetric());
-    f.base = apex.point + f.out * (0.5 * apex.radius * x) - f.axis * (1.5 * apex.radius * x);
-    f.leaflet_angle = static_cast<f64>(p.leaflet_angle_deg) * k_degree;
-    f.vee = 28.0 * k_degree;
+    // The frond leaves the stem at its place on the spiral, its petiole's base inside the sheath.
+    const f64 arc = leaf_arc(spiral, spine.length, k);
+    f.base = spine_point(spine, arc) + f.out * (0.55 * taper(p, spiral, arc));
+    const f64 spear = 1.0 - clamp01(x / 0.08);
+    f.leaflet_angle = static_cast<f64>(p.leaflet_angle_deg) * k_degree * (1.0 - 0.25 * spear);
+    f.vee = (28.0 + 12.0 * spear) * k_degree;
     f.sag = 0.12;
     build_frond(f, plan, out);
   }
 }
 
-// The dead fronds: below the crown, round the trunk, hanging down along it with their leaflets
-// folded in.
-void build_skirt(const Palm& p, const Spine& spine, const Apex& apex, const Plan& plan, Rng& rng,
-                 Emitter& out) {
-  const f64 turn = rng.unit() * 2.0 * k_pi;
+// The dead fronds: the spiral's next leaves below the green ones, hanging down along the trunk
+// with their leaflets folded in.
+void build_skirt(const Palm& p, const Spine& spine, const Spiral& spiral, const Apex& apex,
+                 const Plan& plan, f64 turn, Rng& rng, Emitter& out) {
   const u32 count = p.dead_skirt_fronds;
   const f64 frond = static_cast<f64>(p.frond_length_m);
   for (u32 j = 0; j < count; ++j) {
-    const f64 x = (static_cast<f64>(j) + 0.5) / static_cast<f64>(count);
+    const u32 age = p.frond_count + j;
     FrondShape f;
-    orient(f, apex, turn + static_cast<f64>(j) * k_golden_angle + rng.symmetric() * 0.1);
-    const f64 drop = 1.5 * apex.radius + (0.15 + 0.85 * x) * 0.25 * frond;
-    f64 arc = spine.length - drop;
-    if (arc < 0.3 * spine.length) arc = 0.3 * spine.length;
-    f.base = spine_point(spine, arc) + f.out * (0.9 * taper(p, spine, arc));
+    orient(f, apex, turn + static_cast<f64>(age) * k_golden_angle + rng.symmetric() * 0.05);
+    const f64 arc = leaf_arc(spiral, spine.length, age);
+    f.base = spine_point(spine, arc) + f.out * (0.8 * taper(p, spiral, arc));
     f.start = (120.0 + 25.0 * rng.unit()) * k_degree;
     f.bend = 40.0 * k_degree;
     f.length = 0.85 * frond * (1.0 + 0.05 * rng.symmetric());
@@ -583,7 +854,6 @@ void build_skirt(const Palm& p, const Spine& spine, const Apex& apex, const Plan
     build_frond(f, plan, out);
   }
 }
-
 assets::Material material(const char* name, Vec4 colour, f32 roughness, bool two_sided) {
   assets::Material m;
   m.name = name;
@@ -631,8 +901,10 @@ bool palm_in_range(const Palm& p, std::string& error) {
   return true;
 }
 
-bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::string* error) {
+bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::string* error,
+                Motion* motion) {
   out = assets::MeshData{};
+  Motion parts;
   std::string message;
   if (!palm_in_range(p, message)) {
     if (error != nullptr) *error = message;
@@ -640,9 +912,10 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
   }
   Rng trunk_rng = stream(p, Stream::trunk);
   const Spine spine = make_spine(p, trunk_rng);
+  const Spiral spiral = spiral_of(p, spine.length);
   Plan plan;
   u32 steps = 0;
-  if (!plan_palm(p, spine.length, plan, steps)) {
+  if (!plan_palm(p, spiral, plan, steps)) {
     if (error != nullptr) {
       *error = "engine.flora.Palm.triangle_budget " + std::to_string(p.triangle_budget) +
                " cannot hold this palm: its coarsest form needs " +
@@ -656,7 +929,7 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
   out.materials.push_back(material("bark", Vec4{0.33f, 0.24f, 0.16f, 1.0f}, 0.9f, false));
   out.materials.push_back(material("frond", Vec4{0.13f, 0.21f, 0.07f, 1.0f}, 0.55f, true));
   out.materials.push_back(material("dead frond", Vec4{0.45f, 0.33f, 0.18f, 1.0f}, 0.85f, true));
-  Emitter emit{out};
+  Emitter emit{out, parts};
   const auto primitive = [&](u32 first, i32 material_index) {
     assets::Primitive part;
     part.first_index = first;
@@ -665,18 +938,27 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
     if (part.index_count > 0) out.primitives.push_back(part);
     return part.index_count / 3;
   };
-  build_trunk(p, spine, plan, trunk_rng, emit);
+  // Where the spiral starts: one turn for every leaf on it, green, dead or cut.
+  Rng spiral_rng = stream(p, Stream::spiral);
+  const f64 turn = spiral_rng.unit() * 2.0 * k_pi;
+  build_trunk(p, spine, spiral, plan, trunk_rng, emit);
   const u32 trunk_tris = primitive(0, 0);
+  // The persistent bases: the trunk's material and motion part, a primitive of their own so the
+  // wall stays one closed column.
+  const u32 collar_first = out.indices.size();
+  Rng collar_rng = stream(p, Stream::collar);
+  build_collar(p, spine, spiral, plan, turn, collar_rng, emit);
+  const u32 collar_tris = primitive(collar_first, 0);
 
   const Apex apex = apex_of(p, spine);
   const u32 fronds_vertex = out.positions.size();
   const u32 crown_first = out.indices.size();
   Rng crown_rng = stream(p, Stream::crown);
-  build_crown(p, apex, plan, crown_rng, emit);
+  build_crown(p, spine, spiral, apex, plan, turn, crown_rng, emit);
   const u32 crown_tris = primitive(crown_first, 1);
   const u32 skirt_first = out.indices.size();
   Rng skirt_rng = stream(p, Stream::skirt);
-  build_skirt(p, spine, apex, plan, skirt_rng, emit);
+  build_skirt(p, spine, spiral, apex, plan, turn, skirt_rng, emit);
   const u32 skirt_tris = primitive(skirt_first, 2);
 
   // The fronds' normals: area-weighted over their own faces (the trunk's are analytic, and its
@@ -689,15 +971,20 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
     for (u32 v = fronds_vertex; v < out.positions.size(); ++v)
       out.normals[v] = normals[v];
   }
+  if (motion != nullptr) *motion = std::move(parts);
 
   if (report != nullptr) {
     *report = PalmReport{};
     report->trunk_triangles = trunk_tris;
+    report->collar_triangles = collar_tris;
     report->crown_triangles = crown_tris;
     report->skirt_triangles = skirt_tris;
     report->triangles = out.indices.size() / 3;
     report->vertices = out.positions.size();
-    report->rings = plan.rings;
+    report->rings = rings_of(plan);
+    report->collar_bases = boots_of(plan);
+    report->internode_m = static_cast<f32>(spiral.internode);
+    report->sheath_arc_m = static_cast<f32>(spiral.sheath_start);
     report->rows_per_ring = plan.rows_per_ring;
     report->trunk_segments = plan.segments;
     report->rachis_sides = plan.rachis_sides;

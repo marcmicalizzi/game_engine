@@ -24,6 +24,7 @@
 
 #include <core/base/types.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/trees.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 
@@ -37,10 +38,17 @@ namespace engine::flora {
 // makes from the same parameters — a new rung on the budget's ladder, a different leaflet — is a
 // new key and never an old container read as the answer. Bump it with any change that moves a
 // byte of the default palm's mesh (the determinism test says when one did).
-inline constexpr u32 k_flora_version = 1;
+//
+// 2: the palm's crown on one leaf spiral by age, the trunk's top a collar of persistent frond bases
+//    and swelling sheaths (flora.md, "The crown"), and the motion contract's sections 35 and 36 in
+//    every container — an entry built at 1 has neither.
+inline constexpr u32 k_flora_version = 2;
 
-// The species `engine.flora.FloraFile.species` names.
+// The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
+// member (`palm`, `broadleaf`, `conifer`).
 inline constexpr const char* k_species_date_palm = "date_palm";
+inline constexpr const char* k_species_broadleaf = "broadleaf";
+inline constexpr const char* k_species_conifer = "conifer";
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------
@@ -64,7 +72,12 @@ u64 flora_source_hash(const FloraFile& file);
 // be — which is the key `engine-content flora` and the renderer's scene reader both write under.
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes);
 
-// Solves the file's palm and builds its container: one cluster LOD DAG per primitive, each with
+// Solves the file's species — the palm, the broadleaf or the conifer, by `species` — into a mesh
+// and its motion contract. The report its species fills, when given; the other is left alone.
+bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
+                 PalmReport* palm_report, TreeReport* tree_report, std::string& error);
+
+// Solves the file's species and builds its container: one cluster LOD DAG per primitive, each with
 // its material's cone setting (the trunk's on, a two-sided frond's off), merged, laid out in
 // pages of `page_bytes` (0: no page table), with the materials, the identity (source hash and
 // build key) and the generator section (`flora`, the species, the canonical parameters). The
