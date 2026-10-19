@@ -102,8 +102,7 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
       const u32 b = a + 1;
       const u32 c = a + sides + 1;
       const u32 d = c + 1;
-      const D3 hint = D3{out.mesh.normals[a].x, out.mesh.normals[a].y, out.mesh.normals[a].z} +
-                      D3{out.mesh.normals[d].x, out.mesh.normals[d].y, out.mesh.normals[d].z};
+      const D3 hint = from_f32(out.mesh.normals[a]) + from_f32(out.mesh.normals[d]);
       out.face(a, b, d, hint);
       out.face(a, d, c, hint);
     }
@@ -116,7 +115,7 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   const u32 last = first + (rows - 1) * (sides + 1);
   for (u32 i = 0; i < sides; ++i) {
     const Vec3 nv = out.mesh.normals[last + i];
-    const D3 hint = D3{nv.x, nv.y, nv.z} + tip_dir;
+    const D3 hint = from_f32(nv) + tip_dir;
     out.face(last + i, last + i + 1, tip, hint);
   }
 }

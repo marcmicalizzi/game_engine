@@ -105,11 +105,13 @@ Vector<Shoot> grow(const Broadleaf& p) {
       const Axis& parent = shoots[l].axis;
       const f64 f = (static_cast<f64>(j) + 0.5) / static_cast<f64>(p.branches);
       const f64 s = parent.length * (0.25 + 0.7 * f);
+      // One draw a statement: the order of a call's arguments is the compiler's, not the seed's.
+      const f64 around =
+          bturn + static_cast<f64>(j) * k_golden_angle + 0.2 * branch_rng.symmetric();
+      const f64 spread =
+          static_cast<f64>(p.branch_angle_deg) * k_degree * (1.0 + 0.1 * branch_rng.symmetric());
       D3 radial;
-      const D3 dir = child_direction(
-          parent, s, bturn + static_cast<f64>(j) * k_golden_angle + 0.2 * branch_rng.symmetric(),
-          static_cast<f64>(p.branch_angle_deg) * k_degree * (1.0 + 0.1 * branch_rng.symmetric()),
-          &radial);
+      const D3 dir = child_direction(parent, s, around, spread, &radial);
       const f64 length = static_cast<f64>(p.branch_length) * parent.length * (1.0 - 0.4 * f) *
                          (1.0 + 0.1 * branch_rng.symmetric());
       const f64 r_here = lerp(shoots[l].r0, shoots[l].r1, s / parent.length);
@@ -133,11 +135,11 @@ Vector<Shoot> grow(const Broadleaf& p) {
       const Axis& parent = shoots[parent_index].axis;
       const f64 f = (static_cast<f64>(k) + 0.5) / static_cast<f64>(p.twigs);
       const f64 s = parent.length * (from + (to - from) * f);
+      const f64 around = tturn + static_cast<f64>(k) * k_golden_angle + 0.2 * twig_rng.symmetric();
+      const f64 spread =
+          static_cast<f64>(p.branch_angle_deg) * k_degree * (1.0 + 0.15 * twig_rng.symmetric());
       D3 radial;
-      const D3 dir = child_direction(
-          parent, s, tturn + static_cast<f64>(k) * k_golden_angle + 0.2 * twig_rng.symmetric(),
-          static_cast<f64>(p.branch_angle_deg) * k_degree * (1.0 + 0.15 * twig_rng.symmetric()),
-          &radial);
+      const D3 dir = child_direction(parent, s, around, spread, &radial);
       const f64 length = static_cast<f64>(p.twig_length_m) * (0.85 + 0.3 * twig_rng.unit());
       Shoot twig;
       twig.axis =

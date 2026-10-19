@@ -805,17 +805,10 @@ void orient(FrondShape& f, const Apex& apex, f64 azimuth) {
 // The green fronds, on the leaf spiral by age (flora.md, "The crown"): frond k of n is k leaves
 // from the apex, so the youngest springs at the top and stands up the middle and the oldest leaves
 // the crown's foot at the cone's edge. Age sets everything a frond's shape owes to it: its angle
-// from the axis grows linearly with age (the youngest 4 degrees off vertical), its droop grows from
-// a quarter to the whole of `frond_droop`, the youngest fronds are still lengthening (72% of the
-// length, full by three tenths of the crown), and the youngest eighth are still unfolding — the
-// spear, its leaflets closed up towards the rachis.
-constexpr f64 k_youngest_angle = 4.0 * k_degree;
-
-f64 smoothstep01(f64 t) {
-  const f64 c = clamp01(t);
-  return c * c * (3.0 - 2.0 * c);
-}
-
+// from the axis grows with the square root of age (fastest just after the leaf opens, and the cone
+// filled evenly by area), its droop from half to the whole of `frond_droop`, its length from 80%
+// to the whole, and the youngest 8% are still unfolding — the spear, its leaflets closed up a
+// little towards the rachis (flora.md, "The crown: one spiral by age").
 void build_crown(const Palm& p, const Spine& spine, const Spiral& spiral, const Apex& apex,
                  const Plan& plan, f64 turn, Rng& rng, Emitter& out) {
   const u32 count = p.frond_count;

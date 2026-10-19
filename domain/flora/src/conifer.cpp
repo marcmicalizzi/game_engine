@@ -38,13 +38,6 @@ u32 whorl_branches(const Conifer& p, f64 t) {
   return c < 2 ? 2u : c;
 }
 
-u32 branch_count(const Conifer& p) {
-  u32 total = 0;
-  for (u32 w = 0; w < p.whorls; ++w)
-    total += whorl_branches(p, static_cast<f64>(w) / static_cast<f64>(p.whorls - 1));
-  return total;
-}
-
 Structure grow(const Conifer& p) {
   Structure s;
   const f64 height = static_cast<f64>(p.height_m);

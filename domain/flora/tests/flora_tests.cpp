@@ -827,7 +827,7 @@ TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in
   const flora::Broadleaf p;
   // Parts: the trunk, the limbs, their branches, the branches' twigs and the leader's tuft.
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs + p.twigs;
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x4df541059e9bba35ull);
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x80af7e3dd0bf4804ull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {

@@ -40,6 +40,9 @@ inline D3 normalized(D3 a) {
 inline Vec3 to_f32(D3 a) {
   return Vec3{static_cast<f32>(a.x), static_cast<f32>(a.y), static_cast<f32>(a.z)};
 }
+inline D3 from_f32(Vec3 a) {
+  return D3{static_cast<f64>(a.x), static_cast<f64>(a.y), static_cast<f64>(a.z)};
+}
 inline f64 lerp(f64 a, f64 b, f64 t) { return a + (b - a) * t; }
 inline f64 clamp01(f64 t) { return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t); }
 inline f64 smoothstep01(f64 t) {
