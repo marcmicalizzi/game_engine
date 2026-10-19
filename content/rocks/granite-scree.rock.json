@@ -1,0 +1,12 @@
+{
+  "shape": "Scree",
+  "scree": {
+    "seed": 11,
+    "size_x": 1.4, "size_z": 1.0,
+    "type": "Granite",
+    "count": 14,
+    "fragment_m": 0.22,
+    "buried": 0.2,
+    "triangle_budget": 16000
+  }
+}

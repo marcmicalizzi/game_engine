@@ -169,7 +169,12 @@ const char* k_usage =
     "                                          solve a flora file (a palm) into a cluster\n"
     "                                          container through the cache (flora --help);\n"
     "                                          present with the flora capability\n"
-    "  --version                             the commit this binary was built from, as JSON\n"
+    "  rocks <params.rock.json> <out.clusters>|--cache|--glb <out.glb> [--ddc <dir>] [--force]\n"
+    "                                          solve a rock file (a boulder, an outcrop or\n"
+    "                                          scree) into a cluster container through the\n"
+    "                                          cache, or a GLB (rocks --help); present with the\n"
+    "                                          rocks capability\n"
+    "  --version                            the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
@@ -355,8 +360,8 @@ int build(const BuildCommandOptions& options) {
   // and it is written into the container so that a later build can tell it is still the answer.
   u64 source_hash = 0;
   std::string message;
-  if (!assets::source_mesh_hash(options.input, source_hash, &message)) return failed(message);
-  const u64 key = build_key_of(source_hash, options.mesh);
+  if (!source_hash_of(options.input, source_hash, &message)) return failed(message);
+  const u64 key = mesh_build_key(options.input, source_hash, options.mesh);
 
   std::string output = options.output;
   if (options.cache) {
@@ -1282,5 +1287,6 @@ int main(int argc, char** argv) {
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);
   if (command == "flora") return content::flora_command(argc, argv);
+  if (command == "rocks") return content::rocks_command(argc, argv);
   return usage("unknown command");
 }

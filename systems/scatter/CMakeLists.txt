@@ -45,3 +45,10 @@ if(TARGET engine_scatter_tests AND TARGET engine::terrain)
   target_link_libraries(engine_scatter_tests PRIVATE engine::terrain)
   target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SCATTER_TESTS_DUNES=1)
 endif()
+# The rock field's case reads a scene whose kinds name the rock solver's recipes (`.rock.json`,
+# docs/subsystems/rocks.md): the rocks capability linked as a host links it, for its mesh
+# generator's registrar, and the case compiled only where it is. The scatter itself names none.
+if(TARGET engine_scatter_tests AND TARGET engine::rocks)
+  target_link_libraries(engine_scatter_tests PRIVATE engine::rocks)
+  target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SCATTER_TESTS_ROCKS=1)
+endif()

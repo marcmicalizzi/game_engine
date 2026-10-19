@@ -1,0 +1,24 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "rock-field",
+  "description": "Twenty-four seconds once round the rock field at 45 m and 5 m above the sand, looking at the middle outcrop, then ten walking in between the outcrops at eye height past the boulders and the scree.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {"time": 0.0, "position": [45.0, 5.0, 0.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 4.0, "position": [22.5, 5.0, 39.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 8.0, "position": [-22.5, 5.0, 39.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 12.0, "position": [-45.0, 5.0, 0.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 16.0, "position": [-22.5, 5.0, -39.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 20.0, "position": [22.5, 5.0, -39.0], "ground": true, "target": [0, 2.0, 0], "target_ground": true},
+    {"time": 24.0, "position": [40.0, 3.0, -10.0], "ground": true, "target": [0, 1.5, 0], "target_ground": true},
+    {"time": 29.0, "position": [16.0, 1.7, -4.0], "ground": true, "target": [-4, 1.5, 4], "target_ground": true},
+    {"time": 34.0, "position": [-6.0, 1.7, 8.0], "ground": true, "target": [-22, 2.0, 14], "target_ground": true}
+  ],
+  "markers": [
+    {"frame": 0, "name": "east", "note": "the whole field from the east, the middle outcrop in front"},
+    {"frame": 1740, "name": "approach", "note": "walking in from the east, boulders and scree on the sand"},
+    {"frame": 2040, "name": "between", "note": "between the outcrops at eye height, the large one ahead"}
+  ]
+}

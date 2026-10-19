@@ -172,8 +172,12 @@ class Placer {
 
 // The kinds' meshes: a named file resolved against `dir`, or the procedural rock, written into the
 // layer's mesh directory under its hash when it is not there yet. One per kind, in kind order.
+// That directory is the layer's `meshes` when it names one; else `<ddc>/scatter` under the host's
+// derived-data root (`scene_gen::Context::ddc`, `--ddc`) when `ddc` is not empty; else the
+// checkout's root found by walking up from `dir`; else `scatter` beside the scene (scatter.md, "The
+// procedural rock").
 bool kind_meshes(const Layer& desc, std::string_view dir, Vector<scene_gen::PlacementMesh>& out,
-                 std::string* error);
+                 std::string* error, std::string_view ddc = {});
 
 // The procedural rock as positions, normals and indices; and as a GLB.
 struct RockMesh {

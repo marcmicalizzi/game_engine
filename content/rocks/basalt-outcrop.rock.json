@@ -1,0 +1,12 @@
+{
+  "shape": "Outcrop",
+  "outcrop": {
+    "seed": 3,
+    "size_x": 4.5, "size_y": 2.6, "size_z": 3.5,
+    "type": "Basalt",
+    "count": 7,
+    "joint_sets": 3,
+    "buried": 0.3,
+    "triangle_budget": 60000
+  }
+}
