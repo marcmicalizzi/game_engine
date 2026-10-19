@@ -251,8 +251,8 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          gfx::ClearColor clear{};
-          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
+          gfx::ClearColor clear_color{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear_color);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
         [&, i](gfx::CommandList cb, gfx::RenderGraph&) {

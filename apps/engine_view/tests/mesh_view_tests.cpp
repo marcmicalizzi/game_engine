@@ -855,24 +855,24 @@ TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {
 
 namespace {
 
-std::string content_file(const char* relative) {
+[[maybe_unused]] std::string content_file(const char* relative) {
   return test::data_path(std::string(ENGINE_SOURCE_DIR "/") + relative, relative);
 }
 
 // The animation block of a summary: `animation` in an offscreen one (FlythroughSummary), `anim` in
 // a window's line.
-const JsonValue* animation_block(const Summary& summary) {
+[[maybe_unused]] const JsonValue* animation_block(const Summary& summary) {
   const JsonValue* block = summary.value.find("animation");
   if (block == nullptr || !block->is_object()) block = summary.value.find("anim");
   return block != nullptr && block->is_object() ? block : nullptr;
 }
 
-std::string block_text(const JsonValue* block, const char* key) {
+[[maybe_unused]] std::string block_text(const JsonValue* block, const char* key) {
   const JsonValue* found = block != nullptr ? block->find(key) : nullptr;
   return found != nullptr ? std::string(found->as_string()) : std::string();
 }
 
-u64 block_number(const JsonValue* block, const char* key) {
+[[maybe_unused]] u64 block_number(const JsonValue* block, const char* key) {
   u64 out = ~u64{0};
   const JsonValue* found = block != nullptr ? block->find(key) : nullptr;
   if (found != nullptr) (void)found->get_u64(out);
