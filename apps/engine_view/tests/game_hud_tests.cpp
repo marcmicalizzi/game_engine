@@ -131,8 +131,13 @@ hotload::HudElement element(u32 id, hotload::HudAnchor anchor, hotload::HudAlign
   return e;
 }
 
-f32 centre_x(const view::HudRect& r) { return (r.x0 + r.x1) * 0.5f; }
-f32 centre_y(const view::HudRect& r) { return (r.y0 + r.y1) * 0.5f; }
+f64 centre_x(const view::HudRect& r) {
+  return (static_cast<f64>(r.x0) + static_cast<f64>(r.x1)) * 0.5;
+}
+f64 centre_y(const view::HudRect& r) {
+  return (static_cast<f64>(r.y0) + static_cast<f64>(r.y1)) * 0.5;
+}
+f64 wide(f32 v) { return static_cast<f64>(v); }
 
 }  // namespace
 
@@ -174,21 +179,21 @@ TEST_CASE(
   CHECK(tl.x0 == mx);
   CHECK(tl.y0 == my);
   const view::HudRect top = overlay.bounds_of(11);
-  CHECK(centre_x(top) == doctest::Approx(960.0f).epsilon(0.002));
+  CHECK(centre_x(top) == doctest::Approx(960.0).epsilon(0.002));
   CHECK(top.y0 == my);
   const view::HudRect tr = overlay.bounds_of(12);
-  CHECK(tr.x1 == doctest::Approx(1920.0f - mx).epsilon(0.001));
+  CHECK(wide(tr.x1) == doctest::Approx(wide(1920.0f - mx)).epsilon(0.001));
   const view::HudRect left = overlay.bounds_of(13);
   CHECK(left.x0 == mx);
-  CHECK(centre_y(left) == doctest::Approx(540.0f).epsilon(0.002));
+  CHECK(centre_y(left) == doctest::Approx(540.0).epsilon(0.002));
   const view::HudRect centre = overlay.bounds_of(14);
-  CHECK(centre_x(centre) == doctest::Approx(960.0f).epsilon(0.002));
-  CHECK(centre_y(centre) == doctest::Approx(540.0f).epsilon(0.002));
+  CHECK(centre_x(centre) == doctest::Approx(960.0).epsilon(0.002));
+  CHECK(centre_y(centre) == doctest::Approx(540.0).epsilon(0.002));
   const view::HudRect bl = overlay.bounds_of(16);
-  CHECK(bl.y1 == doctest::Approx(1080.0f - my).epsilon(0.001));
+  CHECK(wide(bl.y1) == doctest::Approx(wide(1080.0f - my)).epsilon(0.001));
   const view::HudRect br = overlay.bounds_of(18);
-  CHECK(br.x1 == doctest::Approx(1920.0f - mx).epsilon(0.001));
-  CHECK(br.y1 == doctest::Approx(1080.0f - my).epsilon(0.001));
+  CHECK(wide(br.x1) == doctest::Approx(wide(1920.0f - mx)).epsilon(0.001));
+  CHECK(wide(br.y1) == doctest::Approx(wide(1080.0f - my)).epsilon(0.001));
   // 18 px at 1080p: the box is a line of text tall, a little more with no outline.
   CHECK(centre.y1 - centre.y0 >= 17.0f);
   CHECK(centre.y1 - centre.y0 <= 24.0f);
@@ -204,8 +209,8 @@ TEST_CASE(
   // Twice the picture, twice the box.
   lay_out_twice(overlay, hud, nullptr, 3840, 2160, 1.0f);
   const view::HudRect big = overlay.bounds_of(14);
-  CHECK(big.y1 - big.y0 == doctest::Approx(2.0f * (centre.y1 - centre.y0)).epsilon(0.15));
-  CHECK(centre_x(big) == doctest::Approx(1920.0f).epsilon(0.002));
+  CHECK(wide(big.y1 - big.y0) == doctest::Approx(2.0 * wide(centre.y1 - centre.y0)).epsilon(0.15));
+  CHECK(centre_x(big) == doctest::Approx(1920.0).epsilon(0.002));
 
   // The report's list: the stack's rows first under their ids, then the elements in order.
   const JsonValue list = view::hud_elements_json(hud, &overlay);
