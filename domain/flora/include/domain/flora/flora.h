@@ -45,7 +45,7 @@ namespace engine::flora {
 inline constexpr u32 k_flora_version = 2;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
-// member (`palm`, `broadleaf`, `conifer`).
+// member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
 inline constexpr const char* k_species_date_palm = "date_palm";
 inline constexpr const char* k_species_broadleaf = "broadleaf";
 inline constexpr const char* k_species_conifer = "conifer";
@@ -77,7 +77,7 @@ u64 flora_source_hash(const FloraFile& file);
 // be — which is the key `engine-content flora` and the renderer's scene reader both write under.
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes);
 
-// Solves the file's species — the palm, the broadleaf or the conifer, by `species` — into a mesh
+// Solves the file's species — whichever `species` names — into a mesh
 // and its motion contract. The report its species fills, when given; the other is left alone.
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error);

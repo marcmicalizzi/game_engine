@@ -102,8 +102,8 @@ void check_tree(const std::string& species, const assets::MeshData& mesh,
   }
   u32 load_bearing = 0;
   REQUIRE(motion.structure.size() == motion.parts.size());
-  const f32 floor = flora::load_bearing_min_radius(species);
-  CHECK(floor > 0.0f);
+  const f32 minimum = flora::load_bearing_min_radius(species);
+  CHECK(minimum > 0.0f);
   for (u32 p = 0; p < motion.parts.size(); ++p) {
     CAPTURE(p);
     if (p > 0) CHECK(motion.parts[p].parent < p);
@@ -120,7 +120,7 @@ void check_tree(const std::string& species, const assets::MeshData& mesh,
     }
     if ((s.flags & flora::k_load_bearing) != 0u) {
       ++load_bearing;
-      CHECK(s.base_radius >= floor);
+      CHECK(s.base_radius >= minimum);
     }
   }
   CHECK(load_bearing == r.load_bearing);
