@@ -785,6 +785,143 @@ TEST_CASE("renderer: a caster outside the camera's frustum casts into the maps a
   CHECK(id_differences(traced, before) == 0);
 }
 
+// ---- a deformed caster outside the frustum (renderer.md, "Shadows"; roadmap R84) ---------------
+//
+// The same card and camera under `--deform lattice`: every instance reads the pool, the card's
+// cage swirls about its box's vertical axis and breathes, and the ground stays a plane (its cage's
+// bottom face moves as one). Until 2026-10-18 a deformed instance outside the frustum was no
+// caster — the caster run had no pool blocks, so its rest pose would have cast where its pose did
+// not — and the card's traced shadow was 0 pixels here. Now the caster run is allocated and
+// deformed like a drawn run, and the traced shadow is the maps' (whose cascades always had blocks)
+// at both of two poses, which differ.
+namespace {
+
+constexpr f32 k_card_swirl = 0.1f;  // the lattice's amplitude: a corner of the card moves ~0.2
+
+ShotOptions deformed_card(ShadowMode shadows, u64 frame) {
+  ShotOptions options;
+  options.eye = k_off_eye;
+  options.target = k_off_target;
+  options.shadows = shadows;
+  options.deform = true;
+  options.deform_kind = gfx::k_deform_lattice;
+  options.deform_amplitude = k_card_swirl;
+  options.frame_index = frame;
+  return options;
+}
+
+}  // namespace
+
+TEST_CASE("renderer: a deformed caster outside the frustum casts its pose into the rays") {
+  const OffFrustum cpu = off_frustum(Caster::card, k_off_eye, k_off_target, Vec3{});
+  REQUIRE(cpu.caster_outside == cpu.caster_clusters);
+  REQUIRE(cpu.caster_in_volume == cpu.caster_clusters);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  // Two poses: frame 0 and frame 55, where the swirl (sin 1.7 t) is near its peak.
+  const u64 frames[2] = {0, 55};
+  Shot traced[2];
+  Shot mapped[2];
+  for (u32 f = 0; f < 2; ++f) {
+    mapped[f] = render(gpu.device, Caster::card, deformed_card(ShadowMode::Cascaded, frames[f]));
+    REQUIRE(mapped[f].available);
+    traced[f] = render(gpu.device, Caster::card, deformed_card(ShadowMode::RayTraced, frames[f]));
+    if (!traced[f].available) {
+      MESSAGE("skipped: ray-traced shadows: " << traced[f].why);
+      return;
+    }
+    const Agreement rays = agree(mapped[f], picture_classes(traced[f]), k_edge_pixels);
+    MESSAGE("frame " << frames[f] << ": the maps shadow " << shadowed_ground(mapped[f])
+                     << " ground pixels, the rays " << shadowed_ground(traced[f]) << " ("
+                     << traced[f].casters << " casters, " << traced[f].deform_entries
+                     << " pool entries, " << traced[f].deform_overflow
+                     << " refused); they differ on " << rays.differ << " of " << rays.compared
+                     << " interior pixels (" << rays.shadowed << " shadowed), " << rays.band
+                     << " edge pixels");
+    CHECK(id_differences(traced[f], mapped[f]) == 0);  // the same picture, shadowed two ways
+    CHECK(traced[f].deform_overflow == 0);
+    CHECK(rays.shadowed > 1000);
+    CHECK(rays.differ == 0);
+  }
+  // The shadow moves with the pose, under the rays as under the maps.
+  const Compared moved = compare_ground(traced[0], traced[1]);
+  const Compared moved_maps = compare_ground(mapped[0], mapped[1]);
+  MESSAGE("the two poses' traced shadows differ on " << moved.differ << " ground pixels, the "
+                                                     << "maps' on " << moved_maps.differ);
+  CHECK(moved.differ > 100);
+  CHECK(moved_maps.differ > 100);
+  // Without the volumes nothing outside the frustum casts: the old answer, and the one a deformed
+  // card got with them until the caster run had blocks.
+  ShotOptions before = deformed_card(ShadowMode::RayTraced, frames[1]);
+  before.off_frustum_casters = false;
+  const Shot old = render(gpu.device, Caster::card, before);
+  CHECK(shadowed_ground(old) == 0);
+  CHECK(id_differences(traced[1], old) == 0);
+}
+
+TEST_CASE("renderer: a deformed caster the pool has no room for casts nothing, not its rest pose") {
+  // **The overflow rule for casters** (renderer.md, "Shadows"). A drawn entry the pool's budget
+  // refuses draws its rest pose — a character momentarily at rest beats a hole. A caster entry it
+  // refuses is **not built at all**: its rest pose would cast a shadow where the pose has none (a
+  // terrain level's rest heights can be metres from the field it draws), and a wrong shadow is
+  // worse than a missing one. Under `--deform identity` the pose *is* the rest pose, so the two
+  // rules can be told apart by what they cast: the rest-pose rule would cast the card's whole
+  // shadow however small the pool, this one loses the shadow of every caster it refused. One KiB is
+  // 85 vertices: the drawn run's first ground cluster takes 35 or more, and what is left cannot
+  // hold every cluster of the card (the witness below), so at least one of them is refused — which
+  // ones depends on the order the cull's atomics appended them in. `clas_records_tests.cpp` holds
+  // the rule entry by entry.
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(make_scene(Caster::card, data, error), error);
+  u32 ground_min = ~0u;
+  u32 card_vertices = 0;
+  for (u32 c = 0; c < data.parts[0].cluster_count; ++c) {
+    ground_min =
+        std::min(ground_min, data.lod.mesh.clusters[data.parts[0].first_cluster + c].vertex_count);
+  }
+  for (u32 c = 0; c < data.parts[1].cluster_count; ++c)
+    card_vertices += data.lod.mesh.clusters[data.parts[1].first_cluster + c].vertex_count;
+  const u32 budget = static_cast<u32>(1024 / (3 * sizeof(f32)));
+  MESSAGE("smallest ground cluster " << ground_min << " vertices, the card's clusters "
+                                     << card_vertices << ", a budget of " << budget);
+  REQUIRE(budget - ground_min < card_vertices);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  ShotOptions options = deformed_card(ShadowMode::RayTraced, 0);
+  options.deform_kind = gfx::k_deform_identity;
+  const Shot roomy = render(gpu.device, Caster::card, options);
+  if (!roomy.available) {
+    MESSAGE("skipped: " << roomy.why);
+    return;
+  }
+  options.deform_pool_kib = 1;
+  const Shot cramped = render(gpu.device, Caster::card, options);
+  // Where the cramped picture is shadowed and the roomy one lit: a shadow the rule cast that the
+  // pose has not. None, since it only ever leaves casters out.
+  u32 extra = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p)
+    extra += is_ground(cramped, p) && shadowed(cramped, p) && !shadowed(roomy, p) ? 1u : 0u;
+  MESSAGE("with room: " << shadowed_ground(roomy) << " shadowed ground pixels, "
+                        << roomy.deform_overflow << " entries refused; one KiB: "
+                        << shadowed_ground(cramped) << " shadowed (" << extra
+                        << " the roomy frame lights), " << cramped.deform_overflow
+                        << " entries refused, " << cramped.casters << " casters culled");
+  CHECK(roomy.deform_overflow == 0);
+  CHECK(shadowed_ground(roomy) > 1000);
+  CHECK(cramped.deform_overflow > 0);
+  CHECK(cramped.casters == roomy.casters);  // the cull keeps them; the records pass leaves them out
+  CHECK(id_differences(cramped, roomy) == 0);  // the rest pose is the pose: the same picture
+  CHECK(shadowed_ground(cramped) < shadowed_ground(roomy));
+  CHECK(extra == 0);
+}
+
 TEST_CASE("renderer: a caster outside the frustum on the side away from the light casts nothing") {
   // The same card moved 0.85 units the other way from the view, away from the sun: outside the
   // frustum, and behind the view's receivers as the sun sees them, so no ray from the view towards

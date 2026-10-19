@@ -361,19 +361,22 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
-  // Instances that come and go are rigid: the deformed-vertex pool's table is laid out once, for
-  // the load's prefix (the terrain levels'), and a tail instance has no entry in it. The pool's
-  // per-frame blocks and the ray tracing chain follow the tail (renderer.md, "Instances that come
-  // and go"); a deformed tail does not, nor do cluster templates (`resolve_settings` turns
-  // `--deform` and `--rt-templates` off for such a scene).
-  if (dynamic_ && (skinned_ || data.morphed() || resolved.settings.deform ||
-                   (ray_tracing_ && resolved.settings.rt_templates))) {
+  // **The tail is rigid; the prefix deforms as any scene's does** (renderer.md, "The pool and the
+  // chain over the tail"). The deformed-vertex pool's per-instance table is laid out once, here,
+  // for the load's instances — the terrain levels, and since 2026-10-18 a skinned or morphed
+  // authored instance — whose slots never move, and a tail instance is placed with
+  // `k_invalid_deform`. The pool's per-frame blocks follow whatever the cull emits, and the per-
+  // entry slot table is laid out by the stride (`relayout`), so nothing else had to change. Still
+  // refused: `--deform`, which deforms *every* instance, the tail's too (`resolve_settings` turns
+  // it off for such a scene), a deformed instance in the tail (`set_dynamic_instances` names it),
+  // and cluster templates, built once from the load's clusters.
+  if (dynamic_ && (resolved.settings.deform || (ray_tracing_ && resolved.settings.rt_templates))) {
     if (error != nullptr) {
       *error = resolved.settings.rt_templates && ray_tracing_
                    ? "a scene whose instances come and go between frames builds no cluster "
                      "templates yet: draw it without --rt-templates"
-                   : "a scene whose instances come and go between frames draws rigid "
-                     "instances only: no --deform, skinning or morph channels yet";
+                   : "a scene whose instances come and go between frames deforms its loaded "
+                     "instances only: --deform would deform the tail's too";
     }
     destroy();
     return false;
@@ -729,10 +732,27 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     for (u32 i = block.first; i < block.first + block.count; ++i) {
       const SceneInstance& source = tail[i];
       gfx::InstanceDesc probe;
-      // The placement's own checks: a mesh the scene has not and a skinned instance are refused
-      // with its sentence.
-      if (source.mesh >= data_->parts.size() || source.joints != 0) {
+      // The placement's own checks: a mesh the scene has not is refused with its sentence.
+      if (source.mesh >= data_->parts.size()) {
         if (!make_instance(*data_, source, 0, probe, error)) return false;
+      }
+      // **A deformed tail instance** — skinned, or of a mesh with morph channels, which deforms
+      // whatever the flags say — is the next stage (renderer.md, "The pool and the chain over
+      // the tail"): the deform table is laid out once, for the load's instances, so a tail
+      // instance has no entry to point at, and drawn rigid it would stand at its bind pose.
+      // Refused alone, by name, before the layout is touched.
+      const geometry::ClusterMeshPart& part = data_->parts[source.mesh];
+      if (source.joints != 0 || part.morph_channel_count != 0) {
+        if (error != nullptr) {
+          *error =
+              "tail instance " + std::to_string(i) + " (mesh " + std::to_string(source.mesh) +
+              (source.joints != 0 ? ", " + std::to_string(source.joints) + " joints) is skinned"
+                                  : ", " + std::to_string(part.morph_channel_count) +
+                                        " morph channels) is morphed") +
+              ": an instance added after the load is drawn rigid, and a deformed one needs "
+              "an entry in the deform table the scene lays out once";
+        }
+        return false;
       }
       pairs += data_->parts[source.mesh].cluster_count;
     }
@@ -1146,10 +1166,14 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       deform_instance_.push_back(i);
     }
     deform_whole_mesh_bytes_ = whole_mesh_vertices * 3 * sizeof(f32);
-    // Each shadow cascade's cut deforms its own copy of the pairs it draws, so the clamp that keeps
-    // a small scene from ever overflowing allows the camera's whole meshes once per cascade too.
-    deform_pool_vertices_ =
-        pool_budget_vertices(resolved, whole_mesh_vertices * (u64{1} + cascade_count_));
+    // Each view's runs and each shadow cascade's cut deform their own copies of the pairs they
+    // hold, so the clamp that keeps a small scene from ever overflowing allows the whole meshes
+    // once per view and once per cascade. Within one view a pair is drawn, a shadow caster or
+    // neither — never two of them — so the caster run shares its view's allowance. Until
+    // 2026-10-18 the views were left out (one allowance for every view), which a surround's
+    // second and third view could overflow on a scene small enough to promise it never would.
+    deform_pool_vertices_ = pool_budget_vertices(
+        resolved, whole_mesh_vertices * (u64{view_count_} + u64{cascade_count_}));
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
                                               gfx::BufferUsage::TransferSrc |

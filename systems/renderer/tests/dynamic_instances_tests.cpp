@@ -18,6 +18,7 @@
 // the tail (`GpuScene::tail_indices`), which is the loaded scene's numbering. The layout's own
 // arithmetic is `tile_layout_tests.cpp`'s.
 #include <core/math/math.h>
+#include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
@@ -701,4 +702,292 @@ TEST_CASE("dynamic instances: the pair cap and the placement need no device") {
   CHECK(desc.first_pair == 40);
   CHECK(desc.scale_max == doctest::Approx(6.0f));
   CHECK(desc.mesh == 0);
+}
+
+// ---- a skinned loaded instance beside the tail (renderer.md, "The pool and the chain over the
+// tail"; roadmap R84) ---------------------------------------------------------------------------
+//
+// Until 2026-10-18 `GpuScene::create` refused a scene whose instances come and go if any of its
+// instances was skinned or morphed — the test game's two actors and its prop tail could not be
+// one scene, so its animation was off. The deform table is laid out once, for the load's instances,
+// whose slots never move; the tail is placed rigid; the pool's per-frame blocks follow whatever the
+// cull emits. So a scene with a bending two-bone bar among its loaded instances takes a tail of
+// boxes, draws the bar through the pool and the boxes rigid, builds the chain over both, and is the
+// picture of the same instances loaded whole — while a skinned instance handed over in the tail is
+// refused alone, by name.
+namespace {
+
+struct Bar {
+  anim::Skeleton skeleton;
+  MeshSource mesh;
+  Vector<geometry::SkinBinding> bindings;  // parallel to the mesh's positions
+};
+
+// The two-bone bar of renderer_tests.cpp: a square column 2 high in 32 slices, bound root to tip
+// by height with a ramp between the quarter and three-quarter marks.
+void build_bar(Bar& bar) {
+  bar.skeleton.resize(2);
+  bar.skeleton.names[0] = "root";
+  bar.skeleton.names[1] = "tip";
+  bar.skeleton.parents[0] = anim::k_no_joint;
+  bar.skeleton.parents[1] = 0;
+  bar.skeleton.local_bind[0] = Transform3::identity();
+  bar.skeleton.local_bind[1] = Transform3::identity();
+  bar.skeleton.local_bind[1].position = Vec3{0.0f, 1.0f, 0.0f};
+  anim::compute_inverse_bind(bar.skeleton);
+  constexpr u32 k_rings = 33;
+  const f32 h = 0.25f;
+  const Vec3 ring[4] = {Vec3{-h, 0, -h}, Vec3{h, 0, -h}, Vec3{h, 0, h}, Vec3{-h, 0, h}};
+  for (u32 r = 0; r < k_rings; ++r) {
+    const f32 t = static_cast<f32>(r) / static_cast<f32>(k_rings - 1);
+    const f32 tip = t < 0.25f ? 0.0f : (t > 0.75f ? 1.0f : (t - 0.25f) * 2.0f);
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 weights[4] = {1.0f - tip, tip, 0.0f, 0.0f};
+    const geometry::SkinBinding binding = geometry::make_skin_binding(joints, weights);
+    for (const Vec3& c : ring) {
+      bar.mesh.positions.push_back(Vec3{c.x, 2.0f * t, c.z});
+      bar.mesh.normals.push_back(normalize(Vec3{c.x, 0.0f, c.z}));
+      bar.bindings.push_back(binding);
+    }
+  }
+  for (u32 r = 0; r + 1 < k_rings; ++r) {
+    for (u32 c = 0; c < 4; ++c) {
+      const u32 a = r * 4 + c;
+      const u32 b = r * 4 + (c + 1) % 4;
+      const u32 tri[6] = {a, a + 4, b, b, a + 4, b + 4};  // counter-clockwise seen from outside
+      for (const u32 i : tri)
+        bar.mesh.indices.push_back(i);
+    }
+  }
+  const u32 top = (k_rings - 1) * 4;
+  const u32 caps[12] = {0, 2, 1, 0, 3, 2, top, top + 1, top + 2, top, top + 2, top + 3};
+  for (const u32 i : caps)
+    bar.mesh.indices.push_back(i);
+}
+
+// The bar's skinning matrices for a bend of the tip joint by `degrees` about +z.
+void bend(const Bar& bar, f32 degrees, Vector<anim::JointMatrix>& out) {
+  anim::Pose pose;
+  anim::rest_pose(bar.skeleton, pose);
+  pose.rotation[1] = quat_from_axis_angle(Vec3{0.0f, 0.0f, 1.0f}, radians(degrees));
+  Vector<Mat4> model(bar.skeleton.joint_count(), Mat4::identity());
+  anim::local_to_model(bar.skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+  out.resize(bar.skeleton.joint_count());
+  anim::skinning_matrices(
+      std::span<const Mat4>(model.data(), model.size()),
+      std::span<const Mat4>(bar.skeleton.inverse_bind.data(), bar.skeleton.inverse_bind.size()),
+      std::span<anim::JointMatrix>(out.data(), out.size()));
+}
+
+// Three meshes — the bar (skinned, and first, so the merged mesh carries a skin), the box and the
+// ground — and the instances: the bar standing on the ground beside the box, skinned with two
+// joints, then `others` (meshes 1 and 2), placed as the tail is.
+bool make_skinned_scene(const Bar& bar, std::span<const SceneInstance> others, bool dynamic,
+                        SceneData& out, std::string& error) {
+  geometry::ClusterLodMesh parts[3];
+  geometry::AttributeSource attributes;
+  attributes.normals = std::span<const Vec3>(bar.mesh.normals.data(), bar.mesh.normals.size());
+  attributes.skin =
+      std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size());
+  attributes.joint_count = bar.skeleton.joint_count();
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(bar.mesh.positions.data(), bar.mesh.positions.size()),
+          std::span<const u32>(bar.mesh.indices.data(), bar.mesh.indices.size()),
+          geometry::ClusterLodOptions{}, parts[0], &error, attributes)) {
+    return false;
+  }
+  if (!leaves_as_roots(box_mesh(), parts[1], error)) return false;
+  if (!leaves_as_roots(sheet_mesh(), parts[2], error)) return false;
+  if (!geometry::merge_cluster_meshes(std::span<const geometry::ClusterLodMesh>(parts, 3), out.lod,
+                                      out.parts, &error)) {
+    return false;
+  }
+  for (u32 m = 0; m < 3; ++m) {
+    SourceMesh source;
+    source.part_material.push_back(-1);
+    source.part_of_cluster.resize(out.parts[m].cluster_count, 0u);
+    out.sources.push_back(std::move(source));
+    out.mesh_fit.push_back(Mat4::identity());
+  }
+  const auto add = [&](const SceneInstance& source, u32 joints) {
+    gfx::InstanceDesc instance;
+    std::string why;
+    if (!make_instance(out, source, out.pair_count, instance, &why)) {
+      error = why;
+      return false;
+    }
+    out.pair_count += out.parts[source.mesh].cluster_count;
+    out.instances.push_back(instance);
+    out.instance_joints.push_back(joints);
+    out.skinned_instances += joints > 0 ? 1u : 0u;
+    return true;
+  };
+  SceneInstance standing = placed(0, Vec3{-3.0f, -1.0f, 1.0f}, 1.5f, 0.4f);
+  standing.bounds_padding = 1.0f;  // a bend of the tip moves no vertex further than this
+  if (!add(standing, 2)) return false;
+  for (const SceneInstance& source : others) {
+    if (!add(source, 0)) return false;
+  }
+  out.max_joints = 2;
+  out.dynamic = dynamic;
+  update_scene_bounds(out);
+  out.center = WorldPos{};
+  out.radius = 14.0f;
+  return true;
+}
+
+// A list of the box-and-ground scene's instances on this scene's mesh numbers.
+Vector<SceneInstance> renumbered(const Vector<SceneInstance>& list) {
+  Vector<SceneInstance> out = list;
+  for (SceneInstance& i : out)
+    i.mesh += 1;
+  return out;
+}
+
+struct SkinnedRig {
+  SceneData data;
+  ResolvedSettings resolved;
+  GpuScene scene;
+  SceneRenderer renderer;
+  std::string error;
+  bool build(const gfx::Device& device, const Bar& bar, std::span<const SceneInstance> others,
+             bool dynamic, const RenderSettings& settings) {
+    if (!make_skinned_scene(bar, others, dynamic, data, error)) return false;
+    resolve_settings(settings, device.features(), &data, resolved);
+    if (!scene.create(device, data, resolved, &error)) return false;
+    SceneRenderer::Desc rd;
+    rd.width = k_width;
+    rd.height = k_height;
+    return renderer.create(device, scene, resolved, rd, &error);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("dynamic instances: a skinned loaded instance beside the tail draws through the pool") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};  // the bar is instance 0
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> a = renumbered(tile_a());
+  const Vector<SceneInstance> whole = join({&head, &a});
+  // No shadows, the cascaded maps, and where the device traces, traced shadows with the casters,
+  // so the chain is built over the bar's pool blocks and the tail's rigid boxes.
+  const bool traces =
+      gpu.device.features().cluster_acceleration_structure && gpu.device.features().ray_query;
+  const ShadowMode modes[3] = {ShadowMode::Off, ShadowMode::Cascaded, ShadowMode::RayTraced};
+  for (const ShadowMode mode : modes) {
+    if (mode == ShadowMode::RayTraced && !traces) continue;
+    CAPTURE(static_cast<u32>(mode));
+    RenderSettings settings;
+    settings.shadows = mode;
+    settings.occlusion = false;
+
+    SkinnedRig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()),
+                      true, settings),
+        dynamic.error);
+    REQUIRE(dynamic.scene.dynamic());
+    REQUIRE(dynamic.scene.skinned());
+    REQUIRE(dynamic.resolved.deform_pass);
+    CHECK(dynamic.resolved.rt_chain == (mode == ShadowMode::RayTraced));
+    SkinnedRig loaded_head;
+    REQUIRE_MESSAGE(
+        loaded_head.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()),
+                          false, settings),
+        loaded_head.error);
+    SkinnedRig loaded_whole;
+    REQUIRE_MESSAGE(loaded_whole.build(gpu.device, bar,
+                                       std::span<const SceneInstance>(whole.data(), whole.size()),
+                                       false, settings),
+                    loaded_whole.error);
+
+    std::string error;
+    CapturedFrame bare;
+    CapturedFrame bare_expected;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), bare, &error), error);
+    REQUIRE_MESSAGE(loaded_head.renderer.capture(posed(), channels(), bare_expected, &error),
+                    error);
+    const u32 bar_entries = dynamic.renderer.stats().deform_entries;
+    const Difference d0 = compare(bare, bare_expected);
+    // The bar is in the picture, bent: its pixels.
+    u32 bar_pixels = 0;
+    for (u32 p = 0; p < bare.width * bare.height; ++p)
+      bar_pixels += bare.ids[u64{p} * k_id_words] == 0 ? 1u : 0u;
+    MESSAGE("no tail: the bar over " << bar_pixels << " pixels from " << bar_entries
+                                     << " pool entries; " << d0.ids << " id, " << d0.depth
+                                     << " depth and " << d0.color << " colour differences");
+    CHECK(bar_pixels > 100);
+    CHECK(bar_entries > 0);
+    CHECK(d0.ids == 0);
+    CHECK(d0.depth == 0);
+    CHECK(d0.color == 0);
+
+    // The tail: six boxes, which grow the stride, so the pool's slot table and the chain are laid
+    // out again with a skinned instance among the loaded ones.
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(a.data(), a.size()), &error),
+                    error);
+    CapturedFrame shot;
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+    REQUIRE_MESSAGE(loaded_whole.renderer.capture(posed(), channels(), expected, &error), error);
+    const Difference d = compare(shot, expected);
+    u32 tail_pixels = 0;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const u32 instance = shot.ids[u64{p} * k_id_words];
+      tail_pixels += instance != k_no_id && instance > head.size() ? 1u : 0u;
+    }
+    MESSAGE("with the tail: " << dynamic.scene.instance_count() << " instances, stride "
+                              << dynamic.scene.pair_stride() << ", " << tail_pixels
+                              << " tail pixels, " << dynamic.renderer.stats().deform_entries
+                              << " pool entries; " << d.ids << " id, " << d.depth << " depth and "
+                              << d.color << " colour differences against the scene loaded whole");
+    CHECK(tail_pixels > 200);
+    CHECK(d.ids == 0);
+    CHECK(d.depth == 0);
+    // Traced, this is also the case that found the chain's capacity ceiling frozen at the load's
+    // prefix: the tail's frames wanted 70 structures of a chain held at 21, dropped ten instances a
+    // frame, and shadowed 2,619 pixels otherwise than the scene loaded whole (scene_renderer.cpp,
+    // `set_dynamic_instances`).
+    CHECK(d.color == 0);
+    if (mode == ShadowMode::RayTraced) {
+      CHECK(dynamic.renderer.stats().rt.capacity >= dynamic.renderer.stats().rt.wanted);
+    }
+    // The tail's boxes are rigid: the pool holds the bar's entries and nothing more.
+    CHECK(dynamic.renderer.stats().deform_entries == bar_entries);
+    CHECK(loaded_whole.renderer.stats().deform_entries == bar_entries);
+
+    // A skinned instance in the tail is refused alone, by name, and the scene is as it was.
+    Vector<SceneInstance> skinned_tail = a;
+    SceneInstance actor = placed(0, Vec3{5.0f, -1.0f, 4.0f}, 1.0f);
+    actor.joints = 2;
+    skinned_tail.push_back(actor);
+    CHECK_FALSE(dynamic.renderer.set_dynamic_instances(
+        std::span<const SceneInstance>(skinned_tail.data(), skinned_tail.size()), &error));
+    MESSAGE("refused: " << error);
+    CHECK(error.find("tail instance 6") != std::string::npos);
+    CHECK(error.find("is skinned") != std::string::npos);
+    CHECK(dynamic.scene.dynamic_instance_count() == a.size());
+    CapturedFrame after;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), after, &error), error);
+    const Difference kept = compare(shot, after);
+    CHECK(kept.ids == 0);
+    CHECK(kept.depth == 0);
+    CHECK(kept.color == 0);
+  }
 }

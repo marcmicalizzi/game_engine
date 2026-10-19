@@ -226,8 +226,9 @@ struct CullParams {
   // caster_volume.h fits them). With `casters` set, a pair the frustum test rejects is tested
   // against these convex volumes — the view's frustum swept towards the key light, and the hull of
   // the frustum and each shadowed point light — and one inside any of them is a caster: it takes
-  // the cut and the page table like a drawn pair and goes to the caster run. A deformed instance
-  // never does, because the caster run has no pool blocks. Volume v is `caster_plane_counts[v]`
+  // the cut and the page table like a drawn pair and goes to the caster run — a deformed instance's
+  // too since 2026-10-18, because the caster run is given pool blocks and deformed like a drawn
+  // run (its refused entries are built not at all). Volume v is `caster_plane_counts[v]`
   // inward planes, `dot(n, p) + w >= 0` inside, in the frame's space, and inside the sphere
   // `caster_reach[v]` (xyz centre, w radius; w < 0 none). `caster_volume_count` 0 drops the pair
   // as the pass always did, and the pass reads none of this unless the frustum test failed.

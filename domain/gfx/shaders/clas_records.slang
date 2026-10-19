@@ -50,7 +50,10 @@
 // one view a pair is drawn or a caster, never both, so the two ends never meet) and is written
 // **without the opaque flag**: the shadow rays force opacity and stop on it, the primary rays cull
 // non-opaque geometry and pass through, so the traced picture stays the rasterized one and only
-// the shadows gain the clusters that face away from the camera.
+// the shadows gain the clusters that face away from the camera. A **deformed** caster (one outside
+// the frustum: a deformed instance is never cone-tested) reads its own pool block like a drawn
+// entry, and one the frame's pool budget had no room for is left out by records_main rather than
+// built at its rest pose.
 
 #include "scene.slang"
 
@@ -167,6 +170,16 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   const InstanceDesc instance = instances[instance_index];
   uint* slots = (uint*)g_params.slots;
   if (caster) {
+    // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A
+    // drawn entry the budget refuses draws its rest pose, which beats a hole in the picture; a
+    // caster's rest pose would cast a shadow where its pose has none — a terrain level's rest
+    // heights can be metres from the field it draws — and a wrong shadow is worse than a missing
+    // one. It is left out here, before it is counted, so the ranges and the emit never see it.
+    MeshDesc* meshes = (MeshDesc*)g_params.meshes;
+    const MeshDesc mesh = meshes[instance.mesh];
+    if (is_deformed(mesh, instance) && deform_base(mesh, instance, index) == k_no_pool_slot) {
+      return;
+    }
     Atomic<uint>* counts = (Atomic<uint>*)caster_counts();
     const uint local = counts[instance_index].add(1);
     slots[slice_base(instance) + slice_length(instance) - 1 - local] = index;
