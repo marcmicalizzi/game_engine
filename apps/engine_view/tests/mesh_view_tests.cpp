@@ -448,6 +448,11 @@ std::string content_app() {
 
 }  // namespace
 
+// The skinned bar, for the game's actor cases (game_actors_view_tests.cpp).
+namespace engine::view_test {
+bool write_skinned_bar_glb(const std::string& path) { return write_skinned_glb(path); }
+}  // namespace engine::view_test
+
 TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") {
   const test::TempDir tmp("engine_view_mesh");
   const std::filesystem::path dir = tmp.native();

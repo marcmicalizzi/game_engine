@@ -37,6 +37,9 @@
 #if ENGINE_VIEW_ANIMATION
 
 #include "fly_camera.h"
+#if ENGINE_VIEW_GAME
+#include "game_props.h"
+#endif
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -170,17 +173,91 @@ u32 advance_animation(AnimatedScene& scene, renderer::SceneRenderer& renderer,
 // already set — the game's, which runs first, so a game that will one day change a clip at a tick
 // changes it before that tick's step — and then brings the world up to the session's tick, the
 // tiers decided from that tick's camera. `attach` installs it; the object must outlive the session.
+//
+// **Two hooks round the step** (`before`, `after`, with `hooks_user`): a game's actors
+// (`GameActors`) advance their fades after the game's commands and before the world steps, and
+// sample their paths once it has. Null, nothing runs.
 struct AnimationTicks {
   AnimatedScene* scene = nullptr;
   renderer::SceneRenderer* views_of = nullptr;  // whose views a tier is decided from
   u32 tick_hz = 0;
   FlySession::TickObserver next = nullptr;
   void* next_user = nullptr;
+  using StepHook = void (*)(void* user, u64 tick);
+  StepHook before = nullptr;
+  StepHook after = nullptr;
+  void* hooks_user = nullptr;
 
   void attach(FlySession& session, AnimatedScene& animated, renderer::SceneRenderer& view_renderer,
               u32 session_tick_hz) noexcept;
   static void observe(void* user, const FlySession& session, const input::InputState& input);
 };
+
+#if ENGINE_VIEW_GAME
+// **The actors a game moves** (module_abi.h ABI 5; docs/subsystems/apps.md, "Actors: the
+// characters a game moves"; roadmap S88): the scene's named animated instances as a `--game`
+// module drives them, through the runner (`GameRunner::set_actors`), by scene instance.
+//
+// **A command is applied at the tick the module made it.** The module runs in the game's tick
+// observer, which `AnimationTicks` calls first, so a play, a stop or a rate goes into the animated
+// world before that tick's step — the same tick in a live window, an injected one and an offscreen
+// replay — and a fade is advanced a tick at a time in `before_step`. A move changes the actor's
+// placement and its tier row at the tick too; the renderer's instance table takes every actor that
+// moved since the last frame in **one** `SceneRenderer::move_instances` before the next frame
+// (`flush`), as a prop reaches the picture on the frame after the tick that changed it — one call
+// a frame rather than one a tick, because the call waits for the device.
+//
+// **What is state and what is replayed.** `to_json` is every actor's placement and its player
+// (`AnimationPlayer` as its schema writes it) plus a fade in flight, the state file's `actors`, and
+// `restore` puts them back before the first tick: a cold restore stands every actor where the
+// last run left it, in the clip and at the playhead it had. The module's commands are not
+// recorded — a replay re-runs the module from what the recording restored, and its calls recur at
+// the same ticks.
+//
+// **A fade to the rest pose is the player's weight** (`AnimationPlayer::weight`, which the sampler
+// already blends toward the bind pose): written here a tick at a time through
+// `ecs::WorldCommands::set_bytes`, the component's own bytes, since the capability's surface has a
+// cross-fade between clips and no stop. A cut is the clip cleared; a play from the rest pose with a
+// fade is a cut to the clip at weight 0 that rises.
+class GameActors final : public ActorHost {
+ public:
+  GameActors();
+  ~GameActors() override;
+  GameActors(const GameActors&) = delete;
+  GameActors& operator=(const GameActors&) = delete;
+
+  // After `attach_instances`: one actor per declared name whose instance animates. `can_move` is
+  // whether the renderer can move a loaded instance (`SceneData::dynamic` false; a scene with props
+  // or a world cannot, and `place` answers `Unsupported`). A declared actor whose instance did not
+  // animate (a rigid mesh under `--animate`) is left out and said once. `tick_hz` paces the path's
+  // samples. Then the hooks onto `ticks`.
+  bool bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
+            const Vector<DeclaredActor>& declared, bool can_move, u32 tick_hz, std::string& error);
+  void hook(AnimationTicks& ticks) noexcept;
+  // The state file's `actors`, before the first tick. False with `error` for an entry that does not
+  // read; a name that is not bound is skipped and said.
+  bool restore(const JsonValue& actors, std::string& error);
+
+  // ---- ActorHost ----
+  hotload::Result place(u32 instance, const f64* position, f32 yaw) override;
+  hotload::Result play(u32 instance, std::string_view clip, f32 fade_s, bool looping) override;
+  hotload::Result stop(u32 instance, f32 fade_s) override;
+  hotload::Result speed(u32 instance, f32 speed) override;
+  hotload::Result state(u32 instance, hotload::ActorState& out) override;
+  JsonValue to_json() const override;
+  JsonValue summary_json() const override;
+  JsonValue calls_json() const override;
+
+  // Between frames: every actor moved since the last call, in one `move_instances`. True when
+  // nothing moved.
+  bool flush(renderer::SceneRenderer& renderer, std::string* error);
+  u32 count() const noexcept;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+#endif
 
 // The frame's half of the contract: the span of every animated instance's matrices and the run
 // per instance, as the world stands.

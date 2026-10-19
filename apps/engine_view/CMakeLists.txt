@@ -98,10 +98,12 @@ if(TARGET engine::hotload)
   list(APPEND _view_deps hotload game_runner_schemas)
   # The props a module places (game_props.cpp; apps.md "The game contract", roadmap P43) are the
   # runner's table and the renderer's tail; the table is checked with no GPU (game_props_tests.cpp)
-  # and the tail end to end (game_props_view_tests.cpp).
+  # and the tail end to end (game_props_view_tests.cpp); the actors a module moves (ABI 5, S88)
+  # end to end beside them (game_actors_view_tests.cpp, which needs the animation build too).
   set(_view_game game_runner.cpp game_hud.cpp game_props.cpp)
   list(APPEND _view_tests tests/game_runner_tests.cpp tests/game_props_tests.cpp
-                          tests/game_props_view_tests.cpp game_runner.cpp game_props.cpp)
+                          tests/game_props_view_tests.cpp tests/game_actors_view_tests.cpp
+                          game_runner.cpp game_props.cpp)
   # How a run ends and what clock its frames are drawn by (roadmap P44): the result panel, the new
   # run, and the drawn sun on the runner's clock, end to end (tests/game_end_tests.cpp). The HUD's
   # sizing (tests/game_hud_tests.cpp) lays ImGui's frame out with no device, so the overlay is

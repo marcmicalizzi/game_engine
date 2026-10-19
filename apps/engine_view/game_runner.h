@@ -241,6 +241,21 @@ class GameRunner {
   // props to the renderer's tail (main.cpp) and this holds the table.
   GameProps& props() noexcept;
   const GameProps& props() const noexcept;
+  // **The actors the module moves** (game_props.h, ABI 5; apps.md "Actors"): the scene file's
+  // named animated instances, declared before `start` since the module's `on_load` may find them,
+  // and the animated world's table (`ActorHost`, animation.h `GameActors`) set once the scene has
+  // loaded; until then a found actor's commands answer `Unsupported`. The restored state's
+  // `actors` (the state file's, or a replay's header's) is the host's to apply when it binds; null
+  // when nothing restored any.
+  void declare_actors(const Vector<DeclaredActor>& actors);
+  const Vector<DeclaredActor>& declared_actors() const noexcept;
+  void set_actors(ActorHost* actors) noexcept;
+  const JsonValue* restored_actors() const noexcept;
+  // **The ground a module asks** (`ground_height`): the walker's own (walk.h
+  // `Walker::ground_height`), set by whoever attaches the runner to a session. Without one the
+  // module hears `Unsupported`.
+  using GroundQuery = bool (*)(void* user, f64 x, f64 z, f64& out_height);
+  void set_ground(GroundQuery query, void* user) noexcept;
   // The loaded module's name and build (the host's generation), for a recording's header.
   const std::string& module_name() const noexcept;
   u32 build() const noexcept;

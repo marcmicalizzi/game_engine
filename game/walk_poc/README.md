@@ -44,11 +44,13 @@ thirst, seconds, metres, days, the run's start, the spring, the counters, `over`
 the can's id and whether it was placed and taken, and the markers placed), so a rebuild carries the
 run and `--game-state` saves it. It resolves the `GameTick` fields it reads, declares `interact` and
 `use` and asks for the two props in `on_load`, exports `game_tick`, and allocates nothing there: the
-HUD's text is formatted into a stack buffer the host copies. Four test builds of the same source
+HUD's text is formatted into a stack buffer the host copies. Five test builds of the same source
 (`WALK_POC_TEST=1`, an action no map has; `2`, a failure at tick 30; `3`, no props and no walker
 calls, so a scene with and without the game draws the same picture; `4`, named `walk_poc_teleport`,
-a teleport 10 m ahead at tick 50) are what engine-view's tests check the refusals, the tail and the
-replay rules with.
+a teleport 10 m ahead at tick 50; `5`, named `walk_poc_actor`, which finds the scene's actor `bar`
+(hotload ABI 5) and walks it round a 3 m circle on the ground it asks for with `ground_height`,
+playing `bend`, at twice the rate from tick 120, fading to rest from 240) are what engine-view's
+tests check the refusals, the tail, the actors and the replay rules with.
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/ruins-walk/scene.json --walk --start 16,20,40 0,0 --game build/msvc-release/bin/game/walk_poc.dll --game-state walk_poc.state.json

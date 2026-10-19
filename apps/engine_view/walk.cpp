@@ -471,6 +471,16 @@ WorldPos Walker::eye() const noexcept {
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
 
+// The ground-follow's own `ground_at`, so a game's answer is the height the walker would stand on
+// there. Its one-point cache is a cache: asked elsewhere, the walker's next look recomputes the
+// same numbers.
+bool Walker::ground_height(f64 x, f64 z, f64& out) {
+  Impl& w = *impl_;
+  if (w.ground == nullptr) return false;
+  out = static_cast<f64>(w.ground_at(x, z));
+  return true;
+}
+
 bool Walker::on_ground() const noexcept {
   const Impl& w = *impl_;
   if (w.ground == nullptr || !w.placed) return false;

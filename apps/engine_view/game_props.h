@@ -142,4 +142,43 @@ class GameProps {
   GamePropsStats stats_;
 };
 
+// ---- actors (module_abi.h, ABI 5; apps.md, "Actors: the characters a game moves")
+// ----------------
+//
+// The props' neighbour: a prop is a mesh the module places from nothing, an **actor** is a skinned
+// instance the scene file already holds and names, which the module finds, moves and plays clips
+// on. The two halves live apart because they need different builds: the names are read here, with
+// the scene file, before the module loads (its `on_load` may look one up, as it looks up a prop),
+// in every build that runs a game; the table that moves and poses them is the animated world's
+// (animation.h `GameActors`), in a build with animation, reached through `ActorHost`.
+
+// One actor the scene file declares: an instance with a `name` that animates — an `animation`
+// block, or any instance under `--animate` — by its index in the file's instances, which is its
+// index in the scene (the file's instances come first, before scatters and generators).
+struct DeclaredActor {
+  std::string name;
+  u32 instance = 0;
+};
+
+// The scene file's actors, in instance order; a name given twice is the first instance's (the
+// second is said once on stderr). False with `error` for a file that does not read.
+bool read_scene_actors(const std::string& path, bool animate, Vector<DeclaredActor>& out,
+                       std::string& error);
+
+// What the runner forwards an actor's commands to, by scene instance (`DeclaredActor::instance`;
+// the runner has already checked it is one). Implemented by the animated world (animation.h).
+class ActorHost {
+ public:
+  virtual ~ActorHost() = default;
+  virtual hotload::Result place(u32 instance, const f64* position, f32 yaw) = 0;
+  virtual hotload::Result play(u32 instance, std::string_view clip, f32 fade_s, bool looping) = 0;
+  virtual hotload::Result stop(u32 instance, f32 fade_s) = 0;
+  virtual hotload::Result speed(u32 instance, f32 speed) = 0;
+  virtual hotload::Result state(u32 instance, hotload::ActorState& out) = 0;
+  // The state file's `actors` (every bound actor's placement and player), and the summary's.
+  virtual JsonValue to_json() const = 0;
+  virtual JsonValue summary_json() const = 0;
+  virtual JsonValue calls_json() const = 0;
+};
+
 }  // namespace engine::view

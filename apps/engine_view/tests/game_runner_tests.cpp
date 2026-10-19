@@ -17,6 +17,7 @@
 #include <test_temp_dir.h>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -412,5 +413,165 @@ TEST_CASE("game runner: water at the nearest placement the host names refills th
   CHECK(state_number(runner, "drinking_ticks") == 240.0);
   CHECK(std::string_view(runner.hud().lines[1].text) == "at the water: drinking");
 }
+
+#if defined(WALK_POC_ACTOR_PATH)
+namespace {
+
+// The animated world as the runner sees it (game_props.h `ActorHost`), kept by hand: what the
+// module asked for, and an actor that stands where it was last put.
+struct FakeActors final : view::ActorHost {
+  u32 instance = 0;
+  f64 position[3] = {4.0, 1.0, -6.0};
+  f32 yaw = 0.0f;
+  u32 places = 0;
+  std::string clip;
+  f32 fade = -1.0f;
+  f32 rate = 1.0f;
+  u64 rate_tick = 0;
+  f32 stop_fade = -1.0f;
+  u64 stop_tick = 0;
+  u64 tick = 0;
+  hotload::Result place(u32 a, const f64* p, f32 y) override {
+    instance = a;
+    for (u32 k = 0; k < 3; ++k)
+      position[k] = p[k];
+    yaw = y;
+    ++places;
+    return hotload::Result::Ok;
+  }
+  hotload::Result play(u32, std::string_view c, f32 f, bool) override {
+    clip = std::string(c);
+    fade = f;
+    return hotload::Result::Ok;
+  }
+  hotload::Result stop(u32, f32 f) override {
+    stop_fade = f;
+    stop_tick = tick;
+    return hotload::Result::Ok;
+  }
+  hotload::Result speed(u32, f32 s) override {
+    rate = s;
+    rate_tick = tick;
+    return hotload::Result::Ok;
+  }
+  hotload::Result state(u32 a, hotload::ActorState& out) override {
+    out.instance = a;
+    for (u32 k = 0; k < 3; ++k)
+      out.position[k] = position[k];
+    out.pose_hash = 0xABCDu + places;
+    return hotload::Result::Ok;
+  }
+  JsonValue to_json() const override { return JsonValue::array(); }
+  JsonValue summary_json() const override { return JsonValue::array(); }
+  JsonValue calls_json() const override { return JsonValue::object(); }
+};
+
+// The ground the fake world stands on: a slope, so a height that was not asked for shows.
+bool slope(void*, f64 x, f64 z, f64& out) {
+  out = 0.1 * x - 0.05 * z;
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("game runner: actors are found by name, refused by name, and driven at the tick") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_actors");
+  const input::ActionMap map = view::default_fly_map();
+  std::string error;
+  // A scene whose actors do not include `bar`: the module's `on_load` lookup refuses the load,
+  // naming what the scene has.
+  {
+    view::GameRunner runner;
+    Vector<view::DeclaredActor> others;
+    others.push_back(view::DeclaredActor{"tortoise", 2});
+    runner.declare_actors(others);
+    CHECK_FALSE(
+        runner.start(config_for(place(tmp, WALK_POC_ACTOR_PATH, "a"), tmp), map, 240, &error));
+    CHECK(error.find("LoadHookFailed") != std::string::npos);
+    CHECK(error.find("no actor 'bar' in the scene (it names tortoise)") != std::string::npos);
+  }
+  // A scene with no actors: `Unsupported`, the module walks nothing and runs.
+  {
+    view::GameRunner runner;
+    REQUIRE_MESSAGE(
+        runner.start(config_for(place(tmp, WALK_POC_ACTOR_PATH, "b"), tmp), map, 240, &error),
+        error);
+    u64 tick = 0;
+    walk(runner, tick, 10);
+    CHECK(state_number(runner, "actor_ticks") == 0.0);
+    CHECK(runner.summary_json().find("actors")->size() == 0);
+  }
+  // `bar` declared and no world bound yet: found, and every command answers `Unsupported`, so the
+  // module does not start its circle; the summary names the actor.
+  Vector<view::DeclaredActor> bar;
+  bar.push_back(view::DeclaredActor{"bar", 1});
+  view::GameRunner runner;
+  runner.declare_actors(bar);
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place(tmp, WALK_POC_ACTOR_PATH, "c"), tmp), map, 240, &error), error);
+  u64 tick = 0;
+  walk(runner, tick, 5);
+  CHECK(state_number(runner, "actor_ticks") == 0.0);
+  const JsonValue unbound = runner.summary_json();
+  REQUIRE(unbound.find("actors")->size() == 1);
+  CHECK((*unbound.find("actors"))[0].find("name")->as_string() == "bar");
+
+  // Bound: the module walks a 3 m circle round where the actor stood, on the ground it asked for,
+  // facing along its way; plays `bend` at once, doubles the rate at tick 120, stops over half a
+  // second at 240.
+  FakeActors actors;
+  runner.set_actors(&actors);
+  runner.set_ground(&slope, nullptr);
+  const f64 centre[3] = {4.0, 1.0, -6.0};
+  for (u32 i = 0; i < 300; ++i) {
+    actors.tick = tick + 1;
+    walk(runner, tick, 1);
+    const f64 dx = actors.position[0] - centre[0];
+    const f64 dz = actors.position[2] - centre[2];
+    CHECK(std::sqrt(dx * dx + dz * dz) == doctest::Approx(3.0).epsilon(1e-12));
+    CHECK(actors.position[1] == 0.1 * actors.position[0] - 0.05 * actors.position[2]);
+    // Facing the way round: +x turned by the yaw is the circle's tangent.
+    const f64 yaw = static_cast<f64>(actors.yaw);
+    CHECK(std::cos(yaw) * dx - std::sin(yaw) * dz == doctest::Approx(0.0).epsilon(1e-5).scale(3.0));
+  }
+  CHECK(actors.instance == 1);
+  CHECK(actors.places == 300);
+  CHECK(actors.clip == "bend");
+  CHECK(actors.fade == 0.0f);
+  CHECK(actors.rate == 2.0f);
+  CHECK(actors.rate_tick == 120);
+  CHECK(actors.stop_fade == 0.5f);
+  CHECK(actors.stop_tick == 240);
+  CHECK(state_number(runner, "actor_ticks") == 300.0);
+  CHECK(state_number(runner, "actor_pose") == static_cast<f64>(0xABCDu + 300));
+  const JsonValue summary = runner.summary_json();
+  const JsonValue* calls = summary.find("actor_calls");
+  REQUIRE(calls != nullptr);
+  u64 queries = 0;
+  CHECK(calls->find("ground_queries")->get_u64(queries));
+  CHECK(queries == 300);
+  runner.set_actors(nullptr);
+}
+
+TEST_CASE("game runner: a state file naming an actor the scene does not is refused by name") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_actor_state");
+  const input::ActionMap map = view::default_fly_map();
+  const std::string state = tmp.file("state.json");
+  write_text(state, R"({"format":"engine.game.state","version":2,"module":"walk_poc_actor",)"
+                    R"("type":"engine.walk_poc.Survivor","tick":10,"state":{},"props":[],)"
+                    R"("actors":[{"name":"tortoise","instance":3,"position":[0,0,0],"yaw":0}]})");
+  Vector<view::DeclaredActor> bar;
+  bar.push_back(view::DeclaredActor{"bar", 1});
+  view::GameRunner runner;
+  runner.declare_actors(bar);
+  view::GameRunner::Config config = config_for(place(tmp, WALK_POC_ACTOR_PATH, "walk_poc"), tmp);
+  config.state_file = state;
+  std::string error;
+  CHECK_FALSE(runner.start(config, map, 240, &error));
+  CHECK(error.find("actors[0] is 'tortoise', which the scene does not name") != std::string::npos);
+}
+#endif  // WALK_POC_ACTOR_PATH
 
 #endif  // WALK_POC_PATH

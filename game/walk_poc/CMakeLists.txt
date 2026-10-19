@@ -28,15 +28,21 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   engine_game_module(NAME walk_poc_teleport OUTPUT_DIRECTORY "${_tests}"
     SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
   target_compile_definitions(engine_game_walk_poc_teleport PRIVATE WALK_POC_TEST=4)
+  # And one named walk_poc_actor that walks the scene's actor `bar` round a circle on the ground,
+  # plays and stops its clip (ABI 5; apps.md "Actors"), for the actor cases end to end.
+  engine_game_module(NAME walk_poc_actor OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_actor PRIVATE WALK_POC_TEST=5)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
-                   engine_game_walk_poc_teleport)
+                   engine_game_walk_poc_teleport engine_game_walk_poc_actor)
   target_compile_definitions(engine_engine_view_tests PRIVATE
     WALK_POC_PATH="$<TARGET_FILE:engine_game_walk_poc>"
     WALK_POC_BAD_ACTION_PATH="$<TARGET_FILE:engine_game_walk_poc_bad_action>"
     WALK_POC_FAILING_PATH="$<TARGET_FILE:engine_game_walk_poc_failing>"
     WALK_POC_NO_PROPS_PATH="$<TARGET_FILE:engine_game_walk_poc_no_props>"
     WALK_POC_TELEPORT_PATH="$<TARGET_FILE:engine_game_walk_poc_teleport>"
+    WALK_POC_ACTOR_PATH="$<TARGET_FILE:engine_game_walk_poc_actor>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.

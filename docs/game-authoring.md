@@ -180,6 +180,23 @@ to run on an older host checks `ENGINE_HOTLOAD_HAS(api, hud_element)` (the helpe
   its last state and `bounds_px`, so a test asserts its prompt was on screen and where without
   reading a picture.
 
+## The characters: actors and the ground (hotload ABI 5)
+
+ABI 5 (2026-10-19) appended services again and loads modules built against 3 and 4 unchanged. A
+**character** the scene file holds is an actor once its instance has a `"name"` and animates (an
+`animation` block): `actor_find(context, "surveyor", actor)` in `on_load` refuses the load if the
+scene spells it otherwise, and the handle — the instance's index — is what the module keeps in its
+state. At a tick, `actor_place` stands it (level, its scale kept), `actor_play` changes its clip
+with a cross-fade, `actor_stop` fades it to its rest pose, `actor_speed` sets its rate, and
+`actor_state` reads back where it is, what it plays and the hash of its pose; `ground_height(x, z)`
+is the height the walker would stand on, so a tortoise ambles over the dunes rather than through
+them. Everything is applied at the tick it is asked for, so a replay with the same module is the
+same walk; `--game-state` keeps where every actor stood and what it played, and a resumed run puts
+them back. Two limits, both the renderer's for now: a scene that also declares `props` (or streams
+a world) answers `actor_place` with `Unsupported`, and `actor_spawn` — a character made at run time —
+answers `Unsupported` everywhere ([apps.md, "Actors"](subsystems/apps.md#actors-the-characters-a-game-moves)
+says what each needs). An actor does not collide: check reach from `actor_state`'s position.
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework
