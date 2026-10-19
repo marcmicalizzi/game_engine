@@ -91,6 +91,14 @@ struct GameServices {
   Result (*sound_play)(void* user, u32 clip, const f64* position, f32 gain,
                        u32* out_voice) = nullptr;
   Result (*sound_stop)(void* user, u32 voice) = nullptr;
+  // ABI 4 (module_abi.h): the HUD's structured elements and the graphics state. The host checks
+  // the struct's `size` and the pointers before it forwards (a struct smaller than ABI 4's, a null
+  // pointer: `InvalidArgument`); everything else — reserved ids, ranges, the table's size — is the
+  // runner's to judge. Null, each answers `Unsupported`.
+  Result (*hud_element)(void* user, const HudElement& element) = nullptr;
+  Result (*hud_remove)(void* user, u32 id) = nullptr;
+  Result (*graphics_state)(void* user, GraphicsState& out) = nullptr;
+  Result (*request_graphics)(void* user, const GraphicsRequest& request) = nullptr;
 };
 
 struct HostConfig {
@@ -145,6 +153,8 @@ class ModuleHost {
   bool loaded() const noexcept { return module_ != nullptr; }
   u32 generation() const noexcept { return generation_; }
   const std::string& module_name() const noexcept;
+  // The hotload ABI the loaded build declared (`k_abi_oldest`..`k_abi_version`); 0 with none.
+  u32 module_abi() const noexcept;
   const std::string& library_path() const noexcept { return library_path_; }
   // The per-load copy the current build was loaded from (empty when nothing is loaded).
   const std::string& loaded_copy_path() const noexcept;

@@ -289,6 +289,75 @@ TEST_CASE(
   CHECK(number_at(*game_of(summary), {"props", "live"}) == 0.0);
 }
 
+TEST_CASE(
+    "engine-view: the fixture's pick-up prompt stands below the picture's centre while the can is "
+    "in reach, and the report says where") {
+  // ABI 4's first consumer (apps.md "The HUD, provisional"): a state file puts the fixture's can a
+  // metre in front of the walker, so from the first tick `nearest_prop` finds it in reach and the
+  // module shows its `[E] Pick up` element — outlined text, no panel, anchored at the centre and
+  // 80 px (at 1080p) below it. The run's report lists it with the bounds the last frame drew.
+  const test::TempDir tmp("engine_view_props_prompt");
+  const std::string scene = props_scene(tmp);
+  const std::string session = walk_session(tmp, scene, 40, "near.jsonl");  // E is never reached
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+  const std::string state = tmp.file("state.json");
+  REQUIRE(io::write_file(state, R"({"format":"engine.game.state","version":1,"module":"walk_poc",
+      "type":"engine.walk_poc.Survivor","state":{"can":1024,"can_placed":true},
+      "props":[{"id":1024,"prop":"can","position":[0,0.3,9],"yaw":0,"scale":1}]})") ==
+          io::Status::Ok);
+  const std::string report = tmp.file("report.json");
+  const Run run =
+      run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width", "800",
+                "--height", "450", "--ddc", tmp.file("ddc"), "--game", module, "--game-state",
+                state, "--report", report, "--capture", tmp.file("prompt.png")});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  std::string text;
+  REQUIRE(io::read_file(report, text) == io::Status::Ok);
+  JsonValue r;
+  REQUIRE(parse_json(text, r).ok);
+  const JsonValue* elements = at(r, {"game", "hud_elements"});
+  REQUIRE(elements != nullptr);
+  REQUIRE(elements->is_array());
+  const JsonValue* prompt = nullptr;
+  for (usize i = 0; i < elements->size(); ++i) {
+    u64 id = 0;
+    const JsonValue& e = (*elements)[i];
+    if (e.find("id") != nullptr && e.find("id")->get_u64(id) && id == 1) prompt = &e;
+  }
+  REQUIRE_MESSAGE(prompt != nullptr, write_json(*elements));
+  MESSAGE("the prompt: " << write_json(*prompt));
+  CHECK(prompt->find("text")->as_string() == "[E] Pick up");
+  CHECK(prompt->find("anchor")->as_string() == "centre");
+  CHECK(prompt->find("visible")->as_bool());
+  const JsonValue& b = *prompt->find("bounds_px");
+  REQUIRE(b.size() == 4);
+  f64 x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  REQUIRE(b[usize{0}].get_f64(x0));
+  REQUIRE(b[1].get_f64(y0));
+  REQUIRE(b[2].get_f64(x1));
+  REQUIRE(b[3].get_f64(y1));
+  // Centred across; below the middle by 80 px at 1080p, 33 px at 450; 28 px a 12 px font here.
+  CHECK((x0 + x1) * 0.5 == doctest::Approx(400.0).epsilon(0.01));
+  CHECK((y0 + y1) * 0.5 == doctest::Approx(225.0 + 80.0 * 450.0 / 1080.0).epsilon(0.03));
+  CHECK(y1 - y0 >= 12.0);
+  CHECK(y1 - y0 <= 20.0);
+  // The stack is listed beside it under its reserved ids, the meter first.
+  u64 first_id = 0;
+  REQUIRE((*elements)[usize{0}].find("id")->get_u64(first_id));
+  CHECK(first_id == 0xFFFF0100u);
+  // And in the summary the same.
+  JsonValue summary;
+  REQUIRE(summary_of(run, summary));
+  REQUIRE(game_of(summary) != nullptr);
+  REQUIRE(at(*game_of(summary), {"hud_elements"}) != nullptr);
+  CHECK(at(*game_of(summary), {"hud_elements"})->size() == elements->size());
+  CHECK(number_at(*game_of(summary), {"abi"}) == 4.0);
+}
+
 #if defined(WALK_POC_NO_PROPS_PATH) && defined(WALK_POC_TELEPORT_PATH)
 
 TEST_CASE(

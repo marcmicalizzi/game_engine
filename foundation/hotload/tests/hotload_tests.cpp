@@ -97,6 +97,92 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   REQUIRE(state.find("count") != nullptr);
   CHECK(state.find("count")->get_u64(count));
   CHECK(count == 2);
+  CHECK(counter.host.module_abi() == k_abi_version);
+}
+
+TEST_CASE("hotload: a module built against ABI 3 loads on an ABI 4 host and runs unchanged") {
+  // ABI 4 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build that
+  // declares 3 is what a module compiled against the ABI 3 header hands the host. It loads, its
+  // exports run, it reads through a view, and a rebuild against 4 takes over from it with its
+  // state.
+  if (in_bundle()) return;
+  engine::test::TempDir dir("hotload-abi3");
+  const std::string live = place(dir, HOTLOAD_MODULE_COUNTER_ABI3, "live");
+  Counter counter(dir);
+  REQUIRE_MESSAGE(counter.load(live) == Status::Ok, counter.host.last_error());
+  CHECK(counter.host.module_abi() == 3);
+  counter.call_bump();
+  CHECK(counter.call_get() == 1.0);
+  hotload_test::Character npc;
+  npc.health = 7.0f;
+  CHECK(counter.call_read_health(counter.host.bind(npc)) == 7.0);
+  place(dir, HOTLOAD_MODULE_COUNTER_V1, "live", 10);
+  REQUIRE_MESSAGE(counter.host.reload() == Status::Ok, counter.host.last_error());
+  CHECK(counter.host.module_abi() == k_abi_version);
+  CHECK(counter.call_get() == 1.0);  // the state carried
+}
+
+TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {
+  // No module: the table the host hands every module, called as one would call it.
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->abi_version == k_abi_version);
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, hud_element));
+  CHECK(ENGINE_HOTLOAD_HAS(api, request_graphics));
+  // A table as an ABI 3 host built it ends before the new entries: the helpers do not call them.
+  HostApi v3 = *api;
+  v3.size = static_cast<u32>(offsetof(HostApi, hud_element));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v3, hud_element));
+  CHECK(ENGINE_HOTLOAD_HAS(&v3, sound_stop));
+  ModuleContext old_host{&v3, nullptr};
+  HudElement prompt;
+  prompt.id = 1;
+  prompt.text = "[E] Pick up";
+  CHECK(hud_element(&old_host, prompt) == Result::Unsupported);
+  CHECK(hud_remove(&old_host, 1) == Result::Unsupported);
+
+  ModuleContext context{api, nullptr};
+  CHECK(hud_element(&context, prompt) == Result::Unsupported);  // no game services
+  GraphicsState state;
+  CHECK(graphics_state(&context, state) == Result::Unsupported);
+  // A struct smaller than ABI 4's is refused before anything is forwarded.
+  HudElement small = prompt;
+  small.size = 16;
+  CHECK(api->hud_element(api->host, &small) == Result::InvalidArgument);
+  CHECK(api->hud_element(api->host, nullptr) == Result::InvalidArgument);
+
+  struct Seen {
+    u32 id = 0;
+    u64 length = 0;
+    u32 removed = 0;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.hud_element = [](void* user, const HudElement& e) {
+    static_cast<Seen*>(user)->id = e.id;
+    static_cast<Seen*>(user)->length = e.text_length;
+    return Result::Ok;
+  };
+  services.hud_remove = [](void* user, u32 id) {
+    static_cast<Seen*>(user)->removed = id;
+    return Result::Ok;
+  };
+  services.graphics_state = [](void*, GraphicsState& out) {
+    out.width = 1920;
+    out.raster[0] = 'm';
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(hud_element(&context, prompt) == Result::Ok);
+  CHECK(seen.id == 1);
+  CHECK(seen.length == 11);  // the helper measured the C string
+  CHECK(hud_remove(&context, 1) == Result::Ok);
+  CHECK(seen.removed == 1);
+  CHECK(graphics_state(&context, state) == Result::Ok);
+  CHECK(state.width == 1920);
+  CHECK(state.size == sizeof(GraphicsState));
+  CHECK(request_graphics(&context, GraphicsRequest{}) == Result::Unsupported);  // not forwarded
 }
 
 TEST_CASE(

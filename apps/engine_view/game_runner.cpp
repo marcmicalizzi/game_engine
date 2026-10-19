@@ -37,12 +37,103 @@ void GameHud::clear() noexcept {
   meter_count = 0;
 }
 
-bool GameHud::empty() const noexcept {
+void GameHud::clear_all() noexcept {
+  clear();
+  element_count = 0;
+}
+
+bool GameHud::stack_empty() const noexcept {
   if (meter_count > 0) return false;
   for (const Line& l : lines) {
     if (l.set) return false;
   }
   return true;
+}
+
+bool GameHud::empty() const noexcept {
+  if (!stack_empty()) return false;
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].visible) return false;
+  }
+  return true;
+}
+
+const GameHud::Element* GameHud::find_element(u32 id) const noexcept {
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].id == id) return &elements[e];
+  }
+  return nullptr;
+}
+
+hotload::Result GameHud::set_element(const hotload::HudElement& in, u64 said) noexcept {
+  Element* slot = nullptr;
+  for (u32 e = 0; e < element_count && slot == nullptr; ++e) {
+    if (elements[e].id == in.id) slot = &elements[e];
+  }
+  if (slot == nullptr) {
+    if (element_count >= k_elements) return hotload::Result::OutOfRange;
+    slot = &elements[element_count++];
+  }
+  slot->id = in.id;
+  slot->anchor = in.anchor;
+  slot->align = in.align;
+  slot->offset_px[0] = in.offset_px[0];
+  slot->offset_px[1] = in.offset_px[1];
+  slot->size_px = in.size_px;
+  slot->outline_px = in.outline_px;
+  std::memcpy(slot->color, in.color, 4);
+  std::memcpy(slot->outline_color, in.outline_color, 4);
+  slot->panel = in.panel;
+  std::memcpy(slot->panel_color, in.panel_color, 4);
+  slot->panel_padding_px = in.panel_padding_px;
+  slot->visible = in.visible != 0;
+  slot->tick = said;
+  // The text, cut at a character boundary when it is longer than the slot: a UTF-8 continuation
+  // byte (10xxxxxx) is never left at the end without its lead.
+  usize n = in.text != nullptr ? static_cast<usize>(in.text_length) : 0u;
+  if (n > k_element_chars - 1) {
+    n = k_element_chars - 1;
+    while (n > 0 && (static_cast<u8>(in.text[n]) & 0xC0u) == 0x80u)
+      --n;
+  }
+  if (n > 0) std::memcpy(slot->text, in.text, n);
+  slot->text[n] = '\0';
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameHud::remove_element(u32 id) noexcept {
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].id != id) continue;
+    for (u32 k = e + 1; k < element_count; ++k)
+      elements[k - 1] = elements[k];
+    --element_count;
+    return hotload::Result::Ok;
+  }
+  return hotload::Result::NotFound;
+}
+
+const char* hud_anchor_name(hotload::HudAnchor anchor) noexcept {
+  switch (anchor) {
+    case hotload::HudAnchor::TopLeft: return "top_left";
+    case hotload::HudAnchor::Top: return "top";
+    case hotload::HudAnchor::TopRight: return "top_right";
+    case hotload::HudAnchor::Left: return "left";
+    case hotload::HudAnchor::Centre: return "centre";
+    case hotload::HudAnchor::Right: return "right";
+    case hotload::HudAnchor::BottomLeft: return "bottom_left";
+    case hotload::HudAnchor::Bottom: return "bottom";
+    case hotload::HudAnchor::BottomRight: return "bottom_right";
+  }
+  return "?";
+}
+
+const char* hud_align_name(hotload::HudAlign align) noexcept {
+  switch (align) {
+    case hotload::HudAlign::Left: return "left";
+    case hotload::HudAlign::Centre: return "centre";
+    case hotload::HudAlign::Right: return "right";
+  }
+  return "?";
 }
 
 JsonValue GameHud::to_json() const {
@@ -61,6 +152,7 @@ JsonValue GameHud::to_json() const {
     meters_json.push_back(std::move(meter));
   }
   out.set("meters", std::move(meters_json));
+  out.set("elements", element_count);
   out.set("tick", tick);
   return out;
 }
@@ -109,6 +201,10 @@ struct GameRunner::Impl {
   bool sound_said = false;
 
   GameHud hud;
+  u64 current_tick = 0;  // the tick being run, for the elements it says
+  u64 hud_sets = 0;      // hud_element calls that placed or replaced an element
+  u64 hud_removes = 0;
+  u64 hud_refused = 0;  // hud_element calls refused (InvalidArgument, OutOfRange)
   u64 ticks = 0;
   u64 last_tick = 0;
   f64 walked_before = 0.0;
@@ -269,6 +365,55 @@ struct GameRunner::Impl {
     ++self.teleports;
     return hotload::Result::Ok;
   }
+  // ---- ABI 4: the HUD's structured elements (GameHud) ----
+  // The judgement is here and not in the HUD: a reserved id, an enum out of range, a length that is
+  // not a finite size, or text the length overruns is `InvalidArgument`, said once on stderr with
+  // the first such call's reason, so a module's mistake is seen without a line every tick.
+  static hotload::Result hud_element(void* user, const hotload::HudElement& e) {
+    Impl& self = *static_cast<Impl*>(user);
+    const char* why = nullptr;
+    const auto finite = [](f32 v) { return std::isfinite(v); };
+    if (e.id >= hotload::k_hud_reserved) {
+      why = "an id from k_hud_reserved up is the host's (hud_text's and hud_meter's)";
+    } else if (static_cast<u32>(e.anchor) > static_cast<u32>(hotload::HudAnchor::BottomRight) ||
+               static_cast<u32>(e.align) > static_cast<u32>(hotload::HudAlign::Right) ||
+               static_cast<u32>(e.panel) > static_cast<u32>(hotload::HudPanel::Solid)) {
+      why = "an anchor, an alignment or a panel outside its enum";
+    } else if (!finite(e.offset_px[0]) || !finite(e.offset_px[1]) || !finite(e.size_px) ||
+               !finite(e.outline_px) || !finite(e.panel_padding_px) || !(e.size_px > 0.0f) ||
+               e.outline_px < 0.0f || e.panel_padding_px < 0.0f) {
+      why =
+          "a length that is not finite, a size at or below zero, or a negative outline or padding";
+    } else if (e.text == nullptr && e.text_length > 0) {
+      why = "a text length with no text";
+    } else {
+      for (u64 i = 0; i < e.text_length && why == nullptr; ++i) {
+        if (e.text[i] == '\0') why = "text shorter than its length says (a NUL inside it)";
+      }
+    }
+    if (why != nullptr) {
+      ++self.hud_refused;
+      if (self.hud_refused == 1) {
+        std::fprintf(stderr, "engine-view: game: hud_element %u refused: %s\n", e.id, why);
+      }
+      return hotload::Result::InvalidArgument;
+    }
+    const hotload::Result r = self.hud.set_element(e, self.current_tick);
+    if (r == hotload::Result::Ok) {
+      ++self.hud_sets;
+    } else {
+      ++self.hud_refused;
+    }
+    return r;
+  }
+  static hotload::Result hud_remove(void* user, u32 id) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (id >= hotload::k_hud_reserved) return hotload::Result::InvalidArgument;
+    const hotload::Result r = self.hud.remove_element(id);
+    if (r == hotload::Result::Ok) ++self.hud_removes;
+    return r;
+  }
+
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
@@ -302,7 +447,7 @@ bool GameRunner::new_run() {
   g.results.push_back(std::move(g.result));
   g.result = JsonValue();
   g.ended = false;
-  g.hud.clear();  // the next tick says the new run's
+  g.hud.clear_all();  // the next tick says the new run's, its elements too
   ++g.runs;
   return true;
 }
@@ -337,6 +482,8 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.walker_set = &Impl::walker_set;
   services.walker_teleport = &Impl::walker_teleport;
   services.sound_clip = &Impl::sound_clip;  // sound_play and sound_stop: null, Unsupported
+  services.hud_element = &Impl::hud_element;
+  services.hud_remove = &Impl::hud_remove;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -518,8 +665,9 @@ void GameRunner::tick(const GameTickInput& in) {
   g.feet = in.feet;
 
   // This tick's HUD is the module's to say again.
-  g.hud.clear();
+  g.hud.clear();  // the lines and meters; the elements are retained until the module removes them
   g.hud.tick = in.tick;
+  g.current_tick = in.tick;
   hotload::ModuleHost& host = *g.host;
   host.set_time(in.tick, g.dt);
   host.function<hotload::TickFn>(g.game_tick)(host.context(), g.view, static_cast<f32>(g.dt));
@@ -619,7 +767,12 @@ JsonValue GameRunner::summary_json() const {
   out.set("state_file", g.config.state_file);
   out.set("restored", g.restored);
   out.set("state", state_json());
-  out.set("hud", g.hud.to_json());
+  JsonValue hud = g.hud.to_json();
+  hud.set("element_sets", g.hud_sets);
+  hud.set("element_removes", g.hud_removes);
+  hud.set("element_refused", g.hud_refused);
+  out.set("hud", std::move(hud));
+  out.set("abi", g.host->module_abi());
   JsonValue clock = JsonValue::object();
   clock.set("sun_time_s", g.state.sun_time_s);
   clock.set("world_time_s", g.state.world_time_s);

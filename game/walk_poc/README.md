@@ -30,7 +30,9 @@ roadmap P18); nothing here is its design, and its survival meters are its own (r
 - **The end**: thirst at zero calls `end_run({"days","seconds","distance"})`, and the session ends.
 - **The HUD**: the thirst meter, "day N · seconds survived · metres walked", where the water is
   (the can when in reach; else the nearest ruin within 400 m, refreshed once a second, and the
-  spring), the E count, and the can and markers taken and placed.
+  spring), the E count, and the can and markers taken and placed. And, once the can stands, a
+  structured element (hotload ABI 4, `hud_element`): `[E] Pick up`, outlined text with no panel
+  centred below the picture's middle, shown while the can is in reach and hidden otherwise.
 
 ## How it is built
 

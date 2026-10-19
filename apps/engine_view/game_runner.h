@@ -36,6 +36,7 @@
 #include <core/base/types.h>
 #include <core/json/json_value.h>
 #include <core/math/world.h>
+#include <foundation/hotload/module_abi.h>
 #include <foundation/input/input.h>
 
 #include <memory>
@@ -50,13 +51,20 @@ inline constexpr const char* k_game_actions[] = {"interact", "use",    "game_1",
                                                  "game_2",   "game_3", "game_4"};
 inline constexpr u32 k_game_action_count = 6;
 
-// The HUD a module asked for on its last tick: up to `k_lines` text lines and `k_meters` meters,
-// each a fixed buffer, so collecting it allocates nothing.
+// The HUD a module asked for: up to `k_lines` text lines and `k_meters` meters said on its last
+// tick (`hud_text`, `hud_meter`: the top-left stack, said again every tick), and up to
+// `k_elements` **structured elements** (`hud_element`, ABI 4: anchored, styled, retained until
+// removed). Each is a fixed buffer, so collecting it allocates nothing. The lines and meters are
+// elements too, of the host's reserved ids (`hotload::k_hud_line_id + n`, `k_hud_meter_id + m`),
+// and are laid out as the one panel they always were, so a module that calls only them draws the
+// picture it drew (apps.md, "The HUD, provisional").
 struct GameHud {
   static constexpr u32 k_lines = 16;
   static constexpr u32 k_line_chars = 96;
   static constexpr u32 k_meters = 8;
   static constexpr u32 k_name_chars = 32;
+  static constexpr u32 k_elements = 64;
+  static constexpr u32 k_element_chars = 128;
   struct Line {
     bool set = false;
     char text[k_line_chars] = {};
@@ -66,15 +74,48 @@ struct GameHud {
     f64 value = 0.0;
     f64 max = 0.0;
   };
+  // A `hotload::HudElement` as the host keeps it: the text copied, the rest by value.
+  struct Element {
+    u32 id = 0;
+    hotload::HudAnchor anchor = hotload::HudAnchor::Centre;
+    hotload::HudAlign align = hotload::HudAlign::Centre;
+    f32 offset_px[2] = {0.0f, 0.0f};
+    f32 size_px = 18.0f;
+    f32 outline_px = 0.0f;
+    u8 color[4] = {255, 255, 255, 255};
+    u8 outline_color[4] = {0, 0, 0, 255};
+    hotload::HudPanel panel = hotload::HudPanel::None;
+    u8 panel_color[4] = {0, 0, 0, 115};
+    f32 panel_padding_px = 6.0f;
+    bool visible = true;
+    u64 tick = 0;  // the tick that last said it
+    char text[k_element_chars] = {};
+  };
   Line lines[k_lines];
   Meter meters[k_meters];
   u32 meter_count = 0;
-  u64 tick = 0;  // the tick that said it
+  Element elements[k_elements];  // in the order they were first placed, which is drawing order
+  u32 element_count = 0;
+  u64 tick = 0;  // the tick that said the lines and meters
 
+  // The lines and meters, at the start of every tick; the elements stay.
   void clear() noexcept;
+  // Everything, the elements too (a new run).
+  void clear_all() noexcept;
+  // Whether there is nothing to draw: no line, no meter and no visible element.
   bool empty() const noexcept;
+  // Whether the top-left stack — the lines and meters — is empty.
+  bool stack_empty() const noexcept;
+  // Places or replaces an element by its id (the runner has judged it), or removes one.
+  hotload::Result set_element(const hotload::HudElement& element, u64 tick) noexcept;
+  hotload::Result remove_element(u32 id) noexcept;
+  const Element* find_element(u32 id) const noexcept;
   JsonValue to_json() const;
 };
+
+// The element's anchor and alignment by name, as the report writes them ("top_left", "centre").
+const char* hud_anchor_name(hotload::HudAnchor anchor) noexcept;
+const char* hud_align_name(hotload::HudAlign align) noexcept;
 
 // One tick, as the runner reads it from the session (or a test makes it).
 struct GameTickInput {

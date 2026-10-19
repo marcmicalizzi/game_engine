@@ -529,6 +529,8 @@ constexpr const char* k_usage =
     "                   nobody at the keyboard; the real pointer is never taken\n"
     "  --input-map <f>  the action map to fly with (default: engine-view's own, the same as\n"
     "                   content/input-maps/engine-view.json)\n"
+    "  --dump-action-map <f>  write the action map a session would fly with (--input-map's, or\n"
+    "                   engine-view's own) and its hash to <f>, and exit: the file a game pins\n"
     "  --tunables <f>   load tunable values from a JSON object file (view.fly.* among them)\n"
     "  --tunable <s>    set tunables: \"view.fly.speed=20,view.fly.look=0.003\"\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
@@ -695,6 +697,10 @@ struct Options {
   // session somebody is at, and quit for an injected one (the tests depend on it).
   std::string on_end;
   std::string input_map;
+  // `--dump-action-map <file>`: write the action map a session would fly with — `--input-map`'s,
+  // or engine-view's own at its latest revision — and its hash, and exit (apps.md, "The game
+  // contract"; roadmap P47). How a game repository pins the map it ships with, by the file.
+  std::string dump_action_map;
   std::string tunables_file;
   std::string tunable_overrides;
   bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
@@ -1606,12 +1612,16 @@ bool game_clock(view::SunDay& sun) {
   sun.changes = g_game->rate_changes();
   return true;
 }
+JsonValue game_hud_elements();  // below, beside the HUD's overlay
 // At the session's end: the state saved, the report's block and reason, the failure said.
 void finish_game() {
   if (g_game == nullptr || !g_game->started()) return;
   std::string error;
   if (!g_game->finish(&error)) std::fprintf(stderr, "engine-view: game: %s\n", error.c_str());
   g_report.game = g_game->summary_json();
+  // Every HUD element's last state and where the last frame drew it (apps.md "--report"), so a
+  // game's test asserts where its prompt stood.
+  g_report.game.set("hud_elements", game_hud_elements());
   if (g_game->failed()) {
     std::fprintf(stderr, "engine-view: game: %s\n", g_game->error().c_str());
     g_report.reason = "game_error";
@@ -1650,6 +1660,12 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
     return nullptr;
   }
   return g_hud_data.commands.empty() ? nullptr : &g_hud_data;
+}
+// The HUD's elements as the runner holds them and the overlay last drew them (game_hud.h).
+JsonValue game_hud_elements() {
+  if (g_game == nullptr) return JsonValue::array();
+  return view::hud_elements_json(g_game->hud(),
+                                 g_hud != nullptr && g_hud->valid() ? g_hud : nullptr);
 }
 #else
 void poll_game() {}
@@ -2035,6 +2051,7 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
     // The HUD's overlay as drawn (game_hud.h): the font it was sized to, the panel, the atlas's
     // uploads and their cost.
     if (g_hud != nullptr && g_hud->valid()) game.set("overlay", g_hud->summary_json());
+    game.set("hud_elements", game_hud_elements());
     out.set("game", std::move(game));
   }
 #endif
@@ -3442,6 +3459,61 @@ int run_view(int argc, char** argv);
 
 }  // namespace
 
+// `--dump-action-map`: the map as `ActionMap::to_json` writes it — so the file loads back through
+// `--input-map`, which ignores the keys added here — with its `hash` (the number a recording's
+// header carries, `InputLog::map_hash`), the same as a hex string for tools whose JSON numbers are
+// doubles, the revision of engine-view's own map it is (0 for a map of the caller's), and where it
+// came from. No window, no device.
+int dump_action_map(const Options& options) {
+  input::ActionMap map = view::default_fly_map();
+  u32 revision = view::k_fly_map_revision;
+  std::string source = "engine-view";
+  if (!options.input_map.empty()) {
+    std::string text;
+    JsonValue value;
+    std::string error;
+    if (io::read_file(options.input_map, text) != io::Status::Ok) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: cannot read %s\n",
+                   options.input_map.c_str());
+      return 1;
+    }
+    if (const JsonParseResult parsed = parse_json(text, value); !parsed.ok) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: %s: %s\n", options.input_map.c_str(),
+                   std::string(parsed.message).c_str());
+      return 1;
+    }
+    map = input::ActionMap{};
+    if (!map.from_json(value, &error)) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: %s\n", error.c_str());
+      return 1;
+    }
+    revision = 0;
+    source = options.input_map;
+  }
+  JsonValue out = map.to_json();
+  const u64 hash = map.hash();
+  char hex[24];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
+  out.set("hash", hash);
+  out.set("hash_hex", std::string_view(hex));
+  out.set("revision", revision);
+  out.set("source", source);
+  const io::Status status = io::write_file(
+      options.dump_action_map, write_json(out, JsonWriteOptions{.pretty = true}) + "\n");
+  if (status != io::Status::Ok) {
+    std::fprintf(stderr, "engine-view: --dump-action-map: cannot write %s (%s)\n",
+                 options.dump_action_map.c_str(), std::string(io::status_name(status)).c_str());
+    return 1;
+  }
+  JsonValue line = JsonValue::object();
+  line.set("action_map", options.dump_action_map);
+  line.set("hash", hash);
+  line.set("hash_hex", std::string_view(hex));
+  line.set("revision", revision);
+  std::printf("%s\n", write_json(line, JsonWriteOptions{.pretty = false}).c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   const int code = run_view(argc, argv);
@@ -4030,12 +4102,15 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.dither = value == "on";
+    } else if (a == "--dump-action-map") {
+      if (!next_value(argc, argv, i, a, options.dump_action_map)) return k_exit_usage;
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);
       return k_exit_usage;
     }
   }
+  if (!options.dump_action_map.empty()) return dump_action_map(options);
   if (options.width == 0 || options.height == 0 || options.grid < 2 || options.grid > 2048) {
     std::fprintf(stderr, "engine-view: size must be positive and --grid within 2..2048\n");
     return k_exit_usage;

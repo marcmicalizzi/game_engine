@@ -23,6 +23,8 @@
 
 #include <core/base/types.h>
 
+#include <cstddef>  // offsetof, for ENGINE_HOTLOAD_HAS
+
 #if defined(_WIN32)
 #define ENGINE_HOTLOAD_EXPORT __declspec(dllexport)
 #else
@@ -49,7 +51,18 @@ namespace engine::hotload {
 // `prop_remove`, `nearest_prop`), the walker (`walker_set`, `walker_teleport`) and sound
 // (`sound_clip`, `sound_play`, `sound_stop`). Additive again — nothing before them moved — and
 // refused again for a module built against 2, for the same reason.
-inline constexpr u32 k_abi_version = 3;
+//
+// **4** (2026-10-18): `HostApi` gained, at its end, the HUD's structured elements (`hud_element`,
+// `hud_remove`) and the graphics state a game may read and ask to change (`graphics_state`,
+// `request_graphics`; roadmap P47). **From 4 on, the table is additive for the module as well as
+// the host: a module built against 3 loads on a host of 4 and runs unchanged** (`k_abi_oldest`),
+// because nothing before the new entries moved and a module built against 3 calls only what 3 had.
+// A module learns what the host it runs on has from `HostApi::size` (`has_entry` below; the
+// helpers answer `Unsupported` for an entry the table does not reach). A module built against a
+// newer ABI than the host's is still refused: it would call past the end of the host's table.
+inline constexpr u32 k_abi_version = 4;
+// The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
+inline constexpr u32 k_abi_oldest = 3;
 
 // The one symbol the host looks up.
 inline constexpr const char* k_entry_point = "engine_hotload_describe";
@@ -115,6 +128,98 @@ enum class Result : i32 {
 };
 
 enum class LogLevel : u32 { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 };
+
+// ---- the HUD's structured elements (ABI 4; apps.md, "The HUD, provisional") --------------------
+
+// Where an element stands: one of nine points of the picture's safe region (5 % in from each edge):
+// its corners, the centres of its edges, and its centre.
+enum class HudAnchor : u32 {
+  TopLeft = 0,
+  Top = 1,
+  TopRight = 2,
+  Left = 3,
+  Centre = 4,
+  Right = 5,
+  BottomLeft = 6,
+  Bottom = 7,
+  BottomRight = 8,
+};
+// How the text's box sits on the anchor across: its left edge, its centre or its right edge there.
+// Down, the anchor's row decides: a top anchor hangs the box from the point, a middle one centres
+// it, a bottom one stands it on the point.
+enum class HudAlign : u32 { Left = 0, Centre = 1, Right = 2 };
+enum class HudPanel : u32 { None = 0, Solid = 1 };
+
+// One element: a line of text the module places and the host keeps — **retained**, unlike
+// `hud_text`'s lines: it stands from the tick that said it until the module says it again under
+// the same id (which replaces it), hides it (`visible` 0), removes it (`hud_remove`), or a new run
+// starts. **Every length is in pixels of a 1080-pixel-high picture at 100 %**: the host multiplies
+// `size_px`, `offset_px`, `outline_px` and `panel_padding_px` by the HUD's scale (the picture's
+// height over 1080, times the display's scale) and holds the font to a minimum, so a module never
+// sees the window's size and an element is legible at any. Colours are RGBA, 8 bits a channel.
+// `size` is the struct's size as the module built it, so the struct can grow the way `HostApi`
+// does. The text is UTF-8, copied by the host (up to 127 bytes); nothing is kept past the call.
+struct HudElement {
+  u32 size = sizeof(HudElement);
+  u32 id = 0;  // the module's own; ids from `k_hud_reserved` up are the host's
+  HudAnchor anchor = HudAnchor::Centre;
+  HudAlign align = HudAlign::Centre;
+  f32 offset_px[2] = {0.0f, 0.0f};  // from the anchor: x right, y down
+  f32 size_px = 18.0f;              // the font's size
+  f32 outline_px = 0.0f;            // 0: no outline
+  u8 color[4] = {255, 255, 255, 255};
+  u8 outline_color[4] = {0, 0, 0, 255};
+  HudPanel panel = HudPanel::None;
+  u8 panel_color[4] = {0, 0, 0, 115};  // the legacy panel's 0.45 alpha
+  f32 panel_padding_px = 6.0f;
+  u32 visible = 1;
+  const char* text = nullptr;
+  u64 text_length = 0;
+};
+
+// Element ids from here up are the host's: `hud_text`'s line n is `k_hud_line_id + n` and
+// `hud_meter`'s slot m is `k_hud_meter_id + m`, the top-left stack, so a report lists every element
+// one way. `hud_element` and `hud_remove` refuse them (`InvalidArgument`).
+inline constexpr u32 k_hud_reserved = 0xFFFF0000u;
+inline constexpr u32 k_hud_line_id = 0xFFFF0000u;
+inline constexpr u32 k_hud_meter_id = 0xFFFF0100u;
+
+// ---- graphics, as the host resolved them (ABI 4) -----------------------------------------------
+
+// What the session draws with — not what was asked for: the host's resolved settings, by name, and
+// the reasons a setting is not what the command line or a request asked (`auto` became `csm`
+// because the device has no ray queries, ...). Names, not numbers, so the engine can add a raster
+// path without changing the ABI. Filled into the caller's struct up to its `size`.
+struct GraphicsState {
+  u32 size = sizeof(GraphicsState);
+  u32 width = 0;  // the picture, pixels
+  u32 height = 0;
+  u32 ray_tracing =
+      0;        // 1: the frame builds acceleration structures (traced shadows, the ray path)
+  u32 hdr = 0;  // 1: the display is an HDR encoding
+  u32 reason_count = 0;
+  char raster[16] = {};   // "mesh", "vertex", "rt", "direct", ...
+  char shadows[16] = {};  // "rt", "csm", "off"
+  char present[16] = {};  // "fifo", "mailbox", "immediate", "offscreen"
+  char display[16] = {};  // "sdr", "hdr10", "scrgb"
+  char tier[16] = {};     // the device's verdict: "raster", "rt", "rt-cluster"
+  char reasons[4][96] = {};
+};
+
+// A change a module asks for. The host **records** it and applies it at its next safe point — a
+// restart of the session, today; nothing is rebuilt under a running frame — and answers
+// `Unsupported` for what it cannot change at all. An empty name, or a zero size, leaves that
+// setting as it is.
+struct GraphicsRequest {
+  u32 size = sizeof(GraphicsRequest);
+  u32 width = 0;
+  u32 height = 0;
+  u32 reserved = 0;
+  char raster[16] = {};
+  char shadows[16] = {};
+  char present[16] = {};
+  char display[16] = {};
+};
 
 // The engine as a module sees it. Every function takes the table's `host` first. The table and
 // everything it points at outlive every call into the module; the module may keep the pointer.
@@ -223,7 +328,35 @@ struct HostApi {
   Result (*sound_clip)(void* host, const char* name, u64 length, u32* out_clip);
   Result (*sound_play)(void* host, u32 clip, const f64* position, f32 gain, u32* out_voice);
   Result (*sound_stop)(void* host, u32 voice);
+
+  // ---- ABI 4: the HUD's structured elements and the graphics state (roadmap P47) ----
+  // A module built against 3 never reaches these; one built against 4 checks `size` (`has_entry`)
+  // before it calls them on a host it does not know, which the helpers below do for it.
+
+  // **A HUD element** (`HudElement` above), placed or replaced by its id, retained until removed.
+  // `InvalidArgument` for a reserved id, an anchor, alignment or panel outside its enum, a
+  // non-finite length, a size at or below zero, a negative outline or padding, a NUL inside the
+  // text's length, or a struct smaller than ABI 4's; `OutOfRange` when the host's table is full
+  // (64 elements). `hud_remove`: `NotFound` for an id that is not placed.
+  Result (*hud_element)(void* host, const HudElement* element);
+  Result (*hud_remove)(void* host, u32 id);
+  // **The graphics the session resolved** (`GraphicsState`), read-only, into the caller's struct;
+  // and a request the host records for its next safe point (`GraphicsRequest`).
+  // `request_graphics` answers `Ok` for a request recorded, `Unsupported` for one asking what the
+  // host cannot change (a raster path the device lacks, HDR on an SDR display, a name it does not
+  // know), and `InvalidArgument` for a malformed struct.
+  Result (*graphics_state)(void* host, GraphicsState* out);
+  Result (*request_graphics)(void* host, const GraphicsRequest* request);
 };
+
+// Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
+// module built against a newer header asks before it calls an entry an older host may not have.
+// `ENGINE_HOTLOAD_HAS(api, hud_element)` spells it.
+inline bool has_entry(const HostApi* api, u64 offset) noexcept {
+  return api != nullptr && api->size >= offset + sizeof(void (*)());
+}
+#define ENGINE_HOTLOAD_HAS(api, entry) \
+  ::engine::hotload::has_entry((api), offsetof(::engine::hotload::HostApi, entry))
 
 // `nearest_prop`'s "a prop of any mesh", and `sound_play`'s "on the listener".
 inline constexpr u32 k_any_prop = 0xFFFFFFFFu;
@@ -428,6 +561,33 @@ inline Result sound_play(const ModuleContext* context, u32 clip, const f64* posi
 
 inline Result sound_stop(const ModuleContext* context, u32 voice) noexcept {
   return context->api->sound_stop(context->api->host, voice);
+}
+
+// ---- the HUD's elements and the graphics state (ABI 4) ----
+// Each answers `Unsupported` on a host whose table ends before the entry.
+
+// `element.text` from a C string when `text_length` is left at zero.
+inline Result hud_element(const ModuleContext* context, const HudElement& element) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, hud_element)) return Result::Unsupported;
+  HudElement e = element;
+  if (e.text != nullptr && e.text_length == 0) e.text_length = text_length(e.text);
+  return context->api->hud_element(context->api->host, &e);
+}
+
+inline Result hud_remove(const ModuleContext* context, u32 id) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, hud_remove)) return Result::Unsupported;
+  return context->api->hud_remove(context->api->host, id);
+}
+
+inline Result graphics_state(const ModuleContext* context, GraphicsState& out) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, graphics_state)) return Result::Unsupported;
+  return context->api->graphics_state(context->api->host, &out);
+}
+
+inline Result request_graphics(const ModuleContext* context,
+                               const GraphicsRequest& request) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, request_graphics)) return Result::Unsupported;
+  return context->api->request_graphics(context->api->host, &request);
 }
 
 template <class State>

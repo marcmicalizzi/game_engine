@@ -109,6 +109,135 @@ TEST_CASE(
   CHECK(overlay.panel().empty());
 }
 
+TEST_CASE("game hud: an element's font is its 1080p size times the HUD's scale, with a floor") {
+  CHECK(view::hud_element_px(28.0f, 1080, 1.0f) == 28.0f);
+  CHECK(view::hud_element_px(28.0f, 2160, 1.0f) == 56.0f);
+  CHECK(view::hud_element_px(28.0f, 2160, 1.5f) == 84.0f);
+  CHECK(view::hud_element_px(28.0f, 450, 1.0f) == 12.0f);  // 11.67, whole pixels
+  CHECK(view::hud_element_px(28.0f, 180, 1.0f) == 10.0f);  // the floor holds
+  CHECK(view::hud_element_px(200.0f, 2160, 2.0f) == view::k_hud_element_max_px);
+}
+
+namespace {
+
+hotload::HudElement element(u32 id, hotload::HudAnchor anchor, hotload::HudAlign align,
+                            const char* text) {
+  hotload::HudElement e;
+  e.id = id;
+  e.anchor = anchor;
+  e.align = align;
+  e.text = text;
+  e.text_length = std::strlen(text);
+  return e;
+}
+
+f32 centre_x(const view::HudRect& r) { return (r.x0 + r.x1) * 0.5f; }
+f32 centre_y(const view::HudRect& r) { return (r.y0 + r.y1) * 0.5f; }
+
+}  // namespace
+
+TEST_CASE(
+    "game hud: elements stand on their anchors, align on them, and the stack keeps its rows") {
+  // Nine elements, one an anchor, and the fixture's stack: every element's box on its point of the
+  // safe region (5 % in), the stack's rows inside its panel, an element hidden drawing nothing.
+  using hotload::HudAlign;
+  using hotload::HudAnchor;
+  view::GameHud hud = fixture_hud();
+  const struct {
+    HudAnchor anchor;
+    HudAlign align;
+  } at[] = {{HudAnchor::TopLeft, HudAlign::Left},     {HudAnchor::Top, HudAlign::Centre},
+            {HudAnchor::TopRight, HudAlign::Right},   {HudAnchor::Left, HudAlign::Left},
+            {HudAnchor::Centre, HudAlign::Centre},    {HudAnchor::Right, HudAlign::Right},
+            {HudAnchor::BottomLeft, HudAlign::Left},  {HudAnchor::Bottom, HudAlign::Centre},
+            {HudAnchor::BottomRight, HudAlign::Right}};
+  for (u32 i = 0; i < 9; ++i) {
+    REQUIRE(hud.set_element(element(10 + i, at[i].anchor, at[i].align, "[E] Pick up"), 1) ==
+            hotload::Result::Ok);
+  }
+  hotload::HudElement hidden = element(30, HudAnchor::Centre, HudAlign::Centre, "hidden");
+  hidden.visible = 0;
+  REQUIRE(hud.set_element(hidden, 1) == hotload::Result::Ok);
+  CHECK(hud.element_count == 10);
+  // Said again under the same id, an element is replaced in place, not added.
+  REQUIRE(hud.set_element(element(14, HudAnchor::Centre, HudAlign::Centre, "[E] Drink"), 2) ==
+          hotload::Result::Ok);
+  CHECK(hud.element_count == 10);
+  CHECK(std::strcmp(hud.find_element(14)->text, "[E] Drink") == 0);
+
+  view::GameHudOverlay overlay;
+  REQUIRE(overlay.create());
+  lay_out_twice(overlay, hud, nullptr, 1920, 1080, 1.0f);
+  const f32 mx = 96.0f;  // 5 % of 1920 x 1080
+  const f32 my = 54.0f;
+  const view::HudRect tl = overlay.bounds_of(10);
+  CHECK(tl.x0 == mx);
+  CHECK(tl.y0 == my);
+  const view::HudRect top = overlay.bounds_of(11);
+  CHECK(centre_x(top) == doctest::Approx(960.0f).epsilon(0.002));
+  CHECK(top.y0 == my);
+  const view::HudRect tr = overlay.bounds_of(12);
+  CHECK(tr.x1 == doctest::Approx(1920.0f - mx).epsilon(0.001));
+  const view::HudRect left = overlay.bounds_of(13);
+  CHECK(left.x0 == mx);
+  CHECK(centre_y(left) == doctest::Approx(540.0f).epsilon(0.002));
+  const view::HudRect centre = overlay.bounds_of(14);
+  CHECK(centre_x(centre) == doctest::Approx(960.0f).epsilon(0.002));
+  CHECK(centre_y(centre) == doctest::Approx(540.0f).epsilon(0.002));
+  const view::HudRect bl = overlay.bounds_of(16);
+  CHECK(bl.y1 == doctest::Approx(1080.0f - my).epsilon(0.001));
+  const view::HudRect br = overlay.bounds_of(18);
+  CHECK(br.x1 == doctest::Approx(1920.0f - mx).epsilon(0.001));
+  CHECK(br.y1 == doctest::Approx(1080.0f - my).epsilon(0.001));
+  // 18 px at 1080p: the box is a line of text tall, a little more with no outline.
+  CHECK(centre.y1 - centre.y0 >= 17.0f);
+  CHECK(centre.y1 - centre.y0 <= 24.0f);
+  CHECK(overlay.bounds_of(30).empty());  // hidden
+  // The stack's rows, under their reserved ids, inside the stack's panel.
+  const view::HudRect meter = overlay.bounds_of(hotload::k_hud_meter_id);
+  const view::HudRect line0 = overlay.bounds_of(hotload::k_hud_line_id);
+  CHECK(inside(meter, overlay.panel().x0, overlay.panel().y0, overlay.panel().x1,
+               overlay.panel().y1));
+  CHECK(inside(line0, overlay.panel().x0, overlay.panel().y0, overlay.panel().x1,
+               overlay.panel().y1));
+  CHECK(line0.y0 >= meter.y1);  // the meters first, then the lines
+  // Twice the picture, twice the box.
+  lay_out_twice(overlay, hud, nullptr, 3840, 2160, 1.0f);
+  const view::HudRect big = overlay.bounds_of(14);
+  CHECK(big.y1 - big.y0 == doctest::Approx(2.0f * (centre.y1 - centre.y0)).epsilon(0.15));
+  CHECK(centre_x(big) == doctest::Approx(1920.0f).epsilon(0.002));
+
+  // The report's list: the stack's rows first under their ids, then the elements in order.
+  const JsonValue list = view::hud_elements_json(hud, &overlay);
+  REQUIRE(list.is_array());
+  CHECK(list.size() == 1 + 3 + 10);
+  const JsonValue& first = list[usize{0}];
+  CHECK(first.find("kind")->as_string() == "meter");
+  u64 id = 0;
+  REQUIRE(list[4].find("id")->get_u64(id));
+  CHECK(id == 10);
+  CHECK(list[8].find("anchor")->as_string() == "centre");
+  CHECK(list[8].find("text")->as_string() == "[E] Drink");
+  CHECK(list[8].find("bounds_px")->size() == 4);
+
+  // Removal, and the table's limit.
+  CHECK(hud.remove_element(14) == hotload::Result::Ok);
+  CHECK(hud.remove_element(14) == hotload::Result::NotFound);
+  CHECK(hud.find_element(15) != nullptr);
+  for (u32 i = 0; hud.element_count < view::GameHud::k_elements; ++i) {
+    REQUIRE(hud.set_element(element(100 + i, HudAnchor::Top, HudAlign::Centre, "x"), 3) ==
+            hotload::Result::Ok);
+  }
+  CHECK(hud.set_element(element(9999, HudAnchor::Top, HudAlign::Centre, "x"), 3) ==
+        hotload::Result::OutOfRange);
+  hud.clear();  // a tick: the lines and meters go, the elements stay
+  CHECK(hud.stack_empty());
+  CHECK(hud.element_count == view::GameHud::k_elements);
+  hud.clear_all();  // a new run
+  CHECK(hud.element_count == 0);
+  CHECK(hud.empty());
+}
+
 TEST_CASE("game hud: a size change bakes the font again; a frame at the same size does not") {
   // What a rebuild costs on the CPU: ImGui rasterizes the glyphs a frame first draws at a size
   // when it renders that frame, so the layout after a size change carries the bake, and the one

@@ -42,7 +42,14 @@ ENGINE_HOTLOAD_DESCRIBE(api, out) {
       export_function<NumberFn>("build", &build),
       export_function<ViewNumberFn>("read_health", &read_health),
   };
+#if defined(HOTLOAD_DECLARE_ABI)
+  // The ABI 3 build (CMakeLists.txt, `hotload_counter_abi3`): it calls nothing ABI 4 added, so it
+  // is what a module compiled against the ABI 3 header was — the table's prefix it reads did not
+  // move — and the host must load it.
+  out->abi_version = HOTLOAD_DECLARE_ABI;
+#else
   out->abi_version = k_abi_version;
+#endif
   out->desc_size = static_cast<u32>(sizeof(ModuleDesc));
   out->name = "counter";
   out->exports = exports;
