@@ -37,12 +37,103 @@ void GameHud::clear() noexcept {
   meter_count = 0;
 }
 
-bool GameHud::empty() const noexcept {
+void GameHud::clear_all() noexcept {
+  clear();
+  element_count = 0;
+}
+
+bool GameHud::stack_empty() const noexcept {
   if (meter_count > 0) return false;
   for (const Line& l : lines) {
     if (l.set) return false;
   }
   return true;
+}
+
+bool GameHud::empty() const noexcept {
+  if (!stack_empty()) return false;
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].visible) return false;
+  }
+  return true;
+}
+
+const GameHud::Element* GameHud::find_element(u32 id) const noexcept {
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].id == id) return &elements[e];
+  }
+  return nullptr;
+}
+
+hotload::Result GameHud::set_element(const hotload::HudElement& in, u64 said) noexcept {
+  Element* slot = nullptr;
+  for (u32 e = 0; e < element_count && slot == nullptr; ++e) {
+    if (elements[e].id == in.id) slot = &elements[e];
+  }
+  if (slot == nullptr) {
+    if (element_count >= k_elements) return hotload::Result::OutOfRange;
+    slot = &elements[element_count++];
+  }
+  slot->id = in.id;
+  slot->anchor = in.anchor;
+  slot->align = in.align;
+  slot->offset_px[0] = in.offset_px[0];
+  slot->offset_px[1] = in.offset_px[1];
+  slot->size_px = in.size_px;
+  slot->outline_px = in.outline_px;
+  std::memcpy(slot->color, in.color, 4);
+  std::memcpy(slot->outline_color, in.outline_color, 4);
+  slot->panel = in.panel;
+  std::memcpy(slot->panel_color, in.panel_color, 4);
+  slot->panel_padding_px = in.panel_padding_px;
+  slot->visible = in.visible != 0;
+  slot->tick = said;
+  // The text, cut at a character boundary when it is longer than the slot: a UTF-8 continuation
+  // byte (10xxxxxx) is never left at the end without its lead.
+  usize n = in.text != nullptr ? static_cast<usize>(in.text_length) : 0u;
+  if (n > k_element_chars - 1) {
+    n = k_element_chars - 1;
+    while (n > 0 && (static_cast<u8>(in.text[n]) & 0xC0u) == 0x80u)
+      --n;
+  }
+  if (n > 0) std::memcpy(slot->text, in.text, n);
+  slot->text[n] = '\0';
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameHud::remove_element(u32 id) noexcept {
+  for (u32 e = 0; e < element_count; ++e) {
+    if (elements[e].id != id) continue;
+    for (u32 k = e + 1; k < element_count; ++k)
+      elements[k - 1] = elements[k];
+    --element_count;
+    return hotload::Result::Ok;
+  }
+  return hotload::Result::NotFound;
+}
+
+const char* hud_anchor_name(hotload::HudAnchor anchor) noexcept {
+  switch (anchor) {
+    case hotload::HudAnchor::TopLeft: return "top_left";
+    case hotload::HudAnchor::Top: return "top";
+    case hotload::HudAnchor::TopRight: return "top_right";
+    case hotload::HudAnchor::Left: return "left";
+    case hotload::HudAnchor::Centre: return "centre";
+    case hotload::HudAnchor::Right: return "right";
+    case hotload::HudAnchor::BottomLeft: return "bottom_left";
+    case hotload::HudAnchor::Bottom: return "bottom";
+    case hotload::HudAnchor::BottomRight: return "bottom_right";
+  }
+  return "?";
+}
+
+const char* hud_align_name(hotload::HudAlign align) noexcept {
+  switch (align) {
+    case hotload::HudAlign::Left: return "left";
+    case hotload::HudAlign::Centre: return "centre";
+    case hotload::HudAlign::Right: return "right";
+  }
+  return "?";
 }
 
 JsonValue GameHud::to_json() const {
@@ -61,6 +152,7 @@ JsonValue GameHud::to_json() const {
     meters_json.push_back(std::move(meter));
   }
   out.set("meters", std::move(meters_json));
+  out.set("elements", element_count);
   out.set("tick", tick);
   return out;
 }
@@ -109,6 +201,10 @@ struct GameRunner::Impl {
   bool sound_said = false;
 
   GameHud hud;
+  u64 current_tick = 0;  // the tick being run, for the elements it says
+  u64 hud_sets = 0;      // hud_element calls that placed or replaced an element
+  u64 hud_removes = 0;
+  u64 hud_refused = 0;  // hud_element calls refused (InvalidArgument, OutOfRange)
   u64 ticks = 0;
   u64 last_tick = 0;
   f64 walked_before = 0.0;
@@ -120,12 +216,116 @@ struct GameRunner::Impl {
   u32 runs = 1;                            // this session's runs, the first included
   JsonValue results = JsonValue::array();  // the ended runs' results, in order (`new_run`)
   bool restored = false;
+  JsonValue restored_from;  // the object restored from (the file's or the header's), or null
+  // The session block (state file version 2): what was restored, and what the next save writes.
+  SavedSession saved;
+  bool has_saved = false;
+  WorldPos last_eye{};
+  f32 last_yaw = 0.0f;
+  f32 last_pitch = 0.0f;
+  bool last_walking = false;
+  bool have_pose = false;
+  f64 surface_time_s = 0.0;
+  bool have_surface_time = false;
+  f64 time_rate = 0.0;
+  // The graphics state and the requests (ABI 4).
+  hotload::GraphicsState graphics;
+  bool have_graphics = false;
+  bool rt_available = false;
+  bool hdr_available = false;
+  hotload::GraphicsRequest last_request;
+  u32 requests = 0;
+  u32 refused_requests = 0;
+  std::string last_refused_request;
   u32 reloads = 0;
   u32 refused_reloads = 0;
   std::string last_refusal;
   u64 placement_queries = 0;
   u64 placement_hits = 0;
   u64 placement_refused = 0;  // radii past k_max_placement_query_m
+
+  // ---- the state file's session block ----
+  static JsonValue session_json(const Impl& g) {
+    JsonValue s = JsonValue::object();
+    s.set("version", k_session_version);
+    JsonValue position = JsonValue::array();
+    for (const f64 v : {g.last_eye.x, g.last_eye.y, g.last_eye.z})
+      position.push_back(JsonValue(v));
+    s.set("position", std::move(position));
+    s.set("yaw", JsonValue(g.last_yaw));
+    s.set("pitch", JsonValue(g.last_pitch));
+    s.set("walking", g.last_walking);
+    s.set("speed_scale", JsonValue(g.speed_scale));
+    s.set("sprint_scale", JsonValue(g.sprint_scale));
+    JsonValue clock = JsonValue::object();
+    clock.set("sun_time_s", g.sun_offset_s + g.day_s);
+    clock.set("sun_offset_s", g.sun_offset_s);
+    clock.set("day_s", g.day_s);
+    clock.set("sun_rate", g.sun_rate);
+    clock.set("ground_time_s", g.ground_time_s);
+    if (g.have_surface_time) clock.set("surface_time_s", g.surface_time_s);
+    clock.set("time_rate", g.time_rate);
+    s.set("clock", std::move(clock));
+    return s;
+  }
+  static bool read_session(const JsonValue& s, SavedSession& out, std::string& why) {
+    u64 version = 0;
+    const JsonValue* v = s.find("version");
+    if (!s.is_object() || v == nullptr || !v->get_u64(version)) {
+      why = "not an object with a version";
+      return false;
+    }
+    if (version != k_session_version) {
+      why = "version " + std::to_string(version) + ", and this build reads " +
+            std::to_string(k_session_version);
+      return false;
+    }
+    const auto number = [&](const JsonValue& o, const char* key, f64& to) {
+      const JsonValue* f = o.find(key);
+      return f != nullptr && f->get_f64(to) && std::isfinite(to);
+    };
+    const JsonValue* position = s.find("position");
+    f64 p[3] = {0.0, 0.0, 0.0};
+    if (position == nullptr || !position->is_array() || position->size() != 3) {
+      why = "no position";
+      return false;
+    }
+    for (u32 i = 0; i < 3; ++i) {
+      if (!(*position)[i].get_f64(p[i]) || !std::isfinite(p[i])) {
+        why = "a position that is not three finite numbers";
+        return false;
+      }
+    }
+    f64 yaw = 0.0, pitch = 0.0, speed = 1.0, sprint = 1.0;
+    const JsonValue* walking = s.find("walking");
+    const JsonValue* clock = s.find("clock");
+    if (!number(s, "yaw", yaw) || !number(s, "pitch", pitch) || !number(s, "speed_scale", speed) ||
+        !number(s, "sprint_scale", sprint) || walking == nullptr || !walking->is_bool() ||
+        clock == nullptr || !clock->is_object()) {
+      why = "the yaw, pitch, walking, speed scales or clock are missing";
+      return false;
+    }
+    out.eye = WorldPos{p[0], p[1], p[2]};
+    if (!world_cell_valid(out.eye)) {
+      why = "a position outside the world";
+      return false;
+    }
+    out.yaw = static_cast<f32>(yaw);
+    out.pitch = static_cast<f32>(pitch);
+    out.walking = walking->as_bool();
+    const auto held = [](f64 x) { return static_cast<f32>(x < 0.0 ? 0.0 : x > 4.0 ? 4.0 : x); };
+    out.speed_scale = held(speed);
+    out.sprint_scale = held(sprint);
+    if (!number(*clock, "sun_time_s", out.sun_time_s) ||
+        !number(*clock, "sun_rate", out.sun_rate) ||
+        !number(*clock, "ground_time_s", out.ground_time_s) ||
+        !number(*clock, "time_rate", out.time_rate)) {
+      why = "the clock's sun_time_s, sun_rate, ground_time_s or time_rate is missing";
+      return false;
+    }
+    out.has_surface_time = number(*clock, "surface_time_s", out.surface_time_s);
+    return true;
+  }
 
   // ---- HostApi's game services (GameServices) ----
   static hotload::Result action(void* user, std::string_view name, u32* out_bit, std::string* why) {
@@ -269,6 +469,110 @@ struct GameRunner::Impl {
     ++self.teleports;
     return hotload::Result::Ok;
   }
+  // ---- ABI 4: the HUD's structured elements (GameHud) ----
+  // The judgement is here and not in the HUD: a reserved id, an enum out of range, a length that is
+  // not a finite size, or text the length overruns is `InvalidArgument`, said once on stderr with
+  // the first such call's reason, so a module's mistake is seen without a line every tick.
+  static hotload::Result hud_element(void* user, const hotload::HudElement& e) {
+    Impl& self = *static_cast<Impl*>(user);
+    const char* why = nullptr;
+    const auto finite = [](f32 v) { return std::isfinite(v); };
+    if (e.id >= hotload::k_hud_reserved) {
+      why = "an id from k_hud_reserved up is the host's (hud_text's and hud_meter's)";
+    } else if (static_cast<u32>(e.anchor) > static_cast<u32>(hotload::HudAnchor::BottomRight) ||
+               static_cast<u32>(e.align) > static_cast<u32>(hotload::HudAlign::Right) ||
+               static_cast<u32>(e.panel) > static_cast<u32>(hotload::HudPanel::Solid)) {
+      why = "an anchor, an alignment or a panel outside its enum";
+    } else if (!finite(e.offset_px[0]) || !finite(e.offset_px[1]) || !finite(e.size_px) ||
+               !finite(e.outline_px) || !finite(e.panel_padding_px) || !(e.size_px > 0.0f) ||
+               e.outline_px < 0.0f || e.panel_padding_px < 0.0f) {
+      why =
+          "a length that is not finite, a size at or below zero, or a negative outline or padding";
+    } else if (e.text == nullptr && e.text_length > 0) {
+      why = "a text length with no text";
+    } else {
+      for (u64 i = 0; i < e.text_length && why == nullptr; ++i) {
+        if (e.text[i] == '\0') why = "text shorter than its length says (a NUL inside it)";
+      }
+    }
+    if (why != nullptr) {
+      ++self.hud_refused;
+      if (self.hud_refused == 1) {
+        std::fprintf(stderr, "engine-view: game: hud_element %u refused: %s\n", e.id, why);
+      }
+      return hotload::Result::InvalidArgument;
+    }
+    const hotload::Result r = self.hud.set_element(e, self.current_tick);
+    if (r == hotload::Result::Ok) {
+      ++self.hud_sets;
+    } else {
+      ++self.hud_refused;
+    }
+    return r;
+  }
+  static hotload::Result hud_remove(void* user, u32 id) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (id >= hotload::k_hud_reserved) return hotload::Result::InvalidArgument;
+    const hotload::Result r = self.hud.remove_element(id);
+    if (r == hotload::Result::Ok) ++self.hud_removes;
+    return r;
+  }
+
+  // ---- ABI 4: the graphics state, read-only, and requests recorded ----
+  static hotload::Result graphics_state(void* user, hotload::GraphicsState& out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!self.have_graphics) return hotload::Result::Unsupported;  // no device yet (on_load)
+    out = self.graphics;
+    return hotload::Result::Ok;
+  }
+  static hotload::Result request_graphics(void* user, const hotload::GraphicsRequest& r) {
+    Impl& self = *static_cast<Impl*>(user);
+    // A name is one of the host's words or empty (leave it), NUL-terminated inside its array.
+    const auto name = [](const char (&field)[24], std::string_view& out) {
+      for (u32 i = 0; i < 24; ++i) {
+        if (field[i] == '\0') {
+          out = std::string_view(field, i);
+          return true;
+        }
+      }
+      return false;
+    };
+    std::string_view raster, shadows, present, display;
+    if (!name(r.raster, raster) || !name(r.shadows, shadows) || !name(r.present, present) ||
+        !name(r.display, display) || r.width > 16384 || r.height > 16384) {
+      return hotload::Result::InvalidArgument;
+    }
+    const auto one_of = [](std::string_view v, std::initializer_list<std::string_view> words) {
+      if (v.empty()) return true;
+      for (const std::string_view w : words)
+        if (v == w) return true;
+      return false;
+    };
+    const char* why = nullptr;
+    if (!one_of(raster, {"direct", "hw", "sw", "auto", "vertex", "rt"})) {
+      why = "a raster path engine-view does not have";
+    } else if (!one_of(shadows, {"auto", "off", "rt", "csm"})) {
+      why = "a shadow mode engine-view does not have";
+    } else if (!one_of(present, {"auto", "fifo", "fifo-relaxed", "mailbox", "immediate",
+                                 "fifo-latest-ready"})) {
+      why = "a present mode engine-view does not have";
+    } else if (!one_of(display, {"sdr", "hdr10", "scrgb"})) {
+      why = "a display encoding engine-view does not have";
+    } else if (!self.rt_available && (raster == "rt" || shadows == "rt")) {
+      why = "ray tracing, which this device cannot do";
+    } else if (!self.hdr_available && (display == "hdr10" || display == "scrgb")) {
+      why = "HDR output, which this session's display cannot show";
+    }
+    if (why != nullptr) {
+      ++self.refused_requests;
+      self.last_refused_request = why;
+      return hotload::Result::Unsupported;
+    }
+    self.last_request = r;
+    ++self.requests;
+    return hotload::Result::Ok;
+  }
+
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
@@ -302,7 +606,7 @@ bool GameRunner::new_run() {
   g.results.push_back(std::move(g.result));
   g.result = JsonValue();
   g.ended = false;
-  g.hud.clear();  // the next tick says the new run's
+  g.hud.clear_all();  // the next tick says the new run's, its elements too
   ++g.runs;
   return true;
 }
@@ -337,6 +641,10 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.walker_set = &Impl::walker_set;
   services.walker_teleport = &Impl::walker_teleport;
   services.sound_clip = &Impl::sound_clip;  // sound_play and sound_stop: null, Unsupported
+  services.hud_element = &Impl::hud_element;
+  services.hud_remove = &Impl::hud_remove;
+  services.graphics_state = &Impl::graphics_state;
+  services.request_graphics = &Impl::request_graphics;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -358,25 +666,43 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   g.view = host.bind(g.state);
 
   // --game-state: the state as the last run left it, through the descriptor (unknown fields
-  // ignored, missing ones at their defaults: the reload's rules).
-  if (!config.state_file.empty() && io::exists(config.state_file)) {
+  // ignored, missing ones at their defaults: the reload's rules). A replay of a `--game` recording
+  // restores what its header says the live session restored, and never the file.
+  JsonValue file;
+  bool have_file = false;
+  std::string source = "--game-state " + config.state_file;
+  if (config.restore_from_header) {
+    source = "the recording's restored state";
+    if (config.restore != nullptr && config.restore->is_object()) {
+      file = *config.restore;
+      have_file = true;
+    }
+    if (!config.state_file.empty() && io::exists(config.state_file)) {
+      std::fprintf(stderr,
+                   "engine-view: game: replaying a --game recording restores what the recording "
+                   "restored, not %s (which is written at the end)\n",
+                   config.state_file.c_str());
+    }
+  } else if (!config.state_file.empty() && io::exists(config.state_file)) {
     std::string text;
-    JsonValue file;
     if (io::read_file(config.state_file, text) != io::Status::Ok || !parse_json(text, file).ok ||
         !file.is_object()) {
       return refuse("--game-state " + config.state_file + " is not a JSON object");
     }
+    have_file = true;
+  }
+  if (have_file) {
     const JsonValue* format = file.find("format");
     const JsonValue* type = file.find("type");
     const JsonValue* saved = file.find("state");
     const schema::TypeInfo* state_type = host.state_type();
     if (format == nullptr || !format->is_string() || format->as_string() != k_state_format ||
         saved == nullptr) {
-      return refuse("--game-state " + config.state_file + " is not an " + k_state_format + " file");
+      return refuse(source + " is not an " + k_state_format + " file");
     }
     if (state_type == nullptr || type == nullptr || !type->is_string() ||
         type->as_string() != std::string_view(state_type->qualified_name)) {
-      return refuse("--game-state " + config.state_file + " holds " +
+      return refuse(source + " holds " +
                     (type != nullptr && type->is_string() ? std::string(type->as_string())
                                                           : std::string("no type")) +
                     ", and the module keeps " +
@@ -385,7 +711,7 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
     schema::ReadContext context;
     context.options.ignore_unknown_fields = true;
     if (!schema::from_json(*state_type, host.context()->state, *saved, context) || !context.ok()) {
-      return refuse("--game-state " + config.state_file + ": " +
+      return refuse(source + ": " +
                     (context.diagnostics.empty() ? std::string("the state did not read")
                                                  : context.diagnostics.front().path + ": " +
                                                        context.diagnostics.front().message));
@@ -395,18 +721,76 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
     if (const JsonValue* props = file.find("props"); props != nullptr) {
       std::string why;
       if (!g.props.from_json(*props, &why)) {
-        return refuse("--game-state " + config.state_file + ": " + why);
+        return refuse(source + ": " + why);
       }
     }
+    // The session (version 2): the walker's pose and scales and the clock. A version 1 file has
+    // none, and its session starts where the flags say; a block of a later version is refused
+    // rather than half read.
+    if (const JsonValue* session = file.find("session"); session != nullptr) {
+      std::string why;
+      if (!Impl::read_session(*session, g.saved, why)) return refuse(source + ": session: " + why);
+      g.has_saved = true;
+    }
+    g.restored_from = file;
     g.restored = true;
   }
   return true;
 }
 
 void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept {
-  impl_->sun_offset_s = sun_offset_s;
-  impl_->sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
-  impl_->ground_time_s = ground_time_s;
+  Impl& g = *impl_;
+  g.sun_offset_s = sun_offset_s;
+  g.sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
+  g.ground_time_s = ground_time_s;
+  // A restored clock: the sky where it stood whatever this session's `--time-of-day` offset is
+  // (the day's seconds are what is left of the saved sky time past it), at the rate the keys had
+  // left it, on the ground time the world's clock stood on.
+  if (g.has_saved) {
+    g.day_s = g.saved.sun_time_s - sun_offset_s;
+    g.sun_rate = g.saved.sun_rate > 0.0 ? g.saved.sun_rate : 0.0;
+    g.ground_time_s = g.saved.ground_time_s;
+  }
+}
+
+const GameRunner::SavedSession* GameRunner::restored_session() const noexcept {
+  return impl_->has_saved ? &impl_->saved : nullptr;
+}
+
+const JsonValue& GameRunner::restored_json() const noexcept { return impl_->restored_from; }
+
+void GameRunner::apply_pose(const SavedSession& saved, SessionHeader& header) noexcept {
+  header.start.position = saved.eye;
+  header.start.yaw = saved.yaw;
+  header.start.pitch = saved.pitch;
+  header.walking = saved.walking;
+}
+
+void GameRunner::note_surface_time(f64 surface_time_s) noexcept {
+  impl_->surface_time_s = surface_time_s;
+  impl_->have_surface_time = true;
+}
+
+void GameRunner::set_time_rate(f64 time_rate) noexcept { impl_->time_rate = time_rate; }
+
+void GameRunner::set_graphics(const hotload::GraphicsState& state, bool ray_tracing_available,
+                              bool hdr_available) noexcept {
+  Impl& g = *impl_;
+  g.graphics = state;
+  g.graphics.size = sizeof(hotload::GraphicsState);
+  g.have_graphics = true;
+  g.rt_available = ray_tracing_available;
+  g.hdr_available = hdr_available;
+}
+
+u32 GameRunner::graphics_requests() const noexcept { return impl_->requests; }
+
+void GameRunner::set_graphics_display(std::string_view name, bool hdr) noexcept {
+  Impl& g = *impl_;
+  if (!g.have_graphics) return;
+  copy_text(g.graphics.display, sizeof(g.graphics.display), name);
+  g.graphics.hdr = hdr ? 1u : 0u;
+  g.hdr_available = hdr;
 }
 
 f64 GameRunner::sun_time_s() const noexcept { return impl_->sun_offset_s + impl_->day_s; }
@@ -430,7 +814,19 @@ const std::string& GameRunner::module_name() const noexcept {
 
 u32 GameRunner::build() const noexcept { return impl_->host ? impl_->host->generation() : 0u; }
 
-void GameRunner::set_session(FlySession* session) noexcept { impl_->session = session; }
+void GameRunner::set_session(FlySession* session) noexcept {
+  Impl& g = *impl_;
+  g.session = session;
+  // The restored speed scales, on the walker before the session's first tick, in a live session
+  // and its replay alike (both restore the same block), so the first tick walks as the saved run's
+  // last did. 1 and 1 — every session that restored nothing — leaves the walker untouched.
+  if (session != nullptr && g.has_saved &&
+      (g.saved.speed_scale != 1.0f || g.saved.sprint_scale != 1.0f)) {
+    g.speed_scale = g.saved.speed_scale;
+    g.sprint_scale = g.saved.sprint_scale;
+    session->set_walk_scale(g.speed_scale, g.sprint_scale);
+  }
+}
 
 void GameRunner::observe(void* user, const FlySession& session, const input::InputState& input) {
   GameRunner& self = *static_cast<GameRunner*>(user);
@@ -488,6 +884,12 @@ void GameRunner::tick(const GameTickInput& in) {
   t.world_time_s = g.ground_time_s + t.sun_time_s;
   const f64 days = t.world_time_s / 86'400.0;
   t.day_fraction = days - std::floor(days);
+  // The pose the state file keeps (`SavedSession`), the tick's whether or not the module runs.
+  g.last_eye = in.eye;
+  g.last_yaw = in.heading;
+  g.last_pitch = in.pitch;
+  g.last_walking = in.walking;
+  g.have_pose = true;
   if (g.ended) return;  // the run is over: the module said so, or failed
   t.tick = in.tick;
   t.dt = g.dt;
@@ -518,8 +920,9 @@ void GameRunner::tick(const GameTickInput& in) {
   g.feet = in.feet;
 
   // This tick's HUD is the module's to say again.
-  g.hud.clear();
+  g.hud.clear();  // the lines and meters; the elements are retained until the module removes them
   g.hud.tick = in.tick;
+  g.current_tick = in.tick;
   hotload::ModuleHost& host = *g.host;
   host.set_time(in.tick, g.dt);
   host.function<hotload::TickFn>(g.game_tick)(host.context(), g.view, static_cast<f32>(g.dt));
@@ -571,12 +974,19 @@ bool GameRunner::finish(std::string* error) {
   if (!g.config.state_file.empty() && g.host->state_type() != nullptr) {
     JsonValue file = JsonValue::object();
     file.set("format", k_state_format);
-    file.set("version", static_cast<u32>(1));
+    file.set("version", k_state_version);
     file.set("module", g.host->module_name());
     file.set("type", g.host->state_type()->qualified_name);
     file.set("tick", g.last_tick);
     file.set("state", state_json());
     file.set("props", g.props.to_json());
+    // The session (version 2): only once a tick has said where the walker is, so a run that never
+    // ticked does not save a pose of zeros over a good one.
+    if (g.have_pose) {
+      file.set("session", Impl::session_json(g));
+    } else if (g.has_saved && g.restored_from.find("session") != nullptr) {
+      file.set("session", *g.restored_from.find("session"));
+    }
     const io::Status status = io::write_file(
         g.config.state_file, write_json(file, JsonWriteOptions{.pretty = true}) + "\n");
     if (status != io::Status::Ok) {
@@ -618,8 +1028,16 @@ JsonValue GameRunner::summary_json() const {
   out.set("error", g.error);
   out.set("state_file", g.config.state_file);
   out.set("restored", g.restored);
+  out.set("restored_session", g.has_saved);
+  // What the next save writes as the session block (state file version 2).
+  if (g.have_pose) out.set("session", Impl::session_json(g));
   out.set("state", state_json());
-  out.set("hud", g.hud.to_json());
+  JsonValue hud = g.hud.to_json();
+  hud.set("element_sets", g.hud_sets);
+  hud.set("element_removes", g.hud_removes);
+  hud.set("element_refused", g.hud_refused);
+  out.set("hud", std::move(hud));
+  out.set("abi", g.host->module_abi());
   JsonValue clock = JsonValue::object();
   clock.set("sun_time_s", g.state.sun_time_s);
   clock.set("world_time_s", g.state.world_time_s);
@@ -647,6 +1065,40 @@ JsonValue GameRunner::summary_json() const {
   walker.set("sprint_scale", JsonValue(g.sprint_scale));
   walker.set("session", g.session != nullptr);
   out.set("walker", std::move(walker));
+  // The graphics a module reads (ABI 4) and what it asked for: recorded, applied by nothing yet.
+  JsonValue graphics = JsonValue::object();
+  graphics.set("known", g.have_graphics);
+  if (g.have_graphics) {
+    const hotload::GraphicsState& s = g.graphics;
+    graphics.set("raster", std::string_view(s.raster));
+    graphics.set("shadows", std::string_view(s.shadows));
+    graphics.set("present", std::string_view(s.present));
+    graphics.set("display", std::string_view(s.display));
+    graphics.set("tier", std::string_view(s.tier));
+    graphics.set("width", s.width);
+    graphics.set("height", s.height);
+    graphics.set("ray_tracing", s.ray_tracing != 0);
+    graphics.set("hdr", s.hdr != 0);
+    JsonValue reasons = JsonValue::array();
+    for (u32 i = 0; i < s.reason_count && i < 4; ++i)
+      reasons.push_back(JsonValue(std::string_view(s.reasons[i])));
+    graphics.set("reasons", std::move(reasons));
+  }
+  graphics.set("requests", g.requests);
+  graphics.set("refused_requests", g.refused_requests);
+  graphics.set("last_refused", g.last_refused_request);
+  if (g.requests > 0) {
+    const hotload::GraphicsRequest& r = g.last_request;
+    JsonValue pending = JsonValue::object();
+    pending.set("raster", std::string_view(r.raster));
+    pending.set("shadows", std::string_view(r.shadows));
+    pending.set("present", std::string_view(r.present));
+    pending.set("display", std::string_view(r.display));
+    pending.set("width", r.width);
+    pending.set("height", r.height);
+    graphics.set("pending", std::move(pending));
+  }
+  out.set("graphics", std::move(graphics));
   return out;
 }
 

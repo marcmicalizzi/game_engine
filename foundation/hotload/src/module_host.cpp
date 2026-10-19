@@ -184,6 +184,7 @@ struct ModuleHost::Module {
   void* library = nullptr;
   std::string copy_path;
   std::string name;
+  u32 abi_version = 0;  // what the build declared, k_abi_oldest..k_abi_version
   const TypeInfo* state_type = nullptr;
   void* state = nullptr;
   i32 (*on_load)(ModuleContext*) = nullptr;
@@ -409,6 +410,40 @@ struct HostCallbacks {
     if (g.sound_stop == nullptr) return Result::Unsupported;
     return g.sound_stop(g.user, voice);
   }
+  // ---- ABI 4 ----
+  // A struct is read only when its `size` says the module built at least ABI 4's, and up to this
+  // host's own: a later struct's extra fields are not this host's to read.
+  static Result hud_element(void* host, const HudElement* element) {
+    const GameServices& g = self(host).game_;
+    if (element == nullptr || element->size < sizeof(HudElement)) return Result::InvalidArgument;
+    if (g.hud_element == nullptr) return Result::Unsupported;
+    return g.hud_element(g.user, *element);
+  }
+  static Result hud_remove(void* host, u32 id) {
+    const GameServices& g = self(host).game_;
+    if (g.hud_remove == nullptr) return Result::Unsupported;
+    return g.hud_remove(g.user, id);
+  }
+  static Result graphics_state(void* host, GraphicsState* out) {
+    const GameServices& g = self(host).game_;
+    if (out == nullptr || out->size < sizeof(GraphicsState)) return Result::InvalidArgument;
+    if (g.graphics_state == nullptr) return Result::Unsupported;
+    GraphicsState state;  // the host's own size, copied back over the module's
+    const Result r = g.graphics_state(g.user, state);
+    if (r == Result::Ok) {
+      const u32 size = out->size;
+      *out = state;
+      out->size = size;
+    }
+    return r;
+  }
+  static Result request_graphics(void* host, const GraphicsRequest* request) {
+    const GameServices& g = self(host).game_;
+    if (request == nullptr || request->size < sizeof(GraphicsRequest))
+      return Result::InvalidArgument;
+    if (g.request_graphics == nullptr) return Result::Unsupported;
+    return g.request_graphics(g.user, *request);
+  }
 };
 
 const char* status_name(Status status) noexcept {
@@ -460,6 +495,10 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.sound_clip = &HostCallbacks::sound_clip;
   api_.sound_play = &HostCallbacks::sound_play;
   api_.sound_stop = &HostCallbacks::sound_stop;
+  api_.hud_element = &HostCallbacks::hud_element;
+  api_.hud_remove = &HostCallbacks::hud_remove;
+  api_.graphics_state = &HostCallbacks::graphics_state;
+  api_.request_graphics = &HostCallbacks::request_graphics;
   context_.api = &api_;
   context_.state = nullptr;
 }
@@ -476,6 +515,8 @@ const std::string& ModuleHost::module_name() const noexcept {
   static const std::string none;
   return module_ ? module_->name : none;
 }
+
+u32 ModuleHost::module_abi() const noexcept { return module_ ? module_->abi_version : 0u; }
 
 const std::string& ModuleHost::loaded_copy_path() const noexcept {
   static const std::string none;
@@ -573,14 +614,19 @@ Status ModuleHost::load_build(Module& build, const std::string& copy_path) {
                                      (pending_failure_.empty() ? "" : ": " + pending_failure_));
     return Status::DescribeFailed;
   }
-  if (desc.abi_version != k_abi_version || desc.desc_size != sizeof(ModuleDesc)) {
+  // ABI 3 and later are one table that only grows (module_abi.h, `k_abi_oldest`): a module built
+  // against an older one calls a prefix of this host's table. A newer one would call past its end.
+  if (desc.abi_version < k_abi_oldest || desc.abi_version > k_abi_version ||
+      desc.desc_size != sizeof(ModuleDesc)) {
     fail(Status::AbiMismatch,
          "the module was built against hotload ABI " + std::to_string(desc.abi_version) + " (a " +
              std::to_string(desc.desc_size) + "-byte ModuleDesc); this host is ABI " +
+             std::to_string(k_abi_version) + " and loads " + std::to_string(k_abi_oldest) + " to " +
              std::to_string(k_abi_version) + " (" + std::to_string(sizeof(ModuleDesc)) +
              " bytes): rebuild the module against this engine");
     return Status::AbiMismatch;
   }
+  build.abi_version = desc.abi_version;
   build.name = desc.name != nullptr ? desc.name : "unnamed";
   build.on_load = desc.on_load;
   build.on_unload = desc.on_unload;

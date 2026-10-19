@@ -7,7 +7,8 @@
 .DESCRIPTION
   tools/run-game.ps1 -Module <file.dll> -Scene <scene.json> [-Report <file.json>]
                      [-Offscreen [-Replay <session.jsonl>] [-Frames <n>]]
-                     [-Ddc <dir>] [-TimeRate <r>] [-SunRate <r>] [-EngineArgs <args...>]
+                     [-Ddc <dir>] [-InputMap <map.json>] [-TimeRate <r>] [-SunRate <r>]
+                     [-EngineArgs <args...>]
 
   A window opens on the scene with the module loaded (`--walk --game`); `--world` is passed where
   the scene streams one (a `world` block or `ruins`) and `--time-rate` where its terrain has dunes,
@@ -18,7 +19,11 @@
 
   -Offscreen runs with no window: a recorded session is replayed (`--replay-input --offscreen`),
   by default the SDK's content/sessions/walk-synthetic.jsonl, two seconds of walking with E pressed
-  once, and -Frames stops it early. A `--game` session is a function of its ticks, so the same
+  once (at tick 40), and -Frames stops it early.
+
+  -InputMap names the action map the session flies with; by default the SDK's
+  content/input-map.json, the map its engine-view was exported with (`--dump-action-map`), which
+  the synthetic walk was recorded against. A `--game` session is a function of its ticks, so the same
   recording replays to the same module state every time: it is how a module is tested without a
   desktop, and what the SDK's own test does.
 
@@ -43,6 +48,7 @@ param(
   [string]$Replay,
   [int]$Frames = 0,
   [string]$Ddc,
+  [string]$InputMap,
   [double]$TimeRate = 1,
   [double]$SunRate = 60,
   [string[]]$EngineArgs = @()
@@ -84,6 +90,19 @@ else {
   $cmd += '--walk'
 }
 $cmd += @('--game', $modulePath, '--ddc', $ddcPath)
+# The action map the session flies with: -InputMap, or the SDK's content/input-map.json (the map
+# this SDK's engine-view was exported with, docs/game-authoring.md "The action map"), so a game's
+# recordings are made against the map it pins by file. A replay recorded against another map is
+# refused by engine-view naming both hashes, rather than replayed with keys that mean other things.
+if (-not $InputMap) {
+  $sdkMap = Join-Path $Sdk 'content/input-map.json'
+  if (Test-Path -LiteralPath $sdkMap -PathType Leaf) { $InputMap = $sdkMap }
+}
+if ($InputMap) {
+  $mapPath = Full $InputMap
+  if (-not (Test-Path -LiteralPath $mapPath -PathType Leaf)) { throw "run-game: no action map $InputMap" }
+  $cmd += @('--input-map', $mapPath)
+}
 if ($Report) { $cmd += @('--report', (Full $Report)) }
 if ($Frames -gt 0) { $cmd += @('--frames', "$Frames") }
 # -EngineArgs as an array from a PowerShell prompt, or as one space-separated string from another

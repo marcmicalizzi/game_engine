@@ -549,6 +549,7 @@ JsonValue session_to_json(const SessionHeader& header) {
     JsonValue game = JsonValue::object();
     game.set("module", header.game_module);
     game.set("build", static_cast<u64>(header.game_build));
+    if (header.game_restored.is_object()) game.set("restored", header.game_restored);
     out.set("game", std::move(game));
   }
   return out;
@@ -633,6 +634,11 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
       return fail("the game block does not name its module and build");
     }
     h.has_game = true;
+    // What the session restored before its first tick (2026-10-18); absent: it started fresh.
+    if (const JsonValue* restored = game->find("restored"); restored != nullptr) {
+      if (!restored->is_object()) return fail("the game block's restored state is not an object");
+      h.game_restored = *restored;
+    }
   }
   out = std::move(h);
   return true;

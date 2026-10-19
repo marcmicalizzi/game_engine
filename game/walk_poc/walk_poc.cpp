@@ -62,6 +62,8 @@ struct Fields {
   f64 scale_set = -1.0;
 } g_fields;
 
+constexpr u32 k_prompt_id = 1;  // the pick-up prompt's HUD element
+
 i32 on_load(ModuleContext* context) {
   Fields& f = g_fields;
   resolve(context, k_tick, "tick", f.tick);
@@ -133,6 +135,24 @@ void game_tick(ModuleContext* context, View tick, f32) {
   }
 #endif
 
+  if (tick_index == 1) {
+    // **The graphics** (ABI 4): what the session draws with, said once in the log, and the two
+    // kinds of answer a request gets — one the host records for its next restart (the sun's
+    // cascaded maps, which every device draws), and one it cannot make (a raster path it has not).
+    GraphicsState graphics;
+    if (graphics_state(context, graphics) == Result::Ok) {
+      char said[96];
+      std::snprintf(said, sizeof(said), "walk_poc: drawn with %s, shadows %s", graphics.raster,
+                    graphics.shadows);
+      log(context, LogLevel::Info, said);
+    }
+    GraphicsRequest maps;
+    std::snprintf(maps.shadows, sizeof(maps.shadows), "csm");
+    request_graphics(context, maps);
+    GraphicsRequest unknown;
+    std::snprintf(unknown.raster, sizeof(unknown.raster), "warp");
+    request_graphics(context, unknown);  // Unsupported: no such path
+  }
   if (!s.started) {
     s.started = true;
     s.start_world_s = world_s;
@@ -253,6 +273,23 @@ void game_tick(ModuleContext* context, View tick, f32) {
     std::snprintf(line, sizeof(line), "%s%u marker%s placed", s.can_taken ? "can taken   " : "",
                   s.markers, s.markers == 1 ? "" : "s");
     hud_text(context, 3, line);
+  }
+
+  // **The pick-up prompt** (ABI 4, a structured element): outlined text with no panel, below the
+  // picture's centre, shown while the can is in reach. The host keeps an element until it is
+  // removed; said every tick under its id it is replaced in place, and `visible` hides it. Said
+  // only once the can stands, so a scene with no props has no element at all.
+  if (s.can_placed) {
+    HudElement prompt;
+    prompt.id = k_prompt_id;
+    prompt.anchor = HudAnchor::Centre;
+    prompt.align = HudAlign::Centre;
+    prompt.offset_px[1] = 80.0f;  // below the crosshair's place, in 1080p pixels
+    prompt.size_px = 28.0f;
+    prompt.outline_px = 2.0f;
+    prompt.visible = can_in_reach ? 1u : 0u;
+    prompt.text = "[E] Pick up";
+    hud_element(context, prompt);
   }
 
   if (s.thirst <= 0.0) {

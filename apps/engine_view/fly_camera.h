@@ -267,6 +267,13 @@ struct SessionHeader {
   bool has_game = false;
   std::string game_module;
   u32 game_build = 0;
+  // **What the session restored before its first tick** (2026-10-18, roadmap P47): the
+  // `--game-state` file's object as the runner read it — the module's state, its props, the
+  // walker's pose and scales and the clock — written as the game block's `restored`, null when the
+  // session started fresh. A replay of the recording restores from here and never from a state
+  // file, which the live session overwrote at its end: so a replay from a restored state is a
+  // replay.
+  JsonValue game_restored;
 };
 
 JsonValue session_to_json(const SessionHeader& header);

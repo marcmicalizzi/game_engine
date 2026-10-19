@@ -191,8 +191,10 @@ std::string erg_window(const test::TempDir& tmp) {
 
 // A walk to replay: walking from the start, W held from tick 10, E pressed at tick 100, `ticks`
 // long, against the map's latest revision (the one with the game actions).
+// With `restored`, the header is a `--game` recording's of the fixture whose session restored that
+// state file object before its first tick (fly_camera.h `SessionHeader::game_restored`).
 std::string walk_session(const test::TempDir& tmp, const std::string& scene, u64 ticks,
-                         const char* name = "walk.jsonl") {
+                         const char* name = "walk.jsonl", const JsonValue* restored = nullptr) {
   input::InputLog keys;
   keys.set_map(view::default_fly_map());
   const auto key = [&](u64 tick, u32 code, bool down) {
@@ -209,6 +211,12 @@ std::string walk_session(const test::TempDir& tmp, const std::string& scene, u64
   header.start.pitch = -0.2f;
   header.has_walk = true;
   header.walking = true;
+  if (restored != nullptr) {
+    header.has_game = true;
+    header.game_module = "walk_poc";
+    header.game_build = 1;
+    header.game_restored = *restored;
+  }
   keys.set_session(view::session_to_json(header));
   const std::string path = tmp.file(name);
   REQUIRE(keys.save(path) == io::Status::Ok);
@@ -390,6 +398,79 @@ TEST_CASE("engine-view: --game-state leaves a run and resumes it") {
         doctest::Approx(2.0 * number_at(*game_of(one), {"state", "seconds"})));
   CHECK(number_at(*game_of(two), {"state", "walked_m"}) ==
         doctest::Approx(2.0 * number_at(*game_of(one), {"state", "walked_m"})));
+}
+
+TEST_CASE(
+    "engine-view: a --game recording that restored a state replays from its header, not from the "
+    "state file") {
+  // Roadmap P47: a first run saves a version 2 state file (the module's state, the walker's pose,
+  // the clock); a recording whose header says its session restored that object replays to the
+  // first run's state plus its own second — with no --game-state, and with one naming a file of
+  // other numbers, which a replay does not read — and to the same trajectory both times; and the
+  // sky's clock goes on from where the first run left it.
+  const test::TempDir tmp("engine_view_game_restored_replay");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string state = tmp.file("state.json");
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+  const std::vector<std::string> common = {
+      "--scene",  scene, "--offscreen", "--game", module,  "--width",      "160",
+      "--height", "96",  "--sun-rate",  "60",     "--ddc", tmp.file("ddc")};
+  std::vector<std::string> args = {"--replay-input", walk_session(tmp, scene, 240), "--game-state",
+                                   state};
+  args.insert(args.end(), common.begin(), common.end());
+  const Run first = run_view(args);
+  if (first.exit_code == 3 || refused_without_dunes(first)) return;
+  REQUIRE_MESSAGE(first.exit_code == 0, first.output);
+  JsonValue one;
+  REQUIRE(summary_of(first, one));
+  JsonValue saved;
+  REQUIRE(read_json_file(state, saved));
+  REQUIRE(saved.find("session") != nullptr);
+  CHECK(number_at(saved, {"version"}) == 2.0);
+  CHECK(number_at(saved, {"session", "clock", "sun_rate"}) == 60.0);
+  CHECK(number_at(saved, {"session", "clock", "sun_time_s"}) ==
+        doctest::Approx(number_at(*game_of(one), {"clock", "sun_time_s"})));
+  // The walker's eye where the first run's walk ended.
+  REQUIRE(at(saved, {"session", "position"}) != nullptr);
+  REQUIRE(at(*game_of(one), {"session", "position"}) != nullptr);
+  CHECK(write_json(*at(saved, {"session", "position"})) ==
+        write_json(*at(*game_of(one), {"session", "position"})));
+
+  const std::string recording = walk_session(tmp, scene, 240, "restored.jsonl", &saved);
+  const std::string other = tmp.file("other.json");
+  REQUIRE(io::write_file(other, R"({"format":"engine.game.state","version":1,"module":"walk_poc",
+      "type":"engine.walk_poc.Survivor","state":{"seconds":999,"walked_m":999}})") ==
+          io::Status::Ok);
+  args = {"--replay-input", recording};
+  args.insert(args.end(), common.begin(), common.end());
+  const Run plain = run_view(args);
+  REQUIRE_MESSAGE(plain.exit_code == 0, plain.output);
+  args.insert(args.end(), {"--game-state", other});
+  const Run with_file = run_view(args);
+  REQUIRE_MESSAGE(with_file.exit_code == 0, with_file.output);
+  CHECK(with_file.output.find("restores what the recording restored") != std::string::npos);
+  JsonValue a;
+  JsonValue b;
+  REQUIRE(summary_of(plain, a));
+  REQUIRE(summary_of(with_file, b));
+  for (const JsonValue* s : {&a, &b}) {
+    REQUIRE(game_of(*s) != nullptr);
+    CHECK(at(*game_of(*s), {"restored"})->as_bool());
+    CHECK(at(*game_of(*s), {"restored_session"})->as_bool());
+    CHECK(number_at(*game_of(*s), {"state", "seconds"}) ==
+          doctest::Approx(2.0 * number_at(*game_of(one), {"state", "seconds"})));
+    // The sky's clock on from the first run's: two seconds' worth at 60.
+    CHECK(number_at(*game_of(*s), {"clock", "sun_time_s"}) ==
+          doctest::Approx(number_at(*game_of(one), {"clock", "sun_time_s"}) + 60.0).epsilon(1e-6));
+  }
+  CHECK(write_json(*at(a, {"interactive", "trajectory", "hash"})) ==
+        write_json(*at(b, {"interactive", "trajectory", "hash"})));
+  // The other file is written at the end — a replay saves where it ended — never read.
+  JsonValue overwritten;
+  REQUIRE(read_json_file(other, overwritten));
+  CHECK(number_at(overwritten, {"state", "seconds"}) ==
+        doctest::Approx(number_at(*game_of(b), {"state", "seconds"})));
 }
 
 TEST_CASE("engine-view: --game refuses a module the host refuses, before any device") {

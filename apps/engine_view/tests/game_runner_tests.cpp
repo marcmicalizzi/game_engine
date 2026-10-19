@@ -291,6 +291,100 @@ TEST_CASE("game runner: thirst at zero ends the run, and the state file carries 
   CHECK(error.find("engine.walk_poc.Survivor") != std::string::npos);
 }
 
+TEST_CASE(
+    "game runner: the state file keeps the walker's pose, its scales and the clock, and a "
+    "replay restores from its header") {
+  // Version 2 of the state file (roadmap P47): a second of walking at a sun rate of 60 saves where
+  // the walker ended, how it looked, the sky's time and the ground's; a second runner reads it
+  // back, takes the sky's time whatever its own offset, and puts the pose on a live header. A
+  // version 1 file restores the state and no session; a session block of another version is
+  // refused; a replay of a recording restores the header's block and ignores the file.
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_session");
+  const input::ActionMap map = view::default_fly_map();
+  const std::string module = place(tmp, WALK_POC_PATH, "walk_poc");
+  const std::string state_file = tmp.file("state.json");
+  view::GameRunner::Config c = config_for(module, tmp);
+  c.state_file = state_file;
+  std::string error;
+  {
+    view::GameRunner runner;
+    REQUIRE_MESSAGE(runner.start(c, map, 240, &error), error);
+    runner.set_clock(3600.0, 60.0, 1000.0);
+    runner.set_time_rate(5.0);
+    runner.note_surface_time(1012.5);
+    CHECK(runner.restored_session() == nullptr);
+    u64 tick = 0;
+    walk(runner, tick, 240, 1.5 / 240.0, nullptr, WorldPos{10.0, 2.0, 30.0});
+    REQUIRE(runner.finish(&error));
+  }
+  JsonValue saved;
+  REQUIRE(parse_json(read_text(state_file), saved).ok);
+  u64 version = 0;
+  REQUIRE(saved.find("version")->get_u64(version));
+  CHECK(version == 2);
+  REQUIRE(saved.find("session") != nullptr);
+  MESSAGE("saved session: " << write_json(*saved.find("session")));
+
+  c.shadow_directory = tmp.file("shadow2");
+  view::GameRunner again;
+  REQUIRE_MESSAGE(again.start(c, map, 240, &error), error);
+  const view::GameRunner::SavedSession* s = again.restored_session();
+  REQUIRE(s != nullptr);
+  // The last tick's eye: 1.5 m walked north of z = 30, 1.65 m over the feet.
+  CHECK(s->eye.x == 10.0);
+  CHECK(s->eye.y == doctest::Approx(3.65));
+  CHECK(s->eye.z == doctest::Approx(28.5));
+  CHECK(s->walking);
+  CHECK(s->sun_time_s == doctest::Approx(3600.0 + 60.0));  // one second at 60
+  CHECK(s->sun_rate == 60.0);
+  CHECK(s->ground_time_s == 1000.0);
+  CHECK(s->has_surface_time);
+  CHECK(s->surface_time_s == 1012.5);
+  CHECK(s->time_rate == 5.0);
+  // Another offset: the sky stands where it stood.
+  again.set_clock(0.0, 1.0, 0.0);
+  CHECK(again.sun_time_s() == doctest::Approx(3660.0));
+  CHECK(again.sun_rate() == 60.0);
+  view::SessionHeader header;
+  view::GameRunner::apply_pose(*s, header);
+  CHECK(header.start.position.z == doctest::Approx(28.5));
+  CHECK(header.walking);
+  CHECK(again.restored_json().is_object());
+
+  // A version 1 file: the state, and no session.
+  write_text(state_file, R"({"format":"engine.game.state","version":1,"module":"walk_poc",
+                            "type":"engine.walk_poc.Survivor","state":{"seconds":5}})");
+  c.shadow_directory = tmp.file("shadow3");
+  view::GameRunner v1;
+  REQUIRE_MESSAGE(v1.start(c, map, 240, &error), error);
+  CHECK(state_number(v1, "seconds") == 5.0);
+  CHECK(v1.restored_session() == nullptr);
+  // A session block of another version is refused, naming it.
+  write_text(state_file, R"({"format":"engine.game.state","version":2,"module":"walk_poc",
+                            "type":"engine.walk_poc.Survivor","state":{},"session":{"version":9}})");
+  c.shadow_directory = tmp.file("shadow4");
+  view::GameRunner later;
+  CHECK_FALSE(later.start(c, map, 240, &error));
+  CHECK(error.find("version 9") != std::string::npos);
+  // A replay of a recording restores the header's block, and never the file (which holds the
+  // refused version 9 here): fresh, with no block; the block, with one.
+  view::GameRunner::Config replay = c;
+  replay.restore_from_header = true;
+  replay.restore = nullptr;
+  replay.shadow_directory = tmp.file("shadow5");
+  view::GameRunner fresh;
+  REQUIRE_MESSAGE(fresh.start(replay, map, 240, &error), error);
+  CHECK(fresh.restored_session() == nullptr);
+  CHECK(state_number(fresh, "seconds") == 0.0);
+  replay.restore = &saved;
+  replay.shadow_directory = tmp.file("shadow6");
+  view::GameRunner from_header;
+  REQUIRE_MESSAGE(from_header.start(replay, map, 240, &error), error);
+  REQUIRE(from_header.restored_session() != nullptr);
+  CHECK(state_number(from_header, "seconds") == doctest::Approx(1.0));
+}
+
 TEST_CASE("game runner: water at the nearest placement the host names refills the meter") {
   if (in_bundle()) return;
   const test::TempDir tmp("game_runner_water");

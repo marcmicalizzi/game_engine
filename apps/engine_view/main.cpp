@@ -529,6 +529,8 @@ constexpr const char* k_usage =
     "                   nobody at the keyboard; the real pointer is never taken\n"
     "  --input-map <f>  the action map to fly with (default: engine-view's own, the same as\n"
     "                   content/input-maps/engine-view.json)\n"
+    "  --dump-action-map <f>  write the action map a session would fly with (--input-map's, or\n"
+    "                   engine-view's own) and its hash to <f>, and exit: the file a game pins\n"
     "  --tunables <f>   load tunable values from a JSON object file (view.fly.* among them)\n"
     "  --tunable <s>    set tunables: \"view.fly.speed=20,view.fly.look=0.003\"\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
@@ -695,6 +697,11 @@ struct Options {
   // session somebody is at, and quit for an injected one (the tests depend on it).
   std::string on_end;
   std::string input_map;
+  // `--dump-action-map <file>`: write the action map a session would fly with — `--input-map`'s,
+  // or engine-view's own at its latest revision — and its hash, and exit (apps.md, "The game
+  // contract"; roadmap P47). How a game repository pins the map it ships with, by the file.
+  std::string dump_action_map;
+  bool time_rate_given = false;  // --time-rate was on the command line
   std::string tunables_file;
   std::string tunable_overrides;
   bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
@@ -1050,6 +1057,11 @@ int unavailable(const char* what, const std::string& error) {
   return k_exit_unavailable;
 }
 
+// The session's graphics for a `--game` module (ABI 4's `graphics_state`), below the game's
+// globals.
+void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSettings& resolved,
+                        u32 width, u32 height);
+
 // The device's half of the report's `machine` block, once a device exists.
 void report_device(const gfx::Device& device, const renderer::ResolvedSettings& resolved, u32 width,
                    u32 height) {
@@ -1063,6 +1075,7 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
   g_report.shadows = renderer::resolved_shadow_name(resolved);
   g_report.width = width;
   g_report.height = height;
+  note_game_graphics(device, resolved, width, height);
 }
 
 // ---- --game: the session's game module (game_runner.h) ---------------------------------------
@@ -1087,6 +1100,45 @@ void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
 }
 bool game_over() { return g_game != nullptr && g_game->ended(); }
+// **The graphics a module reads** (ABI 4, game_runner.h `set_graphics`): the resolved settings by
+// name, and the reasons the device made them what they are — derived here from the device's
+// features and the resolved flags, since `resolve_settings` logs its overrides rather than keeping
+// them (renderer.md, "Settings"): a vertex path on a device with no mesh shaders, cascaded maps on
+// one with no ray queries, casters off under traced shadows. The present mode is the one asked for
+// (`g_game_present`; the swapchain's own is the summary's `presentation`), and the display is
+// filled in by the first frame's overlay hook, which has the renderer.
+std::string g_game_present = "offscreen";
+void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSettings& resolved,
+                        u32 width, u32 height) {
+  if (g_game == nullptr) return;
+  hotload::GraphicsState s;
+  const auto copy = [](char (&to)[24], std::string_view from) {
+    const usize n = from.size() < 23 ? from.size() : 23;
+    std::memcpy(to, from.data(), n);
+    to[n] = '\0';
+  };
+  copy(s.raster, renderer::raster_name(resolved.settings.raster));
+  copy(s.shadows, renderer::resolved_shadow_name(resolved));
+  copy(s.present, g_game_present);
+  copy(s.display, "sdr");
+  copy(s.tier, device.adapter().verdict.tier);
+  s.width = width;
+  s.height = height;
+  s.ray_tracing = resolved.rt_chain ? 1u : 0u;
+  const gfx::DeviceFeatures& f = device.features();
+  const bool rays = f.ray_query && f.acceleration_structure;
+  const auto reason = [&](const char* text) {
+    if (s.reason_count >= 4) return;
+    std::snprintf(s.reasons[s.reason_count++], sizeof(s.reasons[0]), "%s", text);
+  };
+  if (resolved.vertex_path && !f.mesh_shader)
+    reason("raster: no mesh shaders on this device; the vertex-shader baseline tier draws");
+  if (resolved.csm && !rays)
+    reason("shadows: no ray queries on this device; the sun's cascaded shadow maps instead");
+  if (resolved.shadows && !resolved.casters)
+    reason("shadows: back faces cast no shadow (cones off, or templates that cannot mark them)");
+  g_game->set_graphics(s, rays, false);
+}
 // The loaded scene and the game's props (game_props.h): the props' meshes, and the scene made
 // dynamic so the renderer takes the props as a tail — **only when the scene lists props**, so a
 // scene with none stays exactly the scene it was (its frame loop allocates nothing, and the
@@ -1155,12 +1207,16 @@ bool game_clock(view::SunDay& sun) {
   sun.changes = g_game->rate_changes();
   return true;
 }
+JsonValue game_hud_elements();  // below, beside the HUD's overlay
 // At the session's end: the state saved, the report's block and reason, the failure said.
 void finish_game() {
   if (g_game == nullptr || !g_game->started()) return;
   std::string error;
   if (!g_game->finish(&error)) std::fprintf(stderr, "engine-view: game: %s\n", error.c_str());
   g_report.game = g_game->summary_json();
+  // Every HUD element's last state and where the last frame drew it (apps.md "--report"), so a
+  // game's test asserts where its prompt stood.
+  g_report.game.set("hud_elements", game_hud_elements());
   if (g_game->failed()) {
     std::fprintf(stderr, "engine-view: game: %s\n", g_game->error().c_str());
     g_report.reason = "game_error";
@@ -1179,7 +1235,12 @@ renderer::OverlayDrawData g_hud_data;
 f32 g_hud_display_scale = 1.0f;
 void set_hud_display_scale(f32 scale) { g_hud_display_scale = scale > 0.0f ? scale : 1.0f; }
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& renderer) {
-  if (g_game == nullptr || g_hud == nullptr || !g_hud->valid()) return nullptr;
+  if (g_game == nullptr) return nullptr;
+  // The ground's surface time this frame draws, for the state file's clock (game_runner.h).
+  g_game->note_surface_time(renderer.scene().ground_time_s());
+  g_game->set_graphics_display(gfx::display_encoding_name(renderer.display()),
+                               renderer.display() != gfx::DisplayEncoding::Sdr);
+  if (g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
   if (renderer.display() != gfx::DisplayEncoding::Sdr) {
     if (!said) {
@@ -1200,7 +1261,14 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
   }
   return g_hud_data.commands.empty() ? nullptr : &g_hud_data;
 }
+// The HUD's elements as the runner holds them and the overlay last drew them (game_hud.h).
+JsonValue game_hud_elements() {
+  if (g_game == nullptr) return JsonValue::array();
+  return view::hud_elements_json(g_game->hud(),
+                                 g_hud != nullptr && g_hud->valid() ? g_hud : nullptr);
+}
 #else
+void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
 bool game_over() { return false; }
 bool game_failed() { return false; }
@@ -1473,6 +1541,14 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
     h.has_game = true;
     h.game_module = g_game->module_name();
     h.game_build = g_game->build();
+    // What the session restored (`--game-state`), carried in the recording so its replay restores
+    // the same and not the file this session overwrites at its end; and the restored pose as the
+    // session's start, unless `--start` says where (roadmap P47).
+    if (g_game->restored_json().is_object()) h.game_restored = g_game->restored_json();
+    if (const view::GameRunner::SavedSession* saved = g_game->restored_session();
+        saved != nullptr && !options.start_given) {
+      view::GameRunner::apply_pose(*saved, h);
+    }
   }
 #endif
   return h;
@@ -1584,6 +1660,7 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
     // The HUD's overlay as drawn (game_hud.h): the font it was sized to, the panel, the atlas's
     // uploads and their cost.
     if (g_hud != nullptr && g_hud->valid()) game.set("overlay", g_hud->summary_json());
+    game.set("hud_elements", game_hud_elements());
     out.set("game", std::move(game));
   }
 #endif
@@ -3056,6 +3133,61 @@ int run_view(int argc, char** argv);
 
 }  // namespace
 
+// `--dump-action-map`: the map as `ActionMap::to_json` writes it — so the file loads back through
+// `--input-map`, which ignores the keys added here — with its `hash` (the number a recording's
+// header carries, `InputLog::map_hash`), the same as a hex string for tools whose JSON numbers are
+// doubles, the revision of engine-view's own map it is (0 for a map of the caller's), and where it
+// came from. No window, no device.
+int dump_action_map(const Options& options) {
+  input::ActionMap map = view::default_fly_map();
+  u32 revision = view::k_fly_map_revision;
+  std::string source = "engine-view";
+  if (!options.input_map.empty()) {
+    std::string text;
+    JsonValue value;
+    std::string error;
+    if (io::read_file(options.input_map, text) != io::Status::Ok) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: cannot read %s\n",
+                   options.input_map.c_str());
+      return 1;
+    }
+    if (const JsonParseResult parsed = parse_json(text, value); !parsed.ok) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: %s: %s\n", options.input_map.c_str(),
+                   std::string(parsed.message).c_str());
+      return 1;
+    }
+    map = input::ActionMap{};
+    if (!map.from_json(value, &error)) {
+      std::fprintf(stderr, "engine-view: --dump-action-map: %s\n", error.c_str());
+      return 1;
+    }
+    revision = 0;
+    source = options.input_map;
+  }
+  JsonValue out = map.to_json();
+  const u64 hash = map.hash();
+  char hex[24];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
+  out.set("hash", hash);
+  out.set("hash_hex", std::string_view(hex));
+  out.set("revision", revision);
+  out.set("source", source);
+  const io::Status status = io::write_file(
+      options.dump_action_map, write_json(out, JsonWriteOptions{.pretty = true}) + "\n");
+  if (status != io::Status::Ok) {
+    std::fprintf(stderr, "engine-view: --dump-action-map: cannot write %s (%s)\n",
+                 options.dump_action_map.c_str(), std::string(io::status_name(status)).c_str());
+    return 1;
+  }
+  JsonValue line = JsonValue::object();
+  line.set("action_map", options.dump_action_map);
+  line.set("hash", hash);
+  line.set("hash_hex", std::string_view(hex));
+  line.set("revision", revision);
+  std::printf("%s\n", write_json(line, JsonWriteOptions{.pretty = false}).c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   const int code = run_view(argc, argv);
@@ -3121,6 +3253,7 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.time_rate = v;
+      options.time_rate_given = true;  // a restored game state's rate does not override it
     } else if (a == "--terrain-rings") {
       options.settings.terrain_rings = true;
     } else if (a == "--terrain-tiles") {
@@ -3644,12 +3777,15 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.dither = value == "on";
+    } else if (a == "--dump-action-map") {
+      if (!next_value(argc, argv, i, a, options.dump_action_map)) return k_exit_usage;
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);
       return k_exit_usage;
     }
   }
+  if (!options.dump_action_map.empty()) return dump_action_map(options);
   if (options.width == 0 || options.height == 0 || options.grid < 2 || options.grid > 2048) {
     std::fprintf(stderr, "engine-view: size must be positive and --grid within 2..2048\n");
     return k_exit_usage;
@@ -4045,6 +4181,15 @@ int run_view(int argc, char** argv) {
     view::GameRunner::Config config;
     config.module = options.game;
     config.state_file = options.game_state;
+    // A replay of a `--game` recording restores what the live session restored — the header's
+    // `game.restored`, or nothing for one that started fresh — and never the state file, which the
+    // live session overwrote at its end (fly_camera.h `SessionHeader::game_restored`).
+    if (interactive.replay && interactive.header.has_game) {
+      config.restore_from_header = true;
+      config.restore = interactive.header.game_restored.is_object()
+                           ? &interactive.header.game_restored
+                           : nullptr;
+    }
     std::string game_error;
     // The scene's props by name (game_props.h), before the module loads: its `on_load` names them,
     // and the scene itself is loaded only once there is a device. One schema read of the file.
@@ -4061,6 +4206,9 @@ int run_view(int argc, char** argv) {
       return fail("game", game_error);
     }
     g_game = &game;
+    g_game_present = options.offscreen         ? std::string("offscreen")
+                     : options.present.empty() ? std::string(options.vsync ? "auto" : "no-vsync")
+                                               : options.present;
     std::fprintf(stderr, "engine-view: game: %s loaded\n", options.game.c_str());
     if (interactive.replay && interactive.header.has_game &&
         interactive.header.game_module != game.module_name()) {
@@ -4072,6 +4220,17 @@ int run_view(int argc, char** argv) {
                                 "'; another module would walk the recording somewhere else, so "
                                 "it is refused");
     }
+    // **The restored clock's ground** (game_runner.h `SavedSession`; roadmap P47): the scene's
+    // ground at the time the saved run's last frame drew it and the time-lapse at its rate, unless
+    // the command line says otherwise — before the scene is read, which builds the ground at it.
+    // The sky's clock and the walker's scales are the runner's own (`set_clock`, `set_session`),
+    // and the pose is the live header's (`live_header`); a replay's start is its recording's.
+    if (const view::GameRunner::SavedSession* saved = game.restored_session(); saved != nullptr) {
+      if (!options.ground_time_s.has_value() && saved->has_surface_time && !options.scene.empty())
+        options.ground_time_s = saved->surface_time_s;
+      if (!options.time_rate_given) options.settings.time_rate = saved->time_rate;
+    }
+    game.set_time_rate(options.settings.time_rate);
   }
   // The HUD's ImGui context, for a game only: without one nothing of it exists.
   view::GameHudOverlay hud;

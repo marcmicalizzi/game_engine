@@ -57,6 +57,20 @@ inline constexpr f32 k_hud_font_max_px = 64.0f;
 // The font for a `height`-pixel picture on a display at `display_scale` (1 at 100 %, 1.5 at 150 %;
 // an offscreen frame's is 1), whole pixels, clamped.
 f32 hud_font_px(u32 height, f32 display_scale) noexcept;
+// **An element's font** (`hotload::HudElement::size_px`, ABI 4): its size in pixels of a
+// 1080-pixel-high picture at 100 %, times the HUD's scale, whole pixels, never under
+// `k_hud_font_min_px` (the host's accessibility floor, the stack's) nor over
+// `k_hud_element_max_px` (a headline's 64 px at 1080p, on a 4K picture; every size drawn is baked
+// into the font atlas once, so the ceiling bounds the atlas too).
+inline constexpr f32 k_hud_element_max_px = 128.0f;
+f32 hud_element_px(f32 size_px, u32 height, f32 display_scale) noexcept;
+
+// **The report's and the summary's `hud_elements`** (apps.md "--report"): every element of `hud`
+// — the stack's lines and meters under their reserved ids, then the module's elements — with its
+// last state and where `overlay`'s last layout drew it (`bounds_px`, [x0, y0, x1, y1], empty
+// [0, 0, 0, 0] when it drew nothing there or there is no overlay).
+class GameHudOverlay;
+JsonValue hud_elements_json(const GameHud& hud, const GameHudOverlay* overlay);
 
 // A rectangle of the picture, in pixels (x1, y1 exclusive); empty when nothing was drawn.
 struct HudRect {
@@ -110,9 +124,27 @@ class GameHudOverlay {
   u64 layouts() const noexcept { return layouts_; }
   // The summary's `interactive.game.overlay` block.
   JsonValue summary_json() const;
+  // Where the last layout drew the element `id` (an element's own, or a reserved id of the stack's
+  // lines and meters); empty when it drew nothing there.
+  HudRect bounds_of(u32 id) const noexcept;
+  // The HUD scale the last layout used: the picture's height over 1080 times the display's scale.
+  f32 hud_scale() const noexcept { return scale_; }
 
  private:
   void apply_font(f32 px);
+  void draw_elements(const GameHud& hud, f32 margin_x, f32 margin_y);
+
+  // The rectangles of the last layout, by id: the stack's lines and meters, then the elements.
+  struct Placed {
+    u32 id = 0;
+    HudRect rect;
+    f32 font_px = 0.0f;
+  };
+  static constexpr u32 k_placed = GameHud::k_lines + GameHud::k_meters + GameHud::k_elements;
+  Placed placed_[k_placed];
+  u32 placed_count_ = 0;
+  f32 scale_ = 1.0f;
+  f32 display_scale_ = 1.0f;
 
   ImGuiContext* context_ = nullptr;
   Vector<renderer::OverlayVertex> vertices_;

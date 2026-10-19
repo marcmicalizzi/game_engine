@@ -36,6 +36,7 @@
 #include <core/base/types.h>
 #include <core/json/json_value.h>
 #include <core/math/world.h>
+#include <foundation/hotload/module_abi.h>
 #include <foundation/input/input.h>
 
 #include <memory>
@@ -50,13 +51,20 @@ inline constexpr const char* k_game_actions[] = {"interact", "use",    "game_1",
                                                  "game_2",   "game_3", "game_4"};
 inline constexpr u32 k_game_action_count = 6;
 
-// The HUD a module asked for on its last tick: up to `k_lines` text lines and `k_meters` meters,
-// each a fixed buffer, so collecting it allocates nothing.
+// The HUD a module asked for: up to `k_lines` text lines and `k_meters` meters said on its last
+// tick (`hud_text`, `hud_meter`: the top-left stack, said again every tick), and up to
+// `k_elements` **structured elements** (`hud_element`, ABI 4: anchored, styled, retained until
+// removed). Each is a fixed buffer, so collecting it allocates nothing. The lines and meters are
+// elements too, of the host's reserved ids (`hotload::k_hud_line_id + n`, `k_hud_meter_id + m`),
+// and are laid out as the one panel they always were, so a module that calls only them draws the
+// picture it drew (apps.md, "The HUD, provisional").
 struct GameHud {
   static constexpr u32 k_lines = 16;
   static constexpr u32 k_line_chars = 96;
   static constexpr u32 k_meters = 8;
   static constexpr u32 k_name_chars = 32;
+  static constexpr u32 k_elements = 64;
+  static constexpr u32 k_element_chars = 128;
   struct Line {
     bool set = false;
     char text[k_line_chars] = {};
@@ -66,15 +74,48 @@ struct GameHud {
     f64 value = 0.0;
     f64 max = 0.0;
   };
+  // A `hotload::HudElement` as the host keeps it: the text copied, the rest by value.
+  struct Element {
+    u32 id = 0;
+    hotload::HudAnchor anchor = hotload::HudAnchor::Centre;
+    hotload::HudAlign align = hotload::HudAlign::Centre;
+    f32 offset_px[2] = {0.0f, 0.0f};
+    f32 size_px = 18.0f;
+    f32 outline_px = 0.0f;
+    u8 color[4] = {255, 255, 255, 255};
+    u8 outline_color[4] = {0, 0, 0, 255};
+    hotload::HudPanel panel = hotload::HudPanel::None;
+    u8 panel_color[4] = {0, 0, 0, 115};
+    f32 panel_padding_px = 6.0f;
+    bool visible = true;
+    u64 tick = 0;  // the tick that last said it
+    char text[k_element_chars] = {};
+  };
   Line lines[k_lines];
   Meter meters[k_meters];
   u32 meter_count = 0;
-  u64 tick = 0;  // the tick that said it
+  Element elements[k_elements];  // in the order they were first placed, which is drawing order
+  u32 element_count = 0;
+  u64 tick = 0;  // the tick that said the lines and meters
 
+  // The lines and meters, at the start of every tick; the elements stay.
   void clear() noexcept;
+  // Everything, the elements too (a new run).
+  void clear_all() noexcept;
+  // Whether there is nothing to draw: no line, no meter and no visible element.
   bool empty() const noexcept;
+  // Whether the top-left stack — the lines and meters — is empty.
+  bool stack_empty() const noexcept;
+  // Places or replaces an element by its id (the runner has judged it), or removes one.
+  hotload::Result set_element(const hotload::HudElement& element, u64 tick) noexcept;
+  hotload::Result remove_element(u32 id) noexcept;
+  const Element* find_element(u32 id) const noexcept;
   JsonValue to_json() const;
 };
+
+// The element's anchor and alignment by name, as the report writes them ("top_left", "centre").
+const char* hud_anchor_name(hotload::HudAnchor anchor) noexcept;
+const char* hud_align_name(hotload::HudAlign align) noexcept;
 
 // One tick, as the runner reads it from the session (or a test makes it).
 struct GameTickInput {
@@ -120,7 +161,60 @@ class GameRunner {
     std::string state_file;  // --game-state: restored at start when present, saved at finish
     // Where the per-load copies go; empty: beside the module ("<module>.hotload").
     std::string shadow_directory;
+    // **A replay of a `--game` recording restores from its header**, never from `state_file`
+    // (which the live session overwrote at its end): `restore_from_header` set, and `restore` the
+    // header's `game.restored` object or null for a recording that started fresh. Unset, the state
+    // file restores when it exists.
+    bool restore_from_header = false;
+    const JsonValue* restore = nullptr;
   };
+
+  // **The session as the state file keeps it** (version 2 of `engine.game.state`, 2026-10-18,
+  // roadmap P47): where the walker stood and looked, whether it walked, its speed scales, and the
+  // clock — the sky's time and rate, the ground's time and the time-lapse's rate. A file of
+  // version 1 has none, and a session from it starts where its flags say, as before.
+  struct SavedSession {
+    WorldPos eye{};  // the camera, world metres (the eye: a walker is dropped from it to its feet)
+    f32 yaw = 0.0f;
+    f32 pitch = 0.0f;
+    bool walking = false;
+    f32 speed_scale = 1.0f;
+    f32 sprint_scale = 1.0f;
+    f64 sun_time_s = 0.0;     // the sky's clock as the frame drew it: offset plus the day's seconds
+    f64 sun_rate = 0.0;       // game seconds a second, as the keys had left it
+    f64 ground_time_s = 0.0;  // the ground's surface time the world's clock stands on
+    f64 surface_time_s = 0.0;  // the moving ground's time the last frame drew (the time-lapse's)
+    bool has_surface_time = false;
+    f64 time_rate = 0.0;  // the time-lapse's rate (`--time-rate`)
+  };
+  static constexpr u32 k_state_version = 2;
+  static constexpr u32 k_session_version = 1;
+  // The restored session, or null (no file, a version 1 file, a replay of a fresh recording).
+  const SavedSession* restored_session() const noexcept;
+  // The object the runner restored from (the file's, or the header's), for a live recording's
+  // header (`SessionHeader::game_restored`); null when it restored nothing.
+  const JsonValue& restored_json() const noexcept;
+  // The restored pose onto a live session's header: its start and whether it starts walking. A
+  // replay's header is the recording's and is never changed.
+  static void apply_pose(const SavedSession& saved, SessionHeader& header) noexcept;
+  // What the runner cannot see from a tick and the state file keeps: the ground's surface time as
+  // the frame drew it (once a frame), and the time-lapse's rate (once).
+  void note_surface_time(f64 surface_time_s) noexcept;
+  void set_time_rate(f64 time_rate) noexcept;
+
+  // **The graphics a module reads and asks for** (ABI 4's `graphics_state`, `request_graphics`;
+  // apps.md "The game contract"): the session's resolved settings and the reasons they are not
+  // what was asked, set by whoever made the device, and what that device could draw instead —
+  // traced shadows and the ray path, HDR output — which a request is judged against. Until it is
+  // set (in `on_load`, before any device) `graphics_state` answers `Unsupported`.
+  void set_graphics(const hotload::GraphicsState& state, bool ray_tracing_available,
+                    bool hdr_available) noexcept;
+  // The requests recorded, for the summary; none is applied to a running session (the next safe
+  // point is a restart of the session, and engine-view does not restart one yet).
+  u32 graphics_requests() const noexcept;
+  // The display encoding the frames are drawn for ("sdr", "hdr10", "scrgb", "linear"), known once
+  // there is a renderer: an HDR one makes an HDR request answerable.
+  void set_graphics_display(std::string_view name, bool hdr) noexcept;
   // Loads the module through `hotload::ModuleHost` (refusals in the host's own words), resolves
   // its `game_tick`, and restores the state file when there is one. `map` is the session's, which
   // the declared actions are looked up in; an action the map lacks (a log recorded before revision
