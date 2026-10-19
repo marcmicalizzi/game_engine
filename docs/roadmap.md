@@ -322,6 +322,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S84 | ADR-0029's thresholds on a quiet machine and the Titan X | blocked (the Maxwell machine is down) | S67 | S | routine | [ADR-0029](adr/0029-deformable-volume-budgets.md) |
 | S85 | Phase 6 exit | open | S48, S49, S53, S57, S83, W29, W41 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | S86 | Water, stage 2: refraction of what is under the surface, swimming, buoyancy, the ripple map | open | S63, R65 | L | design | [water](subsystems/water.md#not-yet) |
+| S87 | Animation in mixed game scenes and on the simulation clock: the clip loader reads every instance and skips generated, rigid and container meshes, both cluster merges keep a skin stream when any part has one, the water's mesh no longer trips the skeleton build, the world steps on the session's tick in the window and offscreen alike, and the summary carries clip, playhead and pose hashes per animated instance | in progress (the merge rule first: geometry.md, "A merge is skinned when any of its inputs is") | S33 | M | design | [geometry](subsystems/geometry.md#skinned-meshes-the-binding-stream) |
 
 ## C — Characters and tissue
 

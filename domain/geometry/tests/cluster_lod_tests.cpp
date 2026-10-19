@@ -487,3 +487,93 @@ TEST_CASE("cluster lod: skin bindings reach every level and survive both merges"
   CHECK(plain.mesh.skin.empty());
   CHECK(plain.mesh.skin_joint_count == 0);
 }
+
+// **A rigid mesh first and a skinned one second keep the skin stream** (roadmap S87). Both merges
+// decided `skinned` from their first input alone, so a scene listing a palm before a character
+// merged with no stream at all and the load refused the character's instance ("an instance is
+// skinned, but its mesh carries no skin binding stream"). The rigid run is the default record —
+// joint 0, weight 255 — which is padding: a rigid mesh's instances name no joints, their deform
+// record (if any) has no skinning stage, and the pool never reads those bindings, so no pose can
+// move the rigid mesh's vertices. What is checked here is the geometry's half: the stream is there,
+// whole, the skinned run is the skinned mesh's own, the rigid run is the default, and the rigid
+// mesh's positions and grid are exactly what it had alone.
+TEST_CASE("cluster lod: a rigid part first keeps a later part's skin stream in both merges") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(17, 4.0f, positions, indices);
+  Vector<SkinBinding> skin;
+  for (const Vec3& p : positions) {
+    const u32 joints[4] = {1, 2, 0, 0};
+    const f32 t = (p.x + 4.0f) / 8.0f;
+    const f32 weights[4] = {1.0f - t, t, 0.0f, 0.0f};
+    skin.push_back(make_skin_binding(joints, weights));
+  }
+  AttributeSource attributes;
+  attributes.skin = std::span<const SkinBinding>(skin.data(), skin.size());
+  attributes.joint_count = 3;
+  std::string error;
+  ClusterLodMesh rigid;
+  ClusterLodMesh skinned;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, rigid, &error));
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions, indices, ClusterLodOptions{}, skinned, &error, attributes),
+      error);
+  REQUIRE(rigid.mesh.skin.empty());
+  REQUIRE(skinned.mesh.skin.size() == skinned.mesh.vertices.size());
+  const ClusterLodMesh inputs[2] = {rigid, skinned};
+
+  auto check_default = [](const SkinBinding& b) {
+    CHECK(b.joints[0] == 0);
+    CHECK(b.weights[0] == 255);
+    CHECK(b.weights[1] + b.weights[2] + b.weights[3] == 0);
+  };
+
+  // The meshes of one scene.
+  ClusterLodMesh scene;
+  Vector<ClusterMeshPart> parts;
+  REQUIRE_MESSAGE(
+      merge_cluster_meshes(std::span<const ClusterLodMesh>(inputs, 2), scene, parts, &error),
+      error);
+  REQUIRE(scene.mesh.skin.size() == scene.mesh.vertices.size());
+  CHECK(scene.mesh.skin_joint_count == 3);
+  REQUIRE(parts.size() == 2);
+  for (u32 v = 0; v < rigid.mesh.vertices.size(); ++v) {
+    check_default(scene.mesh.skin[parts[0].first_vertex + v]);
+    CHECK(scene.mesh.vertices[parts[0].first_vertex + v].x == rigid.mesh.vertices[v].x);
+    CHECK(scene.mesh.vertices[parts[0].first_vertex + v].y == rigid.mesh.vertices[v].y);
+    CHECK(scene.mesh.vertices[parts[0].first_vertex + v].z == rigid.mesh.vertices[v].z);
+    for (u32 k = 0; k < 3; ++k)
+      CHECK(scene.mesh.quantized[(parts[0].first_vertex + v) * 3 + k] ==
+            rigid.mesh.quantized[v * 3 + k]);
+  }
+  for (u32 v = 0; v < skinned.mesh.vertices.size(); ++v) {
+    const SkinBinding& got = scene.mesh.skin[parts[1].first_vertex + v];
+    for (u32 k = 0; k < 4; ++k) {
+      CHECK(got.joints[k] == skinned.mesh.skin[v].joints[k]);
+      CHECK(got.weights[k] == skinned.mesh.skin[v].weights[k]);
+    }
+  }
+  CHECK(parts[0].quant_origin.x == rigid.mesh.quant_origin.x);
+  CHECK(parts[0].quant_scale == rigid.mesh.quant_scale);
+
+  // The parts of one mesh (an unskinned primitive before a skinned one).
+  ClusterLodMesh merged;
+  REQUIRE_MESSAGE(
+      merge_cluster_lod(std::span<const ClusterLodMesh>(inputs, 2), merged, nullptr, &error),
+      error);
+  REQUIRE(merged.mesh.skin.size() == merged.mesh.vertices.size());
+  CHECK(merged.mesh.skin_joint_count == 3);
+  for (u32 v = 0; v < rigid.mesh.vertices.size(); ++v)
+    check_default(merged.mesh.skin[v]);
+  const u32 second = rigid.mesh.vertices.size();
+  for (u32 v = 0; v < skinned.mesh.vertices.size(); ++v)
+    CHECK(merged.mesh.skin[second + v].joints[0] == skinned.mesh.skin[v].joints[0]);
+
+  // Rigid alone still merges with no stream, so a rigid scene pays nothing.
+  const ClusterLodMesh rigid_only[2] = {rigid, rigid};
+  ClusterLodMesh plain;
+  REQUIRE(merge_cluster_meshes(std::span<const ClusterLodMesh>(rigid_only, 2), plain, parts,
+                               &error));
+  CHECK(plain.mesh.skin.empty());
+  CHECK(plain.mesh.skin_joint_count == 0);
+}
