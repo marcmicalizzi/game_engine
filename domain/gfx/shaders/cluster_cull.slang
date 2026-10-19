@@ -392,8 +392,11 @@ void cull_pair(uint pair, bool vertex_draw) {
   // of the picture had its shadow cut by the frustum's edge, cluster by cluster. With `casters`
   // set, such a pair is tested against the view's caster volumes — every point from which a ray
   // towards a shadowed light can reach the view — and inside one it is a caster, which goes on
-  // through the cut and the page table below like any caster. A deformed instance is not: the
-  // caster run has no pool blocks, so its rest pose would cast where its pose does not.
+  // through the cut and the page table below like any caster. A deformed instance is one too since
+  // 2026-10-18 — a skinned character, a `--deform` mesh, and every terrain level: the caster run is
+  // allocated pool blocks and deformed like a drawn run, and its CLAS records read them (an entry
+  // the budget refused is built not at all, `clas_records.slang`). The padded sphere bounds it
+  // here as it does a drawn pair.
   bool caster = false;
   if (params->lod.w > 0.0) {
     bool outside = false;
@@ -406,7 +409,7 @@ void cull_pair(uint pair, bool vertex_draw) {
     }
     if (outside) {
       if (params->casters == 0 || params->caster_volume_count == 0 ||
-          instance.deform != k_invalid_deform || !in_caster_volume(params, center, radius)) {
+          !in_caster_volume(params, center, radius)) {
         return;
       }
       caster = true;

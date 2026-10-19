@@ -100,7 +100,10 @@ if(TARGET engine::terrain)
        # A streamed tail beside the world's tiles: placements that come and go on the dunes,
        # traced like the prefix. Built on the dunes, so only where the terrain capability is: the
        # minimal build resolves no world tiles (batch 17's gate found it).
-       tests/streamed_tail_tests.cpp)
+       tests/streamed_tail_tests.cpp
+       # The dunes behind the camera casting traced shadows into the view under a low sun: every
+       # terrain level is a deformed instance, and the caster run gives it pool blocks.
+       tests/terrain_shadow_tests.cpp)
 endif()
 if(TARGET engine::sky)
   # A scene naming a sky: the entry read and checked through the registry, the lights, the sky the

@@ -1008,6 +1008,17 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     const i64 waited = time::monotonic_ns();
     frames_.wait_idle();
     if (!scene_->relayout(error)) return false;
+    // The chain's union grew with the stride, and with it the ceiling the capacity policy may grow
+    // to (`rt_capacity_limit`, the budget or the union, whichever is less). Until 2026-10-18 the
+    // policy kept the ceiling it was created with — the load's prefix's union — so a tail whose
+    // frames wanted more than the prefix ever could was dropped instance by instance, every frame,
+    // even from a frame drawn complete. A world on tile ground never showed it: its prefix, every
+    // tile slot, is the larger part of any frame.
+    if (resolved_.rt_chain) {
+      RtCapacityConfig config = rt_capacity_.config();
+      config.limit = scene_->rt_capacity_limit();
+      rt_capacity_.reset(config, scene_->rt_capacity());
+    }
     ++stats_.tiles.relayouts;
     stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
   }
@@ -2882,6 +2893,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           timer.end(cb);
         });
   };
+  // Run 2 is the software rasterizer's, or with shadow casters the casters' (gfx::k_caster_run):
+  // either way counted in the software argument blocks, so the allocator and the pass read the
+  // same word for both.
   auto add_deform = [&](u32 run) {
     const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
     const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
@@ -3267,6 +3281,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   if (cull_on) add_cull(0, 0);
   if (deform_on) add_static_cache();
   if (deform_on) add_deform(0);
+  // **The shadow casters' pool blocks** (renderer.md, "Shadows"): a deformed instance outside the
+  // frustum — a skinned character, a `--deform` mesh, every terrain level — is a caster since
+  // 2026-10-18, so the caster run (the software run, which a frame with casters never draws) is
+  // allocated and deformed like a drawn run, behind run 0 on the same cursor, and its entries' CLAS
+  // records read their own blocks. An entry the budget has no room for is not built at all
+  // (`clas_records.slang`): a rest pose would cast where the pose does not.
+  if (deform_on && casters) add_deform(gfx::k_caster_run);
   if (direct) {
     // The direct path is single-view by construction: it draws mesh shaders straight to color.
     const gfx::ClusterDrawParams* params = &draws[0][0];
@@ -3363,6 +3384,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rg_args[0], gfx::Access::ComputeRead);
               if (casters) b.read(rg_sw_args, gfx::Access::ComputeRead);  // the casters' counts
               b.read(rg_visible, gfx::Access::ComputeRead);
+              // A deformed entry's block: the emit pass points its record at it, and the bucketing
+              // pass leaves out a caster the pool had no room for.
+              if (deform_on) b.read(rg_slots, gfx::Access::ComputeRead);
               b.write(rt.slots, gfx::Access::ComputeReadWrite);
               b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
               if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);

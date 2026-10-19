@@ -77,6 +77,8 @@ struct RecordsFixture {
   u32 caster_base = 0;
   Vector<u32> list;  // the whole list as the renderer lays it out: three runs of pair_count
   Vector<u32> deform_slot_table;
+  // With deformed casters: the caster entries the pool gave no block, which are built not at all.
+  Vector<u8> refused;
   gfx::BufferResource clusters, vertices, index8, instances, visible_buffer, count_buffer,
       caster_count_buffer, slots, instance_counts, records, record_count, blas_records, meshes,
       deform_table, deform_slots, pool;
@@ -87,7 +89,7 @@ struct RecordsFixture {
   u32 entry_instance(u32 entry) const { return list[u64{entry} * 2]; }
   u32 entry_cluster(u32 entry) const { return list[u64{entry} * 2 + 1]; }
 
-  bool create() {
+  bool create(bool deformed_casters = false) {
     if (!gfx_test::open_device(device)) return false;
     Vector<Vec3> positions;
     Vector<u32> indices;
@@ -122,10 +124,16 @@ struct RecordsFixture {
     count = entry_count - 1;
     // The shadow casters: the rigid instance's odd clusters, which the list above does not draw,
     // in run `k_caster_run` of the one view, and again one entry beyond their count. A deformed
-    // instance is never cone-tested, so it never has one.
+    // instance is never cone-tested, so it has casters only outside the frustum: with
+    // `deformed_casters`, its odd clusters too, every other one of which the pool gave a block
+    // (renderer.md, "Shadows": the others are built not at all).
     for (u32 i = 1; i < cluster_count; i += 2) {
       caster_entries.push_back(0);
       caster_entries.push_back(i);
+      if (deformed_casters) {
+        caster_entries.push_back(k_deformed);
+        caster_entries.push_back(i);
+      }
     }
     caster_count = caster_entries.size() / 2 - 1;
     caster_base = gfx::k_caster_run * pair_count;  // run-major, one view
@@ -142,6 +150,18 @@ struct RecordsFixture {
     for (u32 e = 0; e < entry_count; ++e) {
       if (visible[e * 2] != k_deformed) continue;
       deform_slot_table[e] = k_pool_bias + mesh.clusters[visible[e * 2 + 1]].vertex_offset;
+    }
+    refused.assign(u64{3} * pair_count, u8{0});
+    u32 deformed_casters_seen = 0;
+    for (u32 j = 0; j < caster_count; ++j) {
+      if (caster_entries[j * 2] != k_deformed) continue;
+      const u32 entry = caster_base + j;
+      if (deformed_casters_seen++ % 2 == 0) {
+        deform_slot_table[entry] =
+            k_pool_bias + mesh.clusters[caster_entries[j * 2 + 1]].vertex_offset;
+      } else {
+        refused[entry] = 1;
+      }
     }
     constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
     constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
@@ -266,17 +286,25 @@ struct RecordsFixture {
   u32 casters_of(u32 k) const {
     u32 n = 0;
     for (u32 i = 0; i < caster_count; ++i)
-      n += caster_entries[i * 2] == k ? 1u : 0u;
+      n += caster_entries[i * 2] == k && refused[caster_base + i] == 0 ? 1u : 0u;
     return n;
+  }
+  u32 refused_count() const {
+    u32 n = 0;
+    for (const u8 r : refused)
+      n += r;
+    return n;
+  }
+  // An entry the records hold: a counted drawn one, or a counted caster the pool did not refuse.
+  bool listed(u32 entry) const {
+    return entry < count ||
+           (entry >= caster_base && entry < caster_base + caster_count && refused[entry] == 0);
   }
 
   // Every record the set holds, checked against the CPU writer: byte-identical for the entry its
   // cluster id names, inside its instance's run, drawn clusters before casters, each listed entry
   // at most once. Returns how many of each were seen through `drawn_seen` and `casters_seen`.
   void check_records(u32 expected_records, Vector<u32>& seen) {
-    auto listed = [&](u32 entry) {
-      return entry < count || (entry >= caster_base && entry < caster_base + caster_count);
-    };
     const auto* got = static_cast<const u8*>(records.mapped);
     u32 differing = 0;
     u32 misplaced = 0;
@@ -397,6 +425,45 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   MESSAGE("records for " << f.count << " drawn and " << f.caster_count << " caster entries of "
                          << f.pair_count << " pairs over " << k_instances
                          << " instances (one deformed) match the CPU");
+}
+
+TEST_CASE("clas records: a deformed caster reads its block, and one with none is not built") {
+  // **The pool over the caster run** (renderer.md, "Shadows"; roadmap R84). Outside the frustum a
+  // deformed instance is a caster too, and the caster run is allocated pool blocks like a drawn
+  // run: a caster with a block is built from it, exactly as a drawn entry is, and one the budget
+  // refused (`k_no_pool_slot`) is **not built at all** — its rest pose would cast where its pose
+  // does not, and a wrong shadow is worse than a missing one. A drawn entry with no block still
+  // draws its rest pose; the rule is the casters' alone.
+  RecordsFixture f;
+  if (!f.create(true)) return;
+  REQUIRE(f.casters_of(k_deformed) > 0);
+  REQUIRE(f.refused_count() > 0);
+  f.run(f.pair_count);
+  u32 total = 0;
+  for (u32 k = 0; k < k_instances; ++k) {
+    CHECK(f.drawn_out()[k] == f.drawn_of(k));
+    CHECK(f.casters_out()[k] == f.casters_of(k));
+    CHECK(f.first_out()[k] == total);
+    total += f.drawn_of(k) + f.casters_of(k);
+  }
+  const u32 expected_records = f.count + f.caster_count - f.refused_count();
+  CHECK(total == expected_records);
+  CHECK(f.record_word(0) == expected_records);
+  CHECK(f.record_word(1) == expected_records);  // a refused caster is not wanted either
+  Vector<u32> seen;
+  f.check_records(expected_records, seen);
+  u32 unseen = 0;
+  u32 refused_built = 0;
+  for (u32 e = 0; e < seen.size(); ++e) {
+    unseen += seen[e] != (f.listed(e) ? 1u : 0u);
+    refused_built += f.refused[e] != 0 ? seen[e] : 0u;
+  }
+  CHECK(unseen == 0);
+  CHECK(refused_built == 0);
+  f.check_blas_records();
+  MESSAGE(f.casters_of(k_deformed)
+          << " deformed casters built from their blocks, " << f.refused_count()
+          << " without one left out, beside " << f.casters_of(0) << " rigid casters");
 }
 
 TEST_CASE("clas records: a set sized under the frame keeps whole instances, casters last") {

@@ -287,10 +287,12 @@ inline constexpr u32 k_ground = 0;  // the ground's instance
 
 struct Shot {
   CapturedFrame frame;
-  u32 casters = 0;       // Stats::shadow_casters
-  u32 visible = 0;       // Stats::visible_pairs()
-  u32 shadow_pairs = 0;  // Stats::shadow_pairs
-  bool csm = false;      // the frame drew cascaded maps
+  u32 casters = 0;          // Stats::shadow_casters
+  u32 visible = 0;          // Stats::visible_pairs()
+  u32 shadow_pairs = 0;     // Stats::shadow_pairs
+  u32 deform_entries = 0;   // Stats::deform_entries: entries the pool gave a block
+  u32 deform_overflow = 0;  // Stats::deform_overflow_entries: entries it had no room for
+  bool csm = false;         // the frame drew cascaded maps
   bool available = true;
   std::string why;
 };
@@ -310,6 +312,13 @@ struct ShotOptions {
   Vec3 caster_offset{};     // make_scene's
   bool off_frustum_casters = true;
   bool lights = false;  // the renderer's two stand-in point lights beside the sun
+  // `--deform`: every instance read out of the deformed-vertex pool, at `frame_index`'s phase
+  // (`deform.slang`'s time is the frame index over 60), with a budget of `deform_pool_kib`.
+  bool deform = false;
+  u32 deform_kind = gfx::k_deform_identity;
+  f32 deform_amplitude = 0.02f;
+  u32 deform_pool_kib = 0;
+  u64 frame_index = 0;
 };
 
 // One picture of the scene, with its ids, under the options given.
@@ -328,6 +337,10 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   settings.shadow_frustum = options.shadow_frustum;
   // The sun alone, unless a case asks: its shadow is what the shadow view shows.
   settings.lights = options.lights;
+  settings.deform = options.deform;
+  settings.deform_kind = options.deform_kind;
+  settings.deform_amplitude = options.deform_amplitude;
+  settings.deform_pool_kib = options.deform_pool_kib;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   const RenderAvailability availability = check_availability(resolved, device.features());
@@ -349,6 +362,7 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   frame.camera.position = absolute(WorldPos::origin(), to_world(frame_rotation, options.eye));
   frame.camera.target = absolute(WorldPos::origin(), to_world(frame_rotation, options.target));
   frame.view_mode = options.view_mode;
+  frame.frame_index = options.frame_index;
   CaptureChannels channels;
   channels.color = true;
   channels.ids = true;
@@ -356,6 +370,8 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   shot.casters = renderer.stats().shadow_casters;
   shot.visible = renderer.stats().visible_pairs();
   shot.shadow_pairs = renderer.stats().shadow_pairs;
+  shot.deform_overflow = renderer.stats().deform_overflow_entries;
+  shot.deform_entries = renderer.stats().deform_entries;
   return shot;
 }
 

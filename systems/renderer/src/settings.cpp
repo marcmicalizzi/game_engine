@@ -221,10 +221,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // **A scene whose instances come and go between frames** — a streamed world's — is traced and
   // has the deformed-vertex pool since 2026-10-12: a block of the tail writes its own slots of the
   // chain's per-instance tables, and the pool's per-frame suballocation walks the visible list,
-  // which a hole never reaches (GpuScene, renderer.md "Instances that come and go"). What it still
-  // has not is a deformed *tail*: `--deform` deforms every instance and a tail instance has no
-  // entry in the pool's table, so it is off with a warning; a skinned or morphed scene is refused
-  // by the GPU scene, and cluster templates are off below.
+  // which a hole never reaches (GpuScene, renderer.md "Instances that come and go"); since
+  // 2026-10-18 its loaded instances may be skinned or morphed, since the deform table is laid out
+  // for them once and their slots never move. What it still has not is a deformed *tail*:
+  // `--deform` deforms every instance and a tail instance has no entry in the pool's table, so it
+  // is off with a warning; a skinned or morphed tail instance is refused by name when it is handed
+  // over (`GpuScene::set_dynamic_instances`), and cluster templates are off below.
   const bool dynamic = scene != nullptr && scene->dynamic;
   if (dynamic && s.deform) {
     s.deform = false;
