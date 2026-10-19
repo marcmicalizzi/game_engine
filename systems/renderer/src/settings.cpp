@@ -67,6 +67,21 @@ bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept {
   return true;
 }
 
+const char* water_quality_name(WaterQuality quality) noexcept {
+  return quality == WaterQuality::Low ? "low" : "high";
+}
+
+bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept {
+  if (text == "low") {
+    out = WaterQuality::Low;
+  } else if (text == "high") {
+    out = WaterQuality::High;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept {
   return resolved.shadows ? "rt" : (resolved.csm ? "csm" : "off");
 }

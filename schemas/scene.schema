@@ -924,7 +924,7 @@ struct WaterShape @version(1) {
 /// mesh carries under each vertex (the level less the ground there, zero where the ground stands
 /// above the water). The walker wades in it and stops at the chest. Append-only: a field added
 /// later has a default that draws what the block drew before it.
-struct WaterBody @version(1) {
+struct WaterBody @version(2) {
   name: string
   /// The surface's height, a world y, metres.
   level_m: f64 = 0 @unit(m)
@@ -954,6 +954,20 @@ struct WaterBody @version(1) {
   roughness: f32 = 0.08
   /// What the waves' phases are drawn from.
   seed: u32 = 1
+  /// **The volume tier** (the renderer's `water_quality` "high"; docs/subsystems/water.md,
+  /// "Translucent by volume"): the ground under the water seen through it, dimmed and tinted by
+  /// these. What the water absorbs per metre, linear RGB; absent: clear fresh water's, about
+  /// (0.45, 0.065, 0.03) — the red gone in two metres, the blue kept for thirty.
+  absorption: vec3? @since(2)
+  /// What the water scatters per metre, linear RGB, which is the colour deep water tends to under
+  /// the sky's light and the sun's; absent: a little fine matter, (0.03, 0.035, 0.04).
+  scattering: vec3? @since(2)
+  /// The share of the bottom's light that reaches the surface beyond what absorption and
+  /// scattering take, [0, 1]: 1 a clear pool, less a film over the bottom.
+  transmission: f32 = 1 @since(2)
+  /// Suspended sediment, >= 0: each unit adds scattering of the sand's colour (0.9, 0.82, 0.68) and
+  /// absorption (0.03, 0.06, 0.14) per metre, so a turbid pool turns milky and ochre.
+  turbidity: f32 = 0 @since(2)
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,

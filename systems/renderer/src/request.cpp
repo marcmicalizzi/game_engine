@@ -539,6 +539,10 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   s.rt_templates = in.rt_templates;
   s.rt_budget_mib = in.rt_budget_mib;
   s.share_textures = in.share_textures;
+  if (!parse_water_quality(in.water_quality, s.water_quality)) {
+    error = "water_quality must be low or high; got '" + in.water_quality + "'";
+    return false;
+  }
   s.time_rate = in.time_rate;
   s.terrain_rings = in.terrain_rings;
   s.terrain_tiles = in.terrain_tiles;

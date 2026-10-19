@@ -155,4 +155,163 @@ float3 water_reflected(float3 n, float3 v) {
   return normalize(r);
 }
 
+// ---- the volume tier (RenderSettings::water_quality "high"; water.md, "Translucent by volume") ---
+//
+// A water material with `k_material_water_volume` is followed in the table by its **optics**
+// (gfx::set_water_optics): the water's extinction and scattering per metre, its transmission, and
+// the ground under it — the material the terrain draws with and where the body stands in that
+// material's UV frame. The visibility buffer holds the surface and nothing beneath it, so the
+// bottom is found analytically: the view refracted at the wave normal runs down to the plane the
+// mesh's depth attribute says the ground is (the triangle's own depth and its slope), the ground's
+// colour is read there from the terrain's own maps, lit by the sun refracted into the water
+// (shadowed where its ray leaves the surface) and the sky's light, and dimmed by Beer–Lambert
+// along both paths; the water itself adds the light it scatters towards the eye on the way, which
+// is what the deep tends to. Without the flag the branch is `water_radiance` above, unchanged.
+static const uint k_material_water_volume = 32u;  // gfx::k_material_water_volume
+static const uint k_water_no_ground = 0xffffffffu;
+// The sky's light comes down through the water along paths 1.25 times the depth on average (a
+// diffuse light's mean cosine of 0.8 under a level surface).
+static const float k_water_diffuse_path = 1.25;
+static const float k_water_four_pi = 12.566370614359172;
+
+struct WaterOptics {
+  float3 extinction;  // absorption plus scattering, per metre
+  float transmission;  // the share of the bottom's light that reaches the surface beyond that
+  float3 scattering;  // per metre, the turbidity's sediment included
+  float2 ground_uv;   // the ground material's UV at the body's centre
+  float ground_uv_per_m;
+  uint ground;  // the ground's material index, or k_water_no_ground
+};
+
+WaterOptics water_optics_of(ResolveMaterial m) {
+  WaterOptics o;
+  o.extinction = m.albedo.rgb;
+  o.transmission = m.albedo.w;
+  o.scattering = m.emissive.rgb;
+  o.ground_uv = m.uv_transform.xy;
+  o.ground_uv_per_m = m.uv_transform.z;
+  o.ground = m.sampler;
+  return o;
+}
+
+// The refracted view under the surface: its direction (unit, downwards), the metres it runs to the
+// bottom, and the bottom's depth where it lands.
+struct WaterPath {
+  float3 t;
+  float length;
+  float depth;
+};
+
+// `v` towards the eye, `n` the waves' normal, `depth` the bottom's depth under this point and
+// `slope` its change per metre of body-local (x, z). Snell at 1.33 on the wave normal, written out
+// rather than `refract` so the clamp on n.v is the Fresnel term's. The bottom is the plane through
+// the depth with the triangle's slope, depth(x) = depth + slope.(x - here); the ray's own depth
+// after s metres is s * down, so it lands at s = depth / (down - slope.t_xz) — kept no longer than
+// four times the flat answer, where the bottom falls away about as fast as the ray does.
+WaterPath water_path(float3 n, float3 v, float depth, float2 slope) {
+  const float cos_i = max(dot(n, v), k_min_n_dot_v);
+  const float eta = 1.0 / k_water_ior;
+  const float cos_t = sqrt(max(1.0 - eta * eta * (1.0 - cos_i * cos_i), 0.0));
+  WaterPath p;
+  p.t = normalize(-v * eta + n * (eta * cos_i - cos_t));
+  const float down = max(-p.t.y, 1e-3);
+  const float den = max(down - dot(slope, p.t.xz), 0.25 * down);
+  p.length = max(depth, 0.0) / den;
+  p.depth = p.length * down;
+  return p;
+}
+
+// (1 - e^(-a s)) / a, which is s where a is nothing: what a segment of length s through a medium
+// of extinction a gathers of a source along it.
+float water_gather(float a, float s) { return a > 1e-5 ? (1.0 - exp(-a * s)) / a : s; }
+float3 water_gather3(float3 a, float s) {
+  return float3(water_gather(a.x, s), water_gather(a.y, s), water_gather(a.z, s));
+}
+
+// The sun's direction under a level surface, towards it, and the cosine it makes with the vertical
+// (unit: its horizontal part is the sun's over 1.33, Snell's law, and the rest is `cos_l`).
+float3 water_sun_under(float3 sun_dir, out float cos_l) {
+  const float up = max(sun_dir.y, 0.0);
+  const float eta = 1.0 / k_water_ior;
+  cos_l = sqrt(max(1.0 - eta * eta * (1.0 - up * up), 1e-4));
+  return float3(sun_dir.x * eta, cos_l, sun_dir.z * eta);
+}
+
+// The radiance coming up out of the water along the refracted view, before the surface's Fresnel
+// split: the bottom (`albedo`, its normal `n_b`) lit by the sun through the water — `sun` the
+// irradiance arriving at the surface, `sun_bottom` the share of it its shadow lets through where
+// the ray to the bottom leaves the surface — and by the sky's light `ambient` (a level surface's,
+// as the opaque path takes it), both dimmed on the way down, then dimmed again on the way up and
+// passed by the transmission; plus the light the water scatters towards the eye along the path,
+// isotropically, from the sun's beam (`sun_surface`, its shadow at the pixel) and the sky's light
+// as they come down. Deep water is the second term alone: a colour the light makes, not one painted.
+float3 water_volume(WaterOptics o, WaterPath p, float3 n_b, float3 albedo, float3 sun_dir,
+                    float3 sun, float sun_surface, float sun_bottom, float3 ambient) {
+  float cos_l;
+  const float3 l = water_sun_under(sun_dir, cos_l);
+  // What the surface lets into the water: Schlick at the sun's angle, and at normal incidence for
+  // the sky's light.
+  const float3 sun_in = sun * (1.0 - brdf_f_schlick(float3(k_water_f0), max(sun_dir.y, 0.0)).x);
+  const float3 sky_in = ambient * (1.0 - k_water_f0);
+  const float3 down_sun = exp(-o.extinction * (p.depth / cos_l));
+  const float3 down_sky = exp(-o.extinction * (p.depth * k_water_diffuse_path));
+  const float3 lit = sun_in * (sun_bottom * max(dot(n_b, l), 0.0) / k_brdf_pi) * down_sun +
+                     sky_in * down_sky;
+  const float3 bottom = albedo * lit * exp(-o.extinction * p.length) * o.transmission;
+  // The view path from the surface (s = 0) to the bottom: at s the water is s * mu deep, the sun's
+  // beam has come s * mu / cos_l through it and the sky's light s * mu * 1.25, and what is
+  // scattered there comes back s through it. Isotropic: the sun's beam scatters a 4 pi-th of
+  // itself per steradian, and the sky's light — `ambient` is a level surface's radiance, pi times
+  // it its irradiance — a quarter of itself.
+  const float mu = p.length > 0.0 ? p.depth / p.length : 1.0;
+  const float3 a_sun = o.extinction * (1.0 + mu / cos_l);
+  const float3 a_sky = o.extinction * (1.0 + mu * k_water_diffuse_path);
+  const float3 scattered = o.scattering * (sun_in * (sun_surface / k_water_four_pi) *
+                                               water_gather3(a_sun, p.length) +
+                                           sky_in * 0.25 * water_gather3(a_sky, p.length));
+  return bottom + scattered;
+}
+
+// `water_radiance` with the volume's light in place of the painted bottom: the same Fresnel, the
+// same glitter, the same shore fade.
+float3 water_radiance_volume(WaterParams w, float3 n, float3 v, float2 uv, float3 sun_dir,
+                             float3 sun, float3 sky, float3 under) {
+  const float shore = w.shore > 0.0 ? clamp(uv.x / w.shore, 0.0, 1.0) : 1.0;
+  const float n_dot_v = max(dot(n, v), k_min_n_dot_v);
+  const float fresnel = brdf_f_schlick(float3(k_water_f0), n_dot_v).x;
+  float3 glitter = float3(0.0);
+  const float n_dot_l = dot(n, sun_dir);
+  if (n_dot_l > 0.0) {
+    const float3 half_sum = sun_dir + v;
+    const float3 h = dot(half_sum, half_sum) > 1e-12 ? normalize(half_sum) : n;
+    const float alpha = brdf_alpha(w.roughness);
+    const float n_dot_h = clamp(dot(n, h), 0.0, 1.0);
+    const float v_dot_h = clamp(dot(v, h), 0.0, 1.0);
+    const float f = brdf_f_schlick(float3(k_water_f0), v_dot_h).x;
+    glitter = sun * (f * brdf_d_ggx(n_dot_h, alpha) * brdf_v_smith(n_dot_v, n_dot_l, alpha) *
+                     n_dot_l);
+  }
+  return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
+}
+
+// The ground's colour at `uv` of its material: the base colour times its map, at the level the
+// UV's derivatives select where the map is the content build's mipmapped one.
+float3 water_ground_albedo(ResolveMaterial g, float2 uv, float2 duv_dx, float2 duv_dy) {
+  float3 albedo = g.albedo.rgb;
+  if (g.albedo_texture == k_no_texture) return albedo;
+  const float2 at = material_uv(g, uv * g.uv_scale);
+  if ((g.flags & k_material_mipped) != 0) {
+    albedo *= g_textures[NonUniformResourceIndex(g.albedo_texture)]
+                  .SampleGrad(g_samplers[NonUniformResourceIndex(g.sampler)], at,
+                              material_duv(g, duv_dx * g.uv_scale),
+                              material_duv(g, duv_dy * g.uv_scale))
+                  .rgb;
+  } else {
+    albedo *= g_textures[NonUniformResourceIndex(g.albedo_texture)]
+                  .SampleLevel(g_samplers[NonUniformResourceIndex(g.sampler)], at, 0)
+                  .rgb;
+  }
+  return albedo;
+}
+
 #endif  // ENGINE_WATER_SLANG

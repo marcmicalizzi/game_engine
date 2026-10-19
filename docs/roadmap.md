@@ -321,7 +321,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S83 | E26: a cavity reached into at hero distance | open | S69, S73 | L | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | S84 | ADR-0029's thresholds on a quiet machine and the Titan X | blocked (the Maxwell machine is down) | S67 | S | routine | [ADR-0029](adr/0029-deformable-volume-budgets.md) |
 | S85 | Phase 6 exit | open | S48, S49, S53, S57, S83, W29, W41 | L | design | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
-| S86 | Water, stage 2: refraction of what is under the surface, swimming, buoyancy, the ripple map | open | S63, R65 | L | design | [water](subsystems/water.md#not-yet) |
+| S86 | Water, stage 2: refraction of what is under the surface, swimming, buoyancy, the ripple map | in progress (2026-10-18 — the first part, water translucent by volume as a quality tier: `RenderSettings::water_quality` high by default, low the picture it was byte for byte; the view refracted at the wave normal to the ground the depth attribute says is there, the terrain material's own colour read at that point, Beer–Lambert absorption and single scattering of the sun and the sky by each body's `absorption`, `scattering`, `transmission` and `turbidity`, held to a double-precision reference at 1 of 255, +0.06 ms of resolve at 1080p on the oasis pool; remaining: what is under the water that is not the ground (a second visibility layer), caustics, swimming, buoyancy, the ripple map) | S63, R65 | L | design | [water](subsystems/water.md#not-yet) |
 
 ## C — Characters and tissue
 

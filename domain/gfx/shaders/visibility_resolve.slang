@@ -434,6 +434,82 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // returns is the surface's radiance, before the air between it and the eye. Only the water modules
 // have it (RESOLVE_WATER, above).
 #ifdef RESOLVE_WATER
+// **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
+// the surface, seen through it. The bottom's depth and its slope are the triangle's own — the
+// mesh's depth attribute at its three corners, a plane over body-local (x, z) — so the refracted
+// view lands on the ground the mesh was built over; the ground's colour there is the terrain
+// material's, at the point's place in its UV frame, which the optics carry as the body's centre's
+// UV and the UV a metre. The sun reaches the bottom refracted at the level surface, shadowed where
+// that ray leaves the surface (the shadow query at the bottom itself would find the water's own
+// surface over it, which casts as every surface does), and every position handed to a query is
+// in the frame's space, from body-local metres plus the instance's own place: none is a world
+// coordinate.
+float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                          uint cluster, TriangleFetch tri, float3 dp_dx, float3 dp_dy, Surface s,
+                          float3 local, float3 n, float3 view, WaterParams w, float ray_bias) {
+  ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
+  const uint index = ((uint*)geo.cluster_materials)[cluster] + instance.material_base;
+  const WaterOptics o = water_optics_of(materials[index + 1]);
+  // The depth's slope over the triangle: d = d0 + g.(x - x0) through its three corners.
+  float2 slope = float2(0.0, 0.0);
+  if (geo.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+    const float d0 = decode_half2(attributes[tri.local[0]].uv_half2).y;
+    const float d1 = decode_half2(attributes[tri.local[1]].uv_half2).y - d0;
+    const float d2 = decode_half2(attributes[tri.local[2]].uv_half2).y - d0;
+    const float2 e1 = (tri.p[1] - tri.p[0]).xz;
+    const float2 e2 = (tri.p[2] - tri.p[0]).xz;
+    const float det = e1.x * e2.y - e1.y * e2.x;
+    if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
+  }
+  const WaterPath path = water_path(n, view, s.uv.y, slope);
+  const float3 bottom = local + path.t * path.length;
+  const float3 n_b = normalize(float3(slope.x, 1.0, slope.y));
+  float3 albedo = w.shallow;
+  if (o.ground != k_water_no_ground) {
+    const float2 uv = o.ground_uv + bottom.xz * o.ground_uv_per_m;
+    albedo = water_ground_albedo(materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
+                                 dp_dy.xz * o.ground_uv_per_m);
+  }
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
+  float3 sun = float3(0.0);
+  float sun_surface = 0.0;
+  float sun_bottom = 0.0;
+  if (dot(s.normal, params->sun.xyz) > 0.0) {
+    sun = float3(params->sun.w);
+    if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+    sun_surface = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
+                                    params->sun.xyz, 1e30);
+    float cos_l;
+    const float3 l = water_sun_under(params->sun.xyz, cos_l);
+    const float3 exit = bottom + l * (path.depth / cos_l);
+    sun_bottom = shadow_visibility(params, k_shadow_sun, 0u,
+                                   float3(exit.x, local.y, exit.z) +
+                                       instance_from_eye(instance, params->eye),
+                                   s.geometric, ray_bias, params->sun.xyz, 1e30);
+    // In the shallows the bottom's shadow is the surface's: where the ray leaves the surface is a
+    // few centimetres off, and at the waterline it is over the bank, under the sand, which would
+    // shadow the shore's last centimetres in a dashed line along the mesh's edge.
+    sun_bottom = lerp(sun_surface, sun_bottom, clamp(path.depth / k_water_calm_depth, 0.0, 1.0));
+  }
+  float3 ambient;
+  float3 reflected;
+  const float3 r = water_reflected(n, view);
+  if (has_sky) {
+    ambient = sky_ambient((SkyFrame*)sky->frame, s.normal);
+    reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+  } else {
+    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+    ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
+    reflected = params->sky.rgb;
+  }
+  const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
+                                    sun_bottom, ambient);
+  return water_radiance_volume(w, n, view, s.uv, params->sun.xyz, sun * sun_surface, reflected,
+                               under);
+}
+
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                    uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
                    float3 from_eye, ResolveMaterial material, float ray_bias) {
@@ -447,6 +523,10 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   const float3 local = s.position - instance_from_eye(instance, params->eye);
   const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, s.uv.y);
   const float3 view = normalize(-from_eye);
+  if ((material.flags & k_material_water_volume) != 0) {
+    return water_pixel_volume(params, geo, instance, cluster, tri, dp_dx, dp_dy, s, local, n, view,
+                              w, ray_bias);
+  }
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 sun = float3(0.0);

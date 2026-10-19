@@ -42,6 +42,15 @@ inline constexpr u32 k_default_shadow_cascades = 4;
 inline constexpr u32 k_default_shadow_map = 2048;
 inline constexpr u32 k_max_shadow_map = 4096;
 
+// **How water is drawn** (docs/subsystems/water.md, "Translucent by volume"; roadmap S86). `Low`
+// is the surface alone: the sky reflected, the sun's glitter and a bottom colour painted by the
+// depth, exactly the picture before the tier existed. `High` sees through it: the view refracted
+// to the ground under the water, the ground's own colour there, and the water's absorption and
+// scattering along the way, by each body's optics. It is the default on every device: it costs
+// only a scene with water, in the resolve's water modules, and there a few hundredths of a
+// millisecond at 1080p (water.md has the measurement).
+enum class WaterQuality : u8 { Low, High };
+
 // How many views the frame has and how they are laid out over the target (04 §4.6,
 // systems/renderer/view_set.h). `Single` is one rectilinear view over the whole target and is
 // what every existing caller gets. `Surround3` is three views with per-monitor off-axis frusta,
@@ -173,6 +182,10 @@ struct RenderSettings {
   // the picture to the same bytes, not as a mode. It decides what the scene's textures are, which
   // is why it lives here, where a change forces a rebuild.
   bool share_textures = true;
+  // The water's tier (`WaterQuality`). It decides what the material table holds — the volume
+  // tier's optics after each water material, `gfx::set_water_optics` — which is uploaded once a
+  // scene, so it lives here, where a change rebuilds the scene; the resolve module is the same.
+  WaterQuality water_quality = WaterQuality::High;
 
   // Game seconds per real second for the dune field's time-lapse (terrain_time.h,
   // docs/subsystems/renderer.md, "The dunes in time-lapse"); 0, the default, is the scene's own
@@ -363,6 +376,9 @@ const char* raster_name(RasterMode mode) noexcept;
 bool parse_raster_mode(std::string_view text, RasterMode& out) noexcept;
 const char* shadow_name(ShadowMode mode) noexcept;
 bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept;
+// "low" or "high" (`RenderSettings::water_quality`).
+const char* water_quality_name(WaterQuality quality) noexcept;
+bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

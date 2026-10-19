@@ -333,4 +333,53 @@ TEST_CASE("water: a body's shading is packed into its material where only the br
   CHECK(gfx::water_clock(0.0) == 0.0f);
   CHECK(gfx::water_clock(1024.0 * 1000.0 + 12.5) == 12.5f);
   CHECK(gfx::water_clock(-1.0) == 1023.0f);
+  // The volume tier's optics (water.md, "Translucent by volume"): the flag on the water's material
+  // and the entry after it — the extinction and the transmission, the scattering, the ground's UV
+  // frame and its material — with the turbidity's sediment added to both rates.
+  gfx::WaterOptics o;
+  o.absorption = Vec3{0.5f, 0.1f, 0.05f};
+  o.scattering = Vec3{0.02f, 0.03f, 0.04f};
+  o.transmission = 0.75f;
+  o.turbidity = 0.5f;
+  o.ground = 12;
+  o.ground_uv = Vec2{0.5f, 0.25f};
+  o.ground_uv_per_m = 0.004f;
+  gfx::ResolveMaterial optics;
+  gfx::set_water_optics(m, optics, o);
+  CHECK(m.flags == (gfx::k_material_water | gfx::k_material_water_volume));
+  const Vec3 scatter = o.scattering + gfx::k_water_silt_scatter * 0.5f;
+  const Vec3 extinction = o.absorption + gfx::k_water_silt_absorb * 0.5f + scatter;
+  CHECK(optics.albedo == Vec4{extinction, 0.75f});
+  CHECK(optics.emissive == Vec4{scatter, 0.0f});
+  CHECK(optics.uv_transform == Vec4{0.5f, 0.25f, 0.004f, 0.0f});
+  CHECK(optics.sampler == 12u);
+  CHECK(optics.flags == 0u);
+  CHECK(optics.albedo_texture == gfx::k_no_texture);
+}
+
+TEST_CASE("water: the volume tier's optics are read and refused with a sentence") {
+  scene::WaterBody ok = circle_block(0.0, 0.0, 5.0f, 0.0);
+  ok.absorption = Vec3{0.4f, 0.1f, 0.0f};
+  ok.scattering = Vec3{0.0f, 0.0f, 0.0f};
+  ok.transmission = 0.0f;
+  ok.turbidity = 3.0f;
+  water::Body out;
+  std::string error;
+  CHECK(water::read_body(ok, out, &error));
+  scene::WaterBody absorbs = ok;
+  absorbs.absorption = Vec3{0.4f, -0.1f, 0.0f};
+  CHECK_FALSE(water::read_body(absorbs, out, &error));
+  CHECK(error.find("absorption") != std::string::npos);
+  scene::WaterBody scatters = ok;
+  scatters.scattering = Vec3{0.0f, 0.0f, std::nanf("")};
+  CHECK_FALSE(water::read_body(scatters, out, &error));
+  CHECK(error.find("scattering") != std::string::npos);
+  scene::WaterBody passes = ok;
+  passes.transmission = 1.5f;
+  CHECK_FALSE(water::read_body(passes, out, &error));
+  CHECK(error.find("transmission") != std::string::npos);
+  scene::WaterBody silty = ok;
+  silty.turbidity = -1.0f;
+  CHECK_FALSE(water::read_body(silty, out, &error));
+  CHECK(error.find("turbidity") != std::string::npos);
 }

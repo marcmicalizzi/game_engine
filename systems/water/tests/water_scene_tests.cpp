@@ -189,11 +189,12 @@ struct Shot {
   CapturedFrame frame;
   u32 water_instance = ~0u;
   bool has_water = false;  // the GPU scene's answer, which picks the resolve module
+  u32 materials = 0;       // the GPU scene's material table's length
 };
 
 // One capture of a scene file from above the pool's west shore, towards the sun's reflection.
 void shoot(const gfx::Device& device, const std::string& path, const std::string& ddc,
-           f64 sun_time_s, u32 shots, Shot* out) {
+           f64 sun_time_s, u32 shots, Shot* out, WaterQuality quality = WaterQuality::High) {
   SceneDesc desc;
   std::string error;
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
@@ -201,6 +202,7 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
   SceneData data;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
   RenderSettings settings;
+  settings.water_quality = quality;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
@@ -226,6 +228,7 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
     REQUIRE_MESSAGE(renderer.capture(frame, channels, out[s].frame, &error), error);
     out[s].water_instance = water_instance;
     out[s].has_water = scene.has_water();
+    out[s].materials = scene.material_count();
   }
 }
 
@@ -359,5 +362,71 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
   CHECK(differ > pool / 2);
   CHECK(differ_outside == 0u);
   CHECK(moved > pool / 4);
+}
+
+// The water's two tiers (RenderSettings::water_quality; water.md, "Translucent by volume"): the
+// low tier's material table is the table before the tier — no optics entry after the water's
+// material, so the resolve's branch takes the path it always took — and the high tier's has one
+// more; high draws the same bytes twice, and every pixel the tiers differ in is a pixel of the pool
+// or within the shadow filter's band of one, as with and without the block above.
+TEST_CASE("water: the volume tier sees through the pool, and changes nothing but the pool") {
+  if (!gpu_here()) return;
+  const test::TempDir tmp("water_oasis_tiers");
+  const std::string wet = oasis_copy(tmp, true);
+  const std::string ddc = tmp.file("ddc");
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  Shot high[2];
+  Shot low[1];
+  shoot(device, wet, ddc, 0.0, 2, high, WaterQuality::High);
+  shoot(device, wet, ddc, 0.0, 1, low, WaterQuality::Low);
+  device.destroy();
+  const CapturedFrame& a = high[0].frame;
+  const CapturedFrame& b = low[0].frame;
+  REQUIRE(a.color.size() == b.color.size());
+  REQUIRE(high[0].water_instance != ~0u);
+  CHECK(high[0].has_water);
+  CHECK(low[0].has_water);
+  CHECK(high[0].materials == low[0].materials + 1);
+  CHECK(std::equal(a.color.begin(), a.color.end(), high[1].frame.color.begin()));
+  constexpr u32 k_shore_band = 3;
+  const u32 pixels = a.width * a.height;
+  std::vector<u8> by_pool(pixels, 0);
+  u32 pool = 0;
+  for (u32 y = 0; y < a.height; ++y) {
+    for (u32 x = 0; x < a.width; ++x) {
+      if (a.ids[(y * a.width + x) * k_id_words] != high[0].water_instance) continue;
+      ++pool;
+      for (u32 yy = y > k_shore_band ? y - k_shore_band : 0u;
+           yy <= std::min(a.height - 1, y + k_shore_band); ++yy) {
+        for (u32 xx = x > k_shore_band ? x - k_shore_band : 0u;
+             xx <= std::min(a.width - 1, x + k_shore_band); ++xx)
+          by_pool[yy * a.width + xx] = 1;
+      }
+    }
+  }
+  u32 differ = 0;
+  u32 differ_outside = 0;
+  for (u32 p = 0; p < pixels; ++p) {
+    bool same = true;
+    for (u32 c = 0; c < 4; ++c)
+      same = same && a.color[p * 4 + c] == b.color[p * 4 + c];
+    if (same) continue;
+    ++differ;
+    if (by_pool[p] == 0) ++differ_outside;
+  }
+  MESSAGE("pool " << pool << " pixels of " << pixels << "; " << differ
+                  << " differ between the tiers, " << differ_outside << " of them outside it");
+  if (differ_outside != 0 || differ <= pool / 2) {
+    tmp.keep();
+    CaptureFiles files;
+    std::string why;
+    (void)write_capture(tmp.path(), "high", a, files, why);
+    (void)write_capture(tmp.path(), "low", b, files, why);
+  }
+  CHECK(pool * 20 > pixels);
+  CHECK(differ > pool / 2);
+  CHECK(differ_outside == 0u);
 }
 #endif

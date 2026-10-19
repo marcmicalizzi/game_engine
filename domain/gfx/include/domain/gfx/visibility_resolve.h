@@ -295,6 +295,55 @@ inline void set_water_material(ResolveMaterial& material, const WaterShading& wa
   material.flags = k_material_water;
 }
 
+// `k_material_water_volume`: a water material drawn **translucent by volume** (the renderer's
+// `water_quality` high; docs/subsystems/water.md, "Translucent by volume"): the entry right after
+// it in the table is its optics (`set_water_optics`), and the resolve's water branch sees the
+// bottom through the surface by them instead of fading a painted colour. Without it the branch is
+// the one it was, which is the low tier.
+inline constexpr u32 k_material_water_volume = 32u;
+// The optics' "no ground under the water": the bottom is the body's shallow colour.
+inline constexpr u32 k_water_no_ground = 0xffffffffu;
+
+// One water body's optics, as the renderer resolved them (engine.scene.WaterBody's `absorption`,
+// `scattering`, `transmission` and `turbidity`, and the ground the terrain draws).
+struct WaterOptics {
+  Vec3 absorption{0.45f, 0.065f, 0.03f};  // per metre, linear RGB: clear fresh water's
+  Vec3 scattering{0.03f, 0.035f, 0.04f};  // per metre: a little fine matter
+  f32 transmission = 1.0f;                // the share of the bottom's light passed beyond those
+  f32 turbidity = 0.0f;                   // suspended sediment: `k_water_silt_*` per unit
+  // The ground's material (its index in the table) and the body's centre in that material's UV
+  // frame, with the UV a metre: the bottom is read at centre + body-local (x, z) * per metre.
+  u32 ground = k_water_no_ground;
+  Vec2 ground_uv{};
+  f32 ground_uv_per_m = 0.0f;
+};
+
+// What a unit of turbidity adds per metre: sediment that scatters the sand's light (more red than
+// blue) and takes a little of it, most of all the blue — a silty pool turns towards ochre.
+inline constexpr Vec3 k_water_silt_scatter{0.9f, 0.82f, 0.68f};
+inline constexpr Vec3 k_water_silt_absorb{0.03f, 0.06f, 0.14f};
+
+// The optics into the entry after the water material (mirrored by water.slang's `water_optics_of`):
+//
+//   albedo        extinction rgb (absorption + scattering, the turbidity's included), transmission
+//   emissive      scattering rgb (the turbidity's included), 0
+//   uv_transform  ground_uv, ground_uv_per_m, 0
+//   sampler       ground
+//
+// and `k_material_water_volume` on the water material. No cluster names the optics' entry, so no
+// reader takes it for a surface; its flags are 0 and its textures none.
+inline void set_water_optics(ResolveMaterial& water, ResolveMaterial& optics,
+                             const WaterOptics& o) noexcept {
+  water.flags |= k_material_water_volume;
+  const Vec3 scattering = o.scattering + k_water_silt_scatter * o.turbidity;
+  const Vec3 extinction = o.absorption + k_water_silt_absorb * o.turbidity + scattering;
+  optics = ResolveMaterial{};
+  optics.albedo = Vec4{extinction, o.transmission};
+  optics.emissive = Vec4{scattering, 0.0f};
+  optics.uv_transform = Vec4{o.ground_uv.x, o.ground_uv.y, o.ground_uv_per_m, 0.0f};
+  optics.sampler = o.ground;
+}
+
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
   const bool identity = offset.x == 0.0f && offset.y == 0.0f && rotation == 0.0f &&

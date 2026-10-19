@@ -2396,6 +2396,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   Vector<gfx::ResolveMaterial> material_table;
   Vector<u32> cluster_material(cluster_count_);
   Vector<u32> mesh_material_base(data_->parts.size(), 0u);
+  // The water bodies' optics entries in the volume tier, and their meshes (water.md).
+  struct WaterOpticsEntry {
+    u32 optics = 0;
+    u32 mesh = 0;
+  };
+  Vector<WaterOpticsEntry> water_optics;
   if (data_->heightfield) {
     // A procedural ripple texture, linear-sampled through the bindless set.
     constexpr u32 k_texture_size = 256;
@@ -2646,9 +2652,28 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         // A water body's mesh (scene.h, `SceneWater`; docs/subsystems/water.md): its one material
         // is the water class, the body's shading numbers packed into slots an untextured material
         // never reads, so every reader but the resolve's water branch draws its shallow colour.
-        if (m < data_->mesh_info.size() && data_->mesh_info[m].water.has_value())
-          gfx::set_water_material(material, data_->mesh_info[m].water->shading);
+        const bool water = m < data_->mesh_info.size() && data_->mesh_info[m].water.has_value();
+        if (water) gfx::set_water_material(material, data_->mesh_info[m].water->shading);
+        // The volume tier (`RenderSettings::water_quality` high; water.md, "Translucent by
+        // volume"): the body's optics in the entry right after its material, which no cluster
+        // names (the water mesh has the one material). Its ground — the terrain's material and
+        // the body's place in that material's UV frame — is filled in below, once the terrain's
+        // material has its place in the table. The low tier packs nothing more: the table is the
+        // one it always was.
+        gfx::ResolveMaterial optics;
+        const bool volume = water && resolved.settings.water_quality == WaterQuality::High;
+        if (volume) {
+          const scene::WaterBody& body = data_->mesh_info[m].water->body;
+          gfx::WaterOptics o;
+          if (body.absorption.has_value()) o.absorption = *body.absorption;
+          if (body.scattering.has_value()) o.scattering = *body.scattering;
+          o.transmission = body.transmission;
+          o.turbidity = body.turbidity;
+          gfx::set_water_optics(material, optics, o);
+          water_optics.push_back(WaterOpticsEntry{material_table.size() + 1, m});
+        }
         material_table.push_back(material);
+        if (volume) material_table.push_back(optics);
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
       gfx::ResolveMaterial plain;
@@ -2694,6 +2719,34 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   for (gfx::InstanceDesc& instance : instance_table_)
     instance.material_base = mesh_material_base[instance.mesh];
   mesh_material_base_ = mesh_material_base;
+  // The ground under each body in the volume tier: the terrain's one material, and the body's
+  // centre — its instance's place, cell and local in f64 — in the UV frame that material's maps
+  // are baked over (`terrain_uv_frame`: the grid's corner and side, millimetres), with the UV a
+  // metre, so the resolve reads the bottom at centre + body-local metres and never a world
+  // position. No terrain: `k_water_no_ground`, and the bottom is the body's shallow colour.
+  if (!water_optics.empty() && data_->terrain.enabled &&
+      data_->terrain_mesh < mesh_material_base.size()) {
+    TerrainUvFrame frame;
+    if (terrain_uv_frame(data_->terrain, frame, nullptr)) {
+      const f64 per_mm = 1.0 / static_cast<f64>(frame.size_mm);
+      for (const WaterOpticsEntry& entry : water_optics) {
+        for (const gfx::InstanceDesc& instance : data_->instances) {
+          if (instance.mesh != entry.mesh) continue;
+          const f64 x_mm =
+              (static_cast<f64>(instance.cell.x) * k_world_cell_m + instance.rows[0].w) * 1000.0;
+          const f64 z_mm =
+              (static_cast<f64>(instance.cell.z) * k_world_cell_m + instance.rows[2].w) * 1000.0;
+          gfx::ResolveMaterial& optics = material_table[entry.optics];
+          optics.sampler = mesh_material_base[data_->terrain_mesh];
+          optics.uv_transform =
+              Vec4{static_cast<f32>((x_mm - static_cast<f64>(frame.x0_mm)) * per_mm),
+                   static_cast<f32>((z_mm - static_cast<f64>(frame.z0_mm)) * per_mm),
+                   static_cast<f32>(1000.0 * per_mm), 0.0f};
+          break;
+        }
+      }
+    }
+  }
   material_count_ = material_table.size();
   has_water_ = false;
   for (const gfx::ResolveMaterial& material : material_table)
