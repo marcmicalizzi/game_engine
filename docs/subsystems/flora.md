@@ -117,6 +117,51 @@ own length, so the chart is the frond laid flat — rachis down the middle and t
 angle either side, never overlapping each other — and every frond shares the same chart, so one
 frond texture serves them all. The trunk is one strip and its cap a disc beside it.
 
+## Motion attributes
+
+Every species' solver emits, beside its mesh, what a deform stage needs to sway the tree through
+the deformed-vertex pool — wind in the crown, a slight bend of the trunk, fronds pushed aside by a
+walker — without knowing which species it is (`include/domain/flora/motion.h`, `flora::Motion`).
+Nothing moves yet: the stage that reads these is the next piece of work (roadmap S66), and a tree
+whose weights are all zero is exactly the rest pose the renderer draws today.
+
+**Per part**, one `geometry::ClusterFileMotionPart` (32 bytes, mesh space). A **part** is what
+bends as one: the trunk, each green frond, each dead frond, and in a branching species each branch.
+
+| Field | What it is |
+|---|---|
+| `pivot` | where the part meets its parent; the trunk's is its foot |
+| `direction` | the unit tangent the part leaves its pivot along, at rest |
+| `length` | the part's arc length, root to tip, in metres |
+| `parent` | the part it hangs from; `k_motion_no_parent` for the trunk |
+
+**Per vertex**, one `geometry::ClusterFileMotionVertex` (4 bytes) per cluster vertex:
+
+| Field | What it is |
+|---|---|
+| `part` | the vertex's part, `u16` |
+| `weight` | its **bend weight**, a 16-bit unorm: 0 at the part's root rising to 1 at its tip, by arc length along the part's own axis |
+
+**The rules a deform stage can rely on.** Ids are **dense**, the trunk is 0, and a parent's id is
+below its children's, so one pass over the table in order meets every parent first. The ids are
+**stable across the budget ladder**: no rung drops or merges a part (the palm keeps every frond on
+every rung), so one parameter set names the same parts at every budget. A vertex off the part's
+axis — a leaflet, a leaf card, the far side of the trunk — carries the weight of its **station**:
+the point of the axis it was built from, so a leaflet moves rigidly with the piece of rachis it
+stands on and a ring of the trunk with its spine point. The pivot and direction are the part's,
+reached through the id rather than repeated per vertex — 32 bytes a part instead of 24 more a
+vertex. The palm's parts are the trunk (0), the green fronds 1 to `frond_count` youngest first,
+then the dead fronds; every frond's parent is the trunk.
+
+**In the container** the table is **section 35** (`motion_parts`, resident) and the per-vertex
+records **section 36** (`motion_vertices`, parallel to `Vertices` and paged with it, as `Skin` is)
+— two kinds because the format's rule is one fixed-size element per section ([geometry](geometry.md)).
+`build_flora_container` maps each cluster vertex to the solver's vertex it was built from through
+`vertex_source` (`motion_records`). Both are written only by a generator that emits them, so every
+imported mesh's container is the bytes it was; the default palm's container with the two cleared
+hashes to exactly what it did before they existed, and its other sections are byte for byte the
+same (the test compares them section by section).
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the
@@ -250,6 +295,14 @@ data, rebuilt from its parameters.
   below it; no skirt is asked, no skirt primitive;
 - a smaller budget walks down the ladder and holds, and keeps every frond;
 - one seed is one palm, and another seed another;
+- the motion contract: a record per vertex, part ids dense with the trunk 0 and every parent
+  before its children, every part reaching weight 0 at its root and 1 at its tip, and its weights
+  an arc-length parameter (the centroids of its vertices binned by weight lie along it at the
+  share their weight says, to 0.12); the same parts on every rung of the ladder; the mesh the same
+  bytes whether the contract is asked for or not;
+- the contract in the container: every cluster vertex's record is its source vertex's, the table
+  and the stream round-trip through a file, the two sections are appended after the others, and
+  with them cleared the container is byte for byte the one built before they existed;
 - a parameter out of range is refused with its name;
 - a `.flora.json` in a scene's mesh table becomes a mesh with the three materials through the
   cache — a hit the second time, the same clusters built in memory — and the oasis scene's first
@@ -261,7 +314,8 @@ data, rebuilt from its parameters.
   generator section; the canonical parameters are the same for every spelling of one file.
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
+`PalmReport`), `include/domain/flora/motion.h` (the motion contract: `Motion`, `MotionPart`,
+`k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
 `k_species_date_palm`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key`, `build_flora_container`). The mesh generator "flora" registers from
 `src/flora.cpp`.

@@ -58,6 +58,11 @@ ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileImage);
 // build options and the roles, with no padding — the same size as the image record it sits beside.
 ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileTexture);
 
+// The motion contract (sections 35 and 36): a part is a pivot, a direction, a length and a parent
+// with no padding; a vertex is its part and its 16-bit bend weight.
+ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterFileMotionPart);
+ENGINE_EXPECT_SIZE(4, 2, geometry::ClusterFileMotionVertex);
+
 // How a material samples its images (section 33): per slot the packed sampler word and the
 // transform's five floats, and per material five slots, the occlusion strength and one word of
 // padding that keeps the record a power of two.

@@ -9,6 +9,7 @@
 #include <domain/geometry/material_sampling.h>
 
 #include <string>
+#include <utility>
 
 namespace engine::flora {
 
@@ -61,7 +62,8 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
                            std::string& error) {
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
-  if (!solve_palm(file.palm, mesh, report, &error)) return false;
+  Motion motion;
+  if (!solve_palm(file.palm, mesh, report, &error, &motion)) return false;
 
   // One DAG per primitive, each with its material's cone setting: the trunk is one-sided and keeps
   // its cones, a frond is seen from both faces and has none (flora.md, "Two-sided crowns").
@@ -102,6 +104,13 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     }
     geometry::permute_cluster_array(source_of_cluster, part_of_cluster);
   }
+  // The motion contract, per cluster vertex through the vertex each was built from — after the
+  // page layout, which reorders the vertices with their clusters.
+  if (!motion_records(motion, out.mesh, out.motion_vertices)) {
+    error = "the palm's motion attributes do not cover its vertices";
+    return false;
+  }
+  out.motion_parts = std::move(motion.parts);
   out.cluster_material.reserve(part_of_cluster.size());
   for (const u32 part : part_of_cluster)
     out.cluster_material.push_back(part_material[part]);

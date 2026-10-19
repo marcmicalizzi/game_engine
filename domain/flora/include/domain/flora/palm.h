@@ -20,6 +20,7 @@
 
 #include <core/base/types.h>
 #include <domain/assets/gltf.h>
+#include <domain/flora/motion.h>
 
 #include <schemas/flora.h>
 #include <string>
@@ -50,8 +51,9 @@ bool palm_in_range(const Palm& params, std::string& error);
 
 // Builds the palm. False, with a sentence, when a parameter is out of range or the budget cannot
 // hold even the solver's coarsest palm with these counts (the sentence says how many it needs).
-// `out` is replaced.
+// `out` is replaced. `motion`, when given, receives the motion contract (motion.h): the trunk is
+// part 0, the green fronds 1 to `frond_count` youngest first, the dead fronds after them.
 bool solve_palm(const Palm& params, assets::MeshData& out, PalmReport* report = nullptr,
-                std::string* error = nullptr);
+                std::string* error = nullptr, Motion* motion = nullptr);
 
 }  // namespace engine::flora

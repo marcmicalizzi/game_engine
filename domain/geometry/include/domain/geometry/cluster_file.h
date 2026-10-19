@@ -170,10 +170,21 @@ enum class ClusterSection : u32 {
   // table or `k_cluster_cache_version` moves for it, and a reader that does not know the kind
   // skips it.
   Generator = 34,
+  // The motion contract of a generated tree (docs/subsystems/flora.md, "Motion attributes"): what
+  // a deform stage that sways it reads. 35 is one `ClusterFileMotionPart` per **part** — the trunk,
+  // each frond or branch — with its pivot, rest direction, length and parent; 36 is one
+  // `ClusterFileMotionVertex` per cluster vertex, parallel to `Vertices` like `Skin`, naming the
+  // vertex's part and its bend weight. Two kinds because the format's rule is one fixed-size
+  // element per section, and these are a per-mesh table and a per-vertex stream (the stream is
+  // paged with the vertices, the table is resident). **Written only when a generator emits them**,
+  // like 34: every other container is the bytes it was, and a file without them is a rigid mesh —
+  // which is also what a mesh whose weights are all zero draws.
+  MotionParts = 35,
+  MotionVertices = 36,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Generator) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::MotionVertices) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -300,7 +311,31 @@ struct ClusterFileTexture {
   u32 roles = 0;        // texture::k_role_*: which material slots name the image
 };
 
+// One part of a generated tree, as section 35 records it (flora.md, "Motion attributes"). 32
+// bytes, mesh space. A part is what bends as one: the trunk, a frond, a branch. Its `pivot` is
+// where it meets its parent (the trunk's is its base), `direction` the unit direction it leaves
+// the pivot in at rest, `length` its arc length root to tip, and `parent` the part it hangs from,
+// `k_motion_no_parent` for the root. Parents come before their children, so a pass over the table
+// in order meets every parent first.
+inline constexpr u32 k_motion_no_parent = 0xFFFFFFFFu;
+struct ClusterFileMotionPart {
+  Vec3 pivot;
+  Vec3 direction;
+  f32 length = 0.0f;
+  u32 parent = k_motion_no_parent;
+};
+
+// One vertex's place in the motion contract, as section 36 records it: its part, and its bend
+// weight as a 16-bit unorm — 0 at the part's root, 65535 at its tip, by arc length along the
+// part. 4 bytes, parallel to `Vertices`.
+struct ClusterFileMotionVertex {
+  u16 part = 0;
+  u16 weight = 0;
+};
+
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
+static_assert(sizeof(ClusterFileMotionPart) == 32, "a cluster file motion part is 32 bytes");
+static_assert(sizeof(ClusterFileMotionVertex) == 4, "a cluster file motion vertex is 4 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
@@ -360,6 +395,11 @@ struct ClusterFileData {
   std::string generator;
   std::string generator_kind;
   std::string generator_params;
+  // The motion contract (sections 35 and 36), both empty for a rigid mesh: the parts table, and
+  // empty or one record per entry of `mesh.mesh.vertices`. Written only when `motion_parts` is
+  // not empty, so a mesh without them is the bytes it was before the sections existed.
+  Vector<ClusterFileMotionPart> motion_parts;
+  Vector<ClusterFileMotionVertex> motion_vertices;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

@@ -17,7 +17,7 @@ engine_schema_library(NAME flora_schemas SCHEMAS schemas/flora.schema CAPABILITY
 
 engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema assets geometry flora_schemas
-  SOURCES src/palm.cpp src/flora.cpp)
+  SOURCES src/palm.cpp src/motion.cpp src/flora.cpp)
 
 engine_module_tests(NAME flora
   SOURCES tests/flora_tests.cpp tests/size_table.cpp)

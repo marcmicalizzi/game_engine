@@ -6,10 +6,14 @@
 #include <domain/geometry/cluster_pages.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace engine;
@@ -91,7 +95,106 @@ void check_valid(const flora::Palm& p, const assets::MeshData& mesh) {
   CHECK_MESSAGE(degenerate == 0, degenerate << " degenerate triangles; smallest area " << smallest);
 }
 
+// The motion contract a solver emitted, against its mesh (flora.md, "Motion attributes"): one
+// record per vertex, ids dense with the trunk 0 and parents first, and every part's weights an
+// arc-length parameter of it — 0 at the root, 1 at the tip, and the fraction of the way along at
+// every station between. That last is checked without knowing how the solver orders its vertices:
+// the vertices of a part are binned by weight, and the polyline through the bins' centroids, from
+// the pivot, must reach each bin at the share of its length the bin's weight says.
+void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32 expected_parts) {
+  REQUIRE(motion.vertex_part.size() == mesh.positions.size());
+  REQUIRE(motion.vertex_weight.size() == mesh.positions.size());
+  REQUIRE(motion.parts.size() == expected_parts);
+  CHECK(motion.parts[0].parent == geometry::k_motion_no_parent);
+  for (u32 p = 1; p < motion.parts.size(); ++p) {
+    CAPTURE(p);
+    CHECK(motion.parts[p].parent < p);
+    CHECK(motion.parts[p].length > 0.0f);
+    const Vec3 d = motion.parts[p].direction;
+    CHECK(std::abs(dot(d, d) - 1.0f) < 1e-4f);
+  }
+  constexpr u32 k_bins = 12;
+  struct Bin {
+    f64 sum[3] = {0.0, 0.0, 0.0};
+    f64 weight = 0.0;
+    u32 count = 0;
+  };
+  Vector<Bin> bins(motion.parts.size() * k_bins);
+  Vector<f32> lo(motion.parts.size(), 2.0f);
+  Vector<f32> hi(motion.parts.size(), -1.0f);
+  for (u32 v = 0; v < mesh.positions.size(); ++v) {
+    const u32 part = motion.vertex_part[v];
+    REQUIRE(part < motion.parts.size());
+    const f32 w = motion.vertex_weight[v];
+    REQUIRE(w >= 0.0f);
+    REQUIRE(w <= 1.0f);
+    lo[part] = std::min(lo[part], w);
+    hi[part] = std::max(hi[part], w);
+    u32 b = static_cast<u32>(w * static_cast<f32>(k_bins));
+    if (b >= k_bins) b = k_bins - 1;
+    Bin& bin = bins[part * k_bins + b];
+    bin.sum[0] += static_cast<f64>(mesh.positions[v].x);
+    bin.sum[1] += static_cast<f64>(mesh.positions[v].y);
+    bin.sum[2] += static_cast<f64>(mesh.positions[v].z);
+    bin.weight += static_cast<f64>(w);
+    ++bin.count;
+  }
+  u32 off = 0;
+  for (u32 p = 0; p < motion.parts.size(); ++p) {
+    CAPTURE(p);
+    CHECK(lo[p] <= 0.01f);  // every part reaches its root...
+    CHECK(hi[p] >= 0.99f);  // ...and its tip: the ids are dense, none is empty
+    const flora::MotionPart& part = motion.parts[p];
+    f64 at[3] = {static_cast<f64>(part.pivot.x), static_cast<f64>(part.pivot.y),
+                 static_cast<f64>(part.pivot.z)};
+    f64 travelled = 0.0;
+    for (u32 b = 0; b < k_bins; ++b) {
+      const Bin& bin = bins[p * k_bins + b];
+      if (bin.count == 0) continue;
+      const f64 c[3] = {bin.sum[0] / bin.count, bin.sum[1] / bin.count, bin.sum[2] / bin.count};
+      travelled += std::sqrt((c[0] - at[0]) * (c[0] - at[0]) + (c[1] - at[1]) * (c[1] - at[1]) +
+                             (c[2] - at[2]) * (c[2] - at[2]));
+      at[0] = c[0];
+      at[1] = c[1];
+      at[2] = c[2];
+      const f64 share = travelled / static_cast<f64>(part.length);
+      if (std::abs(share - bin.weight / bin.count) > 0.12) ++off;
+    }
+  }
+  CHECK_MESSAGE(off == 0, off << " part bins are not where their weight says along the part");
+}
+
 }  // namespace
+
+TEST_CASE("flora: the palm emits the motion contract — dense parts, weights root to tip") {
+  const flora::Palm p = default_palm();
+  assets::MeshData mesh;
+  flora::Motion motion;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_palm(p, mesh, nullptr, &error, &motion), error);
+  check_motion(mesh, motion, 1 + p.frond_count + p.dead_skirt_fronds);
+  // The trunk's pivot is its foot and its direction the spine's; every frond hangs from it.
+  CHECK(std::abs(motion.parts[0].pivot.y) < 1e-6f);
+  CHECK(motion.parts[0].direction.y > 0.95f);
+  for (u32 k = 1; k < motion.parts.size(); ++k)
+    CHECK(motion.parts[k].parent == flora::k_trunk_part);
+  // Every rung of the ladder names the same parts: a part is never dropped or merged.
+  for (const u32 budget : {20000u, 2000u}) {
+    flora::Palm q = p;
+    q.triangle_budget = budget;
+    assets::MeshData small;
+    flora::Motion small_motion;
+    REQUIRE_MESSAGE(flora::solve_palm(q, small, nullptr, &error, &small_motion), error);
+    CAPTURE(budget);
+    check_motion(small, small_motion, static_cast<u32>(motion.parts.size()));
+    for (u32 k = 0; k < motion.parts.size(); ++k) {
+      CHECK(small_motion.parts[k].pivot.x == motion.parts[k].pivot.x);
+      CHECK(small_motion.parts[k].length == motion.parts[k].length);
+    }
+  }
+  // Without the out-parameter the mesh is the same bytes: the contract rides beside it.
+  CHECK(mesh_hash(solve(p)) == mesh_hash(mesh));
+}
 
 TEST_CASE("flora: the default palm is valid, holds its budget and is the height asked") {
   flora::PalmReport report;
@@ -384,7 +487,9 @@ TEST_CASE(
   const u64 hash = geometry::cluster_file_hash(data);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(hash));
-  constexpr u64 k_golden = 0xab870afd905f4acdull;
+  // With the motion contract appended (sections 35 and 36); without it, the next test holds it to
+  // the bytes it was before them.
+  constexpr u64 k_golden = 0x92736eeeed8632f2ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -396,6 +501,104 @@ TEST_CASE(
   CHECK(error.find("oak") != std::string::npos);
   CHECK_FALSE(flora::read_flora_file("{\"palm\":{\"frond_count\":0}}", spelled, error));
   CHECK(error.find("frond_count") != std::string::npos);
+}
+
+namespace {
+
+// A container's section records and payloads as written: { kind, element size, count, bytes }.
+struct RawSection {
+  u32 kind = 0;
+  u32 element_size = 0;
+  u64 count = 0;
+  std::string bytes;
+};
+Vector<RawSection> raw_sections(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  const std::string file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  REQUIRE(file.size() >= sizeof(geometry::ClusterFileHeader));
+  geometry::ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  Vector<RawSection> out;
+  for (u32 i = 0; i < header.section_count; ++i) {
+    geometry::ClusterFileSection record;
+    std::memcpy(&record, file.data() + sizeof(header) + i * sizeof(record), sizeof(record));
+    RawSection s;
+    s.kind = record.kind;
+    s.element_size = record.element_size;
+    s.count = record.element_count;
+    s.bytes = file.substr(static_cast<usize>(record.offset),
+                          static_cast<usize>(record.element_size * record.element_count));
+    out.push_back(std::move(s));
+  }
+  return out;
+}
+
+}  // namespace
+
+// The motion contract in the container (sections 35 and 36): the table round-trips, every cluster
+// vertex's record is its source vertex's, and the sections are **appended** — the container with
+// them cleared is the container that was, every other section the same bytes.
+TEST_CASE("flora: the motion table round-trips through the container, appended to the rest") {
+  flora::FloraFile file;
+  geometry::ClusterFileData data;
+  std::string error;
+  const geometry::ClusterLodOptions lod;
+  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, lod, page_bytes, data, nullptr, error), error);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  REQUIRE(flora::solve_palm(file.palm, mesh, nullptr, &error, &motion));
+  REQUIRE(data.motion_parts.size() == motion.parts.size());
+  REQUIRE(data.motion_vertices.size() == data.mesh.mesh.vertices.size());
+  for (u32 v = 0; v < data.mesh.mesh.vertices.size(); ++v) {
+    // Each primitive was built over the whole vertex array; the merge shifts its source indices.
+    const u32 source = data.mesh.mesh.vertex_source[v] % static_cast<u32>(mesh.positions.size());
+    REQUIRE(source < mesh.positions.size());
+    CHECK(data.mesh.mesh.vertices[v].x == mesh.positions[source].x);
+    CHECK(data.motion_vertices[v].part == motion.vertex_part[source]);
+    CHECK(data.motion_vertices[v].weight ==
+          flora::encode_bend_weight(motion.vertex_weight[source]));
+  }
+  CHECK(flora::encode_bend_weight(0.0f) == 0);
+  CHECK(flora::encode_bend_weight(1.0f) == 65535);
+  CHECK(flora::decode_bend_weight(65535) == 1.0f);
+
+  engine::test::TempDir tmp("flora");
+  const std::string with = tmp.file("with.clusters");
+  const std::string without = tmp.file("without.clusters");
+  REQUIRE_MESSAGE(geometry::write_cluster_file(with, data, &error), error);
+  geometry::ClusterFileData back;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(with, back, &error), error);
+  REQUIRE(back.motion_parts.size() == data.motion_parts.size());
+  CHECK(std::memcmp(back.motion_parts.data(), data.motion_parts.data(),
+                    data.motion_parts.size() * sizeof(geometry::ClusterFileMotionPart)) == 0);
+  REQUIRE(back.motion_vertices.size() == data.motion_vertices.size());
+  CHECK(std::memcmp(back.motion_vertices.data(), data.motion_vertices.data(),
+                    data.motion_vertices.size() * sizeof(geometry::ClusterFileMotionVertex)) == 0);
+
+  geometry::ClusterFileData rigid = data;
+  rigid.motion_parts.clear();
+  rigid.motion_vertices.clear();
+  REQUIRE_MESSAGE(geometry::write_cluster_file(without, rigid, &error), error);
+  const Vector<RawSection> a = raw_sections(with);
+  const Vector<RawSection> b = raw_sections(without);
+  REQUIRE(a.size() == b.size() + 2);
+  for (u32 i = 0; i < b.size(); ++i) {
+    CAPTURE(b[i].kind);
+    CHECK(a[i].kind == b[i].kind);
+    CHECK(a[i].element_size == b[i].element_size);
+    CHECK(a[i].count == b[i].count);
+    CHECK(a[i].bytes == b[i].bytes);
+  }
+  CHECK(a[b.size()].kind == static_cast<u32>(geometry::ClusterSection::MotionParts));
+  CHECK(a[b.size() + 1].kind == static_cast<u32>(geometry::ClusterSection::MotionVertices));
+  CHECK(std::string(geometry::cluster_section_name(a[b.size()].kind)) == "motion_parts");
+  // The rigid container is the bytes the default palm's container was before the contract.
+  constexpr u64 k_rigid_golden = 0xab870afd905f4acdull;
+  const u64 rigid_hash = geometry::cluster_file_hash(rigid);
+  char hex[32];
+  std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
+  CHECK_MESSAGE(rigid_hash == k_rigid_golden, "the rigid palm's container hashes to " << hex);
 }
 
 // The default palm's mesh, pinned (flora.md, "The same palm from every toolchain"): the solver's

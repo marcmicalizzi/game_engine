@@ -244,6 +244,16 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     }
     add_section(payloads, ClusterSection::Generator, 1u, generator.size(), generator.data());
   }
+  // The motion contract, and only when a generator emitted one: every other container keeps the
+  // bytes it had before the sections existed.
+  if (!data.motion_parts.empty()) {
+    add_section(payloads, ClusterSection::MotionParts,
+                static_cast<u32>(sizeof(ClusterFileMotionPart)), data.motion_parts.size(),
+                data.motion_parts.data());
+    add_section(payloads, ClusterSection::MotionVertices,
+                static_cast<u32>(sizeof(ClusterFileMotionVertex)), data.motion_vertices.size(),
+                data.motion_vertices.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -416,6 +426,8 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Textures: return "textures";
     case ClusterSection::MaterialSampling: return "material_sampling";
     case ClusterSection::Generator: return "generator";
+    case ClusterSection::MotionParts: return "motion_parts";
+    case ClusterSection::MotionVertices: return "motion_vertices";
   }
   return "unknown";
 }
@@ -591,6 +603,26 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(width->element_size) + "-byte elements, expected 4");
     }
     std::memcpy(&result.mesh.mesh.skin_joint_count, bytes.data() + width->offset, sizeof(u32));
+  }
+
+  // The motion contract: a parts table and a per-vertex stream, both or neither. A file without
+  // them, or with an empty table, is a rigid mesh and the stream is not read.
+  if (const ClusterFileSection* parts = found[static_cast<u32>(ClusterSection::MotionParts)];
+      parts != nullptr && parts->element_count != 0) {
+    if (parts->element_size != sizeof(ClusterFileMotionPart)) {
+      return fail(error, "cluster file section motion_parts has " +
+                             std::to_string(parts->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileMotionPart)));
+    }
+    copy_section(bytes, *parts, result.motion_parts);
+    const ClusterFileSection* motion = found[static_cast<u32>(ClusterSection::MotionVertices)];
+    if (motion == nullptr) return fail(error, "cluster file has motion parts but no motion stream");
+    if (motion->element_size != sizeof(ClusterFileMotionVertex)) {
+      return fail(error, "cluster file section motion_vertices has " +
+                             std::to_string(motion->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileMotionVertex)));
+    }
+    copy_section(bytes, *motion, result.motion_vertices);
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -861,6 +893,19 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                            " skin bindings for " + std::to_string(mesh.vertices.size()) +
                            " vertices");
   }
+  if (!result.motion_parts.empty()) {
+    if (result.motion_vertices.size() != mesh.vertices.size()) {
+      return fail(error, "cluster file has " + std::to_string(result.motion_vertices.size()) +
+                             " motion records for " + std::to_string(mesh.vertices.size()) +
+                             " vertices");
+    }
+    for (const ClusterFileMotionVertex& m : result.motion_vertices) {
+      if (m.part >= result.motion_parts.size()) {
+        return fail(error, "cluster file motion record names part " + std::to_string(m.part) +
+                               " of " + std::to_string(result.motion_parts.size()));
+      }
+    }
+  }
   if (!mesh.vertex_ids.empty() && mesh.vertex_ids.size() != mesh.vertices.size()) {
     return fail(error, "cluster file has " + std::to_string(mesh.vertex_ids.size()) +
                            " vertex ids for " + std::to_string(mesh.vertices.size()) + " vertices");
@@ -995,6 +1040,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MaterialSampling,
     // A few hundred bytes, and only in a generated mesh's container: what made it.
     ClusterSection::Generator,
+    // 32 bytes a part, and only in a generated tree's container: the motion contract's table.
+    ClusterSection::MotionParts,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
@@ -1003,9 +1050,9 @@ constexpr ClusterSection k_resident_kinds[] = {
 // mesh", which on an empty mesh would throw the 16-bit grid away, and an absent `Vertices`
 // section is a file it refuses outright.
 constexpr ClusterSection k_paged_kinds[] = {
-    ClusterSection::Vertices,     ClusterSection::Attributes, ClusterSection::Triangles,
-    ClusterSection::VertexSource, ClusterSection::Quantized,  ClusterSection::Skin,
-    ClusterSection::VertexIds,
+    ClusterSection::Vertices,     ClusterSection::Attributes,     ClusterSection::Triangles,
+    ClusterSection::VertexSource, ClusterSection::Quantized,      ClusterSection::Skin,
+    ClusterSection::VertexIds,    ClusterSection::MotionVertices,
 };
 
 bool read_exact(const io::FileHandle& file, u64 offset, void* dst, u64 bytes, const char* what,

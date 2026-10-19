@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <string>
+#include <utility>
 
 namespace engine::flora {
 
@@ -221,14 +222,32 @@ D3 spine_tangent(const Spine& s, f64 arc) {
 // below is chosen for it, and the tests hold every face to point outwards).
 D3 spine_normal(const Spine& s, f64 arc) { return cross(s.side, spine_tangent(s, arc)) * -1.0; }
 
+// Every vertex is emitted with the part it belongs to and its bend weight (motion.h): the part is
+// set once per part, the weight per station along it.
 struct Emitter {
   assets::MeshData& mesh;
+  Motion& motion;
+  u32 part = k_trunk_part;
+  f64 weight = 0.0;
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));
     mesh.normals.push_back(to_f32(normalized(normal)));
     mesh.uvs.push_back(Vec2{static_cast<f32>(u), static_cast<f32>(v)});
+    motion.vertex_part.push_back(part);
+    motion.vertex_weight.push_back(static_cast<f32>(clamp01(weight)));
     return index;
+  }
+  // Opens a part: its record, and the part every vertex until the next one belongs to.
+  void begin_part(D3 pivot, D3 direction, f64 length, u32 parent) {
+    part = motion.parts.size();
+    geometry::ClusterFileMotionPart record;
+    record.pivot = to_f32(pivot);
+    record.direction = to_f32(normalized(direction));
+    record.length = static_cast<f32>(length);
+    record.parent = parent;
+    motion.parts.push_back(record);
+    weight = 0.0;
   }
   void triangle(u32 a, u32 b, u32 c) {
     mesh.indices.push_back(a);
@@ -276,8 +295,12 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
     turn[r] = ring < plan.rings ? lerp(twist[ring], twist[ring + 1], phase) : twist[plan.rings];
   }
 
+  // The trunk is part 0: its pivot the spine's foot, its weight the arc up the spine.
+  out.begin_part(spine_point(spine, 0.0), spine_tangent(spine, 0.0), spine.length,
+                 geometry::k_motion_no_parent);
   const u32 first = out.mesh.positions.size();
   for (u32 r = 0; r < rows; ++r) {
+    out.weight = arc[r] / spine.length;
     const D3 centre = spine_point(spine, arc[r]);
     const D3 tangent = spine_tangent(spine, arc[r]);
     const D3 normal = spine_normal(spine, arc[r]);
@@ -312,6 +335,7 @@ void build_trunk(const Palm& p, const Spine& spine, const Plan& plan, Rng& rng, 
   const D3 normal = spine_normal(spine, top);
   const D3 apex = spine_point(spine, top) + tangent * (0.35 * radius[rows - 1]);
   const f64 cap_radius = 2.0 * k_pi * radius[rows - 1] * v_scale;  // the disc at the wall's scale
+  out.weight = 1.0;
   const u32 centre = out.vertex(apex, tangent, 0.5, -0.5 - cap_radius);
   const u32 ring_first = out.mesh.positions.size();
   for (u32 i = 0; i < segs; ++i) {
@@ -436,7 +460,10 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
   Vector<u32> left(rows);
   Vector<u32> right(rows);
   Vector<u32> keel(rows);
+  // A frond is a part of its own hanging from the trunk; its weight is the arc along the rachis.
+  out.begin_part(f.base, tangent[0], f.length, k_trunk_part);
   for (u32 r = 0; r < rows; ++r) {
+    out.weight = arcs[r] / f.length;
     const f64 w = rachis_half_width(f, arcs[r]);
     left[r] = vertex(centre[r] + f.across * w, up[r], arcs[r], w);
     right[r] = vertex(centre[r] - f.across * w, up[r], arcs[r], -w);
@@ -466,6 +493,7 @@ void build_frond(const FrondShape& f, const Plan& plan, Emitter& out) {
     const u32 r1 = r0 + 1;
     const f64 length = leaflet_length(f, (static_cast<f64>(i) + 0.5) / static_cast<f64>(n));
     const f64 mid_arc = 0.5 * (arcs[r0] + arcs[r1]);
+    out.weight = mid_arc / f.length;  // a leaflet is carried by the rachis where it stands
     const f64 base_half = 0.5 * (arcs[r1] - arcs[r0]);
     const f64 w = rachis_half_width(f, mid_arc);
     const D3 t = normalized(tangent[r0] + tangent[r1]);
@@ -631,8 +659,10 @@ bool palm_in_range(const Palm& p, std::string& error) {
   return true;
 }
 
-bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::string* error) {
+bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::string* error,
+                Motion* motion) {
   out = assets::MeshData{};
+  Motion parts;
   std::string message;
   if (!palm_in_range(p, message)) {
     if (error != nullptr) *error = message;
@@ -656,7 +686,7 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
   out.materials.push_back(material("bark", Vec4{0.33f, 0.24f, 0.16f, 1.0f}, 0.9f, false));
   out.materials.push_back(material("frond", Vec4{0.13f, 0.21f, 0.07f, 1.0f}, 0.55f, true));
   out.materials.push_back(material("dead frond", Vec4{0.45f, 0.33f, 0.18f, 1.0f}, 0.85f, true));
-  Emitter emit{out};
+  Emitter emit{out, parts};
   const auto primitive = [&](u32 first, i32 material_index) {
     assets::Primitive part;
     part.first_index = first;
@@ -689,6 +719,7 @@ bool solve_palm(const Palm& p, assets::MeshData& out, PalmReport* report, std::s
     for (u32 v = fronds_vertex; v < out.positions.size(); ++v)
       out.normals[v] = normals[v];
   }
+  if (motion != nullptr) *motion = std::move(parts);
 
   if (report != nullptr) {
     *report = PalmReport{};
