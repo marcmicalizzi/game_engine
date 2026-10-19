@@ -761,12 +761,12 @@ struct GameActors::Impl {
     return id.is_null() ? animation::Library::k_not_found : scene->library.clip_index(id);
   }
   void fill(const Actor& a, hotload::ActorState& out) const;
-  void start_fade(Actor& a, f32 from, f32 to, f64 seconds, bool stop) noexcept {
+  void start_fade(Actor& a, f32 from, f32 to, f32 seconds, bool stop) noexcept {
     a.fading = true;
     a.stop_at_end = stop;
     a.fade_from = from;
     a.fade_to = to;
-    const f64 ticks = std::round(seconds / dt);
+    const f64 ticks = std::round(static_cast<f64>(seconds) / dt);
     a.fade_ticks = ticks >= 1.0 ? static_cast<u64>(ticks) : 1u;
     a.fade_elapsed = 0;
   }
@@ -1132,7 +1132,7 @@ bool GameActors::restore(const JsonValue& actors, std::string& error) {
         error = where + ": fade: from, to, ticks, elapsed_ticks or stop is missing";
         return false;
       }
-      g.start_fade(*a, static_cast<f32>(from), static_cast<f32>(to), 0.0, stop->as_bool());
+      g.start_fade(*a, static_cast<f32>(from), static_cast<f32>(to), 0.0f, stop->as_bool());
       a->fade_ticks = ticks > 0 ? ticks : 1u;
       a->fade_elapsed = elapsed;
     }
