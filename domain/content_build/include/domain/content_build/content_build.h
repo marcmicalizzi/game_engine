@@ -184,9 +184,25 @@ struct BuildResult {
 // after another on the calling thread, which is what a manifest does because it already has one
 // job per mesh in flight and nesting the two levels would only deepen the wait stack. Either way
 // the merge walks the primitives in index order. `output`'s directory must exist.
+//
+// A **generated mesh** — a path naming a mesh generator, `<name>.<generator>.json`
+// (`assets/mesh_generator.h`: a `.flora.json` palm, a `.rock.json` rock) — is built by its
+// generator through the registry instead, which makes the whole container as the renderer's scene
+// reader has it made; the import, the repairs, the weld and the atlas do not apply to it. A build
+// without the generator's capability refuses it with the registry's sentence.
 bool build_one(const std::string& input, const std::string& output, const MeshOptions& options,
                bool strict, jobs::JobSystem* pool, u64 source_hash, u64 build_key, BuildResult& out,
                Diagnostic& error);
+
+// A mesh source's identity: `assets::source_mesh_hash` for a glTF, the generator's hash of what
+// the file says (canonicalized) for a generated mesh. False, with a sentence, when it cannot be
+// read.
+bool source_hash_of(const std::string& path, u64& out, std::string* message);
+
+// The build key a mesh's container records and the cache addresses it by: `build_key_of`'s for a
+// glTF; for a generated mesh the scene reader's, `cluster_cache_key(source hash, LOD options, no
+// weld, page target)`, so `build`, `build-all` and the renderer share one entry.
+u64 mesh_build_key(const std::string& path, u64 source_hash, const MeshOptions& options) noexcept;
 
 // The job system a build runs on. `worker_count` is `--jobs`; 0 leaves the system its own
 // default, one worker per performance CPU. The efficiency pool is asked for one worker because

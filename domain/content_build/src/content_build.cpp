@@ -7,6 +7,7 @@
 #include <core/log/log.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/texture/material_textures.h>
@@ -283,9 +284,108 @@ void collect_texture_sources(const geometry::ClusterFileData& data, std::string_
 // builds run; null builds them one after another on the calling thread, which is what `build-all`
 // does because it already has one job per mesh in flight and nesting the two levels would only
 // deepen the wait stack. Either way the merge walks the primitives in index order.
+namespace {
+
+// The generator a generated mesh's path names (`assets/mesh_generator.h`), or null with the
+// registry's sentence, which names the capability it comes with.
+const assets::MeshGeneratorDesc* generator_for(const std::string& path, std::string& message) {
+  const std::string_view name = assets::mesh_generator_of(path);
+  const assets::MeshGeneratorRegistry& registry = assets::MeshGeneratorRegistry::global();
+  const assets::MeshGeneratorDesc* generator = registry.find(name);
+  if (generator == nullptr) message = registry.unknown(path, name);
+  return generator;
+}
+
+// A generated mesh — a `.flora.json`, a `.rock.json` — built through its generator, which makes
+// the whole container exactly as the renderer's scene reader has it made, so the two find each
+// other's entries. The import, the repairs, the weld and the atlas are the glTF path's and do not
+// apply: the generator's mesh is made the way it is meant to be.
+bool build_generated(const std::string& input, const std::string& output,
+                     const MeshOptions& options, u64 source_hash, u64 build_key, BuildResult& out,
+                     Diagnostic& error) {
+  const i64 start_ns = time::monotonic_ns();
+  out.path = output;
+  out.source_hash = source_hash;
+  out.build_key = build_key;
+  std::string message;
+  const assets::MeshGeneratorDesc* generator = generator_for(input, message);
+  std::string text;
+  const io::Status status = generator != nullptr ? io::read_file(input, text) : io::Status::Ok;
+  if (generator == nullptr || status != io::Status::Ok) {
+    error.rule = "source.unreadable";
+    error.message = generator == nullptr
+                        ? message
+                        : "cannot read " + input + ": " + std::string(io::status_name(status));
+    return false;
+  }
+  geometry::ClusterFileData data;
+  const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
+  if (!generator->build(bytes, lod_options_of(options), options.page_bytes, data, message)) {
+    error.rule = "source.unreadable";
+    error.message = input + ": " + message;
+    return false;
+  }
+  data.source_path = input;
+  if (data.source_hash != source_hash || data.build_key != build_key) {
+    error.rule = "source.unreadable";
+    error.message = input + ": the generator built under another identity than it hashed";
+    return false;
+  }
+  if (!geometry::write_cluster_file(output, data, &message)) {
+    error.rule = "output.unwritable";
+    error.message = message;
+    return false;
+  }
+  io::FileInfo info;
+  const geometry::ClusterLodMesh& lod = data.mesh;
+  out.clusters = lod.mesh.clusters.size();
+  out.leaf_clusters = lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0];
+  out.triangles = lod.leaf_triangle_count;
+  out.lod_levels = lod.level_cluster_counts.size();
+  out.vertices = lod.mesh.vertices.size();
+  out.pages = data.pages.pages.size();
+  out.page_bytes = options.page_bytes;
+  out.materials = data.materials.size();
+  out.images = data.image_paths.size();
+  out.bytes = io::stat_file(output, info) == io::Status::Ok ? info.size : 0;
+  out.hash = geometry::cluster_file_hash(data);
+  out.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+  return true;
+}
+
+}  // namespace
+
+bool source_hash_of(const std::string& path, u64& out, std::string* message) {
+  if (assets::mesh_generator_of(path).empty()) return assets::source_mesh_hash(path, out, message);
+  std::string why;
+  const assets::MeshGeneratorDesc* generator = generator_for(path, why);
+  std::string text;
+  const io::Status status = generator != nullptr ? io::read_file(path, text) : io::Status::Ok;
+  if (generator != nullptr && status != io::Status::Ok)
+    why = "cannot read " + path + ": " + std::string(io::status_name(status));
+  if (generator != nullptr && status == io::Status::Ok) {
+    const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
+    if (generator->source_hash(bytes, out, why)) return true;
+    why = path + ": " + why;
+  }
+  if (message != nullptr) *message = why;
+  return false;
+}
+
+u64 mesh_build_key(const std::string& path, u64 source_hash, const MeshOptions& options) noexcept {
+  // A generated mesh is keyed as the renderer's scene reader keys it: no weld (the generator's
+  // vertices are shared where it means them), no morph or atlas step.
+  if (!assets::mesh_generator_of(path).empty())
+    return geometry::cluster_cache_key(source_hash, lod_options_of(options), false,
+                                       options.page_bytes);
+  return build_key_of(source_hash, options);
+}
+
 bool build_one(const std::string& input, const std::string& output, const MeshOptions& options,
                bool strict, jobs::JobSystem* pool, u64 source_hash, u64 build_key, BuildResult& out,
                Diagnostic& error) {
+  if (!assets::mesh_generator_of(input).empty())
+    return build_generated(input, output, options, source_hash, build_key, out, error);
   const i64 start_ns = time::monotonic_ns();
   out.path = output;
   out.source_hash = source_hash;
@@ -834,13 +934,13 @@ void run_mesh_task(void* data) {
   const ManifestEntry& entry = *task.entry;
   u64 source_hash = 0;
   std::string message;
-  if (!assets::source_mesh_hash(entry.source, source_hash, &message)) {
+  if (!source_hash_of(entry.source, source_hash, &message)) {
     task.error.rule = "source.unreadable";
     task.error.message = message;
     task.state = TaskState::Failed;
     return;
   }
-  const u64 key = build_key_of(source_hash, entry.options);
+  const u64 key = mesh_build_key(entry.source, source_hash, entry.options);
   const bool to_cache = entry.output.empty();
   const std::string output = to_cache ? geometry::cluster_cache_path(*task.ddc, key) : entry.output;
   task.result.path = output;

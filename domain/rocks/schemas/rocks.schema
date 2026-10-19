@@ -1,0 +1,123 @@
+// The rocks capability's own types (ADR-0007, ADR-0027; docs/subsystems/rocks.md). They live with
+// the capability, so ENGINE_WITH_ROCKS=OFF takes them out of the build with everything else it
+// owns: a build without the capability refuses a `.rock.json` mesh by the mesh-generator registry's
+// sentence, and never needs to read one.
+namespace engine.rocks
+
+/// What the rock is made of (rocks.md, "The model by type"). The type sets what a recipe leaves to
+/// it: how many extra planar facets a boulder is cut by, how round its edges weather, its bedding
+/// layers, its surface noise and its colour.
+enum RockType : u8 {
+  /// Massive, jointed in three near-orthogonal sets: blocky, a few facets, edges weathered round,
+  /// a fine granular surface, grey.
+  Granite
+  /// Bedded: banded along its bedding direction (layers on by default), soft edges, warm tan.
+  Sandstone
+  /// Columnar: vertical joints at sixty degrees make a prism, sharp edges, near black.
+  Basalt
+  /// Rounded by solution: few facets, the softest edges, a pitted surface, pale.
+  Limestone
+}
+
+/// Which shape a rock file makes.
+enum RockShape : u8 {
+  /// One rock: `boulder`.
+  Boulder
+  /// A cluster of boulders grown from one bedding plane: `outcrop`.
+  Outcrop
+  /// A handful of small angular fragments: `scree`.
+  Scree
+}
+
+/// The tiled PBR set a rock's material samples (rocks.md, "UVs and materials"), in the shape the
+/// flora's material block takes so the two can converge. The UVs are laid out for it already;
+/// the image paths are refused until the material lab's tiled sets exist (rocks.md, "Not yet"),
+/// so a recipe that names one is told so rather than drawn without it.
+struct RockMaterial @version(1) {
+  base_color: string?
+  normal: string?
+  roughness: string?
+  metallic: string?
+  height: string?
+  /// One repeat of the set covers this many metres of surface: 0.05 to 20 m.
+  tile_m: f32 = 1.0 @unit(m)
+}
+
+/// One boulder (rocks.md, "The boulder"): a seeded convex body — an ellipsoid of the three
+/// half-extents cut by the type's joint planes and a few seeded facets — weathered (edges rounded,
+/// a low-frequency warp, a fine surface noise), banded along a bedding direction when it has
+/// layers, and lowered so `buried` of its height is under the origin.
+struct Boulder @version(1) {
+  /// Everything the parameters leave to chance. Any u64.
+  seed: u64 = 1
+  /// The half-extents before cutting, x, y (up) and z: each 0.05 to 20 m.
+  size_x: f32 = 1.2 @unit(m)
+  size_y: f32 = 0.8 @unit(m)
+  size_z: f32 = 1.0 @unit(m)
+  type: RockType = Granite
+  /// Joint sets that cut the body, each a pair of parallel planes on opposite sides: 0 to 4.
+  joint_sets: u32 = 3
+  /// How round the cut edges weather, 0 a sharp edge to 1 nearly a pebble; absent takes the type's.
+  rounding: f32?
+  /// Bedding layers across the body, 0 for none, up to 64; absent takes the type's.
+  layers: u32?
+  /// The share of the body's height under the origin, where the ground is: 0 to 0.8.
+  buried: f32 = 0.15
+  /// The most triangles the mesh may have: 500 to 500,000. The solver takes the finest rung of
+  /// its ladder that fits (rocks.md, "The budget ladder").
+  triangle_budget: u32 = 20000
+  material: RockMaterial
+}
+
+/// An outcrop (rocks.md, "The outcrop"): `count` boulders grown from one bedding plane inside the
+/// half-extents, sharing one joint set, the largest in the middle, sunk deeper than a boulder, as
+/// one mesh.
+struct Outcrop @version(1) {
+  seed: u64 = 1
+  /// The outcrop's half-extents, x, y (up) and z: each 0.2 to 50 m.
+  size_x: f32 = 4.0 @unit(m)
+  size_y: f32 = 2.0 @unit(m)
+  size_z: f32 = 3.0 @unit(m)
+  type: RockType = Basalt
+  /// Boulders in it: 2 to 16.
+  count: u32 = 6
+  joint_sets: u32 = 2
+  rounding: f32?
+  layers: u32?
+  /// The share of each boulder's height under the bedding plane: 0 to 0.8.
+  buried: f32 = 0.3
+  /// The most triangles of every boulder together: 1,000 to 1,000,000.
+  triangle_budget: u32 = 60000
+  material: RockMaterial
+}
+
+/// Scree (rocks.md, "Scree"): `count` small angular fragments lying on the ground inside the
+/// footprint's half-extents, as one mesh.
+struct Scree @version(1) {
+  seed: u64 = 1
+  /// The footprint's half-extents, x and z: each 0.1 to 20 m.
+  size_x: f32 = 1.0 @unit(m)
+  size_z: f32 = 1.0 @unit(m)
+  type: RockType = Granite
+  /// Fragments: 2 to 64.
+  count: u32 = 12
+  /// The largest fragment's longest half-extent: 0.02 to 2 m; the rest are smaller.
+  fragment_m: f32 = 0.2 @unit(m)
+  rounding: f32?
+  /// The share of each fragment's height under the ground: 0 to 0.8.
+  buried: f32 = 0.2
+  /// The most triangles of every fragment together: 500 to 500,000.
+  triangle_budget: u32 = 8000
+  material: RockMaterial
+}
+
+/// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may
+/// be given (absent is its defaults). A scene's mesh table names one as it names a glTF, and
+/// `engine-content rocks` builds one into a container; either way the build is keyed by these
+/// values (canonicalized) and the solver's version.
+struct RockFile @version(1) {
+  shape: RockShape = Boulder
+  boulder: Boulder?
+  outcrop: Outcrop?
+  scree: Scree?
+}

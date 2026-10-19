@@ -1,0 +1,12 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 21,
+    "size_x": 1.6, "size_y": 1.0, "size_z": 1.2,
+    "type": "Sandstone",
+    "joint_sets": 2,
+    "layers": 9,
+    "buried": 0.2,
+    "triangle_budget": 24000
+  }
+}

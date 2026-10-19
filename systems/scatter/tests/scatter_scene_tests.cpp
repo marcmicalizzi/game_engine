@@ -285,3 +285,47 @@ TEST_CASE("scatter: a scene's layer is read as instances of one rock standing on
   MESSAGE(visible << " of " << placed << " rocks on the picture, " << rock_pixels << " pixels");
   CHECK(visible * 5 >= placed * 3);
 }
+
+#if defined(ENGINE_SCATTER_TESTS_DUNES) && defined(ENGINE_SCATTER_TESTS_ROCKS)
+// content/test-scenes/rock-field (docs/subsystems/rocks.md, "In a scene"): a layer whose kinds name
+// `.rock.json` recipes — the rock solver's boulders and scree, found through the mesh-generator
+// registry like any generated mesh — placed round three outcrops the scene stands itself, clear of
+// them. Read as engine-view reads it, with the host's root in the test's scratch directory.
+TEST_CASE(
+    "scatter: the rock field's layer places the rock solver's recipes, clear of its outcrops") {
+  const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/rock-field",
+                                          "content/test-scenes/rock-field");
+  if (!test::path_exists(dir)) {
+    MESSAGE("content/test-scenes/rock-field is not here (a bundle without it): skipped");
+    return;
+  }
+  const test::TempDir tmp("scatter_rock_field");
+  SceneDesc desc;
+  desc.ddc = tmp.file("ddc");
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(dir + "/scene.json", desc, error), error);
+  u32 recipes = 0;
+  for (const std::string& mesh : desc.meshes)
+    recipes += mesh.find(".rock.json") != std::string::npos ? 1u : 0u;
+  CHECK(recipes == 4);  // the outcrop, then the layer's three kinds
+  const u32 placed = desc.placed_instances;
+  MESSAGE(placed << " rocks placed over the field");
+  CHECK(placed > 300);
+  // Nothing placed within the exclusion circles round the outcrops (the scene's first three).
+  const f64 circles[3][3] = {{0.0, 0.0, 6.0}, {-22.0, 14.0, 7.5}, {18.0, -16.0, 5.0}};
+  u32 layer_rocks = 0;
+  for (const SceneInstance& rock : desc.instances) {
+    const std::string& mesh = desc.meshes[rock.mesh];
+    if (mesh.find(".rock.json") == std::string::npos ||
+        mesh.find("basalt-outcrop") != std::string::npos)
+      continue;
+    ++layer_rocks;
+    for (const auto& c : circles) {
+      const f64 dx = rock.origin.x - c[0];
+      const f64 dz = rock.origin.z - c[1];
+      CHECK(dx * dx + dz * dz >= c[2] * c[2]);
+    }
+  }
+  CHECK(layer_rocks == placed);
+}
+#endif

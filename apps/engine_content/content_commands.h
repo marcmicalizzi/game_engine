@@ -24,6 +24,11 @@
 //                                                 solved and built into a container through the
 //                                                 cache (docs/subsystems/flora.md), present when
 //                                                 this build has the flora capability
+//   rocks                                         a rock file (a boulder, an outcrop or scree)
+//                                                 solved and built into a container through the
+//                                                 cache, or written as a GLB for E10 (docs/
+//                                                 subsystems/rocks.md), present when this build
+//                                                 has the rocks capability
 //
 // Each prints one JSON line per result on stdout and returns the process exit code: 0 ok, 1 a file
 // could not be read, written or validated, 2 usage.
@@ -56,5 +61,6 @@ int tileset_command(int argc, char** argv);  // terrain-synth, terrain-tiles
 int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
 int flora_command(int argc, char** argv);
+int rocks_command(int argc, char** argv);
 
 }  // namespace engine::content
