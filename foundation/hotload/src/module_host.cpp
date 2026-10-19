@@ -444,6 +444,79 @@ struct HostCallbacks {
     if (g.request_graphics == nullptr) return Result::Unsupported;
     return g.request_graphics(g.user, *request);
   }
+  // ---- ABI 5: actors and the ground ----
+  static Result actor_find(void* host, const char* name, u64 length, u32* out_actor) {
+    ModuleHost& h = self(host);
+    if (out_actor == nullptr || name == nullptr) return Result::InvalidArgument;
+    const std::string_view wanted(name, static_cast<usize>(length));
+    const GameServices& g = h.game_;
+    if (g.actor_find == nullptr) return Result::Unsupported;
+    std::string why;
+    const Result r = g.actor_find(g.user, wanted, out_actor, &why);
+    // Remembered inside `on_load` only, like a field path that does not resolve; at a tick it is a
+    // plain answer (a module may look an actor up whenever it likes), and remembering it there
+    // would grow the list a tick at a time.
+    if (r == Result::NotFound && h.in_load_hook_) {
+      h.pending_unresolved_.push_back(
+          why.empty() ? "no actor '" + std::string(wanted) + "' in the scene" : why);
+    }
+    return r;
+  }
+  static Result actor_spawn(void* host, const char* mesh, u64 length, const f64* position, f32 yaw,
+                            u32* out_actor) {
+    const GameServices& g = self(host).game_;
+    if (mesh == nullptr || position == nullptr || out_actor == nullptr)
+      return Result::InvalidArgument;
+    if (g.actor_spawn == nullptr) return Result::Unsupported;
+    return g.actor_spawn(g.user, std::string_view(mesh, static_cast<usize>(length)), position, yaw,
+                         out_actor);
+  }
+  static Result actor_place(void* host, u32 actor, const f64* position, f32 yaw) {
+    const GameServices& g = self(host).game_;
+    if (position == nullptr) return Result::InvalidArgument;
+    if (g.actor_place == nullptr) return Result::Unsupported;
+    return g.actor_place(g.user, actor, position, yaw);
+  }
+  static Result actor_play(void* host, u32 actor, const char* clip, u64 length, f32 fade_s,
+                           u32 looping) {
+    const GameServices& g = self(host).game_;
+    if (clip == nullptr) return Result::InvalidArgument;
+    for (u64 i = 0; i < length; ++i) {
+      if (clip[i] == '\0') return Result::InvalidArgument;  // shorter than its length says
+    }
+    if (g.actor_play == nullptr) return Result::Unsupported;
+    return g.actor_play(g.user, actor, std::string_view(clip, static_cast<usize>(length)), fade_s,
+                        looping != 0);
+  }
+  static Result actor_stop(void* host, u32 actor, f32 fade_s) {
+    const GameServices& g = self(host).game_;
+    if (g.actor_stop == nullptr) return Result::Unsupported;
+    return g.actor_stop(g.user, actor, fade_s);
+  }
+  static Result actor_speed(void* host, u32 actor, f32 speed) {
+    const GameServices& g = self(host).game_;
+    if (g.actor_speed == nullptr) return Result::Unsupported;
+    return g.actor_speed(g.user, actor, speed);
+  }
+  static Result actor_state(void* host, u32 actor, ActorState* out) {
+    const GameServices& g = self(host).game_;
+    if (out == nullptr || out->size < sizeof(ActorState)) return Result::InvalidArgument;
+    if (g.actor_state == nullptr) return Result::Unsupported;
+    ActorState state;  // the host's own size, copied back over the module's
+    const Result r = g.actor_state(g.user, actor, state);
+    if (r == Result::Ok) {
+      const u32 size = out->size;
+      *out = state;
+      out->size = size;
+    }
+    return r;
+  }
+  static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
+    const GameServices& g = self(host).game_;
+    if (out_height == nullptr) return Result::InvalidArgument;
+    if (g.ground_height == nullptr) return Result::Unsupported;
+    return g.ground_height(g.user, x, z, out_height);
+  }
 };
 
 const char* status_name(Status status) noexcept {
@@ -499,6 +572,14 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.hud_remove = &HostCallbacks::hud_remove;
   api_.graphics_state = &HostCallbacks::graphics_state;
   api_.request_graphics = &HostCallbacks::request_graphics;
+  api_.actor_find = &HostCallbacks::actor_find;
+  api_.actor_spawn = &HostCallbacks::actor_spawn;
+  api_.actor_place = &HostCallbacks::actor_place;
+  api_.actor_play = &HostCallbacks::actor_play;
+  api_.actor_stop = &HostCallbacks::actor_stop;
+  api_.actor_speed = &HostCallbacks::actor_speed;
+  api_.actor_state = &HostCallbacks::actor_state;
+  api_.ground_height = &HostCallbacks::ground_height;
   context_.api = &api_;
   context_.state = nullptr;
 }
@@ -725,7 +806,9 @@ Status ModuleHost::adopt(std::unique_ptr<Module> build) {
     ModuleContext trial{&api_, build->state};
     pending_failure_.clear();
     pending_unresolved_.clear();
+    in_load_hook_ = true;
     const i32 rc = build->on_load(&trial);
+    in_load_hook_ = false;
     if (rc != 0 || !pending_unresolved_.empty()) {
       std::string message = "on_load";
       if (rc != 0) message += " returned " + std::to_string(rc);
