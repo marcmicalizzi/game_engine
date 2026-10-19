@@ -104,8 +104,44 @@ void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out);
 // named "water" whose base colour is `shallow` and roughness `roughness` — what stage 1 drew, and
 // what every reader that is not the resolve's water branch still draws.
 Vector<u8> mesh_glb(const Mesh& mesh, Vec3 shallow, f32 roughness);
-// The file a mesh is written to: "water-<hash of its bytes>.glb".
+// The file a mesh is written to on its own: "water-<hash of its bytes>.glb". A body's mesh and
+// depth map go under `body_file_stem` instead, which covers both.
 std::string mesh_file_name(std::span<const u8> glb);
+
+// **The depth map** (docs/subsystems/water.md, "The depth map"): the depth under the body on a
+// square grid over its bounding square, from the same `Ground::surface` the vertices sample, at a
+// quarter of the mesh's spacing (`size` within [k_depth_map_min, k_depth_map_max] texels a side).
+// The mesh's vertex depths draw the ground as a piecewise-linear surface over its rings and fan,
+// whose facets the eye sees through the water (rings and trapezoids in the bottom's colour); the
+// resolve samples this map bilinearly instead, so the bottom it shades follows the ground and not
+// the triangles. Texel (i, j)'s centre is body-local (origin.x + i texel_m, origin.y + j texel_m),
+// row j along +z; its depth is `texels[j * size + i] / 65535 * depth_max`, metres — 16 bits over
+// the body's own range, so a 2.3 m pool keeps 0.04 mm and a 40 m lake 0.6 mm. Texels outside the
+// outline are the ground there too (clamped at zero), so a refracted view that runs under the
+// bank still finds it.
+inline constexpr u32 k_depth_map_version = 1;
+inline constexpr u32 k_depth_map_min = 64;
+inline constexpr u32 k_depth_map_max = 1024;
+struct DepthMap {
+  u32 size = 0;          // texels a side; 0 is no map
+  Vec2 origin{};         // body-local (x, z) of texel (0, 0)'s centre, metres
+  f32 texel_m = 0.0f;    // metres between texel centres
+  f32 depth_max = 0.0f;  // the depth a texel of 65535 stands for
+  Vector<u16> texels;    // size * size, rows along +z
+};
+void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground& ground,
+                     DepthMap& out);
+// The map as a file: a 32-byte header — "EWDM", the version, the size, 0, origin x and z,
+// texel_m and depth_max as little-endian u32 and f32 — then the texels as little-endian u16. The
+// renderer's scene reader reads it (systems/renderer/src/scene_water.cpp; the layout is mirrored
+// there, since the renderer may not call a capability, and `water_scene_tests.cpp` holds the two
+// to each other).
+Vector<u8> depth_map_bytes(const DepthMap& map);
+bool read_depth_map(std::span<const u8> bytes, DepthMap& out, std::string* error);
+// The name both of a body's files take, "water-<hash of the GLB's bytes and the map's>": the mesh
+// is `<stem>.glb` and the map `<stem>.depth`, beside it, so the one key covers both and the reader
+// finds the map from the mesh's path.
+std::string body_file_stem(std::span<const u8> glb, std::span<const u8> map);
 
 // The generator's parameters, as the reader hands them: `{"bodies": [<WaterBody>...]}`. Its
 // `expand` makes one mesh and one placement per body, in the block's order — mesh k and instance k

@@ -13,8 +13,10 @@
 #include <systems/water/water.h>
 
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace engine::water {
 
@@ -101,20 +103,32 @@ bool expand(void* state, const scene_gen::Context& context, scene_gen::Placement
     build_mesh(body, ground, mesh);
     const Vec3 shallow = block.shallow.has_value() ? *block.shallow : Vec3{0.30f, 0.55f, 0.50f};
     const Vector<u8> glb = mesh_glb(mesh, shallow, block.roughness);
+    // The depth map beside it (water.md, "The depth map"): the same ground at a quarter of the
+    // mesh's spacing, under one name with the mesh, so the reader finds it from the mesh's path.
+    DepthMap map;
+    build_depth_map(body, mesh, ground, map);
+    const Vector<u8> map_file = depth_map_bytes(map);
     const std::span<const u8> bytes(glb.data(), glb.size());
+    const std::span<const u8> map_bytes(map_file.data(), map_file.size());
+    const std::string stem = io::join_path(mesh_dir, body_file_stem(bytes, map_bytes));
     scene_gen::PlacementMesh placed;
-    placed.path = io::join_path(mesh_dir, mesh_file_name(bytes));
+    placed.path = stem + ".glb";
     placed.name = "water/" + (body.name.empty() ? std::to_string(k) : body.name);
-    if (!io::exists(placed.path)) {
+    // The map first and the mesh last: a mesh under its name means both are there.
+    const std::string map_path = stem + ".depth";
+    for (const auto& [path, file] :
+         {std::pair<const std::string*, std::span<const u8>>{&map_path, map_bytes},
+          std::pair<const std::string*, std::span<const u8>>{&placed.path, bytes}}) {
+      if (io::exists(*path)) continue;
       if (io::make_directories(mesh_dir) != io::Status::Ok) {
         if (error != nullptr) *error = entry.where + ": cannot create " + mesh_dir;
         return false;
       }
       const io::Status status = io::write_file_atomic(
-          placed.path, std::string_view(reinterpret_cast<const char*>(glb.data()), glb.size()));
+          *path, std::string_view(reinterpret_cast<const char*>(file.data()), file.size()));
       if (status != io::Status::Ok) {
         if (error != nullptr)
-          *error = entry.where + ": cannot write " + placed.path + ": " + io::status_name(status);
+          *error = entry.where + ": cannot write " + *path + ": " + io::status_name(status);
         return false;
       }
     }

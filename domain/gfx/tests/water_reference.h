@@ -14,6 +14,7 @@
 #include <core/base/types.h>
 #include <domain/gfx/visibility_resolve.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace engine::water_ref {
@@ -168,6 +169,92 @@ inline Path path(Dvec3 n, Dvec3 v, double depth, double slope_x, double slope_z)
   const double den = std::max(down - (slope_x * p.t.x + slope_z * p.t.z), 0.25 * down);
   p.length = std::max(depth, 0.0) / den;
   p.depth = p.length * down;
+  return p;
+}
+
+// water.slang's depth map (`water_depth_map_of`, `water_depth_sample`): the entry's UV frame and
+// the 16-bit texels the image's red and green hold, sampled bilinearly in double as the sampler
+// does — texel coordinates u N - 1/2, the four neighbours, clamp-to-edge — after the UV is clamped
+// half a texel inside the map.
+struct DepthMap {
+  const u16* texels = nullptr;
+  u32 size = 0;
+  double u0 = 0.0;
+  double v0 = 0.0;
+  double uv_per_m = 0.0;
+  double half_texel = 0.0;
+  double depth_max = 0.0;
+};
+
+inline DepthMap depth_map_of(const gfx::ResolveMaterial& entry, const u16* texels, u32 size) {
+  DepthMap d;
+  d.texels = texels;
+  d.size = size;
+  d.u0 = static_cast<double>(entry.uv_offset.x);
+  d.v0 = static_cast<double>(entry.uv_offset.y);
+  d.uv_per_m = static_cast<double>(entry.uv_offset.z);
+  d.depth_max = static_cast<double>(entry.uv_offset.w);
+  d.half_texel = static_cast<double>(entry.uv_transform.w);
+  return d;
+}
+
+inline double depth_sample(const DepthMap& d, double x, double z) {
+  const double n = static_cast<double>(d.size);
+  const double u = std::clamp(d.u0 + x * d.uv_per_m, d.half_texel, 1.0 - d.half_texel);
+  const double v = std::clamp(d.v0 + z * d.uv_per_m, d.half_texel, 1.0 - d.half_texel);
+  const double tx = u * n - 0.5;
+  const double tz = v * n - 0.5;
+  const double fx0 = std::floor(tx);
+  const double fz0 = std::floor(tz);
+  const double ax = tx - fx0;
+  const double az = tz - fz0;
+  const auto at = [&](double i, double j) {
+    const u32 ii = static_cast<u32>(std::clamp(i, 0.0, n - 1.0));
+    const u32 jj = static_cast<u32>(std::clamp(j, 0.0, n - 1.0));
+    return static_cast<double>(d.texels[jj * d.size + ii]) / 65535.0 * d.depth_max;
+  };
+  const double top = at(fx0, fz0) * (1.0 - ax) + at(fx0 + 1.0, fz0) * ax;
+  const double bottom = at(fx0, fz0 + 1.0) * (1.0 - ax) + at(fx0 + 1.0, fz0 + 1.0) * ax;
+  return top * (1.0 - az) + bottom * az;
+}
+
+// water.slang's `water_path_map`: the refracted view marched against the map in
+// `k_march_steps` fixed steps out to `k_march_reach` times the flat answer, one secant in the
+// step that passes under the ground, and the bottom's normal from one texel's forward differences.
+inline constexpr u32 k_march_steps = 6;
+inline constexpr double k_march_reach = 3.0;
+
+inline Path path_map(const DepthMap& d, double x, double z, Dvec3 n, Dvec3 v, double depth,
+                     Dvec3& n_b) {
+  const double cos_i = std::max(brdf_ref::dot(n, v), brdf_ref::k_min_n_dot_v);
+  const double eta = 1.0 / k_ior;
+  const double cos_t = std::sqrt(std::max(1.0 - eta * eta * (1.0 - cos_i * cos_i), 0.0));
+  Path p;
+  p.t = brdf_ref::normalize((-v) * eta + n * (eta * cos_i - cos_t));
+  const double down = std::max(-p.t.y, 1e-3);
+  const double step = k_march_reach * std::max(depth, 0.0) / down / k_march_steps;
+  double s_a = 0.0;
+  double f_a = std::max(depth, 0.0);
+  double s = step * k_march_steps;
+  for (u32 i = 1; i <= k_march_steps; ++i) {
+    const double s_b = step * i;
+    const double f_b = depth_sample(d, x + p.t.x * s_b, z + p.t.z * s_b) - s_b * down;
+    if (f_b <= 0.0) {
+      s = f_a - f_b > 1e-9 ? s_a + (s_b - s_a) * (f_a / (f_a - f_b)) : s_b;
+      break;
+    }
+    s_a = s_b;
+    f_a = f_b;
+  }
+  p.length = s;
+  p.depth = s * down;
+  const double hx = x + p.t.x * s;
+  const double hz = z + p.t.z * s;
+  const double texel_m = 2.0 * d.half_texel / d.uv_per_m;
+  const double d0 = depth_sample(d, hx, hz);
+  const double dx = depth_sample(d, hx + texel_m, hz) - d0;
+  const double dz = depth_sample(d, hx, hz + texel_m) - d0;
+  n_b = brdf_ref::normalize(Dvec3{dx / texel_m, 1.0, dz / texel_m});
   return p;
 }
 

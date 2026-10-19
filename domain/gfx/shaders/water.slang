@@ -6,8 +6,9 @@
 //     the water's index 1.33),
 //   - the sun's glitter: the GGX lobe of the resolve's own BSDF (brdf.slang) on that normal at the
 //     body's roughness, shadowed as the surface is,
-//   - and the bottom: the body's shallow colour fading to its deep colour by the depth the mesh
-//     carries under each vertex (UV.y), lit as a level surface by the sun and the sky's ambient,
+//   - and the bottom: the body's shallow colour fading to its deep colour by the depth under the
+//     pixel — sampled from the body's depth map (below), or the mesh's vertex depth (UV.y) for a
+//     body with none — lit as a level surface by the sun and the sky's ambient,
 //     darkened by the water's absorption along the slant of the refracted view,
 //
 // the reflection and the glitter faded in from the edge over `shore` (UV.x, the distance from the
@@ -161,8 +162,9 @@ float3 water_reflected(float3 n, float3 v) {
 // (gfx::set_water_optics): the water's extinction and scattering per metre, its transmission, and
 // the ground under it — the material the terrain draws with and where the body stands in that
 // material's UV frame. The visibility buffer holds the surface and nothing beneath it, so the
-// bottom is found analytically: the view refracted at the wave normal runs down to the plane the
-// mesh's depth attribute says the ground is (the triangle's own depth and its slope), the ground's
+// bottom is found analytically: the view refracted at the wave normal is marched down to the
+// ground the body's depth map holds (`water_path_map`), or, for a body with no map, run to the
+// plane the mesh's depth attribute says the ground is (the triangle's own depth and slope), the ground's
 // colour is read there from the terrain's own maps, lit by the sun refracted into the water
 // (shadowed where its ray leaves the surface) and the sky's light, and dimmed by Beer–Lambert
 // along both paths; the water itself adds the light it scatters towards the eye on the way, which
@@ -218,6 +220,90 @@ WaterPath water_path(float3 n, float3 v, float depth, float2 slope) {
   const float den = max(down - dot(slope, p.t.xz), 0.25 * down);
   p.length = max(depth, 0.0) / den;
   p.depth = p.length * down;
+  return p;
+}
+
+// ---- the depth map (gfx::set_water_depth_map; water.md, "The depth map") ---------------------
+//
+// With `k_material_water_depth_map` the entry after the water material names the body's depth map:
+// the ground under the body on a square grid at a quarter of the mesh's spacing, a 16-bit depth
+// in an RGBA8 image's red (high byte) and green (low byte). It is sampled bilinearly at the
+// body-local point — the UV clamped half a texel inside the map, which is clamp-to-edge whatever
+// the sampler's address mode — so the bottom the branch shades is the ground, not the water
+// mesh's rings and fan of vertex depths, whose facets the eye saw through the surface.
+static const uint k_material_water_depth_map = 64u;  // gfx::k_material_water_depth_map
+
+struct WaterDepthMap {
+  uint texture;
+  uint sampler;
+  float2 uv_origin;  // the map's UV at the body's centre
+  float uv_per_m;
+  float half_texel;  // in UV
+  float depth_max;   // the depth a texel of 65535 is
+};
+
+WaterDepthMap water_depth_map_of(ResolveMaterial m) {
+  WaterDepthMap d;
+  d.texture = m.albedo_texture;
+  d.sampler = m.samplers_mr_normal;
+  d.uv_origin = m.uv_offset.xy;
+  d.uv_per_m = m.uv_offset.z;
+  d.depth_max = m.uv_offset.w;
+  d.half_texel = m.uv_transform.w;
+  return d;
+}
+
+// The depth at body-local (x, z): red and green are the 16-bit depth's two bytes, and the depth is
+// linear in both, so the filtered pair is the filtered depth.
+float water_depth_sample(WaterDepthMap d, float2 p) {
+  const float2 uv = clamp(d.uv_origin + p * d.uv_per_m, d.half_texel, 1.0 - d.half_texel);
+  const float4 t = g_textures[NonUniformResourceIndex(d.texture)]
+                       .SampleLevel(g_samplers[NonUniformResourceIndex(d.sampler)], uv, 0);
+  return (t.r * (65280.0 / 65535.0) + t.g * (255.0 / 65535.0)) * d.depth_max;
+}
+
+// The refracted view run down to the ground as a **height field**: `k_water_march_steps` fixed
+// steps along the ray out to `k_water_march_reach` times the flat answer (the depth here over the
+// ray's descent), the first step that passes under the sampled ground bracketing the hit, and one
+// secant between that step's two ends. A level bottom lands exactly (the secant of a straight
+// line); a bank that rises under the ray is met sooner and a bottom that falls away later, as the
+// ground goes, never as the triangle under the pixel says. A ray that is still above the ground at
+// the end of its reach stops there — the cap the plane had. `bottom_normal` is the map's slope at
+// the hit, one texel's forward differences: the ground's normal there, (d', 1, d') normalized.
+static const uint k_water_march_steps = 6;
+static const float k_water_march_reach = 3.0;
+
+WaterPath water_path_map(WaterDepthMap d, float2 here, float3 n, float3 v, float depth,
+                         out float3 bottom_normal) {
+  const float cos_i = max(dot(n, v), k_min_n_dot_v);
+  const float eta = 1.0 / k_water_ior;
+  const float cos_t = sqrt(max(1.0 - eta * eta * (1.0 - cos_i * cos_i), 0.0));
+  WaterPath p;
+  p.t = normalize(-v * eta + n * (eta * cos_i - cos_t));
+  const float down = max(-p.t.y, 1e-3);
+  const float step = k_water_march_reach * max(depth, 0.0) / down / float(k_water_march_steps);
+  // f(s) = ground depth less the ray's depth: positive while the ray is in the water.
+  float s_a = 0.0;
+  float f_a = max(depth, 0.0);
+  float s = step * float(k_water_march_steps);
+  for (uint i = 1; i <= k_water_march_steps; ++i) {
+    const float s_b = step * float(i);
+    const float f_b = water_depth_sample(d, here + p.t.xz * s_b) - s_b * down;
+    if (f_b <= 0.0) {
+      s = f_a - f_b > 1e-9 ? s_a + (s_b - s_a) * (f_a / (f_a - f_b)) : s_b;
+      break;
+    }
+    s_a = s_b;
+    f_a = f_b;
+  }
+  p.length = s;
+  p.depth = s * down;
+  const float2 at = here + p.t.xz * s;
+  const float texel_m = 2.0 * d.half_texel / d.uv_per_m;
+  const float d0 = water_depth_sample(d, at);
+  const float dx = water_depth_sample(d, at + float2(texel_m, 0.0)) - d0;
+  const float dz = water_depth_sample(d, at + float2(0.0, texel_m)) - d0;
+  bottom_normal = normalize(float3(dx / texel_m, 1.0, dz / texel_m));
   return p;
 }
 
