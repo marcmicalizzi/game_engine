@@ -14,7 +14,9 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -188,6 +190,90 @@ TEST_CASE("water: the mesh is rings to a fan, facing up, carrying the depth unde
   CHECK(down == 0u);
 }
 
+// The depth map (water.md, "The depth map"): a grid over the body's bounding square at a quarter of
+// the mesh's spacing, every texel the level less the ground under it to the quantization's half
+// step, the vertices' depths what the map interpolates to within the bowl's curvature over a
+// texel, the bytes read back as written, the same bytes twice and a pinned hash.
+TEST_CASE("water: the depth map is the ground under the body, a quarter of the spacing apart") {
+  const scene_gen::Ground ground = bowl_ground();
+  const water::Body body = read(circle_block(100.0, 50.0, 12.0f, 0.0));
+  water::Mesh mesh;
+  water::build_mesh(body, ground, mesh);
+  water::DepthMap map;
+  water::build_depth_map(body, mesh, ground, map);
+  // 24 m at a sixth of a metre: 145 texels a side.
+  CHECK(map.size == 145u);
+  REQUIRE(map.texels.size() == map.size * map.size);
+  CHECK(map.texel_m == doctest::Approx(24.0f / 144.0f).epsilon(1e-5));
+  CHECK(map.origin.x == doctest::Approx(-12.0f).epsilon(1e-5));
+  CHECK(map.origin.y == doctest::Approx(-12.0f).epsilon(1e-5));
+  CHECK(map.depth_max == doctest::Approx(2.0f).epsilon(1e-3));
+  const f64 unit = static_cast<f64>(map.depth_max) / 65535.0;
+  const auto texel = [&](u32 i, u32 j) {
+    return static_cast<f64>(map.texels[j * map.size + i]) * unit;
+  };
+  f64 worst = 0.0;
+  for (u32 j = 0; j < map.size; ++j) {
+    for (u32 i = 0; i < map.size; ++i) {
+      const f64 x = static_cast<f64>(map.origin.x) + i * static_cast<f64>(map.texel_m);
+      const f64 z = static_cast<f64>(map.origin.y) + j * static_cast<f64>(map.texel_m);
+      const f64 want = std::max(0.0, -ground.surface(WorldPos{100.0 + x, 0.0, 50.0 + z}));
+      worst = std::max(worst, std::abs(texel(i, j) - want));
+    }
+  }
+  CHECK(worst <= 0.5 * unit + 1e-12);
+  // At every vertex under water the map's bilinear depth is the vertex's: the bowl's 0.04 m of
+  // curvature a square metre over a sixth of a metre is under a millimetre. (At the waterline the
+  // clamp at zero is a kink a texel of bilinear rounds off, by up to 2 cm on this bowl's 0.4 m a
+  // metre: those vertices are left out.)
+  f64 worst_vertex = 0.0;
+  for (u32 v = 0; v < mesh.positions.size(); ++v) {
+    if (!(mesh.uvs[v].y > 0.1f)) continue;
+    const f64 tx = (static_cast<f64>(mesh.positions[v].x) - static_cast<f64>(map.origin.x)) /
+                   static_cast<f64>(map.texel_m);
+    const f64 tz = (static_cast<f64>(mesh.positions[v].z) - static_cast<f64>(map.origin.y)) /
+                   static_cast<f64>(map.texel_m);
+    const u32 i = std::min(static_cast<u32>(tx), map.size - 2);
+    const u32 j = std::min(static_cast<u32>(tz), map.size - 2);
+    const f64 ax = tx - i, az = tz - j;
+    const f64 d = (texel(i, j) * (1.0 - ax) + texel(i + 1, j) * ax) * (1.0 - az) +
+                  (texel(i, j + 1) * (1.0 - ax) + texel(i + 1, j + 1) * ax) * az;
+    worst_vertex = std::max(worst_vertex, std::abs(d - static_cast<f64>(mesh.uvs[v].y)));
+  }
+  MESSAGE("depth map " << map.size << " texels a side at " << map.texel_m << " m; worst texel "
+                       << worst << " m, worst vertex " << worst_vertex << " m");
+  CHECK(worst_vertex < 1e-3);
+  // The bytes: 32 of header and two a texel, read back as written, the same twice.
+  const Vector<u8> bytes = water::depth_map_bytes(map);
+  CHECK(bytes.size() == 32u + map.size * map.size * 2u);
+  water::DepthMap back;
+  std::string error;
+  REQUIRE_MESSAGE(
+      water::read_depth_map(std::span<const u8>(bytes.data(), bytes.size()), back, &error), error);
+  CHECK(back.size == map.size);
+  CHECK(back.origin == map.origin);
+  CHECK(back.texel_m == map.texel_m);
+  CHECK(back.depth_max == map.depth_max);
+  CHECK(std::equal(back.texels.begin(), back.texels.end(), map.texels.begin()));
+  water::DepthMap again;
+  water::build_depth_map(body, mesh, ground, again);
+  const Vector<u8> twice = water::depth_map_bytes(again);
+  CHECK(std::equal(twice.begin(), twice.end(), bytes.begin()));
+  const u64 hash = hash_bytes(bytes.data(), bytes.size(), 0);
+  MESSAGE("depth map hash " << std::hex << hash);
+  CHECK(hash == 18323378252373688451ull);
+  // Refused: not a map, and a size its bytes do not hold.
+  CHECK_FALSE(water::read_depth_map(std::span<const u8>(bytes.data(), 16), back, &error));
+  CHECK_FALSE(
+      water::read_depth_map(std::span<const u8>(bytes.data(), bytes.size() - 2), back, &error));
+  // A puddle keeps the floor of 64 texels a side.
+  const water::Body puddle = read(circle_block(100.0, 50.0, 1.0f, 0.0));
+  water::Mesh small;
+  water::build_mesh(puddle, ground, small);
+  water::build_depth_map(puddle, small, ground, map);
+  CHECK(map.size == water::k_depth_map_min);
+}
+
 TEST_CASE("water: a 20 m pool's vertex budget, and a lake's spacing grown to fit the budget") {
   const scene_gen::Ground none;
   water::Mesh pool;
@@ -287,6 +373,12 @@ TEST_CASE("water: the generator makes one mesh and one placement per body, in or
   CHECK(placed.meshes[1].name == "water/puddle");
   CHECK(io::exists(placed.meshes[0].path));
   CHECK(io::exists(placed.meshes[1].path));
+  // The depth map beside each mesh, under the one name: `<stem>.glb` and `<stem>.depth`.
+  for (const scene_gen::PlacementMesh& m : placed.meshes) {
+    REQUIRE(m.path.size() > 4);
+    CHECK(m.path.substr(m.path.size() - 4) == ".glb");
+    CHECK(io::exists(m.path.substr(0, m.path.size() - 4) + ".depth"));
+  }
   CHECK(placed.instances[0].position == WorldPos{100.0, 0.0, 50.0});
   CHECK(placed.instances[1].position == WorldPos{-40.0, -1.5, 10.0});
   CHECK(placed.instances[1].mesh == 1u);

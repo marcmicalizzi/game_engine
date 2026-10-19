@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <shaders/visibility_resolve_water.spv.h>
 #include <string>
+#include <vector>
 
 using namespace engine;
 namespace ref = engine::brdf_ref;
@@ -38,7 +39,11 @@ namespace wref = engine::water_ref;
 namespace {
 
 constexpr u32 k_size = 128;
-constexpr u32 k_blocks = 8;
+constexpr u32 k_blocks = 11;
+// The synthetic depth maps (water.md, "The depth map"): 64 texels a side over the quad's 10 m.
+constexpr u32 k_map_size = 64;
+constexpr f32 k_map_origin = -5.0f;
+constexpr f32 k_map_texel = 10.0f / 63.0f;
 
 }  // namespace
 
@@ -103,7 +108,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   silty.absorption = Vec3{0.6f, 0.2f, 0.12f};
   silty.turbidity = 1.0f;
   silty.transmission = 0.6f;
-  gfx::ResolveMaterial material_table[8];
+  gfx::ResolveMaterial material_table[14];
   gfx::set_water_material(material_table[0], wave);
   gfx::set_water_material(material_table[1], sharp);
   gfx::set_water_material(material_table[2], mirror);
@@ -112,15 +117,46 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   gfx::set_water_material(material_table[5], wave);
   gfx::set_water_optics(material_table[5], material_table[6], silty);
   material_table[7].albedo = Vec4{0.55f, 0.45f, 0.32f, 0.9f};
-  const u32 material_index[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+  // The depth maps (gfx::set_water_depth_map): a bottom that slopes as the attributes' plane does,
+  // 1 + 0.1 x, and a bowl, 2.3 m deep in the middle and 0.3 m at the corners. The sharp waves over
+  // the sand see through each (the volume tier's march), and the broad ones fade by the bowl (the
+  // low tier's fade from the map).
+  const auto slope_depth = [](f64 x, f64) { return 1.0 + 0.1 * x; };
+  const auto bowl_depth = [](f64 x, f64 z) { return 0.3 + 2.0 * (1.0 - (x * x + z * z) / 50.0); };
+  std::vector<u16> map_texels[2];
+  const f32 map_max[2] = {1.5f, 2.3f};
+  for (u32 k = 0; k < 2; ++k) {
+    map_texels[k].resize(k_map_size * k_map_size);
+    for (u32 j = 0; j < k_map_size; ++j) {
+      for (u32 i = 0; i < k_map_size; ++i) {
+        const f64 x = static_cast<f64>(k_map_origin) + i * static_cast<f64>(k_map_texel);
+        const f64 z = static_cast<f64>(k_map_origin) + j * static_cast<f64>(k_map_texel);
+        const f64 d = k == 0 ? slope_depth(x, z) : bowl_depth(x, z);
+        map_texels[k][j * k_map_size + i] =
+            static_cast<u16>(std::floor(d / static_cast<f64>(map_max[k]) * 65535.0 + 0.5));
+      }
+    }
+  }
+  gfx::ImageResource map_image[2];
+  gfx::ImageViewHandle map_view[2];
+  gfx::WaterDepthFrame map_frame[2];
+  gfx::set_water_material(material_table[8], sharp);
+  gfx::set_water_optics(material_table[8], material_table[9], clear);
+  gfx::set_water_material(material_table[10], sharp);
+  gfx::set_water_optics(material_table[10], material_table[11], clear);
+  gfx::set_water_material(material_table[12], wave);
+  const u32 material_index[14] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
   // Block: material, attributes (0 open, 1 shore, 2 the slope), clock.
   struct Block {
     u32 material;
     u32 attributes;
     f32 time;
   };
-  const Block block_of[k_blocks] = {{0, 0, 0.0f}, {0, 0, 37.25f}, {1, 0, 500.0f}, {2, 0, 0.0f},
-                                    {0, 1, 0.0f}, {3, 0, 500.0f}, {3, 2, 37.25f}, {5, 1, 0.0f}};
+  const Block block_of[k_blocks] = {{0, 0, 0.0f},   {0, 0, 37.25f},  {1, 0, 500.0f}, {2, 0, 0.0f},
+                                    {0, 1, 0.0f},   {3, 0, 500.0f},  {3, 2, 37.25f}, {5, 1, 0.0f},
+                                    {8, 0, 37.25f}, {10, 0, 500.0f}, {12, 0, 0.0f}};
+  // The map each material reads (k_material_water_depth_map), or none.
+  const i32 map_of_material[14] = {-1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 1, -1, 1, -1};
   const f32 slope_of[3] = {0.0f, 0.0f, 0.1f};  // the depth's change a metre along x
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
@@ -146,8 +182,6 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   REQUIRE(gfx::upload_buffer(device, slope_mesh.attributes.data(),
                              slope_mesh.attributes.size() * sizeof(geometry::VertexAttributes),
                              k_storage, attributes[2], &error));
-  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
-                             &error));
   REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
                              cluster_materials, &error));
 
@@ -172,6 +206,35 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  gfx::SamplerHandle map_sampler;
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Linear, map_sampler, &error));
+  const u32 map_sampler_slot = bindless.add_sampler(map_sampler);
+  for (u32 k = 0; k < 2; ++k) {
+    std::vector<u8> rgba(k_map_size * k_map_size * 4);
+    for (u32 t = 0; t < k_map_size * k_map_size; ++t) {
+      rgba[t * 4 + 0] = static_cast<u8>(map_texels[k][t] >> 8);
+      rgba[t * 4 + 1] = static_cast<u8>(map_texels[k][t] & 0xffu);
+      rgba[t * 4 + 2] = 0;
+      rgba[t * 4 + 3] = 255;
+    }
+    REQUIRE(gfx::upload_image_2d(device, k_map_size, k_map_size, gfx::Format::R8G8B8A8Unorm,
+                                 rgba.data(), rgba.size(), map_image[k], &error));
+    REQUIRE(gfx::create_image_view(device, map_image[k], map_view[k], &error));
+    map_frame[k].texture =
+        bindless.add_sampled_image(map_view[k], gfx::ImageLayout::ShaderReadOnly);
+    map_frame[k].sampler = map_sampler_slot;
+    map_frame[k].size = k_map_size;
+    map_frame[k].origin_m = Vec2{k_map_origin, k_map_origin};
+    map_frame[k].texel_m = k_map_texel;
+    map_frame[k].depth_max = map_max[k];
+  }
+  gfx::set_water_depth_map(material_table[8], material_table[9], map_frame[0]);
+  gfx::set_water_depth_map(material_table[10], material_table[11], map_frame[1]);
+  gfx::set_water_depth_map(material_table[12], material_table[13], map_frame[1]);
+  REQUIRE((material_table[12].flags & gfx::k_material_water_volume) == 0u);
+  REQUIRE((material_table[12].flags & gfx::k_material_water_depth_map) != 0u);
+  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
+                             &error));
   gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_water_spirv,
                                 shaders::k_visibility_resolve_water_spirv_size, &error);
@@ -309,6 +372,11 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     const bool volume = (material.flags & gfx::k_material_water_volume) != 0;
     const Vec2 uv = uv_of[block_of[b].attributes][0];
     const double slope = static_cast<double>(slope_of[block_of[b].attributes]);
+    const i32 map = map_of_material[block_of[b].material];
+    const wref::DepthMap depth_map =
+        map >= 0 ? wref::depth_map_of(material_table[block_of[b].material + 1],
+                                      map_texels[map].data(), k_map_size)
+                 : wref::DepthMap{};
     int worst = 0;
     for (u32 y = k_size / 4; y < 3 * k_size / 4; y += 4) {
       for (u32 x = k_size / 4; x < 3 * k_size / 4; x += 4) {
@@ -318,7 +386,10 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         const ref::Dvec3 py = on_plane(x, y + 1) - p;
         const double footprint = std::max(std::sqrt(ref::dot(px, px)), std::sqrt(ref::dot(py, py)));
         // The depth at the point: the attribute's, or on the slope its plane through the corners.
-        const double depth = slope != 0.0 ? 1.0 + slope * p.x : static_cast<double>(uv.y);
+        // With a map, the map's bilinear sample there.
+        const double depth = map >= 0       ? wref::depth_sample(depth_map, p.x, p.z)
+                             : slope != 0.0 ? 1.0 + slope * p.x
+                                            : static_cast<double>(uv.y);
         const ref::Dvec3 n =
             wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint, depth);
         const ref::Dvec3 v = ref::normalize(ref::dvec3(eye) - p);
@@ -327,8 +398,9 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
           // No shadow is asked for, so the sun reaches the surface and the bottom whole; the
           // ground is the plain material's colour, or the shallow colour with none.
           const gfx::ResolveMaterial& optics = material_table[block_of[b].material + 1];
-          const wref::Path path = wref::path(n, v, depth, slope, 0.0);
-          const ref::Dvec3 n_b = ref::normalize(ref::Dvec3{slope, 1.0, 0.0});
+          ref::Dvec3 n_b = ref::normalize(ref::Dvec3{slope, 1.0, 0.0});
+          const wref::Path path = map >= 0 ? wref::path_map(depth_map, p.x, p.z, n, v, depth, n_b)
+                                           : wref::path(n, v, depth, slope, 0.0);
           const ref::Dvec3 albedo = optics.sampler == gfx::k_water_no_ground
                                         ? w.shallow
                                         : ref::dvec3(material_table[optics.sampler].albedo);
@@ -366,12 +438,32 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   // The clock moves the waves: the same pixels 37.25 s on are not the same picture.
   CHECK(differs_with_time > 100);
   CHECK(differs_with_volume > 100);
+  // The march over the sloped map lands where the plane through the same slope does: block 8 is
+  // block 6's waves and clock over the map instead of the attributes, and draws within 2 of it.
+  int slope_map_vs_plane = 0;
+  for (u32 y = k_size / 4; y < 3 * k_size / 4; ++y) {
+    for (u32 x = k_size / 4; x < 3 * k_size / 4; ++x) {
+      const u8* plane = pixel(6, x, y);
+      const u8* marched = pixel(8, x, y);
+      for (u32 c = 0; c < 3; ++c)
+        slope_map_vs_plane =
+            std::max(slope_map_vs_plane, std::abs(int{plane[c]} - int{marched[c]}));
+    }
+  }
+  MESSAGE("the sloped map's march against the plane through its slope: worst " << slope_map_vs_plane
+                                                                               << " of 255");
+  CHECK(slope_map_vs_plane <= 2);
 
   graph.reset();
   gfx::destroy_pipeline(device, resolve_pipeline);
   raster.destroy(device);
   gfx::destroy_shader_module(device, resolve_module);
   bindless.destroy();
+  for (u32 k = 0; k < 2; ++k) {
+    gfx::destroy_image_view(device, map_view[k]);
+    gfx::destroy_image(device, map_image[k]);
+  }
+  gfx::destroy_sampler(device, map_sampler);
   scene.destroy(device);
   for (gfx::BufferResource* b :
        {&host_color, &params, &vis, &attributes[0], &attributes[1], &attributes[2],

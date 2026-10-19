@@ -23,8 +23,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
+#include <map>
+#include <span>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 using namespace engine;
@@ -77,6 +82,29 @@ TEST_CASE("water: a scene's block is one mesh and one instance a body, before th
   // A fixed direction of 90 degrees: +z.
   CHECK(water.shading.direction.x == doctest::Approx(0.0f).epsilon(1e-6));
   CHECK(water.shading.direction.y == doctest::Approx(1.0f));
+  // The body's depth map, beside its mesh, as the renderer's reader mirrors the capability's
+  // layout (water.md, "The depth map"): the same frame and texels the capability reads back.
+  {
+    const std::string& glb = desc.meshes[0];
+    const std::string map_path = glb.substr(0, glb.size() - 4) + ".depth";
+    std::string bytes;
+    REQUIRE(io::read_file(map_path, bytes) == io::Status::Ok);
+    water::DepthMap map;
+    REQUIRE_MESSAGE(
+        water::read_depth_map(
+            std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()), map,
+            &error),
+        error);
+    const SceneWaterDepth& depth = water.depth;
+    REQUIRE(depth.size == map.size);
+    CHECK(depth.size >= water::k_depth_map_min);
+    CHECK(depth.origin == map.origin);
+    CHECK(depth.texel_m == map.texel_m);
+    CHECK(depth.depth_max == map.depth_max);
+    REQUIRE(depth.texels.size() == map.texels.size());
+    CHECK(std::equal(depth.texels.begin(), depth.texels.end(), map.texels.begin()));
+    CHECK(depth.depth_max > 0.0f);
+  }
   REQUIRE(desc.instances.size() == 2);
   CHECK(desc.instances[0].mesh == 0u);
   CHECK(desc.instances[0].origin == WorldPos{3.0, 0.2, -2.0});
@@ -194,7 +222,8 @@ struct Shot {
 
 // One capture of a scene file from above the pool's west shore, towards the sun's reflection.
 void shoot(const gfx::Device& device, const std::string& path, const std::string& ddc,
-           f64 sun_time_s, u32 shots, Shot* out, WaterQuality quality = WaterQuality::High) {
+           f64 sun_time_s, u32 shots, Shot* out, WaterQuality quality = WaterQuality::High,
+           WorldPos eye = WorldPos{-16.0, 9.0, -5.0}, WorldPos look = WorldPos{1.0, -1.0, 1.0}) {
   SceneDesc desc;
   std::string error;
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
@@ -214,8 +243,8 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
   rd.height = 320;
   REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
   FrameDesc frame;
-  frame.camera.position = WorldPos{-16.0, 9.0, -5.0};
-  frame.camera.target = WorldPos{1.0, -1.0, 1.0};
+  frame.camera.position = eye;
+  frame.camera.target = look;
   frame.sun_time_s = sun_time_s;
   CaptureChannels channels;
   channels.ids = true;
@@ -365,10 +394,10 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
 }
 
 // The water's two tiers (RenderSettings::water_quality; water.md, "Translucent by volume"): the
-// low tier's material table is the table before the tier — no optics entry after the water's
-// material, so the resolve's branch takes the path it always took — and the high tier's has one
-// more; high draws the same bytes twice, and every pixel the tiers differ in is a pixel of the pool
-// or within the shadow filter's band of one, as with and without the block above.
+// two tables are the same length — the entry after the water's material carries the depth map at
+// both tiers and the optics only at high (water.md, "The depth map") — high draws the same bytes
+// twice, and every pixel the tiers differ in is a pixel of the pool or within the shadow filter's
+// band of one, as with and without the block above.
 TEST_CASE("water: the volume tier sees through the pool, and changes nothing but the pool") {
   if (!gpu_here()) return;
   const test::TempDir tmp("water_oasis_tiers");
@@ -388,7 +417,7 @@ TEST_CASE("water: the volume tier sees through the pool, and changes nothing but
   REQUIRE(high[0].water_instance != ~0u);
   CHECK(high[0].has_water);
   CHECK(low[0].has_water);
-  CHECK(high[0].materials == low[0].materials + 1);
+  CHECK(high[0].materials == low[0].materials);
   CHECK(std::equal(a.color.begin(), a.color.end(), high[1].frame.color.begin()));
   constexpr u32 k_shore_band = 3;
   const u32 pixels = a.width * a.height;
@@ -428,5 +457,183 @@ TEST_CASE("water: the volume tier sees through the pool, and changes nothing but
   CHECK(pool * 20 > pixels);
   CHECK(differ > pool / 2);
   CHECK(differ_outside == 0u);
+}
+
+namespace {
+// The bottom's colour across the water mesh's triangle edges, against the noise (`facet_contrast`).
+// For every two neighbouring pixels of the pool, side by side or one above the other, the step in
+// their colour (the sum of the three channels, signed, towards +x or +y), gathered by where the
+// ids channel puts them: the pairs inside one triangle by (triangle, direction), and the pairs
+// across an edge — a ring, a spoke of the fan or a quad's diagonal, as the LOD cut drew them — by
+// (the two triangles, direction). An edge's **excess** is its pairs' mean step less the mean of
+// its two triangles' own: what the colour does at the edge beyond the gradient it has either side.
+// A bottom shaded per triangle has an excess at every edge; a bottom that follows the ground has
+// none, and what is measured is the output's dither, a step of a unit or two in every pixel. So
+// the excess is set against what the dither alone would give it — sqrt(2 / pi) times its standard
+// error, from the scatter of the steps inside the triangles — and `ratio` is 1 within the noise
+// and well above it when the triangles show. The pixels within `k_shore_px` of one that is not the
+// pool are left out: the shore's own edge is not a facet.
+struct FacetContrast {
+  f64 excess = 0.0;  // the edges' mean |excess|, weighted by their pairs
+  f64 noise = 0.0;   // what the dither alone would make of it
+  u32 edges = 0;
+  f64 ratio() const noexcept { return noise > 0.0 ? excess / noise : 0.0; }
+};
+
+FacetContrast facet_contrast(const Shot& shot) {
+  constexpr u32 k_shore_px = 4;
+  constexpr u32 k_min_pairs = 4;
+  const CapturedFrame& f = shot.frame;
+  const u32 w = f.width;
+  const u32 h = f.height;
+  const auto pool = [&](u32 x, u32 y) {
+    return f.ids[(y * w + x) * k_id_words] == shot.water_instance;
+  };
+  // Pool pixels at least k_shore_px from anything that is not the pool.
+  std::vector<u8> inner(w * h, 0);
+  for (u32 y = k_shore_px; y + k_shore_px < h; ++y) {
+    for (u32 x = k_shore_px; x + k_shore_px < w; ++x) {
+      bool all = true;
+      for (u32 yy = y - k_shore_px; all && yy <= y + k_shore_px; ++yy)
+        for (u32 xx = x - k_shore_px; all && xx <= x + k_shore_px; ++xx)
+          all = pool(xx, yy);
+      inner[y * w + x] = all ? 1 : 0;
+    }
+  }
+  const auto colour = [&](u32 p) {
+    return static_cast<f64>(f.color[p * 4]) + static_cast<f64>(f.color[p * 4 + 1]) +
+           static_cast<f64>(f.color[p * 4 + 2]);
+  };
+  const auto triangle = [&](u32 p) {
+    return (u64{f.ids[p * k_id_words + 1]} << 8) | u64{f.ids[p * k_id_words + 2]};
+  };
+  struct Sum {
+    f64 sum = 0.0;
+    f64 squares = 0.0;
+    u32 n = 0;
+    f64 mean() const noexcept { return n != 0 ? sum / n : 0.0; }
+  };
+  // engine-lint: allow-std-container a test's tally
+  std::map<std::pair<u64, u32>, Sum> within;
+  // engine-lint: allow-std-container a test's tally
+  std::map<std::tuple<u64, u64, u32>, Sum> across;
+  for (u32 y = 0; y + 1 < h; ++y) {
+    for (u32 x = 0; x + 1 < w; ++x) {
+      const u32 p = y * w + x;
+      if (inner[p] == 0) continue;
+      for (u32 dir = 0; dir < 2; ++dir) {
+        const u32 q = dir == 0 ? p + 1 : p + w;
+        if (inner[q] == 0) continue;
+        const f64 step = colour(q) - colour(p);
+        Sum& s = triangle(p) == triangle(q) ? within[{triangle(p), dir}]
+                                            : across[{triangle(p), triangle(q), dir}];
+        s.sum += step;
+        s.squares += step * step;
+        ++s.n;
+      }
+    }
+  }
+  // The dither's scatter: the steps' variance about their triangle's mean, pooled.
+  f64 scatter = 0.0;
+  u32 scatter_n = 0;
+  for (const auto& [key, s] : within) {
+    if (s.n < k_min_pairs) continue;
+    scatter += s.squares - s.sum * s.sum / s.n;
+    scatter_n += s.n - 1;
+  }
+  const f64 variance = scatter_n != 0 ? scatter / scatter_n : 0.0;
+  FacetContrast out;
+  u32 pairs = 0;
+  for (const auto& [key, s] : across) {
+    const auto a = within.find({std::get<0>(key), std::get<2>(key)});
+    const auto b = within.find({std::get<1>(key), std::get<2>(key)});
+    if (s.n < k_min_pairs || a == within.end() || b == within.end() || a->second.n < k_min_pairs ||
+        b->second.n < k_min_pairs)
+      continue;
+    const f64 excess = s.mean() - 0.5 * (a->second.mean() + b->second.mean());
+    const f64 error = std::sqrt(variance * (1.0 / s.n + 0.25 / a->second.n + 0.25 / b->second.n));
+    out.excess += std::abs(excess) * s.n;
+    out.noise += std::sqrt(2.0 / 3.141592653589793) * error * s.n;
+    pairs += s.n;
+    ++out.edges;
+  }
+  if (pairs != 0) {
+    out.excess /= pairs;
+    out.noise /= pairs;
+  }
+  return out;
+}
+}  // namespace
+
+// **No ring and no fan** (water.md, "Testing"): the oasis pool at high, its waves calmed so the
+// bottom is all there is to see, from nine metres over its east shore looking down across it (the
+// owner's view of the rings) and from straight over its middle, drawn once with its depth map and
+// once with the map made unreadable — the reader then has none, and the branch falls back to the
+// triangle's plane of vertex depths, which is the picture before the map. With the map the
+// bottom's colour steps no more across the mesh's triangle edges than within its triangles;
+// without it, it does.
+TEST_CASE("water: the bottom seen through the pool shows no ring or fan of the mesh") {
+  if (!gpu_here()) return;
+  const test::TempDir tmp("water_oasis_rings");
+  std::string text;
+  REQUIRE(io::read_file(oasis_copy(tmp, true), text) == io::Status::Ok);
+  const std::string calm = tmp.file("calm.json");
+  {
+    // The waves calmed: a mirror, so the reflection is the sky's and the same everywhere.
+    const usize key = text.find("\"wave_amplitude_m\"");
+    REQUIRE(key != std::string::npos);
+    const usize at = text.find(':', key) + 1;
+    const usize end = text.find_first_of(",}", at);
+    text.replace(at, end - at, "0");
+    REQUIRE(write_text(calm, text));
+  }
+  const std::string ddc = tmp.file("ddc");
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  constexpr u32 k_views = 2;
+  const WorldPos eye[k_views] = {WorldPos{7.0, 9.0, 2.0}, WorldPos{0.0, 20.0, 0.5}};
+  const WorldPos look[k_views] = {WorldPos{-3.0, -1.5, -1.0}, WorldPos{0.0, -0.45, 0.0}};
+  Shot mapped[k_views];
+  for (u32 v = 0; v < k_views; ++v)
+    shoot(device, calm, ddc, 0.0, 1, &mapped[v], WaterQuality::High, eye[v], look[v]);
+  // The map unreadable: the capability finds a file under its name and leaves it; the reader
+  // refuses it and the body has no map.
+  u32 maps = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(tmp.file("water"))) {
+    if (entry.path().extension() != ".depth") continue;
+    REQUIRE(write_text(entry.path().string(), "not a depth map"));
+    ++maps;
+  }
+  REQUIRE(maps == 1u);
+  Shot planes[k_views];
+  for (u32 v = 0; v < k_views; ++v)
+    shoot(device, calm, ddc, 0.0, 1, &planes[v], WaterQuality::High, eye[v], look[v]);
+  device.destroy();
+  bool keep = false;
+  for (u32 v = 0; v < k_views; ++v) {
+    // The entry after the material is there either way: it carries the optics at high.
+    CHECK(mapped[v].materials == planes[v].materials);
+    const FacetContrast with = facet_contrast(mapped[v]);
+    const FacetContrast without = facet_contrast(planes[v]);
+    MESSAGE("view " << v << ": the bottom's step at the mesh's triangle edges over the dither's: "
+                    << "with the map " << with.excess << " / " << with.noise << " = "
+                    << with.ratio() << " over " << with.edges
+                    << " edges; with the triangles' planes " << without.excess << " / "
+                    << without.noise << " = " << without.ratio() << " over " << without.edges);
+    CHECK(with.edges > 200u);
+    CHECK(with.ratio() < 1.15);
+    CHECK(without.ratio() > 1.4);
+    keep = keep || !(with.ratio() < 1.15) || !(without.ratio() > 1.4);
+  }
+  if (keep) {
+    tmp.keep();
+    CaptureFiles files;
+    std::string why;
+    for (u32 v = 0; v < k_views; ++v) {
+      (void)write_capture(tmp.path(), "mapped" + std::to_string(v), mapped[v].frame, files, why);
+      (void)write_capture(tmp.path(), "planes" + std::to_string(v), planes[v].frame, files, why);
+    }
+  }
 }
 #endif

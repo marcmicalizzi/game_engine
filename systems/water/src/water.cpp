@@ -386,6 +386,114 @@ std::string mesh_file_name(std::span<const u8> glb) {
   return name;
 }
 
+void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground& ground,
+                     DepthMap& out) {
+  out = DepthMap{};
+  if (mesh.positions.empty() || mesh.edge == 0) return;
+  // The bounding square of the outline: the edge ring is the first `edge` vertices.
+  f32 lo_x = 1e30f, lo_z = 1e30f, hi_x = -1e30f, hi_z = -1e30f;
+  for (u32 i = 0; i < mesh.edge; ++i) {
+    lo_x = std::min(lo_x, mesh.positions[i].x);
+    hi_x = std::max(hi_x, mesh.positions[i].x);
+    lo_z = std::min(lo_z, mesh.positions[i].z);
+    hi_z = std::max(hi_z, mesh.positions[i].z);
+  }
+  const f64 side = static_cast<f64>(std::max(hi_x - lo_x, hi_z - lo_z));
+  const f64 target = static_cast<f64>(mesh.spacing) * 0.25;
+  const f64 wanted = target > 0.0 ? std::ceil(side / target) + 1.0 : 0.0;
+  const u32 size = static_cast<u32>(
+      std::clamp(wanted, static_cast<f64>(k_depth_map_min), static_cast<f64>(k_depth_map_max)));
+  const f64 texel = side / static_cast<f64>(size - 1);
+  const f64 x0 = 0.5 * (static_cast<f64>(lo_x) + static_cast<f64>(hi_x)) - 0.5 * side;
+  const f64 z0 = 0.5 * (static_cast<f64>(lo_z) + static_cast<f64>(hi_z)) - 0.5 * side;
+  out.size = size;
+  out.origin = Vec2{static_cast<f32>(x0), static_cast<f32>(z0)};
+  out.texel_m = static_cast<f32>(texel);
+  // The depths in f64 first, then the range they are quantized over.
+  Vector<f64> depth(size * size);
+  f64 deepest = 0.0;
+  for (u32 j = 0; j < size; ++j) {
+    for (u32 i = 0; i < size; ++i) {
+      // The texel's centre as the reader computes it, from the stored f32 frame.
+      const f64 x =
+          static_cast<f64>(out.origin.x) + static_cast<f64>(i) * static_cast<f64>(out.texel_m);
+      const f64 z =
+          static_cast<f64>(out.origin.y) + static_cast<f64>(j) * static_cast<f64>(out.texel_m);
+      const WorldPos at{body.center.x + x, body.level_m, body.center.z + z};
+      const f64 d = std::max(0.0, body.level_m - ground.surface(at));
+      depth[j * size + i] = d;
+      deepest = std::max(deepest, d);
+    }
+  }
+  out.depth_max = static_cast<f32>(deepest);
+  out.texels.resize(size * size);
+  const f64 scale = out.depth_max > 0.0f ? 65535.0 / static_cast<f64>(out.depth_max) : 0.0;
+  for (u32 t = 0; t < size * size; ++t)
+    out.texels[t] = static_cast<u16>(std::clamp(std::floor(depth[t] * scale + 0.5), 0.0, 65535.0));
+}
+
+Vector<u8> depth_map_bytes(const DepthMap& map) {
+  Vector<u8> out;
+  out.reserve(32 + map.texels.size() * 2);
+  put_u32(out, 0x4d445745u);  // "EWDM"
+  put_u32(out, k_depth_map_version);
+  put_u32(out, map.size);
+  put_u32(out, 0u);
+  put_f32(out, map.origin.x);
+  put_f32(out, map.origin.y);
+  put_f32(out, map.texel_m);
+  put_f32(out, map.depth_max);
+  for (const u16 t : map.texels) {
+    out.push_back(static_cast<u8>(t & 0xffu));
+    out.push_back(static_cast<u8>(t >> 8));
+  }
+  return out;
+}
+
+bool read_depth_map(std::span<const u8> bytes, DepthMap& out, std::string* error) {
+  out = DepthMap{};
+  auto u32_at = [&](usize at) {
+    return u32{bytes[at]} | (u32{bytes[at + 1]} << 8) | (u32{bytes[at + 2]} << 16) |
+           (u32{bytes[at + 3]} << 24);
+  };
+  auto f32_at = [&](usize at) {
+    const u32 bits = u32_at(at);
+    f32 v = 0.0f;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+  };
+  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u) {
+    if (error != nullptr) *error = "not a water depth map";
+    return false;
+  }
+  if (u32_at(4) != k_depth_map_version) {
+    if (error != nullptr) *error = "a water depth map of version " + std::to_string(u32_at(4));
+    return false;
+  }
+  const u32 size = u32_at(8);
+  if (size < 2 || size > k_depth_map_max || bytes.size() != 32 + usize{size} * size * 2) {
+    if (error != nullptr) *error = "a water depth map whose size does not match its bytes";
+    return false;
+  }
+  out.size = size;
+  out.origin = Vec2{f32_at(16), f32_at(20)};
+  out.texel_m = f32_at(24);
+  out.depth_max = f32_at(28);
+  out.texels.resize(size * size);
+  for (u32 t = 0; t < size * size; ++t)
+    out.texels[t] =
+        static_cast<u16>(u32{bytes[32 + usize{t} * 2]} | (u32{bytes[33 + usize{t} * 2]} << 8));
+  return true;
+}
+
+std::string body_file_stem(std::span<const u8> glb, std::span<const u8> map) {
+  u64 h = hash_bytes(glb.data(), glb.size(), 0x5741544552ull + k_mesh_version);
+  h = hash_bytes(map.data(), map.size(), h ^ (0x4445505448ull + k_depth_map_version));
+  char name[40];
+  std::snprintf(name, sizeof(name), "water-%016llx", static_cast<unsigned long long>(h));
+  return name;
+}
+
 JsonValue generator_params(std::span<const scene::WaterBody> bodies) {
   JsonValue list = JsonValue::array();
   for (const scene::WaterBody& body : bodies)

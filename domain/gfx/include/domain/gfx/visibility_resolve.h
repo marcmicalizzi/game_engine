@@ -344,6 +344,54 @@ inline void set_water_optics(ResolveMaterial& water, ResolveMaterial& optics,
   optics.sampler = o.ground;
 }
 
+// `k_material_water_depth_map`: the water material's body has a **depth map** (docs/subsystems/
+// water.md, "The depth map"), carried by the entry right after the material — the same entry as
+// the optics in the volume tier, and an entry of its own at the low tier — and the branch reads
+// the bottom's depth from it, bilinearly, instead of the mesh's vertex depths (UV.y), whose rings
+// and fan the eye otherwise sees in the bottom's colour. Without it the branch reads UV.y as it
+// did before the map.
+inline constexpr u32 k_material_water_depth_map = 64u;
+
+// One body's depth map as the GPU scene uploaded it: an R8G8B8A8 UNORM image of `size` texels a
+// side whose red is the high byte of a 16-bit depth over [0, depth_max] and green the low byte (a
+// format every device filters bilinearly; decoding is linear in red and green, so filtering the
+// two and recombining is filtering the depth), texel (i, j)'s centre at body-local
+// (origin_m.x + i texel_m, origin_m.y + j texel_m).
+struct WaterDepthFrame {
+  u32 texture = k_no_texture;  // its bindless sampled image
+  u32 sampler = 0;             // a linear sampler's bindless slot
+  u32 size = 0;
+  Vec2 origin_m{};
+  f32 texel_m = 0.0f;
+  f32 depth_max = 0.0f;
+};
+
+// The map into the entry after the water material (mirrored by water.slang's
+// `water_depth_map_of`), in slots the optics leave free, so it is written after `set_water_optics`
+// where both are:
+//
+//   albedo_texture       the map
+//   samplers_mr_normal   its sampler
+//   uv_offset            the map's UV at the body's centre (u, v), the UV a metre, depth_max
+//   uv_transform.w       half a texel of UV: the UV is clamped to [h, 1 - h], so the sampler's
+//                        address mode is never asked (clamp-to-edge whatever it is)
+//
+// and `k_material_water_depth_map` on the water material. The UV frame is computed in double
+// from the map's frame and is body-local: no world position is in it.
+inline void set_water_depth_map(ResolveMaterial& water, ResolveMaterial& entry,
+                                const WaterDepthFrame& map) noexcept {
+  if (map.size < 2 || map.texture == k_no_texture || !(map.texel_m > 0.0f)) return;
+  water.flags |= k_material_water_depth_map;
+  const f64 n = static_cast<f64>(map.size);
+  const f64 texel = static_cast<f64>(map.texel_m);
+  entry.albedo_texture = map.texture;
+  entry.samplers_mr_normal = map.sampler;
+  entry.uv_offset = Vec4{static_cast<f32>((0.5 - static_cast<f64>(map.origin_m.x) / texel) / n),
+                         static_cast<f32>((0.5 - static_cast<f64>(map.origin_m.y) / texel) / n),
+                         static_cast<f32>(1.0 / (texel * n)), map.depth_max};
+  entry.uv_transform.w = static_cast<f32>(0.5 / n);
+}
+
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
   const bool identity = offset.x == 0.0f && offset.y == 0.0f && rotation == 0.0f &&

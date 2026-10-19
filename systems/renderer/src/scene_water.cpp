@@ -7,11 +7,15 @@
 // direction they travel, the ground's wind where the block follows it — resolved here, where the
 // ground provider is, and packed by the GPU scene into the mesh's material
 // (`gfx::set_water_material`).
+#include <core/log/log.h>
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <foundation/io/vfs.h>
 
 #include <cmath>
+#include <cstring>
+#include <renderer_log.h>
 #include <scene_water.h>
 
 namespace engine::renderer {
@@ -55,6 +59,49 @@ gfx::WaterShading shading_of(const scene::WaterBody& body, const TerrainDesc& te
     s.direction = Vec2{std::cos(a), std::sin(a)};
   }
   return s;
+}
+
+// The body's depth map beside its mesh (systems/water's `depth_map_bytes`, whose layout this
+// mirrors because the renderer may not call the capability; water_scene_tests.cpp holds the two
+// together): `<stem>.depth` for `<stem>.glb`. No file, or one this reader does not know, is no
+// map, and the water branch draws from the vertex depths as before the map.
+SceneWaterDepth read_depth_map(const std::string& mesh_path) {
+  SceneWaterDepth map;
+  constexpr std::string_view k_glb = ".glb";
+  if (mesh_path.size() <= k_glb.size() ||
+      mesh_path.compare(mesh_path.size() - k_glb.size(), k_glb.size(), k_glb) != 0)
+    return map;
+  const std::string path = mesh_path.substr(0, mesh_path.size() - k_glb.size()) + ".depth";
+  std::string bytes;
+  if (!io::exists(path) || io::read_file(path, bytes) != io::Status::Ok) return map;
+  const auto byte = [&](usize at) { return u32{static_cast<u8>(bytes[at])}; };
+  const auto u32_at = [&](usize at) {
+    return byte(at) | (byte(at + 1) << 8) | (byte(at + 2) << 16) | (byte(at + 3) << 24);
+  };
+  const auto f32_at = [&](usize at) {
+    const u32 bits = u32_at(at);
+    f32 v = 0.0f;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+  };
+  // "EWDM", version 1, the size, 0, origin x and z, the texel, the range; then u16 texels.
+  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u || u32_at(4) != 1u) {
+    ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
+    return map;
+  }
+  const u32 size = u32_at(8);
+  if (size < 2 || size > 4096 || bytes.size() != 32 + usize{size} * size * 2) {
+    ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
+    return map;
+  }
+  map.size = size;
+  map.origin = Vec2{f32_at(16), f32_at(20)};
+  map.texel_m = f32_at(24);
+  map.depth_max = f32_at(28);
+  map.texels.resize(size * size);
+  for (u32 t = 0; t < size * size; ++t)
+    map.texels[t] = static_cast<u16>(byte(32 + usize{t} * 2) | (byte(33 + usize{t} * 2) << 8));
+  return map;
 }
 
 }  // namespace
@@ -105,7 +152,11 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     SceneMeshInfo info;
     info.name = placed.meshes[k].name;
     info.origin = "water";
-    info.water = SceneWater{file.water[k], shading_of(file.water[k], out.terrain, ground)};
+    SceneWater water;
+    water.body = file.water[k];
+    water.shading = shading_of(file.water[k], out.terrain, ground);
+    water.depth = read_depth_map(placed.meshes[k].path);
+    info.water = std::move(water);
     out.mesh_info.push_back(std::move(info));
     SceneInstance instance;
     instance.mesh = mesh;

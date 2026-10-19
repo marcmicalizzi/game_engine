@@ -123,9 +123,25 @@ struct MeshFit {
 // it — which the GPU scene packs into the mesh's one material with `gfx::k_material_water`
 // (`gfx::set_water_material`). A water mesh is not a collision surface: the walker stands on the
 // ground under it (scene_collision leaves out every mesh that has this).
+//
+// `depth` is the body's **depth map** (docs/subsystems/water.md, "The depth map"), read from the
+// file beside the mesh (`<stem>.depth` for `<stem>.glb`; the water capability's
+// `depth_map_bytes`, whose layout the reader mirrors): the depth on a square grid over the body,
+// texel (i, j) at body-local (origin.x + i texel_m, origin.y + j texel_m) and
+// `texels[j * size + i] / 65535 * depth_max` metres deep. The GPU scene uploads it for the water
+// branch, which shades the bottom from it rather than from the mesh's vertex depths. `size` 0: no
+// map beside the mesh, and the branch reads the vertex depths as it did before the map.
+struct SceneWaterDepth {
+  u32 size = 0;
+  Vec2 origin{};
+  f32 texel_m = 0.0f;
+  f32 depth_max = 0.0f;
+  Vector<u16> texels;
+};
 struct SceneWater {
   scene::WaterBody body;
   gfx::WaterShading shading;
+  SceneWaterDepth depth{};
 };
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must

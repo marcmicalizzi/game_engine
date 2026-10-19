@@ -2426,6 +2426,42 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     u32 mesh = 0;
   };
   Vector<WaterOpticsEntry> water_optics;
+  // A water body's depth map (scene.h, `SceneWaterDepth`; water.md, "The depth map") as the image
+  // the water branch samples: R8G8B8A8 UNORM, red the 16-bit depth's high byte and green its low
+  // (the RHI's formats have no 16-bit UNORM single channel, and a 32-bit float is not filterable
+  // on every device; RGBA8 is, and the depth is linear in red and green), one level, through the
+  // scene's linear sampler — the shader clamps the UV inside the map, so its address mode is
+  // never asked.
+  auto upload_water_depth = [&](const SceneWaterDepth& depth, gfx::WaterDepthFrame& frame) {
+    const u32 texel_count = depth.size * depth.size;
+    Vector<u8> texels(texel_count * 4);
+    for (u32 t = 0; t < texel_count; ++t) {
+      texels[t * 4 + 0] = static_cast<u8>(depth.texels[t] >> 8);
+      texels[t * 4 + 1] = static_cast<u8>(depth.texels[t] & 0xffu);
+      texels[t * 4 + 2] = 0;
+      texels[t * 4 + 3] = 255;
+    }
+    gfx::ImageResource image;
+    gfx::ImageViewHandle view;
+    if (!gfx::upload_image_2d(device, depth.size, depth.size, gfx::Format::R8G8B8A8Unorm,
+                              texels.data(), texels.size(), image, error) ||
+        !gfx::create_image_view(device, image, view, error)) {
+      if (image.image.valid()) gfx::destroy_image(device, image);
+      return false;
+    }
+    texture_bytes_ += image.bytes;
+    ENGINE_LOG_INFO(log_renderer, "water depth map", log::field("size", depth.size),
+                    log::field("texel_m", depth.texel_m), log::field("bytes", image.bytes));
+    textures_.push_back(image);
+    texture_views_.push_back(view);
+    frame.texture = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+    frame.sampler = sampler_slot;
+    frame.size = depth.size;
+    frame.origin_m = depth.origin;
+    frame.texel_m = depth.texel_m;
+    frame.depth_max = depth.depth_max;
+    return true;
+  };
   if (data_->heightfield) {
     // A procedural ripple texture, linear-sampled through the bindless set.
     constexpr u32 k_texture_size = 256;
@@ -2696,8 +2732,17 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           gfx::set_water_optics(material, optics, o);
           water_optics.push_back(WaterOpticsEntry{material_table.size() + 1, m});
         }
+        // The body's depth map, at both tiers (water.md, "The depth map"): in the same entry as
+        // the optics where there are optics, in an entry of its own at the low tier. A body with
+        // no map packs nothing, and the branch reads the mesh's vertex depths.
+        if (water && data_->mesh_info[m].water->depth.size >= 2) {
+          gfx::WaterDepthFrame frame;
+          if (!upload_water_depth(data_->mesh_info[m].water->depth, frame)) return false;
+          gfx::set_water_depth_map(material, optics, frame);
+        }
         material_table.push_back(material);
-        if (volume) material_table.push_back(optics);
+        if (volume || (material.flags & gfx::k_material_water_depth_map) != 0)
+          material_table.push_back(optics);
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
       gfx::ResolveMaterial plain;
@@ -2767,7 +2812,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           optics.uv_transform =
               Vec4{static_cast<f32>((x_mm - static_cast<f64>(frame.x0_mm)) * per_mm),
                    static_cast<f32>((z_mm - static_cast<f64>(frame.z0_mm)) * per_mm),
-                   static_cast<f32>(1000.0 * per_mm), 0.0f};
+                   static_cast<f32>(1000.0 * per_mm), optics.uv_transform.w};
           break;
         }
       }
