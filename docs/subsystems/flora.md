@@ -26,7 +26,7 @@ a 9 m palm. A parameter out of its range is refused with its name (`palm_in_rang
 | `seed` | any u64 | 1 | everything left to chance: the lean's azimuth, each ring's twist, each frond's turn and spread |
 | `height_m` | 1–30 m | 9 | the trunk's apex above its base, where the fronds spring |
 | `trunk_base_radius_m` | 0.05–1 m | 0.24 | the radius at the ground, at a scar ring's lip |
-| `trunk_top_radius_m` | 0.03 m – base | 0.18 | the radius at the apex |
+| `trunk_top_radius_m` | 0.03 m – base | 0.18 | the radius where the leaf sheaths begin; they swell it 40% by the apex |
 | `lean_deg` | 0–40° | 7 | how far from vertical the trunk leaves the ground |
 | `curve` | 0–1 | 0.5 | how much of the lean the spine takes back by the apex (1: vertical again) |
 | `ring_spacing_m` | 0.04–1 m | 0.11 | one leaf-scar ring every this many metres |
@@ -48,19 +48,22 @@ test holds `PalmReport::triangles` to the index buffer), builds the full detail 
 `triangle_budget`, and otherwise walks down a fixed ladder one rung at a time until it does:
 
 1. detail that does not change the outline — leaflets of two segments, scar rings of two rows,
-   leaflets of one segment (a single triangle each);
+   leaflets of one segment (a single triangle each), the collar's boots as wedges of three sides;
 2. then the trunk's and the rachis's cross-sections — 12 segments round the trunk, a ribbon
    rachis instead of a keeled trough, two petiole rows, 8 segments, one row a ring;
 3. then fewer, wider leaflets, halved repeatedly with their width doubled so a frond keeps its
    leaf area (a frond of half the leaflets twice as wide reads as the same frond from a distance);
-4. then rings merged two by two, and six segments round the trunk last.
+4. then every other persistent base, down to eight; rings merged two by two; six segments round
+   the trunk; and last the collar itself — the fronds' sheaths, then the persistent bases.
 
-The fronds themselves are never dropped: the crown's outline is what a palm is recognized by. A
-budget that cannot hold even the bottom rung is refused with the count it would need; inside the
-documented ranges that does not happen (the test builds everything at its most expensive on
-2,000). The default palm is 52,704 triangles at full detail — trunk 10,512, crown 30,472, skirt
-11,720 — under its 60,000; on 20,000 it is 18,132 (one-segment leaflets, 12 segments, two rows a
-ring), and on 2,000, 1,896 (two leaflets a side).
+The fronds themselves are never dropped: the crown's outline is what a palm is recognized by, and
+the motion contract's parts are the same on every rung. A budget that cannot hold even the bottom
+rung is refused with the count it would need; inside the documented ranges that does not happen
+(the test builds everything at its most expensive on 2,000: 1,370 triangles after 32 rungs). The
+default palm is 55,312 triangles at full detail — trunk 11,920 (93 rings), collar 1,200 (36 sheaths
+and 64 persistent bases), crown 30,472, skirt 11,720 — under its 60,000; on 40,000 it is 30,928
+(one-segment leaflets), on 20,000 19,560 (and 12 segments, two rows a ring), and on 2,000, 1,516
+(one leaflet a side, eight persistent bases, the rings merged in pairs).
 
 ### The trunk
 
@@ -68,31 +71,64 @@ A tapered generalized cylinder swept along a spine. The spine leans towards an a
 the seed, and its angle from vertical falls linearly with arc length, from `lean_deg` at the ground
 to `(1 - curve)` of it at the apex: that has a closed form (the height after an arc *s* is
 (sin *a* − sin(*a* − *bs*)) / *b*), so the arc length that puts the apex at exactly `height_m` is
-solved for, not searched. The radius tapers linearly from base to apex, and the **leaf-scar rings**
-are a radial profile along the spine: each ring is a leaf base's boot, the wall stepping in sharply
-at the scar and swelling back out to the boot's lip, drawn with four rows a ring (two or one when
-the budget asks). The lip is where the radius is the one asked for. Each ring turns a few degrees
-against the one below it, from the seed, interpolated through the ring so the wall never shears —
-what makes the scars read as grown rather than lathed. The apex is closed by a low cone. One UV
-island: *u* once round with one seam column, *v* up the trunk at the same scale so a bark texture is
-not stretched; the cap is a small disc of its own beside it.
+solved for, not searched. The radius tapers linearly from `trunk_base_radius_m` at the ground to
+`trunk_top_radius_m` where the leaf sheaths begin ([the crown](#the-crown-one-spiral-by-age)), and
+above that the sheaths swell it smoothly to 1.4 times the top radius at the apex. The **leaf-scar
+rings** are a radial profile along the spine: each ring is a leaf base's boot, the wall stepping in
+sharply at the scar and swelling back out to the boot's lip, drawn with four rows a ring (two or one
+when the budget asks). The lip is where the radius is the one asked for. The rings are
+`ring_spacing_m` apart up to the collar and then **tighten** towards the apex, to 0.4 of the spacing
+at the top, as a stem's internodes shorten where it is still growing — the scars run up into the
+collar instead of stopping under it. Each ring turns a few degrees against the one below it, from
+the seed, interpolated through the ring so the wall never shears — what makes the scars read as
+grown rather than lathed. The apex is closed by a low dome, hidden inside the youngest fronds'
+bases. One UV island: *u* once round with one seam column, *v* up the trunk at the same scale so a
+bark texture is not stretched; the dome is a small disc of its own beside it.
 
-### The crown and the skirt
+### The crown: one spiral by age
 
-`frond_count` green fronds spring from the apex, round the trunk's own axis there, on the golden
-angle as a palm's leaves come; frond *k* of *n* leaves at `frond_spread_deg` × √((*k* + ½)/*n*) from
-the axis (so the youngest stands up the middle and the oldest at the cone's edge, the cone filled
-evenly by area), the older ones springing a little lower and outward, and every frond is turned and
-tilted a little from the seed. A frond's **rachis** is a curve whose angle from the axis grows with
-the square of its arc length — by `frond_droop` × 100° at the tip, more for the outer fronds — so a
-frond rises, arches and droops; its cross-section is a trough (two edges and a keel below, a ribbon
-when the budget asks), a petiole's width at the base and millimetres at the tip. Below the first
-leaflet is a bare petiole (22% of the rachis). On each side, `leaflet_count` **leaflets** stand on
-the rachis's own edge vertices — each a strip from two base corners, out at `leaflet_angle_deg`
-towards the tip and 28° up out of the rachis's plane (a date palm's fronds are V-shaped in
-section), tapering to a point and sagging a little; longest a little past the middle of the frond
-and at most a ninth of its length.
+**What a date palm's top is.** The owner's note on the first palms was that the tops of the trunks
+looked wrong: they ended in a bare cone with the fronds stuck on it. A real *Phoenix dactylifera*
+has no bare top. Its leaves come from the apex one at a time — a new one every few weeks — on a
+spiral, each turned close to the golden angle (137.5°) from the last and a short internode below it,
+so a leaf's place on the stem *is* its age; the leaf bases clasp the stem in fibrous sheaths, which
+is why the crown's head is wider than the trunk under it; the youngest leaf (the spear) stands
+nearly upright at the centre, still folded, and each older leaf leaves the stem further from
+vertical and arches further, until the oldest green ones stand out flat and droop; the dead leaves
+hang below them from the same spiral; and below those, the bases of the leaves that were cut or
+fell persist for years as a dense collar of stubs before they weather off into the scar rings of the
+bare trunk. (Written references on the species' morphology; no imagery was copied.)
 
+**The solver's model**, every number chosen for that picture, the budget and the harness:
+
+| Quantity | Value | Why |
+|---|---|---|
+| divergence between successive leaves | the golden angle, 137.5° | the palm's phyllotaxis; it fills the circle evenly at any count |
+| internode (stem between two green leaves) | 2 top radii ÷ `frond_count`, at least 1.5 cm | the green fronds' bases span about two trunk radii (0.39 m on the default, at the 1.5 cm floor), the depth of a crown of sheaths; a model frond stands for several real leaves, so the spacing is a modelling unit |
+| dead fronds' spacing | a quarter of a frond's length over the dead fronds, never less than the internode | the skirt hangs from a band below the green crown, as the first palms' did |
+| a short palm | the whole spiral scaled into the top half of the stem | a 1 m palm keeps a trunk |
+| leaf *k*'s base | its place on the spiral, at 0.55 of the stem's radius there (0.8 for a dead frond) | one spiral for green fronds (*k* < `frond_count`), dead fronds next, persistent bases after them |
+| a green frond's angle from the axis | `frond_spread_deg` × √age, ±6% from the seed | leaf inclination rises fastest just after a leaf opens and then levels off; √ also fills the crown's cone evenly by area |
+| its droop and length | `frond_droop` × 100° × (0.5 + 0.5 × age); `frond_length_m` × (0.8 + 0.2 × age), ±5% | the young are shorter and barely curve, the old arch and droop |
+| the spear (the youngest 8%) | leaflets closed by up to a quarter of their angle and up to 12° more upright out of the rachis's plane | an unfolding leaf is a closing fan; kept slight because a closed leaflet is thin geometry the coarse cut loses |
+| the sheaths' swelling | the stem's radius × (1 + 0.4 smoothstep) from the lowest dead frond's base to the apex | the head of clasping sheaths, wider than the trunk |
+| a boot at every frond's base | the sheath the petiole leaves from, snug to the stem at the apex (20° from the axis) and opening with age to the persistent bases' 50° | the crown's head reads as leaf bases, not as a bare column |
+| persistent bases | six top radii of the spiral below the dead fronds, at the internode, at most 64 (64 on the default) | the collar that turns into the bare trunk's scars |
+| a base's shape | a tapered box 0.9 × 0.3 top radii across, 0.8 top radii out of the wall (±15%), 50° from the axis (±15%), cut square | a petiole's boot cut a hand's width from the stem, pointing up and out |
+
+The collar is its own primitive in the trunk's material, built with cones (one-sided like the
+wall), so the wall stays one closed column; each base is a tube whose open end is inside the trunk,
+one UV chart every base shares beside the trunk's, and a small island for its cut face. Its vertices
+belong to the trunk's motion part.
+
+**The fronds.** A frond's **rachis** is a curve whose angle from the axis grows with the square of
+its arc length — by its droop at the tip — so a frond rises, arches and droops; its cross-section is
+a trough (two edges and a keel below, a ribbon when the budget asks), a petiole's width at the base
+and millimetres at the tip. Below the first leaflet is a bare petiole (22% of the rachis). On each
+side, `leaflet_count` **leaflets** stand on the rachis's own edge vertices — each a strip from two
+base corners, out at `leaflet_angle_deg` towards the tip and 28° up out of the rachis's plane (a
+date palm's fronds are V-shaped in section), tapering to a point and sagging a little; longest a
+little past the middle of the frond and at most a ninth of its length.
 **Why a frond is one connected surface.** The LOD builder can only collapse what is connected: a
 leaflet made as a loose strip keeps its last triangle at every level, and a crown of a few thousand
 of them does not coarsen at all. Standing every leaflet on the rachis's edge makes a frond one
@@ -107,9 +143,9 @@ trunk's with cones on — two primitives, two cone settings, one mesh (geometry.
 The resolve turns a shading normal that ended up behind the surface to the camera's side, which is
 what makes one sheet of triangles read from below as well as above.
 
-`dead_skirt_fronds` **dead fronds** hang below the crown in tan, from the trunk's surface between
-one and two of its radii below the apex down to a quarter of a frond's length, pointing down at
-120°–145° from the axis and bending 40° further, their leaflets folded in (60% of the angle, 15°
+`dead_skirt_fronds` **dead fronds** hang below the crown in tan, from their places on the spiral —
+a band a quarter of a frond deep below the green fronds, each from its sheath — pointing down at
+120°–145° from the axis and bending 40° further, their leaflets folded in (75% of the angle, 5°
 down out of the plane) and sagging more.
 
 **The UV layout.** One island a frond: *u* along the rachis and *v* across it, both in the frond's
@@ -229,6 +265,33 @@ FLIP ≤ 0.02, coarse cut ≤ 0.75 of the finest's pairs.
 | `-leaning` | 49,464 | 1,548 / 12 | 36 | 1.6% | 913,029 | 0.227 | 0.0250 | 26.5 / 0.953 |
 | `-young` | 40,168 | 1,283 / 11 | 32 | 1.0% | 913,029 | 0.231 | 0.0322 | 25.7 / 0.942 |
 
+**The crown on its spiral (`k_flora_version` 2, 2026-10-18)**, the same measurements by the same
+procedure (a scratch script outside the repository; msvc-debug, RTX 5090, captures under the GPU
+lock, none of it a timing):
+
+| Palm | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
+|---|---|---|---|---|---|---|---|---|
+| `date-palm` (default) | 55,312 | 1,748 / 11 | 238 | 4.1% | 34,200 | 0.240 (192 of 799) | 0.0213 | 27.2 / 0.960 |
+| `-tall` | 51,984 | 1,545 / 11 | 238 | 5.7% | 35,195 | 0.143 | **0.0176** | 27.0 / 0.964 |
+| `-old` | 28,624 | 822 / 10 | 146 | 7.6% | 33,338 | 0.255 | **0.0106** | 29.4 / 0.978 |
+| `-leaning` | 52,048 | 1,637 / 11 | 232 | 4.2% | 34,240 | 0.235 | 0.0283 | 26.0 / 0.948 |
+| `-young` | 42,700 | 1,378 / 11 | 198 | 3.8% | 39,797 | 0.375 | 0.0385 | 24.9 / 0.924 |
+
+The atlas and the collapse still pass everywhere: the collar's boots are two islands each (a tube
+and its cut face), which is where the islands and the seam share went, and its smallest island is
+still tens of thousands of texels. **The picture moved the wrong way by about a tenth**: the
+default palm from 0.0194 to 0.0213, now just over the threshold with the leaning and the young palm
+that were over it already; the tall and the old palm pass. The heat map puts the error where it
+was — leaflets and dead fronds — and none on the collar (its boots are irreducible, so the coarse
+cut draws them exactly). Bisected with a switch per change over the default palm: the boots, the
+sheaths' swelling and the tightening rings each moved FLIP by less than the run-to-run spread
+(±0.002 from the fit orbit following the bounding sphere); the fronds' bases on the spiral instead
+of at the apex cost about 0.002, because fronds springing from a 0.4 m band overlap their
+neighbours' leaflets more than fronds from one point; a deeper crown (3 top radii) and a stronger
+spear (leaflets closed by half, 40° up) cost another 0.002 each, which is why the crown is two radii
+deep and the spear slight. What the spiral costs is thin geometry overlapping, which is R65's
+problem and not the solver's: the conclusion above stands.
+
 **The atlas and the collapse pass everywhere, because of the layout rule.** One island a frond and
 one strip for the trunk is 38 islands for the default palm (26 fronds, 10 dead, the wall, the cap),
 1.6% of its vertices on a seam (the trunk's seam column and the cap's ring), and the coarse cut
@@ -288,8 +351,13 @@ data, rebuilt from its parameters.
 - every parameter at either end of its range builds a valid mesh: finite positions, indices in
   range, no degenerate triangle, primitives covering the index buffer in order;
 - the mesh holds its `triangle_budget`, down to everything at its most expensive on 2,000;
-- the trunk's apex stands at `height_m` and its radii at the base and the apex are the ones asked,
-  to 1%; every trunk face looks outwards (the column's signed volume is the taper's);
+- the trunk's apex stands at `height_m`, its radii at the base and where the sheaths begin are
+  the ones asked to 1%, and the apex is 1.4 times the top radius; every trunk face looks outwards
+  (the column's signed volume is the taper's);
+- the crown is one spiral by age: the green fronds' bases one internode apart down the stem, the
+  dead fronds' below them, the youngest frond within a quarter of the spread of vertical and the
+  oldest past 85% of it, younger steeper; the collar a boot per frond plus the persistent bases,
+  below the sheaths, out of the stem;
 - each green and each dead frond is one connected surface (the components of the crown are its
   fronds), wound consistently with its normals; the crown stands above the apex and the skirt
   below it; no skirt is asked, no skirt primitive;

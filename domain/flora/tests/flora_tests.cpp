@@ -101,7 +101,8 @@ void check_valid(const flora::Palm& p, const assets::MeshData& mesh) {
 // every station between. That last is checked without knowing how the solver orders its vertices:
 // the vertices of a part are binned by weight, and the polyline through the bins' centroids, from
 // the pivot, must reach each bin at the share of its length the bin's weight says.
-void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32 expected_parts) {
+void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32 expected_parts,
+                  bool along = true) {
   REQUIRE(motion.vertex_part.size() == mesh.positions.size());
   REQUIRE(motion.vertex_weight.size() == mesh.positions.size());
   REQUIRE(motion.parts.size() == expected_parts);
@@ -158,7 +159,7 @@ void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32
       at[1] = c[1];
       at[2] = c[2];
       const f64 share = travelled / static_cast<f64>(part.length);
-      if (std::abs(share - bin.weight / bin.count) > 0.12) ++off;
+      if (along && std::abs(share - bin.weight / bin.count) > 0.12) ++off;
     }
   }
   CHECK_MESSAGE(off == 0, off << " part bins are not where their weight says along the part");
@@ -186,7 +187,9 @@ TEST_CASE("flora: the palm emits the motion contract — dense parts, weights ro
     flora::Motion small_motion;
     REQUIRE_MESSAGE(flora::solve_palm(q, small, nullptr, &error, &small_motion), error);
     CAPTURE(budget);
-    check_motion(small, small_motion, static_cast<u32>(motion.parts.size()));
+    // On the bottom rung a frond is a handful of vertices and a leaflet the size of a bin, so the
+    // centroids say little there; the ids, the parents and the end weights still hold.
+    check_motion(small, small_motion, static_cast<u32>(motion.parts.size()), budget > 2000u);
     for (u32 k = 0; k < motion.parts.size(); ++k) {
       CHECK(small_motion.parts[k].pivot.x == motion.parts[k].pivot.x);
       CHECK(small_motion.parts[k].length == motion.parts[k].length);
@@ -236,7 +239,8 @@ TEST_CASE("flora: the trunk's radii are the radii asked, and every wall face loo
   // the one asked.
   flora::Palm p = default_palm();
   p.lean_deg = 0.0f;
-  const assets::MeshData mesh = solve(p);
+  flora::PalmReport report;
+  const assets::MeshData mesh = solve(p, &report);
   const assets::Primitive* trunk = primitive_of(mesh, 0);
   REQUIRE(trunk != nullptr);
   const auto widest = [&](f32 y0, f32 y1) {
@@ -249,11 +253,19 @@ TEST_CASE("flora: the trunk's radii are the radii asked, and every wall face loo
     return r;
   };
   const f64 base = widest(0.0f, p.ring_spacing_m);
-  const f64 top = widest(p.height_m - p.ring_spacing_m, p.height_m);
+  // The top radius is the stem's where the leaf sheaths begin (the lowest dead frond's base); above
+  // it the sheaths swell the stem by 40% by the apex (flora.md, "The crown").
+  const f32 sheath = report.sheath_arc_m;
+  REQUIRE(sheath > 0.5f * p.height_m);
+  REQUIRE(sheath < p.height_m);
+  const f64 top = widest(sheath - p.ring_spacing_m, sheath);
+  const f64 apex = widest(p.height_m - 0.5f * p.ring_spacing_m, p.height_m + 0.001f);
   CHECK(std::abs(base - static_cast<f64>(p.trunk_base_radius_m)) <=
         0.01 * static_cast<f64>(p.trunk_base_radius_m));
   CHECK(std::abs(top - static_cast<f64>(p.trunk_top_radius_m)) <=
         0.01 * static_cast<f64>(p.trunk_top_radius_m));
+  CHECK(std::abs(apex - 1.4 * static_cast<f64>(p.trunk_top_radius_m)) <=
+        0.02 * static_cast<f64>(p.trunk_top_radius_m));
 
   // Every face of the trunk agrees with its corners' normals, and those point away from the
   // spine: the wall's outward, the cap's up. A face wound the wrong way round would be dropped by
@@ -343,6 +355,67 @@ TEST_CASE("flora: each frond is one connected, consistently wound surface above 
   bare.dead_skirt_fronds = 0;
   const assets::MeshData bare_mesh = solve(bare);
   CHECK(primitive_of(bare_mesh, 2) == nullptr);
+}
+
+// The crown is one leaf spiral by age (flora.md, "The crown"): a frond's base is lower the older it
+// is, by one internode a frond, each turned the golden angle from the last; the youngest stands
+// near vertical and the oldest at the cone's edge; the trunk's top is a collar of persistent bases
+// below the dead fronds, out of the trunk and pointing up.
+TEST_CASE("flora: the fronds leave the stem on one spiral by age, above a collar of old bases") {
+  flora::Palm p = default_palm();
+  p.lean_deg = 0.0f;  // a vertical spine, so a pivot's height is its arc
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::PalmReport report;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_palm(p, mesh, &report, &error, &motion), error);
+  const u32 fronds = p.frond_count + p.dead_skirt_fronds;
+  REQUIRE(motion.parts.size() == 1 + fronds);
+  const f32 internode = report.internode_m;
+  CHECK(internode > 0.0f);
+  // One internode between green fronds; the dead fronds hang from a deeper band below them, still
+  // one leaf after another down the stem.
+  for (u32 k = 1; k < fronds; ++k) {
+    CAPTURE(k);
+    const f32 drop = motion.parts[k].pivot.y - motion.parts[k + 1].pivot.y;
+    if (k < p.frond_count) {
+      CHECK(std::abs(drop - internode) < 0.25f * internode);
+    } else {
+      CHECK(drop > 0.5f * internode);
+    }
+  }
+  // The youngest frond stands near vertical and the oldest green one at the cone's edge.
+  const auto from_vertical = [](const Vec3& d) {
+    return std::acos(std::clamp(d.y, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+  };
+  CHECK(from_vertical(motion.parts[1].direction) < 0.25f * p.frond_spread_deg);
+  CHECK(from_vertical(motion.parts[p.frond_count].direction) > 0.85f * p.frond_spread_deg);
+  // Younger means steeper, frond by frond, apart from the seed's few degrees.
+  for (u32 k = 1; k + 3 < p.frond_count; ++k)
+    CHECK(from_vertical(motion.parts[k].direction) < from_vertical(motion.parts[k + 3].direction));
+  // The collar: below the lowest dead frond, out of the stem and pointing up.
+  CHECK(report.collar_bases > 20);
+  CHECK(report.collar_triangles == (fronds + report.collar_bases) * 12);  // a boot per leaf
+  const assets::Primitive* trunk = primitive_of(mesh, 0);
+  REQUIRE(trunk != nullptr);
+  REQUIRE(mesh.primitives.size() == 4);
+  const assets::Primitive& collar = mesh.primitives[1];
+  CHECK(collar.material == 0);
+  f32 lowest = 1e30f;
+  f32 widest = 0.0f;
+  for (u32 i = collar.first_index; i < collar.first_index + collar.index_count; ++i) {
+    const Vec3 v = mesh.positions[mesh.indices[i]];
+    lowest = std::min(lowest, v.y);
+    widest = std::max(widest, std::hypot(v.x, v.z));
+  }
+  CHECK(lowest > 0.6f * p.height_m);
+  CHECK(lowest < report.sheath_arc_m);
+  CHECK(widest > 1.5f * p.trunk_top_radius_m);  // the bases stand out of the stem
+  // A frond leaves the stem where its base is on the spiral: inside the swollen sheath.
+  for (u32 k = 1; k <= fronds; ++k) {
+    const Vec3 pivot = motion.parts[k].pivot;
+    CHECK(std::hypot(pivot.x, pivot.z) < 1.4f * p.trunk_top_radius_m);
+  }
 }
 
 TEST_CASE("flora: a smaller budget walks down the ladder and holds") {
@@ -489,7 +562,7 @@ TEST_CASE(
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(hash));
   // With the motion contract appended (sections 35 and 36); without it, the next test holds it to
   // the bytes it was before them.
-  constexpr u64 k_golden = 0x92736eeeed8632f2ull;
+  constexpr u64 k_golden = 0x5ab6c0536295b350ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -593,8 +666,11 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   CHECK(a[b.size()].kind == static_cast<u32>(geometry::ClusterSection::MotionParts));
   CHECK(a[b.size() + 1].kind == static_cast<u32>(geometry::ClusterSection::MotionVertices));
   CHECK(std::string(geometry::cluster_section_name(a[b.size()].kind)) == "motion_parts");
-  // The rigid container is the bytes the default palm's container was before the contract.
-  constexpr u64 k_rigid_golden = 0xab870afd905f4acdull;
+  // The container with the contract cleared, pinned on its own: it was 0xab870afd905f4acd, the
+  // container from before the contract existed, until the crown's spiral moved the mesh
+  // (k_flora_version 2), so a change that moves only the contract is told apart from one that moves
+  // the mesh.
+  constexpr u64 k_rigid_golden = 0xeb471d9e96454476ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -607,7 +683,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
 // `k_flora_version` and the number in the same commit.
 TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
-  constexpr u64 k_golden = 0x60d8345e83d0a6f1ull;
+  constexpr u64 k_golden = 0x86f10c7cf1c598e7ull;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);

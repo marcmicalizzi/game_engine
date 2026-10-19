@@ -37,7 +37,11 @@ namespace engine::flora {
 // makes from the same parameters — a new rung on the budget's ladder, a different leaflet — is a
 // new key and never an old container read as the answer. Bump it with any change that moves a
 // byte of the default palm's mesh (the determinism test says when one did).
-inline constexpr u32 k_flora_version = 1;
+//
+// 2: the palm's crown on one leaf spiral by age, the trunk's top a collar of persistent frond bases
+//    and swelling sheaths (flora.md, "The crown"), and the motion contract's sections 35 and 36 in
+//    every container — an entry built at 1 has neither.
+inline constexpr u32 k_flora_version = 2;
 
 // The species `engine.flora.FloraFile.species` names.
 inline constexpr const char* k_species_date_palm = "date_palm";

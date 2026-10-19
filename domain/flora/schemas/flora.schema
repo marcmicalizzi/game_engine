@@ -15,7 +15,8 @@ struct Palm @version(1) {
   height_m: f32 = 9.0 @unit(m)
   /// The trunk's radius at the ground, over the ring scars: 0.05 to 1 m.
   trunk_base_radius_m: f32 = 0.24 @unit(m)
-  /// The trunk's radius at the apex: 0.03 m up to the base radius.
+  /// The trunk's radius where the crown's leaf sheaths begin, which swell it by 40% by the apex:
+  /// 0.03 m up to the base radius.
   trunk_top_radius_m: f32 = 0.18 @unit(m)
   /// How far from vertical the trunk leaves the ground: 0 to 40 degrees.
   lean_deg: f32 = 7.0 @unit(deg)
