@@ -2,6 +2,7 @@
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_pages.h>
 
@@ -60,12 +61,12 @@ u64 mesh_hash(const assets::MeshData& mesh) {
 }
 
 // Every validity property a solved palm has, whatever its parameters.
-void check_valid(const flora::Palm& p, const assets::MeshData& mesh) {
+void check_mesh(u32 budget, const assets::MeshData& mesh) {
   REQUIRE(!mesh.positions.empty());
   REQUIRE(mesh.normals.size() == mesh.positions.size());
   REQUIRE(mesh.uvs.size() == mesh.positions.size());
   REQUIRE(mesh.indices.size() % 3 == 0);
-  CHECK(mesh.indices.size() / 3 <= p.triangle_budget);
+  CHECK(mesh.indices.size() / 3 <= budget);
   u32 covered = 0;
   for (const assets::Primitive& prim : mesh.primitives) {
     CHECK(prim.first_index == covered);
@@ -93,6 +94,10 @@ void check_valid(const flora::Palm& p, const assets::MeshData& mesh) {
     if (a == b || b == c || a == c || !(area > 1e-10)) ++degenerate;
   }
   CHECK_MESSAGE(degenerate == 0, degenerate << " degenerate triangles; smallest area " << smallest);
+}
+
+void check_valid(const flora::Palm& p, const assets::MeshData& mesh) {
+  check_mesh(p.triangle_budget, mesh);
 }
 
 // The motion contract a solver emitted, against its mesh (flora.md, "Motion attributes"): one
@@ -140,9 +145,27 @@ void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32
     bin.weight += static_cast<f64>(w);
     ++bin.count;
   }
+  // How far a part's vertices stand off its axis — the tube's radius, a leaflet's or a card's
+  // length — is how far a bin's centroid may be pulled off the axis: the tolerance scales with it.
+  Vector<f64> spread(motion.parts.size(), 0.0);
+  for (u32 v = 0; v < mesh.positions.size(); ++v) {
+    const u32 part = motion.vertex_part[v];
+    u32 b = static_cast<u32>(motion.vertex_weight[v] * static_cast<f32>(k_bins));
+    if (b >= k_bins) b = k_bins - 1;
+    const Bin& bin = bins[part * k_bins + b];
+    const f64 dx = static_cast<f64>(mesh.positions[v].x) - bin.sum[0] / bin.count;
+    const f64 dy = static_cast<f64>(mesh.positions[v].y) - bin.sum[1] / bin.count;
+    const f64 dz = static_cast<f64>(mesh.positions[v].z) - bin.sum[2] / bin.count;
+    spread[part] = std::max(spread[part], std::sqrt(dx * dx + dy * dy + dz * dz));
+  }
   u32 off = 0;
   for (u32 p = 0; p < motion.parts.size(); ++p) {
     CAPTURE(p);
+    const f64 tolerance = 0.12 + spread[p] / static_cast<f64>(motion.parts[p].length);
+    // A part whose cards stand out further than a quarter of its length (a short top branch of
+    // a conifer under 0.4 m needle cards) has centroids that zigzag across it: only its ends say
+    // anything there.
+    const bool measurable = spread[p] <= 0.25 * static_cast<f64>(motion.parts[p].length);
     CHECK(lo[p] <= 0.01f);  // every part reaches its root...
     CHECK(hi[p] >= 0.99f);  // ...and its tip: the ids are dense, none is empty
     const flora::MotionPart& part = motion.parts[p];
@@ -159,7 +182,14 @@ void check_motion(const assets::MeshData& mesh, const flora::Motion& motion, u32
       at[1] = c[1];
       at[2] = c[2];
       const f64 share = travelled / static_cast<f64>(part.length);
-      if (along && std::abs(share - bin.weight / bin.count) > 0.12) ++off;
+      if (along && measurable && std::abs(share - bin.weight / bin.count) > tolerance) {
+        if (off < 4) {
+          MESSAGE("part " << p << " bin " << b << ": at " << share << " of its length "
+                          << part.length << ", weight " << bin.weight / bin.count << ", spread "
+                          << spread[p]);
+        }
+        ++off;
+      }
     }
   }
   CHECK_MESSAGE(off == 0, off << " part bins are not where their weight says along the part");
@@ -687,4 +717,219 @@ TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
+}
+
+// ---- the branching species (flora.md, "The broadleaf", "The conifer") -------------------------
+
+namespace {
+
+// Every property a branching species' mesh has: valid, in budget, two primitives (bark one-sided,
+// leaves two-sided), and the motion contract with every part reaching its root and its tip.
+void check_tree(const assets::MeshData& mesh, const flora::Motion& motion,
+                const flora::TreeReport& r, u32 budget, bool along) {
+  check_mesh(budget, mesh);
+  REQUIRE(mesh.materials.size() == 2);
+  CHECK_FALSE(mesh.materials[0].double_sided);
+  CHECK(mesh.materials[1].double_sided);
+  REQUIRE(mesh.primitives.size() == 2);
+  CHECK(r.triangles == mesh.indices.size() / 3);
+  CHECK(r.wood_triangles + r.leaf_triangles == r.triangles);
+  CHECK(r.parts == motion.parts.size());
+  check_motion(mesh, motion, r.parts, along);
+}
+
+u64 tree_hash(const assets::MeshData& mesh, const flora::Motion& motion) {
+  u64 h = mesh_hash(mesh);
+  h = hash_combine(h, hash_bytes(motion.parts.data(),
+                                 motion.parts.size() * sizeof(geometry::ClusterFileMotionPart)));
+  h = hash_combine(h,
+                   hash_bytes(motion.vertex_part.data(), motion.vertex_part.size() * sizeof(u32)));
+  return hash_combine(
+      h, hash_bytes(motion.vertex_weight.data(), motion.vertex_weight.size() * sizeof(f32)));
+}
+
+template <typename Params, typename Solve>
+void check_species(const std::string& name, const Params& params, Solve solve, u32 expected_parts,
+                   u64 golden) {
+  CAPTURE(name);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+  std::string error;
+  REQUIRE_MESSAGE(solve(params, mesh, &report, &error, &motion), error);
+  MESSAGE(name << ": " << report.triangles << " triangles (bark " << report.wood_triangles
+               << ", leaves " << report.leaf_triangles << "), " << report.parts << " parts, "
+               << report.sprays << " sprays of " << report.cards_per_side << " cards a side, "
+               << report.steps << " budget steps");
+  CHECK(report.steps == 0);  // the defaults fit their own budget at full detail
+  CHECK(report.parts == expected_parts);
+  check_tree(mesh, motion, report, params.triangle_budget, true);
+  // The leaves: each spray one connected surface, so the LOD builder can collapse it.
+  const assets::Primitive& leaves = mesh.primitives[1];
+  Vector<u32> parent(mesh.positions.size());
+  for (u32 v = 0; v < parent.size(); ++v)
+    parent[v] = v;
+  const auto find = [&](u32 v) {
+    while (parent[v] != v)
+      v = parent[v] = parent[parent[v]];
+    return v;
+  };
+  for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; i += 3) {
+    parent[find(mesh.indices[i])] = find(mesh.indices[i + 1]);
+    parent[find(mesh.indices[i + 1])] = find(mesh.indices[i + 2]);
+  }
+  Vector<u32> roots;
+  for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; ++i) {
+    const u32 root = find(mesh.indices[i]);
+    if (std::find(roots.begin(), roots.end(), root) == roots.end()) roots.push_back(root);
+  }
+  CHECK(roots.size() == report.sprays);
+  // Every rung of the ladder holds and names the same parts.
+  for (const u32 budget : {params.triangle_budget / 2, params.triangle_budget / 5, 8000u}) {
+    CAPTURE(budget);
+    Params q = params;
+    q.triangle_budget = budget;
+    assets::MeshData small;
+    flora::Motion small_motion;
+    flora::TreeReport small_report;
+    REQUIRE_MESSAGE(solve(q, small, &small_report, &error, &small_motion), error);
+    MESSAGE(name << " on " << budget << ": " << small_report.triangles << " triangles after "
+                 << small_report.steps << " steps, " << small_report.cards_per_side
+                 << " cards a side");
+    check_tree(small, small_motion, small_report, budget, false);
+    REQUIRE(small_motion.parts.size() == motion.parts.size());
+    for (u32 k = 0; k < motion.parts.size(); ++k) {
+      CHECK(small_motion.parts[k].pivot.x == motion.parts[k].pivot.x);
+      CHECK(small_motion.parts[k].length == motion.parts[k].length);
+      CHECK(small_motion.parts[k].parent == motion.parts[k].parent);
+    }
+  }
+  // One seed one tree, the same bytes on every toolchain; another seed another tree.
+  assets::MeshData again;
+  flora::Motion again_motion;
+  REQUIRE(solve(params, again, nullptr, &error, &again_motion));
+  const u64 got = tree_hash(again, again_motion);
+  CHECK(got == tree_hash(mesh, motion));
+  char hex[32];
+  std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
+  CHECK_MESSAGE(got == golden, name << " hashes to " << hex);
+  Params other = params;
+  other.seed = 2;
+  assets::MeshData other_mesh;
+  flora::Motion other_motion;
+  REQUIRE(solve(other, other_mesh, nullptr, &error, &other_motion));
+  CHECK(tree_hash(other_mesh, other_motion) != got);
+}
+
+}  // namespace
+
+TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in its budget") {
+  const flora::Broadleaf p;
+  // Parts: the trunk, the limbs, their branches, the branches' twigs and the leader's tuft.
+  const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs + p.twigs;
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x4df541059e9bba35ull);
+}
+
+TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {
+  const flora::Conifer p;
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_conifer(p, mesh, &report, &error, &motion), error);
+  // Parts: the trunk and every branch; the whorls thin upward, so the top has fewer.
+  check_species("conifer", p, flora::solve_conifer, report.parts, 0xd849a6672e26415aull);
+  CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl);
+  CHECK(report.parts > 1 + p.whorls * 2);
+  // A cone: the lowest branches reach furthest, the highest least.
+  f32 low_reach = 0.0f;
+  f32 high_reach = 0.0f;
+  for (u32 k = 1; k < motion.parts.size(); ++k) {
+    const f32 y = motion.parts[k].pivot.y;
+    if (y < 0.4f * p.height_m) low_reach = std::max(low_reach, motion.parts[k].length);
+    if (y > 0.8f * p.height_m) high_reach = std::max(high_reach, motion.parts[k].length);
+  }
+  CHECK(low_reach > 2.0f * high_reach);
+}
+
+TEST_CASE("flora: the branching species' ranges, ends and refusals") {
+  std::string error;
+  flora::Broadleaf b;
+  b.limbs = 0;
+  CHECK_FALSE(flora::broadleaf_in_range(b, error));
+  CHECK(error.find("limbs") != std::string::npos);
+  flora::Conifer c;
+  c.whorls = 61;
+  CHECK_FALSE(flora::conifer_in_range(c, error));
+  CHECK(error.find("whorls") != std::string::npos);
+  // Everything at its most expensive at once, on the smallest budget: the bottom rung holds.
+  flora::Broadleaf wb;
+  wb.limbs = 12;
+  wb.branches = 8;
+  wb.twigs = 10;
+  wb.leaves = 40;
+  wb.triangle_budget = 8000;
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+  REQUIRE_MESSAGE(flora::solve_broadleaf(wb, mesh, &report, &error, &motion), error);
+  check_tree(mesh, motion, report, wb.triangle_budget, false);
+  MESSAGE("broadleaf at its most expensive on 8,000: " << report.triangles << " after "
+                                                       << report.steps << " steps");
+  flora::Conifer wc;
+  wc.whorls = 60;
+  wc.branches_per_whorl = 10;
+  wc.thinning = 0.0f;
+  wc.needle_cards = 60;
+  wc.height_m = 60.0f;
+  wc.triangle_budget = 8000;
+  REQUIRE_MESSAGE(flora::solve_conifer(wc, mesh, &report, &error, &motion), error);
+  check_tree(mesh, motion, report, wc.triangle_budget, false);
+  MESSAGE("conifer at its most expensive on 8,000: " << report.triangles << " after "
+                                                     << report.steps << " steps");
+  // The smallest trees build too.
+  flora::Broadleaf sb;
+  sb.height_m = 3.0f;
+  sb.limbs = 1;
+  sb.branches = 1;
+  sb.twigs = 1;
+  sb.leaves = 1;
+  REQUIRE_MESSAGE(flora::solve_broadleaf(sb, mesh, &report, &error, &motion), error);
+  check_tree(mesh, motion, report, sb.triangle_budget, false);
+  flora::Conifer sc;
+  sc.height_m = 1.0f;
+  sc.whorls = 2;
+  sc.branches_per_whorl = 2;
+  REQUIRE_MESSAGE(flora::solve_conifer(sc, mesh, &report, &error, &motion), error);
+  check_tree(mesh, motion, report, sc.triangle_budget, false);
+}
+
+// A flora file names its species, and the container is built from that species' parameters alone:
+// the canonical form carries nothing of the species not chosen, so the palm's key is the same
+// whatever the broadleaf's defaults are.
+TEST_CASE("flora: a file's species picks the solver, and its key carries that species alone") {
+  flora::FloraFile file;
+  std::string error;
+  REQUIRE_MESSAGE(
+      flora::read_flora_file("{\"species\":\"broadleaf\",\"broadleaf\":{\"seed\":3}}", file, error),
+      error);
+  const std::string canonical = flora::canonical_flora_json(file);
+  CHECK(canonical.find("\"broadleaf\"") != std::string::npos);
+  CHECK(canonical.find("\"palm\"") == std::string::npos);
+  CHECK(canonical.find("\"conifer\"") == std::string::npos);
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, geometry::ClusterLodOptions{},
+                                               geometry::ClusterPagesOptions{}.page_bytes, data,
+                                               nullptr, error),
+                  error);
+  CHECK(data.generator_kind == "broadleaf");
+  CHECK(data.materials.size() == 2);
+  CHECK(data.motion_vertices.size() == data.mesh.mesh.vertices.size());
+  CHECK_FALSE(data.motion_parts.empty());
+  flora::FloraFile palm;
+  REQUIRE(flora::read_flora_file("{}", palm, error));
+  CHECK(flora::canonical_flora_json(palm).find("broadleaf") == std::string::npos);
+  CHECK_FALSE(
+      flora::read_flora_file("{\"species\":\"conifer\",\"conifer\":{\"whorls\":1}}", file, error));
+  CHECK(error.find("whorls") != std::string::npos);
 }

@@ -6,9 +6,12 @@ modelled assets or image-to-3D, which is the owner's direction for it (plan 05 �
 wind") and what E10 measured: a generated mesh loses its detail past a person's size
 ([e10](../experiments/e10-generated-props.md)), and a tree is several times that. The first species
 is the **date palm** (`flora::solve_palm`, `engine.flora.Palm`), because Desert Survival's oases
-need palms before anything else (plan 13 §13.1, "Oases"). It does not place what it makes (a scene's
-instances do, and a scatter layer will — roadmap G55), move it in the wind (S66), or texture it yet
-(G60).
+need palms before anything else (plan 13 §13.1, "Oases"); after it come a **broadleaf** and a
+**conifer** (`flora::solve_broadleaf`, `solve_conifer`; [the branching species](#the-branching-species)),
+because the next game is a fantasy RPG that needs forests. Every species emits, beside its mesh,
+the **motion contract** a sway stage will read ([motion attributes](#motion-attributes)). It does
+not place what it makes (a scene's instances do, and a scatter layer will — roadmap G55), move it
+in the wind (S66), or texture it yet (G60).
 
 **Why this shape.** A solver's output is a mesh like any other, so it reuses everything a glTF goes
 through rather than growing a path of its own: an `assets::MeshData` into `geometry::build_cluster_lod`
@@ -198,6 +201,112 @@ imported mesh's container is the bytes it was; the default palm's container with
 hashes to exactly what it did before they existed, and its other sections are byte for byte the
 same (the test compares them section by section).
 
+## The branching species
+
+After the palm, two species a forest is made of (roadmap G61): `engine.flora.Broadleaf`, a
+deciduous tree, and `engine.flora.Conifer`, a pine or spruce, each a struct of the flora schema
+with its ranges (`broadleaf_in_range`, `conifer_in_range` refuse a field out of range by name), a
+solver file of its own (`src/broadleaf.cpp`, `src/conifer.cpp`, over the shared shapes in
+`src/kit.h`) and the same `.flora.json` dispatch: the file's `species` — `"broadleaf"` or
+`"conifer"` — picks the member the solver reads. Both make two primitives, **bark** (closed tubes,
+one-sided, cones on) and **leaves** (two-sided card sprays, cones off), and the motion contract.
+
+**Why self-similar branching and not space colonisation.** Space colonisation grows a tree towards
+attraction points, which makes beautiful crowns, but its branch count is whatever the simulation
+ends with: the triangle count is known only after growing, a budget can only be met by growing again
+or pruning afterwards, and a pruned branch moves every motion id after it. Seeded recursive
+branching knows its whole structure from the parameters — `limbs`, `branches`, `twigs` — so the
+solver counts the triangles of a plan *before* it builds, exactly as the palm does, walks the same
+kind of ladder, and never drops a part. It is also the cheaper thing to keep deterministic: a fixed
+number of draws per shoot from a stream per order, where colonisation's nearest-point searches
+order their work by floating-point distances.
+
+**The structure is grown once, at a fixed resolution, whatever the budget.** Every shoot's axis is
+grown at 16 rows (the trunk at 32), its children placed along that axis, and a mesh is the axis
+resampled at the plan's rows: so a lower budget changes how finely a shoot is drawn, never where it
+is, and the motion parts' pivots, directions and lengths are the same bits on every rung (the test
+holds them).
+
+**The shapes** (`kit.h`). A shoot's axis grows from its bud along a direction that **turns towards
+the light** (`upturn`, a share of 40° over its length, negative for a weeping habit) — a rotation
+about the axis the two directions span, slowing as it aligns, so it never overshoots — and
+**wanders** by up to `wander_deg` a step; its frame is parallel-transported, so a tube never
+twists. A **tube** is a tapered closed cylinder along it, capped by a cone, open at the base inside
+its parent, its UVs in metres (round the circumference and along the axis) so a tiled bark set lies
+on it unstretched. A **spray** is leaves or needle bundles on a twig: the twig's centre line split
+into equal steps, two cards on each step (one either side, `leaf_angle_deg` towards the tip, lifted
+15° out of the spray's level plane), consecutive cards sharing their centre-line vertices — so a
+spray is **one connected surface** the LOD builder collapses along the twig (the palm's lesson) —
+and every card's UV the **full card** (card *i* spans *u* in [*i*, *i* + 1], one side *v* in [0, 1]
+and the other [0, −1]), so a one-leaf image sampled with repeat lies on every card whole.
+
+### The broadleaf
+
+An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards
+a seeded azimuth and straightens towards the vertical; its radius is `trunk_radius_m` and every
+other radius follows by the **pipe model** — a shoot's base radius is the trunk's times (its
+terminal twigs ÷ all of them)^(1/2.5), da Vinci's rule that a parent's cross-section is about the
+sum of its children's — tapering along each shoot. `limbs` **scaffold limbs** leave the trunk
+between `crown_base` and nine tenths of it on the golden angle, at `limb_angle_deg` (the upper ones
+a third more upright), `limb_length` of the height long (the upper ones down to half). Each limb
+carries `branches` **branches** from a quarter of the way out, alternating round it on the golden
+angle at `branch_angle_deg`, `branch_length` of their limb long (shorter towards its tip); each
+branch carries `twigs` **twigs** from a fifth of the way out, and the leader's top carries `twigs`
+more. A twig is a spray of `leaves` cards a side, `leaf_length_m` long, its plane laid level so the
+cards face the sky. Parts: the trunk, every limb, every branch, every twig (its parent its branch,
+or the trunk for the leader's tuft) — 1 + 8 + 48 + 441 = 498 on the default.
+
+**The budget** (default 60,000; 8,000 to 2,000,000). The default is 27,356 triangles at full detail
+— bark 6,188 (trunk 12 sides × 30 rows, limbs 8 × 14, branches 5 × 7), leaves 21,168 (441 twigs of
+12 cards a side) — and the ladder, rung by rung: branch rows 4, limb rows 8; sides 4/6/10, then
+3/5/8; the trunk's rows halved; then the cards halved repeatedly (a twig of half the cards keeps
+its leaf area, each card twice as wide); then rows 2/4/3, sides 4/6, and limb rows 2 and branch rows
+1 last. On 12,000 the default is 7,516 (3 cards a side); everything at its most expensive (12 limbs,
+8 branches, 10 twigs, 40 leaves) holds 8,000 with 7,740.
+
+### The conifer
+
+A spruce by default (16 m; `spruce-tall.flora.json` is 22 m, `spruce-young.flora.json` 4 m). The
+**trunk** is straight (no wander, a lean taken back towards the vertical), tapering from
+`trunk_radius_m` to a centimetre at the leader's tip. `whorls` **whorls** stand from `crown_base` to
+the top, each of `branches_per_whorl` branches spaced evenly round the trunk from a seeded turn —
+fewer up the crown by `thinning`, so the top tiers are sparse — at an angle from vertical running
+from `bottom_angle_deg` at the lowest (past 90°: hanging below level) to `top_angle_deg` at the
+top, `crown_radius_m` long at the bottom shrinking to a tenth at the top (as (1 − *t*)^0.9 of the
+crown's height, a cone with full shoulders), each tip turning back up towards the light by
+`upturn`. A branch is a woody tube and a **spray of needle-bundle cards** from a sixth of the way
+out to its tip, `needle_cards` a side on the longest branch and fewer in proportion to length,
+`needle_length_m` long, splayed 60° forward and 15° up; the leader carries a tuft. Parts: the trunk
+(which owns the tuft) and every branch, the branch's tube and spray one part — 136 on the default.
+
+**The budget** (default 40,000; 8,000 to 2,000,000). The default is 12,882 triangles at full detail
+— bark 5,510, needles 7,372 — and the ladder: branch rows 3, then 2; trunk sides 8; branch sides 3;
+the trunk's rows halved; the cards halved repeatedly; branch rows 1; trunk sides 6; and last the
+branches' woody tubes, their sprays then reaching to the trunk. On 8,000 it is 6,109 (12 cards a
+side); everything at its most expensive (60 whorls of 10, 60 cards, 60 m) holds 8,000 with 2,654.
+
+### What the harness said
+
+The same measurements as the palms' (below), over the three recipes, 2026-10-18:
+
+| Tree | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
+|---|---|---|---|---|---|---|---|---|
+| `oak` | 27,356 | 848 / 11 | 498 | 5.1% | 5,475,665 | 0.567 (204 of 360) | **0.0065** | 36.6 / 0.993 |
+| `spruce-tall` | 13,058 | 410 / 9 | 272 | 14.5% | 295,087 | 0.465 (79 of 170) | **0.0039** | 38.2 / 0.994 |
+| `spruce-young` | 3,442 | 112 / 8 | 72 | 14.0% | 69,530 | 0.739 (34 of 46) | **0.0009** | 46.0 / 0.999 |
+
+All three pass every threshold, the young spruce's collapse narrowly: at the harness's framing a
+4 m tree of 3,442 triangles is a few dozen clusters, and a card spray's coarsest level is a strip
+of a few triangles it keeps. The picture error is a third of the palms' and less, because a card is
+a surface with area to lose gradually where a leaflet is a sliver a pixel wide. Islands: one a
+spray and one a tube, which is the layout rule again.
+
+**What they look like** (`content/test-scenes/grove/`, offscreen captures, not committed): trees,
+at once — limbs and twigs with leaves on them, whorled spruces with drooping lower tiers — and
+stylized, because a card is an opaque parallelogram until alpha-tested cards (R65) give it a leaf's
+outline: the spruce's sprays read as flat green strips close up, the oak's leaves as tiles. The
+shapes are right for the cards an image will be cut into.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the
@@ -234,7 +343,10 @@ names `ENGINE_WITH_FLORA`.
 four variants — `-tall` (14 m), `-young` (3.5 m, a heavy skirt), `-leaning` (22°), `-old` (sparse,
 drooping, no skirt). [`content/test-scenes/oasis-palms/`](../../content/test-scenes/oasis-palms/README.md)
 stands twelve of them round a basin on a small dune field with a camera path that circles the grove
-and walks in under the crowns: a scene to fly that needs no sample asset.
+and walks in under the crowns: a scene to fly that needs no sample asset. Beside them,
+`oak.flora.json` (a broadleaf), `spruce-tall.flora.json` and `spruce-young.flora.json` (conifers);
+[`content/test-scenes/grove/`](../../content/test-scenes/grove/README.md) stands four oaks, seven
+spruces and a palm on a nearly flat ground with a camera path round and into them.
 
 **What the first pictures taught.** The first oasis capture read as sticks: a leaflet 3 cm wide
 tapering linearly to its tip is under a pixel from 25 m at 640 x 400, and a crown of them vanished
@@ -318,20 +430,30 @@ threshold that knows a strip's width — not more tuning of the solver.
 
 ## Not yet
 
-- **Textures** (G60): the materials are flat PBR constants. The atlas is laid out for them already —
-  one frond chart every frond shares, the trunk's strip and cap — so generated bark and frond
-  images (`tools/generate.ps1 image`, with provenance) are a material change, not a mesh change.
-- **Wind and sway** (S66): plan 05 §5.15's rods, the wind field and the sway tiers.
-- **Placement** (G55): a scatter layer naming flora files, so an oasis is a rule and not a list.
-- **A coverage-preserving foliage LOD** (R65): alpha-tested cards or a width-aware threshold, for
-  the crowns whose thin leaflets fail E10's FLIP ([above](#what-the-harness-taught)).
-- **A second species** (G60) needs what the palm did not: **branching** — a palm is one unbranched
-  stem, and a tree is a recursive structure (axes, their buds and their order) whose budget has to
-  be spent across orders rather than across parts, which wants the pipe model's radii (a parent's
-  cross-section the sum of its children's) and a solver for where branches go; **leaves that are
-  not fronds** — broad leaves are where cards stop being optional; a **species switch** in
-  `FloraFile` beside `palm` (one struct per species, the solver picked by `species`, the key
-  already mixing the species in); and **bark that is not rings**.
+- **Textures** (G60): the materials are flat PBR constants, and the recipe's `materials` block
+  (`engine.flora.FloraMaterials`: a tiled set per part — bark, leaf, skirt, wood — with `tile_m`)
+  is in the schema and the key but not yet read by the solvers. The branching species' UVs are
+  already what a set needs (tubes in metres, cards whole); the palm's trunk is still one
+  circumference-scaled strip. The engine half that is left: lay each set's images into the
+  container's materials (section 32 through the derived-data cache), the palm's trunk UVs in
+  metres, and a stand-in set a test writes; the sets themselves are the material lab's.
+- **Wind and sway** (S66): the deform stage that reads the motion contract — plan 05 §5.15's rods,
+  the wind field and the sway tiers, a slight trunk bend, fronds and branches pushed aside by a
+  walker. The contract is emitted and stored; nothing reads it.
+- **Alpha-tested cards** (R65): a card is an opaque parallelogram until a leaf image's alpha cuts
+  it, which is also the coverage-preserving foliage LOD the palms' thin leaflets want
+  ([above](#what-the-harness-taught)). The cards' UVs already give each card the whole image.
+- **The interior for environment destruction**: a trunk cut by destruction needs a cross-section
+  material and a cap — the `wood` slot of the materials block is recorded for it and drawn by
+  nothing — and the cut itself needs the tube's rings, which the solver has and does not keep.
+- **Placement** (G55): a scatter layer naming flora files, so an oasis or a forest is a rule and
+  not a list.
+- **More species**: the kit's axis, tube and spray make a new branching species a structure
+  function and a ladder (a birch's weeping twigs, a pine's tufts at the branch tips, a fan palm);
+  bark that is not rings or tubes (plates, fissures) wants displacement or the height map of a set.
+- **The palm's solver on the kit**: `palm.cpp` keeps its own copies of the f64 vector, the stream
+  and the emitter that `kit.h` now holds for the branching species; moving it over is mechanical
+  and must leave its pinned bytes alone.
 
 ## Determinism
 
@@ -363,6 +485,11 @@ data, rebuilt from its parameters.
   below it; no skirt is asked, no skirt primitive;
 - a smaller budget walks down the ladder and holds, and keeps every frond;
 - one seed is one palm, and another seed another;
+- the broadleaf and the conifer: valid, in budget at their defaults with no rung walked and on
+  every smaller budget down to 8,000 (everything at its most expensive included), two primitives
+  (bark one-sided, leaves two-sided), each spray one connected surface, the motion parts the same
+  bits on every rung, one seed one tree and another seed another, both pinned by hash; a file's
+  species picks the solver and its canonical form carries that species alone;
 - the motion contract: a record per vertex, part ids dense with the trunk 0 and every parent
   before its children, every part reaching weight 0 at its root and 1 at its tip, and its weights
   an arc-length parameter (the centroids of its vertices binned by weight lie along it at the
@@ -382,9 +509,9 @@ data, rebuilt from its parameters.
   generator section; the canonical parameters are the same for every spelling of one file.
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/motion.h` (the motion contract: `Motion`, `MotionPart`,
+`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `solve_broadleaf`, `solve_conifer`, `TreeReport`), `include/domain/flora/motion.h` (the motion contract: `Motion`, `MotionPart`,
 `k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
-`k_species_date_palm`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
+`k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `solve_flora`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key`, `build_flora_container`). The mesh generator "flora" registers from
 `src/flora.cpp`.
 
@@ -404,7 +531,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Registration point | This capability | Status |
 |---|---|---|
 | Capabilities it requires | none | this capability stands alone |
-| Component and event types | `domain/flora/schemas/flora.schema`: `Palm`, `FloraFile` | parameters, not components: a palm has no runtime state |
+| Component and event types | `domain/flora/schemas/flora.schema`: `Palm`, `Broadleaf`, `Conifer`, `MaterialSet`, `FloraMaterials`, `FloraFile` | parameters, not components: a palm has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a palm is a cluster mesh like any other |
 | Content-build derived step | `engine-content flora`, the mesh generator "flora" | [the build](#the-build): keyed by the canonical parameters, the species and `k_flora_version` |

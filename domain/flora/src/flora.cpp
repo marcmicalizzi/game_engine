@@ -5,6 +5,7 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/trees.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
 
@@ -31,18 +32,36 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = text_errors.empty() ? std::string("not an engine.flora.FloraFile") : text_errors;
     return false;
   }
-  if (out.species != k_species_date_palm) {
-    error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
-            k_species_date_palm + "\")";
-    return false;
-  }
-  return palm_in_range(out.palm, error);
+  if (out.species == k_species_date_palm) return palm_in_range(out.palm, error);
+  if (out.species == k_species_broadleaf) return broadleaf_in_range(out.broadleaf, error);
+  if (out.species == k_species_conifer) return conifer_in_range(out.conifer, error);
+  error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
+          k_species_date_palm + "\", \"" + k_species_broadleaf + "\" and \"" + k_species_conifer +
+          "\")";
+  return false;
 }
 
+namespace {
+// The member of `engine.flora.FloraFile` a species' parameters are in.
+const char* species_member(const std::string& species) {
+  if (species == k_species_broadleaf) return "broadleaf";
+  if (species == k_species_conifer) return "conifer";
+  return "palm";
+}
+}  // namespace
+
 std::string canonical_flora_json(const FloraFile& file) {
+  // The species, its own parameters and the materials — nothing of the species not chosen, so a
+  // palm's key does not move when the broadleaf's defaults do. The writer sorts the keys.
+  const JsonValue whole = schema::to_json(file);
+  JsonValue canonical = JsonValue::object();
+  for (const char* key : {"species", species_member(file.species), "materials"}) {
+    const JsonValue* value = whole.find(key);
+    if (value != nullptr && !value->is_null()) canonical.set(key, *value);
+  }
   JsonWriteOptions compact;
   compact.pretty = false;
-  return write_json(schema::to_json(file), compact);
+  return write_json(canonical, compact);
 }
 
 u64 flora_source_hash(const FloraFile& file) {
@@ -57,14 +76,22 @@ u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32
   return geometry::cluster_cache_key(source_hash, lod, false, page_bytes);
 }
 
+bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
+                 PalmReport* palm_report, TreeReport* tree_report, std::string& error) {
+  if (file.species == k_species_broadleaf)
+    return solve_broadleaf(file.broadleaf, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_conifer)
+    return solve_conifer(file.conifer, mesh, tree_report, &error, &motion);
+  return solve_palm(file.palm, mesh, palm_report, &error, &motion);
+}
+
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
                            std::string& error) {
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
   Motion motion;
-  if (!solve_palm(file.palm, mesh, report, &error, &motion)) return false;
-
+  if (!solve_flora(file, mesh, motion, report, nullptr, error)) return false;
   // One DAG per primitive, each with its material's cone setting: the trunk is one-sided and keeps
   // its cones, a frond is seen from both faces and has none (flora.md, "Two-sided crowns").
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
@@ -79,7 +106,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     std::string part_error;
     if (!geometry::build_cluster_lod(mesh.positions, range, options, part, &part_error,
                                      attributes)) {
-      error = "the cluster build refused the palm's " +
+      error = "the cluster build refused the tree's " +
               mesh.materials[static_cast<u32>(primitive.material)].name + ": " + part_error;
       return false;
     }
@@ -89,7 +116,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   Vector<u32> part_of_cluster;
   std::string merge_error;
   if (!geometry::merge_cluster_lod(parts, out.mesh, &part_of_cluster, &merge_error)) {
-    error = "the palm's parts did not merge: " + merge_error;
+    error = "the tree's parts did not merge: " + merge_error;
     return false;
   }
   if (page_bytes > 0) {
@@ -99,7 +126,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     std::string page_error;
     if (!geometry::build_cluster_pages(out.mesh, page_options, out.pages, &page_error,
                                        &source_of_cluster)) {
-      error = "the palm's pages were not laid out: " + page_error;
+      error = "the tree's pages were not laid out: " + page_error;
       return false;
     }
     geometry::permute_cluster_array(source_of_cluster, part_of_cluster);
@@ -107,7 +134,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   // The motion contract, per cluster vertex through the vertex each was built from — after the
   // page layout, which reorders the vertices with their clusters.
   if (!motion_records(motion, out.mesh, out.motion_vertices)) {
-    error = "the palm's motion attributes do not cover its vertices";
+    error = "the tree's motion attributes do not cover its vertices";
     return false;
   }
   out.motion_parts = std::move(motion.parts);

@@ -1,0 +1,9 @@
+{
+  "species": "broadleaf",
+  "broadleaf": {
+    "seed": 7,
+    "height_m": 12.0,
+    "trunk_radius_m": 0.4,
+    "triangle_budget": 60000
+  }
+}
