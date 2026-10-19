@@ -224,14 +224,30 @@ foreach ($scene in $Scenes) {
   Write-Host ("scene:    content/{0} ({1} files{2})" -f $sceneRel, $files.Count, $(if ($kits.Count) { ", kit generated" } else { '' }))
 }
 
+# content/input-map.json: the action map this build's sessions fly with, written by the build's own
+# engine-view (`--dump-action-map`, roadmap P47) with its hash. A game pins the map it ships with by
+# this file, not by a number in a test (docs/game-authoring.md, "The action map"): a game's
+# recordings name this hash, and tools/run-game.ps1 passes the file as `--input-map`.
+$mapFile = Join-Path $OutDir 'content/input-map.json'
+New-Item -ItemType Directory -Force -Path (Split-Path $mapFile -Parent) | Out-Null
+& $engineView --dump-action-map $mapFile | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $mapFile)) { Refuse "engine-view --dump-action-map failed ($LASTEXITCODE)" }
+# The hash as the text engine-view wrote: a u64 past 2^63 does not survive PowerShell's JSON
+# numbers, so it is carried as digits from here on.
+$mapText = Get-Content -LiteralPath $mapFile -Raw
+if ($mapText -notmatch '"hash":\s*(\d+)') { Refuse "$mapFile carries no hash" }
+$mapHash = $Matches[1]
+
 # content/sessions/walk-synthetic.jsonl: a recorded walk for offscreen runs. engine-view's --game
 # runs offscreen only as a replay, and a recording's header has to carry the action map's hash and
-# the walker's numbers as this build has them; the committed synthetic fly session
-# (content/input-logs/sessions/fly-synthetic.jsonl, regenerated from code and held byte for byte
-# by apps/engine_view/tests/fly_tests.cpp) carries the map and the camera, and the walk block is
-# the walker's defaults (apps/engine_view/walk.h, WalkParams). Two seconds at 240 Hz: W held from
-# tick 10, E (interact) pressed at tick 100, the shape of apps/engine_view/tests/game_view_tests.cpp's
-# walk. The start is high over the ground so it is above any scene's terrain; the walker drops.
+# the walker's numbers as this build has them. The camera and the columns come from the committed
+# synthetic fly session (content/input-logs/sessions/fly-synthetic.jsonl, regenerated from code and
+# held byte for byte by apps/engine_view/tests/fly_tests.cpp), the **map is the exported one above**
+# — the fly session's is the first revision, which has no `interact`, so a replay of it never
+# pressed E for a game (before 2026-10-18 it did not) — and the walk block is the walker's
+# defaults (apps/engine_view/walk.h, WalkParams). Two seconds at 240 Hz: W held from tick 10, E
+# (interact) pressed at tick 40, inside the twenty frames (80 ticks) the SDK's test runs. The start
+# is high over the ground so it is above any scene's terrain; the walker drops.
 $flySession = Join-Path $Root 'content/input-logs/sessions/fly-synthetic.jsonl'
 if (-not (Test-Path -LiteralPath $flySession)) { Refuse "no $flySession to take a session header from" }
 $flyHeader = (Get-Content -LiteralPath $flySession -TotalCount 1) | ConvertFrom-Json -Depth 16 -AsHashtable
@@ -247,9 +263,12 @@ $session['walk'] = [ordered]@{
   collision = [ordered]@{ spacing_m = 1.0; radius_tiles = 1.5; max_tiles = 2; mesh_error_m = 0.05; ground_error_m = 0.05; max_refreshes = 2 }
   start_walking = $true
 }
-$header = [ordered]@{ columns = $flyHeader['columns']; map = $flyHeader['map']; session = $session; type = $flyHeader['type']; version = $flyHeader['version'] }
-$events = @('[10,"key",26,1.0,0]', '[100,"key",8,1.0,0]', '[101,"key",8,0.0,0]')
-Write-Utf8 (Join-Path $OutDir 'content/sessions/walk-synthetic.jsonl') ((@(($header | ConvertTo-Json -Depth 16 -Compress)) + $events) -join "`n")
+$header = [ordered]@{ columns = $flyHeader['columns']; map = 0; session = $session; type = $flyHeader['type']; version = $flyHeader['version'] }
+$headerLine = ($header | ConvertTo-Json -Depth 16 -Compress)
+if ($headerLine -notmatch '"map":0,') { Refuse 'the synthetic session header has no map field to fill' }
+$headerLine = $headerLine.Replace('"map":0,', "`"map`":$mapHash,")
+$events = @('[10,"key",26,1.0,0]', '[40,"key",8,1.0,0]', '[41,"key",8,0.0,0]')
+Write-Utf8 (Join-Path $OutDir 'content/sessions/walk-synthetic.jsonl') ((@($headerLine) + $events) -join "`n")
 
 # tools/
 Copy-Item -LiteralPath (Join-Path $Root 'tools/sdk/build-module.ps1') -Destination (Join-Path $OutDir 'tools') -Force
@@ -287,6 +306,7 @@ $sdkJson = [ordered]@{
   includes = $includes
   scenes = $carried
   session = 'content/sessions/walk-synthetic.jsonl'
+  action_map = 'content/input-map.json'
   example_module = "bin/game/walk_poc$($gm['GM_SUFFIX'])"
   contract = 'docs/subsystems/apps.md#the-game-contract'
   authoring_guide = 'docs/game-authoring.md'
@@ -341,7 +361,8 @@ is packaged with its directory's content, a scene from ``content/`` with the SDK
 | ``cmake/`` | ``EngineGameModuleBuild.cmake`` and ``build_config.cmake``: the engine's exact compiler flags, with every path into this folder relative to the config, so the folder can be moved |
 | ``content/`` | the scenes:
 $sceneList
-| | ``sessions/walk-synthetic.jsonl``: two seconds of walking with E pressed once, for ``-Offscreen`` |
+| | ``sessions/walk-synthetic.jsonl``: two seconds of walking with E pressed once, for ``-Offscreen``, recorded against ``input-map.json`` |
+| | ``input-map.json``: the action map the SDK's engine-view flies with and its ``hash``; pin it by this file (``tools/run-game.ps1`` passes it as ``--input-map``) |
 | ``tools/`` | the three commands and ``lib/GameContent.psm1`` |
 | ``sdk.json`` | the commit, preset, baseline, ABI, date and scenes |
 

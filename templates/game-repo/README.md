@@ -34,6 +34,14 @@ report engine-view's `--report` writes, which is what a tester sends back; `./ru
 time, which is how the module is tested. `./run.ps1 -EngineArgs "--game-state save.json"` saves the
 state at exit and restores it next time.
 
+**The action map is pinned by a file.** The keys a session reads are the SDK's
+`content/input-map.json` (its engine-view's map, written by `engine-view --dump-action-map`, with
+its `hash`), which `./run.ps1` passes as `--input-map` and which the SDK's recorded walk was
+recorded against. A recording of this game names that hash; a test that needs it reads the file's
+`hash`, never a number typed into the test, so moving to a newer SDK moves the map with it and a
+recording made against the old one is refused naming both hashes. A game that wants its own
+bindings copies the file into this repository, edits it, and passes `-InputMap` to `./run.ps1`.
+
 Requirements: Windows x64, PowerShell 7, CMake 3.28 or later, Visual Studio 2022 or later with the
 C++ x64 tools, a Vulkan driver. The SDK's `README.md` has the detail, and says that Linux is not
 covered by an exported SDK yet.

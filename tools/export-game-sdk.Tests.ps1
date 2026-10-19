@@ -87,6 +87,18 @@ try {
     Check (Test-Path -LiteralPath (Join-Path $sdk $rel) -PathType Leaf) "the SDK has $rel"
   }
   Check (-not (Test-Path -LiteralPath (Join-Path $sdk 'include/foundation/hotload/src'))) 'and nothing from a src/ directory'
+  # The action map, as a file, and the synthetic walk recorded against it (roadmap P47): the hash is
+  # compared as the digits both files hold, never through a JSON number.
+  $mapPath = Join-Path $sdk 'content/input-map.json'
+  Check (Test-Path -LiteralPath $mapPath -PathType Leaf) 'the SDK has content/input-map.json'
+  if (Test-Path -LiteralPath $mapPath) {
+    $mapText = Get-Content -LiteralPath $mapPath -Raw
+    $mapHash = if ($mapText -match '"hash":\s*(\d+)') { $Matches[1] } else { '' }
+    $walkHeader = Get-Content -LiteralPath (Join-Path $sdk 'content/sessions/walk-synthetic.jsonl') -TotalCount 1
+    $walkHash = if ($walkHeader -match '"map":(\d+)') { $Matches[1] } else { '' }
+    Check ($mapHash -ne '' -and $mapHash -eq $walkHash) "the synthetic walk names the exported map's hash ($walkHash, the map's $mapHash)"
+    Check ($mapText -match '"name":\s*"interact"') 'and the exported map has the interact action'
+  }
   $sdkJson = Get-Content -LiteralPath (Join-Path $sdk 'sdk.json') -Raw | ConvertFrom-Json -Depth 16
   Check ($sdkJson.format -eq 'engine.game.sdk' -and $sdkJson.commit.Length -ge 7 -and $sdkJson.abi_version -ge 2 -and $sdkJson.preset -eq $preset) 'sdk.json names the commit, the ABI and the preset'
   $relocatable = Get-Content -LiteralPath (Join-Path $sdk 'cmake/build_config.cmake') -Raw
@@ -129,6 +141,10 @@ try {
         Check ($null -ne $r.frames -and $r.frames.count -eq 20) "the report counts 20 frames ($($r.frames.count))"
         Check ($null -ne $r.game -and $r.game.ticks -gt 0 -and $r.game.name -eq $name) "the game block names $name, ticked $($r.game.ticks) times"
         Check ($null -ne $r.game.hud -and $r.game.hud.lines.Count -ge 1 -and $r.game.hud.meters.Count -ge 1) "the HUD said a line and a meter: $($r.game.hud.lines -join ' / ')"
+        # E at tick 40 reaches the module through the exported map's `interact`; with the first
+        # revision's map, which the walk was recorded against until 2026-10-18, it never did.
+        Check ($null -ne $r.game.state -and $r.game.state.interactions -eq 1) "the walk's E press reached the module ($($r.game.state.interactions) interactions)"
+        Check ($null -ne $r.game.hud_elements -and @($r.game.hud_elements).Count -ge 2) "the report lists the HUD's elements ($(@($r.game.hud_elements).Count))"
       }
       Check (Test-Path -LiteralPath (Join-Path $repo 'ddc') -PathType Container) "the run's cache went to the repository's ddc/"
 

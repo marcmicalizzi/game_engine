@@ -77,7 +77,7 @@ describes it; in short:
 | `schemas/` | the schema root a module's `.schema` may import from |
 | `bin/` | `schemac` (the schema compiler), `engine-view` (the preset's, shaders embedded), `game/walk_poc.dll` (the worked example: run it before writing a line) |
 | `cmake/` | `EngineGameModuleBuild.cmake`, the engine's build command, and a **relocatable** `build_config.cmake`: every path into the SDK is relative to the config itself, so the folder can be moved or unzipped anywhere ([hotload.md, "Building a module"](subsystems/hotload.md#building-a-module)) |
-| `content/` | `test-scenes/desert-endless/` and `ruins-walk/` (with its ruins kit generated at export, since the tree never commits it), with every file each names, and `sessions/walk-synthetic.jsonl` |
+| `content/` | `test-scenes/desert-endless/` and `ruins-walk/` (with its ruins kit generated at export, since the tree never commits it), with every file each names, `sessions/walk-synthetic.jsonl` (recorded against the map below), and `input-map.json`, the action map the SDK's engine-view flies with and its hash (`--dump-action-map`) |
 | `tools/` | the three commands below, and `lib/GameContent.psm1` |
 | `sdk.json` | the engine commit, whether it was dirty, the preset, the CPU baseline, the hotload ABI version, the export date, the scenes carried |
 | `LICENSE`, `NOTICE` | the engine's Apache-2.0, which everything in the folder is under |
@@ -142,6 +142,34 @@ the module keeps to these — they are the contract's determinism paragraph in t
   engine's, or not load at all.
 - **Read actions from the tick's masks** (`actions_pressed`, `actions_held`, `actions_released`,
   through `action_set(value, bit)`), never from the keyboard: a replay has no keyboard.
+- **Pin the action map by its file, not by a number in a test.** Which key is `interact` is the
+  action map's, and a recording names the map's hash in its header; a replay against another map
+  is refused naming both hashes, because the same key would mean another action. The SDK carries
+  the map its engine-view flies with as `content/input-map.json` (written at export by
+  `engine-view --dump-action-map`, with its `hash`), `run-game.ps1` and the template's `run.ps1`
+  pass it as `--input-map`, and the SDK's synthetic walk is recorded against it. A game's test that
+  needs the hash reads that file's `hash`; a hash typed into a test is the next SDK's mismatch, and
+  until 2026-10-18 the SDK's walk named the first revision's map — the one with no `interact` —
+  so an offscreen run never pressed E for the module at all.
+
+## The action map and the HUD's elements (hotload ABI 4)
+
+ABI 4 (2026-10-18) appended services and **loads a module built against 3 unchanged**: an SDK
+upgrade that only adds a service no longer forces a rebuild. A module built against 4 that wants
+to run on an older host checks `ENGINE_HOTLOAD_HAS(api, hud_element)` (the helpers do, answering
+`Unsupported`). What 4 adds for a game:
+
+- **Structured HUD elements**: `hud_element(context, element)` with a `HudElement` — an id of the
+  module's, an anchor (the nine points of the safe region), an offset, an alignment, text, a colour,
+  a font size, an outline, an optional panel, visibility — kept by the host until `hud_remove` or a
+  new run, so a prompt is said when it changes (saying it every tick is allowed). **Lengths are in
+  pixels of a 1080-pixel-high picture at 100 %**; the host scales them and keeps the font legible,
+  so a module never sizes anything to the window. `walk_poc`'s `[E] Pick up` is the example:
+  centred, 80 px below the middle, 28 px, a 2 px outline, no panel.
+- **The report says where each element stood**: `game.hud_elements` lists every element — the
+  `hud_text` lines and `hud_meter` meters under the host's reserved ids, then the module's — with
+  its last state and `bounds_px`, so a test asserts its prompt was on screen and where without
+  reading a picture.
 
 ## The HUD, and how far `nearest_placement` sees
 
@@ -200,9 +228,10 @@ and ["The HUD, provisional"](subsystems/apps.md#the-hud-provisional)); of the ki
   skips off Windows.
 - **No `engine-content` in the SDK**, so a scene that needs generated content (a ruins kit) is made
   from a checkout; the exporter generates the kits of the scenes it carries.
-- **The offscreen walk is synthetic**: its header is the committed fly session's with the walker's
-  default numbers written by the exporter; when `walk.h`'s version moves, engine-view refuses the
-  recording naming both versions, and the exporter has to follow.
+- **The offscreen walk is synthetic**: its header is the committed fly session's camera with the
+  exported map's hash and the walker's default numbers written by the exporter; when `walk.h`'s
+  version moves, engine-view refuses the recording naming both versions, and the exporter has to
+  follow.
 - **The documentation is not in the SDK**: `sdk.json` names the pages by path at the pinned commit.
 - **One game action set** (`interact`, `use`, `game_1`..`game_4`), and the HUD above.
 
@@ -212,10 +241,13 @@ and ["The HUD, provisional"](subsystems/apps.md#the-hud-provisional)); of the ki
 and skip code) runs the whole loop from the build it is in: an SDK exported into the test's scratch
 directory, the template instantiated from it, the module built through the repository's `build.ps1`
 over the relocatable config, run offscreen for 20 frames through `run.ps1` with a report whose
-`exit`, `machine`, `frames` and `game` (the name, 80 ticks, the HUD's line and meter) are checked,
+`exit`, `machine`, `frames` and `game` (the name, 80 ticks, the HUD's line and meter, the walk's E
+press reaching the module once through the exported map, the HUD's elements listed) are checked,
+the exported `content/input-map.json` checked against the synthetic walk's header digit for digit,
 packed with the SDK's `package-game.ps1` on `-ModuleDll` and the zip's `package.json`, `run.cmd` and
 module checked, then a scene of the repository's own packed and found under `content/<its directory>/`;
-plus the refusals. 56 checks, 74 s in `msvc-debug` (export 9 s, build 3 s, the run 54 s, the
-package 2 s) on the RTX 5090 beside other agents' builds; it skips with a sentence where the build
+plus the refusals. 61 checks, 127 s in `msvc-debug` on 2026-10-18 (the module's build 16 s, the
+run 77 s, the package 5 s; 56 checks and 74 s before, on a quieter machine) on the RTX 5090
+beside five other agents' builds; it skips with a sentence where the build
 has no hotload capability. The SDK it exports from `msvc-debug` is 33 MB (a 32 MB Debug `engine-view`),
 87 files.

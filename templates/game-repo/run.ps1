@@ -18,6 +18,7 @@ param(
   [string]$Report,
   [switch]$Offscreen,
   [int]$Frames = 0,
+  [string]$InputMap,  # default: the SDK's content/input-map.json, the map this game pins
   [string[]]$EngineArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,7 @@ $forward = @{ Module = $module; Scene = $Scene; Ddc = (Join-Path $here 'ddc') }
 if ($Report) { $forward.Report = $Report }
 if ($Offscreen) { $forward.Offscreen = $true }
 if ($Frames -gt 0) { $forward.Frames = $Frames }
+if ($InputMap) { $forward.InputMap = $InputMap }
 if ($EngineArgs.Count -gt 0) { $forward.EngineArgs = $EngineArgs }
 & (Join-Path $sdk 'tools/run-game.ps1') @forward
 exit $LASTEXITCODE
