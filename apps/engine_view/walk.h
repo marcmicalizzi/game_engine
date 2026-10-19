@@ -196,6 +196,11 @@ class Walker {
   // ground-follow's not being in a jump. False before the first drop. Read only: a game asks it
   // (game_runner.h), and nothing the walker computes depends on it being asked.
   bool on_ground() const noexcept;
+  // **The ground's height at (x, z)** (game_runner.h `ground_height`, module_abi.h ABI 5): the
+  // provider's height at the nearest millimetre, the function the ground-follow stands on — at the
+  // terrain's own time on still ground, the drawn pair blended as the frame draws it on moving
+  // ground. False without a ground (no terrain). Asking changes nothing the walker computes.
+  bool ground_height(f64 x, f64 z, f64& out);
 
   const WalkStats& stats() const noexcept;
   // The summary's block (apps.md, "Walking"): the collision and its counts beside the stats.

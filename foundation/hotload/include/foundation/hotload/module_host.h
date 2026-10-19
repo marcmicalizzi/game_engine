@@ -99,6 +99,21 @@ struct GameServices {
   Result (*hud_remove)(void* user, u32 id) = nullptr;
   Result (*graphics_state)(void* user, GraphicsState& out) = nullptr;
   Result (*request_graphics)(void* user, const GraphicsRequest& request) = nullptr;
+  // ABI 5 (module_abi.h): actors and the ground. `actor_find` is the third `on_load` lookup that
+  // is a refusal when it returns `NotFound` (with `why`) and a plain answer when it returns
+  // `Unsupported` (the session has no actors). The host checks pointers, the state struct's `size`
+  // and the clip name's NULs before it forwards. Null, each answers `Unsupported`.
+  Result (*actor_find)(void* user, std::string_view name, u32* out_actor,
+                       std::string* why) = nullptr;
+  Result (*actor_spawn)(void* user, std::string_view mesh, const f64* position, f32 yaw,
+                        u32* out_actor) = nullptr;
+  Result (*actor_place)(void* user, u32 actor, const f64* position, f32 yaw) = nullptr;
+  Result (*actor_play)(void* user, u32 actor, std::string_view clip, f32 fade_s,
+                       bool looping) = nullptr;
+  Result (*actor_stop)(void* user, u32 actor, f32 fade_s) = nullptr;
+  Result (*actor_speed)(void* user, u32 actor, f32 speed) = nullptr;
+  Result (*actor_state)(void* user, u32 actor, ActorState& out) = nullptr;
+  Result (*ground_height)(void* user, f64 x, f64 z, f64* out_height) = nullptr;
 };
 
 struct HostConfig {
@@ -270,6 +285,7 @@ class ModuleHost {
   // resolve, reported together when it returns.
   std::string pending_failure_;
   Vector<std::string> pending_unresolved_;
+  bool in_load_hook_ = false;  // inside a build's `on_load`: what `actor_find` remembers
   i64 pending_copy_ns_ = 0;
   i64 pending_load_ns_ = 0;
 };

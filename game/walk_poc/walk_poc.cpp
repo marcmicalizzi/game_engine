@@ -30,7 +30,8 @@ using Survivor = walk_poc::Survivor;
 
 #ifndef WALK_POC_TEST
 // 1: declares an action no map has; 2: fails at tick 30; 3: places no props and touches no walker;
-// 4: named walk_poc_teleport, teleports the walker 10 m ahead at tick 50 (the tests').
+// 4: named walk_poc_teleport, teleports the walker 10 m ahead at tick 50; 5: named walk_poc_actor,
+// walks the scene's actor `bar` round a circle on the ground (the tests').
 #define WALK_POC_TEST 0
 #endif
 
@@ -60,7 +61,47 @@ struct Fields {
   // scale set, so the walker is told only when it changes: a reload tells it again once.
   f64 ruin_distance = -1.0;
   f64 scale_set = -1.0;
+  // The actor build's `bar` (ABI 5), when the scene names one.
+  bool has_bar = false;
+  u32 bar = 0;
 } g_fields;
+
+#if WALK_POC_TEST == 5
+// **The actor build** (apps.md "Actors: the characters a game moves"): the scene's actor `bar`
+// walks a 3 m circle round where it stood, a turn every two seconds, standing on the ground
+// (`ground_height`) and facing along its way; it plays `bend` from its first tick, at twice the
+// rate from tick 120, and fades to its rest pose over half a second from tick 240. What it saw
+// last (`actor_state`'s pose hash) is in the state.
+constexpr f64 k_circle_radius = 3.0;
+constexpr u64 k_circle_ticks = 480;
+constexpr f64 k_two_pi = 6.283185307179586;
+
+void walk_actor(ModuleContext* context, Survivor& s, u64 tick) {
+  const u32 bar = g_fields.bar;
+  ActorState seen;
+  if (!s.actor_started) {
+    if (actor_state(context, bar, seen) != Result::Ok) return;
+    s.actor_started = true;
+    s.actor_centre.x = seen.position[0];
+    s.actor_centre.y = seen.position[1];
+    s.actor_centre.z = seen.position[2];
+    actor_play(context, bar, "bend", 0.0f, true);
+  }
+  const f64 angle =
+      k_two_pi * static_cast<f64>(tick % k_circle_ticks) / static_cast<f64>(k_circle_ticks);
+  f64 at[3] = {s.actor_centre.x + k_circle_radius * std::cos(angle), s.actor_centre.y,
+               s.actor_centre.z + k_circle_radius * std::sin(angle)};
+  f64 ground = 0.0;
+  if (ground_height(context, at[0], at[2], ground) == Result::Ok) at[1] = ground;
+  // Along the circle: the way (-sin a, cos a) in x and z, and a yaw turns +x to (cos y, -sin y).
+  const f64 yaw = std::atan2(-std::cos(angle), -std::sin(angle));
+  actor_place(context, bar, at, static_cast<f32>(yaw));
+  if (tick == 120) actor_speed(context, bar, 2.0f);
+  if (tick == 240) actor_stop(context, bar, 0.5f);
+  if (actor_state(context, bar, seen) == Result::Ok) s.actor_pose = seen.pose_hash;
+  ++s.actor_ticks;
+}
+#endif
 
 constexpr u32 k_prompt_id = 1;  // the pick-up prompt's HUD element
 
@@ -90,6 +131,11 @@ i32 on_load(ModuleContext* context) {
             prop_mesh(context, "marker", f.marker_mesh) == Result::Ok;
 #endif
   f.scale_set = -1.0;
+#if WALK_POC_TEST == 5
+  // `Unsupported`: a session with no actors, and the build walks nothing; `NotFound` — a scene
+  // with actors and no `bar` — refuses the load by itself, naming it.
+  f.has_bar = actor_find(context, "bar", f.bar) == Result::Ok;
+#endif
   return 0;  // a path, an action or a prop that did not resolve refuses the load by itself
 }
 
@@ -170,6 +216,9 @@ void game_tick(ModuleContext* context, View tick, f32) {
     const f64 at[3] = {s.spring.x, s.spring.y, s.spring.z};
     if (prop_place(context, f.can_mesh, at, 0.0f, 1.0f, s.can) != Result::Ok) s.can = 0;
   }
+#if WALK_POC_TEST == 5
+  if (f.has_bar) walk_actor(context, s, tick_index);
+#endif
   if (s.over) return;
 
   // Water: a ruin within reach, or the spring.
@@ -312,6 +361,8 @@ ENGINE_HOTLOAD_DESCRIBE(api, out) {
   out->desc_size = static_cast<u32>(sizeof(ModuleDesc));
 #if WALK_POC_TEST == 4
   out->name = "walk_poc_teleport";
+#elif WALK_POC_TEST == 5
+  out->name = "walk_poc_actor";
 #else
   out->name = "walk_poc";
 #endif

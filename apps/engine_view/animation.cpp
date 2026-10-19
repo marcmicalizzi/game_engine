@@ -18,6 +18,7 @@
 #include <systems/renderer/request.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -404,8 +405,11 @@ void AnimationTicks::observe(void* user, const FlySession& session,
                              const input::InputState& input) {
   auto* self = static_cast<AnimationTicks*>(user);
   if (self->next != nullptr) self->next(self->next_user, session, input);
+  const u64 tick = session.tick().value;
+  if (self->before != nullptr) self->before(self->hooks_user, tick);
   (void)advance_animation(*self->scene, *self->views_of, session.camera(), "ticks", self->tick_hz,
-                          session.tick().value);
+                          tick);
+  if (self->after != nullptr) self->after(self->hooks_user, tick);
 }
 
 void set_frame_joints(const AnimatedScene& scene, renderer::FrameDesc& frame) noexcept {
@@ -643,6 +647,576 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
 JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
   return schema::to_json(animation_summary(scene, frames));
 }
+
+#if ENGINE_VIEW_GAME
+// ---- the actors a game moves (animation.h `GameActors`; apps.md "Actors")
+// ------------------------
+
+namespace {
+
+constexpr const char* k_player_type = "engine.animation.AnimationPlayer";
+// A quarter-second a sample, 256 of them: a minute of path per actor, sized once at the bind so a
+// tick allocates nothing; past it the samples stop and `path_dropped` counts what was not kept.
+constexpr u32 k_path_samples = 256;
+
+// The yaw a rotation turns +x to, about +y, as `quat_from_axis_angle(+y, yaw)` does.
+f32 yaw_of(Quat q) {
+  const Vec3 x = rotate(normalize(q), Vec3{1.0f, 0.0f, 0.0f});
+  return std::atan2(-x.z, x.x);
+}
+
+JsonValue position_json(const WorldPos& p) {
+  JsonValue out = JsonValue::array();
+  for (const f64 v : {p.x, p.y, p.z})
+    out.push_back(JsonValue(v));
+  return out;
+}
+
+}  // namespace
+
+struct GameActors::Impl {
+  struct Sample {
+    u64 tick = 0;
+    WorldPos position{};
+    f32 yaw = 0.0f;
+    u32 clip = animation::Library::k_not_found;
+    f32 playhead = 0.0f;
+    u64 pose_hash = 0;
+  };
+  struct Actor {
+    std::string name;
+    u32 instance = 0;
+    Id128 entity;
+    u32 skeleton = animation::Library::k_not_found;
+    u32 row = ~0u;  // the tier row, `AnimatedScene::row_instance`
+    renderer::SceneInstance placement;
+    WorldPos position{};
+    f32 yaw = 0.0f;
+    Vec3 centre{};  // the tier sphere's centre from the origin, before the rotation
+    bool moved = false;
+    // The weight's fade (a stop, or a play from the rest pose), a tick at a time.
+    bool fading = false;
+    bool stop_at_end = false;
+    f32 fade_from = 1.0f;
+    f32 fade_to = 1.0f;
+    // In whole ticks, so where a fade ends is a count and not a sum of 1/240s.
+    u64 fade_ticks = 1;
+    u64 fade_elapsed = 0;
+    Vector<Sample> path;
+    u64 path_dropped = 0;
+  };
+
+  AnimatedScene* scene = nullptr;
+  Vector<Actor> actors;
+  bool can_move = false;
+  bool said_cannot_move = false;
+  u64 sample_every = 60;
+  f64 dt = 1.0 / 240.0;
+  Vector<u32> move_indices;
+  Vector<renderer::SceneInstance> move_placements;
+  u64 places = 0, plays = 0, stops = 0, speeds = 0, refused = 0, flushes = 0, moves = 0;
+
+  Actor* find(u32 instance) noexcept {
+    for (Actor& a : actors) {
+      if (a.instance == instance) return &a;
+    }
+    return nullptr;
+  }
+  bool read(const Actor& a, animation::AnimationPlayer& out) const {
+    return scene->system.player(a.entity, out);
+  }
+  // The player's own bytes back into the world, outside a tick (the module and the hooks run
+  // between steps), applied at once so the next read sees it.
+  void write(const Actor& a, const animation::AnimationPlayer& player) {
+    ecs::WorldCommands commands(scene->sim.world());
+    (void)commands.set_bytes(
+        a.entity, k_player_type,
+        std::span<const u8>(reinterpret_cast<const u8*>(&player), sizeof(player)));
+    (void)commands.apply();
+  }
+  static void clear_clip(animation::AnimationPlayer& p) noexcept {
+    p.clip = Id128{};
+    p.fade_clip = Id128{};
+    p.time = 0.0f;
+    p.fade_time = 0.0f;
+    p.fade_elapsed = 0.0f;
+    p.fade_seconds = 0.0f;
+    p.weight = 1.0f;
+  }
+  // The pose the last step left, as the summary hashes it (`animation_summary`).
+  u64 pose_hash(const Actor& a) const {
+    const std::span<const anim::JointMatrix> matrices = scene->system.joint_matrices();
+    const renderer::InstanceJoints& run = scene->runs[a.instance];
+    return run.count > 0 && run.first + run.count <= matrices.size()
+               ? hash_bytes(matrices.data() + run.first,
+                            usize{run.count} * sizeof(anim::JointMatrix))
+               : k_hash_seed;
+  }
+  // The clip a player is heading for — the one fading in, else the one playing — and its time.
+  u32 target_clip(const animation::AnimationPlayer& p, f32& time, bool& looping) const {
+    const bool fading = !p.fade_clip.is_null();
+    time = fading ? p.fade_time : p.time;
+    looping = fading ? p.fade_looping : p.looping;
+    const Id128& id = fading ? p.fade_clip : p.clip;
+    return id.is_null() ? animation::Library::k_not_found : scene->library.clip_index(id);
+  }
+  void fill(const Actor& a, hotload::ActorState& out) const;
+  void start_fade(Actor& a, f32 from, f32 to, f32 seconds, bool stop) noexcept {
+    a.fading = true;
+    a.stop_at_end = stop;
+    a.fade_from = from;
+    a.fade_to = to;
+    const f64 ticks = std::round(static_cast<f64>(seconds) / dt);
+    a.fade_ticks = ticks >= 1.0 ? static_cast<u64>(ticks) : 1u;
+    a.fade_elapsed = 0;
+  }
+
+  // After the game's commands, before the step: every fade of the weight a tick on.
+  void before(u64) {
+    for (Actor& a : actors) {
+      if (!a.fading) continue;
+      animation::AnimationPlayer p;
+      if (!read(a, p)) continue;
+      ++a.fade_elapsed;
+      const bool done = a.fade_elapsed >= a.fade_ticks;
+      const f32 t =
+          done
+              ? 1.0f
+              : static_cast<f32>(static_cast<f64>(a.fade_elapsed) / static_cast<f64>(a.fade_ticks));
+      p.weight = a.fade_from + (a.fade_to - a.fade_from) * t;
+      if (done) {
+        a.fading = false;
+        if (a.stop_at_end) clear_clip(p);
+        a.stop_at_end = false;
+      }
+      write(a, p);
+    }
+  }
+  // After the step: the path, a quarter-second at a time.
+  void after(u64 tick) {
+    if (sample_every == 0 || tick % sample_every != 0) return;
+    for (Actor& a : actors) {
+      if (a.path.size() >= k_path_samples) {
+        ++a.path_dropped;
+        continue;
+      }
+      Sample s;
+      s.tick = tick;
+      s.position = a.position;
+      s.yaw = a.yaw;
+      animation::AnimationPlayer p;
+      bool looping = false;
+      if (read(a, p)) s.clip = target_clip(p, s.playhead, looping);
+      s.pose_hash = pose_hash(a);
+      a.path.push_back(s);
+    }
+  }
+};
+
+GameActors::GameActors() : impl_(std::make_unique<Impl>()) {}
+GameActors::~GameActors() = default;
+
+u32 GameActors::count() const noexcept { return impl_->actors.size(); }
+
+bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
+                      const Vector<DeclaredActor>& declared, bool can_move, u32 tick_hz,
+                      std::string& error) {
+  Impl& g = *impl_;
+  g.scene = &scene;
+  g.can_move = can_move;
+  const u32 hz = tick_hz > 0 ? tick_hz : 240u;
+  g.dt = 1.0 / static_cast<f64>(hz);
+  g.sample_every = hz / 4 > 0 ? hz / 4 : 1u;
+  g.actors.clear();
+  for (const DeclaredActor& d : declared) {
+    if (d.instance >= scene.entities.size() || d.instance >= desc.instances.size() ||
+        scene.entities[d.instance].is_null()) {
+      std::fprintf(stderr,
+                   "engine-view: game: the scene names instance %u \"%s\", which does not animate "
+                   "(its mesh has no skin); it is not an actor\n",
+                   d.instance, d.name.c_str());
+      continue;
+    }
+    Impl::Actor a;
+    a.name = d.name;
+    a.instance = d.instance;
+    a.entity = scene.entities[d.instance];
+    const renderer::SceneInstance& source = desc.instances[d.instance];
+    a.skeleton = source.mesh < scene.mesh_skeleton.size() ? scene.mesh_skeleton[source.mesh]
+                                                          : animation::Library::k_not_found;
+    a.placement = source;
+    a.position = source.origin + DVec3{source.transform.position};
+    a.yaw = yaw_of(source.transform.rotation);
+    for (u32 r = 0; r < scene.row_instance.size(); ++r) {
+      if (scene.row_instance[r] == d.instance) a.row = r;
+    }
+    if (a.row != ~0u) {
+      const DVec3 offset = scene.positions[a.row] - a.position;
+      a.centre = rotate(
+          inverse(normalize(source.transform.rotation)),
+          Vec3{static_cast<f32>(offset.x), static_cast<f32>(offset.y), static_cast<f32>(offset.z)});
+    }
+    a.path.reserve(k_path_samples);
+    g.actors.push_back(std::move(a));
+  }
+  g.move_indices.reserve(g.actors.size());
+  g.move_placements.reserve(g.actors.size());
+  (void)error;
+  return true;
+}
+
+void GameActors::hook(AnimationTicks& ticks) noexcept {
+  ticks.before = [](void* user, u64 tick) { static_cast<GameActors*>(user)->impl_->before(tick); };
+  ticks.after = [](void* user, u64 tick) { static_cast<GameActors*>(user)->impl_->after(tick); };
+  ticks.hooks_user = this;
+}
+
+hotload::Result GameActors::place(u32 instance, const f64* position, f32 yaw) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  const WorldPos at{position[0], position[1], position[2]};
+  if (!std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z) || !std::isfinite(yaw) ||
+      !world_cell_valid(at)) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  if (!g.can_move) {
+    ++g.refused;
+    if (!g.said_cannot_move) {
+      g.said_cannot_move = true;
+      std::fprintf(stderr,
+                   "engine-view: game: this scene's instances are the renderer's dynamic tail's "
+                   "(it declares props or streams a world), which cannot move a loaded instance "
+                   "yet; actor_place hears Unsupported\n");
+    }
+    return hotload::Result::Unsupported;
+  }
+  // Level: the scene's pitch and roll are dropped, its scale kept, so a character stands up.
+  const Quat turn = quat_from_axis_angle(Vec3::unit_y(), yaw);
+  a->position = at;
+  a->yaw = yaw;
+  a->placement.origin = at;
+  a->placement.transform.position = Vec3{};
+  a->placement.transform.rotation = turn;
+  a->moved = true;
+  if (a->row != ~0u) g.scene->positions[a->row] = at + DVec3{rotate(turn, a->centre)};
+  ++g.places;
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameActors::play(u32 instance, std::string_view clip, f32 fade_s, bool looping) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(fade_s) || fade_s < 0.0f) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  const u32 index = find_clip(g.scene->library, a->skeleton, clip);
+  if (clip.empty() || index == animation::Library::k_not_found) {
+    ++g.refused;
+    return hotload::Result::NotFound;
+  }
+  animation::AnimationPlayer before;
+  if (!g.read(*a, before)) return hotload::Result::NotFound;
+  const bool from_rest = before.clip.is_null() && before.fade_clip.is_null();
+  if (!g.scene->system.play(a->entity, g.scene->library.clip(index).id, fade_s, looping)) {
+    ++g.refused;
+    return hotload::Result::NotFound;
+  }
+  animation::AnimationPlayer after;
+  (void)g.read(*a, after);
+  if (from_rest && fade_s > 0.0f) {
+    // From the rest pose the capability cuts; the fade in is the weight's, from 0.
+    after.weight = 0.0f;
+    g.start_fade(*a, 0.0f, 1.0f, fade_s, false);
+    g.write(*a, after);
+  } else if (a->fading && a->stop_at_end) {
+    // A stop in flight turns round: back up to the clip from where the weight stands.
+    if (fade_s > 0.0f) {
+      g.start_fade(*a, after.weight, 1.0f, fade_s, false);
+    } else {
+      a->fading = false;
+      a->stop_at_end = false;
+      after.weight = 1.0f;
+      g.write(*a, after);
+    }
+  }
+  ++g.plays;
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameActors::stop(u32 instance, f32 fade_s) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(fade_s) || fade_s < 0.0f) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  animation::AnimationPlayer p;
+  if (!g.read(*a, p)) return hotload::Result::NotFound;
+  ++g.stops;
+  if (p.clip.is_null() && p.fade_clip.is_null()) {
+    a->fading = false;  // already at rest
+    a->stop_at_end = false;
+    return hotload::Result::Ok;
+  }
+  if (fade_s <= 0.0f) {
+    Impl::clear_clip(p);
+    a->fading = false;
+    a->stop_at_end = false;
+    g.write(*a, p);
+  } else {
+    g.start_fade(*a, p.weight, 0.0f, fade_s, true);
+  }
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameActors::speed(u32 instance, f32 rate) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(rate)) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  animation::AnimationPlayer p;
+  if (!g.read(*a, p) || !g.scene->system.set_playhead(a->entity, p.time, rate)) {
+    return hotload::Result::NotFound;
+  }
+  ++g.speeds;
+  return hotload::Result::Ok;
+}
+
+void GameActors::Impl::fill(const Actor& a, hotload::ActorState& out) const {
+  out.instance = a.instance;
+  out.position[0] = a.position.x;
+  out.position[1] = a.position.y;
+  out.position[2] = a.position.z;
+  out.yaw = a.yaw;
+  animation::AnimationPlayer p;
+  if (read(a, p)) {
+    bool looping = false;
+    const u32 clip = target_clip(p, out.playhead_s, looping);
+    out.looping = looping ? 1u : 0u;
+    out.speed = p.speed;
+    out.weight = p.weight;
+    out.playing = clip != animation::Library::k_not_found ? 1u : 0u;
+    out.fading = !p.fade_clip.is_null() || a.fading ? 1u : 0u;
+    out.clip[0] = '\0';
+    if (clip != animation::Library::k_not_found) {
+      const std::string& name = scene->library.clip(clip).name;
+      const usize n = name.size() < sizeof(out.clip) - 1 ? name.size() : sizeof(out.clip) - 1;
+      std::memcpy(out.clip, name.data(), n);
+      out.clip[n] = '\0';
+    }
+  }
+  out.tier = a.instance < scene->instance_tier.size() ? scene->instance_tier[a.instance] : 0u;
+  out.pose_hash = pose_hash(a);
+}
+
+hotload::Result GameActors::state(u32 instance, hotload::ActorState& out) {
+  Impl& g = *impl_;
+  const Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  g.fill(*a, out);
+  return hotload::Result::Ok;
+}
+
+// The state file's `actors`: `[{"name","instance","position":[x,y,z],"yaw","player":{…},
+// "fade":{"from","to","ticks","elapsed_ticks","stop"}}]`, the player as its schema writes it, so a
+// field the capability adds to it later reads back at its default.
+JsonValue GameActors::to_json() const {
+  const Impl& g = *impl_;
+  JsonValue out = JsonValue::array();
+  for (const Impl::Actor& a : g.actors) {
+    JsonValue actor = JsonValue::object();
+    actor.set("name", a.name);
+    actor.set("instance", a.instance);
+    actor.set("position", position_json(a.position));
+    actor.set("yaw", static_cast<f64>(a.yaw));
+    animation::AnimationPlayer p;
+    if (g.read(a, p)) actor.set("player", schema::to_json(p));
+    if (a.fading) {
+      JsonValue fade = JsonValue::object();
+      fade.set("from", static_cast<f64>(a.fade_from));
+      fade.set("to", static_cast<f64>(a.fade_to));
+      fade.set("ticks", a.fade_ticks);
+      fade.set("elapsed_ticks", a.fade_elapsed);
+      fade.set("stop", a.stop_at_end);
+      actor.set("fade", std::move(fade));
+    }
+    out.push_back(std::move(actor));
+  }
+  return out;
+}
+
+bool GameActors::restore(const JsonValue& actors, std::string& error) {
+  Impl& g = *impl_;
+  if (!actors.is_array()) {
+    error = "actors: not an array";
+    return false;
+  }
+  for (u32 i = 0; i < actors.size(); ++i) {
+    const JsonValue& entry = actors[i];
+    const std::string where = "actors[" + std::to_string(i) + "]";
+    const JsonValue* name = entry.find("name");
+    if (name == nullptr || !name->is_string()) {
+      error = where + " has no name";
+      return false;
+    }
+    Impl::Actor* a = nullptr;
+    for (Impl::Actor& candidate : g.actors) {
+      if (candidate.name == name->as_string()) a = &candidate;
+    }
+    if (a == nullptr) {
+      std::fprintf(stderr,
+                   "engine-view: game: %s, \"%s\", is not an actor of this scene; skipped\n",
+                   where.c_str(), std::string(name->as_string()).c_str());
+      continue;
+    }
+    const JsonValue* position = entry.find("position");
+    const JsonValue* yaw = entry.find("yaw");
+    f64 p[3] = {0.0, 0.0, 0.0};
+    f64 angle = 0.0;
+    if (position == nullptr || !position->is_array() || position->size() != 3 || yaw == nullptr ||
+        !yaw->get_f64(angle)) {
+      error = where + ": no position and yaw";
+      return false;
+    }
+    for (u32 k = 0; k < 3; ++k) {
+      if (!(*position)[k].get_f64(p[k])) {
+        error = where + ": a position that is not three numbers";
+        return false;
+      }
+    }
+    // Where it stood: through `place`, the same validation and the same tier row, but not counted
+    // as a module's call.
+    const u64 places = g.places;
+    const hotload::Result placed = place(a->instance, p, static_cast<f32>(angle));
+    g.places = places;
+    if (placed == hotload::Result::InvalidArgument) {
+      error = where + ": a position outside the world";
+      return false;
+    }
+    if (const JsonValue* player = entry.find("player"); player != nullptr) {
+      animation::AnimationPlayer restored;
+      schema::ReadContext context;
+      context.options.ignore_unknown_fields = true;
+      if (!schema::from_json(restored, *player, context) || !context.ok()) {
+        error = where + ": player: " +
+                (context.diagnostics.empty() ? std::string("does not read")
+                                             : context.diagnostics.front().path + ": " +
+                                                   context.diagnostics.front().message);
+        return false;
+      }
+      g.write(*a, restored);
+    }
+    a->fading = false;
+    a->stop_at_end = false;
+    if (const JsonValue* fade = entry.find("fade"); fade != nullptr && fade->is_object()) {
+      f64 from = 1.0, to = 1.0;
+      u64 ticks = 0, elapsed = 0;
+      const JsonValue* stop = fade->find("stop");
+      const JsonValue* ticks_json = fade->find("ticks");
+      const JsonValue* elapsed_json = fade->find("elapsed_ticks");
+      const auto number = [&](const char* key, f64& v) {
+        const JsonValue* f = fade->find(key);
+        return f != nullptr && f->get_f64(v) && std::isfinite(v);
+      };
+      if (!number("from", from) || !number("to", to) || ticks_json == nullptr ||
+          !ticks_json->get_u64(ticks) || elapsed_json == nullptr ||
+          !elapsed_json->get_u64(elapsed) || stop == nullptr || !stop->is_bool()) {
+        error = where + ": fade: from, to, ticks, elapsed_ticks or stop is missing";
+        return false;
+      }
+      g.start_fade(*a, static_cast<f32>(from), static_cast<f32>(to), 0.0f, stop->as_bool());
+      a->fade_ticks = ticks > 0 ? ticks : 1u;
+      a->fade_elapsed = elapsed;
+    }
+  }
+  return true;
+}
+
+JsonValue GameActors::summary_json() const {
+  const Impl& g = *impl_;
+  const auto clip_name = [&](u32 clip) {
+    return clip != animation::Library::k_not_found ? g.scene->library.clip(clip).name
+                                                   : std::string();
+  };
+  JsonValue out = JsonValue::array();
+  for (const Impl::Actor& a : g.actors) {
+    hotload::ActorState s;
+    g.fill(a, s);
+    JsonValue actor = JsonValue::object();
+    actor.set("name", a.name);
+    actor.set("instance", a.instance);
+    actor.set("position", position_json(a.position));
+    actor.set("yaw", static_cast<f64>(a.yaw));
+    actor.set("clip", std::string_view(s.clip));
+    actor.set("playhead", static_cast<f64>(s.playhead_s));
+    actor.set("speed", static_cast<f64>(s.speed));
+    actor.set("weight", static_cast<f64>(s.weight));
+    actor.set("looping", s.looping != 0);
+    actor.set("playing", s.playing != 0);
+    actor.set("fading", s.fading != 0);
+    actor.set("tier", s.tier);
+    actor.set("pose_hash", renderer::hash_hex(s.pose_hash));
+    JsonValue path = JsonValue::array();
+    for (const Impl::Sample& sample : a.path) {
+      JsonValue p = JsonValue::object();
+      p.set("tick", sample.tick);
+      p.set("position", position_json(sample.position));
+      p.set("yaw", static_cast<f64>(sample.yaw));
+      p.set("clip", clip_name(sample.clip));
+      p.set("playhead", static_cast<f64>(sample.playhead));
+      p.set("pose_hash", renderer::hash_hex(sample.pose_hash));
+      path.push_back(std::move(p));
+    }
+    actor.set("path", std::move(path));
+    actor.set("path_dropped", a.path_dropped);
+    out.push_back(std::move(actor));
+  }
+  return out;
+}
+
+JsonValue GameActors::calls_json() const {
+  const Impl& g = *impl_;
+  JsonValue out = JsonValue::object();
+  out.set("bound", true);
+  out.set("actors", g.actors.size());
+  out.set("can_move", g.can_move);
+  out.set("places", g.places);
+  out.set("plays", g.plays);
+  out.set("stops", g.stops);
+  out.set("speeds", g.speeds);
+  out.set("refused", g.refused);
+  out.set("flushes", g.flushes);
+  out.set("moves", g.moves);
+  return out;
+}
+
+bool GameActors::flush(renderer::SceneRenderer& renderer, std::string* error) {
+  Impl& g = *impl_;
+  g.move_indices.clear();
+  g.move_placements.clear();
+  for (Impl::Actor& a : g.actors) {
+    if (!a.moved) continue;
+    a.moved = false;
+    g.move_indices.push_back(a.instance);
+    g.move_placements.push_back(a.placement);
+  }
+  if (g.move_indices.empty()) return true;
+  ++g.flushes;
+  g.moves += g.move_indices.size();
+  return renderer.move_instances(
+      std::span<const u32>(g.move_indices.data(), g.move_indices.size()),
+      std::span<const renderer::SceneInstance>(g.move_placements.data(), g.move_placements.size()),
+      error);
+}
+#endif  // ENGINE_VIEW_GAME
 
 }  // namespace engine::view
 

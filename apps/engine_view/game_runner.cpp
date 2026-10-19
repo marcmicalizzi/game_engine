@@ -192,6 +192,14 @@ struct GameRunner::Impl {
   void* placements_user = nullptr;
   WorldPos feet{};  // this tick's, for `nearest_placement` and `nearest_prop`
   GameProps props;  // the module's objects (game_props.h)
+  // The actors (ABI 5): the scene file's names, the animated world's table once it is bound, and
+  // the ground the walker stands on.
+  Vector<DeclaredActor> declared_actors;
+  ActorHost* actors = nullptr;
+  GroundQuery ground = nullptr;
+  void* ground_user = nullptr;
+  bool spawn_said = false;
+  u64 ground_queries = 0;
   // The walker's services (ABI 3): the session they go to, and what they did.
   FlySession* session = nullptr;
   u64 walker_sets = 0;
@@ -573,6 +581,86 @@ struct GameRunner::Impl {
     return hotload::Result::Ok;
   }
 
+  // ---- ABI 5: actors (game_props.h `ActorHost`) and the ground ----
+  // The runner judges the handle — a declared actor's scene instance, or `NotFound` — and the
+  // animated world everything else, so a handle the module made up never reaches the world.
+  bool is_actor(u32 instance) const noexcept {
+    for (const DeclaredActor& a : declared_actors) {
+      if (a.instance == instance) return true;
+    }
+    return false;
+  }
+  static hotload::Result actor_find(void* user, std::string_view name, u32* out, std::string* why) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.declared_actors.empty()) return hotload::Result::Unsupported;
+    for (const DeclaredActor& a : self.declared_actors) {
+      if (name == a.name) {
+        *out = a.instance;
+        return hotload::Result::Ok;
+      }
+    }
+    if (why != nullptr) {
+      *why = "no actor '" + std::string(name) + "' in the scene (it names";
+      for (const DeclaredActor& a : self.declared_actors)
+        *why += " " + a.name;
+      *why += ")";
+    }
+    return hotload::Result::NotFound;
+  }
+  // Spawning: not built (apps.md "Actors", what it needs). `Unsupported`, said once.
+  static hotload::Result actor_spawn(void* user, std::string_view, const f64*, f32, u32*) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!self.spawn_said) {
+      self.spawn_said = true;
+      std::fprintf(stderr,
+                   "engine-view: game: the module spawns an actor, which engine-view cannot draw "
+                   "yet (a deformed instance in the renderer's dynamic tail, roadmap R84); "
+                   "actor_spawn hears Unsupported\n");
+    }
+    return hotload::Result::Unsupported;
+  }
+  // The handle first, then whether there is a world to act on (`on_load`, or a build without one).
+  hotload::Result actor_host(u32 actor, ActorHost*& out) const noexcept {
+    if (!is_actor(actor)) return hotload::Result::NotFound;
+    if (actors == nullptr) return hotload::Result::Unsupported;
+    out = actors;
+    return hotload::Result::Ok;
+  }
+  static hotload::Result actor_place(void* user, u32 actor, const f64* position, f32 yaw) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->place(actor, position, yaw) : r;
+  }
+  static hotload::Result actor_play(void* user, u32 actor, std::string_view clip, f32 fade_s,
+                                    bool looping) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->play(actor, clip, fade_s, looping) : r;
+  }
+  static hotload::Result actor_stop(void* user, u32 actor, f32 fade_s) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->stop(actor, fade_s) : r;
+  }
+  static hotload::Result actor_speed(void* user, u32 actor, f32 speed) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->speed(actor, speed) : r;
+  }
+  static hotload::Result actor_state(void* user, u32 actor, hotload::ActorState& out) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->state(actor, out) : r;
+  }
+  static hotload::Result ground_height(void* user, f64 x, f64 z, f64* out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(x) || !std::isfinite(z)) return hotload::Result::InvalidArgument;
+    if (self.ground == nullptr) return hotload::Result::Unsupported;
+    ++self.ground_queries;
+    return self.ground(self.ground_user, x, z, *out) ? hotload::Result::Ok
+                                                     : hotload::Result::Unsupported;
+  }
+
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
@@ -645,6 +733,14 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.hud_remove = &Impl::hud_remove;
   services.graphics_state = &Impl::graphics_state;
   services.request_graphics = &Impl::request_graphics;
+  services.actor_find = &Impl::actor_find;
+  services.actor_spawn = &Impl::actor_spawn;
+  services.actor_place = &Impl::actor_place;
+  services.actor_play = &Impl::actor_play;
+  services.actor_stop = &Impl::actor_stop;
+  services.actor_speed = &Impl::actor_speed;
+  services.actor_state = &Impl::actor_state;
+  services.ground_height = &Impl::ground_height;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -722,6 +818,25 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
       std::string why;
       if (!g.props.from_json(*props, &why)) {
         return refuse(source + ": " + why);
+      }
+    }
+    // The actors (ABI 5) are applied by the animated world once it is bound (`restored_actors`);
+    // here only their names, so a file naming an actor the scene does not is refused before any
+    // device, as a prop is.
+    if (const JsonValue* actors = file.find("actors"); actors != nullptr) {
+      if (!actors->is_array()) return refuse(source + ": actors: not an array");
+      for (u32 i = 0; i < actors->size(); ++i) {
+        const JsonValue* name = (*actors)[i].find("name");
+        if (name == nullptr || !name->is_string()) {
+          return refuse(source + ": actors[" + std::to_string(i) + "] has no name");
+        }
+        bool declared = false;
+        for (const DeclaredActor& a : g.declared_actors)
+          declared = declared || a.name == name->as_string();
+        if (!declared) {
+          return refuse(source + ": actors[" + std::to_string(i) + "] is '" +
+                        std::string(name->as_string()) + "', which the scene does not name");
+        }
       }
     }
     // The session (version 2): the walker's pose and scales and the clock. A version 1 file has
@@ -806,6 +921,23 @@ void GameRunner::set_placements(PlacementQuery query, void* user, PlacementStats
 
 GameProps& GameRunner::props() noexcept { return impl_->props; }
 const GameProps& GameRunner::props() const noexcept { return impl_->props; }
+
+void GameRunner::declare_actors(const Vector<DeclaredActor>& actors) {
+  impl_->declared_actors = actors;
+}
+const Vector<DeclaredActor>& GameRunner::declared_actors() const noexcept {
+  return impl_->declared_actors;
+}
+void GameRunner::set_actors(ActorHost* actors) noexcept { impl_->actors = actors; }
+const JsonValue* GameRunner::restored_actors() const noexcept {
+  const Impl& g = *impl_;
+  if (!g.restored || !g.restored_from.is_object()) return nullptr;
+  return g.restored_from.find("actors");
+}
+void GameRunner::set_ground(GroundQuery query, void* user) noexcept {
+  impl_->ground = query;
+  impl_->ground_user = user;
+}
 
 const std::string& GameRunner::module_name() const noexcept {
   static const std::string none;
@@ -980,6 +1112,15 @@ bool GameRunner::finish(std::string* error) {
     file.set("tick", g.last_tick);
     file.set("state", state_json());
     file.set("props", g.props.to_json());
+    // The actors (ABI 5): each one's placement and player as the last tick left them, for a cold
+    // restore; a session whose world never bound keeps what it restored, as the session block does.
+    if (g.actors != nullptr) {
+      file.set("actors", g.actors->to_json());
+    } else if (const JsonValue* restored =
+                   g.restored_from.is_object() ? g.restored_from.find("actors") : nullptr;
+               restored != nullptr) {
+      file.set("actors", *restored);
+    }
     // The session (version 2): only once a tick has said where the walker is, so a run that never
     // ticked does not save a pose of zeros over a good one.
     if (g.have_pose) {
@@ -1058,6 +1199,29 @@ JsonValue GameRunner::summary_json() const {
   placements.set("world", g.placements != nullptr);
   out.set("placements", std::move(placements));
   out.set("props", g.props.summary_json());
+  // The actors (ABI 5): every bound actor where it stands, its clip, playhead and pose hash, and
+  // its path sampled a quarter-second at a time; and what the module called. Without a bound
+  // world, the names the scene declared.
+  if (g.actors != nullptr) {
+    out.set("actors", g.actors->summary_json());
+    JsonValue calls = g.actors->calls_json();
+    calls.set("ground_queries", g.ground_queries);
+    out.set("actor_calls", std::move(calls));
+  } else {
+    JsonValue names = JsonValue::array();
+    for (const DeclaredActor& a : g.declared_actors) {
+      JsonValue actor = JsonValue::object();
+      actor.set("name", a.name);
+      actor.set("instance", a.instance);
+      names.push_back(std::move(actor));
+    }
+    out.set("actors", std::move(names));
+    JsonValue calls = JsonValue::object();
+    calls.set("bound", false);
+    calls.set("ground_queries", g.ground_queries);
+    out.set("actor_calls", std::move(calls));
+  }
+  out.set("ground", g.ground != nullptr);
   JsonValue walker = JsonValue::object();
   walker.set("sets", g.walker_sets);
   walker.set("teleports", g.teleports);

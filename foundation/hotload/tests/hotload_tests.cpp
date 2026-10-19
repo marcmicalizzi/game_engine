@@ -100,26 +100,129 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   CHECK(counter.host.module_abi() == k_abi_version);
 }
 
-TEST_CASE("hotload: a module built against ABI 3 loads on an ABI 4 host and runs unchanged") {
-  // ABI 4 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build that
-  // declares 3 is what a module compiled against the ABI 3 header hands the host. It loads, its
-  // exports run, it reads through a view, and a rebuild against 4 takes over from it with its
+TEST_CASE(
+    "hotload: modules built against ABI 3 and ABI 4 load on an ABI 5 host and run unchanged") {
+  // ABI 4 and ABI 5 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
+  // that declares 3 or 4 is what a module compiled against that header hands the host. It loads,
+  // its exports run, it reads through a view, and a rebuild against 5 takes over from it with its
   // state.
   if (in_bundle()) return;
-  engine::test::TempDir dir("hotload-abi3");
-  const std::string live = place(dir, HOTLOAD_MODULE_COUNTER_ABI3, "live");
-  Counter counter(dir);
-  REQUIRE_MESSAGE(counter.load(live) == Status::Ok, counter.host.last_error());
-  CHECK(counter.host.module_abi() == 3);
-  counter.call_bump();
-  CHECK(counter.call_get() == 1.0);
-  hotload_test::Character npc;
-  npc.health = 7.0f;
-  CHECK(counter.call_read_health(counter.host.bind(npc)) == 7.0);
-  place(dir, HOTLOAD_MODULE_COUNTER_V1, "live", 10);
-  REQUIRE_MESSAGE(counter.host.reload() == Status::Ok, counter.host.last_error());
-  CHECK(counter.host.module_abi() == k_abi_version);
-  CHECK(counter.call_get() == 1.0);  // the state carried
+  struct Old {
+    const char* path;
+    u32 abi;
+  };
+  for (const Old old : {Old{HOTLOAD_MODULE_COUNTER_ABI3, 3}, Old{HOTLOAD_MODULE_COUNTER_ABI4, 4}}) {
+    INFO("ABI " << old.abi);
+    engine::test::TempDir dir("hotload-old-abi");
+    const std::string live = place(dir, old.path, "live");
+    Counter counter(dir);
+    REQUIRE_MESSAGE(counter.load(live) == Status::Ok, counter.host.last_error());
+    CHECK(counter.host.module_abi() == old.abi);
+    counter.call_bump();
+    CHECK(counter.call_get() == 1.0);
+    hotload_test::Character npc;
+    npc.health = 7.0f;
+    CHECK(counter.call_read_health(counter.host.bind(npc)) == 7.0);
+    place(dir, HOTLOAD_MODULE_COUNTER_V1, "live", 10);
+    REQUIRE_MESSAGE(counter.host.reload() == Status::Ok, counter.host.last_error());
+    CHECK(counter.host.module_abi() == k_abi_version);
+    CHECK(counter.call_get() == 1.0);  // the state carried
+  }
+}
+
+TEST_CASE("hotload: ABI 5's actor entries and the ground forward, and answer Unsupported without") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_find));
+  CHECK(ENGINE_HOTLOAD_HAS(api, ground_height));
+  // A table as an ABI 4 host built it ends before the actors: the helpers do not call them.
+  HostApi v4 = *api;
+  v4.size = static_cast<u32>(offsetof(HostApi, actor_find));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v4, actor_find));
+  CHECK(ENGINE_HOTLOAD_HAS(&v4, request_graphics));
+  ModuleContext old_host{&v4, nullptr};
+  u32 actor = 7;
+  f64 height = -1.0;
+  const f64 at[3] = {1.0, 2.0, 3.0};
+  ActorState state;
+  CHECK(actor_find(&old_host, "bar", actor) == Result::Unsupported);
+  CHECK(actor_place(&old_host, 0, at, 0.0f) == Result::Unsupported);
+  CHECK(actor_state(&old_host, 0, state) == Result::Unsupported);
+  CHECK(ground_height(&old_host, 0.0, 0.0, height) == Result::Unsupported);
+  CHECK(actor == 7);
+
+  // No game services: every entry answers Unsupported, and a lookup is not remembered.
+  ModuleContext context{api, nullptr};
+  CHECK(actor_find(&context, "bar", actor) == Result::Unsupported);
+  CHECK(actor_spawn(&context, "bar", at, 0.0f, actor) == Result::Unsupported);
+  CHECK(actor_play(&context, 0, "bend", 0.0f, true) == Result::Unsupported);
+  CHECK(actor_stop(&context, 0, 0.5f) == Result::Unsupported);
+  CHECK(actor_speed(&context, 0, 2.0f) == Result::Unsupported);
+  CHECK(ground_height(&context, 0.0, 0.0, height) == Result::Unsupported);
+  // The host's own checks, before anything is forwarded.
+  ActorState small;
+  small.size = 16;
+  CHECK(api->actor_state(api->host, 0, &small) == Result::InvalidArgument);
+  CHECK(api->actor_play(api->host, 0, "be\0nd", 5, 0.0f, 1) == Result::InvalidArgument);
+  CHECK(api->actor_place(api->host, 0, nullptr, 0.0f) == Result::InvalidArgument);
+  CHECK(api->ground_height(api->host, 0.0, 0.0, nullptr) == Result::InvalidArgument);
+
+  struct Seen {
+    std::string clip;
+    f32 fade = 0.0f;
+    bool looping = false;
+    f64 position[3] = {0.0, 0.0, 0.0};
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.actor_find = [](void*, std::string_view name, u32* out, std::string* why) {
+    if (name == "bar") {
+      *out = 3;
+      return Result::Ok;
+    }
+    if (why != nullptr) *why = "no actor '" + std::string(name) + "' (the scene names bar)";
+    return Result::NotFound;
+  };
+  services.actor_place = [](void* user, u32, const f64* p, f32) {
+    for (u32 k = 0; k < 3; ++k)
+      static_cast<Seen*>(user)->position[k] = p[k];
+    return Result::Ok;
+  };
+  services.actor_play = [](void* user, u32, std::string_view clip, f32 fade, bool looping) {
+    static_cast<Seen*>(user)->clip = std::string(clip);
+    static_cast<Seen*>(user)->fade = fade;
+    static_cast<Seen*>(user)->looping = looping;
+    return Result::Ok;
+  };
+  services.actor_state = [](void*, u32 a, ActorState& out) {
+    out.instance = a;
+    out.pose_hash = 0x1234;
+    out.clip[0] = 'b';
+    return Result::Ok;
+  };
+  services.ground_height = [](void*, f64 x, f64 z, f64* out) {
+    *out = x + z;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(actor_find(&context, "bar", actor) == Result::Ok);
+  CHECK(actor == 3);
+  CHECK(actor_find(&context, "tortoise", actor) == Result::NotFound);  // at a tick: an answer
+  CHECK(actor_place(&context, 3, at, 0.5f) == Result::Ok);
+  CHECK(seen.position[2] == 3.0);
+  CHECK(actor_play(&context, 3, "bend", 0.25f, false) == Result::Ok);
+  CHECK(seen.clip == "bend");  // the helper measured the C string
+  CHECK(seen.fade == 0.25f);
+  CHECK_FALSE(seen.looping);
+  CHECK(actor_state(&context, 3, state) == Result::Ok);
+  CHECK(state.instance == 3);
+  CHECK(state.pose_hash == 0x1234);
+  CHECK(state.size == sizeof(ActorState));
+  CHECK(ground_height(&context, 2.0, 0.5, height) == Result::Ok);
+  CHECK(height == 2.5);
+  CHECK(actor_stop(&context, 3, 0.0f) == Result::Unsupported);  // not forwarded: no service
+  CHECK(actor_spawn(&context, "bar", at, 0.0f, actor) == Result::Unsupported);
 }
 
 TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {

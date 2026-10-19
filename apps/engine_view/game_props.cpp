@@ -1,8 +1,13 @@
 #include "game_props.h"
 
+#include <core/json/json.h>
 #include <core/math/math.h>
+#include <core/schema/json_reflect.h>
+#include <foundation/io/vfs.h>
 
 #include <cmath>
+#include <cstdio>
+#include <schemas/scene.h>
 
 namespace engine::view {
 
@@ -267,6 +272,51 @@ JsonValue GameProps::summary_json() const {
   out.set("queries", stats_.queries);
   out.set("found", stats_.found);
   return out;
+}
+
+// One schema read of the file, as `renderer::read_scene_props` makes for the props: the scene is
+// loaded only once there is a device, and the module's `on_load` runs before one. The grammar is
+// the schema's, so a file this refuses the scene reader refuses too.
+bool read_scene_actors(const std::string& path, bool animate, Vector<DeclaredActor>& out,
+                       std::string& error) {
+  out.clear();
+  std::string text;
+  const io::Status status = io::read_file(path, text);
+  if (status != io::Status::Ok) {
+    error = "cannot read " + path + ": " + std::string(io::status_name(status));
+    return false;
+  }
+  JsonValue root;
+  const JsonParseResult parsed = parse_json(text, root);
+  if (!parsed.ok) {
+    error = path + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    return false;
+  }
+  scene::Scene file;
+  schema::ReadContext context;
+  if (!schema::from_json(file, root, context) || !context.ok()) {
+    error = path + ": " +
+            (context.diagnostics.empty()
+                 ? std::string("not a scene")
+                 : context.diagnostics.front().path + ": " + context.diagnostics.front().message);
+    return false;
+  }
+  for (u32 i = 0; i < file.instances.size(); ++i) {
+    const scene::Instance& instance = file.instances[i];
+    if (instance.name.empty() || (!instance.animation.has_value() && !animate)) continue;
+    bool taken = false;
+    for (const DeclaredActor& earlier : out)
+      taken = taken || earlier.name == instance.name;
+    if (taken) {
+      std::fprintf(stderr,
+                   "engine-view: game: instance %u is named \"%s\" as an earlier one is; the actor "
+                   "of that name is the first\n",
+                   i, instance.name.c_str());
+      continue;
+    }
+    out.push_back(DeclaredActor{instance.name, i});
+  }
+  return true;
 }
 
 }  // namespace engine::view

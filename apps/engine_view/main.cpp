@@ -1094,12 +1094,48 @@ view::GameRunner* g_game = nullptr;
 // Hooks the game onto a session about to start: the observer that ticks it after the walker, and
 // the sky's clock as the session runs it (the offset, the day's rate, the ground's time).
 void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate,
-                 const renderer::SceneData& scene) {
+                 const renderer::SceneData& scene, view::Walker& walker) {
   if (g_game == nullptr) return;
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, scene.terrain.enabled ? scene.terrain.time_s : 0.0);
+  // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
+  if (walker.available()) {
+    g_game->set_ground(
+        [](void* user, f64 x, f64 z, f64& out) {
+          return static_cast<view::Walker*>(user)->ground_height(x, z, out);
+        },
+        &walker);
+  }
 }
+#if ENGINE_VIEW_ANIMATION
+// **The actors a game moves** (animation.h `GameActors`; apps.md "Actors"): bound to the animated
+// world once its entities exist, the state file's (or the recording's) actors put back before the
+// first tick, and hooked round the world's step. A scene that names none, or a run without a game,
+// binds nothing and costs nothing. `g_actors` is the table the frames flush moves from.
+view::GameActors* g_actors = nullptr;
+bool attach_game_actors(view::GameActors& actors, view::AnimatedScene* animated,
+                        view::AnimationTicks& ticks, const renderer::SceneDesc& desc,
+                        const renderer::SceneData& scene, u32 tick_hz, std::string& error) {
+  if (g_game == nullptr || animated == nullptr || g_game->declared_actors().empty()) return true;
+  if (!actors.bind(*animated, desc, g_game->declared_actors(), !scene.dynamic, tick_hz, error))
+    return false;
+  if (const JsonValue* restored = g_game->restored_actors(); restored != nullptr) {
+    if (!actors.restore(*restored, error)) return false;
+  }
+  actors.hook(ticks);
+  g_game->set_actors(&actors);
+  g_actors = &actors;
+  return true;
+}
+// Whatever way a run's loop ends, the table it bound goes with it.
+struct GameActorsScope {
+  ~GameActorsScope() {
+    if (g_game != nullptr) g_game->set_actors(nullptr);
+    g_actors = nullptr;
+  }
+};
+#endif
 // Between frames: a rebuilt module swapped in with its state carried (hotload's poll).
 void poll_game() {
   if (g_game != nullptr) (void)g_game->poll();
@@ -1160,6 +1196,10 @@ bool attach_game_scene(renderer::SceneData& scene, std::string& error) {
 template <class World>
 bool hand_over_game_props([[maybe_unused]] World* world, renderer::SceneRenderer& renderer,
                           std::string* error) {
+#if ENGINE_VIEW_ANIMATION
+  // The actors moved since the last frame, in one write of the instance table (animation.h).
+  if (g_actors != nullptr && !g_actors->flush(renderer, error)) return false;
+#endif
   if (g_game == nullptr || !g_game->props().changed()) return true;
   view::GameProps& props = g_game->props();
   bool ok = false;
@@ -2263,6 +2303,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // replay of a recording animates exactly as the window did.
   std::unique_ptr<AnimatedScene> animated;
   AnimationTicks animation_ticks;
+#if ENGINE_VIEW_GAME
+  // A game's actors (animation.h `GameActors`): after the world they act on, so they go first.
+  view::GameActors game_actors;
+  GameActorsScope game_actors_scope;
+#endif
 #endif
   const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
   const u32 ticks_per_frame =
@@ -2542,11 +2587,18 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
       session.set_walker(&walker);
 #if ENGINE_VIEW_GAME
-      attach_game(session, clock.offset_s, clock.sun_rate, scene_data);
+      attach_game(session, clock.offset_s, clock.sun_rate, scene_data, walker);
 #endif
 #if ENGINE_VIEW_ANIMATION
       // After the game's observer, which it chains: the world on the replay's tick.
       if (animated) animation_ticks.attach(session, *animated, view_renderer, tick_hz);
+#if ENGINE_VIEW_GAME
+      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, scene_data,
+                              tick_hz, error)) {
+        exit_code = fail("actors", error);
+        break;
+      }
+#endif
 #endif
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("replay", error);
@@ -4211,6 +4263,17 @@ int run_view(int argc, char** argv) {
         return fail("scene", game_error);
       }
       game.props().declare(props);
+#if ENGINE_VIEW_ANIMATION
+      // And its actors (game_props.h, ABI 5): the named instances that animate, which the module
+      // may find in `on_load`. A build without animation declares none and the module hears
+      // `Unsupported`.
+      Vector<view::DeclaredActor> actors;
+      if (!view::read_scene_actors(options.scene, options.animate, actors, game_error)) {
+        log::remove_sink(&stderr_sink);
+        return fail("scene", game_error);
+      }
+      game.declare_actors(actors);
+#endif
     }
     if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
@@ -4328,6 +4391,11 @@ int run_view(int argc, char** argv) {
   // `--morph-animate`'s clips when `--animate` loaded none (a mesh with no skin): the library
   // alone, no world, because a weight curve is sampled on the frame's clock and ticks nothing.
   std::unique_ptr<animation::Library> morph_library;
+#if ENGINE_VIEW_GAME
+  // A game's actors (animation.h `GameActors`): after the world they act on, so they go first.
+  view::GameActors game_actors;
+  GameActorsScope game_actors_scope;
+#endif
 #endif
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   gfx::Swapchain swapchain;
@@ -4834,17 +4902,22 @@ int run_view(int argc, char** argv) {
       // The day's rate as the window's sun starts it (below), so a live game and its offscreen
       // replay keep the same clock.
       attach_game(session, sky_offset,
-                  renderer::frame_clock(request_of(options).clock, scene_data).sun_rate,
-                  scene_data);
+                  renderer::frame_clock(request_of(options).clock, scene_data).sun_rate, scene_data,
+                  walker);
 #endif
 #if ENGINE_VIEW_ANIMATION
       // The scene's characters on the session's tick, after the game's observer, which it chains:
       // the same world at the same ticks as an offscreen replay of this session.
-      if (animated) {
-        animation_ticks.attach(
-            session, *animated, view_renderer,
-            interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 240u);
+      const u32 session_hz =
+          interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 240u;
+      if (animated) animation_ticks.attach(session, *animated, view_renderer, session_hz);
+#if ENGINE_VIEW_GAME
+      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, scene_data,
+                              session_hz, error)) {
+        exit_code = fail("actors", error);
+        break;
       }
+#endif
 #endif
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("interactive", error);

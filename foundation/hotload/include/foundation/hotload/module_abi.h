@@ -60,7 +60,13 @@ namespace engine::hotload {
 // A module learns what the host it runs on has from `HostApi::size` (`has_entry` below; the
 // helpers answer `Unsupported` for an entry the table does not reach). A module built against a
 // newer ABI than the host's is still refused: it would call past the end of the host's table.
-inline constexpr u32 k_abi_version = 4;
+//
+// **5** (2026-10-19): `HostApi` gained, at its end, the **actors** — the skinned instances of the
+// scene a game moves and plays clips on (`actor_find`, `actor_spawn`, `actor_place`, `actor_play`,
+// `actor_stop`, `actor_speed`, `actor_state`; roadmap S88; apps.md, "Actors: the characters a game
+// moves") — and the scene's ground (`ground_height`). Additive, as 4 was: a module built against 3
+// or 4 loads and runs unchanged, and `ActorState` leads with its own `size` like ABI 4's structs.
+inline constexpr u32 k_abi_version = 5;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -221,6 +227,28 @@ struct GraphicsRequest {
   char display[24] = {};
 };
 
+// ---- actors, as the host keeps them (ABI 5; apps.md, "Actors: the characters a game moves") ----
+
+// One actor as it stands after the last tick: where, which way, which clip and where in it, and
+// the hash of the pose the last animation step left — the summary's `pose_hash` as a number, so a
+// module and a test that reads the report compare the same thing. Filled into the caller's struct
+// up to its `size`, as `GraphicsState` is.
+struct ActorState {
+  u32 size = sizeof(ActorState);
+  u32 instance = 0;                   // the scene instance the actor is
+  f64 position[3] = {0.0, 0.0, 0.0};  // world metres: where the instance's origin stands
+  f32 yaw = 0.0f;                     // radians about +y, as `prop_place` turns a prop
+  f32 playhead_s = 0.0f;              // seconds into `clip`
+  f32 speed = 1.0f;                   // the playback rate (`actor_speed`)
+  f32 weight = 1.0f;                  // 1 the clip, toward 0 a fade to the rest pose
+  u32 looping = 0;
+  u32 tier = 0;        // the animation LOD tier, 0 the finest
+  u32 playing = 0;     // 0: stopped, the rest pose
+  u32 fading = 0;      // a cross-fade, a fade in or a fade to rest in flight
+  u64 pose_hash = 0;   // over the joint matrices of the last step
+  char clip[64] = {};  // the library's name ("bar/bend"); empty when stopped
+};
+
 // The engine as a module sees it. Every function takes the table's `host` first. The table and
 // everything it points at outlive every call into the module; the module may keep the pointer.
 struct HostApi {
@@ -347,6 +375,53 @@ struct HostApi {
   // know), and `InvalidArgument` for a malformed struct.
   Result (*graphics_state)(void* host, GraphicsState* out);
   Result (*request_graphics)(void* host, const GraphicsRequest* request);
+
+  // ---- ABI 5: actors and the ground (roadmap S88; apps.md, "Actors: the characters a game
+  // moves") ----
+  // An **actor** is a skinned instance the scene file names (`"name"` on an instance that animates:
+  // an `animation` block, or any under `--animate`). Its handle is its scene instance's index —
+  // stable for the scene file, and what a module keeps in its state. A command is applied **at the
+  // tick the module made it**, before that tick's animation step, so a recorded session replays to
+  // the same poses with the same module; the picture takes a move on the next frame, as it does a
+  // prop's. A module built against 3 or 4 never reaches these, and the helpers below answer
+  // `Unsupported` on a host whose table ends before them.
+
+  // The actor named `name`, in `on_load` or at any tick. `NotFound` — the scene has actors and not
+  // this one — is remembered in `on_load` like a field path that does not resolve, so the load is
+  // refused naming it; `Unsupported` — the session has no actors at all (the scene names none, or
+  // the build has no animation) — is a plain answer, so one module runs on any scene.
+  Result (*actor_find)(void* host, const char* name, u64 length, u32* out_actor);
+  // **A new actor at run time**: a skinned instance of a scene mesh made by the module. Answered
+  // `Unsupported` by every host until the renderer draws a deformed instance in its dynamic tail
+  // (roadmap R84's remainder); the entry is here so that landing it does not change the ABI again.
+  Result (*actor_spawn)(void* host, const char* mesh, u64 length, const f64* position, f32 yaw,
+                        u32* out_actor);
+  // Stands the actor's origin at `position` (world metres, three f64) turned `yaw` radians about
+  // +y, level — the scene's pitch and roll are dropped, its scale kept — at this tick. Every actor
+  // moved in a tick reaches the renderer in one write before the next frame. `NotFound` for a
+  // handle that is not an actor, `InvalidArgument` for a non-finite number or a position outside
+  // the world, `Unsupported` before the scene is loaded (`on_load`) or in a session whose renderer
+  // cannot move a loaded instance (a scene that also declares props, or streams a world: the
+  // renderer's tail owns those instances' table, apps.md says what it needs).
+  Result (*actor_place)(void* host, u32 actor, const f64* position, f32 yaw);
+  // Plays the actor's clip `clip` (its library name "bar/bend", the name without the file's prefix
+  // "bend", or its index among the skeleton's clips as digits), cross-fading over `fade_s` seconds
+  // from whatever plays (0 a cut; from the rest pose a fade in), looping or not. `NotFound` for an
+  // actor or a clip its skeleton has not, `InvalidArgument` for a negative or non-finite fade.
+  Result (*actor_play)(void* host, u32 actor, const char* clip, u64 length, f32 fade_s,
+                       u32 looping);
+  // Fades the actor to its rest pose over `fade_s` seconds (0 at once) and stops its clip.
+  Result (*actor_stop)(void* host, u32 actor, f32 fade_s);
+  // The playback rate: 1 the clip's own, 0 holds the pose, negative plays backwards.
+  Result (*actor_speed)(void* host, u32 actor, f32 speed);
+  // The actor as the last tick left it (`ActorState`), into the caller's struct up to its size.
+  // `InvalidArgument` for a struct smaller than ABI 5's.
+  Result (*actor_state)(void* host, u32 actor, ActorState* out);
+  // **The ground's height at (x, z)**, world metres: the scene's ground provider at the nearest
+  // millimetre, the function the walker stands on — deterministic, a function of the scene and the
+  // ground's time. `Unsupported` for a scene with no ground, `InvalidArgument` for a non-finite
+  // coordinate.
+  Result (*ground_height)(void* host, f64 x, f64 z, f64* out_height);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -588,6 +663,54 @@ inline Result request_graphics(const ModuleContext* context,
                                const GraphicsRequest& request) noexcept {
   if (!ENGINE_HOTLOAD_HAS(context->api, request_graphics)) return Result::Unsupported;
   return context->api->request_graphics(context->api->host, &request);
+}
+
+// ---- actors and the ground (ABI 5) ----
+// Each answers `Unsupported` on a host whose table ends before the entry.
+
+inline Result actor_find(const ModuleContext* context, const char* name, u32& actor) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_find)) return Result::Unsupported;
+  return context->api->actor_find(context->api->host, name, text_length(name), &actor);
+}
+
+inline Result actor_spawn(const ModuleContext* context, const char* mesh, const f64 (&position)[3],
+                          f32 yaw, u32& actor) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_spawn)) return Result::Unsupported;
+  return context->api->actor_spawn(context->api->host, mesh, text_length(mesh), position, yaw,
+                                   &actor);
+}
+
+inline Result actor_place(const ModuleContext* context, u32 actor, const f64 (&position)[3],
+                          f32 yaw) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_place)) return Result::Unsupported;
+  return context->api->actor_place(context->api->host, actor, position, yaw);
+}
+
+inline Result actor_play(const ModuleContext* context, u32 actor, const char* clip, f32 fade_s,
+                         bool looping) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_play)) return Result::Unsupported;
+  return context->api->actor_play(context->api->host, actor, clip, text_length(clip), fade_s,
+                                  looping ? 1u : 0u);
+}
+
+inline Result actor_stop(const ModuleContext* context, u32 actor, f32 fade_s) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_stop)) return Result::Unsupported;
+  return context->api->actor_stop(context->api->host, actor, fade_s);
+}
+
+inline Result actor_speed(const ModuleContext* context, u32 actor, f32 speed) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_speed)) return Result::Unsupported;
+  return context->api->actor_speed(context->api->host, actor, speed);
+}
+
+inline Result actor_state(const ModuleContext* context, u32 actor, ActorState& out) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_state)) return Result::Unsupported;
+  return context->api->actor_state(context->api->host, actor, &out);
+}
+
+inline Result ground_height(const ModuleContext* context, f64 x, f64 z, f64& height) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, ground_height)) return Result::Unsupported;
+  return context->api->ground_height(context->api->host, x, z, &height);
 }
 
 template <class State>
