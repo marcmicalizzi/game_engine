@@ -233,13 +233,16 @@ class GpuScene {
                              Vector<gfx::BufferResource>* retired, std::string* error = nullptr,
                              bool compact = false);
   const TileLayout& tile_layout() const noexcept { return layout_; }
-  // **Places instances of a scene read whole again** (`SceneRenderer::move_instances`, which waits
-  // for the device first; renderer.md, "Moving an instance"): instance `indices[i]` takes
-  // `placements[i]`'s transform and origin through its mesh's fit, as the load placed it, and keeps
-  // everything else — mesh, pairs, material base, deformation — so nothing laid out per pair or per
-  // instance moves. The entries are written into the device table at once (a blocking submission),
-  // which is why **no frame may be in flight**. Refused, with nothing written, for a dynamic scene,
-  // an index past the instances, a placement of another mesh, or a translation off the world grid.
+  // **Places loaded instances again** (`SceneRenderer::move_instances`; renderer.md, "Moving an
+  // instance"): instance `indices[i]` takes `placements[i]`'s transform and origin through its
+  // mesh's fit, as the load placed it, and keeps everything else — mesh, pairs, material base,
+  // deformation — so nothing laid out per pair or per instance moves. In a scene read whole the
+  // entries are written into the device table at once (a blocking submission), which is why **no
+  // frame may be in flight** (the caller waits first). In a dynamic scene they are marked pending
+  // for every table set, as a tail block's slots are, and the next `prepare_tables` copies them:
+  // nothing is written to the device and nothing waits. Refused, with nothing written, for an index
+  // past the instances, a dynamic scene's tail slot (past `static_instance_count()`), a placement
+  // of another mesh, or a translation off the world grid.
   bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                        std::string* error = nullptr);
   u64 compactions() const noexcept { return compactions_; }

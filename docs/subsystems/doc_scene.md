@@ -50,4 +50,4 @@ engine-host's `render.load {"session": <id>}` (2026-10-10, [apps](apps.md#engine
 - **Sculpting the heightfield in the editor** (roadmap W66's second half): a brush that edits the grid and writes the source back, with undo through the document ([tileset](tileset.md#the-editors-brush-next)).
 - **More than one ground**, and a heightfield turned off the world's axes.
 - **Hierarchy**: a placement's document parent does not transform it (as `Transform` does not propagate through `ChildOf`, [world.schema](../../schemas/world.schema)); positions are world positions.
-- **A dynamic scene's tail.** Moves go through `move_instances`, which needs a scene read whole; a streamed world's instances would move through `set_dynamic_instances` instead.
+- **A dynamic scene's tail.** Moves go through `move_instances`, which moves a scene's loaded instances (in a dynamic scene through the next table flip, since 2026-10-19) but refuses a tail slot; a streamed world's instances would move through `set_dynamic_instances` instead.

@@ -1115,11 +1115,10 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate,
 // binds nothing and costs nothing. `g_actors` is the table the frames flush moves from.
 view::GameActors* g_actors = nullptr;
 bool attach_game_actors(view::GameActors& actors, view::AnimatedScene* animated,
-                        view::AnimationTicks& ticks, const renderer::SceneDesc& desc,
-                        const renderer::SceneData& scene, u32 tick_hz, std::string& error) {
+                        view::AnimationTicks& ticks, const renderer::SceneDesc& desc, u32 tick_hz,
+                        std::string& error) {
   if (g_game == nullptr || animated == nullptr || g_game->declared_actors().empty()) return true;
-  if (!actors.bind(*animated, desc, g_game->declared_actors(), !scene.dynamic, tick_hz, error))
-    return false;
+  if (!actors.bind(*animated, desc, g_game->declared_actors(), tick_hz, error)) return false;
   if (const JsonValue* restored = g_game->restored_actors(); restored != nullptr) {
     if (!actors.restore(*restored, error)) return false;
   }
@@ -2593,8 +2592,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // After the game's observer, which it chains: the world on the replay's tick.
       if (animated) animation_ticks.attach(session, *animated, view_renderer, tick_hz);
 #if ENGINE_VIEW_GAME
-      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, scene_data,
-                              tick_hz, error)) {
+      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, tick_hz, error)) {
         exit_code = fail("actors", error);
         break;
       }
@@ -4912,8 +4910,8 @@ int run_view(int argc, char** argv) {
           interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 240u;
       if (animated) animation_ticks.attach(session, *animated, view_renderer, session_hz);
 #if ENGINE_VIEW_GAME
-      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, scene_data,
-                              session_hz, error)) {
+      if (!attach_game_actors(game_actors, animated.get(), animation_ticks, desc, session_hz,
+                              error)) {
         exit_code = fail("actors", error);
         break;
       }

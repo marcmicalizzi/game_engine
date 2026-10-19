@@ -779,11 +779,21 @@ void bend(const Bar& bar, f32 degrees, Vector<anim::JointMatrix>& out) {
       std::span<anim::JointMatrix>(out.data(), out.size()));
 }
 
+// Where the bar stands unless a case moves it: on the ground beside the box.
+const Vec3 k_bar_at{-3.0f, -1.0f, 1.0f};
+
+// The bar's placement standing at `at`: what the load places and what a move hands over.
+SceneInstance bar_placement(Vec3 at) {
+  SceneInstance standing = placed(0, at, 1.5f, 0.4f);
+  standing.bounds_padding = 1.0f;  // a bend of the tip moves no vertex further than this
+  return standing;
+}
+
 // Three meshes — the bar (skinned, and first, so the merged mesh carries a skin), the box and the
-// ground — and the instances: the bar standing on the ground beside the box, skinned with two
-// joints, then `others` (meshes 1 and 2), placed as the tail is.
+// ground — and the instances: the bar standing at `bar_at`, skinned with two joints, then `others`
+// (meshes 1 and 2), placed as the tail is.
 bool make_skinned_scene(const Bar& bar, std::span<const SceneInstance> others, bool dynamic,
-                        SceneData& out, std::string& error) {
+                        Vec3 bar_at, SceneData& out, std::string& error) {
   geometry::ClusterLodMesh parts[3];
   geometry::AttributeSource attributes;
   attributes.normals = std::span<const Vec3>(bar.mesh.normals.data(), bar.mesh.normals.size());
@@ -822,9 +832,7 @@ bool make_skinned_scene(const Bar& bar, std::span<const SceneInstance> others, b
     out.skinned_instances += joints > 0 ? 1u : 0u;
     return true;
   };
-  SceneInstance standing = placed(0, Vec3{-3.0f, -1.0f, 1.0f}, 1.5f, 0.4f);
-  standing.bounds_padding = 1.0f;  // a bend of the tip moves no vertex further than this
-  if (!add(standing, 2)) return false;
+  if (!add(bar_placement(bar_at), 2)) return false;
   for (const SceneInstance& source : others) {
     if (!add(source, 0)) return false;
   }
@@ -851,8 +859,8 @@ struct SkinnedRig {
   SceneRenderer renderer;
   std::string error;
   bool build(const gfx::Device& device, const Bar& bar, std::span<const SceneInstance> others,
-             bool dynamic, const RenderSettings& settings) {
-    if (!make_skinned_scene(bar, others, dynamic, data, error)) return false;
+             bool dynamic, const RenderSettings& settings, Vec3 bar_at = k_bar_at) {
+    if (!make_skinned_scene(bar, others, dynamic, bar_at, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (!scene.create(device, data, resolved, &error)) return false;
     SceneRenderer::Desc rd;
@@ -989,5 +997,149 @@ TEST_CASE("dynamic instances: a skinned loaded instance beside the tail draws th
     CHECK(kept.ids == 0);
     CHECK(kept.depth == 0);
     CHECK(kept.color == 0);
+  }
+}
+
+// **A loaded instance moved in a dynamic scene** (roadmap S88's remainder; renderer.md, "Instances
+// that come and go"): the test game's actors are skinned instances its scene file names, and its
+// props make the scene dynamic. A move there rides the next frame's flip to a table set no frame in
+// flight reads, as a tail block's change does, and waits for nothing. Here the bar walks along a
+// line, a step a frame for ten frames, while tiles of boxes arrive, leave and come back in blocks
+// of their own; each frame it is moved twice — half a step, a frame submitted and not waited for,
+// then the rest — and the frame captured after the second is compared word for word with the
+// scene loaded whole with the bar where it now stands and the tail of that frame.
+TEST_CASE(
+    "dynamic instances: a loaded skinned instance moved every frame among tiles that come and go "
+    "draws the loaded scene") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};  // the bar is instance 0
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Tile ta = make_tile(101, renumbered(tile_a()));
+  const Tile tb = make_tile(202, renumbered(tile_b()));
+  const Tile td = make_tile(404, renumbered(tile_d()));
+  struct Step {
+    const Tile* tiles[3];
+  };
+  const Step steps[10] = {
+      {{&ta, nullptr, nullptr}}, {{&ta, &tb, nullptr}},         {{&tb, nullptr, nullptr}},
+      {{&tb, &td, nullptr}},     {{&td, nullptr, nullptr}},     {{&td, &ta, nullptr}},
+      {{&td, &ta, nullptr}},     {{nullptr, nullptr, nullptr}}, {{&tb, nullptr, nullptr}},
+      {{&ta, &tb, &td}},
+  };
+  // Along +x in front of the box, 0.6 m a frame.
+  const auto bar_at = [](f32 step) { return Vec3{-3.0f + 0.6f * step, -1.0f, 1.8f}; };
+  const bool traces =
+      gpu.device.features().cluster_acceleration_structure && gpu.device.features().ray_query;
+  const ShadowMode modes[3] = {ShadowMode::Off, ShadowMode::Cascaded, ShadowMode::RayTraced};
+  for (const ShadowMode mode : modes) {
+    if (mode == ShadowMode::RayTraced && !traces) continue;
+    CAPTURE(static_cast<u32>(mode));
+    RenderSettings settings;
+    settings.shadows = mode;
+    settings.occlusion = false;
+    SkinnedRig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()),
+                      true, settings, bar_at(0.0f)),
+        dynamic.error);
+    REQUIRE(dynamic.scene.dynamic());
+    REQUIRE(dynamic.resolved.deform_pass);
+    std::string error;
+    Vector<SceneInstance> tail;
+    Vector<DynamicBlock> blocks;
+    f32 first_centre = 0.0f;
+    f32 last_centre = 0.0f;
+    for (u32 k = 0; k < 10; ++k) {
+      CAPTURE(k);
+      tail_of(std::span<const Tile* const>(steps[k].tiles, 3), tail, blocks);
+      REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                          std::span<const SceneInstance>(tail.data(), tail.size()),
+                          std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                      error);
+      const u32 index = 0;
+      const f32 at = static_cast<f32>(k) + 1.0f;
+      const SceneInstance half = bar_placement(bar_at(at - 0.5f));
+      REQUIRE_MESSAGE(
+          dynamic.renderer.move_instances(std::span<const u32>(&index, 1),
+                                          std::span<const SceneInstance>(&half, 1), &error),
+          error);
+      dynamic.renderer.begin_frame();
+      REQUIRE_MESSAGE(dynamic.renderer.submit_frame(posed(), &error) != 0, error);
+      // With that frame in flight: the rest of the step.
+      const SceneInstance full = bar_placement(bar_at(at));
+      REQUIRE_MESSAGE(
+          dynamic.renderer.move_instances(std::span<const u32>(&index, 1),
+                                          std::span<const SceneInstance>(&full, 1), &error),
+          error);
+      REQUIRE_MESSAGE(dynamic.scene.validate_tables(&error), error);
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+
+      const Vector<SceneInstance> whole = join({&head, &tail});
+      SkinnedRig loaded;
+      REQUIRE_MESSAGE(
+          loaded.build(gpu.device, bar, std::span<const SceneInstance>(whole.data(), whole.size()),
+                       false, settings, bar_at(at)),
+          loaded.error);
+      CapturedFrame expected;
+      REQUIRE_MESSAGE(loaded.renderer.capture(posed(), channels(), expected, &error), error);
+      const Difference d = compare_through_tail(shot, dynamic.scene, expected);
+      u32 bar_pixels = 0;
+      u32 tail_pixels = 0;
+      f32 centre = 0.0f;
+      for (u32 p = 0; p < shot.width * shot.height; ++p) {
+        const u32 instance = shot.ids[u64{p} * k_id_words];
+        if (instance == 0) {
+          ++bar_pixels;
+          centre += static_cast<f32>(p % shot.width);
+        }
+        tail_pixels +=
+            instance != k_no_id && instance >= dynamic.scene.static_instance_count() ? 1u : 0u;
+      }
+      centre = bar_pixels > 0 ? centre / static_cast<f32>(bar_pixels) : -1.0f;
+      MESSAGE("shadows " << static_cast<u32>(mode) << ", frame " << k << ": the bar at x "
+                         << bar_at(at).x << " over " << bar_pixels << " pixels (centre column "
+                         << centre << "), " << tail.size() << " tail instances in " << blocks.size()
+                         << " blocks over " << tail_pixels << " pixels; " << d.ids << " id, "
+                         << d.depth << " depth and " << d.color
+                         << " colour differences against the scene loaded whole");
+      CHECK(bar_pixels > 50);  // 70 at x = 0.6, behind tile a's box at (0, 0.5, 4)
+      CHECK((tail_pixels > 100) == !tail.empty());
+      CHECK(shot.covered == expected.covered);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+      CHECK(d.color == 0);
+      if (k == 0) first_centre = centre;
+      last_centre = centre;
+    }
+    // The bar walked: 5.4 m to the right, which the boxes in front of it hide only in part.
+    MESSAGE("the bar's pixels moved from column " << first_centre << " to " << last_centre);
+    CHECK(last_centre - first_centre > 40.0f);
+    // A tail slot is the tail's to place, and a placement of another mesh is refused; neither
+    // moves anything.
+    const u32 slot = dynamic.scene.static_instance_count();
+    const SceneInstance box = placed(1, Vec3{}, 1.0f);
+    CHECK_FALSE(dynamic.renderer.move_instances(std::span<const u32>(&slot, 1),
+                                                std::span<const SceneInstance>(&box, 1), &error));
+    MESSAGE("refused: " << error);
+    CHECK(error.find("dynamic tail") != std::string::npos);
+    const u32 index = 0;
+    CHECK_FALSE(dynamic.renderer.move_instances(std::span<const u32>(&index, 1),
+                                                std::span<const SceneInstance>(&box, 1), &error));
+    CHECK(error.find("a mesh it is not") != std::string::npos);
   }
 }

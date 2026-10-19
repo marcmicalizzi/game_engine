@@ -708,8 +708,6 @@ struct GameActors::Impl {
 
   AnimatedScene* scene = nullptr;
   Vector<Actor> actors;
-  bool can_move = false;
-  bool said_cannot_move = false;
   u64 sample_every = 60;
   f64 dt = 1.0 / 240.0;
   Vector<u32> move_indices;
@@ -819,11 +817,9 @@ GameActors::~GameActors() = default;
 u32 GameActors::count() const noexcept { return impl_->actors.size(); }
 
 bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
-                      const Vector<DeclaredActor>& declared, bool can_move, u32 tick_hz,
-                      std::string& error) {
+                      const Vector<DeclaredActor>& declared, u32 tick_hz, std::string& error) {
   Impl& g = *impl_;
   g.scene = &scene;
-  g.can_move = can_move;
   const u32 hz = tick_hz > 0 ? tick_hz : 240u;
   g.dt = 1.0 / static_cast<f64>(hz);
   g.sample_every = hz / 4 > 0 ? hz / 4 : 1u;
@@ -881,17 +877,9 @@ hotload::Result GameActors::place(u32 instance, const f64* position, f32 yaw) {
     ++g.refused;
     return hotload::Result::InvalidArgument;
   }
-  if (!g.can_move) {
-    ++g.refused;
-    if (!g.said_cannot_move) {
-      g.said_cannot_move = true;
-      std::fprintf(stderr,
-                   "engine-view: game: this scene's instances are the renderer's dynamic tail's "
-                   "(it declares props or streams a world), which cannot move a loaded instance "
-                   "yet; actor_place hears Unsupported\n");
-    }
-    return hotload::Result::Unsupported;
-  }
+  // Every scene the renderer draws moves a loaded instance: a scene read whole at once, a dynamic
+  // one (props, a world) through the next frame's table flip (renderer.md, "Instances that come
+  // and go"; until 2026-10-19 a dynamic scene refused the move and this answered `Unsupported`).
   // Level: the scene's pitch and roll are dropped, its scale kept, so a character stands up.
   const Quat turn = quat_from_axis_angle(Vec3::unit_y(), yaw);
   a->position = at;
@@ -1187,7 +1175,7 @@ JsonValue GameActors::calls_json() const {
   JsonValue out = JsonValue::object();
   out.set("bound", true);
   out.set("actors", g.actors.size());
-  out.set("can_move", g.can_move);
+  out.set("can_move", true);  // in every scene since 2026-10-19, dynamic ones included
   out.set("places", g.places);
   out.set("plays", g.plays);
   out.set("stops", g.stops);

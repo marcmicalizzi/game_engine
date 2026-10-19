@@ -3881,8 +3881,11 @@ bool SceneRenderer::read_last_frame(const CaptureChannels& channels, CapturedFra
 bool SceneRenderer::move_instances(std::span<const u32> indices,
                                    std::span<const SceneInstance> placements, std::string* error) {
   ENGINE_ASSERT(!recording_, "SceneRenderer::move_instances: between begin_frame and submit_frame");
-  // The table every frame in flight reads is the one written; so no frame may be in flight.
-  frames_.wait_idle();
+  // A dynamic scene's table sets take the move as they take a tail's change: into the set the next
+  // frame flips to, with no frame in flight reading it, so nothing waits (renderer.md, "Instances
+  // that come and go"). A scene read whole has one table, which every frame in flight reads and the
+  // move writes at once; so no frame may be in flight.
+  if (!scene_->dynamic()) frames_.wait_idle();
   return scene_->place_instances(indices, placements, error);
 }
 
