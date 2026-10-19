@@ -205,6 +205,12 @@ class AnimationSystem {
   // renderer's per-instance record wants. False when the entity has no pose slot — LOD3, or never
   // attached — which a renderer reads as "this instance draws its rest pose this frame".
   bool joint_run(const Id128& entity, u32& first, u32& count) const;
+  // The entity's player as it stands — the clip, the playhead and the rate, the fade in flight —
+  // for a host that reports it: `engine-view` hashes it per instance into its summary, so a game's
+  // test pins where every character's clip stood when a run ended (docs/subsystems/apps.md,
+  // "Animation in a session"). A copy, never a pointer into the world, so nothing outside a tick
+  // holds one. False for an id this world does not hold or that has no player.
+  bool player(const Id128& entity, AnimationPlayer& out) const;
 
   // --- LOD -------------------------------------------------------------------------------------
 

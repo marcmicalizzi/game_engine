@@ -20,7 +20,10 @@
 set(_view_deps base containers hash math time jobs log platform window image io gfx renderer json
                schema schemas bench input tunables)
 if(TARGET engine::animation)
-  list(APPEND _view_deps ids animation)
+  # The glue itself is animation.cpp (animation.h): which meshes are clip sources, which instances
+  # play, the world on the session's tick, the summary's hashes; compiled only with the capability.
+  list(APPEND _view_deps ids assets animation)
+  set(_view_animation animation.cpp)
 endif()
 
 # The camera and the conversion are compiled into the tests as well as the app: the trajectory of
@@ -115,7 +118,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world} ${_view_game}
+  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world} ${_view_game} ${_view_animation}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
@@ -146,6 +149,10 @@ if(TARGET engine_engine_view_tests)
   if(TARGET engine::terrain)
     # The cases over a dune scene skip only in a build whose engine-view has no dunes to draw it.
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_DUNES=1)
+  endif()
+  if(TARGET engine::flora)
+    # The mixed animated scene's palm (mesh_view_tests.cpp) only where a `.flora.json` draws.
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_FLORA=1)
   endif()
 endif()
 

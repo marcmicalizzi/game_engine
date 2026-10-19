@@ -844,3 +844,253 @@ TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {
   CHECK(lod_bytes_a.size() > 8);
   CHECK(lod_bytes_a == lod_bytes_b);
 }
+
+// ---- animation in a mixed scene, and on the simulation clock (roadmap S87) --------------------
+//
+// The test game's scene: rigid meshes first, a skinned character after them, a generated palm and
+// generated water beside it. Before S87 every piece of that failed somewhere: the clip loader read
+// `instances[0]` to decide whether the scene animated, opened every mesh as glTF (and failed on the
+// palm's `.flora.json`, the water's `.glb` and any rigid shoreline), the scene merge kept no skin
+// stream behind a rigid first mesh, and the offscreen path ran no clips at all.
+
+namespace {
+
+std::string content_file(const char* relative) {
+  return test::data_path(std::string(ENGINE_SOURCE_DIR "/") + relative, relative);
+}
+
+// The animation block of a summary: `animation` in an offscreen one (FlythroughSummary), `anim` in
+// a window's line.
+const JsonValue* animation_block(const Summary& summary) {
+  const JsonValue* block = summary.value.find("animation");
+  if (block == nullptr || !block->is_object()) block = summary.value.find("anim");
+  return block != nullptr && block->is_object() ? block : nullptr;
+}
+
+std::string block_text(const JsonValue* block, const char* key) {
+  const JsonValue* found = block != nullptr ? block->find(key) : nullptr;
+  return found != nullptr ? std::string(found->as_string()) : std::string();
+}
+
+u64 block_number(const JsonValue* block, const char* key) {
+  u64 out = ~u64{0};
+  const JsonValue* found = block != nullptr ? block->find(key) : nullptr;
+  if (found != nullptr) (void)found->get_u64(out);
+  return out;
+}
+
+// A rigid cube first, the skinned bar second (with or without its block), a palm when this build
+// has the flora generator, and a pool of water when it has the water capability.
+void write_mixed_scene(const std::string& path, const std::string& cube, const std::string& bar,
+                       const std::string& block0, const std::string& block1,
+                       const std::string& block2) {
+  std::ofstream out(path);
+  out << "{\"meshes\":[{\"path\":\"" << cube << "\"},{\"path\":\"" << bar << "\"}";
+#if ENGINE_VIEW_TESTS_FLORA
+  out << ",{\"path\":\"" << content_file("content/flora/date-palm-tall.flora.json") << "\"}";
+#endif
+  out << "],\"instances\":[{\"mesh\":0,\"translation\":[-2,0,0]" << block0 << "},"
+      << "{\"mesh\":1,\"translation\":[0,0,0]" << block1 << "}";
+#if ENGINE_VIEW_TESTS_FLORA
+  out << ",{\"mesh\":2,\"translation\":[3,0,0],\"scale\":[0.3,0.3,0.3]" << block2 << "}";
+#else
+  (void)block2;
+#endif
+  out << "]";
+#if ENGINE_VIEW_WATER
+  out << ",\"water\":[{\"name\":\"pool\",\"level_m\":0.05,"
+      << "\"shape\":{\"circle\":{\"center\":[0,0,0],\"radius_m\":4}}}]";
+#endif
+  out << "}";
+}
+
+}  // namespace
+
+TEST_CASE(
+    "engine-view: a mixed scene animates its skinned instance offscreen, on the frame clock") {
+  const test::TempDir tmp("engine_view_mixed_anim");
+  const std::filesystem::path dir = tmp.native();
+  const std::string cube = slashes(dir / "cube.glb");
+  const std::string bar = slashes(dir / "bar.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_cube_glb(cube));
+  REQUIRE(write_skinned_glb(bar));
+  const std::string posed = slashes(dir / "posed.json");
+  const std::string rest = slashes(dir / "rest.json");
+  write_mixed_scene(posed, cube, bar, "", ",\"animation\":{\"clip\":\"bend\"}", "");
+  write_mixed_scene(rest, cube, bar, "", "", "");
+  // The finest band for everything, so the bar is skinned at every distance the orbit takes it to:
+  // what is checked here is that it animates at all, not where the tiers fall.
+  auto run = [&](const std::string& scene, const char* frames, const std::string& capture) {
+    std::vector<std::string> args = {"--scene", scene,     "--offscreen", "--frames",
+                                     frames,    "--width", "320",         "--height",
+                                     "240",     "--ddc",   ddc,           "--anim-lod-scale",
+                                     "100000"};
+    if (!capture.empty()) {
+      args.push_back("--capture");
+      args.push_back(capture);
+    }
+    return view(args);
+  };
+  const std::string posed_png = slashes(dir / "posed.png");
+  const Run a = run(posed, "30", posed_png);
+  if (a.exit_code == 3) {
+    MESSAGE("engine-view unavailable here (exit 3), skipping");
+    return;
+  }
+  REQUIRE_MESSAGE(a.exit_code == 0, a.output);
+#if ENGINE_VIEW_ANIMATION
+  Summary sa;
+  REQUIRE(parse_summary(a, sa));
+  const JsonValue* anim = animation_block(sa);
+  REQUIRE_MESSAGE(anim != nullptr, a.output.substr(0, 400));
+  CHECK(block_number(anim, "instances") == 1);
+  CHECK(block_text(anim, "clock") == "frames");
+  CHECK(block_number(anim, "steps") == 30);
+  const JsonValue* animated = anim->find("animated");
+  REQUIRE(animated != nullptr);
+  REQUIRE(animated->size() == 1);
+  const JsonValue& bar_entry = (*animated)[0];
+  CHECK(block_number(&bar_entry, "instance") == 1);  // the second instance; the first is rigid
+  CHECK(block_text(&bar_entry, "clip") == "bar/bend");
+  CHECK(block_number(&bar_entry, "tier") == 0);
+  const std::string pose_30 = block_text(&bar_entry, "pose_hash");
+  CHECK(pose_30.size() == 16);
+
+  // The same run is the same hashes, and fewer frames are fewer steps and another pose: the world
+  // steps once a frame offscreen as it does in a window.
+  const Run again = run(posed, "30", "");
+  REQUIRE_MESSAGE(again.exit_code == 0, again.output);
+  Summary s_again;
+  REQUIRE(parse_summary(again, s_again));
+  CHECK(block_text(animation_block(s_again), "hash") == block_text(anim, "hash"));
+  const Run early = run(posed, "5", "");
+  REQUIRE_MESSAGE(early.exit_code == 0, early.output);
+  Summary s_early;
+  REQUIRE(parse_summary(early, s_early));
+  const JsonValue* early_anim = animation_block(s_early);
+  REQUIRE(early_anim != nullptr);
+  CHECK(block_number(early_anim, "steps") == 5);
+  const JsonValue* early_list = early_anim->find("animated");
+  REQUIRE(early_list != nullptr);
+  REQUIRE(early_list->size() == 1);
+  CHECK(block_text(&(*early_list)[0], "pose_hash") != pose_30);
+  CHECK(block_text(&(*early_list)[0], "playhead_hash") != block_text(&bar_entry, "playhead_hash"));
+
+  // **Posed, not at rest**: the same scene with no block draws the bar in its bind pose, rigid,
+  // and the two pictures differ.
+  const std::string rest_png = slashes(dir / "rest.png");
+  const Run b = run(rest, "30", rest_png);
+  REQUIRE_MESSAGE(b.exit_code == 0, b.output);
+  Summary sb;
+  REQUIRE(parse_summary(b, sb));
+  CHECK(animation_block(sb) == nullptr);  // nothing animates: no block in the summary
+  CHECK(read_bytes(posed_png) != read_bytes(rest_png));
+#endif
+}
+
+TEST_CASE("engine-view: an animation block on a mesh with no skin is refused by name") {
+#if ENGINE_VIEW_ANIMATION
+  const test::TempDir tmp("engine_view_anim_refusal");
+  const std::filesystem::path dir = tmp.native();
+  const std::string cube = slashes(dir / "cube.glb");
+  const std::string bar = slashes(dir / "bar.glb");
+  REQUIRE(write_cube_glb(cube));
+  REQUIRE(write_skinned_glb(bar));
+  const std::string ddc = slashes(dir / "ddc");
+  auto run = [&](const std::string& scene) {
+    return view({"--scene", scene, "--offscreen", "--frames", "2", "--width", "64", "--height",
+                 "64", "--ddc", ddc});
+  };
+  // On the rigid cube: a sentence naming the instance and the mesh.
+  const std::string on_cube = slashes(dir / "on_cube.json");
+  write_mixed_scene(on_cube, cube, bar, ",\"animation\":{\"clip\":\"bend\"}", "", "");
+  const Run cube_run = run(on_cube);
+  if (cube_run.exit_code == 3) return;
+  CHECK(cube_run.exit_code == 1);
+  CHECK_MESSAGE(cube_run.output.find("instance 0 has an \"animation\" block") != std::string::npos,
+                cube_run.output);
+  CHECK(cube_run.output.find("cube.glb") != std::string::npos);
+  CHECK(cube_run.output.find("no skin") != std::string::npos);
+#if ENGINE_VIEW_TESTS_FLORA
+  // On the generated palm: it is never opened as a clip source, and the sentence says why.
+  const std::string on_palm = slashes(dir / "on_palm.json");
+  write_mixed_scene(on_palm, cube, bar, "", "", ",\"animation\":{}");
+  const Run palm_run = run(on_palm);
+  CHECK(palm_run.exit_code == 1);
+  CHECK_MESSAGE(palm_run.output.find("instance 2 has an \"animation\" block") != std::string::npos,
+                palm_run.output);
+  CHECK(palm_run.output.find("made by a mesh generator") != std::string::npos);
+#endif
+  // A clip the character does not have is named, with the instance.
+  const std::string no_clip = slashes(dir / "no_clip.json");
+  write_mixed_scene(no_clip, cube, bar, "", ",\"animation\":{\"clip\":\"sprint\"}", "");
+  const Run clip_run = run(no_clip);
+  CHECK(clip_run.exit_code == 1);
+  CHECK(clip_run.output.find("instance 1: no clip named 'sprint'") != std::string::npos);
+#endif
+}
+
+// **Ticks, not frames.** The fixture's session injected into a window (on this test's own desktop;
+// view_process.h) lands its 480 ticks on whatever frames the window happened to draw; the replay
+// of its recording offscreen lands them four to a frame. The world steps on the tick in both —
+// 480 ticks at 240 Hz are 120 steps of 1/60 s — so the two end on the same clip, playhead and pose
+// hashes for every animated instance, which is what a game's test of its characters pins.
+TEST_CASE("engine-view: an offscreen replay animates exactly as the window it was recorded in") {
+#if ENGINE_VIEW_ANIMATION
+  const std::string log = content_file("content/input-logs/sessions/fly-synthetic.jsonl");
+  if (!test::path_exists(log)) {
+    MESSAGE("the session fixture is not in this bundle");
+    return;
+  }
+  const test::TempDir tmp("engine_view_anim_replay");
+  const std::filesystem::path dir = tmp.native();
+  const std::string cube = slashes(dir / "cube.glb");
+  const std::string bar = slashes(dir / "bar.glb");
+  REQUIRE(write_cube_glb(cube));
+  REQUIRE(write_skinned_glb(bar));
+  const std::string scene = slashes(dir / "scene.json");
+  write_mixed_scene(scene, cube, bar, "", ",\"animation\":{\"clip\":\"bend\",\"speed\":1.5}", "");
+  const std::string ddc = slashes(dir / "ddc");
+  const std::string recorded = slashes(dir / "recorded.jsonl");
+  // The tiers are decided from each tick's camera in both runs; the finest band keeps them where
+  // the window manager's idea of the client area could not move them (a frustum of another aspect
+  // is another decision), so this checks the clock and only the clock.
+  const Run live = view({"--interactive", "--inject-input", log, "--record-input", recorded,
+                         "--scene", scene, "--width", "256", "--height", "160", "--no-vsync",
+                         "--ddc", ddc, "--anim-lod-scale", "100000"});
+  if (live.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << live.output.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  Summary live_summary;
+  REQUIRE_MESSAGE(parse_summary(live, live_summary), live.output);
+  const JsonValue* live_anim = animation_block(live_summary);
+  REQUIRE_MESSAGE(live_anim != nullptr, live.output.substr(0, 600));
+  CHECK(block_text(live_anim, "clock") == "ticks");
+  CHECK(block_number(live_anim, "clock_hz") == 240);
+  CHECK(block_number(live_anim, "clock_ticks") == 480);
+  CHECK(block_number(live_anim, "steps") == 120);
+
+  const Run replay = view({"--replay-input", recorded, "--offscreen", "--scene", scene, "--width",
+                           "256", "--height", "160", "--ddc", ddc, "--anim-lod-scale", "100000"});
+  REQUIRE_MESSAGE(replay.exit_code == 0, replay.output);
+  Summary replay_summary;
+  REQUIRE_MESSAGE(parse_summary(replay, replay_summary), replay.output);
+  const JsonValue* replay_anim = animation_block(replay_summary);
+  REQUIRE_MESSAGE(replay_anim != nullptr, replay.output.substr(0, 600));
+  CHECK(block_text(replay_anim, "clock") == "ticks");
+  CHECK(block_number(replay_anim, "steps") == 120);
+  // Every instance's three hashes, and the hash over them all.
+  const JsonValue* live_list = live_anim->find("animated");
+  const JsonValue* replay_list = replay_anim->find("animated");
+  REQUIRE(live_list != nullptr);
+  REQUIRE(replay_list != nullptr);
+  CHECK(live_list->size() == 1);
+  CHECK(write_json(*replay_list) == write_json(*live_list));
+  CHECK(block_text(replay_anim, "hash") == block_text(live_anim, "hash"));
+  MESSAGE("window and replay: " << block_text(live_anim, "hash") << " "
+                                << block_text(replay_anim, "hash"));
+#endif
+}

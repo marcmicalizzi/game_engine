@@ -506,6 +506,15 @@ size_t build_heightfield_lod(const clodConfig& config, const clodMesh& mesh, con
   return clusters.size();
 }
 
+// Whether a merge carries a skin binding stream: when **any** of its inputs has one. Both merges
+// ask it, and both used to read the first input alone.
+bool any_skin(std::span<const ClusterLodMesh> parts) noexcept {
+  for (const ClusterLodMesh& part : parts) {
+    if (!part.mesh.skin.empty() && part.mesh.skin.size() == part.mesh.vertices.size()) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
@@ -757,9 +766,13 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   Vector<u32> group_base(part_count);
   const bool attributes = parts[0].mesh.attributes.size() == parts[0].mesh.vertices.size();
   // The parts of one mesh share one skin, so the merged palette is the widest of them; a part
-  // with no bindings contributes default ones rather than shortening the stream, exactly as it
-  // does for attributes.
-  const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
+  // with no bindings contributes default ones (`SkinBinding{}`: joint 0, weight 1) rather than
+  // shortening the stream, exactly as it does for attributes. **Any** part with bindings makes the
+  // merge skinned, not the first: a glTF mesh whose first primitive is unskinned and whose second
+  // is skinned kept no stream at all before. Such a primitive follows joint 0 — the stream has one
+  // record a vertex, and the default record binds rigidly to the palette's first joint, which in a
+  // parent-first palette is the skin's root (docs/subsystems/geometry.md, "merge_cluster_meshes").
+  const bool skinned = any_skin(parts);
   // **The parts of one mesh share one set of morph channels**, by index: glTF requires every
   // primitive of a mesh to have the same number of targets, and the mesh's weights array drives
   // all of them, so channel k means the same expression in every part. The scales are computed
@@ -913,7 +926,15 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
   // Separate meshes have separate skeletons, so the merged palette width is only the bound the
   // validator needs: a mesh's own bindings index its own skin, and the renderer reaches the right
   // bone matrices through the *instance's* deform record, never through the merged mesh.
-  const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
+  //
+  // **The stream is kept when any mesh has one**, not when the first does: a scene whose first
+  // mesh is a rigid palm and whose second is a character used to merge with no stream at all, and
+  // the load then refused the character ("an instance is skinned, but its mesh carries no skin
+  // binding stream"). A rigid mesh's run is the default record (joint 0, weight 1), and that is
+  // padding and nothing more: an instance of a rigid mesh names no joints, so its deform record (if
+  // it has one at all) has no skinning stage, the pool never reads those bindings, and no pose can
+  // reach its vertices.
+  const bool skinned = any_skin(parts);
   // Separate meshes have separate channel sets, so the merged array is their concatenation and a
   // mesh's run is recorded on its `ClusterMeshPart` — the same split the skin palette gets, and
   // for the same reason: an instance reaches its own weights through its deform record, never
