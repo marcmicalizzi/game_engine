@@ -3411,10 +3411,6 @@ bool GpuScene::place_instances(std::span<const u32> indices,
     if (error != nullptr) *error = "the scene is not created";
     return false;
   }
-  if (dynamic_) {
-    if (error != nullptr) *error = "a dynamic scene's instances move through set_dynamic_instances";
-    return false;
-  }
   if (indices.size() != placements.size()) {
     if (error != nullptr) *error = "place_instances takes one placement per index";
     return false;
@@ -3424,6 +3420,15 @@ bool GpuScene::place_instances(std::span<const u32> indices,
     const u32 index = indices[i];
     if (index >= instance_count_ || index >= instance_table_.size()) {
       if (error != nullptr) *error = "instance " + std::to_string(index) + " is past the scene's";
+      return false;
+    }
+    // A dynamic scene moves its load's own instances, the prefix; a tail slot is whatever block
+    // the layout put there, and is placed by the tail it came in (`set_dynamic_instances`).
+    if (dynamic_ && index >= static_instances_) {
+      if (error != nullptr) {
+        *error = "instance " + std::to_string(index) +
+                 " is in the dynamic tail, which set_dynamic_instances places";
+      }
       return false;
     }
     if (placements[i].mesh != instance_table_[index].mesh ||
@@ -3443,6 +3448,18 @@ bool GpuScene::place_instances(std::span<const u32> indices,
     const Mat4& fit = data_->mesh_fit[placements[i].mesh];
     gfx::set_instance_placement(entry, mat4_from_transform(placements[i].transform) * fit,
                                 instance_translation(placements[i], fit));
+  }
+  if (dynamic_) {
+    // **A dynamic scene's move rides the next flip** (renderer.md, "Instances that come and go"):
+    // the slot is marked pending for every table set, as a tail block's slots are, so the next
+    // frame flips to a set no frame in flight reads and copies the moved record into it, with the
+    // chain's top-level record of the slot, before anything reads either; the frames in flight
+    // keep reading theirs. Nothing is written to the device here and nothing waits. Nothing else
+    // holds the placement: the deformed-vertex pool is in mesh space, and `tlas_references`
+    // writes the chain's transforms from the frame's instance table.
+    for (const u32 index : indices)
+      mark_instance_written(index);
+    return true;
   }
   return gfx::submit_immediate(
       *device_,

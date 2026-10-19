@@ -31,7 +31,8 @@ using namespace engine;
 
 namespace engine::view_test {
 bool write_skinned_bar_glb(const std::string& path);  // mesh_view_tests.cpp
-}
+bool write_box_glb(const std::string& path);          // game_props_tests.cpp
+}  // namespace engine::view_test
 
 namespace {
 
@@ -93,14 +94,22 @@ std::string fixture(const test::TempDir& tmp, const char* built, const char* nam
 }
 
 // The waves of game_props_view_tests.cpp, 20 cm over 128 m, and the bar standing on them 10 m
-// ahead of the walker, named `bar` and playing `bend` from its block: the one actor.
-std::string actor_scene(const test::TempDir& tmp) {
+// ahead of the walker, named `bar` and playing `bend` from its block: the one actor. With
+// `props`, the scene also declares the fixture's two props (`can` and `marker`, the box of
+// game_props_tests.cpp), which makes it **dynamic** — its instances are the renderer's prefix and a
+// tail of props that come and go — and the fixture places the can on its first tick.
+std::string actor_scene(const test::TempDir& tmp, bool props = false) {
   REQUIRE(view_test::write_skinned_bar_glb(tmp.file("bar.glb")));
-  const std::string scene = tmp.file("actors.json");
-  const std::string body = R"({"format":"engine.scene.v1","name":"actors",
+  if (props) REQUIRE(view_test::write_box_glb(tmp.file("box.glb")));
+  const std::string scene = tmp.file(props ? "actors_props.json" : "actors.json");
+  std::string body = R"({"format":"engine.scene.v1","name":"actors",
       "terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},
-      "meshes":[{"path":"bar.glb"}],
-      "instances":[{"mesh":0,"name":"bar","translation":[0,0,0],"ground":true,
+      "meshes":[{"path":"bar.glb"}],)";
+  if (props) {
+    body += R"("props":[{"name":"can","mesh":"box.glb","fit":{"height":1}},
+                        {"name":"marker","mesh":"box.glb","fit":{"height":0.5}}],)";
+  }
+  body += R"("instances":[{"mesh":0,"name":"bar","translation":[0,0,0],"ground":true,
                     "animation":{"clip":"bend"}}]})";
   REQUIRE(io::write_file(scene, body) == io::Status::Ok);
   return scene;
@@ -239,6 +248,79 @@ TEST_CASE(
   REQUIRE_MESSAGE(still.exit_code == 0, still.output);
   const u64 moved = differing_pixels(tmp.file("walked.png"), tmp.file("still.png"));
   MESSAGE("the walked bar changed " << moved << " pixels of 64,000");
+  CHECK(moved > 20);
+}
+
+TEST_CASE(
+    "engine-view: in a scene with props the actor walks too, beside the props, and a replay ends "
+    "on the same path and poses") {
+  // The scene declares props, so it is dynamic, and the fixture places the can on its first tick:
+  // the renderer takes the tail and the bar's moves through the same table flips (renderer.md,
+  // "Instances that come and go"). Until 2026-10-19 every place here was refused (`Unsupported`,
+  // `can_move` false) and the bar stood where the scene put it.
+  const test::TempDir tmp("engine_view_actors_props");
+  const std::string scene = actor_scene(tmp, true);
+  const std::string session = stand_session(tmp, scene, 480, "stand.jsonl");
+  const std::string module = fixture(tmp, WALK_POC_ACTOR_PATH, "walk_poc_actor");
+  const std::string plain = fixture(tmp, WALK_POC_PATH, "walk_poc");
+  const std::vector<std::string> common = {
+      "--replay-input", session, "--scene", scene,           "--offscreen",      "--width", "320",
+      "--height",       "200",   "--ddc",   tmp.file("ddc"), "--anim-lod-scale", "100000"};
+  std::vector<std::string> args = common;
+  args.insert(args.end(), {"--game", module, "--capture", tmp.file("walked.png")});
+  const Run first = run_view(args);
+  if (first.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << first.output.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(first.exit_code == 0, first.output);
+  JsonValue a;
+  REQUIRE_MESSAGE(summary_of(first, a), first.output);
+  CHECK(number(at(a, {"interactive", "game", "props", "live"})) == 1.0);  // the can
+  const JsonValue* bar = bar_of(a);
+  REQUIRE_MESSAGE(bar != nullptr, first.output.substr(0, 2000));
+  const JsonValue* calls = at(a, {"interactive", "game", "actor_calls"});
+  REQUIRE(calls != nullptr);
+  CHECK(calls->find("can_move")->as_bool());
+  CHECK(number(calls->find("places")) == 480.0);
+  CHECK(number(calls->find("refused")) == 0.0);
+  CHECK(number(calls->find("flushes")) > 0.0);
+  MESSAGE("actor calls: " << write_json(*calls));
+  CHECK(first.output.find("actor_place hears Unsupported") == std::string::npos);
+  // The path moves: every sample on the 3 m circle, no two at one place.
+  const JsonValue* path = bar->find("path");
+  REQUIRE(path != nullptr);
+  REQUIRE(path->size() == 8);
+  for (u32 i = 0; i < path->size(); ++i) {
+    const JsonValue* p = (*path)[i].find("position");
+    REQUIRE(p != nullptr);
+    const f64 x = number(&(*p)[0]);
+    const f64 z = number(&(*p)[2]);
+    CHECK(std::sqrt(x * x + z * z) == doctest::Approx(3.0).epsilon(1e-9));
+    if (i > 0) CHECK(write_json(*p) != write_json(*(*path)[i - 1].find("position")));
+  }
+  MESSAGE("the bar's path beside the props: " << write_json(*path).substr(0, 600));
+
+  // The same recording again: the same path and poses, to the bit, and the same world.
+  const Run second = run_view(args);
+  REQUIRE_MESSAGE(second.exit_code == 0, second.output);
+  JsonValue b;
+  REQUIRE(summary_of(second, b));
+  REQUIRE(bar_of(b) != nullptr);
+  CHECK(write_json(*bar_of(b)) == write_json(*bar));
+  CHECK(text(at(b, {"animation", "hash"})) == text(at(a, {"animation", "hash"})));
+
+  // The picture: the plain fixture places the same can and leaves the bar where the scene stands
+  // it, so the two captures differ where the bar was and where the module walked it.
+  args = common;
+  args.insert(args.end(), {"--game", plain, "--capture", tmp.file("still.png")});
+  const Run still = run_view(args);
+  REQUIRE_MESSAGE(still.exit_code == 0, still.output);
+  JsonValue c;
+  REQUIRE(summary_of(still, c));
+  CHECK(number(at(c, {"interactive", "game", "props", "live"})) == 1.0);
+  const u64 moved = differing_pixels(tmp.file("walked.png"), tmp.file("still.png"));
+  MESSAGE("beside the props, the walked bar changed " << moved << " pixels of 64,000");
   CHECK(moved > 20);
 }
 

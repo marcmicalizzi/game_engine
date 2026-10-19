@@ -226,13 +226,12 @@ class GameActors final : public ActorHost {
   GameActors(const GameActors&) = delete;
   GameActors& operator=(const GameActors&) = delete;
 
-  // After `attach_instances`: one actor per declared name whose instance animates. `can_move` is
-  // whether the renderer can move a loaded instance (`SceneData::dynamic` false; a scene with props
-  // or a world cannot, and `place` answers `Unsupported`). A declared actor whose instance did not
-  // animate (a rigid mesh under `--animate`) is left out and said once. `tick_hz` paces the path's
-  // samples. Then the hooks onto `ticks`.
+  // After `attach_instances`: one actor per declared name whose instance animates. A declared actor
+  // whose instance did not animate (a rigid mesh under `--animate`) is left out and said once.
+  // `tick_hz` paces the path's samples. Then the hooks onto `ticks`. Every scene moves its actors,
+  // a dynamic one (props, a world) included (`SceneRenderer::move_instances`).
   bool bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
-            const Vector<DeclaredActor>& declared, bool can_move, u32 tick_hz, std::string& error);
+            const Vector<DeclaredActor>& declared, u32 tick_hz, std::string& error);
   void hook(AnimationTicks& ticks) noexcept;
   // The state file's `actors`, before the first tick. False with `error` for an entry that does not
   // read; a name that is not bound is skipped and said.
