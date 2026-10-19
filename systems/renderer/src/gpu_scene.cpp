@@ -2732,10 +2732,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       for (const WaterOpticsEntry& entry : water_optics) {
         for (const gfx::InstanceDesc& instance : data_->instances) {
           if (instance.mesh != entry.mesh) continue;
-          const f64 x_mm =
-              (static_cast<f64>(instance.cell.x) * k_world_cell_m + instance.rows[0].w) * 1000.0;
-          const f64 z_mm =
-              (static_cast<f64>(instance.cell.z) * k_world_cell_m + instance.rows[2].w) * 1000.0;
+          const f64 x_mm = (static_cast<f64>(instance.cell.x) * k_world_cell_m +
+                            static_cast<f64>(instance.rows[0].w)) *
+                           1000.0;
+          const f64 z_mm = (static_cast<f64>(instance.cell.z) * k_world_cell_m +
+                            static_cast<f64>(instance.rows[2].w)) *
+                           1000.0;
           gfx::ResolveMaterial& optics = material_table[entry.optics];
           optics.sampler = mesh_material_base[data_->terrain_mesh];
           optics.uv_transform =
