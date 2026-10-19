@@ -109,6 +109,62 @@ repository's **only when the cache root is looked up too** — the repository's 
 repository's cache, and a caller that names its own derived-data root (every test does) names its
 pack as well or draws flat.
 
+## The first pack (2026-10-19)
+
+Made and fetched locally, nothing committed: the material lab's three palm picks — Bark A as
+`palm/bark` (2K, `tile_m` 0.35, normal strength 0.4; StableMaterials then PBRify's upscale), Green
+C as `palm/frond` (1K, 0.12, 0.25; StableMaterials, PBRify rejected by the lab for its mottling)
+and Dry B as `palm/skirt` (1K, 0.12, 0.25; StableMaterials and PBRify) — and the lab's generic set A
+as `rock/sandstone` (2K, 0.5; StableMaterials, a "warm beige limestone" prompt, ungraded) for the
+rock half of the proof. The staging script copied the files the lab's `materials.json` names and
+checked every one against the lab's own SHA-256 before packing; `pack-materials.ps1` made
+`materials-palm-2026-10-19.zip` (22.7 MB, 20 maps) under `D:\workspace\game_engine_local\packages\`
+and `fetch-materials.ps1` unpacked it into `content/materials/` against its hash.
+
+`engine-content flora content/flora/date-palm.flora.json --ddc <scratch>` found the pack beside the
+repository, built the palm with nine images and their textures in **4.9 s** cold (msvc-debug, the
+texture step's nine BC7/BC5 builds 19.2 s of job time spread over the pool; CPU 43% busy with other
+work when it started) and in **0.76 s** with the textures already built; the sandstone boulder with
+three images in **4.4 s** cold. The `.tex` files: the bark's three 2K maps 5.59 MB each (BC7 colour,
+BC7 roughness, BC5 normal, twelve levels; PSNR 53.7, 57.1, 56.1 dB against their sources), each
+frond and skirt map 1.40 MB at 1K (eleven levels), **25.2 MB for the palm's nine** from 9.5 MB of
+PNG, and 16.8 MB for the boulder's three.
+
+**What the captures showed** (offscreen through engine-host from the built container and the
+scratch cache, 800 × 600, shadows off, under the GPU lock; captures in the scratch directory, not
+committed). The trunk reads grey-brown with the bark's fine vertical fibre and its **repeated dark
+marks every 0.35 m up the trunk** — the lab's own note on Bark A ("repeated marks remain visible")
+holds on the mesh, as a regular slash pattern a few rings apart; from 3 m the mip chain softens the
+fibre where the decode of level 0 alone (the same container with no cache) shows it sharp and
+shimmering, which is the texture step doing its job. The collar's boots carry the bark too. The
+green fronds read dark olive and the skirt muted tan, the colours the lab graded them to; at every
+distance captured the leaflets are a few pixels wide, so the fronds' grain along the rachis is not
+resolvable — the rachis takes the set's colour evenly, and whether the grain runs the right way
+waits for a capture close enough to see it. The flat palm and the textured one have the same
+silhouette and nearly the same overall colour from 15 m. The **sandstone boulder** shows the set's
+normal map well (cracks and pits over the bedding bands) but its base colour is a **saturated
+yellow**: set A is the lab's raw, ungraded output, unlike the palm picks, and is a stand-in for the
+pipe, not a sandstone.
+
+## Not yet
+
+- **The sets themselves**: the oak's, the spruce's, the leaf and needle cards' and the four rocks'
+  ([content/materials/README.md](../../content/materials/README.md) says what each needs), and a
+  hosted default pack whose hash `fetch-materials.ps1` pins.
+- **Roughness alone costs a BC7 texture.** The metallic-roughness slot is built BC7 linear
+  ([texture](texture.md), "Formats per slot") because a glTF packs two or three channels there; a
+  greyscale roughness needs one, and BC4 would halve it (the palm's three roughness maps are 8.4 MB
+  of its 25.2). A slot record that says "one channel" — or packing roughness and metallic at build
+  time — is the fix; it changes texture keys, so it is texture's to decide.
+- **Height and metallic** are carried and read by nothing: parallax or displacement wants the
+  height, and a metal part (a rusted can) the metallic channel packed into B.
+- **A host's pack over the protocol**: engine-host finds the repository's pack only when its cache
+  root is looked up; `render.load` has no `materials` field yet, so a client that names its own
+  `ddc` draws generated meshes flat.
+- **Per-role keys**: the pack's key is over the whole manifest, so changing one role rebuilds every
+  generated mesh (a second each, and the textures are keyed by their bytes, so none of them
+  rebuild).
+
 ## Invariants
 
 - A set with no image changes nothing; a set's images are shared, never repeated, in

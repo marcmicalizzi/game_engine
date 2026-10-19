@@ -331,7 +331,7 @@ is, in this order:
 
 | Part | UVs | Transform |
 |---|---|---|
-| Palm trunk, apex dome, collar of bases | metres: *u* round at the mean radius, *v* up the arc; the dome at its own size | `1 / tile_m` |
+| Palm trunk, apex dome, collar of bases | metres: *u* round at the mean radius, from the spine's frame and not from each ring's turned first column (the rings' turn wanders a few degrees a ring, and a *u* that followed it would twist the bark's grain with the sum of those turns up the trunk), *v* up the arc; the dome at its own size | `1 / tile_m` |
 | Palm green and dead fronds | metres: *u* along the rachis, *v* across it (0.5 at the rachis) — the material lab turns its frond sets so the image's *u* runs along the frond | `1 / tile_m` |
 | Broadleaf and conifer bark (`kit.cpp` tubes) | metres: *u* round, *v* along the axis | `1 / tile_m` |
 | Broadleaf leaf and conifer needle cards | the whole card per image (`build_spray`) | none: the image whole |
@@ -357,6 +357,10 @@ one *v*), which stretches or squeezes the repeat between two rows about 10 cm ap
 an unevenness of the bark's grain up the top of the 11 and 14 m palms, not a seam. *u* stays under
 4 m (a 2 mm step). Bands in the trunk's *v*, each a whole number of repeats from zero, are the fix
 if a closer look ever needs one.
+
+**The first pack on the palm** — the lab's Bark A, Green C and Dry B through the cache, the build
+times, the `.tex` sizes and what the captures showed — is in
+[materials](materials.md#the-first-pack-2026-10-19).
 
 ## The build
 
@@ -468,10 +472,10 @@ them (geometry.md, "What the simplifier is given"), so the DAG moved a little:
 
 | Palm | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
 |---|---|---|---|---|---|---|---|---|
-| `date-palm` (default) | 55,312 | 1,752 / 12 | 238 | 4.1% | 59,864 | 0.263 (210 of 799) | 0.0212 | 27.2 / 0.960 |
-| `-tall` | 51,984 | 1,547 / 11 | 238 | 5.7% | 74,104 | 0.144 | **0.0182** | 26.9 / 0.963 |
-| `-old` | 28,624 | 823 / 10 | 146 | 7.6% | 47,306 | 0.247 | **0.0106** | 29.4 / 0.979 |
-| `-leaning` | 52,048 | 1,647 / 11 | 232 | 4.2% | 59,404 | 0.245 | 0.0285 | 25.9 / 0.948 |
+| `date-palm` (default) | 55,312 | 1,753 / 12 | 238 | 4.1% | 59,864 | 0.242 (193 of 799) | 0.0213 | 27.2 / 0.960 |
+| `-tall` | 51,984 | 1,543 / 11 | 238 | 5.7% | 74,104 | 0.144 | **0.0181** | 26.9 / 0.963 |
+| `-old` | 28,624 | 823 / 10 | 146 | 7.6% | 47,306 | 0.247 | **0.0105** | 29.4 / 0.979 |
+| `-leaning` | 52,048 | 1,646 / 11 | 232 | 4.2% | 59,404 | 0.245 | 0.0285 | 25.9 / 0.948 |
 | `-young` | 42,700 | 1,378 / 11 | 198 | 3.8% | 53,550 | 0.350 | 0.0395 | 24.7 / 0.922 |
 
 Every palm passes and fails where it did at version 2, FLIP within 0.001 of it everywhere; the

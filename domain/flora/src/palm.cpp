@@ -446,8 +446,11 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
     for (u32 i = 0; i <= segs; ++i) {
       const f64 angle = turn[r] + 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(segs);
       const D3 radial = normal * det::cos(angle) + spine.side * det::sin(angle);
-      out.vertex(centre + radial * radius[r], radial - tangent * (0.5 * slope),
-                 circumference * static_cast<f64>(i) / static_cast<f64>(segs), arc[r]);
+      // u is the arc round at the mean radius from the spine's frame, not from the ring's turned
+      // first column: the rings turn a few degrees each and their sum wanders, and a u that turned
+      // with them would twist the bark's grain by that sum up the trunk (flora.md, "Materials").
+      out.vertex(centre + radial * radius[r], radial - tangent * (0.5 * slope), mean_radius * angle,
+                 arc[r]);
     }
   }
   for (u32 r = 0; r + 1 < rows; ++r) {
@@ -506,7 +509,9 @@ void build_collar(const Palm& p, const Spine& spine, const Spiral& spiral, const
   const f64 top = static_cast<f64>(p.trunk_top_radius_m);
   const f64 mean_radius =
       0.5 * (static_cast<f64>(p.trunk_base_radius_m) + static_cast<f64>(p.trunk_top_radius_m));
-  // The bases' chart starts a hand's width past the wall's island, in metres like it.
+  // The bases' chart starts a hand's width past one circumference, in metres like the wall. The
+  // wall's island is shifted by the rings' wandering turn, so the two may overlap by a little; a
+  // tiled set repeats over both alike and nothing bakes into this layout.
   const f64 chart_u = 2.0 * k_pi * mean_radius + 0.1;
   const auto face = [&](u32 a, u32 b, u32 c, D3 hint) {
     const Vec3 nf = cross(out.mesh.positions[b] - out.mesh.positions[a],

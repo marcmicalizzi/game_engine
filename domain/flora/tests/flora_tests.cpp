@@ -596,7 +596,7 @@ TEST_CASE(
   // With the motion contract appended (sections 35 and 36); without it, the next test holds it to
   // the bytes it was before them.
   // 0x5ab6c0536295b350 at k_flora_version 2; the palm's UVs in metres moved it (version 3).
-  constexpr u64 k_golden = 0xca542b38d032dad4ull;
+  constexpr u64 k_golden = 0x178ae32e3572bd96ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -704,7 +704,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // container from before the contract existed, until the crown's spiral moved the mesh
   // (k_flora_version 2), and 0xeb471d9e96454476 until the UVs went to metres (3), so a change that
   // moves only the contract is told apart from one that moves the mesh.
-  constexpr u64 k_rigid_golden = 0xf159535cf4d27db5ull;
+  constexpr u64 k_rigid_golden = 0x31af079d27301ce7ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -718,7 +718,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
 TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
   // 0x86f10c7cf1c598e7 at version 2; the UVs in metres (3) moved only the UVs.
-  constexpr u64 k_golden = 0x695c37e41fad0a93ull;
+  constexpr u64 k_golden = 0x297fc148e1d646fcull;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
