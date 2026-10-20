@@ -246,9 +246,38 @@ later, because a plane through the trunk is honestly as wrong as the crown is wi
 measured case for the octahedral frames: their error is the parallax left after choosing the
 nearest of 64 views and correcting by depth, a few degrees' worth, not the crown's radius. With the
 error the selector is held to, the elder grove's camera path (within about 110 m of the trees)
-never reaches a card level, and its frame is what it was (below). At a coarser threshold — a preset
-that draws foliage at 30 pixels of error — the oak's cards hold the picture at 28 m
-(`flora.md`'s captures), which is where a per-material threshold would spend them.
+never reaches a card level, and its frame is what it was (the table below). At a coarser threshold —
+`--lod 60` — the oak's cards hold the picture at 28 m in a capture, which is where a per-material
+threshold (R91) would spend them.
+
+**What the chain costs** (msvc-debug, RTX 5090, 1080p, `--offscreen --repeat 1 --warmup 60
+--wait-quiet 60` along each scene's camera path, 2026-10-21; "before" is the same binary on copies of
+the recipes with `card_bake_px` and `impostor_px` 0, which is the decimated path the gate draws).
+Neither run found a quiet machine: other processes held 27–45% of the CPU and the gate's GPU tests
+held the lock at moments, so every number is an upper bound.
+
+| | Elder grove, before → after | Grove, before → after |
+|---|---|---|
+| GPU total ms, median / p95 / p99 | 1.98 / 2.31 / 2.86 → 2.00 / 2.36 / 2.76 | 0.671 / 0.726 / 0.921 → 0.676 / 0.729 / 0.930 |
+| rt, CLAS, raster, resolve (median ms) | 1.27, 0.97, 0.078, 0.34 → 1.28, 0.98, 0.087, 0.35 | 0.305, 0.133, 0.041, 0.261 → 0.306, 0.133, 0.041, 0.264 |
+| Visible pairs (median) | 22,649 → 22,692 | 4,020 → 4,021 |
+| Scene clusters | 121,211 → 129,403 | 5,326 → 5,465 |
+| Built textures | 2, 47 KB → 26, 3.9 MB | 2, 47 KB → 12, 1.8 MB |
+| GPU memory the engine used | 1,126 → 1,145 MiB | 421 → 424 MiB |
+| Frames that allocated | 0 → 0 | 0 → 0 |
+
+Within the noise, as it should be: no level of the chain is drawn inside 830 m of an ancient tree or
+590 m of an oak. The 43 more visible pairs are the leaves' decimated survivors re-parented to the
+chain's sphere, which is larger than their own and keeps them a step finer a little longer. **The
+atlases per tree**: an ancient tree's five card levels and its star are 12 textures, 1.95 MB built
+(BC7 colour and BC5 normal with their mips; 0.89 MB of PNG in the container), an oak's 10 textures
+1.77 MB (0.79 MB of PNG). **The bake's time**: the default ancient tree's container builds in 77.4 s
+with the chain against 53.9 s without on the same machine (debug, others at 28% of the CPU) — the
+levels' frames, five views of 1.4 million triangles and 160 card tiles — and the 12 m oak's in 8.8 s.
+**The picture**: the 8 m oak's star, drawn from its +z plane's baked view at 120 m with a narrow
+field, against its finest leaves (`impostor_view_tests.cpp`): the silhouettes share 63% of their
+86,351 pixels (the oblique planes and the level one add a fringe of 24,052 the tree does not have;
+7,785 are the tree's alone) and where both draw the colour differs by 12.5 of 255 on average.
 
 ## G74: what self-organising growth would add
 

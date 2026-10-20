@@ -77,6 +77,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
                     tests/flora_scene_tests.cpp
+                    # A tree's impostor chain drawn, against the full tree from a baked view (R89).
+                    tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.
                     tests/flora_motion_tests.cpp)
 if(TARGET engine::ruins)

@@ -429,7 +429,7 @@ material, atlas and error; `engine-content info` prints it as `impostors`.
 after everything, their triangles kept apart); the atlases are the same bytes every time and on
 every toolchain (`impostor_tests.cpp` pins the 8 m oak's card and tree atlases); each level of the
 container is chosen 1 % past its switch distance and not 1 % inside it, with the finer leaves gone
-past it and the bark too past the tree's; the section round-trips. **Not built**: a true octahedral
+past it and the bark too past the tree's; the section round-trips. Drawn (`systems/renderer/tests/impostor_view_tests.cpp`), the 8 m oak's star from its +z plane's baked view shares 63% of its silhouette with the finest leaves' and is within 12.5 of 255 in colour where both draw — bounds of one half and 50 held by the test ([tree allometry](../experiments/tree-allometry.md#what-r89-built-and-where-it-switches-2026-10-21) has the costs). **Not built**: a true octahedral
 atlas (the brief's 8 × 8 views blended by direction) needs coverage that depends on the view, and
 R65's mask is a function of the UV alone on every path — the rasterizers, the rays and the shadow
 maps — which a static star of planes satisfies and a view-chosen octahedral frame does not; and the
