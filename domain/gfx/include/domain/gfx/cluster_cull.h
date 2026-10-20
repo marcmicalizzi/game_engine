@@ -382,7 +382,11 @@ struct DeformDesc {
   // into the other. It is here rather than in `MeshDesc` because that record is full at 64 bytes
   // and this is read by one pass, not by every position read in the renderer.
   u32 first_vertex = 0;
-  u32 pad = 0;
+  // **A flora instance's** first record in the frame's part-pose table (`DeformParams::flora`,
+  // `FloraPartPose`, flora_motion.h), and then `joint_count` is its part count: the flora stage
+  // never runs beside skinning, so the two words a skinned record's palette takes are free on a
+  // tree's. It took the record's pad word; 0 on everything else.
+  u32 first_part = 0;
   u64 joints = 0;  // anim::JointMatrix[joint_count]: three float4 rows each, or 0
   // f32[2 * channel_count]: the **static** weights first, then the **pose** weights. One array
   // rather than two addresses because the two are the same shape, are written by the same host
@@ -454,9 +458,15 @@ inline constexpr u32 k_deform_stage_rebuild_cache = 1u << 12;
 // runs beside the others: a terrain level is a heightfield whose every vertex sits on one lattice,
 // which is what lets its position be a function of the lattice point alone (`TerrainLevelDesc`).
 inline constexpr u32 k_deform_stage_terrain = 1u << 13;
+// **A generated tree's sway** (renderer.md, "The flora stage"; flora_motion.h): each vertex bent by
+// its part's pose for the frame — the wind's bend and the walker's push about the part's pivot,
+// scaled by the vertex's bend weight, inside the frame its parent chain carried the part to. Like
+// the terrain stage it never runs beside the others: a tree has no skin, no morphs and no cage, and
+// its record's palette words name its run of the frame's part-pose table instead.
+inline constexpr u32 k_deform_stage_flora = 1u << 14;
 inline constexpr u32 k_deform_stage_mask = k_deform_stage_static | k_deform_stage_pose |
                                            k_deform_stage_skin | k_deform_stage_procedural |
-                                           k_deform_stage_terrain;
+                                           k_deform_stage_terrain | k_deform_stage_flora;
 
 // ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse")
 // ----------------------
@@ -846,8 +856,16 @@ struct DeformParams {
   // The frame's `TerrainLevelDesc` table, which a `k_deform_stage_terrain` instance reads through
   // `InstanceDesc::terrain`; 0 for a scene with no terrain levels.
   u64 terrain = 0;
+  // **The flora stage's two arrays** (renderer.md, "The flora stage"), both 0 in a scene with no
+  // swaying tree, whose pool pass then runs the instructions it ran before. `motion` is the scene's
+  // motion vertex stream — one `geometry::ClusterFileMotionVertex` (u16 part, u16 bend weight) per
+  // scene-wide vertex, zero for every mesh that carries none — and `flora` this frame's
+  // `FloraPartPose[]`, every swaying instance's parts one after another (`DeformDesc::first_part`).
+  // They took the block from 112 to its 128-byte limit.
+  u64 motion = 0;
+  u64 flora = 0;
 };
-static_assert(sizeof(DeformParams) == 112);
+static_assert(sizeof(DeformParams) == 128);
 
 // Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator. 72
 // bytes. **One workgroup**, once per run of the visible list, looping over the views inside it:

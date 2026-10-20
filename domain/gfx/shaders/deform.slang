@@ -15,7 +15,9 @@
 // pass runs what it names in a fixed order: static shape, pose morphs, skinning, then the
 // procedural cage stand-in. A **terrain level** runs a stage of its own instead of the chain
 // (`k_deform_stage_terrain`, below): its heights blended between two evaluated fields of the dune
-// field, the renderer's time-lapse. The order is what the data means rather than a preference — a morph
+// field, the renderer's time-lapse — and so does a **generated tree** (`k_deform_stage_flora`, the
+// flora stage below): its parts bent by the frame's wind and the walker's push. The order is what
+// the data means rather than a preference — a morph
 // delta is authored in **bind space** against the rest mesh, so it has to be applied before the
 // skin moves that mesh, and a cage acts on the **posed** surface because that is what a
 // soft-tissue solver sees. gfx.md ("The deform chain") carries the argument and the crack rule
@@ -74,7 +76,7 @@ struct MorphParams {
   uint64_t normal_deltas; // int16[3 * delta_count], or 0
 };
 
-// Mirrors gfx::DeformParams (112 bytes). `deform_cache_main` reads two of the fields with a
+// Mirrors gfx::DeformParams (128 bytes). `deform_cache_main` reads two of the fields with a
 // different meaning, and says so where it uses them, because the block is at the 128-byte limit
 // the renderer allows and the two it needs are the two the cut dispatch uses for the same
 // purpose: where to start, and how many.
@@ -95,6 +97,8 @@ struct DeformParams {
   uint max_entries;       // the run's capacity; the device count is clamped to it
   uint visible_offset;    // this run's first entry in the whole visible list
   uint64_t terrain;       // TerrainLevelDesc[]: the frame's terrain levels, or 0
+  uint64_t motion;        // uint per scene-wide vertex: part | bend weight << 16, or 0
+  uint64_t flora;         // FloraPartPose[]: the frame's part poses, or 0
 };
 
 [[vk::push_constant]] ConstantBuffer<DeformParams> g_params;
@@ -515,6 +519,71 @@ void terrain_vertex(MeshDesc mesh, InstanceDesc instance, TerrainLevelDesc level
   normal = terrain_normal(level, i, j);
 }
 
+// ---- the flora stage (docs/subsystems/renderer.md, "The flora stage"; flora.md, "Motion") -------
+//
+// A generated tree sways by its parts. A vertex's part and bend weight are the mesh's (the motion
+// contract, `DeformParams::motion`), and the part's pose is the frame's (`DeformParams::flora`, from
+// `DeformDesc::first_part`): a bend of `pivot_angle.w * weight` radians about `axis` through the
+// part's pivot, then the rigid frame its ancestors' bends carried the part to — which the CPU
+// composed parent-first, so nothing here walks a chain. The weight is 0 at the part's root and 1 at
+// its tip, so the root stays where its parent put it and the tip travels.
+//
+// **Crack-free for the same reason skinning is**: a vertex's position is a function of its rest
+// position, its part and its weight, all three per-vertex data every copy of a surface point shares
+// on every LOD level (clusterlod keeps original vertices, and section 36 is one record per cluster
+// vertex). The normal turns with the same rotation; it is never displaced along.
+//
+// **A part at rest writes the rest pose itself**: its position off the grid and its normal's packed
+// word copied through, so a tree with no wind and no push is the rigid picture to the bit — the
+// pool reader decodes the same word the rigid path decodes.
+
+// Mirrors gfx::FloraPartPose (80 bytes).
+struct FloraPartPose {
+  float4 rows[3];       // the frame the part's ancestors carried it to: rotation | translation
+  float4 pivot_angle;   // the pivot, and the part's own bend at its tip in radians
+  float4 axis;          // the bend's unit axis; w 0 when the part is at rest
+};
+
+// Rodrigues, in the order gfx::flora_rotate writes it.
+float3 flora_rotate(float3 v, float3 k, float c, float s) {
+  const float3 kxv = cross(k, v);
+  const float kv = dot(k, v) * (1.0 - c);
+  return float3(v.x * c + kxv.x * s + k.x * kv, v.y * c + kxv.y * s + k.y * kv,
+                v.z * c + kxv.z * s + k.z * kv);
+}
+
+void flora_vertex(MeshDesc mesh, DeformDesc deform, uint vertex, out float3 position,
+                  out uint normal_word) {
+  position = load_quantized_position(mesh, vertex);
+  if (g_params.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    normal_word = attributes[vertex].normal_oct;
+  } else {
+    normal_word = encode_oct_normal(rest_normal(mesh, vertex, position));
+  }
+  if (g_params.motion == 0 || g_params.flora == 0) return;
+  const uint record = ((uint*)g_params.motion)[vertex];
+  const uint part = record & 0xffffu;
+  if (part >= deform.joint_count) return;  // a part the table does not have: at rest
+  const FloraPartPose pose = ((FloraPartPose*)g_params.flora)[deform.first_part + part];
+  if (pose.axis.w == 0.0) return;
+  const float angle = pose.pivot_angle.w * (float(record >> 16) * (1.0 / 65535.0));
+  const float c = cos(angle);
+  const float s = sin(angle);
+  const float3 k = pose.axis.xyz;
+  const float3 pivot = pose.pivot_angle.xyz;
+  const float3 q = flora_rotate(position - pivot, k, c, s) + pivot;
+  position = float3(dot(pose.rows[0].xyz, q) + pose.rows[0].w,
+                    dot(pose.rows[1].xyz, q) + pose.rows[1].w,
+                    dot(pose.rows[2].xyz, q) + pose.rows[2].w);
+  if (g_params.normal_pool == 0) return;
+  const float3 n = flora_rotate(decode_oct(normal_word), k, c, s);
+  const float3 m = float3(dot(pose.rows[0].xyz, n), dot(pose.rows[1].xyz, n),
+                          dot(pose.rows[2].xyz, n));
+  const float len = length(m);
+  if (len > 0.0) normal_word = encode_oct_normal(m / len);
+}
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
@@ -567,6 +636,19 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
       pool[slot + 1] = moved.y;
       pool[slot + 2] = moved.z;
       if (g_params.normal_pool != 0) normals[base + i] = encode_oct_normal(normal);
+    }
+    return;
+  }
+  if ((deform.stages & k_deform_stage_flora) != 0) {
+    for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
+      float3 moved;
+      uint normal_word;
+      flora_vertex(mesh, deform, cluster.vertex_offset + i, moved, normal_word);
+      const uint slot = (base + i) * 3;
+      pool[slot] = moved.x;
+      pool[slot + 1] = moved.y;
+      pool[slot + 2] = moved.z;
+      if (g_params.normal_pool != 0) normals[base + i] = normal_word;
     }
     return;
   }

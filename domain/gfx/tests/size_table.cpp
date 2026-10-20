@@ -6,6 +6,7 @@
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/commands.h>
+#include <domain/gfx/flora_motion.h>
 #include <domain/gfx/ground_detail.h>
 #include <domain/gfx/path_trace.h>
 #include <domain/gfx/pipeline.h>
@@ -38,7 +39,7 @@ ENGINE_EXPECT_SIZE(64, 8, gfx::MeshDesc);
 // is per *mesh* — the channel records, the slice directory, the delta streams — is deliberately
 // **not** here and not in `MeshDesc` either, which is full at 64 bytes and which every position
 // read in the renderer holds: those are scene-wide arrays behind `DeformParams::morph`. One pad
-// word is left, which is what a fifth stage's address would take.
+// word was left, and the flora stage took it (`first_part`, its run of the frame's part poses).
 ENGINE_EXPECT_SIZE(48, 8, gfx::DeformDesc);
 
 // 16: what the static shape stage keeps per vertex of a cached instance's mesh — the displaced
@@ -62,7 +63,13 @@ ENGINE_EXPECT_SIZE(16, 4, gfx::DeformAlloc);
 // 112, not 104: the terrain stage's table of levels (`terrain`), null for a scene with none, so
 // every other scene's pool pass runs the instructions it ran before (renderer.md, "The dunes in
 // time-lapse").
-ENGINE_EXPECT_SIZE(112, 8, gfx::DeformParams);
+// 128, not 112: the flora stage's motion vertex stream and its frame's part-pose table (`motion`,
+// `flora`; renderer.md, "The flora stage"), both null in a scene with no swaying tree. That is the
+// push block's 128-byte limit, so the next address this pass needs goes behind one of these.
+ENGINE_EXPECT_SIZE(128, 8, gfx::DeformParams);
+// 80: one part's pose for a frame (flora_motion.h) — the 3x4 its ancestors' bends carried it to,
+// then its pivot and bend angle, then the bend's axis with an at-rest flag. A vertex reads one.
+ENGINE_EXPECT_SIZE(80, 4, gfx::FloraPartPose);
 
 // A terrain level's height field and its frame (gfx.md, "The deform chain"; renderer.md, "The dunes
 // in time-lapse"): 24 bytes a field — the heights' address, the window's lattice origin and its

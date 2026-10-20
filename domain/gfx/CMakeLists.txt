@@ -75,6 +75,7 @@ if(TARGET engine_gfx_tests)
                                           tests/rt_tests.cpp tests/rt_cluster_tests.cpp
                                           tests/clas_records_tests.cpp tests/scene_tests.cpp
                                           tests/deform_tests.cpp tests/skin_tests.cpp tests/morph_deform_tests.cpp
+                                          tests/flora_deform_tests.cpp
                                           tests/sampling_tests.cpp tests/stream_tests.cpp
                                           tests/ground_detail_tests.cpp
                                           tests/ground_detail_preview_tests.cpp
