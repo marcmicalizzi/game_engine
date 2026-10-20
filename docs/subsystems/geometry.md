@@ -265,6 +265,42 @@ The leaf-level pictures are byte-identical in **both** poses (FLIP 0, SSIM 1), w
 
 **Testing.** `heightfield_fold_tests.cpp` (`-Filter geometry`): a 129×129 tile of the erg's kind made in integers — a slip-faced dune whose crest bends, waves across it and a grain of noise — built plain folds (38 triangles upside down and 153 overlapping in the floats, 43 and 171 on the grid, none at level 0), the count-only build is the plain build byte for byte and blames the regular simplifier (the sloppy fallback never runs), and the guarded build validates with zero of either at every level on both, 22 results refused and 25 simplifications again, 721 clusters against 725 in the same 10 levels; the same dunes a sixteenth as tall, which nothing folds, build the same bytes guarded; and a hand-made cluster with one triangle folded over its neighbour and a skirt under an edge counts one upside down and two overlapping on both, the skirt neither.
 
+## Authored levels
+
+Roadmap R89 (2026-10-21). Decimation is the right coarse form of a connected surface and the
+wrong one of a crown of loose leaf cards: the simplifier collapses a spray along its twig, but
+it cannot turn a thousand leaves into the one baked card that stands for them. So a caller that
+knows a better coarse form hands it over as **levels above the finest**
+(`build_cluster_lod_levels`, `ClusterLodLevel`: triangles over the same positions and the
+mesh-space error each stands at), and the flora builder is the first ([flora](flora.md#the-impostor-chain)).
+
+**How a level joins the DAG.** The finest is decimated exactly as `build_cluster_lod` does, and
+the decimated chain is **cut at the first level's error**: a cluster whose own error is at or past
+it is dropped (it was coarser than the level that replaces it), and a survivor whose parent error is
+at or past it, or terminal, is re-parented to the level. Level *k*'s clusters carry own error
+*e_k* and parent error *e_{k+1}* (terminal for the last). Every one of those transitions carries
+**one sphere** — centred on the box of every level's vertices and every survivor's own sphere, as
+large as the farthest of them, computed in double and rounded outward — so a level switches whole,
+and because the sphere encloses every sphere below it and the errors rise, the projected error is
+monotonic along every path and the cut is still exactly one cluster per path for any view.
+`lod_selects` and the cull pass need no change: an authored level is a group like any other, with an
+honest error. The cost is that a big mesh switches level as a whole, from the near side of its
+sphere; a per-region sphere would switch the far half of a 115 m crown sooner, and is not built.
+
+**The hand-over between parts.** An empty level, allowed last only, says "nothing of this part
+draws past this error": a tree's bark hands over to the impostor its leaves part carries. The two
+parts' transitions at that error then have to carry the same sphere, so `authored_lod_sphere`
+finds the sphere a part's transitions carry (grown to hold another's) and `widen_lod_spheres`
+gives both the union, refusing a sphere that does not hold one it replaces — a smaller one would let
+the projected error fall along a path and draw two forms or none.
+
+**What holds.** With no levels the build is `build_cluster_lod`'s, byte for byte (the cap the
+decimated chain is cut at is FLT_MAX, which no own error reaches; the determinism pins and
+`authored_levels_tests.cpp` hold it). On a 65 × 65 heightfield with a 9 × 9 level at 0.5 m and a
+quad at 2 m, the cut at 1080p is the plain build's up to 1 % inside 484 m from the sphere's centre,
+the 128-triangle level whole 1 % past it, and the quad past 1,887 m — the formula *d* = *e* ·
+`proj_scale` / threshold + *r*, and not nearer. A tree's chain records its levels in container **section 38** (`ClusterFileImpostor`, 48 bytes a level: what it stands for, its material and atlas, its error and the parallax and texel terms it came from), written only when a generator emits one, so every other container is the bytes it was.
+
 ## UV-degenerate triangles: the repair
 
 **What it repairs.** E10 ([experiment](../experiments/e10-generated-props.md)) found that the commonest atlas failure on generated props is not fragmentation but a single island of **no area** in an otherwise sound atlas: eight of twenty Meshy props, all four of Tripo's island failures, and both TRELLIS.2 samples failed the harness's one-texel check on one to a few triangles, in atlases whose median island was hundreds to tens of thousands of texels. Nothing about such an island needs a texture pipeline. It covers less than a texel, so nothing in it can be sampled as itself at any mip, and no seam-respecting simplification can coarsen it; folding it into the island beside it loses nothing and needs no repack and no rebake. `geometry::repair_uv_degenerate_triangles` (`uv_repair.h`) does that, and both builders run it through `assets::repair_uv_degenerate_triangles` **after the load and before the weld** — `engine-content build` and the renderer's glTF path behind `engine-view --mesh`, which share cache entries and must build the same bytes.

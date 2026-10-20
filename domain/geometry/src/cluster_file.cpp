@@ -261,6 +261,10 @@ u64 encode(const ClusterFileData& data, std::string& out) {
                 static_cast<u32>(sizeof(ClusterFileStructuralPart)), data.structural_parts.size(),
                 data.structural_parts.data());
   }
+  if (!data.impostors.empty()) {
+    add_section(payloads, ClusterSection::Impostors, static_cast<u32>(sizeof(ClusterFileImpostor)),
+                data.impostors.size(), data.impostors.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -436,6 +440,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MotionParts: return "motion_parts";
     case ClusterSection::MotionVertices: return "motion_vertices";
     case ClusterSection::StructuralParts: return "structural_parts";
+    case ClusterSection::Impostors: return "impostors";
   }
   return "unknown";
 }
@@ -642,6 +647,16 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(sizeof(ClusterFileStructuralPart)));
     }
     copy_section(bytes, *structure, result.structural_parts);
+  }
+  // The impostor chain: a file without it, or with an empty one, has none.
+  if (const ClusterFileSection* chain = found[static_cast<u32>(ClusterSection::Impostors)];
+      chain != nullptr && chain->element_count != 0) {
+    if (chain->element_size != sizeof(ClusterFileImpostor)) {
+      return fail(error, "cluster file section impostors has " +
+                             std::to_string(chain->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileImpostor)));
+    }
+    copy_section(bytes, *chain, result.impostors);
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -925,6 +940,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
       }
     }
   }
+  // Every impostor record names a material, and their errors rise.
+  for (u32 i = 0; i < result.impostors.size(); ++i) {
+    const ClusterFileImpostor& r = result.impostors[i];
+    if (r.material >= result.materials.size() ||
+        (i > 0 && !(r.error > result.impostors[i - 1].error))) {
+      return fail(error, "cluster file impostor record " + std::to_string(i) +
+                             " names a material it does not have, or does not rise");
+    }
+  }
   // Every structural record names a part of the motion table, in ascending order.
   for (u32 i = 0; i < result.structural_parts.size(); ++i) {
     const u32 part = result.structural_parts[i].part;
@@ -1074,6 +1098,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MotionParts,
     // 16 bytes a part, and only where a species emits it: the structural table.
     ClusterSection::StructuralParts,
+    // 48 bytes a level, and only in a tree with an impostor chain.
+    ClusterSection::Impostors,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

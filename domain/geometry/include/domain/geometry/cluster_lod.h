@@ -153,6 +153,46 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
                        const ClusterLodOptions& options, ClusterLodMesh& out,
                        std::string* error = nullptr, const AttributeSource& attributes = {});
 
+// ---- authored coarser levels (geometry.md, "Authored levels")
+// ------------------------------------
+//
+// A caller that knows a better coarse form of its mesh than decimation does — a tree whose leaf
+// cards merge into baked branch-group cards and then into a whole-tree impostor (flora.md, "The
+// impostor chain") — hands those forms over as **levels above the finest**, each with the
+// mesh-space error it stands at. The finest is decimated exactly as `build_cluster_lod` does, and
+// the decimated chain is **cut where its error reaches the first level's**: a cluster whose own
+// error is at or past it is dropped, and a survivor whose parent error is at or past it (or
+// terminal) is re-parented to the first level. Level k's clusters then carry own error
+// `levels[k].error` and parent error `levels[k + 1].error` (terminal for the last), and every one
+// of those transitions carries **one sphere**, enclosing every vertex of every level and every
+// sphere the decimated survivors carry, so a level switches as a whole and the cut stays exactly
+// one cluster on every path for any view (the projected error is monotonic because the sphere
+// encloses the spheres below it and the errors grow). An empty level is allowed last only: nothing
+// draws past its error, which is how a part hands over to a level that another part of the same
+// mesh carries (a tree's bark to its impostor; `widen_lod_spheres` then gives both parts one
+// sphere). With no levels this is `build_cluster_lod`, byte for byte.
+struct ClusterLodLevel {
+  std::span<const u32> indices;  // triangles over the same `positions`; empty: nothing past here
+  f32 error = 0.0f;              // mesh-space, greater than the level below's
+};
+
+bool build_cluster_lod_levels(std::span<const Vec3> positions, std::span<const u32> indices,
+                              std::span<const ClusterLodLevel> levels,
+                              const ClusterLodOptions& options, ClusterLodMesh& out,
+                              std::string* error = nullptr, const AttributeSource& attributes = {});
+
+// The sphere every authored transition at or past `from_error` carries in `mesh` (the own sphere of
+// a cluster whose own error is at least it, the parent sphere of one whose finite parent error is),
+// grown to enclose `with` when its radius is positive: what two parts of one mesh that share a
+// transition are both widened to. Zero radius when the mesh has no such transition.
+Vec4 authored_lod_sphere(const ClusterLodMesh& mesh, f32 from_error, Vec4 with = {}) noexcept;
+
+// Replaces every sphere `authored_lod_sphere` reads with `sphere`. Fails, changing nothing, when
+// `sphere` does not enclose one of them (a sphere that did not would let the projected error fall
+// along a path, and the cut would then draw two levels or none).
+bool widen_lod_spheres(ClusterLodMesh& mesh, f32 from_error, Vec4 sphere,
+                       std::string* error = nullptr);
+
 // View-dependent selection, the reference for the GPU pass. Errors are projected to screen
 // pixels the way clusterlod documents: error / max(distance - radius, znear) * proj_scale.
 struct LodView {

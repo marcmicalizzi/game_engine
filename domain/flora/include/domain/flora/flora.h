@@ -103,8 +103,12 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
 
 // Solves the file's species — whichever `species` names — into a mesh
 // and its motion contract. The report its species fills, when given; the other is left alone.
+// `levels`, when given, receives the impostor chain of a species that builds one (the broadleaf
+// and the ancient tree; impostor.h) with its cards appended to `mesh` past everything, and is
+// left empty by the rest.
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
-                 PalmReport* palm_report, TreeReport* tree_report, std::string& error);
+                 PalmReport* palm_report, TreeReport* tree_report, std::string& error,
+                 TreeLevels* levels = nullptr);
 
 // Solves the file's species and builds its container: one cluster LOD DAG per primitive, each with
 // its material's cone setting (the trunk's on, a two-sided frond's off), merged, laid out in

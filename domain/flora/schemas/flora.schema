@@ -53,7 +53,7 @@ struct Palm @version(1) {
 /// their branches and leafy twigs, grown by seeded self-similar branching — each order's shoots
 /// spaced along their parent on the golden angle, turned towards the light, their radii by the pipe
 /// model — with its leaves as two-sided cards on the twigs. Defaults make a 12 m oak.
-struct Broadleaf @version(2) {
+struct Broadleaf @version(3) {
   /// Everything left to chance: the lean's azimuth, every shoot's turn, spread and wander.
   seed: u64 = 1
   /// The leader's top above the ground: 3 to 40 m.
@@ -124,6 +124,11 @@ struct Broadleaf @version(2) {
   /// The exponent b of height on trunk diameter, H ~ D^b (elastic similarity's 2/3), by which a
   /// `trunk_radius_m` of 0 is found from `height_m`: 0.4 to 1.
   allometry_exponent: f32 = 0.6667 @since(2)
+  /// A branch-group card's baked tile, texels a side; 0 bakes no branch-group levels (flora.md, "The
+  /// impostor chain"): 0, or 16 to 256.
+  card_bake_px: u32 = 64 @since(3)
+  /// A whole-tree impostor view, texels a side; 0 makes no impostor: 0, or 32 to 1024.
+  impostor_px: u32 = 256 @since(3)
 }
 
 /// A conifer (flora.md, "The conifer"): a pine or spruce of a straight trunk and whorls of
@@ -296,7 +301,7 @@ struct Orchard @version(1) {
 /// run straight and near-horizontal for their first stretch — where platforms go — before they
 /// turn up and branch as a broadleaf does at a larger scale, carrying a canopy of leaf-cluster
 /// cards. Its parts carry the structural table (section 37). Defaults make a 100 m tree.
-struct Ancient @version(2) {
+struct Ancient @version(3) {
   /// Everything left to chance: the buttresses', hollows' and limbs' azimuths, every shoot's turn.
   seed: u64 = 1
   /// The crown's top above the ground: 40 to 150 m.
@@ -389,6 +394,11 @@ struct Ancient @version(2) {
   leaf_area_index: f32 = 3.0 @since(2)
   /// A leaf card's width over its length: 0.1 to 1.
   leaf_width: f32 = 0.6 @since(2)
+  /// A branch-group card's baked tile, texels a side; 0 bakes no branch-group levels (flora.md, "The
+  /// impostor chain"): 0, or 16 to 256.
+  card_bake_px: u32 = 64 @since(3)
+  /// A whole-tree impostor view, texels a side; 0 makes no impostor: 0, or 32 to 1024.
+  impostor_px: u32 = 256 @since(3)
 }
 
 /// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative

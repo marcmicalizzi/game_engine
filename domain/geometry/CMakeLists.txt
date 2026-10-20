@@ -15,7 +15,8 @@ target_include_directories(engine_geometry SYSTEM PUBLIC
 target_include_directories(engine_geometry SYSTEM PRIVATE "${meshoptimizer_SOURCE_DIR}/demo")
 
 engine_module_tests(NAME geometry
-  SOURCES tests/cluster_tests.cpp tests/cluster_lod_tests.cpp tests/cluster_pages_tests.cpp
+  SOURCES tests/cluster_tests.cpp tests/cluster_lod_tests.cpp tests/authored_levels_tests.cpp
+          tests/cluster_pages_tests.cpp
           tests/cluster_file_tests.cpp tests/atlas_seam_tests.cpp tests/morph_tests.cpp
           tests/uv_repair_tests.cpp tests/zero_area_repair_tests.cpp tests/limit_surface_tests.cpp
           tests/surface_binding_tests.cpp

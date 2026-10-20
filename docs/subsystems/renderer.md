@@ -642,6 +642,25 @@ scene instance, and a tree's instance holds both. **Opacity micromaps are not bu
 classify most of a leaf card's micro-triangles as wholly opaque or wholly transparent in the
 traversal hardware and leave the loop only the boundary ones — the loop's whole cost below, less
 what the boundary keeps.
+### Impostors are masked clusters
+
+**A tree's impostor chain draws through what R65 built and adds no shader** (R89, 2026-10-21;
+[flora](flora.md#the-impostor-chain)). Its branch-group cards and its whole-tree star are clusters of
+authored DAG levels ([geometry](geometry.md#authored-levels)) whose materials are alpha-tested,
+two-sided, and sample a baked colour atlas (alpha the coverage the leaves cut) and a baked
+tangent-space normal atlas: the cull pass chooses them by their errors like any cluster, the masked
+variants rasterize them, the ray loops and the shadow maps test the same mask, and the resolve shades
+the baked normal through the triangle's own tangent frame (`tangent_frame`, `material.slang`) with
+the frame's lights as it shades any normal-mapped surface — so a card's leaves are lit by the sun
+and the sky they face, not the flat card's normal. What a dedicated material kind would add, and is
+not built: **view-chosen frames** (an octahedral atlas blended by the view direction; the coverage
+would then depend on the view, which every rasterizer's masked variant, every ray loop and the
+cascades would have to compute alike to keep the visibility buffer and the ray path word for word),
+the baked depth offsetting a shadow ray's origin to where the leaf was, and a **dithered
+cross-fade** at a level's switch, which needs both levels drawn across a band of distance with
+complementary screen-space masks — today a level switches whole at its distance, and the errors are
+honest enough that the switch is at a pixel of parallax.
+
 ## The sky above, the ground below
 
 **The resolve's whole indirect term is a hemisphere of two uniform halves** (2026-09-25): the sky
