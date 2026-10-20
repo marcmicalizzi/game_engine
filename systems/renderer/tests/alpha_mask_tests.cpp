@@ -15,6 +15,7 @@
 #include <foundation/image/png.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -506,4 +507,82 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
     CHECK(baseline == 0);
     CHECK(disagree <= interior / 50);
   }
+}
+TEST_CASE("alpha mask: the reference path tracer sees through the holes the rasterizer leaves") {
+  // The masked quad through the reference (k_pt_alpha_masks: its camera rays decide masked
+  // candidates by the mask) and through the real-time frame: a pixel the rasterizer leaves empty is
+  // the sky in the reference, to the bit, and a pixel it covers is not. The sky is the furnace's one
+  // colour, so a hole reads exactly the background a pixel off the quad reads.
+  Fixture fx;
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("skipped: device unavailable: " << error);
+    return;
+  }
+  SceneData data;
+  GpuScene scene;
+  SceneRenderer renderer;
+  ReferenceRenderer reference;
+  SceneDesc desc;
+  desc.meshes.push_back(fx.masked);
+  desc.cache = false;
+  RenderSettings settings = base_settings(RasterMode::Hardware);
+  settings.shadows = ShadowMode::RayTraced;  // what makes the frame build the structures
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok ||
+      !reference_available(resolved, device, &error)) {
+    MESSAGE("skipped: no reference here: " << error);
+    device.destroy();
+    return;
+  }
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  SceneRenderer::Desc rd;
+  rd.width = k_size;
+  rd.height = k_size;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  REQUIRE_MESSAGE(reference.create(device, scene, renderer, {}, &error), error);
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), ShotView{}.eye);
+  frame.camera.target = absolute(WorldPos::origin(), ShotView{}.target);
+  frame.camera.fov_y = k_fov;
+  CaptureChannels channels;
+  channels.depth = true;
+  CapturedFrame raster;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, raster, &error), error);
+  ReferenceSettings rs;
+  rs.spp = 8;
+  rs.batch = 8;
+  rs.uniform_sky = true;
+  rs.pixel_center = true;
+  ReferenceFrame traced;
+  REQUIRE_MESSAGE(reference.render(frame.camera, rs, traced, &error), error);
+  REQUIRE(traced.width == k_size);
+  // The background: a pixel the quad covers in neither picture (the frame's corner).
+  REQUIRE_FALSE(covered(raster, 0));
+  const f32* sky = &traced.hdr[0];
+  u32 holes = 0;
+  u32 surface = 0;
+  u32 wrong = 0;
+  for (u32 p = 0; p < k_size * k_size; ++p) {
+    const f32* px = &traced.hdr[p * 4];
+    const bool background = px[0] == sky[0] && px[1] == sky[1] && px[2] == sky[2];
+    if (covered(raster, p)) {
+      ++surface;
+      if (background) ++wrong;
+    } else {
+      ++holes;
+      if (!background) ++wrong;
+    }
+  }
+  MESSAGE("reference: " << surface << " surface pixels, " << holes
+                        << " background or hole pixels, " << wrong << " disagreeing");
+  CHECK(surface > 1000);
+  CHECK(wrong <= 4);
+  reference.destroy();
+  renderer.destroy();
+  scene.destroy();
+  device.destroy();
 }
