@@ -38,6 +38,11 @@ struct BuildContext {
   Vector<unsigned int> local_vertices;
   Vector<unsigned char> local_triangles;
   bool failed = false;
+  // `build_cluster_lod_levels`: a cluster whose own error reaches this is not emitted (the caller's
+  // first authored level stands there). FLT_MAX for a plain build, which no own error reaches: an
+  // own error is a refined group's, and a group whose error is FLT_MAX is never refined.
+  f32 cap = k_lod_terminal_error;
+  u32 skipped = 0;
 };
 
 // The attribute record the simplifier is given per source vertex: the normal, then the UV.
@@ -79,6 +84,11 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
 
   for (size_t i = 0; i < cluster_count; ++i) {
     const clodCluster& cluster = clusters[i];
+    if (cluster.refined >= 0 &&
+        ctx->group_bounds[static_cast<u32>(cluster.refined)].error >= ctx->cap) {
+      ++ctx->skipped;
+      continue;
+    }
     if (cluster.vertex_count > 255 || cluster.index_count / 3 > 512) {
       ctx->failed = true;
       return group_index;
@@ -515,11 +525,196 @@ bool any_skin(std::span<const ClusterLodMesh> parts) noexcept {
   return false;
 }
 
+// Whether sphere `outer` holds sphere `inner` whole, with a relative slack for the float rounding
+// of a centre and a radius computed in double and stored in float.
+bool sphere_encloses(Vec4 outer, Vec4 inner) noexcept {
+  const f64 dx = static_cast<f64>(inner.x) - static_cast<f64>(outer.x);
+  const f64 dy = static_cast<f64>(inner.y) - static_cast<f64>(outer.y);
+  const f64 dz = static_cast<f64>(inner.z) - static_cast<f64>(outer.z);
+  const f64 reach = std::sqrt(dx * dx + dy * dy + dz * dz) + static_cast<f64>(inner.w);
+  const f64 r = static_cast<f64>(outer.w);
+  return reach <= r + 1e-5 * (r > 1.0 ? r : 1.0);
+}
+
+// The sphere the authored transitions carry: centred on the box of everything it has to hold
+// (the vertices of every level, the survivors' spheres) and as large as the farthest of them, in
+// double, rounded outward once into float. A minimal enclosing sphere would be a few per cent
+// smaller and an iterative search; this one is a function of the inputs alone.
+struct SphereFit {
+  f64 lo[3] = {1e300, 1e300, 1e300};
+  f64 hi[3] = {-1e300, -1e300, -1e300};
+  Vector<Vec4> items;  // points have radius 0
+  void add(Vec4 s) {
+    const f64 c[3] = {static_cast<f64>(s.x), static_cast<f64>(s.y), static_cast<f64>(s.z)};
+    for (u32 k = 0; k < 3; ++k) {
+      if (c[k] - static_cast<f64>(s.w) < lo[k]) lo[k] = c[k] - static_cast<f64>(s.w);
+      if (c[k] + static_cast<f64>(s.w) > hi[k]) hi[k] = c[k] + static_cast<f64>(s.w);
+    }
+    items.push_back(s);
+  }
+  Vec4 sphere() const {
+    if (items.empty()) return Vec4{};
+    const f64 c[3] = {(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5};
+    const Vec4 centre{static_cast<f32>(c[0]), static_cast<f32>(c[1]), static_cast<f32>(c[2]), 0.0f};
+    f64 r = 0.0;
+    for (const Vec4& s : items) {
+      const f64 dx = static_cast<f64>(s.x) - static_cast<f64>(centre.x);
+      const f64 dy = static_cast<f64>(s.y) - static_cast<f64>(centre.y);
+      const f64 dz = static_cast<f64>(s.z) - static_cast<f64>(centre.z);
+      const f64 reach = std::sqrt(dx * dx + dy * dy + dz * dz) + static_cast<f64>(s.w);
+      if (reach > r) r = reach;
+    }
+    // Outward: the float radius is never smaller than the double one.
+    f32 radius = static_cast<f32>(r);
+    while (static_cast<f64>(radius) < r)
+      radius = std::nextafter(radius, k_lod_terminal_error);
+    return Vec4{centre.x, centre.y, centre.z, radius};
+  }
+};
+
+// The authored half of `build_cluster_lod_levels`, after the decimated chain was built and cut at
+// `levels[0].error` (the context's cap): the survivors re-parented, each level clustered on its own
+// and appended above them, and one sphere over every transition the levels make.
+bool append_authored_levels(std::span<const Vec3> positions,
+                            std::span<const ClusterLodLevel> levels,
+                            const ClusterLodOptions& options, ClusterLodMesh& out,
+                            std::string* error) {
+  while (!out.level_cluster_counts.empty() && out.level_cluster_counts.back() == 0)
+    out.level_cluster_counts.pop_back();
+  ClusterBuildOptions build;
+  build.max_vertices = options.max_vertices;
+  build.max_triangles = options.max_triangles & ~3u;
+  build.normal_cones = options.normal_cones;
+  Vector<ClusterMesh> built(static_cast<u32>(levels.size()));
+  SphereFit fit;
+  for (const ClusterLodDesc& lod : out.lod)
+    fit.add(lod.own);
+  for (u32 k = 0; k < levels.size(); ++k) {
+    if (levels[k].indices.empty()) continue;
+    std::string message;
+    if (!build_clusters(positions, levels[k].indices, build, built[k], &message)) {
+      if (error != nullptr) *error = "build_cluster_lod_levels: level " + std::to_string(k + 1) +
+                                     " did not cluster: " + message;
+      return false;
+    }
+    for (const u32 index : levels[k].indices) {
+      const Vec3 p = positions[index];
+      fit.add(Vec4{p.x, p.y, p.z, 0.0f});
+    }
+  }
+  const Vec4 sphere = fit.sphere();
+  const f32 cap = levels[0].error;
+  for (ClusterLodDesc& lod : out.lod) {
+    if (lod.parent_error >= cap) {
+      lod.parent = sphere;
+      lod.parent_error = cap;
+    }
+  }
+  for (u32 k = 0; k < levels.size(); ++k) {
+    const ClusterMesh& level = built[k];
+    if (level.clusters.empty()) continue;
+    const u32 vertex_base = out.mesh.vertices.size();
+    const u32 triangle_base = out.mesh.triangles.size();
+    out.level_cluster_counts.push_back(0);
+    for (const ClusterDesc& c : level.clusters) {
+      ClusterDesc desc = c;
+      desc.vertex_offset += vertex_base;
+      desc.triangle_offset += triangle_base;
+      out.mesh.clusters.push_back(desc);
+      ClusterLodDesc lod;
+      lod.own = sphere;
+      lod.own_error = levels[k].error;
+      lod.parent = sphere;
+      lod.parent_error = k + 1 < levels.size() ? levels[k + 1].error : k_lod_terminal_error;
+      lod.level = out.level_cluster_counts.size() - 1;
+      lod.group = out.group_count;
+      out.lod.push_back(lod);
+      ++out.level_cluster_counts.back();
+    }
+    out.mesh.vertices.append(std::span<const Vec3>(level.vertices.data(), level.vertices.size()));
+    out.mesh.vertex_source.append(
+        std::span<const u32>(level.vertex_source.data(), level.vertex_source.size()));
+    out.mesh.triangles.append(
+        std::span<const u32>(level.triangles.data(), level.triangles.size()));
+    ++out.group_count;
+  }
+  return true;
+}
+
+bool build_lod(std::span<const Vec3> positions, std::span<const u32> indices,
+               std::span<const ClusterLodLevel> levels, const ClusterLodOptions& options,
+               ClusterLodMesh& out, std::string* error, const AttributeSource& attributes);
+
 }  // namespace
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
                        const ClusterLodOptions& options, ClusterLodMesh& out, std::string* error,
                        const AttributeSource& attributes) {
+  return build_lod(positions, indices, {}, options, out, error, attributes);
+}
+
+bool build_cluster_lod_levels(std::span<const Vec3> positions, std::span<const u32> indices,
+                              std::span<const ClusterLodLevel> levels,
+                              const ClusterLodOptions& options, ClusterLodMesh& out,
+                              std::string* error, const AttributeSource& attributes) {
+  out = ClusterLodMesh{};
+  for (u32 k = 0; k < levels.size(); ++k) {
+    const ClusterLodLevel& level = levels[k];
+    const bool rising = level.error > 0.0f && level.error < k_lod_terminal_error &&
+                        (k == 0 || level.error > levels[k - 1].error);
+    if (!rising || level.indices.size() % 3 != 0 ||
+        (level.indices.empty() && k + 1 != levels.size())) {
+      if (error != nullptr)
+        *error =
+            "build_cluster_lod_levels: every level's error must be positive, finite and above the "
+            "one below, its indices a multiple of three, and only the last may be empty";
+      return false;
+    }
+    for (const u32 index : level.indices) {
+      if (index >= positions.size()) {
+        if (error != nullptr) *error = "build_cluster_lod_levels: index out of range";
+        return false;
+      }
+    }
+  }
+  return build_lod(positions, indices, levels, options, out, error, attributes);
+}
+
+Vec4 authored_lod_sphere(const ClusterLodMesh& mesh, f32 from_error, Vec4 with) noexcept {
+  SphereFit fit;
+  for (const ClusterLodDesc& lod : mesh.lod) {
+    if (lod.own_error >= from_error) fit.add(lod.own);
+    if (lod.parent_error >= from_error && lod.parent_error < k_lod_terminal_error)
+      fit.add(lod.parent);
+  }
+  if (fit.items.empty()) return Vec4{};
+  if (with.w > 0.0f) fit.add(with);
+  return fit.sphere();
+}
+
+bool widen_lod_spheres(ClusterLodMesh& mesh, f32 from_error, Vec4 sphere, std::string* error) {
+  for (const ClusterLodDesc& lod : mesh.lod) {
+    const bool own = lod.own_error >= from_error;
+    const bool parent = lod.parent_error >= from_error && lod.parent_error < k_lod_terminal_error;
+    if ((own && !sphere_encloses(sphere, lod.own)) ||
+        (parent && !sphere_encloses(sphere, lod.parent))) {
+      if (error != nullptr) *error = "widen_lod_spheres: the sphere does not enclose one it replaces";
+      return false;
+    }
+  }
+  for (ClusterLodDesc& lod : mesh.lod) {
+    if (lod.own_error >= from_error) lod.own = sphere;
+    if (lod.parent_error >= from_error && lod.parent_error < k_lod_terminal_error)
+      lod.parent = sphere;
+  }
+  return true;
+}
+
+namespace {
+
+bool build_lod(std::span<const Vec3> positions, std::span<const u32> indices,
+               std::span<const ClusterLodLevel> levels, const ClusterLodOptions& options,
+               ClusterLodMesh& out, std::string* error, const AttributeSource& attributes) {
   out = ClusterLodMesh{};
   if (positions.empty() || indices.empty() || indices.size() % 3 != 0) {
     if (error != nullptr)
@@ -675,6 +870,7 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   ctx.positions = positions;
   ctx.out = &out;
   ctx.normal_cones = options.normal_cones;
+  if (!levels.empty()) ctx.cap = levels[0].error;
   out.mesh.source_vertex_count = static_cast<u32>(positions.size());
   out.mesh.source_triangle_count = static_cast<u32>(indices.size() / 3);
   // A heightfield is built by the same loop with its simplification held to `up`; everything else
@@ -691,17 +887,33 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
     out = ClusterLodMesh{};
     return false;
   }
-  if (produced != out.mesh.clusters.size() || out.mesh.clusters.empty()) {
+  if (produced != out.mesh.clusters.size() + ctx.skipped || out.mesh.clusters.empty()) {
     if (error != nullptr) *error = "build_cluster_lod: the builder produced no clusters";
     out = ClusterLodMesh{};
     return false;
   }
   out.group_count = ctx.group_bounds.size();
   out.fold_guard = fold_guard;
-  fill_cluster_attributes(out.mesh, positions, indices, attributes);
+  if (!levels.empty() && !append_authored_levels(positions, levels, options, out, error)) {
+    out = ClusterLodMesh{};
+    return false;
+  }
+  if (levels.empty() || attributes.normals.size() == positions.size()) {
+    fill_cluster_attributes(out.mesh, positions, indices, attributes);
+  } else {
+    // Normals computed from every level's triangles, so an authored vertex no finer triangle uses
+    // still gets its own surface's.
+    Vector<u32> all;
+    all.append(indices);
+    for (const ClusterLodLevel& level : levels)
+      all.append(level.indices);
+    fill_cluster_attributes(out.mesh, positions, all, attributes);
+  }
   quantize_positions(out.mesh);  // one grid over every level
   return true;
 }
+
+}  // namespace
 
 f32 projected_error(Vec4 sphere, f32 error, const LodView& view) noexcept {
   if (error >= k_lod_terminal_error) return k_lod_terminal_error;
