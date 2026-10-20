@@ -11,6 +11,7 @@
 #include <core/math/deterministic.h>
 #include <domain/assets/gltf.h>
 #include <domain/flora/motion.h>
+#include <domain/flora/trees.h>
 
 #include <cmath>
 
@@ -235,5 +236,138 @@ u32 emit_spray_part(Emitter& out, const Axis& axis, u32 parent, u32 cards, f64 c
 // Replaces the normals of the vertices from `first_vertex` on with the area-weighted normals of
 // the triangles from `first_index` on — how a spray's cards get a surface's normals.
 void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index);
+
+// ---- the allometric crown (G72; docs/experiments/tree-allometry.md, flora.md "Allometry") ------
+//
+// The recursion every converted species grows its crown with, from the shoots of its named orders
+// (the broadleaf's trunk and limbs, the ancient tree's limbs past their runs and its trunk's top).
+// A shoot of base radius R carries laterals along its distal part and a **leader** at its tip, and
+// the children's cross-sections sum to the parent's with exponent `area_exponent` (the pipe model,
+// da Vinci's rule): R^D = sum r_child^D, the leader taking `leader_share` of the area and the
+// laterals the rest equally. The recursion stops where a shoot's thinnest child would fall below
+// `twig_radius`: that shoot is a **terminal twig**, `twig_length` long whatever the tree's size
+// (Corner's rules: the terminal unit is the species', not the tree's), and its leaves are cards of
+// the species' own size. So the order count and the twig count follow from the sizes — about
+// (R / r_twig)^D twigs — and a bigger tree is more tree, not a scaled-up one.
+//
+// The structure never depends on the budget: every shoot is grown once, from a stream of its own
+// (its index in the depth-first order), and a plan only says how much of it is meshed. Shoots of a
+// radius class at or above the part class are motion parts with grown axes (their count capped, so
+// a tree has thousands of parts, not millions); every finer shoot is **folded** into its nearest
+// part — a straight segment that rides the part at the station it leaves it, meshed as a tube or
+// not at all by the plan, its leaves always.
+
+inline constexpr u32 k_crown_none = 0xFFFFFFFFu;
+inline constexpr u32 k_crown_terminal = 1u;  // a terminal twig: it carries leaves
+inline constexpr u32 k_crown_part = 2u;      // a motion part with a grown axis
+inline constexpr u32 k_crown_named = 4u;     // a shoot of the species' named orders
+
+struct CrownSpec {
+  f64 area_exponent = 2.0;  // D in R^D = sum r^D
+  f64 leader_share = 0.3;   // the leader's share of a node's cross-section
+  u32 laterals = 3;         // laterals on a shoot of the recursion (Rb - 1, capped)
+  f64 length_ratio = 0.63;  // a child's length over its parent's
+  f64 twig_radius = 0.004;
+  f64 twig_length = 0.8;
+  f64 branch_angle = 0.7;  // a lateral's angle from its parent, radians
+  f64 leader_angle = 0.2;  // the leader's
+  f64 upturn = 0.35;       // radians a shoot turns towards the light over its length
+  f64 wander = 0.08;       // radians a grown step wanders
+  f64 from = 0.3;          // laterals leave from this share of their parent's length on
+  u32 part_cap = 2000;     // the most recursion shoots that are motion parts
+  u64 seed = 1;
+  u64 stream = 1000;  // the streams of the recursion's shoots start here
+};
+
+struct CrownNode {
+  D3 base;
+  D3 tip;
+  D3 dir;  // the tangent at the base
+  f64 r0 = 0.0;
+  f64 r1 = 0.0;
+  f64 length = 0.0;
+  u32 parent = k_crown_none;   // index into the nodes
+  u32 generation = 0;          // below the named orders
+  i32 cls = 0;                 // radius class: twigs are 0, each class a pipe step thicker
+  u32 axis = k_crown_none;     // index into the axes, for a named shoot or a part
+  u32 part = k_crown_none;     // the part it is, or rides, set by the emission
+  u32 carrier = k_crown_none;  // the part node a folded shoot rides (itself for a part)
+  f64 weight = 0.0;            // where a folded shoot rides its part
+  u32 cards = 0;               // a twig's leaf cards a side
+  u32 flags = 0;
+};
+
+// A named shoot the recursion grows from: the cross-section its children share (its radius where
+// they leave it), its laterals' count and length, and where they start.
+struct CrownRoot {
+  u32 node = 0;
+  f64 radius = 0.0;
+  u32 laterals = 0;
+  f64 lateral_length = 0.0;  // the first lateral's; later ones shorter, the leader the last's
+  f64 from = 0.25;
+  f64 to = 0.95;
+  f64 spread_scale = 1.0;
+};
+
+struct Crown {
+  Vector<CrownNode> nodes;  // the named shoots first, then the recursion depth-first
+  Vector<Axis> axes;
+  Vector<u32> twigs;  // node indices of the terminal twigs, depth-first
+  u32 first_recursion = 0;
+  i32 part_class = 0;  // recursion shoots of this class and up are parts
+  u32 recursion_parts = 0;
+  u32 laterals =
+      3;  // a recursion shoot's laterals: each merged level stands for laterals + 1 times the twigs
+  u32 orders = 0;       // the most orders from the first named shoot to a twig, both counted
+  f64 footprint = 0.0;  // m^2: the convex hull of every shoot tip, seen from above
+  f64 card_step = 0.0;  // along a twig, one card's base
+};
+
+// The leader's radius under a node of base radius `radius`: what a root's own tube tapers to.
+f64 crown_leader_radius(const CrownSpec& spec, f64 radius);
+
+// Adds a named shoot (with its grown axis) and returns its node.
+u32 crown_add_named(Crown& crown, const Axis& axis, f64 r0, f64 r1, u32 parent);
+
+// Grows the recursion from the roots, assigns the part class and fills the footprint.
+void crown_grow(Crown& crown, const CrownSpec& spec, const Vector<CrownRoot>& roots,
+                u32 named_generations);
+
+// Distributes `cards` one-sided leaf cards over the twigs (as evenly as integers go, depth-first,
+// each twig at most `cap` a side) and sets each twig's count a side.
+void crown_distribute_leaves(Crown& crown, f64 cards, u32 cap);
+
+// How much of the structure a mesh carries (the ladder's rungs move these and nothing else).
+struct CrownPlan {
+  f64 edge_m = 0.12;  // a tube's circumference step: sides = 2 pi r / edge, 3 to `max_sides`
+  u32 max_sides = 12;
+  f64 row_m = 1.0;     // a part tube's rows: one per this many metres, 1 to 8
+  i32 wood_class = 0;  // folded shoots of this class and up are tubes
+  u32 merge = 0;       // leaf cards merged this many generations up their twigs
+  u32 halvings = 0;    // merged sprays' cards halved this many times
+};
+
+u32 crown_tube_sides(const CrownPlan& plan, f64 radius);
+u32 crown_part_rows(const CrownPlan& plan, f64 length);
+
+// The triangles a plan makes of the recursion (the named shoots are the species').
+u32 crown_triangles(const Crown& crown, const CrownPlan& plan);
+
+// The bark of the recursion: every part a tube and a part of its own, every folded shoot of the
+// plan's classes a tube in its part. Parents first, so the part ids are dense; `structural` also
+// records each part's structural row.
+void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool structural);
+
+// The leaves: a spray of the twig's cards on every leafy twig, `card_length` long with the step
+// `crown.card_step` along it — or, with the plan's merge, one spray per sub-tree root standing for
+// its twigs' leaves, its cards sized to the sub-tree's extent. Returns the longest card built.
+f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f64 card_length,
+                      f64 angle, f64 lift, f64 droop);
+
+// The crown as `CrownShoot` rows (trees.h), in node order.
+void crown_table(const Crown& crown, Vector<CrownShoot>& out);
+
+// The one-sided area of the triangles from `first_index` on.
+f64 triangles_area(const assets::MeshData& mesh, u32 first_index);
 
 }  // namespace engine::flora::detail

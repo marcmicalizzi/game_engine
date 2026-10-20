@@ -43,7 +43,33 @@ struct TreeReport {
   u32 fruit_triangles = 0;  // the orchard tree's fruit primitive
   u32 load_bearing = 0;     // parts flagged load-bearing in the structural table
   u32 hollows = 0;          // the ancient tree's
+  // The allometric crown (G72: the broadleaf and the ancient tree; zero for the others).
+  u32 twigs = 0;               // terminal twigs in the structure, leafy or not
+  u32 orders = 0;              // the most orders from the trunk to a twig, both counted
+  u32 leaf_cards = 0;          // cards built, both sides of every spray
+  u32 merge_level = 0;         // 0: one card a leaf; m: a card stands for a sub-tree m orders up
+  u32 wood_class = 0;          // the finest radius class meshed as wood (0: the twigs themselves)
+  u32 part_class = 0;          // the finest radius class that is a motion part of its own
+  f32 card_length = 0.0f;      // the longest card built, metres (the leaf's own at merge 0)
+  f32 footprint_m2 = 0.0f;     // the crown's footprint: the convex hull of its tips from above
+  f32 leaf_area_m2 = 0.0f;     // the one-sided area of the cards built
+  f32 leaf_area_index = 0.0f;  // the realised LAI: leaf_area_m2 over footprint_m2
 };
+
+// One shoot of an allometric crown (G72), for a test or a tool to check the structure against the
+// model: the named orders first (the trunk, the limbs, a megaflora's runs), then the recursion
+// depth-first. Every row's parent is above it.
+struct CrownShoot {
+  u32 parent = 0xFFFFFFFFu;
+  u32 generation = 0;  // below the named orders
+  f32 base_radius = 0.0f;
+  f32 tip_radius = 0.0f;
+  f32 length = 0.0f;
+  u32 flags = 0;
+};
+inline constexpr u32 k_crown_shoot_terminal = 1u;  // a terminal twig
+inline constexpr u32 k_crown_shoot_part = 2u;      // a motion part of its own
+inline constexpr u32 k_crown_shoot_named = 4u;     // a shoot of the named orders
 
 // The documented ranges; false with a sentence naming the first field out of range.
 bool broadleaf_in_range(const Broadleaf& params, std::string& error);
@@ -76,5 +102,10 @@ bool solve_orchard(const Orchard& params, assets::MeshData& out, TreeReport* rep
                    std::string* error = nullptr, Motion* motion = nullptr);
 bool solve_ancient(const Ancient& params, assets::MeshData& out, TreeReport* report = nullptr,
                    std::string* error = nullptr, Motion* motion = nullptr);
+
+// The crown's structure as the solver grows it, independent of the budget (G72): what the pipe
+// rule, the twig size and the order count are checked against. False for parameters out of range.
+bool broadleaf_crown(const Broadleaf& params, Vector<CrownShoot>& out);
+bool ancient_crown(const Ancient& params, Vector<CrownShoot>& out);
 
 }  // namespace engine::flora

@@ -22,7 +22,15 @@ and out over both trees, in 38 s.
 
 It needs no sample asset: every tree is solved from its parameters and built through the
 derived-data cache ([flora](../../../docs/subsystems/flora.md#in-a-scene)); the first load builds
-seven containers, elder A's 196,301 triangles among them.
+seven containers. **The two elders' crowns are the allometric recursion** (G73, 2026-10-20;
+[flora](../../../docs/subsystems/flora.md#allometry)): leaves 0.3 m long on 0.8 m twigs, as on a young
+tree of the species, and many of them — elder A 1,419,335 triangles, 214,834 twigs over 12 orders and
+564,920 leaf cards over a 57 m crown (a leaf area index of 2.9), elder B 1,050,182 triangles and
+147,180 twigs — on the default budget of 1,500,000, which holds them at the leaf's own size. Until then
+elder A was 196,301 triangles with 5 m twigs of 1.4 m cards. In msvc-debug the first load builds elder
+A's container in about 49 s and elder B's in 30 s; at 1080p the camera path costs the GPU 2.0 ms a
+frame (median; 0.78 before), and the deformed-vertex pool takes the scene's 7.8 million tree vertices,
+93.5 MB ([tree allometry](../../../docs/experiments/tree-allometry.md#what-it-costs) has the table).
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/elder-grove/scene.json --camera-path content/test-scenes/elder-grove/camera-path.json --offscreen --benchmark elder-grove.jsonl

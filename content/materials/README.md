@@ -94,7 +94,11 @@ the surface one repeat covers, in metres, and the UVs it lands on are below.
 | `rock/limestone` | limestone | as granite | 2K | 1.0 | **not made** |
 
 A species the solver gains later (a birch, a willow) is `<species>/bark` and `<species>/leaf` by the
-same scheme. What reads as **wrong** on the mesh, which the lab cannot see without it: a bark set
+same scheme. **A leaf card's set is one leaf per image at the species' size, for every species**
+(since the allometric crown, G73, 2026-10-20): the ancient tree's card is a 0.3 m leaf, no longer a
+1.4 m leaf cluster, so `ancient/leaf` is drawn as a single leaf like `broadleaf/leaf`. The cards a
+low budget merges into branch-group cards will take a baked image of the sub-tree (R89), not a lab
+set. What reads as **wrong** on the mesh, which the lab cannot see without it: a bark set
 with features larger than a third of its repeat repeats visibly up a 14 m trunk (the palm candidates'
 "repeated marks remain visible" note), a frond set whose grain runs across the image's *u* runs
 across the leaflets, and a rock set with a strong single direction shows the box projection's six

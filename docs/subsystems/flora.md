@@ -51,6 +51,12 @@ a 9 m palm. A parameter out of its range is refused with its name (`palm_in_rang
 
 ### The budget
 
+**Every species' ladder changes a tree's detail and never its structure** (the owner, 2026-10-20):
+graphics presets pick rungs and gameplay must not change with them, so on every rung the parts,
+their pivots, directions, lengths and parents, the load-bearing flags and the structural table are
+the same bytes, and a rung drops only rows, sides, cards and folded wood ([the budget of a
+crown](#the-budget-of-a-crown)).
+
 The solver counts the triangles a plan makes before it builds anything (the count is exact: the
 test holds `PalmReport::triangles` to the index buffer), builds the full detail when it fits
 `triangle_budget`, and otherwise walks down a fixed ladder one rung at a time until it does:
@@ -292,9 +298,11 @@ one-sided, cones on) and **leaves** (two-sided card sprays, cones off), and the 
 attraction points, which makes beautiful crowns, but its branch count is whatever the simulation
 ends with: the triangle count is known only after growing, a budget can only be met by growing again
 or pruning afterwards, and a pruned branch moves every motion id after it. Seeded recursive
-branching knows its whole structure from the parameters — `limbs`, `branches`, `twigs` — so the
+branching knows its whole structure from the parameters — the named orders' counts and, for the
+broadleaf and the ancient tree, the [allometric recursion](#allometry)'s sizes and ratios — so the
 solver counts the triangles of a plan *before* it builds, exactly as the palm does, walks the same
-kind of ladder, and never drops a part. It is also the cheaper thing to keep deterministic: a fixed
+kind of ladder, and never drops a part. (Self-organising growth is roadmap G74, proposed; what it
+would add and cost is in [tree allometry](../experiments/tree-allometry.md#g74-what-self-organising-growth-would-add).) It is also the cheaper thing to keep deterministic: a fixed
 number of draws per shoot from a stream per order, where colonisation's nearest-point searches
 order their work by floating-point distances.
 
@@ -317,29 +325,85 @@ spray is **one connected surface** the LOD builder collapses along the twig (the
 and every card's UV the **full card** (card *i* spans *u* in [*i*, *i* + 1], one side *v* in [0, 1]
 and the other [0, −1]), so a one-leaf image sampled with repeat lies on every card whole.
 
+### Allometry
+
+**A bigger tree is more tree, not a scaled-up one** (roadmap G73, 2026-10-20; the sources, the
+constants and the measurements are [tree allometry](../experiments/tree-allometry.md)). The
+broadleaf's and the ancient tree's crowns are one recursion (`kit.h`, "the allometric crown") from
+the shoots of their named orders — the broadleaf's limbs and its trunk's top, the ancient tree's
+limbs past their runs and its trunk's top — down to a **terminal twig of the species' own size**,
+and the leaves on it are **one leaf a card, at the species' size**, on a 3 m tree and a 150 m one.
+Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending in 5 m twigs of
+1.4 m cards, which the owner's first walk under it read as giant leaves.
+
+| Rule | Species constant, or what scales | Where it comes from |
+|---|---|---|
+| A node's children share its cross-section: R^Δ = Σ r^Δ, the leader `leader_share` of it and the laterals the rest equally | `area_exponent` Δ (2; measured trees 1.8–2.3) and `leader_share`, the species'; the radii scale | the pipe model, da Vinci's rule (Shinozaki 1964, Eloy 2011) |
+| A shoot of the recursion bears `branching_ratio` − 1 laterals along its distal part and a leader at its tip; the named roots bear `branches` laterals | `branching_ratio` (4) the species' | Horton–Strahler's bifurcation ratio, 3 to 5 |
+| A child is `length_ratio` of its parent's length; a root's laterals `branch_length` of its length | `length_ratio` (0.63) the species' | WBE's n^(−1/3) |
+| A shoot whose thinnest child would be thinner than `twig_radius_m` is a **terminal twig**, `twig_length_m` long | the twig's radius and length are the species', never the tree's | Corner's rules; WBE's invariant terminal unit |
+| So the twigs number about (R / r_twig)^Δ and the orders about 1 + log_Rb of that | both scale with size: the oak's 3,384 twigs over 8 orders, the ancient tree's 214,834 over 12 | follows |
+| The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side | LAI and the leaf the species'; the footprint (the convex hull of every shoot tip from above) scales | the leaf area index (Asner et al. 2003) |
+| The broadleaf's `trunk_radius_m` of 0 is 0.35 m × (H / 12 m)^(1 / `allometry_exponent`) | the exponent the species' (2/3) | McMahon's elastic similarity, H ∝ D^(2/3) |
+| The crown's radius is the limbs' reach, a share of the height for the broadleaf | scales as H ∝ D^(2/3) | crown ∝ D^0.6–0.8 |
+| The lowest limbs shed, apical control weak in an old crown | `crown_base` / `limb_low_m` and `leader_share`, the recipe's | Hallé, Oldeman and Tomlinson 1978; deriving them from age is G74 |
+
+**The structure never depends on the budget.** Every shoot is grown once, from a splitmix64 stream of
+its own (its index in the depth-first order), so a draw added to one shoot moves no other. Shoots of
+the **part class** and up (the finest radius class whose shoots, with every coarser one, number at
+most 400 for the broadleaf and 2,000 for the ancient tree) are motion parts with grown axes, eight
+rows at the structure's resolution; every finer shoot — the twigs among them — is **folded** into
+the part it grows from: a straight segment that takes half its turn towards the light at once,
+riding that part at the station where its branch left it (its vertices carry that part and that
+one bend weight). A part is a tube on every rung; a folded shoot is a tube of one row on the rungs
+whose `wood_class` reaches its class, and nothing on the rest; its leaves are always there. The old
+fields still read: `twigs` (and the ancient tree's `sub_branches`) cap a shoot's laterals, `leaves`
+caps a twig's cards a side, and `branches` is the limbs' own laterals.
+
+#### The budget of a crown
+
+The ladder may change a tree's detail but **never its structure**, because graphics presets pick
+rungs and gameplay must not change with them (the owner, 2026-10-20): on every rung the same
+shoots with the same axes, radii, parents and pivots, the same part ids, the same load-bearing
+flags, the same structural table byte for byte, and the same motion parts; a rung drops tube rows
+and sides, leaf cards, and the finer orders' wood folded into its part, nothing else
+(`allometry_tests.cpp` holds the part list and the table identical on every rung of the default
+broadleaf and ancient tree). The order, rung by rung: the finest wood first (a centimetre's shoot is
+under a pixel past a few metres), then rows and cross-sections, then the finer orders' wood folded
+one radius class at a time up to the part class, then the trunk's, and only where the budget
+forces it **the cards merged up the hierarchy, finest first**: at merge level *m* a twig's cards
+gather on its ancestor *m* orders up (never past a part) into one spray of about the twigs' cards a
+side whose cards reach as far as that sub-tree does — a **branch-group card** — then those sprays'
+cards halved, then the last rows. On the default ancient tree the merge starts at the ninth rung, on
+any budget under about 1.15 million triangles, and a merge-1 card is 1.22 m; on the oak at the third,
+under about 38,000, a 1.04 m card. A merged card drawn opaque is a parallelogram again; alpha-masked
+cluster textures (R65) baked from the solver's own finest geometry (R89) are what make it read as
+foliage ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
+
 ### The broadleaf
 
 An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards
-a seeded azimuth and straightens towards the vertical; its radius is `trunk_radius_m` and every
-other radius follows by the **pipe model** — a shoot's base radius is the trunk's times (its
-terminal twigs ÷ all of them)^(1/2.5), da Vinci's rule that a parent's cross-section is about the
-sum of its children's — tapering along each shoot. `limbs` **scaffold limbs** leave the trunk
-between `crown_base` and nine tenths of it on the golden angle, at `limb_angle_deg` (the upper ones
-a third more upright), `limb_length` of the height long (the upper ones down to half). Each limb
-carries `branches` **branches** from a quarter of the way out, alternating round it on the golden
-angle at `branch_angle_deg`, `branch_length` of their limb long (shorter towards its tip); each
-branch carries `twigs` **twigs** from a fifth of the way out, and the leader's top carries `twigs`
-more. A twig is a spray of `leaves` cards a side, `leaf_length_m` long, its plane laid level so the
-cards face the sky. Parts: the trunk, every limb, every branch, every twig (its parent its branch,
-or the trunk for the leader's tuft) — 1 + 8 + 48 + 441 = 498 on the default.
+a seeded azimuth and straightens towards the vertical; its radius is `trunk_radius_m`, or the
+allometric radius of the height when that is 0 (0.35 m at 12 m, the default). `limbs` **scaffold
+limbs** leave the trunk between `crown_base` and nine tenths of it on the golden angle, at
+`limb_angle_deg` (the upper ones a third more upright), `limb_length` of the height long (the upper
+ones down to half); by the pipe rule the trunk's top keeps `leader_share` of its cross-section and
+the limbs share the rest. From every limb (`branches` laterals from a quarter of the way out, each
+`branch_length` of the limb) and from the trunk's top the [allometric recursion](#allometry) grows to
+the 4 mm, 0.7 m twig; a leafy twig is a spray of its cards a side, `leaf_length_m` long and
+`leaf_width` of that wide, at the twig's tip, its plane laid level so the cards face the sky. On the
+default: 3,384 twigs over 8 orders, 4,501 shoots, 16,638 cards over a 120 m² footprint — a realised
+LAI of 3.9 (3.67 measured over the leaves' own hull) — and **230 parts**: the trunk, the 8 limbs
+and the 221 recursion shoots of the part class (3) and up. The broadleaf emits no structural table.
 
-**The budget** (default 60,000; 8,000 to 2,000,000). The default is 27,356 triangles at full detail
-— bark 6,188 (trunk 12 sides × 30 rows, limbs 8 × 14, branches 5 × 7), leaves 21,168 (441 twigs of
-12 cards a side) — and the ladder, rung by rung: branch rows 4, limb rows 8; sides 4/6/10, then
-3/5/8; the trunk's rows halved; then the cards halved repeatedly (a twig of half the cards keeps
-its leaf area, each card twice as wide); then rows 2/4/3, sides 4/6, and limb rows 2 and branch rows
-1 last. On 12,000 the default is 7,516 (3 cards a side); everything at its most expensive (12 limbs,
-8 branches, 10 twigs, 40 leaves) holds 8,000 with 7,740.
+**The budget** (default 60,000; 8,000 to 2,000,000). The default is 49,157 triangles at full detail
+(bark 15,881: the trunk 12 sides × 30 rows, limbs 8 × 14, the recursion's parts by the plan's edge
+and row steps and its shoots of class 1 and up a row each; leaves 33,276) with no rung walked. The
+ladder ([above](#the-budget-of-a-crown)): class 2's wood folded; limb rows 8 and the parts' rows
+halved; the cross-sections; the folded classes one by one to the part class; the trunk's rows
+halved; then the merges and the halvings; then the last rows. On 40,000 it is 38,396 (merge 0); on
+25,000, 13,576 (merge 1, cards to 1.04 m); on 8,000, 6,364 (merge 2, 2.2 m); everything at its most
+expensive (12 limbs, 8 branches, 10 twigs, 40 leaves) holds 8,000.
 
 ### The conifer
 
@@ -435,6 +499,12 @@ expensive (8 limbs of 8 branches of 12 spurs, 30 cards) holds 8,000 with 5,536.
 
 ### What the harness said
 
+**The `oak`, `ancient`, `ancient-rising` and `ancient-1m` rows below are the trees from before the
+allometric crown (G73, 2026-10-20)**: their recipes now make different meshes (the oak 50,340
+triangles at merge 0, the two elders 1,419,335 and 1,050,182, `ancient-1m` 454,886 on its first
+merged rung), whose numbers are in [tree allometry](../experiments/tree-allometry.md); the rows are
+kept as what those trees measured.
+
 The same measurements as the palms' (below), over the three recipes, 2026-10-18:
 
 | Tree | Triangles | Clusters / levels | Islands | Seam vertices | Smallest island (texels) | Collapse share | FLIP | PSNR / SSIM |
@@ -512,8 +582,10 @@ and how many orders of branching it has (five, not three). Every one of those is
 broadleaf's code paths that the oak would then pass through, so the oak's bytes would rest on
 every such branch being taken the old way at scale 1. A species of its own shares the kit (`kit.h`:
 the axis, the tube, the spray, and the helpers added for this batch) and nothing else, so the oak
-cannot move, and its ranges are its own (a 100 m tree's twig is 5 m and its leaf card 1.4 m — a
-leaf cluster — where the oak's are 0.9 m and 0.24 m).
+cannot move, and its ranges are its own. What it no longer has of its own is a twig and a leaf of
+the tree's size: since G73 its twig is 0.8 m and 6 mm in radius and its leaf 0.3 m, the species'
+on a 40 m tree and a 150 m one, and its size shows as more orders and more twigs
+([allometry](#allometry)); until then a 100 m tree's twig was 5 m and its card 1.4 m.
 
 **The trunk** is straight — a lean of up to 8° and no wander — so the structural rule holds for it
 exactly; its foot is sunk a metre (`k_sink_m`) so the flare meets uneven ground. Its **core** tapers
@@ -545,30 +617,36 @@ radius out from its axis), `limb_run_m` long (the highest 0.65 of it), `limb_rad
 base (the highest 0.65 of it) tapering to 0.85 of that: **that is where platforms go**, and it is
 load-bearing and straight. **The limb past it** continues from the run's tip, turning up towards
 the light by (0.6 + 0.4 `upturn`) × 60° over `limb_reach_m` (the highest 0.6 of it) with half the
-wander, load-bearing and curved, and carries `branches` branches as the broadleaf's limbs do at a
-larger scale; the trunk's top carries `branches` more. Each branch carries `sub_branches`
-sub-branches, each sub-branch `twigs` leafy twigs of `twig_length_m`, each a spray of `leaves`
-**leaf-cluster cards** a side, `leaf_length_m` long — a card stands for a cluster of leaves at this
-scale, and the ladder halves the cards (doubling their width) so a far tree is still cheap. Radii
-by the pipe model below the limbs. Parts: the trunk, the runs and the limbs past them, the branches,
-the sub-branches, the twigs — 2,179 on the default, 19 of them load-bearing.
+wander, load-bearing and curved, and from it and from the trunk's top the [allometric
+recursion](#allometry) grows: `branches` laterals on the limb from 0.15 of the way out, each
+`branch_length` (0.3) of its reach, and then self-similar orders by the pipe rule down to the
+species' twig, 6 mm in radius and 0.8 m long, whose cards are leaves 0.3 m long. On the default
+100 m tree: 214,834 twigs over 12 orders, 286,441 shoots, 564,920 cards over a 10,169 m² footprint
+(a 57 m crown radius) — a realised LAI of 2.93 — and **972 parts**: the trunk, the nine runs and
+the nine limbs past them (the 19 load-bearing ones), and the 953 recursion shoots of the part class
+(4, shoots over about 10 cm in radius) and up. The trunk's 5 m core carries more area than its
+limbs and crown need (theirs is a 3.9 m core's): the heartwood of the shed limbs' disused pipes, as
+in a giant.
 
-**The budget** (default 300,000; 12,000 to 2,000,000). The default 100 m tree is 196,301 triangles
-at full detail — bark 81,101 (the trunk 96 columns plus 30 pinned by 135 rows, runs 32 × 12, limbs
-24 × 20, branches 12 × 10, sub-branches 6 × 5), leaves 115,200 (1,800 twigs of 16 cards a side) —
-and `ancient-1m` is 945,961 (8 branches, 6 sub-branches, 10 twigs, 44 cards: 4,800 twigs). The
-ladder: sub-branch rows, branch rows, limb and run rows, the two finest orders' sides, the trunk's
-columns and the runs' and limbs' sides, the trunk's rows halved, every order's sides again, the
-trunk to 40 columns and its rows halved again, the cards halved down to one, and last two rungs of
-everything's rows and sides (the fins' flank pins go, their ridges stay). On 100,000 the default is
-76,703 (8 cards), on 30,000 26,303 (one card), and its bottom rung is **11,448** — about two thirds of
-it the 1,800 twigs' four triangles each, which no rung drops because they are parts. Everything at
-its most parts (12 limbs, 10 branches, 8 sub-branches, 12 twigs: 13,000 twigs) needs 61,608 at the
-bottom and is refused under it. **What it costs** (msvc-debug, on a machine shared with other
-agents' builds and GPU work, so upper bounds): the default's container builds in 2.6 s (5,631
-clusters, 13 levels, 57 pages, 339,203 vertices), `ancient-1m`'s in 13.8 s (26,081 clusters, 16
-levels, 269 pages), the bottom rung's in 0.2 s; drawing it is its cluster DAG's, which the harness
-shows collapsing to 0.16–0.31 of the finest cut at 1 px.
+**The budget** (default 1,500,000; 20,000 to 4,000,000). The default 100 m tree is 1,419,335
+triangles at full detail — bark 289,495 (the trunk 96 columns plus 30 pinned by 135 rows, runs 32
+× 12, limbs 24 × 20, the recursion's parts and its shoots of class 2 and up), leaves 1,129,840 — with
+no rung walked; the default was 300,000 until G73 and was raised to what holds the 100 m tree's
+leaves at their own size, which the elder grove affords twice ([what it
+costs](../experiments/tree-allometry.md#what-it-costs)). The ladder ([above](#the-budget-of-a-crown)):
+the parts' and the limbs' rows; the recursion's cross-sections; the trunk's columns and the runs'
+and limbs' sides; the folded wood class by class to the part class; the trunk's rows halved; every
+order's sides again; the trunk to 40 columns and its rows halved again; then the merges — the
+**ninth rung**, on any budget under about 1.15 million — and the halvings; and last two rungs of
+everything's rows and sides (the fins' flank pins go, their ridges stay). On 1,000,000 it is
+449,070 (merge 1, cards 1.22 m), on 250,000 140,410 (merge 2, 2.52 m), on 100,000 57,642 (merge 3),
+and its floor, **20,000**, holds 15,964 after 27 rungs (it was 12,000 until the recursion's 953
+parts, each a tube on every rung, needed more). Everything at its most limbs and laterals holds the
+floor too (19,834, 1,173 parts): the part cap is what bounds it. `ancient-1m` (110 m on a million
+triangles) is now the first merged rung's example: 454,886 triangles of 1.22 m cards. **What it
+costs** (msvc-debug, a shared machine, so upper bounds): the default's container builds in 48.8 s
+(68,013 clusters, 17 levels, 4,167,147 vertices), `ancient-rising`'s in 30.0 s; the elder grove's
+frame and pool before and after are in [tree allometry](../experiments/tree-allometry.md#what-it-costs).
 
 ### The structural table
 
@@ -606,7 +684,7 @@ motion contract and **written only when a species emits it**: the palm, the broa
 conifer emit none — the shared helper that opens a part (`Emitter::begin_part`) knows no radius, and
 their solvers' code paths stay as they were, so their containers are the bytes they were — and an
 imported mesh's container never has it. A reader refuses a record naming a part the motion table
-does not have, or out of order. The default ancient tree's table is 2,179 rows (34,864 bytes); the
+does not have, or out of order. The default ancient tree's table is 972 rows (15,552 bytes); the
 first 19 are what a village plan reads: the trunk (5.0 → 2.0 m), and nine runs and nine limbs past
 them.
 
@@ -873,8 +951,21 @@ threshold that knows a strip's width — not more tuning of the solver.
   tree's bark tubes are UV'd in metres and their cards whole, like the broadleaf's, but which set
   each part samples (the birch's white bark, the willow's curtains, the fruit) is the materials
   work's (G60), not these solvers'.
-- **Wind on the curtains and the canopy** (S66): every willow curtain and every megaflora twig is a
-  part of its own so that stage can move it; nothing does yet.
+- **The canopy's leaves ride their parts** (G73): a broadleaf's or an ancient tree's twigs are no
+  longer parts of their own — there are hundreds of thousands — so a leaf card sways with the finest
+  part it grows from, at that part's twig stiffness (the renderer's "leaf" class is for parts with no
+  wood, which these crowns no longer have); a leaf's own flutter is a per-vertex term the stage does
+  not have yet.
+- **Branch-group and whole-tree impostors** (R65, R89): the merged cards of a lower rung are opaque
+  parallelograms a metre and more long until alpha-masked cluster textures baked from the solver's
+  own finest geometry draw them as foliage, and octahedral impostors take the far field
+  ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
+- **Self-organising growth** (G74, proposed): bud fate by light, so crowns fill their light and
+  apical control and shedding follow from age rather than from the recipe.
+- **A walker on the same limb at every rung**: the collision proxy is the mesh's triangles by part,
+  and between the default ancient tree's finest rung and its floor the limbs' surfaces move up to
+  0.44 m (the runs 0.12 m); a proxy built from the structural table's tubes would not move at all
+  ([tree allometry](../experiments/tree-allometry.md#what-it-costs)).
 - **The structural table for the first three species**: the palm, the broadleaf and the conifer
   emit none, because the helper that opens their parts knows no radius and their pinned code paths
   were left alone. Adding it is a change to each solver and a new pin each.
@@ -901,7 +992,14 @@ structural table) in `tests/species_tests.cpp`; a change that moves one bumps
 `flora::k_flora_version` and the number in the same commit. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
-an oak or a spruce does not carry.
+an oak or a spruce does not carry. **The allometric crown (G73) moved the broadleaf's and the
+ancient tree's pins and not `k_flora_version`**: it appended fields to both species (`@version(2)`),
+so every broadleaf and ancient file's canonical parameters — and with them its source hash and its
+cache key — changed anyway, while a version bump would have moved every other species' container
+(the palm's is pinned with its identity) for nothing. Its recursion draws from one stream per shoot
+(its depth-first index), and the two species' containers are pinned besides, folded section by
+section, in `apps/engine_content/tests/determinism_tests.cpp` (the broadleaf at its default, the
+ancient tree on a 100,000 rung, so the merged cards are in the bytes), which GCC and Clang reproduce.
 
 **Owned data.** The species' parameter types and the solver. Nothing persistent: a palm is derived
 data, rebuilt from its parameters.
@@ -950,6 +1048,18 @@ data, rebuilt from its parameters.
   near-horizontal and at least a metre thick, its foot flaring past the core and the core exact
   above the buttresses, each hollow open through its doorway, closed at its back and floored; the
   table round-trips through section 37 and the palm's container has none;
+- the allometric crown (`tests/allometry_tests.cpp`): the same species at 8 and 32 m (the
+  broadleaf) and at 45 and 100 m (the ancient tree) draws cards of `leaf_length_m` to the millimetre;
+  the broadleaf at 6, 12 and 24 m has more orders as it grows, each within one of
+  1 + log_Rb((R / r_twig)^Δ); the pipe rule holds at every node of the recursion to 2% at Δ 2 and 2.3
+  (to 2e-7 in fact), and every terminal twig's radius is `twig_radius_m` to within one pipe step;
+  the realised LAI, measured as the leaf cards' area over the convex hull of their vertices, is
+  within a fifth of the field on the default broadleaf and ancient tree; a recipe setting the old
+  fields (`sub_branches`, `twigs`, `leaves`) validates, builds and is capped by them; the parts are
+  dense and parent-first, 230 on the default broadleaf and 972 on the default ancient tree
+  (`flora_tests.cpp`, `species_tests.cpp`); and down the ladder every rung holds its budget, merges
+  no less finely than the rung above, and keeps the part list and the structural table byte for
+  byte, with the load-bearing surfaces' movement between the finest rung and the floor measured;
 - a parameter out of range is refused with its name;
 - a `.flora.json` in a scene's mesh table becomes a mesh with the three materials through the
   cache — a hit the second time, the same clusters built in memory — and the oasis scene's first
@@ -970,11 +1080,11 @@ data, rebuilt from its parameters.
   (`flora_scene_tests.cpp`).
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
+`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
 `k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/structure.h` (the structural table: `StructuralPart`, `k_load_bearing`, `k_straight`, `structural_point`, `structural_radius`, `load_bearing_min_radius`, `Hollow`, `ancient_hollows`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
 `k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `k_species_birch`, `k_species_willow`, `k_species_orchard`, `k_species_ancient`, `solve_flora`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key` (with the pack), `flora_role`, `apply_flora_materials`, `build_flora_container`
-(with the pack)). The mesh generator "flora" registers from `src/flora.cpp` and takes the pack from
+(with the pack, and a branching species' `TreeReport`)). The mesh generator "flora" registers from `src/flora.cpp` and takes the pack from
 the host's `assets::MeshGeneratorInputs`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `assets`, `geometry`,
@@ -1002,7 +1112,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | LOD policy | the cluster DAG's | a palm is one mesh; distance is the DAG's |
 | Determinism | the same bytes on every toolchain | [above](#determinism) |
 | Zero cost when unused | nothing runs unless something asks for a palm | plan 11 §11.10: absent work |
-| Tests and size table | `tests/flora_tests.cpp`, `tests/size_table.cpp` | written |
+| Tests and size table | `tests/flora_tests.cpp`, `tests/species_tests.cpp`, `tests/allometry_tests.cpp`, `tests/size_table.cpp` | written |
 | Bench | none | no hot path |
 | Removal proof | `ENGINE_WITH_FLORA`, off in the minimal build | works |
 

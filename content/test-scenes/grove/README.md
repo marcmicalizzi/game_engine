@@ -8,7 +8,11 @@ above the ground, looking at its middle, then walks in among the trunks at eye h
 
 It needs no sample asset: every tree is solved from its parameters and built through the
 derived-data cache like any glTF ([flora](../../../docs/subsystems/flora.md#in-a-scene)), so the
-first load builds four containers and every later one reads them.
+first load builds four containers and every later one reads them. Since the allometric crown (G73,
+2026-10-20; [flora](../../../docs/subsystems/flora.md#allometry)) the oak's recipe (12 m, a 0.4 m
+trunk) is 50,340 triangles: 5,814 twigs over 8 orders carrying 20,418 leaf cards of 0.24 m over a
+147 m² crown, a leaf area index of 3.9, and 94 motion parts — where it was 27,356 triangles of 441
+twigs, every twig a part.
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/grove/scene.json --camera-path content/test-scenes/grove/camera-path.json --offscreen --benchmark grove.jsonl

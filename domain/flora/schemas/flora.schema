@@ -53,14 +53,14 @@ struct Palm @version(1) {
 /// their branches and leafy twigs, grown by seeded self-similar branching — each order's shoots
 /// spaced along their parent on the golden angle, turned towards the light, their radii by the pipe
 /// model — with its leaves as two-sided cards on the twigs. Defaults make a 12 m oak.
-struct Broadleaf @version(1) {
+struct Broadleaf @version(2) {
   /// Everything left to chance: the lean's azimuth, every shoot's turn, spread and wander.
   seed: u64 = 1
   /// The leader's top above the ground: 3 to 40 m.
   height_m: f32 = 12.0 @unit(m)
-  /// The trunk's radius at the ground: 0.05 to 2 m. Every shoot's radius follows from it by the
-  /// pipe model.
-  trunk_radius_m: f32 = 0.35 @unit(m)
+  /// The trunk's radius at the ground: 0.05 to 2 m, or 0 for the allometric radius of the height
+  /// (`allometry_exponent`: 0.35 m at 12 m). Every shoot's radius follows from it by the pipe model.
+  trunk_radius_m: f32 = 0.0 @unit(m)
   /// Where the crown begins, as a share of the height: the lowest limb leaves the trunk here,
   /// 0.1 to 0.8.
   crown_base: f32 = 0.3
@@ -75,27 +75,55 @@ struct Broadleaf @version(1) {
   limb_length: f32 = 0.5
   /// Branches (order 2) on every limb: 1 to 8.
   branches: u32 = 6
-  /// Leafy twigs (order 3) on every branch, and on the leader's top: 1 to 10.
+  /// The most laterals a shoot above the limbs bears (a cap on `branching_ratio` - 1; it was the
+  /// twigs on every branch): 1 to 10.
   twigs: u32 = 9
   /// A branch's or a twig's angle from its parent: 15 to 85 degrees.
   branch_angle_deg: f32 = 45.0 @unit(deg)
   /// A branch's length over its limb's: 0.2 to 0.9.
   branch_length: f32 = 0.5
-  /// A twig's length: 0.1 to 3 m.
-  twig_length_m: f32 = 0.9 @unit(m)
+  /// The terminal twig's length, a species constant: 0.1 to 3 m.
+  twig_length_m: f32 = 0.7 @unit(m)
   /// How far each shoot turns towards the light along its length, as a share of 40 degrees:
   /// -1 (weeping) to 1.
   upturn: f32 = 0.5
   /// How far a shoot wanders from straight at every step: 0 to 25 degrees.
   wander_deg: f32 = 5.0 @unit(deg)
-  /// Leaf cards along each side of a twig: 1 to 40.
+  /// The most leaf cards along each side of a twig (the count is `leaf_area_index`'s): 1 to 40.
   leaves: u32 = 12
-  /// A leaf card's length, out from the twig: 0.03 to 0.6 m.
+  /// A leaf card's length, out from the twig — one leaf, a species constant: 0.03 to 0.6 m.
   leaf_length_m: f32 = 0.24 @unit(m)
   /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
   leaf_angle_deg: f32 = 50.0 @unit(deg)
   /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The broadleaf").
   triangle_budget: u32 = 60000
+  // ---- allometric branching (G72; flora.md "Allometry", docs/experiments/tree-allometry.md).
+  // Above the limbs the crown is a recursion of self-similar orders down to a terminal twig of the
+  // species' own size: `branches` is then the limbs' laterals, `twigs` a cap on a shoot's laterals,
+  // `leaves` a cap on a twig's cards a side, and the leaf count comes from `leaf_area_index`.
+  /// The terminal twig's radius, a species constant that never scales with the tree (Corner's
+  /// rules): 0.001 to 0.012 m. The recursion stops where a shoot's thinnest child would be thinner.
+  twig_radius_m: f32 = 0.004 @unit(m) @since(2)
+  /// The pipe model's exponent: a parent's radius to this power is the sum of its children's
+  /// (da Vinci's 2; measured trees 1.8 to 2.5): 1.8 to 3.
+  area_exponent: f32 = 2.0 @since(2)
+  /// Children a shoot of the recursion bears, its leader included (Horton's bifurcation ratio,
+  /// 3 to 5 in trees): 2 to 6.
+  branching_ratio: u32 = 4 @since(2)
+  /// A child's length over its parent's (West, Brown and Enquist's space-filling n^(-1/3), 0.63
+  /// for 4 children): 0.4 to 0.9.
+  length_ratio: f32 = 0.63 @since(2)
+  /// The leader's share of a node's cross-section, the laterals sharing the rest equally: 0.1 to
+  /// 0.7. Above 1 / `branching_ratio` the leader dominates (apical control).
+  leader_share: f32 = 0.3 @since(2)
+  /// One-sided leaf area over the crown's footprint (the convex hull of its shoot tips from above),
+  /// which sets the leaf count: 0.5 to 10 (temperate broadleaf crowns 3 to 6).
+  leaf_area_index: f32 = 4.0 @since(2)
+  /// A leaf card's width over its length: 0.1 to 1.
+  leaf_width: f32 = 0.5 @since(2)
+  /// The exponent b of height on trunk diameter, H ~ D^b (elastic similarity's 2/3), by which a
+  /// `trunk_radius_m` of 0 is found from `height_m`: 0.4 to 1.
+  allometry_exponent: f32 = 0.6667 @since(2)
 }
 
 /// A conifer (flora.md, "The conifer"): a pine or spruce of a straight trunk and whorls of
@@ -268,7 +296,7 @@ struct Orchard @version(1) {
 /// run straight and near-horizontal for their first stretch — where platforms go — before they
 /// turn up and branch as a broadleaf does at a larger scale, carrying a canopy of leaf-cluster
 /// cards. Its parts carry the structural table (section 37). Defaults make a 100 m tree.
-struct Ancient @version(1) {
+struct Ancient @version(2) {
   /// Everything left to chance: the buttresses', hollows' and limbs' azimuths, every shoot's turn.
   seed: u64 = 1
   /// The crown's top above the ground: 40 to 150 m.
@@ -318,26 +346,49 @@ struct Ancient @version(1) {
   branches: u32 = 6
   /// A branch's angle from its parent: 15 to 80 degrees.
   branch_angle_deg: f32 = 40.0 @unit(deg)
-  /// A branch's length over its limb's reach: 0.2 to 0.9.
-  branch_length: f32 = 0.7
-  /// Sub-branches on every branch: 1 to 8.
+  /// A branch's length over its limb's reach: 0.2 to 0.9. Its leaders carry it on by
+  /// `length_ratio` an order, so a branch system reaches about 1 / (1 - `length_ratio`) of this.
+  branch_length: f32 = 0.3
+  /// A cap on the laterals a shoot of the recursion bears (it was the sub-branches on every
+  /// branch): 1 to 8.
   sub_branches: u32 = 5
-  /// Leafy twigs on every sub-branch: 1 to 12.
+  /// A second cap on the same (it was the leafy twigs on every sub-branch): 1 to 12.
   twigs: u32 = 6
-  /// A twig's length: 1 to 10 m.
-  twig_length_m: f32 = 5.0 @unit(m)
+  /// The terminal twig's length, a species constant (it was a 5 m leaf-cluster twig): 0.3 to 1.5 m.
+  twig_length_m: f32 = 0.8 @unit(m)
   /// How far each shoot past the runs turns towards the light, as a share of 40 degrees: -1 to 1.
   upturn: f32 = 0.5
   /// How far a shoot past the runs wanders from straight at every step: 0 to 20 degrees.
   wander_deg: f32 = 5.0 @unit(deg)
-  /// Leaf-cluster cards along each side of a twig: 1 to 60.
+  /// The most leaf cards along each side of a twig (the count is `leaf_area_index`'s): 1 to 60.
   leaves: u32 = 16
-  /// A leaf-cluster card's length, out from the twig: 0.2 to 3 m.
-  leaf_length_m: f32 = 1.4 @unit(m)
+  /// A leaf card's length — one leaf at the species' size, never the tree's: 0.05 to 0.6 m.
+  leaf_length_m: f32 = 0.3 @unit(m)
   /// A card's angle from its twig, towards the tip: 10 to 85 degrees.
   leaf_angle_deg: f32 = 50.0 @unit(deg)
-  /// The most triangles the mesh may have: 12,000 to 2,000,000 (flora.md, "Megaflora").
-  triangle_budget: u32 = 300000
+  /// The most triangles the mesh may have: 20,000 to 4,000,000 (flora.md, "Megaflora").
+  triangle_budget: u32 = 1500000
+  // ---- allometric branching (G72; flora.md "Allometry", docs/experiments/tree-allometry.md).
+  // Past the limbs' runs the crown is a recursion of self-similar orders down to a terminal twig of
+  // the species' own size: `branches` is then the limbs' laterals, `sub_branches` and `twigs`
+  // caps on a shoot's laterals, `leaves` a cap on a twig's cards a side, and the leaf count comes
+  // from `leaf_area_index`.
+  /// The terminal twig's radius, a species constant that never scales with the tree (Corner's
+  /// rules: a large leaf needs a stout twig): 0.001 to 0.012 m.
+  twig_radius_m: f32 = 0.006 @unit(m) @since(2)
+  /// The pipe model's exponent: 1.8 to 3.
+  area_exponent: f32 = 2.0 @since(2)
+  /// Children a shoot of the recursion bears, its leader included: 2 to 6.
+  branching_ratio: u32 = 4 @since(2)
+  /// A child's length over its parent's: 0.4 to 0.9.
+  length_ratio: f32 = 0.63 @since(2)
+  /// The leader's share of a node's cross-section: 0.1 to 0.7 (an old crown's apical control is
+  /// weak, so the default splits nearly evenly).
+  leader_share: f32 = 0.28 @since(2)
+  /// One-sided leaf area over the crown's footprint: 0.5 to 10.
+  leaf_area_index: f32 = 3.0 @since(2)
+  /// A leaf card's width over its length: 0.1 to 1.
+  leaf_width: f32 = 0.6 @since(2)
 }
 
 /// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative
