@@ -52,6 +52,12 @@ a teleport 10 m ahead at tick 50; `5`, named `walk_poc_actor`, which finds the s
 playing `bend`, at twice the rate from tick 120, fading to rest from 240) are what engine-view's
 tests check the refusals, the tail, the actors and the replay rules with.
 
+**Its own art** (hotload ABI 6): with `hud/panel.png` beside the scene file (or the module), every
+build draws that image nine-sliced as a panel behind the `[E] Pick up` prompt, and with
+`hud/font.ttf`, a `FIND THE WATER` title in that font at the top of the picture, letter-spaced with a
+drop shadow; without the files the HUD is the one it always drew. engine-view's HDR HUD case writes
+both into its scratch directory and captures them in `sdr8`, `hdr10` and `scrgb`.
+
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/ruins-walk/scene.json --walk --start 16,20,40 0,0 --game build/msvc-release/bin/game/walk_poc.dll --game-state walk_poc.state.json
 ```

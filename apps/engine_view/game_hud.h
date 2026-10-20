@@ -9,10 +9,11 @@
 //
 // **This is a proof-of-concept HUD, not the game UI framework.** ADR-0054 decided the *tools* UI is
 // ImGui through the overlay and said in so many words that a tool's overlay is not a HUD; plan 04
-// §4.7 and 10 §10.6 R45 defer the game UI framework. What a game needs from a HUD — layout that
-// scales, fonts, images, localisation, HDR composition at paper white — is that framework's, and
-// none of it is here. This draws what a fixture needs to be played and judged, through a path that
-// already exists, and is meant to be replaced, not grown.
+// §4.7 and 10 §10.6 R45 defer the game UI framework. Since ABI 6 (roadmap P49) it draws a game's
+// images (nine-sliced, tinted) and its own fonts with a shadow and letter spacing, and on an HDR
+// target the renderer composites it at paper white; layout beyond nine anchors, localisation and
+// input are still that framework's. This draws what a fixture needs to be played and judged,
+// through a path that already exists, and is meant to be replaced, not grown.
 //
 // **It scales with the picture** (P44). The font is rasterized at `hud_font_px(height, scale)` —
 // `k_hud_font_px` on a 1080-pixel-high picture at 100 %, other heights and display scales in
@@ -36,6 +37,7 @@
 #include <string>
 
 struct ImGuiContext;
+struct ImFont;
 
 namespace engine::renderer {
 class SceneRenderer;
@@ -129,9 +131,17 @@ class GameHudOverlay {
   HudRect bounds_of(u32 id) const noexcept;
   // The HUD scale the last layout used: the picture's height over 1080 times the display's scale.
   f32 hud_scale() const noexcept { return scale_; }
+  // ABI 6's images and fonts: the overlay textures made for the images (one each, while an element
+  // names it) and the fonts added to the atlas.
+  u32 image_textures() const noexcept;
+  u32 image_uploads() const noexcept { return image_uploads_; }
+  u32 fonts_loaded() const noexcept { return fonts_loaded_; }
 
  private:
   void apply_font(f32 px);
+  void load_fonts(const GameHud& hud);
+  bool image_texture(renderer::SceneRenderer& renderer, u32 image, std::string& error);
+  void release_images(renderer::SceneRenderer& renderer);
   void draw_elements(const GameHud& hud, f32 margin_x, f32 margin_y);
 
   // The rectangles of the last layout, by id: the stack's lines and meters, then the elements.
@@ -159,6 +169,17 @@ class GameHudOverlay {
   u32 pending_textures_ = 0;
   i64 atlas_ns_ = 0;
   u64 layouts_ = 0;
+
+  // ABI 6. A font the module named, added to the atlas once (null: it could not be, and the
+  // element falls back to the HUD's own). An image's overlay texture, made by `upload` the first
+  // time a layout draws it and removed when no element names it any more; `image_used_` is what
+  // the last layout's elements named. The files are the runner's (`GameHud::images`).
+  ImFont* fonts_[GameHud::k_fonts] = {};
+  u32 fonts_loaded_ = 0;
+  u32 image_texture_[GameHud::k_images];  // renderer::OverlayPass::k_no_texture when none
+  bool image_used_[GameHud::k_images] = {};
+  u32 image_uploads_ = 0;
+  const GameHud* hud_ = nullptr;  // the last layout's
 };
 
 }  // namespace engine::view

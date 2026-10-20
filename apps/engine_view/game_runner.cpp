@@ -5,6 +5,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <foundation/hotload/module_host.h>
+#include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
 #include <cmath>
@@ -74,6 +75,8 @@ hotload::Result GameHud::set_element(const hotload::HudElement& in, u64 said) no
     if (element_count >= k_elements) return hotload::Result::OutOfRange;
     slot = &elements[element_count++];
   }
+  *slot = Element{};
+  slot->kind = Kind::Text;
   slot->id = in.id;
   slot->anchor = in.anchor;
   slot->align = in.align;
@@ -88,6 +91,12 @@ hotload::Result GameHud::set_element(const hotload::HudElement& in, u64 said) no
   slot->panel_padding_px = in.panel_padding_px;
   slot->visible = in.visible != 0;
   slot->tick = said;
+  // ABI 6's fields, which the host left at their defaults for an older module's element.
+  slot->font = in.font;
+  slot->letter_spacing_px = in.letter_spacing_px;
+  slot->shadow_offset_px[0] = in.shadow_offset_px[0];
+  slot->shadow_offset_px[1] = in.shadow_offset_px[1];
+  std::memcpy(slot->shadow_color, in.shadow_color, 4);
   // The text, cut at a character boundary when it is longer than the slot: a UTF-8 continuation
   // byte (10xxxxxx) is never left at the end without its lead.
   usize n = in.text != nullptr ? static_cast<usize>(in.text_length) : 0u;
@@ -98,6 +107,33 @@ hotload::Result GameHud::set_element(const hotload::HudElement& in, u64 said) no
   }
   if (n > 0) std::memcpy(slot->text, in.text, n);
   slot->text[n] = '\0';
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameHud::set_image(const hotload::HudImage& in, u32 image, u64 said) noexcept {
+  Element* slot = nullptr;
+  for (u32 e = 0; e < element_count && slot == nullptr; ++e) {
+    if (elements[e].id == in.id) slot = &elements[e];
+  }
+  if (slot == nullptr) {
+    if (element_count >= k_elements) return hotload::Result::OutOfRange;
+    slot = &elements[element_count++];
+  }
+  *slot = Element{};
+  slot->kind = Kind::Image;
+  slot->id = in.id;
+  slot->anchor = in.anchor;
+  slot->align = in.align;
+  slot->offset_px[0] = in.offset_px[0];
+  slot->offset_px[1] = in.offset_px[1];
+  slot->image = image;
+  slot->image_size_px[0] = in.size_px[0];
+  slot->image_size_px[1] = in.size_px[1];
+  for (u32 k = 0; k < 4; ++k)
+    slot->slice_px[k] = in.slice_px[k];
+  std::memcpy(slot->tint, in.tint, 4);
+  slot->visible = in.visible != 0;
+  slot->tick = said;
   return hotload::Result::Ok;
 }
 
@@ -153,6 +189,8 @@ JsonValue GameHud::to_json() const {
   }
   out.set("meters", std::move(meters_json));
   out.set("elements", element_count);
+  out.set("images", image_count);
+  out.set("fonts", font_count);
   out.set("tick", tick);
   return out;
 }
@@ -498,6 +536,12 @@ struct GameRunner::Impl {
           "a length that is not finite, a size at or below zero, or a negative outline or padding";
     } else if (e.text == nullptr && e.text_length > 0) {
       why = "a text length with no text";
+    } else if (e.font > self.hud.font_count ||
+               (e.font > 0 && self.hud.fonts[e.font - 1].status != hotload::Result::Ok)) {
+      why = "a font no hud_font returned";
+    } else if (!finite(e.letter_spacing_px) || !finite(e.shadow_offset_px[0]) ||
+               !finite(e.shadow_offset_px[1])) {
+      why = "a letter spacing or a shadow offset that is not finite";
     } else {
       for (u64 i = 0; i < e.text_length && why == nullptr; ++i) {
         if (e.text[i] == '\0') why = "text shorter than its length says (a NUL inside it)";
@@ -524,6 +568,128 @@ struct GameRunner::Impl {
     const hotload::Result r = self.hud.remove_element(id);
     if (r == hotload::Result::Ok) ++self.hud_removes;
     return r;
+  }
+
+  // ---- ABI 6: the HUD's images and the game's fonts ----
+  // **Where a module's file is** (`Config::scene`; apps.md, "The HUD, provisional"): a relative,
+  // `/`-separated path, never absolute and never through `..`, beside the scene file and then
+  // beside the module. Looked up and judged once, the first time the path is named, and the answer
+  // kept in `table` — found or not — so a module that names it every tick allocates nothing more.
+  // `judge` decides what a found file is (an image that decodes, a font by its signature).
+  using Judge = hotload::Result (*)(const std::string& native, GameHud::File& file);
+  static hotload::Result find_file(Impl& self, std::string_view path, GameHud::File* table,
+                                   u32& count, u32 capacity, Judge judge, u32& index) {
+    for (u32 i = 0; i < count; ++i) {
+      if (path == table[i].path) {
+        index = i;
+        return table[i].status;
+      }
+    }
+    if (path.empty() || path.size() >= GameHud::k_path_chars || path.front() == '/' ||
+        path.find('\\') != std::string_view::npos || path.find(':') != std::string_view::npos ||
+        path.find('\0') != std::string_view::npos) {
+      return hotload::Result::InvalidArgument;
+    }
+    for (usize at = 0; at <= path.size();) {
+      const usize end =
+          path.find('/', at) == std::string_view::npos ? path.size() : path.find('/', at);
+      if (path.substr(at, end - at) == "..") return hotload::Result::InvalidArgument;
+      at = end + 1;
+    }
+    if (count >= capacity) return hotload::Result::OutOfRange;
+    GameHud::File& file = table[count];
+    file = GameHud::File{};
+    copy_text(file.path, GameHud::k_path_chars, path);
+    file.status = hotload::Result::NotFound;
+    const std::string_view roots[2] = {io::parent_path(self.config.scene),
+                                       io::parent_path(self.config.module)};
+    for (u32 r = 0; r < 2; ++r) {
+      if (r == 0 && self.config.scene.empty()) continue;
+      const std::string native = io::join_path(roots[r], path);
+      if (!io::exists(native)) continue;
+      file.status = judge(native, file);
+      if (native.size() < GameHud::k_path_chars) {
+        copy_text(file.resolved, GameHud::k_path_chars, native);
+      } else {
+        file.status = hotload::Result::InvalidArgument;  // a root too deep to keep the path
+      }
+      break;
+    }
+    index = count++;
+    return file.status;
+  }
+  static hotload::Result judge_image(const std::string& native, GameHud::File& file) {
+    image::Image decoded;
+    if (image::read_image(native, decoded) != io::Status::Ok || decoded.width == 0)
+      return hotload::Result::InvalidArgument;
+    file.width = decoded.width;
+    file.height = decoded.height;
+    return hotload::Result::Ok;
+  }
+  // TrueType (0x00010000 or "true"), OpenType with CFF outlines ("OTTO") or a collection ("ttcf").
+  static hotload::Result judge_font(const std::string& native, GameHud::File&) {
+    std::string bytes;
+    if (io::read_file(native, bytes) != io::Status::Ok || bytes.size() < 12)
+      return hotload::Result::InvalidArgument;
+    const std::string_view tag(bytes.data(), 4);
+    const bool font =
+        tag == std::string_view("\0\1\0\0", 4) || tag == "true" || tag == "OTTO" || tag == "ttcf";
+    return font ? hotload::Result::Ok : hotload::Result::InvalidArgument;
+  }
+  static void said_refusal(Impl& self, const char* what, u32 id, const char* why) {
+    ++self.hud_refused;
+    if (self.hud_refused == 1)
+      std::fprintf(stderr, "engine-view: game: %s %u refused: %s\n", what, id, why);
+  }
+  static hotload::Result hud_image(void* user, const hotload::HudImage& e) {
+    Impl& self = *static_cast<Impl*>(user);
+    const auto finite = [](f32 v) { return std::isfinite(v); };
+    const char* why = nullptr;
+    if (e.id >= hotload::k_hud_reserved) {
+      why = "an id from k_hud_reserved up is the host's";
+    } else if (static_cast<u32>(e.anchor) > static_cast<u32>(hotload::HudAnchor::BottomRight) ||
+               static_cast<u32>(e.align) > static_cast<u32>(hotload::HudAlign::Right)) {
+      why = "an anchor or an alignment outside its enum";
+    } else {
+      bool ok = finite(e.offset_px[0]) && finite(e.offset_px[1]);
+      for (u32 k = 0; k < 2; ++k)
+        ok = ok && finite(e.size_px[k]) && e.size_px[k] >= 0.0f;
+      for (u32 k = 0; k < 4; ++k)
+        ok = ok && finite(e.slice_px[k]) && e.slice_px[k] >= 0.0f;
+      if (!ok) why = "a length that is not finite, or a negative size or border";
+    }
+    if (why != nullptr) {
+      said_refusal(self, "hud_image", e.id, why);
+      return hotload::Result::InvalidArgument;
+    }
+    const std::string_view path(e.path != nullptr ? e.path : "", static_cast<usize>(e.path_length));
+    u32 index = 0;
+    const hotload::Result found = find_file(self, path, self.hud.images, self.hud.image_count,
+                                            GameHud::k_images, &judge_image, index);
+    if (found != hotload::Result::Ok) {
+      if (found != hotload::Result::NotFound)
+        said_refusal(self, "hud_image", e.id, "a path that is not a relative path to an image");
+      return found;
+    }
+    const hotload::Result r = self.hud.set_image(e, index, self.current_tick);
+    if (r == hotload::Result::Ok) {
+      ++self.hud_sets;
+    } else {
+      ++self.hud_refused;
+    }
+    return r;
+  }
+  static hotload::Result hud_font(void* user, std::string_view path, f32 size_px, u32* out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(size_px) || !(size_px > 0.0f) || size_px > 128.0f)
+      return hotload::Result::InvalidArgument;
+    u32 index = 0;
+    const hotload::Result found = find_file(self, path, self.hud.fonts, self.hud.font_count,
+                                            GameHud::k_fonts, &judge_font, index);
+    if (found != hotload::Result::Ok) return found;
+    if (self.hud.fonts[index].size_px == 0.0f) self.hud.fonts[index].size_px = size_px;
+    *out = index + 1;
+    return hotload::Result::Ok;
   }
 
   // ---- ABI 4: the graphics state, read-only, and requests recorded ----
@@ -741,6 +907,8 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.actor_speed = &Impl::actor_speed;
   services.actor_state = &Impl::actor_state;
   services.ground_height = &Impl::ground_height;
+  services.hud_image = &Impl::hud_image;
+  services.hud_font = &Impl::hud_font;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {

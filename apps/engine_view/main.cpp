@@ -1273,8 +1273,8 @@ void finish_game() {
   }
 }
 // The HUD the game said on its last tick, as this frame's overlay (game_hud.h): null — no overlay,
-// nothing drawn — without a game, with nothing said, or on an HDR target, which the overlay pass
-// refuses until the UI's HDR seam is built (renderer.md, "The overlay"; said once).
+// nothing drawn — without a game or with nothing said. On an HDR target the renderer composites it
+// at paper white before the output encode (renderer.md, "The overlay"; roadmap P49).
 view::GameHudOverlay* g_hud = nullptr;
 renderer::OverlayDrawData g_hud_data;
 // The display's scale under the window (1.5 at 150 %), which sizes the HUD's font with the
@@ -1289,14 +1289,6 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
                                renderer.display() != gfx::DisplayEncoding::Sdr);
   if (g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
-  if (renderer.display() != gfx::DisplayEncoding::Sdr) {
-    if (!said) {
-      said = true;
-      std::fprintf(stderr,
-                   "engine-view: game: no HUD on an HDR target (the overlay is SDR only)\n");
-    }
-    return nullptr;
-  }
   std::string error;
   if (!g_hud->build(g_game->hud(), game_result_panel(), renderer.width(), renderer.height(),
                     g_hud_display_scale, renderer, g_hud_data, error)) {
@@ -4249,6 +4241,11 @@ int run_view(int argc, char** argv) {
     view::GameRunner::Config config;
     config.module = options.game;
     config.state_file = options.game_state;
+    // The game's content directory (ABI 6's images and fonts): beside the scene file — the command
+    // line's, or a replay's header's — and then beside the module.
+    config.scene = !options.scene.empty() ? options.scene
+                   : interactive.replay   ? std::string(interactive.header.scene)
+                                          : std::string();
     // A replay of a `--game` recording restores what the live session restored — the header's
     // `game.restored`, or nothing for one that started fresh — and never the state file, which the
     // live session overwrote at its end (fly_camera.h `SessionHeader::game_restored`).
