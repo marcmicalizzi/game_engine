@@ -421,6 +421,9 @@ ccache_report() {
 }
 '@
 
+# The same two lines after a build on the GPU server (tools/remote-build.ps1), which runs POSIX sh too.
+function Get-CcacheReportScript { return $script:CcacheReport }
+
 function Get-PresetScript {
   <#
   .SYNOPSIS
@@ -481,4 +484,4 @@ Export-ModuleMember -Function Get-ShortHash, Get-CheckoutVolumeId, Get-CheckoutV
   ConvertTo-RootKey, Get-VolumeLabels, ConvertFrom-WorktreePorcelain, ConvertFrom-ContainerMounts,
   ConvertFrom-DockerSize, Format-DockerSize, New-VolumeFact, New-CheckoutFact, Get-VolumeVerdict,
   Get-OwnVolumeVerdict, Format-VolumeVerdict, Get-SharedVolume, Get-CcacheMaxSize, Get-BuildContainerArgs,
-  Get-PresetScript
+  Get-CcacheReportScript, Get-PresetScript

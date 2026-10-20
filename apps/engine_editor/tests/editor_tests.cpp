@@ -1943,11 +1943,13 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
 
   // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
   // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.
-  std::string root = __FILE__;
-  for (u32 i = 0; i < 4; ++i)
-    root = root.substr(0, root.find_last_of("/\\"));
-  const std::string sample = root + "/content/samples/Suzanne/Suzanne.gltf";
-  if (!io::exists(sample)) {
+  // The source tree comes from the build (ENGINE_SOURCE_DIR, test_paths.h), never from __FILE__:
+  // under the compiler cache __FILE__ is relative to the build directory (docs/ci/local-linux.md,
+  // "The compiler cache"), and a walk up from it lands in the build tree and skips this half.
+  const std::string sample =
+      test::data_path(ENGINE_SOURCE_DIR "/content/samples/Suzanne/Suzanne.gltf",
+                      "content/samples/Suzanne/Suzanne.gltf");
+  if (!test::path_exists(sample)) {
     MESSAGE("no " << sample << ": run tools/fetch-samples.ps1 for the sample import");
     return;
   }
