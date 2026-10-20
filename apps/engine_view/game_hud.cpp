@@ -322,10 +322,10 @@ JsonValue hud_elements_json(const GameHud& hud, const GameHudOverlay* overlay) {
     out.push_back(std::move(e));
   }
   const auto pair = [](const f32(&v)[2]) {
-    JsonValue out = JsonValue::array();
-    out.push_back(JsonValue(static_cast<f64>(v[0])));
-    out.push_back(JsonValue(static_cast<f64>(v[1])));
-    return out;
+    JsonValue values = JsonValue::array();
+    values.push_back(JsonValue(static_cast<f64>(v[0])));
+    values.push_back(JsonValue(static_cast<f64>(v[1])));
+    return values;
   };
   for (u32 i = 0; i < hud.element_count; ++i) {
     const GameHud::Element& el = hud.elements[i];
