@@ -18,10 +18,10 @@ engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema CAPABILITY
 
 engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema assets geometry materials texture rocks_schemas
-  SOURCES src/solver.cpp src/rocks.cpp)
+  SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp)
 
 engine_module_tests(NAME rocks
-  SOURCES tests/rocks_tests.cpp tests/size_table.cpp)
+  SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/size_table.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

@@ -468,6 +468,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G68 | Bridge solver: rope bridges as catenaries between two anchors with planks, ties and hand ropes, and plank bridges on posts; static, the motion contract written for later sway | open | G64, G67 | M | design | [14 §14.3](plan/14-structures.md#143-the-solver-family) |
 | G69 | Village solver: a scene generator (`domain/village`) laying paths and lots on the tile source's heights, structure recipes per lot, fences, a well, and the clearing as footprints scatter honours | open | G65, D37, G37, G59 | L | design | [14 §14.3](plan/14-structures.md#143-the-solver-family) |
 | G70 | Structure materials by role: the role table (`timber/oak`, `thatch`, `rope`, `plaster`, …) answered from the material pack's tiled PBR sets, one role-keyed type shared with flora and rocks; trim sheets, per-part tint and solve-time decals after | open | G60 | M | design | [14 §14.6](plan/14-structures.md#146-materials) |
+| G71 | Cliffs and rock faces: a face solver along the ground and a generator that dresses steep terrain | in progress (the face solver, `engine.rocks.Cliff`: rocks.md "Cliffs") | G62 | M | design | [rocks](subsystems/rocks.md#cliffs) |
 
 ## T — Tooling and CI
 

@@ -127,6 +127,53 @@ std::string rock_role(RockType type);
 bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report = nullptr,
                 std::string* error = nullptr);
 
+// ---- cliffs (rocks.md, "Cliffs") ---------------------------------------------------------------
+//
+// A cliff is not a radial body: it is a face along a line on the ground, a box of quads —
+// `stations` along the line, `rows` up it, `depth_rows` back from it — whose front is carved by the
+// joints and beds, whose back is buried `depth` behind it, and whose ends and top close it; a talus
+// skirt (another box) at its foot and fallen blocks (the scree's fragments) on the skirt. The rung
+// is a cell edge in metres, coarsest first: the solver takes the finest whose triangles fit the
+// budget, the skirt at twice the face's cell. The features finer than four cells of a rung fade
+// out, as the boulders' grain does, so the coarsest rung is the same face with its detail left out.
+inline constexpr f64 k_cliff_cells_m[] = {32.0, 24.0, 16.0, 12.0, 8.0, 6.0,   4.0, 3.0,
+                                          2.0,  1.5,  1.0,  0.75, 0.5, 0.375, 0.25};
+inline constexpr u32 k_cliff_cell_count = sizeof(k_cliff_cells_m) / sizeof(k_cliff_cells_m[0]);
+
+// How the solver spent a cliff's budget.
+struct CliffReport {
+  u32 triangles = 0;
+  u32 vertices = 0;
+  u32 parts = 0;            // the face, the skirt (when it has one) and each fallen block
+  u32 steps = 0;            // rungs above the finest the face took; 0 is the finest cell
+  u32 stations = 0;         // the face's grid: cells along the line,
+  u32 rows = 0;             // up it,
+  u32 depth_rows = 0;       // and back through it
+  u32 face_triangles = 0;   // the face's box
+  u32 skirt_triangles = 0;  // the talus skirt's
+  u32 block_triangles = 0;  // the fallen blocks'
+  u32 block_grid = 0;       // the blocks' cube-sphere rung
+  u32 joint_sets = 0;       // as built
+  u32 beds = 0;             // bedding planes across the face's height
+  f32 cell_m = 0.0f;        // the rung
+  f32 length_m = 0.0f;      // the line's
+  f32 height_m = 0.0f;      // the tallest vertex's
+  f32 depth_m = 0.0f;       // the back's distance behind the face, as built
+  f32 relief_m = 0.0f;      // as built
+  f32 rounding = 0.0f;      // as built
+};
+
+// The ranges `engine.rocks.Cliff` documents: false, with a sentence naming the first field out of
+// range, otherwise. What `rock_file_in_range` asks of a cliff's block.
+bool cliff_in_range(const Cliff& cliff, std::string& error);
+
+// Solves a cliff into `out` (one primitive, the type's material): closed, two-manifold and
+// outward-wound part by part, deterministic like every rock. False, with a sentence, when the
+// cliff is refused or its budget cannot hold the face at the coarsest cell and its blocks at the
+// coarsest rung (the sentence says what that needs).
+bool solve_cliff(const Cliff& cliff, assets::MeshData& out, CliffReport* report = nullptr,
+                 std::string* error = nullptr);
+
 // Solves the rock and builds its container: one cluster LOD DAG with normal cones, laid out in
 // pages of `page_bytes` (0: no page table), with the material and its set — the recipe's when its
 // block names an image, else `pack`'s for the type's role, solved at that set's repeat, else the

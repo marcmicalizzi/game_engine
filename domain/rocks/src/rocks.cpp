@@ -56,6 +56,7 @@ RockMaterial* material_of(RockFile& file) {
     case RockShape::Boulder: return file.boulder.has_value() ? &file.boulder->material : nullptr;
     case RockShape::Outcrop: return file.outcrop.has_value() ? &file.outcrop->material : nullptr;
     case RockShape::Scree: return file.scree.has_value() ? &file.scree->material : nullptr;
+    case RockShape::Cliff: return file.cliff.has_value() ? &file.cliff->material : nullptr;
   }
   return nullptr;
 }
@@ -65,6 +66,7 @@ RockType type_of(const RockFile& file) {
     case RockShape::Boulder: return file.boulder.value_or(Boulder{}).type;
     case RockShape::Outcrop: return file.outcrop.value_or(Outcrop{}).type;
     case RockShape::Scree: return file.scree.value_or(Scree{}).type;
+    case RockShape::Cliff: return file.cliff.has_value() ? file.cliff->type : Cliff{}.type;
   }
   return RockType::Granite;
 }
@@ -88,6 +90,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
     case RockShape::Boulder: {
       if (file.outcrop.has_value()) return other("outcrop");
       if (file.scree.has_value()) return other("scree");
+      if (file.cliff.has_value()) return other("cliff");
       const Boulder p = file.boulder.value_or(Boulder{});
       Check c{error, "Boulder"};
       return c.f(p.size_x, 0.05f, 20.0f, "size_x", "0.05 to 20 m") &&
@@ -102,6 +105,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
     case RockShape::Outcrop: {
       if (file.boulder.has_value()) return other("boulder");
       if (file.scree.has_value()) return other("scree");
+      if (file.cliff.has_value()) return other("cliff");
       const Outcrop p = file.outcrop.value_or(Outcrop{});
       Check c{error, "Outcrop"};
       return c.f(p.size_x, 0.2f, 50.0f, "size_x", "0.2 to 50 m") &&
@@ -117,6 +121,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
     case RockShape::Scree: {
       if (file.boulder.has_value()) return other("boulder");
       if (file.outcrop.has_value()) return other("outcrop");
+      if (file.cliff.has_value()) return other("cliff");
       const Scree p = file.scree.value_or(Scree{});
       Check c{error, "Scree"};
       return c.f(p.size_x, 0.1f, 20.0f, "size_x", "0.1 to 20 m") &&
@@ -127,6 +132,17 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 500u, 500000u, "triangle_budget", "500 to 500,000") &&
              material_in_range(p.material, c);
+    }
+    case RockShape::Cliff: {
+      if (file.boulder.has_value()) return other("boulder");
+      if (file.outcrop.has_value()) return other("outcrop");
+      if (file.scree.has_value()) return other("scree");
+      // A cliff's block cannot be left to its defaults: its line is what it is.
+      if (!file.cliff.has_value()) {
+        error = "engine.rocks.RockFile.cliff is absent: a cliff needs its line along the ground";
+        return false;
+      }
+      return cliff_in_range(*file.cliff, error);
     }
   }
   error = "engine.rocks.RockFile.shape is not one the solver has";
@@ -163,6 +179,7 @@ bool read_rock_file(std::string_view text, RockFile& out, std::string& error) {
     case RockShape::Scree:
       if (!out.scree.has_value()) out.scree = Scree{};
       break;
+    case RockShape::Cliff: break;  // in range, so it is there
   }
   return true;
 }
@@ -172,9 +189,14 @@ std::string canonical_rock_json(const RockFile& file) {
   if (filled.shape == RockShape::Boulder && !filled.boulder.has_value()) filled.boulder = Boulder{};
   if (filled.shape == RockShape::Outcrop && !filled.outcrop.has_value()) filled.outcrop = Outcrop{};
   if (filled.shape == RockShape::Scree && !filled.scree.has_value()) filled.scree = Scree{};
+  JsonValue json = schema::to_json(filled);
+  // The shapes' blocks added after version 1 are left out when absent, so a boulder's, an
+  // outcrop's or a scree's parameters — and the key over them — are the bytes they were before
+  // the cliff was (rocks.md, "The build").
+  if (json.is_object() && !filled.cliff.has_value()) json.as_object().erase(std::string("cliff"));
   JsonWriteOptions compact;
   compact.pretty = false;
-  return write_json(schema::to_json(filled), compact);
+  return write_json(json, compact);
 }
 
 u64 rock_source_hash(const RockFile& file) {
