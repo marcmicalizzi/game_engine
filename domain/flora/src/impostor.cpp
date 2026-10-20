@@ -387,10 +387,12 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
     const D3 u = from_f32(job.view.u_axis);
     const D3 v = from_f32(job.view.v_axis);
     const D3 n = from_f32(job.view.normal);
-    const f64 su = static_cast<f64>(px) / (static_cast<f64>(job.view.u_max) - job.view.u_min);
-    const f64 sv = static_cast<f64>(px) / (static_cast<f64>(job.view.v_max) - job.view.v_min);
-    const f64 u_min = job.view.u_min;
-    const f64 v_min = job.view.v_min;
+    const f64 su = static_cast<f64>(px) /
+                   (static_cast<f64>(job.view.u_max) - static_cast<f64>(job.view.u_min));
+    const f64 sv = static_cast<f64>(px) /
+                   (static_cast<f64>(job.view.v_max) - static_cast<f64>(job.view.v_min));
+    const f64 u_min = static_cast<f64>(job.view.u_min);
+    const f64 v_min = static_cast<f64>(job.view.v_min);
     for (const BakeRange& range : job.ranges) {
       for (u32 i = range.first_index; i + 2 < range.first_index + range.index_count; i += 3) {
         i64 x[3], y[3];

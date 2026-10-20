@@ -1048,7 +1048,7 @@ structural table) in `tests/species_tests.cpp`; a change that moves one bumps
 `flora::k_flora_version` and the number in the same commit. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
-an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`. **The allometric crown (G73) moved the broadleaf's and the
+an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The allometric crown (G73) moved the broadleaf's and the
 ancient tree's pins and not `k_flora_version`**: it appended fields to both species (`@version(2)`),
 so every broadleaf and ancient file's canonical parameters — and with them its source hash and its
 cache key — changed anyway, while a version bump would have moved every other species' container

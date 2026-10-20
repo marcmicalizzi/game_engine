@@ -1,7 +1,7 @@
 // A tree's impostor chain drawn (docs/subsystems/flora.md, "The impostor chain"; renderer.md,
-// "Impostors are masked clusters"; R89): from a plane's baked view, the whole-tree star drawn by the
-// masked variants and lit through its baked normals matches the full geometry's picture within a
-// stated error — the proof that the bake, the container, the texture step and the draw agree.
+// "Impostors are masked clusters"; R89): from a plane's baked view, the whole-tree star drawn by
+// the masked variants and lit through its baked normals matches the full geometry's picture within
+// a stated error — the proof that the bake, the container, the texture step and the draw agree.
 
 #include <domain/gfx/device.h>
 #include <systems/renderer/camera_path.h>
@@ -133,11 +133,10 @@ TEST_CASE("impostor view: the tree's star from its baked view matches the full t
   REQUIRE(either > 2000u);
   const f64 overlap = static_cast<f64>(both) / static_cast<f64>(either);
   const f64 mean = colour_error / (3.0 * static_cast<f64>(both > 0 ? both : 1u));
-  MESSAGE("star against full tree from the baked view: " << either << " tree pixels, overlap "
-                                                         << overlap << " (" << full_only
-                                                         << " only the tree's, " << star_only
-                                                         << " only the star's), mean colour error "
-                                                         << mean << " of 255");
+  MESSAGE("star against full tree from the baked view: "
+          << either << " tree pixels, overlap " << overlap << " (" << full_only
+          << " only the tree's, " << star_only << " only the star's), mean colour error " << mean
+          << " of 255");
   // The stated bounds (flora.md, "The impostor chain"): the silhouettes share most of their
   // pixels — the oblique planes and the level one add a fringe the tree does not have — and where
   // both draw, the colour is the tree's to within a fifth of the range.

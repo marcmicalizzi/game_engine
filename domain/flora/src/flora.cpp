@@ -269,10 +269,17 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     out.materials.push_back(material);
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
-    out.impostors.push_back(geometry::ClusterFileImpostor{
-        static_cast<u32>(level.kind), level.merge, out.materials.size() - 1, level.groups,
-        level.tile_px, level.columns, level.rows, level.error, level.parallax_m, level.texel_m, 0u,
-        0u});
+    out.impostors.push_back(geometry::ClusterFileImpostor{static_cast<u32>(level.kind),
+                                                          level.merge,
+                                                          out.materials.size() - 1,
+                                                          level.groups,
+                                                          level.tile_px,
+                                                          level.columns,
+                                                          level.rows,
+                                                          level.error,
+                                                          level.parallax_m,
+                                                          level.texel_m,
+                                                          {0u, 0u}});
   }
   texture::fill_cluster_texture_records(out);
   return true;
