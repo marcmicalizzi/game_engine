@@ -504,7 +504,7 @@ f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept {
 }
 
 MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
-                       f64 time_s, bool near) noexcept {
+                       f64 time_s, bool marched) noexcept {
   MediumFire out;
   out.base = Vec4{relative(fire.base, eye), fire.radius_m};
   const f32 cell = k_flame_cell * fire.radius_m;
@@ -525,7 +525,7 @@ MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, con
   const Vec2 w = wind.direction * (wind.speed_mps * k_smoke_wind);
   out.wind = Vec4{w.x, k_smoke_start * fire.radius_m, w.y, 0.0f};
   out.ids[0] = fire.seed;
-  out.ids[1] = near ? 1u : 0u;
+  out.ids[1] = marched ? 1u : 0u;
   return out;
 }
 
@@ -800,8 +800,8 @@ u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWi
 // frame, in the eye's frame, into this slot's block; those within k_fire_near_m of the eye marked
 // for the apply's march. How many, and how many of them near.
 u32 MediumPass::build_fires(const renderer::FramePassContext& c, const MediumWind& wind,
-                            u32& near) {
-  near = 0;
+                            u32& near_count) {
+  near_count = 0;
   if (c.fires == nullptr || c.fire_count == 0 || fire_buffers_.empty()) return 0;
   const u32 n = std::min(c.fire_count, renderer::k_max_fires);
   MediumFire* out = static_cast<MediumFire*>(fire_buffers_[c.slot].mapped);
@@ -811,7 +811,7 @@ u32 MediumPass::build_fires(const renderer::FramePassContext& c, const MediumWin
     const f64 reach = static_cast<f64>(k_fire_near_m) + static_cast<f64>(fire.radius_m);
     const bool is_near = d.x * d.x + d.y * d.y + d.z * d.z < reach * reach;
     out[i] = medium_fire(fire, c.eye_world, wind, c.world_time_s, is_near);
-    near += is_near ? 1u : 0u;
+    near_count += is_near ? 1u : 0u;
   }
   return n;
 }

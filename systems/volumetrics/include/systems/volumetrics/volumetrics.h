@@ -266,9 +266,9 @@ struct MediumFire {
 f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept;
 // A frame's fire in the frame of the eye at the world's clock, under the hour's wind: the flame's
 // noise offset reduced to its period in f64, the smoke's numbers, the light where the resolve has
-// it. `near` marks it for the apply's march.
+// it. `marched` marks it for the apply's march.
 MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
-                       f64 time_s, bool near) noexcept;
+                       f64 time_s, bool marched) noexcept;
 // The smoke's extinction at a point of the frame's space (shaders/medium.slang's
 // `smoke_density`, the same arithmetic).
 f32 smoke_density(const MediumFire& fire, const Vec3& x) noexcept;
@@ -406,7 +406,8 @@ class MediumPass {
   u32 cloud_h_ = 0;
   // The fires (R85): per frame slot, the frame's `MediumFire`s (host-visible, read by every pass).
   Vector<gfx::BufferResource> fire_buffers_;
-  u32 build_fires(const renderer::FramePassContext& context, const MediumWind& wind, u32& near);
+  u32 build_fires(const renderer::FramePassContext& context, const MediumWind& wind,
+                  u32& near_count);
   struct PlumeCache;
   std::unique_ptr<PlumeCache> plumes_;
   u32 build_plumes(const renderer::FramePassContext& context, const MediumWind& wind, Vec4& grid);

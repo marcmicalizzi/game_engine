@@ -198,7 +198,7 @@ TEST_CASE("volumetrics: the smoke leaves the flame's top and drifts downwind as 
   const f32 downwind = smoke_density(f, Vec3{18.0f, 2.8f, 0.0f});
   const f32 upwind = smoke_density(f, Vec3{2.0f, 2.8f, 0.0f});
   MESSAGE("top " << top << ", 2 m over the flame " << over << ", 8 m downwind " << downwind);
-  CHECK(top == doctest::Approx(k_smoke_extinction_per_m));
+  CHECK(top == doctest::Approx(static_cast<f64>(k_smoke_extinction_per_m)));
   CHECK(downwind > 0.0f);
   CHECK(downwind < top);
   CHECK(downwind > 100.0f * over);

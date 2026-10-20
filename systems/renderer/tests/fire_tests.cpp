@@ -105,7 +105,8 @@ TEST_CASE("fire: the light array takes the nearest fires after the lights it has
   CHECK(lighting.lights[2].color_intensity.w == 104.0f);
   CHECK(lighting.lights[4].color_intensity.w == 102.0f);
   CHECK(lighting.lights[1].position_radius.x == 0.0f);
-  CHECK(lighting.lights[1].position_radius.y == doctest::Approx(k_fire_light_height));
+  CHECK(lighting.lights[1].position_radius.y ==
+        doctest::Approx(static_cast<f64>(k_fire_light_height)));
   CHECK(lighting.lights[1].position_radius.z == -5.0f);
   CHECK(lighting.lights[1].position_radius.w == 30.0f);
   CHECK(lighting.lights[1].direction_type.w == gfx::k_light_point);
@@ -184,8 +185,8 @@ TEST_CASE("fire: a prop's fire stands where each placed instance of the prop sta
   CHECK(out[1].base.x == doctest::Approx(1000.0));
   CHECK(out[1].base.y == doctest::Approx(5.5));
   CHECK(out[1].base.z == doctest::Approx(2000.0 - 1.0));
-  CHECK(out[1].radius_m == doctest::Approx(2.0f * fire.radius_m));
-  CHECK(out[1].base_intensity == doctest::Approx(4.0f * fire.intensity));
+  CHECK(out[1].radius_m == doctest::Approx(static_cast<f64>(2.0f * fire.radius_m)));
+  CHECK(out[1].base_intensity == doctest::Approx(static_cast<f64>(4.0f * fire.intensity)));
   CHECK(out[2].base == WorldPos{0.5, 0.25, 0.0});
   // The tail emptied, the props' fires go with it.
   set.place({});
