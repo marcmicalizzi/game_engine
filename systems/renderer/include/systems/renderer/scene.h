@@ -222,6 +222,12 @@ struct SceneDesc {
   u32 heightfield_grid = 257;  // vertices a side, when a mesh path is empty
   std::string ddc;             // derived-data root; empty and `cache` looks one up
   bool cache = true;           // read and write <ddc>/clusters/<key>.clusters
+  // The material pack a generated mesh's parts fall back to (docs/subsystems/materials.md): a
+  // directory holding `pack.json`. Empty and the repository's own, `<repo>/content/materials`, is
+  // looked up **when the cache root is** — the repository's defaults go with the repository's
+  // cache — so a caller that names its own derived-data root (every test does) names its pack too,
+  // or draws the flat colours.
+  std::string materials;
   // The longest bone-matrix span the caller will hand a frame, which is what the per-frame joint
   // buffer is sized by. It is the caller's number because it comes from the animation capability's
   // pose pool, which the renderer does not know about; a frame handing over more than this is

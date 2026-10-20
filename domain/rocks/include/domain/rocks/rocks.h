@@ -45,6 +45,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::materials {
+struct Pack;
+}
+
 namespace engine::rocks {
 
 /// Determinism stance (ADR-0010): "derived". A rock is content, rebuilt from its parameters
@@ -89,8 +93,7 @@ const char* rock_shape_name(RockShape shape) noexcept;
 // ---- the rock file and its build (rocks.md, "The build") ---------------------------------------
 
 // The ranges the schema documents, for the shape the file names: false, with a sentence naming
-// the first field out of range and its range, otherwise. A block for another shape is refused,
-// and so is an image path in a material (the tiled sets are not wired yet: rocks.md, "Not yet").
+// the first field out of range and its range, otherwise. A block for another shape is refused.
 bool rock_file_in_range(const RockFile& file, std::string& error);
 
 // Reads a `.rock.json`'s text: an `engine.rocks.RockFile` in range. The shape's block is filled
@@ -107,10 +110,16 @@ std::string canonical_rock_json(const RockFile& file);
 // bytes and `k_rocks_version`.
 u64 rock_source_hash(const RockFile& file);
 
-// `geometry::cluster_cache_key(source_hash, lod, false, page_bytes)` — no weld: the UV seams'
-// duplicate vertices are the charts' and the solver means them — which is the key `engine-content
-// rocks` and the renderer's scene reader both write under.
-u64 rock_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes);
+// `assets::generated_mesh_build_key`: `geometry::cluster_cache_key(source_hash, lod, false,
+// page_bytes)` — no weld: the UV seams' duplicate vertices are the charts' and the solver means
+// them — with the material pack's key when one with roles is given, which is the key
+// `engine-content rocks` and the renderer's scene reader both write under.
+u64 rock_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                   const materials::Pack* pack = nullptr);
+
+// The role a rock of `type` looks its default set up by in a material pack: "rock/granite",
+// "rock/sandstone", "rock/basalt", "rock/limestone" (rocks.md, "UVs and materials").
+std::string rock_role(RockType type);
 
 // Solves the file's rock (the file must hold its shape's block, as `read_rock_file` leaves it).
 // False, with a sentence, when the file is refused or the budget cannot hold the shape at the
@@ -119,11 +128,13 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report 
                 std::string* error = nullptr);
 
 // Solves the rock and builds its container: one cluster LOD DAG with normal cones, laid out in
-// pages of `page_bytes` (0: no page table), with the material, the identity (source hash and build
-// key) and the generator section (`rocks`, the shape, the canonical parameters). The source path
-// is left to the caller. Deterministic: the same file gives the same bytes on every toolchain.
+// pages of `page_bytes` (0: no page table), with the material and its set — the recipe's when its
+// block names an image, else `pack`'s for the type's role, solved at that set's repeat, else the
+// flat colour — the identity (source hash and build key) and the generator section (`rocks`, the
+// shape, the canonical parameters). The source path is left to the caller. Deterministic: the
+// same file and pack give the same bytes on every toolchain.
 bool build_rock_container(const RockFile& file, const geometry::ClusterLodOptions& lod,
                           u32 page_bytes, geometry::ClusterFileData& out, RockReport* report,
-                          std::string& error);
+                          std::string& error, const materials::Pack* pack = nullptr);
 
 }  // namespace engine::rocks

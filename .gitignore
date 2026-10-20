@@ -23,6 +23,10 @@ compile_commands.json
 /mcp-workspace/
 /content/golden/local/
 /content/samples/
+# The material pack tools/fetch-materials.ps1 unpacks (docs/subsystems/materials.md): generated
+# images, never committed; only the directory's README.md is the repository's.
+/content/materials/*
+!/content/materials/README.md
 
 # OS
 Thumbs.db

@@ -6,6 +6,7 @@
 // Compiled in every configuration: with the flora capability it links it, as a host does, so its
 // registrar is what makes the name one the reader knows; without it, the refusal is what is tested.
 #include <domain/gfx/device.h>
+#include <foundation/image/png.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -18,7 +19,9 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -90,6 +93,87 @@ TEST_CASE("flora scene: a .flora.json mesh is built through the cache and read b
   SceneData refused;
   CHECK_FALSE(load_scene(one_mesh(bad, ddc), refused, error));
   CHECK(error.find("frond_count") != std::string::npos);
+}
+
+namespace {
+
+// A 64 x 64 stand-in map of the test's own — vertical stripes, `a` and `b` — so every image has
+// bytes of its own and the texture step builds each once.
+bool write_stripes(const std::string& path, u8 a, u8 b) {
+  Vector<u8> pixels(64u * 64u * 4u);
+  for (u32 y = 0; y < 64; ++y) {
+    for (u32 x = 0; x < 64; ++x) {
+      const u8 v = (x / 8u) % 2u == 0 ? a : b;
+      u8* p = pixels.data() + (y * 64u + x) * 4u;
+      p[0] = v;
+      p[1] = static_cast<u8>(v / 2u + 64u);
+      p[2] = 128u;
+      p[3] = 255u;
+    }
+  }
+  Vector<u8> png;
+  if (!image::encode_png(64, 64, 4, std::span<const u8>(pixels.data(), pixels.size()), png))
+    return false;
+  std::ofstream f(path, std::ios::binary);
+  f.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return f.good();
+}
+
+u32 files_in(const std::string& dir) {
+  std::error_code ec;
+  u32 n = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (entry.is_regular_file()) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+// docs/subsystems/materials.md: a recipe's set for the bark, a material pack's for the fronds and
+// nothing for the skirt; every image the parts sample is built into the cache's textures, as a
+// glTF's are, and the container names them.
+TEST_CASE("flora scene: a palm's material sets are built into the cache as textures") {
+  const test::TempDir tmp("renderer_flora_materials");
+  REQUIRE(tmp.ok());
+  std::filesystem::create_directories(tmp.native_file("sets"));
+  std::filesystem::create_directories(tmp.native_file("pack/palm/frond"));
+  REQUIRE(write_stripes(tmp.file("sets/bark_c.png"), 90, 140));
+  REQUIRE(write_stripes(tmp.file("sets/bark_n.png"), 120, 136));
+  REQUIRE(write_stripes(tmp.file("sets/bark_r.png"), 200, 230));
+  const char* maps[] = {"base_color", "normal", "roughness", "metallic", "height"};
+  std::string pack =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1",)"
+      R"("roles":{"palm/frond":{"tile_m":0.25,"normal_convention":"opengl","maps":{)";
+  for (u32 i = 0; i < 5; ++i) {
+    REQUIRE(write_stripes(tmp.file(std::string("pack/palm/frond/") + maps[i] + ".png"),
+                          static_cast<u8>(10 + 30 * i), static_cast<u8>(20 + 30 * i)));
+    pack += std::string(i > 0 ? "," : "") + "\"" + maps[i] + "\":{\"file\":\"palm/frond/" +
+            maps[i] + ".png\"}";
+  }
+  pack += "}}}}";
+  REQUIRE(write_text(tmp.file("pack/pack.json"), pack));
+  const std::string palm = tmp.file("small.flora.json");
+  REQUIRE(write_text(
+      palm, R"({"species":"date_palm","palm":{"seed":9,"height_m":5,"frond_count":8,)"
+            R"("leaflet_count":12,"dead_skirt_fronds":2,"triangle_budget":8000},)"
+            R"("materials":{"bark":{"base_color":"sets/bark_c.png","normal":"sets/bark_n.png",)"
+            R"("roughness":"sets/bark_r.png","tile_m":0.5}}})"));
+
+  SceneDesc desc = one_mesh(palm, tmp.file("ddc"));
+  desc.materials = tmp.file("pack");
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  REQUIRE(data.sources.size() == 1);
+  const assets::MeshData& mesh = data.sources[0].data;
+  REQUIRE(mesh.materials.size() == 3);
+  CHECK(mesh.materials[0].base_color_image >= 0);
+  CHECK(mesh.materials[1].normal_image >= 0);
+  CHECK(mesh.materials[2].base_color_image == -1);  // the skirt: no set, the flat colour
+  // Bark three, frond three (metallic and height are carried, not sampled).
+  CHECK(mesh.images.size() == 6);
+  CHECK(files_in(tmp.file("ddc/textures")) == 6);
 }
 
 #if ENGINE_RENDERER_TESTS_FLORA_TERRAIN

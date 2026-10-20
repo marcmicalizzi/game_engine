@@ -8,15 +8,17 @@
 # dropped by the linker because nothing references them.
 #
 # Pure CPU arithmetic over core modules and the mesh types it emits: `assets` for the mesh
-# (`assets::MeshData`), `geometry` for the cluster build its container is made by. No GPU, no ECS,
-# no io: the callers read the file and hand over its text.
+# (`assets::MeshData`), `geometry` for the cluster build its container is made by, `materials` for
+# the tiled sets its parts sample and `texture` for the records that say how their images are built
+# (flora.md, "Materials"). No GPU, no ECS, no io: the callers read the file and the material pack
+# and hand over the text and the pack.
 
 # The capability's own types (ADR-0007): a species' parameters and the flora file. CAPABILITY ties
 # them to the same switch, so they leave the build with it.
 engine_schema_library(NAME flora_schemas SCHEMAS schemas/flora.schema CAPABILITY flora)
 
 engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash json schema assets geometry flora_schemas
+  DEPS base containers math hash json schema assets geometry materials texture flora_schemas
   SOURCES src/palm.cpp src/motion.cpp src/kit.cpp src/broadleaf.cpp src/conifer.cpp src/flora.cpp)
 
 engine_module_tests(NAME flora

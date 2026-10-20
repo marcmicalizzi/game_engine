@@ -77,7 +77,7 @@ describes it; in short:
 | `schemas/` | the schema root a module's `.schema` may import from |
 | `bin/` | `schemac` (the schema compiler), `engine-view` (the preset's, shaders embedded), `game/walk_poc.dll` (the worked example: run it before writing a line) |
 | `cmake/` | `EngineGameModuleBuild.cmake`, the engine's build command, and a **relocatable** `build_config.cmake`: every path into the SDK is relative to the config itself, so the folder can be moved or unzipped anywhere ([hotload.md, "Building a module"](subsystems/hotload.md#building-a-module)) |
-| `content/` | `test-scenes/desert-endless/` and `ruins-walk/` (with its ruins kit generated at export, since the tree never commits it), with every file each names, `sessions/walk-synthetic.jsonl` (recorded against the map below), and `input-map.json`, the action map the SDK's engine-view flies with and its hash (`--dump-action-map`) |
+| `content/` | `test-scenes/desert-endless/` and `ruins-walk/` (with its ruins kit generated at export, since the tree never commits it), with every file each names, `sessions/walk-synthetic.jsonl` (recorded against the map below), `input-map.json`, the action map the SDK's engine-view flies with and its hash (`--dump-action-map`), and `materials/`, the material pack, when the exporting checkout had one ([below](#packaging-and-reading-what-comes-back)) |
 | `tools/` | the three commands below, and `lib/GameContent.psm1` |
 | `sdk.json` | the engine commit, whether it was dirty, the preset, the CPU baseline, the hotload ABI version, the export date, the scenes carried |
 | `LICENSE`, `NOTICE` | the engine's Apache-2.0, which everything in the folder is under |
@@ -222,6 +222,16 @@ The scene is the SDK's by default; a scene of the game's own (a directory in the
 `scene.json` and what it names) is carried with that directory's content
 ([apps.md, "package-game"](subsystems/apps.md#package-game-a-zip-somebody-else-double-clicks)). The far
 end needs a Vulkan driver and the Visual C++ redistributable, which the package's `README.txt` says.
+
+**The material pack.** When the checkout the SDK was exported from had a material pack fetched
+(`tools/fetch-materials.ps1`; [materials](subsystems/materials.md)), the SDK carries it as
+`content/materials/` with its `LICENSES.md` (`sdk.json`'s `materials`), and `package-game.ps1`
+puts it in the zip and passes `--materials` to engine-view, so a tester's palms and rocks draw the
+same default sets as the author's — the bark, the fronds and the stone instead of flat colours. A
+recipe of the game's own that names its own images keeps them; one that names none takes the
+pack's role. Running from the SDK by hand, pass it on: `tools/run-game.ps1 ... -EngineArgs
+"--materials content\materials"`. The pack's images are generated sets whose licences are in its
+`LICENSES.md`; a game that ships them ships that file with them.
 
 Reading a report: `exit` says how the run ended — `reason` is `end_run` when the module ended it (the
 object it handed `end_run` is `game.result`), `game_error` when the module failed (`game.error` has

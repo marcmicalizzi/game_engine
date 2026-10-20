@@ -4,6 +4,8 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/materials/materials.h>
 #include <domain/rocks/rocks.h>
 
 #include <doctest/doctest.h>
@@ -343,7 +345,8 @@ TEST_CASE("rocks: the file is read, canonicalized and refused with the field's n
   refused(R"({"boulder":{"triangle_budget":100}})", "triangle_budget");
   refused(R"({"outcrop":{"count":1},"shape":"Outcrop"})", "count");
   refused(R"({"shape":"Boulder","scree":{}})", "scree");
-  refused(R"({"boulder":{"material":{"base_color":"granite.png"}}})", "material.base_color");
+  refused(R"({"boulder":{"material":{"normal_scale":5}}})", "material.normal_scale");
+  refused(R"({"boulder":{"material":{"tile_m":0.01}}})", "material.tile_m");
   refused(R"({"boulder":{"colour":1}})", "colour");
 }
 
@@ -362,7 +365,9 @@ TEST_CASE("rocks: the mesh generator \"rock\" builds what the capability builds"
   const geometry::ClusterLodOptions lod{};
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
   geometry::ClusterFileData through;
-  REQUIRE_MESSAGE(generator->build(bytes, lod, page_bytes, through, error), error);
+  REQUIRE_MESSAGE(
+      generator->build(bytes, assets::MeshGeneratorInputs{}, lod, page_bytes, through, error),
+      error);
   geometry::ClusterFileData direct;
   REQUIRE_MESSAGE(build_rock_container(file, lod, page_bytes, direct, nullptr, error), error);
   CHECK(geometry::cluster_file_hash(through) == geometry::cluster_file_hash(direct));
@@ -389,7 +394,9 @@ TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain"
   // Taken on MSVC; GCC and Clang at v3 and GCC at v2 must reproduce them. A change that moves
   // them bumps k_rocks_version and these numbers in the same commit.
   constexpr u64 k_mesh = 0xee8f6918ba577fabull;
-  constexpr u64 k_container = 0x7865d56fc786dbd1ull;
+  // 0x7865d56fc786dbd1 until RockMaterial gained `normal_scale` (version 2), which the canonical
+  // parameters in the generator section spell out; the mesh did not move.
+  constexpr u64 k_container = 0x420fa50ebc8196ffull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;
@@ -450,4 +457,69 @@ TEST_CASE("rocks: the committed recipes are closed, hold their budgets, and are 
             << " cuts, mesh " << hash);
     CHECK(mesh_hash(mesh) == recipe.mesh);
   }
+}
+
+// rocks.md, "UVs and materials": the block's set, else the pack's `rock/<type>`, else the flat
+// colour; the charts in whole repeats of whichever set was chosen, so no transform.
+TEST_CASE("rocks: a rock samples its block's set, else its type's role in the pack") {
+  const char* k_pack =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)"
+      R"("rock/sandstone":{"tile_m":0.5,"normal_scale":0.6,"normal_convention":"opengl","maps":{)"
+      R"("base_color":{"file":"s/c.png"},"normal":{"file":"s/n.png"},"roughness":{"file":"s/r.png"},)"
+      R"("metallic":{"file":"s/m.png"},"height":{"file":"s/h.png"}}}}})";
+  materials::Pack pack;
+  std::string error;
+  REQUIRE_MESSAGE(materials::parse_pack(k_pack, "C:/stand-in", pack, error), error);
+  CHECK(rock_role(RockType::Sandstone) == "rock/sandstone");
+  CHECK(rock_role(RockType::Granite) == "rock/granite");
+  const geometry::ClusterLodOptions lod{};
+  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+
+  Boulder sandstone;
+  sandstone.type = RockType::Sandstone;
+  sandstone.triangle_budget = 4000;
+  geometry::ClusterFileData plain;
+  REQUIRE_MESSAGE(build_rock_container(boulder(sandstone), lod, page_bytes, plain, nullptr, error),
+                  error);
+  CHECK(plain.image_paths.empty());
+  CHECK(plain.textures.empty());
+
+  // The pack's set: its images, absolute, its normal strength, and the charts at its 0.5 m repeat —
+  // twice the coordinates of the 1 m the recipe's default would have laid them at.
+  geometry::ClusterFileData from_pack;
+  REQUIRE_MESSAGE(
+      build_rock_container(boulder(sandstone), lod, page_bytes, from_pack, nullptr, error, &pack),
+      error);
+  REQUIRE(from_pack.materials.size() == 1);
+  REQUIRE(from_pack.materials[0].base_color_image >= 0);
+  CHECK(from_pack.image_paths[static_cast<u32>(from_pack.materials[0].base_color_image)] ==
+        "C:/stand-in/s/c.png");
+  CHECK(from_pack.materials[0].normal_scale == doctest::Approx(0.6f));
+  CHECK(from_pack.materials[0].metallic == 0.0f);
+  CHECK(from_pack.textures.size() == from_pack.image_paths.size());
+  CHECK(from_pack.build_key != plain.build_key);
+  CHECK(from_pack.source_hash == plain.source_hash);
+  geometry::TextureSlotSampling slots[geometry::k_material_slots];
+  f32 occlusion = 0.0f;
+  geometry::decode_material_sampling(from_pack.material_sampling[0], slots, occlusion);
+  CHECK(slots[geometry::k_slot_base_color].transform.identity());
+  RockFile at_half = boulder(sandstone);
+  at_half.boulder->material.tile_m = 0.5f;
+  CHECK(mesh_hash(solve(at_half)) != mesh_hash(solve(boulder(sandstone))));
+
+  // A granite has no role in this pack: the flat colour.
+  geometry::ClusterFileData granite;
+  REQUIRE_MESSAGE(build_rock_container(boulder(), lod, page_bytes, granite, nullptr, error, &pack),
+                  error);
+  CHECK(granite.image_paths.empty());
+
+  // The recipe's own images win, at the recipe's repeat, relative to the recipe as it spelled them.
+  RockFile own = boulder(sandstone);
+  own.boulder->material.base_color = "mine/c.png";
+  own.boulder->material.tile_m = 2.0f;
+  geometry::ClusterFileData mine;
+  REQUIRE_MESSAGE(build_rock_container(own, lod, page_bytes, mine, nullptr, error, &pack), error);
+  REQUIRE(mine.image_paths.size() == 1);
+  CHECK(mine.image_paths[0] == "mine/c.png");
+  CHECK(mine.materials[0].normal_image == -1);
 }

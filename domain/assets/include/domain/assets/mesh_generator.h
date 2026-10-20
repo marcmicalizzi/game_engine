@@ -33,7 +33,27 @@
 #include <string>
 #include <string_view>
 
+namespace engine::materials {
+struct Pack;
+}
+
 namespace engine::assets {
+
+// What a host hands a generator besides the file's bytes: the material pack whose roles a recipe
+// that names no set for a part falls back to (domain/materials, docs/subsystems/materials.md), or
+// none. The host finds the pack — `<repo>/content/materials`, or a directory it was told — and
+// reads it, so a generator stays a function of what it is given.
+struct MeshGeneratorInputs {
+  const materials::Pack* materials = nullptr;
+};
+
+// The key a generated mesh's container is addressed by, which every host computes the same way:
+// `geometry::cluster_cache_key(source_hash, lod, false, page_bytes)` — no weld, since a generator's
+// vertices are shared where it means them — combined with the pack's key when the inputs carry a
+// pack with roles, so a mesh built with a pack's defaults and one built without never share an
+// entry, and a build with no pack keys exactly as it did before packs existed.
+u64 generated_mesh_build_key(u64 source_hash, const MeshGeneratorInputs& inputs,
+                             const geometry::ClusterLodOptions& lod, u32 page_bytes) noexcept;
 
 struct MeshGeneratorDesc {
   // The generator, as its files' names give it: "flora".
@@ -43,11 +63,13 @@ struct MeshGeneratorDesc {
   // `geometry::cluster_cache_key` takes, as a glTF's `source_mesh_hash` is. False, with a
   // sentence, for bytes that are not a file this generator reads.
   bool (*source_hash)(std::span<const u8> bytes, u64& out, std::string& error) = nullptr;
-  // Builds the container for a file's bytes under these LOD options and this page target (0: no
-  // page table), recording the source hash, `cluster_cache_key(source hash, lod, false,
-  // page_bytes)` as the build key, and what made it (`ClusterFileData::generator`). `source_path`
-  // is left to the caller. False, with a sentence, when the file or its parameters are refused.
-  bool (*build)(std::span<const u8> bytes, const geometry::ClusterLodOptions& lod, u32 page_bytes,
+  // Builds the container for a file's bytes and the host's inputs under these LOD options and this
+  // page target (0: no page table), recording the source hash, `generated_mesh_build_key` as the
+  // build key, and what made it (`ClusterFileData::generator`). `source_path` is left to the
+  // caller; image paths a recipe names are relative to it, a pack's are absolute. False, with a
+  // sentence, when the file or its parameters are refused.
+  bool (*build)(std::span<const u8> bytes, const MeshGeneratorInputs& inputs,
+                const geometry::ClusterLodOptions& lod, u32 page_bytes,
                 geometry::ClusterFileData& out, std::string& error) = nullptr;
 };
 

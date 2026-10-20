@@ -196,6 +196,19 @@ foreach ($f in $resolved) {
   $shipped += [ordered]@{ path = $rel; bytes = (Get-Item -LiteralPath $f.Path).Length }
   if ($f.Path -eq $scenePath) { $sceneRel = $rel.Replace('/', '\') }
 }
+# The material pack (docs/subsystems/materials.md), when this tree or SDK has one fetched into
+# content/materials: the default sets a generated mesh's parts fall back to, with its LICENSES.md,
+# so a tester's palms draw what the author's do. engine-view is told where it is (--materials),
+# since the package's cache root is named and the repository's lookup does not run.
+$packDir = Join-Path $ContentRoot 'materials'
+$withPack = Test-Path -LiteralPath (Join-Path $packDir 'pack.json')
+if ($withPack) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $stage 'content') | Out-Null
+  Copy-Item -LiteralPath $packDir -Destination (Join-Path $stage 'content') -Recurse -Force
+  foreach ($p in Get-ChildItem -LiteralPath $packDir -Recurse -File) {
+    $shipped += [ordered]@{ path = 'content/materials/' + [System.IO.Path]::GetRelativePath($packDir, $p.FullName).Replace('\', '/'); bytes = $p.Length }
+  }
+}
 
 # The arguments run.cmd passes, every path inside the folder: `{dir}` is the folder.
 $runArgs = @('--scene', "{dir}\$sceneRel")
@@ -204,6 +217,7 @@ if ($dunes -and $TimeRate -gt 0) { $runArgs += @('--time-rate', ([string]$TimeRa
 if ($SunRate -gt 0) { $runArgs += @('--sun-rate', ([string]$SunRate)) }
 $runArgs += @('--walk', '--game', "{dir}\game\$Module$ModuleSuffix", '--report', '{dir}\report.json',
               '--ddc', '{dir}\ddc', '--width', "$Width", '--height', "$Height")
+if ($withPack) { $runArgs += @('--materials', '{dir}\content\materials') }
 $quoted = ($runArgs | ForEach-Object { if ($_ -match '\{dir\}') { '"' + $_.Replace('{dir}\', '%~dp0') + '"' } else { $_ } }) -join ' '
 
 $run = @"
@@ -279,6 +293,7 @@ $manifest = [ordered]@{
   time_rate = $TimeRate
   sun_rate = $SunRate
   args = $runArgs
+  materials = [bool]$withPack
   files = $shipped
   runtime = [ordered]@{
     dlls = @('VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll')

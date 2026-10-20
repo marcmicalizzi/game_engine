@@ -9,6 +9,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -164,6 +165,42 @@ TEST_CASE("engine-content flora: the key is the parameters, not the file's spell
   write_text(c, "{\"species\":\"baobab\"}");
   CHECK(run({"flora", c, tmp.file("x.clusters")}).exit_code == 1);
   CHECK(run({"flora", c}).exit_code == 2);
+}
+
+// docs/subsystems/materials.md: `--materials` names the pack a part with no set falls back to,
+// which moves the key and names the pack's images; `--no-materials` is the flat palm. The pack's
+// images are not there, so the texture step finds them missing — a warning, as a glTF's missing
+// image is, and the build still succeeds.
+TEST_CASE("engine-content flora: a material pack's roles fill the parts and move the key") {
+  const test::TempDir tmp("engine_content_flora_pack");
+  REQUIRE(tmp.ok());
+  const std::string params = tmp.file("palm.flora.json");
+  write_text(params, k_palm);
+  const std::string pack_dir = tmp.file("pack");
+  REQUIRE(std::filesystem::create_directories(tmp.native_file("pack")));
+  write_text(pack_dir + "/pack.json",
+             R"({"format":"engine.materials.pack/1","name":"stand-in","version":"7","roles":{)"
+             R"("palm/bark":{"tile_m":0.35,"normal_convention":"opengl","maps":{)"
+             R"("base_color":{"file":"b/c.png"},"normal":{"file":"b/n.png"},)"
+             R"("roughness":{"file":"b/r.png"},"metallic":{"file":"b/m.png"},)"
+             R"("height":{"file":"b/h.png"}}}}})");
+  const Output plain = run({"flora", params, "--ddc", tmp.file("ddc"), "--no-materials"});
+  REQUIRE_MESSAGE(plain.exit_code == 0, plain.text);
+  const Output packed = run({"flora", params, "--ddc", tmp.file("ddc"), "--materials", pack_dir});
+  REQUIRE_MESSAGE(packed.exit_code == 0, packed.text);
+  const JsonValue a = line_of(plain);
+  const JsonValue b = line_of(packed);
+  CHECK(number(a, "images") == 0);
+  CHECK(number(b, "images") == 3);
+  CHECK(number(a, "source_hash") == number(b, "source_hash"));
+  CHECK(number(a, "build_key") != number(b, "build_key"));
+  const JsonValue* pack = b.find("pack");
+  REQUIRE(pack != nullptr);
+  REQUIRE(pack->is_string());
+  CHECK(pack->as_string() == "stand-in 7");
+  const JsonValue* textures = b.find("textures");
+  REQUIRE(textures != nullptr);
+  CHECK(flag(*textures, "enabled"));
 }
 
 #else

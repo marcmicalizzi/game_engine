@@ -44,10 +44,12 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/atlas/repack.h>
 #include <domain/content_build/container_stats.h>
 #include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
@@ -355,7 +357,16 @@ struct BuildCommandOptions {
   bool ddc_named = false;
 };
 
-int build(const BuildCommandOptions& options) {
+// The repository's material pack (`<repo>/content/materials`), which a generated mesh's parts fall
+// back to as `engine-content flora` and the renderer's scene reader have them do, so the three
+// share entries; null when there is none (docs/subsystems/materials.md).
+const materials::Pack* repository_pack() {
+  return materials::pack_at(materials::default_pack_dir(platform::executable_directory()));
+}
+
+int build(const BuildCommandOptions& options_in) {
+  BuildCommandOptions options = options_in;
+  if (!assets::mesh_generator_of(options.input).empty()) options.mesh.materials = repository_pack();
   // The source's identity comes first whatever the destination is: it addresses the cache entry,
   // and it is written into the container so that a later build can tell it is still the answer.
   u64 source_hash = 0;
@@ -581,6 +592,10 @@ int build_all(const BuildAllCommandOptions& options) {
   if (!read_manifest(options.manifest, options.defaults, entries, message,
                      std::span<const char* const>(step_arrays.data(), step_arrays.size()))) {
     return failed(message);
+  }
+  for (ManifestEntry& entry : entries) {
+    if (!assets::mesh_generator_of(entry.source).empty())
+      entry.options.materials = repository_pack();
   }
   Vector<Vector<DerivedEntry>> derived_entries(static_cast<u32>(steps.size()));
   for (u32 s = 0; s < steps.size(); ++s) {
@@ -1253,6 +1268,28 @@ int read_command(int argc, char** argv, const char* name, int (*run)(const std::
 }
 
 }  // namespace
+
+namespace engine::content {
+
+JsonValue generated_textures(const geometry::ClusterFileData& data, const std::string& source,
+                             const std::string& ddc, u32& failures) {
+  failures = 0;
+  if (ddc.empty()) return textures_json(Vector<TextureResult>{}, ~u32{0}, false, true);
+  Vector<TextureSource> sources;
+  collect_texture_sources(data, io::parent_path(source), sources);
+  Vector<const TextureSource*> pointers;
+  for (const TextureSource& s : sources)
+    pointers.push_back(&s);
+  const Vector<u32> mesh_of(pointers.size(), 0u);
+  jobs::JobSystem pool(job_config(0));
+  Vector<TextureResult> results;
+  run_texture_step(std::span<const TextureSource* const>(pointers.data(), pointers.size()),
+                   std::span<const u32>(mesh_of.data(), mesh_of.size()), ddc, pool, results);
+  failures = report_texture_problems(results);
+  return textures_json(results, ~u32{0}, true, true);
+}
+
+}  // namespace engine::content
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement

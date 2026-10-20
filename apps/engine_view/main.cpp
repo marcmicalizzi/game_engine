@@ -154,7 +154,7 @@ constexpr const char* k_usage =
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
-    "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
+    "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--materials <dir>] [--no-lights]\n"
     "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
     "                   [--time-of-day <hours>] [--exposure <stops>] [--exposure-ev100 <ev>]\n"
     "                   [--ground-time <game s>] [--no-texture-sharing] [--dither on|off]\n"
@@ -214,6 +214,8 @@ constexpr const char* k_usage =
     "  --grid-instances <n>  place the loaded mesh n x n times with varied rotation and scale\n"
     "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
     "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
+    "  --materials <dir>  the material pack a generated mesh's parts fall back to (default:\n"
+    "                   <repo>/content/materials, looked up only with the ddc root)\n"
     "  --no-texture-sharing  upload every mesh's own copy of its textures. By default the scene\n"
     "                   uploads one texture per distinct image content and every mesh that samples\n"
     "                   it shares it; this is the old behaviour, for measuring what that saves\n"
@@ -605,6 +607,7 @@ struct Options {
   geometry::ClusterLodOptions lod;
   std::string scene;       // a scene JSON file: meshes and instances of them
   std::string ddc;         // derived-data root; empty is found from the executable
+  std::string materials;   // the material pack (materials.md); empty is found with the ddc root
   u32 grid_instances = 0;  // n: place the one mesh n x n times
   bool cache = true;
   f32 orbit = 0.0f;  // 0: breathe
@@ -1979,6 +1982,7 @@ int run_reference(Options& options) {
     desc.heightfield_grid = options.grid;
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
+    desc.materials = options.materials;
     desc.cache = options.cache;
     // Loading keeps the page table only when someone is going to stream from it: the layout itself
     // is what the derived-data cache key promises and runs either way.
@@ -2334,6 +2338,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     desc.heightfield_grid = options.grid;
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
+    desc.materials = options.materials;
     desc.cache = options.cache;
     desc.stream = options.settings.stream;
     if (!options.scene.empty()) {
@@ -3551,6 +3556,8 @@ int run_view(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.scene)) return k_exit_usage;
     } else if (a == "--ddc") {
       if (!next_value(argc, argv, i, a, options.ddc)) return k_exit_usage;
+    } else if (a == "--materials") {
+      if (!next_value(argc, argv, i, a, options.materials)) return k_exit_usage;
     } else if (a == "--no-cache") {
       options.cache = false;
     } else if (a == "--no-present-timing") {
@@ -4584,6 +4591,7 @@ int run_view(int argc, char** argv) {
     desc.heightfield_grid = options.grid;
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
+    desc.materials = options.materials;
     desc.cache = options.cache;
     desc.stream = options.settings.stream;  // keep the page table for the residency manager
     if (!options.scene.empty()) {

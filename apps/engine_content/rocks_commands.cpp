@@ -20,6 +20,7 @@
 #include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/materials/materials.h>
 #include <domain/rocks/rocks.h>
 #include <foundation/io/vfs.h>
 
@@ -46,6 +47,9 @@ const char* k_rocks_usage =
     "      --ddc <dir>    the cache root (default: <repo>/ddc, found beside AGENTS.md); implies\n"
     "                     --cache when no output is named\n"
     "      --force        build even when the output is already the answer\n"
+    "      --materials <dir>  the material pack a rock with no set of its own takes rock/<type>\n"
+    "                     from (default: <repo>/content/materials, found beside AGENTS.md)\n"
+    "      --no-materials no pack: a rock with no set of its own draws its flat colour\n"
     "      --glb <file>   write the solved mesh as a GLB instead (positions, normals, UVs, the\n"
     "                     material's colour): what tools/e10-harness.ps1 judges\n";
 
@@ -181,15 +185,24 @@ int rocks_build(int argc, char** argv) {
   std::string output;
   std::string ddc;
   std::string glb;
+  std::string materials_dir;
   bool cache = false;
   bool force = false;
+  bool no_materials = false;
+  bool ddc_named = false;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (a == "--cache") {
       cache = true;
     } else if (a == "--force") {
       force = true;
+    } else if (a == "--no-materials") {
+      no_materials = true;
+    } else if (a == "--materials") {
+      if (i + 1 >= argc) return usage("--materials needs a directory");
+      materials_dir = argv[++i];
     } else if (a == "--ddc") {
+      ddc_named = true;
       if (i + 1 >= argc) return usage("--ddc needs a directory");
       ddc = argv[++i];
     } else if (a == "--glb") {
@@ -253,8 +266,12 @@ int rocks_build(int argc, char** argv) {
   const geometry::ClusterLodOptions lod =
       content_build::lod_options_of(content_build::MeshOptions{});
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  // The material pack a rock with no set of its own falls back to (materials.md).
+  if (!no_materials && materials_dir.empty())
+    materials_dir = materials::default_pack_dir(platform::executable_directory());
+  const materials::Pack* pack = no_materials ? nullptr : materials::pack_at(materials_dir);
   const u64 source_hash = rocks::rock_source_hash(file);
-  const u64 build_key = rocks::rock_build_key(source_hash, lod, page_bytes);
+  const u64 build_key = rocks::rock_build_key(source_hash, lod, page_bytes, pack);
   const std::string path = cache ? geometry::cluster_cache_path(ddc, build_key) : output;
 
   bool cached = false;
@@ -267,7 +284,7 @@ int rocks_build(int argc, char** argv) {
   rocks::RockReport report;
   bool have_report = false;
   if (!cached) {
-    if (!rocks::build_rock_container(file, lod, page_bytes, data, &report, error))
+    if (!rocks::build_rock_container(file, lod, page_bytes, data, &report, error, pack))
       return failed(input + ": " + error);
     have_report = true;
     data.source_path = input;
@@ -292,12 +309,18 @@ int rocks_build(int argc, char** argv) {
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));
   summary.set("vertices", JsonValue(data.mesh.mesh.vertices.size()));
   summary.set("materials", JsonValue(data.materials.size()));
+  summary.set("images", JsonValue(data.image_paths.size()));
+  summary.set("pack", pack != nullptr ? JsonValue(pack->name + " " + pack->version) : JsonValue());
   summary.set("pages", JsonValue(data.pages.pages.size()));
+  // The texture step beside the container, when there is a derived-data root to put textures in.
+  u32 texture_failures = 0;
+  summary.set("textures", generated_textures(data, input, cache || ddc_named ? ddc : std::string(),
+                                             texture_failures));
   // What the budget bought (rocks.md, "The budget ladder"); a cache hit did not run the solver.
   if (have_report) summary.set("budget", report_json(report, budget_of(file)));
   summary.set("build_ms", JsonValue(static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6));
   print_json(summary);
-  return k_exit_ok;
+  return texture_failures > 0 ? k_exit_error : k_exit_ok;
 }
 #else
 int refuse() {

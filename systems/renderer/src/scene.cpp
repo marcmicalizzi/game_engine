@@ -10,6 +10,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
+#include <domain/materials/materials.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
 #include <foundation/image/png.h>
@@ -553,6 +554,11 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
                              out.source_hash, error)) {
       return false;
     }
+    // The images its parts sample — a recipe's sets, a material pack's — built into the cache's
+    // textures as a glTF's are, so they draw block-compressed and mipmapped; without a cache they
+    // draw through the decode (renderer.md, "Built textures").
+    if (desc.cache && !generated.image_paths.empty())
+      build_cache_textures(generated, io::parent_path(path), desc.ddc, path);
     adopt_container(generated, where, desc, out, lod, pages);
     return true;
   }
@@ -1487,6 +1493,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // keep a built mesh, so the cache is simply off.
   if (resolved.cache && resolved.ddc.empty()) {
     resolved.ddc = geometry::find_ddc_root(platform::executable_directory());
+    if (resolved.materials.empty())
+      resolved.materials = materials::default_pack_dir(platform::executable_directory());
     if (resolved.ddc.empty()) {
       resolved.cache = false;
       ENGINE_LOG_WARN(log_renderer, "no derived-data root above the executable",

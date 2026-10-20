@@ -117,6 +117,15 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.blender_run PROPERTIES LABELS "tools")
 
+  # The material pack's two scripts (docs/subsystems/materials.md): packing a staging directory of
+  # stand-in sets and its refusals, and fetching — the pinned hash, the manifest's file hashes, the
+  # licence file, and a destination left untouched by a refused pack. No network and no image.
+  add_test(NAME tools.materials_pack
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/materials-pack.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.materials_pack PROPERTIES LABELS "tools")
+
   # E39's measurement script (tools/hdr-measure.ps1, roadmap R80): its refusals, a dry run's plan
   # (every picture waits for a quiet machine, none lifts the present ceiling) and a run through
   # stand-ins for engine-cli and engine-view. No GPU and no window.

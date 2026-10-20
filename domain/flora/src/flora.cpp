@@ -8,11 +8,19 @@
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
+#include <domain/materials/materials.h>
+#include <domain/texture/material_textures.h>
 
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
 namespace engine::flora {
+
+namespace {
+bool materials_in_range(const FloraFile& file, std::string& error);
+}  // namespace
 
 bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) {
   out = FloraFile{};
@@ -32,13 +40,111 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = text_errors.empty() ? std::string("not an engine.flora.FloraFile") : text_errors;
     return false;
   }
-  if (out.species == k_species_date_palm) return palm_in_range(out.palm, error);
-  if (out.species == k_species_broadleaf) return broadleaf_in_range(out.broadleaf, error);
-  if (out.species == k_species_conifer) return conifer_in_range(out.conifer, error);
-  error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
-          k_species_date_palm + "\", \"" + k_species_broadleaf + "\" and \"" + k_species_conifer +
-          "\")";
-  return false;
+  bool in_range = false;
+  if (out.species == k_species_date_palm) {
+    in_range = palm_in_range(out.palm, error);
+  } else if (out.species == k_species_broadleaf) {
+    in_range = broadleaf_in_range(out.broadleaf, error);
+  } else if (out.species == k_species_conifer) {
+    in_range = conifer_in_range(out.conifer, error);
+  } else {
+    error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
+            k_species_date_palm + "\", \"" + k_species_broadleaf + "\" and \"" + k_species_conifer +
+            "\")";
+    return false;
+  }
+  return in_range && materials_in_range(out, error);
+}
+
+namespace {
+
+// A recipe's set in the shape domain/materials takes.
+materials::MaterialSet set_of(const MaterialSet& s) {
+  materials::MaterialSet out;
+  out.base_color = s.base_color;
+  out.normal = s.normal;
+  out.roughness = s.roughness;
+  out.metallic = s.metallic;
+  out.height = s.height;
+  out.tile_m = s.tile_m;
+  out.normal_scale = s.normal_scale;
+  return out;
+}
+
+// Which of the recipe's sets a part takes.
+enum class Block : u8 { bark, leaf, skirt };
+
+// One material of a species, in its material order: the part's word in its role, how its UVs are
+// laid out, and the recipe's set it reads (flora.md, "Materials").
+struct PartRole {
+  const char* part;
+  materials::UvLayout layout;
+  Block block;
+};
+
+constexpr PartRole k_palm_parts[] = {{"bark", materials::UvLayout::metres, Block::bark},
+                                     {"frond", materials::UvLayout::metres, Block::leaf},
+                                     {"skirt", materials::UvLayout::metres, Block::skirt}};
+constexpr PartRole k_conifer_parts[] = {{"bark", materials::UvLayout::metres, Block::bark},
+                                        {"needles", materials::UvLayout::card, Block::leaf}};
+// The broadleaf's, and any species' that says nothing of its own: a barked tube and leaf cards.
+constexpr PartRole k_tree_parts[] = {{"bark", materials::UvLayout::metres, Block::bark},
+                                     {"leaf", materials::UvLayout::card, Block::leaf}};
+
+std::span<const PartRole> parts_of(const std::string& species) {
+  if (species == k_species_date_palm) return k_palm_parts;
+  if (species == k_species_conifer) return k_conifer_parts;
+  return k_tree_parts;
+}
+
+const std::optional<MaterialSet>& block_set(const FloraMaterials& block, Block which) {
+  switch (which) {
+    case Block::leaf: return block.leaf;
+    case Block::skirt: return block.skirt;
+    case Block::bark: break;
+  }
+  return block.bark;
+}
+
+bool materials_in_range(const FloraFile& file, std::string& error) {
+  if (!file.materials.has_value()) return true;
+  const FloraMaterials& m = *file.materials;
+  const std::pair<const char*, const std::optional<MaterialSet>*> sets[] = {
+      {"bark", &m.bark}, {"leaf", &m.leaf}, {"skirt", &m.skirt}, {"wood", &m.wood}};
+  for (const auto& [name, set] : sets) {
+    if (!set->has_value()) continue;
+    const std::string field = std::string("engine.flora.FloraFile.materials.") + name;
+    if (!materials::set_in_range(set_of(**set), field, error)) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+std::string flora_role(const std::string& species, u32 material) {
+  const std::span<const PartRole> parts = parts_of(species);
+  if (material >= parts.size()) return std::string();
+  const std::string prefix = species == k_species_date_palm ? std::string("palm") : species;
+  return prefix + "/" + parts[material].part;
+}
+
+void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
+                           geometry::ClusterFileData& out) {
+  const std::span<const PartRole> parts = parts_of(file.species);
+  for (u32 i = 0; i < out.materials.size() && i < parts.size(); ++i) {
+    materials::MaterialSet recipe;
+    if (file.materials.has_value()) {
+      const std::optional<MaterialSet>& set = block_set(*file.materials, parts[i].block);
+      if (set.has_value()) recipe = set_of(*set);
+    }
+    if (const materials::MaterialSet* chosen =
+            materials::resolve_set(&recipe, pack, flora_role(file.species, i)))
+      materials::apply_set(*chosen, parts[i].layout, out, i);
+  }
+  // Where each image's built texture will be — its roles and options, and a zero key, since an
+  // image named by path is not the container's bytes (texture/material_textures.h) — so a host's
+  // texture step finds them from the container alone.
+  if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
 }
 
 namespace {
@@ -71,9 +177,11 @@ u64 flora_source_hash(const FloraFile& file) {
   return hash_combine(h, k_flora_version);
 }
 
-u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes) {
+u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                    const materials::Pack* pack) {
   // No weld: the solver's vertices are shared where they are meant to be and nowhere else.
-  return geometry::cluster_cache_key(source_hash, lod, false, page_bytes);
+  return assets::generated_mesh_build_key(source_hash, assets::MeshGeneratorInputs{pack}, lod,
+                                          page_bytes);
 }
 
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
@@ -87,7 +195,7 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
-                           std::string& error) {
+                           std::string& error, const materials::Pack* pack) {
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
   Motion motion;
@@ -158,8 +266,9 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
   }
+  apply_flora_materials(file, pack, out);
   out.source_hash = flora_source_hash(file);
-  out.build_key = flora_build_key(out.source_hash, lod, page_bytes);
+  out.build_key = flora_build_key(out.source_hash, lod, page_bytes, pack);
   out.generator = "flora";
   out.generator_kind = file.species;
   out.generator_params = canonical_flora_json(file);
@@ -182,11 +291,12 @@ bool generator_source_hash(std::span<const u8> bytes, u64& out, std::string& err
   return true;
 }
 
-bool generator_build(std::span<const u8> bytes, const geometry::ClusterLodOptions& lod,
-                     u32 page_bytes, geometry::ClusterFileData& out, std::string& error) {
+bool generator_build(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                     const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                     geometry::ClusterFileData& out, std::string& error) {
   FloraFile file;
   if (!read_flora_file(text_of(bytes), file, error)) return false;
-  return build_flora_container(file, lod, page_bytes, out, nullptr, error);
+  return build_flora_container(file, lod, page_bytes, out, nullptr, error, inputs.materials);
 }
 
 constexpr assets::MeshGeneratorDesc k_flora_generator{

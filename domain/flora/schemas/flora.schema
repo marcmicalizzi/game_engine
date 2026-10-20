@@ -136,8 +136,9 @@ struct Conifer @version(1) {
 }
 
 /// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative
-/// to the flora file, any of them empty for none, and the set's physical repeat.
-struct MaterialSet @version(1) {
+/// to the flora file, any of them empty for none, and the set's physical repeat. A set that names
+/// an image replaces the material pack's default for its part (docs/subsystems/materials.md).
+struct MaterialSet @version(2) {
   base_color: string = ""
   /// Tangent-space normals, OpenGL convention (+Y up), as the material lab writes them.
   normal: string = ""
@@ -147,6 +148,8 @@ struct MaterialSet @version(1) {
   height: string = ""
   /// The set's repeat in metres: one tile covers this much surface, 0.05 to 20 m.
   tile_m: f32 = 1.0 @unit(m)
+  /// How far the normal map bends the shading normal, glTF's `normalTexture.scale`: 0 to 4.
+  normal_scale: f32 = 1.0 @since(2)
 }
 
 /// The images a tree's parts sample, any absent for the flat colour (flora.md, "Materials").

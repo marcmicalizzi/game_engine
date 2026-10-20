@@ -1,6 +1,8 @@
 // The mesh-generator registry (mesh_generator.h).
 #include <core/base/assert.h>
+#include <core/hash/hash.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/materials/materials.h>
 
 #include <algorithm>
 
@@ -18,6 +20,13 @@ std::string_view mesh_generator_of(std::string_view path) noexcept {
   if (dot == 0 || (slash != std::string_view::npos && dot == slash + 1)) return {};
   const std::string_view name = stem.substr(dot + 1);
   return name.empty() ? std::string_view{} : name;
+}
+
+u64 generated_mesh_build_key(u64 source_hash, const MeshGeneratorInputs& inputs,
+                             const geometry::ClusterLodOptions& lod, u32 page_bytes) noexcept {
+  const u64 key = geometry::cluster_cache_key(source_hash, lod, false, page_bytes);
+  const u64 pack = materials::pack_key(inputs.materials);
+  return pack == 0 ? key : hash_combine(key, pack);
 }
 
 MeshGeneratorRegistry& MeshGeneratorRegistry::global() {

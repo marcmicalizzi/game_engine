@@ -10,6 +10,7 @@
 #include <core/log/log.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 
 #include <cstdio>
@@ -54,9 +55,11 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     error = path + " hashes to " + got + ", and the scene names " + want;
     return false;
   }
-  // The key `engine-content flora` writes under too, so either app finds what the other built.
+  // The key `engine-content flora` writes under too, so either app finds what the other built —
+  // with the material pack the parts fall back to in it, when there is one (materials.md).
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
-  const u64 key = geometry::cluster_cache_key(source_hash, desc.lod, false, page_bytes);
+  const assets::MeshGeneratorInputs inputs{materials::pack_at(desc.materials)};
+  const u64 key = assets::generated_mesh_build_key(source_hash, inputs, desc.lod, page_bytes);
   std::string cache_path;
   if (desc.cache) {
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
@@ -67,13 +70,16 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
           data.source_hash == source_hash && data.build_key == key) {
         cache = "hit";
         container = cache_path;
+        // A recipe's image paths are relative to the recipe, which is this path whatever path the
+        // host that wrote the entry knew it by.
+        data.source_path = path;
         return true;
       }
       ENGINE_LOG_WARN(log_renderer, "cluster cache entry ignored", log::field("path", cache_path),
                       log::field("error", read_error.empty() ? "a different build" : read_error));
     }
   }
-  if (!generator->build(bytes, desc.lod, page_bytes, data, generator_error)) {
+  if (!generator->build(bytes, inputs, desc.lod, page_bytes, data, generator_error)) {
     error = path + ": " + generator_error;
     return false;
   }

@@ -9,7 +9,7 @@
 # OPTIONAL: nothing it links is a capability, and the content build is not a feature a
 # configuration leaves out.
 engine_module(NAME content_build LAYER domain
-  DEPS base containers math hash time jobs log io json geometry assets atlas texture
+  DEPS base containers math hash time jobs log io json geometry materials assets atlas texture
   SOURCES src/content_build.cpp src/container_stats.cpp)
 
 # The protocol's `ContentBuildOptions` states the same defaults `MeshOptions` has, and the test

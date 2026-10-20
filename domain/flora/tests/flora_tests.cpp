@@ -5,6 +5,8 @@
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/materials/materials.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -14,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 
@@ -592,7 +595,8 @@ TEST_CASE(
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(hash));
   // With the motion contract appended (sections 35 and 36); without it, the next test holds it to
   // the bytes it was before them.
-  constexpr u64 k_golden = 0x5ab6c0536295b350ull;
+  // 0x5ab6c0536295b350 at k_flora_version 2; the palm's UVs in metres moved it (version 3).
+  constexpr u64 k_golden = 0x178ae32e3572bd96ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -698,9 +702,9 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   CHECK(std::string(geometry::cluster_section_name(a[b.size()].kind)) == "motion_parts");
   // The container with the contract cleared, pinned on its own: it was 0xab870afd905f4acd, the
   // container from before the contract existed, until the crown's spiral moved the mesh
-  // (k_flora_version 2), so a change that moves only the contract is told apart from one that moves
-  // the mesh.
-  constexpr u64 k_rigid_golden = 0xeb471d9e96454476ull;
+  // (k_flora_version 2), and 0xeb471d9e96454476 until the UVs went to metres (3), so a change that
+  // moves only the contract is told apart from one that moves the mesh.
+  constexpr u64 k_rigid_golden = 0x31af079d27301ce7ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -713,7 +717,8 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
 // `k_flora_version` and the number in the same commit.
 TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
-  constexpr u64 k_golden = 0x86f10c7cf1c598e7ull;
+  // 0x86f10c7cf1c598e7 at version 2; the UVs in metres (3) moved only the UVs.
+  constexpr u64 k_golden = 0x297fc148e1d646fcull;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
@@ -932,4 +937,133 @@ TEST_CASE("flora: a file's species picks the solver, and its key carries that sp
   CHECK_FALSE(
       flora::read_flora_file("{\"species\":\"conifer\",\"conifer\":{\"whorls\":1}}", file, error));
   CHECK(error.find("whorls") != std::string::npos);
+}
+
+namespace {
+
+// A pack of the test's own, in memory: every map of every role a path under `dir`.
+materials::Pack stand_in_pack(std::initializer_list<const char*> roles, f32 tile_m) {
+  std::string text = R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1",)"
+                     R"("roles":{)";
+  bool first = true;
+  for (const char* role : roles) {
+    if (!first) text += ",";
+    first = false;
+    text += "\"" + std::string(role) + "\":{\"tile_m\":" + std::to_string(tile_m) +
+            R"(,"normal_convention":"opengl","maps":{)";
+    const char* maps[] = {"base_color", "normal", "roughness", "metallic", "height"};
+    for (u32 i = 0; i < 5; ++i) {
+      if (i > 0) text += ",";
+      text += "\"" + std::string(maps[i]) + "\":{\"file\":\"" + role + "/" + maps[i] + ".png\"}";
+    }
+    text += "}}";
+  }
+  text += "}}";
+  materials::Pack pack;
+  std::string error;
+  REQUIRE_MESSAGE(materials::parse_pack(text, "C:/stand-in/materials", pack, error), error);
+  return pack;
+}
+
+f32 slot_scale(const geometry::ClusterFileData& data, u32 material, u32 slot) {
+  geometry::TextureSlotSampling slots[geometry::k_material_slots];
+  f32 occlusion = 0.0f;
+  geometry::decode_material_sampling(data.material_sampling[material], slots, occlusion);
+  return slots[slot].transform.scale.x;
+}
+
+const std::string& image_of(const geometry::ClusterFileData& data, i32 index) {
+  REQUIRE(index >= 0);
+  REQUIRE(static_cast<u32>(index) < data.image_paths.size());
+  return data.image_paths[static_cast<u32>(index)];
+}
+
+}  // namespace
+
+// The stand-in set (flora.md, "Materials"): a recipe that names images for the bark, a pack that
+// has the frond's role, and nothing for the skirt — the three ways a part gets its material.
+TEST_CASE("flora: each part takes the recipe's set, else the pack's role, else its flat colour") {
+  flora::FloraFile file;
+  std::string error;
+  REQUIRE_MESSAGE(
+      flora::read_flora_file(
+          R"({"materials":{"bark":{"base_color":"sets/bark_c.png","normal":"sets/bark_n.png",)"
+          R"("roughness":"sets/bark_r.png","tile_m":0.5,"normal_scale":0.4}}})",
+          file, error),
+      error);
+  const materials::Pack pack = stand_in_pack({"palm/bark", "palm/frond"}, 0.25f);
+  const geometry::ClusterLodOptions lod;
+  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, lod, page_bytes, data, nullptr, error, &pack),
+                  error);
+  REQUIRE(data.materials.size() == 3);
+  // The bark: the recipe's images, as it spelled them (relative to the flora file), over the
+  // pack's.
+  CHECK(image_of(data, data.materials[0].base_color_image) == "sets/bark_c.png");
+  CHECK(image_of(data, data.materials[0].normal_image) == "sets/bark_n.png");
+  CHECK(image_of(data, geometry::decode_optional_image(
+                           data.materials[0].metallic_roughness_image)) == "sets/bark_r.png");
+  CHECK(data.materials[0].metallic == 0.0f);
+  CHECK(data.materials[0].roughness == 1.0f);
+  CHECK(data.materials[0].normal_scale == doctest::Approx(0.4f));
+  CHECK(slot_scale(data, 0, geometry::k_slot_base_color) == doctest::Approx(2.0f));  // 1 / 0.5 m
+  // The frond: the pack's, absolute, at the pack's repeat.
+  CHECK(image_of(data, data.materials[1].base_color_image) ==
+        "C:/stand-in/materials/palm/frond/base_color.png");
+  CHECK(slot_scale(data, 1, geometry::k_slot_normal) == doctest::Approx(4.0f));  // 1 / 0.25 m
+  // The skirt: no set anywhere, so the flat colour it always had.
+  CHECK(data.materials[2].base_color_image == -1);
+  CHECK(data.materials[2].normal_image == -1);
+  CHECK(data.materials[2].base_color.x < 1.0f);
+  // Five images, each with a texture record saying how it is built (section 32).
+  CHECK(data.image_paths.size() == 6);
+  CHECK(data.textures.size() == data.image_paths.size());
+  // The pack is in the key, and a different pack is a different key; the source hash is the
+  // file's alone, so a scene that names it by hash still finds it.
+  CHECK(data.build_key == flora::flora_build_key(data.source_hash, lod, page_bytes, &pack));
+  CHECK(data.build_key != flora::flora_build_key(data.source_hash, lod, page_bytes));
+  CHECK(data.source_hash == flora::flora_source_hash(file));
+
+  // Written and read back, the images and the transforms survive.
+  engine::test::TempDir tmp("flora_materials");
+  const std::string path = tmp.file("palm.clusters");
+  REQUIRE_MESSAGE(geometry::write_cluster_file(path, data, &error), error);
+  geometry::ClusterFileData back;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(path, back, &error), error);
+  CHECK(back.image_paths.size() == data.image_paths.size());
+  CHECK(slot_scale(back, 1, geometry::k_slot_normal) == doctest::Approx(4.0f));
+
+  // The broadleaf's leaf is a card: its image whole, no transform; its bark in metres.
+  flora::FloraFile tree;
+  REQUIRE(flora::read_flora_file(R"({"species":"broadleaf"})", tree, error));
+  const materials::Pack tree_pack = stand_in_pack({"broadleaf/bark", "broadleaf/leaf"}, 0.5f);
+  geometry::ClusterFileData oak;
+  REQUIRE_MESSAGE(
+      flora::build_flora_container(tree, lod, page_bytes, oak, nullptr, error, &tree_pack), error);
+  CHECK(slot_scale(oak, 0, geometry::k_slot_base_color) == doctest::Approx(2.0f));
+  CHECK(slot_scale(oak, 1, geometry::k_slot_base_color) == doctest::Approx(1.0f));
+  CHECK(flora::flora_role("conifer", 1) == "conifer/needles");
+  CHECK(flora::flora_role("date_palm", 2) == "palm/skirt");
+  CHECK(flora::flora_role("birch", 0) == "birch/bark");
+
+  // A set's numbers are checked when the file is read.
+  CHECK_FALSE(flora::read_flora_file(R"({"materials":{"leaf":{"tile_m":0.01}}})", file, error));
+  CHECK(error.find("materials.leaf.tile_m") != std::string::npos);
+}
+
+TEST_CASE("flora: with no block and no pack the palm's container names no image") {
+  flora::FloraFile file;
+  geometry::ClusterFileData data;
+  std::string error;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, geometry::ClusterLodOptions{},
+                                               geometry::ClusterPagesOptions{}.page_bytes, data,
+                                               nullptr, error),
+                  error);
+  CHECK(data.image_paths.empty());
+  CHECK(data.textures.empty());
+  for (const geometry::ClusterFileMaterial& m : data.materials) {
+    CHECK(m.base_color_image == -1);
+    CHECK(m.normal_image == -1);
+  }
 }
