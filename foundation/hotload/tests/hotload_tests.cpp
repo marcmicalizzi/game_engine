@@ -100,18 +100,18 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   CHECK(counter.host.module_abi() == k_abi_version);
 }
 
-TEST_CASE(
-    "hotload: modules built against ABI 3 and ABI 4 load on an ABI 5 host and run unchanged") {
-  // ABI 4 and ABI 5 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
-  // that declares 3 or 4 is what a module compiled against that header hands the host. It loads,
-  // its exports run, it reads through a view, and a rebuild against 5 takes over from it with its
+TEST_CASE("hotload: modules built against ABI 3, 4 and 5 load on an ABI 6 host and run unchanged") {
+  // ABI 4, 5 and 6 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
+  // that declares 3, 4 or 5 is what a module compiled against that header hands the host. It loads,
+  // its exports run, it reads through a view, and a rebuild against 6 takes over from it with its
   // state.
   if (in_bundle()) return;
   struct Old {
     const char* path;
     u32 abi;
   };
-  for (const Old old : {Old{HOTLOAD_MODULE_COUNTER_ABI3, 3}, Old{HOTLOAD_MODULE_COUNTER_ABI4, 4}}) {
+  for (const Old old : {Old{HOTLOAD_MODULE_COUNTER_ABI3, 3}, Old{HOTLOAD_MODULE_COUNTER_ABI4, 4},
+                        Old{HOTLOAD_MODULE_COUNTER_ABI5, 5}}) {
     INFO("ABI " << old.abi);
     engine::test::TempDir dir("hotload-old-abi");
     const std::string live = place(dir, old.path, "live");
@@ -128,6 +128,109 @@ TEST_CASE(
     CHECK(counter.host.module_abi() == k_abi_version);
     CHECK(counter.call_get() == 1.0);  // the state carried
   }
+}
+
+TEST_CASE(
+    "hotload: ABI 6's images and fonts forward, and an older element arrives at the defaults") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, hud_image));
+  CHECK(ENGINE_HOTLOAD_HAS(api, hud_font));
+  // A table as an ABI 5 host built it ends before the images: the helpers do not call them.
+  HostApi v5 = *api;
+  v5.size = static_cast<u32>(offsetof(HostApi, hud_image));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v5, hud_image));
+  CHECK(ENGINE_HOTLOAD_HAS(&v5, ground_height));
+  ModuleContext old_host{&v5, nullptr};
+  HudImage panel;
+  panel.id = 2;
+  panel.path = "hud/panel.png";
+  u32 font = 9;
+  CHECK(hud_image(&old_host, panel) == Result::Unsupported);
+  CHECK(hud_font(&old_host, "hud/font.ttf", 24.0f, font) == Result::Unsupported);
+  CHECK(font == 9);
+
+  ModuleContext context{api, nullptr};
+  CHECK(hud_image(&context, panel) == Result::Unsupported);  // no game services
+  CHECK(hud_font(&context, "hud/font.ttf", 24.0f, font) == Result::Unsupported);
+  // The host's own checks, before anything is forwarded.
+  HudImage small = panel;
+  small.size = 40;
+  CHECK(api->hud_image(api->host, &small) == Result::InvalidArgument);
+  CHECK(api->hud_image(api->host, nullptr) == Result::InvalidArgument);
+  CHECK(api->hud_font(api->host, "a.ttf", 5, 24.0f, nullptr) == Result::InvalidArgument);
+
+  struct Seen {
+    u32 image = 0;
+    u64 path_length = 0;
+    std::string font_path;
+    f32 font_px = 0.0f;
+    u32 element_size = 0;
+    u32 element_font = 0;
+    f32 spacing = -1.0f;
+    u8 shadow_alpha = 0;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.hud_image = [](void* user, const HudImage& i) {
+    static_cast<Seen*>(user)->image = i.id;
+    static_cast<Seen*>(user)->path_length = i.path_length;
+    return Result::Ok;
+  };
+  services.hud_font = [](void* user, std::string_view path, f32 size_px, u32* out) {
+    static_cast<Seen*>(user)->font_path = std::string(path);
+    static_cast<Seen*>(user)->font_px = size_px;
+    *out = 1;
+    return Result::Ok;
+  };
+  services.hud_element = [](void* user, const HudElement& e) {
+    Seen& s = *static_cast<Seen*>(user);
+    s.element_size = e.size;
+    s.element_font = e.font;
+    s.spacing = e.letter_spacing_px;
+    s.shadow_alpha = e.shadow_color[3];
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(hud_image(&context, panel) == Result::Ok);
+  CHECK(seen.image == 2);
+  CHECK(seen.path_length == 13);  // the helper measured the C string
+  CHECK(hud_font(&context, "hud/font.ttf", 24.0f, font) == Result::Ok);
+  CHECK(font == 1);
+  CHECK(seen.font_path == "hud/font.ttf");
+  CHECK(seen.font_px == 24.0f);
+
+  // An element as an ABI 5 module built it: ABI 4's 72 bytes, followed in its memory by whatever
+  // the module had there. The host reads the 72 and nothing past them, so the new fields arrive
+  // at their defaults.
+  struct Older {
+    HudElement element;
+  } older;
+  older.element.id = 1;
+  older.element.text = "[E] Pick up";
+  older.element.text_length = 11;
+  older.element.font = 7;  // what an ABI 5 module's memory held past its struct
+  older.element.letter_spacing_px = 99.0f;
+  older.element.shadow_color[3] = 1;
+  older.element.size = k_hud_element_v4_size;
+  CHECK(api->hud_element(api->host, &older.element) == Result::Ok);
+  CHECK(seen.element_size == k_hud_element_v4_size);
+  CHECK(seen.element_font == 0);
+  CHECK(seen.spacing == 0.0f);
+  CHECK(seen.shadow_alpha == 160);
+  // And one of ABI 6's own size arrives whole.
+  HudElement styled;
+  styled.id = 3;
+  styled.font = 1;
+  styled.letter_spacing_px = 2.0f;
+  CHECK(hud_element(&context, styled) == Result::Ok);
+  CHECK(seen.element_size == sizeof(HudElement));
+  CHECK(seen.element_font == 1);
+  CHECK(seen.spacing == 2.0f);
+  // Smaller than ABI 4's is refused, as before.
+  older.element.size = k_hud_element_v4_size - 8;
+  CHECK(api->hud_element(api->host, &older.element) == Result::InvalidArgument);
 }
 
 TEST_CASE("hotload: ABI 5's actor entries and the ground forward, and answer Unsupported without") {

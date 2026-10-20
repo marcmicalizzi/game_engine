@@ -66,7 +66,13 @@ namespace engine::hotload {
 // `actor_stop`, `actor_speed`, `actor_state`; roadmap S88; apps.md, "Actors: the characters a game
 // moves") — and the scene's ground (`ground_height`). Additive, as 4 was: a module built against 3
 // or 4 loads and runs unchanged, and `ActorState` leads with its own `size` like ABI 4's structs.
-inline constexpr u32 k_abi_version = 5;
+//
+// **6** (2026-10-19): `HostApi` gained, at its end, the HUD's **images** and the **game's fonts**
+// (`hud_image`, `hud_font`; roadmap P49; apps.md, "The HUD, provisional"), and `HudElement` grew at
+// its end for the first time — `font`, `letter_spacing_px` and a drop shadow. The host reads an
+// element only as far as the module's `size` says and leaves the rest at the defaults, so a module
+// built against 3, 4 or 5 loads and its elements draw exactly as they drew.
+inline constexpr u32 k_abi_version = 6;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -181,6 +187,39 @@ struct HudElement {
   u32 visible = 1;
   const char* text = nullptr;
   u64 text_length = 0;
+  // ---- ABI 6 (2026-10-19): read by the host only when `size` reaches them ----
+  u32 font = 0;                            // 0: the HUD's own; else a handle `hud_font` returned
+  f32 letter_spacing_px = 0.0f;            // added after each character; may be negative
+  f32 shadow_offset_px[2] = {0.0f, 0.0f};  // a drop shadow, x right, y down; 0, 0: none
+  u8 shadow_color[4] = {0, 0, 0, 160};
+  u32 reserved = 0;  // zero: the next field's place
+};
+// ABI 4's (and 5's) element: everything before `font`. The host takes any element from this size
+// up, copies it into its own up to the module's `size` and leaves the rest at the defaults.
+inline constexpr u32 k_hud_element_v4_size = 72;
+
+// **An image on the HUD** (ABI 6): an element of the same id space as `HudElement` (an id names one
+// or the other), on the same nine anchors with the same alignment and 1080p offsets, drawing a PNG
+// or JPEG from the **game's content directory**: `path` is `/`-separated and relative, looked up
+// beside the scene file and then beside the module (an absolute path or a `..` is
+// `InvalidArgument`). It is drawn `size_px` big — both 0: the image's own pixels as 1080p pixels;
+// one 0: that side from the other by the image's aspect — times `tint`, and with **nine-slice
+// borders** `slice_px` (left, top, right, bottom, in the image's pixels, drawn at the HUD's scale)
+// the corners keep their size and the edges and the middle stretch, so one small PNG is a panel of
+// any size. All zero: the whole image stretched. Retained like an element; `hud_remove` removes it.
+// Led by its `size`.
+struct HudImage {
+  u32 size = sizeof(HudImage);
+  u32 id = 0;  // the module's own, below `k_hud_reserved`, shared with the text elements
+  HudAnchor anchor = HudAnchor::Centre;
+  HudAlign align = HudAlign::Centre;
+  f32 offset_px[2] = {0.0f, 0.0f};             // from the anchor: x right, y down
+  f32 size_px[2] = {0.0f, 0.0f};               // width, height
+  f32 slice_px[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // left, top, right, bottom
+  u8 tint[4] = {255, 255, 255, 255};
+  u32 visible = 1;
+  const char* path = nullptr;  // UTF-8, copied by the host (up to 255 bytes)
+  u64 path_length = 0;
 };
 
 // Element ids from here up are the host's: `hud_text`'s line n is `k_hud_line_id + n` and
@@ -422,6 +461,23 @@ struct HostApi {
   // ground's time. `Unsupported` for a scene with no ground, `InvalidArgument` for a non-finite
   // coordinate.
   Result (*ground_height)(void* host, f64 x, f64 z, f64* out_height);
+
+  // ---- ABI 6: the HUD's images and the game's fonts (roadmap P49; apps.md, "The HUD,
+  // provisional") ----
+  // **An image** (`HudImage` above), placed or replaced by its id like `hud_element`. The host
+  // decodes a path once, the first time it is named (so a bad file is answered here), and uploads
+  // it when a frame first draws it. `InvalidArgument` for what `hud_element` refuses, a size or a
+  // border that is negative or not finite, an empty, absolute or `..` path, a NUL inside its
+  // length, a file `foundation/image` cannot decode, or a struct smaller than ABI 6's; `NotFound`
+  // for a path in neither the scene's directory nor the module's; `OutOfRange` past the element
+  // table (64) or sixteen paths.
+  Result (*hud_image)(void* host, const HudImage* image);
+  // **A font the game ships**: a TrueType or OpenType file by path (looked up as an image's is),
+  // added to the HUD's atlas and baked at each element's size on the host's scale ladder; `size_px`
+  // (1080p pixels, in (0, 128]) is the size it is baked at first. Answers a handle for
+  // `HudElement::font`; the same path twice is the same handle. `NotFound` as for an image,
+  // `InvalidArgument` for a file that is not a font or a bad size or path, `OutOfRange` past eight.
+  Result (*hud_font)(void* host, const char* path, u64 length, f32 size_px, u32* out_font);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -711,6 +767,23 @@ inline Result actor_state(const ModuleContext* context, u32 actor, ActorState& o
 inline Result ground_height(const ModuleContext* context, f64 x, f64 z, f64& height) noexcept {
   if (!ENGINE_HOTLOAD_HAS(context->api, ground_height)) return Result::Unsupported;
   return context->api->ground_height(context->api->host, x, z, &height);
+}
+
+// ---- the HUD's images and fonts (ABI 6) ----
+// Each answers `Unsupported` on a host whose table ends before the entry.
+
+// `image.path` from a C string when `path_length` is left at zero.
+inline Result hud_image(const ModuleContext* context, const HudImage& image) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, hud_image)) return Result::Unsupported;
+  HudImage i = image;
+  if (i.path != nullptr && i.path_length == 0) i.path_length = text_length(i.path);
+  return context->api->hud_image(context->api->host, &i);
+}
+
+inline Result hud_font(const ModuleContext* context, const char* path, f32 size_px,
+                       u32& font) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, hud_font)) return Result::Unsupported;
+  return context->api->hud_font(context->api->host, path, text_length(path), size_px, &font);
 }
 
 template <class State>

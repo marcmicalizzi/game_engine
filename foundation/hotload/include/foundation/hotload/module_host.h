@@ -114,6 +114,13 @@ struct GameServices {
   Result (*actor_speed)(void* user, u32 actor, f32 speed) = nullptr;
   Result (*actor_state)(void* user, u32 actor, ActorState& out) = nullptr;
   Result (*ground_height)(void* user, f64 x, f64 z, f64* out_height) = nullptr;
+  // ABI 6 (module_abi.h): the HUD's images and the game's fonts. The host refuses a `HudImage`
+  // smaller than ABI 6's and null pointers before it forwards (`InvalidArgument`); the paths, the
+  // sizes and the tables are the runner's to judge. An element (`hud_element` above) arrives in the
+  // host's own `HudElement`, filled up to the module's `size` and at the defaults past it. Null,
+  // each answers `Unsupported`.
+  Result (*hud_image)(void* user, const HudImage& image) = nullptr;
+  Result (*hud_font)(void* user, std::string_view path, f32 size_px, u32* out_font) = nullptr;
 };
 
 struct HostConfig {
