@@ -77,7 +77,7 @@ struct FloraWindDefault {
 FloraWindDefault flora_wind_default() noexcept;
 
 // **What a frame says sways the trees** (`FrameDesc::flora`). The wind: unset, it is the scene
-// ground's at the world's one clock (`GpuScene::ground_time_s` plus the frame's `sun_time_s`) where
+// ground's record at the sky's hour (`FrameDesc::sky_time_s`: the weather follows the day) where
 // the ground says one, and the `renderer.flora.wind_*` tunables' where it does not; set, it is
 // `wind_to` (where it blows to, x and z) at `wind_strength` over a record's mean — and a strength
 // of 0 with no walker draws every tree at rest, to the bit. The walker: its capsule, upright from

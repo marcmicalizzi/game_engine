@@ -26,6 +26,11 @@ const char* format_rate(f64 rate, char* out, usize size) noexcept {
     std::snprintf(out, size, "%g", rate);
     return out;
   }
+  // Below one, the slow-motion rungs as they are: "0.125", "0.25", "0.5".
+  if (rate > 0.0 && rate < 1.0) {
+    std::snprintf(out, size, "%.3g", rate);
+    return out;
+  }
   // Tenths, rounded once, so 5,000.46 is "5,000.5" and 59.97 is "60.0" rather than "59.10".
   const u64 tenths = static_cast<u64>(std::llround(rate * 10.0));
   const u64 whole = tenths / 10;
@@ -49,16 +54,56 @@ const char* format_rate(f64 rate, char* out, usize size) noexcept {
   return out;
 }
 
+const char* format_day_length(f64 sun_rate, char* out, usize size) noexcept {
+  if (size == 0) return out;
+  if (!(sun_rate > 0.0) || !std::isfinite(sun_rate)) {
+    std::snprintf(out, size, "still");
+    return out;
+  }
+  const f64 length = 86'400.0 / sun_rate;
+  f64 value = length;
+  const char* unit = "s";
+  if (length >= 3'600.0) {
+    value = length / 3'600.0;
+    unit = "h";
+  } else if (length >= 60.0) {
+    value = length / 60.0;
+    unit = "min";
+  }
+  const f64 tenths = std::round(value * 10.0);
+  if (std::fmod(tenths, 10.0) == 0.0) {
+    std::snprintf(out, size, "%.0f %s", tenths / 10.0, unit);
+  } else if (value >= 0.1) {
+    std::snprintf(out, size, "%.1f %s", tenths / 10.0, unit);
+  } else {
+    std::snprintf(out, size, "%.3g %s", value, unit);
+  }
+  return out;
+}
+
+const char* format_hour(f64 hour, char* out, usize size) noexcept {
+  if (size == 0) return out;
+  if (!std::isfinite(hour)) hour = 0.0;
+  f64 minutes = std::floor(hour * 60.0);
+  minutes -= std::floor(minutes / 1'440.0) * 1'440.0;
+  const int m = static_cast<int>(minutes);
+  std::snprintf(out, size, "%02d:%02d", (m / 60) % 24, m % 60);
+  return out;
+}
+
 usize format_status(const TitleStatus& status, char* out, usize size) noexcept {
   if (size == 0) return 0;
   // UTF-8 spelled as bytes, so the source says the same thing under any compiler's idea of the
   // execution character set: U+00D7 MULTIPLICATION SIGN and U+00B7 MIDDLE DOT.
   constexpr const char* k_times = "\xC3\x97";
   constexpr const char* k_dot = " \xC2\xB7 ";
-  char dunes[32];
-  char sun[32];
-  format_rate(status.dune_rate, dunes, sizeof(dunes));
-  format_rate(status.sun_rate, sun, sizeof(sun));
+  char world[32];
+  char day[32];
+  char hour[16];
+  format_rate(status.world_rate, world, sizeof(world));
+  format_day_length(status.sun_rate, day, sizeof(day));
+  hour[0] = '\0';
+  if (status.has_hour) format_hour(status.hour, hour, sizeof(hour));
   const char* mode = "";
   switch (status.mode) {
     case TitleMode::none: break;
@@ -67,13 +112,9 @@ usize format_status(const TitleStatus& status, char* out, usize size) noexcept {
     case TitleMode::walking_ground: mode = "walking (ground only)"; break;
   }
   const char* after_mode = mode[0] != '\0' ? k_dot : "";
-  int n = 0;
-  if (status.dunes) {
-    n = std::snprintf(out, size, "%s%sdunes %s%s%ssun %s%s", mode, after_mode, k_times, dunes,
-                      k_dot, k_times, sun);
-  } else {
-    n = std::snprintf(out, size, "%s%ssun %s%s", mode, after_mode, k_times, sun);
-  }
+  const char* after_hour = status.has_hour ? k_dot : "";
+  const int n = std::snprintf(out, size, "%s%s%s%sday %s%sworld %s%s", mode, after_mode, hour,
+                              after_hour, day, k_dot, k_times, world);
   if (n < 0) {
     out[0] = '\0';
     return 0;

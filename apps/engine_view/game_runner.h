@@ -165,10 +165,13 @@ struct GameTickInput {
   bool sprinting = false;
   f64 moved_m = 0.0;
   const input::InputState* input = nullptr;  // null: no action is pressed
-  // Sun-rate key presses on this tick (fly_camera.h `ViewControl`): the game's clock steps the
-  // rate as the window's does.
+  // Rate key presses so far, running counts (fly_camera.h `ViewControl`): the game's clocks step
+  // the rates as the window's do — `[`/`]` the day's length (`sun_slower`, `sun_faster`), `,`/`.`
+  // the world's rate (the `dunes_slower`/`dunes_faster` controls, whose names the map keeps).
   u32 sun_slower = 0;
   u32 sun_faster = 0;
+  u32 world_slower = 0;
+  u32 world_faster = 0;
 };
 
 // Where the nearest placement of a kind is: answered by whoever has the streamed world
@@ -219,15 +222,21 @@ class GameRunner {
     bool walking = false;
     f32 speed_scale = 1.0f;
     f32 sprint_scale = 1.0f;
-    f64 sun_time_s = 0.0;     // the sky's clock as the frame drew it: offset plus the day's seconds
-    f64 sun_rate = 0.0;       // game seconds a second, as the keys had left it
-    f64 ground_time_s = 0.0;  // the ground's surface time the world's clock stands on
+    f64 sun_time_s = 0.0;      // the sky's offset from the epoch: `--time-of-day`'s plus the day's
+    f64 sun_rate = 0.0;        // game seconds of the day a real second, as the keys had left it
+    f64 ground_time_s = 0.0;   // the scene's epoch the sky's hour stood on
     f64 surface_time_s = 0.0;  // the moving ground's time the last frame drew (the time-lapse's)
     bool has_surface_time = false;
-    f64 time_rate = 0.0;  // the time-lapse's rate (`--time-rate`)
+    f64 time_rate = 0.0;  // the time-lapse's rate (`--time-rate`), game seconds a world second
+    // Session version 2 (2026-10-20, R88): the sky's hour, absolute (version 1's is its epoch plus
+    // its offset), the world clock and the world's rate. The file writes `day_length_s` beside the
+    // sun rate for a reader; the rate is what is restored, to its bits.
+    f64 sky_time_s = 0.0;
+    f64 world_time_s = 0.0;
+    f64 world_rate = 1.0;
   };
   static constexpr u32 k_state_version = 2;
-  static constexpr u32 k_session_version = 1;
+  static constexpr u32 k_session_version = 2;
   // The restored session, or null (no file, a version 1 file, a replay of a fresh recording).
   const SavedSession* restored_session() const noexcept;
   // The object the runner restored from (the file's, or the header's), for a live recording's
@@ -260,20 +269,25 @@ class GameRunner {
   // 5) is accepted and never pressed. False with `error`.
   bool start(const Config& config, const input::ActionMap& map, u32 tick_hz, std::string* error);
   bool started() const noexcept;
-  // The sky's clock at the session's start: `FrameDesc::sun_time_s`'s offset, the day's rate in
-  // game seconds a second, and the ground's surface time the sky stands on.
-  void set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept;
-  // **The clock as the frame draws it** (renderer.md "One clock"; roadmap P44): a `--game`
-  // session's frames take `FrameDesc::sun_time_s` from here — the offset plus the day's game
-  // seconds so far, stepped a tick at a time by the ticks that ran, at the rate the keys had set by
-  // each — in the window, in an offscreen replay and in a `--capture` alike, so a replay of a
-  // recording in which
-  // `]` was pressed draws the sky where the live session drew it. The clock runs on after
-  // `end_run`: the result panel's sky keeps turning while the module is no longer ticked.
+  // The clocks at the session's start (renderer/clocks.h): the sky's `--time-of-day` offset from
+  // the epoch, the day's rate in game seconds a real second, the scene's epoch, and the world's
+  // rate. A restored session's clocks replace them.
+  void set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate = 1.0) noexcept;
+  // **The clocks as the frame draws them** (renderer.md "One world clock, and the day's length";
+  // roadmap P44, R88): a `--game` session's frames take `FrameDesc::sky_time_s` (`sun_time_s`:
+  // the offset plus the day's game seconds so far) and `FrameDesc::world_time_s` from here, each
+  // stepped a tick at a time by the ticks that ran at the rate the keys had set by each — in the
+  // window, in an offscreen replay and in a `--capture` alike, so a replay of a recording in which
+  // `]` or `.` was pressed draws the sky and the world where the live session drew them. The clocks
+  // run on after `end_run`: the result panel's sky keeps turning while the module is not ticked.
   f64 sun_time_s() const noexcept;
   f64 day_s() const noexcept;         // the day's game seconds so far
   f64 sun_rate() const noexcept;      // the rate now
   u32 rate_changes() const noexcept;  // ladder steps taken
+  f64 world_time_s() const noexcept;  // the world clock
+  f64 world_rate() const noexcept;    // the world's rate now, at the start, and its changes
+  f64 world_start_rate() const noexcept;
+  u32 world_rate_changes() const noexcept;
   void set_placements(PlacementQuery query, void* user, PlacementStats stats = nullptr) noexcept;
   // **The props the module places** (game_props.h): declare the scene's before `start`, since the
   // module's `on_load` names them, and `attach` the loaded scene after it. The host hands the live

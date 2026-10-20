@@ -223,7 +223,8 @@ struct Shot {
 // One capture of a scene file from above the pool's west shore, towards the sun's reflection.
 void shoot(const gfx::Device& device, const std::string& path, const std::string& ddc,
            f64 sun_time_s, u32 shots, Shot* out, WaterQuality quality = WaterQuality::High,
-           WorldPos eye = WorldPos{-16.0, 9.0, -5.0}, WorldPos look = WorldPos{1.0, -1.0, 1.0}) {
+           WorldPos eye = WorldPos{-16.0, 9.0, -5.0}, WorldPos look = WorldPos{1.0, -1.0, 1.0},
+           f64 world_time_s = -1.0) {
   SceneDesc desc;
   std::string error;
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
@@ -245,7 +246,9 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
   FrameDesc frame;
   frame.camera.position = eye;
   frame.camera.target = look;
-  frame.sun_time_s = sun_time_s;
+  frame.sky_time_s = sun_time_s;
+  // The waves move with the sun here, as on the one clock, unless a world time is given (R88).
+  frame.world_time_s = world_time_s >= 0.0 ? world_time_s : sun_time_s;
   CaptureChannels channels;
   channels.ids = true;
   u32 water_instance = ~0u;
@@ -318,9 +321,12 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
   Shot with[2];
   Shot without[1];
   Shot later[1];
+  Shot waves[1];
   shoot(device, wet, ddc, 0.0, 2, with);
   shoot(device, dry, ddc, 0.0, 1, without);
   shoot(device, wet, ddc, 7200.0, 1, later);
+  shoot(device, wet, ddc, 0.0, 1, waves, WaterQuality::High, WorldPos{-16.0, 9.0, -5.0},
+        WorldPos{1.0, -1.0, 1.0}, 7.5);  // the sky held, the world 7.5 s on
   device.destroy();
   const CapturedFrame& a = with[0].frame;
   const CapturedFrame& b = without[0].frame;
@@ -360,21 +366,36 @@ TEST_CASE("water: the oasis pool drawn, only where the pool is, the same bytes t
   u32 differ = 0;
   u32 differ_outside = 0;
   u32 moved = 0;
+  u32 waved = 0;          // pool pixels the world clock alone moved
+  u32 waved_outside = 0;  // and pixels it moved that are not the pool's
   for (u32 p = 0; p < pixels; ++p) {
     const bool in_pool = a.ids[p * k_id_words] == with[0].water_instance;
     pool += in_pool ? 1u : 0u;
     bool same = true;
     bool same_later = true;
+    bool same_waves = true;
     for (u32 c = 0; c < 4; ++c) {
       same = same && a.color[p * 4 + c] == b.color[p * 4 + c];
       same_later = same_later && a.color[p * 4 + c] == later[0].frame.color[p * 4 + c];
+      same_waves = same_waves && a.color[p * 4 + c] == waves[0].frame.color[p * 4 + c];
     }
     if (!same) {
       ++differ;
       if (by_pool[p] == 0) ++differ_outside;
     }
     if (in_pool && !same_later) ++moved;
+    if (!same_waves) {
+      if (in_pool) ++waved;
+      if (by_pool[p] == 0) ++waved_outside;
+    }
   }
+  // **The waves are on the world clock, the sun on the sky's** (R88; water.md, "Shading"): with
+  // the sky held at its hour and the world 7.5 s on, the pool moves and nothing else does — the
+  // sun, the sky and the sand stand where they stood, whatever day length the session runs.
+  MESSAGE(waved << " pool pixels move 7.5 world seconds on under a held sky, " << waved_outside
+                << " outside it");
+  CHECK(waved > pool / 4);
+  CHECK(waved_outside == 0u);
   MESSAGE("pool " << pool << " pixels of " << pixels << "; " << differ << " differ with the block, "
                   << differ_outside << " of them outside it; " << moved
                   << " pool pixels change two hours on");

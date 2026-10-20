@@ -149,6 +149,11 @@ bool SkyPass::create(const gfx::Device& device, const SceneData& scene, gfx::Sha
   destroy();
   if (!scene.sky.has_value()) return true;
   entry_ = *scene.sky;
+  // The discs' scale is the drawing's, not the provider's model (renderer.md, "The sky").
+  if (!(entry_.disc_scale >= 1.0f && entry_.disc_scale <= 20.0f)) {
+    if (error != nullptr) *error = "the scene's sky: sky.disc_scale must be within [1, 20]";
+    return false;
+  }
   const std::string_view name = scene_gen::sky_provider_name(entry_);
   const scene_gen::SkyProviderDesc* desc = scene_gen::GeneratorRegistry::global().find_sky(name);
   if (desc == nullptr) {
@@ -265,11 +270,18 @@ void SkyPass::fill(const FrameSky& sky, const ViewSet& views, const Camera& came
   out.local_albedo = vec4(ground_albedo_, 0.0f);
   out.night = vec4(air.night_glow, 0.0f);
   const scene_gen::SkyState& s = sky.state;
-  out.sun = vec4(normalize(s.sun), s.sun_radius);
+  // **The discs' scale** (`Sky.disc_scale`, 1 physical): both angular radii times it. The sun's
+  // disc spreads its illuminance over its own solid angle (`sky_sun_disc`), so a larger disc is a
+  // dimmer one by the inverse square by construction; the moon's is a Lambertian sphere of its
+  // albedo, whose radiance does not depend on its size, so its albedo is divided by the square
+  // here — and the light either gives the sky and the ground (`sun_illuminance`, the `rgb` of
+  // `moon_illuminance`) is untouched. At 1 the block is the bytes it was.
+  const f32 disc = entry_.disc_scale;
+  out.sun = vec4(normalize(s.sun), s.sun_radius * disc);
   out.sun_illuminance = Vec4{s.sun_illuminance, s.sun_illuminance, s.sun_illuminance, 0.0f};
-  out.moon = vec4(normalize(s.moon), s.moon_radius);
-  out.moon_illuminance =
-      Vec4{s.moon_illuminance, s.moon_illuminance, s.moon_illuminance, s.moon_albedo};
+  out.moon = vec4(normalize(s.moon), s.moon_radius * disc);
+  out.moon_illuminance = Vec4{s.moon_illuminance, s.moon_illuminance, s.moon_illuminance,
+                              disc == 1.0f ? s.moon_albedo : s.moon_albedo / (disc * disc)};
   // The eye's height in the tables: the world's y over the planet's ground, which is the world's
   // zero, and never below the tables' least nor above the top of the air.
   const f32 top = air.top_radius_km - air.bottom_radius_km;

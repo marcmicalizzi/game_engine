@@ -518,7 +518,8 @@ FrameDesc frame_towards(Vec3 light, f64 time_s, f32 fov_deg, bool away = false) 
   towards = normalize(towards + Vec3{0.0f, 0.45f, 0.0f});  // about 24 degrees up
   FrameDesc frame;
   frame.camera = aimed(Vec3{0.0f, 3.0f, 0.0f}, towards, fov_deg);
-  frame.sun_time_s = time_s;
+  frame.sky_time_s = time_s;
+  frame.world_time_s = time_s;  // the clocks agree here, as the one clock did (R88)
   return frame;
 }
 

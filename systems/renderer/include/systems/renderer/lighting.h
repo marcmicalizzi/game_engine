@@ -15,8 +15,9 @@
 // frame by default** (since 2026-09-27): the orbit was frame-driven, and a time-lapse's sand, lit
 // by a warm light a scene's radius away that went round it every eight seconds, read as a sun
 // racing across the sky (renderer.md, "The dunes in time-lapse"). The day is the caller's clock,
-// not the frame's: a frame is told how far into the day it is (`FrameDesc::sun_time_s`), and 0 is
-// the sun it always had. Reach and intensity scale with the scene's radius, intensity with its
+// not the frame's: a frame is told the sky's hour (`FrameDesc::sky_time_s`), the stand-in's sun
+// stands its seconds past the scene's epoch along the arc, and an unset hour is the sun it always
+// had. Reach and intensity scale with the scene's radius, intensity with its
 // square because the falloff is inverse square, so a 2 cm mesh and a 20 m heightfield look alike.
 // The ground they light is the scene's own, `SceneData::ground_albedo`: a terrain's sand, or a
 // neutral grey for a scene without one.

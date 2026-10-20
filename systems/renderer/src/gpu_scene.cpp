@@ -1624,11 +1624,11 @@ bool GpuScene::create_flora(std::string* error) {
   return true;
 }
 
-u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
-                          f64 sun_time_s) noexcept {
+u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
+                          f64 sky_time_s) noexcept {
   if (flora_instances_.empty() || flora_poses_.mapped == nullptr || slot >= k_joint_slots) return 0;
-  // The wind in the ground plane: the frame's, the ground's at the world's one clock, or the
-  // tunables'.
+  // The wind in the ground plane: the frame's, the ground's record at the sky's hour (the weather
+  // follows the day, clocks.h), or the tunables'.
   Vec2 to{1.0f, 0.0f};
   f32 strength = 0.0f;
   const char* source = "frame";
@@ -1639,7 +1639,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
     f64 moved = 0.0;
     f32 ground_strength = 0.0f;
-    const f64 at = (ground_ != nullptr ? ground_time_s_ : data_->terrain.time_s) + sun_time_s;
+    const f64 at = sky_time_s;
     if (ground != nullptr && ground->transport(at, moved, ground_strength)) {
       to = ground->wind(at);
       strength = ground_strength;
@@ -1665,7 +1665,9 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
   flora_stats_.wind_to = to;
   flora_stats_.pushed_parts = 0;
   flora_moving_ = false;
-  const f64 time_s = static_cast<f64>(frame_index) / 60.0;
+  // The sway's clock is the world's (a host at 60 frames a second with the world at real time hands
+  // `frame_index / 60`, the number this was before the clocks were split).
+  const f64 time_s = world_time_s;
   auto* region = static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_parts_;
   for (FloraInstance& fi : flora_instances_) {
     const FloraMesh& tree = flora_meshes_[fi.mesh];

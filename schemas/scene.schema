@@ -855,7 +855,7 @@ enum SkyExposure : u8 {
 /// **Absent, the scene draws exactly what it drew before**: the renderer's stand-in, a flat sky colour
 /// and a sun that is a direction. Append-only: a field added later has a default that draws what the
 /// block drew before it.
-struct Sky @version(1) {
+struct Sky @version(2) {
   /// The sky provider that draws it, by the name it registered under (docs/subsystems/scene_gen.md):
   /// "earth", the sky capability's. Empty: "earth". A name the executable does not carry is refused
   /// with a sentence naming it.
@@ -887,6 +887,12 @@ struct Sky @version(1) {
   exposure_compensation_ev: f32 = 0
   /// Fixed: the exposure value at ISO 100. 15 is a sunlit scene, -3 a moonlit one.
   exposure_ev100: f32 = 15
+  /// The sun's and the moon's drawn discs, as a factor on their angular radii, [1, 20]: 1 is
+  /// physical (the sun 0.2665 degrees, the moon about 0.259 from the ephemeris's distance). A game
+  /// may enlarge both for the look without changing the sky's light: each disc's radiance is
+  /// scaled by the inverse square, so the sun's and the moon's illuminance stay what they were
+  /// (docs/subsystems/renderer.md, "The sky").
+  disc_scale: f32 = 1 @since(2)
 }
 
 /// A fire's smoke (docs/subsystems/volumetrics.md, "Fire"): a plume leaving the flame's top, rising

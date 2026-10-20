@@ -7,6 +7,7 @@
 #include <foundation/hotload/module_host.h>
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/clocks.h>
 
 #include <cmath>
 #include <cstdio>
@@ -216,14 +217,21 @@ struct GameRunner::Impl {
   u32 action_count = 0;
   input::ActionId fast = input::k_invalid_action;
 
-  // The sky's clock, a tick at a time.
+  // The clocks, a tick at a time (renderer/clocks.h): the sky's day at the sun rate per real
+  // second, and the world's clock at the world rate per real second.
   f64 sun_offset_s = 0.0;
   f64 sun_rate = 0.0;
-  f64 ground_time_s = 0.0;
-  f64 day_s = 0.0;  // the day's game seconds so far
+  f64 ground_time_s = 0.0;  // the scene's epoch: the ground's start, which the sky's hour adds to
+  f64 day_s = 0.0;          // the day's game seconds so far
   u32 rate_changes = 0;
   u32 last_slower = 0;  // the sun keys' presses acted on
   u32 last_faster = 0;
+  f64 world_time_s = 0.0;  // the world clock: real seconds scaled by the world rate
+  f64 world_rate = 1.0;
+  f64 world_start_rate = 1.0;
+  u32 world_rate_changes = 0;
+  u32 last_world_slower = 0;  // the world keys' presses acted on
+  u32 last_world_faster = 0;
 
   PlacementQuery placements = nullptr;
   PlacementStats placement_stats = nullptr;
@@ -311,6 +319,11 @@ struct GameRunner::Impl {
     clock.set("ground_time_s", g.ground_time_s);
     if (g.have_surface_time) clock.set("surface_time_s", g.surface_time_s);
     clock.set("time_rate", g.time_rate);
+    // Session version 2 (2026-10-20, R88): the day's length the sun rate is, and the world clock.
+    clock.set("sky_time_s", g.ground_time_s + (g.sun_offset_s + g.day_s));
+    clock.set("day_length_s", renderer::day_length_of_rate(g.sun_rate));
+    clock.set("world_time_s", g.world_time_s);
+    clock.set("world_rate", g.world_rate);
     s.set("clock", std::move(clock));
     return s;
   }
@@ -321,8 +334,8 @@ struct GameRunner::Impl {
       why = "not an object with a version";
       return false;
     }
-    if (version != k_session_version) {
-      why = "version " + std::to_string(version) + ", and this build reads " +
+    if (version != k_session_version && version != 1) {
+      why = "version " + std::to_string(version) + ", and this build reads 1 to " +
             std::to_string(k_session_version);
       return false;
     }
@@ -370,6 +383,20 @@ struct GameRunner::Impl {
       return false;
     }
     out.has_surface_time = number(*clock, "surface_time_s", out.surface_time_s);
+    // Version 2's world clock; a version 1 session starts the world at 0 at real time. The sun
+    // rate is what is restored (to its bits): `day_length_s` is written beside it for a reader.
+    out.world_time_s = 0.0;
+    out.world_rate = 1.0;
+    // The sky's hour, absolute: version 1 kept it as the one clock did, the ground's time plus
+    // the sky's offset on it.
+    out.sky_time_s = out.ground_time_s + out.sun_time_s;
+    if (version >= 2 && (!number(*clock, "world_time_s", out.world_time_s) ||
+                         !number(*clock, "world_rate", out.world_rate) ||
+                         !number(*clock, "sky_time_s", out.sky_time_s))) {
+      why = "the clock's world_time_s, world_rate or sky_time_s is missing";
+      return false;
+    }
+    if (out.world_rate < 0.0) out.world_rate = 0.0;
     return true;
   }
 
@@ -1021,18 +1048,23 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   return true;
 }
 
-void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 ground_time_s) noexcept {
+void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate) noexcept {
   Impl& g = *impl_;
   g.sun_offset_s = sun_offset_s;
   g.sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
-  g.ground_time_s = ground_time_s;
-  // A restored clock: the sky where it stood whatever this session's `--time-of-day` offset is
-  // (the day's seconds are what is left of the saved sky time past it), at the rate the keys had
-  // left it, on the ground time the world's clock stood on.
+  g.ground_time_s = epoch_s;
+  g.world_rate = world_rate > 0.0 ? world_rate : 0.0;
+  g.world_start_rate = g.world_rate;
+  // A restored clock: the sky's hour where it stood whatever this session's epoch (a restored
+  // ground starts at the saved surface time) and `--time-of-day` offset are — the day's seconds are
+  // what is left of the saved hour past them — at the rates the keys had left, and the world clock
+  // where it stood, so the waves, the smoke and the sway carry on from their phase.
   if (g.has_saved) {
-    g.day_s = g.saved.sun_time_s - sun_offset_s;
+    g.day_s = (g.saved.sky_time_s - epoch_s) - sun_offset_s;
     g.sun_rate = g.saved.sun_rate > 0.0 ? g.saved.sun_rate : 0.0;
-    g.ground_time_s = g.saved.ground_time_s;
+    g.world_time_s = g.saved.world_time_s;
+    g.world_rate = g.saved.world_rate;
+    g.world_start_rate = g.world_rate;
   }
 }
 
@@ -1080,6 +1112,10 @@ f64 GameRunner::sun_time_s() const noexcept { return impl_->sun_offset_s + impl_
 f64 GameRunner::day_s() const noexcept { return impl_->day_s; }
 f64 GameRunner::sun_rate() const noexcept { return impl_->sun_rate; }
 u32 GameRunner::rate_changes() const noexcept { return impl_->rate_changes; }
+f64 GameRunner::world_time_s() const noexcept { return impl_->world_time_s; }
+f64 GameRunner::world_rate() const noexcept { return impl_->world_rate; }
+f64 GameRunner::world_start_rate() const noexcept { return impl_->world_start_rate; }
+u32 GameRunner::world_rate_changes() const noexcept { return impl_->world_rate_changes; }
 
 void GameRunner::set_placements(PlacementQuery query, void* user, PlacementStats stats) noexcept {
   impl_->placements = query;
@@ -1152,38 +1188,57 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   }
   in.sun_slower = session.control_presses(ViewControl::sun_slower);
   in.sun_faster = session.control_presses(ViewControl::sun_faster);
+  in.world_slower = session.control_presses(ViewControl::dunes_slower);
+  in.world_faster = session.control_presses(ViewControl::dunes_faster);
   self.tick(in);
 }
 
 void GameRunner::tick(const GameTickInput& in) {
   Impl& g = *impl_;
   if (!g.host) return;
-  // The time-lapse keys at the ticks they were pressed on: a rung of the sun's ladder each, as the
-  // window's `step_rate` does (time_controls.h); then the day moves by this tick at the rate now.
-  // The presses arrive as running counts; anything past the count already acted on is new. The
-  // clock steps whether or not the run has ended: the frame draws the sky from it (`sun_time_s`),
+  // The rate keys at the ticks they were pressed on: a rung of the day's ladder (`[`, `]`) or of
+  // the world's (`,`, `.`) each, as the window's `step_rate` does (time_controls.h); then the day
+  // moves by this tick's real seconds at the sun rate now, and the world by them at the world rate
+  // now. The presses arrive as running counts; anything past the count already acted on is new. The
+  // clocks step whether or not the run has ended: the frame draws the sky and the world from them,
   // and a result panel's sky keeps turning; only the module is not ticked past `end_run`.
-  const u32 slower = in.sun_slower;
-  const u32 faster = in.sun_faster;
-  while (g.last_slower < slower) {
+  while (g.last_slower < in.sun_slower) {
     ++g.last_slower;
     g.sun_rate = ladder_step(k_sun_ladder, g.sun_rate, false);
     ++g.rate_changes;
   }
-  while (g.last_faster < faster) {
+  while (g.last_faster < in.sun_faster) {
     ++g.last_faster;
     g.sun_rate = ladder_step(k_sun_ladder, g.sun_rate, true);
     ++g.rate_changes;
   }
+  while (g.last_world_slower < in.world_slower) {
+    ++g.last_world_slower;
+    const f64 next = ladder_step(k_world_ladder, g.world_rate, false);
+    if (next != g.world_rate) ++g.world_rate_changes;
+    g.world_rate = next;
+  }
+  while (g.last_world_faster < in.world_faster) {
+    ++g.last_world_faster;
+    const f64 next = ladder_step(k_world_ladder, g.world_rate, true);
+    if (next != g.world_rate) ++g.world_rate_changes;
+    g.world_rate = next;
+  }
   g.day_s += g.sun_rate * g.dt;
+  g.world_time_s += g.world_rate * g.dt;
 
   game::GameTick& t = g.state;
   // The clock's fields first, so the summary's `clock` is the frame's whether or not the module
   // is ticked below.
+  // `world_time_s` is the world clock (R88; until 2026-10-20 it was the sky's hour, which is
+  // `sky_time_s` now); `day_fraction` is the sky's.
   t.sun_time_s = g.sun_offset_s + g.day_s;
-  t.world_time_s = g.ground_time_s + t.sun_time_s;
-  const f64 days = t.world_time_s / 86'400.0;
+  t.sky_time_s = g.ground_time_s + t.sun_time_s;
+  t.world_time_s = g.world_time_s;
+  const f64 days = t.sky_time_s / 86'400.0;
   t.day_fraction = days - std::floor(days);
+  t.day_length_s = renderer::day_length_of_rate(g.sun_rate);
+  t.world_rate = g.world_rate;
   // The pose the state file keeps (`SavedSession`), the tick's whether or not the module runs.
   g.last_eye = in.eye;
   g.last_yaw = in.heading;
@@ -1350,8 +1405,12 @@ JsonValue GameRunner::summary_json() const {
   JsonValue clock = JsonValue::object();
   clock.set("sun_time_s", g.state.sun_time_s);
   clock.set("world_time_s", g.state.world_time_s);
+  clock.set("sky_time_s", g.state.sky_time_s);
   clock.set("day_fraction", g.state.day_fraction);
   clock.set("sun_rate", g.sun_rate);
+  clock.set("day_length_s", g.state.day_length_s);
+  clock.set("world_rate", g.world_rate);
+  clock.set("world_rate_changes", g.world_rate_changes);
   clock.set("rate_changes", g.rate_changes);
   out.set("clock", std::move(clock));
   JsonValue placements = JsonValue::object();

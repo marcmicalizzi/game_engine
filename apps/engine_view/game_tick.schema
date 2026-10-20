@@ -7,7 +7,7 @@
 namespace engine.game
 
 /// One tick of the walking session, as a game sees it: no engine types, only values.
-struct GameTick @version(1) {
+struct GameTick @version(2) {
   /// The session's tick (the first is 1) and its length in seconds (1 / the tick rate).
   tick: u64 = 0
   dt: f64 = 0
@@ -26,9 +26,12 @@ struct GameTick @version(1) {
   sprinting: bool = false
   /// Metres the walker moved over the ground this tick (0 while flying).
   moved_m: f64 = 0
-  /// The sky's clock: `FrameDesc::sun_time_s` as the session runs it (the --time-of-day offset
-  /// plus the day's game seconds at the session's sun rate), the world's time (the ground's
-  /// surface time plus that), and where in its day the world is, 0 at midnight to 1.
+  /// The clocks (docs/subsystems/renderer.md, "One world clock, and the day's length"):
+  /// `sun_time_s` is the sky's offset from the scene's epoch as the session runs it (the
+  /// --time-of-day offset plus the day's game seconds at the session's day length);
+  /// `world_time_s` the world clock, real seconds scaled by the world rate — what a game animates
+  /// by (until 2026-10-20 it was the sky's hour, which is `sky_time_s` now); and `day_fraction`
+  /// where in its day the **sky** is, 0 at midnight to 1.
   sun_time_s: f64 = 0
   world_time_s: f64 = 0
   day_fraction: f64 = 0
@@ -37,4 +40,11 @@ struct GameTick @version(1) {
   actions_pressed: u64 = 0
   actions_held: u64 = 0
   actions_released: u64 = 0
+  /// The sky's hour, absolute game seconds (the scene's epoch plus `sun_time_s`): what a game
+  /// counts its days by. The day's length in real seconds (0 a still sky: 86,400 over the sun
+  /// rate) and the world's rate (world seconds a real second; 0 pauses every animation), as the
+  /// keys have left them.
+  sky_time_s: f64 = 0 @since(2)
+  day_length_s: f64 = 0 @since(2)
+  world_rate: f64 = 1 @since(2)
 }

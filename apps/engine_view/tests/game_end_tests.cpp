@@ -223,12 +223,16 @@ TEST_CASE("engine-view: a --game replay draws the sky where the runner's clock s
   CHECK(day_a == doctest::Approx(8241.0).epsilon(1e-9));
   CHECK(day_b == doctest::Approx(3600.0).epsilon(1e-9));
   // The frame was drawn from the runner's clock: the sky the renderer evaluated stood at the
-  // ground's time plus the runner's sun time, which is the runner's world time.
+  // scene's epoch plus the runner's sun time, which is the runner's sky hour (R88).
   const f64 sky_a = number_at(sa, {"sun", "sky", "time_s"});
   const f64 sky_b = number_at(sb, {"sun", "sky", "time_s"});
   REQUIRE_MESSAGE(sky_a > 0.0, "the erg window has a sky: " << write_json(*at(sa, {"sun"})));
-  CHECK(sky_a == number_at(sa, {"interactive", "game", "clock", "world_time_s"}));
-  CHECK(sky_b == number_at(sb, {"interactive", "game", "clock", "world_time_s"}));
+  CHECK(sky_a == number_at(sa, {"interactive", "game", "clock", "sky_time_s"}));
+  CHECK(sky_b == number_at(sb, {"interactive", "game", "clock", "sky_time_s"}));
+  // And the day's key left the world clock alone: a second of world in both.
+  CHECK(number_at(sa, {"interactive", "game", "clock", "world_time_s"}) ==
+        number_at(sb, {"interactive", "game", "clock", "world_time_s"}));
+  CHECK(number_at(sa, {"sun", "world_time_s"}) == doctest::Approx(1.0).epsilon(1e-9));
   CHECK(sky_a - sky_b == doctest::Approx(8241.0 - 3600.0).epsilon(1e-9));
   // And the two captures, drawn where each replay ended, show different skies.
   const u64 differ = differing_pixels(tmp.file("pressed.png"), tmp.file("plain.png"));

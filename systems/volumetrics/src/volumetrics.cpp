@@ -708,7 +708,10 @@ u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWi
                              Vec4& grid) {
   PlumeCache& cache = *plumes_;
   const WorldPos eye = c.eye_world;
-  const i64 hour = static_cast<i64>(std::floor(c.world_time_s / 3600.0));
+  // The record's hour at the sky's clock (the weather follows the day; renderer.md "One world
+  // clock, and the day's length"): the crest lines are the ones of that hour too, which a dune
+  // time-lapse leaves a lapse's few metres behind the drawn brinks at most.
+  const i64 hour = static_cast<i64>(std::floor(c.sky_time_s / 3600.0));
   const f64 longest = 3.0 * static_cast<f64>(k_plume_decay_s * std::max(wind.speed_mps, 0.0f));
   const f64 reach = static_cast<f64>(k_plume_radius_m) + longest;
   const f64 tile_m = static_cast<f64>(k_plume_tile_mm) / 1000.0;
@@ -883,7 +886,9 @@ f64 MediumPass::corner_height(i64 x, i64 z) {
 bool MediumPass::record(const renderer::FramePassContext& c, std::string* error) {
   if (!ensure_buffers(c, error)) return false;
   // ---- the frame's medium on the CPU, in f64 where it is the world's --------------------------
-  const MediumWind wind = wind_now(field_, c.world_time_s);
+  // The wind at the sky's hour (the weather follows the day); what it moves — the flames' noise,
+  // the smoke's and the clouds' drift — moves on the world clock.
+  const MediumWind wind = wind_now(field_, c.sky_time_s);
   const DustState dust = dust_state(desc_, wind);
   const WorldPos eye = c.eye_world;
   f64 ground_y = 0.0;

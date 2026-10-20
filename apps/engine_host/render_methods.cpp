@@ -798,7 +798,8 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
 
   const renderer::FrameClock clock = renderer::frame_clock(request.clock, scene->data);
   const renderer::FrameDesc frame = renderer::frame_at(clock, camera, params.frame);
-  reference_settings.sun_time_s = frame.sun_time_s;
+  reference_settings.sky_time_s = frame.sky_time_s;
+  reference_settings.world_time_s = frame.world_time_s;
   renderer::CapturedFrame shot;
   scene->view->reset_stats();
   // A time-lapse is drawn up to the frame asked for, a sixtieth of a second of its motion a frame,
@@ -1062,7 +1063,8 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     const u32 last = flight.frames > 0 ? flight.frames - 1 : 0u;
     summary.sun = renderer::sun_summary(
         scene->resolved.settings,
-        renderer::SunDayState{clock.sun_rate, clock.sun_rate, 0, clock.at(last)},
+        renderer::SunDayState{clock.sun_rate, clock.sun_rate, 0, clock.sky_offset_at(last),
+                              clock.world_rate, clock.world_rate, 0, clock.world_at(last)},
         scene->view->stats());
     out.flythrough = std::move(summary);
   }
@@ -1191,7 +1193,8 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   // One frame on the clock the call asked for, and the reference at the same time.
   const renderer::FrameDesc frame =
       renderer::frame_at(renderer::frame_clock(request.clock, scene->data), camera, params.frame);
-  reference_settings.sun_time_s = frame.sun_time_s;
+  reference_settings.sky_time_s = frame.sky_time_s;
+  reference_settings.world_time_s = frame.world_time_s;
   step_ground(*scene, camera);
 
   // The real-time picture first. `reset_stats` before it, so the statistics returned are this

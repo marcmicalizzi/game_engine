@@ -13,10 +13,10 @@
 //   settings_for           the settings against the loaded scene (a page budget's percentage,
 //                          the morph weights by name and the channels' authored defaults)
 //   view_set_desc          the renderer's view layout from the resolved settings
-//   frame_clock, frame_at  the frame's clock and the frame: `FrameDesc::sun_time_s`
-//   flight_clock           the same clock for a flight (`FlightOptions`)
-//   MovingGround           the terrain levels a run moves: the time-lapse, the rings, the tiles
-//   sun_summary, time_lapse_summary   the summary blocks both hosts report
+//   frame_clock, frame_at  the frame's clocks and the frame: `FrameDesc::world_time_s`,
+//   `sky_time_s` flight_clock           the same clock for a flight (`FlightOptions`) MovingGround
+//   the terrain levels a run moves: the time-lapse, the rings, the tiles sun_summary,
+//   time_lapse_summary   the summary blocks both hosts report
 //
 // `request_tests.cpp` holds the line: every field of `RenderSettings` and of `FrameDesc` is named
 // there with the protocol field that reaches it or the reason none does, by a structured binding
@@ -25,6 +25,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
+#include <systems/renderer/clocks.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -55,14 +56,21 @@ namespace engine::renderer {
 // index's clock, which the sun's day, the time-lapse and a flight all count by.
 inline constexpr u32 k_frame_hz = 60;
 
-// The world's clock as a host is asked for it (renderer.md, "One clock"): engine-view's
-// `--time-of-day` and `--sun-rate`, `render.*`'s `clock`.
+// The world's clocks as a host is asked for them (clocks.h; renderer.md, "One world clock, and the
+// day's length"): engine-view's `--time-of-day`, `--sun-rate` and `--day-length`, `render.*`'s
+// `clock`.
 struct ClockRequest {
-  // A sky's hour, local apparent solar time, [0, 24): the offset that puts the ground's day there.
-  // Unset: the ground's own hour. Nothing without a sky.
+  // A sky's hour, local apparent solar time, [0, 24): the sky's start, as an offset from the
+  // scene's epoch that puts its day there. Unset: the scene's own hour. Nothing without a sky.
   std::optional<f64> time_of_day_h;
-  // The sun's day, game seconds per real second. Unset: the `renderer.sun.rate` tunable.
+  // The sun's day, game seconds per world second. Unset: the `renderer.sun.rate` tunable.
   std::optional<f64> sun_rate;
+  // The same said as the day's length, world seconds (3,600 is a sixty-minute day): the rate
+  // `86,400 / day_length_s`. A request names one of the two; with both, `day_length_s` is used.
+  std::optional<f64> day_length_s;
+  // World seconds per real second: what every animation and the dunes' time-lapse run at. Unset:
+  // 1, real time. The sky's day is in real seconds and does not follow it.
+  std::optional<f64> world_rate;
 };
 
 // Everything a host is asked that decides a picture, in one place.
@@ -94,19 +102,24 @@ bool settings_for(const RenderRequest& request, const SceneData& scene, RenderSe
 // `resolve_settings` left — the ones the GPU scene's per-view working set was sized by.
 ViewSetDesc view_set_desc(const RenderSettings& resolved);
 
-// **The frame's clock** (renderer.md, "One clock", "The sun's day"): frame f stands
-// `offset_s + sun_rate * f / 60` game seconds into the world's day, on top of the ground's own
-// time. `offset_s` is a sky's `time_of_day` offset — the hours asked for less how far into its day
-// the ground already stands — and 0 without one, whose stand-in sun has no hour.
-struct FrameClock {
-  f64 offset_s = 0.0;
-  f64 sun_rate = 0.0;
-  f64 at(u64 frame_index) const noexcept {
-    return offset_s + sun_rate * static_cast<f64>(frame_index) / static_cast<f64>(k_frame_hz);
+// **The frames' clocks** (clocks.h; renderer.md, "One world clock, and the day's length"): frame f
+// of a run is `f / 60` world seconds in, its sky `sky_start_s + sun_rate * f / 60` game seconds
+// past the scene's epoch. `sky_start_s` is a sky's `time_of_day` offset — the hours asked for less
+// how far into its day the epoch already stands — and 0 without one, whose stand-in sun has no
+// hour. The ground's time-lapse is the moving ground's own (`MovingGround`), at the settings'
+// `time_rate`, and never moves the sky.
+struct FrameClock : WorldClocks {
+  // The sky's hour, and its seconds past the epoch (what `FrameDesc::sky_time_s` takes).
+  f64 sky_at(u64 frame_index) const noexcept { return sky_time_s(frame_index, k_frame_hz); }
+  f64 sky_offset_at(u64 frame_index) const noexcept {
+    return sky_offset_s(frame_index, k_frame_hz);
   }
+  f64 world_at(u64 frame_index) const noexcept { return world_time_s(frame_index, k_frame_hz); }
 };
 FrameClock frame_clock(const ClockRequest& clock, const SceneData& scene);
-// One frame of a run: its camera, its number and its place on the clock.
+// The scene's epoch: its terrain's `time`, 0 without a terrain (clocks.h).
+f64 scene_epoch_s(const SceneData& scene) noexcept;
+// One frame of a run: its camera, its number and its place on the clocks.
 FrameDesc frame_at(const FrameClock& clock, const Camera& camera, u64 frame_index);
 // A flight's clock: path frame f at `clock.at(f)`.
 void flight_clock(const FrameClock& clock, FlightOptions& out);
@@ -172,11 +185,18 @@ const char* ground_layout(const TerrainMotion& motion) noexcept;
 // **The summaries both hosts report** (apps.md, "--time-rate", "--sun-rate"). The sun's day as the
 // host kept it: the rate at the end and at the start, how often it changed, and how far into the
 // day the last frame was (game seconds, the clock's `at`).
+// With them the world's rate as the host kept it (clocks.h): at the end, at the start, its changes
+// and the world clock the last frame stood at — the `sun` block's `world_*` keys, beside the
+// `day_length_s` the sun's rate is.
 struct SunDayState {
   f64 rate = 0.0;
   f64 start_rate = 0.0;
   u32 changes = 0;
   f64 time_s = 0.0;
+  f64 world_rate = 1.0;
+  f64 world_start_rate = 1.0;
+  u32 world_changes = 0;
+  f64 world_time_s = 0.0;
 };
 // The `sun` block: the stand-in's arc and where its sun stood at `day.time_s`, and with a sky,
 // the `sky` block of what drew the frame (`Stats::sky`).

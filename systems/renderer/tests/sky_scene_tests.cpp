@@ -412,7 +412,7 @@ TEST_CASE("sky scene: the resolve draws the mirror's sky, and the reference the 
     const Camera camera = aimed(eye, towards, s.fov_deg);
     FrameDesc frame;
     frame.camera = camera;
-    frame.sun_time_s = s.time_s;
+    frame.sky_time_s = s.time_s;
     CaptureChannels channels;
     channels.depth = true;
     CapturedFrame shot;
@@ -434,7 +434,7 @@ TEST_CASE("sky scene: the resolve draws the mirror's sky, and the reference the 
       rs.batch = 1;
       rs.max_bounces = 1;
       rs.pixel_center = true;
-      rs.sun_time_s = s.time_s;
+      rs.sky_time_s = s.time_s;
       REQUIRE_MESSAGE(rig.reference.render(camera, rs, reference, &rig.error), rig.error);
     }
     const SkyCompare c = compare_sky(params, shot, stars, gpu.trace ? &reference : nullptr);
@@ -475,7 +475,7 @@ struct SkyShot {
 SkyShot sky_shot(Rig& rig, const Camera& camera, f64 time_s) {
   FrameDesc frame;
   frame.camera = camera;
-  frame.sun_time_s = time_s;
+  frame.sky_time_s = time_s;
   CaptureChannels channels;
   channels.depth = true;
   SkyShot out;
@@ -645,7 +645,7 @@ TEST_CASE("sky scene: a scene without a sky draws the stand-in and hands the res
   CHECK_FALSE(rig.renderer.sky().active());
   FrameDesc frame;
   frame.camera = aimed(Vec3{0.0f, 3.0f, 0.0f}, normalize(Vec3{1.0f, 0.3f, 0.0f}), 60.0f);
-  frame.sun_time_s = 20.0 * 3600.0;  // a day that moves: still the stand-in's sky
+  frame.sky_time_s = 20.0 * 3600.0;  // a day that moves: still the stand-in's sky
   CaptureChannels channels;
   channels.depth = true;
   CapturedFrame shot;
@@ -729,13 +729,13 @@ TEST_CASE("sky scene: the same frame meters the same exposure in fresh renderers
     const Vec3 level = normalize(Vec3{light.x, 0.0f, light.z});
     FrameDesc frame;
     frame.camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(normalize(light) + level), 60.0f);
-    frame.sun_time_s = hour * 3600.0;
+    frame.sky_time_s = hour * 3600.0;
     const Metered a = meter(first, frame);
     const Metered b = meter(second, frame);
     // Other frames in between — another hour and another eye — and then the same frame again.
     FrameDesc other = frame;
     other.camera.position.y += 7.0;
-    other.sun_time_s += 5400.0;
+    other.sky_time_s += 5400.0;
     (void)meter(first, other);
     const Metered again = meter(first, frame);
     MESSAGE("hour " << hour << ": EV100 " << a.sky.ev100 << ", " << a.sky.lux << " lux, the sky's "
@@ -783,7 +783,7 @@ TEST_CASE("sky scene: the sky stands at the ground's time plus the frame's offse
   for (const f64 offset : {0.0, 7.0 * 3600.0, 30.0 * 86'400.0}) {
     FrameDesc frame;
     frame.camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(Vec3{1.0f, 0.1f, 0.0f}), 60.0f);
-    frame.sun_time_s = offset;
+    frame.sky_time_s = offset;
     REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
     const FrameSky& sky = rig.renderer.frame_sky();
     const f64 t = desc.terrain.time_s + offset;
@@ -797,5 +797,70 @@ TEST_CASE("sky scene: the sky stands at the ground's time plus the frame's offse
           doctest::Approx(static_cast<f64>(entry.day_of_year) + t / 86'400.0).epsilon(1e-9));
     CHECK(rig.renderer.stats().sky.time_s == t);
   }
+  // **(b) A dune time-lapse leaves the sun alone** (R88): the motion moves the ground's surface
+  // time (`set_ground_time`, what `TerrainMotion` does each frame) — here 10,000 game seconds a
+  // real second for a minute, a week of sand — and the sky stays at the frame's own hour, the
+  // sun's direction to the bit. Before the clocks were split the sky stood on the surface time
+  // and turned 6.9 days with it.
+  FrameDesc frame;
+  frame.camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(Vec3{1.0f, 0.1f, 0.0f}), 60.0f);
+  frame.sky_time_s = 3.0 * 3600.0;
+  REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+  const Vec3 still_sun = rig.renderer.frame_sky().state.sun;
+  const f64 still_time = rig.renderer.frame_sky().time_s;
+  rig.scene.set_ground_time(desc.terrain.time_s + 10'000.0 * 60.0);
+  CHECK(rig.scene.epoch_s() == desc.terrain.time_s);
+  REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+  CHECK(rig.renderer.frame_sky().time_s == still_time);
+  const Vec3 lapsed_sun = rig.renderer.frame_sky().state.sun;
+  CHECK(lapsed_sun.x == still_sun.x);
+  CHECK(lapsed_sun.y == still_sun.y);
+  CHECK(lapsed_sun.z == still_sun.z);
+
+  // **The discs' sizes against the real ones** (renderer.md, "The sky"): the sun's angular radius
+  // is its radius over its distance, 4.65 mrad (0.2665 degrees) at 1 AU and within the orbit's
+  // 1.7 % of it all year; the moon's 4.52 mrad (0.259 degrees) at its mean distance and within the
+  // 6 % its orbit swings by. Said here so a provider that changed them is seen.
+  const scene_gen::SkyState& at = rig.renderer.frame_sky().state;
+  MESSAGE("sun radius " << at.sun_radius * 1000.0f << " mrad, moon radius "
+                        << at.moon_radius * 1000.0f << " mrad");
+  CHECK(at.sun_radius == doctest::Approx(4.6505e-3).epsilon(0.018));
+  CHECK(at.moon_radius == doctest::Approx(4.52e-3).epsilon(0.07));
+}
+
+TEST_CASE("sky scene: a disc scale enlarges the sun and the moon and keeps their light") {
+  // `Sky.disc_scale` (R88 stage 4): both radii times the scale, the moon's albedo over its
+  // square, the light the sky and the ground get untouched; at 1 the block is what it was.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("renderer_sky_discs");
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  const Camera camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(Vec3{1.0f, 0.3f, 0.0f}), 60.0f);
+  gfx::SkyParams params[2];
+  const f32 scales[2] = {1.0f, 4.0f};
+  for (u32 i = 0; i < 2; ++i) {
+    SceneDesc desc = hills(erg_sky());
+    desc.sky->disc_scale = scales[i];
+    desc.ddc = tmp.file("ddc");
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, 64, 36, false), rig.error);
+    params[i] = sky_shot(rig, camera, 0.0).params;
+  }
+  CHECK(params[1].sun.w == params[0].sun.w * 4.0f);
+  CHECK(params[1].moon.w == params[0].moon.w * 4.0f);
+  CHECK(params[1].moon_illuminance.w == params[0].moon_illuminance.w / 16.0f);
+  CHECK(params[1].moon_illuminance.x == params[0].moon_illuminance.x);
+  CHECK(params[1].sun_illuminance.x == params[0].sun_illuminance.x);
+  // Out of range is refused, naming the field.
+  SceneDesc wrong = hills(erg_sky());
+  wrong.sky->disc_scale = 0.5f;
+  wrong.ddc = tmp.file("ddc");
+  Rig refused;
+  CHECK_FALSE(refused.build(gpu.device, wrong, settings, 64, 36, false));
+  CHECK(refused.error.find("disc_scale") != std::string::npos);
 }
 #endif

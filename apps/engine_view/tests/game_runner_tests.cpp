@@ -22,6 +22,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace engine;
 
@@ -125,6 +126,86 @@ TEST_CASE("game runner: the fixture ticks, drains thirst while walking and says 
   CHECK(summary.find("actions")->size() == 2);  // interact and use
   MESSAGE(
       "after a second: " << write_json(summary.find("hud") ? *summary.find("hud") : JsonValue()));
+}
+
+TEST_CASE(
+    "game runner: the world's keys scale the world clock and leave the sky's, and the day's keys "
+    "the reverse (R88)") {
+  // The owner's two rates (2026-10-20): `,`/`.` step the world's rate — the clock every animation
+  // and the dunes read — and never the sky's; `[`/`]` step the day's length, in real seconds, and
+  // never the world's. Three runners tick the same second: one plain, one that presses `.` three
+  // times on its first tick (1 -> 2 -> 4 -> 8), one that presses `]` twice (1 -> 6 -> 24, a
+  // sixty-minute day). And at a world rate of 0 the world holds still while the sun moves.
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_rates");
+  const input::ActionMap map = view::default_fly_map();
+  std::string error;
+  struct Run {
+    view::GameRunner runner;
+    u64 tick = 0;
+  };
+  Run plain, world_fast, day_fast, paused;
+  const auto start = [&](Run& r, const char* name, f64 world_rate) {
+    view::GameRunner::Config c = config_for(place(tmp, WALK_POC_PATH, name), tmp);
+    c.shadow_directory = tmp.file(std::string("shadow_") + name);
+    REQUIRE_MESSAGE(r.runner.start(c, map, 240, &error), error);
+    r.runner.set_clock(0.0, 1.0, 46'200.0, world_rate);
+  };
+  start(plain, "walk_poc_plain", 1.0);
+  start(world_fast, "walk_poc_world", 1.0);
+  start(day_fast, "walk_poc_day", 1.0);
+  start(paused, "walk_poc_paused", 0.0);
+  const auto run = [](Run& r, u32 world_presses, u32 day_presses, std::vector<f64>& sky,
+                      std::vector<f64>& world) {
+    for (u32 i = 0; i < 240; ++i) {
+      view::GameTickInput in;
+      in.tick = ++r.tick;
+      in.world_faster = world_presses;  // running counts: all pressed on the first tick
+      in.sun_faster = day_presses;
+      r.runner.tick(in);
+      sky.push_back(r.runner.sun_time_s());
+      world.push_back(r.runner.world_time_s());
+    }
+  };
+  std::vector<f64> sky_plain, world_plain, sky_wf, world_wf, sky_df, world_df, sky_p, world_p;
+  run(plain, 0, 0, sky_plain, world_plain);
+  run(world_fast, 3, 0, sky_wf, world_wf);
+  run(day_fast, 0, 2, sky_df, world_df);
+  run(paused, 0, 0, sky_p, world_p);
+  CHECK(world_fast.runner.world_rate() == 8.0);
+  CHECK(world_fast.runner.world_rate_changes() == 3u);
+  CHECK(day_fast.runner.sun_rate() == 24.0);
+  bool sky_same = true;
+  bool world_same = true;
+  bool paused_still = true;
+  for (u32 i = 0; i < 240; ++i) {
+    // (e) the world's keys: the world eight times as far, the sky to the bit.
+    sky_same = sky_same && sky_wf[i] == sky_plain[i];
+    CHECK(world_wf[i] == doctest::Approx(8.0 * world_plain[i]));
+    // (f) the day's keys: the sky 24 times as far, the world to the bit.
+    world_same = world_same && world_df[i] == world_plain[i];
+    CHECK(sky_df[i] == doctest::Approx(24.0 * sky_plain[i]));
+    // (g) at a world rate of 0 the world holds still, and the sky keeps its pace.
+    paused_still = paused_still && world_p[i] == 0.0;
+    CHECK(sky_p[i] == sky_plain[i]);
+  }
+  CHECK(sky_same);
+  CHECK(world_same);
+  CHECK(paused_still);
+  CHECK(world_plain[239] == doctest::Approx(1.0));
+  CHECK(sky_plain[239] == doctest::Approx(1.0));
+  // What a game reads: the world clock, the sky's hour (the epoch plus the sky's seconds), the
+  // day's length and the world's rate.
+  const JsonValue summary = day_fast.runner.summary_json();
+  const JsonValue* clock = summary.find("clock");
+  REQUIRE(clock != nullptr);
+  f64 v = 0.0;
+  REQUIRE(clock->find("sky_time_s")->get_f64(v));
+  CHECK(v == doctest::Approx(46'200.0 + sky_df[239]));
+  REQUIRE(clock->find("day_length_s")->get_f64(v));
+  CHECK(v == 3'600.0);
+  REQUIRE(clock->find("world_time_s")->get_f64(v));
+  CHECK(v == doctest::Approx(1.0));
 }
 
 TEST_CASE("game runner: interact is a game action the module reads on the tick it was pressed") {
@@ -343,10 +424,18 @@ TEST_CASE(
   CHECK(s->has_surface_time);
   CHECK(s->surface_time_s == 1012.5);
   CHECK(s->time_rate == 5.0);
-  // Another offset: the sky stands where it stood.
-  again.set_clock(0.0, 1.0, 0.0);
-  CHECK(again.sun_time_s() == doctest::Approx(3660.0));
+  // Session version 2 (R88): the sky's hour, absolute, and the world clock — a second at real
+  // time.
+  CHECK(s->sky_time_s == doctest::Approx(1000.0 + 3600.0 + 60.0));
+  CHECK(s->world_time_s == doctest::Approx(1.0));
+  CHECK(s->world_rate == 1.0);
+  // Another offset and another epoch: the sky's hour stands where it stood (1000 + 3660 on an
+  // epoch of 0), and the world clock carries on from its second.
+  again.set_clock(0.0, 1.0, 0.0, 8.0);
+  CHECK(again.sun_time_s() == doctest::Approx(4660.0));
   CHECK(again.sun_rate() == 60.0);
+  CHECK(again.world_time_s() == doctest::Approx(1.0));
+  CHECK(again.world_rate() == 1.0);  // the saved rate, not the one asked
   view::SessionHeader header;
   view::GameRunner::apply_pose(*s, header);
   CHECK(header.start.position.z == doctest::Approx(28.5));

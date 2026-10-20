@@ -104,7 +104,8 @@ FrameDesc looking(f64 time_s) {
   frame.camera.target = absolute(WorldPos::origin(), eye + towards * 100.0f);
   frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
   frame.camera.znear = 0.05f;
-  frame.sun_time_s = time_s;
+  frame.sky_time_s = time_s;
+  frame.world_time_s = time_s;  // the clocks agree here, as the one clock did (R88)
   return frame;
 }
 
@@ -335,7 +336,7 @@ f64 afternoon_at(const Rig& rig, f32 elevation_deg) {
   for (u32 i = 0; i < 40; ++i) {
     const f64 mid = 0.5 * (lo + hi);
     FrameSky sky;
-    rig.renderer.sky().evaluate(rig.scene.ground_time_s() + mid, sky);
+    rig.renderer.sky().evaluate(rig.scene.epoch_s() + mid, sky);
     if (sky.state.sun.y > target)
       lo = mid;
     else
@@ -351,7 +352,8 @@ FrameDesc towards(f64 time_s, Vec3 dir) {
   frame.camera.target = absolute(WorldPos::origin(), eye + normalize(dir) * 100.0f);
   frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
   frame.camera.znear = 0.05f;
-  frame.sun_time_s = time_s;
+  frame.sky_time_s = time_s;
+  frame.world_time_s = time_s;  // the clocks agree here, as the one clock did (R88)
   return frame;
 }
 
@@ -406,7 +408,7 @@ TEST_CASE("volumetrics: the far clouds are stored exposed: no bands at night, no
   // Night: 23:00, looking up towards the full moon's side of the sky.
   FrameSky night_sky;
   const f64 night_s = 23.0 * 3600.0;
-  rig.renderer.sky().evaluate(rig.scene.ground_time_s() + night_s, night_sky);
+  rig.renderer.sky().evaluate(rig.scene.epoch_s() + night_s, night_sky);
   const Vec3 moon = night_sky.state.moon;
   Picture night;
   REQUIRE_MESSAGE(
@@ -416,7 +418,7 @@ TEST_CASE("volumetrics: the far clouds are stored exposed: no bands at night, no
   const auto low_sun = [&](f32 elevation_deg, const char* name, Picture& out) {
     const f64 time_s = afternoon_at(rig, elevation_deg);
     FrameSky sky;
-    rig.renderer.sky().evaluate(rig.scene.ground_time_s() + time_s, sky);
+    rig.renderer.sky().evaluate(rig.scene.epoch_s() + time_s, sky);
     const Vec3 sun = sky.state.sun;
     return picture(gpu.device, rig, towards(time_s, Vec3{sun.x, 0.15f, sun.z}), name, tmp, out);
   };
@@ -608,7 +610,7 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
     if (c.outside != 0) MESSAGE("the light's reach is " << reach << " m at " << view.distance);
     // Another clock, another flame: the noise rises.
     FrameDesc later = view.frame;
-    later.sun_time_s = 0.5;
+    later.world_time_s = 0.5;  // the flame's noise is on the world clock (R88)
     CapturedFrame moved;
     REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, {}, later, moved), rig.error);
     CHECK(changes(on, moved, limit).inside > 0);

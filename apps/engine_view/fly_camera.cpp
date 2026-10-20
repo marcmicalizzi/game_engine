@@ -552,6 +552,15 @@ JsonValue session_to_json(const SessionHeader& header) {
     if (header.game_restored.is_object()) game.set("restored", header.game_restored);
     out.set("game", std::move(game));
   }
+  if (header.has_clock) {
+    JsonValue clock = JsonValue::object();
+    clock.set("sun_rate", header.sun_rate);
+    clock.set("day_length_s", header.sun_rate > 0.0 ? 86'400.0 / header.sun_rate : 0.0);
+    clock.set("world_rate", header.world_rate);
+    clock.set("time_rate", header.time_rate);
+    if (header.time_of_day_h >= 0.0) clock.set("time_of_day", header.time_of_day_h);
+    out.set("clock", std::move(clock));
+  }
   return out;
 }
 
@@ -639,6 +648,22 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
       if (!restored->is_object()) return fail("the game block's restored state is not an object");
       h.game_restored = *restored;
     }
+  }
+  // The clock block, from 2026-10-20 (R88): the rates the session ran on. Absent: the flags'.
+  if (const JsonValue* clock = value.find("clock"); clock != nullptr) {
+    const auto rate = [&](const char* key, f64& to) {
+      const JsonValue* f = clock->find(key);
+      return f != nullptr && f->get_f64(to) && std::isfinite(to) && to >= 0.0;
+    };
+    if (!clock->is_object() || !rate("sun_rate", h.sun_rate) || !rate("world_rate", h.world_rate) ||
+        !rate("time_rate", h.time_rate)) {
+      return fail("the clock block does not give its sun, world and time-lapse rates");
+    }
+    if (const JsonValue* hour = clock->find("time_of_day"); hour != nullptr) {
+      if (!hour->get_f64(h.time_of_day_h) || !(h.time_of_day_h >= 0.0 && h.time_of_day_h < 24.0))
+        return fail("the clock block's time_of_day is not an hour");
+    }
+    h.has_clock = true;
   }
   out = std::move(h);
   return true;

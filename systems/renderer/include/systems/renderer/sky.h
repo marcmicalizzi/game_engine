@@ -13,12 +13,13 @@
 // the tables' buffers and passes (domain/gfx/shaders/sky_luts.slang), the frame's block
 // (`gfx::SkyParams`), the star table's cells, and the exposure's tunables.
 //
-// **One clock** (renderer.md, "One clock"): the sky is evaluated at the time the ground's surface
-// stands at — the scene's `Terrain.time`, or a moving terrain's surface time as its time-lapse runs
-// (`GpuScene::ground_time_s`) — plus the frame's `FrameDesc::sun_time_s`, the host's own offset
-// (its
-// `--sun-rate` and `--time-of-day`). The ground's wind reads the same time, and the moon's month
-// runs on it, so the sun's hour, the wind's day and the moon's phase are one clock's.
+// **The sky's clock** (clocks.h; renderer.md, "One world clock, and the day's length"): the sky is
+// evaluated at the frame's `FrameDesc::sky_time_s` — the scene's epoch (its `Terrain.time`) plus
+// the host's offset (`--time-of-day`) plus the day's game seconds at the day's length
+// (`--sun-rate`,
+// `--day-length`, in real seconds) — and never at a moving terrain's surface time, so a dune
+// time-lapse leaves the sun alone. The weather's wind record is read at the same hour, and the
+// moon's month runs on it, so the sun's hour, the wind's day and the moon's phase are one clock's.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
