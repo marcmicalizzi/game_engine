@@ -292,6 +292,16 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     out.data.images.push_back(std::move(image));
   }
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
+  // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
+  // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
+  // index them by.
+  if (!container_data.motion_parts.empty() &&
+      container_data.motion_vertices.size() == lod.mesh.vertices.size()) {
+    out.motion_parts = std::move(container_data.motion_parts);
+    out.motion_vertices = std::move(container_data.motion_vertices);
+    out.structural_parts = std::move(container_data.structural_parts);
+    out.species = container_data.generator_kind;
+  }
   out.part_of_cluster = std::move(container_data.cluster_material);
   if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
     out.part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), out.part_material.size());
@@ -309,7 +319,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   // that a streamed run never depends on which build wrote the cache entry.
   if (desc.stream) {
     pages = std::move(container_data.pages);
-    if (pages.pages.empty()) lay_out_pages(desc, container.c_str(), 0, out, lod, pages);
+    if (pages.pages.empty()) {
+      lay_out_pages(desc, container.c_str(), 0, out, lod, pages);
+      // The layout renumbers the vertices, and the motion records are the container's order.
+      out.motion_parts.clear();
+      out.motion_vertices.clear();
+      out.structural_parts.clear();
+    }
   }
   ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("path", container),
                   log::field("from", "cluster file"),

@@ -86,6 +86,10 @@ const Row k_settings_rows[] = {
     ENGINE_ROW(deform, "deform", ""),
     ENGINE_ROW(deform_kind, "deform", ""),
     ENGINE_ROW(deform_amplitude, "deform_amplitude", ""),
+    ENGINE_ROW(
+        flora_motion, nullptr,
+        "on by default for a scene with generated trees; the renderer.flora.motion tunable "
+        "is a host's switch, and a call draws them swaying (renderer.md, \"The flora stage\")"),
     ENGINE_ROW(deform_pool_kib, "deform_pool_mib", ""),
     // Resolved against the scene's channels (`settings_for`); the wire carries the request.
     Row{"morph_static_weights", "morph", "",
@@ -204,6 +208,9 @@ const FrameRow k_frame_rows[] = {
     {"overlay",
      "a host's own tools UI (engine-editor's Dear ImGui panels, ADR-0054); render.* captures "
      "the scene, not a host's chrome"},
+    {"flora",
+     "a walking host's capsule and a host's own wind (renderer.md, \"The flora stage\"); a call's "
+     "trees sway in the scene ground's wind at its frame index, and no call walks"},
     {"dt_s",
      "a host's own step, for the frame passes (frame_pass.h); render.* registers none, so "
      "no call draws a medium (systems/volumetrics; engine-host's render.* is a later stage)"},
@@ -220,14 +227,14 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
                           s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
-                          s45, s46, s47, s48, s49] = settings;
-  static_assert(std::size(k_settings_rows) == 50, "one row per RenderSettings field");
+                          s45, s46, s47, s48, s49, s50] = settings;
+  static_assert(std::size(k_settings_rows) == 51, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;
   [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14,
-                          f15] = frame;
-  static_assert(std::size(k_frame_rows) == 16, "one row per FrameDesc field");
+                          f15, f16] = frame;
+  static_assert(std::size(k_frame_rows) == 17, "one row per FrameDesc field");
   for (const FrameRow& row : k_frame_rows) {
     CHECK_MESSAGE(std::strlen(row.source) > 0, row.field);
   }

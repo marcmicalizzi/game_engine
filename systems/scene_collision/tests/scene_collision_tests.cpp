@@ -653,6 +653,91 @@ TEST_CASE("scene_collision: a scene read whole collides as its instances, a prox
   CHECK(local_of(walker.state().position).z > face - c.radius - 0.1f);
 }
 
+TEST_CASE("scene_collision: a tree's fronds are walked through and its trunk stops the walker") {
+  // One mesh of two parts, as a generated palm's motion contract names them: a trunk 0.4 m square
+  // and 4 m tall at z = 20, and a "frond" across the path — a slab 2 m wide from z = 16 to 19.7,
+  // from 0.6 to 1.6 m up, which a walker cannot step over — that is part 1.
+  MeshSource tree = box_mesh(Vec3{0.2f, 2.0f, 0.2f});
+  for (Vec3& p : tree.positions)
+    p.z += 20.0f;
+  const MeshSource slab = box_mesh(Vec3{1.0f, 0.5f, 1.85f});
+  const u32 base = tree.positions.size();
+  for (const Vec3& p : slab.positions)
+    tree.positions.push_back(Vec3{p.x, p.y + 0.6f, p.z + 17.85f});
+  for (const u32 i : slab.indices)
+    tree.indices.push_back(base + i);
+  const MeshSource meshes[] = {tree};
+  renderer::SceneInstance at_origin;
+  renderer::SceneData scene;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(&at_origin, 1), scene);
+  scene.sources.resize(scene.parts.size());
+  renderer::SourceMesh& source = scene.sources[0];
+  geometry::ClusterFileMotionPart trunk;
+  trunk.pivot = Vec3{0.0f, 0.0f, 20.0f};
+  trunk.direction = Vec3{0.0f, 1.0f, 0.0f};
+  trunk.length = 4.0f;
+  geometry::ClusterFileMotionPart frond;
+  frond.pivot = Vec3{0.0f, 1.1f, 19.8f};
+  frond.direction = Vec3{0.0f, 0.0f, -1.0f};
+  frond.length = 3.7f;
+  frond.parent = 0;
+  source.motion_parts.push_back(trunk);
+  source.motion_parts.push_back(frond);
+  const geometry::ClusterMeshPart& part = scene.parts[0];
+  const u32 vertices = scene.lod.mesh.vertices.size() - part.first_vertex;
+  for (u32 v = 0; v < vertices; ++v) {
+    const Vec3 p = scene.lod.mesh.vertices[part.first_vertex + v];
+    geometry::ClusterFileMotionVertex record;
+    record.part = p.z < 19.75f ? 1 : 0;  // the slab's vertices are the frond's
+    source.motion_vertices.push_back(record);
+  }
+  REQUIRE(source.has_motion());
+
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  physics::ShapeId floor_shape;
+  REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
+  physics::BodyDesc floor;
+  floor.shape = floor_shape;
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
+  floor.motion = physics::MotionType::Static;
+  floor.layer = physics::Layer::Static;
+  physics::BodyId floor_body;
+  REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(0.0f, 16.0f), 0, true);
+  const Stats& s = collision.stats();
+  MESSAGE("the tree's proxy: " << s.proxy_triangles << " triangles kept, "
+                               << s.flora_triangles_left_out << " of the frond left out");
+  CHECK(s.flora_triangles_left_out >= 12);  // the slab's twelve, at least
+  CHECK(s.proxy_triangles >= 10);           // the trunk's box, less its bottom face at most
+  // Nothing stands where the slab is: straight down at its middle meets the floor.
+  f32 top = 0.0f;
+  REQUIRE(hit_below(physics, 0.5f, 17.5f, top));
+  CHECK(top == doctest::Approx(0.0f).epsilon(1.0e-3));
+
+  // A walker going north walks through the frond and is stopped by the trunk.
+  physics::CharacterBody walker;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 12.0f})) == physics::Status::Ok);
+  physics::CharacterInput north;
+  north.move = Vec3{0.0f, 0.0f, 1.0f};
+  for (u32 k = 0; k < 8 * 240; ++k)
+    REQUIRE(walker.step(north) == physics::Status::Ok);
+  const f32 face = 20.0f - 0.2f;
+  const f32 z = local_of(walker.state().position).z;
+  MESSAGE("walked north through the frond into the trunk's face at z " << face << ": stopped at z "
+                                                                       << z);
+  CHECK(z > 16.0f);  // past where the slab would have stopped it
+  CHECK(z < face - c.radius + 0.03f);
+  CHECK(z > face - c.radius - 0.1f);
+}
+
 TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the error") {
   const MeshSource meshes[] = {ball_mesh(3.0f, 5)};  // 8,192 triangles
   Vector<renderer::SceneInstance> placed(1);

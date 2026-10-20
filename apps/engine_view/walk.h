@@ -41,7 +41,8 @@
 
 namespace engine::renderer {
 struct SceneData;
-}
+struct FrameFlora;
+}  // namespace engine::renderer
 
 namespace engine::view {
 
@@ -210,5 +211,12 @@ class Walker {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// **The walker's capsule, handed to a frame** (renderer.md, "The flora stage"): while `walking`,
+// the feet and the header's radius and height go into the frame's `flora` block, where the
+// renderer bends aside the fronds, leaves and twigs the capsule reaches; otherwise the block says
+// no walker. A frame's walker is the last tick's feet, so a replay hands every frame the capsule
+// its recording did, and the trees' poses follow it bit for bit.
+void set_frame_walker(const Walker& walker, bool walking, renderer::FrameFlora& out) noexcept;
 
 }  // namespace engine::view

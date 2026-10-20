@@ -133,6 +133,9 @@ struct Stats {
   u32 placements = 0;  // pieces in the compounds
   u32 proxies = 0;     // shapes made from meshes, each shared by every instance of its mesh
   u32 proxy_triangles = 0;
+  // A tree's triangles a proxy left out because a corner is of a frond, a leaf, a curtain or a twig
+  // (scene_collision.md, "What gets no body").
+  u32 flora_triangles_left_out = 0;
   u64 ground_samples = 0;  // heights held on the CPU, beside the backend's own copy
   // What the backend holds (`physics::World::shape_memory`): the live tiles' heightfields and
   // compounds (a compound's own tree and child table; its pieces are the proxies), and every proxy.

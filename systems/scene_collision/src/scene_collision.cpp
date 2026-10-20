@@ -5,6 +5,7 @@
 #include <core/time/time.h>
 #include <domain/physics/character.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
 
@@ -696,6 +697,23 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
   proxy_indices_.clear();
   proxy_remap_.clear();
   const bool has_lod = lod.lod.size() == lod.mesh.clusters.size();
+  // **A tree collides by its wood** (scene_collision.md, "What gets no body"): a mesh that carries
+  // the motion contract keeps a triangle only when all three corners are of a part that stays a
+  // collider — the trunk, and a load-bearing limb where the structural table says so — so the
+  // walker walks into a palm's crown, where the renderer's push bends the fronds aside, and is
+  // still stopped by the trunk.
+  const renderer::SourceMesh* tree =
+      mesh < scene_->sources.size() && scene_->sources[mesh].has_motion() ? &scene_->sources[mesh]
+                                                                          : nullptr;
+  const std::span<const geometry::ClusterFileStructuralPart> structure =
+      tree != nullptr ? std::span<const geometry::ClusterFileStructuralPart>(
+                            tree->structural_parts.data(), tree->structural_parts.size())
+                      : std::span<const geometry::ClusterFileStructuralPart>();
+  auto wooden = [&](u32 v) {
+    const u32 at = v - part.first_vertex;
+    return at < tree->motion_vertices.size() &&
+           renderer::flora_part_collides(structure, tree->motion_vertices[at].part);
+  };
   for (u32 c = 0; c < part.cluster_count; ++c) {
     const u32 index = part.first_cluster + c;
     if (has_lod) {
@@ -709,6 +727,12 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
     for (u32 t = 0; t < cluster.triangle_count; ++t) {
       const u32 packed = lod.mesh.triangles[cluster.triangle_offset + t];
       const u32 local[3] = {packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu};
+      if (tree != nullptr &&
+          !(wooden(cluster.vertex_offset + local[0]) && wooden(cluster.vertex_offset + local[1]) &&
+            wooden(cluster.vertex_offset + local[2]))) {
+        ++stats_.flora_triangles_left_out;
+        continue;
+      }
       u32 corner[3];
       for (u32 k = 0; k < 3; ++k) {
         const u32 v = cluster.vertex_offset + local[k];

@@ -2657,6 +2657,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
+        view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         frame.sun_time_s = frame_sun(frame.frame_index);
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         animate_frame(frame, 0);                          // the ticks above stepped the world
@@ -5431,6 +5432,7 @@ int run_view(int argc, char** argv) {
             session.tick().value == clock.tick().value ? clock.interpolation_alpha() : 1.0f;
         frame.camera = session.camera_at(alpha);
         frame.frame_index = session.frame_index();
+        view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         // What the frame draws, for the frame log: the pose and the simulated time it stands for.
         drawn = view::fly_interpolate(session.previous(), session.state(), alpha);
         const u64 last_tick = session.tick().value;

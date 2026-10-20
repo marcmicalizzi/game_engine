@@ -34,6 +34,7 @@
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
@@ -484,7 +485,41 @@ class GpuScene {
   // The deformed normal pool: a scene with morph channels carries one, and so does one with terrain
   // levels, whose pool pass writes the moved field's normals (below).
   u64 normal_pool_address() const noexcept {
-    return morphed() || !terrain_.empty() ? deform_normals.address : 0;
+    return morphed() || !terrain_.empty() || flora() ? deform_normals.address : 0;
+  }
+
+  // ---- swaying trees (docs/subsystems/renderer.md, "The flora stage") -------------------------
+  //
+  // Every loaded instance of a mesh that carries the motion contract, under
+  // `ResolvedSettings::flora_motion`, is a deformed instance of the flora stage: laid out at load
+  // as the deform records are, its parts given a run of the frame's part-pose table, its spheres
+  // padded by the sway's bound. A dynamic scene's tail is rigid. What lives here is the scene's
+  // motion vertex stream (one u32 per scene-wide vertex), the table (`k_joint_slots` regions of
+  // every tree's parts, host-visible), and the push's state between frames.
+  bool flora() const noexcept { return !flora_instances_.empty(); }
+  u64 flora_motion_address() const noexcept { return flora() ? flora_motion_.address : 0; }
+  // Poses every tree's parts for this frame into `slot`'s region and returns its address (0 with no
+  // trees): the wind the frame names, or the ground's at `ground_time_s() + sun_time_s`, or the
+  // tunables'; the clock is `frame_index` at 60 Hz, and the push's ease advances by the frame ticks
+  // since the last call. Allocates nothing.
+  u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 sun_time_s) noexcept;
+  struct FloraStats {
+    u32 instances = 0;         // swaying instances
+    u32 parts = 0;             // their parts, the table's length a slot
+    u32 pushed_parts = 0;      // parts the walker bent this frame (any ease)
+    f32 max_padding = 0.0f;    // the largest sphere padding the sway gave an instance, metres
+    f32 wind_strength = 0.0f;  // this frame's, over a record's mean
+    Vec2 wind_to{};            // where it blew to, x and z
+  };
+  const FloraStats& flora_stats() const noexcept { return flora_stats_; }
+  // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
+  // normals are the trees' alone on a frame where no part of any tree moves: then 0, and the
+  // resolve shades every tree from the attribute stream's rest normals with the rigid path's own
+  // instructions. The pool's decode is not the attribute stream's (scene.slang's
+  // `decode_oct_normal` and material.slang's `decode_normal_oct`), so a calm tree shades from the
+  // rigid path's own normals, and a calm frame writes no normal pool at all.
+  u64 frame_normal_pool_address() const noexcept {
+    return flora() && !morphed() && terrain_.empty() && !flora_moving_ ? 0 : normal_pool_address();
   }
 
   // ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse") ----------------
@@ -885,6 +920,7 @@ class GpuScene {
   bool create_streaming(const ResolvedSettings& resolved, std::string* error);
   bool create_morph(const ResolvedSettings& resolved, std::string* error);
   bool create_terrain(const ResolvedSettings& resolved, std::string* error);
+  bool create_flora(std::string* error);
   // One terrain level's device side (above).
   struct TerrainLevel {
     TerrainLattice lattice;
@@ -1001,6 +1037,30 @@ class GpuScene {
   TerrainLevelSet* rings_ = nullptr;  // during `create` only
   // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.
   std::unique_ptr<TerrainSampler> ground_;
+  // The trees' (renderer.md, "The flora stage"): per scene mesh its motion as the stage reads it
+  // (empty for a rigid mesh) and its rest bounds in mesh space; per swaying instance where its run
+  // of the table starts, its seed, its mesh frame's inverse and its last frame index; per part the
+  // push's state; the ground asked for the wind when the scene's sand detail made none.
+  struct FloraInstance {
+    u32 instance = 0;
+    u32 mesh = 0;
+    u32 first_part = 0;
+    u32 seed = 0;
+    Vec3 inverse[3] = {};  // rows: the instance's 3x3 inverted, world to mesh
+    f32 inverse_scale = 1.0f;
+    u64 last_tick = 0;
+    bool posed = false;
+  };
+  Vector<FloraMesh> flora_meshes_;
+  Vector<Vec4> flora_bounds_;  // per mesh: mesh-space centre and radius of its rest vertices
+  Vector<FloraInstance> flora_instances_;
+  Vector<FloraPartState> flora_state_;
+  u32 flora_parts_ = 0;
+  gfx::BufferResource flora_motion_;  // geometry::ClusterFileMotionVertex per scene-wide vertex
+  gfx::BufferResource flora_poses_;   // k_joint_slots regions of gfx::FloraPartPose[flora_parts_]
+  std::unique_ptr<TerrainSampler> flora_ground_;
+  FloraStats flora_stats_;
+  bool flora_moving_ = false;  // any part of any tree off its rest pose this frame
   f64 ground_time_s_ = 0.0;
   f64 ground_previous_s_ = 0.0;
 

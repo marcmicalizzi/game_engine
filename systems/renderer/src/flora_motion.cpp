@@ -1,0 +1,331 @@
+// The flora stage's CPU half (flora_motion.h; renderer.md, "The flora stage").
+#include <foundation/tunables/tunables.h>
+#include <systems/renderer/flora_motion.h>
+
+#include <cmath>
+
+namespace engine::renderer {
+namespace {
+
+tunables::Bool flora_motion{"renderer.flora.motion", true,
+                            "Sway the generated trees in the wind and bend them away from the "
+                            "walker (renderer.md, \"The flora stage\"); false draws them rigid"};
+tunables::Float flora_wind_strength{
+    "renderer.flora.wind_strength", 1.0, 0.0, 2.0,
+    "The wind's strength over its record's mean for the trees of a scene whose ground says no wind "
+    "(0 calm, 1 a mean day)"};
+tunables::Float flora_wind_deg{"renderer.flora.wind_deg", 0.0, -360.0, 360.0,
+                               "Where that wind blows to: degrees in the ground plane from +x "
+                               "towards +z"};
+
+constexpr f32 k_tau = 6.28318530717958647692f;
+
+// A 32-bit integer hash (the "lowbias32" finalizer): the seed's phases, nothing that needs more.
+u32 hash32(u32 x) noexcept {
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
+f32 unit_of(u32 h) noexcept { return static_cast<f32>(h >> 8) * (1.0f / 16777216.0f); }
+
+struct Frame {
+  Vec3 r[3];  // rows of the rotation
+  Vec3 t;
+};
+
+Frame frame_of(const gfx::FloraPartPose& pose) noexcept {
+  Frame f;
+  for (u32 i = 0; i < 3; ++i) {
+    f.r[i] = pose.rows[i].xyz();
+  }
+  f.t = Vec3{pose.rows[0].w, pose.rows[1].w, pose.rows[2].w};
+  return f;
+}
+
+// Rodrigues as a matrix, rows: c I + s [k]x + (1 - c) k k^T.
+void rotation_rows(Vec3 k, f32 angle, Vec3 (&r)[3]) noexcept {
+  const f32 c = std::cos(angle);
+  const f32 s = std::sin(angle);
+  const f32 t = 1.0f - c;
+  r[0] = Vec3{c + t * k.x * k.x, t * k.x * k.y - s * k.z, t * k.x * k.z + s * k.y};
+  r[1] = Vec3{t * k.y * k.x + s * k.z, c + t * k.y * k.y, t * k.y * k.z - s * k.x};
+  r[2] = Vec3{t * k.z * k.x - s * k.y, t * k.z * k.y + s * k.x, c + t * k.z * k.z};
+}
+
+Vec3 row_times(const Vec3 (&r)[3], Vec3 v) noexcept {
+  return Vec3{dot(r[0], v), dot(r[1], v), dot(r[2], v)};
+}
+
+f32 clamp01(f32 v) noexcept { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
+// The closest points of segments [p0, p1] and [q0, q1]: the parameters along each.
+void closest_on_segments(Vec3 p0, Vec3 p1, Vec3 q0, Vec3 q1, f32& s, f32& t) noexcept {
+  const Vec3 d1 = p1 - p0;
+  const Vec3 d2 = q1 - q0;
+  const Vec3 r = p0 - q0;
+  const f32 a = dot(d1, d1);
+  const f32 e = dot(d2, d2);
+  const f32 f = dot(d2, r);
+  if (a <= 1.0e-12f && e <= 1.0e-12f) {
+    s = t = 0.0f;
+    return;
+  }
+  if (a <= 1.0e-12f) {
+    s = 0.0f;
+    t = clamp01(f / e);
+    return;
+  }
+  const f32 c = dot(d1, r);
+  if (e <= 1.0e-12f) {
+    t = 0.0f;
+    s = clamp01(-c / a);
+    return;
+  }
+  const f32 b = dot(d1, d2);
+  const f32 denom = a * e - b * b;
+  s = denom > 1.0e-12f ? clamp01((b * f - c * e) / denom) : 0.0f;
+  t = (b * s + f) / e;
+  if (t < 0.0f) {
+    t = 0.0f;
+    s = clamp01(-c / a);
+  } else if (t > 1.0f) {
+    t = 1.0f;
+    s = clamp01((b - c) / a);
+  }
+}
+
+}  // namespace
+
+bool flora_motion_tunable() noexcept { return flora_motion.get(); }
+FloraWindDefault flora_wind_default() noexcept {
+  const f64 a = flora_wind_deg.get() * (3.14159265358979323846 / 180.0);
+  return FloraWindDefault{Vec2{static_cast<f32>(std::cos(a)), static_cast<f32>(std::sin(a))},
+                          static_cast<f32>(flora_wind_strength.get())};
+}
+
+FloraStiffness flora_stiffness(std::string_view species) noexcept {
+  // Trunk, limb, twig, leaf: radians of steady lean at the record's mean wind. A palm's fronds
+  // are its limbs and swing the most of any limb; a megaflora's limbs are the stiffest; a willow's
+  // curtains are the most compliant leaves (flora.md, "Motion", has the table and why).
+  if (species == "date_palm") return FloraStiffness{0.012f, 0.10f, 0.12f, 0.14f};
+  if (species == "broadleaf") return FloraStiffness{0.006f, 0.03f, 0.07f, 0.12f};
+  if (species == "conifer") return FloraStiffness{0.008f, 0.035f, 0.06f, 0.08f};
+  if (species == "birch") return FloraStiffness{0.015f, 0.05f, 0.09f, 0.14f};
+  if (species == "willow") return FloraStiffness{0.006f, 0.03f, 0.08f, 0.16f};
+  if (species == "orchard") return FloraStiffness{0.006f, 0.025f, 0.06f, 0.10f};
+  if (species == "ancient") return FloraStiffness{0.0015f, 0.008f, 0.04f, 0.10f};
+  return FloraStiffness{};
+}
+
+bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure,
+                         u32 part) noexcept {
+  if (part == 0) return true;
+  if (structure.empty() || part >= structure.size()) return false;
+  return (structure[part].flags & geometry::k_structural_load_bearing) != 0;
+}
+
+bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
+                std::span<const geometry::ClusterFileStructuralPart> structure,
+                std::string_view species, FloraMesh& out) {
+  out = FloraMesh{};
+  if (parts.empty() || parts.size() > 65536u) return false;
+  const FloraStiffness stiffness = flora_stiffness(species);
+  const bool structured = structure.size() == parts.size();
+  const u32 n = static_cast<u32>(parts.size());
+  out.parts.resize(n);
+  out.compliance.resize(n, 0.0f);
+  out.attach.resize(n, 0.0f);
+  out.reach.resize(n, 0.0f);
+  out.pushable.resize(n, u8{0});
+  Vector<u32> depth(n, 0u);
+  for (u32 p = 0; p < n; ++p) {
+    const geometry::ClusterFileMotionPart& part = parts[p];
+    out.parts[p] = part;
+    const bool root = part.parent == geometry::k_motion_no_parent;
+    if (!root && part.parent >= p) return false;  // parents first, or the frames cannot compose
+    depth[p] = root ? 0u : depth[part.parent] + 1u;
+    const bool load_bearing =
+        structured && (structure[p].flags & geometry::k_structural_load_bearing) != 0;
+    const bool wooden = !structured || structure[p].base_radius > 0.0f;
+    f32 c = depth[p] == 0 ? stiffness.trunk : depth[p] == 1 ? stiffness.limb : stiffness.twig;
+    if (!wooden) c = stiffness.leaf;
+    if (load_bearing) c *= k_flora_load_bearing;
+    out.compliance[p] = c;
+    if (!root) {
+      const geometry::ClusterFileMotionPart& parent = parts[part.parent];
+      out.attach[p] =
+          parent.length > 0.0f
+              ? clamp01(dot(part.pivot - parent.pivot, parent.direction) / parent.length)
+              : 0.0f;
+    }
+    const f32 wood =
+        structured ? std::fmax(structure[p].base_radius, structure[p].tip_radius) : 0.0f;
+    out.reach[p] = wood > 0.0f ? wood : k_flora_leaf_reach * part.length;
+    out.pushable[p] = (!root && p != 0 && !load_bearing) ? u8{1} : u8{0};
+  }
+  return true;
+}
+
+f32 flora_gust(f64 time_s, u32 seed) noexcept {
+  // Two incommensurate sines, 7.7 s and 3.2 s, phases from the seed: a gust that rises and falls
+  // over seconds and never repeats in step across a grove.
+  const f32 a = unit_of(hash32(seed ^ 0x9e3779b9u)) * k_tau;
+  const f32 b = unit_of(hash32(seed ^ 0x85ebca6bu)) * k_tau;
+  const f64 t = time_s;
+  const f32 g = 0.6f * static_cast<f32>(std::sin(t * (k_tau * 0.13) + a)) +
+                0.4f * static_cast<f32>(std::sin(t * (k_tau * 0.31) + b));
+  return clamp01(0.5f + 0.5f * g);
+}
+
+void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, u32 seed,
+                      const FloraPush& push, u32 ticks, std::span<FloraPartState> state,
+                      std::span<gfx::FloraPartPose> out) noexcept {
+  const u32 n = mesh.part_count();
+  if (state.size() < n || out.size() < n) return;
+  const f32 s = wind.strength < 0.0f               ? 0.0f
+                : wind.strength > k_flora_max_wind ? k_flora_max_wind
+                                                   : wind.strength;
+  const f32 gust = s > 0.0f ? flora_gust(time_s, seed) : 0.0f;
+  const f32 lean = s * (0.6f + 0.8f * gust);
+  const f32 flutter = s * (0.25f + 0.35f * gust);
+  const f32 seed_phase = unit_of(hash32(seed));
+  const f32 step = static_cast<f32>(ticks) / static_cast<f32>(k_flora_push_ease_ticks);
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const Vec3 a0 = push.feet + up * push.radius;
+  const Vec3 a1 =
+      push.feet + up * (push.height > 2.0f * push.radius ? push.height - push.radius : push.radius);
+  for (u32 p = 0; p < n; ++p) {
+    const geometry::ClusterFileMotionPart& part = mesh.parts[p];
+    const Vec3 d = part.direction;
+    // ---- the wind's rotation vector
+    Vec3 omega{};
+    if (s > 0.0f && mesh.compliance[p] > 0.0f) {
+      Vec3 perp = wind.to - d * dot(d, wind.to);
+      if (dot(perp, perp) < 0.04f) perp = up - d * dot(d, up);  // along the wind: a flutter up
+      const f32 pl = length(perp);
+      if (pl > 1.0e-4f) {
+        const Vec3 k = cross(d, perp * (1.0f / pl));
+        const f32 kl = length(k);
+        if (kl > 1.0e-4f) {
+          const f32 phase = k_tau * (seed_phase + 0.37f * part.pivot.x + 0.11f * part.pivot.y +
+                                     0.53f * part.pivot.z + 0.618034f * static_cast<f32>(p));
+          const f32 hz = k_flora_flutter_hz / std::sqrt(part.length > 0.25f ? part.length : 0.25f);
+          const f32 sway = static_cast<f32>(
+              std::sin(time_s * static_cast<f64>(k_tau * hz) + static_cast<f64>(phase)));
+          const f32 angle = mesh.compliance[p] * (lean + flutter * sway);
+          omega = k * (angle / kl);
+        }
+      }
+    }
+    // ---- the walker's push, eased
+    FloraPartState& st = state[p];
+    if (mesh.pushable[p] != 0 && (push.active || st.ease > 0.0f)) {
+      bool contact = false;
+      if (push.active && part.length > 0.0f) {
+        f32 sa = 0.0f;
+        f32 sb = 0.0f;
+        const Vec3 b1 = part.pivot + d * part.length;
+        closest_on_segments(a0, a1, part.pivot, b1, sa, sb);
+        const Vec3 pa = a0 + (a1 - a0) * sa;
+        const Vec3 pb = part.pivot + d * (part.length * sb);
+        const f32 reach = push.radius + mesh.reach[p] + k_flora_push_margin;
+        Vec3 away = pb - pa;
+        const f32 dist = length(away);
+        if (dist < reach && sb * part.length > 0.05f) {
+          away = away - d * dot(away, d);
+          if (dot(away, away) < 1.0e-8f) {
+            away = Vec3{pb.x - push.feet.x, 0.0f, pb.z - push.feet.z};
+            if (dot(away, away) < 1.0e-8f) away = Vec3{1.0f, 0.0f, 0.0f};
+          }
+          away = away * (1.0f / length(away));
+          const Vec3 k = cross(d, away);
+          const f32 kl = length(k);
+          if (kl > 1.0e-4f) {
+            const f32 arc = std::fmax(sb * part.length, 0.25f * part.length);
+            const f32 needed = (reach - dist) / arc;
+            const f32 angle = needed < k_flora_push_max ? needed : k_flora_push_max;
+            st.push = k * (angle / kl);
+            contact = true;
+          }
+        }
+      }
+      st.ease = contact ? (st.ease + step < 1.0f ? st.ease + step : 1.0f)
+                        : (st.ease - step > 0.0f ? st.ease - step : 0.0f);
+      const f32 e = st.ease * st.ease * (3.0f - 2.0f * st.ease);
+      omega = omega + st.push * e;
+      if (st.ease == 0.0f) st.push = Vec3{};
+    }
+    // ---- the pose: the parent's frame times the parent's own bend where this part leaves it
+    gfx::FloraPartPose pose{};
+    bool moving = false;
+    if (part.parent != geometry::k_motion_no_parent) {
+      const gfx::FloraPartPose& parent = out[part.parent];
+      if (parent.axis.w != 0.0f) {
+        moving = true;
+        const f32 bend = parent.pivot_angle.w * mesh.attach[p];
+        if (bend == 0.0f) {
+          for (u32 r = 0; r < 3; ++r)
+            pose.rows[r] = parent.rows[r];
+        } else {
+          Vec3 b[3];
+          rotation_rows(parent.axis.xyz(), bend, b);
+          const Vec3 pivot = parent.pivot_angle.xyz();
+          const Vec3 bt = pivot - row_times(b, pivot);
+          const Frame f = frame_of(parent);
+          // F * B: rows of the product, and F's rotation of B's translation plus F's own.
+          const Vec3 cols[3] = {Vec3{b[0].x, b[1].x, b[2].x}, Vec3{b[0].y, b[1].y, b[2].y},
+                                Vec3{b[0].z, b[1].z, b[2].z}};
+          const Vec3 t = row_times(f.r, bt) + f.t;
+          for (u32 r = 0; r < 3; ++r) {
+            pose.rows[r] = Vec4{dot(f.r[r], cols[0]), dot(f.r[r], cols[1]), dot(f.r[r], cols[2]),
+                                r == 0 ? t.x : (r == 1 ? t.y : t.z)};
+          }
+        }
+      }
+    }
+    const f32 angle = length(omega);
+    pose.pivot_angle = Vec4{part.pivot, angle};
+    if (angle > 0.0f) {
+      pose.axis = Vec4{omega * (1.0f / angle), 1.0f};
+    } else {
+      pose.axis = Vec4{0.0f, 0.0f, 1.0f, moving ? 1.0f : 0.0f};
+    }
+    out[p] = pose;
+  }
+}
+
+f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                         std::span<const geometry::ClusterFileMotionVertex> motion) noexcept {
+  // The most any part turns: its lean and flutter at their peaks under the strongest wind. A
+  // rotation of a about a pivot moves a point at r from it at most a r, and the bends of a vertex's
+  // chain compose, so the sum over the chain bounds the vertex. **The push is not in it**: a pushed
+  // part is within a metre of the walker, whose eye is the camera, and it turns away from it — and
+  // its 0.9 rad over a 4 m frond would pad every sphere of every palm by 3.6 m at any distance,
+  // which the cut pays for in finer clusters everywhere (renderer.md, "The flora stage").
+  const u32 n = mesh.part_count();
+  if (n == 0 || vertices.size() != motion.size()) return 0.0f;
+  Vector<f32> most(n, 0.0f);
+  for (u32 p = 0; p < n; ++p) {
+    most[p] = mesh.compliance[p] * k_flora_max_wind * (0.6f + 0.8f + 0.25f + 0.35f);
+  }
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < vertices.size(); ++v) {
+    u32 p = motion[v].part;
+    if (p >= n) continue;
+    const Vec3 at = vertices[v];
+    f32 bound = most[p] * (static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f)) *
+                length(at - mesh.parts[p].pivot);
+    for (u32 guard = 0; guard < 64 && mesh.parts[p].parent != geometry::k_motion_no_parent;
+         ++guard) {
+      p = mesh.parts[p].parent;
+      bound += most[p] * length(at - mesh.parts[p].pivot);
+    }
+    worst = bound > worst ? bound : worst;
+  }
+  return worst;
+}
+
+}  // namespace engine::renderer

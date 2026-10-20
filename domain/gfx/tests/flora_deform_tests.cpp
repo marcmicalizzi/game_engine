@@ -1,9 +1,9 @@
 // The flora stage of the deformed-vertex pool (docs/subsystems/renderer.md, "The flora stage";
 // roadmap S66). A two-part cylinder — a trunk from y = 0 to 1 and a child from 1 to 2 hanging from
 // it — is bent on the GPU by `deform.slang`'s flora stage and compared, slot by slot, against
-// `gfx::flora_bend` on the CPU: the same poses, the same motion records, the same rest positions off
-// the mesh's 16-bit grid. The renderer composes the poses (its flora_motion.h); this case holds the
-// shader to the arithmetic a pose means, and holds a pose at rest to the rest pose's own bits.
+// `gfx::flora_bend` on the CPU: the same poses, the same motion records, the same rest positions
+// off the mesh's 16-bit grid. The renderer composes the poses (its flora_motion.h); this case holds
+// the shader to the arithmetic a pose means, and holds a pose at rest to the rest pose's own bits.
 #include "raster_path.h"
 
 #include <domain/geometry/cluster.h>
@@ -86,8 +86,8 @@ struct FloraScene {
   geometry::ClusterMesh mesh;
   u32 pool_vertices = 0;
   Vector<u32> records;
-  gfx::BufferResource clusters, quantized, attributes, motion, poses, meshes, instances, deform_table,
-      pool, normals, slots, count_buffer, visible, host, host_normals;
+  gfx::BufferResource clusters, quantized, attributes, motion, poses, meshes, instances,
+      deform_table, pool, normals, slots, count_buffer, visible, host, host_normals;
 
   bool create(const gfx::Device& device, std::string* error) {
     Vector<Vec3> positions;
@@ -126,10 +126,11 @@ struct FloraScene {
         !gfx::upload_buffer(device, mesh.attributes.data(),
                             mesh.attributes.size() * sizeof(geometry::VertexAttributes), k_storage,
                             attributes, error) ||
-        !gfx::upload_buffer(device, records.data(), records.size() * sizeof(u32), k_storage,
-                            motion, error) ||
+        !gfx::upload_buffer(device, records.data(), records.size() * sizeof(u32), k_storage, motion,
+                            error) ||
         !gfx::create_buffer(device, sizeof(gfx::FloraPartPose) * 2,
-                            k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, poses, error) ||
+                            k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, poses,
+                            error) ||
         !gfx::create_buffer(device, pool_bytes, k_pool, false, pool, error) ||
         !gfx::create_buffer(device, u64{pool_vertices} * sizeof(u32), k_pool, false, normals,
                             error) ||
@@ -212,7 +213,7 @@ TEST_CASE("deform: the flora stage bends a part chain as the CPU reference does"
                   error);
   const gfx::DeformParams params = scene.params();
   const u32 groups = scene.mesh.clusters.size();
-  auto run = [&](const gfx::FloraPartPose (&poses)[2]) {
+  auto run = [&](const gfx::FloraPartPose(&poses)[2]) {
     std::memcpy(scene.poses.mapped, poses, sizeof(poses));
     gfx::RenderGraph graph(device);
     const gfx::RgBuffer rg_pool = graph.import_buffer("pool", scene.pool);
@@ -237,8 +238,7 @@ TEST_CASE("deform: the flora stage bends a part chain as the CPU reference does"
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
-          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params),
-                            &params);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
           cb.dispatch(groups, 1, 1);
         });
     graph.add_pass(

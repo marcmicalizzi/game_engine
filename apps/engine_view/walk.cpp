@@ -8,6 +8,7 @@
 #include <core/math/world.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 
@@ -705,6 +706,14 @@ JsonValue Walker::summary_json() const {
   out.set("ground", std::move(ground));
   out.set("ms", std::move(ms));
   return out;
+}
+
+void set_frame_walker(const Walker& walker, bool walking, renderer::FrameFlora& out) noexcept {
+  out.walker = walking && walker.available();
+  if (!out.walker) return;
+  out.walker_feet = walker.feet();
+  out.walker_radius = walker.params().radius;
+  out.walker_height = walker.params().height;
 }
 
 }  // namespace engine::view

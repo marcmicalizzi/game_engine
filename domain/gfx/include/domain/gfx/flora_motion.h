@@ -57,7 +57,8 @@ inline Vec3 flora_rotate(Vec3 v, Vec3 k, f32 c, f32 s) noexcept {
 }
 
 inline Vec3 flora_frame_point(const FloraPartPose& pose, Vec3 q) noexcept {
-  return Vec3{dot(pose.rows[0].xyz(), q) + pose.rows[0].w, dot(pose.rows[1].xyz(), q) + pose.rows[1].w,
+  return Vec3{dot(pose.rows[0].xyz(), q) + pose.rows[0].w,
+              dot(pose.rows[1].xyz(), q) + pose.rows[1].w,
               dot(pose.rows[2].xyz(), q) + pose.rows[2].w};
 }
 inline Vec3 flora_frame_direction(const FloraPartPose& pose, Vec3 d) noexcept {
