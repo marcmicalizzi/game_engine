@@ -459,8 +459,10 @@ struct FrameDesc {
   // that is the whole difference between the two stages.
   std::span<const f32> morph_weights;
   // 2D lists composited onto the colour image after everything else the frame draws (overlay.h,
-  // ADR-0054): the tools UI. Null draws nothing, which is every frame before the overlay existed.
-  // Refused on an HDR target (`Desc::display` other than SDR), where the UI's seam is not built.
+  // ADR-0054): the tools UI, the game's HUD. On an HDR target they are composited in linear light
+  // at paper white before the output encode (renderer.md, "The overlay"). Null draws nothing, which
+  // is every frame before the overlay existed. Refused on an HDR target (`Desc::display` other than
+  // SDR), where the UI's seam is not built.
   const OverlayDrawData* overlay = nullptr;
   // The host's step since its last frame, seconds: handed to the frame passes (frame_pass.h), which
   // draw nothing from it that depends on a previous frame. Nothing else reads it.
@@ -793,6 +795,18 @@ class SceneRenderer {
   bool create_frame_pass_pipelines(std::string* error);
   bool create_linear_target(std::string* error);
   void destroy_linear_target() noexcept;
+  // **The overlay's UI layer on an HDR target** (overlay.h, renderer.md "The overlay"): the
+  // target's size in `k_overlay_layer_format`, which the overlay draws into and the frame encode
+  // composites at paper white. Made, with the linear image and its pipelines, by the first HDR
+  // frame with an overlay (`ensure_ui_layer`), and kept until the renderer is destroyed or resized.
+  gfx::ImageResource ui_layer_;
+  gfx::ImageViewHandle ui_layer_view_;
+  u32 ui_layer_slot_ = gfx::BindlessSet::k_invalid_slot;
+  bool ensure_ui_layer(std::string* error);
+  bool create_ui_layer(std::string* error);
+  void destroy_ui_layer() noexcept;
+  // Whether the linear image is wanted: a frame pass is registered, or the UI layer exists.
+  bool linear_wanted() const noexcept { return frame_pass_count_ > 0 || ui_layer_.image.valid(); }
   bool drawn_ = false;  // a frame has been submitted, so the visibility buffer holds one
   FrameSky frame_sky_;
   u64 sky_params_address_ = 0;

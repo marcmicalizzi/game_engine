@@ -10,12 +10,19 @@
 // without converting them, but nothing here includes ImGui and nothing below the host knows it is
 // there. A command is a scissor rectangle, an overlay texture and a run of indices.
 //
-// **SDR only, for now.** The overlay draws into the encoded picture with no curve of its own,
-// blending "over" in the space the output encode wrote (`display_output`, display.slang), which is
-// exactly what an immediate-mode UI's colours are authored in on an SDR target. On a PQ or scRGB
-// target that is wrong — the UI has to be composited at paper white, in the output's primaries,
-// between the curve and the encode (renderer.md, "HDR output", the UI's seam) — so a frame that
-// asks for an overlay on an HDR target is refused rather than drawn wrongly.
+// **Where it composites depends on the target** (renderer.md, "The overlay"; ADR-0054 decision 3
+// and its status note of 2026-10-19). On an SDR target it draws into the encoded picture with no
+// curve of its own, blending "over" in the space the output encode wrote (`display_output`,
+// display.slang), which is exactly what an immediate-mode UI's colours are authored in there — the
+// path it always took, to the byte. On a PQ, scRGB or linear target that would put UI white at the
+// top of the curve and blend in a perceptual encoding, so a shaded frame draws the overlay into a
+// **UI layer** instead (`OverlayEncoding::Layer`: the colours decoded to linear light, blended into
+// a layer cleared to zero, which leaves premultiplied linear colour), and the frame's one encode
+// composites that layer at paper white between the tone curve and the transfer
+// (`frame_encode.slang`). A frame with no linear path (the direct raster path, a debug view) draws
+// it straight onto the HDR target with the colours encoded by this pass's own shader
+// (`OverlayEncoding::Pq`, `ScRgb`, `Linear`): exact where the target's space is linear light, an
+// approximation of the blend on PQ.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -66,7 +73,17 @@ struct OverlayDrawData {
   std::span<const OverlayCommand> commands;
 };
 
-// Mirrors `OverlayDrawParams` in shaders/overlay.slang: the push block, 48 bytes.
+// What a fragment writes (overlay.slang's `k_overlay_*`). `Encoded`: the colour as it is, into an
+// SDR picture. `Layer`: decoded from the SDR transfer to linear light, into the UI layer the encode
+// composites at paper white. `Pq`, `ScRgb`, `Linear`: decoded, at paper white, and encoded for an
+// HDR target the pass draws onto directly.
+enum class OverlayEncoding : u32 { Encoded = 0, Layer = 1, Pq = 2, ScRgb = 3, Linear = 4 };
+
+// The UI layer's format: 8 bits a channel stored through the sRGB curve, so the hardware blends in
+// linear light and dark translucent colours keep their precision, at half a float layer's bytes.
+inline constexpr gfx::Format k_overlay_layer_format = gfx::Format::R8G8B8A8Srgb;
+
+// Mirrors `OverlayDrawParams` in shaders/overlay.slang: the push block, 56 bytes.
 struct OverlayDrawParams {
   u64 vertices = 0;
   u64 indices = 0;
@@ -76,10 +93,13 @@ struct OverlayDrawParams {
   u32 vertex_offset = 0;
   u32 texture = 0;
   u32 sampler = 0;
+  u32 encoding = 0;             // OverlayEncoding
+  f32 paper_white_nits = 0.0f;  // `Pq` and `ScRgb`: the nits UI white is drawn at
 };
-static_assert(sizeof(OverlayDrawParams) == 48, "OverlayDrawParams mirrors overlay.slang");
+static_assert(sizeof(OverlayDrawParams) == 56, "OverlayDrawParams mirrors overlay.slang");
 
-// The pass itself: one pipeline (alpha-blended, `gfx::BlendMode::Alpha`), one linear sampler, the
+// The pass itself: two pipelines (alpha-blended, `gfx::BlendMode::Alpha`: one for the target's
+// format, one for the UI layer's), one linear sampler, the
 // overlay's textures in the scene's bindless set, and per frame slot a host-visible vertex buffer
 // and index buffer that grow to the largest frame seen and are then reused, so a steady UI
 // allocates nothing a frame. `SceneRenderer` owns one and records it as the frame's last raster
@@ -116,9 +136,11 @@ class OverlayPass {
              std::string* error = nullptr);
   // Records the draws `stage` staged into slot `slot`, over a `width` x `height` target: an
   // unflipped viewport, each command's scissor, and one non-indexed draw per command. Inside a
-  // raster pass on the target, with the bindless set bound.
+  // raster pass on the target — the frame's colour image, or with `OverlayEncoding::Layer` the UI
+  // layer (`k_overlay_layer_format`) — with the bindless set bound.
   void record(gfx::CommandList commands, u32 slot, const OverlayDrawData& data, u32 width,
-              u32 height) const noexcept;
+              u32 height, OverlayEncoding encoding = OverlayEncoding::Encoded,
+              f32 paper_white_nits = 0.0f) const noexcept;
 
  private:
   struct Texture {
@@ -134,6 +156,7 @@ class OverlayPass {
   const gfx::Device* device_ = nullptr;
   gfx::BindlessSet* bindless_ = nullptr;
   gfx::PipelineHandle pipeline_;
+  gfx::PipelineHandle layer_pipeline_;
   gfx::SamplerHandle sampler_;
   u32 sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
   Vector<Texture> textures_;

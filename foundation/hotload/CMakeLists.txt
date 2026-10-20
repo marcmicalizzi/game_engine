@@ -43,6 +43,11 @@ if(TARGET engine_hotload_tests)
   engine_game_module(NAME hotload_counter_abi4 OUTPUT_DIRECTORY "${_modules}"
     SOURCES tests/modules/counter_v1/counter.cpp SCHEMAS tests/modules/counter_v1/counter.schema)
   target_compile_definitions(engine_game_hotload_counter_abi4 PRIVATE HOTLOAD_DECLARE_ABI=4)
+  # And declaring ABI 5: what a module compiled before ABI 6 (the HUD's images and fonts, and an
+  # element that grew) hands the host.
+  engine_game_module(NAME hotload_counter_abi5 OUTPUT_DIRECTORY "${_modules}"
+    SOURCES tests/modules/counter_v1/counter.cpp SCHEMAS tests/modules/counter_v1/counter.schema)
+  target_compile_definitions(engine_game_hotload_counter_abi5 PRIVATE HOTLOAD_DECLARE_ABI=5)
   set(_refusals no_entry describe abi paths drops)
   set(_index 1)
   foreach(_refusal IN LISTS _refusals)
@@ -53,7 +58,7 @@ if(TARGET engine_hotload_tests)
   endforeach()
 
   set(_defs "")
-  foreach(_m IN ITEMS counter_v1 counter_v2 counter_retyped counter_abi3 counter_abi4
+  foreach(_m IN ITEMS counter_v1 counter_v2 counter_retyped counter_abi3 counter_abi4 counter_abi5
                       refusal_no_entry
                       refusal_describe
                       refusal_abi refusal_paths refusal_drops)

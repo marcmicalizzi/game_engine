@@ -64,6 +64,11 @@ struct Fields {
   // The actor build's `bar` (ABI 5), when the scene names one.
   bool has_bar = false;
   u32 bar = 0;
+  // The game's own HUD art (ABI 6), when its content directory has it: a font for the title line,
+  // and the prompt's panel image, not asked for again once the host said it is not there.
+  bool has_font = false;
+  u32 font = 0;
+  bool no_panel = false;
 } g_fields;
 
 #if WALK_POC_TEST == 5
@@ -104,6 +109,8 @@ void walk_actor(ModuleContext* context, Survivor& s, u64 tick) {
 #endif
 
 constexpr u32 k_prompt_id = 1;  // the pick-up prompt's HUD element
+constexpr u32 k_panel_id = 2;   // the image behind it (ABI 6)
+constexpr u32 k_title_id = 3;   // the title line in the game's font (ABI 6)
 
 i32 on_load(ModuleContext* context) {
   Fields& f = g_fields;
@@ -131,6 +138,9 @@ i32 on_load(ModuleContext* context) {
             prop_mesh(context, "marker", f.marker_mesh) == Result::Ok;
 #endif
   f.scale_set = -1.0;
+  // The game's font (ABI 6), when its content directory ships one: a plain answer either way.
+  f.has_font = hud_font(context, "hud/font.ttf", 56.0f, f.font) == Result::Ok;
+  f.no_panel = false;
 #if WALK_POC_TEST == 5
   // `Unsupported`: a session with no actors, and the build walks nothing; `NotFound` — a scene
   // with actors and no `bar` — refuses the load by itself, naming it.
@@ -328,6 +338,38 @@ void game_tick(ModuleContext* context, View tick, f32) {
   // picture's centre, shown while the can is in reach. The host keeps an element until it is
   // removed; said every tick under its id it is replaced in place, and `visible` hides it. Said
   // only once the can stands, so a scene with no props has no element at all.
+  // **The game's own art** (ABI 6): with `hud/panel.png` in its content directory (beside the
+  // scene, or beside the module), a nine-sliced panel behind the prompt — placed before the prompt
+  // the first time, so it is drawn under it — and with `hud/font.ttf`, a title line in that font
+  // with a drop shadow and letter spacing at the top of the picture. Without the files the host
+  // answers NotFound and the HUD is what it was.
+  if (s.can_placed && !g_fields.no_panel) {
+    HudImage panel;
+    panel.id = k_panel_id;
+    panel.anchor = HudAnchor::Centre;
+    panel.align = HudAlign::Centre;
+    panel.offset_px[1] = 80.0f;
+    panel.size_px[0] = 300.0f;
+    panel.size_px[1] = 64.0f;
+    for (f32& border : panel.slice_px)
+      border = 16.0f;
+    panel.visible = can_in_reach ? 1u : 0u;
+    panel.path = "hud/panel.png";
+    if (hud_image(context, panel) != Result::Ok) g_fields.no_panel = true;
+  }
+  if (g_fields.has_font) {
+    HudElement title;
+    title.id = k_title_id;
+    title.anchor = HudAnchor::Top;
+    title.align = HudAlign::Centre;
+    title.size_px = 56.0f;
+    title.font = g_fields.font;
+    title.letter_spacing_px = 4.0f;
+    title.shadow_offset_px[0] = 3.0f;
+    title.shadow_offset_px[1] = 3.0f;
+    title.text = "FIND THE WATER";
+    hud_element(context, title);
+  }
   if (s.can_placed) {
     HudElement prompt;
     prompt.id = k_prompt_id;

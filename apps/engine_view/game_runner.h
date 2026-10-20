@@ -74,8 +74,32 @@ struct GameHud {
     f64 value = 0.0;
     f64 max = 0.0;
   };
-  // A `hotload::HudElement` as the host keeps it: the text copied, the rest by value.
+  // **The images and fonts a module named** (ABI 6, `hud_image`, `hud_font`): each path as the
+  // module said it, where the host found it (beside the scene, then beside the module), and what
+  // it is. Fixed tables kept for the session — a path is looked up and validated once, the first
+  // time it is named, a path that was not there is remembered as not there, and a new run keeps
+  // them — so naming one again every tick costs a comparison of strings and allocates nothing.
+  static constexpr u32 k_images = 16;
+  static constexpr u32 k_fonts = 8;
+  static constexpr u32 k_path_chars = 256;
+  struct File {
+    char path[k_path_chars] = {};      // as the module said it
+    char resolved[k_path_chars] = {};  // native, where it was found; empty when it was not
+    hotload::Result status = hotload::Result::Ok;  // what naming it answers: Ok, NotFound, ...
+    u32 width = 0;                                 // an image's own pixels
+    u32 height = 0;
+    f32 size_px = 0.0f;  // a font's first size, 1080p pixels
+  };
+  File images[k_images];
+  u32 image_count = 0;
+  File fonts[k_fonts];
+  u32 font_count = 0;
+
+  enum class Kind : u8 { Text = 0, Image = 1 };
+  // A `hotload::HudElement` or `hotload::HudImage` as the host keeps it: the text copied, the
+  // rest by value; an image names its file by its index in `images`.
   struct Element {
+    Kind kind = Kind::Text;
     u32 id = 0;
     hotload::HudAnchor anchor = hotload::HudAnchor::Centre;
     hotload::HudAlign align = hotload::HudAlign::Centre;
@@ -90,6 +114,16 @@ struct GameHud {
     bool visible = true;
     u64 tick = 0;  // the tick that last said it
     char text[k_element_chars] = {};
+    // ABI 6's styled text: a font handle (0 the HUD's own), the spacing, the drop shadow.
+    u32 font = 0;
+    f32 letter_spacing_px = 0.0f;
+    f32 shadow_offset_px[2] = {0.0f, 0.0f};
+    u8 shadow_color[4] = {0, 0, 0, 160};
+    // An image (`Kind::Image`): its file, its drawn size, its nine-slice borders and its tint.
+    u32 image = 0;
+    f32 image_size_px[2] = {0.0f, 0.0f};
+    f32 slice_px[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    u8 tint[4] = {255, 255, 255, 255};
   };
   Line lines[k_lines];
   Meter meters[k_meters];
@@ -108,6 +142,8 @@ struct GameHud {
   bool stack_empty() const noexcept;
   // Places or replaces an element by its id (the runner has judged it), or removes one.
   hotload::Result set_element(const hotload::HudElement& element, u64 tick) noexcept;
+  // Places or replaces an image element by its id; `image` an index into `images` already judged.
+  hotload::Result set_image(const hotload::HudImage& element, u32 image, u64 tick) noexcept;
   hotload::Result remove_element(u32 id) noexcept;
   const Element* find_element(u32 id) const noexcept;
   JsonValue to_json() const;
@@ -167,6 +203,9 @@ class GameRunner {
     // file restores when it exists.
     bool restore_from_header = false;
     const JsonValue* restore = nullptr;
+    // **The game's content directory** (ABI 6's images and fonts): a path a module names is looked
+    // up beside this scene file, then beside the module. Empty: beside the module only.
+    std::string scene;
   };
 
   // **The session as the state file keeps it** (version 2 of `engine.game.state`, 2026-10-18,

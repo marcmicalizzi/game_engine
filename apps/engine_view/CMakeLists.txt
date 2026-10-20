@@ -114,6 +114,9 @@ if(TARGET engine::hotload)
   # sizing (tests/game_hud_tests.cpp) lays ImGui's frame out with no device, so the overlay is
   # compiled into the tests too and they link imgui below.
   list(APPEND _view_tests tests/game_end_tests.cpp tests/game_hud_tests.cpp game_hud.cpp)
+  # The HUD on an HDR target and the game's own art (ABI 6, roadmap P49): the fixture's panel image
+  # and font line captured in sdr8, hdr10 and scrgb, end to end (tests/game_hud_hdr_view_tests.cpp).
+  list(APPEND _view_tests tests/game_hud_hdr_view_tests.cpp)
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
@@ -199,6 +202,12 @@ if(TARGET engine::hotload)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_GAME=1)
     target_link_libraries(engine_engine_view_tests PRIVATE imgui)  # game_hud.cpp, in the tests
+    # A permissively licensed font the HDR HUD case hands the fixture as its own (Roboto, Apache
+    # 2.0), from the ImGui checkout the build already fetched: nothing is committed.
+    if(DEFINED imgui_SOURCE_DIR)
+      target_compile_definitions(engine_engine_view_tests PRIVATE
+        ENGINE_VIEW_TEST_FONT="${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf")
+    endif()
     # tools/package-game.ps1's test packs this build's engine-view and walk_poc with PowerShell 7
     # and plays the zip where it is unpacked (tests/game_view_tests.cpp).
     if(ENGINE_PWSH)

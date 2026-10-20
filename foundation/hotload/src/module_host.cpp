@@ -413,11 +413,18 @@ struct HostCallbacks {
   // ---- ABI 4 ----
   // A struct is read only when its `size` says the module built at least ABI 4's, and up to this
   // host's own: a later struct's extra fields are not this host's to read.
+  // From ABI 6 the element itself grows (`font`, the spacing, the shadow): the host takes any from
+  // ABI 4's size up and copies it into one of its own up to the module's `size`, so the fields an
+  // older module never had are the defaults and nothing past its struct is read.
   static Result hud_element(void* host, const HudElement* element) {
     const GameServices& g = self(host).game_;
-    if (element == nullptr || element->size < sizeof(HudElement)) return Result::InvalidArgument;
+    if (element == nullptr || element->size < k_hud_element_v4_size) return Result::InvalidArgument;
     if (g.hud_element == nullptr) return Result::Unsupported;
-    return g.hud_element(g.user, *element);
+    HudElement e;
+    const usize n = element->size < sizeof(HudElement) ? element->size : sizeof(HudElement);
+    std::memcpy(static_cast<void*>(&e), element, n);
+    e.size = static_cast<u32>(n);
+    return g.hud_element(g.user, e);
   }
   static Result hud_remove(void* host, u32 id) {
     const GameServices& g = self(host).game_;
@@ -517,6 +524,22 @@ struct HostCallbacks {
     if (g.ground_height == nullptr) return Result::Unsupported;
     return g.ground_height(g.user, x, z, out_height);
   }
+  // ---- ABI 6 ----
+  static Result hud_image(void* host, const HudImage* image) {
+    const GameServices& g = self(host).game_;
+    if (image == nullptr || image->size < sizeof(HudImage)) return Result::InvalidArgument;
+    if (image->path == nullptr && image->path_length > 0) return Result::InvalidArgument;
+    if (g.hud_image == nullptr) return Result::Unsupported;
+    return g.hud_image(g.user, *image);
+  }
+  static Result hud_font(void* host, const char* path, u64 length, f32 size_px, u32* out_font) {
+    const GameServices& g = self(host).game_;
+    if (out_font == nullptr || (path == nullptr && length > 0)) return Result::InvalidArgument;
+    if (g.hud_font == nullptr) return Result::Unsupported;
+    return g.hud_font(g.user,
+                      std::string_view(path != nullptr ? path : "", static_cast<usize>(length)),
+                      size_px, out_font);
+  }
 };
 
 const char* status_name(Status status) noexcept {
@@ -580,6 +603,8 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.actor_speed = &HostCallbacks::actor_speed;
   api_.actor_state = &HostCallbacks::actor_state;
   api_.ground_height = &HostCallbacks::ground_height;
+  api_.hud_image = &HostCallbacks::hud_image;
+  api_.hud_font = &HostCallbacks::hud_font;
   context_.api = &api_;
   context_.state = nullptr;
 }

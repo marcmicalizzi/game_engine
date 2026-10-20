@@ -61,6 +61,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The frame-pass registration point: a null pass, its context, and the frame
                     # without one to the byte (frame_pass.h).
                     tests/frame_pass_tests.cpp
+    tests/overlay_tests.cpp
                     # One request, two hosts: every RenderSettings and FrameDesc field named with
                     # the protocol field that reaches it or the reason none does, by a structured
                     # binding that stops compiling when a field is added; no device.

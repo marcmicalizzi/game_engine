@@ -2,6 +2,7 @@
 
 #include <core/json/json.h>
 #include <core/time/time.h>
+#include <foundation/image/decode.h>
 #include <systems/renderer/scene_renderer.h>
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <imgui.h>
+#include <imgui_internal.h>  // ImTextCharFromUtf8, for the letter-spaced text
 
 namespace engine::view {
 
@@ -43,6 +45,54 @@ void format_value(const JsonValue& v, char* out, usize size) {
   }
 }
 
+// An image element's draw commands name `k_image_texture_base + n` for the runner's image n until
+// `upload` swaps in the overlay texture made for it; ImGui's own textures are ids below 2^32.
+constexpr ImTextureID k_image_texture_base = ImTextureID{1} << 40;
+
+// `text` laid at `at` in `font` at `px`, with `spacing` pixels after each character but the last:
+// ImGui's own `AddText` when there is none — the picture an ABI 4 element always drew — and a glyph
+// at a time from the baked font's advances when there is.
+void draw_text(ImDrawList* draw, ImFont* font, f32 px, ImVec2 at, ImU32 colour, const char* text,
+               f32 spacing) {
+  if (spacing == 0.0f) {
+    draw->AddText(font, px, at, colour, text);
+    return;
+  }
+  ImFontBaked* baked = font->GetFontBaked(px);
+  const char* s = text;
+  const char* end = text + std::strlen(text);
+  f32 x = at.x;
+  while (s < end) {
+    unsigned int c = 0;
+    const int n = ImTextCharFromUtf8(&c, s, end);
+    s += n > 0 ? n : 1;
+    if (c == 0) break;
+    font->RenderChar(draw, px, ImVec2(x, at.y), colour, static_cast<ImWchar>(c));
+    x += baked->GetCharAdvance(static_cast<ImWchar>(c)) + spacing;
+  }
+}
+
+// The box `draw_text` fills: the font's own measure, or the advances plus the spacing between.
+ImVec2 text_size(ImFont* font, f32 px, const char* text, f32 spacing) {
+  ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+  if (spacing == 0.0f) return size;
+  ImFontBaked* baked = font->GetFontBaked(px);
+  const char* s = text;
+  const char* end = text + std::strlen(text);
+  f32 width = 0.0f;
+  u32 count = 0;
+  while (s < end) {
+    unsigned int c = 0;
+    const int n = ImTextCharFromUtf8(&c, s, end);
+    s += n > 0 ? n : 1;
+    if (c == 0) break;
+    width += baked->GetCharAdvance(static_cast<ImWchar>(c));
+    ++count;
+  }
+  size.x = width + (count > 1 ? spacing * static_cast<f32>(count - 1) : 0.0f);
+  return size;
+}
+
 HudRect window_rect() {
   const ImVec2 pos = ImGui::GetWindowPos();
   const ImVec2 size = ImGui::GetWindowSize();
@@ -74,24 +124,11 @@ f32 hud_element_px(f32 size_px, u32 height, f32 display_scale) noexcept {
 void GameHudOverlay::draw_elements(const GameHud& hud, f32 margin_x, f32 margin_y) {
   if (hud.element_count == 0) return;
   ImDrawList* draw = ImGui::GetBackgroundDrawList();
-  ImFont* font = ImGui::GetFont();
   const f32 w = static_cast<f32>(width_);
   const f32 h = static_cast<f32>(height_);
-  for (u32 i = 0; i < hud.element_count; ++i) {
-    const GameHud::Element& e = hud.elements[i];
-    Placed placed{e.id, HudRect{}, 0.0f};
-    if (!e.visible || e.text[0] == '\0') {
-      placed_[placed_count_++] = placed;
-      continue;
-    }
-    const f32 px = hud_element_px(e.size_px, height_, display_scale_);
-    const f32 outline =
-        e.outline_px > 0.0f ? std::max(1.0f, std::round(e.outline_px * scale_)) : 0.0f;
-    const bool panel = e.panel == hotload::HudPanel::Solid;
-    const f32 margin = panel ? std::round(e.panel_padding_px * scale_) : outline;
-    const ImVec2 text = font->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text);
-    const f32 box_w = text.x + 2.0f * margin;
-    const f32 box_h = text.y + 2.0f * margin;
+  // The point a box of `box_w` x `box_h` stands on for the element's anchor, offset and
+  // alignment, at whole pixels.
+  const auto place = [&](const GameHud::Element& e, f32 box_w, f32 box_h, f32& x0, f32& y0) {
     const u32 a = static_cast<u32>(e.anchor);
     const u32 column = a % 3;  // left, centre, right
     const u32 row = a / 3;     // top, middle, bottom
@@ -99,10 +136,94 @@ void GameHudOverlay::draw_elements(const GameHud& hud, f32 margin_x, f32 margin_
     f32 y = row == 0 ? margin_y : row == 1 ? h * 0.5f : h - margin_y;
     x += e.offset_px[0] * scale_;
     y += e.offset_px[1] * scale_;
-    const f32 x0 = std::round(e.align == hotload::HudAlign::Left     ? x
-                              : e.align == hotload::HudAlign::Centre ? x - box_w * 0.5f
-                                                                     : x - box_w);
-    const f32 y0 = std::round(row == 0 ? y : row == 1 ? y - box_h * 0.5f : y - box_h);
+    x0 = std::round(e.align == hotload::HudAlign::Left     ? x
+                    : e.align == hotload::HudAlign::Centre ? x - box_w * 0.5f
+                                                           : x - box_w);
+    y0 = std::round(row == 0 ? y : row == 1 ? y - box_h * 0.5f : y - box_h);
+  };
+  for (u32 i = 0; i < hud.element_count; ++i) {
+    const GameHud::Element& e = hud.elements[i];
+    Placed placed{e.id, HudRect{}, 0.0f};
+    if (e.kind == GameHud::Kind::Image) {
+      // **An image** (ABI 6): its box from the drawn size (or the file's own, or one side from the
+      // other by the aspect), its nine-slice borders at the HUD's scale, shrunk together when the
+      // box is smaller than its corners, and one textured quad per non-empty cell.
+      const GameHud::File& file = hud.images[e.image];
+      if (e.image < GameHud::k_images) image_used_[e.image] = true;
+      if (!e.visible || file.width == 0 || file.height == 0) {
+        placed_[placed_count_++] = placed;
+        continue;
+      }
+      const f32 fw = static_cast<f32>(file.width);
+      const f32 fh = static_cast<f32>(file.height);
+      f32 iw = e.image_size_px[0];
+      f32 ih = e.image_size_px[1];
+      if (iw == 0.0f && ih == 0.0f) {
+        iw = fw;
+        ih = fh;
+      } else if (iw == 0.0f) {
+        iw = ih * fw / fh;
+      } else if (ih == 0.0f) {
+        ih = iw * fh / fw;
+      }
+      const f32 box_w = std::round(iw * scale_);
+      const f32 box_h = std::round(ih * scale_);
+      f32 x0 = 0.0f;
+      f32 y0 = 0.0f;
+      place(e, box_w, box_h, x0, y0);
+      const ImTextureID texture = k_image_texture_base + static_cast<ImTextureID>(e.image);
+      const ImU32 tint = IM_COL32(e.tint[0], e.tint[1], e.tint[2], e.tint[3]);
+      f32 l = std::round(e.slice_px[0] * scale_);
+      f32 t = std::round(e.slice_px[1] * scale_);
+      f32 r = std::round(e.slice_px[2] * scale_);
+      f32 b = std::round(e.slice_px[3] * scale_);
+      if (l + r > box_w && l + r > 0.0f) {
+        const f32 k = box_w / (l + r);
+        l = std::floor(l * k);
+        r = std::floor(r * k);
+      }
+      if (t + b > box_h && t + b > 0.0f) {
+        const f32 k = box_h / (t + b);
+        t = std::floor(t * k);
+        b = std::floor(b * k);
+      }
+      const f32 xs[4] = {x0, x0 + l, x0 + box_w - r, x0 + box_w};
+      const f32 ys[4] = {y0, y0 + t, y0 + box_h - b, y0 + box_h};
+      const f32 us[4] = {0.0f, e.slice_px[0] / fw, 1.0f - e.slice_px[2] / fw, 1.0f};
+      const f32 vs[4] = {0.0f, e.slice_px[1] / fh, 1.0f - e.slice_px[3] / fh, 1.0f};
+      for (u32 row = 0; row < 3; ++row) {
+        for (u32 col = 0; col < 3; ++col) {
+          if (xs[col + 1] <= xs[col] || ys[row + 1] <= ys[row]) continue;
+          draw->AddImage(ImTextureRef(texture), ImVec2(xs[col], ys[row]),
+                         ImVec2(xs[col + 1], ys[row + 1]), ImVec2(us[col], vs[row]),
+                         ImVec2(us[col + 1], vs[row + 1]), tint);
+        }
+      }
+      placed.rect = HudRect{x0, y0, x0 + box_w, y0 + box_h};
+      placed_[placed_count_++] = placed;
+      continue;
+    }
+    if (!e.visible || e.text[0] == '\0') {
+      placed_[placed_count_++] = placed;
+      continue;
+    }
+    // The element's font: the HUD's own, or one the module loaded (ABI 6), the HUD's own again when
+    // that one could not be added.
+    ImFont* font = ImGui::GetFont();
+    if (e.font > 0 && e.font <= GameHud::k_fonts && fonts_[e.font - 1] != nullptr)
+      font = fonts_[e.font - 1];
+    const f32 px = hud_element_px(e.size_px, height_, display_scale_);
+    const f32 outline =
+        e.outline_px > 0.0f ? std::max(1.0f, std::round(e.outline_px * scale_)) : 0.0f;
+    const f32 spacing = e.letter_spacing_px * scale_;
+    const bool panel = e.panel == hotload::HudPanel::Solid;
+    const f32 margin = panel ? std::round(e.panel_padding_px * scale_) : outline;
+    const ImVec2 text = text_size(font, px, e.text, spacing);
+    const f32 box_w = text.x + 2.0f * margin;
+    const f32 box_h = text.y + 2.0f * margin;
+    f32 x0 = 0.0f;
+    f32 y0 = 0.0f;
+    place(e, box_w, box_h, x0, y0);
     if (panel) {
       draw->AddRectFilled(
           ImVec2(x0, y0), ImVec2(x0 + box_w, y0 + box_h),
@@ -110,6 +231,16 @@ void GameHudOverlay::draw_elements(const GameHud& hud, f32 margin_x, f32 margin_
           std::round(4.0f * scale_));
     }
     const ImVec2 at(x0 + margin, y0 + margin);
+    // The drop shadow (ABI 6): the text once in the shadow's colour at its offset, under the
+    // outline and the text, at whole pixels.
+    if (e.shadow_offset_px[0] != 0.0f || e.shadow_offset_px[1] != 0.0f) {
+      const ImVec2 shadow(at.x + std::round(e.shadow_offset_px[0] * scale_),
+                          at.y + std::round(e.shadow_offset_px[1] * scale_));
+      draw_text(
+          draw, font, px, shadow,
+          IM_COL32(e.shadow_color[0], e.shadow_color[1], e.shadow_color[2], e.shadow_color[3]),
+          e.text, spacing);
+    }
     if (outline > 0.0f) {
       // The outline is the text drawn eight times round its place in the outline's colour: what a
       // caption on a bright sky needs to be read, at no cost to the atlas (the same glyphs).
@@ -118,20 +249,20 @@ void GameHudOverlay::draw_elements(const GameHud& hud, f32 margin_x, f32 margin_
       for (i32 dy = -1; dy <= 1; ++dy) {
         for (i32 dx = -1; dx <= 1; ++dx) {
           if (dx == 0 && dy == 0) continue;
-          draw->AddText(
-              font, px,
+          draw_text(
+              draw, font, px,
               ImVec2(at.x + static_cast<f32>(dx) * outline, at.y + static_cast<f32>(dy) * outline),
-              oc, e.text);
+              oc, e.text, spacing);
         }
       }
     }
-    draw->AddText(font, px, at, IM_COL32(e.color[0], e.color[1], e.color[2], e.color[3]), e.text);
+    draw_text(draw, font, px, at, IM_COL32(e.color[0], e.color[1], e.color[2], e.color[3]), e.text,
+              spacing);
     placed.rect = HudRect{x0, y0, x0 + box_w, y0 + box_h};
     placed.font_px = px;
     placed_[placed_count_++] = placed;
   }
 }
-
 HudRect GameHudOverlay::bounds_of(u32 id) const noexcept {
   for (u32 i = 0; i < placed_count_; ++i) {
     if (placed_[i].id == id) return placed_[i].rect;
@@ -190,10 +321,40 @@ JsonValue hud_elements_json(const GameHud& hud, const GameHudOverlay* overlay) {
     e.set("bounds_px", rect_json(bounds(id)));
     out.push_back(std::move(e));
   }
+  const auto pair = [](const f32(&v)[2]) {
+    JsonValue values = JsonValue::array();
+    values.push_back(JsonValue(static_cast<f64>(v[0])));
+    values.push_back(JsonValue(static_cast<f64>(v[1])));
+    return values;
+  };
   for (u32 i = 0; i < hud.element_count; ++i) {
     const GameHud::Element& el = hud.elements[i];
     JsonValue e = JsonValue::object();
     e.set("id", el.id);
+    if (el.kind == GameHud::Kind::Image) {
+      // An image (ABI 6): its file as the module named it, the file's own size, how it is drawn.
+      const GameHud::File& file = hud.images[el.image];
+      e.set("kind", "image");
+      e.set("anchor", hud_anchor_name(el.anchor));
+      e.set("align", hud_align_name(el.align));
+      e.set("offset_px", pair(el.offset_px));
+      e.set("path", std::string_view(file.path));
+      JsonValue own = JsonValue::array();
+      own.push_back(JsonValue(static_cast<u64>(file.width)));
+      own.push_back(JsonValue(static_cast<u64>(file.height)));
+      e.set("image_px", std::move(own));
+      e.set("size_px", pair(el.image_size_px));
+      JsonValue slice = JsonValue::array();
+      for (const f32 v : el.slice_px)
+        slice.push_back(JsonValue(static_cast<f64>(v)));
+      e.set("slice_px", std::move(slice));
+      e.set("tint", colour_json(el.tint));
+      e.set("visible", el.visible);
+      e.set("tick", el.tick);
+      e.set("bounds_px", rect_json(bounds(el.id)));
+      out.push_back(std::move(e));
+      continue;
+    }
     e.set("kind", "text");
     e.set("anchor", hud_anchor_name(el.anchor));
     e.set("align", hud_align_name(el.align));
@@ -211,6 +372,13 @@ JsonValue hud_elements_json(const GameHud& hud, const GameHudOverlay* overlay) {
       e.set("panel_color", colour_json(el.panel_color));
       e.set("panel_padding_px", static_cast<f64>(el.panel_padding_px));
     }
+    // ABI 6's styled text: the font (0 the HUD's own) and its file, the spacing and the shadow.
+    e.set("font", el.font);
+    if (el.font > 0 && el.font <= hud.font_count)
+      e.set("font_path", std::string_view(hud.fonts[el.font - 1].path));
+    e.set("letter_spacing_px", static_cast<f64>(el.letter_spacing_px));
+    e.set("shadow_offset_px", pair(el.shadow_offset_px));
+    e.set("shadow_color", colour_json(el.shadow_color));
     e.set("visible", el.visible);
     e.set("tick", el.tick);
     e.set("bounds_px", rect_json(bounds(el.id)));
@@ -234,6 +402,13 @@ bool GameHudOverlay::create() {
   io.BackendPlatformName = "engine-view hud";
   font_px_ = 0.0f;
   apply_font(k_imgui_default_px);
+  for (u32 i = 0; i < GameHud::k_images; ++i) {
+    image_texture_[i] = renderer::OverlayPass::k_no_texture;
+    image_used_[i] = false;
+  }
+  for (ImFont*& f : fonts_)
+    f = nullptr;
+  fonts_loaded_ = 0;
   return true;
 }
 
@@ -254,6 +429,32 @@ void GameHudOverlay::apply_font(f32 px) {
   style.FontSizeBase = px;
 }
 
+// **The fonts a module named** (ABI 6), added to the atlas between frames, once each, in the order
+// named. ImGui makes the first font added the default, so the HUD's own is added first when nothing
+// else has been — the call its first frame would have made, at the same style — and stays what the
+// stack and every element without a font draw with.
+void GameHudOverlay::load_fonts(const GameHud& hud) {
+  if (fonts_loaded_ >= hud.font_count) return;
+  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+  if (atlas->Fonts.Size == 0) atlas->AddFontDefault();
+  for (; fonts_loaded_ < hud.font_count; ++fonts_loaded_) {
+    const GameHud::File& file = hud.fonts[fonts_loaded_];
+    fonts_[fonts_loaded_] = nullptr;
+    if (file.status != hotload::Result::Ok || file.resolved[0] == '\0') continue;
+    ImFontConfig config;
+    config.FontDataOwnedByAtlas = true;
+    fonts_[fonts_loaded_] = atlas->AddFontFromFileTTF(file.resolved, file.size_px, &config);
+  }
+}
+
+u32 GameHudOverlay::image_textures() const noexcept {
+  u32 n = 0;
+  for (const u32 t : image_texture_) {
+    if (t != renderer::OverlayPass::k_no_texture) ++n;
+  }
+  return n;
+}
+
 void GameHudOverlay::destroy() noexcept {
   if (context_ == nullptr) return;
   ImGui::DestroyContext(context_);
@@ -269,6 +470,9 @@ bool GameHudOverlay::layout(const GameHud& hud, const JsonValue* result, u32 wid
   result_panel_ = HudRect{};
   placed_count_ = 0;
   pending_textures_ = 0;
+  hud_ = &hud;
+  for (bool& used : image_used_)
+    used = false;
   width_ = width;
   height_ = height;
   const bool panel = result != nullptr && result->is_object();
@@ -279,6 +483,7 @@ bool GameHudOverlay::layout(const GameHud& hud, const JsonValue* result, u32 wid
   display_scale_ = display_scale > 0.0f ? display_scale : 1.0f;
   scale_ = static_cast<f32>(height) / 1080.0f * display_scale_;
   apply_font(px);
+  load_fonts(hud);
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<f32>(width), static_cast<f32>(height));
   io.DeltaTime = 1.0f / 60.0f;  // nothing animates; ImGui only needs it positive
@@ -443,11 +648,19 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
       if (cmd.UserCallback != nullptr || cmd.ElemCount == 0) continue;
       if (c >= commands_.size()) break;
       const ImTextureID tex = cmd.GetTexID();
-      commands_[c].texture = tex == ImTextureID_Invalid ? renderer::OverlayPass::k_no_texture
-                                                        : static_cast<u32>(tex - 1);
+      if (tex >= k_image_texture_base) {
+        // An image element's (ABI 6): its texture, made the first time a layout draws it.
+        const u32 image = static_cast<u32>(tex - k_image_texture_base);
+        if (!image_texture(renderer, image, error)) return false;
+        commands_[c].texture = image_texture_[image];
+      } else {
+        commands_[c].texture = tex == ImTextureID_Invalid ? renderer::OverlayPass::k_no_texture
+                                                          : static_cast<u32>(tex - 1);
+      }
       ++c;
     }
   }
+  release_images(renderer);
   u32 kept = 0;
   for (u32 i = 0; i < commands_.size(); ++i) {
     if (commands_[i].texture == renderer::OverlayPass::k_no_texture) continue;
@@ -457,12 +670,49 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
   return true;
 }
 
+// An image's overlay texture (ABI 6): decoded from the file the runner found, uploaded once, kept
+// while an element names it. The upload is a blocking submission in the HUD's build, before the
+// frame is recorded, the first time a frame draws the image — never in a steady frame.
+bool GameHudOverlay::image_texture(renderer::SceneRenderer& renderer, u32 image,
+                                   std::string& error) {
+  if (image >= GameHud::k_images || hud_ == nullptr || image >= hud_->image_count) {
+    error = "an image element names no image the runner holds";
+    return false;
+  }
+  if (image_texture_[image] != renderer::OverlayPass::k_no_texture) return true;
+  const GameHud::File& file = hud_->images[image];
+  image::Image decoded;
+  if (image::read_image(file.resolved, decoded, 4, &error) != io::Status::Ok) {
+    error = "the HUD image " + std::string(file.path) + " cannot be read: " + error;
+    return false;
+  }
+  const u32 id =
+      renderer.overlay().add_texture(decoded.width, decoded.height, decoded.pixels.data(), &error);
+  if (id == renderer::OverlayPass::k_no_texture) return false;
+  image_texture_[image] = id;
+  ++image_uploads_;
+  return true;
+}
+
+// The textures of images no element of the last layout named: removed with the element, which
+// waits for the device (a removal, never a frame's cost).
+void GameHudOverlay::release_images(renderer::SceneRenderer& renderer) {
+  for (u32 i = 0; i < GameHud::k_images; ++i) {
+    if (image_used_[i] || image_texture_[i] == renderer::OverlayPass::k_no_texture) continue;
+    renderer.remove_overlay_texture(image_texture_[i]);
+    image_texture_[i] = renderer::OverlayPass::k_no_texture;
+  }
+}
+
 bool GameHudOverlay::build(const GameHud& hud, const JsonValue* result, u32 width, u32 height,
                            f32 display_scale, renderer::SceneRenderer& renderer,
                            renderer::OverlayDrawData& out, std::string& error) {
   out = renderer::OverlayDrawData{};
   if (!layout(hud, result, width, height, display_scale)) return false;
-  if (vertices_.empty()) return true;
+  if (vertices_.empty()) {
+    release_images(renderer);
+    return true;
+  }
   if (!upload(renderer, error)) return false;
   out.vertices = std::span<const renderer::OverlayVertex>(vertices_.data(), vertices_.size());
   out.indices = std::span<const u32>(indices_.data(), indices_.size());
@@ -482,6 +732,9 @@ JsonValue GameHudOverlay::summary_json() const {
   out.set("layouts", layouts_);
   out.set("atlas_uploads", atlas_uploads_);
   out.set("atlas_ms", atlas_ms());
+  out.set("images", image_textures());
+  out.set("image_uploads", image_uploads_);
+  out.set("fonts", fonts_loaded_);
   return out;
 }
 

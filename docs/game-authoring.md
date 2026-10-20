@@ -203,8 +203,19 @@ The HUD is a proof-of-concept panel, not the game UI framework
 ([apps.md, "The HUD, provisional"](subsystems/apps.md#the-hud-provisional)): the host clears it at
 the start of every tick, so a module says each tick what it shows — **16 lines of 95 characters and
 8 meters**, more is dropped — laid out as one fixed panel at the top left, meters first (a name and a
-bar with `value / max`), then the lines in order. Nothing on it takes input; on an HDR output it is
-left off and says so once.
+bar with `value / max`), then the lines in order. Nothing on it takes input. On an HDR output it is
+drawn at paper white (`--paper-white-nits`): white text is the display's paper white, never the
+top of its curve.
+
+**Your own art and type** (hotload ABI 6, 2026-10-19): ship the files in the game's content
+directory — beside the scene file, or beside the module — and name them by a relative path.
+`hud_image(context, image)` places a `HudImage` (a PNG or JPEG, at a size in 1080p pixels, tinted,
+with nine-slice borders so one small panel graphic stretches to any box with its corners kept) and
+`hud_font(context, "hud/title.otf", 48.0f, font)` loads a TrueType or OpenType font, a handle a
+`HudElement`'s `font` names; `letter_spacing_px` and `shadow_offset_px`/`shadow_color` style the
+text. Elements are drawn in the order they were first placed, so place a panel before the text on it.
+A missing file is `NotFound` — a plain answer, so a module runs without its art — and the walk_poc
+fixture shows both ([apps.md, "The HUD, provisional"](subsystems/apps.md#the-hud-provisional)).
 
 `nearest_placement(kind, radius, &position, &distance)` answers the nearest placement of a scatter's
 or the ruins' kind within `radius` metres of the walker's feet, measured over the ground, from the
