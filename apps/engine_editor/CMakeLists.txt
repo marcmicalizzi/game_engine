@@ -59,4 +59,9 @@ if(TARGET engine_shell_files)
 endif()
 if(TARGET engine_engine_editor_tests)
   target_link_libraries(engine_engine_editor_tests PRIVATE imgui)
+  # The sample import finds content/samples through the source tree CMake names (or the test
+  # bundle's copy: tests/support/test_paths.h), never by walking up from __FILE__, which the
+  # compiler cache makes relative to the build directory (docs/ci/local-linux.md).
+  target_compile_definitions(engine_engine_editor_tests PRIVATE
+    ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()

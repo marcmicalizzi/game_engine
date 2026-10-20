@@ -411,10 +411,14 @@ A configured tree whose launcher is not the one the checkout now wants (ccache i
 `ENGINE_CCACHE` changed) is configured again before it builds; switching the cache off removes the
 three variables it set, so the tree is the one it was before.
 
-One test reads `__FILE__` to find the repository: `apps/engine_editor/tests/editor_tests.cpp` walks
-four directories up from it to `content/samples/`. Relative, that walk lands in the build tree, the
-sample is not found, and the case's sample-import half is skipped with its message rather than run.
-It is a skip and not a failure, and it wants a CMake-provided source root instead of `__FILE__`.
+**So no test finds the repository from `__FILE__`.** `apps/engine_editor/tests/editor_tests.cpp`
+once walked four directories up from it to `content/samples/`; relative, the walk landed in the build
+tree and the case's sample-import half was skipped with its message, silently, in every cached tree.
+A test that needs the source tree takes it from the build — `ENGINE_SOURCE_DIR`, a compile
+definition on its test target, through `test::data_path` in `tests/support/test_paths.h`, which a
+test bundle overrides — exactly as the tests reading `content/` already did. The cost is small and
+known: ccache rewrites paths in include and source arguments, not inside a `-D` value, so a test
+target carrying `ENGINE_SOURCE_DIR` compiles once per checkout instead of hitting another's objects.
 
 `build.cpu_baseline` reads `compile_commands.json`, which CMake writes without the launcher, and
 classifies each compile by its flags, which the launcher does not change; it is unaffected.
