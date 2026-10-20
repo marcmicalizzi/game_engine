@@ -2938,6 +2938,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           if (conflict) ++transform_conflicts_;
           gfx::set_uv_transform(material, transform.offset, transform.rotation, transform.scale);
         }
+        // An alpha-tested material (renderer.md, "Alpha-tested geometry"): after the transform,
+        // which clears the two words the cutoff and the factor's alpha go in.
+        if (source.alpha_mode == assets::k_alpha_mask)
+          gfx::set_alpha_mask(material, source.alpha_cutoff, source.base_color.w);
         // A water body's mesh (scene.h, `SceneWater`; docs/subsystems/water.md): its one material
         // is the water class, the body's shading numbers packed into slots an untextured material
         // never reads, so every reader but the resolve's water branch draws its shallow colour.
@@ -3049,8 +3053,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   material_count_ = material_table.size();
   has_water_ = false;
-  for (const gfx::ResolveMaterial& material : material_table)
+  has_masked_ = false;
+  for (const gfx::ResolveMaterial& material : material_table) {
     if ((material.flags & gfx::k_material_water) != 0) has_water_ = true;
+    if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
+  }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
   return gfx::upload_buffer(device, material_table.data(),
@@ -3171,7 +3178,10 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   gfx::ClusterSetLimits limits;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  limits.instantiate = resolved.settings.rt_templates;
+  // A template is built once, opaque, and an instantiation cannot clear the flag, so a scene with
+  // an alpha-tested material builds records instead (renderer.md, "Alpha-tested geometry").
+  const bool templates = resolved.settings.rt_templates && !has_masked_;
+  limits.instantiate = templates;
   rt_limits_ = limits;
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
   bool ok = (streamed_ || upload_room(device, packed.data(), packed.size(),
@@ -3185,7 +3195,7 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   // once, **packed to the size each one is** rather than to the driver's worst case (about 2.2 KB
   // reserved against 504–532 bytes used on the desert overlook), and instantiated from the pool
   // every frame.
-  if (ok && resolved.settings.rt_templates) {
+  if (ok && templates) {
     gfx::ClusterSetLimits template_limits = limits;
     template_limits.max_clusters = cluster_count_;
     template_limits.max_geometry_index = 0;

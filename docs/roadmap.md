@@ -105,7 +105,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R62 | BLAS budget manager | open | R51 | L | design | [04 §4.4](plan/04-renderer.md#44-ray-tracing) |
 | R63 | Cluster structures shared across rigid instances | open | R50 | S | design | [gfx](subsystems/gfx.md#what-a-device-has-to-have) |
 | R64 | KHR fallback measured on an AMD or Intel GPU | blocked (no such ray-tracing card here) | R50 | M | research | [ADR-0025](adr/0025-cluster-acceleration-structures.md) |
-| R65 | Alpha-tested geometry in raster, rays, shadows | open (2026-10-20, the design the allometric crown asks of it, [tree allometry](experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves): an alpha mask on every card and impostor honoured by the three rasterizers, the visibility tie rule and the ray and shadow tests alike, so a merged branch-group card and its shadow are its leaves and not its parallelogram; the images are R89's, baked from the solver's own finest geometry) | R51, G11 | L | design | [04 §4.3](plan/04-renderer.md#43-geometry) |
+| R65 | Alpha-tested geometry in raster, rays, shadows | done (206ab88d, 3f509535, 704b6dcf); remains: opacity micromaps for the ray loops, a signed-distance mask, the template path's masked flag; alpha-to-coverage never (no MSAA in the visibility buffer) | R51, G11 | L | design | [renderer](subsystems/renderer.md#alpha-tested-geometry) |
 | R66 | Hierarchical instancing of parts | open | R7 | M | research | [04 §4.3](plan/04-renderer.md#43-geometry) |
 | R67 | Vegetation impostors | open | R66 | L | research | [04 §4.3](plan/04-renderer.md#43-geometry) |
 | R68 | In-house ReSTIR DI | open | R28, R51 | L | research | [04 §4.4](plan/04-renderer.md#44-ray-tracing) |

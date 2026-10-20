@@ -90,7 +90,9 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (128 bytes).
+// Mirrors gfx::ClusterRecordParams (144 bytes: past the 128 every device guarantees, which this
+// pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
+// such device has 256).
 struct RecordParams {
   uint64_t clusters;         // ClusterDesc[]
   uint64_t vertices;         // float3[]: cluster-ordered rest positions
@@ -112,6 +114,10 @@ struct RecordParams {
   uint pair_count;  // the scene's; one run's count cannot exceed it
   uint mode;        // low 16 bits: views whose runs accumulate here; bit 16: instantiate
   uint capacity;    // the structures the set holds; ranges_main keeps no more
+  // Alpha-tested materials (renderer.md, "Alpha-tested geometry"): the scene's material table and
+  // material per cluster, or 0 for a frame with none. A masked pair is built non-opaque.
+  uint64_t mask_materials;
+  uint64_t mask_cluster_materials;
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
@@ -359,8 +365,14 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   record.counts = (cluster.triangle_count & 0x1ff) | ((cluster.vertex_count & 0x1ff) << 9) |
                   (k_index_type_8bit << 24);
   // Everything the picture draws is opaque; a shadow caster is not, which is the whole of how the
-  // primary rays leave it out (RAY_FLAG_CULL_NON_OPAQUE) while the shadow rays keep it.
-  const bool opaque = g_params.caster_count == 0 || visible_index < caster_base();
+  // primary rays leave it out (RAY_FLAG_CULL_NON_OPAQUE) while the shadow rays keep it. Nor is an
+  // alpha-tested pair, drawn or caster, whose hits the ray loops test against its mask
+  // (alpha_mask.slang, `candidate_keeps`).
+  MaskTables masks = no_mask_tables();
+  masks.materials = g_params.mask_materials;
+  masks.cluster_materials = g_params.mask_cluster_materials;
+  const bool opaque = (g_params.caster_count == 0 || visible_index < caster_base()) &&
+                      !pair_masked(masks, instance, cluster_id);
   record.geometry = (visible_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);
   record.strides0 = 1 | (12 << 16);
   record.strides1 = 0;

@@ -12,4 +12,5 @@ engine_module(NAME texture LAYER domain
 
 engine_module_tests(NAME texture
   SOURCES tests/texture_file_tests.cpp tests/mips_tests.cpp tests/blocks_tests.cpp
-          tests/material_textures_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
+          tests/material_textures_tests.cpp tests/determinism_tests.cpp tests/alpha_mask_tests.cpp
+          tests/size_table.cpp)

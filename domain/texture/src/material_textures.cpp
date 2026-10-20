@@ -41,6 +41,10 @@ TextureBuildOptions options_for_roles(u32 roles) noexcept {
 
 namespace {
 
+// glTF's MASK as the alpha word stores the mode (geometry::encode_alpha_word,
+// assets::k_alpha_mask).
+constexpr u8 k_alpha_word_mask = 1;
+
 EdgeMode edge_of(geometry::TextureWrap wrap) noexcept {
   switch (wrap) {
     case geometry::TextureWrap::repeat: return EdgeMode::repeat;
@@ -51,6 +55,12 @@ EdgeMode edge_of(geometry::TextureWrap wrap) noexcept {
 }
 
 }  // namespace
+
+u8 alpha_cutoff_code(f32 cutoff) noexcept {
+  const f32 scaled = cutoff * 255.0f + 0.5f;
+  if (!(scaled >= 1.0f)) return 1;  // a cutoff of 0 (or NaN) still tests: alpha 0 fails
+  return scaled >= 255.0f ? u8{255} : static_cast<u8>(scaled);
+}
 
 void image_edges(std::span<const geometry::ClusterFileMaterial> materials,
                  std::span<const geometry::ClusterFileMaterialSampling> sampling, u32 image_count,
@@ -98,6 +108,16 @@ void cluster_texture_records(std::span<const geometry::ClusterFileMaterial> mate
   Vector<EdgeMode> edge_x;
   Vector<EdgeMode> edge_y;
   image_edges(materials, sampling, count, edge_x, edge_y);
+  // The cutoff a masked material tests its base colour's alpha at (texture.md, "Alpha-tested
+  // masks"): the build keeps that image's coverage at it. An image two masked materials test at two
+  // cutoffs keeps the first one's, which is the order the materials were given in.
+  Vector<u8> cutoff(count, u8{0});
+  for (const geometry::ClusterFileMaterial& m : materials) {
+    if (geometry::alpha_word_mode(m.alpha) != k_alpha_word_mask) continue;
+    if (m.base_color_image < 0 || static_cast<u32>(m.base_color_image) >= count) continue;
+    u8& slot = cutoff[static_cast<u32>(m.base_color_image)];
+    if (slot == 0) slot = alpha_cutoff_code(geometry::alpha_word_cutoff(m.alpha));
+  }
   out.assign(count, geometry::ClusterFileTexture{});
   for (u32 i = 0; i < count; ++i) {
     geometry::ClusterFileTexture& record = out[i];
@@ -106,6 +126,7 @@ void cluster_texture_records(std::span<const geometry::ClusterFileMaterial> mate
     TextureBuildOptions options = options_for_roles(roles[i]);
     options.edge_x = edge_x[i];
     options.edge_y = edge_y[i];
+    options.alpha_cutoff = cutoff[i];
     record.options = pack_texture_options(options);
     const std::span<const u8> bytes = embedded[i];
     if (bytes.empty()) continue;  // named by path: resolved from the file when it is needed

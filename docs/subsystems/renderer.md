@@ -572,6 +572,76 @@ every level included, against **213.9 MB** decoded at one level; the resolve mov
 3% against the parent commit either way (2–3% slower up close for the derivative pass, 3% faster
 far away at 4K); and the decoded path's capture is byte-identical to the parent commit's.
 
+## Alpha-tested geometry
+
+Roadmap R65 (plan 04 §4.3). A material whose glTF `alphaMode` is `MASK` draws nothing where its base
+colour's alpha (times the base colour factor's) is below its `alphaCutoff`: leaf cards, fronds, a
+fence's wire. The importer has read the mode and the cutoff since the first glTF path, and the
+container carries them; until R65 nothing honoured them, so every leaf card the flora solver emits
+was an opaque parallelogram. Grounding: the practice every shipping engine follows — a masked
+pipeline variant that interpolates the UV and discards below the cutoff, coverage kept down the mip
+chain at build time (Castaño 2010; [texture](texture.md#alpha-tested-masks)), the colour dilated
+under the mask so the filtered fringe is the leaf's, and in ray tracing a test of each non-opaque
+candidate against the mask (the any-hit shader of a pipeline, a `RayQuery` loop here), accelerated
+where the hardware has them by opacity micromaps (`VK_EXT_opacity_micromap`; Indiana Jones'
+vegetation trace went from 7.90 to 3.58 ms on an RTX 5080 with them, NVIDIA's "Path Tracing
+Optimizations in Indiana Jones", 2025). What the engine's visibility buffer allows is narrower than
+a forward renderer's: **no MSAA, so no alpha-to-coverage** (Golus, "Anti-aliased Alpha Test", 2017):
+the cut is hard at the cutoff, and an id is either a whole pair's triangle or nothing, which is what
+keeps the resolve, the tie rule and the ray path's word-for-word match exact.
+
+**The data.** The mask is the base colour's alpha, built with its coverage kept and its colour
+dilated ([texture](texture.md#alpha-tested-masks) says why not a slot of its own).
+`gfx::set_alpha_mask` flags the material (`k_material_alpha_mask`) with the cutoff and the factor's
+alpha in `uv_offset.zw`; `GpuScene::has_masked()` says the table has one. A scene with none builds,
+draws and traces exactly what it did: no masked pipeline is made, the mask tables stay zero, and
+every pass takes the branch it always took.
+
+**The classification.** What says a pair is masked is its material (`materials[cluster_materials
+[cluster] + material_base]`), read through `gfx::MaskTables` — in the cull block right after the
+eye, so the rasterizers reach it through the eye they already read (`FrameEye::masks` says the
+tables follow; gfx.md). The material and not an instance bit, because a tree is one mesh of bark and
+leaf clusters, and a bit per cluster would be a table of its own to keep beside the one that exists.
+The cull pass sends **a masked pair to the hardware rasterizers only, never to the software one**: a
+thread a triangle walking its box in compute would pay a UV interpolation and a texture fetch per
+covered pixel with no quad to take a mip from, a few times the software path's whole per-pixel cost,
+for clusters that are by definition a few pixels across. Only a pair that would have gone software
+pays the two reads. `--raster sw` (everything software, a debugging mode) has no hardware draw and
+draws a masked pair solid.
+
+**The variants.** Each rasterizer draws twice where a scene has a masked material: its opaque entry
+point, which now collapses a masked pair (the mesh stage emits no primitives for it, the vertex
+stages a degenerate corner), then its masked variant **over the same run of the visible list**,
+which keeps only the masked pairs, emits the UV per vertex and the material flat, and in the
+fragment stage samples the mask with the quad's derivatives, discards below the cutoff and writes
+exactly the opaque stage's word. A second run per pass would have kept the masked pairs out of the
+opaque draw's work, but it is a run more of the list per view and pass, every per-entry table
+(the pool's blocks, the indexed draw's records, the CLAS records) sized and indexed by one more,
+and the classification would have had to happen before the vertex path's allocation; a second draw
+over one run keeps the index space as it was, and costs the masked draw an empty workgroup or a
+collapsed triangle per opaque pair (measured below). The variants: `mesh_main_masked` +
+`fs_visibility_masked`, `vs_cluster_masked`, `vs_cluster_indexed_masked` +
+`fs_visibility_indexed_masked`, `vs_cluster_fallback_masked` + `fs_visibility_fallback_masked`, and
+for the cascades the same vertex or mesh stages with `fs_mask_depth*`, a fragment stage that only
+discards, so a masked caster writes the atlas only where its mask keeps the pixel.
+
+**The rays.** A masked pair is built **non-opaque** into the frame's structures, drawn or caster
+(`clas_records.slang`), as the shadow casters already are, and the template path is not taken in a
+masked scene (a template is built once, opaque, and an instantiation cannot clear the flag). Every
+ray then decides its non-opaque candidates in its `RayQuery` loop by one rule
+(`alpha_mask.slang`, `candidate_keeps`): **a pair whose material is masked is kept where its mask
+keeps the hit** — the hit's barycentrics give the UV, the material's transform applies, the mask is
+sampled at level 0 — **and anything else non-opaque is a shadow caster**. The primary ray of the
+ray path cannot cull non-opaque geometry any more in such a frame; it traces with no flag, leaves a
+caster out by its entry (`caster_base`, as its tie scan always did) and commits a masked candidate
+the mask keeps; the tie scan skips a masked candidate the mask cuts. The resolve's shadow ray
+(`k_shadow_alpha_masks`) and the path tracer's rays (`k_pt_alpha_masks`) drop `FORCE_OPAQUE` and
+commit a caster or a kept masked candidate, the first one ending the search. A caster and a masked
+cluster are told apart by the material, not by an instance mask bit: the TLAS's instance is the
+scene instance, and a tree's instance holds both. **Opacity micromaps are not built**: they would
+classify most of a leaf card's micro-triangles as wholly opaque or wholly transparent in the
+traversal hardware and leave the loop only the boundary ones — the loop's whole cost below, less
+what the boundary keeps.
 ## The sky above, the ground below
 
 **The resolve's whole indirect term is a hemisphere of two uniform halves** (2026-09-25): the sky

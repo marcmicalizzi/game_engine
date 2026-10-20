@@ -50,6 +50,12 @@ role per process, so a scene of a hundred palms says it once.
   `1 / tile_m` on every slot it fills (`geometry::encode_material_sampling`); a part in whole
   repeats already (`repeats`, a rock's charts) or a card that takes its image whole (`card`) gets
   none;
+- **a card is a cutout**: a `card` set's base colour makes the material alpha-tested (glTF MASK) at
+  the default cutoff 0.5, because a leaf card's image is the whole leaf and its alpha the leaf's
+  outline; the content build then keeps that image's coverage down its mips and dilates its colour
+  under the cut ([texture](texture.md#alpha-tested-masks)), and the renderer draws, casts and traces
+  it through the mask ([renderer](renderer.md#alpha-tested-geometry)). An image with no alpha passes
+  everywhere and draws what an opaque card drew;
 - each image once in `image_paths`, shared by every part that samples it, with an empty `images`
   entry (named by path, no carried bytes).
 
@@ -184,7 +190,7 @@ a module that is not a capability may not depend on one (ADR-0027), so this sits
 the flora and rocks capabilities link it.
 
 **Testing.** `tools/dev.ps1 test -Filter materials`: a set into a container's slots (roughness
-alone, metallic zero, the transform on metres, none on a card, shared images, an empty set a
+alone, metallic zero, the transform on metres, none on a card, a card alpha-tested at 0.5, shared images, an empty set a
 no-op); the override order; a pack read and refused for a bad role, format, convention, missing
 map and `tile_m` out of range, its key moving with its directory; `pack_at` once per directory and
 none where there is none. The solvers' own tests hold them to it ([flora](flora.md), [rocks](rocks.md)),

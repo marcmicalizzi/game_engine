@@ -74,7 +74,8 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
 
   REQUIRE(gfx::reflect_spirv(
       words_of(shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size), r, &error));
-  REQUIRE(r.entry_points.size() == 4);
+  // Four, and since R65 the masked variants' three (renderer.md, "Alpha-tested geometry").
+  REQUIRE(r.entry_points.size() == 7);
   const gfx::ShaderEntryPoint* mesh = r.entry("mesh_main");
   REQUIRE(mesh != nullptr);
   CHECK(mesh->stage == gfx::ShaderStage::Mesh);
@@ -83,11 +84,17 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(r.entry("fs_main")->stage == gfx::ShaderStage::Fragment);
   CHECK(r.entry("fs_color") != nullptr);
   CHECK(r.entry("fs_visibility") != nullptr);
+  REQUIRE(r.entry("mesh_main_masked") != nullptr);
+  CHECK(r.entry("mesh_main_masked")->stage == gfx::ShaderStage::Mesh);
+  CHECK(r.entry("fs_visibility_masked") != nullptr);
+  CHECK(r.entry("fs_mask_depth") != nullptr);
   CHECK(r.entry("missing") == nullptr);
   // float4x4, three addresses (clusters, the MeshDesc array, triangles), the visible offset and
   // the triangle capacity, the visible list, the visibility buffer, width, height, the instances.
   CHECK(r.push_constant_bytes == 128);
-  CHECK(r.bindings.empty());
+  // The masked fragment stages sample the base colour's alpha through the bindless set's sampled
+  // images and samplers (alpha_mask.slang).
+  CHECK(r.bindings.size() == 2);
 
   REQUIRE(gfx::reflect_spirv(words_of(shaders::k_triangle_spirv, shaders::k_triangle_spirv_size), r,
                              &error));
@@ -165,7 +172,7 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
     REQUIRE_MESSAGE(file_mesh != nullptr, error);
     CHECK(file_mesh->from_file);
     CHECK(file_mesh->hash == embedded_mesh->hash);
-    CHECK(file_mesh->reflection.entry_points.size() == 4);
+    CHECK(file_mesh->reflection.entry_points.size() == 7);
   }
   std::string description;
   library.describe(description);

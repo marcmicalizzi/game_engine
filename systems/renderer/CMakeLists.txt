@@ -53,7 +53,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/fire_tests.cpp
-                    tests/tile_layout_tests.cpp
+                    tests/tile_layout_tests.cpp tests/alpha_mask_tests.cpp
                     tests/sun_arc_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
                     # the CPU (caster_volume.h).

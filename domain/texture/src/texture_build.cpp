@@ -26,14 +26,21 @@ constexpr u32 k_pack_mips = 1u << 6;
 constexpr u32 k_pack_valid = 1u << 7;
 constexpr u32 k_pack_edge_x_shift = 8;
 constexpr u32 k_pack_edge_y_shift = 10;
+constexpr u32 k_pack_cutoff_shift = 16;
 constexpr u32 k_pack_known = 0xfu | k_pack_srgb | k_pack_normal | k_pack_mips | k_pack_valid |
-                             (3u << k_pack_edge_x_shift) | (3u << k_pack_edge_y_shift);
+                             (3u << k_pack_edge_x_shift) | (3u << k_pack_edge_y_shift) |
+                             (0xffu << k_pack_cutoff_shift);
 
 // The largest side the builder takes. Level 1's working set is a float image of half the source
 // and a horizontal pass of half its width at full height, about 12 bytes a source texel, and the
 // engine's `Vector` counts in 32 bits: 16,384 on a side is 3 GiB of floats in the worst pass,
 // which is past what that holds.
 constexpr u32 k_max_side = 16384;
+
+// A mask level's coverage after the encoder (build_texture): how far from level 0's it may land
+// before the level is scaled again, and how many times it is.
+constexpr f64 k_coverage_slack = 0.005;
+constexpr u32 k_coverage_passes = 4;
 
 f64 ms_since(i64 start_ns) noexcept {
   return static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
@@ -105,6 +112,7 @@ u32 pack_texture_options(const TextureBuildOptions& options) noexcept {
   if (options.mips) word |= k_pack_mips;
   word |= static_cast<u32>(options.edge_x) << k_pack_edge_x_shift;
   word |= static_cast<u32>(options.edge_y) << k_pack_edge_y_shift;
+  word |= static_cast<u32>(options.alpha_cutoff) << k_pack_cutoff_shift;
   return word | k_pack_valid;
 }
 
@@ -122,6 +130,7 @@ bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept {
   out.mips = (packed & k_pack_mips) != 0;
   out.edge_x = static_cast<EdgeMode>(edge_x);
   out.edge_y = static_cast<EdgeMode>(edge_y);
+  out.alpha_cutoff = static_cast<u8>((packed >> k_pack_cutoff_shift) & 0xffu);
   return true;
 }
 
@@ -172,6 +181,92 @@ std::string texture_cache_path(std::string_view ddc_root, u64 key) {
   return io::join_path(io::join_path(ddc_root, "textures"), std::string(name) + ".tex");
 }
 
+f64 alpha_coverage(std::span<const u8> rgba, u32 width, u32 height, u8 cutoff) noexcept {
+  const usize texels = static_cast<usize>(width) * height;
+  if (texels == 0 || rgba.size() < texels * 4) return 0.0;
+  usize kept = 0;
+  for (usize i = 0; i < texels; ++i)
+    if (rgba[i * 4 + 3] >= cutoff) ++kept;
+  return static_cast<f64>(kept) / static_cast<f64>(texels);
+}
+
+void dilate_under_mask(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, u32 rings) {
+  const usize texels = static_cast<usize>(width) * height;
+  if (texels == 0 || rgba.size() < texels * 4) return;
+  // 1: the texel's colour is the leaf's (it passes, or an earlier ring filled it); 0: not yet.
+  Vector<u8> filled(static_cast<u32>(texels), 0);
+  for (usize i = 0; i < texels; ++i)
+    filled[static_cast<u32>(i)] = rgba.data()[i * 4 + 3] >= cutoff ? 1 : 0;
+  Vector<u8> next;
+  Vector<u8> colour;
+  for (u32 ring = 0; ring < rings; ++ring) {
+    next = filled;
+    colour = rgba;
+    const u8* src = rgba.data();
+    u8* dst = colour.data();
+    bool grew = false;
+    for (u32 y = 0; y < height; ++y) {
+      for (u32 x = 0; x < width; ++x) {
+        const usize i = static_cast<usize>(y) * width + x;
+        if (filled[static_cast<u32>(i)] != 0) continue;
+        u32 sum[3] = {0, 0, 0};
+        u32 count = 0;
+        for (i32 dy = -1; dy <= 1; ++dy) {
+          for (i32 dx = -1; dx <= 1; ++dx) {
+            const i32 nx = static_cast<i32>(x) + dx;
+            const i32 ny = static_cast<i32>(y) + dy;
+            if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= static_cast<i32>(width) ||
+                ny >= static_cast<i32>(height)) {
+              continue;
+            }
+            const usize n = static_cast<usize>(ny) * width + static_cast<usize>(nx);
+            if (filled[static_cast<u32>(n)] == 0) continue;
+            for (u32 c = 0; c < 3; ++c)
+              sum[c] += src[n * 4 + c];
+            ++count;
+          }
+        }
+        if (count == 0) continue;
+        // Integer arithmetic, rounded half up: the same bytes from every compiler.
+        for (u32 c = 0; c < 3; ++c)
+          dst[i * 4 + c] = static_cast<u8>((sum[c] + count / 2) / count);
+        next[static_cast<u32>(i)] = 1;
+        grew = true;
+      }
+    }
+    rgba = colour;
+    filled = next;
+    if (!grew) break;
+  }
+}
+
+void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage) {
+  const usize texels = static_cast<usize>(width) * height;
+  if (texels == 0 || rgba.size() < texels * 4 || cutoff == 0) return;
+  // How many texels each 8-bit alpha holds; `at_least[t]` is the count at or above t.
+  u8* px = rgba.data();
+  u64 histogram[256] = {};
+  for (usize i = 0; i < texels; ++i)
+    ++histogram[px[i * 4 + 3]];
+  const f64 wanted = coverage * static_cast<f64>(texels);
+  u64 at_least = 0;
+  u32 best = cutoff;
+  f64 best_miss = std::numeric_limits<f64>::infinity();
+  for (i32 t = 255; t >= 1; --t) {
+    at_least += histogram[t];
+    const f64 miss = std::fabs(static_cast<f64>(at_least) - wanted);
+    if (miss < best_miss) {  // strictly: the largest t of the closest counts
+      best_miss = miss;
+      best = static_cast<u32>(t);
+    }
+  }
+  if (best == cutoff) return;
+  for (usize i = 0; i < texels; ++i) {
+    const u32 scaled = static_cast<u32>(px[i * 4 + 3]) * cutoff / best;  // rounded down
+    px[i * 4 + 3] = static_cast<u8>(scaled > 255u ? 255u : scaled);
+  }
+}
+
 bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_channels,
                    const TextureBuildOptions& options, TextureData& out, jobs::JobSystem* pool,
                    std::string* error, TextureBuildReport* report) {
@@ -193,12 +288,6 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   TextureBuildReport local;
   TextureBuildReport& r = report != nullptr ? *report : local;
 
-  const i64 mip_start = time::monotonic_ns();
-  Vector<MipLevel> chain;
-  build_mip_chain(rgba, width, height, mode, options.mips, chain, pool, options.edge_x,
-                  options.edge_y);
-  r.mip_ms = ms_since(mip_start);
-
   out.format = format;
   out.color_space = srgb ? ColorSpace::srgb : ColorSpace::linear;
   out.width = width;
@@ -211,6 +300,28 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
       break;
     }
   }
+
+  // **An alpha-tested mask** (texture.md, "Alpha-tested masks"): the colour under the cut grown
+  // outwards first, so the chain filters the leaf's colour into its fringe, and every level's alpha
+  // then held to level 0's coverage at the cutoff. Only a build given a cutoff, of an image that
+  // has alpha, of a format that keeps it; everything else is the bytes it always was.
+  const bool masked = options.alpha_cutoff != 0 && (out.flags & k_texture_has_alpha) != 0 &&
+                      !options.normal_map && (stored_channels(format) & 0x8u) != 0;
+  Vector<u8> dilated;
+  std::span<const u8> source = rgba;
+  if (masked) {
+    dilated.assign(rgba.data(), rgba.data() + static_cast<usize>(width) * height * 4);
+    dilate_under_mask(dilated, width, height, options.alpha_cutoff, k_alpha_dilation_texels);
+    source = std::span<const u8>(dilated.data(), dilated.size());
+  }
+
+  const i64 mip_start = time::monotonic_ns();
+  Vector<MipLevel> chain;
+  build_mip_chain(source, width, height, mode, options.mips, chain, pool, options.edge_x,
+                  options.edge_y);
+  const f64 coverage = masked ? alpha_coverage(source, width, height, options.alpha_cutoff) : 0.0;
+  if (masked) out.flags |= k_texture_alpha_coverage;
+  r.mip_ms = ms_since(mip_start);
 
   // The level table first, so the payload is sized once and each level encodes into its own
   // aligned range.
@@ -235,13 +346,41 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   // shader multiplies by: a roughness map's green channel is not "more visible" than its blue.
   const bool perceptual = srgb;
   const i64 encode_start = time::monotonic_ns();
+  Vector<u8> unscaled;
+  Vector<u8> check;
   for (u32 i = 0; i < chain.size(); ++i) {
-    const MipLevel& level = chain[i];
+    MipLevel& level = chain[i];
     const TextureFileLevel& record = out.levels[i];
-    encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
-                 level.height, perceptual,
-                 std::span<u8>(out.data.data() + record.offset, static_cast<usize>(record.bytes)),
-                 pool);
+    const std::span<u8> blocks(out.data.data() + record.offset, static_cast<usize>(record.bytes));
+    if (!masked) {
+      encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
+                   level.height, perceptual, blocks, pool);
+      continue;
+    }
+    // A mask's level: its alpha scaled to the coverage, encoded, and measured **as the GPU will
+    // read it**, decoded. The encoder moves an alpha by a code or two, and a filtered level holds
+    // many texels within a code of the cutoff (every needle a texel wide sits at half alpha one
+    // level down), so a scale that is exact before the encoder can be 3% off after it. The miss
+    // is fed back into the target and the level is scaled again from its unscaled alpha, at most
+    // `k_coverage_passes` times: deterministic, because the encoder is, and only a mask pays it.
+    unscaled = level.rgba;
+    f64 target = coverage;
+    for (u32 pass = 0; pass < k_coverage_passes; ++pass) {
+      level.rgba = unscaled;
+      preserve_alpha_coverage(level.rgba, level.width, level.height, options.alpha_cutoff, target);
+      encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
+                   level.height, perceptual, blocks, pool);
+      if (!decode_level(format, std::span<const u8>(blocks.data(), blocks.size()), level.width,
+                        level.height, check, nullptr)) {
+        break;
+      }
+      const f64 measured = alpha_coverage(std::span<const u8>(check.data(), check.size()),
+                                          level.width, level.height, options.alpha_cutoff);
+      const f64 miss = coverage - measured;
+      if (std::fabs(miss) <= k_coverage_slack) break;
+      target = target + miss;
+      target = target < 0.0 ? 0.0 : (target > 1.0 ? 1.0 : target);
+    }
   }
   r.encode_ms = ms_since(encode_start);
 

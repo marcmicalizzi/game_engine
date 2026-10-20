@@ -698,6 +698,14 @@ class SceneRenderer {
     // fragment stage and the atlas as its depth attachment.
     gfx::PipelineHandle shadow;
     gfx::PipelineHandle shadow_fallback;
+    // **Alpha-tested clusters** (renderer.md, "Alpha-tested geometry"): each rasterizer's masked
+    // variant, built only for a scene with a masked material and drawn after the opaque draw over
+    // the same run — the picture's, the indexed draw's overflow, and the cascades' depth-only two.
+    gfx::PipelineHandle hardware_masked;
+    gfx::PipelineHandle vertex_masked;
+    gfx::PipelineHandle vertex_fallback_masked;
+    gfx::PipelineHandle shadow_masked;
+    gfx::PipelineHandle shadow_fallback_masked;
     gfx::PipelineHandle resolve;
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;

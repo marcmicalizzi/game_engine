@@ -85,6 +85,12 @@ TEST_CASE("materials: a set's images go into the slots, roughness alone and meta
   CHECK(data.image_paths.size() == 3);
   geometry::decode_material_sampling(data.material_sampling[1], slots, occlusion);
   CHECK(slots[geometry::k_slot_base_color].transform.identity());
+  // A card is a cutout at glTF's default cutoff (renderer.md, "Alpha-tested geometry"); a part in
+  // metres is not.
+  CHECK(geometry::alpha_word_mode(data.materials[1].alpha) == 1);  // MASK
+  CHECK(geometry::alpha_word_cutoff(data.materials[1].alpha) ==
+        doctest::Approx(0.5f).epsilon(0.01));
+  CHECK(geometry::alpha_word_mode(data.materials[0].alpha) == 0);
 
   // A set that names nothing changes nothing.
   geometry::ClusterFileData untouched = flat(1);

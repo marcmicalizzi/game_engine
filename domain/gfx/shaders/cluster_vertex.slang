@@ -10,6 +10,7 @@
 // SV_InstanceID is therefore the **visible index**, which leads to the entry's (instance, cluster)
 // and so to the scene's pair, which is what the visibility id carries (scene.slang, `pair_of`).
 
+#include "alpha_mask.slang"
 #include "scene.slang"
 
 // Same layout as MeshParams in cluster_mesh.slang (128 bytes).
@@ -44,7 +45,11 @@ ClusterVertex vs_cluster(uint vertex_id : SV_VertexID, uint instance_id : SV_Ins
   const uint triangle = vertex_id / 3;
   const uint corner = vertex_id - triangle * 3;
   ClusterVertex out;
-  if (triangle >= cluster.triangle_count) {
+  // An alpha-tested pair is vs_cluster_masked's (below), and collapses here like a triangle past
+  // the cluster's count; a frame with no masked material carries no tables and keeps every pair.
+  const FrameEye eye = load_eye(g_params.eye);
+  if (triangle >= cluster.triangle_count ||
+      pair_masked(load_mask_tables(g_params.eye, eye), instance, entry.y)) {
     out.id = 0;  // never rasterized
     out.position = float4(0.0, 0.0, 0.0, 0.0);  // degenerate: all three corners coincide
     return out;
@@ -57,7 +62,7 @@ ClusterVertex vs_cluster(uint vertex_id : SV_VertexID, uint instance_id : SV_Ins
   const uint local = (packed >> (8 * corner)) & 0xff;
   const uint base = deform_base(mesh, instance, visible_index);
   const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
-  const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
+  const float3 from_eye = instance_from_eye(instance, eye);
   const float3 q = instance_point(instance, from_eye, p);
   out.position = mul(g_params.view_proj, float4(q, 1.0));
   return out;
@@ -71,4 +76,70 @@ void fs_visibility(ClusterVertex v) {
   const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(v.id);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
   visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// ---- alpha-tested clusters (docs/subsystems/renderer.md, "Alpha-tested geometry") -------------
+//
+// The capacity draw's masked variant: the same instanced draw over the same run, keeping only the
+// alpha-tested pairs vs_cluster collapses, with the UV interpolated and the material flat. Also the
+// indexed draw's fallback's fragment stage (cluster_vertex_indexed.slang), whose masked vertex
+// stage writes the same interface.
+struct MaskedClusterVertex {
+  float4 position : SV_Position;
+  nointerpolation uint id : VISIBILITY_ID;   // pair << 8 | triangle
+  nointerpolation uint material : MATERIAL;  // the pair's index in the material table
+  float2 uv : TEXCOORD0;
+};
+
+[shader("vertex")]
+MaskedClusterVertex vs_cluster_masked(uint vertex_id : SV_VertexID,
+                                      uint instance_id : SV_InstanceID) {
+  const uint visible_index = g_params.visible_offset + instance_id;
+  const uint2 entry = visible_entry(g_params.visible, instance_id);
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  const InstanceDesc instance = instances[entry.x];
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  const ClusterDesc cluster = clusters[entry.y];
+  const uint triangle = vertex_id / 3;
+  const uint corner = vertex_id - triangle * 3;
+  const FrameEye eye = load_eye(g_params.eye);
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  MaskedClusterVertex out;
+  out.id = 0;
+  out.material = 0;
+  out.uv = float2(0.0, 0.0);
+  out.position = float4(0.0, 0.0, 0.0, 0.0);  // degenerate unless the pair is masked
+  if (triangle >= cluster.triangle_count || !pair_masked(masks, instance, entry.y)) return out;
+  MeshDesc* meshes = (MeshDesc*)g_params.mesh;
+  const MeshDesc mesh = meshes[instance.mesh];
+  out.id = (pair_of(instance, mesh, entry.y) << 8) | (triangle & 0xff);
+  out.material = pair_material(masks, instance, entry.y);
+  uint* triangles = (uint*)g_params.triangles;
+  const uint packed = triangles[cluster.triangle_offset + triangle];
+  const uint local = (packed >> (8 * corner)) & 0xff;
+  out.uv = vertex_uv(masks, cluster.vertex_offset + local);
+  const uint base = deform_base(mesh, instance, visible_index);
+  const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
+  const float3 q = instance_point(instance, instance_from_eye(instance, eye), p);
+  out.position = mul(g_params.view_proj, float4(q, 1.0));
+  return out;
+}
+
+// fs_visibility behind the mask.
+[shader("fragment")]
+void fs_visibility_masked(MaskedClusterVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const uint2 pixel = uint2(v.position.xy);
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
+  const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(v.id);
+  Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// The cascades' depth-only draw of a masked cluster.
+[shader("fragment")]
+void fs_mask_depth(MaskedClusterVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
 }

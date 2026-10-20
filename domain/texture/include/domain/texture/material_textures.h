@@ -58,10 +58,15 @@ void image_edges(std::span<const geometry::ClusterFileMaterial> materials,
                  std::span<const geometry::ClusterFileMaterialSampling> sampling, u32 image_count,
                  Vector<EdgeMode>& edge_x, Vector<EdgeMode>& edge_y);
 
+// A material's alpha cutoff (0..1) as the 8-bit code `TextureBuildOptions::alpha_cutoff` holds:
+// rounded to nearest and clamped to 1..255, because 0 there means "no mask".
+u8 alpha_cutoff_code(f32 cutoff) noexcept;
+
 // Fills `data.textures`, parallel to `data.image_paths`, from `data.materials`, their sampling
 // records and the embedded bytes in `data.images`: the roles, the packed options (the slot's
-// format and colour space, and the edges its samplers wrap with), and — for an image whose bytes
-// the container carries — the source hash and the cache key. An image named by path records
+// format and colour space, the edges its samplers wrap with, and — for the base colour of a
+// material whose alpha mode is MASK — the cutoff its coverage is kept at), and — for an image whose
+// bytes the container carries — the source hash and the cache key. An image named by path records
 // options and roles and a zero key, because its bytes are not the container's and the container
 // has to be a function of what its own key covers (the glTF and its buffers): the renderer and the
 // build hash the file when they need the key. An image no slot names records all zeros.

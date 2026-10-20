@@ -176,6 +176,11 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (vertex_fallback.valid()) gfx::destroy_pipeline(device, vertex_fallback);
   if (shadow.valid()) gfx::destroy_pipeline(device, shadow);
   if (shadow_fallback.valid()) gfx::destroy_pipeline(device, shadow_fallback);
+  if (hardware_masked.valid()) gfx::destroy_pipeline(device, hardware_masked);
+  if (vertex_masked.valid()) gfx::destroy_pipeline(device, vertex_masked);
+  if (vertex_fallback_masked.valid()) gfx::destroy_pipeline(device, vertex_fallback_masked);
+  if (shadow_masked.valid()) gfx::destroy_pipeline(device, shadow_masked);
+  if (shadow_fallback_masked.valid()) gfx::destroy_pipeline(device, shadow_fallback_masked);
   if (resolve.valid()) gfx::destroy_pipeline(device, resolve);
   if (resolve_linear.valid()) gfx::destroy_pipeline(device, resolve_linear);
   if (encode.valid()) gfx::destroy_pipeline(device, encode);
@@ -909,6 +914,74 @@ bool SceneRenderer::create_pipelines(std::string* error) {
         if (!gfx::create_graphics_pipeline(device, shadow_desc, pipelines_.shadow_fallback,
                                            error)) {
           return false;
+        }
+      }
+    }
+  }
+  // **The masked variants** (renderer.md, "Alpha-tested geometry"): only for a scene with an
+  // alpha-tested material, so every other scene builds and draws exactly what it did. Each is its
+  // rasterizer's own module with the masked entry points: the mesh stage, the capacity draw's
+  // vertex stage, or the indexed draw's and its fallback's; the cascades' take the same vertex or
+  // mesh stage with a fragment stage that only discards.
+  if (scene_->has_masked() && (mesh_pipeline || resolved_.vertex_path)) {
+    const gfx::Shader* indexed =
+        resolved_.vertex_indexed ? shaders_.get("cluster_vertex_indexed", error) : nullptr;
+    if (resolved_.vertex_indexed && indexed == nullptr) return false;
+    if (mesh_pipeline) {
+      gfx::MeshPipelineDesc masked_desc;
+      masked_desc.mesh = mesh->module;
+      masked_desc.mesh_entry = "mesh_main_masked";
+      masked_desc.fragment = mesh->module;
+      masked_desc.fragment_entry = "fs_visibility_masked";
+      masked_desc.layout = bindless.pipeline_layout();
+      if (!gfx::create_mesh_pipeline(device, masked_desc, pipelines_.hardware_masked, error))
+        return false;
+      if (resolved_.csm) {
+        masked_desc.fragment_entry = "fs_mask_depth";
+        masked_desc.depth_format = k_shadow_format;
+        masked_desc.depth_test = true;
+        masked_desc.depth_write = true;
+        if (!gfx::create_mesh_pipeline(device, masked_desc, pipelines_.shadow_masked, error))
+          return false;
+      }
+    } else {
+      gfx::GraphicsPipelineDesc masked_desc = vertex_desc;
+      gfx::GraphicsPipelineDesc fallback_desc = vertex_desc;
+      if (resolved_.vertex_indexed) {
+        masked_desc.vertex = masked_desc.fragment = indexed->module;
+        masked_desc.vertex_entry = "vs_cluster_indexed_masked";
+        masked_desc.fragment_entry = "fs_visibility_indexed_masked";
+        fallback_desc.vertex = fallback_desc.fragment = indexed->module;
+        fallback_desc.vertex_entry = "vs_cluster_fallback_masked";
+        fallback_desc.fragment_entry = "fs_visibility_fallback_masked";
+        if (!gfx::create_graphics_pipeline(device, fallback_desc, pipelines_.vertex_fallback_masked,
+                                           error)) {
+          return false;
+        }
+      } else {
+        masked_desc.vertex = masked_desc.fragment = vertex->module;
+        masked_desc.vertex_entry = "vs_cluster_masked";
+        masked_desc.fragment_entry = "fs_visibility_masked";
+      }
+      if (!gfx::create_graphics_pipeline(device, masked_desc, pipelines_.vertex_masked, error))
+        return false;
+      if (resolved_.csm) {
+        masked_desc.fragment_entry =
+            resolved_.vertex_indexed ? "fs_mask_depth_indexed" : "fs_mask_depth";
+        masked_desc.depth_format = k_shadow_format;
+        masked_desc.depth_test = true;
+        masked_desc.depth_write = true;
+        if (!gfx::create_graphics_pipeline(device, masked_desc, pipelines_.shadow_masked, error))
+          return false;
+        if (resolved_.vertex_indexed) {
+          fallback_desc.fragment_entry = "fs_mask_depth_fallback";
+          fallback_desc.depth_format = k_shadow_format;
+          fallback_desc.depth_test = true;
+          fallback_desc.depth_write = true;
+          if (!gfx::create_graphics_pipeline(device, fallback_desc,
+                                             pipelines_.shadow_fallback_masked, error)) {
+            return false;
+          }
         }
       }
     }
@@ -1693,6 +1766,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // The sun's cascaded shadow maps: a run of the visible list per cascade behind every view's
   // three, culled from the light, drawn depth-only into the atlas, and filtered by the resolve.
   const bool csm = resolved_.csm;
+  // **Alpha-tested clusters** (renderer.md, "Alpha-tested geometry"): a scene with a masked
+  // material draws each rasterizer's masked variant after its opaque draw, over the same run, and
+  // its cull and ray blocks carry the mask tables. False — no masked material, or a path that built
+  // no masked pipeline — and the frame is the one it always was.
+  const bool masked_frame = scene.has_masked() && (pipelines_.hardware_masked.valid() ||
+                                                   pipelines_.vertex_masked.valid());
+  const bool masked_shadows = masked_frame && pipelines_.shadow_masked.valid();
+  // The tables every masked reader is given (gfx::MaskTables): set in a scene with a masked
+  // material whatever the path, because the ray chain builds a masked pair non-opaque and the ray
+  // loops test it even where no rasterizer draws it.
+  gfx::MaskTables mask_tables;
+  if (scene.has_masked()) {
+    mask_tables.materials = scene.materials.address;
+    mask_tables.cluster_materials = scene.cluster_materials.address;
+    mask_tables.attributes = scene.attributes.address;
+  }
   const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
   ENGINE_ASSERT(!csm || (!shadows && !use_sw && !ray_path && !direct),
                 "cascaded shadow maps are drawn on the hw and vertex paths, never beside rays");
@@ -2018,6 +2107,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.view_proj = view.view_proj;
     cull.camera = Vec4{eye, znear};
     cull.eye = gpu_eye;
+    // The mask tables right after the eye, which the rasterizers read through it.
+    if (scene.has_masked()) {
+      cull.eye.masks = 1;
+      cull.masks = mask_tables;
+    }
     // The LOD threshold is this view's: a peripheral view lets a cluster be `lod_scale` times as
     // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation). A
     // frame may override the settings' threshold — `FrameDesc::lod_px`, which the reference
@@ -2223,6 +2317,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // the lights are.
     resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
     resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
+    // A masked caster is built non-opaque, so the shadow rays test masks (renderer.md,
+    // "Alpha-tested geometry").
+    if (shadows && scene.has_masked()) resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
     // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
@@ -2287,6 +2384,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       ray.visible = scene.visible.address;
       ray.instances = scene.instances.address;
       ray.meshes = scene.meshes.address;
+      ray.clusters = scene.clusters.address;
+      ray.triangles = scene.triangles.address;
+      ray.masks = mask_tables;  // zero without a masked material: the culled query it always took
       ray.caster_base = casters ? scene.visible_base(0, gfx::k_caster_run) : ~u32{0};
       vf.ray_address = ray_params_[slot].address + sizeof(gfx::RayVisibilityParams) * v;
       std::memcpy(static_cast<u8*>(ray_params_[slot].mapped) + sizeof(gfx::RayVisibilityParams) * v,
@@ -2318,6 +2418,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.view_proj = cascade.view_proj;
     cull.camera = Vec4{eye, znear};
     cull.eye = gpu_eye;
+    // The mask tables right after the eye, which the rasterizers read through it.
+    if (scene.has_masked()) {
+      cull.eye.masks = 1;
+      cull.masks = mask_tables;
+    }
     cull.lod = Vec4{lod_view.proj_scale,
                     frame_lod_px * lod_view.quality.lod_scale * settings.shadow_lod_scale, 1.0f,
                     settings.shadow_frustum ? 1.0f : 0.0f};
@@ -2455,13 +2560,20 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.clas_addresses = scene.clas_set.addresses.address;
     record_params.instance_count = instance_count;
     record_params.pair_count = pair_stride;
-    record_params.mode = gfx::cluster_records_mode(views, settings.rt_templates);
+    // A template is built once, opaque, and an instantiation cannot clear the flag, so a scene with
+    // an
+    // alpha-tested material builds records (renderer.md, "Alpha-tested geometry"), as one with
+    // shadow casters does.
+    record_params.mode =
+        gfx::cluster_records_mode(views, settings.rt_templates && !scene.has_masked());
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —
     // were written once with the scene; the frame only copies each instance's bottom-level address
     // into them after the one build that decides it.
     record_params.capacity = scene.rt_capacity();
+    record_params.mask_materials = mask_tables.materials;  // a masked pair is built non-opaque
+    record_params.mask_cluster_materials = mask_tables.cluster_materials;
   }
 
   gfx::RenderGraph& graph = *graph_;
@@ -3104,43 +3216,53 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Graphics,
-                           vertex_path ? pipelines.vertex : pipelines.hardware);
-          bindless.bind(cb, gfx::BindPoint::Graphics);
-          for (u32 v = 0; v < views; ++v) {
-            timer.begin(cb, k_zone_names[k_zone_hw][v]);
-            set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
-            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
-                              sizeof(gfx::ClusterDrawParams), &draws[v][run]);
-            if (vertex_indexed) {
-              // The run's triangles, indexed, then whatever its index budget had no room for
-              // through the capacity draw — an empty draw unless something overflowed.
-              const u64 header = scene.vertex_header_offset(v, run);
-              cb.bind_index_buffer(scene.vertex_indices.buffer, scene.vertex_indices_offset(v, run),
-                                   gfx::IndexType::Uint32);
-              cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
-                                       sizeof(gfx::DrawIndexedIndirectArgs));
-              cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.vertex_fallback);
-              cb.draw_indirect(scene.vertex_headers.buffer,
-                               header + gfx::k_vertex_draw_fallback_offset, 1,
-                               sizeof(gfx::DrawIndirectArgs));
-              if (v + 1 < views) {
-                cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.vertex);
-              }
-            } else if (vertex_path) {
-              if (cull_on) {
-                cb.draw_indirect(scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
-                                 sizeof(u32) * 4);
+          // The opaque draw, then — in a frame with an alpha-tested material — the masked variants
+          // over the same runs (renderer.md, "Alpha-tested geometry"): each keeps the pairs the
+          // other collapses, so the two together draw every pair once.
+          for (u32 variant = 0; variant < (masked_frame ? 2u : 1u); ++variant) {
+            const bool masked = variant == 1;
+            const gfx::PipelineHandle main_pipeline =
+                vertex_path ? (masked ? pipelines.vertex_masked : pipelines.vertex)
+                            : (masked ? pipelines.hardware_masked : pipelines.hardware);
+            const gfx::PipelineHandle fallback_pipeline =
+                masked ? pipelines.vertex_fallback_masked : pipelines.vertex_fallback;
+            cb.bind_pipeline(gfx::BindPoint::Graphics, main_pipeline);
+            bindless.bind(cb, gfx::BindPoint::Graphics);
+            for (u32 v = 0; v < views; ++v) {
+              timer.begin(cb, k_zone_names[k_zone_hw][v]);  // both draws are the view's hw time
+              set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
+              cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(gfx::ClusterDrawParams), &draws[v][run]);
+              if (vertex_indexed) {
+                // The run's triangles, indexed, then whatever its index budget had no room for
+                // through the capacity draw — an empty draw unless something overflowed.
+                const u64 header = scene.vertex_header_offset(v, run);
+                cb.bind_index_buffer(scene.vertex_indices.buffer,
+                                     scene.vertex_indices_offset(v, run), gfx::IndexType::Uint32);
+                cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
+                                         sizeof(gfx::DrawIndexedIndirectArgs));
+                cb.bind_pipeline(gfx::BindPoint::Graphics, fallback_pipeline);
+                cb.draw_indirect(scene.vertex_headers.buffer,
+                                 header + gfx::k_vertex_draw_fallback_offset, 1,
+                                 sizeof(gfx::DrawIndirectArgs));
+                if (v + 1 < views) {
+                  cb.bind_pipeline(gfx::BindPoint::Graphics, main_pipeline);
+                }
+              } else if (vertex_path) {
+                if (cull_on) {
+                  cb.draw_indirect(scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
+                                   sizeof(u32) * 4);
+                } else {
+                  cb.draw(triangles_per_cluster * 3, leaf_count, 0, 0);
+                }
+              } else if (cull_on) {
+                cb.draw_mesh_tasks_indirect(scene.draw_args[list].buffer,
+                                            view_frames[v].args_offset, 1, sizeof(u32) * 3);
               } else {
-                cb.draw(triangles_per_cluster * 3, leaf_count, 0, 0);
+                cb.draw_mesh_tasks(leaf_count, 1, 1);
               }
-            } else if (cull_on) {
-              cb.draw_mesh_tasks_indirect(scene.draw_args[list].buffer, view_frames[v].args_offset,
-                                          1, sizeof(u32) * 3);
-            } else {
-              cb.draw_mesh_tasks(leaf_count, 1, 1);
+              timer.end(cb);
             }
-            timer.end(cb);
           }
         });
   };
@@ -3334,33 +3456,43 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           read_tables(b, stage, false);
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow);
-          bindless.bind(cb, gfx::BindPoint::Graphics);
           timer.begin(cb, "shadow");
-          for (u32 c = 0; c < count; ++c) {
-            // Cascade c's tile of the atlas, flipped like every raster pass's viewport.
-            set_view_viewport(cb, c * shadow_map, 0, shadow_map, shadow_map);
-            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
-                              sizeof(gfx::ClusterDrawParams), &shadow_draws[c]);
-            if (vertex_indexed) {
-              const u64 header = scene.shadow_vertex_header_offset(c);
-              cb.bind_index_buffer(scene.vertex_indices.buffer,
-                                   scene.shadow_vertex_indices_offset(c), gfx::IndexType::Uint32);
-              cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
-                                       sizeof(gfx::DrawIndexedIndirectArgs));
-              cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow_fallback);
-              cb.draw_indirect(scene.vertex_headers.buffer,
-                               header + gfx::k_vertex_draw_fallback_offset, 1,
-                               sizeof(gfx::DrawIndirectArgs));
-              if (c + 1 < count) {
-                cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow);
+          // The opaque casters, then the alpha-tested ones through the masked depth-only variants,
+          // which write depth only where the mask keeps the pixel (renderer.md, "Alpha-tested
+          // geometry").
+          for (u32 variant = 0; variant < (masked_shadows ? 2u : 1u); ++variant) {
+            const bool masked = variant == 1;
+            const gfx::PipelineHandle main_pipeline =
+                masked ? pipelines.shadow_masked : pipelines.shadow;
+            const gfx::PipelineHandle fallback_pipeline =
+                masked ? pipelines.shadow_fallback_masked : pipelines.shadow_fallback;
+            cb.bind_pipeline(gfx::BindPoint::Graphics, main_pipeline);
+            bindless.bind(cb, gfx::BindPoint::Graphics);
+            for (u32 c = 0; c < count; ++c) {
+              // Cascade c's tile of the atlas, flipped like every raster pass's viewport.
+              set_view_viewport(cb, c * shadow_map, 0, shadow_map, shadow_map);
+              cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(gfx::ClusterDrawParams), &shadow_draws[c]);
+              if (vertex_indexed) {
+                const u64 header = scene.shadow_vertex_header_offset(c);
+                cb.bind_index_buffer(scene.vertex_indices.buffer,
+                                     scene.shadow_vertex_indices_offset(c), gfx::IndexType::Uint32);
+                cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
+                                         sizeof(gfx::DrawIndexedIndirectArgs));
+                cb.bind_pipeline(gfx::BindPoint::Graphics, fallback_pipeline);
+                cb.draw_indirect(scene.vertex_headers.buffer,
+                                 header + gfx::k_vertex_draw_fallback_offset, 1,
+                                 sizeof(gfx::DrawIndirectArgs));
+                if (c + 1 < count) {
+                  cb.bind_pipeline(gfx::BindPoint::Graphics, main_pipeline);
+                }
+              } else if (vertex_path) {
+                cb.draw_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
+                                 sizeof(u32) * 4);
+              } else {
+                cb.draw_mesh_tasks_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c),
+                                            1, sizeof(u32) * 3);
               }
-            } else if (vertex_path) {
-              cb.draw_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
-                               sizeof(u32) * 4);
-            } else {
-              cb.draw_mesh_tasks_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
-                                          sizeof(u32) * 3);
             }
           }
           timer.end(cb);

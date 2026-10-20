@@ -53,6 +53,10 @@ void scale_slot(geometry::ClusterFileMaterialSampling& record, u32 slot, f32 sca
   record.slots[slot].scale[1] = scale;
 }
 
+// glTF's MASK as the alpha word stores the mode (assets::k_alpha_mask), and its default cutoff.
+constexpr u8 k_alpha_mask_mode = 1;
+constexpr f32 k_card_cutoff = 0.5f;
+
 }  // namespace
 
 void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileData& data,
@@ -66,6 +70,14 @@ void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileDat
     // The image is the colour; the flat colour it replaces would tint it.
     m.base_color = Vec4{1.0f, 1.0f, 1.0f, m.base_color.w};
     scale_slot(sampling, geometry::k_slot_base_color, scale);
+    // **A card is a cutout** (renderer.md, "Alpha-tested geometry"): a leaf or a needle spray is
+    // the image whole on a parallelogram, and the image's alpha is the leaf's outline, so a card
+    // set is alpha-tested at glTF's default cutoff. An image without alpha passes everywhere and
+    // draws what an opaque card drew.
+    if (layout == UvLayout::card) {
+      m.alpha = geometry::encode_alpha_word(
+          k_alpha_mask_mode, geometry::alpha_word_double_sided(m.alpha), k_card_cutoff);
+    }
   }
   if (!set.roughness.empty()) {
     // Roughness alone in glTF's metallic-roughness slot: G is roughness, and the B a greyscale

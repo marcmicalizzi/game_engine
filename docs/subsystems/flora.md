@@ -932,7 +932,7 @@ threshold that knows a strip's width — not more tuning of the solver.
 - **The sets themselves** (G60's other half): the engine reads a recipe's block and a pack's
   roles ([materials](#materials)); the palm's three roles have the lab's candidates, and the oak's,
   the spruce's and the leaf cards' have nothing yet ([content/materials/README.md](../../content/materials/README.md)
-  says what the lab must make). A leaf card's set wants an alpha mask, which is R65's.
+  says what the lab must make). A leaf card's set is alpha-tested since R65 — a card set is a cutout at 0.5 ([materials](materials.md), [renderer](renderer.md#alpha-tested-geometry)), and `content/test-scenes/leaf-cards/` draws the oak's with a procedural leaf — so what the cards lack is the lab's image, not the mask.
 - **Wind and sway** (S66): the deform stage that reads the motion contract — plan 05 §5.15's rods,
   the wind field and the sway tiers, a slight trunk bend, fronds and branches pushed aside by a
   walker. The contract is emitted and stored; nothing reads it.

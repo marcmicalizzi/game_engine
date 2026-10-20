@@ -29,12 +29,13 @@
 // and 26-51% on the helmet grid, and it grows with the depth complexity a ray passes through,
 // where the second look's cost is bounded by one descent to one point.
 
+#include "alpha_mask.slang"
 #include "scene.slang"
 #include "view_ray.slang"
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Read through a device address; mirrors gfx::RayVisibilityParams (208 bytes).
+// Read through a device address; mirrors gfx::RayVisibilityParams (256 bytes).
 struct RayVisibilityParams {
   column_major float4x4 view_proj;
   column_major float4x4 clip_to_ray;  // clip to the world direction of the eye's ray (view_ray.slang)
@@ -49,7 +50,10 @@ struct RayVisibilityParams {
   uint64_t visible;    // uint2[]: {instance, cluster} per entry; 0 is {0, entry}
   uint64_t instances;  // InstanceDesc[]
   uint64_t meshes;     // MeshDesc[]
+  uint64_t triangles;  // uint[]: packed local indices, for a masked candidate's UV
+  uint64_t clusters;   // ClusterDesc[]
   uint64_t pad;
+  MaskTables masks;    // 0: no alpha-tested material (renderer.md, "Alpha-tested geometry")
 };
 
 struct RayPush {
@@ -74,6 +78,14 @@ uint hit_key(RayVisibilityParams* params, uint entry, uint primitive) {
   return (pair_of(instance, meshes[instance.mesh], pair.y) << 8) | (primitive & 0xff);
 }
 
+// The loop's rule for a non-opaque candidate of a drawn entry: its mask, if its pair has one.
+bool candidate_passes(RayVisibilityParams* params, uint entry, uint primitive, float2 barycentrics) {
+  const uint2 pair = visible_entry(params->visible, entry);
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  return candidate_keeps(params->masks, params->clusters, params->triangles, instances[pair.x],
+                         pair.y, primitive, barycentrics);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void trace_main(uint3 id : SV_DispatchThreadID) {
@@ -96,21 +108,55 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
   // caster**: a cluster the cull pass's cone test kept out of the picture but not out of the
   // shadows (clas_records.slang). Culling non-opaque geometry is what keeps it out of this ray,
   // so the traced picture stays the rasterized one word for word.
-  RayQuery<RAY_FLAG_CULL_NON_OPAQUE> query;
-  query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_CULL_NON_OPAQUE, 0xff, ray);
-  while (query.Proceed()) {
+  //
+  // **An alpha-tested cluster is non-opaque too** (renderer.md, "Alpha-tested geometry"), so a
+  // frame with one cannot cull non-opaque geometry: it traces with no flag and decides each
+  // non-opaque candidate in the loop — a caster's entry is left out, as the flag left it out, and a
+  // masked pair is committed where its mask keeps the hit (`candidate_keeps`). A frame without
+  // masks takes the culled query it always took.
+  const bool masked_frame = params->masks.materials != 0;
+  bool hit = false;
+  float t = 0.0;
+  uint key = 0;
+  if (!masked_frame) {
+    RayQuery<RAY_FLAG_CULL_NON_OPAQUE> query;
+    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_CULL_NON_OPAQUE, 0xff, ray);
+    while (query.Proceed()) {
+    }
+    if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+      hit = true;
+      t = query.CommittedRayT();
+      key = hit_key(params,
+                    hit_entry(params, query.CommittedGeometryIndex(), query.CommittedInstanceID()),
+                    query.CommittedPrimitiveIndex());
+    }
+  } else {
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {
+      if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+      const uint entry =
+          hit_entry(params, query.CandidateGeometryIndex(), query.CandidateInstanceID());
+      if (entry >= params->caster_base) continue;
+      if (candidate_passes(params, entry, query.CandidatePrimitiveIndex(),
+                           query.CandidateTriangleBarycentrics())) {
+        query.CommitNonOpaqueTriangleHit();
+      }
+    }
+    if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+      hit = true;
+      t = query.CommittedRayT();
+      key = hit_key(params,
+                    hit_entry(params, query.CommittedGeometryIndex(), query.CommittedInstanceID()),
+                    query.CommittedPrimitiveIndex());
+    }
   }
 
   uint64_t value = 0;
-  if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-    const float t = query.CommittedRayT();
+  if (hit) {
     const float3 p = origin + direction * t;
     const float4 clip = mul(params->view_proj, float4(p, 1.0));
     const float depth = clip.z / clip.w;  // what the rasterizer's SV_Position.z holds
-    uint key = hit_key(params,
-                       hit_entry(params, query.CommittedGeometryIndex(),
-                                 query.CommittedInstanceID()),
-                       query.CommittedPrimitiveIndex());
     // The second look, at exactly the committed distance (the interval is widened by an ulp's
     // worth each way so that an implementation whose bounds are exclusive still reports it, and
     // the candidates are then held to the distance exactly). Forcing every candidate non-opaque is
@@ -127,6 +173,11 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
       const uint entry = hit_entry(params, scan.CandidateGeometryIndex(),
                                    scan.CandidateInstanceID());
       if (entry >= params->caster_base) continue;
+      // A masked candidate the mask cuts away is not a surface at this distance.
+      if (masked_frame && !candidate_passes(params, entry, scan.CandidatePrimitiveIndex(),
+                                            scan.CandidateTriangleBarycentrics())) {
+        continue;
+      }
       key = max(key, hit_key(params, entry, scan.CandidatePrimitiveIndex()));
     }
     value = (uint64_t(asuint(depth)) << 32) | uint64_t(key);

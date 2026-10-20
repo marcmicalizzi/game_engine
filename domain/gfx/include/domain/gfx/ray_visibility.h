@@ -24,11 +24,18 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/view_ray.h>
 
 namespace engine::gfx {
 
-// Mirrors RayVisibilityParams in ray_visibility.slang. 208 bytes.
+// **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): with `masks.materials` set the
+// pass traces without culling non-opaque geometry and its loop decides each non-opaque candidate
+// itself — a shadow caster's entry (at or past `caster_base`) is left out as the cull flag left it
+// out, an alpha-tested pair is kept where its mask keeps the hit (`clusters` and `triangles` give
+// the hit's UV), and anything else non-opaque is kept. All zero: the pass is the one it always was.
+//
+// Mirrors RayVisibilityParams in ray_visibility.slang. 256 bytes.
 struct RayVisibilityParams {
   Mat4 view_proj;
   // Clip space to the world direction of the eye's ray, `clip_to_ray(projection, view)`: the
@@ -46,9 +53,12 @@ struct RayVisibilityParams {
   u64 visible = 0;    // u32x2[]: the visible list GeometryIndex (+ instance_base) is an entry of
   u64 instances = 0;  // InstanceDesc[] (cluster_cull.h)
   u64 meshes = 0;     // MeshDesc[] (cluster_cull.h)
+  u64 triangles = 0;  // u32[]: packed local indices, for a masked candidate's UV
+  u64 clusters = 0;   // geometry::ClusterDesc[]
   u64 pad = 0;        // keeps the block a whole number of float4 rows
+  MaskTables masks;   // 0: no alpha-tested material in the frame
 };
-static_assert(sizeof(RayVisibilityParams) == 208);
+static_assert(sizeof(RayVisibilityParams) == 256);
 
 inline constexpr u32 k_ray_visibility_workgroup = 8;  // numthreads(8, 8, 1)
 
