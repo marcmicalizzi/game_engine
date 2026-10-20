@@ -175,8 +175,9 @@ f32 flora_gust(f64 time_s, u32 seed) noexcept {
   const f32 a = unit_of(hash32(seed ^ 0x9e3779b9u)) * k_tau;
   const f32 b = unit_of(hash32(seed ^ 0x85ebca6bu)) * k_tau;
   const f64 t = time_s;
-  const f32 g = 0.6f * static_cast<f32>(std::sin(t * (k_tau * 0.13) + a)) +
-                0.4f * static_cast<f32>(std::sin(t * (k_tau * 0.31) + b));
+  const f64 tau = static_cast<f64>(k_tau);
+  const f32 g = 0.6f * static_cast<f32>(std::sin(t * (tau * 0.13) + static_cast<f64>(a))) +
+                0.4f * static_cast<f32>(std::sin(t * (tau * 0.31) + static_cast<f64>(b)));
   return clamp01(0.5f + 0.5f * g);
 }
 

@@ -1631,6 +1631,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
   // tunables'.
   Vec2 to{1.0f, 0.0f};
   f32 strength = 0.0f;
+  const char* source = "frame";
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
@@ -1642,11 +1643,21 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
     if (ground != nullptr && ground->transport(at, moved, ground_strength)) {
       to = ground->wind(at);
       strength = ground_strength;
+      source = "ground";
     } else {
       const FloraWindDefault fallback = flora_wind_default();
       to = fallback.to;
       strength = fallback.strength;
+      source = "tunables";
     }
+  }
+  // Said once, on a tree's first frame and whenever the source changes, so "why do the palms not
+  // move" has an answer in the log.
+  if (source != flora_wind_source_) {
+    flora_wind_source_ = source;
+    ENGINE_LOG_INFO(log_renderer, "the trees' wind", log::field("source", source),
+                    log::field("strength", strength), log::field("to_x", to.x),
+                    log::field("to_z", to.y));
   }
   const f32 to_length = length(to);
   to = to_length > 0.0f ? to * (1.0f / to_length) : Vec2{1.0f, 0.0f};
@@ -1671,9 +1682,10 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
     if (frame.walker) {
       // The walker's feet from the instance's own place, in f64 to the cell and float after: the
       // mesh frame's, never a world position in a float.
-      const WorldPos origin{static_cast<f64>(placed.cell.x) * k_world_cell_m + placed.rows[0].w,
-                            static_cast<f64>(placed.cell.y) * k_world_cell_m + placed.rows[1].w,
-                            static_cast<f64>(placed.cell.z) * k_world_cell_m + placed.rows[2].w};
+      const WorldPos origin{
+          static_cast<f64>(placed.cell.x) * k_world_cell_m + static_cast<f64>(placed.rows[0].w),
+          static_cast<f64>(placed.cell.y) * k_world_cell_m + static_cast<f64>(placed.rows[1].w),
+          static_cast<f64>(placed.cell.z) * k_world_cell_m + static_cast<f64>(placed.rows[2].w)};
       const Vec3 feet = to_mesh(relative(frame.walker_feet, origin));
       push.radius = frame.walker_radius * fi.inverse_scale;
       push.height = frame.walker_height * fi.inverse_scale;
@@ -3551,6 +3563,7 @@ void GpuScene::destroy() noexcept {
   flora_ground_.reset();
   flora_stats_ = FloraStats{};
   flora_moving_ = false;
+  flora_wind_source_ = nullptr;
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);

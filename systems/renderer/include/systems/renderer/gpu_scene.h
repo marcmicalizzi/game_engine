@@ -1060,7 +1060,8 @@ class GpuScene {
   gfx::BufferResource flora_poses_;   // k_joint_slots regions of gfx::FloraPartPose[flora_parts_]
   std::unique_ptr<TerrainSampler> flora_ground_;
   FloraStats flora_stats_;
-  bool flora_moving_ = false;  // any part of any tree off its rest pose this frame
+  bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
+  const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
   f64 ground_time_s_ = 0.0;
   f64 ground_previous_s_ = 0.0;
 
