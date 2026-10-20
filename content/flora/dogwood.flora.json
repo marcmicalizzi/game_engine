@@ -1,0 +1,19 @@
+{
+  "species": "shrub",
+  "shrub": {
+    "seed": 5,
+    "height_m": 2.2,
+    "stems": 24,
+    "stem_radius_m": 0.009,
+    "stool_radius_m": 0.35,
+    "stem_spread_deg": 35.0,
+    "branches": 4,
+    "twig_radius_m": 0.0018,
+    "twig_length_m": 0.18,
+    "leaf_length_m": 0.08,
+    "leaf_width": 0.55,
+    "leaf_area_index": 2.5,
+    "triangle_budget": 20000,
+    "detail_tier": "standard"
+  }
+}

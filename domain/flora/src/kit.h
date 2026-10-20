@@ -402,4 +402,29 @@ void crown_table(const Crown& crown, Vector<CrownShoot>& out);
 // The one-sided area of the triangles from `first_index` on.
 f64 triangles_area(const assets::MeshData& mesh, u32 first_index);
 
+// ---- the understory (G75; flora.md "The understory") -------------------------------------------
+//
+// Added after everything above and changing none of it, so every tree's bytes stay pinned.
+
+// `build_spray` with a card length per station: `lengths` holds `cards + 1` lengths, station k's
+// cards that long — a fern's pinnae, longest below the middle and shortening to the tip, and a
+// stipe of cards a few millimetres long that is the bare stalk drawn as a ribbon of the same
+// surface. Every other rule is `build_spray`'s: one connected surface, the full card per image.
+void build_spray_profile(const Axis& axis, f64 from, u32 cards, const Vector<f64>& lengths,
+                         f64 angle, f64 lift, f64 droop, D3 side, Emitter& out);
+
+// A blade: a strip along the axis's rows, `width` across at the base, its edges straight to 0.65
+// of its length and closing to a point at the tip (so the rows between collapse first), its plane
+// across `side`. UVs the full card: u across in [0, 1] at the base's width, v along in [0, 1].
+// Weights are each row's arc over the length. `segments` quads, the last a triangle.
+inline u32 blade_triangles(u32 segments) { return 2 * segments - 1; }
+void build_blade(const Axis& axis, f64 width, D3 side, Emitter& out);
+
+// A leaf card: a diamond from `base` out along `direction` for `length`, widest (`width`) at 0.35
+// of it, its tip sunk by `droop` of the length, its plane across `side`. Two triangles, the UVs
+// the full card. Every vertex's weight is the caller's.
+inline constexpr u32 k_leaf_card_triangles = 2;
+void build_leaf_card(D3 base, D3 direction, D3 side, f64 length, f64 width, f64 droop,
+                     Emitter& out);
+
 }  // namespace engine::flora::detail

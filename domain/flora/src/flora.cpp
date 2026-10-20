@@ -6,6 +6,7 @@
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
 #include <domain/flora/trees.h>
+#include <domain/flora/understory.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
@@ -56,11 +57,21 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = orchard_in_range(out.orchard, error);
   } else if (out.species == k_species_ancient) {
     in_range = ancient_in_range(out.ancient, error);
+  } else if (out.species == k_species_shrub) {
+    in_range = shrub_in_range(out.shrub, error);
+  } else if (out.species == k_species_fern) {
+    in_range = fern_in_range(out.fern, error);
+  } else if (out.species == k_species_tuft) {
+    in_range = tuft_in_range(out.tuft, error);
+  } else if (out.species == k_species_herb) {
+    in_range = herb_in_range(out.herb, error);
   } else {
     error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
             k_species_date_palm + "\", \"" + k_species_broadleaf + "\", \"" + k_species_conifer +
             "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" +
-            k_species_orchard + "\" and \"" + k_species_ancient + "\")";
+            k_species_orchard + "\", \"" + k_species_ancient + "\", \"" + k_species_shrub +
+            "\", \"" + k_species_fern + "\", \"" + k_species_tuft + "\" and \"" + k_species_herb +
+            "\")";
     return false;
   }
   return in_range && materials_in_range(out, error);
@@ -82,7 +93,8 @@ materials::MaterialSet set_of(const MaterialSet& s) {
 }
 
 // Which of the recipe's sets a part takes.
-enum class Block : u8 { bark, leaf, skirt };
+// `none`: a part no recipe block names (a herb's flowers: the pack's role or the flat colour).
+enum class Block : u8 { bark, leaf, skirt, none };
 
 // One material of a species, in its material order: the part's word in its role, how its UVs are
 // laid out, and the recipe's set it reads (flora.md, "Materials").
@@ -101,16 +113,28 @@ constexpr PartRole k_conifer_parts[] = {{"bark", materials::UvLayout::metres, Bl
 constexpr PartRole k_tree_parts[] = {{"bark", materials::UvLayout::metres, Block::bark},
                                      {"leaf", materials::UvLayout::card, Block::leaf}};
 
+// The understory's (flora.md, "The understory"): a fern's fronds, a tuft's blades, a herb's leaves
+// and flowers, every one a card that takes its image whole.
+constexpr PartRole k_fern_parts[] = {{"frond", materials::UvLayout::card, Block::leaf}};
+constexpr PartRole k_tuft_parts[] = {{"blade", materials::UvLayout::card, Block::leaf}};
+constexpr PartRole k_herb_parts[] = {{"leaf", materials::UvLayout::card, Block::leaf},
+                                     {"flower", materials::UvLayout::card, Block::none}};
+
 std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_date_palm) return k_palm_parts;
   if (species == k_species_conifer) return k_conifer_parts;
+  if (species == k_species_fern) return k_fern_parts;
+  if (species == k_species_tuft) return k_tuft_parts;
+  if (species == k_species_herb) return k_herb_parts;
   return k_tree_parts;
 }
 
 const std::optional<MaterialSet>& block_set(const FloraMaterials& block, Block which) {
+  static const std::optional<MaterialSet> k_nothing;
   switch (which) {
     case Block::leaf: return block.leaf;
     case Block::skirt: return block.skirt;
+    case Block::none: return k_nothing;
     case Block::bark: break;
   }
   return block.bark;
@@ -134,7 +158,11 @@ bool materials_in_range(const FloraFile& file, std::string& error) {
 std::string flora_role(const std::string& species, u32 material) {
   const std::span<const PartRole> parts = parts_of(species);
   if (material >= parts.size()) return std::string();
-  const std::string prefix = species == k_species_date_palm ? std::string("palm") : species;
+  // A palm's roles are "palm/..." and a tuft's "grass/...": the material lab's words, not the
+  // solver's.
+  const std::string prefix = species == k_species_date_palm ? std::string("palm")
+                             : species == k_species_tuft    ? std::string("grass")
+                                                            : species;
   return prefix + "/" + parts[material].part;
 }
 
@@ -166,6 +194,10 @@ const char* species_member(const std::string& species) {
   if (species == k_species_willow) return "willow";
   if (species == k_species_orchard) return "orchard";
   if (species == k_species_ancient) return "ancient";
+  if (species == k_species_shrub) return "shrub";
+  if (species == k_species_fern) return "fern";
+  if (species == k_species_tuft) return "tuft";
+  if (species == k_species_herb) return "herb";
   return "palm";
 }
 }  // namespace
@@ -214,6 +246,14 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_orchard(file.orchard, mesh, tree_report, &error, &motion);
   if (file.species == k_species_ancient)
     return solve_ancient_chain(file.ancient, mesh, tree_report, &error, &motion, levels);
+  if (file.species == k_species_shrub)
+    return solve_shrub(file.shrub, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_fern)
+    return solve_fern(file.fern, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_tuft)
+    return solve_tuft(file.tuft, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_herb)
+    return solve_herb(file.herb, mesh, tree_report, &error, &motion);
   return solve_palm(file.palm, mesh, palm_report, &error, &motion);
 }
 
@@ -286,6 +326,23 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
 }
 
 }  // namespace
+
+DetailTier flora_detail_tier(const FloraFile& file) {
+  // The trees carry no field (it would move every tree's canonical parameters, and with them its
+  // pinned source hash and cache key, for a value that cannot differ): a tree collides by its
+  // trunk, so it is essential. The understory's species say theirs.
+  if (file.species == k_species_shrub) return file.shrub.detail_tier;
+  if (file.species == k_species_fern) return file.fern.detail_tier;
+  if (file.species == k_species_tuft) return file.tuft.detail_tier;
+  if (file.species == k_species_herb) return file.herb.detail_tier;
+  return DetailTier::essential;
+}
+
+bool flora_collides(const FloraFile& file) {
+  if (file.species == k_species_shrub) return shrub_collides(file.shrub);
+  return !(file.species == k_species_fern || file.species == k_species_tuft ||
+           file.species == k_species_herb);
+}
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,

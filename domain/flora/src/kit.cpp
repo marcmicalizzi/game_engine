@@ -730,6 +730,98 @@ f64 triangles_area(const assets::MeshData& mesh, u32 first_index) {
   return area;
 }
 
+// ---- the understory (kit.h) ---------------------------------------------------------------------
+
+void build_spray_profile(const Axis& axis, f64 from, u32 cards, const Vector<f64>& lengths,
+                         f64 angle, f64 lift, f64 droop, D3 side, Emitter& out) {
+  const f64 span = axis.length - from;
+  Vector<D3> centre(cards + 1);
+  Vector<D3> tangent(cards + 1);
+  Vector<D3> lateral(cards + 1);
+  Vector<D3> upper(cards + 1);
+  Vector<u32> mid(cards + 1);
+  Vector<u32> tips[2] = {Vector<u32>(cards + 1), Vector<u32>(cards + 1)};
+  const f64 ca = det::cos(angle);
+  const f64 sa = det::sin(angle);
+  const f64 cl = det::cos(lift);
+  const f64 sl = det::sin(lift);
+  for (u32 k = 0; k <= cards; ++k) {
+    const f64 s = from + span * static_cast<f64>(k) / static_cast<f64>(cards);
+    centre[k] = axis_point(axis, s);
+    tangent[k] = axis_tangent(axis, s);
+    lateral[k] = perpendicular(tangent[k], side);
+    upper[k] = normalized(cross(lateral[k], tangent[k]));
+    out.weight = s / axis.length;
+    mid[k] = out.vertex(centre[k], upper[k], static_cast<f64>(k), 0.0);
+  }
+  for (u32 k = 0; k <= cards; ++k) {
+    const f64 s = from + span * static_cast<f64>(k) / static_cast<f64>(cards);
+    out.weight = s / axis.length;
+    const f64 length = lengths[k];
+    for (u32 j = 0; j < 2; ++j) {
+      const f64 sigma = j == 0 ? 1.0 : -1.0;
+      const D3 out_dir = lateral[k] * (sigma * cl) + upper[k] * sl;
+      const D3 d = normalized(tangent[k] * ca + out_dir * sa);
+      const D3 tip = centre[k] + d * length - k_up * (droop * length);
+      tips[j][k] = out.vertex(tip, upper[k], static_cast<f64>(k), sigma);
+    }
+  }
+  for (u32 k = 0; k < cards; ++k) {
+    for (u32 j = 0; j < 2; ++j) {
+      out.face(mid[k], mid[k + 1], tips[j][k + 1], upper[k]);
+      out.face(mid[k], tips[j][k + 1], tips[j][k], upper[k]);
+    }
+  }
+}
+
+void build_blade(const Axis& axis, f64 width, D3 side, Emitter& out) {
+  const u32 rows = axis.point.size();
+  Vector<u32> left(rows);
+  Vector<u32> right(rows);
+  Vector<D3> facing(rows);
+  for (u32 r = 0; r < rows; ++r) {
+    const f64 s = axis.arc[r] / axis.length;
+    out.weight = s;
+    const D3 t = axis.tangent[r];
+    const D3 lateral = perpendicular(t, side);
+    facing[r] = normalized(cross(lateral, t));
+    if (r + 1 == rows) {
+      left[r] = right[r] = out.vertex(axis.point[r], facing[r], 0.5, 1.0);
+      break;
+    }
+    // Straight edges to 0.65 of the length, then closing to the point: the rows between are
+    // collinear, so the simplifier takes them first without losing the blade's area.
+    const f64 w = width * (s < 0.65 ? 1.0 - 0.3 * s : (1.0 - s) * (0.805 / 0.35));
+    const f64 half = 0.5 * w / width;
+    left[r] = out.vertex(axis.point[r] - lateral * (0.5 * w), facing[r], 0.5 - half, s);
+    right[r] = out.vertex(axis.point[r] + lateral * (0.5 * w), facing[r], 0.5 + half, s);
+  }
+  for (u32 r = 0; r + 1 < rows; ++r) {
+    if (r + 2 == rows) {
+      out.face(left[r], right[r], left[r + 1], facing[r]);
+      break;
+    }
+    out.face(left[r], right[r], right[r + 1], facing[r]);
+    out.face(left[r], right[r + 1], left[r + 1], facing[r]);
+  }
+}
+
+void build_leaf_card(D3 base, D3 direction, D3 side, f64 length, f64 width, f64 droop,
+                     Emitter& out) {
+  const D3 d = normalized(direction);
+  const D3 lateral = perpendicular(d, side);
+  D3 facing = normalized(cross(lateral, d));
+  if (facing.y < 0.0) facing = facing * -1.0;
+  const D3 widest = base + d * (0.35 * length) - k_up * (0.2 * droop * length);
+  const D3 tip = base + d * length - k_up * (droop * length);
+  const u32 b = out.vertex(base, facing, 0.5, 0.0);
+  const u32 l = out.vertex(widest - lateral * (0.5 * width), facing, 0.0, 0.35);
+  const u32 r = out.vertex(widest + lateral * (0.5 * width), facing, 1.0, 0.35);
+  const u32 t = out.vertex(tip, facing, 0.5, 1.0);
+  out.face(b, r, t, facing);
+  out.face(b, t, l, facing);
+}
+
 void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index) {
   Vector<Vec3> normals;
   const std::span<const u32> range(mesh.indices.data() + first_index,

@@ -1,0 +1,10 @@
+{
+  "species": "shrub",
+  "shrub": {
+    "seed": 3,
+    "height_m": 4.0,
+    "stems": 16,
+    "triangle_budget": 30000,
+    "detail_tier": "essential"
+  }
+}

@@ -431,13 +431,201 @@ struct FloraMaterials @version(1) {
   wood: MaterialSet?
 }
 
+// ---- the understory (G75; flora.md "The understory", docs/experiments/understory.md) ----------
+//
+// The shrub, herb and ground layers under a forest's canopy. Each species carries the detail tier
+// a graphics preset may drop its kind at, and the rule that what a preset may drop never collides:
+// a shrub whose stems stop a walker is never `rich` (the reader refuses it by name).
+
+/// Which graphics presets keep a kind of plant (flora.md, "Detail tiers"): `essential` on every
+/// preset, `standard` on all but the lowest, `rich` only on the highest. A kind whose instances
+/// carry a collision body is never `rich`, so dropping one never changes what a walker meets.
+enum DetailTier : u8 {
+  /// Kept on every preset: trees, and shrubs whose stems collide.
+  essential
+  /// Dropped only by the lowest presets: shrubs a walker passes through.
+  standard
+  /// Kept only by the highest presets: ferns, grass tufts and herbs, which never collide.
+  rich
+}
+
+/// A shrub (flora.md, "The shrub"): a multi-stemmed woody plant branching at the ground — hazel,
+/// elder, dogwood, hawthorn — whose basal stems rise from a stool and each grow the allometric
+/// recursion (G73) to a terminal twig of the species' size, with leaves at the species' size and
+/// their count from the leaf area index. Defaults make a 4 m coppiced hazel of 16 stems.
+struct Shrub @version(1) {
+  /// Everything left to chance: each stem's azimuth, lean and size, every shoot's turn and wander.
+  seed: u64 = 1
+  /// The tallest stem's top above the ground: 0.5 to 6 m.
+  height_m: f32 = 4.0 @unit(m)
+  /// Basal stems from the stool: 1 to 40.
+  stems: u32 = 16
+  /// The stoutest stem's radius at the ground: 0.003 to 0.08 m (the others down to 0.55 of it), or
+  /// 0 for the allometric radius of the height, 0.022 m at 4 m as H ~ r^(2/3). Every stem whose
+  /// radius is at least 0.0125 m stops a walker (flora.md, "The shrub").
+  stem_radius_m: f32 = 0.0 @unit(m)
+  /// The stool's radius, over which the stems' feet stand: 0.02 to 1.5 m.
+  stool_radius_m: f32 = 0.25 @unit(m)
+  /// How far from vertical the outermost stems leave the stool: 0 to 70 degrees (the inner ones
+  /// more upright).
+  stem_spread_deg: f32 = 28.0 @unit(deg)
+  /// How far each stem turns towards the light along its length, as a share of 40 degrees: -1
+  /// (arching canes that bow back to the ground, a bramble's) to 1.
+  upturn: f32 = 0.4
+  /// How far a shoot wanders from straight at every step: 0 to 25 degrees.
+  wander_deg: f32 = 6.0 @unit(deg)
+  /// Laterals on every stem, along its upper part: 1 to 12.
+  branches: u32 = 6
+  /// A stem's first lateral's length over the stem's: 0.1 to 0.8.
+  branch_length: f32 = 0.35
+  /// A lateral's angle from its parent: 15 to 85 degrees.
+  branch_angle_deg: f32 = 40.0 @unit(deg)
+  /// The terminal twig's radius, a species constant: 0.0008 to 0.008 m.
+  twig_radius_m: f32 = 0.0016 @unit(m)
+  /// The terminal twig's length — a season's shoot, a species constant: 0.05 to 1 m.
+  twig_length_m: f32 = 0.45 @unit(m)
+  /// The pipe model's exponent: 1.8 to 3.
+  area_exponent: f32 = 2.0
+  /// Children a shoot of the recursion bears, its leader included: 2 to 6.
+  branching_ratio: u32 = 4
+  /// A child's length over its parent's: 0.4 to 0.9.
+  length_ratio: f32 = 0.63
+  /// The leader's share of a node's cross-section: 0.1 to 0.7.
+  leader_share: f32 = 0.35
+  /// One-sided leaf area over the shrub's footprint: 0.5 to 8 (a shrub layer's 1 to 4).
+  leaf_area_index: f32 = 2.5
+  /// The most leaf cards along each side of a twig: 1 to 30.
+  leaves: u32 = 10
+  /// A leaf card's length — one leaf, a species constant: 0.02 to 0.3 m.
+  leaf_length_m: f32 = 0.1 @unit(m)
+  /// A leaf card's width over its length: 0.1 to 1.
+  leaf_width: f32 = 0.8
+  /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
+  leaf_angle_deg: f32 = 55.0 @unit(deg)
+  /// The most triangles the mesh may have: 4,000 to 400,000.
+  triangle_budget: u32 = 30000
+  /// The kind's detail tier: `essential` for a shrub whose stems collide (the default hazel's do),
+  /// `standard` for one a walker passes through; never `rich` when a stem collides.
+  detail_tier: DetailTier = essential
+}
+
+/// A fern (flora.md, "The fern"): a crown of pinnate fronds from a rhizome — male fern, lady fern,
+/// a bracken frond — each frond a stipe and a rachis carrying pinnae as cards, the longest a little
+/// below the middle and shortening to the tip. Defaults make a 0.9 m male fern of 14 fronds.
+struct Fern @version(1) {
+  /// Everything left to chance: each frond's turn, spread, length and droop.
+  seed: u64 = 1
+  /// Fronds in the crown: 1 to 40.
+  fronds: u32 = 14
+  /// A frond's length, stipe and blade: 0.15 to 2.5 m (the youngest down to 0.75 of it).
+  frond_length_m: f32 = 0.9 @unit(m)
+  /// The bare stipe's share of the frond: 0.05 to 0.5.
+  stipe: f32 = 0.22
+  /// Pinnae along each side of the blade: 3 to 40.
+  pinnae: u32 = 24
+  /// The longest pinna's length over the frond's: 0.05 to 0.4.
+  pinna_length: f32 = 0.15
+  /// A pinna's angle from the rachis, towards the tip: 30 to 90 degrees.
+  pinna_angle_deg: f32 = 70.0 @unit(deg)
+  /// The crown's cone: the outermost frond leaves the crown this far from vertical, 5 to 85
+  /// degrees (the youngest stand nearly upright: a shuttlecock).
+  spread_deg: f32 = 50.0 @unit(deg)
+  /// How far a frond arches over along its length: 0 straight, 1 its tip turned 90 degrees down.
+  droop: f32 = 0.45
+  /// The rhizome crown's radius, the ring the fronds rise from: 0.005 to 0.3 m.
+  crown_radius_m: f32 = 0.04 @unit(m)
+  /// The most triangles the mesh may have: 500 to 100,000.
+  triangle_budget: u32 = 4000
+  /// The kind's detail tier: a fern never collides, so any; `rich` by default.
+  detail_tier: DetailTier = rich
+}
+
+/// A grass tuft (flora.md, "The grass tuft"): a bunch of blades from one base — tufted hair-grass,
+/// a fescue's tussock — each blade a tapering strip along a curved axis, a part of its own.
+/// Defaults make a 0.45 m tuft of 120 blades.
+struct Tuft @version(1) {
+  /// Everything left to chance: each blade's turn, spread, length and arch.
+  seed: u64 = 1
+  /// Blades in the tuft: 4 to 400.
+  blades: u32 = 120
+  /// The longest blade's length: 0.05 to 1.2 m (the others down to 0.6 of it).
+  blade_length_m: f32 = 0.45 @unit(m)
+  /// A blade's width at its base, tapering to its tip: 0.002 to 0.03 m.
+  blade_width_m: f32 = 0.004 @unit(m)
+  /// The outermost blade's angle from vertical where it leaves the base: 0 to 80 degrees (the
+  /// inner ones more upright).
+  spread_deg: f32 = 35.0 @unit(deg)
+  /// How far a blade arches over along its length: 0 straight, 1 its tip turned 90 degrees down.
+  droop: f32 = 0.5
+  /// The base's radius, the ring the blades rise from: 0.002 to 0.3 m.
+  base_radius_m: f32 = 0.04 @unit(m)
+  /// Rows along a blade: 2 to 8 (the ladder's to lower).
+  segments: u32 = 5
+  /// Each blade as two crossed strips instead of one: reads from every side at a distance.
+  crossed: bool = false
+  /// The most triangles the mesh may have: 1,500 to 50,000.
+  triangle_budget: u32 = 4000
+  /// The kind's detail tier: a tuft never collides, so any; `rich` by default.
+  detail_tier: DetailTier = rich
+}
+
+/// A herb (flora.md, "The herb"): a stem with leaves and flowers — a meadow flower's single head,
+/// a foxglove's spike of bells, a nettle's leafy stem with none. Defaults make a 0.6 m ox-eye
+/// daisy-like herb with one white head.
+struct Herb @version(1) {
+  /// Everything left to chance: the stem's lean and wander, each leaf's turn and size.
+  seed: u64 = 1
+  /// The stem's top above the ground: 0.1 to 2 m.
+  height_m: f32 = 0.6 @unit(m)
+  /// The stem's radius at the ground: 0.001 to 0.015 m.
+  stem_radius_m: f32 = 0.0025 @unit(m)
+  /// How far from vertical the stem leaves the ground: 0 to 30 degrees.
+  lean_deg: f32 = 6.0 @unit(deg)
+  /// How far the stem wanders from straight at every step: 0 to 20 degrees.
+  wander_deg: f32 = 4.0 @unit(deg)
+  /// Leaves up the stem: 0 to 40.
+  leaves: u32 = 8
+  /// Leaves in opposite pairs, each pair turned a right angle from the last (a nettle's), rather
+  /// than one at a time on the golden angle.
+  opposite: bool = false
+  /// The highest leaf's place up the stem, as a share of its height: 0.1 to 0.95.
+  leaf_top: f32 = 0.6
+  /// The lowest leaf's length: 0.01 to 0.3 m (the upper ones down to half of it).
+  leaf_length_m: f32 = 0.07 @unit(m)
+  /// A leaf's width over its length: 0.1 to 1.
+  leaf_width: f32 = 0.35
+  /// A leaf's angle from the stem, towards its top: 20 to 100 degrees.
+  leaf_angle_deg: f32 = 55.0 @unit(deg)
+  /// Flowers: 0 for none, 1 a single head at the top, more a spike along the top `spike` share.
+  /// 0 to 40.
+  flowers: u32 = 1
+  /// The share of the stem's top a spike of flowers occupies: 0 to 0.8.
+  spike: f32 = 0.0
+  /// Petal cards round each flower: 3 to 40.
+  petals: u32 = 16
+  /// A petal's length: 0.004 to 0.08 m.
+  petal_length_m: f32 = 0.02 @unit(m)
+  /// A petal's width over its length: 0.1 to 1.
+  petal_width: f32 = 0.3
+  /// A petal's angle from the flower's axis: 10 to 100 degrees (90 a flat head, 25 a bell).
+  petal_angle_deg: f32 = 82.0 @unit(deg)
+  /// The flower's colour, linear red, green and blue, each 0 to 1.
+  flower_red: f32 = 0.85
+  flower_green: f32 = 0.85
+  flower_blue: f32 = 0.78
+  /// The most triangles the mesh may have: 1,000 to 50,000.
+  triangle_budget: u32 = 2500
+  /// The kind's detail tier: a herb never collides, so any; `rich` by default.
+  detail_tier: DetailTier = rich
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by these values (canonicalized: the species' own parameters and the materials,
 /// nothing of the species not chosen), the species and the solver's version.
-struct FloraFile @version(3) {
-  /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard" or "ancient";
-  /// the solver reads the parameters of the same name.
+struct FloraFile @version(4) {
+  /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
+  /// "shrub", "fern", "tuft" or "herb"; the solver reads the parameters of the same name.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
@@ -448,4 +636,8 @@ struct FloraFile @version(3) {
   willow: Willow @since(3)
   orchard: Orchard @since(3)
   ancient: Ancient @since(3)
+  shrub: Shrub @since(4)
+  fern: Fern @since(4)
+  tuft: Tuft @since(4)
+  herb: Herb @since(4)
 }

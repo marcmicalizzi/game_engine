@@ -32,6 +32,9 @@ namespace engine::flora {
 using StructuralPart = geometry::ClusterFileStructuralPart;
 inline constexpr u32 k_load_bearing = geometry::k_structural_load_bearing;
 inline constexpr u32 k_straight = geometry::k_structural_straight;
+// A part that stops a walker though no structure may hang from it: a shrub's stem at least
+// `k_shrub_collider_radius_m` thick at the ground (understory.h).
+inline constexpr u32 k_collider = geometry::k_structural_collider;
 
 // The point at arc `s` along a part's axis by the rule above.
 inline Vec3 structural_point(const MotionPart& part, f32 s) noexcept {

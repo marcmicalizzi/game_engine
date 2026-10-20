@@ -223,7 +223,7 @@ level), each baked from its own side; both as authored levels of the cluster DAG
 errors ([geometry](../subsystems/geometry.md#authored-levels)), baked colour with coverage and a
 tangent-space normal the resolve lights with the frame's sun and sky (the lighting mismatch's
 answer). Not built: the octahedral frames blended by view, because R65's mask is a function of the
-UV alone on every path and a view-chosen frame's coverage is not (roadmap R90), and the dithered
+UV alone on every path and a view-chosen frame's coverage is not (roadmap R92), and the dithered
 cross-fade (R91).
 
 **Where it switches** (`engine-content info`, 1080p, a 60° field, a 1-pixel threshold: *d* = *e* ×

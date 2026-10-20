@@ -162,6 +162,14 @@ TEST_CASE("flora motion: a load-bearing limb moves less than the twig and the le
       std::span<const ClusterFileStructuralPart>(structure.data(), structure.size()), 2));
   CHECK(flora_part_collides({}, 0));  // with no table, the trunk alone
   CHECK_FALSE(flora_part_collides({}, 1));
+  // A shrub's stout stem is a collider though nothing hangs from it, and is never pushed
+  // (flora.md, "The shrub").
+  Vector<ClusterFileStructuralPart> stout = structure;
+  stout[2].flags = geometry::k_structural_collider;
+  CHECK(flora_part_collides(std::span<const ClusterFileStructuralPart>(stout.data(), stout.size()),
+                            2));
+  CHECK(mesh_of(parts, stout, "shrub").pushable[2] == 0);
+  CHECK(flora_stiffness("tuft").leaf > flora_stiffness("willow").leaf);
   Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
   Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
   f32 angle[4] = {};

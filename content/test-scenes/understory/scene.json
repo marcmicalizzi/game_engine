@@ -1,0 +1,721 @@
+{
+  "format": "engine.scene.v1",
+  "name": "understory",
+  "camera_path": "camera-path.json",
+  "description": "A grove's floor: five trees and two saplings from the existing recipes round an octagonal clearing 14 m across, and under them the understory of roadmap G75 - hazel and dogwood shrubs in the gaps, male fern, bracken and nettle in the shade, hair-grass, fescue and daisies in the clearing's light, all placed by three scatter layers, with foxgloves at the clearing's edge and brambles by the path placed by hand; a camera path walks through it at eye height. Every plant is solved from its recipe and built through the derived-data cache (README.md).",
+  "meshes": [
+    {
+      "name": "oak",
+      "path": "../../flora/oak.flora.json"
+    },
+    {
+      "name": "birch",
+      "path": "../../flora/birch.flora.json"
+    },
+    {
+      "name": "spruce-young",
+      "path": "../../flora/spruce-young.flora.json"
+    },
+    {
+      "name": "oak-sapling",
+      "path": "../../flora/oak-sapling.flora.json"
+    },
+    {
+      "name": "foxglove",
+      "path": "../../flora/foxglove.flora.json"
+    },
+    {
+      "name": "bramble",
+      "path": "../../flora/bramble.flora.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "tree 1: oak",
+      "translation": [
+        -11.0,
+        0.0,
+        -9.0
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 0,
+      "name": "tree 2: oak",
+      "translation": [
+        12.0,
+        0.0,
+        -10.0
+      ],
+      "ground": true,
+      "yaw_deg": 140,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 0,
+      "name": "tree 3: oak",
+      "translation": [
+        -12.0,
+        0.0,
+        11.0
+      ],
+      "ground": true,
+      "yaw_deg": 260,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 4: birch",
+      "translation": [
+        11.0,
+        0.0,
+        10.0
+      ],
+      "ground": true,
+      "yaw_deg": 30
+    },
+    {
+      "mesh": 2,
+      "name": "tree 5: young spruce",
+      "translation": [
+        1.0,
+        0.0,
+        -15.0
+      ],
+      "ground": true,
+      "yaw_deg": 200
+    },
+    {
+      "mesh": 3,
+      "name": "sapling 1: oak",
+      "translation": [
+        8.5,
+        0.0,
+        1.5
+      ],
+      "ground": true,
+      "yaw_deg": 75
+    },
+    {
+      "mesh": 3,
+      "name": "sapling 2: oak",
+      "translation": [
+        -3.0,
+        0.0,
+        13.0
+      ],
+      "ground": true,
+      "yaw_deg": 310,
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "foxglove 1",
+      "translation": [
+        -6.2,
+        0.0,
+        2.4
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 4,
+      "name": "foxglove 2",
+      "translation": [
+        -6.6,
+        0.0,
+        1.6
+      ],
+      "ground": true,
+      "yaw_deg": 120
+    },
+    {
+      "mesh": 4,
+      "name": "foxglove 3",
+      "translation": [
+        5.8,
+        0.0,
+        -4.4
+      ],
+      "ground": true,
+      "yaw_deg": 240
+    },
+    {
+      "mesh": 5,
+      "name": "bramble by the path 1",
+      "translation": [
+        -15.0,
+        0.0,
+        1.5
+      ],
+      "ground": true,
+      "yaw_deg": 0
+    },
+    {
+      "mesh": 5,
+      "name": "bramble by the path 2",
+      "translation": [
+        15.5,
+        0.0,
+        -1.0
+      ],
+      "ground": true,
+      "yaw_deg": 90
+    }
+  ],
+  "placements": [
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "understory-shrubs",
+        "seed": 21,
+        "tile_size": 32,
+        "region": {
+          "kind": "Polygon",
+          "polygon": [
+            [
+              -19,
+              -19
+            ],
+            [
+              19,
+              -19
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              -19,
+              19
+            ],
+            [
+              -19,
+              0
+            ],
+            [
+              -7,
+              0
+            ],
+            [
+              -5,
+              -5
+            ],
+            [
+              0,
+              -7
+            ],
+            [
+              5,
+              -5
+            ],
+            [
+              7,
+              0
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              0,
+              7
+            ],
+            [
+              -5,
+              5
+            ],
+            [
+              -7,
+              0
+            ],
+            [
+              -19,
+              0
+            ]
+          ]
+        },
+        "density": {
+          "kind": "Constant",
+          "per_m2": 0.022
+        },
+        "kinds": [
+          {
+            "name": "hazel",
+            "mesh": "../../flora/hazel.flora.json",
+            "weight": 1.0,
+            "spacing": 3.5,
+            "slope_max_deg": 25,
+            "scale_min": 0.8,
+            "scale_max": 1.15
+          },
+          {
+            "name": "dogwood",
+            "mesh": "../../flora/dogwood.flora.json",
+            "weight": 0.8,
+            "spacing": 3.0,
+            "clearance": 2.0,
+            "slope_max_deg": 25,
+            "scale_min": 0.85,
+            "scale_max": 1.15
+          }
+        ],
+        "exclude": {
+          "circles": [
+            {
+              "at": [
+                -11,
+                0,
+                -9
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                12,
+                0,
+                -10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -12,
+                0,
+                11
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                11,
+                0,
+                10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                1,
+                0,
+                -15
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                8.5,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -3,
+                0,
+                13
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -15,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                15.5,
+                0,
+                -1
+              ],
+              "radius": 1.2
+            }
+          ]
+        },
+        "budget": {
+          "per_tile": 40
+        }
+      }
+    },
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "understory-shade",
+        "seed": 22,
+        "tile_size": 32,
+        "region": {
+          "kind": "Polygon",
+          "polygon": [
+            [
+              -19,
+              -19
+            ],
+            [
+              19,
+              -19
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              -19,
+              19
+            ],
+            [
+              -19,
+              0
+            ],
+            [
+              -7,
+              0
+            ],
+            [
+              -5,
+              -5
+            ],
+            [
+              0,
+              -7
+            ],
+            [
+              5,
+              -5
+            ],
+            [
+              7,
+              0
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              0,
+              7
+            ],
+            [
+              -5,
+              5
+            ],
+            [
+              -7,
+              0
+            ],
+            [
+              -19,
+              0
+            ]
+          ]
+        },
+        "density": {
+          "kind": "Noise",
+          "per_m2": 0.25,
+          "octaves": 2,
+          "wavelength": 9,
+          "low": 0.25,
+          "high": 0.75
+        },
+        "kinds": [
+          {
+            "name": "male fern",
+            "mesh": "../../flora/male-fern.flora.json",
+            "weight": 1.0,
+            "spacing": 1.1,
+            "clear": 0.4,
+            "slope_max_deg": 30,
+            "scale_min": 0.8,
+            "scale_max": 1.2
+          },
+          {
+            "name": "bracken",
+            "mesh": "../../flora/bracken.flora.json",
+            "weight": 0.5,
+            "spacing": 0.9,
+            "clearance": 0.6,
+            "clear": 0.4,
+            "slope_max_deg": 30,
+            "scale_min": 0.8,
+            "scale_max": 1.2
+          },
+          {
+            "name": "nettle",
+            "mesh": "../../flora/nettle.flora.json",
+            "weight": 0.25,
+            "spacing": 0.6,
+            "clearance": 0.5,
+            "clear": 0.3,
+            "slope_max_deg": 30,
+            "scale_min": 0.8,
+            "scale_max": 1.2
+          }
+        ],
+        "exclude": {
+          "circles": [
+            {
+              "at": [
+                -11,
+                0,
+                -9
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                12,
+                0,
+                -10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -12,
+                0,
+                11
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                11,
+                0,
+                10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                1,
+                0,
+                -15
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                8.5,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -3,
+                0,
+                13
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -15,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                15.5,
+                0,
+                -1
+              ],
+              "radius": 1.2
+            }
+          ]
+        },
+        "budget": {
+          "per_tile": 400
+        }
+      }
+    },
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "understory-light",
+        "seed": 23,
+        "tile_size": 32,
+        "region": {
+          "kind": "Polygon",
+          "polygon": [
+            [
+              7,
+              0
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              0,
+              7
+            ],
+            [
+              -5,
+              5
+            ],
+            [
+              -7,
+              0
+            ],
+            [
+              -5,
+              -5
+            ],
+            [
+              0,
+              -7
+            ],
+            [
+              5,
+              -5
+            ]
+          ]
+        },
+        "density": {
+          "kind": "Constant",
+          "per_m2": 2.0
+        },
+        "kinds": [
+          {
+            "name": "hair-grass",
+            "mesh": "../../flora/hair-grass.flora.json",
+            "weight": 1.0,
+            "spacing": 0.55,
+            "slope_max_deg": 30,
+            "scale_min": 0.75,
+            "scale_max": 1.2
+          },
+          {
+            "name": "fescue",
+            "mesh": "../../flora/fescue.flora.json",
+            "weight": 1.2,
+            "spacing": 0.4,
+            "clearance": 0.3,
+            "slope_max_deg": 30,
+            "scale_min": 0.8,
+            "scale_max": 1.2
+          },
+          {
+            "name": "daisy",
+            "mesh": "../../flora/daisy.flora.json",
+            "weight": 0.5,
+            "spacing": 0.5,
+            "clearance": 0.25,
+            "slope_max_deg": 30,
+            "scale_min": 0.8,
+            "scale_max": 1.2
+          }
+        ],
+        "exclude": {
+          "circles": [
+            {
+              "at": [
+                -11,
+                0,
+                -9
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                12,
+                0,
+                -10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -12,
+                0,
+                11
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                11,
+                0,
+                10
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                1,
+                0,
+                -15
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                8.5,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -3,
+                0,
+                13
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                -15,
+                0,
+                1.5
+              ],
+              "radius": 1.2
+            },
+            {
+              "at": [
+                15.5,
+                0,
+                -1
+              ],
+              "radius": 1.2
+            }
+          ]
+        },
+        "budget": {
+          "per_tile": 600
+        }
+      }
+    }
+  ],
+  "terrain": {
+    "size": 129,
+    "extent": 96,
+    "seed": 7,
+    "dune_height": 0.15,
+    "dune_wavelength": 40,
+    "generator": "Waves"
+  }
+}

@@ -55,6 +55,8 @@ struct TreeReport {
   f32 footprint_m2 = 0.0f;     // the crown's footprint: the convex hull of its tips from above
   f32 leaf_area_m2 = 0.0f;     // the one-sided area of the cards built
   f32 leaf_area_index = 0.0f;  // the realised LAI: leaf_area_m2 over footprint_m2
+  // The understory (G75; understory.h).
+  u32 colliders = 0;  // a shrub's stems flagged k_structural_collider
 };
 
 // One shoot of an allometric crown (G72), for a test or a tool to check the structure against the

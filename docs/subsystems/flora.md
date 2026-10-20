@@ -263,11 +263,20 @@ the ancient tree's limbs, which a village hangs from, nearly still.
 | `willow` | 0.006 | 0.03 | 0.08 | 0.16 |
 | `orchard` | 0.006 | 0.025 | 0.06 | 0.10 |
 | `ancient` | 0.0015 | 0.008 | 0.04 | 0.10 |
+| `shrub` | 0.01 | 0.07 | 0.10 | 0.14 |
+| `fern` | 0.01 | 0.18 | 0.20 | 0.22 |
+| `tuft` | 0.01 | 0.20 | 0.22 | 0.26 |
+| `herb` | 0.01 | 0.16 | 0.18 | 0.20 |
 
 At a mean wind a 6 m palm trunk's top leans 6.6 cm and its 3 m fronds' tips move 0.24 m downwind on
 average over ten seconds (the renderer's test), the flutter swinging them either side of that; at
 the strength the sway saturates at (2), twice that. They are chosen by eye against how a palm, an
-oak and a willow move in a breeze, not measured, and the table is the one place to change them.
+oak and a willow move in a breeze, not measured, and the table is the one place to change them. The
+understory is the most compliant (G75): its part 0 is a root with no geometry, a shrub's stems are
+its limbs and sway like a tree's twigs, and a fern's fronds, a tuft's blades and a herb's leaves and
+flowers have no wood and take the leaf class — a tuft's blade leans 0.26 rad at a mean wind, the
+most of any part; a herb's stem is its limb. A part flagged `k_structural_collider` (a shrub's
+stout stem) is never pushed.
 
 **The push.** A walker's capsule (its feet, 0.3 m radius, 1.8 m tall: [apps](apps.md#walking)) is
 handed to the frame. A part that is neither the trunk nor load-bearing whose rest axis comes within
@@ -780,6 +789,122 @@ platform moving or a limb swaying (every body is static, [scene collision](scene
 structures to be anchored to parts that do not sway). A near-level run is a floor as it stands: a
 walker stays on its crest the length of it.
 
+## The understory
+
+**The shrub, herb and ground layers under the canopy** (roadmap G75, 2026-10-21; the research, the
+constants and the measurements are [the understory](../experiments/understory.md)): four species a
+forest's floor is made of, `engine.flora.Shrub`, `Fern`, `Tuft` and `Herb`, each a struct of the
+flora schema with its ranges (`shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`
+refuse a field out of range by name), a solver file of its own (`src/shrub.cpp`, `fern.cpp`,
+`tuft.cpp`, `herb.cpp`, over the kit) and the same `.flora.json` dispatch (`include/domain/flora/understory.h`).
+Saplings are not a species: a tree species at a small `height_m` is its sapling since the allometric
+crown (`oak-sapling.flora.json`, a 3 m broadleaf). Leaf litter is the ground's material, and moss,
+lichen and fungi are roadmap G78's, grown over a host rather than standing on the ground.
+
+**What every one of them shares.** **Part 0 is the root** — the stool, the rhizome's crown, the
+tuft's base, the herb's root — a pivot at the ground with **no geometry**, which every other part
+hangs from: so nothing of a fern, a tuft or a herb is the trunk the collision keeps, and the stem, the
+fronds and the blades are all parts a walker's push bends. Each emits the motion contract and the
+structural table (one row a part; the root's radius the stool's or the crown's, a frond's, a
+blade's, a leaf's and a flower's zero, no part load-bearing). Its structure is grown once, at a fixed
+resolution, and its ladder changes only detail — never a stem, a frond, a blade, a leaf or a flower
+— so the parts and the table are the same bytes on every rung.
+
+| Species | Default | Parts | Default triangles | Budget | Primitives |
+|---|---|---|---|---|---|
+| `shrub` | a 4 m hazel, 16 stems | the root, 16 stems, 17 recursion parts | 23,028 | 4,000–400,000, default 30,000 | bark (one-sided), leaves |
+| `fern` | a 0.9 m male fern, 14 fronds | the root, a frond each | 1,736 | 500–100,000, default 4,000 | fronds |
+| `tuft` | a 0.45 m hair-grass tussock, 120 blades | the root, a blade each | 1,080 | 1,500–50,000, default 4,000 | blades |
+| `herb` | a 0.6 m daisy, 8 leaves, one head | the root, the stem, a leaf each, a flower each | 190 | 1,000–50,000, default 2,500 | leaf (the stem and leaves), flower |
+
+### The shrub
+
+`stems` basal stems (16) from a stool of `stool_radius_m` (0.25 m), their feet filling its disc as a
+sunflower does with the stoutest at the middle, each leaning out by up to `stem_spread_deg` (28°) the
+further out it stands and turning towards the light by `upturn` (0.4; negative arches the canes
+back down, which is how `bramble.flora.json` is a shrub). The stoutest stem's radius is
+`stem_radius_m`, or at its default of 0 the **allometric radius of the height**, 2.2 cm × (H / 4 m)^1.5
+(H ∝ D^(2/3), as the broadleaf's trunk); the others are 0.55 to 1 of it and shorter by the same law.
+**Every stem grows the allometric recursion** ([above](#allometry)) as a named root with `branches`
+laterals along its upper 0.3 to 0.95, down to the species' twig (`twig_radius_m` 1.6 mm,
+`twig_length_m` 0.45 m), and its leaves are one leaf a card at the species' size (`leaf_length_m`
+0.10 m, `leaf_width` 0.8), their count `leaf_area_index` (2.5) over the footprint — so a 1 m hazel's
+16 stems are twigs themselves, the 4 m default has 889 twigs over 5 orders and 9,190 cards (a
+realised LAI of 2.16 over 29.4 m²), and a 5 m one 2,047 twigs over 6 orders, every card 0.10 m. The
+budget's ladder is the broadleaf's at a shrub's scale (the finest wood, rows and cross-sections, the
+folded classes, then the cards merged and halved, the last rows), and a stem's sides follow its girth as the recursion's tubes' do (a 6 mm cane is three sides round): on 12,000 the default is 5,655 and on its floor of 4,000, 2,059.
+
+**Collision**: a stem whose radius at the ground is at least **`k_shrub_collider_radius_m`, 1.25 cm**
+is flagged `k_structural_collider` (`structure.h`, `geometry::k_structural_collider`, 4) in its
+structural row: it stops a walker and is never pushed; a thinner stem, the recursion's shoots and
+the leaves are walked through and bent aside. The number is a green stem's cantilever under a
+walker's 150 N push at a stride's deflection ([the understory](../experiments/understory.md#the-collision-threshold)):
+a hazel's 2 to 8 cm stems stop a walker and a dogwood's thumb-thick ones do not. The default hazel's
+16 stems all collide on its seed (a stem may be as thin as 0.55 × 2.2 = 1.21 cm, just under, and none drew so thin); `dogwood.flora.json` (9 mm) has none.
+
+### The fern
+
+`fronds` fronds (14) on the palm's crown rule at a tenth of its scale: each one's angle from vertical
+`spread_deg` × √age (50°), the youngest nearly upright at the crown's middle, the oldest furthest out,
+on the golden angle, rising from a ring of `crown_radius_m`, 0.75 to 1 of `frond_length_m` (0.9 m)
+long with age, its rachis **arching under its weight** by `droop` × 90° (0.45), the older more. A
+frond is **one spray** of cards (`build_spray_profile`, the kit's spray with a length per station):
+the stipe (`stipe`, 0.22 of the frond) a ribbon of 4 mm cards on the same surface, then `pinnae`
+(24) pairs of pinna cards at `pinna_angle_deg` (70°) whose length follows a lanceolate outline —
+sin(π (0.15 + 0.85 u)) of `pinna_length` (0.15 of the frond), the longest two fifths up the blade.
+The ladder halves the pinnae (down to three a side), never a frond: on 1,500 the default is 840
+triangles. `bracken.flora.json` is three tall, wide fronds: a bracken stand is many such plants,
+placed densely, which is placement's (G77).
+
+### The grass tuft
+
+`blades` blades (120) from a base of `base_radius_m` (4 cm), filling it as a sunflower does, the
+inner ones upright and the outer leaning out to `spread_deg` (35°) and arching by `droop` × 90° (0.5),
+the outer more — a tussock's fountain — each 0.6 to 1 of `blade_length_m` (0.45 m), `blade_width_m`
+(4 mm) wide at its base with straight edges to 0.65 of its length and then a point (`build_blade`),
+`segments` rows (5): 2 × segments − 1 triangles a blade. **Every blade is its own part**, so the wind
+moves each and a walker parts them. `crossed` doubles each blade into two crossed strips. The ladder
+drops the crossing, then the rows down to two, never a blade: 400 blades hold the 1,500 floor at
+1,200 triangles.
+
+### The herb
+
+A stem from the root — a tube of `stem_radius_m` (2.5 mm) tapering to 0.45 of it, leaning by
+`lean_deg` and straightening — with `leaves` leaf cards (8; a diamond each, widest at 0.35 of its
+length, `build_leaf_card`) up its lower `leaf_top` (0.6), on the golden angle or in **opposite**
+pairs each turned a right angle from the last (`opposite`, a nettle's), the lowest `leaf_length_m`
+(7 cm) and the top half of it, each its own part; and `flowers` flowers, each its own part: one head
+at the stem's top (`flowers` 1, `spike` 0) or a **spike** up its top `spike` share, nodding out 70°.
+A flower is a fan of `petals` petal cards (16, `petal_length_m` 2 cm) at `petal_angle_deg` from its
+axis (82°: a flat head; 22°: a foxglove's bell) and the wedges between them, which make the disc,
+in a **flower** material of its own in the recipe's colour (`flower_red`/`green`/`blue`). The stem is
+in the leaf material, two-sided, its UVs a corner of the leaf card. The ladder lowers the stem's rows
+and sides, then halves the petals; never a leaf or a flower. `daisy.flora.json` is the default,
+`foxglove.flora.json` a 1.2 m spike of 22 purple bells, `nettle.flora.json` a 1 m stem of 20 opposite
+leaves and no flowers.
+
+### Detail tiers
+
+**Every flora kind has a detail tier** (the owner, 2026-10-20): a graphics preset will be able to
+leave out whole kinds of plants (the detail-tiers row puts a `detail_tier` on a scene instance and a
+cut-off in the render settings), so each kind says which tier it is, `engine.flora.DetailTier`:
+`essential` (every preset), `standard` (all but the lowest), `rich` (the highest only). **What a
+preset may drop never collides**: a kind whose instances carry a body is never `rich`, so a preset
+never changes what a walker meets.
+
+| Kind | Tier | Where it is declared |
+|---|---|---|
+| every tree species | `essential` | by rule (`flora_detail_tier`): a tree collides by its trunk, and a field would move every tree's pinned canonical parameters for a value that cannot differ |
+| a shrub whose stems collide | `essential` (the default) | `Shrub::detail_tier`; `rich` is refused by name |
+| a shrub a walker passes through | `standard` (its recipes say so) | `Shrub::detail_tier` |
+| a fern, a tuft, a herb | `rich` (the default) | `Fern`/`Tuft`/`Herb::detail_tier`; any tier is allowed, since none collides |
+
+The understory's tier is in its canonical parameters, so it is in the container's generator section
+(`engine-content info` prints it) and in its source hash; `flora_detail_tier(file)` answers it for
+any kind and `flora_collides(file)` says whether its instances carry a body. **The renderer honours
+none of it yet**, and the scatter generator does not yet write a tier on the instances it places:
+both are the detail-tiers row's, which reads the tier from here.
+
 ## Materials
 
 Every part samples a tiled PBR set, or draws the flat colour it always drew
@@ -790,7 +915,9 @@ is, in this order:
    the part — `bark` for the trunk, its collar and a tree's tubes; `leaf` for a palm's green fronds
    and a tree's leaves or needles; `skirt` for a palm's dead fronds; paths relative to the recipe;
 2. else **the material pack's default for the part's role**: `palm/bark`, `palm/frond`,
-   `palm/skirt`; `broadleaf/bark`, `broadleaf/leaf`; `conifer/bark`, `conifer/needles`; a species
+   `palm/skirt`; `broadleaf/bark`, `broadleaf/leaf`; `conifer/bark`, `conifer/needles`; the understory's
+   `shrub/bark`, `shrub/leaf`, `fern/frond`, `grass/blade` (a tuft's), `herb/leaf`, `herb/flower` (no recipe
+   block names a flower: the pack's role or the flat colour); a species
    with no list of its own (the next ones) is `<species>/bark` and `<species>/leaf` for its first
    two materials (`flora::flora_role`);
 3. else **none**: the flat colour, and one log line naming the role, once per run.
@@ -805,6 +932,7 @@ is, in this order:
 | Palm green and dead fronds | metres: *u* along the rachis, *v* across it (0.5 at the rachis) — the material lab turns its frond sets so the image's *u* runs along the frond | `1 / tile_m` |
 | Broadleaf and conifer bark (`kit.cpp` tubes) | metres: *u* round, *v* along the axis | `1 / tile_m` |
 | Broadleaf leaf and conifer needle cards | the whole card per image (`build_spray`) | none: the image whole |
+| The understory's leaf, pinna, blade and petal cards | the whole card per image (`build_spray`, `build_spray_profile`, `build_blade`, `build_leaf_card`); a herb's stem a corner of its leaf card | none: the image whole |
 
 The palm's fronds are geometric leaflets on one island a frond, not cards, so their set is a tiled
 surface (the lab's frond sets are "longitudinal surface samples" at a `tile_m` of 0.12 m), and they
@@ -884,7 +1012,13 @@ batch's recipes are `birch.flora.json`, `birch-single.flora.json`, `willow.flora
 `ancient-rising.flora.json` (90 m, its limbs' runs rising at 20° and more) and
 `ancient-1m.flora.json`; [`content/test-scenes/elder-grove/`](../../content/test-scenes/elder-grove/README.md)
 stands two ancient trees 60 m apart with four willows, eight birches and an orchard row of seven,
-with a camera path from the ground up into the canopy and a walk start at a hollow.
+with a camera path from the ground up into the canopy and a walk start at a hollow. The understory's
+recipes (G75) are `hazel`, `dogwood` and `bramble` (shrubs), `male-fern` and `bracken`, `hair-grass`
+and `fescue` (tufts), `daisy`, `foxglove` and `nettle` (herbs), with `oak-sapling` (a 3 m broadleaf);
+[`content/test-scenes/understory/`](../../content/test-scenes/understory/README.md) stands them on a
+grove's floor — shrubs in the canopy's gaps, ferns and nettles in its shade, grasses and daisies in a
+clearing, by three scatter layers, with foxgloves and brambles by hand — 415 instances and a walk at
+eye height.
 
 **What the first pictures taught.** The first oasis capture read as sticks: a leaflet 3 cm wide
 tapering linearly to its tip is under a pixel from 25 m at 640 x 400, and a crown of them vanished
@@ -1016,6 +1150,13 @@ threshold that knows a strip's width — not more tuning of the solver.
   parallelograms a metre and more long until alpha-masked cluster textures baked from the solver's
   own finest geometry draw them as foliage, and octahedral impostors take the far field
   ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
+- **The understory's images** (G60): `shrub/bark`, `shrub/leaf`, `fern/frond`, `grass/blade`,
+  `herb/leaf` and `herb/flower` have no sets yet ([content/materials/README.md](../../content/materials/README.md)
+  says what each must be); a pinna, a blade and a petal want an alpha mask (R65) to lose their
+  polygon's outline.
+- **The understory's placement** (G77): ferns under the canopy and grass in its gaps is a density
+  field from the trees' light, which the scatter generator does not compute yet; the understory
+  scene places by hand where its rules cannot.
 - **Self-organising growth** (G74, proposed): bud fate by light, so crowns fill their light and
   apical control and shedding follow from age rather than from the recipe.
 - **A walker on the same limb at every rung**: the collision proxy is the mesh's triangles by part,
@@ -1055,7 +1196,11 @@ cache key — changed anyway, while a version bump would have moved every other 
 (the palm's is pinned with its identity) for nothing. Its recursion draws from one stream per shoot
 (its depth-first index), and the two species' containers are pinned besides, folded section by
 section, in `apps/engine_content/tests/determinism_tests.cpp` (the broadleaf at its default, the
-ancient tree on a 100,000 rung, so the merged cards are in the bytes), which GCC and Clang reproduce.
+ancient tree on a 100,000 rung, so the merged cards are in the bytes), which GCC and Clang reproduce. **The understory (G75) moved no tree's pin and not `k_flora_version`**: its kit helpers are appended
+(`build_spray_profile`, `build_blade`, `build_leaf_card`), its species are new members of the flora
+file that no tree's canonical form carries, and a tree's detail tier is a rule rather than a field;
+the four defaults are pinned in `tests/understory_tests.cpp`, one stream a stem, frond, blade or
+leaf row, every draw its own statement.
 
 **Owned data.** The species' parameter types and the solver. Nothing persistent: a palm is derived
 data, rebuilt from its parameters.
@@ -1116,6 +1261,18 @@ data, rebuilt from its parameters.
   (`flora_tests.cpp`, `species_tests.cpp`); and down the ladder every rung holds its budget, merges
   no less finely than the rung above, and keeps the part list and the structural table byte for
   byte, with the load-bearing surfaces' movement between the finest rung and the floor measured;
+- the understory (`tests/understory_tests.cpp`): every species' default valid, in its budget with no
+  rung walked, every material two-sided but a shrub's bark, the root part 0 with no geometry and
+  every other part reaching weight 0 at its root and 1 at its tip, parents first, no part
+  load-bearing; on smaller budgets the same parts and structural rows byte for byte; one seed one
+  plant (pinned by hash) and another seed another; the shrub's cards `leaf_length_m` at 1, 4 and 5 m
+  and its realised LAI within a fifth of the field; a stem flagged a collider exactly when it is a
+  stem at least 1.25 cm thick, none on a 9 mm dogwood; a fern's parts its fronds and one, its
+  triangles its fronds times its stations' cards; a tuft's parts its blades and one, the most blades
+  crossed and at the budget's floor; a herb's parts its root, stem, leaves and flowers, the floor
+  holding forty flowers of forty petals by halving them; a rich shrub whose stems collide refused by
+  name and a thin one accepted; every kind's tier and whether it collides; the tier in the
+  container's generator parameters; the understory's material roles;
 - a parameter out of range is refused with its name;
 - a `.flora.json` in a scene's mesh table becomes a mesh with the three materials through the
   cache — a hit the second time, the same clusters built in memory — and the oasis scene's first
@@ -1136,9 +1293,9 @@ data, rebuilt from its parameters.
   (`flora_scene_tests.cpp`).
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
-`k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/structure.h` (the structural table: `StructuralPart`, `k_load_bearing`, `k_straight`, `structural_point`, `structural_radius`, `load_bearing_min_radius`, `Hollow`, `ancient_hollows`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
-`k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `k_species_birch`, `k_species_willow`, `k_species_orchard`, `k_species_ancient`, `solve_flora`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
+`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`), `include/domain/flora/understory.h` (the understory: `shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`, `shrub_collides`, `k_shrub_collider_radius_m`, `solve_shrub`, `solve_fern`, `solve_tuft`, `solve_herb`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
+`k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/structure.h` (the structural table: `StructuralPart`, `k_load_bearing`, `k_straight`, `k_collider`, `structural_point`, `structural_radius`, `load_bearing_min_radius`, `Hollow`, `ancient_hollows`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
+`k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `k_species_birch`, `k_species_willow`, `k_species_orchard`, `k_species_ancient`, `k_species_shrub`, `k_species_fern`, `k_species_tuft`, `k_species_herb`, `solve_flora`, `flora_detail_tier`, `flora_collides`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key` (with the pack), `flora_role`, `apply_flora_materials`, `build_flora_container`
 (with the pack, and a branching species' `TreeReport`)). The mesh generator "flora" registers from `src/flora.cpp` and takes the pack from
 the host's `assets::MeshGeneratorInputs`.
@@ -1159,7 +1316,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Registration point | This capability | Status |
 |---|---|---|
 | Capabilities it requires | none | this capability stands alone |
-| Component and event types | `domain/flora/schemas/flora.schema`: `Palm`, `Broadleaf`, `Conifer`, `Birch`, `Willow`, `Orchard`, `Ancient`, `MaterialSet`, `FloraMaterials`, `FloraFile` | parameters, not components: a palm has no runtime state |
+| Component and event types | `domain/flora/schemas/flora.schema`: `Palm`, `Broadleaf`, `Conifer`, `Birch`, `Willow`, `Orchard`, `Ancient`, `DetailTier`, `Shrub`, `Fern`, `Tuft`, `Herb`, `MaterialSet`, `FloraMaterials`, `FloraFile` | parameters, not components: a palm has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a palm is a cluster mesh like any other |
 | Content-build derived step | `engine-content flora`, the mesh generator "flora" | [the build](#the-build): keyed by the canonical parameters, the species and `k_flora_version` |
@@ -1168,7 +1325,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | LOD policy | the cluster DAG's | a palm is one mesh; distance is the DAG's |
 | Determinism | the same bytes on every toolchain | [above](#determinism) |
 | Zero cost when unused | nothing runs unless something asks for a palm | plan 11 §11.10: absent work |
-| Tests and size table | `tests/flora_tests.cpp`, `tests/species_tests.cpp`, `tests/allometry_tests.cpp`, `tests/size_table.cpp` | written |
+| Tests and size table | `tests/flora_tests.cpp`, `tests/species_tests.cpp`, `tests/allometry_tests.cpp`, `tests/understory_tests.cpp`, `tests/size_table.cpp` | written |
 | Bench | none | no hot path |
 | Removal proof | `ENGINE_WITH_FLORA`, off in the minimal build | works |
 

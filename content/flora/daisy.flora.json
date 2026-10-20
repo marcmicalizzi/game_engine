@@ -1,0 +1,7 @@
+{
+  "species": "herb",
+  "herb": {
+    "seed": 2,
+    "detail_tier": "rich"
+  }
+}

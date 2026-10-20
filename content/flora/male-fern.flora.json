@@ -1,0 +1,9 @@
+{
+  "species": "fern",
+  "fern": {
+    "seed": 4,
+    "fronds": 14,
+    "frond_length_m": 0.9,
+    "detail_tier": "rich"
+  }
+}

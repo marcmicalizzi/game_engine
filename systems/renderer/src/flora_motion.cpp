@@ -117,6 +117,14 @@ FloraStiffness flora_stiffness(std::string_view species) noexcept {
   if (species == "willow") return FloraStiffness{0.006f, 0.03f, 0.08f, 0.16f};
   if (species == "orchard") return FloraStiffness{0.006f, 0.025f, 0.06f, 0.10f};
   if (species == "ancient") return FloraStiffness{0.0015f, 0.008f, 0.04f, 0.10f};
+  // The understory (flora.md, "The understory"): the most compliant of all. Each one's part 0 is
+  // its root, with no geometry; a shrub's stems are its limbs and sway like a tree's twigs, a
+  // fern's fronds, a tuft's blades and a herb's leaves and flowers have no wood (the leaf class),
+  // and a herb's stem is its limb.
+  if (species == "shrub") return FloraStiffness{0.01f, 0.07f, 0.10f, 0.14f};
+  if (species == "fern") return FloraStiffness{0.01f, 0.18f, 0.20f, 0.22f};
+  if (species == "tuft") return FloraStiffness{0.01f, 0.20f, 0.22f, 0.26f};
+  if (species == "herb") return FloraStiffness{0.01f, 0.16f, 0.18f, 0.20f};
   return FloraStiffness{};
 }
 
@@ -124,7 +132,10 @@ bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> st
                          u32 part) noexcept {
   if (part == 0) return true;
   if (structure.empty() || part >= structure.size()) return false;
-  return (structure[part].flags & geometry::k_structural_load_bearing) != 0;
+  // A load-bearing limb, or a part flagged a collider: a shrub's stem stout enough to stop a
+  // walker (flora.md, "The shrub").
+  return (structure[part].flags &
+          (geometry::k_structural_load_bearing | geometry::k_structural_collider)) != 0;
 }
 
 bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
@@ -164,7 +175,9 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     const f32 wood =
         structured ? std::fmax(structure[p].base_radius, structure[p].tip_radius) : 0.0f;
     out.reach[p] = wood > 0.0f ? wood : k_flora_leaf_reach * part.length;
-    out.pushable[p] = (!root && p != 0 && !load_bearing) ? u8{1} : u8{0};
+    // A part that collides is never pushed: the walker stops at it rather than bending it.
+    const bool collider = structured && (structure[p].flags & geometry::k_structural_collider) != 0;
+    out.pushable[p] = (!root && p != 0 && !load_bearing && !collider) ? u8{1} : u8{0};
   }
   return true;
 }

@@ -738,6 +738,93 @@ TEST_CASE("scene_collision: a tree's fronds are walked through and its trunk sto
   CHECK(z > face - c.radius - 0.1f);
 }
 
+TEST_CASE(
+    "scene_collision: a walker passes a fern, a tuft and a thin stem and stops at a hazel's") {
+  // The understory's contract (flora.md, "The understory"): part 0 is the root, with no
+  // geometry; a fern's fronds, a tuft's blades and a herb's leaves are parts of no wood and no
+  // flag; a shrub's stem is a part whose structural row is flagged a collider when it is at least
+  // 1.25 cm thick at the ground. Three slabs across the path a walker cannot step over: a frond
+  // (part 1, no wood) at z = 10, a thin stem (part 2, 9 mm, no flag) at z = 14, and a hazel's
+  // stem (part 3, 22 mm, flagged) at z = 18.
+  MeshSource plant;
+  const f32 at_z[3] = {10.0f, 14.0f, 18.0f};
+  for (const f32 z : at_z) {
+    const MeshSource slab = box_mesh(Vec3{1.0f, 0.5f, 0.1f});
+    const u32 base = plant.positions.size();
+    for (const Vec3& p : slab.positions)
+      plant.positions.push_back(Vec3{p.x, p.y + 0.6f, p.z + z});
+    for (const u32 i : slab.indices)
+      plant.indices.push_back(base + i);
+  }
+  const MeshSource meshes[] = {plant};
+  renderer::SceneInstance at_origin;
+  renderer::SceneData scene;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(&at_origin, 1), scene);
+  scene.sources.resize(scene.parts.size());
+  renderer::SourceMesh& source = scene.sources[0];
+  for (u32 p = 0; p < 4; ++p) {
+    geometry::ClusterFileMotionPart part;
+    part.pivot = Vec3{0.0f, 0.0f, p == 0 ? 0.0f : at_z[p - 1]};
+    part.direction = Vec3{0.0f, 1.0f, 0.0f};
+    part.length = p == 0 ? 0.05f : 1.2f;
+    part.parent = p == 0 ? geometry::k_motion_no_parent : 0u;
+    source.motion_parts.push_back(part);
+  }
+  source.structural_parts.push_back(geometry::ClusterFileStructuralPart{0, 0.25f, 0.25f, 0u});
+  source.structural_parts.push_back(geometry::ClusterFileStructuralPart{1, 0.0f, 0.0f, 0u});
+  source.structural_parts.push_back(geometry::ClusterFileStructuralPart{2, 0.009f, 0.004f, 0u});
+  source.structural_parts.push_back(
+      geometry::ClusterFileStructuralPart{3, 0.022f, 0.008f, geometry::k_structural_collider});
+  const geometry::ClusterMeshPart& part = scene.parts[0];
+  const u32 vertices = scene.lod.mesh.vertices.size() - part.first_vertex;
+  for (u32 v = 0; v < vertices; ++v) {
+    const f32 z = scene.lod.mesh.vertices[part.first_vertex + v].z;
+    geometry::ClusterFileMotionVertex record;
+    record.part = z < 12.0f ? 1 : (z < 16.0f ? 2 : 3);
+    source.motion_vertices.push_back(record);
+  }
+  REQUIRE(source.has_motion());
+
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  physics::ShapeId floor_shape;
+  REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
+  physics::BodyDesc floor;
+  floor.shape = floor_shape;
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
+  floor.motion = physics::MotionType::Static;
+  floor.layer = physics::Layer::Static;
+  physics::BodyId floor_body;
+  REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(0.0f, 12.0f), 0, true);
+  const Stats& s = collision.stats();
+  MESSAGE("the plant's proxy: " << s.proxy_triangles << " triangles kept, "
+                                << s.flora_triangles_left_out << " left out");
+  CHECK(s.flora_triangles_left_out >= 24);  // the frond's and the thin stem's twelve each
+  CHECK(s.proxy_triangles >= 10);           // the hazel stem's box
+
+  physics::CharacterBody walker;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 6.0f})) == physics::Status::Ok);
+  physics::CharacterInput north;
+  north.move = Vec3{0.0f, 0.0f, 1.0f};
+  for (u32 k = 0; k < 10 * 240; ++k)
+    REQUIRE(walker.step(north) == physics::Status::Ok);
+  const f32 face = 18.0f - 0.1f;
+  const f32 z = local_of(walker.state().position).z;
+  MESSAGE("walked north through the frond and the thin stem into the hazel's at z "
+          << face << ": stopped at z " << z);
+  CHECK(z > 14.2f);  // past the frond and the thin stem
+  CHECK(z < face - c.radius + 0.03f);
+  CHECK(z > face - c.radius - 0.1f);
+}
+
 TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the error") {
   const MeshSource meshes[] = {ball_mesh(3.0f, 5)};  // 8,192 triangles
   Vector<renderer::SceneInstance> placed(1);
