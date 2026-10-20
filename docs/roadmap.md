@@ -505,7 +505,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T22 | Retire the v2 presets | deferred (ADR-0031) | T21 | S | routine | [ADR-0031](adr/0031-minimum-cpu-x86-64-v3.md) |
 | T23 | Host tools build for the build machine | done (ADR-0034) | T21 | S | design | [ADR-0034](adr/0034-host-tools-build-for-the-build-machine.md) |
 | T24 | Capability scaffold, capability-graph presets | done (ADR-0027, c24677d7) | | M | design | [02 §2.8](plan/02-architecture.md#28-adding-a-capability) |
-| T25 | Compiler cache; container rebuild keeps third party | open | T26 | M | design | [local Linux](ci/local-linux.md#follow-ups) |
+| T25 | Container `-Rebuild` keeps the third-party objects (the compiler cache half became T68) | open | T26 | S | routine | [local Linux](ci/local-linux.md#follow-ups) |
 | T26 | Local Linux container gate | done (df922466) | T7 | M | routine | [local Linux](ci/local-linux.md) |
 | T27 | Remote build on the Titan Xp | done (f25ffe8e) | | M | routine | [remote Linux](ci/remote-linux.md#the-script) |
 | T28 | `remote-build.ps1 -Prune` for old trees | open | T27 | S | routine | [remote Linux](ci/remote-linux.md#the-script) |
@@ -538,6 +538,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T65 | Allocation count in a window's frame loop | open | T48 | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
 | T66 | `msvc-asan` built and tested in CI | done (2026-10-09: 96 of 96 here after a renderer test's use after scope; in the Windows matrix, blocking) | T11 | S | routine | [what to run](ci/what-to-run.md#sanitizers) |
 | T67 | Frame budgets on the baseline-tier machines | open | T34, T46 | S | routine | [bench](subsystems/bench.md#frame-budgets) |
+| T68 | Shared compiler cache: a worktree's first build is incremental in effect | open | T26 | M | routine | [local Linux](ci/local-linux.md#the-compiler-cache) |
 | T55 | Overlay directory found by the build | open | T54 | M | design | [publishing](publishing.md#a-private-and-experimental-capabilities-and-content-an-overlay-repository) |
 | T56 | History audit, private mirror, first public push | open | T55 | M | design | [publishing](publishing.md#c-before-the-first-public-push) |
 | T57 | ARM64 CI target | deferred (10 §10.6 2026-09-25) | | M | design | [10 §10.6](plan/10-roadmap-risks.md#106-decisions-deliberately-deferred) |

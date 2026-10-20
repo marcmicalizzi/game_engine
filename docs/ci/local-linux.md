@@ -19,9 +19,12 @@ builds on Windows" had stopped meaning very much.
 
 A gate that only exists on somebody else's machine is a gate that can be taken away. This one is
 local, needs the network only for a dependency no checkout on the machine has fetched yet, and —
-warm — takes minutes. **The first run of a fresh checkout is not minutes**, and every agent
-works in a fresh worktree: see [Measured times](#measured-times) for what that costs and
-[Scheduling](#scheduling-warm-early-one-at-a-time) for how to keep it off the critical path.
+warm — takes minutes. Since 2026-10-20 **the first run of a fresh checkout is minutes too**, once
+any checkout on the machine has compiled the same sources: the compiled objects are shared through
+[the compiler cache](#the-compiler-cache), and the three hosted-matrix presets' first run in a fresh
+worktree went from about half an hour to three minutes ([Measured times](#with-the-compiler-cache-2026-10-20)).
+The first run after a change to the toolchain or a compile flag is still a cold one, for the
+machine; [Scheduling](#scheduling-warm-early-one-at-a-time) says how to keep that off the critical path.
 
 It does **not** replace `ci.yml`: the workflow is still what gates a push, and the self-hosted GPU
 runners ([self-hosted runners](self-hosted-runners.md)) are still the only machines that execute a
@@ -230,13 +233,14 @@ time.
 the sync finds nothing to copy. Run `-Rebuild` once, or `touch` the file inside `-Shell`. Touching
 it on Windows no longer helps, because its bytes have not changed.
 
-### Three volumes: two per checkout, one per machine
+### Four volumes: two per checkout, two per machine
 
 | Volume | Mounted at | Holds | Shared by |
 |---|---|---|---|
 | `engine-linux-src-<id>` | `/src` | the synced sources and `build/<preset>/` for every preset | this checkout |
 | `engine-linux-deps-<id>` | `/deps` | `FETCHCONTENT_BASE_DIR`: the dependencies' *build* directories, one directory per preset; and `.host-mirror`, the [sync](#the-sync-a-file-gets-a-new-time-only-when-its-bytes-changed)'s copy of the host tree with the host's times | this checkout |
 | `engine-linux-fetch-cache` | `/fetch` | the dependencies' downloaded *sources*, one directory per pin | every checkout on the machine |
+| `engine-linux-ccache` | `/ccache` | ccache's results: every object any checkout's container has compiled, keyed by the compile ([the compiler cache](#the-compiler-cache)) | every checkout on the machine |
 
 `<id>` is a hash of the checkout's path, so every agent worktree gets its own pair of build volumes
 and two of them cannot land in one build directory. The image is shared between checkouts — it is
@@ -284,6 +288,154 @@ dependencies a run downloaded. **Checked rather than assumed**: a fresh checkout
 four-preset build with `-Offline` (`--network none`) succeeds once any checkout has filled the
 cache — see [Measured times](#measured-times).
 
+### The compiler cache
+
+**Why.** On 2026-10-20 the owner put it plainly: nine tenths of the machine's time went on
+compiling. Every agent works in its own worktree, so every agent started from nothing — a whole
+`msvc-debug` build, and three containers on empty volumes that each compiled every third-party
+dependency and the whole engine, one after another behind the build lock — while main, compiled
+after every merge in the gate worktree, was reused by nobody. The fetch cache had already taken the
+downloads out of a fresh worktree's first run; what was left was compiling identical sources with
+identical flags.
+
+**What.** `ccache` is in the image (Ubuntu's 4.9.1), the machine-wide volume `engine-linux-ccache`
+is mounted at `/ccache` in every build and shell container with `CCACHE_DIR=/ccache` and
+`CCACHE_MAXSIZE=30G`, and the configure line `linux-build.ps1` writes carries
+`-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`. The two variables
+initialise every target's launcher, and FetchContent's dependencies are targets of the same project,
+so Jolt, flecs, SDL3, SQLite and the rest go through it exactly as the engine does.
+
+**Why no path rewriting is needed here.** Every checkout's container sees its sources at `/src`,
+its build tree at `/src/build/<preset>`, its dependencies' build directories at `/deps/<preset>` and
+their sources at `/fetch/<name>-<key>`. So a compile command is byte-identical in every checkout,
+`-g`'s compilation directory included, and ccache's default key — the command, the compiler, and
+the preprocessed source or, in direct mode, the source and every header it read — matches across
+checkouts as it stands. No `base_dir`, no `hash_dir=false`, and so no object that says it came from
+anywhere but where it is; the Windows half has to give that up, below.
+
+**What a run prints.** After each preset's build, two lines:
+
+```text
+ccache: 1584 of 1585 compiles from the cache (99.9%: 1584 direct, 0 preprocessed), 1 compiled, 0 not cacheable
+ccache: /ccache, Cache size (GB): 0.8 / 30.0 ( 2.67%)
+```
+
+(a fresh worktree's `linux-clang-debug` with one line of `domain/flora` changed, 2026-10-20). A
+build with nothing to compile says `ccache: nothing was compiled`.
+
+The first is the difference of ccache's counters (`ccache --print-stats`) across this build — the
+counters are the machine's, so they are read on both sides rather than zeroed, which would erase
+what another run is counting. The second is the cache's size against its limit. A failed build
+prints them too and still ends the run with its own status before the tests.
+
+**Precompiled headers are switched off on the same line** (`-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON`).
+The engine uses none, but SDL3 (`SDL_ENABLE_PCH`) and Jolt do, and ccache will not cache a compile
+that reads one unless it is told to be sloppy about the header's timestamps and defines. The first
+runs counted it: 749 of 2,359 compiles `could not use precompiled header`, every SDL3 and Jolt
+source, compiled again in every checkout. With the headers off they are ordinary compiles and the
+next run had **0** not cacheable of 3,941. It changes how two dependencies are compiled, not what
+they are; the tests below ran on it.
+
+**Why 30 GB.** Measured on 2026-10-20: the three hosted-matrix presets compiled once from an empty
+cache — 3,941 compiles — fill **771 MB** of the volume (ccache compresses with zstd; the same three
+presets' build trees are 11.3 GB in the two checkout volumes, most of it debug information and the
+linked binaries, which the cache does not hold). So 30 GB is about forty complete compiles of those
+three: room for main's generations over weeks of merges, every agent's changed objects, and the
+presets the matrix and the gate add (`linux-clang-no-ecs`, `linux-clang-asan`, the server presets)
+before ccache evicts the least recently used. A smaller limit would start evicting main's last
+generation while a batch of agents was still branching from it; nothing is spent until it is used.
+
+**Turning it off.** `$env:ENGINE_CCACHE = '0'` for one invocation passes `CCACHE_DISABLE=1` into the
+container: the launcher stays on the configure line, so nothing reconfigures and nothing rebuilds,
+and ccache runs the compiler directly. That is also how the cache was checked against the compiler,
+on 2026-10-20: the 30 objects of `engine_geometry` and meshoptimizer in `linux-clang-debug`, built
+through the cache, then built again with `CCACHE_DISABLE=1`, then served from the cache, were
+byte-identical all three ways (SHA-256). A cache returns the object the compiler made, so the
+golden hashes and the determinism tests see what they always saw.
+
+`-Prune` and `-Prune -Stale` never touch the volume; `docker volume rm engine-linux-ccache` empties
+the cache for the machine, and every checkout's next build compiles everything once. The hosted CI
+job is untouched: it installs no ccache and passes no launcher. Caching there is `actions/cache`
+over a ccache directory keyed by the preset, a row of its own when hosted minutes matter.
+
+#### The Windows half
+
+`tools/dev.ps1 configure` puts the same tool in front of MSVC
+([`tools/lib/CompilerCache.psm1`](../../tools/lib/CompilerCache.psm1)), with three differences
+that each follow from Windows:
+
+- **It is the owner's to install** — `winget install ccache` — and the script never downloads a
+  compiler wrapper. With none on `PATH`, or one older than **4.13**, the build is exactly what it was:
+  no launcher, `/Zi`, nothing on the configure line. 4.13 is the first release that calls caching
+  `cl.exe` supported; the module's header lists what the tree's compiles need and the release each
+  arrived in (per-invocation settings on the command line in 4.8, `/Z7` overriding an earlier `/Z`
+  option in 4.8, `/Fd` out of the hash in 4.9, `INCLUDE` in the hash in 4.12). Ninja reads header
+  dependencies from `/showIncludes`; ccache stores that output with each result, with the paths
+  under `base_dir` made relative, so a hit replays *this* checkout's headers into Ninja's log. With
+  the cache on, precompiled headers are off (SDL3's and Jolt's `/Yc` and `/Yu`, as in the
+  containers), and the tree scans for no modules, so `/sourceDependencies` does not arise;
+  `/Zc:preprocessor`, `/utf-8` and the warning set are ordinary options to it.
+- **Debug information goes in the object.** ccache cannot cache `/Zi`: every `/Zi` compile writes
+  into one shared PDB through `mspdbsrv`, a side effect no cache can replay. So with the launcher on,
+  the configure also passes `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>`,
+  which is `/Z7` for the two configurations the presets build — the rule
+  [`cmake/EngineGameModule.cmake`](../../cmake/EngineGameModule.cmake) already applies to the game
+  modules hotload's tests compile, for its own reason (a test's compile should leave no PDB server
+  behind), extended to the tree for this one. The linker still writes each binary's PDB from the
+  objects. Measured without a cache on 2026-10-20, two cold `msvc-debug` builds of one checkout:
+  `/Z7` took 284 s of ninja against `/Zi`'s 293 s (inside the noise of the other agents' builds
+  and a container beside both), its links 1,635 s of CPU against 1,807 s, and its objects and the
+  libraries archived from them 2.8 GB against 1.9 GB. `/Z7` costs about 0.9 GB of disk a tree and
+  no time. Precompiled headers go off too, as in the containers: SDL3's and Jolt's.
+- **The paths differ per worktree, so the cache is told to ignore them**, and that has a cost that
+  decides where it is on. Every setting rides on the launcher itself —
+  `ccache.exe;base_dir=D:/workspace;cache_dir=D:/workspace/game_engine_local/ccache;hash_dir=false;max_size=30G`
+  — so a build run from an IDE or straight through `ninja` caches exactly as `dev.ps1`'s does.
+  `base_dir` is the main checkout's parent, which holds it, its `.claude\worktrees\` and the gate's
+  `D:\workspace\ge-gate`; ccache rewrites every absolute path under it relative to the build
+  directory, both in what it hashes and in what the compiler is given, so `..\..\core\base\src\x.cpp`
+  is the same file in every checkout. `hash_dir=false` leaves the build directory's own path out of
+  the key, which `/Z7` would otherwise put in it.
+
+**The caveat.** An object served from the cache carries, in its debug information, the build
+directory of the worktree that compiled it first, and its `__FILE__` strings are relative to the
+build directory instead of absolute. So a debugger opened on a build made from cached objects may
+show **another worktree's source paths**, and an assert or a log line names a file as
+`..\..\core\...`. Therefore the launcher is **on by default only in an agent's worktree** (a root
+under `.claude\worktrees\`) **and in the gate worktree** (branch `gate`), where nobody debugs, and
+**off in the owner's primary checkout** — and in any other worktree — unless `ENGINE_CCACHE=1` is
+set, so the owner's own debugging never meets an agent's paths. `ENGINE_CCACHE=0` turns it off
+anywhere. The cache is `<main checkout>_local\ccache` (`D:\workspace\game_engine_local\ccache`,
+beside the owner's other machine-local files) or `$env:ENGINE_CCACHE_DIR`, with the containers' 30 GB.
+A configured tree whose launcher is not the one the checkout now wants (ccache installed since,
+`ENGINE_CCACHE` changed) is configured again before it builds; switching the cache off removes the
+three variables it set, so the tree is the one it was before.
+
+One test reads `__FILE__` to find the repository: `apps/engine_editor/tests/editor_tests.cpp` walks
+four directories up from it to `content/samples/`. Relative, that walk lands in the build tree, the
+sample is not found, and the case's sample-import half is skipped with its message rather than run.
+It is a skip and not a failure, and it wants a CMake-provided source root instead of `__FILE__`.
+
+`build.cpu_baseline` reads `compile_commands.json`, which CMake writes without the launcher, and
+classifies each compile by its flags, which the launcher does not change; it is unaffected.
+
+#### `build -Affected`
+
+`tools/dev.ps1 build -Affected` builds only the targets `test -Affected` will run: for each module
+of the affected set — the changed modules, everything that depends on them, and for a capability
+everything above its layer, with the apps among them, since an app is a module in `modules.json` —
+its library, its test executable and its bench, as `cmake --build --preset <p> --target <list>`.
+A test that runs another binary names it with `add_dependencies` (engine-cli's tests on engine-host,
+engine-view and engine-content), so it builds with the test. `test -Affected` builds the same way.
+Counted with `ninja -t commands` over the targets on the 2026-10-20 tree in `msvc-debug`: a change in
+`domain/flora` — a capability, so every module above its layer — asks for 1,146 of the tree's 1,542
+compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in
+`apps/engine_cli`, whose tests start three other apps, for 954 and 7. The floor is the third-party
+code and `core/`, which everything links, so without the cache it saves a quarter to a third of a
+fresh worktree's compiles and most of its links; with the cache warm the compiles are hits, and
+what it saves is the links and the lookups. ([what to run](what-to-run.md#what-affected-means)
+has the rest of the rule.)
+
 ### Size, and getting it back
 
 Measured on 2026-09-22 after all four presets had been built once, in two fresh checkouts of the
@@ -308,7 +460,11 @@ pwsh tools/linux-build.ps1 -Prune        # this checkout's two volumes, and it n
 pwsh tools/linux-build.ps1 -Prune -Stale -WhatIf   # every checkout's leftovers; drop -WhatIf to remove them
 docker image rm engine-linux-ci-desktop:<tag> engine-linux-ci-headless:<tag>
 docker volume rm engine-linux-fetch-cache  # every checkout's next configure refetches what it needs
+docker volume rm engine-linux-ccache       # every checkout's next build compiles everything once
 ```
+
+The compiler cache bounds itself at 30 GB ([why](#the-compiler-cache)); it held 771 MB after the
+three hosted-matrix presets' first compile on 2026-10-20.
 
 The cache is never pruned on its own: a pin bump leaves the old entry behind, a few megabytes to a
 few hundred. Removing the volume while no build is running costs the next configure its
@@ -551,12 +707,51 @@ because the policy says to know what is in the build:
 Development desktop (i9-10980XE, 36 logical CPUs), Docker Desktop 29.6.1, WSL2 VM with 12 CPUs
 and 15.6 GB, `-Jobs 8`.
 
-### The first run of a fresh checkout — which is every agent's first run
+### With the compiler cache (2026-10-20)
 
-Every agent works in a fresh worktree, and a fresh worktree has empty build volumes, so its first
-run is a **cold** build whatever the machine has built before: every third-party dependency —
-Jolt, flecs, SDL3, SQLite, Recast, Tracy, meshoptimizer — is compiled again, for every preset.
-The shared dependency cache takes the *downloads* out of that; the *compiles* it does not touch.
+The three presets the hosted matrix runs, one container each, configure and build, no tests; the
+time is the container's (`-- <preset>: ok in ...`), so the wait for the build lock is not in it.
+One fresh worktree, its volumes pruned between rounds; the tree of `61e7ca55` (about 1,975 ninja
+edges and 1,585 compiles for `linux-clang-debug`, against 1,116 edges when the table below was
+taken).
+
+| | Before: no cache | Cache empty: the first run on the machine | **Fresh worktree, cache warm, no change** | Fresh worktree, cache warm, one line of `domain/flora` changed | Warm volumes, no change |
+|---|---|---|---|---|---|
+| `linux-clang-debug` | 6 m 44 s | 16 m 52 s (0 of 1,585 hits) | **1 m 33 s** (1,585 of 1,585) | 0 m 57 s (1,584 of 1,585; 1 compiled) | 0 m 03 s |
+| `linux-gcc-release` | 20 m 37 s | 21 m 41 s (0 of 1,586) | **0 m 48 s** (1,586 of 1,586) | 0 m 44 s (1,585 of 1,586) | 0 m 03 s |
+| `linux-clang-minimal` | 5 m 22 s | 5 m 52 s (3 of 770) | **0 m 38 s** (770 of 770) | 0 m 37 s (770 of 770: flora is off in it) | 0 m 03 s |
+| **the three** | **32 m 43 s** | 44 m 25 s | **2 m 59 s** | 2 m 18 s | 0 m 09 s |
+
+How to read it:
+
+- **A fresh worktree's first three containers went from about half an hour to three minutes**, at
+  a 100% hit rate: every object, the engine's and every dependency's, came out of the cache. What
+  remains is the configure, the links and the cache's lookups. The one-line change shows the shape
+  an agent's run will have: one compile, everything else a hit. (The same round with a *comment*
+  appended instead was a preprocessed-mode hit — ccache saw that the preprocessed source had not
+  changed — and took 0 m 44 s, 0 m 47 s and 0 m 31 s.)
+- **The cold columns are not a clean comparison, and the warm ones do not need one.** The machine
+  was as loaded as it gets — host CPU at 90–100% through both cold rounds (the WSL VM's twelve CPUs
+  busy, other agents' Windows builds and another session's Python processes beside it), commit
+  13–19 GB free — so the cold numbers are three to six times what the same compiles took on a quiet
+  machine in September, and the 6 m 44 s against 16 m 52 s for `linux-clang-debug` is load, not the
+  cache. The before column's `linux-clang-debug` is the script before this change; its other two
+  rows ran with the cache empty and precompiled headers still on (so every compile a miss, and 749
+  of them not cacheable at all), which is no cache plus ccache's own cost of a miss. The warm rounds
+  ran with the host at 40–85%.
+- **The first run on the machine pays for everyone after it**, once per change to the toolchain or a
+  compile flag: about what a cold build cost before, plus ccache writing 3,941 results (771 MB).
+
+Building the new image (the apt layer and everything after it) took about six minutes, once for
+the machine, inside the first run that needed it.
+
+### The first run of a fresh checkout, before the compiler cache
+
+Measured before 2026-10-20, when a fresh worktree's empty build volumes made its first run a
+**cold** build whatever the machine had built before: every third-party dependency — Jolt, flecs,
+SDL3, SQLite, Recast, Tracy, meshoptimizer — compiled again, for every preset. The shared
+dependency cache took the *downloads* out of that; the *compiles* it did not touch. The compiler
+cache now does ([above](#with-the-compiler-cache-2026-10-20)); this is the history it replaced.
 Configure and build of all four presets, no tests, measured on 2026-09-22 from fresh checkouts of
 one tree (so the three columns built the same sources):
 
@@ -615,8 +810,9 @@ never.
 ### Scheduling: warm early, one at a time
 
 - **Start a fresh worktree's first run early, in the background**, before you need its answer —
-  as soon as the change compiles on Windows, not when you are ready to commit. It is seven to
-  eight minutes of compiling for all four presets with nothing to show for it until the end.
+  as soon as the change compiles on Windows, not when you are ready to commit. With the compiler
+  cache warm it is about a minute a preset; after a toolchain or flag change, the first run on the
+  machine is the cold half hour of [the table](#with-the-compiler-cache-2026-10-20).
   A warm run afterwards is the minute-long compile check the rest of this page describes.
 - **One at a time is the rule, and the lock enforces it**; do not work around it with `-Jobs` or
   a second invocation. A second run waits and says whose build it is waiting for. Three agents
@@ -634,17 +830,14 @@ never.
 
 ### Follow-ups
 
-- **Share the compiles too.** Every checkout compiles byte-identical third-party sources with the
-  same flags at the same paths (`/fetch/...`, `/deps/<preset>/...` and `/src` are the same in every
-  container), so a machine-wide compiler cache — `ccache` in the image, one volume beside
-  `engine-linux-fetch-cache`, `CMAKE_<LANG>_COMPILER_LAUNCHER` on the same configure line — would
-  turn most of the remaining six minutes of a fresh worktree's first run into cache hits, and the
-  unchanged engine files with them. Not done here: it changes the image and adds a tool to it, and
-  it wants its own measurement.
+- **Share the compiles too** — done on 2026-10-20: [the compiler cache](#the-compiler-cache) (roadmap
+  T68), and [its measurements](#with-the-compiler-cache-2026-10-20).
 - **`-Rebuild` could leave the third-party objects alone**, which is what this page used to claim
   it did. Deleting `build/<preset>` takes ninja's deps log with it, so every object under
   `/deps/<preset>` is rebuilt as well: 635 of the 1116 edges of `linux-clang-debug`. Removing only
   the engine's own object directories and keeping `.ninja_log` and `.ninja_deps` would fix it.
+  Since the compiler cache those rebuilt objects are hits, so what is left of this (roadmap T25) is
+  the links and the lookups.
   That is a change to what `-Rebuild` means, so it wants its own measurement, and a cold compile of
   this preset is a minute and a half.
 - **`tools/remote-build.ps1` keeps one dependency directory per checkout on the server** (see
@@ -759,6 +952,14 @@ running that no lock accounts for — most likely a build from a checkout whose 
 predates the lock. The build waits for it; the `docker rm -f <name>` the line prints ends it if
 you know it is abandoned. (An orphan of *this* script, whose owning process is gone, is removed
 without asking: `removing <name>, an orphan whose linux-build.ps1 (pid N) is gone`.)
+
+**`ccache: 0 of N compiles from the cache` on a run you expected to be warm.** Something every
+compile reads changed: the image (a new compiler), a flag every target carries (`cmake/`, a
+preset), or a header everything includes. That run fills the cache for every checkout after it. A
+count of **not cacheable** above zero means a kind of compile ccache refuses has come back — the
+first runs' 749 were precompiled headers ([the compiler cache](#the-compiler-cache)); `docker run
+--rm -v engine-linux-ccache:/ccache -e CCACHE_DIR=/ccache <image> ccache --print-stats` names the
+counter. To rule the cache out of a failure, run once with `$env:ENGINE_CCACHE = '0'`.
 
 **`fetch-cache: <name> is not cached yet` on a run you expected to be warm.** Somebody changed that
 dependency's declaration — a pin, a URL, any detail at all is in the key — so this is the first

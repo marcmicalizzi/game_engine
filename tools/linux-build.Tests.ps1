@@ -250,6 +250,130 @@ Test-That 'a git-spelt root becomes the spelling $Root has' {
   $r -eq (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
 
+# --- the compiler cache: the containers' half -----------------------------------------------------------
+#
+# docs/ci/local-linux.md, "The compiler cache". What a build container is given, and the order of
+# build, statistics and exit in the script it runs, checked as data.
+
+Test-That 'the compiler cache is a machine-wide volume at /ccache, labelled shared, naming no checkout' {
+  $v = Get-SharedVolume ccache
+  $l = Get-VolumeLabels -Role ccache
+  $v.Name -eq 'engine-linux-ccache' -and $v.Mount -eq '/ccache' -and $l['engine.scope'] -eq 'shared' -and
+    $l['engine.role'] -eq 'ccache' -and -not $l.Contains('engine.root')
+}
+Test-That 'and a sweep never lists it, labelled or not' {
+  $machine = @($volumes) + @(
+    (New-VolumeFact -Name 'engine-linux-ccache' -Labels (Get-VolumeLabels -Role ccache) -Size '12GB'),
+    (New-VolumeFact -Name 'engine-linux-ccache' -Size '12GB'))
+  $v = Get-VolumeVerdict -Volumes $machine -Checkouts $checkouts -Holders $holders -CurrentRoot $roots.current
+  $own = Get-OwnVolumeVerdict -Volumes $machine -Root $roots.current -Holders $holders
+  -not (@($v) + @($own) | Where-Object { $_.Name -eq 'engine-linux-ccache' }) -and @($v).Count -eq 17
+}
+$runArgs = Get-BuildContainerArgs -SrcVolume 'engine-linux-src-0123456789ab' -DepsVolume 'engine-linux-deps-0123456789ab' -RoleLabel 'engine.linux-build' -Role build
+$joined = $runArgs -join ' '
+Test-That 'a build container mounts its checkout''s two volumes and the machine''s two' {
+  $joined -match '-v engine-linux-src-0123456789ab:/src ' -and $joined -match '-v engine-linux-deps-0123456789ab:/deps ' -and
+    $joined -match '-v engine-linux-fetch-cache:/fetch ' -and $joined -match '-v engine-linux-ccache:/ccache '
+}
+Test-That 'with the cache''s directory and its 30 GB limit, and the cache on' {
+  $joined -match '-e CCACHE_DIR=/ccache( |$)' -and $joined -match '-e CCACHE_MAXSIZE=30G( |$)' -and
+    $joined -notmatch 'CCACHE_DISABLE' -and $joined -notmatch '--network' -and (Get-CcacheMaxSize) -eq '30G'
+}
+Test-That 'ENGINE_CCACHE=0 runs the compiler directly, and -Offline still takes the network away' {
+  $off = (Get-BuildContainerArgs -SrcVolume s -DepsVolume d -RoleLabel l -Role build -NoCcache -Offline) -join ' '
+  $off -match '-e CCACHE_DISABLE=1' -and $off -match '--network none' -and $off -match '-v engine-linux-ccache:/ccache'
+}
+$presetScript = Get-PresetScript -Name 'linux-clang-debug' -Jobs 8 -Test -Filter 'flora|docs' -FetchCacheArgs '-DENGINE_FETCH_CACHE=/fetch'
+$lines = @($presetScript -split "`n")
+function Find-Line([string]$pattern) { for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { return $i } }; return -1 }
+Test-That 'the configure line names ccache as the C and C++ launcher, turns precompiled headers off, beside the fetch cache' {
+  $c = $lines[(Find-Line '^cmake --preset ')]
+  $c -match '-DCMAKE_C_COMPILER_LAUNCHER=ccache( |$)' -and $c -match '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache( |$)' -and
+    $c -match '-DENGINE_FETCH_CACHE=/fetch' -and $c -match '-DFETCHCONTENT_BASE_DIR=/deps/linux-clang-debug' -and $c -match '-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON( |$)'
+}
+Test-That 'the counters are read on both sides of the build, and the two lines printed after it' {
+  $before = Find-Line '^ccache_snapshot /tmp/ccache.before$'
+  $build = Find-Line '^cmake --build --preset linux-clang-debug -j 8 -- -k 0 \|\| build_status=\$\?$'
+  $after = Find-Line '^ccache_snapshot /tmp/ccache.after$'
+  $report = Find-Line '^ccache_report /tmp/ccache.before /tmp/ccache.after$'
+  $before -gt (Find-Line '^cmake --preset ') -and $build -gt $before -and $after -gt $build -and $report -gt $after
+}
+Test-That 'a failed build still ends the run with its status, after the statistics and before the tests' {
+  $exit = Find-Line '^if \[ "\$build_status" -ne 0 \]; then exit "\$build_status"; fi$'
+  $exit -gt (Find-Line '^ccache_report ') -and $exit -lt (Find-Line '^ctest --preset linux-clang-debug -R ''flora\|docs''$') -and
+    $lines[0] -eq 'set -eo pipefail'
+}
+Test-That 'the statistics are a difference of counters, never a zeroing of the machine''s' {
+  $presetScript -match 'ccache --print-stats' -and $presetScript -notmatch 'ccache (-z|--zero-stats)' -and $presetScript -match "grep -m1 'Cache size'"
+}
+Test-That '-Rebuild removes the preset''s tree first, and without -Test there is no ctest' {
+  $s = Get-PresetScript -Name 'linux-gcc-release' -Rebuild -FetchCacheArgs 'x'
+  $s -match "(?m)^rm -rf /src/build/linux-gcc-release$" -and $s -notmatch 'ctest'
+}
+
+# --- the compiler cache: the Windows half (tools/lib/CompilerCache.psm1, `tools/dev.ps1 configure`) -----
+#
+# Tested here rather than in a test of its own because tools.linux_build is the CTest test the
+# compiler cache already has, and registering another is a cmake/ change for a pure function.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/CompilerCache.psm1') -Force
+$mainRoot = 'D:\workspace\game_engine'
+$common = 'D:/workspace/game_engine/.git'
+Test-That 'the main checkout is primary, an agent''s and the gate''s worktrees are theirs, any other is a worktree' {
+  (Get-CheckoutKind -Root $mainRoot -GitDir 'D:/workspace/game_engine/.git' -CommonDir $common -Branch 'main') -eq 'primary' -and
+    (Get-CheckoutKind -Root 'D:\workspace\game_engine' -GitDir 'd:\workspace\game_engine\.git\' -CommonDir $common) -eq 'primary' -and
+    (Get-CheckoutKind -Root 'D:\workspace\game_engine\.claude\worktrees\agent-a1' -GitDir "$common/worktrees/agent-a1" -CommonDir $common -Branch 'worktree-agent-a1') -eq 'agent' -and
+    (Get-CheckoutKind -Root 'D:\workspace\ge-gate' -GitDir "$common/worktrees/ge-gate" -CommonDir $common -Branch 'gate') -eq 'gate' -and
+    (Get-CheckoutKind -Root 'D:\workspace\mine' -GitDir "$common/worktrees/mine" -CommonDir $common -Branch 'gate-notes') -eq 'worktree'
+}
+Test-That 'ccache''s version line parses, and anything else is $null' {
+  (ConvertFrom-CcacheVersion 'ccache version 4.13.1') -eq [version]'4.13.1' -and (ConvertFrom-CcacheVersion 'ccache version 4.9') -eq [version]'4.9' -and
+    $null -eq (ConvertFrom-CcacheVersion 'command not found')
+}
+$exe = 'C:\Users\someone\AppData\Local\Microsoft\WinGet\Links\ccache.exe'
+function Plan([string]$kind, [string]$setting = '', [string]$e = $exe, [version]$v = [version]'4.13.1', [string]$dir = '', [bool]$win = $true) {
+  Get-CcachePlan -Kind $kind -Setting $setting -Exe $e -Version $v -MainRoot $mainRoot -CacheDir $dir -IsWindows $win
+}
+Test-That 'on by default in an agent''s worktree and the gate''s' { (Plan agent).Enabled -and (Plan gate).Enabled }
+Test-That 'off in the primary checkout and any other worktree, and says how to turn it on and why it is off' {
+  $p = Plan primary
+  -not $p.Enabled -and $p.Reason -match 'ENGINE_CCACHE=1' -and $p.Reason -match 'debug information' -and -not (Plan worktree).Enabled
+}
+Test-That 'ENGINE_CCACHE=1 turns it on there, and ENGINE_CCACHE=0 off everywhere' {
+  (Plan primary '1').Enabled -and (Plan worktree '1').Enabled -and -not (Plan agent '0').Enabled -and -not (Plan gate '0').Enabled
+}
+Test-That 'no ccache on PATH, one older than 4.13, or not Windows: off, and the build is what it was' {
+  -not (Plan agent '' '').Enabled -and (Plan agent '' '').Reason -match 'winget install ccache' -and
+    -not (Plan agent '' $exe ([version]'4.12.2')).Enabled -and -not (Plan agent '' $exe $null).Enabled -and
+    -not (Plan agent '' $exe ([version]'4.13') '' $false).Enabled -and
+    (@(Get-CcacheConfigureArgs -Plan (Plan agent '' '') -CachedLauncher '')).Count -eq 0
+}
+$on = Plan agent
+Test-That 'base_dir is the main checkout''s parent, which holds every worktree and the gate''s; the cache is beside it' {
+  $on.BaseDir -eq 'D:\workspace' -and $on.CacheDir -eq 'D:\workspace\game_engine_local\ccache' -and
+    (Plan agent '' $exe ([version]'4.13') 'E:\cc').CacheDir -eq 'E:\cc'
+}
+Test-That 'the launcher carries every setting, so a build from an IDE or straight through ninja caches the same way' {
+  $on.Launcher -eq 'C:/Users/someone/AppData/Local/Microsoft/WinGet/Links/ccache.exe;base_dir=D:/workspace;cache_dir=D:/workspace/game_engine_local/ccache;hash_dir=false;max_size=30G'
+}
+Test-That 'configured on: both launchers, debug information in the object for the configurations that carry it, no precompiled headers' {
+  $a = @(Get-CcacheConfigureArgs -Plan $on -CachedLauncher '')
+  $a.Count -eq 4 -and $a[3] -eq '-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON' -and $a[0] -eq "-DCMAKE_C_COMPILER_LAUNCHER=$($on.Launcher)" -and $a[1] -eq "-DCMAKE_CXX_COMPILER_LAUNCHER=$($on.Launcher)" -and
+    $a[2] -eq '-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>'
+}
+Test-That 'switched off over a tree it was on in: the four variables removed; over any other tree: nothing' {
+  $off = Plan primary
+  $a = @(Get-CcacheConfigureArgs -Plan $off -CachedLauncher $on.Launcher)
+  ($a -join ' ') -eq '-UCMAKE_C_COMPILER_LAUNCHER -UCMAKE_CXX_COMPILER_LAUNCHER -UCMAKE_MSVC_DEBUG_INFORMATION_FORMAT -UCMAKE_DISABLE_PRECOMPILE_HEADERS' -and
+    (@(Get-CcacheConfigureArgs -Plan $off -CachedLauncher '')).Count -eq 0 -and
+    (@(Get-CcacheConfigureArgs -Plan $off -CachedLauncher 'sccache')).Count -eq 0
+}
+Test-That 'a tree reconfigures when its launcher is not the one wanted, and only then' {
+  (Test-CcacheReconfigure -Plan $on -CachedLauncher '') -and -not (Test-CcacheReconfigure -Plan $on -CachedLauncher $on.Launcher) -and
+    (Test-CcacheReconfigure -Plan (Plan primary) -CachedLauncher $on.Launcher) -and -not (Test-CcacheReconfigure -Plan (Plan primary) -CachedLauncher '') -and
+    (Test-CcacheReconfigure -Plan (Plan agent '' $exe ([version]'4.13') 'E:\cc') -CachedLauncher $on.Launcher)
+}
+
 # --- the script's own refusals, before docker is asked anything ---------------------------------------
 
 function Invoke-Script([string[]]$arguments, [hashtable]$environment = @{}) {
