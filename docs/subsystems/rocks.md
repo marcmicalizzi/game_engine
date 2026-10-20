@@ -435,8 +435,15 @@ FLIP ≤ 0.02, coarse cut ≤ 0.75 of the finest's pairs where the finest is den
 | `sandstone-boulder` | 19,200 | 429 / 10 | 0 | 6 | 9.5% | 49,655,040 | 88 / 159 (55%, too sparse to judge) | 0.0102 | 44.8 | pass |
 | `basalt-outcrop` | 50,304 | 1,163 / 11 | 0 | 42 | 14.8% | 34,370,464 | 92 / 273 (34%) | 0.0050 | 46.6 | pass |
 | `granite-scree` | 13,152 | 327 / 9 | 0 | 84 | 35.6% | 84,672 | 36 / 109 (33%) | 0.0048 | 41.9 | pass |
+| `sandstone-escarpment` (2026-10-19, the GPU shared with another agent's flora run) | 162,064 | 3,840 / 12 | 0 | 269 | 16.7% | 2,746,392 | 132 / 726 (18%) | 0.0064 | 40.4 | pass |
 
-Four of four pass, all of them with room: the FLIP is half the threshold or less and the coarse
+The cliff passes with as much room as the boulders — the coarse cut draws 18% of the finest's pairs
+and the FLIP is a third of the threshold — though at the harness's framing, the whole 300 m face in
+a 640-pixel square, it covers 4.5% of the frame, so its object FLIP (0.142) is the harness's
+unreliable-below-15% figure and the whole-frame one is the judge. Its 269 islands are the face's
+charts of 24 repeats, the skirt's and the blocks' six each; the 16.7% seam is those charts' borders.
+
+The four boulder recipes: four of four pass, all of them with room: the FLIP is half the threshold or less and the coarse
 cut a third to a half of the finest. The scree's seam share is high (six charts on each of fourteen
 small bodies, many at n = 4) and costs it nothing at this framing. The one failure on the way was
 the UV layout (above).
