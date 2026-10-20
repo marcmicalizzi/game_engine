@@ -80,15 +80,17 @@ std::vector<Hit> vertical_hits(const assets::MeshData& mesh, f64 x, f64 z) {
     const Vec3 a = mesh.positions[mesh.indices[i]];
     const Vec3 b = mesh.positions[mesh.indices[i + 1]];
     const Vec3 c = mesh.positions[mesh.indices[i + 2]];
-    const f64 d = (static_cast<f64>(b.x) - a.x) * (static_cast<f64>(c.z) - a.z) -
-                  (static_cast<f64>(c.x) - a.x) * (static_cast<f64>(b.z) - a.z);
+    const f64 ax = static_cast<f64>(a.x), ay = static_cast<f64>(a.y), az = static_cast<f64>(a.z);
+    const f64 bx = static_cast<f64>(b.x) - ax, by = static_cast<f64>(b.y) - ay;
+    const f64 bz = static_cast<f64>(b.z) - az;
+    const f64 cx = static_cast<f64>(c.x) - ax, cy = static_cast<f64>(c.y) - ay;
+    const f64 cz = static_cast<f64>(c.z) - az;
+    const f64 d = bx * cz - cx * bz;
     if (std::fabs(d) < 1e-12) continue;
-    const f64 u =
-        ((x - a.x) * (static_cast<f64>(c.z) - a.z) - (static_cast<f64>(c.x) - a.x) * (z - a.z)) / d;
-    const f64 v =
-        ((static_cast<f64>(b.x) - a.x) * (z - a.z) - (x - a.x) * (static_cast<f64>(b.z) - a.z)) / d;
+    const f64 u = ((x - ax) * cz - cx * (z - az)) / d;
+    const f64 v = (bx * (z - az) - (x - ax) * bz) / d;
     if (u < 0.0 || v < 0.0 || u + v > 1.0) continue;
-    const f64 y = a.y + u * (static_cast<f64>(b.y) - a.y) + v * (static_cast<f64>(c.y) - a.y);
+    const f64 y = ay + u * by + v * cy;
     const Vec3 n = cross(b - a, c - a);
     hits.push_back(Hit{y, n.y < 0.0f});
   }
@@ -176,12 +178,12 @@ TEST_CASE("cliffs: the undercut makes an overhang, and without it nothing overha
   // The vertical line through the first: at least two hits above the foot, the lower one facing
   // down (out of the overhang's underside) and one above it facing up (into the bed from above).
   const Vec3 at = centres[centres.size() / 2];
-  const std::vector<Hit> hits = vertical_hits(mesh, at.x, at.z);
+  const std::vector<Hit> hits = vertical_hits(mesh, static_cast<f64>(at.x), static_cast<f64>(at.z));
   u32 down = 0;
   u32 up_above = 0;
   for (const Hit& h : hits) {
-    if (h.down && h.y > 1.0 && std::fabs(h.y - at.y) < 0.5) ++down;
-    if (!h.down && h.y > at.y) ++up_above;
+    if (h.down && h.y > 1.0 && std::fabs(h.y - static_cast<f64>(at.y)) < 0.5) ++down;
+    if (!h.down && h.y > static_cast<f64>(at.y)) ++up_above;
   }
   CHECK(down >= 1);
   CHECK(up_above >= 1);

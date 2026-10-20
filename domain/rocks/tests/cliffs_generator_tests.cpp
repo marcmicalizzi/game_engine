@@ -72,14 +72,15 @@ TEST_CASE("cliffs generator: the foot of a steep band is traced, and flat ground
   REQUIRE(faces.size() == 1);
   const CliffFace& face = faces[0];
   const Vector<CliffPoint>& p = face.cliff.points;
-  MESSAGE("one face at x " << face.x_mm / 1000.0 << ", " << face.length << " m long, "
-                           << face.mean_height << " m high, batter " << *p[p.size() / 2].batter);
+  MESSAGE("one face at x " << static_cast<f64>(face.x_mm) / 1000.0 << ", " << face.length
+                           << " m long, " << face.mean_height << " m high, batter "
+                           << static_cast<f64>(*p[p.size() / 2].batter));
   // Along z, the full block, standing off downhill of the foot at x 100-104.
   CHECK(face.length > 240.0);
   f64 x_lo = 1e9, x_hi = -1e9;
   for (const CliffPoint& q : p) {
-    x_lo = std::min(x_lo, face.x_mm / 1000.0 + q.x);
-    x_hi = std::max(x_hi, face.x_mm / 1000.0 + q.x);
+    x_lo = std::min(x_lo, static_cast<f64>(face.x_mm) / 1000.0 + static_cast<f64>(q.x));
+    x_hi = std::max(x_hi, static_cast<f64>(face.x_mm) / 1000.0 + static_cast<f64>(q.x));
   }
   CHECK(x_lo > 94.0);
   CHECK(x_hi < 104.0);
@@ -134,8 +135,8 @@ TEST_CASE("cliffs generator: a face is the same whichever blocks and tiles ask")
   CHECK(expanded.things == 2);  // the band crosses two blocks along z, one face each
   bool found = false;
   for (const scene_gen::Placement& p : expanded.instances) {
-    found = found || (std::fabs(p.position.x - alone[0].x_mm / 1000.0) < 1e-9 &&
-                      std::fabs(p.position.z - alone[0].z_mm / 1000.0) < 1e-9);
+    found = found || (std::fabs(p.position.x - static_cast<f64>(alone[0].x_mm) / 1000.0) < 1e-9 &&
+                      std::fabs(p.position.z - static_cast<f64>(alone[0].z_mm) / 1000.0) < 1e-9);
   }
   CHECK(found);
   // Every tile, in reverse order: the same instances and the same recipes as the whole read.
