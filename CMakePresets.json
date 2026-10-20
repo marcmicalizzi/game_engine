@@ -117,13 +117,13 @@
       "name": "linux-server",
       "displayName": "Linux GCC RelWithDebInfo, x86-64-v2, headless (the Sandy Bridge GPU server over SSH)",
       "inherits": "linux-gcc-release-v2",
-      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none" }
+      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none", "ENGINE_TEST_WORK_TIMEOUT_S": "3600" }
     },
     {
       "name": "linux-server-debug",
       "displayName": "Linux Clang Debug, x86-64-v2, headless (the same server, asserts on)",
       "inherits": "linux-clang-debug-v2",
-      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none" }
+      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none", "ENGINE_TEST_WORK_TIMEOUT_S": "3600" }
     }
   ],
   "buildPresets": [

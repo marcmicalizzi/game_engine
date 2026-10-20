@@ -59,7 +59,10 @@ set(ENGINE_TEST_GPU_LOCK_WAIT_S 1800 CACHE STRING
 # end-to-end tests have always had (cmake/EngineModule.cmake says why ten), which is also four
 # times the slowest GPU module test (renderer, about 140 s in msvc-debug). A test that can wait
 # gets TIMEOUT = work + queue, so a wait that ends at the deadline and then does all of the test's
-# work still ends inside it.
+# work still ends inside it. The linux-server presets raise it to 3,600 (CMakePresets.json): the
+# Pascal server's renderer suite takes about 37 minutes (2,195 s and 2,207 s on gates b30 and b32,
+# 2026-10-20), so its work alone was spending the queue budget too, and batch 33's heavier flora
+# scenes (G73, R65) took it past 2,400 s and into a timeout.
 set(ENGINE_TEST_WORK_TIMEOUT_S 600 CACHE STRING
   "Seconds of work a test that can wait for the GPU lock has on top of the wait")
 target_compile_definitions(engine_test_main PRIVATE

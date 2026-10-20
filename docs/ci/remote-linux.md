@@ -361,6 +361,13 @@ running at all, the renderer's most of all: until that day the driver was out, a
 day back the renderer could not be created there
 ([self-hosted runners](self-hosted-runners.md#the-first-run-on-the-titan-xp)).
 
+By 2026-10-20 the `renderer` suite alone takes about 37 minutes there (2,195 s on gate b30 and
+2,207 s on b32: the water, flora, fire and HUD tests that landed in October), which is why the
+`linux-server` presets set `ENGINE_TEST_WORK_TIMEOUT_S` to 3,600 (`CMakePresets.json`): the
+default 600 s of work plus the 1,800 s lock wait was being spent on work alone, and batch 33's
+heavier flora scenes (G73, R65) ran it past 2,400 s and into a timeout on 2026-10-21. A test's
+ceiling there is now 5,400 s.
+
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded
 dependencies 2.2 GB — under `~/game_engine-remote/<checkout-id>/`, on a volume with 8.6 TB free.
 `-Clean` drops the build tree and keeps the dependencies. Nothing is written anywhere else on that
