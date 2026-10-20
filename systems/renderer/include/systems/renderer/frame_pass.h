@@ -43,6 +43,7 @@ class Device;
 namespace engine::renderer {
 
 struct Camera;
+struct FrameFire;
 struct SceneData;
 struct ShadowCascades;
 
@@ -152,6 +153,11 @@ struct FramePassContext {
   const ShadowCascades* fit = nullptr;
   // Where the pass's report goes; the renderer folds it into `Stats` when the callback returns.
   FramePassReport* report = nullptr;
+  // The frame's fires (fire.h; renderer.md, "Fires"): the scene's own and its placed props', burnt
+  // at `world_time_s` — the same ones whose lights are in the frame's light array — for a medium to
+  // draw their flames and smoke. None: `fire_count` 0.
+  const FrameFire* fires = nullptr;
+  u32 fire_count = 0;
 };
 
 // A pass: adds its passes to `context.graph` and fills `context.report`. False, with `error`, fails

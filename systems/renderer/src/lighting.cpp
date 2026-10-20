@@ -136,7 +136,7 @@ void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptio
                          -std::sin(angle * 0.7f) * orbit},
            4.0f * radius};
   out.lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * orbit * orbit};
-  out.light_count = k_frame_lights;
+  out.light_count = k_stand_in_lights;
 }
 
 void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out,

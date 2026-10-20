@@ -22,6 +22,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
 
 #include <optional>
@@ -203,6 +204,9 @@ struct StreamedPlacements {
 struct SceneProp {
   std::string name;
   u32 mesh = 0;
+  // The prop's `fire` (fire.h): every placed instance of it carries this fire, its position from
+  // the instance's origin. Absent: none.
+  std::optional<FireDesc> fire{};
 };
 
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
@@ -283,6 +287,8 @@ struct SceneDesc {
   // The file's `props` (`engine.scene.Prop`): meshes appended after the file's own, in the file's
   // order, with no instance of any of them. Empty for a scene with none.
   Vector<SceneProp> props;
+  // The file's `fires` (`engine.scene.Fire`, fire.h), at their world positions. Empty: none.
+  Vector<FireDesc> fires;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -425,6 +431,8 @@ struct SceneData {
   // Carried from the `SceneDesc`: the props a game module may place (`SceneProp`), each naming its
   // mesh among `parts`. The load placed none of them.
   Vector<SceneProp> props;
+  // Carried from the `SceneDesc`: the scene's own fires (fire.h), lit by the renderer's `FireSet`.
+  Vector<FireDesc> fires;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

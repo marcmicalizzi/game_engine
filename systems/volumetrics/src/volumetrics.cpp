@@ -9,6 +9,7 @@
 #include <domain/terrain/tile.h>
 #include <domain/terrain/wind.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/fire.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/terrain.h>
@@ -96,6 +97,8 @@ bool parse_medium_debug(std::string_view text, MediumDebug& out) noexcept {
     out = MediumDebug::plumes;
   } else if (text == "clouds") {
     out = MediumDebug::clouds;
+  } else if (text == "fire") {
+    out = MediumDebug::fire;
   } else if (text == "none") {
     out = MediumDebug::none;
   } else {
@@ -109,6 +112,7 @@ const char* medium_debug_name(MediumDebug debug) noexcept {
     case MediumDebug::dust: return "froxels";
     case MediumDebug::plumes: return "plumes";
     case MediumDebug::clouds: return "clouds";
+    case MediumDebug::fire: return "fire";
     case MediumDebug::none: break;
   }
   return "none";
@@ -490,6 +494,66 @@ Vec2 CloudDrift::offset_m(f64 time_s) const noexcept {
   return Vec2{static_cast<f32>(x), static_cast<f32>(z)};
 }
 
+// ---- fire (R85) ---------------------------------------------------------------------------------
+
+f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept {
+  const f32 area = k_flame_fill * 2.0f * radius_m * height_m;
+  const f32 path = k_flame_fill * 2.0f * radius_m;
+  if (!(area > 0.0f) || !(path > 0.0f) || !(intensity > 0.0f)) return 0.0f;
+  return k_flame_brightness * intensity / area / path;
+}
+
+MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
+                       f64 time_s, bool near) noexcept {
+  MediumFire out;
+  out.base = Vec4{relative(fire.base, eye), fire.radius_m};
+  const f32 cell = k_flame_cell * fire.radius_m;
+  // The noise's rise in cells, reduced to its lattice's period in f64 (the clock is years in).
+  const f64 cells = time_s * static_cast<f64>(k_flame_rise_m_s) / static_cast<f64>(cell);
+  const f64 period = static_cast<f64>(k_flame_noise_period);
+  const f64 rise = cells - std::floor(cells / period) * period;
+  out.flame = Vec4{fire.height_m, k_flame_absorption_per_m, static_cast<f32>(rise), cell};
+  // The flame burns at the light's mean intensity: the light flickers, the flame's own noise moves.
+  const f32 e = flame_emission_per_m(fire.base_intensity, fire.radius_m, fire.height_m);
+  out.emission = Vec4{fire.flame_color * e, 0.0f};
+  const WorldPos light =
+      fire.base + DVec3{0.0, static_cast<f64>(renderer::k_fire_light_height * fire.height_m), 0.0};
+  out.light = Vec4{relative(light, eye), fire.reach_m};
+  out.light_rgb = Vec4{fire.color * fire.intensity, 0.0f};
+  out.smoke = Vec4{k_smoke_extinction_per_m * fire.smoke_density, fire.smoke_rise_m_s,
+                   fire.smoke_spread, k_smoke_fade_m};
+  const Vec2 w = wind.direction * (wind.speed_mps * k_smoke_wind);
+  out.wind = Vec4{w.x, k_smoke_start * fire.radius_m, w.y, 0.0f};
+  out.ids[0] = fire.seed;
+  out.ids[1] = near ? 1u : 0u;
+  return out;
+}
+
+f32 smoke_density(const MediumFire& f, const Vec3& x) noexcept {
+  if (f.smoke.x <= 0.0f) return 0.0f;
+  const Vec3 top{f.base.x, f.base.y + f.flame.x, f.base.z};
+  const f32 s = x.y - top.y;
+  if (s < -0.5f * f.flame.x) return 0.0f;
+  const f32 rise = std::max(f.smoke.y, 0.05f);
+  const f32 rs = std::max(s, 0.0f);
+  const f32 slope_x = f.wind.x / rise;
+  const f32 slope_z = f.wind.z / rise;
+  const f32 cx = top.x + slope_x * rs;
+  const f32 cz = top.z + slope_z * rs;
+  const f32 path = rs * std::sqrt(1.0f + slope_x * slope_x + slope_z * slope_z);
+  const f32 r0 = f.wind.y;
+  const f32 sigma = r0 + f.smoke.z * path;
+  const f32 ox = x.x - cx;
+  const f32 oz = x.z - cz;
+  const f32 across = (ox * ox + oz * oz) / (sigma * sigma);
+  if (across > 18.0f) return 0.0f;
+  const f32 fade = std::exp(-path / f.smoke.w);
+  const f32 a = -0.5f * f.flame.x;
+  const f32 u = std::clamp((s - a) / (0.0f - a), 0.0f, 1.0f);
+  const f32 rise_in = u * u * (3.0f - 2.0f * u);
+  return f.smoke.x * (r0 / sigma) * (r0 / sigma) * fade * rise_in * std::exp(-0.5f * across);
+}
+
 struct MediumPass::Pipelines {
   gfx::ComputePipeline fill;
   gfx::ComputePipeline integrate;
@@ -524,8 +588,13 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
     case MediumDebug::dust: sources_ &= k_source_dust; break;
     case MediumDebug::plumes: sources_ &= k_source_plumes; break;
     case MediumDebug::clouds: sources_ &= k_source_clouds; break;
+    case MediumDebug::fire: sources_ = 0; break;
     case MediumDebug::none: break;
   }
+  // The frame's fires (R85): whatever the renderer hands each frame, none at all costs nothing.
+  if (options_.fires &&
+      (options_.debug == MediumDebug::none || options_.debug == MediumDebug::fire))
+    sources_ |= k_source_fire;
   // The ground the dust lies on and the wind that lifts it: the scene's terrain, through the same
   // provider the renderer drew it with (and the dunes' own field behind it, for the wind record).
   if (scene.terrain.enabled) {
@@ -599,6 +668,8 @@ void MediumPass::destroy() noexcept {
     }
     for (gfx::BufferResource& b : params_)
       gfx::destroy_buffer(*device_, b);
+    for (gfx::BufferResource& b : fire_buffers_)
+      gfx::destroy_buffer(*device_, b);
     if (froxels_.buffer.valid()) gfx::destroy_buffer(*device_, froxels_);
     if (clouds_.buffer.valid()) gfx::destroy_buffer(*device_, clouds_);
     if (cloud_shadow_.buffer.valid()) gfx::destroy_buffer(*device_, cloud_shadow_);
@@ -612,6 +683,7 @@ void MediumPass::destroy() noexcept {
   plumes_.reset();
   pipelines_.reset();
   params_.clear();
+  fire_buffers_.clear();
   froxels_ = gfx::BufferResource{};
   clouds_ = gfx::BufferResource{};
   cloud_shadow_ = gfx::BufferResource{};
@@ -724,6 +796,26 @@ u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWi
   return kept;
 }
 
+// The frame's fires in the medium (volumetrics.md, "Fire"): every fire the renderer burnt this
+// frame, in the eye's frame, into this slot's block; those within k_fire_near_m of the eye marked
+// for the apply's march. How many, and how many of them near.
+u32 MediumPass::build_fires(const renderer::FramePassContext& c, const MediumWind& wind,
+                            u32& near) {
+  near = 0;
+  if (c.fires == nullptr || c.fire_count == 0 || fire_buffers_.empty()) return 0;
+  const u32 n = std::min(c.fire_count, renderer::k_max_fires);
+  MediumFire* out = static_cast<MediumFire*>(fire_buffers_[c.slot].mapped);
+  for (u32 i = 0; i < n; ++i) {
+    const renderer::FrameFire& fire = c.fires[i];
+    const DVec3 d = fire.base - c.eye_world;
+    const f64 reach = static_cast<f64>(k_fire_near_m) + static_cast<f64>(fire.radius_m);
+    const bool is_near = d.x * d.x + d.y * d.y + d.z * d.z < reach * reach;
+    out[i] = medium_fire(fire, c.eye_world, wind, c.world_time_s, is_near);
+    near += is_near ? 1u : 0u;
+  }
+  return n;
+}
+
 // The first frame makes the per-slot blocks and the grids; a frame after it makes nothing, so the
 // steady-state frame allocates nothing (renderer.md, "The frame loop allocates nothing").
 bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::string* error) {
@@ -737,6 +829,17 @@ bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::
   for (gfx::BufferResource& b : params_) {
     if (!gfx::create_buffer(*device_, u64{k_params_bytes} * views_, k_address, true, b, error))
       return false;
+  }
+  for (gfx::BufferResource& b : fire_buffers_)
+    gfx::destroy_buffer(*device_, b);
+  fire_buffers_.clear();
+  if ((sources_ & k_source_fire) != 0) {
+    fire_buffers_.resize(context.frames_in_flight);
+    for (gfx::BufferResource& b : fire_buffers_) {
+      if (!gfx::create_buffer(*device_, sizeof(MediumFire) * renderer::k_max_fires, k_address, true,
+                              b, error))
+        return false;
+    }
   }
   if (plumes_ != nullptr) {
     for (gfx::BufferResource& b : plumes_->segment_buffers)
@@ -810,6 +913,9 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
   Vec4 plume_grid{};
   stats_.plume_segments =
       (sources_ & k_source_plumes) != 0 ? build_plumes(c, wind, plume_grid) : 0u;
+  u32 near_fires = 0;
+  stats_.fires = (sources_ & k_source_fire) != 0 ? build_fires(c, wind, near_fires) : 0u;
+  stats_.near_fires = near_fires;
   // The far clouds: the march's texels (a quarter of the largest view a side), made on the first
   // frame and again only when the views change size, and the noise's coordinate at the eye — the
   // eye less the wind's drift, reduced to the field's period in f64 (ADR-0053).
@@ -892,6 +998,12 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
       p.source[3] = cp.seed;
       p.clouds = clouds_.address + u64{cloud_w_} * cloud_h_ * 8 * v;
       p.cloud_shadow_map = cloud_shadow_.address;
+    }
+    if (stats_.fires > 0) {
+      p.fires = fire_buffers_[c.slot].address;
+      p.fire_count = stats_.fires;
+      p.fire_near = near_fires;
+      p.fire_terms = Vec4{k_smoke_albedo, static_cast<f32>(k_flame_steps), 0.0f, 0.0f};
     }
     if (stats_.plume_segments > 0) {
       p.plumes = plumes_->segment_buffers[c.slot].address;

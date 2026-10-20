@@ -1,0 +1,23 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "campfire",
+  "description": "Twenty seconds at 60 fps: once round the fire a metre and a half over the sand six metres out, looking at the flame, then in to two and a half metres on the downwind side, under the smoke. README.md says what each marker shows.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "position": [6, 1.5, 0], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 3, "position": [4.24, 1.5, 4.24], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 6, "position": [0, 1.5, 6], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 9, "position": [-4.24, 1.5, 4.24], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 12, "position": [-6, 1.5, 0], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 15, "position": [-4.24, 1.5, -4.24], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 17, "position": [0, 1.4, -4], "ground": true, "target": [0, -0.6, 0]},
+    {"time": 20, "position": [1.8, 1.3, -1.8], "ground": true, "target": [0, -0.7, 0]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "east", "note": "From six metres east: the flame, the ring of stones and the logs, the sand lit orange round them and falling to the moonlight in a few metres."},
+    {"frame": 720, "name": "west", "note": "From the west, the other side: the shadows of the stones and the logs thrown away from the fire under --shadows rt, and the smoke leaning downwind."},
+    {"frame": 1199, "name": "close", "note": "Two and a half metres from the flame: the near flame marched per pixel, its tongues and its colour from the base to the tips."}
+  ]
+}

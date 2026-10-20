@@ -39,6 +39,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/fire.h>
 #include <systems/renderer/frame_pass.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/overlay.h>
@@ -350,6 +351,10 @@ struct Stats {
   // the CPU (systems/volumetrics). Gameplay reads it here, never from the picture (plan 04).
   // Negative when no pass reported one. Not one frame late: the field is the CPU's.
   f32 visibility_m = -1.0f;
+  // The last recorded frame's fires (fire.h): how many it burnt, and how many of them it lit by a
+  // light of the array (`k_max_fire_lights` at most, nearest the eye).
+  u32 fires = 0;
+  u32 fire_lights = 0;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
@@ -773,6 +778,10 @@ class SceneRenderer {
   u32 shadow_texture_slot_ = gfx::BindlessSet::k_invalid_slot;
   u32 shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
   ShadowCascades cascades_;
+  // The scene's fires (fire.h): its own and its placed props', found again when the tail changes,
+  // and this frame's burnt at the world's clock (reserved once: a frame allocates nothing).
+  FireSet fires_;
+  Vector<FrameFire> frame_fires_;
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
   OverlayPass overlay_;

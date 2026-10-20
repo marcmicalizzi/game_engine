@@ -1,0 +1,93 @@
+{
+  "format": "engine.scene.v1",
+  "name": "campfire",
+  "camera_path": "camera-path.json",
+  "description": "A campfire in a hollow of small dunes at 22:00 under a thin moon (roadmap R85): a fire with a ring of scree stones and two logs, its flickering light on the sand and the stones, casting their shadows under --shadows rt, its flame in the medium and its smoke drifting downwind on the dunes' wind, the dust round it lit orange. A prop declaring the same fire is there for a game to place (engine-view --game). A camera path circles the fire at six metres and closes in; a walk starts beside it (README.md).",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "moon_age_days": 3,
+    "turbidity": 2.2,
+    "ground_albedo": 0.38,
+    "exposure": "Fixed",
+    "exposure_ev100": 5
+  },
+  "terrain": {
+    "size": 257,
+    "extent": 128,
+    "seed": 5,
+    "dune_height": 3,
+    "dune_wavelength": 40,
+    "basins": [
+      {"center": [0, 0], "radius": 14, "depth": 1.5}
+    ],
+    "generator": "Dunes",
+    "time": 94687200.0
+  },
+  "medium": {
+    "dust": {"scale": 1.0}
+  },
+  "fires": [
+    {
+      "name": "hearth",
+      "position": [0, 0.05, 0],
+      "ground": true,
+      "radius_m": 0.32,
+      "height_m": 0.85,
+      "intensity": 250,
+      "color_k": 1800,
+      "smoke": {"density": 0.5, "rise_m_s": 1.2, "spread": 0.22},
+      "flicker": 0.6,
+      "seed": 7
+    }
+  ],
+  "meshes": [
+    {"name": "log", "path": "../../rocks/sandstone-boulder.rock.json"}
+  ],
+  "instances": [
+    {"mesh": 0, "name": "log 1", "translation": [0.05, 0.0, 0.0], "ground": true, "yaw_deg": 20, "scale": [0.2, 0.1, 0.08]},
+    {"mesh": 0, "name": "log 2", "translation": [-0.05, 0.06, 0.02], "ground": true, "yaw_deg": 110, "scale": [0.19, 0.09, 0.075]}
+  ],
+  "placements": [
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "hearth-stones",
+        "seed": 11,
+        "tile_size": 32,
+        "region": {"kind": "Polygon", "polygon": [[0.95, 0], [0.67, 0.67], [0, 0.95], [-0.67, 0.67], [-0.95, 0], [-0.67, -0.67], [0, -0.95], [0.67, -0.67]]},
+        "density": {"kind": "Constant", "per_m2": 40},
+        "kinds": [
+          {
+            "name": "stone",
+            "mesh": "../../rocks/granite-boulder.rock.json",
+            "weight": 1.0,
+            "spacing": 0.3,
+            "scale_min": 0.09,
+            "scale_max": 0.14,
+            "align": true
+          }
+        ],
+        "exclude": {"circles": [{"at": [0, 0, 0], "radius": 0.62}]}
+      }
+    }
+  ],
+  "props": [
+    {
+      "name": "campfire",
+      "mesh": "../../rocks/granite-scree.rock.json",
+      "fit": {"height": 0.25},
+      "fire": {
+        "name": "campfire",
+        "position": [0, 0.1, 0],
+        "radius_m": 0.3,
+        "height_m": 0.8,
+        "intensity": 220,
+        "color_k": 1850,
+        "smoke": {"density": 0.45, "rise_m_s": 1.2, "spread": 0.22},
+        "flicker": 0.6,
+        "seed": 3
+      }
+    }
+  ]
+}

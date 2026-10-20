@@ -42,6 +42,7 @@ struct TileWind;
 
 namespace engine::renderer {
 class SceneRenderer;
+struct FrameFire;
 struct SceneData;
 class TerrainSampler;
 }  // namespace engine::renderer
@@ -74,7 +75,7 @@ struct MediumDesc {
 bool read_medium(const JsonValue& block, MediumDesc& out, bool& present, std::string* error);
 
 // `--medium-debug`: one source alone, for a look.
-enum class MediumDebug : u8 { none = 0, dust, plumes, clouds };
+enum class MediumDebug : u8 { none = 0, dust, plumes, clouds, fire };
 bool parse_medium_debug(std::string_view text, MediumDebug& out) noexcept;
 const char* medium_debug_name(MediumDebug debug) noexcept;
 
@@ -215,11 +216,71 @@ class CloudDrift {
   const terrain::DuneField* field_ = nullptr;
 };
 
+// ---- fire (R85) ---------------------------------------------------------------------------------
+
+// A fire in the medium (volumetrics.md, "Fire"): the renderer's `FrameFire` — its light already in
+// the frame's light array — as a flame, its light scattered round it and its smoke.
+//
+// **The flame** is an emissive, weakly absorbing volume of seeded noise rising through an envelope
+// over the base radius and height. Its emission is tied to the light, so the flame is as bright as
+// the light it casts: the intensity over the flame's projected area (`k_flame_fill` of the
+// rectangle 2r x h) is its luminance, and the emission per metre is that over the mean path through
+// it (`k_flame_fill` of 2r), in the blackbody colour of the block's temperature.
+inline constexpr f32 k_flame_absorption_per_m = 0.8f;  // at density 1: a flame is mostly clear
+inline constexpr f32 k_flame_fill = 0.6f;
+// The share of that luminance the flame's own emission carries at its densest, chosen by eye on the
+// campfire's captures: at the whole of it every flame is one saturated blob at any exposure that
+// shows the sand it lights, where a real flame's core and its tongues read apart.
+inline constexpr f32 k_flame_brightness = 0.3f;
+inline constexpr f32 k_flame_rise_m_s = 1.4f;       // how fast the flame's noise rises through it
+inline constexpr f32 k_flame_cell = 0.45f;          // the noise's cell, of the flame's radius
+inline constexpr f32 k_flame_noise_period = 64.0f;  // its lattice wraps on y, in cells
+// **The near flame**: a fire whose base is within this of the eye is marched per pixel in the apply
+// with this many steps, where the froxels are a metre deep; past it the froxels hold it.
+inline constexpr f32 k_fire_near_m = 8.0f;
+inline constexpr u32 k_flame_steps = 40;
+// **The smoke**: at density 1 this extinction at the flame's top, an albedo darker than the sand's
+// and the dust's phase; the column fades by e over `k_smoke_fade_m` of its path, starts at
+// `k_smoke_start` of the flame's radius, and bends with `k_smoke_wind` of the record's wind (the
+// wind at a fire's height, under the log profile's 10 m).
+inline constexpr f32 k_smoke_extinction_per_m = 0.6f;
+inline constexpr f32 k_smoke_albedo = 0.42f;
+inline constexpr f32 k_smoke_fade_m = 25.0f;
+inline constexpr f32 k_smoke_start = 0.6f;
+inline constexpr f32 k_smoke_wind = 0.5f;
+
+// One fire as the shader reads it (GPU-mirrored, 128 bytes; shaders/medium.slang's `MediumFire`).
+struct MediumFire {
+  Vec4 base;   // xyz the flame's base (frame space), w its radius
+  Vec4 flame;  // x its height, y absorption /m, z the noise's rise (cells, mod the period), w cell
+  Vec4 emission;    // rgb the flame's emission /m at density 1 (raw), w 0
+  Vec4 light;       // xyz the light (frame space), w its reach
+  Vec4 light_rgb;   // rgb its colour times its intensity at this clock (raw), w 0
+  Vec4 smoke;       // x extinction /m at the top, y rise m/s, z spread per metre, w fade length m
+  Vec4 wind;        // xz the wind at the fire (m/s), y the smoke's start radius, w 0
+  u32 ids[4] = {};  // x the seed, y 1 when the apply marches this flame
+};
+
+// The flame's emission per metre at density 1, raw: its luminance (`intensity` over `k_flame_fill`
+// of 2 r h) over its mean path (`k_flame_fill` of 2 r).
+f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept;
+// A frame's fire in the frame of the eye at the world's clock, under the hour's wind: the flame's
+// noise offset reduced to its period in f64, the smoke's numbers, the light where the resolve has
+// it. `near` marks it for the apply's march.
+MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
+                       f64 time_s, bool near) noexcept;
+// The smoke's extinction at a point of the frame's space (shaders/medium.slang's
+// `smoke_density`, the same arithmetic).
+f32 smoke_density(const MediumFire& fire, const Vec3& x) noexcept;
+
 // ---- the pass
 // ------------------------------------------------------------------------------------
 
 struct MediumOptions {
   MediumDebug debug = MediumDebug::none;
+  // Draw the frame's fires (R85) in the medium. Off, the medium draws as if the scene had none (the
+  // fires' lights stay in the resolve's array: they are the renderer's).
+  bool fires = true;
   // The froxel grid and its slices; zero takes the tunables (`volumetrics.froxels.*`).
   u32 froxels_x = 0;
   u32 froxels_y = 0;
@@ -246,6 +307,8 @@ struct MediumStats {
   u32 cloud_width = 0;     // the cloud march's texels a view (a quarter of its pixels a side)
   u32 cloud_height = 0;
   Vec2 cloud_drift_m;  // how far the wind has carried the layer, reduced to its period
+  u32 fires = 0;       // the frame's fires the medium drew (R85)
+  u32 near_fires = 0;  // of them, the flames the apply marched
 };
 
 // The GPU-mirrored blocks (shaders/medium.slang), pinned by tests/size_table.cpp.
@@ -275,13 +338,18 @@ struct MediumParams {
   u64 plume_cells = 0;
   u64 clouds = 0;
   u64 cloud_shadow_map = 0;
-  u32 pad[20] = {};
+  u64 fires = 0;  // MediumFire[fire_count] (R85)
+  u32 fire_count = 0;
+  u32 fire_near = 0;  // how many of them the apply marches as a near flame
+  Vec4 fire_terms;    // x the smoke's albedo, y the near flames' steps
+  u32 pad[12] = {};
 };
 
 inline constexpr u32 k_source_dust = 1u;
 inline constexpr u32 k_source_plumes = 2u;
 inline constexpr u32 k_source_clouds = 4u;
 inline constexpr u32 k_source_shadows = 8u;
+inline constexpr u32 k_source_fire = 16u;
 
 // The medium of one scene, drawn by one renderer: `create` registers the frame pass, `destroy`
 // removes it. Both between frames. The pass draws only while the renderer draws shaded frames.
@@ -336,6 +404,9 @@ class MediumPass {
   gfx::BufferResource cloud_shadow_;
   u32 cloud_w_ = 0;
   u32 cloud_h_ = 0;
+  // The fires (R85): per frame slot, the frame's `MediumFire`s (host-visible, read by every pass).
+  Vector<gfx::BufferResource> fire_buffers_;
+  u32 build_fires(const renderer::FramePassContext& context, const MediumWind& wind, u32& near);
   struct PlumeCache;
   std::unique_ptr<PlumeCache> plumes_;
   u32 build_plumes(const renderer::FramePassContext& context, const MediumWind& wind, Vec4& grid);

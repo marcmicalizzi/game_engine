@@ -1,0 +1,18 @@
+# campfire
+
+A fire at night ([volumetrics](../../../docs/subsystems/volumetrics.md#fire), [renderer](../../../docs/subsystems/renderer.md#fires), roadmap R85): the owner's campfire for the proof-of-concept game, a light at night the player sees by and fire as a thing that exists. The terrain is the terrain capability's dunes (seed 5, 3 m dunes 40 m apart, 256 m square at 1 m) with a hollow 28 m across and 1.5 m deep at the origin, at 22:00 on day 100 at 31° N (the terrain's time, three years and twenty-two hours into the world) under a three-day moon, its exposure fixed at EV100 5 so that the sand a few metres from the fire is lit and the moonlit dunes beyond it are dark. The medium is the dust at its defaults, which the fire lights orange; the dunes' wind record blows the smoke (11 m/s at the hour, half of it at the fire's height).
+
+- **The fire** (`fires`, "hearth"): 250 cd at 1,800 K, a flame 0.32 m across its base and 0.85 m tall, smoke of density 0.5 rising at 1.2 m/s, flicker 0.6, standing on the ground at the origin.
+- **The hearth**: a ring of granite stones (the scatter capability's, `content/rocks/granite-boulder.rock.json` at a tenth of its size, kept 0.62 m from the centre within 0.95 m) and two logs — the sandstone boulder squashed long and thin, since the tree has no log mesh; a log is a rock here.
+- **The prop** `campfire`: the granite scree as a ring of embers 0.25 m high with a fire of its own (220 cd at 1,850 K), which nothing in the scene places: a game places it (`prop_place`, engine-view `--game`), and it lights where it stands ([apps](../../../docs/subsystems/apps.md#props-the-objects-a-game-places)).
+
+```powershell
+build/msvc-release/bin/engine-view --scene content/test-scenes/campfire/scene.json --interactive
+build/msvc-release/bin/engine-view --scene content/test-scenes/campfire/scene.json --camera-path content/test-scenes/campfire/camera-path.json --offscreen --width 1920 --height 1080 --shadows rt --marker-captures captures/
+build/msvc-release/bin/engine-view --scene content/test-scenes/campfire/scene.json --interactive --walk --start 3,1,0 90,-10
+build/msvc-release/bin/engine-view --scene content/test-scenes/campfire/scene.json --interactive --medium-debug fire
+```
+
+**What to look at.** The camera path circles the fire a metre and a half over the sand six metres out, looking at the flame, then closes in to two and a half metres on its north-east side; its markers: `east` (frame 0), `west` (frame 720, the far side) and `close` (frame 1199). **The walk** starts three metres east of the fire, looking at it.
+
+Nothing here is a benchmark; the scene exists to be looked at and walked up to. What the fire costs, with one and with four in view, is on the [volumetrics](../../../docs/subsystems/volumetrics.md#what-it-costs) page.
