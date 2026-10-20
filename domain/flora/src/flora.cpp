@@ -58,8 +58,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
   } else {
     error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
             k_species_date_palm + "\", \"" + k_species_broadleaf + "\", \"" + k_species_conifer +
-            "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" + k_species_orchard +
-            "\" and \"" + k_species_ancient + "\")";
+            "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" +
+            k_species_orchard + "\" and \"" + k_species_ancient + "\")";
     return false;
   }
   return in_range && materials_in_range(out, error);
