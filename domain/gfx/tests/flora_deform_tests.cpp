@@ -16,8 +16,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <shaders/deform.spv.h>
 #include <string>
 
@@ -265,21 +267,36 @@ TEST_CASE("deform: the flora stage bends a part chain as the CPU reference does"
   const auto* pool = static_cast<const f32*>(scene.host.mapped);
   const auto* normals = static_cast<const u32*>(scene.host_normals.mapped);
 
-  // 1. Every part at rest: the rest position off the grid and the rest normal's own packed word,
-  //    to the bit — what makes a tree in no wind the rigid picture.
+  // 1. Every part at rest: the rest position off the grid and the rest normal's own packed word —
+  //    what makes a tree in no wind the rigid picture. The normal is the packed word itself and is
+  //    held to the bit. The position is the grid's dequantization, `origin + q * scale` per axis,
+  //    which a driver may fuse into one multiply-add where the CPU (contraction off, ADR-0035)
+  //    rounds twice: the RTX 5090 reproduces the CPU's bits on every vertex, the TITAN Xp's driver
+  //    580 differs in the last bit on 163 of 243 (gate b30, 2026-10-20). So a rest position is held
+  //    to **two ulps** of the CPU's, and the exact count is reported for the record.
   gfx::FloraPartPose poses[2];
   two_part_poses(0.0f, 0.0f, poses);
   run(poses);
   u32 position_bits = 0;
+  u32 position_off = 0;
   u32 normal_bits = 0;
   for (u32 v = 0; v < scene.pool_vertices; ++v) {
     const Vec3 rest = geometry::dequantize_position(scene.mesh, v);
     const f32 got[3] = {pool[v * 3], pool[v * 3 + 1], pool[v * 3 + 2]};
     const f32 want[3] = {rest.x, rest.y, rest.z};
     position_bits += std::memcmp(got, want, sizeof(got)) != 0 ? 1u : 0u;
+    bool within = true;
+    for (u32 i = 0; i < 3; ++i) {
+      const f32 ulp = std::max(std::numeric_limits<f32>::denorm_min(),
+                               std::abs(want[i]) * std::numeric_limits<f32>::epsilon());
+      within = within && std::abs(got[i] - want[i]) <= 2.0f * ulp;
+    }
+    position_off += within ? 0u : 1u;
     normal_bits += normals[v] != scene.mesh.attributes[v].normal_oct ? 1u : 0u;
   }
-  CHECK(position_bits == 0);
+  MESSAGE("flora stage at rest: " << position_bits << " of " << scene.pool_vertices
+                                  << " positions differ from the CPU's bits (two ulps allowed)");
+  CHECK(position_off == 0);
   CHECK(normal_bits == 0);
 
   // 2. The trunk bent 0.25 rad about +z and the child 0.6 about +x on top of it: every vertex
