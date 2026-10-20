@@ -65,8 +65,8 @@ u8 alpha_cutoff_code(f32 cutoff) noexcept;
 // Fills `data.textures`, parallel to `data.image_paths`, from `data.materials`, their sampling
 // records and the embedded bytes in `data.images`: the roles, the packed options (the slot's
 // format and colour space, the edges its samplers wrap with, and — for the base colour of a
-// material whose alpha mode is MASK — the cutoff its coverage is kept at), and — for an image whose bytes
-// the container carries — the source hash and the cache key. An image named by path records
+// material whose alpha mode is MASK — the cutoff its coverage is kept at), and — for an image whose
+// bytes the container carries — the source hash and the cache key. An image named by path records
 // options and roles and a zero key, because its bytes are not the container's and the container
 // has to be a function of what its own key covers (the glTF and its buffers): the renderer and the
 // build hash the file when they need the key. An image no slot names records all zeros.

@@ -1139,7 +1139,7 @@ class GpuScene {
   void destroy_ray_tracing_layout() noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
-  bool has_water_ = false;  // a material of the table carries gfx::k_material_water
+  bool has_water_ = false;   // a material of the table carries gfx::k_material_water
   bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;

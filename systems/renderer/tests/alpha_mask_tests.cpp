@@ -93,13 +93,14 @@ bool write_quad(const std::filesystem::path& dir, const char* name, const char* 
   }
   if (!write_file((dir / "quad.bin").string(), bin.data(), bin.size())) return false;
   const std::string json =
-      std::string("{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
-                  "\"nodes\":[{\"mesh\":0}],"
-                  "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
-                  "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
-                  "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
-                  "\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true,"
-                  "\"alphaMode\":\"") +
+      std::string(
+          "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+          "\"nodes\":[{\"mesh\":0}],"
+          "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
+          "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
+          "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
+          "\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true,"
+          "\"alphaMode\":\"") +
       alpha_mode +
       "\",\"alphaCutoff\":0.5}],"
       "\"samplers\":[{\"magFilter\":9728,\"minFilter\":9728}],"
@@ -122,7 +123,8 @@ bool write_quad(const std::filesystem::path& dir, const char* name, const char* 
 // A ground 6 units across at y = 0, white and opaque, and the mask's quad lying flat 1 unit above
 // it (the XY quad turned -90 degrees about x), `alpha_mode` as above: what the sun's shadow of a
 // masked caster falls on.
-bool write_caster_scene(const std::filesystem::path& dir, const char* name, const char* alpha_mode) {
+bool write_caster_scene(const std::filesystem::path& dir, const char* name,
+                        const char* alpha_mode) {
   std::vector<u8> bin;
   const f32 quad_positions[12] = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
   const f32 quad_normals[12] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
@@ -130,18 +132,25 @@ bool write_caster_scene(const std::filesystem::path& dir, const char* name, cons
   const f32 ground_positions[12] = {-3, 0, 3, 3, 0, 3, 3, 0, -3, -3, 0, -3};
   const f32 ground_normals[12] = {0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0};
   const f32 ground_uvs[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  for (const f32 v : quad_positions) put_f32(bin, v);      // 0
-  for (const f32 v : quad_normals) put_f32(bin, v);        // 48
-  for (const f32 v : quad_uvs) put_f32(bin, v);            // 96
-  for (const f32 v : ground_positions) put_f32(bin, v);    // 128
-  for (const f32 v : ground_normals) put_f32(bin, v);      // 176
-  for (const f32 v : ground_uvs) put_f32(bin, v);          // 224
-  const u16 indices[6] = {0, 1, 2, 0, 2, 3};               // 256
+  for (const f32 v : quad_positions)
+    put_f32(bin, v);  // 0
+  for (const f32 v : quad_normals)
+    put_f32(bin, v);  // 48
+  for (const f32 v : quad_uvs)
+    put_f32(bin, v);  // 96
+  for (const f32 v : ground_positions)
+    put_f32(bin, v);  // 128
+  for (const f32 v : ground_normals)
+    put_f32(bin, v);  // 176
+  for (const f32 v : ground_uvs)
+    put_f32(bin, v);                          // 224
+  const u16 indices[6] = {0, 1, 2, 0, 2, 3};  // 256
   for (const u16 i : indices) {
     bin.push_back(static_cast<u8>(i & 0xff));
     bin.push_back(static_cast<u8>(i >> 8));
   }
-  for (u32 i = 0; i < 4; ++i) bin.push_back(0);  // 268: pad to 272
+  for (u32 i = 0; i < 4; ++i)
+    bin.push_back(0);  // 268: pad to 272
   if (!write_file((dir / "caster.bin").string(), bin.data(), bin.size())) return false;
   const std::string json =
       std::string(
@@ -182,7 +191,8 @@ bool write_caster_scene(const std::filesystem::path& dir, const char* name, cons
   return write_file((dir / name).string(), json.data(), json.size());
 }
 
-struct Shot {  CapturedFrame frame;
+struct Shot {
+  CapturedFrame frame;
   std::string skip;  // why the path could not run here, or empty
   bool masked_scene = false;
 };
@@ -286,7 +296,8 @@ RenderSettings base_settings(RasterMode raster) {
 
 }  // namespace
 
-TEST_CASE("alpha mask: a masked quad writes the opaque quad's words where it keeps, none where it cuts") {
+TEST_CASE(
+    "alpha mask: a masked quad writes the opaque quad's words where it keeps, none where it cuts") {
   Fixture fx;
   const Shot opaque = shoot(fx.opaque, base_settings(RasterMode::Hardware));
   if (!opaque.skip.empty()) {
@@ -371,7 +382,7 @@ TEST_CASE("alpha mask: every rasterizer and the ray path write the same masked p
       if (!same) ++differing;
     }
     MESSAGE(name << " against " << first_name << ": " << differing << " pixels differ, "
-                      << shot.frame.covered << " covered");
+                 << shot.frame.covered << " covered");
     CHECK(differing == 0);
   }
 }
@@ -465,9 +476,9 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
   }
   if (ran[0] && ran[1]) {
     // Pixel for pixel away from the shadow's edges: a ground pixel whose 7x7 neighbourhood the rays
-    // call all lit or all shadowed, which leaves out the band the maps' 3x3 filter softens and their
-    // texels step (the shading tests leave out the same band). Three pixels here are about 0.11 m
-    // of ground, two or three of the nearest cascade's texels.
+    // call all lit or all shadowed, which leaves out the band the maps' 3x3 filter softens and
+    // their texels step (the shading tests leave out the same band). Three pixels here are about
+    // 0.11 m of ground, two or three of the nearest cascade's texels.
     auto disagreement = [&](const ShadowCount& rays, const ShadowCount& maps, u32& interior) {
       u32 disagree = 0;
       interior = 0;
@@ -511,8 +522,8 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
 TEST_CASE("alpha mask: the reference path tracer sees through the holes the rasterizer leaves") {
   // The masked quad through the reference (k_pt_alpha_masks: its camera rays decide masked
   // candidates by the mask) and through the real-time frame: a pixel the rasterizer leaves empty is
-  // the sky in the reference, to the bit, and a pixel it covers is not. The sky is the furnace's one
-  // colour, so a hole reads exactly the background a pixel off the quad reads.
+  // the sky in the reference, to the bit, and a pixel it covers is not. The sky is the furnace's
+  // one colour, so a hole reads exactly the background a pixel off the quad reads.
   Fixture fx;
   gfx::Device device;
   std::string error;
@@ -577,8 +588,8 @@ TEST_CASE("alpha mask: the reference path tracer sees through the holes the rast
       if (!background) ++wrong;
     }
   }
-  MESSAGE("reference: " << surface << " surface pixels, " << holes
-                        << " background or hole pixels, " << wrong << " disagreeing");
+  MESSAGE("reference: " << surface << " surface pixels, " << holes << " background or hole pixels, "
+                        << wrong << " disagreeing");
   CHECK(surface > 1000);
   CHECK(wrong <= 4);
   reference.destroy();

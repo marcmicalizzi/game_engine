@@ -41,7 +41,8 @@ TextureBuildOptions options_for_roles(u32 roles) noexcept {
 
 namespace {
 
-// glTF's MASK as the alpha word stores the mode (geometry::encode_alpha_word, assets::k_alpha_mask).
+// glTF's MASK as the alpha word stores the mode (geometry::encode_alpha_word,
+// assets::k_alpha_mask).
 constexpr u8 k_alpha_word_mask = 1;
 
 EdgeMode edge_of(geometry::TextureWrap wrap) noexcept {

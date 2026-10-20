@@ -75,8 +75,8 @@ void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileDat
     // set is alpha-tested at glTF's default cutoff. An image without alpha passes everywhere and
     // draws what an opaque card drew.
     if (layout == UvLayout::card) {
-      m.alpha = geometry::encode_alpha_word(k_alpha_mask_mode, geometry::alpha_word_double_sided(m.alpha),
-                                            k_card_cutoff);
+      m.alpha = geometry::encode_alpha_word(
+          k_alpha_mask_mode, geometry::alpha_word_double_sided(m.alpha), k_card_cutoff);
     }
   }
   if (!set.roughness.empty()) {

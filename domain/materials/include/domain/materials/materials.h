@@ -72,10 +72,10 @@ enum class UvLayout : u8 {
 
 // Writes `set` into material `material` of `data`: the images appended to `image_paths` (an image
 // already there is shared, not repeated) with an empty `images` entry beside each, the slots, the
-// factors above and, for `UvLayout::metres`, the transform; a `UvLayout::card` set's base colour makes
-// the material alpha-tested at 0.5 (a card is a cutout: the image's alpha is the leaf's outline;
-// renderer.md, "Alpha-tested geometry"). `data.materials` and
-// `data.material_sampling` must hold `material`. A set that names no image changes nothing.
+// factors above and, for `UvLayout::metres`, the transform; a `UvLayout::card` set's base colour
+// makes the material alpha-tested at 0.5 (a card is a cutout: the image's alpha is the leaf's
+// outline; renderer.md, "Alpha-tested geometry"). `data.materials` and `data.material_sampling`
+// must hold `material`. A set that names no image changes nothing.
 void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileData& data,
                u32 material);
 

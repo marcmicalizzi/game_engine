@@ -3176,8 +3176,8 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   gfx::ClusterSetLimits limits;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  // A template is built once, opaque, and an instantiation cannot clear the flag, so a scene with an
-  // alpha-tested material builds records instead (renderer.md, "Alpha-tested geometry").
+  // A template is built once, opaque, and an instantiation cannot clear the flag, so a scene with
+  // an alpha-tested material builds records instead (renderer.md, "Alpha-tested geometry").
   const bool templates = resolved.settings.rt_templates && !has_masked_;
   limits.instantiate = templates;
   rt_limits_ = limits;

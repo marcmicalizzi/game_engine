@@ -151,7 +151,8 @@ ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
 // volumes moved 32 bytes back, and nothing reads them by offset.
 ENGINE_EXPECT_SIZE(1712, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
-// The mask test reads one word of a material by offset (scene.slang, `k_resolve_material_flags_offset`).
+// The mask test reads one word of a material by offset (scene.slang,
+// `k_resolve_material_flags_offset`).
 static_assert(offsetof(gfx::ResolveMaterial, flags) == 44);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the

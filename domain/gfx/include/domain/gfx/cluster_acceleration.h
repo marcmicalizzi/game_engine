@@ -292,10 +292,10 @@ struct ClusterRecordParams {
   u32 mode = 1;
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
   // **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): the scene's material table
-  // and material per cluster (`MaskTables`' first two words), or 0 in a frame with none. A pair whose
-  // material is masked is built without the opaque flag, drawn or caster, so the ray loops test its
-  // mask. Past 128 bytes, which only this pass's devices (every one with the cluster extension has
-  // 256 bytes of push constants) are asked to take.
+  // and material per cluster (`MaskTables`' first two words), or 0 in a frame with none. A pair
+  // whose material is masked is built without the opaque flag, drawn or caster, so the ray loops
+  // test its mask. Past 128 bytes, which only this pass's devices (every one with the cluster
+  // extension has 256 bytes of push constants) are asked to take.
   u64 mask_materials = 0;
   u64 mask_cluster_materials = 0;
 };

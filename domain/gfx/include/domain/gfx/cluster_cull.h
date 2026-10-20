@@ -238,9 +238,9 @@ struct CullParams {
   // The frame's origin (`FrameEye`): every instance is moved into its space before any test.
   // `ClusterDrawParams::eye` points the rasterizers at this field of the view's own block.
   FrameEye eye;
-  // **Alpha-tested materials** (`MaskTables`; renderer.md, "Alpha-tested geometry"): right after the
-  // eye, so a rasterizer that reads the eye through `ClusterDrawParams::eye` reaches them too when
-  // `eye.masks` says they are there. All zero, and `eye.masks` 0, in a frame with no masked
+  // **Alpha-tested materials** (`MaskTables`; renderer.md, "Alpha-tested geometry"): right after
+  // the eye, so a rasterizer that reads the eye through `ClusterDrawParams::eye` reaches them too
+  // when `eye.masks` says they are there. All zero, and `eye.masks` 0, in a frame with no masked
   // material, and then no pass reads a word of it.
   MaskTables masks;
   // **Shadow casters outside the frustum** (renderer.md, "Shadows"; the renderer's

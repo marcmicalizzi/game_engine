@@ -221,13 +221,15 @@ void dilate_under_mask(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, u32 r
             }
             const usize n = static_cast<usize>(ny) * width + static_cast<usize>(nx);
             if (filled[static_cast<u32>(n)] == 0) continue;
-            for (u32 c = 0; c < 3; ++c) sum[c] += src[n * 4 + c];
+            for (u32 c = 0; c < 3; ++c)
+              sum[c] += src[n * 4 + c];
             ++count;
           }
         }
         if (count == 0) continue;
         // Integer arithmetic, rounded half up: the same bytes from every compiler.
-        for (u32 c = 0; c < 3; ++c) dst[i * 4 + c] = static_cast<u8>((sum[c] + count / 2) / count);
+        for (u32 c = 0; c < 3; ++c)
+          dst[i * 4 + c] = static_cast<u8>((sum[c] + count / 2) / count);
         next[static_cast<u32>(i)] = 1;
         grew = true;
       }
@@ -244,7 +246,8 @@ void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff,
   // How many texels each 8-bit alpha holds; `at_least[t]` is the count at or above t.
   u8* px = rgba.data();
   u64 histogram[256] = {};
-  for (usize i = 0; i < texels; ++i) ++histogram[px[i * 4 + 3]];
+  for (usize i = 0; i < texels; ++i)
+    ++histogram[px[i * 4 + 3]];
   const f64 wanted = coverage * static_cast<f64>(texels);
   u64 at_least = 0;
   u32 best = cutoff;
@@ -300,10 +303,10 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
 
   // **An alpha-tested mask** (texture.md, "Alpha-tested masks"): the colour under the cut grown
   // outwards first, so the chain filters the leaf's colour into its fringe, and every level's alpha
-  // then held to level 0's coverage at the cutoff. Only a build given a cutoff, of an image that has
-  // alpha, of a format that keeps it; everything else is the bytes it always was.
+  // then held to level 0's coverage at the cutoff. Only a build given a cutoff, of an image that
+  // has alpha, of a format that keeps it; everything else is the bytes it always was.
   const bool masked = options.alpha_cutoff != 0 && (out.flags & k_texture_has_alpha) != 0 &&
-                    !options.normal_map && (stored_channels(format) & 0x8u) != 0;
+                      !options.normal_map && (stored_channels(format) & 0x8u) != 0;
   Vector<u8> dilated;
   std::span<const u8> source = rgba;
   if (masked) {
@@ -316,8 +319,7 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   Vector<MipLevel> chain;
   build_mip_chain(source, width, height, mode, options.mips, chain, pool, options.edge_x,
                   options.edge_y);
-  const f64 coverage =
-      masked ? alpha_coverage(source, width, height, options.alpha_cutoff) : 0.0;
+  const f64 coverage = masked ? alpha_coverage(source, width, height, options.alpha_cutoff) : 0.0;
   if (masked) out.flags |= k_texture_alpha_coverage;
   r.mip_ms = ms_since(mip_start);
 

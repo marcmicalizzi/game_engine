@@ -58,7 +58,8 @@ void needle_image(u32 side, Vector<u8>& out) {
   for (u32 s = 0; s < length;) {
     s += 2 + next(10);  // the gap
     const u32 width = 1 + next(3);
-    for (u32 w = 0; w < width && s < length; ++w, ++s) along[s] = 1;
+    for (u32 w = 0; w < width && s < length; ++w, ++s)
+      along[s] = 1;
   }
   const f32 c = static_cast<f32>(side) * 0.5f;
   for (u32 y = 0; y < side; ++y) {

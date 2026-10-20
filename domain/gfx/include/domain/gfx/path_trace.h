@@ -41,8 +41,8 @@ inline constexpr u32 k_pt_pixel_center = 2u;
 // noise at the same pixel, so a reference of a dithered frame carries the noise the frame does.
 inline constexpr u32 k_pt_dither = 4u;
 // The frame has alpha-tested materials (`k_material_alpha_mask`; renderer.md, "Alpha-tested
-// geometry"): every ray decides its non-opaque candidates in its loop — a masked pair by its mask at
-// level 0, a shadow caster out of the camera ray and solid to the rest — where without it the
+// geometry"): every ray decides its non-opaque candidates in its loop — a masked pair by its mask
+// at level 0, a shadow caster out of the camera ray and solid to the rest — where without it the
 // flags do (culled on the camera ray, forced opaque after). The picture of a scene with no masked
 // material does not depend on it.
 inline constexpr u32 k_pt_alpha_masks = 8u;
