@@ -101,8 +101,19 @@ float hg_phase(float mu, float g) {
   return (1.0 - g2) / (4.0 * k_pi * pow(max(1.0 + g2 - 2.0 * g * mu, 1.0e-4), 1.5));
 }
 
+// Four halves in two words. **What is packed is exposed light** (and a transmittance or an
+// extinction), never raw radiance in sun units: a full moon's cloud is about 1e-7 of a sun unit,
+// a few of a half's denormal steps of 6e-8, which the exposure then scaled into colour bands, a
+// different staircase per channel (volumetrics.md, "The march"). Exposed, the light sits where a
+// display wants it, 0 to a few hundred, with a half's ten bits of mantissa at every level. The
+// clamp to the largest finite half and the NaN to 0 are a guard, not a tone curve: a value past
+// 65,504 would be infinity, and a channel that is infinity or NaN beside two finite ones is a
+// flat saturated region of one hue.
+static const float k_half_max = 65504.0;
+float half_guard(float x) { return isnan(x) ? 0.0 : clamp(x, -k_half_max, k_half_max); }
 uint2 pack_halves(float4 v) {
-  return uint2(f32tof16(v.x) | (f32tof16(v.y) << 16), f32tof16(v.z) | (f32tof16(v.w) << 16));
+  const float4 g = float4(half_guard(v.x), half_guard(v.y), half_guard(v.z), half_guard(v.w));
+  return uint2(f32tof16(g.x) | (f32tof16(g.y) << 16), f32tof16(g.z) | (f32tof16(g.w) << 16));
 }
 float4 unpack_halves(uint2 p) {
   return float4(f16tof32(p.x & 0xffffu), f16tof32(p.x >> 16), f16tof32(p.y & 0xffffu),
@@ -488,7 +499,9 @@ void cloud_march_main(uint3 id : SV_DispatchThreadID) {
       light = light * air + inscatter * (1.0 - transmittance);
     }
   }
-  ((uint2*)p->clouds)[id.y * cw + id.x] = pack_halves(float4(light, transmittance));
+  // Stored exposed: the frame's exposure is the one the apply composites under (one per frame,
+  // every view's), so the apply adds the texel as it is.
+  ((uint2*)p->clouds)[id.y * cw + id.x] = pack_halves(float4(light * frame_exposure(p), transmittance));
 }
 
 // The march's texels at a full-resolution pixel of the view, bilinear.
@@ -514,8 +527,8 @@ float3 froxel_centre(MediumParams* p, uint3 cell, out float3 dir) {
   return dir * slice_distance(p, float(cell.z) + 0.5);
 }
 
-// Each cell: its extinction and the light it scatters towards the eye per metre (albedo-weighted),
-// four halves, from every source at the cell's centre.
+// Each cell: its extinction and the light it scatters towards the eye per metre (albedo-weighted,
+// exposed), four halves, from every source at the cell's centre.
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
@@ -542,7 +555,8 @@ void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
   float3 light = float3(0.0);
   if (sigma > 0.0) {
     const float shadow = medium_cascade(p, x) * cloud_sun(p, x);
-    light = scatter * source_light(p, x, dir, p->dust_albedo.w, shadow);
+    // Exposed, as the clouds' texels are: per metre, the integration and the apply add it as it is.
+    light = scatter * source_light(p, x, dir, p->dust_albedo.w, shadow) * frame_exposure(p);
   }
   const uint index = (id.z * p->grid.y + id.y) * p->grid.x + id.x;
   ((uint2*)p->froxels)[index] = pack_halves(float4(light, sigma));
@@ -627,7 +641,7 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
   bool touched = false;
   if (depth <= 0.0 && (p->grid.w & k_source_clouds) != 0 && p->clouds != 0) {
     const float4 cloud = clouds_at(p, id.xy);
-    radiance = radiance * cloud.a + cloud.rgb * exposure;
+    radiance = radiance * cloud.a + cloud.rgb;  // the texel is exposed already
     touched = true;
   }
   // The froxels to the pixel, or to their far boundary and then the dust in closed form beyond it.
@@ -644,11 +658,11 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
     // Unshadowed past the froxels; the sun and the sky at the far boundary's point stand for the
     // rest of the ray.
     const float3 at = dir * far;
-    const float3 tail = p->dust_albedo.rgb * source_light(p, at, dir, p->dust_albedo.w, 1.0);
+    const float3 tail = p->dust_albedo.rgb * source_light(p, at, dir, p->dust_albedo.w, 1.0) * exposure;
     light += transmittance * tail * (1.0 - tail_t);
     transmittance *= tail_t;
   }
   if (!touched && transmittance >= 1.0 && all(light <= float3(0.0))) return;
-  radiance = radiance * transmittance + light * exposure;
+  radiance = radiance * transmittance + light;  // the froxels' light and the tail are exposed
   g_storage_images[p->source.z][target] = float4(radiance, 1.0);
 }
