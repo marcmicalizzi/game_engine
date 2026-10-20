@@ -236,6 +236,7 @@ Identity, the layered document, persistence and schema evolution: [03](plan/03-d
 | D35 | Agent edits logged as agent-origin events | open | D16 | M | design | [03 §3.10](plan/03-data-model.md#310-how-deterministic-and-agent-generated-state-coexist) |
 | D36 | Phase 0 exit | done (10 §10.2 2026-09-15) | D4, D5, A1 | L | routine | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | D37 | Structure records: `engine.structure.Building` holding its description (the authored artefact, never regenerated), `.Door` (a building's child with its hinge and its open state written back at `Persist`), `.Platform`, `.Stair`, `.Ramp`, `.Bridge`, and `.Village` (a region, a seed and the fill's provenance, its houses ordinary child records), meshed on read through the derived-data cache like the heightfield record, anchors naming a tree record and part, the placement hierarchy that moves an attachment with its tree | open | G65 | M | design | [14 §14.5](plan/14-structures.md#145-the-authoring-workflow) |
+| D38 | `Id128::generate` stays time-ordered when the wall clock steps back: the last id issued kept per process, `max(now, last + 1)` as UUIDv7 generators do, never a wait | done (2026-10-20, after gate b33's minimal container saw two consecutive ids a millisecond apart backwards; `TimeOrderedIds`) | D1 | S | routine | [ids](subsystems/ids.md) |
 
 ## S — Simulation and physics
 

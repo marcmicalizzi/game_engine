@@ -44,6 +44,55 @@ TEST_CASE("Id128: generated ids are unique, non-null, and time-ordered") {
   }
 }
 
+TEST_CASE("Id128: a clock that steps back still issues increasing ids") {
+  // Gate b33: two consecutive generate() calls in a container carried 1792526767780 then
+  // ...779, because the system clock stepped back between them.
+  constexpr u64 k_t0 = 1792526767780ull;
+  struct Step {
+    u64 now_ms;
+    int count;
+  };
+  // Forward, back 5 ms, forward again but still behind, past where it was, and one
+  // millisecond holding more ids than its sequence (65536 words, the first at most 0x7FFF).
+  const Step steps[] = {
+      {k_t0, 1000}, {k_t0 - 5, 1000}, {k_t0 - 2, 10}, {k_t0 + 3, 1000}, {k_t0 + 4, 70000}};
+  TimeOrderedIds source;
+  HashSet<Id128> seen;
+  Id128 previous;
+  u64 highest_clock = 0;
+  bool all_increasing = true;
+  bool all_unique = true;
+  bool none_behind = true;
+  for (const Step& step : steps) {
+    highest_clock = step.now_ms > highest_clock ? step.now_ms : highest_clock;
+    for (int i = 0; i < step.count; ++i) {
+      const Id128 id = source.next(step.now_ms);
+      all_increasing = all_increasing && id > previous && id.hi > previous.hi;
+      all_unique = all_unique && seen.insert(id).second;
+      // Never behind the latest clock reading it was given.
+      none_behind = none_behind && id.timestamp_ms() >= highest_clock;
+      previous = id;
+    }
+  }
+  CHECK(all_increasing);
+  CHECK(all_unique);
+  CHECK(none_behind);
+  CHECK(seen.size() == 73010);
+  CHECK(source.last() == previous.hi);
+  // The 70000 ids at k_t0 + 4 overflowed its sequence and borrowed from k_t0 + 5, nothing more.
+  CHECK(previous.timestamp_ms() == k_t0 + 5);
+  // The step back and the step still behind borrowed from k_t0 and never waited for the clock:
+  // the clock caught up at k_t0 + 3, and a fresh millisecond starts low in its sequence again.
+  TimeOrderedIds fresh;
+  const Id128 a = fresh.next(k_t0);
+  const Id128 b = fresh.next(k_t0 - 5);
+  CHECK(b.timestamp_ms() == k_t0);
+  CHECK(b.hi == a.hi + 1);
+  const Id128 c = fresh.next(k_t0 + 1);
+  CHECK(c.timestamp_ms() == k_t0 + 1);
+  CHECK((c.hi & 0xFFFFull) < 0x8000ull);
+}
+
 TEST_CASE("Id128: generation from several threads never collides") {
   std::vector<std::vector<Id128>> per_thread(8);
   std::vector<std::thread> threads;
