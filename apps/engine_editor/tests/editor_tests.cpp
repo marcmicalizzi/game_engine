@@ -1946,8 +1946,9 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   // The source tree comes from the build (ENGINE_SOURCE_DIR, test_paths.h), never from __FILE__:
   // under the compiler cache __FILE__ is relative to the build directory (docs/ci/local-linux.md,
   // "The compiler cache"), and a walk up from it lands in the build tree and skips this half.
-  const std::string sample = test::data_path(ENGINE_SOURCE_DIR "/content/samples/Suzanne/Suzanne.gltf",
-                                             "content/samples/Suzanne/Suzanne.gltf");
+  const std::string sample =
+      test::data_path(ENGINE_SOURCE_DIR "/content/samples/Suzanne/Suzanne.gltf",
+                      "content/samples/Suzanne/Suzanne.gltf");
   if (!test::path_exists(sample)) {
     MESSAGE("no " << sample << ": run tools/fetch-samples.ps1 for the sample import");
     return;

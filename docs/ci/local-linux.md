@@ -417,8 +417,10 @@ tree and the case's sample-import half was skipped with its message, silently, i
 A test that needs the source tree takes it from the build — `ENGINE_SOURCE_DIR`, a compile
 definition on its test target, through `test::data_path` in `tests/support/test_paths.h`, which a
 test bundle overrides — exactly as the tests reading `content/` already did. The cost is small and
-known: ccache rewrites paths in include and source arguments, not inside a `-D` value, so a test
-target carrying `ENGINE_SOURCE_DIR` compiles once per checkout instead of hitting another's objects.
+known: ccache rewrites paths in include and source arguments, not inside a `-D` value, so a source
+that expands `ENGINE_SOURCE_DIR` compiles once per checkout instead of hitting another's object.
+The GPU server's builds go through a cache of their own, with a `base_dir` because its checkouts
+do not share one path ([remote Linux](remote-linux.md#the-compiler-cache)).
 
 `build.cpu_baseline` reads `compile_commands.json`, which CMake writes without the launcher, and
 classifies each compile by its flags, which the launcher does not change; it is unaffected.

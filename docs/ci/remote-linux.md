@@ -366,6 +366,55 @@ dependencies 2.2 GB — under `~/game_engine-remote/<checkout-id>/`, on a volume
 `-Clean` drops the build tree and keeps the dependencies. Nothing is written anywhere else on that
 machine and no daemon is left running.
 
+## The compiler cache
+
+The server has ccache (4.13.5, Gentoo's), and every `remote-build.ps1` compile goes through it, the
+engine's and every FetchContent dependency's: the configure carries the containers' launcher
+(`-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`) and their
+`-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON`, for their reason — SDL3 and Jolt use precompiled headers,
+and ccache will not cache a compile that reads one ([local Linux](local-linux.md#the-compiler-cache)).
+The build prints the containers' two lines after it: how many compiles came from the cache, and the
+cache's size against its limit.
+
+- **The cache is `~/game_engine-ccache`, 30 GB**, shared by every checkout's tree on the machine. It
+  is its own directory rather than ccache's default (`~/.cache/ccache`, 5 GB) so that its limit is
+  the containers' and nothing else the account compiles evicts it; the script writes the limit into
+  that directory's `ccache.conf` too, so a `ccache -d ~/game_engine-ccache -s` by hand agrees.
+- **`base_dir` is `~/game_engine-remote`**, the parent of every checkout's directory. The containers
+  need none, because every checkout is `/src` inside one; here each is
+  `~/game_engine-remote/<checkout-id>/`, and its compiles name sources, includes and dependencies by
+  absolute paths under it. Rewritten relative to the build directory, they are the same text in every
+  checkout. **`hash_dir` is off** because `linux-server` is RelWithDebInfo: with `-g`, ccache hashes
+  the build directory GCC records as the compilation directory, and every checkout would miss. The
+  price is the Windows half's — a cached object's debug information names the checkout that
+  compiled it first — and nobody debugs on that machine.
+- **`ENGINE_CCACHE=0`** compiles everything for that run: the launcher stays on the configure line
+  and `CCACHE_DISABLE` makes ccache run the compiler directly, so switching it never reconfigures.
+
+What it misses on purpose: a source that *uses* a checkout's absolute path from a `-D` value —
+`ENGINE_SOURCE_DIR`, `ENGINE_APP_PATH` and the rest that test targets get — because `base_dir`
+rewrites path arguments and not the insides of a definition. In the warm run 201 of the 1576
+compiles carried one; a source that does not expand the macro misses ccache's direct mode and hits
+its preprocessed one (the output is the same text), and one that does is compiled once per
+checkout: most, by that count, of the warm run's 97.
+
+Measured 2026-10-20, `-Preset linux-server -Test -Filter "tools|docs|lint"` (the filter selects one
+test there, since the PowerShell ones do not exist on that machine), each from a checkout the server
+had never seen, so each run also cloned the dependencies and configured from nothing:
+
+| | Cold: empty cache | Warm: a second checkout, the cache from the first |
+|---|---|---|
+| Configure, dependencies cloned | 2 m 46 s | 2 m 52 s |
+| Compiles from the cache | 0 of 1521 | **1424 of 1521** (93.6%: 1302 direct, 122 preprocessed) |
+| End to end, sync to exit | 52 m 41 s | **11 m 00 s** |
+| Cache size after | 0.5 GB of 30 | 0.5 GB of 30 |
+| Machine state | load 0.6 at the start; **the gate's own `linux-server` run** (a full build, then the whole suite) started on the server ten minutes in, and the two builds shared the 16 threads for most of the run (load 18 at its end) | the gate's run's CTest suite, GPU tests included, throughout (load 15) |
+
+Both are upper bounds, the cold one by far: 1521 compiles at 16 jobs took nine minutes for 972
+targets on a quiet machine (above), and this one shared the CPU with a second build of the same
+tree. The warm run's 11 minutes
+are mostly what the cache does not touch: the sync, the dependencies' clone and configure, and the
+links.
 ## What GCC 14 and clang 22 found
 
 The tree had never been compiled by either. Between them they found **one** thing, and it was in
