@@ -132,8 +132,14 @@ experiment were still polling six hours later. None of that was work. So:
   period: on 2026-10-04 agents wrote "wait up to eight minutes" round `test -Affected` runs that
   take half an hour, and were woken four times for one run. Give the one wait a time limit of
   about twice the figure in the table below, not the tool's default. Where the harness can run a
-  command in the background and wake the agent when it exits, that is the wait: start the build or
-  the test that way with a limit of an hour or more, and write no loop at all.
+  command in the background and wake the agent when it exits, that is the wait for a session
+  working alone: start the run that way with a limit of an hour or more, and write no loop. **A
+  sub-agent of a coordinating session never does**: its turn ends while the command runs, and
+  that end and the command's completion each wake the coordinator with the coordinator's whole
+  context, the largest on the machine (2026-10-20: a night of such "interim" wakes cost a few
+  percent of a day's budget). It starts the run detached (`Start-Process … -PassThru`, output to
+  a log) and waits in the foreground with `Wait-Process -Id <id> -Timeout 570` a call, re-issued
+  until the process is gone: a poll with a ten-minute period, the cheapest wait a sub-agent has.
 - **One wait at a time, a minute or more between looks, and none left behind.** Before handing
   back, nothing the agent started is still running.
 - **One line at the end.** A watch on a gate reports once, when every part of it has finished or
