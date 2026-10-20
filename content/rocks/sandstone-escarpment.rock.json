@@ -1,0 +1,21 @@
+{
+  "shape": "Cliff",
+  "cliff": {
+    "seed": 31,
+    "type": "Sandstone",
+    "points": [
+      {"x": 0, "y": 0, "z": 0, "height": 24},
+      {"x": 75, "y": 1.5, "z": 9, "height": 38},
+      {"x": 150, "y": 2.5, "z": 12},
+      {"x": 225, "y": 2.0, "z": 6, "height": 44},
+      {"x": 298, "y": 0.5, "z": -4, "height": 30}
+    ],
+    "height": 40,
+    "batter": 0.12,
+    "undercut": 0.6,
+    "talus": 0.2,
+    "talus_blocks": 30, "talus_block_m": 2.5,
+    "material": {"tile_m": 2.0},
+    "triangle_budget": 250000
+  }
+}

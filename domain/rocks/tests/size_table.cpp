@@ -7,3 +7,4 @@
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(36, 4, rocks::RockReport);
+ENGINE_EXPECT_SIZE(76, 4, rocks::CliffReport);

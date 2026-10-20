@@ -27,6 +27,8 @@ enum RockShape : u8 {
   Outcrop
   /// A handful of small angular fragments: `scree`.
   Scree
+  /// A rock face along the ground, metres to a kilometre long: `cliff` (rocks.md, "Cliffs").
+  Cliff
 }
 
 /// The tiled PBR set a rock's material samples (rocks.md, "UVs and materials"), in the shape the
@@ -114,13 +116,129 @@ struct Scree @version(1) {
   material: RockMaterial
 }
 
+/// One vertex of a cliff's line along the ground (rocks.md, "Cliffs"), metres from the recipe's
+/// origin: `x` and `z` where the face's foot runs, `y` the ground there. `height` and `batter`
+/// override the face's own at this vertex, and are interpolated between vertices.
+struct CliffPoint @version(1) {
+  x: f32 = 0.0 @unit(m)
+  y: f32 = 0.0 @unit(m)
+  z: f32 = 0.0 @unit(m)
+  /// The face's top above `y`: 1 to 200 m; absent, the face's `height`.
+  height: f32? @unit(m)
+  /// How far the face leans back, metres across per metre up: 0 to 1.5; absent, the face's.
+  batter: f32?
+}
+
+/// A cliff (rocks.md, "Cliffs"): a rock face along a line on the ground — a sheet of quads along
+/// and up the line, carved into blocks by the type's joint sets (ledges where a set is near
+/// horizontal, columns where it is vertical), banded by its beds, undercut where a weak bed lies
+/// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
+/// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
+/// face looks to the right (+z for a line along +x).
+struct Cliff @version(1) {
+  seed: u64 = 1
+  type: RockType = Sandstone
+  /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
+  points: CliffPoint[]
+  /// The face's top above the ground at its foot: 1 to 200 m (a vertex's `height` overrides it).
+  height: f32 = 40.0 @unit(m)
+  /// How far the face leans back from vertical, metres across per metre up: 0 to 1.5.
+  batter: f32 = 0.1
+  /// How far the foot is sunk under the ground: 0 to 20 m.
+  buried: f32 = 2.0 @unit(m)
+  /// How far behind the face its buried back stands: 2 to 200 m; absent, the deepest the carving
+  /// reaches plus 2 m, and never under 4 m.
+  depth: f32? @unit(m)
+  /// How far a joint block may stand back from the face: 0 to 20 m; absent, the type's.
+  relief: f32? @unit(m)
+  /// Joint sets that carve the face, in order: horizontal (ledges), vertical (columns), dipping:
+  /// 0 to 3.
+  joint_sets: u32 = 3
+  /// How round the blocks' edges weather, 0 to 1; absent, the type's.
+  rounding: f32?
+  /// The beds' thickness: 0 (none) or 0.25 to 50 m; absent, the type's.
+  bed_m: f32? @unit(m)
+  /// How deep a weak bed is notched under the hard bed above it, a share of its thickness, and how
+  /// far a block may stand out over the one below: 0 (nothing overhangs) to 1.
+  undercut: f32 = 0.0
+  /// The talus skirt's height against the face, a share of the face's height: 0 (none) to 0.6.
+  talus: f32 = 0.2
+  /// The skirt's slope, degrees: 20 to 45.
+  talus_angle_deg: f32 = 35.0
+  /// Fallen blocks lying on the skirt: 0 to 256.
+  talus_blocks: u32 = 12
+  /// The largest fallen block's longest half-extent: 0.1 to 10 m; the rest are smaller, the
+  /// largest rolled furthest.
+  talus_block_m: f32 = 1.5 @unit(m)
+  /// The height in the recipe's frame the beds and the horizontal joints are counted from, so
+  /// faces cut from one rock mass share their beds: any.
+  datum_y: f32 = 0.0 @unit(m)
+  /// The most triangles of the face, its skirt and its blocks together: 2,000 to 4,000,000. The
+  /// solver takes the finest cell of its ladder that fits (rocks.md, "Cliffs").
+  triangle_budget: u32 = 250000
+  material: RockMaterial
+}
+
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may
 /// be given (absent is its defaults). A scene's mesh table names one as it names a glTF, and
 /// `engine-content rocks` builds one into a container; either way the build is keyed by these
 /// values (canonicalized) and the solver's version.
-struct RockFile @version(1) {
+struct RockFile @version(2) {
   shape: RockShape = Boulder
   boulder: Boulder?
   outcrop: Outcrop?
   scree: Scree?
+  /// A cliff's block; left out of the canonical parameters when absent, so a version-1 file's key
+  /// is what it was.
+  cliff: Cliff? @since(2)
+}
+
+/// A height band of a cliffs layer's rock (rocks.md, "The cliffs generator"): a face whose foot
+/// stands below `below_m` (world height) is of `type`; the first band that holds it wins.
+struct CliffBand @version(1) {
+  below_m: f32 = 0.0 @unit(m)
+  type: RockType = Sandstone
+}
+
+/// The scene generator `cliffs`' entry (rocks.md, "The cliffs generator"): the steep ground of a
+/// region found from the ground's heights, its feet traced into lines and dressed with faces.
+struct CliffLayer @version(1) {
+  name: string
+  seed: u64 = 1
+  /// The region dressed, world metres, x and z: a face whose first vertex lies inside is placed.
+  region_min: f64[2]
+  region_max: f64[2]
+  /// The heights' spacing the slope is measured at: 0.5 to 32 m.
+  spacing_m: f32 = 4.0 @unit(m)
+  /// The tracing grid: a line is traced inside one block of this edge, so a face is a function of
+  /// the block's heights alone and the same whichever tile asks: 16 to 4,096 m, a whole number of
+  /// spacings.
+  block_m: f32 = 256.0 @unit(m)
+  /// Steep ground: a slope above this, degrees: 30 to 85.
+  min_slope_deg: f32 = 50.0
+  /// A line shorter than this is left bare: 4 to 1,000 m.
+  min_length_m: f32 = 24.0 @unit(m)
+  /// A face lower than this, on average, is left bare: 1 to 200 m.
+  min_height_m: f32 = 6.0 @unit(m)
+  /// A longer line is cut into faces of at most this: 16 to 1,000 m.
+  max_length_m: f32 = 300.0 @unit(m)
+  /// How far in front of the steep ground's foot a face stands, so its carving stays proud of the
+  /// ground: 0 to 20 m; absent, three quarters of the face's relief.
+  standoff_m: f32? @unit(m)
+  /// A face is not placed where it comes within this of an earlier placement's footprint: 0 to
+  /// 100 m.
+  clear_m: f32 = 2.0 @unit(m)
+  /// The faces' parameters, all but their lines and heights, which the ground gives.
+  face: Cliff
+  /// The rock by the height of a face's foot; none, or none that holds it: `face.type`.
+  bands: CliffBand[]
+  /// Fallen boulders at the faces' feet, beside the skirt's own blocks: a recipe (`.rock.json`, a
+  /// glTF) relative to the scene, and how many per 100 m of face. Empty: none.
+  foot_mesh: string
+  foot_per_100m: f32 = 0.0
+  foot_scale_min: f32 = 0.6
+  foot_scale_max: f32 = 1.4
+  /// Where the faces' recipes are written: relative to the scene; empty, the host's derived-data
+  /// root's `cliffs/`, else the repository's, else `cliffs` beside the scene.
+  recipes: string
 }

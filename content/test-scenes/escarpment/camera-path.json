@@ -1,0 +1,21 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "escarpment",
+  "description": "Thirty-four seconds at the escarpment's east flank: from the valley floor the whole face and its talus, then along the face at mid height past the ledges and the undercut beds, up over the crest looking down the face, and last a walk at eye height along its foot between the fallen blocks and the boulders.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.3,
+  "keys": [
+    {"time": 0.0, "position": [210.0, 30.0, -110.0], "ground": true, "target": [62.0, 45.0, 10.0]},
+    {"time": 8.0, "position": [120.0, 25.0, -70.0], "ground": true, "target": [62.0, 50.0, 20.0]},
+    {"time": 16.0, "position": [105.0, 30.0, 70.0], "ground": true, "target": [70.0, 40.0, -40.0]},
+    {"time": 24.0, "position": [90.0, 140.0, 110.0], "target": [62.0, 40.0, 10.0]},
+    {"time": 30.0, "position": [122.0, 1.7, 40.0], "ground": true, "target": [80.0, 22.0, 10.0]},
+    {"time": 34.0, "position": [118.0, 1.7, 0.0], "ground": true, "target": [82.0, 25.0, -30.0]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "valley", "note": "the east face whole from the valley floor, its talus and the boulders at its foot"},
+    {"frame": 480, "name": "along", "note": "along the face at mid height: ledges, the undercut beds, the gullies"},
+    {"frame": 1800, "name": "foot", "note": "walking at eye height along the foot, the face over the skirt"}
+  ]
+}

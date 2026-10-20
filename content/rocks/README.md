@@ -11,6 +11,7 @@ derived-data cache. Nothing binary lives here: the meshes are solved from these 
 | `sandstone-boulder.rock.json` | Boulder | a 3.2 × 2 × 2.4 m sandstone loaf with nine beds of uneven depth | 19,200 (24,000) |
 | `basalt-outcrop.rock.json` | Outcrop | seven basalt columns, hexagonal and flat-topped, on one bedding plane, 9 × 5.2 × 7 m | 50,304 (60,000) |
 | `granite-scree.rock.json` | Scree | fourteen sharp granite fragments up to 0.44 m over a 2.8 × 2 m patch | 13,152 (16,000) |
+| `sandstone-escarpment.rock.json` | Cliff | a sandstone face 298 m along a gentle bend, 24 to 44 m high, undercut, a talus skirt and thirty fallen blocks ([rocks](../../docs/subsystems/rocks.md#cliffs)) | 162,064 (250,000) |
 
 Each passes E10's four thresholds (rocks.md, "What the harness taught"), and each one's mesh is
 pinned by hash in `domain/rocks/tests/rocks_tests.cpp`: change a number here and that test says

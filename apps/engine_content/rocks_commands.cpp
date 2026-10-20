@@ -176,6 +176,7 @@ u32 budget_of(const rocks::RockFile& file) {
     case rocks::RockShape::Boulder: return file.boulder->triangle_budget;
     case rocks::RockShape::Outcrop: return file.outcrop->triangle_budget;
     case rocks::RockShape::Scree: return file.scree->triangle_budget;
+    case rocks::RockShape::Cliff: return file.cliff->triangle_budget;
   }
   return 0;
 }
