@@ -1,0 +1,42 @@
+{
+  "format": "engine.scene.v1",
+  "name": "escarpment",
+  "description": "An escarpment dressed by the cliffs generator (domain/rocks, docs/subsystems/rocks.md 'The cliffs generator'): an authored ridge 120 m high whose two steep flanks are found from the ground's heights, their feet traced into lines and stood with sandstone faces — ledges, undercut beds, gullies, a talus skirt and fallen blocks — and granite boulders at their feet. It needs no sample asset, but its heightfield is written first by engine-content terrain-synth (README.md).",
+  "camera_path": "camera-path.json",
+  "terrain": {
+    "size": 401,
+    "extent": 200,
+    "provider": "tiles",
+    "tiles": {"heightfield": "ridge.json", "vertical_scale": 3}
+  },
+  "placements": [
+    {
+      "generator": "cliffs",
+      "params": {
+        "name": "escarpment",
+        "seed": 7,
+        "region_min": [-200, -200],
+        "region_max": [200, 200],
+        "spacing_m": 4,
+        "block_m": 400,
+        "min_slope_deg": 50,
+        "min_length_m": 30,
+        "min_height_m": 8,
+        "max_length_m": 300,
+        "face": {
+          "type": "Sandstone",
+          "undercut": 0.5,
+          "talus": 0.15,
+          "talus_blocks": 24,
+          "talus_block_m": 2.5,
+          "material": {"tile_m": 2.0},
+          "triangle_budget": 250000
+        },
+        "foot_mesh": "../../rocks/granite-boulder.rock.json",
+        "foot_per_100m": 4,
+        "foot_scale_min": 0.8,
+        "foot_scale_max": 2.2
+      }
+    }
+  ]
+}

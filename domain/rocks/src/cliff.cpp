@@ -584,7 +584,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   carve.d_cos = det::cos(m.d_dip_deg * k_pi / 180.0);
   carve.d_sin = det::sin(m.d_dip_deg * k_pi / 180.0);
   carve.warp_amp = m.warp * z.line.height_max;
-  carve.gully_amp = 0.12 * z.line.height_max;
+  carve.gully_amp = min2(6.0, 0.06 * z.line.height_max);
   carve.gully_len = max2(12.0, 0.6 * z.line.height_max);
   carve.warp_len = max2(16.0, 0.6 * z.line.height_max);
   {

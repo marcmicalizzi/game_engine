@@ -9,8 +9,9 @@ fantasy RPG wants outcrops, boulders and scree; and the Tripo-generated props fa
 topology ([e10](../experiments/e10-generated-props.md)), which a solver never has. A `.rock.json`
 recipe is a mesh like a glTF: a scene's mesh table, a scatter layer's kind or `engine-view --mesh`
 names one, and it is built through the derived-data cache by the mesh-generator registry
-([assets](assets.md#generated-meshes)). It does not place rocks (a scatter layer or a scene's
-instances do), texture them (the UVs are laid out for a tiled set that does not exist yet), erode
+([assets](assets.md#generated-meshes)). It does not place boulders (a scatter layer or a scene's
+instances do) — but it does place cliffs, through its scene generator `cliffs`, which finds a
+terrain's steep ground and stands faces along it ([The cliffs generator](#the-cliffs-generator)) — texture them (the UVs are laid out for a tiled set that does not exist yet), erode
 them over time, or give them an interior to break.
 
 **Why this shape.** It is the flora capability's shape ([flora](flora.md)) because the problem is
@@ -116,7 +117,8 @@ line. What carves it:
 - **The undercut** (`undercut`): a weak bed is notched deepest just under the hard bed above it,
   which returns to the face within the bed's top eighth — the **overhang**'s underside.
 - **The low warp** and **the gullies**: one octave over the face, and gullies between buttresses,
-  cut back up to 12% of the height where a slow noise along the face says the joints let water in.
+  cut back up to 6% of the height (at most 6 m) where a slow noise along the face says the joints let
+  water in.
 - **The grain**: up to three octaves from 3 m (limestone's pitted), and **the crest** rounded back.
 - **The skyline**: the top broken back by up to 15% of the height, slowly along the face.
 
@@ -125,15 +127,15 @@ no row standing out over the one below by more than 0.4 of the height between th
 not hang off a face unsupported, so a block whose footing has fallen back leans back over it — and
 only then are the undercut's notches taken off, whose hard beds are what overhang. Without an
 undercut nothing on the face faces down more steeply than that lean, and with one the hard beds'
-undersides do: the test counts 2,715 triangles facing down by more than 60° above the foot of a
+undersides do: the test counts 2,716 triangles facing down by more than 60° above the foot of a
 120 m sandstone face at `undercut` 1 and none at 0, and a vertical line through one meets the face
 twice, into the bed from above and out of its underside.
 
 **Closed against the ground.** The back stands `depth` behind the face's mean plane (which leans
 back by the batter, so the back leans with it), **buried**: absent, the carving's deepest reach —
 relief, the undercut's deepest notch, the grooves, the warp, the gullies, the grain, the columns and
-the crest's rounding — plus 2 m, and never under 4 m (12.6 m for the default sandstone face 40 m
-high, 37 m for a granite one 200 m high). The front is held half a metre in front of the back, so
+the crest's rounding — plus 2 m, and never under 4 m (10.2 m for the default sandstone face 40 m
+high, 18.9 m for a granite one 200 m high). The front is held half a metre in front of the back, so
 the ends — a ladder between the back and the front at each row — are wound one way: a rung's two
 triangles have twice-areas `(y₁ − y₀)(x₁ + D)` and `(y₁ − y₀)(x₀ + D)`, positive while the front is
 in front. The top is a flat cap from the crest to the back's top, the bottom one at the buried foot.
@@ -164,13 +166,13 @@ built at.
 
 | Face | Budget | Cell | Grid (along × up × back) | Face | Skirt | Blocks | Triangles | Solve (msvc-debug) |
 |---|---|---|---|---|---|---|---|---|
-| 300 m × 40 m sandstone, straight | 250,000 (default) | 0.75 m | 400 × 56 × 17 | 120,608 | 20,096 | 14,400 (12 at n = 10) | 155,104 | 0.26–0.42 s |
-| the same | 2,000 | 8 m | 38 × 6 × 2 | — | — | 0 | 1,580 | — |
-| ~1 km × 200 m granite, bent | 1,000,000 | 1.5 m | 665 × 135 × 25 | 439,100 | 60,116 | 76,800 (64) | 576,016 | 0.99 s |
-| `sandstone-escarpment.rock.json` (298 m, 24–44 m, bent) | 250,000 | 0.75 m | 400 × 62 × 20 | 136,160 | 20,096 | 12,960 (30 at n = 6) | 169,216 | — |
+| 300 m × 40 m sandstone, straight | 250,000 (default) | 0.75 m | 400 × 56 × 14 | 115,136 | 18,488 | 14,400 (12 at n = 10) | 148,024 | 0.26–0.42 s |
+| the same | 2,000 | 8 m | 38 × 6 × 2 | — | — | 0 | 1,500 | — |
+| ~1 km × 200 m granite, bent | 1,000,000 | 1.5 m | 665 × 135 × 13 | 400,700 | 49,428 | 76,800 (64) | 526,928 | 1.0 s |
+| `sandstone-escarpment.rock.json` (298 m, 24–44 m, bent) | 250,000 | 0.75 m | 400 × 62 × 17 | 130,616 | 18,488 | 12,960 (30 at n = 6) | 162,064 | — |
 
 The ladder's steps are a third to a half apart in cell, so a budget is used to between half and all
-of it (the kilometre face at a million takes 576,016, because the 1 m cell would need about 1.3
+of it (the kilometre face at a million takes 526,928, because the 1 m cell would need about 1.07
 million). Timings are a debug build on a machine shared with other agents' builds, an upper bound;
 the solve is single-threaded and linear in the triangles.
 
@@ -188,6 +190,95 @@ stays inside ±16 (`geometry.uv_range`) while a cell is under four repeats, and 
 separate islands. What the box projection cannot do is follow a ledge's top: the front's charts are
 (along, up), so a ledge stretched outwards by one row samples one row of the set. The blocks keep
 the scree's own six charts.
+
+### The cliffs generator
+
+**A mountain gets its cliffs without an author drawing them.** `cliffs` is a placement generator
+in the scene-generator registry ([scene_gen](scene_gen.md#adding-a-generator)), registered from
+this capability (`src/cliffs_generator.cpp`, `include/domain/rocks/cliffs.h`) rather than from the
+scatter: nothing of the scatter's placement machinery — a Poisson disc of a few kinds — fits a face
+that is a line hundreds of metres long and a mesh of its own, and the face's recipe and solver are
+here. A scene names it as `{"generator": "cliffs", "params": {...}}`, an `engine.rocks.CliffLayer`:
+
+- **Where the steep ground is.** The region is cut into **blocks** of a world-anchored grid
+  (`block_m`, 256 m by default, a whole number of `spacing_m`). In each, the ground's heights
+  (`Context::ground`, whole millimetres, as every generator asks) on a lattice of `spacing_m` (4 m),
+  the slope by central differences, and **marching squares** on "steeper than `min_slope_deg`"
+  (50°), its segments oriented with the steep side on their left and the saddles settled by the
+  cell's centre. A segment whose steep side is uphill is a **foot**; the brow and the ends of a band
+  are not. The feet are joined by their shared lattice edges into lines, in the order they were
+  found.
+- **A line into faces.** Each line is resampled at the spacing and smoothed; at each vertex the
+  slope's profile is walked uphill while it stays steeper than four fifths of the threshold (a ledge
+  part way up does not end the face), at most 200 m up. The face **stands off** downhill
+  (`standoff_m`; absent, three quarters of the type's relief plus 3% of the height) so its carving
+  stays proud of the ground; its **height** reaches half a metre under the brow, so the ground's own
+  edge stands over its crest; its **batter** is the lean that keeps its mean plane the standoff in
+  front of every point of the profile — not the chord from foot to brow, which a slope that
+  steepens and then rounds over rises above and buried the first faces in (the first captures). The
+  heights and batters are smoothed along the line, which is cut into faces of equal length no longer
+  than `max_length_m` (300 m), each kept when it is at least `min_length_m` long and
+  `min_height_m` high on average. **A line the block's edge cut runs on 12 m past it**, so the face
+  the next block traced overlaps its end instead of leaving the ground showing between two capped
+  ends and two tapering skirts.
+- **The rock** is the first of `bands` whose `below_m` the face's foot is under, else `face.type`;
+  everything else is the layer's `face` block (a `Cliff` without its line), its seed mixed with the
+  face's identity, its `datum_y` the world's zero so faces cut from one mass share their beds.
+- **What it writes.** A face's recipe is a `.rock.json` named by its canonical parameters' hash
+  (`cliff-<hash>.rock.json`) under `recipes`, else the host's derived-data root's `cliffs/`
+  (`Context::ddc`), else the repository's, else `cliffs` beside the scene — the scatter's rule for
+  its procedural rock — and a file already there is the right one. The scene reader builds it through
+  the mesh-generator registry like any recipe; the placement is the face's **origin**, the first
+  vertex of its line in whole millimetres (ADR-0053), unturned.
+- **Fallen boulders** at the feet, beside the skirt's own blocks, are **scatter-compatible
+  placements** of any recipe or glTF (`foot_mesh`, `foot_per_100m`, `foot_scale_min`/`_max`): along
+  the line and out over the skirt, on the ground, turned and scaled from the face's identity, tag 1.
+
+**Tile-stable.** A block's faces are a function of the layer, the block and the ground's heights
+over it and a two-point apron — nothing of another block — and **a face's identity is a hash of its
+line in whole millimetres and its heights in centimetres**, so a streamed world and a whole read make
+the same faces, the same recipes and the same bytes whichever tile asks first. A face belongs to the
+region and the tile its **anchor** is in — the middle vertex of its line, which the run-on past a
+block's edge never moves out of the block. `open` traces every block of the region once and writes
+the recipes; `meshes` is every face's recipe and the foot's; `tile` places the faces anchored in the
+tile and their boulders; `occupies` says whether any is. **An earlier placement's footprint** within
+`clear_m` of a face's line clears the whole face, in `expand` and in `tile` alike — a streamed tile
+cannot name a mesh `meshes` did not list, so a face is not split round a building (yet).
+
+The tests (`tests/cliffs_generator_tests.cpp`): on an escarpment of 30 m over 20 m along z, a block
+finds one face the block long, standing off downhill of the foot, 26.5 m high, leaning back about
+the band's run over its rise, looking downhill, whose recipe solves; flat ground, a 30° slope and a
+block beside the band find none; a block traced alone is the same face as in a region of four, and
+`tile` over every tile in reverse order is `expand`, recipe for recipe; a footprint on a face's line
+clears that face and one far away nothing; a layer out of range is refused by field; and the
+escarpment scene's own layer over its ridge dresses both flanks.
+
+### The escarpment
+
+[`content/test-scenes/escarpment/`](../../content/test-scenes/escarpment/README.md): an authored
+ridge (`engine-content terrain-synth --kind ridge --size 401 --spacing-mm 1000`, 400 m square, under
+the `tiles` provider at a vertical scale of 3: 120 m high, its flanks to 66°) and a `cliffs` layer of
+sandstone faces with an undercut of 0.5, a talus skirt of 0.15 of the height, 24 fallen blocks each
+and granite boulders at 4 per 100 m; four faces, two a flank, 215 m long and to 113 m high, 153,340
+triangles at a 1 m cell under 250,000. A camera path along the east flank with three markers:
+`valley`, `along` and `foot`, the last a walk at eye height. Its heightfield is written first and is
+never committed (the README has the lines).
+
+**What the capture showed** (engine-view offscreen, 1280 × 720, `--shadows csm`, `--sun 120,35`,
+msvc-debug, RTX 5090, 2026-10-19; a picture, not a timing): from the valley the east flank is a wall
+of tan sandstone rising out of a lumpy talus apron, beds as horizontal ledges a few metres apart,
+joint-bounded blocks standing back by different amounts, the skyline broken back; the two faces meet
+where the blocks' grid divides them, their ends overlapped. Along the face at mid height the ledges
+read as faint horizontal steps and the vertical joints as shallow grooves; the undercut's notches,
+a metre or so under a 100 m face, do not read at that distance in the flat colour (they do in the
+300 m recipe seen from 60 m), and the fallen blocks lie on the skirt's slope with the grey granite
+boulders beyond its toe. Walking at the foot the face fills the picture over the skirt, its beds
+and blocks plain. **The ground shows through** in a few of the face's deepest recesses, as sand-coloured
+patches: the carving there retreats behind the ridge's own surface, which is drawn in the terrain's
+sand material — a rock material where the slope is steep is the per-tile maps' job (W25), and with it
+those patches would be rock. The first captures put every face inside the hill: the batter was the
+chord from foot to brow, and the ridge's convex upper flank rises above that chord; the batter that
+keeps the face in front of the whole profile is what fixed it.
 
 ## The parameters and ranges
 
@@ -438,13 +529,16 @@ reader (the four recipes as meshes, over 300 placed, none inside the outcrops' c
 `triangles_of_grid`, `RockReport`, `rock_type_name`, `rock_shape_name`, `rock_file_in_range`,
 `read_rock_file`, `canonical_rock_json`, `rock_source_hash`, `rock_build_key` (with the pack),
 `rock_role`, `solve_rock`, `build_rock_container` (with the pack); for cliffs `k_cliff_cells_m`,
-`CliffReport`, `cliff_in_range`, `solve_cliff`. `src/detail.h` is the arithmetic, streams and noise
+`CliffReport`, `cliff_in_range`, `solve_cliff`; `include/domain/rocks/cliffs.h`: `k_cliffs_generator`,
+`CliffFace`, `cliff_layer_in_range`, `trace_cliff_block`, and the generator `cliffs` registered
+beside them. `src/detail.h` is the arithmetic, streams and noise
 the two solvers share (moved out of `solver.cpp` without moving a byte of a recipe) and the one body
 the cliff borrows, a fallen block. The mesh generator `rock`
 registers from `src/rocks.cpp` and takes the pack from the host's `assets::MeshGeneratorInputs`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `assets`, `geometry`,
-`materials` (the set), `texture` (the records saying how each image is built), `rocks_schemas`.
+`materials` (the set), `texture` (the records saying how each image is built), `rocks_schemas`;
+for the cliffs generator `scene_gen` (the registry and the ground), `io` (its recipes) and `log`.
 
 **Testing.** `tools/dev.ps1 test -Filter rocks`.
 
@@ -464,6 +558,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a rock is a cluster mesh like any other |
 | Content-build derived step | `engine-content rocks`, the mesh generator `rock` (and through it `build`, `build-all`) | [the build](#the-build): keyed by the canonical parameters and `k_rocks_version` |
+| Scene generator | `cliffs`, a placement generator (`src/cliffs_generator.cpp`) | [The cliffs generator](#the-cliffs-generator) |
 | Protocol methods | none | not needed |
 | Tunables | none | everything the solver reads is a parameter of the file |
 | LOD policy | the budget ladder, then the cluster DAG's | [the budget ladder](#the-budget-ladder) |

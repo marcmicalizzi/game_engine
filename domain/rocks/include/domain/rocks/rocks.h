@@ -10,7 +10,10 @@
 //
 // The registration points, ADR-0027 decision 2:
 //
-//   [x] schema types      schemas/rocks.schema: engine.rocks.Boulder, Outcrop, Scree, RockFile
+//   [x] schema types      schemas/rocks.schema: engine.rocks.Boulder, Outcrop, Scree, Cliff,
+//                         RockFile, CliffLayer
+//   [x] scene generator   "cliffs", a placement generator (cliffs.h; rocks.md, "The cliffs
+//                         generator")
 //   [-] scheduler entry   none: the solver runs at content-build time and has no tick
 //   [-] render passes     none: a rock is a cluster mesh like any other
 //   [x] derived data      the solver's container, keyed by the parameters (rocks.md, "The build")
