@@ -1,0 +1,16 @@
+{
+  "species": "fern",
+  "fern": {
+    "seed": 6,
+    "fronds": 3,
+    "frond_length_m": 1.3,
+    "stipe": 0.4,
+    "pinnae": 16,
+    "pinna_length": 0.3,
+    "pinna_angle_deg": 80.0,
+    "spread_deg": 25.0,
+    "droop": 0.35,
+    "crown_radius_m": 0.15,
+    "detail_tier": "rich"
+  }
+}

@@ -25,6 +25,7 @@
 #include <core/base/types.h>
 #include <domain/flora/palm.h>
 #include <domain/flora/trees.h>
+#include <domain/flora/understory.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 
@@ -62,6 +63,11 @@ inline constexpr const char* k_species_willow = "willow";
 inline constexpr const char* k_species_orchard = "orchard";
 inline constexpr const char* k_species_ancient =
     "ancient";  // the megaflora (flora.md, "Megaflora")
+// The understory (G75; understory.h, flora.md "The understory").
+inline constexpr const char* k_species_shrub = "shrub";
+inline constexpr const char* k_species_fern = "fern";
+inline constexpr const char* k_species_tuft = "tuft";
+inline constexpr const char* k_species_herb = "herb";
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------
@@ -105,6 +111,17 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
 // and its motion contract. The report its species fills, when given; the other is left alone.
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error);
+
+// The kind's detail tier (flora.md, "Detail tiers"): the one its species struct declares for the
+// understory, `essential` for every tree (a tree collides by its trunk; the trees carry no field,
+// so their pinned parameters do not move). A graphics preset may leave out a whole tier; the
+// renderer honours none of it yet (roadmap G75).
+DetailTier flora_detail_tier(const FloraFile& file);
+
+// Whether instances of the file's mesh carry a collision body: every tree (its trunk), a shrub
+// whose stoutest stem is at least `k_shrub_collider_radius_m` (understory.h), never a fern, a tuft
+// or a herb. The reader refuses `rich` wherever this is true.
+bool flora_collides(const FloraFile& file);
 
 // Solves the file's species and builds its container: one cluster LOD DAG per primitive, each with
 // its material's cone setting (the trunk's on, a two-sided frond's off), merged, laid out in

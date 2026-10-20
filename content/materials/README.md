@@ -88,6 +88,12 @@ the surface one repeat covers, in metres, and the UVs it lands on are below.
 | `broadleaf/leaf` | the oak's leaf cards, **one leaf per image, whole** | the card: *u* along the twig, *v* across, 0 to 1 | 512 or 1K | unused (cards take the image whole) | **not made**; wants an alpha mask, which R65 will read |
 | `conifer/bark` | the spruce's trunk and branches | metres, as the broadleaf | 2K | about 0.3: thin, flaking plates | **not made** |
 | `conifer/needles` | the spruce's needle sprays, **one spray per image** | the card, as the leaf | 512 or 1K | unused | **not made**; wants alpha, as the leaf |
+| `shrub/bark` | a shrub's stems and shoots (hazel's smooth, lenticelled grey-brown bark) | metres, *u* round, *v* along | 1K | about 0.15: a stem is a few centimetres round | **not made** |
+| `shrub/leaf` | a shrub's leaf cards, **one leaf per image, whole** (a hazel leaf: broadly ovate, toothed, 6–12 cm) | the card, as the broadleaf's leaf | 512 | unused | **not made**; wants alpha (R65) |
+| `fern/frond` | a fern's pinna cards and its stipe's ribbon, **one pinna per image, whole** (a male fern's pinna: lanceolate, cut into pinnules) | the card: *u* along the rachis (a card a unit), *v* out along the pinna | 512 | unused | **not made**; the pinnules are the image's, so it wants alpha (R65) |
+| `grass/blade` | a grass tuft's blades, **one blade per image, whole** (linear, ribbed, tapering to a point; base green to a paler tip) | the card: *u* across the blade, *v* from base (0) to tip (1) | 256 × 1K | unused | **not made**; wants alpha (R65) for the tip |
+| `herb/leaf` | a herb's leaf cards and its stem (a corner of the card), **one leaf per image, whole** | the card: *u* across, *v* from base (0) to tip (1) | 512 | unused | **not made** |
+| `herb/flower` | a herb's petal cards, **one petal per image, whole**, white or pale so the recipe's colour can tint it (a daisy's ray, a foxglove's bell lobe) | the card: *u* across, *v* from the flower's centre (0) to the petal's tip (1) | 256 | unused | **not made**; no recipe block names it, so the pack's role or the flat colour |
 | `rock/granite` | boulders, outcrops and scree of granite | the box projection's charts in **whole repeats** | 2K | 1.0, or the size of the grain wanted; a small repeat raises the UVs | **not made** |
 | `rock/sandstone` | sandstone | as granite | 2K | 1.0 | **not made**; the lab's generic set A stood in for the first proof |
 | `rock/basalt` | basalt | as granite | 2K | 1.0 | **not made** |

@@ -1,0 +1,23 @@
+{
+  "species": "herb",
+  "herb": {
+    "seed": 12,
+    "height_m": 1.2,
+    "stem_radius_m": 0.005,
+    "leaves": 12,
+    "leaf_top": 0.45,
+    "leaf_length_m": 0.2,
+    "leaf_width": 0.35,
+    "leaf_angle_deg": 70.0,
+    "flowers": 22,
+    "spike": 0.4,
+    "petals": 5,
+    "petal_length_m": 0.045,
+    "petal_width": 0.45,
+    "petal_angle_deg": 22.0,
+    "flower_red": 0.55,
+    "flower_green": 0.12,
+    "flower_blue": 0.42,
+    "detail_tier": "rich"
+  }
+}

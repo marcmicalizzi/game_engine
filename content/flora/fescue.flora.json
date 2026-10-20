@@ -1,0 +1,14 @@
+{
+  "species": "tuft",
+  "tuft": {
+    "seed": 10,
+    "blades": 90,
+    "blade_length_m": 0.22,
+    "blade_width_m": 0.002,
+    "spread_deg": 25.0,
+    "droop": 0.35,
+    "base_radius_m": 0.025,
+    "segments": 4,
+    "detail_tier": "rich"
+  }
+}

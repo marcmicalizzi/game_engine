@@ -133,8 +133,10 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
                 std::span<const geometry::ClusterFileStructuralPart> structure,
                 std::string_view species, FloraMesh& out);
 
-// **Whether a part stays a collider** (scene_collision.md, "What gets no body"): the trunk and a
-// load-bearing limb do; with no structural table, the trunk alone. Fronds, leaves, curtains and
+// **Whether a part stays a collider** (scene_collision.md, "What gets no body"): the trunk, a
+// load-bearing limb and a part flagged `k_structural_collider` (a shrub's stout stem) do; with no
+// structural table, the trunk alone. The understory's part 0 is a root with no geometry, so a
+// fern, a tuft and a herb have no body at all. Fronds, leaves, curtains and
 // twigs are walked through, and the push bends them aside.
 bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure,
                          u32 part) noexcept;

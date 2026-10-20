@@ -1,0 +1,9 @@
+{
+  "species": "tuft",
+  "tuft": {
+    "seed": 8,
+    "blades": 120,
+    "blade_length_m": 0.45,
+    "detail_tier": "rich"
+  }
+}

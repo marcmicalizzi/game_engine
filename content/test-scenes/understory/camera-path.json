@@ -1,0 +1,190 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "understory",
+  "description": "Forty-four seconds walking at eye height (1.6 m above the ground): round the canopy ring past the shrubs and ferns, into the clearing's grass and flowers, and out under the third oak, looking where it walks.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0.0,
+      "position": [
+        -17.0,
+        1.6,
+        -3.0
+      ],
+      "ground": true,
+      "target": [
+        -14.0,
+        1.2,
+        -12.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 4.0,
+      "position": [
+        -14.0,
+        1.6,
+        -12.0
+      ],
+      "ground": true,
+      "target": [
+        -5.0,
+        1.2,
+        -16.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 8.0,
+      "position": [
+        -5.0,
+        1.6,
+        -16.0
+      ],
+      "ground": true,
+      "target": [
+        6.0,
+        1.2,
+        -16.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 12.0,
+      "position": [
+        6.0,
+        1.6,
+        -16.0
+      ],
+      "ground": true,
+      "target": [
+        15.0,
+        1.2,
+        -13.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 16.0,
+      "position": [
+        15.0,
+        1.6,
+        -13.0
+      ],
+      "ground": true,
+      "target": [
+        17.0,
+        1.2,
+        -3.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 20.0,
+      "position": [
+        17.0,
+        1.6,
+        -3.0
+      ],
+      "ground": true,
+      "target": [
+        15.0,
+        1.2,
+        6.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 24.0,
+      "position": [
+        15.0,
+        1.6,
+        6.0
+      ],
+      "ground": true,
+      "target": [
+        7.0,
+        1.2,
+        4.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 28.0,
+      "position": [
+        7.0,
+        1.6,
+        4.0
+      ],
+      "ground": true,
+      "target": [
+        0.0,
+        1.2,
+        0.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 32.0,
+      "position": [
+        0.0,
+        1.6,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        -5.0,
+        1.2,
+        3.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 36.0,
+      "position": [
+        -5.0,
+        1.6,
+        3.0
+      ],
+      "ground": true,
+      "target": [
+        -9.0,
+        1.2,
+        9.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 40.0,
+      "position": [
+        -9.0,
+        1.6,
+        9.0
+      ],
+      "ground": true,
+      "target": [
+        -16.0,
+        1.2,
+        15.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 44.0,
+      "position": [
+        -16.0,
+        1.6,
+        15.0
+      ],
+      "ground": true,
+      "target": [
+        -20.0,
+        1.2,
+        18.0
+      ],
+      "target_ground": true
+    }
+  ]
+}

@@ -352,6 +352,9 @@ inline constexpr u32 k_structural_load_bearing = 1u;  // trunk or major limb: a 
                                                       // from it; its base radius is at least the
                                                       // species' declared minimum
 inline constexpr u32 k_structural_straight = 2u;      // its axis is the segment, to the millimetre
+inline constexpr u32 k_structural_collider = 4u;      // stops a walker though nothing hangs from
+                                                      // it: a shrub's stout stem (flora.md,
+                                                      // "The shrub")
 struct ClusterFileStructuralPart {
   u32 part = 0;
   f32 base_radius = 0.0f;
