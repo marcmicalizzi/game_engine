@@ -28,6 +28,10 @@
                 report taken on the remote machine.
     -Sync:$false  build what is already on the remote machine.
 
+  Every compile goes through the server's ccache (~/game_engine-ccache, 30 GB, shared by every
+  checkout's tree there), and the build prints two lines of cache statistics. ENGINE_CCACHE=0
+  compiles everything for that run (docs/ci/remote-linux.md, "The compiler cache").
+
   Exit status is the build's, or the tests' when -Test is given.
 
 .NOTES
@@ -101,6 +105,21 @@ $RemoteRel = "game_engine-remote/$CheckoutId"
 $RemoteRoot = '$HOME/' + $RemoteRel
 $RemoteSrc = "$RemoteRoot/src"
 $RemoteDeps = "$RemoteRoot/deps"
+
+# The compiler cache on the server, shared by every checkout's tree there (docs/ci/remote-linux.md,
+# "The compiler cache"). Its own directory in the build account's home rather than ccache's default
+# (~/.cache/ccache, 5 GB), so its limit is the containers' 30 GB and nothing else's results evict it.
+# base_dir is the parent of every checkout's directory: each compile runs in
+# <checkout>/src/build/<preset> and names its sources, includes and dependencies by absolute paths
+# under <checkout>, so rewritten relative to the build directory they are the same text in every
+# checkout. hash_dir off because linux-server is RelWithDebInfo, and with -g ccache otherwise hashes
+# the build directory GCC records as the compilation directory: every checkout would miss. The
+# price is the Windows half's: a cached object's debug information names the checkout that compiled
+# it first, which on a machine nobody debugs on costs nothing.
+$RemoteCcacheDir = '$HOME/game_engine-ccache'
+$RemoteCcacheBase = '$HOME/game_engine-remote'
+$NoCcache = $env:ENGINE_CCACHE -eq '0'
+Import-Module (Join-Path $PSScriptRoot 'lib/LinuxVolumes.psm1') -Force -Function Get-CcacheReportScript, Get-CcacheMaxSize
 
 # ssh, with the output left on the caller's streams and the status in $LASTEXITCODE. It is never
 # wrapped in a function that returns the status, because a PowerShell function returns its whole
@@ -317,8 +336,24 @@ $lines = @('set -e', "cd `"$RemoteSrc`"")
 # with "error writing to /tmp/cc….s: No space left on device", and the build had done nothing wrong.
 $lines += "mkdir -p `"$RemoteRoot/tmp`" && export TMPDIR=`"$RemoteRoot/tmp`""
 if ($Clean) { $lines += "rm -rf `"build/$Preset`"" }
-$lines += "cmake --preset $Preset -DFETCHCONTENT_BASE_DIR=`"$RemoteDeps/$Preset`" -DFETCHCONTENT_UPDATES_DISCONNECTED=ON"
-$lines += "cmake --build --preset $Preset -j $jobCount -- -k 0"
+# The compiler cache: the containers' launcher and the same reason for switching precompiled
+# headers off (tools/lib/LinuxVolumes.psm1, Get-PresetScript; SDL3 and Jolt use them, and ccache
+# will not cache a compile that reads one). ENGINE_CCACHE=0 keeps the launcher on the configure
+# line and makes ccache run the compiler directly, so turning the cache off and on never
+# reconfigures the tree.
+$lines += "export CCACHE_DIR=`"$RemoteCcacheDir`" CCACHE_MAXSIZE=$(Get-CcacheMaxSize) CCACHE_BASEDIR=`"$RemoteCcacheBase`" CCACHE_NOHASHDIR=1"
+# The limit is written into the cache's own ccache.conf too, so a `ccache -s` run by hand there reads
+# the same 30 GB and an eviction outside this script keeps to it.
+$lines += 'mkdir -p "$CCACHE_DIR" && ccache -M "$CCACHE_MAXSIZE" > /dev/null'
+if ($NoCcache) { $lines += 'export CCACHE_DISABLE=1' }
+$lines += Get-CcacheReportScript
+$lines += "cmake --preset $Preset -DFETCHCONTENT_BASE_DIR=`"$RemoteDeps/$Preset`" -DFETCHCONTENT_UPDATES_DISCONNECTED=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON"
+$lines += "ccache_snapshot `"$RemoteRoot/tmp/ccache.before`""
+$lines += 'build_status=0'
+$lines += "cmake --build --preset $Preset -j $jobCount -- -k 0 || build_status=`$?"
+$lines += "ccache_snapshot `"$RemoteRoot/tmp/ccache.after`""
+$lines += "ccache_report `"$RemoteRoot/tmp/ccache.before`" `"$RemoteRoot/tmp/ccache.after`""
+$lines += 'if [ "$build_status" -ne 0 ]; then exit "$build_status"; fi'
 if ($Test) {
   # `set -e` off around the tests: a failing suite is a result to collect artefacts for, not a
   # reason to stop before collecting them. Its status is kept and re-raised at the end.
