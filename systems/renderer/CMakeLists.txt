@@ -37,7 +37,7 @@ engine_module(NAME renderer LAYER systems
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/tile_layout.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp)
+          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -76,7 +76,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/terrain_tiles_tests.cpp
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
-                    tests/flora_scene_tests.cpp)
+                    tests/flora_scene_tests.cpp
+                    # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.
+                    tests/flora_motion_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.

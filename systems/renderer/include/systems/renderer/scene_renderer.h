@@ -467,6 +467,9 @@ struct FrameDesc {
   // The host's step since its last frame, seconds: handed to the frame passes (frame_pass.h), which
   // draw nothing from it that depends on a previous frame. Nothing else reads it.
   f64 dt_s = 0.0;
+  // What sways the trees this frame: the wind, when the host names one, and the walker's capsule
+  // (flora_motion.h, `FrameFlora`; renderer.md, "The flora stage").
+  FrameFlora flora{};
 };
 
 class SceneRenderer {

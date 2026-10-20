@@ -168,8 +168,8 @@ frond texture serves them all. The trunk is one strip and its cap a disc beside 
 Every species' solver emits, beside its mesh, what a deform stage needs to sway the tree through
 the deformed-vertex pool — wind in the crown, a slight bend of the trunk, fronds pushed aside by a
 walker — without knowing which species it is (`include/domain/flora/motion.h`, `flora::Motion`).
-Nothing moves yet: the stage that reads these is the next piece of work (roadmap S66), and a tree
-whose weights are all zero is exactly the rest pose the renderer draws today.
+The renderer's flora stage reads them since 2026-10-19 ([Motion](#motion), below); a tree whose
+weights are all zero is exactly the rest pose.
 
 **Per part**, one `geometry::ClusterFileMotionPart` (32 bytes, mesh space). A **part** is what
 bends as one: the trunk, each green frond, each dead frond, and in a branching species each branch.
@@ -207,6 +207,72 @@ records **section 36** (`motion_vertices`, parallel to `Vertices` and paged with
 imported mesh's container is the bytes it was; the default palm's container with the two cleared
 hashes to exactly what it did before they existed, and its other sections are byte for byte the
 same (the test compares them section by section).
+
+## Motion
+
+**Trees move** (2026-10-19, roadmap S66): wind sways the crowns with a slight bend of the trunk,
+and a walker who walks into a palm's crown bends its fronds aside instead of meeting a wall. Nothing
+in this module changed for it — the contract above is what the renderer reads — and nothing in the
+renderer names a species beyond a table of numbers: the stage is the deformed-vertex pool's
+([renderer](renderer.md#the-flora-stage)), the model is `systems/renderer/flora_motion.h`, and the
+collision rule is [scene_collision](scene_collision.md)'s.
+
+**What a frame does with the contract.** Each part bends about its `pivot` by one rotation, the sum
+of the wind's and the walker's; a vertex takes its part's rotation scaled by its bend weight, so the
+root stays where its parent put it and the tip travels; and a child rides its parent — its frame is
+the parent's frame times the parent's own bend at the weight where the child leaves it, the child's
+pivot projected on the parent's axis. The CPU composes the frames parent-first each frame (the ids'
+parent-first order is what makes that one pass), so the shader reads one pose per vertex whatever the
+depth. Because the part, the weight and the rest position are per-vertex data every copy of a
+surface point shares on every rung and every LOD level, a bent tree cannot crack.
+
+**The wind.** Where it blows to and its strength over its record's mean come from the scene's
+ground at the world's one clock (the dunes' wind record, the hour's direction and strength), from
+`renderer.flora.wind_deg` and `renderer.flora.wind_strength` (default 1, a mean day, towards +x)
+where the ground says none, or from the frame (`FrameDesc::flora`). A part's steady lean is
+`compliance × s × (0.6 + 0.8 g)` and its flutter `compliance × s × (0.25 + 0.35 g) × sin(2π f t +
+φ)`: `s` the strength held to [0, 2], `g` the gust (two sines of 7.7 s and 3.2 s with phases from the
+instance's seed, in [0, 1]), `f` 0.9 Hz over the square root of the part's length — a longer part
+sways slower, and since its tip travels the angle times its length, farther — and `φ` the part's
+own phase from its pivot in the mesh's frame and the seed, so no two fronds and no two trees swing in
+step and no world position is involved. Its axis turns the part's rest direction towards where the
+wind blows (a part lying along the wind flutters up and down instead).
+
+**Stiffness, per species** — radians of steady lean at a mean wind, by class of part: the trunk
+(part 0), a limb (a child of the trunk; a palm's fronds), a twig (deeper), a leaf (a part the
+structural table gives no wood: a spray of cards, a willow's curtain). A part the structural table
+flags **load-bearing** takes a quarter of its class's (`k_flora_load_bearing`), which is what keeps
+the ancient tree's limbs, which a village hangs from, nearly still.
+
+| Species | Trunk | Limb | Twig | Leaf |
+|---|---|---|---|---|
+| `date_palm` | 0.012 | 0.10 | 0.12 | 0.14 |
+| `broadleaf` | 0.006 | 0.03 | 0.07 | 0.12 |
+| `conifer` | 0.008 | 0.035 | 0.06 | 0.08 |
+| `birch` | 0.015 | 0.05 | 0.09 | 0.14 |
+| `willow` | 0.006 | 0.03 | 0.08 | 0.16 |
+| `orchard` | 0.006 | 0.025 | 0.06 | 0.10 |
+| `ancient` | 0.0015 | 0.008 | 0.04 | 0.10 |
+
+At a mean wind a 6 m palm trunk's top leans 6.6 cm and its 3 m fronds' tips move 0.24 m downwind on
+average over ten seconds (the renderer's test), the flutter swinging them either side of that; at
+the strength the sway saturates at (2), twice that. They are chosen by eye against how a palm, an
+oak and a willow move in a breeze, not measured, and the table is the one place to change them.
+
+**The push.** A walker's capsule (its feet, 0.3 m radius, 1.8 m tall: [apps](apps.md#walking)) is
+handed to the frame. A part that is neither the trunk nor load-bearing whose rest axis comes within
+the capsule's radius plus the part's own reach — its wood's radius, or an eighth of its length for a
+part with none (a frond's leaflets stand out from its rachis) — plus 5 cm of the capsule's axis is
+turned about its pivot, away from the walker, by the angle that carries its nearest point clear, at
+most 0.9 rad; the push eases in and out over 12 frame ticks (0.2 s), a smoothstep of a ramp held per
+part between frames. A part's children go with it. The walker's own collision leaves those parts out
+([scene_collision](scene_collision.md)), so it walks into the crown and the fronds bend away, and the
+trunk still stops it.
+
+**Determinism.** A pose is a function of the parts, the frame index (at 60 Hz), the instance's seed,
+the wind and the walker's capsule, and of the push's state, which the frames before left as a
+function of the same: a replay of a recorded walk draws every pose it drew (the renderer's test
+replays a walk through a palm's crown to the same bytes).
 
 ## The branching species
 

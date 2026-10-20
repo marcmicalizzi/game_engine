@@ -29,6 +29,13 @@ up each trunk; fronds that rise, arch and droop, their leaflets in a V; tan dead
 under most crowns; and no two palms alike. Close in, the leaflets are geometry, seen from both
 faces. Far out, the crowns coarsen through their cluster DAGs.
 
+**The wind** (roadmap S66, [renderer](../../../docs/subsystems/renderer.md#the-flora-stage)). The
+palms sway in the dune field's own wind — its record's direction and strength at the scene's
+time — with a slight bend of the trunks and the fronds swinging most, no two in step. Walk in
+(`--interactive --walk`) and the fronds you walk into bend away from you; the trunks still stop
+you. `--tunable renderer.flora.wind_strength=0` does nothing here (the ground names a wind);
+`--tunable renderer.flora.motion=false` draws the palms rigid.
+
 **What pins it.** `systems/renderer/tests/flora_scene_tests.cpp` loads this file, checks every
 `.flora.json` entry became a mesh with the three materials, and on a GPU captures the first frame of
 the path offscreen and holds the pixels the crowns cover to green and the trunks' to brown, the

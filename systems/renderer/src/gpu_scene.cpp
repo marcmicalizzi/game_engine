@@ -42,6 +42,14 @@ constexpr gfx::BufferUsage k_transfer =
 // no room for draws its rest pose, and for a terrain level that is a jump — the one thing a moving
 // terrain must never do — so a scene with terrain levels takes at least this budget
 // (renderer.md, "The dunes in time-lapse", has what the erg's cut needs).
+// **A swaying tree is a deformed instance too** (renderer.md, "The flora stage"), and an entry the
+// budget refuses draws its rest pose beside neighbours that sway — a crack in the crown. A grove's
+// cut is a few hundred thousand vertices a view and as many a cascade, so a scene with trees takes
+// at least this, clamped down as every budget is to what its whole meshes need.
+tunables::Int flora_pool_mib{"renderer.flora.pool_mib", 96, 1, 16'384,
+                             "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
+                             "trees sway"};
+
 tunables::Int terrain_pool_mib{
     "renderer.terrain.pool_mib", 768, 1, 16'384,
     "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
@@ -99,6 +107,7 @@ u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertic
   u64 kib = resolved.settings.deform_pool_kib > 0 ? u64{resolved.settings.deform_pool_kib}
                                                   : u64{k_default_deform_pool_kib};
   if (resolved.terrain_levels) kib = std::max<u64>(kib, u64(terrain_pool_mib.get()) * 1024);
+  if (resolved.flora_motion) kib = std::max<u64>(kib, u64(flora_pool_mib.get()) * 1024);
   if (kib < k_min_deform_pool_kib) kib = k_min_deform_pool_kib;
   u64 vertices = kib * 1024 / (3 * sizeof(f32));
   if (vertices < 1) vertices = 1;
@@ -1118,6 +1127,43 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   if (deform_) {
     const u32 total_vertices = lod.mesh.vertices.size();
     u64 whole_mesh_vertices = 0;
+    // **The trees' motion, per mesh** (renderer.md, "The flora stage"): the contract as the stage
+    // reads it, the sway's bound on how far a vertex leaves its rest position, and the rest bounds
+    // the push's test starts from. A mesh whose table breaks the contract stays rigid, said once.
+    flora_meshes_.clear();
+    flora_bounds_.clear();
+    if (resolved.flora_motion) {
+      flora_meshes_.resize(data_->parts.size());
+      flora_bounds_.resize(data_->parts.size(), Vec4{});
+      for (u32 m = 0; m < data_->parts.size() && m < data_->sources.size(); ++m) {
+        const SourceMesh& source = data_->sources[m];
+        if (!source.has_motion()) continue;
+        const geometry::ClusterMeshPart& part = data_->parts[m];
+        const u32 end =
+            m + 1 < data_->parts.size() ? data_->parts[m + 1].first_vertex : total_vertices;
+        if (end - part.first_vertex != source.motion_vertices.size() ||
+            !flora_mesh(std::span<const geometry::ClusterFileMotionPart>(
+                            source.motion_parts.data(), source.motion_parts.size()),
+                        std::span<const geometry::ClusterFileStructuralPart>(
+                            source.structural_parts.data(), source.structural_parts.size()),
+                        source.species, flora_meshes_[m])) {
+          flora_meshes_[m] = FloraMesh{};
+          ENGINE_LOG_WARN(log_renderer, "a tree drawn rigid", log::field("mesh", m),
+                          log::field("reason", "its motion contract does not cover its mesh"));
+          continue;
+        }
+        Vec3 lo = lod.mesh.vertices[part.first_vertex];
+        Vec3 hi = lo;
+        for (u32 v = part.first_vertex; v < end; ++v) {
+          lo = min(lo, lod.mesh.vertices[v]);
+          hi = max(hi, lod.mesh.vertices[v]);
+        }
+        flora_bounds_[m] = Vec4{(lo + hi) * 0.5f, length(hi - lo) * 0.5f};
+      }
+    }
+    flora_instances_.clear();
+    flora_parts_ = 0;
+    Vector<f32> flora_padding(flora_meshes_.size(), -1.0f);  // computed for a mesh once
     for (u32 i = 0; i < instance_count_; ++i) {
       // A skinned instance is deformed whatever the settings say; a rigid one only under
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
@@ -1131,8 +1177,12 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       // and every ring slot's (`lay_out_rings` gave them their levels).
       const bool terrain_level =
           resolved.terrain_levels && (instance_table_[i].mesh == data_->terrain_mesh || ring_slot);
+      const u32 mesh_index = instance_table_[i].mesh;
+      const bool flora_level = !ring_slot && !terrain_level && instance_joints == 0 &&
+                               mesh_index < flora_meshes_.size() &&
+                               flora_meshes_[mesh_index].part_count() > 0;
       if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform &&
-          !terrain_level)
+          !terrain_level && !flora_level)
         continue;
       const u32 next = ring_slot ? part.first_vertex + part.cluster_count * 64u
                        : instance_table_[i].mesh + 1 < data_->parts.size()
@@ -1152,6 +1202,49 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       if (terrain_level) {
         desc.stages = gfx::k_deform_stage_terrain;
         if (!ring_slot) instance_table_[i].terrain = 1;  // a slot's is its ring's level already
+      } else if (flora_level) {
+        // A tree runs the flora stage and nothing else: its record names its run of the frame's
+        // part-pose table, and its spheres take the sway's bound.
+        const FloraMesh& tree = flora_meshes_[mesh_index];
+        desc.stages = gfx::k_deform_stage_flora;
+        desc.first_part = flora_parts_;
+        desc.joint_count = tree.part_count();
+        if (flora_padding[mesh_index] < 0.0f) {
+          const SourceMesh& source = data_->sources[mesh_index];
+          flora_padding[mesh_index] = flora_bounds_padding(
+              tree,
+              std::span<const Vec3>(lod.mesh.vertices.data() + part.first_vertex,
+                                    source.motion_vertices.size()),
+              std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
+                                                                 source.motion_vertices.size()));
+        }
+        gfx::InstanceDesc& placed = instance_table_[i];
+        if (flora_padding[mesh_index] > placed.bounds_padding)
+          placed.bounds_padding = flora_padding[mesh_index];
+        FloraInstance fi;
+        fi.instance = i;
+        fi.mesh = mesh_index;
+        fi.first_part = flora_parts_;
+        fi.seed = i * 0x9e3779b9u + 0x632be5abu;
+        // World to mesh: the instance's 3x3 inverted, once.
+        const Vec3 r0 = placed.rows[0].xyz();
+        const Vec3 r1 = placed.rows[1].xyz();
+        const Vec3 r2 = placed.rows[2].xyz();
+        const Vec3 c0{r0.x, r1.x, r2.x};
+        const Vec3 c1{r0.y, r1.y, r2.y};
+        const Vec3 c2{r0.z, r1.z, r2.z};
+        const f32 det = dot(c0, cross(c1, c2));
+        if (det != 0.0f) {
+          const f32 inv = 1.0f / det;
+          fi.inverse[0] = cross(c1, c2) * inv;
+          fi.inverse[1] = cross(c2, c0) * inv;
+          fi.inverse[2] = cross(c0, c1) * inv;
+        }
+        fi.inverse_scale = placed.scale_max > 0.0f ? 1.0f / placed.scale_max : 1.0f;
+        flora_instances_.push_back(fi);
+        flora_parts_ += tree.part_count();
+        flora_stats_.max_padding =
+            std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
       }
       desc.first_vertex = part.first_vertex;
       desc.first_channel = part.first_morph_channel;
@@ -1217,6 +1310,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     }
     if (ok && !lod.mesh.morph_channels.empty()) ok = create_morph(resolved, error);
     if (ok && resolved.terrain_levels) ok = create_terrain(resolved, error);
+    if (ok && !flora_instances_.empty()) ok = create_flora(error);
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
@@ -1485,6 +1579,139 @@ void GpuScene::set_static_weights(std::span<const f32> weights) {
   static_cache_dirty_ = true;
 }
 
+// **The trees' device side** (renderer.md, "The flora stage"): the scene's motion vertex stream —
+// each tree mesh's records at its run of the merged vertex streams, zero for every other mesh,
+// which no rigid instance reads — and the part-pose table, a region per frame slot like the joint
+// matrices, host-visible and persistently mapped, so a frame's poses are written in place. Every
+// region starts at rest. The ground the wind is asked of is the sand detail's when the scene has
+// one, and one made here for a terrain that has none.
+bool GpuScene::create_flora(std::string* error) {
+  const gfx::Device& device = *device_;
+  const u32 total_vertices = data_->lod.mesh.vertices.size();
+  Vector<geometry::ClusterFileMotionVertex> stream(total_vertices,
+                                                   geometry::ClusterFileMotionVertex{});
+  for (u32 m = 0; m < flora_meshes_.size(); ++m) {
+    if (flora_meshes_[m].part_count() == 0) continue;
+    const SourceMesh& source = data_->sources[m];
+    const u32 first = data_->parts[m].first_vertex;
+    for (u32 v = 0; v < source.motion_vertices.size(); ++v)
+      stream[first + v] = source.motion_vertices[v];
+  }
+  const u64 table_bytes = u64{k_joint_slots} * flora_parts_ * sizeof(gfx::FloraPartPose);
+  if (!gfx::upload_buffer(device, stream.data(),
+                          u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex), k_address,
+                          flora_motion_, error) ||
+      !gfx::create_buffer(device, table_bytes, k_address, true, flora_poses_, error)) {
+    return false;
+  }
+  std::memset(flora_poses_.mapped, 0, table_bytes);  // axis.w 0: every part at rest
+  flora_state_.clear();
+  flora_state_.resize(flora_parts_, FloraPartState{});
+  if (!deform_normals.buffer.valid() &&
+      !gfx::create_buffer(device, u64{deform_pool_vertices_} * sizeof(u32), k_address, false,
+                          deform_normals, error)) {
+    return false;
+  }
+  if (data_->terrain.enabled) flora_ground_ = std::make_unique<TerrainSampler>(data_->terrain);
+  flora_stats_.instances = flora_instances_.size();
+  flora_stats_.parts = flora_parts_;
+  ENGINE_LOG_INFO(
+      log_renderer, "trees sway", log::field("instances", flora_stats_.instances),
+      log::field("parts", flora_parts_),
+      log::field("motion_bytes", u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex)),
+      log::field("table_bytes", table_bytes),
+      log::field("max_padding_m", flora_stats_.max_padding));
+  return true;
+}
+
+u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index,
+                          f64 sun_time_s) noexcept {
+  if (flora_instances_.empty() || flora_poses_.mapped == nullptr || slot >= k_joint_slots) return 0;
+  // The wind in the ground plane: the frame's, the ground's at the world's one clock, or the
+  // tunables'.
+  Vec2 to{1.0f, 0.0f};
+  f32 strength = 0.0f;
+  const char* source = "frame";
+  if (frame.wind_set) {
+    to = frame.wind_to;
+    strength = frame.wind_strength;
+  } else {
+    const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
+    f64 moved = 0.0;
+    f32 ground_strength = 0.0f;
+    const f64 at = (ground_ != nullptr ? ground_time_s_ : data_->terrain.time_s) + sun_time_s;
+    if (ground != nullptr && ground->transport(at, moved, ground_strength)) {
+      to = ground->wind(at);
+      strength = ground_strength;
+      source = "ground";
+    } else {
+      const FloraWindDefault fallback = flora_wind_default();
+      to = fallback.to;
+      strength = fallback.strength;
+      source = "tunables";
+    }
+  }
+  // Said once, on a tree's first frame and whenever the source changes, so "why do the palms not
+  // move" has an answer in the log.
+  if (source != flora_wind_source_) {
+    flora_wind_source_ = source;
+    ENGINE_LOG_INFO(log_renderer, "the trees' wind", log::field("source", source),
+                    log::field("strength", strength), log::field("to_x", to.x),
+                    log::field("to_z", to.y));
+  }
+  const f32 to_length = length(to);
+  to = to_length > 0.0f ? to * (1.0f / to_length) : Vec2{1.0f, 0.0f};
+  flora_stats_.wind_strength = strength;
+  flora_stats_.wind_to = to;
+  flora_stats_.pushed_parts = 0;
+  flora_moving_ = false;
+  const f64 time_s = static_cast<f64>(frame_index) / 60.0;
+  auto* region = static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_parts_;
+  for (FloraInstance& fi : flora_instances_) {
+    const FloraMesh& tree = flora_meshes_[fi.mesh];
+    const gfx::InstanceDesc& placed = instance_table_[fi.instance];
+    auto to_mesh = [&](Vec3 v) {
+      return Vec3{dot(fi.inverse[0], v), dot(fi.inverse[1], v), dot(fi.inverse[2], v)};
+    };
+    FloraWind wind;
+    const Vec3 along = to_mesh(Vec3{to.x, 0.0f, to.y});
+    const f32 along_length = length(along);
+    wind.to = along_length > 0.0f ? along * (1.0f / along_length) : Vec3{1.0f, 0.0f, 0.0f};
+    wind.strength = strength;
+    FloraPush push;
+    if (frame.walker) {
+      // The walker's feet from the instance's own place, in f64 to the cell and float after: the
+      // mesh frame's, never a world position in a float.
+      const WorldPos origin{
+          static_cast<f64>(placed.cell.x) * k_world_cell_m + static_cast<f64>(placed.rows[0].w),
+          static_cast<f64>(placed.cell.y) * k_world_cell_m + static_cast<f64>(placed.rows[1].w),
+          static_cast<f64>(placed.cell.z) * k_world_cell_m + static_cast<f64>(placed.rows[2].w)};
+      const Vec3 feet = to_mesh(relative(frame.walker_feet, origin));
+      push.radius = frame.walker_radius * fi.inverse_scale;
+      push.height = frame.walker_height * fi.inverse_scale;
+      push.feet = feet;
+      // Only a tree the capsule can reach is tested part by part.
+      const Vec4 bound = flora_bounds_[fi.mesh];
+      const Vec3 centre{bound.x, bound.y, bound.z};
+      const Vec3 mid = feet + Vec3{0.0f, push.height * 0.5f, 0.0f};
+      push.active = length(mid - centre) < bound.w + push.height + push.radius;
+    }
+    const u32 ticks =
+        fi.posed && frame_index > fi.last_tick
+            ? static_cast<u32>(std::min<u64>(frame_index - fi.last_tick, k_flora_push_ease_ticks))
+            : 0u;
+    const std::span<FloraPartState> state(flora_state_.data() + fi.first_part, tree.part_count());
+    flora_part_poses(tree, wind, time_s, fi.seed, push, ticks, state,
+                     std::span<gfx::FloraPartPose>(region + fi.first_part, tree.part_count()));
+    for (const FloraPartState& s : state)
+      flora_stats_.pushed_parts += s.ease > 0.0f ? 1u : 0u;
+    for (u32 p = 0; p < tree.part_count() && !flora_moving_; ++p)
+      flora_moving_ = region[fi.first_part + p].axis.w != 0.0f;
+    fi.last_tick = frame_index;
+    fi.posed = true;
+  }
+  return flora_poses_.address + u64{slot} * flora_parts_ * sizeof(gfx::FloraPartPose);
+}
 // ---- terrain levels (renderer.md, "The dunes in time-lapse")
 // -------------------------------------
 //
@@ -3326,6 +3553,17 @@ void GpuScene::destroy() noexcept {
   scene_vertex_count_ = scene_triangle_count_ = vertex_capacity_ = triangle_capacity_ = 0;
   terrain_ring_bytes_ = terrain_chunk_uploads_ = terrain_chunk_upload_bytes_ = 0;
   gfx::destroy_buffer(device, deform_normals);
+  gfx::destroy_buffer(device, flora_motion_);
+  gfx::destroy_buffer(device, flora_poses_);
+  flora_meshes_.clear();
+  flora_bounds_.clear();
+  flora_instances_.clear();
+  flora_state_.clear();
+  flora_parts_ = 0;
+  flora_ground_.reset();
+  flora_stats_ = FloraStats{};
+  flora_moving_ = false;
+  flora_wind_source_ = nullptr;
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);

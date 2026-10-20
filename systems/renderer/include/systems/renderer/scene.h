@@ -363,6 +363,16 @@ struct SourceMesh {
   // The derived-data root those textures are looked up under; empty when the load reads no cache
   // (`SceneDesc::cache` off), and then the built textures are not used either.
   std::string texture_ddc;
+  // **A generated tree's motion contract** (flora.md, "Motion attributes"; renderer.md, "The flora
+  // stage"): the container's sections 35 to 37 as `adopt_container` found them — the parts, one
+  // record per vertex of this mesh's run of the merged vertex streams (`parts[m].first_vertex` on),
+  // and the structural table — and the species the generator section names. All empty for every
+  // mesh a generator did not make, which is what keeps them rigid.
+  Vector<geometry::ClusterFileMotionPart> motion_parts;
+  Vector<geometry::ClusterFileMotionVertex> motion_vertices;
+  Vector<geometry::ClusterFileStructuralPart> structural_parts;
+  std::string species;
+  bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.

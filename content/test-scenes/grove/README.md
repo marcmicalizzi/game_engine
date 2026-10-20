@@ -18,5 +18,12 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/grove/scene.json 
 has no colour of its own, and a grass-coloured ground is a tile set with a material
 ([tileset](../../../docs/subsystems/tileset.md)), which this scene does not carry yet. It is the
 trees that the scene is for: the three species side by side at one scale, their canopies'
-coverage, their LOD from 34 m in to under the crowns, and — once the trees sway (roadmap S66) —
-the motion contract's parts.
+coverage, their LOD from 34 m in to under the crowns, and the motion contract's parts swaying.
+
+**The wind** (roadmap S66, [renderer](../../../docs/subsystems/renderer.md#the-flora-stage)). The
+waves say no wind, so the trees sway in the renderer's default — a mean day towards +x —
+which `--tunable renderer.flora.wind_strength=2,renderer.flora.wind_deg=90` turns into a gale
+towards +z and `renderer.flora.wind_strength=0` calms: in a calm the grove is its rest pose.
+`--tunable renderer.flora.motion=false` draws every tree rigid, which is how the costs in
+renderer.md were measured against. Walking (`--interactive --walk`) into a tree's leaves bends
+them aside; its trunk and, on the trees with a structural table, its load-bearing limbs stop you.

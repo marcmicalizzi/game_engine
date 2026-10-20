@@ -3,6 +3,7 @@
 #include <domain/gfx/display.h>
 #include <domain/gfx/requirements.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/view_set.h>
@@ -426,7 +427,20 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                                       ? "cluster templates ignored with world tiles"
                                       : "cluster templates ignored with terrain rings");
   }
-  out.deform_pass = s.deform || out.terrain_levels ||
+  // **Trees sway** (renderer.md, "The flora stage"): a scene whose meshes carry the motion contract
+  // draws them through the pool's flora stage — unless streaming was asked for, which indexes the
+  // vertices by page and wins, since asking for it is deliberate and swaying is the default.
+  bool any_motion = false;
+  if (scene != nullptr) {
+    for (const SourceMesh& source : scene->sources)
+      any_motion = any_motion || source.has_motion();
+  }
+  out.flora_motion = any_motion && s.flora_motion && flora_motion_tunable() && !s.stream;
+  if (any_motion && s.flora_motion && s.stream) {
+    ENGINE_LOG_WARN(log_renderer, "trees drawn rigid",
+                    log::field("reason", "a streamed scene indexes its vertices by page"));
+  }
+  out.deform_pass = s.deform || out.terrain_levels || out.flora_motion ||
                     (scene != nullptr && (scene->skinned() || scene->morphed()));
   if (out.deform_pass && !s.cull) {
     s.cull = true;  // the pool pass walks the cull's visible list, which is the point

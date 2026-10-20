@@ -19,7 +19,11 @@
 // the piece of rachis it stands on. The pivot and the rest direction are the part's, reached
 // through the part id, rather than repeated per vertex: 32 bytes a part instead of 24 a vertex.
 //
-// A tree whose weights are all zero is the rest pose, which is what the renderer draws today.
+// A tree whose weights are all zero is the rest pose. **What reads it**: the renderer's flora stage
+// (docs/subsystems/renderer.md, "The flora stage"; flora.md, "Motion"), which bends each part by
+// the frame's wind and the walker's push, scaled by the weight; and the walker's collision, which
+// keeps a tree's trunk and load-bearing limbs and leaves its other parts out
+// (scene_collision.md, "What gets no body").
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>

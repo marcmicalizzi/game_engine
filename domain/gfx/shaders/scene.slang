@@ -247,7 +247,7 @@ struct DeformDesc {
   uint first_channel;  // this mesh's first entry of the scene's morph channel array
   uint channel_count;  // the width of `weights`' two halves
   uint first_vertex;   // this mesh's first scene-wide vertex: what indexes `cache`
-  uint pad;
+  uint first_part;     // a flora instance's first FloraPartPose of the frame's table (deform.slang)
   uint64_t joints;    // JointMatrix[joint_count], or 0
   uint64_t weights;   // float[2 * channel_count]: static weights then pose weights
   uint64_t cache;     // float3 per mesh vertex: the static stage's kept result, or 0
@@ -355,6 +355,7 @@ static const uint k_deform_stage_skin = 0x400u;
 static const uint k_deform_stage_procedural = 0x800u;
 static const uint k_deform_stage_rebuild_cache = 0x1000u;
 static const uint k_deform_stage_terrain = 0x2000u;
+static const uint k_deform_stage_flora = 0x4000u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that
 // contain them. The stream is padded to an even u16 count on the CPU, so the last word read is

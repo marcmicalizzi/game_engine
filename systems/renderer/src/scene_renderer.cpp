@@ -343,6 +343,15 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
+  // And the trees' part-pose table (GpuScene::flora_frame).
+  if (scene.flora() && desc.frames_in_flight > k_joint_slots) {
+    if (error != nullptr) {
+      *error = "a scene whose trees sway supports at most " + std::to_string(k_joint_slots) +
+               " frames in flight; its part-pose table has one region per frame slot";
+    }
+    destroy();
+    return false;
+  }
 
   // A streamed world's tables: one set per frame in flight, so a change is written into a set no
   // frame in flight reads and never waits for the device (GpuScene, "Instances that come and go").
@@ -1738,6 +1747,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // Everything else about the pool pass — the indirect dispatch, the per-run blocks below — is
   // exactly what a procedural deformer already does.
   u64 deform_table_address = scene.deform_table.address;
+  // **The trees' poses** (renderer.md, "The flora stage"): every swaying instance's parts posed
+  // from the frame's wind and walker into this slot's region of the part-pose table, on the CPU and
+  // in place, before the pool pass reads them. Zero, and nothing written, in a scene with no tree.
+  const u64 flora_table = scene.flora_frame(slot, frame.flora, frame.frame_index, frame.sun_time_s);
   if (scene.skinned()) {
     const u32 span = static_cast<u32>(frame.joints.size());
     const u32 uploaded = span < scene.max_joints() ? span : scene.max_joints();
@@ -2141,7 +2154,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     // The deformed shading normals the chain wrote beside the positions. Null for a scene with no
     // morph channels, and the resolve then reads the rest attribute stream exactly as it did.
-    resolve.normal_pool = scene.normal_pool_address();
+    resolve.normal_pool = scene.frame_normal_pool_address();
     resolve.sun = lighting.sun;
     // The water's clock (water.slang, `ResolveParams::water_time_s`): the ground's surface time
     // plus the frame's sun time, the one clock the sky reads (renderer.md, "One clock"), wrapped by
@@ -2229,12 +2242,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       d.deform = deform_table_address;
       d.slots = scene.deform_slots.address;
       d.morph = scene.morph_params_address();
-      d.normal_pool = scene.normal_pool_address();
+      d.normal_pool = scene.frame_normal_pool_address();
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
       d.max_entries = pair_stride;
       d.visible_offset = vf.run_base[run];
       d.terrain = terrain_table;
+      d.motion = scene.flora_motion_address();
+      d.flora = flora_table;
     }
 
     if (ray_path) {
