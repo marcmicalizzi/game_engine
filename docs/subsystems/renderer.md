@@ -572,6 +572,11 @@ every level included, against **213.9 MB** decoded at one level; the resolve mov
 3% against the parent commit either way (2–3% slower up close for the derivative pass, 3% faster
 far away at 4K); and the decoded path's capture is byte-identical to the parent commit's.
 
+## Alpha-tested geometry
+
+Roadmap R65 (plan 04 §4.3). A material whose `alphaMode` is `MASK` draws nothing where its base
+colour's alpha is below its cutoff. The mask is the base colour's alpha, built with its coverage
+kept down the chain and its colour dilated under the cut ([texture](texture.md#alpha-tested-masks)).
 ## The sky above, the ground below
 
 **The resolve's whole indirect term is a hemisphere of two uniform halves** (2026-09-25): the sky

@@ -56,7 +56,34 @@ struct TextureBuildOptions {
   bool mips = true;         // the full chain to 1x1; false writes level 0 alone
   EdgeMode edge_x = EdgeMode::clamp;  // across the left and right edges (the sampler's wrap s)
   EdgeMode edge_y = EdgeMode::clamp;  // across the top and bottom edges (its wrap t)
+  // **An alpha-tested mask** (texture.md, "Alpha-tested masks"): the cutoff of the material that
+  // tests this image's alpha, as an 8-bit code (`round(cutoff * 255)`, clamped to 1..255), or 0 for
+  // an image no material tests. With a cutoff and a source that has alpha, the build dilates the
+  // colour under the mask (`k_alpha_dilation_texels` rings of the texels that pass) so the filtered
+  // fringe is the leaf's colour and not the black or white an editor left under the cut, and scales
+  // every level's alpha so that the share of texels at or above the cutoff stays level 0's
+  // (Castaño 2010, "Computing alpha mipmaps"): a mask filtered as stored loses coverage down the
+  // chain, and a tree's far leaves thin to nothing. The cutoff is part of the options and so of the
+  // cache key: one image tested at two cutoffs is two textures.
+  u8 alpha_cutoff = 0;
 };
+
+// How many rings of texels the colour under a mask is grown into (`alpha_cutoff`): enough that a
+// level-4 texel's 2x2 footprint, sixteen source texels on a side, still reads the leaf's colour at
+// the edge where the bilinear filter mixes in what is under the cut.
+inline constexpr u32 k_alpha_dilation_texels = 8;
+
+// The share of `level`'s texels whose alpha is at or above `cutoff` (8-bit, as the mask test reads
+// it): what the build holds every level of a mask's chain to. 0 for an empty level.
+f64 alpha_coverage(std::span<const u8> rgba, u32 width, u32 height, u8 cutoff) noexcept;
+
+// The build's two passes over a mask, public because the tests measure them: the colour of every
+// texel below `cutoff` replaced, ring by ring for `rings` rings, by the average of its passing (or
+// already filled) 8-neighbours; and a level's alpha scaled by `cutoff / t`, where `t` is the
+// smallest 8-bit alpha whose share of texels at or above it is closest to `coverage` — rounded
+// down, so exactly the texels at or above `t` reach the cutoff and none below it does.
+void dilate_under_mask(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, u32 rings);
+void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage);
 
 const char* format_choice_name(FormatChoice choice) noexcept;
 bool parse_format_choice(std::string_view name, FormatChoice& out) noexcept;
@@ -66,8 +93,9 @@ bool parse_edge_mode(std::string_view name, EdgeMode& out) noexcept;
 // The options as one non-zero word, for the cache key and for the record a `.clusters` container
 // keeps per image (geometry::ClusterFileTexture::options): bits 0..3 the format choice, bit 4 sRGB,
 // bit 5 normal map, bit 6 mips, bit 7 always set so that no valid packing is zero — zero is the
-// record's "no texture wanted" — bits 8..9 `edge_x` and 10..11 `edge_y`. Clamped edges pack to
-// zero there, so every word written before the edges existed means what it meant. `unpack` refuses
+// record's "no texture wanted" — bits 8..9 `edge_x` and 10..11 `edge_y`, bits 16..23 the mask's
+// `alpha_cutoff`. Clamped edges and no cutoff pack to zero there, so every word written before
+// either existed means what it meant (and keys the same texture). `unpack` refuses
 // a word with unknown bits, an unknown format or an unknown edge mode.
 u32 pack_texture_options(const TextureBuildOptions& options) noexcept;
 bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept;

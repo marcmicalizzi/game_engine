@@ -44,6 +44,7 @@ struct Case {
   bool through_png;
   EdgeMode edge_x = EdgeMode::clamp;  // what the mip filter reads past each edge
   EdgeMode edge_y = EdgeMode::clamp;
+  u8 alpha_cutoff = 0;  // an alpha-tested mask's cutoff (texture.md, "Alpha-tested masks")
 };
 
 constexpr Case k_cases[] = {
@@ -61,6 +62,10 @@ constexpr Case k_cases[] = {
      EdgeMode::repeat, EdgeMode::repeat},
     {"bc5_normal_mirror", 64, 64, 2, FormatChoice::automatic, ColorSpace::linear, true, true, false,
      EdgeMode::mirror, EdgeMode::repeat},
+    // An alpha-tested mask (texture.md, "Alpha-tested masks"): the colour dilated under the cut and
+    // every level's alpha held to level 0's coverage at the cutoff, 128.
+    {"bc7_srgb_mask", 97, 61, 0, FormatChoice::bc7, ColorSpace::srgb, false, true, false,
+     EdgeMode::clamp, EdgeMode::clamp, 128},
 };
 
 struct Golden {
@@ -71,7 +76,9 @@ struct Golden {
 // Taken on MSVC 14.51 (msvc-debug), 2026-09-24, at k_texture_cache_version 1. The last two rows —
 // the mip filter's repeating and mirrored edges — were added the same day with the edges; the
 // first eight, clamped, did not move, because clamped edges pack to the word they always did and
-// the filter reads what it always read there.
+// the filter reads what it always read there. The mask's row (texture.md, "Alpha-tested masks")
+// was added on 2026-10-20 without a version bump: a cutoff packs into the options and so into the
+// key, and none of the other ten moved.
 constexpr Golden k_golden[] = {
     {0xb44fc7fe3316033aull, 0xa95d66a7f41d6a92ull},  // bc7_srgb
     {0xa5e0149565818232ull, 0x5f56dd427532c4c2ull},  // bc7_linear
@@ -83,6 +90,7 @@ constexpr Golden k_golden[] = {
     {0x630c069169f3816aull, 0xfd256e6c797136c7ull},  // bc7_png
     {0x1adc7d36da7a4d37ull, 0x89e5ef4589f71741ull},  // bc7_srgb_repeat
     {0x128666fac4f96983ull, 0xb4badd3d1713d530ull},  // bc5_normal_mirror
+    {0xc78271ddba4d997dull, 0xed264b7a54ed58c8ull},  // bc7_srgb_mask
 };
 static_assert(std::size(k_golden) == std::size(k_cases));
 
@@ -103,6 +111,7 @@ bool build(const Case& c, jobs::JobSystem* pool, TextureData& out, std::string& 
   options.mips = c.mips;
   options.edge_x = c.edge_x;
   options.edge_y = c.edge_y;
+  options.alpha_cutoff = c.alpha_cutoff;
   Vector<u8> pixels;
   source_pixels(c, pixels);
   if (c.through_png) {

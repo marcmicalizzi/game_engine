@@ -61,6 +61,10 @@ enum class ColorSpace : u32 { linear = 0, srgb = 1 };
 // TextureFileDesc::flags.
 inline constexpr u32 k_texture_normal_map = 1u;  // xy of a unit tangent-space normal, z implied
 inline constexpr u32 k_texture_has_alpha = 2u;   // the source had a texel with alpha below 255
+// An alpha-tested mask's chain: the colour under the mask dilated and every level's alpha scaled to
+// keep level 0's coverage at the material's cutoff (texture_build.h, TextureBuildOptions::
+// alpha_cutoff; texture.md, "Alpha-tested masks"). Set only by a build that was given a cutoff.
+inline constexpr u32 k_texture_alpha_coverage = 4u;
 
 const char* texture_format_name(TextureFormat format) noexcept;
 const char* color_space_name(ColorSpace space) noexcept;

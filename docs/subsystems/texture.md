@@ -26,7 +26,7 @@ skips one it does not know:
 
 | Kind | Name | Element | What |
 |---|---|---|---|
-| 1 | `desc` | `TextureFileDesc`, 32 bytes, one | format, colour space, level-0 width and height, level count, flags (`k_texture_normal_map`, `k_texture_has_alpha`), the source's channel count |
+| 1 | `desc` | `TextureFileDesc`, 32 bytes, one | format, colour space, level-0 width and height, level count, flags (`k_texture_normal_map`, `k_texture_has_alpha`, `k_texture_alpha_coverage`), the source's channel count |
 | 2 | `levels` | `TextureFileLevel`, 24 bytes, one per level | width, height, and the offset and length of the level's blocks in `data`; level 0 first |
 | 3 | `data` | `u8` | every level's blocks back to back, each level at a 16-byte aligned offset, the padding zero |
 | 4 | `source_hash` | `u64`, two | the source image's content hash (`hash_bytes` over its encoded bytes as read) and the build key over it and the options |
@@ -111,6 +111,55 @@ are spread over the job system's performance pool, one row a job at most, and ev
 written by exactly one of them. `decode_level` goes the other way (`rgbcx`'s decoders and
 `bc7decomp`) for the tool's error figure and the tests.
 
+## Alpha-tested masks
+
+A material whose glTF `alphaMode` is `MASK` tests its base colour's alpha against `alphaCutoff`
+and draws nothing below it (roadmap R65; the renderer's half is [renderer](renderer.md#alpha-tested-geometry)).
+**The mask is the base colour's alpha, not a slot of its own**: glTF has no other place for it,
+every exporter and the lab's leaf sets already put it there, BC7 keeps it at no cost in bytes (a
+BC7 block is 16 bytes with or without alpha), and the base colour is the one texture every reader
+of a masked surface — the rasterizers' masked variants, the ray loops, the path tracer — already
+has an address for. A separate one-channel BC4 mask would be half BC7's size *of the mask alone*,
+but it is a second texture fetch per masked pixel and a second record per material, for no
+coverage it does not also need here.
+
+The container's record for that image (`cluster_texture_records`) carries the material's cutoff in
+its packed options (`TextureBuildOptions::alpha_cutoff`, bits 16..23, `alpha_cutoff_code`: the
+8-bit code, rounded, clamped to 1..255), and a build given a cutoff does two things the plain build
+does not, and says it did them with `k_texture_alpha_coverage` in the file's flags:
+
+- **The colour under the cut is dilated** (`dilate_under_mask`, `k_alpha_dilation_texels` = 8
+  rings): every texel below the cutoff takes the average colour of its passing (or already filled)
+  8-neighbours, ring by ring. An editor exporting straight alpha leaves black or white under the
+  cut; the bilinear filter and the mip chain both mix that into the leaf's edge, which is the dark
+  halo a cutout gets at distance. Eight rings cover a level-3 texel's footprint. Integer
+  arithmetic, so the bytes are the same everywhere.
+- **Every level keeps level 0's coverage at the cutoff** (Castaño, "Computing Alpha Mipmaps", 2010;
+  the method *The Witness* shipped). A mask filtered as stored loses its thin parts down the chain:
+  a needle a texel wide is half alpha one level down and is cut away whole, so a conifer goes bald
+  with distance. `preserve_alpha_coverage` finds the 8-bit alpha `t` whose share of the level's
+  texels at or above it is closest to level 0's share at the cutoff and scales the level's alpha by
+  `cutoff / t`, rounded down, so exactly those texels reach the cutoff. **The share is measured
+  after the encoder**, decoded: BC7 moves an alpha by a code or two and a filtered level holds many
+  texels within a code of the cutoff, so a scale exact before the encoder was 3.4% off after it on
+  the needle test; the miss is fed back into the target and the level rescaled from its unscaled
+  alpha, at most four times (`k_coverage_passes`), until it lands within half a percent. Only a
+  mask pays the extra encodes.
+
+The alternative the literature offers is a **signed-distance mask** (Green, "Improved
+Alpha-Tested Magnification for Vector Textures and Special Effects", SIGGRAPH 2007): the alpha
+channel stores the distance to the edge, which filters linearly and keeps a sharp edge under
+magnification. It needs the source to be a shape rather than a painted alpha, and a different test
+in every reader; coverage scaling works on any painted mask with the test unchanged, which is why
+it was chosen. **No cache-version bump**: the cutoff is part of the options and so of the key, so a
+masked image keys a texture of its own and every other image keys exactly what it did — the ten
+committed hashes did not move.
+
+A level too small to hold the share — a 4x4 level of a 14% mask holds 2 texels or 3 — lands within
+two texels of it; such a level is a tree a few pixels across. A perfectly periodic mask (needles at
+one spacing) filters to one uniform alpha at the level whose texel spans the period, and no scale
+cuts a uniform level at a fraction; real masks are not periodic, and the test's are irregular for
+that reason.
 ## Determinism
 
 **A `.tex` is a function of its source's bytes and its options — not of the compiler, the
@@ -425,7 +474,7 @@ pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `s
 ## Public API
 
 - `domain/texture/texture_file.h` — `TextureFormat`, `ColorSpace`, `k_texture_normal_map`,
-  `k_texture_has_alpha`, `texture_format_name`, `color_space_name`, `parse_texture_format`,
+  `k_texture_has_alpha`, `k_texture_alpha_coverage`, `texture_format_name`, `color_space_name`, `parse_texture_format`,
   `texture_format_known`, `texture_block_extent`, `texture_block_bytes`, `texture_level_bytes`,
   `texture_full_level_count`, `texture_level_extent`, `TextureSection`, `texture_section_name`,
   `TextureFileHeader`, `TextureFileSection`, `TextureFileDesc`, `TextureFileLevel`, `TextureData`
@@ -436,10 +485,12 @@ pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `s
   `EdgeMode`, `TextureBuildOptions` (with `edge_x` and `edge_y`), `format_choice_name`,
   `parse_format_choice`, `edge_mode_name`, `parse_edge_mode`, `pack_texture_options`,
   `unpack_texture_options`, `resolve_texture_format`, `texture_cache_key`, `texture_cache_path`,
-  `TextureBuildReport`, `build_texture`, `build_texture_from_encoded`, and the pieces:
+  `TextureBuildReport`, `build_texture`, `build_texture_from_encoded`, `k_alpha_dilation_texels`,
+  `alpha_coverage`, `dilate_under_mask`, `preserve_alpha_coverage`, and the pieces:
   `srgb8_to_linear`, `linear_to_srgb8`, `srgb_decode_table`, `srgb_threshold_table`, `MipMode`,
   `mip_kernel`, `MipLevel`, `build_mip_chain`, `encode_level`, `decode_level`.
 - `domain/texture/material_textures.h` — `k_role_*`, `image_roles`, `options_for_roles`, `image_edges`,
+  `alpha_cutoff_code`,
   `fill_cluster_texture_records`, `cluster_texture_records`.
 
 ## Depends on
@@ -478,7 +529,14 @@ record the glue fills); `bc7enc` (the vendored encoders, MIT or public domain).
   the options word round-tripping every format, flag and edge combination and refusing an unknown
   edge mode or bit, the `auto` rules and the sRGB refusal, and the cache key moving with every
   input.
-- `determinism_tests.cpp` — above; ten cases, the last two with repeating and mirrored edges.
+- `determinism_tests.cpp` — above; eleven cases, two with repeating and mirrored edges and the last
+  an alpha-tested mask at cutoff 128.
+- `alpha_mask_tests.cpp` — a 256x256 mask of irregular needles one to three texels wide (14% at
+  the cutoff) built as BC7 with and without its cutoff: decoded, every level of 8x8 or more holds level
+  0's coverage within 2% with it and the smaller ones within two texels, while the same chain filtered
+  as stored drifts by all 14 points (the needles vanish); the dilation leaves alpha and passing texels
+  alone and gives a texel under the cut the leaf's green; the cutoff packs into bits 16..23 and none
+  packs to the word it always did.
 - `size_table.cpp` — the header, the section record, the description and the level record.
 
 End to end: `apps/engine_content/tests/texture_tests.cpp` ([apps](apps.md)) and
@@ -494,9 +552,8 @@ occlusion slots and the transform's rotation are held to the CPU reference in
 
 - **Cube maps, arrays, volume textures and HDR** (BC6H from EXR sources, which 07 §7.2 names): the
   format has room — a new format value and `desc` words — and nothing consumes them yet.
-- **Alpha coverage preservation.** A masked material's mips average alpha, so a cutout thins with
-  distance; the fix (scaling each level's alpha to keep the fraction above the cutoff) needs the
-  cutoff, which is the material's and not the image's.
+- **A signed-distance mask** (Green 2007), which would keep a leaf's edge sharp under
+  magnification; "Alpha-tested masks" says why coverage scaling came first.
 - **Streaming.** Textures are uploaded whole, all levels, at load; the chain is laid out so a
   streamer can fetch the small levels first, but no residency manager asks.
 - **A UV transform per slot on the GPU.** The container keeps one per slot and the material table
