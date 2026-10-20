@@ -85,13 +85,15 @@ the surface one repeat covers, in metres, and the UVs it lands on are below.
 | `palm/frond` | the green fronds (geometric leaflets, one island a frond) | metres, *u* **along the rachis**, *v* across | 1K | 0.12 (proposed) | candidates, turned so the image's *u* runs along the frond; Green C the pick |
 | `palm/skirt` | the dead fronds | as the fronds | 1K | 0.12 (proposed) | candidates; Dry B the pick |
 | `broadleaf/bark` | the oak's trunk, limbs and branches (tubes) | metres, *u* round, *v* along | 2K | about 0.5: a broadleaf's ridges are a few centimetres apart | **not made** |
-| `broadleaf/leaf` | the oak's leaf cards, **one leaf per image, whole** | the card: *u* along the twig, *v* across, 0 to 1 | 512 or 1K | unused (cards take the image whole) | **not made**; wants an alpha mask, which R65 will read |
+| `broadleaf/leaf` | the oak's leaf cards, **one leaf per image, whole** | the card: *u* along the twig, *v* across, 0 to 1 | 512 or 1K | unused (cards take the image whole) | **not made**; **the mask is the base colour's alpha** (RGBA PNG, straight alpha: 255 on the leaf, 0 off it, a texel or two of soft edge), cut at **0.5**; the colour under the cut may be anything, because the build dilates the leaf's colour into it — leave it black rather than painting a halo |
 | `conifer/bark` | the spruce's trunk and branches | metres, as the broadleaf | 2K | about 0.3: thin, flaking plates | **not made** |
-| `conifer/needles` | the spruce's needle sprays, **one spray per image** | the card, as the leaf | 512 or 1K | unused | **not made**; wants alpha, as the leaf |
+| `conifer/needles` | the spruce's needle sprays, **one spray per image** | the card, as the leaf | 512 or 1K | unused | **not made**; a mask as the leaf's, cut at 0.5: the needles' alpha, each needle at least two texels wide at 1K so the coverage the build keeps has something to keep |
 | `rock/granite` | boulders, outcrops and scree of granite | the box projection's charts in **whole repeats** | 2K | 1.0, or the size of the grain wanted; a small repeat raises the UVs | **not made** |
 | `rock/sandstone` | sandstone | as granite | 2K | 1.0 | **not made**; the lab's generic set A stood in for the first proof |
 | `rock/basalt` | basalt | as granite | 2K | 1.0 | **not made** |
 | `rock/limestone` | limestone | as granite | 2K | 1.0 | **not made** |
+
+**What a masked image is** (roadmap R65; [texture](../../docs/subsystems/texture.md#alpha-tested-masks)): a card role's base colour is alpha-tested — the engine draws, shadows and traces nothing where its alpha is below 0.5 — so the lab delivers the leaf or the spray **with its outline in alpha** and nothing else changes: no separate mask image, no premultiplied colour. The content build keeps the share of the image at or above 0.5 at every mip (so a far tree does not thin), and grows the leaf's colour eight texels into the cut (so a far tree has no dark halo). content/test-scenes/leaf-cards/ builds a procedural stand-in with the command in its README, for checking a set's orientation and cut before the lab's arrives.
 
 A species the solver gains later (a birch, a willow) is `<species>/bark` and `<species>/leaf` by the
 same scheme. What reads as **wrong** on the mesh, which the lab cannot see without it: a bark set

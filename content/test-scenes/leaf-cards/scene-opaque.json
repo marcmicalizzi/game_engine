@@ -1,0 +1,66 @@
+{
+  "format": "engine.scene.v1",
+  "name": "leaf-cards-opaque",
+  "camera_path": "camera-path.json",
+  "description": "The leaf-cards scene's four oaks with flat-colour opaque cards: the baseline the masked scene's costs are measured against (README.md).",
+  "meshes": [
+    {
+      "path": "oak-opaque.flora.json",
+      "name": "oak"
+    }
+  ],
+  "instances": [
+    {
+      "ground": true,
+      "translation": [
+        -6.0,
+        0.0,
+        -4.0
+      ],
+      "yaw_deg": 0,
+      "name": "oak 1",
+      "mesh": 0
+    },
+    {
+      "ground": true,
+      "translation": [
+        9.0,
+        0.0,
+        -6.0
+      ],
+      "yaw_deg": 70,
+      "name": "oak 2",
+      "mesh": 0
+    },
+    {
+      "ground": true,
+      "translation": [
+        -2.0,
+        0.0,
+        8.0
+      ],
+      "yaw_deg": 150,
+      "name": "oak 3",
+      "mesh": 0
+    },
+    {
+      "ground": true,
+      "translation": [
+        6.0,
+        0.0,
+        7.0
+      ],
+      "yaw_deg": 230,
+      "name": "oak 4",
+      "mesh": 0
+    }
+  ],
+  "terrain": {
+    "size": 129,
+    "extent": 96,
+    "seed": 7,
+    "dune_height": 0.15,
+    "dune_wavelength": 40,
+    "generator": "Waves"
+  }
+}
