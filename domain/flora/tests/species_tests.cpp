@@ -323,11 +323,18 @@ TEST_CASE("flora: the orchard tree — a low broad crown, pruned flat or free, w
 
 TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canopy, its structure") {
   const flora::Ancient p;
-  const u32 branches = p.branches * (p.limbs + 1);
-  const u32 parts =
-      1 + 2 * p.limbs + branches + branches * p.sub_branches + branches * p.sub_branches * p.twigs;
-  check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 30000u, 12000u},
-                0xe9f2fe3b015def05ull);
+  // Parts: the trunk, the runs and the limbs past them, and the recursion's shoots of the part
+  // class and up — 972 on the default (flora.md, "Megaflora"); the finer shoots and the twigs, of
+  // which there are 214,834, ride them.
+  Vector<flora::CrownShoot> crown;
+  REQUIRE(flora::ancient_crown(p, crown));
+  u32 parts = 0;
+  for (const flora::CrownShoot& s : crown)
+    parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
+  CHECK(parts == 972u);
+  // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72).
+  check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 20000u},
+                0xf43a0a8e4b677b3full);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -524,17 +531,23 @@ TEST_CASE("flora: the second batch's ranges, ends and refusals") {
   MESSAGE(error);
   // The ancient tree's coarsest rung, and the smallest trees of every species.
   flora::Ancient wa;
-  wa.triangle_budget = 12000;
+  wa.triangle_budget = 20000;
   REQUIRE_MESSAGE(flora::solve_ancient(wa, mesh, &report, &error, &motion), error);
   check_tree(flora::k_species_ancient, mesh, motion, report, wa.triangle_budget);
-  MESSAGE("the default ancient tree on 12,000: " << report.triangles << " after " << report.steps
+  MESSAGE("the default ancient tree on 20,000: " << report.triangles << " after " << report.steps
                                                  << " steps");
   wa.limbs = 12;
   wa.branches = 10;
   wa.sub_branches = 8;
   wa.twigs = 12;
-  CHECK_FALSE(flora::solve_ancient(wa, mesh, &report, &error, &motion));
-  MESSAGE("the ancient tree at its most parts: " << error);
+  // The recursion's parts are capped (the finer shoots fold into them), so even the tree with the
+  // most limbs and laterals holds the floor: it was refused there until the crown became the
+  // allometric recursion (G72).
+  REQUIRE_MESSAGE(flora::solve_ancient(wa, mesh, &report, &error, &motion), error);
+  check_tree(flora::k_species_ancient, mesh, motion, report, wa.triangle_budget);
+  MESSAGE("the ancient tree at its most limbs on 20,000: " << report.triangles << " after "
+                                                           << report.steps << " steps, "
+                                                           << report.parts << " parts");
   flora::Ancient sa;
   sa.height_m = 40.0f;
   sa.trunk_radius_m = 2.0f;

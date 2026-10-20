@@ -830,9 +830,16 @@ void check_species(const std::string& name, const Params& params, Solve solve, u
 
 TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in its budget") {
   const flora::Broadleaf p;
-  // Parts: the trunk, the limbs, their branches, the branches' twigs and the leader's tuft.
-  const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs + p.twigs;
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x80af7e3dd0bf4804ull);
+  // Parts: the trunk, the limbs and the recursion's shoots of the part class and up — 230 on the
+  // default (flora.md, "The broadleaf"); every finer shoot and every twig rides one of them.
+  Vector<flora::CrownShoot> crown;
+  REQUIRE(flora::broadleaf_crown(p, crown));
+  u32 parts = 0;
+  for (const flora::CrownShoot& s : crown)
+    parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
+  CHECK(parts == 230u);
+  // 0x80af7e3dd0bf4804 until the crown became the allometric recursion (G72).
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x1830133b376b6e08ull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {

@@ -131,6 +131,30 @@ TEST_CASE(
   CHECK(palm->find("frond_droop") != nullptr);
 }
 
+// A branching species' line says what its crown is (flora.md, "Allometry"): the twigs, the orders,
+// the cards and the realised leaf area index, within a fifth of the field's on a small broadleaf.
+TEST_CASE("engine-content flora: a broadleaf's line reports its crown and its leaf area index") {
+  const test::TempDir tmp("engine_content_flora_crown");
+  REQUIRE(tmp.ok());
+  const std::string params = tmp.file("young.flora.json");
+  write_text(params,
+             "{\"species\":\"broadleaf\",\"broadleaf\":{\"height_m\":6,"
+             "\"leaf_area_index\":4,\"triangle_budget\":30000}}");
+  const Output built = run({"flora", params, tmp.file("young.clusters")});
+  REQUIRE_MESSAGE(built.exit_code == 0, built.text);
+  const JsonValue line = line_of(built);
+  const JsonValue* crown = line.find("crown");
+  REQUIRE_MESSAGE(crown != nullptr, built.text);
+  CHECK(number(*crown, "twigs") > 100);
+  CHECK(number(*crown, "orders") >= 4);
+  CHECK(number(*crown, "merge_level") == 0);
+  f64 lai = 0.0;
+  REQUIRE(crown->find("leaf_area_index") != nullptr);
+  REQUIRE(crown->find("leaf_area_index")->get_f64(lai));
+  CHECK(lai > 3.2);
+  CHECK(lai < 4.8);
+}
+
 TEST_CASE("engine-content flora: the key is the parameters, not the file's spelling of them") {
   const test::TempDir tmp("engine_content_flora_key");
   REQUIRE(tmp.ok());

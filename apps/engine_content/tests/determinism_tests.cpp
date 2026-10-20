@@ -453,3 +453,71 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
       "the yield does not match the committed hash; this build's is 0x" << yields[0] << "ull");
 }
 #endif
+
+#if ENGINE_CONTENT_FLORA
+// The allometric crowns' rows (docs/subsystems/flora.md, "Determinism", "Allometry"): the default
+// broadleaf and an ancient tree on a 100,000 rung (its cards merged up the hierarchy, so the merge
+// path is in the bytes; the default's full detail is pinned by the solver's own hash in
+// domain/flora's species_tests.cpp) built into containers, every section but the source path
+// folded into one number per tree. The solver is IEEE f64 with the deterministic sines and the
+// cluster build is the content build's, so the same numbers hold on MSVC, GCC and Clang. A change
+// to either species' solver moves its row; take the new number from a failing run's message, which
+// also prints the section table.
+//
+// Taken on MSVC 14.51 (msvc-debug), 2026-10-20, when the crowns became the recursion (G72).
+constexpr u64 k_broadleaf_container_golden = 0x1f76b0e374bf4c0dull;
+constexpr u64 k_ancient_container_golden = 0xcb5b0d40cec65a2full;
+
+TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
+  const test::TempDir tmp("engine_content_flora_determinism");
+  const struct {
+    const char* name;
+    const char* recipe;
+    u64 golden;
+  } trees[] = {
+      {"broadleaf", "{\"species\":\"broadleaf\"}", k_broadleaf_container_golden},
+      {"ancient", "{\"species\":\"ancient\",\"ancient\":{\"triangle_budget\":100000}}",
+       k_ancient_container_golden},
+  };
+  for (const auto& tree : trees) {
+    CAPTURE(tree.name);
+    const std::string recipe = tmp.file(std::string(tree.name) + ".flora.json");
+    {
+      std::ofstream out(recipe, std::ios::binary);
+      out << tree.recipe;
+    }
+    const std::string container = tmp.file(std::string(tree.name) + ".clusters");
+    const Output built = run({"flora", recipe, container, "--no-materials"});
+    REQUIRE_MESSAGE(built.exit_code == 0, built.text);
+    const Output info = run({"info", container});
+    REQUIRE_MESSAGE(info.exit_code == 0, info.text);
+    JsonValue summary;
+    REQUIRE(parse_json(info.text, summary).ok);
+    const JsonValue* sections = summary.find("sections");
+    REQUIRE(sections != nullptr);
+    u64 folded = 0xcbf29ce484222325ull;
+    std::string table;
+    for (usize i = 0; i < sections->size(); ++i) {
+      const JsonValue& s = (*sections)[i];
+      u64 kind = 0;
+      u64 hash = 0;
+      REQUIRE(s.find("kind") != nullptr);
+      REQUIRE(s.find("hash") != nullptr);
+      REQUIRE(s.find("kind")->get_u64(kind));
+      REQUIRE(s.find("hash")->get_u64(hash));
+      if (kind == k_source_path_kind) continue;
+      folded = (folded ^ kind) * 0x100000001b3ull;
+      folded = (folded ^ hash) * 0x100000001b3ull;
+      char line[64];
+      std::snprintf(line, sizeof(line), "    {%u, 0x%016llxull}\n", static_cast<u32>(kind),
+                    static_cast<unsigned long long>(hash));
+      table += line;
+    }
+    char hex[32];
+    std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(folded));
+    CHECK_MESSAGE(folded == tree.golden, std::string(tree.name) << "'s container folds to " << hex
+                                                                << "; its sections:\n"
+                                                                << table);
+  }
+}
+#endif

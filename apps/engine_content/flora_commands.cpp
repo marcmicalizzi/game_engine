@@ -144,9 +144,10 @@ int flora(int argc, char** argv) {
              data.source_hash == source_hash && data.build_key == build_key;
   }
   flora::PalmReport report;
+  flora::TreeReport tree;
   bool have_report = false;
   if (!cached) {
-    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error, pack))
+    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error, pack, &tree))
       return failed(input + ": " + error);
     have_report = true;
     data.source_path = input;
@@ -178,7 +179,32 @@ int flora(int argc, char** argv) {
   u32 texture_failures = 0;
   summary.set("textures", generated_textures(data, input, cache || ddc_named ? ddc : std::string(),
                                              texture_failures));
-  if (have_report) {
+  if (have_report && file.species != flora::k_species_date_palm) {
+    // A branching species' budget, and for the allometric crowns what the structure is (flora.md,
+    // "Allometry"): the twigs and orders, the cards, the merge level, and the realised leaf area
+    // index over the footprint.
+    JsonValue budget = JsonValue::object();
+    budget.set("triangles", JsonValue(tree.triangles));
+    budget.set("wood_triangles", JsonValue(tree.wood_triangles));
+    budget.set("leaf_triangles", JsonValue(tree.leaf_triangles));
+    budget.set("parts", JsonValue(tree.parts));
+    budget.set("steps", JsonValue(tree.steps));
+    summary.set("budget", std::move(budget));
+    if (tree.twigs > 0) {
+      JsonValue crown = JsonValue::object();
+      crown.set("twigs", JsonValue(tree.twigs));
+      crown.set("orders", JsonValue(tree.orders));
+      crown.set("leaf_cards", JsonValue(tree.leaf_cards));
+      crown.set("merge_level", JsonValue(tree.merge_level));
+      crown.set("card_length_m", JsonValue(static_cast<f64>(tree.card_length)));
+      crown.set("wood_class", JsonValue(tree.wood_class));
+      crown.set("part_class", JsonValue(tree.part_class));
+      crown.set("footprint_m2", JsonValue(static_cast<f64>(tree.footprint_m2)));
+      crown.set("leaf_area_m2", JsonValue(static_cast<f64>(tree.leaf_area_m2)));
+      crown.set("leaf_area_index", JsonValue(static_cast<f64>(tree.leaf_area_index)));
+      summary.set("crown", std::move(crown));
+    }
+  } else if (have_report) {
     // What the budget bought (flora.md, "The budget"); a cache hit did not run the solver.
     JsonValue budget = JsonValue::object();
     budget.set("triangle_budget", JsonValue(file.palm.triangle_budget));

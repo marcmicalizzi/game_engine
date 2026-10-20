@@ -216,11 +216,12 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
-                           std::string& error, const materials::Pack* pack) {
+                           std::string& error, const materials::Pack* pack,
+                           TreeReport* tree_report) {
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
   Motion motion;
-  if (!solve_flora(file, mesh, motion, report, nullptr, error)) return false;
+  if (!solve_flora(file, mesh, motion, report, tree_report, error)) return false;
   // One DAG per primitive, each with its material's cone setting: the trunk is one-sided and keeps
   // its cones, a frond is seen from both faces and has none (flora.md, "Two-sided crowns").
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);

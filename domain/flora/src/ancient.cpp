@@ -22,9 +22,7 @@ enum class Stream : u64 {
   buttresses = 52,
   hollows = 53,
   limbs = 54,
-  branches = 55,
-  subs = 56,
-  twigs = 57,
+  crown = 1000000,  // the recursion's shoots, one stream each from here
 };
 
 constexpr f64 k_sink_m = 1.0;      // the foot below the ground, so the flare meets any ground
@@ -32,9 +30,7 @@ constexpr f64 k_fin_width = 0.12;  // a buttress's half-width at its root, a sha
 constexpr f64 k_run_inset = 0.5;   // a limb's run starts this share of the core radius out
 constexpr f64 k_run_taper = 0.85;  // a run's tip radius over its base's
 constexpr u32 k_crown_rows = 16;   // the structure's resolution past the runs
-constexpr u32 k_branch_rows = 12;
-constexpr u32 k_sub_rows = 8;
-constexpr u32 k_twig_rows = 6;
+constexpr u32 k_part_cap = 2000;   // the recursion's motion parts: thousands a tree, not millions
 
 // ---- the layout: the trunk's frame, its buttresses and its hollows ------------------------------
 
@@ -294,41 +290,56 @@ u32 trunk_triangles(const Grid& g, const Vector<Window>& windows) {
 }
 
 // ---- the structure ----------------------------------------------------------------------------
+//
+// The named orders — the trunk, every major limb's straight run and the limb past it — and from
+// every limb and from the trunk's top the allometric recursion (kit.h, "the allometric crown") down
+// to the species' own twig. Grown once; it never depends on the budget.
 
-struct Shoot {
-  Axis axis;
-  f64 r0 = 0.0;
-  f64 r1 = 0.0;
-  u32 order = 0;   // 0 trunk, 1 a limb's run, 2 a limb past it, 3 branch, 4 sub-branch, 5 twig
-  u32 parent = 0;  // index into the shoots, parents first
-  u32 flags = 0;
+struct Named {
+  u32 trunk = 0;
+  Vector<u32> runs;
+  Vector<u32> limbs;
 };
 
-Vector<Shoot> grow(const Ancient& p, const Layout& l) {
-  Vector<Shoot> shoots;
-  const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
-  const f64 upturn = static_cast<f64>(p.upturn) * 40.0 * k_degree;
-  const f64 b_count = static_cast<f64>(p.branches);
-  const f64 s_count = static_cast<f64>(p.sub_branches);
+CrownSpec spec_of(const Ancient& p) {
+  CrownSpec s;
+  s.area_exponent = static_cast<f64>(p.area_exponent);
+  s.leader_share = static_cast<f64>(p.leader_share);
+  u32 laterals = p.branching_ratio - 1;
+  if (laterals > p.sub_branches) laterals = p.sub_branches;
+  if (laterals > p.twigs) laterals = p.twigs;
+  s.laterals = laterals;
+  s.length_ratio = static_cast<f64>(p.length_ratio);
+  s.twig_radius = static_cast<f64>(p.twig_radius_m);
+  s.twig_length = static_cast<f64>(p.twig_length_m);
+  s.branch_angle = static_cast<f64>(p.branch_angle_deg) * k_degree;
+  s.leader_angle = 0.25 * s.branch_angle;
+  s.upturn = static_cast<f64>(p.upturn) * 40.0 * k_degree;
+  s.wander = static_cast<f64>(p.wander_deg) * k_degree;
+  s.from = 0.25;
+  s.part_cap = k_part_cap;
+  s.seed = p.seed;
+  s.stream = static_cast<u64>(Stream::crown);
+  return s;
+}
 
-  Shoot trunk;
+Crown grow(const Ancient& p, const Layout& l, const CrownSpec& spec, Named& named) {
+  Crown crown;
+  const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
   {
     Rng none(0);
-    trunk.axis = grow_axis(l.base, l.t, l.length, 32, k_up, 0.0, 0.0, none);
+    const Axis trunk = grow_axis(l.base, l.t, l.length, 32, k_up, 0.0, 0.0, none);
+    named.trunk = crown_add_named(crown, trunk, l.r0, l.r1, k_crown_none);
   }
-  trunk.r0 = l.r0;
-  trunk.r1 = l.r1;
-  trunk.flags = k_load_bearing | k_straight;
-  shoots.push_back(std::move(trunk));
 
   // The major limbs, up the trunk on the golden angle from `limb_low_m` to `limb_high_m`: each a
   // straight run out from inside the trunk, near-horizontal — where platforms go — and then the
-  // limb past it, turning up towards the light, which carries the branches.
+  // limb past it, turning up towards the light, from which the crown grows.
   Rng limb_rng = stream_of(p.seed, static_cast<u64>(Stream::limbs));
   const f64 turn = limb_rng.unit() * 2.0 * k_pi;
   const f64 low = static_cast<f64>(p.limb_low_m);
   const f64 high = static_cast<f64>(p.limb_high_m);
-  Vector<u32> limb_tips;
+  Vector<CrownRoot> roots;
   for (u32 i = 0; i < p.limbs; ++i) {
     const f64 f = static_cast<f64>(i) / static_cast<f64>(p.limbs - 1);
     const f64 y = low + (high - low) * f;
@@ -342,118 +353,56 @@ Vector<Shoot> grow(const Ancient& p, const Layout& l) {
     out = normalized(D3{out.x, 0.0, out.z});
     const D3 dir = normalized(out * det::cos(rise) + k_up * det::sin(rise));
     const D3 pivot = l.base + l.t * arc + out * (k_run_inset * core_radius(l, arc));
-    Shoot run;
+    Axis run;
     {
       Rng none(0);
-      run.axis = grow_axis(pivot, dir, static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * f), 8, k_up,
-                           0.0, 0.0, none);
+      run = grow_axis(pivot, dir, static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * f), 8, k_up, 0.0,
+                      0.0, none);
     }
-    run.r0 = static_cast<f64>(p.limb_radius_m) * (1.0 - 0.35 * f);
-    run.r1 = run.r0 * k_run_taper;
-    run.order = 1;
-    run.parent = 0;
-    run.flags = k_load_bearing | k_straight;
-    shoots.push_back(std::move(run));
-    const u32 run_index = shoots.size() - 1;
+    const f64 run_r0 = static_cast<f64>(p.limb_radius_m) * (1.0 - 0.35 * f);
+    const f64 run_r1 = run_r0 * k_run_taper;
+    const D3 run_tip = run.point.back();
+    named.runs.push_back(crown_add_named(crown, run, run_r0, run_r1, named.trunk));
 
-    Shoot limb;
     const f64 reach =
         static_cast<f64>(p.limb_reach_m) * (1.0 - 0.4 * f) * (0.9 + 0.2 * limb_rng.unit());
     const f64 sweep = (0.6 + 0.4 * static_cast<f64>(p.upturn)) * 60.0 * k_degree;
-    limb.axis = grow_axis(shoots[run_index].axis.point.back(), dir, reach, k_crown_rows, k_up,
-                          sweep / reach, wander * 0.5, limb_rng);
-    limb.r0 = shoots[run_index].r1;
-    limb.r1 = pipe_radius_of(limb.r0, 1.0, b_count);
-    limb.order = 2;
-    limb.parent = run_index;
-    limb.flags = k_load_bearing;
-    shoots.push_back(std::move(limb));
-    limb_tips.push_back(shoots.size() - 1);
+    const Axis limb =
+        grow_axis(run_tip, dir, reach, k_crown_rows, k_up, sweep / reach, wander * 0.5, limb_rng);
+    CrownRoot root;
+    root.node =
+        crown_add_named(crown, limb, run_r1, crown_leader_radius(spec, run_r1), named.runs.back());
+    named.limbs.push_back(root.node);
+    root.radius = run_r1;
+    root.laterals = p.branches;
+    root.lateral_length = static_cast<f64>(p.branch_length) * reach;
+    root.from = 0.15;
+    root.to = 0.95;
+    roots.push_back(root);
   }
+  // A crown on the trunk's top, where the limbs stop.
+  CrownRoot top;
+  top.node = named.trunk;
+  top.radius = l.r1;
+  top.laterals = p.branches;
+  top.lateral_length = static_cast<f64>(p.branch_length) * static_cast<f64>(p.limb_reach_m) * 0.8;
+  top.from = 0.86;
+  top.to = 1.0;
+  top.spread_scale = 0.8;
+  roots.push_back(top);
+  crown_grow(crown, spec, roots, 3);
+  return crown;
+}
 
-  // The branches: on every limb past its run, and a crown of them on the trunk's top.
-  Rng branch_rng = stream_of(p.seed, static_cast<u64>(Stream::branches));
-  const auto add_branches = [&](u32 parent_index, f64 from, f64 to, f64 spread_scale,
-                                f64 length_base) {
-    const f64 bturn = branch_rng.unit() * 2.0 * k_pi;
-    for (u32 j = 0; j < p.branches; ++j) {
-      const Axis& parent = shoots[parent_index].axis;
-      const f64 f = (static_cast<f64>(j) + 0.5) / b_count;
-      const f64 s = parent.length * (from + (to - from) * f);
-      const f64 around =
-          bturn + static_cast<f64>(j) * k_golden_angle + 0.2 * branch_rng.symmetric();
-      const f64 spread = static_cast<f64>(p.branch_angle_deg) * k_degree * spread_scale *
-                         (1.0 + 0.1 * branch_rng.symmetric());
-      D3 radial;
-      const D3 dir = branch_direction(parent, s, around, spread, &radial);
-      const f64 length = static_cast<f64>(p.branch_length) * length_base * (1.0 - 0.4 * f) *
-                         (0.9 + 0.2 * branch_rng.unit());
-      const f64 r_here = lerp(shoots[parent_index].r0, shoots[parent_index].r1, s / parent.length);
-      Shoot branch;
-      branch.axis = grow_axis(axis_point(parent, s) + radial * (0.4 * r_here), dir, length,
-                              k_branch_rows, k_up, upturn / length, wander, branch_rng);
-      branch.r0 = pipe_radius_of(shoots[parent_index].r0, 1.0, b_count);
-      if (branch.r0 > 0.8 * r_here) branch.r0 = 0.8 * r_here;
-      branch.r1 = pipe_radius_of(branch.r0, 1.0, s_count) * 0.6;
-      branch.order = 3;
-      branch.parent = parent_index;
-      shoots.push_back(std::move(branch));
-    }
-  };
-  for (const u32 limb : limb_tips)
-    add_branches(limb, 0.15, 0.95, 1.0, shoots[limb].axis.length);
-  add_branches(0, 0.86, 1.0, 0.8, static_cast<f64>(p.limb_reach_m) * 0.8);
-
-  // The sub-branches on every branch, and the twigs on every sub-branch.
-  Rng sub_rng = stream_of(p.seed, static_cast<u64>(Stream::subs));
-  const u32 branches_begin = 1 + 2 * p.limbs;
-  const u32 branches_end = shoots.size();
-  for (u32 b = branches_begin; b < branches_end; ++b) {
-    const f64 sturn = sub_rng.unit() * 2.0 * k_pi;
-    for (u32 j = 0; j < p.sub_branches; ++j) {
-      const Axis& parent = shoots[b].axis;
-      const f64 f = (static_cast<f64>(j) + 0.5) / s_count;
-      const f64 s = parent.length * (0.25 + 0.75 * f);
-      const f64 around = sturn + static_cast<f64>(j) * k_golden_angle + 0.2 * sub_rng.symmetric();
-      const f64 spread =
-          static_cast<f64>(p.branch_angle_deg) * k_degree * (1.0 + 0.12 * sub_rng.symmetric());
-      D3 radial;
-      const D3 dir = branch_direction(parent, s, around, spread, &radial);
-      const f64 length = 0.6 * parent.length * (1.0 - 0.3 * f) * (0.9 + 0.2 * sub_rng.unit());
-      const f64 r_here = lerp(shoots[b].r0, shoots[b].r1, s / parent.length);
-      Shoot sub;
-      sub.axis = grow_axis(axis_point(parent, s) + radial * (0.4 * r_here), dir, length, k_sub_rows,
-                           k_up, upturn / length, wander, sub_rng);
-      sub.r0 = pipe_radius_of(shoots[b].r0, 1.0, s_count);
-      if (sub.r0 > 0.8 * r_here) sub.r0 = 0.8 * r_here;
-      sub.r1 = 0.3 * sub.r0;
-      sub.order = 4;
-      sub.parent = b;
-      shoots.push_back(std::move(sub));
-    }
-  }
-  Rng twig_rng = stream_of(p.seed, static_cast<u64>(Stream::twigs));
-  const u32 subs_end = shoots.size();
-  for (u32 s_index = branches_end; s_index < subs_end; ++s_index) {
-    const f64 tturn = twig_rng.unit() * 2.0 * k_pi;
-    for (u32 k = 0; k < p.twigs; ++k) {
-      const Axis& parent = shoots[s_index].axis;
-      const f64 f = (static_cast<f64>(k) + 0.5) / static_cast<f64>(p.twigs);
-      const f64 s = parent.length * (0.2 + 0.8 * f);
-      const f64 around = tturn + static_cast<f64>(k) * k_golden_angle + 0.2 * twig_rng.symmetric();
-      const f64 spread = 45.0 * k_degree * (1.0 + 0.15 * twig_rng.symmetric());
-      D3 radial;
-      const D3 dir = branch_direction(parent, s, around, spread, &radial);
-      const f64 length = static_cast<f64>(p.twig_length_m) * (0.8 + 0.4 * twig_rng.unit());
-      Shoot twig;
-      twig.axis = grow_axis(axis_point(parent, s), dir, length, k_twig_rows, k_up, upturn / length,
-                            wander, twig_rng);
-      twig.order = 5;
-      twig.parent = s_index;
-      shoots.push_back(std::move(twig));
-    }
-  }
-  return shoots;
+// The leaf count by the leaf area index (kit.h): one-sided leaf area over the footprint, each card
+// one leaf of `leaf_length_m` — the species' leaf on a 40 m tree and on a 150 m one.
+void place_leaves(const Ancient& p, Crown& crown) {
+  const f64 length = static_cast<f64>(p.leaf_length_m);
+  const f64 width = static_cast<f64>(p.leaf_width) * length;
+  const f64 angle = static_cast<f64>(p.leaf_angle_deg) * k_degree;
+  crown.card_step = width / det::sin(angle);
+  const f64 cards = static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
+  crown_distribute_leaves(crown, cards, p.leaves);
 }
 
 // ---- the plan ----------------------------------------------------------------------------------
@@ -462,34 +411,36 @@ struct Plan {
   u32 trunk_sides = 96;
   u32 trunk_rows = 0;
   bool fin_flanks = true;
-  u32 sides[5] = {0, 32, 24, 12, 6};  // by order: (trunk), run, limb, branch, sub-branch
-  u32 rows[5] = {0, 12, 20, 10, 5};
-  u32 cards = 0;
+  u32 sides[3] = {0, 32, 24};  // by order: (trunk), run, limb past it
+  u32 rows[3] = {0, 12, 20};
+  CrownPlan crown;
 };
 
-u32 count_triangles(const Ancient& p, const Layout& l, const Plan& plan) {
+u32 count_triangles(const Ancient& p, const Layout& l, const Crown& crown, const Plan& plan) {
   const Grid g = trunk_grid(l, p, plan.trunk_rows, plan.trunk_sides, plan.fin_flanks);
-  const u32 branches = p.branches * (p.limbs + 1);
-  const u32 subs = branches * p.sub_branches;
-  const u32 twigs = subs * p.twigs;
   return trunk_triangles(g, windows_of(l, g)) +
          p.limbs * tube_triangles(plan.rows[1], plan.sides[1]) +
-         p.limbs * tube_triangles(plan.rows[2], plan.sides[2]) +
-         branches * tube_triangles(plan.rows[3], plan.sides[3]) +
-         subs * tube_triangles(plan.rows[4], plan.sides[4]) + twigs * spray_triangles(plan.cards);
+         p.limbs * tube_triangles(plan.rows[2], plan.sides[2]) + crown_triangles(crown, plan.crown);
 }
 
-// The ladder: the finest orders' rows first, then cross-sections from the finest order up, then
-// the trunk's rows and columns, then fewer and wider leaf-cluster cards (a twig of half the cards
-// keeps its leaf area), then the last of the rows and sides. The pinned columns stay on every rung,
-// so a doorway is its size and a buttress keeps its ridge. No rung drops a part.
-bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
+// The ladder (flora.md, "The budget"): the finest wood first, then rows and cross-sections from
+// the finest order up, then the finer orders' wood folded into their parts one class at a time,
+// then the trunk's rows and columns, and only then — where the budget forces it — leaf cards
+// merged up the hierarchy, finest first, and the last of the rows and sides. The pinned columns
+// stay on every rung, so a doorway is its size and a buttress keeps its ridge. No rung moves a
+// shoot or drops a part: the skeleton, the part list and the structural table are the same bytes
+// on every rung (graphics presets pick rungs; gameplay must not change with them).
+bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& plan, u32& steps) {
   plan = Plan{};
   const u32 trunk_rows = static_cast<u32>(l.length / 0.6);
   plan.trunk_rows = trunk_rows < 24 ? 24 : (trunk_rows > 160 ? 160 : trunk_rows);
-  plan.cards = p.leaves;
+  plan.crown.edge_m = 0.1;
+  plan.crown.max_sides = 12;
+  plan.crown.row_m = 1.0;
+  plan.crown.wood_class =
+      2;  // shoots under two pipe steps over a twig (2.6 cm) fold from the start
   steps = 0;
-  const auto fits = [&] { return count_triangles(p, l, plan) <= p.triangle_budget; };
+  const auto fits = [&] { return count_triangles(p, l, crown, plan) <= p.triangle_budget; };
   if (fits()) return true;
   const auto step = [&](auto&& change) {
     change();
@@ -497,17 +448,16 @@ bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
     return fits();
   };
   const auto halve = [](u32 v, u32 floor) { return v / 2 < floor ? floor : v / 2; };
-  if (step([&] { plan.rows[4] = 3; })) return true;
-  if (step([&] { plan.rows[3] = 6; })) return true;
   if (step([&] {
+        plan.crown.row_m = 2.0;
         plan.rows[2] = 12;
         plan.rows[1] = 8;
       })) {
     return true;
   }
   if (step([&] {
-        plan.sides[4] = 4;
-        plan.sides[3] = 8;
+        plan.crown.edge_m = 0.2;
+        plan.crown.max_sides = 8;
       })) {
     return true;
   }
@@ -518,10 +468,13 @@ bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
       })) {
     return true;
   }
+  while (plan.crown.wood_class < crown.part_class) {
+    if (step([&] { ++plan.crown.wood_class; })) return true;
+  }
   if (step([&] { plan.trunk_rows = halve(plan.trunk_rows, 16); })) return true;
   if (step([&] {
-        plan.sides[4] = 3;
-        plan.sides[3] = 5;
+        plan.crown.edge_m = 0.4;
+        plan.crown.max_sides = 5;
         plan.sides[2] = 10;
         plan.sides[1] = 16;
       })) {
@@ -533,8 +486,11 @@ bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
       })) {
     return true;
   }
-  while (plan.cards > 1) {
-    if (step([&] { plan.cards = (plan.cards + 1) / 2; })) return true;
+  while (plan.crown.merge < crown.orders) {
+    if (step([&] { ++plan.crown.merge; })) return true;
+  }
+  for (u32 k = 0; k < 6; ++k) {
+    if (step([&] { ++plan.crown.halvings; })) return true;
   }
   if (step([&] {
         plan.trunk_sides = 20;
@@ -544,9 +500,8 @@ bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
         plan.rows[1] = 3;
         plan.sides[2] = 6;
         plan.rows[2] = 4;
-        plan.sides[3] = 4;
-        plan.rows[3] = 2;
-        plan.rows[4] = 1;
+        plan.crown.max_sides = 4;
+        plan.crown.row_m = 4.0;
       })) {
     return true;
   }
@@ -557,8 +512,8 @@ bool plan_ancient(const Ancient& p, const Layout& l, Plan& plan, u32& steps) {
     plan.rows[1] = 2;
     plan.sides[2] = 4;
     plan.rows[2] = 2;
-    plan.sides[3] = 3;
-    plan.rows[3] = 1;
+    plan.crown.max_sides = 3;
+    plan.crown.row_m = 8.0;
   });
 }
 
@@ -748,17 +703,28 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
     return bad("branch_length", "0.2 to 0.9");
   if (!(p.sub_branches >= 1u && p.sub_branches <= 8u)) return bad("sub_branches", "1 to 8");
   if (!(p.twigs >= 1u && p.twigs <= 12u)) return bad("twigs", "1 to 12");
-  if (!(p.twig_length_m >= 1.0f && p.twig_length_m <= 10.0f))
-    return bad("twig_length_m", "1 to 10 m");
+  if (!(p.twig_length_m >= 0.3f && p.twig_length_m <= 1.5f))
+    return bad("twig_length_m", "0.3 to 1.5 m");
   if (!(p.upturn >= -1.0f && p.upturn <= 1.0f)) return bad("upturn", "-1 to 1");
   if (!(p.wander_deg >= 0.0f && p.wander_deg <= 20.0f)) return bad("wander_deg", "0 to 20 degrees");
   if (!(p.leaves >= 1u && p.leaves <= 60u)) return bad("leaves", "1 to 60");
-  if (!(p.leaf_length_m >= 0.2f && p.leaf_length_m <= 3.0f))
-    return bad("leaf_length_m", "0.2 to 3 m");
+  if (!(p.leaf_length_m >= 0.05f && p.leaf_length_m <= 0.6f))
+    return bad("leaf_length_m", "0.05 to 0.6 m");
   if (!(p.leaf_angle_deg >= 10.0f && p.leaf_angle_deg <= 85.0f))
     return bad("leaf_angle_deg", "10 to 85 degrees");
-  if (!(p.triangle_budget >= 12000u && p.triangle_budget <= 2000000u))
-    return bad("triangle_budget", "12,000 to 2,000,000");
+  if (!(p.triangle_budget >= 20000u && p.triangle_budget <= 4000000u))
+    return bad("triangle_budget", "20,000 to 4,000,000");
+  if (!(p.twig_radius_m >= 0.001f && p.twig_radius_m <= 0.012f))
+    return bad("twig_radius_m", "0.001 to 0.012 m");
+  if (!(p.area_exponent >= 1.8f && p.area_exponent <= 3.0f))
+    return bad("area_exponent", "1.8 to 3");
+  if (!(p.branching_ratio >= 2u && p.branching_ratio <= 6u))
+    return bad("branching_ratio", "2 to 6");
+  if (!(p.length_ratio >= 0.4f && p.length_ratio <= 0.9f)) return bad("length_ratio", "0.4 to 0.9");
+  if (!(p.leader_share >= 0.1f && p.leader_share <= 0.7f)) return bad("leader_share", "0.1 to 0.7");
+  if (!(p.leaf_area_index >= 0.5f && p.leaf_area_index <= 10.0f))
+    return bad("leaf_area_index", "0.5 to 10");
+  if (!(p.leaf_width >= 0.1f && p.leaf_width <= 1.0f)) return bad("leaf_width", "0.1 to 1");
   // What the fields allow only together. A run must leave the trunk: past the core where it
   // starts, at every limb's height.
   const Layout l = lay_out(p);
@@ -797,44 +763,50 @@ bool solve_ancient(const Ancient& p, assets::MeshData& out, TreeReport* report, 
     return false;
   }
   const Layout l = lay_out(p);
+  const CrownSpec spec = spec_of(p);
+  Named named;
+  Crown crown = grow(p, l, spec, named);
+  place_leaves(p, crown);
   Plan plan;
   u32 steps = 0;
-  if (!plan_ancient(p, l, plan, steps)) {
+  if (!plan_ancient(p, l, crown, plan, steps)) {
     if (error != nullptr) {
       *error = "engine.flora.Ancient.triangle_budget " + std::to_string(p.triangle_budget) +
                " cannot hold this tree: its coarsest form needs " +
-               std::to_string(count_triangles(p, l, plan)) + " triangles";
+               std::to_string(count_triangles(p, l, crown, plan)) + " triangles";
     }
     return false;
   }
-  const Vector<Shoot> shoots = grow(p, l);
 
   out.materials.push_back(material("bark", Vec4{0.27f, 0.22f, 0.17f, 1.0f}, 0.92f, false));
   out.materials.push_back(material("leaf", Vec4{0.09f, 0.22f, 0.06f, 1.0f}, 0.6f, true));
   Motion parts;
   Emitter emit{out, parts};
-  Vector<u32> part_of(shoots.size(), 0u);
 
   // The trunk: its core is the structural row (the buttresses stand outside it, the hollows cut
   // into it), load-bearing and straight.
   const Grid grid = trunk_grid(l, p, plan.trunk_rows, plan.trunk_sides, plan.fin_flanks);
   const Vector<Window> windows = windows_of(l, grid);
-  part_of[0] = begin_structural_part(emit, l.base, l.t, l.length, geometry::k_motion_no_parent,
-                                     l.r0, l.r1, k_load_bearing | k_straight);
+  crown.nodes[named.trunk].part =
+      begin_structural_part(emit, l.base, l.t, l.length, geometry::k_motion_no_parent, l.r0, l.r1,
+                            k_load_bearing | k_straight);
   const u32 trunk_vertex = out.positions.size();
   build_trunk(l, p, grid, windows, emit);
   trunk_normals(out, trunk_vertex, 0, out.indices.size(), grid.arcs.size(), grid.angles.size());
 
-  u32 wood = 1;
+  // The runs and the limbs past them, in pairs, load-bearing; the runs straight.
   u32 load_bearing = 1;
-  for (u32 i = 1; i < shoots.size(); ++i) {
-    const Shoot& s = shoots[i];
-    if (s.order > 4) continue;
-    part_of[i] = emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order],
-                                part_of[s.parent], s.flags);
-    load_bearing += (s.flags & k_load_bearing) != 0u ? 1u : 0u;
-    ++wood;
+  for (u32 i = 0; i < p.limbs; ++i) {
+    CrownNode& run = crown.nodes[named.runs[i]];
+    run.part =
+        emit_tube_part(emit, crown.axes[run.axis], run.r0, run.r1, plan.rows[1], plan.sides[1],
+                       crown.nodes[named.trunk].part, k_load_bearing | k_straight);
+    CrownNode& limb = crown.nodes[named.limbs[i]];
+    limb.part = emit_tube_part(emit, crown.axes[limb.axis], limb.r0, limb.r1, plan.rows[2],
+                               plan.sides[2], run.part, k_load_bearing);
+    load_bearing += 2;
   }
+  crown_emit_wood(crown, plan.crown, emit, true);
   assets::Primitive bark;
   bark.first_index = 0;
   bark.index_count = out.indices.size();
@@ -843,15 +815,9 @@ bool solve_ancient(const Ancient& p, assets::MeshData& out, TreeReport* report, 
 
   const u32 leaf_vertex = out.positions.size();
   const u32 leaf_first = out.indices.size();
-  u32 sprays = 0;
-  for (u32 i = 1; i < shoots.size(); ++i) {
-    const Shoot& s = shoots[i];
-    if (s.order != 5) continue;
-    part_of[i] = emit_spray_part(
-        emit, s.axis, part_of[s.parent], plan.cards, static_cast<f64>(p.leaf_length_m),
-        static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15);
-    ++sprays;
-  }
+  const f64 card_length =
+      crown_emit_leaves(crown, plan.crown, emit, static_cast<f64>(p.leaf_length_m),
+                        static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15);
   assets::Primitive leaves;
   leaves.first_index = leaf_first;
   leaves.index_count = out.indices.size() - leaf_first;
@@ -866,16 +832,41 @@ bool solve_ancient(const Ancient& p, assets::MeshData& out, TreeReport* report, 
     report->leaf_triangles = leaves.index_count / 3;
     report->vertices = out.positions.size();
     report->parts = parts.parts.size();
-    report->shoots = wood;
+    report->shoots = crown.nodes.size();
+    u32 sprays = 0;
+    for (const u32 t : crown.twigs) {
+      if (crown.nodes[t].cards > 0u) ++sprays;
+      if (crown.nodes[t].cards > report->cards_per_side)
+        report->cards_per_side = crown.nodes[t].cards;
+    }
     report->sprays = sprays;
-    report->cards_per_side = plan.cards;
     report->trunk_sides = grid.angles.size() - 1;
-    report->shoot_sides = plan.sides[4];
+    report->shoot_sides = plan.crown.max_sides;
     report->steps = steps;
     report->load_bearing = load_bearing;
     report->hollows = windows.size();
+    report->twigs = crown.twigs.size();
+    report->orders = crown.orders;
+    report->leaf_cards = report->leaf_triangles / 2;
+    report->merge_level = plan.crown.merge;
+    report->wood_class = static_cast<u32>(plan.crown.wood_class);
+    report->part_class = static_cast<u32>(crown.part_class);
+    report->card_length = static_cast<f32>(card_length);
+    report->footprint_m2 = static_cast<f32>(crown.footprint);
+    report->leaf_area_m2 = static_cast<f32>(triangles_area(out, leaf_first));
+    report->leaf_area_index =
+        crown.footprint > 0.0 ? report->leaf_area_m2 / report->footprint_m2 : 0.0f;
   }
   if (motion != nullptr) *motion = std::move(parts);
+  return true;
+}
+
+bool ancient_crown(const Ancient& p, Vector<CrownShoot>& out) {
+  std::string error;
+  if (!ancient_in_range(p, error)) return false;
+  const Layout l = lay_out(p);
+  Named named;
+  crown_table(grow(p, l, spec_of(p), named), out);
   return true;
 }
 

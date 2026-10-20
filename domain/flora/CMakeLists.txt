@@ -23,4 +23,5 @@ engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
           src/birch.cpp src/willow.cpp src/orchard.cpp src/ancient.cpp)
 
 engine_module_tests(NAME flora
-  SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/size_table.cpp)
+  SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/allometry_tests.cpp
+          tests/size_table.cpp)

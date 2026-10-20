@@ -112,9 +112,12 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
 // (`apply_flora_materials`, from the recipe's block and `pack`), the identity (source hash and
 // build key) and the generator section (`flora`, the species, the canonical parameters). The
 // source path is left to the caller. Deterministic: the same file and pack give the same bytes on
-// every toolchain and thread count.
+// every toolchain and thread count. `tree_report`, when given, receives a branching species'
+// report: its budget, and for the allometric crowns the twigs, the orders and the realised leaf
+// area index.
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
-                           std::string& error, const materials::Pack* pack = nullptr);
+                           std::string& error, const materials::Pack* pack = nullptr,
+                           TreeReport* tree_report = nullptr);
 
 }  // namespace engine::flora
