@@ -646,6 +646,54 @@ void SceneRenderer::destroy_linear_target() noexcept {
   linear_ = gfx::ImageResource{};
 }
 
+// The overlay's UI layer (overlay.h): the target's size in the layer's format, a colour attachment
+// the overlay draws into and a sampled image the encode reads, at one bindless slot.
+bool SceneRenderer::create_ui_layer(std::string* error) {
+  destroy_ui_layer();
+  const gfx::Device& device = *device_;
+  if (!gfx::create_image_2d(device, width_, height_, k_overlay_layer_format,
+                            gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::Sampled, ui_layer_,
+                            error) ||
+      !gfx::create_image_view(device, ui_layer_, ui_layer_view_, error)) {
+    destroy_ui_layer();
+    return false;
+  }
+  ui_layer_slot_ =
+      scene_->bindless().add_sampled_image(ui_layer_view_, gfx::ImageLayout::ShaderReadOnly);
+  if (ui_layer_slot_ == gfx::BindlessSet::k_invalid_slot) {
+    if (error != nullptr) *error = "no bindless slot for the overlay's UI layer";
+    destroy_ui_layer();
+    return false;
+  }
+  return true;
+}
+
+// Every caller has waited for the device, or the layer was never drawn.
+void SceneRenderer::destroy_ui_layer() noexcept {
+  if (device_ == nullptr) return;
+  if (ui_layer_slot_ != gfx::BindlessSet::k_invalid_slot && scene_ != nullptr && scene_->valid()) {
+    scene_->bindless().release_sampled_image(ui_layer_slot_, 0);
+    scene_->bindless().recycle(0);
+  }
+  ui_layer_slot_ = gfx::BindlessSet::k_invalid_slot;
+  gfx::destroy_image_view(*device_, ui_layer_view_);
+  if (ui_layer_.image.valid()) gfx::destroy_image(*device_, ui_layer_);
+  ui_layer_view_ = {};
+  ui_layer_ = gfx::ImageResource{};
+}
+
+// The first HDR frame with an overlay makes what its composite needs: the UI layer, and the frame
+// passes' linear image and pipelines when no pass made them. Nothing in flight reads any of them
+// (they did not exist), so nothing waits; every later frame finds them made.
+bool SceneRenderer::ensure_ui_layer(std::string* error) {
+  if (!pipelines_.encode.valid() && !create_frame_pass_pipelines(error)) return false;
+  if (!linear_.image.valid() && !create_linear_target(error)) {
+    destroy_linear_target();
+    return false;
+  }
+  return ui_layer_.image.valid() || create_ui_layer(error);
+}
+
 bool SceneRenderer::add_frame_pass(FramePassStage stage, FramePassFn fn, void* user,
                                    const char* zone, std::string* error) {
   ENGINE_ASSERT(!recording_, "add_frame_pass between begin_frame and submit_frame");
@@ -657,7 +705,7 @@ bool SceneRenderer::add_frame_pass(FramePassStage stage, FramePassFn fn, void* u
     if (error != nullptr) *error = "the renderer holds no more frame passes";
     return false;
   }
-  if (frame_pass_count_ == 0) {
+  if (frame_pass_count_ == 0 && !linear_.image.valid()) {
     frames_.wait_idle();
     if (!create_frame_pass_pipelines(error) || !create_linear_target(error)) {
       destroy_linear_target();
@@ -676,7 +724,7 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
     for (u32 j = i + 1; j < frame_pass_count_; ++j)
       frame_passes_[j - 1] = frame_passes_[j];
     --frame_pass_count_;
-    if (frame_pass_count_ == 0) destroy_linear_target();
+    if (!linear_wanted()) destroy_linear_target();
     return;
   }
 }
@@ -900,6 +948,7 @@ void SceneRenderer::destroy() noexcept {
     delete graph_;
     graph_ = nullptr;
   }
+  destroy_ui_layer();
   destroy_linear_target();
   frame_pass_count_ = 0;
   targets_.destroy(device);
@@ -969,8 +1018,9 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   if (!views_.build(desc_.views, width_, height_, error)) return false;
   fill_view_layout();
   if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
-  // The frame passes' linear image is the target's size (frame_pass.h).
-  return frame_pass_count_ == 0 || create_linear_target(error);
+  // The frame passes' linear image and the overlay's UI layer are the target's size (frame_pass.h).
+  if (ui_layer_.image.valid() && !create_ui_layer(error)) return false;
+  return !linear_wanted() || create_linear_target(error);
 }
 
 bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
@@ -1046,7 +1096,7 @@ bool SceneRenderer::poll_shaders(Vector<std::string>& changed, std::string* erro
   if (shaders_.poll_changes(changed, error) == 0) return true;
   frames_.wait_idle();
   pipelines_.destroy(*device_);
-  return create_pipelines(error) && (frame_pass_count_ == 0 || create_frame_pass_pipelines(error));
+  return create_pipelines(error) && (!linear_wanted() || create_frame_pass_pipelines(error));
 }
 
 // The visible-pair counts of the frame that last used `slot`, per view and summed. The three
@@ -1543,16 +1593,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const SceneData& data = scene.data();
   const RenderSettings& settings = resolved_.settings;
   const u32 slot = frames_.slot();
-  // The overlay composites into the encoded picture with no curve of its own, which is right on an
-  // SDR target only (overlay.h); before anything is recorded, so a refusal records nothing.
+  // **The overlay** (overlay.h; renderer.md "The overlay"). On an SDR target it composites into the
+  // encoded picture, after everything else, as it always did. On an HDR target a shaded frame with
+  // a visibility buffer draws it into the UI layer and the encode composites that at paper white,
+  // between the curve and the transfer (`ui_layer_on`), which takes the frame passes' linear path
+  // whether or not a pass is registered; a frame with no linear path (the direct path, a debug
+  // view) draws it onto the target with its colours encoded for it. What that needs is made here,
+  // on the first such frame, before anything is recorded, so a failure records nothing.
   const bool overlay_on = frame.overlay != nullptr && !frame.overlay->commands.empty();
-  if (overlay_on && desc_.display != gfx::DisplayEncoding::Sdr) {
-    if (error != nullptr)
-      *error =
-          "the overlay composites onto an SDR target only; HDR waits for display_output's "
-          "split at paper white (ADR-0054)";
-    return false;
-  }
+  const u32 frame_view_mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
+  const bool ui_layer_on = overlay_on && desc_.display != gfx::DisplayEncoding::Sdr &&
+                           !resolved_.direct &&
+                           frame_view_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
+  if (ui_layer_on && !ensure_ui_layer(error)) return false;
   // A streamed world's tables, before anything reads their addresses: after a change the frame
   // flips `scene.instances` and `scene.pair_table` to the next table set, which no frame in flight
   // reads, and stages that set's changed slots in this slot's staging for the passes below to copy
@@ -1604,7 +1657,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // frame of a path with a visibility buffer is resolved into the linear image, the passes draw
   // into it, and the encode quantizes it into `color`. Every other frame is exactly what it was.
   const u32 shade_mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
-  const bool frame_passes_on = frame_pass_count_ > 0 && !direct && linear_.image.valid() &&
+  const bool frame_passes_on = (frame_pass_count_ > 0 || ui_layer_on) && !direct &&
+                               linear_.image.valid() &&
                                shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
   const bool vertex_path = resolved_.vertex_path;
   const bool ray_path = resolved_.ray_path;
@@ -3618,8 +3672,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     f32 knee = 1.0f;
     f32 paper_white_nits = 0.0f;
     f32 peak_nits = 0.0f;
+    u32 ui_texture = ~u32{0};  // the overlay's UI layer, or none
   };
-  static_assert(sizeof(FrameEncodePush) == 32, "frame_encode.slang's FrameEncodePush");
+  static_assert(sizeof(FrameEncodePush) == 36, "frame_encode.slang's FrameEncodePush");
   FrameEncodePush encode_push[k_max_views];
   if (frame_passes_on) {
     FramePassContext context;
@@ -3691,12 +3746,39 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       push.knee = frame_knee;
       push.paper_white_nits = levels.paper_white_nits;
       push.peak_nits = levels.peak_nits;
+      if (ui_layer_on) push.ui_texture = ui_layer_slot_;
+    }
+    // **The overlay into its UI layer** (overlay.h, an HDR frame's): cleared to nothing, drawn with
+    // its colours in linear light, and read by the encode below, which composites it at paper
+    // white.
+    gfx::RgImage rg_ui{};
+    if (ui_layer_on) {
+      if (!overlay_.stage(slot, *frame.overlay, frames_, error)) return false;
+      rg_ui = graph.import_image("overlay layer", ui_layer_, gfx::ImageLayout::Undefined,
+                                 gfx::PipelineStage::FragmentShader,
+                                 gfx::MemoryAccess::ShaderSampledRead);
+      const OverlayDrawData* overlay = frame.overlay;
+      const u32 overlay_width = width_;
+      const u32 overlay_height = height_;
+      gfx::ClearColor nothing{};
+      graph.add_pass(
+          "overlay", gfx::PassKind::Raster,
+          [&, rg_ui, nothing](gfx::PassBuilder& b) {
+            b.color_attachment(rg_ui, gfx::LoadOp::Clear, nothing);
+          },
+          [&, overlay, slot, overlay_width, overlay_height](gfx::CommandList cb,
+                                                            gfx::RenderGraph&) {
+            scene.bindless().bind(cb, gfx::BindPoint::Graphics);
+            overlay_.record(cb, slot, *overlay, overlay_width, overlay_height,
+                            OverlayEncoding::Layer);
+          });
     }
     graph.add_pass(
         "frame encode", gfx::PassKind::Raster,
-        [&](gfx::PassBuilder& b) {
+        [&, rg_ui](gfx::PassBuilder& b) {
           b.color_attachment(color, gfx::LoadOp::Clear, sky);
           b.read(rg_linear, gfx::Access::SampledRead);
+          if (ui_layer_on) b.read(rg_ui, gfx::Access::SampledRead);
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.encode);
@@ -3821,19 +3903,29 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         });
   }
   // The overlay (overlay.h, ADR-0054): the tools UI, over everything the frame drew, as its last
-  // raster pass. Its lists are copied into this slot's own buffers now, so the caller's spans need
-  // not outlive `submit_frame`.
-  if (overlay_on) {
+  // raster pass — on an SDR target as it always was, and on an HDR one whose frame has no linear
+  // path with its colours encoded for the target at paper white (an HDR frame that has one drew it
+  // into the UI layer above). Its lists are copied into this slot's own buffers now, so the
+  // caller's spans need not outlive `submit_frame`.
+  if (overlay_on && !ui_layer_on) {
     if (!overlay_.stage(slot, *frame.overlay, frames_, error)) return false;
     const OverlayDrawData* overlay = frame.overlay;
     const u32 overlay_width = width_;
     const u32 overlay_height = height_;
+    const OverlayEncoding encoding =
+        desc_.display == gfx::DisplayEncoding::Pq       ? OverlayEncoding::Pq
+        : desc_.display == gfx::DisplayEncoding::ScRgb  ? OverlayEncoding::ScRgb
+        : desc_.display == gfx::DisplayEncoding::Linear ? OverlayEncoding::Linear
+                                                        : OverlayEncoding::Encoded;
+    const f32 paper_white =
+        encoding == OverlayEncoding::Encoded ? 0.0f : display_levels(settings).paper_white_nits;
     graph.add_pass(
         "overlay", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) { b.color_attachment(color, gfx::LoadOp::Load); },
-        [&, overlay, slot, overlay_width, overlay_height](gfx::CommandList cb, gfx::RenderGraph&) {
+        [&, overlay, slot, overlay_width, overlay_height, encoding, paper_white](
+            gfx::CommandList cb, gfx::RenderGraph&) {
           scene.bindless().bind(cb, gfx::BindPoint::Graphics);
-          overlay_.record(cb, slot, *overlay, overlay_width, overlay_height);
+          overlay_.record(cb, slot, *overlay, overlay_width, overlay_height, encoding, paper_white);
         });
   }
   graph.set_final_layout(color, frame.final_layout);

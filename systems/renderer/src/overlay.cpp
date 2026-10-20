@@ -24,6 +24,14 @@ bool OverlayPass::create(const gfx::Device& device, gfx::BindlessSet& bindless,
   desc.blend = gfx::BlendMode::Alpha;
   if (!gfx::create_graphics_pipeline(device, desc, pipeline_, error)) return false;
   device_ = &device;
+  // The UI layer's pipeline: the same module into the layer's format, for an HDR frame's overlay
+  // (overlay.h). Made with the pass, a few kilobytes, so the first HUD on an HDR target compiles
+  // nothing.
+  desc.color_format = k_overlay_layer_format;
+  if (!gfx::create_graphics_pipeline(device, desc, layer_pipeline_, error)) {
+    destroy();
+    return false;
+  }
   bindless_ = &bindless;
   if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) {
     destroy();
@@ -57,7 +65,9 @@ void OverlayPass::destroy() noexcept {
   if (sampler_.valid()) gfx::destroy_sampler(*device_, sampler_);
   sampler_ = {};
   if (pipeline_.valid()) gfx::destroy_pipeline(*device_, pipeline_);
+  if (layer_pipeline_.valid()) gfx::destroy_pipeline(*device_, layer_pipeline_);
   pipeline_ = {};
+  layer_pipeline_ = {};
   device_ = nullptr;
   bindless_ = nullptr;
 }
@@ -159,10 +169,12 @@ bool OverlayPass::stage(u32 slot, const OverlayDrawData& data, gfx::FrameContext
 }
 
 void OverlayPass::record(gfx::CommandList commands, u32 slot, const OverlayDrawData& data,
-                         u32 width, u32 height) const noexcept {
+                         u32 width, u32 height, OverlayEncoding encoding,
+                         f32 paper_white_nits) const noexcept {
   if (device_ == nullptr || slot >= slots_.size() || width == 0 || height == 0) return;
   const SlotBuffers& s = slots_[slot];
-  commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline_);
+  commands.bind_pipeline(gfx::BindPoint::Graphics,
+                         encoding == OverlayEncoding::Layer ? layer_pipeline_ : pipeline_);
   // The render graph sets a y-flipped viewport for the frame's passes (clip space y up); the
   // overlay's positions are pixels, y down, so it takes the target as it is.
   gfx::Viewport viewport;
@@ -175,6 +187,8 @@ void OverlayPass::record(gfx::CommandList commands, u32 slot, const OverlayDrawD
   params.scale[0] = 2.0f / static_cast<f32>(width);
   params.scale[1] = 2.0f / static_cast<f32>(height);
   params.sampler = sampler_slot_;
+  params.encoding = static_cast<u32>(encoding);
+  params.paper_white_nits = paper_white_nits;
   const f32 w = static_cast<f32>(width);
   const f32 h = static_cast<f32>(height);
   for (const OverlayCommand& c : data.commands) {
