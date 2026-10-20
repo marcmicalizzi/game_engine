@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <optional>
 #include <renderer_log.h>
+#include <scene_fire.h>
 #include <scene_water.h>
 #include <schemas/scene.h>
 #include <utility>
@@ -1112,6 +1113,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // The participating medium (`engine.scene.Medium`): carried as the file gave it, read by the
   // capability that draws it (systems/volumetrics), as `world` is carried for the world's.
   out.medium = file.medium;
+  // The fires (`engine.scene.Fire`, fire.h): lights the renderer burns, and flames the medium
+  // draws.
+  if (!read_scene_fires(file, path, out, error)) return false;
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -1229,6 +1233,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       info.fit.ground = prop.fit->ground;
     }
     out.props.push_back(SceneProp{prop.name, out.meshes.size()});
+    if (prop.fire.has_value()) {  // fire.h: every placed instance carries it
+      FireDesc fire;
+      std::string why;
+      if (!read_fire(*prop.fire, fire, &why)) {
+        error = where + " (\"" + prop.name + "\"): fire: " + why;
+        return false;
+      }
+      out.props.back().fire = std::move(fire);
+    }
     out.meshes.push_back(
         io::is_absolute_path(prop.mesh) || dir.empty() ? prop.mesh : io::join_path(dir, prop.mesh));
     out.mesh_info.push_back(std::move(info));
@@ -1372,6 +1385,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
                      out.terrain.time_s, scene_gen::nearest_mm(p.x), scene_gen::nearest_mm(p.z)))
                : 0.0;
   };
+  // A grounded fire stands where a grounded instance would (fire.h).
+  for (u32 i = 0; i < file.fires.size() && i < out.fires.size(); ++i) {
+    if (file.fires[i].ground) out.fires[i].position.y += ground_at_world(file.fires[i].position);
+  }
 
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
@@ -1727,6 +1744,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.sky = resolved.sky;
   out.medium = resolved.medium;
   out.props = resolved.props;
+  out.fires = resolved.fires;
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;

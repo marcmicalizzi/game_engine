@@ -24,6 +24,7 @@
 #include <core/base/types.h>
 #include <core/math/math.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/fire.h>
 
 #include <optional>
 
@@ -99,8 +100,12 @@ struct LightingOptions {
 // first frame of the day; a start at or above the horizon has none.)
 LightingOptions lighting_options(const RenderSettings& settings, f64 sun_time_s = 0.0);
 
-// The two point lights beside the sun.
-inline constexpr u32 k_frame_lights = 2;
+// The stand-in's two point lights beside the sun.
+inline constexpr u32 k_stand_in_lights = 2;
+// The light array's room: the stand-in's two point lights (or a sky's moon), then the fires nearest
+// the eye (fire.h, `add_fire_lights`). A frame with no fire fills what it always filled, and the
+// resolve reads `light_count` of them, so the room alone changes no picture.
+inline constexpr u32 k_frame_lights = k_stand_in_lights + k_max_fire_lights;
 
 // The sky, in one place, because **three** things have to be the same number. It is the resolve
 // pass's clear value and `gfx::ResolveParams::sky`, which `sky_is_clear` ties together — the

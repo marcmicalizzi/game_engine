@@ -79,7 +79,11 @@ struct MediumParams {
   uint64_t plume_cells;   // uint[cells^2 + 1] offsets into plume_index, then the indices
   uint64_t clouds;        // uint2[cloud texels]: the march's four halves a texel
   uint64_t cloud_shadow_map;  // float[texels^2]: the clouds' transmittance towards the sun
-  uint4 pad[5];
+  uint64_t fires;         // MediumFire[fire_count] (R85)
+  uint fire_count;
+  uint fire_near;         // how many of them the apply marches as a near flame
+  float4 fire_terms;      // x the smoke's albedo, y the near flames' steps, zw unused
+  uint4 pad[3];
 };
 
 struct MediumPush {
@@ -91,6 +95,7 @@ static const uint k_source_dust = 1u;
 static const uint k_source_plumes = 2u;
 static const uint k_source_clouds = 4u;
 static const uint k_source_shadows = 8u;  // the cascaded maps are drawn this frame
+static const uint k_source_fire = 16u;    // the fires' flames, light and smoke (R85)
 
 // ---- the scattering model ----------------------------------------------------------------------
 
@@ -518,6 +523,219 @@ float4 clouds_at(MediumParams* p, uint2 pixel) {
   return lerp(a, b, f.y);
 }
 
+// ---- fire (R85) --------------------------------------------------------------------------------
+//
+// volumetrics.md, "Fire". Each fire of the frame (renderer::FrameFire, its light already in the
+// resolve's array) is three things here: **a flame**, an emissive, weakly absorbing volume of
+// seeded noise rising over the base radius and height — in the froxels for a fire past
+// `k_fire_near_m`, marched per pixel in the apply for a nearer one, where a froxel is a metre deep
+// and the flame a metre tall; **its light scattered** by the dust, the plumes and the smoke round
+// it (inverse square windowed as the resolve's, the dust's phase, no shadow); and **smoke**, a
+// column leaving the flame's top that rises, bends with the wind and spreads, at a darker albedo.
+// Everything is a function of the fire's seed and the frame's clock: the CPU hands the noise's
+// offsets already reduced to their periods (`medium_fire`, volumetrics.cpp).
+
+// Mirrors volumetrics::MediumFire (128 bytes).
+struct MediumFire {
+  float4 base;      // xyz the flame's base (frame space), w its radius
+  float4 flame;     // x its height, y absorption /m, z the noise's rise (cells, mod the period), w cell
+  float4 emission;  // rgb the flame's emission /m at density 1 (raw, not exposed), w unused
+  float4 light;     // xyz the light (frame space), w its reach
+  float4 light_rgb; // rgb its colour times its intensity at this clock (raw)
+  float4 smoke;     // x extinction /m at the top, y rise m/s, z spread per metre, w fade length m
+  float4 wind;      // xz the wind at the fire (m/s), y the smoke's start radius, w unused
+  uint4 ids;        // x the seed, y 1 when the apply marches this flame, zw 0
+};
+
+static const float k_fire_noise_period = 64.0;  // the noise's lattice wraps on y, in cells
+static const float k_flame_reach = 1.6;         // the flame's bounds, of its radius across
+static const float k_flame_top = 1.3;           // and of its height up
+
+// Value noise whose lattice wraps at `period` cells on y only: the flame's rise is an offset the
+// CPU reduced to the period, so the noise is seamless at any clock.
+float fire_noise(float3 q, int period, uint seed) {
+  const float3 f = floor(q);
+  const int3 i = int3(f);
+  float3 t = q - f;
+  t = t * t * (3.0 - 2.0 * t);
+  float c[8];
+  for (uint k = 0; k < 8; ++k) {
+    c[k] = cloud_unit(cloud_hash(i.x + int(k & 1), cloud_wrap(i.y + int((k >> 1) & 1), period),
+                                 i.z + int(k >> 2), seed));
+  }
+  const float x00 = c[0] + (c[1] - c[0]) * t.x, x10 = c[2] + (c[3] - c[2]) * t.x;
+  const float x01 = c[4] + (c[5] - c[4]) * t.x, x11 = c[6] + (c[7] - c[6]) * t.x;
+  const float y0 = x00 + (x10 - x00) * t.y, y1 = x01 + (x11 - x01) * t.y;
+  return y0 + (y1 - y0) * t.z;
+}
+
+// The flame's density at a point, [0, 1]: an envelope narrow at the very base, widest a fifth of
+// the way up and tapering to the top, whose axis sways with height, carved by two octaves of noise
+// rising through it — little at the base, tongues higher up.
+float flame_density(MediumFire f, float3 x) {
+  const float3 d = x - f.base.xyz;
+  const float height = f.flame.x;
+  const float h = d.y / height;
+  if (h < -0.05 || h > k_flame_top) return 0.0;
+  const float radius = f.base.w;
+  const float reach = k_flame_reach * radius;
+  if (dot(d.xz, d.xz) > reach * reach) return 0.0;
+  const float cell = f.flame.w;
+  const int period = int(k_fire_noise_period);
+  const float3 q = float3(d.x / cell, d.y / cell - f.flame.z, d.z / cell);
+  const uint seed = f.ids.x;
+  const float n = 0.65 * fire_noise(q, period, seed) + 0.35 * fire_noise(2.0 * q, 2 * period, seed + 1u);
+  const float3 qs = q * 0.35;
+  const float2 sway = (float2(fire_noise(qs, period, seed + 2u), fire_noise(qs, period, seed + 3u)) - 0.5) *
+                      (1.1 * radius * saturate(h));
+  const float r = length(d.xz - sway) / radius;
+  const float envelope = (0.75 + 0.25 * smoothstep(0.0, 0.2, h)) * pow(saturate(1.12 - h), 0.8);
+  const float shape = envelope - r + (n - 0.5) * (0.35 + 0.9 * saturate(h));
+  return saturate(shape * 1.6) * smoothstep(-0.05, 0.03, h);
+}
+
+// The flame's emission at a point (raw): as the density's square, so the core outshines the
+// tongues' edges, hotter at the base, and redder where it is thin and towards the tips — the
+// cooler soot glows deeper.
+float3 flame_emission(MediumFire f, float3 x, float density) {
+  const float h = saturate((x.y - f.base.y) / f.flame.x);
+  const float3 tint = lerp(float3(1.0, 0.5, 0.35), float3(1.0, 1.0, 1.0), density) *
+                      lerp(float3(1.0, 1.0, 1.0), float3(1.0, 0.72, 0.45), h);
+  return f.emission.rgb * (density * density * (1.3 - 0.6 * h)) * tint;
+}
+
+// The smoke's extinction at a point (volumetrics.cpp's `smoke_density`, the same arithmetic): a
+// column from the flame's top whose centre at a rise `s` has drifted `wind s / rise` downwind,
+// Gaussian across with a radius growing by `spread` a metre of its path, the column's density
+// falling as that radius grows (what rose is conserved across it) and by e over `fade` metres of
+// path, faded in over the flame's top.
+float smoke_density(MediumFire f, float3 x) {
+  if (f.smoke.x <= 0.0) return 0.0;
+  const float3 top = f.base.xyz + float3(0.0, f.flame.x, 0.0);
+  const float s = x.y - top.y;
+  if (s < -0.5 * f.flame.x) return 0.0;
+  const float rise = max(f.smoke.y, 0.05);
+  const float rs = max(s, 0.0);
+  const float2 slope = f.wind.xz / rise;
+  const float2 centre = top.xz + slope * rs;
+  const float path = rs * sqrt(1.0 + dot(slope, slope));
+  const float r0 = f.wind.y;
+  const float sigma = r0 + f.smoke.z * path;
+  const float2 off = x.xz - centre;
+  const float across = dot(off, off) / (sigma * sigma);
+  if (across > 18.0) return 0.0;
+  const float fade = exp(-path / f.smoke.w);
+  const float rise_in = smoothstep(-0.5 * f.flame.x, 0.0, s);
+  return f.smoke.x * (r0 / sigma) * (r0 / sigma) * fade * rise_in * exp(-0.5 * across);
+}
+
+// The fires' light arriving at a point, raw, through the phase towards the eye along `dir`: the
+// resolve's windowed inverse square (brdf.slang's `brdf_distance_attenuation`), no closer than the
+// flame's radius, unshadowed.
+float3 fire_light(MediumParams* p, float3 x, float3 dir) {
+  MediumFire* fires = (MediumFire*)p->fires;
+  float3 sum = float3(0.0);
+  for (uint i = 0; i < p->fire_count; ++i) {
+    const MediumFire f = fires[i];
+    const float3 to = f.light.xyz - x;
+    const float reach = f.light.w;
+    const float d2 = max(dot(to, to), f.base.w * f.base.w);
+    if (d2 >= reach * reach) continue;
+    const float ratio = d2 / (reach * reach);
+    const float window = 1.0 - ratio * ratio;
+    const float mu = dot(to, dir) * rsqrt(max(dot(to, to), 1.0e-8));
+    sum += f.light_rgb.rgb * (window * window / d2 * hg_phase(mu, p->dust_albedo.w));
+  }
+  return sum;
+}
+
+// What the fires put in a froxel: the smoke's extinction and scattering (its albedo darker than
+// the sand's), and — for a fire the apply does not march — the flame's absorption and emission.
+void fire_sources(MediumParams* p, float3 x, inout float sigma, inout float3 scatter,
+                  inout float3 emission) {
+  MediumFire* fires = (MediumFire*)p->fires;
+  for (uint i = 0; i < p->fire_count; ++i) {
+    const MediumFire f = fires[i];
+    const float smoke = smoke_density(f, x);
+    if (smoke > 0.0) {
+      sigma += smoke;
+      scatter += smoke * float3(p->fire_terms.x);
+    }
+    if (f.ids.y != 0) continue;
+    const float flame = flame_density(f, x);
+    if (flame > 0.0) {
+      sigma += flame * f.flame.y;
+      emission += flame_emission(f, x, flame);
+    }
+  }
+}
+
+// Where the eye's ray along `dir` is inside a flame's bounds (a vertical cylinder from just below
+// its base to `k_flame_top` of its height), before `limit`.
+bool flame_chord(MediumFire f, float3 dir, float limit, out float t0, out float t1) {
+  t0 = 0.0;
+  t1 = 0.0;
+  const float rc = k_flame_reach * f.base.w;
+  const float2 o = -f.base.xz;
+  const float2 d = dir.xz;
+  const float a = dot(d, d);
+  const float b = dot(o, d);
+  const float c = dot(o, o) - rc * rc;
+  float lo = 0.0;
+  float hi = limit;
+  if (a < 1.0e-10) {
+    if (c > 0.0) return false;
+  } else {
+    const float disc = b * b - a * c;
+    if (disc <= 0.0) return false;
+    const float s = sqrt(disc);
+    lo = (-b - s) / a;
+    hi = (-b + s) / a;
+  }
+  const float y0 = f.base.y - 0.05 * f.flame.x;
+  const float y1 = f.base.y + k_flame_top * f.flame.x;
+  if (abs(dir.y) > 1.0e-7) {
+    const float ta = y0 / dir.y;
+    const float tb = y1 / dir.y;
+    lo = max(lo, min(ta, tb));
+    hi = min(hi, max(ta, tb));
+  } else if (y0 > 0.0 || y1 < 0.0) {
+    return false;
+  }
+  t0 = max(lo, 0.0);
+  t1 = min(hi, limit);
+  return t1 > t0;
+}
+
+// **The near flames**: every fire the CPU marked near, marched along the pixel's own ray through
+// its bounds up to the surface, `fire_terms.y` steps offset by a hash of the pixel (a fixed
+// pattern, no frame in it). The flame's light, exposed, and its transmittance.
+float4 near_flames(MediumParams* p, float3 dir, float limit, uint2 pixel) {
+  MediumFire* fires = (MediumFire*)p->fires;
+  float3 light = float3(0.0);
+  float transmittance = 1.0;
+  const uint steps = uint(p->fire_terms.y);
+  const float jitter = cloud_unit(cloud_hash(int(pixel.x), int(pixel.y), 1, 0x2f6b9c3du));
+  for (uint i = 0; i < p->fire_count; ++i) {
+    const MediumFire f = fires[i];
+    if (f.ids.y == 0) continue;
+    float t0, t1;
+    if (!flame_chord(f, dir, limit, t0, t1)) continue;
+    const float step = (t1 - t0) / float(steps);
+    for (uint k = 0; k < steps; ++k) {
+      const float3 x = dir * (t0 + (float(k) + jitter) * step);
+      const float density = flame_density(f, x);
+      if (density <= 0.0) continue;
+      const float s = density * f.flame.y;
+      const float slice_t = exp(-s * step);
+      const float3 e = flame_emission(f, x, density);
+      light += transmittance * (s > 1.0e-6 ? e * (1.0 - slice_t) / s : e * step);
+      transmittance *= slice_t;
+    }
+  }
+  return float4(light * frame_exposure(p), transmittance);
+}
+
 // ---- (a) the froxels ---------------------------------------------------------------------------
 
 float3 froxel_centre(MediumParams* p, uint3 cell, out float3 dir) {
@@ -552,11 +770,17 @@ void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
       scatter += s * p->dust_albedo.rgb;
     }
   }
+  // The fires (R85): their smoke, and the flames the apply does not march.
+  const bool fires = (p->grid.w & k_source_fire) != 0 && p->fire_count > 0;
+  float3 emission = float3(0.0);
+  if (fires) fire_sources(p, x, sigma, scatter, emission);
   float3 light = float3(0.0);
   if (sigma > 0.0) {
     const float shadow = medium_cascade(p, x) * cloud_sun(p, x);
     // Exposed, as the clouds' texels are: per metre, the integration and the apply add it as it is.
     light = scatter * source_light(p, x, dir, p->dust_albedo.w, shadow) * frame_exposure(p);
+    // The fires' light scattered towards the eye, and the flames' own, exposed the same way.
+    if (fires) light += (scatter * fire_light(p, x, dir) + emission) * frame_exposure(p);
   }
   const uint index = (id.z * p->grid.y + id.y) * p->grid.x + id.x;
   ((uint2*)p->froxels)[index] = pack_halves(float4(light, sigma));
@@ -643,6 +867,15 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
     const float4 cloud = clouds_at(p, id.xy);
     radiance = radiance * cloud.a + cloud.rgb;  // the texel is exposed already
     touched = true;
+  }
+  // The near flames (R85) over what the pixel holds, under the froxels in front of them: a flame is
+  // within `k_fire_near_m` of the eye, so the medium between it and the surface is a few metres.
+  if ((p->grid.w & k_source_fire) != 0 && p->fire_near != 0) {
+    const float4 flame = near_flames(p, dir, distance, id.xy);
+    if (flame.a < 1.0 || any(flame.rgb > float3(0.0))) {
+      radiance = radiance * flame.a + flame.rgb;
+      touched = true;
+    }
   }
   // The froxels to the pixel, or to their far boundary and then the dust in closed form beyond it.
   const float2 uv = float2((float(id.x) + 0.5) / float(p->rect.z) * float(p->grid.x),

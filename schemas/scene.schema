@@ -889,11 +889,51 @@ struct Sky @version(1) {
   exposure_ev100: f32 = 15
 }
 
+/// A fire's smoke (docs/subsystems/volumetrics.md, "Fire"): a plume leaving the flame's top, rising
+/// with buoyancy, bent by the wind and spreading as it rises, drawn by the volumetrics capability's
+/// medium where the scene has one.
+struct FireSmoke @version(1) {
+  /// Its density at the flame's top, [0, 1]: 0 no smoke, 1 a thick grey column.
+  density: f32 = 0.5
+  /// How fast it rises, metres a second.
+  rise_m_s: f32 = 1.2 @unit("m/s")
+  /// How fast it widens, metres of radius per metre risen.
+  spread: f32 = 0.25
+}
+
+/// **A fire** (roadmap R85; docs/subsystems/volumetrics.md, "Fire"; renderer.md, "Fires"): a
+/// flickering point light at the flame's centre in the frame's lights, and — where the scene has a
+/// `medium` — an emissive, absorbing flame, the light scattered round it and a smoke plume in the
+/// medium. On a scene's `fires` its `position` is the flame's base in the world; on a prop's `fire`
+/// it is measured from the prop's origin, turned and scaled with the prop, so a game lights a fire
+/// by placing the prop.
+struct Fire @version(1) {
+  name: string
+  /// The flame's base, at its centre.
+  position: worldpos @unit(m)
+  /// On a scene's `fires`: `position.y` is metres above the terrain's surface at (x, z) rather than
+  /// absolute. Not read on a prop's, which stands where the prop does.
+  ground: bool = false
+  /// The flame's radius at its base, and its height.
+  radius_m: f32 = 0.35 @unit(m)
+  height_m: f32 = 0.9 @unit(m)
+  /// The light's luminous intensity: candela with a sky (whose light is in lux), the stand-in's
+  /// units without one (its sun is 1). A campfire is a few hundred candela.
+  intensity: f32 = 250
+  /// The flame's colour temperature, kelvin: its emission's colour and its light's.
+  color_k: f32 = 1800
+  smoke: FireSmoke
+  /// How much the light's intensity and colour flicker, [0, 1].
+  flicker: f32 = 0.5
+  /// The flame's shape and flicker are drawn from it: the same seed and clock, the same fire.
+  seed: u32 = 1
+}
+
 /// A mesh a scene loads and places nowhere, so that a game module running over the scene
 /// (engine-view `--game`; docs/subsystems/apps.md "The game contract") can place, move and remove
 /// instances of it between frames without the renderer ever loading a mesh mid-run: the meshes stay,
 /// only instances change. A module names a prop by `name` in its `on_load` (`prop_mesh`).
-struct Prop @version(1) {
+struct Prop @version(2) {
   /// The name a module asks for. Unique among the scene's props.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -901,6 +941,9 @@ struct Prop @version(1) {
   /// `assets::source_mesh_hash` of `mesh`, 16 lower-case hex digits; empty: not checked.
   hash: string
   fit: Fit?
+  /// A fire every placed instance of the prop carries (`Fire`, its position from the prop's origin):
+  /// a campfire prop lights where a game places it. Absent: none.
+  fire: Fire? @since(2)
 }
 
 /// A water body's circle: its centre's x and z (its y is not read; the surface is at the body's
@@ -971,8 +1014,8 @@ struct WaterBody @version(2) {
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
-/// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`.
-struct Scene @version(8) {
+/// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`.
+struct Scene @version(9) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -1014,6 +1057,10 @@ struct Scene @version(8) {
   /// renderer carries uninterpreted and the volumetrics capability reads (docs/subsystems/
   /// volumetrics.md). Null: no medium, and the frame is what it was.
   medium: json @since(8)
+  /// Fires standing in the world (`Fire`; roadmap R85): each a flickering light in the frame's
+  /// lights, and a flame and its smoke in the medium where the scene has one. Empty: none, and the
+  /// scene reads and draws exactly as it did.
+  fires: Fire[] @since(9)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

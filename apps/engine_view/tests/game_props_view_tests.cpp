@@ -503,4 +503,71 @@ TEST_CASE(
 }
 
 #endif  // WALK_POC_NO_PROPS_PATH && WALK_POC_TELEPORT_PATH
+
+TEST_CASE("engine-view: a prop that declares a fire lights the frame where the game places it") {
+  // R85 (renderer.md, "Fires"; apps.md, "Props"): the scene declares the box twice, as `can` and as
+  // `campfire` with a fire 1.2 m over its origin, and two runs restore one of them at the same
+  // place from the state file — the runner's table, the path `prop_place` takes. The box is the
+  // same mesh, so what differs is the fire's light on the sand round it, and it only brightens.
+  const test::TempDir tmp("engine_view_props_fire");
+  REQUIRE(view_test::write_box_glb(tmp.file("box.glb")));
+  const std::string scene = tmp.file("fire.json");
+  REQUIRE(io::write_file(scene, R"({"format":"engine.scene.v1","name":"fire",
+      "terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},
+      "props":[{"name":"can","mesh":"box.glb","fit":{"height":1}},
+               {"name":"campfire","mesh":"box.glb","fit":{"height":1},
+                "fire":{"name":"camp","position":[0,1.2,0],"intensity":4,"flicker":0}}]})") ==
+          io::Status::Ok);
+  const std::string session = walk_session(tmp, scene, 60);
+#if defined(WALK_POC_NO_PROPS_PATH)
+  const std::string module = fixture(tmp, WALK_POC_NO_PROPS_PATH);
+#else
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+#endif
+  const auto state_with = [&](const char* prop, const char* name) {
+    const std::string path = tmp.file(name);
+    REQUIRE(io::write_file(path, std::string(R"({"format":"engine.game.state","version":1,
+        "module":"walk_poc","type":"engine.walk_poc.Survivor","state":{},
+        "props":[{"id":1024,"prop":")") +
+                                     prop + R"(","position":[0,0.3,4],"yaw":0,"scale":1}]})") ==
+            io::Status::Ok);
+    return path;
+  };
+  const std::vector<std::string> common = {
+      "--replay-input", session, "--scene", scene,           "--offscreen", "--width", "800",
+      "--height",       "450",   "--ddc",   tmp.file("ddc"), "--game",      module};
+  std::vector<std::string> args = common;
+  args.insert(args.end(), {"--game-state", state_with("campfire", "fire.state.json"), "--capture",
+                           tmp.file("fire.png")});
+  const Run fire = run_view(args);
+  if (fire.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << fire.output);
+    return;
+  }
+  REQUIRE_MESSAGE(fire.exit_code == 0, fire.output);
+  args = common;
+  args.insert(args.end(), {"--game-state", state_with("can", "can.state.json"), "--capture",
+                           tmp.file("can.png")});
+  const Run can = run_view(args);
+  REQUIRE_MESSAGE(can.exit_code == 0, can.output);
+
+  image::Image a;
+  image::Image b;
+  REQUIRE(image::read_image(tmp.file("fire.png"), a) == io::Status::Ok);
+  REQUIRE(image::read_image(tmp.file("can.png"), b) == io::Status::Ok);
+  REQUIRE(a.pixels.size() == b.pixels.size());
+  u32 brighter = 0, darker = 0;
+  const u32 bytes = static_cast<u32>(a.pixels.size());
+  for (u32 i = 0; i + 3 < bytes; i += 4) {
+    const i32 d = (i32{a.pixels[i]} + a.pixels[i + 1] + a.pixels[i + 2]) -
+                  (i32{b.pixels[i]} + b.pixels[i + 1] + b.pixels[i + 2]);
+    brighter += d > 0 ? 1u : 0u;
+    darker += d < 0 ? 1u : 0u;
+  }
+  MESSAGE("the placed fire brightened " << brighter << " pixels and darkened " << darker);
+  CHECK(brighter > 2000);
+  CHECK(darker == 0);
+  if (brighter <= 2000 || darker != 0) tmp.keep();
+}
+
 #endif  // ENGINE_VIEW_GAME && WALK_POC_PATH

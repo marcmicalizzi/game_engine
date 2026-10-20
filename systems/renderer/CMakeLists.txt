@@ -37,7 +37,7 @@ engine_module(NAME renderer LAYER systems
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/tile_layout.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp)
+          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp src/scene_fire.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -52,7 +52,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
-                    tests/dynamic_instances_tests.cpp
+                    tests/dynamic_instances_tests.cpp tests/fire_tests.cpp
                     tests/tile_layout_tests.cpp
                     tests/sun_arc_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on

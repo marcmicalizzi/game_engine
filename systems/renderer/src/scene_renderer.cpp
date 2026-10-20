@@ -268,6 +268,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   destroy();
   device_ = &device;
   scene_ = &scene;
+  // The scene's fires (fire.h): its own, and the props' that a tail may place.
+  fires_.reset(scene.data());
+  frame_fires_.clear();
+  frame_fires_.reserve(k_max_fires);
   resolved_ = resolved;
   desc_ = desc;
   width_ = desc.width;
@@ -1059,6 +1063,9 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   for (const gfx::BufferResource& buffer : retired_)
     frames_.defer_destroy(buffer);
   retired_.clear();
+  // The props' fires stand where the tail now places them (fire.h): a game lights a fire by placing
+  // the prop. The whole tail, because the change is the whole tail.
+  fires_.place(tail);
   // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
   // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
   // again, which every frame in flight reads by address (renderer.md, "Instances that come and
@@ -1874,6 +1881,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                    frame.camera.position);
   }
   sky_params_address_ = sky_address;
+  // **The fires** (fire.h, renderer.md "Fires"): burnt at the world's one clock — the time the sky
+  // and the medium stand at — and the nearest appended to the light array after the stand-in's or
+  // the sky's lights, so a frame with none fills the array as it always did.
+  // A fire's intensity is candela, and a sky's light is in sun units of 128,000 lux (sky.h).
+  fires_.burn(scene.ground_time_s() + frame.sun_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f,
+              frame_fires_);
+  stats_.fires = static_cast<u32>(frame_fires_.size());
+  stats_.fire_lights = add_fire_lights(frame_fires_, frame.camera.position, lighting);
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
 
@@ -3745,6 +3760,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.shadow_maps = csm ? shadow_maps_address : 0;
     context.fit = &cascades_;
     context.report = &pass_report;
+    context.fires = frame_fires_.data();
+    context.fire_count = static_cast<u32>(frame_fires_.size());
     for (u32 p = 0; p < frame_pass_count_; ++p) {
       const FramePassEntry& entry = frame_passes_[p];
       if (entry.stage != FramePassStage::AfterResolve) continue;
