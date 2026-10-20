@@ -9,8 +9,9 @@
 
 Set-StrictMode -Version Latest
 
-# The only names a sweep may touch: the two a checkout's build creates. The shared dependency cache
-# (engine-linux-fetch-cache), buildx's state and every other project's volumes never match.
+# The only names a sweep may touch: the two a checkout's build creates. The two machine-wide volumes
+# (engine-linux-fetch-cache, engine-linux-ccache), buildx's state and every other project's volumes
+# never match.
 $script:CheckoutVolumePattern = '^engine-linux-(src|deps)-([0-9a-f]{12})$'
 
 function Get-ShortHash([string]$text) {
@@ -56,16 +57,16 @@ function Get-VolumeLabels {
   .SYNOPSIS
     The labels linux-build.ps1 creates a volume with, so that a sweep names a volume's checkout
     from the volume alone instead of hashing every checkout it can find. engine.root is the
-    checkout as $Root spells it; engine.role is src, deps or fetch-cache; engine.scope is checkout
-    or shared; engine.created is the UTC creation time.
+    checkout as $Root spells it; engine.role is src, deps, fetch-cache or ccache; engine.scope is
+    checkout, or shared for the two machine-wide volumes; engine.created is the UTC creation time.
   #>
   param(
-    [Parameter(Mandatory)][ValidateSet('src', 'deps', 'fetch-cache')][string]$Role,
+    [Parameter(Mandatory)][ValidateSet('src', 'deps', 'fetch-cache', 'ccache')][string]$Role,
     [string]$Root,
     [DateTime]$Created = [DateTime]::UtcNow
   )
   $labels = [ordered]@{ 'engine.role' = $Role }
-  if ($Role -eq 'fetch-cache') {
+  if ($Role -in @('fetch-cache', 'ccache')) {
     $labels['engine.scope'] = 'shared'
   } else {
     if (-not $Root) { throw "a $Role volume is per checkout and needs its root" }
@@ -330,7 +331,154 @@ function Format-VolumeVerdict {
   return ('{0,-6} {1,-30} {2,9}  {3}  -- {4}' -f $Action, $Verdict.Name, $size, $root, $Verdict.Reason)
 }
 
+# --- the build container: its mounts, its environment, and the script it runs --------------------
+#
+# Here rather than in linux-build.ps1 so that tools/linux-build.Tests.ps1 checks what a build
+# container is given — every volume at its mount point, the compiler cache's settings, the configure
+# line's launcher, and the order of build, statistics and exit — without a daemon.
+
+# The two volumes every checkout on the machine shares, at the mount points the image creates for
+# them (tools/ci/linux.Dockerfile). The fetch cache holds the dependencies' downloaded sources, one
+# directory per pin; the compiler cache holds ccache's results, keyed by what the compiler is given.
+# Neither belongs to a checkout, so neither is ever a sweep's (CheckoutVolumePattern above).
+$script:SharedVolumes = [ordered]@{
+  'fetch-cache' = [pscustomobject]@{ Name = 'engine-linux-fetch-cache'; Mount = '/fetch' }
+  'ccache' = [pscustomobject]@{ Name = 'engine-linux-ccache'; Mount = '/ccache' }
+}
+
+# The compiler cache's limit. docs/ci/local-linux.md ("The compiler cache") has the measurement it
+# comes from: what one compile of each preset adds to the cache, and how many of main's generations
+# and checkouts' changes the limit then holds. ccache evicts the least recently used results past
+# it; nothing else ever removes anything from the volume.
+$script:CcacheMaxSize = '30G'
+
+function Get-SharedVolume {
+  param([Parameter(Mandatory)][ValidateSet('fetch-cache', 'ccache')][string]$Role)
+  return $script:SharedVolumes[$Role]
+}
+
+function Get-CcacheMaxSize { return $script:CcacheMaxSize }
+
+function Get-BuildContainerArgs {
+  <#
+  .SYNOPSIS
+    The `docker run` arguments a checkout's build and shell containers share: its two volumes and
+    the machine's two, the working directory, the locale, the compiler cache's settings, and
+    --network none with -Offline. -NoCcache (ENGINE_CCACHE=0) leaves the launcher on the configure
+    line — so turning the cache off and on again never reconfigures or rebuilds the tree — and makes
+    ccache run the compiler directly (CCACHE_DISABLE), which is also how an object compiled through
+    the cache is checked against one compiled without it.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$SrcVolume,
+    [Parameter(Mandatory)][string]$DepsVolume,
+    [Parameter(Mandatory)][string]$RoleLabel,
+    [Parameter(Mandatory)][string]$Role,
+    [switch]$Offline,
+    [switch]$NoCcache
+  )
+  $fetch = Get-SharedVolume fetch-cache
+  $cc = Get-SharedVolume ccache
+  $runArgs = @(
+    '--rm',
+    '--label', "$RoleLabel=$Role",
+    '-v', "${SrcVolume}:/src",
+    '-v', "${DepsVolume}:/deps",
+    '-v', "$($fetch.Name):$($fetch.Mount)",
+    '-v', "$($cc.Name):$($cc.Mount)",
+    '-w', '/src',
+    # Ninja and CTest both write plain text; without this the odd UTF-8 in the tree's comments
+    # comes back mangled in the Windows console.
+    '-e', 'LANG=C.UTF-8',
+    '-e', "CCACHE_DIR=$($cc.Mount)",
+    '-e', "CCACHE_MAXSIZE=$script:CcacheMaxSize"
+  )
+  if ($NoCcache) { $runArgs += @('-e', 'CCACHE_DISABLE=1') }
+  if ($Offline) { $runArgs += @('--network', 'none') }
+  return $runArgs
+}
+
+# The two lines of compiler-cache statistics a build prints. The counters are read before and after
+# the build (`ccache --print-stats`, tab-separated) and the difference is printed, rather than
+# zeroing them first: the counters are the machine's, and zeroing them would erase what another
+# checkout's run is in the middle of counting. The second line is the cache's size against its limit.
+$script:CcacheReport = @'
+ccache_snapshot() { ccache --print-stats 2>/dev/null > "$1" || : > "$1"; }
+ccache_report() {
+  if [ -n "${CCACHE_DISABLE:-}" ]; then echo "ccache: disabled for this run (ENGINE_CCACHE=0): every object was compiled"; return 0; fi
+  awk -F'\t' '
+    NR == FNR { before[$1] = $2; next }
+    { d = $2 - before[$1]
+      if ($1 == "direct_cache_hit") direct = d
+      else if ($1 == "preprocessed_cache_hit") pre = d
+      else if ($1 == "cache_miss") miss = d
+      else if ($1 !~ /^(direct_cache_miss|preprocessed_cache_miss|cache_size_kibibyte|files_in_cache|cleanups_performed|recache|stats_.*|local_storage_.*|remote_storage_.*)$/ && d > 0) other += d }
+    END { hits = direct + pre; total = hits + miss
+          if (total == 0 && other == 0) { print "ccache: nothing was compiled"; exit }
+          printf "ccache: %d of %d compiles from the cache (%.1f%%: %d direct, %d preprocessed), %d compiled, %d not cacheable\n",
+                 hits, total, total ? 100 * hits / total : 0, direct, pre, miss, other }' "$1" "$2" || true
+  ccache -s 2>/dev/null | grep -m1 'Cache size' | sed -e 's/^ *//' -e 's/  */ /g' -e "s|^|ccache: $CCACHE_DIR, |" || true
+}
+'@
+
+function Get-PresetScript {
+  <#
+  .SYNOPSIS
+    The bash script one preset's build container runs: configure with the dependency cache and the
+    compiler cache's launcher, build, two lines of cache statistics, then the tests. `set -e`, and
+    the build's status is kept across the statistics, so a failed build still ends the run with its
+    own status and the tests never run over it (docs/ci/local-linux.md, "The command").
+  #>
+  param(
+    [Parameter(Mandatory)][string]$Name,
+    [int]$Jobs = 8,
+    [switch]$Test,
+    [string]$Filter,
+    [switch]$Rebuild,
+    [Parameter(Mandatory)][string]$FetchCacheArgs
+  )
+  $lines = @()
+  # -e: a configure or build that fails ends the run with its own status. Without it the script
+  # went on to `ctest`, which ran the *previous* build's binaries, passed, and made the container's
+  # exit status 0: a -Test run printed "ok" over a compile error (2026-09-23, docs/ci/local-linux.md).
+  $lines += 'set -eo pipefail'
+  $lines += $script:CcacheReport
+  if ($Rebuild) { $lines += "rm -rf /src/build/$Name" }
+  # FETCHCONTENT_UPDATES_DISCONNECTED stops a git-based dependency re-running `git fetch` on a
+  # reconfigure should one ever be populated the ordinary way (a configure without the cache).
+  #
+  # The launcher sends every compile through ccache, the engine's and every FetchContent
+  # dependency's alike: the two variables initialise every target's <LANG>_COMPILER_LAUNCHER, and
+  # the dependencies are targets of this one project. Every checkout's container sees its sources
+  # at /src, its dependencies' builds at /deps/<preset> and their sources at /fetch, so a compile
+  # command is byte-identical in every checkout and needs no base_dir: an unchanged file is a hit
+  # wherever it was last compiled, and the object is the one the compiler made there.
+  #
+  # CMAKE_DISABLE_PRECOMPILE_HEADERS: the engine uses no precompiled headers, but SDL3
+  # (SDL_ENABLE_PCH) and Jolt do, and ccache will not cache a compile that reads one unless told to
+  # be sloppy about it. The first runs here counted it: 749 of 2359 compiles "could not use
+  # precompiled header", every SDL3 and Jolt source, compiled again in every checkout. Without the
+  # header the same sources are ordinary compiles and cache like the rest (docs/ci/local-linux.md,
+  # "The compiler cache").
+  $lines += "cmake --preset $Name -DFETCHCONTENT_BASE_DIR=/deps/$Name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON $FetchCacheArgs -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON"
+  $lines += 'ccache_snapshot /tmp/ccache.before'
+  # -k 0 is ci.yml's: keep going after a failure so one run reports every error in the tree
+  # rather than the first file Ninja happened to reach.
+  $lines += 'build_status=0'
+  $lines += "cmake --build --preset $Name -j $Jobs -- -k 0 || build_status=`$?"
+  $lines += 'ccache_snapshot /tmp/ccache.after'
+  $lines += 'ccache_report /tmp/ccache.before /tmp/ccache.after'
+  $lines += 'if [ "$build_status" -ne 0 ]; then exit "$build_status"; fi'
+  if ($Test) {
+    $testCmd = "ctest --preset $Name"
+    if ($Filter) { $testCmd += " -R '$Filter'" }
+    $lines += $testCmd
+  }
+  return ($lines -join "`n")
+}
+
 Export-ModuleMember -Function Get-ShortHash, Get-CheckoutVolumeId, Get-CheckoutVolumeName, ConvertTo-CheckoutRoot,
   ConvertTo-RootKey, Get-VolumeLabels, ConvertFrom-WorktreePorcelain, ConvertFrom-ContainerMounts,
   ConvertFrom-DockerSize, Format-DockerSize, New-VolumeFact, New-CheckoutFact, Get-VolumeVerdict,
-  Get-OwnVolumeVerdict, Format-VolumeVerdict
+  Get-OwnVolumeVerdict, Format-VolumeVerdict, Get-SharedVolume, Get-CcacheMaxSize, Get-BuildContainerArgs,
+  Get-PresetScript

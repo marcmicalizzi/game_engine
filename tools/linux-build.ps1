@@ -27,8 +27,13 @@
 
   **Downloaded dependency sources are shared by every checkout** (the engine-linux-fetch-cache
   volume, keyed by the dependency pins through tools/ci/fetch-cache.cmake), so a fresh worktree's
-  first configure downloads nothing another checkout has already fetched. Build trees stay per
-  checkout.
+  first configure downloads nothing another checkout has already fetched. **So are compiled
+  objects**: every compile goes through ccache into the engine-linux-ccache volume, and every
+  checkout's container compiles the same command at the same paths, so an unchanged file is a hit
+  wherever it was last compiled and a fresh worktree's first build is the links plus what its
+  change touched. Each preset's build prints two lines of cache statistics. ENGINE_CCACHE=0 runs
+  the compiler directly for one invocation (the launcher stays, so nothing reconfigures). Build
+  trees stay per checkout.
 
   Presets: linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, or
   `all` for the four in that order — the same four, in the same order, as ci.yml's matrix.
@@ -55,7 +60,8 @@
     -Prune        remove this checkout's two volumes and report what they held, then exit. **Run
                   it from your worktree before you hand it back**, once you are done with
                   containers: nothing else removes a checkout's volumes, and on 2026-10-07 250 of
-                  them held 568 GB. The shared dependency cache and the images are left alone.
+                  them held 568 GB. The shared dependency and compiler caches and the images are
+                  left alone.
     -Stale        with -Prune: sweep the machine instead of this checkout. Removes every
                   engine-linux-src-* and engine-linux-deps-* volume that is stale — its checkout is
                   gone from disk; or its checkout is a worktree (not the main checkout, not locked,
@@ -176,7 +182,10 @@ $SrcVolume = Get-CheckoutVolumeName -Role src -Root $Root
 $DepsVolume = Get-CheckoutVolumeName -Role deps -Root $Root
 # The downloaded dependency *sources* are not: they are a function of the pins, and one volume on
 # the machine holds them for every checkout and both image targets (tools/ci/fetch-cache.cmake).
-$FetchVolume = 'engine-linux-fetch-cache'
+$FetchVolume = (Get-SharedVolume fetch-cache).Name
+# Nor are the compiled objects: ccache's results, keyed by the compile command and the source, are
+# the same in every checkout because every container sees the same paths.
+$CcacheVolume = (Get-SharedVolume ccache).Name
 $FetchCacheArgs = '-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/src/tools/ci/fetch-cache.cmake -DENGINE_FETCH_CACHE=/fetch'
 
 # Every container this script starts carries this label, with its role as the value, so a build
@@ -226,7 +235,8 @@ function Ensure-Volumes {
   $wanted = @(
     @{ Name = $SrcVolume; Role = 'src' },
     @{ Name = $DepsVolume; Role = 'deps' },
-    @{ Name = $FetchVolume; Role = 'fetch-cache' }
+    @{ Name = $FetchVolume; Role = 'fetch-cache' },
+    @{ Name = $CcacheVolume; Role = 'ccache' }
   )
   foreach ($v in $wanted) {
     & docker volume inspect $v.Name 2>&1 | Out-Null
@@ -293,20 +303,12 @@ if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | 
   Write-Host ("   in {0:N1}s" -f ([DateTime]::UtcNow - $started).TotalSeconds)
 }
 
+# The volumes, the compiler cache's settings and the network, from tools/lib/LinuxVolumes.psm1
+# (Get-BuildContainerArgs), where tools/linux-build.Tests.ps1 checks them. ENGINE_CCACHE=0 runs the
+# compiler directly for this invocation and leaves the configure line, and so the build tree, alone.
 function Get-RunArgs([string]$role) {
-  $runArgs = @(
-    '--rm',
-    '--label', "$RoleLabel=$role",
-    '-v', "${SrcVolume}:/src",
-    '-v', "${DepsVolume}:/deps",
-    '-v', "${FetchVolume}:/fetch",
-    '-w', '/src',
-    # Ninja and CTest both write plain text; without this the odd UTF-8 in the tree's comments
-    # comes back mangled in the Windows console.
-    '-e', 'LANG=C.UTF-8'
-  )
-  if ($Offline) { $runArgs += @('--network', 'none') }
-  return $runArgs
+  return Get-BuildContainerArgs -SrcVolume $SrcVolume -DepsVolume $DepsVolume -RoleLabel $RoleLabel -Role $role `
+                                -Offline:$Offline -NoCcache:($env:ENGINE_CCACHE -eq '0')
 }
 
 # Containers from this toolchain's images that a build must not run beside: anything but a shell
@@ -398,30 +400,14 @@ function Invoke-DocsChecks {
 }
 
 function Invoke-Preset([string]$name) {
-  $lines = @()
-  # -e: a configure or build that fails ends the run with its own status. Without it the script
-  # went on to `ctest`, which ran the *previous* build's binaries, passed, and made the container's
-  # exit status 0: a -Test run printed "ok" over a compile error (2026-09-23, docs/ci/local-linux.md).
-  $lines += 'set -eo pipefail'
-  if ($Rebuild) { $lines += "rm -rf /src/build/$name" }
   # The dependencies' *sources* come from the machine-wide cache at /fetch
   # (tools/ci/fetch-cache.cmake, keyed by the pins), so nothing already fetched by any checkout is
   # fetched again. Their *build* directories stay in this checkout's second volume, one directory
-  # per preset, because a Debug tree cannot share one with a Release tree: -Rebuild then costs an
-  # engine compile and not a third-party one.
-  #
-  # FETCHCONTENT_UPDATES_DISCONNECTED stops a git-based dependency re-running `git fetch` on a
-  # reconfigure should one ever be populated the ordinary way (a configure without the cache).
-  $lines += "cmake --preset $name -DFETCHCONTENT_BASE_DIR=/deps/$name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON $FetchCacheArgs"
-  # -k 0 is ci.yml's: keep going after a failure so one run reports every error in the tree
-  # rather than the first file Ninja happened to reach.
-  $lines += "cmake --build --preset $name -j $Jobs -- -k 0"
-  if ($Test) {
-    $testCmd = "ctest --preset $name"
-    if ($Filter) { $testCmd += " -R '$Filter'" }
-    $lines += $testCmd
-  }
-  $runScript = $lines -join "`n"
+  # per preset, because a Debug tree cannot share one with a Release tree. Every compile goes
+  # through ccache into the machine-wide /ccache, so an object any checkout has compiled with the
+  # same command is not compiled again. The script itself — configure, build, the cache's two
+  # lines, the tests — is Get-PresetScript in tools/lib/LinuxVolumes.psm1.
+  $runScript = Get-PresetScript -Name $name -Jobs $Jobs -Test:$Test -Filter $Filter -Rebuild:$Rebuild -FetchCacheArgs $FetchCacheArgs
 
   # A headless preset is built where no display development package exists, so `none` is verified
   # rather than merely configured. Ensure-Image is idempotent and cheap once the image is there.
@@ -451,7 +437,7 @@ function Invoke-Shell {
   $target = Get-TargetForPreset $(if ($Preset -eq 'all') { $AllPresets[0] } else { $Preset })
   Ensure-Image $target
   $image = Get-ImageTag $target
-  Write-Step "shell in $image ($SrcVolume at /src, $DepsVolume at /deps, $FetchVolume at /fetch)"
+  Write-Step "shell in $image ($SrcVolume at /src, $DepsVolume at /deps, $FetchVolume at /fetch, $CcacheVolume at /ccache)"
   # -it only when there is a terminal to attach: docker refuses `-t` with redirected input, and
   # "the input device is not a TTY" is a poor way to learn that this switch wants a console.
   $tty = if ([Console]::IsInputRedirected) { @() } else { @('-it') }
@@ -619,6 +605,8 @@ function Invoke-Prune {
   Write-Host "  docker image rm $(Get-ImageTag 'desktop') $(Get-ImageTag 'headless')"
   Write-Host "So is the dependency cache, $FetchVolume; every checkout's next configure refetches if it goes:"
   Write-Host "  docker volume rm $FetchVolume"
+  Write-Host "And the compiler cache, $CcacheVolume; every checkout's next build compiles everything once if it goes:"
+  Write-Host "  docker volume rm $CcacheVolume"
   Write-Host "Other checkouts' leftovers: tools/linux-build.ps1 -Prune -Stale -WhatIf"
   exit $failed
 }

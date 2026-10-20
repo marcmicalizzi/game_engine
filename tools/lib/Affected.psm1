@@ -136,4 +136,41 @@ function Get-ChangedPaths {
   return @($paths | Sort-Object)
 }
 
-Export-ModuleMember -Function Get-AffectedTests, Get-ChangedPaths
+function Get-AffectedTargets {
+  <#
+  .SYNOPSIS
+    The build targets `tools/dev.ps1 build -Affected` builds for an affected set: each module's
+    library (and its _impl, the archive behind a whole-archive module's interface target), its test
+    executable and its bench, of those the build tree has. An app is a module in modules.json, so an
+    app that links a changed module is in the set already, and its target is engine_<app>.
+  .DESCRIPTION
+    A test's other executables come with it: a test that runs another binary names it with
+    add_dependencies (engine_cli's tests on engine-host, engine-view and engine-content, hotload's
+    on its game modules), so building the test target builds them. What the selected tests do not
+    need is not built: a change in domain/flora compiles what can reach flora's tests and not the
+    city, the muscle system or the editor. Sorted, so the same change asks for the same build.
+  #>
+  param(
+    [AllowEmptyCollection()] [string[]]$Modules = @(),
+    [AllowEmptyCollection()] [string[]]$Available = @()
+  )
+  $have = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($t in $Available) { if ($t) { [void]$have.Add($t) } }
+  $out = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+  foreach ($m in $Modules) {
+    foreach ($t in @("engine_$m", "engine_${m}_impl", "engine_${m}_tests", "engine_${m}_bench")) {
+      if ($have.Contains($t)) { [void]$out.Add($t) }
+    }
+  }
+  return @($out)
+}
+
+function ConvertFrom-NinjaTargets {
+  # `ninja -t targets all` as target names: the phony aliases CMake writes for its targets
+  # ("engine_flora: phony"), not the files.
+  param([AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Lines = @())
+  $names = foreach ($line in $Lines) { if ("$line" -match '^([A-Za-z0-9_.+-]+): phony\s*$') { $Matches[1] } }
+  return @($names)
+}
+
+Export-ModuleMember -Function Get-AffectedTests, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets

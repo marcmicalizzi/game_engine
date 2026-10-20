@@ -21,7 +21,7 @@ One script drives everything, identically for humans, agents, and CI:
 
 ```powershell
 tools/dev.ps1 configure [-Preset msvc-debug]   # locates Visual Studio, runs CMake with the preset
-tools/dev.ps1 build     [-Preset msvc-debug]
+tools/dev.ps1 build     [-Preset msvc-debug] [-Affected [-Base main]]   # -Affected: only the targets those tests need
 tools/dev.ps1 test      [-Preset msvc-debug] [-Filter <regex>] [-Affected [-Base main]]   # -Affected: only the tests the change can reach
 tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>] [-GpuLock]  # runs engine_*_bench; JSON lines in build/<preset>/bench/
 tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
@@ -47,6 +47,8 @@ tools/mcp-check.ps1      [-Mcp <engine-mcp>] [-Scratch <dir>] [-Report <file.jso
 
 **A test run needs no GPU lock around it, and should not have one.** Every test executable, and every process it starts, takes the machine-wide lock itself in `gfx::Device::create` (and before a Vulkan window appears, so a waiting process shows nothing) for as long as it has a GPU device open, so a suite holds the GPU for the minutes it uses it rather than the hour it runs, and a CPU-only test never touches it; a test whose wait for the lock runs out (half an hour) exits 75, CTest reports it as skipped, and `tools/dev.ps1 test` exits 75 naming it — run it again later ([gpu_lock](docs/subsystems/gpu_lock.md), [ADR-0049](docs/adr/0049-tests-take-the-gpu-lock-per-device.md)). The owner's own `engine-view` and `engine-host` sessions never take it.
 
+**Compiles are shared between checkouts through ccache** ([the compiler cache](docs/ci/local-linux.md#the-compiler-cache), roadmap T68): every Linux container compiles into the machine-wide `engine-linux-ccache` volume, and on Windows `tools/dev.ps1 configure` puts ccache 4.13+ (`winget install ccache`, the owner's to install) in front of MSVC with `/Z7` debug information — **on by default only in an agent's worktree and the gate's**, off in the primary checkout unless `ENGINE_CCACHE=1`, because a cached object's debug information names the worktree that compiled it first; `ENGINE_CCACHE=0` turns it off anywhere.
+
 ### What to run, and when
 
 **Before handing a branch over, run what the change can reach, not the suite:** `tools/dev.ps1 test -Affected` in `msvc-debug` — the modules holding a changed file, everything that depends on them, and for a changed capability everything above its layer, with the lint and the documentation check in every case (`tools/dev.ps1 affected` prints the set) — and, when C++ changed, the Linux container with a `-Filter` of the same modules. **The three Windows suites, the apps' end-to-end tests in `msvc-release`, the three Linux containers, the GPU server and the frame budgets (`tools/frame-budget.ps1`) run once, at the merge**, on the branch rebased onto `main`; branches that are ready together are gated together, and a follow-up that changes only a test or a page is gated by what it changes. An author who runs the three suites is spending an hour of the machine on a tree the merge will test again ([what to run, and why](docs/ci/what-to-run.md)).
@@ -64,7 +66,7 @@ tools/linux-build.ps1 [-Preset all|<name>] [-Test] [-Filter <regex>] [-Jobs 8] [
 ```
 
 Run it before pushing anything that touches C++: MSVC forgives a long list of things GCC and Clang
-do not, and the Windows build stays silent about every one of them. Only one container build runs on the machine at a time — a second waits for the machine-wide build lock and says whose it is (`-NoWait` exits 2 instead) — and downloaded dependency sources are shared by every checkout, but a fresh worktree's first run still compiles every third-party dependency, so start it early and in the background. Nothing else removes a checkout's two build volumes, so an agent runs `tools/linux-build.ps1 -Prune` from its worktree before it hands back, once it is done with containers; the persistent gate worktree keeps its two between batches, since warm volumes are what make its containers take minutes; and `tools/linux-build.ps1 -Prune -Stale` (`-WhatIf` first) sweeps what slipped through. See
+do not, and the Windows build stays silent about every one of them. Only one container build runs on the machine at a time — a second waits for the machine-wide build lock and says whose it is (`-NoWait` exits 2 instead) — and downloaded dependency sources and compiled objects are shared by every checkout (the fetch cache and the compiler cache), so a fresh worktree's first run compiles what its change touched and links, once any checkout has compiled the rest. Nothing else removes a checkout's two build volumes, so an agent runs `tools/linux-build.ps1 -Prune` from its worktree before it hands back, once it is done with containers; the persistent gate worktree keeps its two between batches, since warm volumes are what make its containers take minutes; and `tools/linux-build.ps1 -Prune -Stale` (`-WhatIf` first) sweeps what slipped through. See
 [local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
 first four runs found.
 

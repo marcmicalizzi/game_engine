@@ -123,6 +123,28 @@ Test-That 'backslashes are paths too, and the sets add up' { ($r.Modules -join '
 $r = Affected @('domain/physics/src/solver.cpp', 'cmake/EngineModule.cmake')
 Test-That 'one path that selects everything is enough' { $r.All }
 
+Write-Host 'build -Affected: the targets'
+$ninja = ConvertFrom-NinjaTargets -Lines @(
+  'engine_physics: phony', 'engine_physics_tests: phony', 'engine_physics_bench: phony', 'engine_cloth_impl: phony',
+  'engine_cloth_tests: phony', 'engine_gfx: phony', 'engine_gfx_tests: phony', 'engine_engine_view: phony',
+  'engine_engine_view_tests: phony', 'domain/physics/libengine_physics.a: CXX_STATIC_LIBRARY_LINKER__engine_physics_Debug',
+  'all: phony', '')
+Test-That 'ninja''s phony aliases are the target names, and its files are not' {
+  ($ninja -contains 'engine_physics') -and ($ninja -contains 'all') -and -not ($ninja -match '/') -and $ninja.Count -eq 10
+}
+$r = Affected @('domain/physics/src/solver.cpp')
+$t = Get-AffectedTargets -Modules $r.Modules -Available $ninja
+Test-That 'each affected module''s library, archive, tests and bench that the tree has, sorted' {
+  ($t -join ',') -eq 'engine_cloth_impl,engine_cloth_tests,engine_physics,engine_physics_bench,engine_physics_tests'
+}
+Test-That 'and nothing the change cannot reach' { -not ($t -contains 'engine_gfx') -and -not ($t -contains 'engine_engine_view') -and -not ($t -contains 'all') }
+$r = Affected @('domain/gfx/src/device.cpp')
+$t = Get-AffectedTargets -Modules $r.Modules -Available $ninja
+Test-That 'an app that links the changed module is a module of the set, so its binary and its end-to-end tests build' {
+  ($t -contains 'engine_engine_view') -and ($t -contains 'engine_engine_view_tests') -and -not ($t -contains 'engine_physics')
+}
+Test-That 'a change no module holds builds nothing' { (Get-AffectedTargets -Modules @() -Available $ninja).Count -eq 0 }
+
 Write-Host ''
 if ($failures.Count -gt 0) {
   Write-Host "$($failures.Count) of $checks checks failed" -ForegroundColor Red

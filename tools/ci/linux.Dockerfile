@@ -58,10 +58,18 @@ ENV LANG=C.UTF-8
 # first run's use after free in the texture tests (F14) came back with no frame anyone could read
 # (2026-10-07). The `llvm` package is Ubuntu's unversioned links to LLVM 18's tools, the same LLVM
 # `clang` is.
+#
+# ccache is the compiler cache every build container compiles through (2026-10-20, roadmap T67):
+# `tools/linux-build.ps1` puts it on the configure line as the C and C++ compiler launcher and mounts
+# the machine-wide `engine-linux-ccache` volume at /ccache, so an object any checkout on the machine
+# has compiled is never compiled again, third-party code included — every container sees its
+# sources at /src and its dependencies at /deps and /fetch, so the commands are byte-identical
+# across checkouts. Ubuntu's 4.9.1. docs/ci/local-linux.md, "The compiler cache", has the
+# measurements; ci.yml's hosted job does not install it and is unaffected.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
       build-essential cmake ninja-build clang libclang-rt-18-dev llvm clang-format g++ git rsync \
-      pkg-config file unzip xz-utils \
+      ccache pkg-config file unzip xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # --- PowerShell 7, from Microsoft's apt repository ---------------------------------------------
@@ -93,11 +101,12 @@ RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-micro
 # /fetch is the machine-wide dependency cache (tools/ci/fetch-cache.cmake). It has to exist in the
 # image, owned by the build user, because an empty named volume takes its mount point's owner
 # from the image the first time it is mounted: without it the volume's root is root's and the
-# first configure cannot write the cache.
+# first configure cannot write the cache. /ccache, the machine-wide compiler cache, is the same
+# case for the same reason.
 RUN groupadd --gid 1001 build \
  && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash build \
- && mkdir -p /src /deps /fetch \
- && chown build:build /src /deps /fetch
+ && mkdir -p /src /deps /fetch /ccache \
+ && chown build:build /src /deps /fetch /ccache
 
 USER build
 WORKDIR /src
@@ -112,9 +121,9 @@ RUN git config --global user.email "build@localhost" \
 
 # A build tree that outlives the container: /src is the synced source (plus build/<preset>/),
 # /deps is FETCHCONTENT_BASE_DIR (the dependencies' build directories), both per checkout, and
-# /fetch is the dependencies' downloaded sources, shared by every checkout. linux-build.ps1 mounts
-# a named volume on each.
-VOLUME ["/src", "/deps", "/fetch"]
+# /fetch is the dependencies' downloaded sources and /ccache the compiled objects, both shared by
+# every checkout. linux-build.ps1 mounts a named volume on each.
+VOLUME ["/src", "/deps", "/fetch", "/ccache"]
 
 CMD ["/bin/bash"]
 

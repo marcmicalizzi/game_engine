@@ -8,7 +8,18 @@
 
   Commands:
     configure   Run CMake with the preset (default: msvc-debug on Windows, linux-clang-debug on Linux).
-    build       Build the preset (configures first if needed).
+                On Windows, in an agent's worktree (under .claude\worktrees\) or the merge gate's
+                (branch `gate`), with ccache 4.13 or later on PATH, every compile goes through
+                ccache into one cache for the machine (<main checkout>_local\ccache, or
+                $env:ENGINE_CCACHE_DIR), so an unchanged file another checkout compiled is a hit;
+                debug information then goes in the object (/Z7), since ccache cannot cache /Zi.
+                Off in the primary checkout unless ENGINE_CCACHE=1, because a cached object's
+                debug information names the checkout that compiled it first; ENGINE_CCACHE=0 is
+                off everywhere (tools/lib/CompilerCache.psm1, docs/ci/local-linux.md "The
+                compiler cache"). A tree whose launcher no longer matches is configured again.
+    build       Build the preset (configures first if needed). -Affected builds only what
+                `test -Affected` would run: the affected modules' libraries, tests and benches,
+                and the apps that link them (tools/lib/Affected.psm1, Get-AffectedTargets).
     test        Run CTest for the preset. -Filter is a regex on test names. Tests take the
                 machine-wide GPU lock themselves, per GPU device, so do not wrap this in
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
@@ -21,6 +32,7 @@
                 build system, the test support, vendored code or committed content runs
                 everything and says why (tools/lib/Affected.psm1). It is what a change is
                 tested with before it is handed over; the whole suites run at the merge.
+                It builds what those tests need and nothing else, as `build -Affected` does.
     affected    Print what `test -Affected` would run, without building or running it.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
@@ -84,27 +96,100 @@ function Ensure-Tool([string]$name) {
   if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { throw "$name not found on PATH." }
 }
 
+# Whether this checkout compiles through the machine's compiler cache (tools/lib/CompilerCache.psm1),
+# decided once per invocation from the checkout's kind, ENGINE_CCACHE and the ccache on PATH.
+function Get-CcacheSetup {
+  if ($script:CcachePlan) { return $script:CcachePlan }
+  Import-Module (Join-Path $PSScriptRoot 'lib/CompilerCache.psm1') -Force
+  $gitDir = & git -C $Root rev-parse --path-format=absolute --git-dir 2>$null
+  $commonDir = & git -C $Root rev-parse --path-format=absolute --git-common-dir 2>$null
+  if (-not $gitDir -or -not $commonDir) {
+    # Not a git checkout (an exported SDK, say): nothing to share a cache with, and nothing to decide by.
+    $script:CcachePlan = [pscustomobject]@{ Enabled = $false; Reason = 'not a git checkout' }
+    return $script:CcachePlan
+  }
+  $branch = & git -C $Root rev-parse --abbrev-ref HEAD 2>$null
+  $kind = Get-CheckoutKind -Root $Root -GitDir $gitDir -CommonDir $commonDir -Branch "$branch"
+  $mainRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $commonDir))
+  $exe = ''
+  $version = $null
+  $cmd = Get-Command ccache -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  # Asked only where the answer matters, so a primary checkout without ENGINE_CCACHE=1 never runs it.
+  if ($cmd -and $env:ENGINE_CCACHE -ne '0' -and ($kind -in @('agent', 'gate') -or $env:ENGINE_CCACHE -eq '1')) {
+    $exe = $cmd.Source
+    $version = ConvertFrom-CcacheVersion "$(& $exe --version 2>$null | Select-Object -First 1)"
+  }
+  $script:CcachePlan = Get-CcachePlan -Kind $kind -Setting "$env:ENGINE_CCACHE" -Exe $exe -Version $version `
+                                      -MainRoot $mainRoot -CacheDir "$env:ENGINE_CCACHE_DIR" -IsWindows $IsWin
+  return $script:CcachePlan
+}
+
 function Invoke-Configure {
   Ensure-Tool cmake
   $args = @('--preset', $Preset)
   if ($Fresh) { $args += '--fresh' }
+  $plan = Get-CcacheSetup
+  $cacheArgs = @(Get-CcacheConfigureArgs -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
+  $args += $cacheArgs
+  if ($plan.Enabled) {
+    Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version)" -ForegroundColor Cyan
+  } elseif ($cacheArgs.Count -gt 0 -or $env:ENGINE_CCACHE) {
+    Write-Host "ccache: off ($($plan.Reason))" -ForegroundColor Cyan
+  } else {
+    Write-Verbose "ccache: off ($($plan.Reason))"
+  }
   Push-Location $Root
   try { & cmake @args; if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" } }
   finally { Pop-Location }
 }
 
 function Invoke-Build {
-  # A failed configure can leave CMakeCache.txt without build.ninja; require both.
+  # A failed configure can leave CMakeCache.txt without build.ninja; require both. A tree whose
+  # compiler launcher is not the one this checkout now wants (ccache installed since, ENGINE_CCACHE
+  # changed) is configured again; that changes every compile command, so its next build is whole.
   $configured = (Test-Path (Join-Path $BuildDir 'CMakeCache.txt')) -and (Test-Path (Join-Path $BuildDir 'build.ninja'))
-  if ($Fresh -or -not $configured) { Invoke-Configure }
+  $plan = Get-CcacheSetup   # first: it imports the module the next line calls
+  $relaunch = $configured -and (Test-CcacheReconfigure -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
+  if ($Fresh -or -not $configured -or $relaunch) { Invoke-Configure }
   Ensure-Tool cmake
+  $buildArgs = @('--build', '--preset', $Preset)
+  if ($Affected) {
+    $result = Get-Affected
+    if (-not $result.All) {
+      $targets = @(Get-AffectedBuildTargets $result)
+      if ($targets.Count -eq 0) {
+        Write-Host '  build: nothing; no affected module has a target in this preset' -ForegroundColor Cyan
+        return
+      }
+      Write-Host ("  build: {0} target(s): {1}" -f $targets.Count, ($targets -join ' ')) -ForegroundColor Cyan
+      $buildArgs += @('--target') + $targets
+    }
+  }
   Push-Location $Root
-  try { & cmake --build --preset $Preset; if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" } }
+  try { & cmake @buildArgs; if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" } }
   finally { Pop-Location }
 }
 
+# The targets of an affected set that this build tree has (tools/lib/Affected.psm1). The tree's own
+# ninja lists them: CMake writes a phony alias for every target.
+function Get-AffectedBuildTargets($result) {
+  $ninja = Select-String -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt') -Pattern '^CMAKE_MAKE_PROGRAM(:[A-Z]+)?=(.*)$' |
+    Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[2].Value }
+  if (-not $ninja) { $ninja = 'ninja' }
+  $lines = & $ninja -C $BuildDir -t targets all 2>$null
+  if ($LASTEXITCODE -ne 0) { throw "ninja -t targets failed in $BuildDir ($LASTEXITCODE)" }
+  return Get-AffectedTargets -Modules $result.Modules -Available (ConvertFrom-NinjaTargets -Lines @($lines))
+}
+
 # What the change against -Base can reach, from the preset's module graph (tools/lib/Affected.psm1).
+# Once per invocation: `test -Affected` asks before its build and again for its tests.
 function Get-Affected {
+  if ($script:AffectedResult) { return $script:AffectedResult }
+  $script:AffectedResult = Get-AffectedOnce
+  return $script:AffectedResult
+}
+
+function Get-AffectedOnce {
   $graph = Join-Path $BuildDir 'modules.json'
   if (-not (Test-Path -LiteralPath $graph)) { throw "no $graph; run: tools/dev.ps1 configure -Preset $Preset" }
   Import-Module (Join-Path $PSScriptRoot 'lib/Affected.psm1') -Force
@@ -127,7 +212,13 @@ function Get-Affected {
 
 function Show-Affected {
   $result = Get-Affected
-  if (-not $result.All) { Write-Host "  ctest -R '$($result.Filter)'" }
+  if (-not $result.All) {
+    Write-Host "  ctest -R '$($result.Filter)'"
+    if (Test-Path -LiteralPath (Join-Path $BuildDir 'build.ninja')) {
+      $targets = @(Get-AffectedBuildTargets $result)
+      Write-Host ("  build -Affected: {0} target(s){1}" -f $targets.Count, $(if ($targets.Count) { ": $($targets -join ' ')" } else { '' }))
+    }
+  }
 }
 
 function Invoke-Test {

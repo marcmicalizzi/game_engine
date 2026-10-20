@@ -39,6 +39,19 @@ presets that build them, not by the whole gate again.
 - A module's tests are the test named after it, its bench's smoke run (`bench.<module>`), and a part
   of its tests registered as a test of its own, `<module>.<part>` — so far `engine_view.frame_loop`,
   whose three flights would double `engine_view`'s run.
+- **It builds only what those tests need** (since 2026-10-20, roadmap T68): each affected module's
+  library, test executable and bench, the apps among them, and whatever those tests name with
+  `add_dependencies` (`cmake --build --preset <p> --target <list>`; `tools/dev.ps1 build -Affected`
+  does the same without the tests, and `tools/dev.ps1 affected` prints the list). A fresh worktree's
+  first build is where that counts: measured on the 2026-10-20 tree in `msvc-debug`, a change in
+  `domain/flora`, a capability and so everything above its layer, asks for 1,146 of the tree's 1,542
+  compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in
+  `apps/engine_cli`, whose tests start engine-host, engine-view and engine-content, for 954 and 7.
+  The floor under all of them is the third-party code and `core/`, which everything links. In a
+  tree that is already built, the saving is whatever else is out of date — main's changes after a
+  rebase, say — which a whole build compiles and this does not; the change's own files are
+  recompiled either way. What takes the floor out of a fresh worktree is
+  [the compiler cache](local-linux.md#the-compiler-cache).
 
 On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock free):
 
@@ -171,6 +184,8 @@ not quiet figures; CTest's own "Total Test time" in each case, builds not includ
 | The three Windows suites in series, the way a per-batch gate ran them before 2026-10-10 | about 2 h, plus a fresh worktree's four builds |
 | The frame budgets (`tools/frame-budget.ps1`, five runs, `msvc-release`, warm cache; 2026-10-07) | 13 min, plus lock and quiet waits |
 | `engine_view.frame_loop` alone (2026-10-07) | 220 s in `msvc-debug`, 60 s in `msvc-release` |
+| A fresh worktree's first three containers (`linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, build only), compiler cache warm (2026-10-20) | 3 min (1 m 33 s, 0 m 48 s, 0 m 38 s; 100% hits); half an hour or more cold, which is now the first run on the machine after a toolchain or flag change ([local Linux](local-linux.md#with-the-compiler-cache-2026-10-20)) |
+| A fresh worktree's first `msvc-debug` build, no compiler cache (2026-10-20, host CPU 96–100%) | 9 min: about 4 configuring and fetching, 5 compiling and linking (1,542 compiles, 128 links). With ccache installed and warm: not yet measured, pending the install ([the Windows half](local-linux.md#the-windows-half)) |
 
 **The merge gate runs in a worktree that persists** (`D:workspacege-gate`, branch `gate`, locked so the
 volume sweep keeps it): main is reset onto it and the batch's branches are cherry-picked on top, so its
@@ -188,6 +203,7 @@ the gate's first run spent three of its five hours in that wait, silently, becau
 that writes a string and returns a value hands both to the caller's `if`. Ten GB to spare and four
 free, fifteen minutes, then proceed and log it: a build that fails for memory is retried anyway.
 
-A first build in a fresh worktree comes on top of these, and a fresh worktree's first container
-run compiles every third-party dependency ([local Linux builds](local-linux.md) has those times).
+A first build in a fresh worktree comes on top of these (the table's last two rows); with the compiler
+cache warm the containers' share of it is minutes, and `build -Affected` builds only what the
+change's tests need ([what "affected" means](#what-affected-means)).
 When a figure here is found wrong by more than a third, correct it in the change that found it.
