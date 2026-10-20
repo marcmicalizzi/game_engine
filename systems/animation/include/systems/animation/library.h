@@ -199,8 +199,10 @@ void joint_influence_bounds(std::span<const Vec3> positions,
 f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
                             const JointBounds& bounds, u32 samples = 64);
 // The largest bound over every clip of `skeleton_index` in `library`, which is what an instance
-// that may play any of them has to be padded by. A skeleton with no clips gives zero — correct,
-// because a character holding its rest pose never leaves its rest-pose bounds.
+// that may play any of them has to be padded by, and never less than the rest pose's own: zero
+// where the inverse binds undo the rest (a character holding it never leaves its bind-space
+// bounds), the ancestor's offset where they do not — a root joint under a transformed non-joint
+// ancestor whose inverse binds leave it out stands that far from its bind positions (S92).
 f32 skeleton_displacement_bound(const Library& library, u32 skeleton_index,
                                 const JointBounds& bounds, u32 samples = 64);
 

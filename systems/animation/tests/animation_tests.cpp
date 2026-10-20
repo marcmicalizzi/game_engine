@@ -4,6 +4,7 @@
 // clip sampled directly, and the matrices have to be `anim::skinning_matrices` of that pose. A
 // system layer that quietly reimplements its data layer is the failure this guards against.
 #include "animation_glb.h"
+#include "pose_hash.h"
 
 #include <core/ids/id128.h>
 #include <core/jobs/job_system.h>
@@ -729,4 +730,25 @@ TEST_CASE("animation: the displacement bound covers every vertex at every phase 
   // A skeleton with no clip moves nothing, and a clip over a rig nothing binds to moves nothing.
   JointBounds empty;
   CHECK(clip_displacement_bound(skeleton, clip, empty) == 0.0f);
+}
+
+// S92's guard on everything that has no ancestor to fold: this fixture's root joint sits under
+// `rig`, a non-joint node with the identity transform, and the fold of the identity must leave the
+// skeleton and the clips exactly as they were. The numbers were taken before the fold existed. The
+// times keep away from the inside of a rotation key interval, where `slerp` calls the C library's
+// `acos` and `sin` and a pinned number would pin a libm rather than this module.
+TEST_CASE("animation library: a rig with an identity ancestor poses exactly as before the fold") {
+  Fixture fixture;
+  const u32 skeleton = fixture.library.skeleton_index(fixture.skeleton);
+  const u32 walk = fixture.library.clip_index(fixture.walk);
+  const u32 idle = fixture.library.clip_index(fixture.idle);
+  REQUIRE(skeleton != Library::k_not_found);
+  const u64 rest = test_fixture::pose_hash(fixture.library, skeleton, Library::k_not_found, {0.0f});
+  const u64 idle_hash = test_fixture::pose_hash(fixture.library, skeleton, idle,
+                                                {0.0f, 0.25f, 0.5f, 0.75f, 0.999f, 1.25f});
+  const u64 walk_hash = test_fixture::pose_hash(fixture.library, skeleton, walk, {0.0f, 1.0f});
+  MESSAGE("pinned pose hashes: rest " << rest << ", idle " << idle_hash << ", walk " << walk_hash);
+  CHECK(rest == 2538946049477752829ull);
+  CHECK(idle_hash == 2386305119254717539ull);
+  CHECK(walk_hash == 10902121964293612683ull);
 }
