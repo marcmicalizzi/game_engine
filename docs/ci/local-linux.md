@@ -365,7 +365,12 @@ over a ccache directory keyed by the preset, a row of its own when hosted minute
 that each follow from Windows:
 
 - **It is the owner's to install** — `winget install ccache` — and the script never downloads a
-  compiler wrapper. With none on `PATH`, or one older than **4.13**, the build is exactly what it was:
+  compiler wrapper. `configure` uses the ccache on `PATH`, or else the one winget put in
+  `%LOCALAPPDATA%\Microsoft\WinGet\Links` (`Find-Ccache`), and prints which path it used and where
+  it found it: winget adds Links to the user's `PATH`, but a shell started before the install — an
+  agent harness's, an IDE's — never sees that, and until batch 33 every configure such a shell ran
+  printed `ccache: off` in a worktree that should have had it on, so agents' briefs had to prepend
+  Links by hand. With none in either place, or one older than **4.13**, the build is exactly what it was:
   no launcher, `/Zi`, nothing on the configure line. 4.13 is the first release that calls caching
   `cl.exe` supported; the module's header lists what the tree's compiles need and the release each
   arrived in (per-invocation settings on the command line in 4.8, `/Z7` overriding an earlier `/Z`

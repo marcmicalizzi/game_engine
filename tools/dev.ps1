@@ -115,9 +115,12 @@ function Get-CcacheSetup {
   $exe = ''
   $version = $null
   $cmd = Get-Command ccache -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  # On PATH, or where winget put it for a shell started before the install (Find-Ccache).
+  $found = Find-Ccache -OnPath "$(if ($cmd) { $cmd.Source })" -LocalAppData "$env:LOCALAPPDATA"
   # Asked only where the answer matters, so a primary checkout without ENGINE_CCACHE=1 never runs it.
-  if ($cmd -and $env:ENGINE_CCACHE -ne '0' -and ($kind -in @('agent', 'gate') -or $env:ENGINE_CCACHE -eq '1')) {
-    $exe = $cmd.Source
+  if ($found -and $env:ENGINE_CCACHE -ne '0' -and ($kind -in @('agent', 'gate') -or $env:ENGINE_CCACHE -eq '1')) {
+    $exe = $found.Path
+    $script:CcacheWhere = $found.Where
     $version = ConvertFrom-CcacheVersion "$(& $exe --version 2>$null | Select-Object -First 1)"
   }
   $script:CcachePlan = Get-CcachePlan -Kind $kind -Setting "$env:ENGINE_CCACHE" -Exe $exe -Version $version `
@@ -133,7 +136,7 @@ function Invoke-Configure {
   $cacheArgs = @(Get-CcacheConfigureArgs -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
   $args += $cacheArgs
   if ($plan.Enabled) {
-    Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version)" -ForegroundColor Cyan
+    Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version) at $($plan.Exe) (from $script:CcacheWhere)" -ForegroundColor Cyan
   } elseif ($cacheArgs.Count -gt 0 -or $env:ENGINE_CCACHE) {
     Write-Host "ccache: off ($($plan.Reason))" -ForegroundColor Cyan
   } else {

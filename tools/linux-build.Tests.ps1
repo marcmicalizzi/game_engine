@@ -331,6 +331,20 @@ Test-That 'ccache''s version line parses, and anything else is $null' {
     $null -eq (ConvertFrom-CcacheVersion 'command not found')
 }
 $exe = 'C:\Users\someone\AppData\Local\Microsoft\WinGet\Links\ccache.exe'
+$linksOnly = { param($p) $p -eq $exe }
+$nowhere = { param($p) $false }
+Test-That 'ccache on PATH is the one used, wherever else one is' {
+  $f = Find-Ccache -OnPath 'C:\tools\ccache.exe' -LocalAppData 'C:\Users\someone\AppData\Local' -Exists $linksOnly
+  $f.Path -eq 'C:\tools\ccache.exe' -and $f.Where -eq 'PATH'
+}
+Test-That 'a shell started before winget installed it finds the one in WinGet''s Links, and says so' {
+  $f = Find-Ccache -OnPath '' -LocalAppData 'C:\Users\someone\AppData\Local\' -Exists $linksOnly
+  $f.Path -eq $exe -and $f.Where -eq 'WinGet Links'
+}
+Test-That 'neither on PATH nor in Links, or no LOCALAPPDATA: none, and the plan says how to install it' {
+  $null -eq (Find-Ccache -OnPath '' -LocalAppData 'C:\Users\someone\AppData\Local' -Exists $nowhere) -and
+    $null -eq (Find-Ccache -OnPath '' -LocalAppData '' -Exists $linksOnly)
+}
 function Plan([string]$kind, [string]$setting = '', [string]$e = $exe, [version]$v = [version]'4.13.1', [string]$dir = '', [bool]$win = $true) {
   Get-CcachePlan -Kind $kind -Setting $setting -Exe $e -Version $v -MainRoot $mainRoot -CacheDir $dir -IsWindows $win
 }
