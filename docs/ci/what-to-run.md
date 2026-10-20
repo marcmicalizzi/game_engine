@@ -40,7 +40,8 @@ presets that build them, not by the whole gate again.
   of its tests registered as a test of its own, `<module>.<part>` — so far `engine_view.frame_loop`,
   whose three flights would double `engine_view`'s run.
 - **It builds only what those tests need** (since 2026-10-20, roadmap T68): each affected module's
-  library, test executable and bench, the apps among them, and whatever those tests name with
+  library, test executable and bench, the apps among them, every app when the tools' own tests run
+  (they start them; [local Linux](local-linux.md#build--affected)), and whatever those tests name with
   `add_dependencies` (`cmake --build --preset <p> --target <list>`; `tools/dev.ps1 build -Affected`
   does the same without the tests, and `tools/dev.ps1 affected` prints the list). A fresh worktree's
   first build is where that counts: measured on the 2026-10-20 tree in `msvc-debug`, a change in

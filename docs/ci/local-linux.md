@@ -432,7 +432,14 @@ of the affected set — the changed modules, everything that depends on them, an
 everything above its layer, with the apps among them, since an app is a module in `modules.json` —
 its library, its test executable and its bench, as `cmake --build --preset <p> --target <list>`.
 A test that runs another binary names it with `add_dependencies` (engine-cli's tests on engine-host,
-engine-view and engine-content), so it builds with the test. `test -Affected` builds the same way.
+engine-view and engine-content), so it builds with the test. The tools' own tests (`tools.*`) are
+CTest tests with no target to hang a dependency on, and `tools.game_sdk` exports and runs
+engine-view, so whenever they are selected (any change under `tools/`) every app the graph declares
+— each `engine_app()`, the `apps` layer of `modules.json` — is built too, its binary and not its
+tests; until batch 33 a `tools/`-only change built no app and `tools.game_sdk` failed on a missing
+engine-view. That is the whole app set rather than the two the tools tests start today because no
+declaration says which they start, and a list written in `Affected.psm1` would rot the first time a
+tools test began to run a third. `test -Affected` builds the same way.
 Counted with `ninja -t commands` over the targets on the 2026-10-20 tree in `msvc-debug`: a change in
 `domain/flora` — a capability, so every module above its layer — asks for 1,146 of the tree's 1,542
 compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in
