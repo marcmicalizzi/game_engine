@@ -479,14 +479,14 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
     // call all lit or all shadowed, which leaves out the band the maps' 3x3 filter softens and
     // their texels step (the shading tests leave out the same band). Three pixels here are about
     // 0.11 m of ground, two or three of the nearest cascade's texels.
-    auto disagreement = [&](const ShadowCount& rays, const ShadowCount& maps, u32& interior) {
+    auto disagreement = [&](const ShadowCount& traced, const ShadowCount& mapped, u32& interior) {
       u32 disagree = 0;
       interior = 0;
       for (u32 y = 3; y + 3 < k_size; ++y) {
         for (u32 x = 3; x + 3 < k_size; ++x) {
           const u32 p = y * k_size + x;
-          const u8 ray = rays.classes[p];
-          if (ray == 0 || maps.classes[p] == 0) continue;
+          const u8 ray = traced.classes[p];
+          if (ray == 0 || mapped.classes[p] == 0) continue;
           // Where the two already disagree under the opaque caster — the maps' speckle at the
           // frame's near edge, where a cascade texel is largest on screen — the mask is not what
           // is being compared.
@@ -494,10 +494,10 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
           bool uniform = true;
           for (u32 dy = 0; dy < 7 && uniform; ++dy)
             for (u32 dx = 0; dx < 7 && uniform; ++dx)
-              uniform = rays.classes[(y + dy - 3) * k_size + (x + dx - 3)] == ray;
+              uniform = traced.classes[(y + dy - 3) * k_size + (x + dx - 3)] == ray;
           if (!uniform) continue;
           ++interior;
-          if (maps.classes[p] != ray) ++disagree;
+          if (mapped.classes[p] != ray) ++disagree;
         }
       }
       return disagree;
