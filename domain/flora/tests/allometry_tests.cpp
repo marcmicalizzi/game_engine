@@ -212,8 +212,9 @@ TEST_CASE("flora allometry: the pipe rule holds at every node and every twig is 
     REQUIRE(flora::broadleaf_crown(b, crown));
     u32 nodes = 0;
     f64 worst = 0.0;
-    check_crown(crown, exponent, static_cast<f64>(b.twig_radius_m),
-                smallest_step(b.leader_share, std::min(b.branching_ratio - 1, b.twigs), exponent),
+    check_crown(crown, static_cast<f64>(exponent), static_cast<f64>(b.twig_radius_m),
+                smallest_step(static_cast<f64>(b.leader_share),
+                              std::min(b.branching_ratio - 1, b.twigs), static_cast<f64>(exponent)),
                 nodes, worst);
     MESSAGE("broadleaf, exponent " << exponent << ": " << crown.size() << " shoots, " << nodes
                                    << " nodes, the worst within " << worst);
@@ -226,9 +227,10 @@ TEST_CASE("flora allometry: the pipe rule holds at every node and every twig is 
     flora::Ancient a;
     a.area_exponent = exponent;
     REQUIRE(flora::ancient_crown(a, crown));
-    check_crown(crown, exponent, static_cast<f64>(a.twig_radius_m),
-                smallest_step(a.leader_share,
-                              std::min({a.branching_ratio - 1, a.sub_branches, a.twigs}), exponent),
+    check_crown(crown, static_cast<f64>(exponent), static_cast<f64>(a.twig_radius_m),
+                smallest_step(static_cast<f64>(a.leader_share),
+                              std::min({a.branching_ratio - 1, a.sub_branches, a.twigs}),
+                              static_cast<f64>(exponent)),
                 nodes, worst);
     MESSAGE("ancient, exponent " << exponent << ": " << crown.size() << " shoots, " << nodes
                                  << " nodes, the worst within " << worst);
