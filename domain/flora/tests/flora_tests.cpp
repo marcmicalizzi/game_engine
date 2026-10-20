@@ -935,7 +935,9 @@ TEST_CASE("flora: a file's species picks the solver, and its key carries that sp
                                                nullptr, error),
                   error);
   CHECK(data.generator_kind == "broadleaf");
-  CHECK(data.materials.size() == 2);
+  // The species' two, and one a level of its impostor chain (flora.md, "The impostor chain").
+  CHECK_FALSE(data.impostors.empty());
+  CHECK(data.materials.size() == 2 + data.impostors.size());
   CHECK(data.motion_vertices.size() == data.mesh.mesh.vertices.size());
   CHECK_FALSE(data.motion_parts.empty());
   flora::FloraFile palm;

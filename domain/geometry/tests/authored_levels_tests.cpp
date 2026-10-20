@@ -127,8 +127,8 @@ TEST_CASE("authored levels: they sit above the decimated chain and switch whole"
   ClusterLodMesh none;
   REQUIRE(build_cluster_lod_levels(positions, fine, {}, ClusterLodOptions{}, none, &error));
   REQUIRE(none.lod.size() == plain.lod.size());
-  CHECK(std::memcmp(none.lod.data(), plain.lod.data(),
-                    plain.lod.size() * sizeof(ClusterLodDesc)) == 0);
+  CHECK(std::memcmp(none.lod.data(), plain.lod.data(), plain.lod.size() * sizeof(ClusterLodDesc)) ==
+        0);
   REQUIRE(none.mesh.quantized.size() == plain.mesh.quantized.size());
   CHECK(std::memcmp(none.mesh.quantized.data(), plain.mesh.quantized.data(),
                     plain.mesh.quantized.size() * sizeof(u16)) == 0);

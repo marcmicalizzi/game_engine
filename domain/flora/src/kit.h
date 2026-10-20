@@ -10,6 +10,7 @@
 
 #include <core/math/deterministic.h>
 #include <domain/assets/gltf.h>
+#include <domain/flora/impostor.h>
 #include <domain/flora/motion.h>
 #include <domain/flora/trees.h>
 
@@ -358,11 +359,42 @@ u32 crown_triangles(const Crown& crown, const CrownPlan& plan);
 // records each part's structural row.
 void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool structural);
 
+// Where one spray of the leaves landed: the node it grows on (a twig, or with the plan's merge the
+// sub-tree root), and its runs of the mesh's indices and vertices.
+struct SprayRange {
+  u32 node = 0;
+  u32 first_index = 0;
+  u32 index_count = 0;
+  u32 first_vertex = 0;
+  u32 vertex_count = 0;
+};
+
 // The leaves: a spray of the twig's cards on every leafy twig, `card_length` long with the step
 // `crown.card_step` along it — or, with the plan's merge, one spray per sub-tree root standing for
 // its twigs' leaves, its cards sized to the sub-tree's extent. Returns the longest card built.
+// `sprays`, when given, receives every spray's ranges in emission order (the impostor chain's).
 f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f64 card_length,
-                      f64 angle, f64 lift, f64 droop);
+                      f64 angle, f64 lift, f64 droop, Vector<SprayRange>* sprays = nullptr);
+
+// ---- the impostor chain (R89; impostor.h, flora.md "The impostor chain") ----------------------
+//
+// Appended after everything above and changing none of it: a solver that is not asked for levels
+// emits the bytes it did.
+
+// The branch-group levels above the finest leaves: at step k every spray's leaves gather on their
+// sub-tree root k orders further up (never past a part), and each sub-tree becomes **one card** in
+// the plane its leaves lie nearest (the least-variance plane of their vertices), the size of their
+// extent in it, sampling one of `spec.representatives` baked tiles. The cards are appended to the
+// mesh past everything (with their motion: the root's carrier part), their triangles kept in the
+// level's own indices. Stops where a step merges nothing more.
+void crown_levels(const Crown& crown, const CrownPlan& plan, const Vector<SprayRange>& sprays,
+                  const ImpostorSpec& spec, Emitter& out, TreeLevels& levels);
+
+// The whole-tree impostor as the last level: four vertical planes through the trunk's axis 45
+// degrees apart and one level plane at the crown's centre, each the size of the tree in it, each
+// with a tile of its own view of the bark and the finest leaves (`mesh.indices` up to
+// `levels.leaf_index_end`). Riding the trunk (`part`).
+void tree_star(const ImpostorSpec& spec, u32 part, Emitter& out, TreeLevels& levels);
 
 // The crown as `CrownShoot` rows (trees.h), in node order.
 void crown_table(const Crown& crown, Vector<CrownShoot>& out);

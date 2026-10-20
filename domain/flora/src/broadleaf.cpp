@@ -254,6 +254,10 @@ bool broadleaf_in_range(const Broadleaf& p, std::string& error) {
   if (!(p.leaf_area_index >= 0.5f && p.leaf_area_index <= 10.0f))
     return bad("leaf_area_index", "0.5 to 10");
   if (!(p.leaf_width >= 0.1f && p.leaf_width <= 1.0f)) return bad("leaf_width", "0.1 to 1");
+  if (p.card_bake_px != 0u && !(p.card_bake_px >= 16u && p.card_bake_px <= 256u))
+    return bad("card_bake_px", "0, or 16 to 256");
+  if (p.impostor_px != 0u && !(p.impostor_px >= 32u && p.impostor_px <= 1024u))
+    return bad("impostor_px", "0, or 32 to 1024");
   if (!(p.allometry_exponent >= 0.4f && p.allometry_exponent <= 1.0f))
     return bad("allometry_exponent", "0.4 to 1");
   return true;
@@ -268,6 +272,11 @@ bool broadleaf_crown(const Broadleaf& p, Vector<CrownShoot>& out) {
 
 bool solve_broadleaf(const Broadleaf& p, assets::MeshData& out, TreeReport* report,
                      std::string* error, Motion* motion) {
+  return solve_broadleaf_chain(p, out, report, error, motion, nullptr);
+}
+
+bool solve_broadleaf_chain(const Broadleaf& p, assets::MeshData& out, TreeReport* report,
+                           std::string* error, Motion* motion, TreeLevels* levels) {
   out = assets::MeshData{};
   std::string message;
   if (!broadleaf_in_range(p, message)) {
@@ -313,9 +322,11 @@ bool solve_broadleaf(const Broadleaf& p, assets::MeshData& out, TreeReport* repo
   // The leaves: one spray a leafy twig, its plane laid level so the cards face the sky.
   const u32 leaf_vertex = out.positions.size();
   const u32 leaf_first = out.indices.size();
+  Vector<SprayRange> spray_ranges;
   const f64 card_length =
       crown_emit_leaves(crown, plan.crown, emit, static_cast<f64>(p.leaf_length_m),
-                        static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15);
+                        static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15,
+                        levels != nullptr ? &spray_ranges : nullptr);
   assets::Primitive leaves;
   leaves.first_index = leaf_first;
   leaves.index_count = out.indices.size() - leaf_first;
@@ -353,6 +364,18 @@ bool solve_broadleaf(const Broadleaf& p, assets::MeshData& out, TreeReport* repo
     report->leaf_area_m2 = static_cast<f32>(triangles_area(out, leaf_first));
     report->leaf_area_index =
         crown.footprint > 0.0 ? report->leaf_area_m2 / report->footprint_m2 : 0.0f;
+  }
+  // The impostor chain above the finest leaves (impostor.h): appended past everything, so the
+  // mesh above is the bytes it is without it.
+  if (levels != nullptr) {
+    *levels = TreeLevels{};
+    levels->leaf_first_index = leaf_first;
+    levels->leaf_index_end = out.indices.size();
+    ImpostorSpec chain_spec;
+    chain_spec.card_px = p.card_bake_px;
+    chain_spec.tree_px = p.impostor_px;
+    crown_levels(crown, plan.crown, spray_ranges, chain_spec, emit, *levels);
+    tree_star(chain_spec, crown.nodes[0].part, emit, *levels);
   }
   if (motion != nullptr) *motion = std::move(parts);
   return true;

@@ -593,8 +593,9 @@ bool append_authored_levels(std::span<const Vec3> positions,
     if (levels[k].indices.empty()) continue;
     std::string message;
     if (!build_clusters(positions, levels[k].indices, build, built[k], &message)) {
-      if (error != nullptr) *error = "build_cluster_lod_levels: level " + std::to_string(k + 1) +
-                                     " did not cluster: " + message;
+      if (error != nullptr)
+        *error = "build_cluster_lod_levels: level " + std::to_string(k + 1) +
+                 " did not cluster: " + message;
       return false;
     }
     for (const u32 index : levels[k].indices) {
@@ -634,8 +635,7 @@ bool append_authored_levels(std::span<const Vec3> positions,
     out.mesh.vertices.append(std::span<const Vec3>(level.vertices.data(), level.vertices.size()));
     out.mesh.vertex_source.append(
         std::span<const u32>(level.vertex_source.data(), level.vertex_source.size()));
-    out.mesh.triangles.append(
-        std::span<const u32>(level.triangles.data(), level.triangles.size()));
+    out.mesh.triangles.append(std::span<const u32>(level.triangles.data(), level.triangles.size()));
     ++out.group_count;
   }
   return true;
@@ -698,7 +698,8 @@ bool widen_lod_spheres(ClusterLodMesh& mesh, f32 from_error, Vec4 sphere, std::s
     const bool parent = lod.parent_error >= from_error && lod.parent_error < k_lod_terminal_error;
     if ((own && !sphere_encloses(sphere, lod.own)) ||
         (parent && !sphere_encloses(sphere, lod.parent))) {
-      if (error != nullptr) *error = "widen_lod_spheres: the sphere does not enclose one it replaces";
+      if (error != nullptr)
+        *error = "widen_lod_spheres: the sphere does not enclose one it replaces";
       return false;
     }
   }

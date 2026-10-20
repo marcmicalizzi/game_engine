@@ -19,6 +19,7 @@
 
 #include <core/base/types.h>
 #include <domain/assets/gltf.h>
+#include <domain/flora/impostor.h>
 #include <domain/flora/motion.h>
 
 #include <schemas/flora.h>
@@ -102,6 +103,13 @@ bool solve_orchard(const Orchard& params, assets::MeshData& out, TreeReport* rep
                    std::string* error = nullptr, Motion* motion = nullptr);
 bool solve_ancient(const Ancient& params, assets::MeshData& out, TreeReport* report = nullptr,
                    std::string* error = nullptr, Motion* motion = nullptr);
+
+// The same two with the impostor chain (impostor.h): `levels` receives it, its cards appended to
+// `out` past everything else, so the mesh up to them is the bytes the plain call makes.
+bool solve_broadleaf_chain(const Broadleaf& params, assets::MeshData& out, TreeReport* report,
+                           std::string* error, Motion* motion, TreeLevels* levels);
+bool solve_ancient_chain(const Ancient& params, assets::MeshData& out, TreeReport* report,
+                         std::string* error, Motion* motion, TreeLevels* levels);
 
 // The crown's structure as the solver grows it, independent of the budget (G72): what the pipe
 // rule, the twig size and the order count are checked against. False for parameters out of range.

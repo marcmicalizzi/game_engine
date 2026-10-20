@@ -153,7 +153,8 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
                        const ClusterLodOptions& options, ClusterLodMesh& out,
                        std::string* error = nullptr, const AttributeSource& attributes = {});
 
-// ---- authored coarser levels (geometry.md, "Authored levels") ------------------------------------
+// ---- authored coarser levels (geometry.md, "Authored levels")
+// ------------------------------------
 //
 // A caller that knows a better coarse form of its mesh than decimation does — a tree whose leaf
 // cards merge into baked branch-group cards and then into a whole-tree impostor (flora.md, "The

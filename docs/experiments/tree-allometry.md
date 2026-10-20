@@ -201,6 +201,55 @@ size hold to about 300 m from elder A; a 1.22 m merge-1 card is a pixel at 1.2 k
 merge-3 card at about 4 km; and the 115 m crown is 115 pixels across at a kilometre, where an
 octahedral impostor of 128 pixels a view would replace it.
 
+### What R89 built, and where it switches (2026-10-21)
+
+**The literature's chain and its known errors.** Octahedral impostors bake a hemisphere or sphere of
+views into one atlas laid out on an octahedron and blend the nearest frames by the view direction,
+with a depth map for parallax (Brucks's shaderbits post on Fortnite's trees is the origin every
+implementation cites — [three.js](https://discourse.threejs.org/t/octahedral-impostors-for-three-js/80318),
+[Godot](https://github.com/SIsilicon/Godot-Octahedral-Impostors), whose depth maps are a feature of
+its standard shader only — and the commercial bakers offer the hemi-octahedron for a model never
+seen from below, [Unity's industry toolkit](https://docs.unity3d.com/ja/Packages/com.unity.industry.toolkit%403.0/manual/create-impostors.html),
+or blend smoothly between views, [Amplify Impostors](https://amplify.pt/_AI)). The errors every one
+of them names are two: **popping** where a form switches to the next, met by a dithered or alpha
+cross-fade over a band of distance (SpeedTree's billboards are "cross faded in", above), and a
+**lighting mismatch** where the baked picture carries lighting the scene does not, met by baking
+normals (and depth) instead of a shaded colour and lighting them with the frame's lights.
+
+**What this engine built** ([flora](../subsystems/flora.md#the-impostor-chain)): the branch-group
+rung as **one card a sub-tree** at each merge level, in its leaves' best plane, sampling one of
+sixteen baked sub-trees; the whole tree as a **star of five planes** (four through the trunk, one
+level), each baked from its own side; both as authored levels of the cluster DAG with geometric
+errors ([geometry](../subsystems/geometry.md#authored-levels)), baked colour with coverage and a
+tangent-space normal the resolve lights with the frame's sun and sky (the lighting mismatch's
+answer). Not built: the octahedral frames blended by view, because R65's mask is a function of the
+UV alone on every path and a view-chosen frame's coverage is not (roadmap R90), and the dithered
+cross-fade (R91).
+
+**Where it switches** (`engine-content info`, 1080p, a 60° field, a 1-pixel threshold: *d* = *e* ×
+935.3 + *r* from the chain's sphere, *r* = 104.8 m for the default ancient tree, 14.1 m for the oak):
+
+| Default ancient tree (100 m) | Cards | Error *e* | Switches in at |
+|---|---|---|---|
+| merge 1 | 54,547 | 0.78 m | 832 m |
+| merge 2 | 16,340 | 1.47 m | 1.5 km |
+| merge 3 | 4,954 | 2.46 m | 2.4 km |
+| merge 4 | 1,553 | 3.85 m | 3.7 km |
+| merge 5 | 743 | 4.25 m | 4.1 km |
+| the star | 5 planes | 71.7 m | 67 km |
+
+The oak: 1,485 cards at 0.61 m (589 m), 474 at 1.26 m (1.2 km), 141 at 2.24 m (2.1 km), then the
+star at 8.39 m (7.9 km). **Against the estimate above** (a merge-1 card a pixel at 1.2 km, an
+impostor from a kilometre): the cards come in sooner than their size alone said, because the error
+is a sub-tree's depth off its card (0.78 m) and not the card's length (1.22 m), and the star far
+later, because a plane through the trunk is honestly as wrong as the crown is wide — which is the
+measured case for the octahedral frames: their error is the parallax left after choosing the
+nearest of 64 views and correcting by depth, a few degrees' worth, not the crown's radius. With the
+error the selector is held to, the elder grove's camera path (within about 110 m of the trees)
+never reaches a card level, and its frame is what it was (below). At a coarser threshold — a preset
+that draws foliage at 30 pixels of error — the oak's cards hold the picture at 28 m
+(`flora.md`'s captures), which is where a per-material threshold would spend them.
+
 ## G74: what self-organising growth would add
 
 The recursion here is **architectural**: its branching follows from sizes and ratios, not from the

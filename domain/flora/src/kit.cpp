@@ -637,8 +637,9 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
 }
 
 f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f64 card_length,
-                      f64 angle, f64 lift, f64 droop) {
+                      f64 angle, f64 lift, f64 droop, Vector<SprayRange>* sprays) {
   const auto spray = [&](const CrownNode& node, f64 from, u32 cards, f64 length) {
+    const u32 first_index = out.mesh.indices.size();
     const bool part = (node.flags & k_crown_part) != 0u;
     const Axis local = part ? Axis{} : segment_axis(node);
     const Axis& axis = part ? crown.axes[node.axis] : local;
@@ -647,6 +648,15 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
     out.part = crown.nodes[node.carrier].part;
     const u32 first = out.mesh.positions.size();
     build_spray(axis, from, cards, length, angle, lift, droop, normalized(side), out);
+    if (sprays != nullptr) {
+      SprayRange r;
+      r.node = static_cast<u32>(&node - crown.nodes.data());
+      r.first_index = first_index;
+      r.index_count = out.mesh.indices.size() - first_index;
+      r.first_vertex = first;
+      r.vertex_count = out.mesh.positions.size() - first;
+      sprays->push_back(r);
+    }
     if (!part) {
       for (u32 v = first; v < out.mesh.positions.size(); ++v)
         out.motion.vertex_weight[v] = static_cast<f32>(node.weight);

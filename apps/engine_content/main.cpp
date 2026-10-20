@@ -1150,6 +1150,33 @@ int info(const std::string& path) {
   summary.set("textures", texture_records_json(data));
   summary.set("morph_channels", JsonValue(lod.mesh.morph_channels.size()));
   summary.set("morph_deltas", JsonValue(lod.mesh.morph_delta_count));
+  // A generated tree's impostor chain (section 38; flora.md, "The impostor chain"), only when it
+  // has one: each authored level, what it stands for, its atlas and the error it switches at.
+  if (!data.impostors.empty()) {
+    JsonValue chain = JsonValue::array();
+    // The sphere every transition of the chain carries (geometry.md, "Authored levels"), and where
+    // each level switches in at 1080p with a 60-degree vertical field and a 1-pixel threshold:
+    // error x cot(30 deg) x 540 + radius from the sphere's centre.
+    const Vec4 sphere = geometry::authored_lod_sphere(lod, data.impostors[0].error);
+    summary.set("impostor_sphere_m", JsonValue(static_cast<f64>(sphere.w)));
+    for (const geometry::ClusterFileImpostor& r : data.impostors) {
+      JsonValue level = JsonValue::object();
+      level.set("kind", JsonValue(r.kind == 2u ? "tree" : "branch_group"));
+      level.set("merge", JsonValue(r.merge));
+      level.set("material", JsonValue(r.material));
+      level.set("cards", JsonValue(r.groups));
+      level.set("tile_px", JsonValue(r.tile_px));
+      level.set("atlas_px", JsonValue(std::to_string(r.columns * r.tile_px) + "x" +
+                                      std::to_string(r.rows * r.tile_px)));
+      level.set("error_m", JsonValue(static_cast<f64>(r.error)));
+      level.set("parallax_m", JsonValue(static_cast<f64>(r.parallax)));
+      level.set("texel_m", JsonValue(static_cast<f64>(r.texel)));
+      level.set("switch_1080p_m", JsonValue(static_cast<f64>(r.error) * 935.30743608719377 +
+                                            static_cast<f64>(sphere.w)));
+      chain.push_back(std::move(level));
+    }
+    summary.set("impostors", std::move(chain));
+  }
   // The canonical vertex ids: how many (one per cluster vertex, or none) and what id space they
   // are in, which is what a file written beside this mesh checks before it names a vertex.
   summary.set("vertex_ids", JsonValue(lod.mesh.vertex_ids.size()));

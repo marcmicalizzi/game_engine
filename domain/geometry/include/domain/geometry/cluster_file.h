@@ -190,11 +190,19 @@ enum class ClusterSection : u32 {
   // **Written only when a species emits it**, like 34 to 36: every other container is the bytes
   // it was.
   StructuralParts = 37,
+  // The impostor chain of a generated tree (docs/subsystems/flora.md, "The impostor chain"; R89):
+  // one `ClusterFileImpostor` per authored level above the finest leaves, rising — what each stands
+  // for (a branch-group level or the whole-tree star), the material that draws it and its baked
+  // atlas (the material's two images), its tile layout, and the error it switches at with the two
+  // terms it was taken from. The renderer needs none of it to draw (the levels are clusters, the
+  // atlases images); it is what `engine-content info` and a reader of the chain report. **Written
+  // only when a species emits a chain**, like 34 to 37, so every other container is the bytes it
+  // was.
+  Impostors = 38,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds =
-    static_cast<u32>(ClusterSection::StructuralParts) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Impostors) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -359,11 +367,32 @@ struct ClusterFileStructuralPart {
   u32 flags = 0;
 };
 
+// One authored level of a tree's impostor chain (section 38). `kind` is 1 for a branch-group level
+// (one card a sub-tree merged `merge` orders up its twigs) and 2 for the whole-tree star;
+// `material` draws it, its base colour and normal images the atlas of `columns` x `rows` tiles of
+// `tile_px`; `groups` its cards (planes); `error` the mesh-space error its clusters carry, the
+// larger of `parallax` (the farthest the geometry a card stands for lies from the card) and `texel`
+// (half a baked texel on the largest card).
+struct ClusterFileImpostor {
+  u32 kind = 0;
+  u32 merge = 0;
+  u32 material = 0;
+  u32 groups = 0;
+  u32 tile_px = 0;
+  u32 columns = 0;
+  u32 rows = 0;
+  f32 error = 0.0f;
+  f32 parallax = 0.0f;
+  f32 texel = 0.0f;
+  u32 pad[2] = {0, 0};
+};
+
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
 static_assert(sizeof(ClusterFileMotionPart) == 32, "a cluster file motion part is 32 bytes");
 static_assert(sizeof(ClusterFileMotionVertex) == 4, "a cluster file motion vertex is 4 bytes");
 static_assert(sizeof(ClusterFileStructuralPart) == 16,
               "a cluster file structural part is 16 bytes");
+static_assert(sizeof(ClusterFileImpostor) == 48, "a cluster file impostor record is 48 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
@@ -431,6 +460,9 @@ struct ClusterFileData {
   // The structural table (section 37), empty for a mesh whose generator emits none; every record
   // names a part of `motion_parts`. Written only when not empty.
   Vector<ClusterFileStructuralPart> structural_parts;
+  // The impostor chain (section 38), empty for a mesh whose generator builds none; every record
+  // names one of `materials`. Written only when not empty.
+  Vector<ClusterFileImpostor> impostors;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

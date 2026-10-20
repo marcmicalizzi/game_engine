@@ -10,6 +10,7 @@
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
+#include <foundation/image/png.h>
 
 #include <optional>
 #include <span>
@@ -198,9 +199,11 @@ u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32
 }
 
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
-                 PalmReport* palm_report, TreeReport* tree_report, std::string& error) {
+                 PalmReport* palm_report, TreeReport* tree_report, std::string& error,
+                 TreeLevels* levels) {
+  if (levels != nullptr) *levels = TreeLevels{};
   if (file.species == k_species_broadleaf)
-    return solve_broadleaf(file.broadleaf, mesh, tree_report, &error, &motion);
+    return solve_broadleaf_chain(file.broadleaf, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_conifer)
     return solve_conifer(file.conifer, mesh, tree_report, &error, &motion);
   if (file.species == k_species_birch)
@@ -210,9 +213,72 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
   if (file.species == k_species_orchard)
     return solve_orchard(file.orchard, mesh, tree_report, &error, &motion);
   if (file.species == k_species_ancient)
-    return solve_ancient(file.ancient, mesh, tree_report, &error, &motion);
+    return solve_ancient_chain(file.ancient, mesh, tree_report, &error, &motion, levels);
   return solve_palm(file.palm, mesh, palm_report, &error, &motion);
 }
+
+namespace {
+
+// Bakes every level of the chain and appends what draws it: per level a colour and a normal atlas
+// embedded in the container as PNG (sections 21 and 22; the texture step builds them like any
+// embedded image) and a material — white, masked at one half, two-sided, the atlas's colour and
+// tangent-space normal — at `mesh.materials.size() + k`, the index the clusters were given.
+bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
+                geometry::ClusterFileData& out, std::string& error) {
+  BakeLook look;
+  look.bark = mesh.materials[0].base_color;
+  look.leaf = mesh.materials.size() > 1 ? mesh.materials[1].base_color : look.leaf;
+  // A pack's leaf card is cut to the leaf (its image's alpha), so the far card is too.
+  look.leaf_outline =
+      out.materials.size() > 1 && geometry::alpha_word_mode(out.materials[1].alpha) != 0u;
+  if (out.images.size() < out.image_paths.size()) out.images.resize(out.image_paths.size());
+  for (const TreeLevel& level : chain.levels) {
+    BakedAtlas atlas;
+    bake_level(mesh, chain, level, look, atlas);
+    const i32 colour_image = static_cast<i32>(out.image_paths.size());
+    for (const Vector<u8>* pixels : {&atlas.colour, &atlas.normal}) {
+      geometry::ClusterImage image;
+      image.mime_type = "image/png";
+      if (!image::encode_png(atlas.width, atlas.height, 4, *pixels, image.bytes)) {
+        error = "the tree's impostor atlas did not encode";
+        return false;
+      }
+      out.image_paths.push_back(std::string());
+      out.images.push_back(std::move(image));
+    }
+    assets::Material m;
+    m.name = level.kind == ImpostorKind::tree ? "impostor" : "branch_cards";
+    m.base_color = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    m.roughness = mesh.materials.size() > 1 ? mesh.materials[1].roughness : 0.6f;
+    m.metallic = 0.0f;
+    m.double_sided = true;
+    m.alpha_mode = assets::k_alpha_mask;
+    m.alpha_cutoff = 0.5f;
+    geometry::ClusterFileMaterial material;
+    material.base_color = m.base_color;
+    material.metallic = m.metallic;
+    material.roughness = m.roughness;
+    material.base_color_image = colour_image;
+    material.normal_image = colour_image + 1;
+    material.metallic_roughness_image = geometry::encode_optional_image(-1);
+    material.occlusion_image = geometry::encode_optional_image(-1);
+    material.emissive_image = geometry::encode_optional_image(-1);
+    material.emissive = m.emissive;
+    material.normal_scale = 1.0f;
+    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    out.materials.push_back(material);
+    out.material_sampling.push_back(
+        geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
+    out.impostors.push_back(geometry::ClusterFileImpostor{
+        static_cast<u32>(level.kind), level.merge, out.materials.size() - 1, level.groups,
+        level.tile_px, level.columns, level.rows, level.error, level.parallax_m, level.texel_m, 0u,
+        0u});
+  }
+  texture::fill_cluster_texture_records(out);
+  return true;
+}
+
+}  // namespace
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
@@ -221,33 +287,80 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
   Motion motion;
-  if (!solve_flora(file, mesh, motion, report, tree_report, error)) return false;
+  TreeLevels chain;
+  if (!solve_flora(file, mesh, motion, report, tree_report, error, &chain)) return false;
+  // The impostor chain (impostor.h, flora.md "The impostor chain"): the leaves' primitive takes the
+  // levels above its finest, every other primitive hands over to the whole-tree impostor where it
+  // stands, and every level's view is baked from the finest geometry.
+  const bool has_chain = !chain.levels.empty();
+  const bool has_tree = has_chain && chain.levels.back().kind == ImpostorKind::tree;
+  const f32 tree_error = has_tree ? chain.levels.back().error : 0.0f;
+  Vector<geometry::ClusterLodLevel> leaf_levels;
+  for (const TreeLevel& level : chain.levels)
+    leaf_levels.push_back(geometry::ClusterLodLevel{level.indices, level.error});
+  const geometry::ClusterLodLevel handover[] = {{{}, tree_error}};
   // One DAG per primitive, each with its material's cone setting: the trunk is one-sided and keeps
   // its cones, a frond is seen from both faces and has none (flora.md, "Two-sided crowns").
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
   Vector<geometry::ClusterLodMesh> parts;
   Vector<u32> part_material;
+  Vector<u32> part_first_authored;  // the part's first DAG level that is an authored one
   for (const assets::Primitive& primitive : mesh.primitives) {
     geometry::ClusterLodOptions options = lod;
     options.normal_cones = !mesh.materials[static_cast<u32>(primitive.material)].double_sided;
     const std::span<const u32> range(mesh.indices.data() + primitive.first_index,
                                      primitive.index_count);
+    const bool leaves = has_chain && primitive.first_index == chain.leaf_first_index;
+    std::span<const geometry::ClusterLodLevel> levels;
+    if (leaves) {
+      levels = std::span<const geometry::ClusterLodLevel>(leaf_levels.data(), leaf_levels.size());
+    } else if (has_tree) {
+      levels = handover;
+    }
     geometry::ClusterLodMesh part;
     std::string part_error;
-    if (!geometry::build_cluster_lod(mesh.positions, range, options, part, &part_error,
-                                     attributes)) {
+    if (!geometry::build_cluster_lod_levels(mesh.positions, range, levels, options, part,
+                                            &part_error, attributes)) {
       error = "the cluster build refused the tree's " +
               mesh.materials[static_cast<u32>(primitive.material)].name + ": " + part_error;
       return false;
     }
+    part_first_authored.push_back(
+        leaves ? part.level_cluster_counts.size() - static_cast<u32>(leaf_levels.size()) : ~0u);
     parts.push_back(std::move(part));
     part_material.push_back(static_cast<u32>(primitive.material));
+  }
+  if (has_chain) {
+    // Every transition at or past the first authored error carries one sphere across the parts,
+    // so the bark's hand-over and the impostor's own switch are the same test.
+    const f32 from = chain.levels.front().error;
+    Vec4 shared{};
+    for (u32 p = 0; p < parts.size(); ++p)
+      shared = geometry::authored_lod_sphere(parts[p], from, shared);
+    for (u32 p = 0; p < parts.size(); ++p) {
+      std::string widen_error;
+      if (!geometry::widen_lod_spheres(parts[p], from, shared, &widen_error)) {
+        error = "the tree's impostor chain: " + widen_error;
+        return false;
+      }
+    }
   }
   Vector<u32> part_of_cluster;
   std::string merge_error;
   if (!geometry::merge_cluster_lod(parts, out.mesh, &part_of_cluster, &merge_error)) {
     error = "the tree's parts did not merge: " + merge_error;
     return false;
+  }
+  // An authored level's clusters draw with that level's material, which follows the species' own.
+  if (has_chain) {
+    for (u32 c = 0; c < part_of_cluster.size(); ++c) {
+      const u32 part = part_of_cluster[c];
+      const u32 level = out.mesh.lod[c].level;
+      if (part_first_authored[part] != ~0u && level >= part_first_authored[part])
+        part_of_cluster[c] = parts.size() + level - part_first_authored[part];
+    }
+    for (u32 k = 0; k < chain.levels.size(); ++k)
+      part_material.push_back(mesh.materials.size() + k);
   }
   if (page_bytes > 0) {
     Vector<u32> source_of_cluster;
@@ -290,6 +403,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
   }
   apply_flora_materials(file, pack, out);
+  if (has_chain && !bake_chain(mesh, chain, out, error)) return false;
   out.source_hash = flora_source_hash(file);
   out.build_key = flora_build_key(out.source_hash, lod, page_bytes, pack);
   out.generator = "flora";
