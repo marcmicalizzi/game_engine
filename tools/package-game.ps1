@@ -40,9 +40,12 @@
 .EXAMPLE
   tools/package-game.ps1 -Preset msvc-release -Module walk_poc -Scene content/test-scenes/desert-endless/scene.json
 
-  run.cmd starts the dunes at -TimeRate game seconds a real second (1: real time; passed only
+  run.cmd starts the dunes at -TimeRate game seconds a world second (1: real time; passed only
   where the scene's terrain has dunes) and the sun's day at -SunRate (60: a game day in 24
-  minutes); the [ ] and , . keys step either a rung, and 1 is a rung above still.
+  minutes), or at -DayLength real seconds a day when that is given (3600: a sixty-minute day;
+  it wins over -SunRate). [ ] step the day's length a rung and , . the world's rate, which the
+  water, the smoke, the sway and the dunes run at (docs/subsystems/apps.md, "The two rates on
+  four keys").
 
 .EXAMPLE
   <sdk>/tools/package-game.ps1 -ModuleDll build/my_game.dll -Scene scenes/start/scene.json -Out my_game.zip
@@ -59,8 +62,12 @@ param(
   [int]$Width = 1600,
   [int]$Height = 900,
   [double]$TimeRate = 1,
-  [double]$SunRate = 60
+  [double]$SunRate = 60,
+  [double]$DayLength = 0
 )
+# A day length is the sun rate said the other way round (86,400 / -DayLength); 0 leaves -SunRate.
+if ($DayLength -lt 0) { throw "-DayLength is real seconds a day, 0 or more" }
+if ($DayLength -gt 0) { $SunRate = 86400.0 / $DayLength }
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -254,8 +261,8 @@ Keys (engine-view's action map, revision 5):
   E              interact        Q               use
   1 2 3 4        the game's own  F               fly / walk
   Escape         give the mouse back; again to end
-  [ ]            the sun's day slower / faster (starts at x${SunRate}: a game day in $([math]::Round(86400 / [math]::Max($SunRate, 1) / 60)) minutes)
-  , .            the dunes' time-lapse slower / faster (starts at x${TimeRate}; 1 is real time, 0 still)
+  [ ]            the day longer / shorter (starts at a game day in $([math]::Round(86400 / [math]::Max($SunRate, 1) / 60)) minutes; a rung is 24 h, 4 h, 1 h, 24 min, 4 min, 1 min, 10 s or still)
+  , .            the world slower / faster: the water, smoke, trees and dunes (1 is real time, 0 paused; the sky keeps its pace)
   - = 0          exposure darker / brighter / hold
   A gamepad: left stick walks, right stick looks, South jumps, West interacts.
 

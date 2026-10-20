@@ -130,10 +130,12 @@ struct FramePassContext {
   WorldPos eye_world{};
   gfx::FrameEye gpu_eye{};
   f32 znear = 0.1f;
-  // The world's one clock (renderer.md, "One clock"): the ground's surface time plus the frame's
-  // offset, which is the time the sky stands at; and the offset alone.
+  // The frame's clocks (clocks.h; renderer.md, "One world clock, and the day's length"): world
+  // seconds, which a medium's motion reads (a flame's noise, the smoke's and the clouds' drift
+  // distance), and the sky's hour, absolute game seconds — `FrameDesc::sky_time_s` resolved
+  // against the scene's epoch — which the weather reads (the wind record's hour and the plumes').
   f64 world_time_s = 0.0;
-  f64 sun_time_s = 0.0;
+  f64 sky_time_s = 0.0;
   // The sun: the direction towards it, and its light — with a sky, its illuminance outside the air
   // (sky units; `gfx::SkyParams::sun_illuminance`); without one, the stand-in's white intensity.
   Vec3 sun_direction{0.0f, 1.0f, 0.0f};

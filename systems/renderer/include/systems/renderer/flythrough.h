@@ -100,15 +100,16 @@ struct FlightOptions {
   // the same frames reading 1.55, 0.77 and 0.71 ms back to back for exactly that reason).
   f64 warmup_seconds = 0.0;
   u32 frames_in_flight = 2;
-  // Game seconds per real second of the sun's day (lighting.h, "The sun's day"). A frame is a
-  // sixtieth of a second, the frame index's clock, so path frame f is lit `sun_rate * f / 60` game
-  // seconds into the day — the numbers engine-view's plain offscreen run lights frame f with — and
-  // every repeat, and every warm-up frame (at the path's first camera), is lit alike.
+  // **The flight's clocks** (clocks.h; renderer.md, "One world clock, and the day's length"). A
+  // frame is a sixtieth of a real second, the frame index's clock, so path frame f's sky stands
+  // `sky_start_s + sun_rate * f / 60` game seconds past the scene's epoch (`FrameDesc::sky_time_s`)
+  // — the hour engine-view's plain offscreen run lights frame f with — and its water, fires and
+  // trees `world_rate * f / 60` world seconds in; every repeat, and every warm-up frame (at the
+  // path's first camera), alike. `sun_rate` is game seconds of the sky's day per real second
+  // (lighting.h, "The sun's day"), `sky_start_s` the `--time-of-day` offset from the epoch.
   f64 sun_rate = 0.0;
-  // Where the day stands at path frame 0, game seconds (`FrameDesc::sun_time_s`): path frame f is
-  // lit `sun_time_s + sun_rate * f / 60` into it. A sky's hour (engine-view's `--time-of-day`,
-  // renderer.md "One clock"); 0 is the ground's own time.
-  f64 sun_time_s = 0.0;
+  f64 world_rate = 1.0;
+  f64 sky_start_s = 0.0;
 };
 
 struct Flight {

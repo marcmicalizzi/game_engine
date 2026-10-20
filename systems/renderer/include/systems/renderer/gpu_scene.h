@@ -148,6 +148,12 @@ class GpuScene {
     ground_time_s_ = time_s;
   }
   f64 ground_time_s() const noexcept { return ground_time_s_; }
+  // **The scene's epoch** (clocks.h): its terrain's `time` as the scene was loaded (a request's
+  // `ground_time_s` included), 0 without a terrain — where the sky stands for a frame that names no
+  // hour of its own, whatever a time-lapse has since done to the ground.
+  f64 epoch_s() const noexcept {
+    return data_ != nullptr && data_->terrain.enabled ? data_->terrain.time_s : 0.0;
+  }
 
   u32 cluster_count() const noexcept { return cluster_count_; }
   u32 leaf_count() const noexcept { return leaf_count_; }
@@ -499,10 +505,12 @@ class GpuScene {
   bool flora() const noexcept { return !flora_instances_.empty(); }
   u64 flora_motion_address() const noexcept { return flora() ? flora_motion_.address : 0; }
   // Poses every tree's parts for this frame into `slot`'s region and returns its address (0 with no
-  // trees): the wind the frame names, or the ground's at `ground_time_s() + sun_time_s`, or the
-  // tunables'; the clock is `frame_index` at 60 Hz, and the push's ease advances by the frame ticks
-  // since the last call. Allocates nothing.
-  u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 sun_time_s) noexcept;
+  // trees): the wind the frame names, or the ground's record at the sky's hour `sky_time_s` (the
+  // weather follows the day), or the tunables'; the sway runs on the world clock `world_time_s`
+  // (clocks.h), and the push's ease advances by the frame ticks since the last call. Allocates
+  // nothing.
+  u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
+                  f64 sky_time_s) noexcept;
   struct FloraStats {
     u32 instances = 0;         // swaying instances
     u32 parts = 0;             // their parts, the table's length a slot

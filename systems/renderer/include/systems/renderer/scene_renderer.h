@@ -421,17 +421,23 @@ struct Stats {
 struct FrameDesc {
   Camera camera;
   u64 frame_index = 0;  // drives the light orbit and the deformation phase, as engine-view does
-  // How far into the sun's day the frame is, game seconds (lighting.h, "The sun's day"): the sun
-  // stands on its daily arc there. 0, the default, is the start — the sun every frame had before
-  // the sun had a day, to the bit. The caller's clock and not the frame index's, because the rate
-  // the day runs at can change while it runs (engine-view's `[` and `]`).
+  // **The frame's clocks** (clocks.h; renderer.md, "One world clock, and the day's length"). Both
+  // are the caller's and not the frame index's, because the rates they run at can change while
+  // they run (engine-view's `[`, `]`, `,` and `.`).
   //
-  // **With a sky** (sky.h) it is the host's offset on the world's one clock: the sky stands at the
-  // time the ground's surface stands at (`GpuScene::ground_time_s`: the scene's `Terrain.time`, or
-  // a moving terrain's surface time) plus this, so a host that runs no day of its own draws the sky
-  // of the ground's hour and the wind's, and one that runs a day (`--sun-rate`, `--time-of-day`)
-  // moves the sky, the moon and the stars on from there (renderer.md, "One clock").
-  f64 sun_time_s = 0.0;
+  // `world_time_s`: world seconds — real time scaled by the world rate — the clock every surface
+  // and medium that moves reads: the water's waves, the fires' flicker, flames and smoke, the far
+  // clouds' drift and the trees' sway. 0 is the world's start.
+  f64 world_time_s = 0.0;
+  // `sky_time_s`: the sky's game seconds past the scene's epoch (`GpuScene::epoch_s`, its
+  // `Terrain.time`): the sky's hour is `epoch_s + sky_time_s` — where the sun, the moon and the
+  // stars stand, the sky's light and exposure, and the hour of the wind record the weather reads.
+  // 0, the default, is the scene's own hour, which a dune time-lapse never moves. Without a sky the
+  // stand-in sun stands this far along its daily arc (lighting.h, "The sun's day"), and 0 is the
+  // sun every frame had before the sun had a day, to the bit. It replaces `sun_time_s`, an offset
+  // on the ground's *moving* surface time, which it was until 2026-10-20 (roadmap R88): the same
+  // number wherever the ground stands still, and the sky's own wherever it does not.
+  f64 sky_time_s = 0.0;
   // What the frame asks of a sky's exposure beyond the scene's rule (sky.h): stops added to it, or
   // a fixed exposure value. Nothing without a sky.
   ExposureRequest exposure;

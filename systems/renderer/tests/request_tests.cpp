@@ -188,7 +188,9 @@ struct FrameRow {
 const FrameRow k_frame_rows[] = {
     {"camera", "camera, orbit, or a camera_path's frame"},
     {"frame_index", "frame (capture, evaluate), the frame's number (benchmark)"},
-    {"sun_time_s", "clock.time_of_day and clock.sun_rate, through renderer::frame_clock"},
+    {"world_time_s", "clock.world_rate and the frame's number, through renderer::frame_clock"},
+    {"sky_time_s",
+     "clock.time_of_day and clock.sun_rate or clock.day_length_s, through renderer::frame_clock"},
     {"exposure",
      "a window's - = and 0 keys; a call asks through settings.exposure_ev and "
      "settings.exposure_ev100, which the frame's request adds to"},
@@ -233,8 +235,8 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   // the row says which.
   renderer::FrameDesc frame;
   [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14,
-                          f15, f16] = frame;
-  static_assert(std::size(k_frame_rows) == 17, "one row per FrameDesc field");
+                          f15, f16, f17] = frame;
+  static_assert(std::size(k_frame_rows) == 18, "one row per FrameDesc field");
   for (const FrameRow& row : k_frame_rows) {
     CHECK_MESSAGE(std::strlen(row.source) > 0, row.field);
   }
@@ -296,6 +298,8 @@ TEST_CASE("request: a wire request that names nothing is the renderer's defaults
   REQUIRE(renderer::read_protocol_clock(protocol::RenderClock{}, request.clock, error));
   CHECK(!request.clock.time_of_day_h.has_value());
   CHECK(!request.clock.sun_rate.has_value());
+  CHECK(!request.clock.day_length_s.has_value());
+  CHECK(!request.clock.world_rate.has_value());
   // And an empty JSON object reads as the defaults: what an agent's `{}` is.
   protocol::RenderSettings empty;
   REQUIRE(read_wire("{}", empty));
@@ -338,6 +342,21 @@ TEST_CASE("request: the wire's refusals") {
   CHECK(clock_refused(std::nullopt, -1.0));
   CHECK(clock_refused(std::nullopt, 2.0e7));
   CHECK(!clock_refused(23.99, 86400.0));
+  // The day's length and the world's rate (R88).
+  const auto rates_refused = [](std::optional<f64> day, std::optional<f64> world) {
+    protocol::RenderClock in;
+    in.day_length_s = day;
+    in.world_rate = world;
+    renderer::ClockRequest out;
+    std::string error;
+    return !renderer::read_protocol_clock(in, out, error);
+  };
+  CHECK(rates_refused(-1.0, std::nullopt));
+  CHECK(rates_refused(1.0e-3, std::nullopt));  // a rate past the ceiling
+  CHECK(rates_refused(std::nullopt, -0.5));
+  CHECK(rates_refused(std::nullopt, 2.0e7));
+  CHECK(!rates_refused(3600.0, 0.0));
+  CHECK(!rates_refused(0.0, 0.125));
 }
 
 TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and --sun-rate set") {
@@ -347,33 +366,77 @@ TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and
   clock.sun_rate = 600.0;
   // No sky: the stand-in sun has no hour, so the offset is zero whatever is asked.
   renderer::FrameClock c = renderer::frame_clock(clock, scene);
-  CHECK(c.offset_s == 0.0);
+  CHECK(c.sky_start_s == 0.0);
+  CHECK(c.epoch_s == 0.0);
   CHECK(c.sun_rate == 600.0);
-  CHECK(c.at(60) == 600.0);
+  CHECK(c.sky_at(60) == 600.0);
+  // The world runs at real time whatever the day does: frame 60 is a second in.
+  CHECK(c.world_rate == 1.0);
+  CHECK(c.world_at(60) == 1.0);
+  CHECK(c.world_at(7) == 7.0 / 60.0);  // to the bit: the flora's frame index at 60 Hz
   // A sky over ground three years and five hours in: 18:00 is thirteen hours on.
   scene.sky.emplace();
   scene.terrain.enabled = true;
-  scene.terrain.time_s = 94'608'000.0 + 5.0 * 3600.0;
+  const f64 epoch = 94'608'000.0 + 5.0 * 3600.0;
+  scene.terrain.time_s = epoch;
   c = renderer::frame_clock(clock, scene);
-  CHECK(c.offset_s == 13.0 * 3600.0);
-  CHECK(c.at(0) == 13.0 * 3600.0);
-  CHECK(c.at(120) == 13.0 * 3600.0 + 1200.0);
+  CHECK(c.epoch_s == epoch);
+  CHECK(c.sky_start_s == 13.0 * 3600.0);
+  CHECK(c.sky_at(0) == epoch + 13.0 * 3600.0);
+  CHECK(c.sky_at(120) == epoch + (13.0 * 3600.0 + 1200.0));
   // The frame and the flight read the same numbers.
   renderer::Camera camera;
   camera.position = absolute(WorldPos::origin(), Vec3{1.0f, 2.0f, 3.0f});
   const renderer::FrameDesc frame = renderer::frame_at(c, camera, 120);
   CHECK(frame.frame_index == 120);
-  CHECK(frame.sun_time_s == c.at(120));
+  CHECK(frame.sky_time_s == c.sky_offset_at(120));
+  CHECK(frame.sky_time_s == 13.0 * 3600.0 + 1200.0);
+  CHECK(frame.world_time_s == 2.0);
   CHECK(frame.camera.position.y == 2.0);
   CHECK(frame.view_mode == renderer::FrameDesc{}.view_mode);
   renderer::FlightOptions flight;
   renderer::flight_clock(c, flight);
   CHECK(flight.sun_rate == 600.0);
-  CHECK(flight.sun_time_s == c.offset_s);
-  // A clock that asks for nothing is still: the `renderer.sun.rate` tunable's 0 and no offset.
+  CHECK(flight.sky_start_s == c.sky_start_s);
+  CHECK(flight.world_rate == 1.0);
+  // A clock that asks for nothing holds the sky: the `renderer.sun.rate` tunable's 0 and no
+  // offset, the sky at the scene's epoch; the world still runs.
   const renderer::FrameClock still = renderer::frame_clock(renderer::ClockRequest{}, scene);
-  CHECK(still.offset_s == 0.0);
-  CHECK(still.at(1000) == 0.0);
+  CHECK(still.sky_start_s == 0.0);
+  CHECK(still.sky_at(1000) == epoch);
+  CHECK(still.world_at(1200) == 20.0);
+  // The day's length is the rate said the other way round, and wins over a rate beside it.
+  renderer::ClockRequest day;
+  day.sun_rate = 600.0;
+  day.day_length_s = 3600.0;
+  CHECK(renderer::frame_clock(day, scene).sun_rate == 24.0);
+  CHECK(renderer::frame_clock(day, scene).day_length_s() == 3600.0);
+  // (a) A sixty-minute day and a real one put frame f at the same world time, to the bit: the
+  // water, the smoke and the sway are drawn alike, and only the sky moves faster.
+  renderer::ClockRequest real_day;
+  real_day.day_length_s = 86'400.0;
+  for (const u64 f : {u64{0}, u64{7}, u64{6'000}, u64{1'000'003}}) {
+    CHECK(renderer::frame_clock(day, scene).world_at(f) ==
+          renderer::frame_clock(real_day, scene).world_at(f));
+    CHECK(renderer::frame_at(renderer::frame_clock(day, scene), camera, f).world_time_s ==
+          static_cast<f64>(f) / 60.0);
+  }
+  day.day_length_s = 0.0;  // a held sky
+  CHECK(renderer::frame_clock(day, scene).sun_rate == 0.0);
+  // A world rate scales the world clock and leaves the sky's alone (the day is in real seconds).
+  renderer::ClockRequest fast;
+  fast.sun_rate = 60.0;
+  fast.world_rate = 8.0;
+  const renderer::FrameClock f8 = renderer::frame_clock(fast, scene);
+  fast.world_rate = 0.0;
+  const renderer::FrameClock f0 = renderer::frame_clock(fast, scene);
+  CHECK(f8.world_at(60) == 8.0);
+  CHECK(f0.world_at(60) == 0.0);
+  CHECK(f8.sky_at(60) == f0.sky_at(60));
+  CHECK(f8.sky_at(60) == epoch + 60.0);
+  CHECK(renderer::day_length_of_rate(60.0) == 1440.0);
+  CHECK(renderer::sun_rate_of_day(1440.0) == 60.0);
+  CHECK(renderer::day_length_of_rate(0.0) == 0.0);
 }
 
 namespace {

@@ -227,7 +227,7 @@ depth. Because the part, the weight and the rest position are per-vertex data ev
 surface point shares on every rung and every LOD level, a bent tree cannot crack.
 
 **The wind.** Where it blows to and its strength over its record's mean come from the scene's
-ground at the world's one clock (the dunes' wind record, the hour's direction and strength), from
+ground's wind record at the **sky's hour** (the hour's direction and strength: the weather follows the day; [renderer](renderer.md#one-world-clock-and-the-days-length)), from
 `renderer.flora.wind_deg` and `renderer.flora.wind_strength` (default 1, a mean day, towards +x)
 where the ground says none, or from the frame (`FrameDesc::flora`). A part's steady lean is
 `compliance × s × (0.6 + 0.8 g)` and its flutter `compliance × s × (0.25 + 0.35 g) × sin(2π f t +
@@ -236,7 +236,11 @@ instance's seed, in [0, 1]), `f` 0.9 Hz over the square root of the part's lengt
 sways slower, and since its tip travels the angle times its length, farther — and `φ` the part's
 own phase from its pivot in the mesh's frame and the seed, so no two fronds and no two trees swing in
 step and no world position is involved. Its axis turns the part's rest direction towards where the
-wind blows (a part lying along the wind flutters up and down instead).
+wind blows (a part lying along the wind flutters up and down instead). **`t` is the world clock**
+(`FrameDesc::world_time_s`, since 2026-10-20, roadmap R88): the gust and the flutter run at real
+speed whatever the day's length, faster or slower only with the world rate (engine-view's `,` and
+`.`), and stand still at a world rate of 0. It is the number the frame index at 60 Hz gave before,
+for a host at sixty frames at real time, so a replay sways as it did.
 
 **Stiffness, per species** — radians of steady lean at a mean wind, by class of part: the trunk
 (part 0), a limb (a child of the trunk; a palm's fronds), a twig (deeper), a leaf (a part the

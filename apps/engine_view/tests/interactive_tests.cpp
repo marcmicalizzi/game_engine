@@ -797,9 +797,9 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   // never two presses swallowed into one.
   constexpr u32 k_escape = 41;
   press(3, input::Source::Key, k_escape);     // captured at the start: gives the pointer back
-  press(83, input::Source::Key, 55);          // .  dunes 0 -> 1 (the rung at 1 is real time)
-  press(163, input::Source::Key, 48);         // ]  sun 0 -> 1
-  press(243, input::Source::Key, 48);         // ]  sun 1 -> 60
+  press(83, input::Source::Key, 55);          // .  the world 1 -> 2 (R88: the dunes ride it)
+  press(163, input::Source::Key, 48);         // ]  the day: still -> 24 h (sun 0 -> 1)
+  press(243, input::Source::Key, 48);         // ]  24 h -> 4 h (sun 1 -> 6)
   press(323, input::Source::MouseButton, 1);  // a click takes the pointer
   press(403, input::Source::Key, k_escape);   // gives it back
   press(483, input::Source::Key, k_escape);   // and with it given back, ends the session
@@ -822,18 +822,25 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   const JsonValue* lapse = summary.find("time_lapse");
   REQUIRE_MESSAGE(lapse != nullptr, live.output);
   REQUIRE_MESSAGE(lapse->is_object(), live.output);
+  // The dunes ride the world clock at --time-rate game seconds a world second (R88): at a rate of
+  // 0 a faster world moves no sand, and the motion's rate is never changed.
   CHECK(number_of(lapse, "start_rate") == 0.0);
-  CHECK(number_of(lapse, "rate") == 1.0);
-  CHECK(number_of(lapse, "rate_changes") == 1.0);
+  CHECK(number_of(lapse, "rate") == 0.0);
+  CHECK(number_of(lapse, "rate_changes") == 0.0);
   const JsonValue* sun = summary.find("sun");
   REQUIRE(sun != nullptr);
   CHECK(number_of(sun, "start_rate") == 0.0);
-  CHECK(number_of(sun, "rate") == 60.0);
+  CHECK(number_of(sun, "rate") == 6.0);
+  CHECK(number_of(sun, "day_length_s") == 14'400.0);
   CHECK(number_of(sun, "rate_changes") == 2.0);
   CHECK(number_of(sun, "time_s") > 0.0);
+  CHECK(number_of(sun, "world_start_rate") == 1.0);
+  CHECK(number_of(sun, "world_rate") == 2.0);
+  CHECK(number_of(sun, "world_rate_changes") == 1.0);
+  CHECK(number_of(sun, "world_time_s") > 0.0);
   // The console said so, a line a change.
-  CHECK(live.output.find("dunes x1 game s a real s (was x0)") != std::string::npos);
-  CHECK(live.output.find("sun x60 game s a real s (was x1)") != std::string::npos);
+  CHECK(live.output.find("world x2 world s a real s (was x1)") != std::string::npos);
+  CHECK(live.output.find("day 4 h (sun x6 game s a real s; was 24 h)") != std::string::npos);
   // Esc with the pointer free ended it: the recording stops at the last Escape, not at 800.
   input::InputLog recording;
   std::string error;

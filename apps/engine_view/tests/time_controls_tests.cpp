@@ -37,40 +37,44 @@ std::string rate_text(f64 rate) {
 
 TEST_CASE("time controls: a key steps its ladder a rung, from anywhere, and stops at the ends") {
   const std::span<const f64> sun(view::k_sun_ladder);
-  const std::span<const f64> dunes(view::k_dune_ladder);
-  // The ladders the owner asked for.
-  const f64 sun_rungs[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0};
-  const f64 dune_rungs[] = {0.0, 1.0, 60.0, 600.0, 3'600.0, 8'640.0, 86'400.0, 604'800.0};
+  const std::span<const f64> world(view::k_world_ladder);
+  // The ladders the owner asked for (2026-10-20, R88): the day's length — still, 24 h, 4 h, 1 h,
+  // 24 min, 4 min, 1 min, 10 s, as sun rates — and the world's rate, from a pause through slow
+  // motion and real time to the dunes' time-lapses.
+  const f64 sun_rungs[] = {0.0, 1.0, 6.0, 24.0, 60.0, 360.0, 1'440.0, 8'640.0};
+  const f64 world_rungs[] = {0.0, 0.125, 0.25, 0.5,   1.0,     2.0,
+                             4.0, 8.0,   60.0, 600.0, 3'600.0, 86'400.0};
   REQUIRE(sun.size() == std::size(sun_rungs));
-  REQUIRE(dunes.size() == std::size(dune_rungs));
+  REQUIRE(world.size() == std::size(world_rungs));
   for (usize i = 0; i < sun.size(); ++i)
     CHECK(sun[i] == sun_rungs[i]);
-  for (usize i = 0; i < dunes.size(); ++i)
-    CHECK(dunes[i] == dune_rungs[i]);
+  for (usize i = 0; i < world.size(); ++i)
+    CHECK(world[i] == world_rungs[i]);
   // Up and down one rung at a time, and nowhere past an end.
   f64 rate = 0.0;
-  for (usize i = 1; i < dunes.size(); ++i) {
-    rate = view::ladder_step(dunes, rate, true);
-    CHECK(rate == dunes[i]);
+  for (usize i = 1; i < world.size(); ++i) {
+    rate = view::ladder_step(world, rate, true);
+    CHECK(rate == world[i]);
   }
-  CHECK(view::ladder_step(dunes, rate, true) == 604'800.0);
-  for (usize i = dunes.size() - 1; i-- > 0;) {
-    rate = view::ladder_step(dunes, rate, false);
-    CHECK(rate == dunes[i]);
+  CHECK(view::ladder_step(world, rate, true) == 86'400.0);
+  for (usize i = world.size() - 1; i-- > 0;) {
+    rate = view::ladder_step(world, rate, false);
+    CHECK(rate == world[i]);
   }
-  CHECK(view::ladder_step(dunes, 0.0, false) == 0.0);
-  CHECK(view::ladder_step(sun, 86'400.0, true) == 86'400.0);
-  // From a rate between two rungs (a `--time-rate 5000`), the rung on that side; from past an
+  CHECK(view::ladder_step(world, 0.0, false) == 0.0);
+  CHECK(view::ladder_step(sun, 8'640.0, true) == 8'640.0);
+  // From a rate between two rungs (a `--sun-rate 5000`), the rung on that side; from past an
   // end, that end.
-  CHECK(view::ladder_step(dunes, 5'000.0, true) == 8'640.0);
-  CHECK(view::ladder_step(dunes, 5'000.0, false) == 3'600.0);
-  CHECK(view::ladder_step(sun, 1.0e6, false) == 86'400.0);
-  CHECK(view::ladder_step(sun, 1.0e6, true) == 86'400.0);
-  // The rung at 1 (2026-10-16, the owner): a tester can step back to real time, not only to still.
-  CHECK(view::ladder_step(dunes, 30.0, false) == 1.0);
-  CHECK(view::ladder_step(dunes, 1.0, false) == 0.0);
+  CHECK(view::ladder_step(sun, 5'000.0, true) == 8'640.0);
+  CHECK(view::ladder_step(sun, 5'000.0, false) == 1'440.0);
+  CHECK(view::ladder_step(sun, 1.0e6, false) == 8'640.0);
+  CHECK(view::ladder_step(sun, 1.0e6, true) == 8'640.0);
+  // A sixty-minute day is two presses from real time; real time is one from a pause.
+  CHECK(view::ladder_step(sun, view::ladder_step(sun, 1.0, true), true) == 24.0);
   CHECK(view::ladder_step(sun, 0.0, true) == 1.0);
-  CHECK(view::ladder_step(sun, 1.0, true) == 60.0);
+  CHECK(view::ladder_step(world, 0.0, true) == 0.125);
+  CHECK(view::ladder_step(world, 2.0, false) == 1.0);
+  CHECK(view::ladder_step(world, 0.125, false) == 0.0);
 }
 
 TEST_CASE("time controls: the sun's day moves by the rate and never jumps when it changes") {
@@ -109,35 +113,62 @@ TEST_CASE("time controls: a rate is written the way the title writes it") {
   CHECK(rate_text(5'000.5) == "5,000.5");
   CHECK(rate_text(0.5) == "0.5");
   CHECK(rate_text(1.0e9) == "1,000,000,000");
+  CHECK(rate_text(0.125) == "0.125");
+  CHECK(rate_text(0.25) == "0.25");
 
-  // The status the title leads with, in UTF-8: the rates, then what the pointer is doing.
+  // The day's length a sun rate is, and an hour.
+  const auto day_text = [](f64 sun_rate) {
+    char text[32];
+    return std::string(view::format_day_length(sun_rate, text, sizeof(text)));
+  };
+  CHECK(day_text(0.0) == "still");
+  CHECK(day_text(1.0) == "24 h");
+  CHECK(day_text(6.0) == "4 h");
+  CHECK(day_text(24.0) == "1 h");
+  CHECK(day_text(60.0) == "24 min");
+  CHECK(day_text(360.0) == "4 min");
+  CHECK(day_text(1'440.0) == "1 min");
+  CHECK(day_text(8'640.0) == "10 s");
+  CHECK(day_text(16.0) == "1.5 h");
+  const auto hour_text = [](f64 hour) {
+    char text[16];
+    return std::string(view::format_hour(hour, text, sizeof(text)));
+  };
+  CHECK(hour_text(7.5) == "07:30");
+  CHECK(hour_text(0.0) == "00:00");
+  CHECK(hour_text(23.999) == "23:59");
+  CHECK(hour_text(-1.0) == "23:00");
+
+  // The status the title leads with, in UTF-8: the sky's hour, the day's length and the world's
+  // rate, then what the pointer is doing.
   char text[160];
   view::TitleStatus status;
-  status.dunes = true;
-  status.dune_rate = 86'400.0;
-  status.sun_rate = 3'600.0;
+  status.has_hour = true;
+  status.hour = 12.0 + 50.0 / 60.0;
+  status.sun_rate = 24.0;
+  status.world_rate = 8.0;
   status.live = true;
   status.captured = true;
   const usize n = view::format_status(status, text, sizeof(text));
   CHECK(n == std::strlen(text));
   CHECK(std::string(text) ==
-        "dunes \xC3\x97"
-        "86,400 \xC2\xB7 sun \xC3\x97"
-        "3,600 \xC2\xB7 mouse captured (Esc frees it)");
+        "12:50 \xC2\xB7 day 1 h \xC2\xB7 world \xC3\x97"
+        "8 \xC2\xB7 mouse captured (Esc frees it)");
   status.captured = false;
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text).find("mouse free (click to capture, Esc again exits)") !=
         std::string::npos);
-  // A scene whose sand cannot move leaves the dunes out; a replay says nothing about a pointer.
-  status.dunes = false;
+  // A scene without a sky has no hour; a replay says nothing about a pointer.
+  status.has_hour = false;
   status.live = false;
+  status.world_rate = 1.0;
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text) ==
-        "sun \xC3\x97"
-        "3,600");
+        "day 1 h \xC2\xB7 world \xC3\x97"
+        "1");
   // A buffer too small is cut, never overrun.
   char tiny[12];
-  status.dunes = true;
+  status.has_hour = true;
   status.live = true;
   const usize cut = view::format_status(status, tiny, sizeof(tiny));
   CHECK(cut < sizeof(tiny));

@@ -38,7 +38,7 @@ constexpr const char* k_tick = "engine.game.GameTick";
 // how an engine-side rename reaches a game: loudly, never as a wrong read.
 struct Fields {
   FieldRef dt;               // this tick's length in game seconds (read this, not the f32 argument)
-  FieldRef world_time_s;     // the world's clock, game seconds
+  FieldRef world_time_s;     // the sky's hour (GameTick.sky_time_s), game seconds: days
   FieldRef actions_pressed;  // the game actions pressed on this tick, as a mask of bits
   u32 interact = 0;          // the bit `game_action` hands out for "interact" (E on the keyboard)
 } g_fields;
@@ -46,7 +46,7 @@ struct Fields {
 // Called when the module is loaded, and again after every rebuild. Resolve, declare, return 0.
 i32 on_load(ModuleContext* context) {
   resolve(context, k_tick, "dt", g_fields.dt);
-  resolve(context, k_tick, "world_time_s", g_fields.world_time_s);
+  resolve(context, k_tick, "sky_time_s", g_fields.world_time_s);  // the sky's hour
   resolve(context, k_tick, "actions_pressed", g_fields.actions_pressed);
   game_action(context, "interact", g_fields.interact);  // interact, use, game_1..game_4 exist
   return 0;  // a path or an action that did not resolve refuses the load by itself

@@ -230,8 +230,20 @@ constexpr const char* k_usage =
     "  --sun-rate <r>   run the sun's day at r game seconds per real second (default: the\n"
     "                   renderer.sun.rate tunable, 0): it turns once a game day round the pole on\n"
     "                   the arc through its start, tilted renderer.sun.arc_tilt_deg (40), and\n"
-    "                   fades below the horizon. Independent of --time-rate; [ and ] step it in an\n"
-    "                   --interactive window. The summary's \"sun\" block says where it ended\n"
+    "                   fades below the horizon. The day is in real seconds: --world-rate never\n"
+    "                   moves it; [ and ] step it in an --interactive window. The summary's \"sun\"\n"
+    "                   block says where it ended\n"
+    "  --day-length <s>  the same as the day's length in real seconds: --sun-rate 86400/s (3600\n"
+    "                   is a sixty-minute day, 0 a still sky)\n"
+    "  --world-rate <r>  world seconds per real second (default 1, real time): the clock the\n"
+    "                   water, the fires and smoke, the trees' sway and the cloud drift run on, and\n"
+    "                   the dunes' time-lapse with them (it runs --time-rate game seconds a world\n"
+    "                   second); 0 pauses them all while the sky keeps its pace. , and . step it in\n"
+    "                   an --interactive window (renderer.md, \"One world clock, and the day's\n"
+    "                   length\")\n"
+    "  --sky-disc-scale <k>  a scene with a sky: draw the sun's and the moon's discs k times their\n"
+    "                   angular size (1 physical, to 20), each the dimmer by k squared so their\n"
+    "                   light is unchanged (the scene's Sky.disc_scale)\n"
     "  --time-of-day <h>  a scene with a sky (renderer.md, \"The sky\"): start its clock at hour h\n"
     "                   (17.5 is 17:30) of the day its ground stands at, rather than the ground's\n"
     "                   own hour; --sun-rate runs the day on from there. The summary's \"sun\"\n"
@@ -328,13 +340,14 @@ constexpr const char* k_usage =
     "                   sized by what the frames build, a step above it; a frame that wants more\n"
     "                   than the budget holds drops whole instances' structures, shadow casters\n"
     "                   first, and the summary's \"rt\" block counts it\n"
-    "  --time-rate <r>  run a dune terrain's game time at r game seconds per real second (a frame\n"
-    "                   is 1/60 s): the field is re-evaluated off the frame whenever its fastest\n"
+    "  --time-rate <r>  run a dune terrain's game time at r game seconds per world second (a frame\n"
+    "                   is 1/60 s; times --world-rate per real second, and the sky never follows\n"
+    "                   it): the field is re-evaluated off the frame whenever its fastest\n"
     "                   band will have moved a quarter of a sample (renderer.terrain.move_fraction)\n"
     "                   and the terrain blended between the last two fields every frame, no vertex\n"
     "                   moving more than that fraction of the spacing in one frame. Offscreen a late\n"
     "                   field is waited for; in a window the sand runs a latency behind game time\n"
-    "                   and slows for a late field. , and . step it in an --interactive window. The\n"
+    "                   and slows for a late field. , and . step the world's rate it rides. The\n"
     "                   summary's \"time_lapse\" block says how often and what it cost\n"
     "  --terrain-rings  draw a dune terrain's ground near the camera at the rings' finer grids\n"
     "                   (terrain.rings.*: 50 cm to 250 m, 1 m to 1 km by default) beside the\n"
@@ -715,9 +728,20 @@ struct Options {
   bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
   // `--sun-rate`: the sun's day in game seconds per real second (lighting.h, "The sun's day");
   // unset takes the `renderer.sun.rate` tunable. The day's clock is the host's: `view::SunDay`.
+  // `--day-length <s>` says the same as the day's length in real seconds and is turned into it
+  // (`renderer::sun_rate_of_day`) when the flags are read.
   std::optional<f64> sun_rate;
-  // `--time-of-day`: a sky scene's hour to start at, on the day its ground stands at (renderer.md,
-  // "One clock"); unset, the ground's own hour.
+  // `--world-rate`: world seconds per real second (renderer/clocks.h), the clock every animation
+  // and the dunes' time-lapse run on; unset, 1. A replay takes its recording's, a restored game
+  // its state file's.
+  std::optional<f64> world_rate;
+  // `--time-rate` as given (game seconds of the dunes a world second): `settings.time_rate` is
+  // made its product with the world's rate once the clocks are settled (`settle_world_rate`).
+  f64 time_rate_base = 0.0;
+  // `--sky-disc-scale`: the scene's `Sky.disc_scale` for looking (1 physical, up to 20).
+  std::optional<f32> sky_disc_scale;
+  // `--time-of-day`: a sky scene's hour to start at, on the day its epoch stands at (renderer.md,
+  // "One world clock, and the day's length"); unset, the scene's own hour.
   std::optional<f64> time_of_day;
   // `--ground-time`: the game time a scene file's ground stands at, in place of its terrain's own
   // (renderer.md, "One request, two hosts"; `render.load`'s `ground_time_s`).
@@ -734,6 +758,8 @@ renderer::RenderRequest request_of(const Options& options) {
   r.settings = options.settings;
   r.clock.time_of_day_h = options.time_of_day;
   r.clock.sun_rate = options.sun_rate;
+  // The world's rate reaches the frames' clock; the settings' `time_rate` already carries it
+  // (`settle_world_rate`), so `settings_for` is not asked to multiply it again.
   r.ground_time_s = options.ground_time_s;
   r.page_budget_pct = options.page_budget_pct;
   for (const std::string& entry : options.morph_requests)
@@ -743,10 +769,31 @@ renderer::RenderRequest request_of(const Options& options) {
   return r;
 }
 
-// The offset `--time-of-day` puts on the world's one clock (FrameDesc::sun_time_s): the renderer's
+// The offset `--time-of-day` puts on the sky's clock (FrameDesc::sky_time_s): the renderer's
 // `frame_clock`, which `render.*`'s `clock` goes through too.
 f64 sky_offset_s(const Options& options, const renderer::SceneData& scene) {
-  return renderer::frame_clock(request_of(options).clock, scene).offset_s;
+  return renderer::frame_clock(request_of(options).clock, scene).sky_start_s;
+}
+// The frames' clocks for a run (clocks.h): `frame_clock` with the world's rate.
+renderer::FrameClock frames_clock(const Options& options, const renderer::SceneData& scene) {
+  renderer::FrameClock clock = renderer::frame_clock(request_of(options).clock, scene);
+  clock.world_rate = options.world_rate.value_or(1.0);
+  if (!(clock.world_rate > 0.0)) clock.world_rate = 0.0;
+  return clock;
+}
+// What the command line changes about a loaded scene for looking at it: `--sky-disc-scale` on a
+// scene with a sky (scene.schema `Sky.disc_scale`; renderer.md, "The sky").
+void look_overrides(const Options& options, renderer::SceneData& scene) {
+  if (options.sky_disc_scale.has_value() && scene.sky.has_value())
+    scene.sky->disc_scale = *options.sky_disc_scale;
+}
+// **The world's rate, settled once** (renderer/clocks.h): the dunes' time-lapse rides the world
+// clock, so the motion runs at `--time-rate` times the world's rate per real second. Called once
+// every source of the two has been read (the flags, a replay's header, a restored game state).
+void settle_world_rate(Options& options) {
+  options.time_rate_base = options.settings.time_rate;
+  const f64 world = options.world_rate.value_or(1.0);
+  options.settings.time_rate = options.time_rate_base * (world > 0.0 ? world : 0.0);
 }
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
@@ -827,8 +874,9 @@ view::AnimationOptions animation_options(const Options& options) {
 // The summaries' `sun`, `time_lapse` and a flight record's `terrain` blocks are the renderer's
 // (request.h), which engine-host's `render.benchmark` reports from too; the day as the host keeps
 // it, for them.
-renderer::SunDayState day_state(const view::SunDay& day) {
-  return renderer::SunDayState{day.rate, day.start_rate, day.changes, day.time_s};
+renderer::SunDayState day_state(const view::SunDay& day, const view::WorldDay& world) {
+  return renderer::SunDayState{day.rate,   day.start_rate,   day.changes,   day.time_s,
+                               world.rate, world.start_rate, world.changes, world.time_s};
 }
 
 // The ray tracing chain's block of the summary line (renderer::RtStats): what the per-frame
@@ -1095,13 +1143,14 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
 view::GameRunner* g_game = nullptr;
 
 // Hooks the game onto a session about to start: the observer that ticks it after the walker, and
-// the sky's clock as the session runs it (the offset, the day's rate, the ground's time).
-void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate,
+// the clocks as the session runs them (the sky's offset, the day's rate, the scene's epoch, the
+// world's rate).
+void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 world_rate,
                  const renderer::SceneData& scene, view::Walker& walker) {
   if (g_game == nullptr) return;
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
-  g_game->set_clock(sun_offset_s, sun_rate, scene.terrain.enabled ? scene.terrain.time_s : 0.0);
+  g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
   // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
   if (walker.available()) {
     g_game->set_ground(
@@ -1241,17 +1290,22 @@ void game_new_run() {
   std::fprintf(stderr, "engine-view: game: run %u started (the state at its defaults)\n",
                g_game->runs());
 }
-// **A `--game` session's frames are lit by the runner's clock** (game_runner.h `sun_time_s`;
-// renderer.md "One clock"; roadmap P44): the day as the ticks stepped it, at the rate the keys had
-// set by each tick, copied into the host's `SunDay` — so the frame's `sun_time_s`, the title's rate
-// and the summary's `sun` block come from one place, in the window, in an offscreen replay and in a
-// `--capture`. False, and `sun` untouched, without a game: a session without `--game` draws what it
-// drew, from the window's own clock or the frame index.
-bool game_clock(view::SunDay& sun) {
+// **A `--game` session's frames are drawn on the runner's clocks** (game_runner.h `sun_time_s`,
+// `world_time_s`; renderer.md "One world clock, and the day's length"; roadmap P44, R88): the day
+// and the world as the ticks stepped them, at the rates the keys had set by each tick, copied into
+// the host's `SunDay` and `WorldDay` — so the frame's `sky_time_s` and `world_time_s`, the title's
+// rates and the summary's `sun` block come from one place, in the window, in an offscreen replay
+// and in a `--capture`. False, and both untouched, without a game: a session without `--game` draws
+// from the window's own clocks or the frame index.
+bool game_clock(view::SunDay& sun, view::WorldDay& world) {
   if (g_game == nullptr || !g_game->started()) return false;
   sun.time_s = g_game->day_s();
   sun.rate = g_game->sun_rate();
   sun.changes = g_game->rate_changes();
+  world.time_s = g_game->world_time_s();
+  world.rate = g_game->world_rate();
+  world.start_rate = g_game->world_start_rate();
+  world.changes = g_game->world_rate_changes();
   return true;
 }
 JsonValue game_hud_elements();  // below, beside the HUD's overlay
@@ -1311,7 +1365,7 @@ void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u
 void poll_game() {}
 bool game_over() { return false; }
 bool game_failed() { return false; }
-bool game_clock(view::SunDay&) { return false; }
+bool game_clock(view::SunDay&, view::WorldDay&) { return false; }
 void game_new_run() {}
 void set_hud_display_scale(f32) {}
 void finish_game() {}
@@ -1503,6 +1557,15 @@ int prepare_interactive(Options& options, Interactive& it) {
                    "scene '%s' mesh '%s'); the camera flies the same path\n",
                    h.scene.c_str(), h.mesh.c_str());
     }
+    // The rates the recording ran on (its `clock` block, R88), unless the command line names its
+    // own: a replay starts the day, the world and the dunes where the live session did.
+    if (h.has_clock) {
+      if (!options.sun_rate.has_value()) options.sun_rate = h.sun_rate;
+      if (!options.world_rate.has_value()) options.world_rate = h.world_rate;
+      if (!options.time_rate_given) options.settings.time_rate = h.time_rate;
+      if (!options.time_of_day.has_value() && h.time_of_day_h >= 0.0)
+        options.time_of_day = h.time_of_day_h;
+    }
   }
   if (!options.inject_input.empty()) {
     if (it.injected.load(options.inject_input, &error) != io::Status::Ok) {
@@ -1573,6 +1636,13 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.has_walk = true;
   h.walking = options.walk;
   h.walk = view::walk_params_from_tunables();
+  // The clocks the session runs on (R88): a replay runs on them too.
+  h.has_clock = true;
+  h.sun_rate = options.sun_rate.value_or(renderer::sun_rate_tunable());
+  if (!(h.sun_rate > 0.0)) h.sun_rate = 0.0;
+  h.world_rate = options.world_rate.value_or(1.0);
+  h.time_rate = options.time_rate_base;
+  h.time_of_day_h = options.time_of_day.value_or(-1.0);
 #if ENGINE_VIEW_GAME
   // The game module whose calls this walk may depend on (fly_camera.h, the `game` block): a
   // replay of the recording needs the same module, and is refused without it.
@@ -2005,6 +2075,7 @@ int run_reference(Options& options) {
       exit_code = fail("mesh", error);
       break;
     }
+    look_overrides(options, scene_data);  // `--sky-disc-scale`
 #if ENGINE_VIEW_ANIMATION
     if (animated) {
       if (!view::attach_instances(*animated, desc, scene_data, animation_options(options), error)) {
@@ -2056,7 +2127,7 @@ int run_reference(Options& options) {
       break;
     }
     renderer::ReferenceSettings reference_settings;
-    reference_settings.sun_time_s = sky_offset_s(options, scene_data);
+    reference_settings.sky_time_s = sky_offset_s(options, scene_data);
     reference_settings.spp = options.reference;
     reference_settings.max_bounces = options.bounces;
     reference_settings.batch = options.spp_batch;
@@ -2307,20 +2378,30 @@ int run_offscreen(Options& options, Interactive& interactive) {
   const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
   const u32 ticks_per_frame =
       tick_hz / view::k_frame_index_hz > 0 ? tick_hz / view::k_frame_index_hz : 1u;
-  // The sun's day (renderer.md, "The sun's day"): offscreen the rate is the flag's for the whole
-  // run — the keys are a window's — so a frame's place in the day is a function of its frame index
-  // at the frame index's own sixty a second, and two runs light the same frames alike.
-  // The clock is the renderer's (`frame_clock`), set once the scene is loaded: a sky's
-  // `--time-of-day` offset and the day's rate, frame f at `clock.at(f)`.
+  // The clocks (renderer/clocks.h; renderer.md, "One world clock, and the day's length"):
+  // offscreen the rates are the flags' for the whole run — the keys are a window's — so a frame's
+  // place in the day and in the world is a function of its frame index at the frame index's own
+  // sixty a second, and two runs draw the same frames alike. The clock is the renderer's
+  // (`frame_clock`), set once the scene is loaded: a sky's `--time-of-day` offset and the day's
+  // rate, and the world's rate; frame f's sky at `clock.sky_offset_at(f)`, its world at
+  // `clock.world_at(f)`.
   view::SunDay sun;
+  view::WorldDay world;
   renderer::FrameClock clock;
   static_assert(view::k_frame_index_hz == renderer::k_frame_hz);
-  const auto sun_at = [&](u64 frame_index) { return clock.at(frame_index); };
-  // A `--game` replay's frames are lit by the runner's clock instead (`game_clock`): the day as the
-  // ticks stepped it, so a recording in which `]` was pressed replays to the sky the live session
-  // drew. Without a game it is `sun_at`, and the frame draws what it drew.
-  const auto frame_sun = [&](u64 frame_index) {
-    return game_clock(sun) ? clock.offset_s + sun.time_s : sun_at(frame_index);
+  const auto sun_at = [&](u64 frame_index) { return clock.sky_offset_at(frame_index); };
+  // A `--game` replay's frames are drawn on the runner's clocks instead (`game_clock`): the day
+  // and the world as the ticks stepped them, so a recording in which `]` or `.` was pressed
+  // replays to the sky and the world the live session drew. Without a game they are the frame
+  // index's, and the frame draws what it drew.
+  const auto set_clocks = [&](renderer::FrameDesc& frame) {
+    if (game_clock(sun, world)) {
+      frame.sky_time_s = clock.sky_start_s + sun.time_s;
+      frame.world_time_s = world.time_s;
+    } else {
+      frame.sky_time_s = sun_at(frame.frame_index);
+      frame.world_time_s = clock.world_at(frame.frame_index);
+    }
   };
   do {
     renderer::SceneDesc desc;
@@ -2369,6 +2450,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       exit_code = fail("mesh", error);
       break;
     }
+    look_overrides(options, scene_data);  // `--sky-disc-scale`
     if (!attach_game_scene(scene_data, error)) {
       exit_code = fail("game", error);
       break;
@@ -2382,8 +2464,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
     // The frames' clock: `--time-of-day`'s offset and `--sun-rate`, through the renderer's
     // `frame_clock`, which `render.*`'s `clock` goes through too.
-    clock = renderer::frame_clock(request_of(options).clock, scene_data);
+    clock = frames_clock(options, scene_data);
     sun.start(clock.sun_rate);
+    world.start(clock.world_rate);
     // The settings against the loaded scene — the page budget's percentage and the morph weights
     // — through the renderer's function, which `render.*` calls too.
     if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
@@ -2583,7 +2666,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
       session.set_walker(&walker);
 #if ENGINE_VIEW_GAME
-      attach_game(session, clock.offset_s, clock.sun_rate, scene_data, walker);
+      attach_game(session, clock.sky_start_s, clock.sun_rate, clock.world_rate, scene_data, walker);
 #endif
 #if ENGINE_VIEW_ANIMATION
       // After the game's observer, which it chains: the world on the replay's tick.
@@ -2650,7 +2733,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
-        frame.sun_time_s = frame_sun(frame.frame_index);
+        set_clocks(frame);
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         animate_frame(frame, 0);                          // the ticks above stepped the world
         if (view_renderer.submit_frame(frame, &error) == 0) {
@@ -2772,7 +2855,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(0);
           frame.frame_index = 0;
-          frame.sun_time_s = sun_at(frame.frame_index);
+          frame.sky_time_s = sun_at(frame.frame_index);
+          frame.world_time_s = clock.world_at(frame.frame_index);
           ok = ok && view_renderer.submit_frame(frame, &error) != 0;
         }
         if (options.warmup == 0) ok = world_before(camera_at(0), WorldStep::restart, 0, 0, false);
@@ -2787,7 +2871,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(f);
           frame.frame_index = f;
-          frame.sun_time_s = sun_at(frame.frame_index);
+          frame.sky_time_s = sun_at(frame.frame_index);
+          frame.world_time_s = clock.world_at(frame.frame_index);
           if (!world_before(frame.camera, WorldStep::budgeted, 0, f, false)) {
             ok = false;
             break;
@@ -2859,7 +2944,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
-        frame.sun_time_s = sun_at(frame.frame_index);
+        frame.sky_time_s = sun_at(frame.frame_index);
+        frame.world_time_s = clock.world_at(frame.frame_index);
         animate_frame(frame, u64{f} + 1);
         // `--capture-every n`: every n-th frame is drawn by the capture itself, so the picture is
         // that frame's — its camera and, under `--time-rate`, the sand where it stood then.
@@ -2922,7 +3008,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
-        frame.sun_time_s = sun_at(frame.frame_index);
+        frame.sky_time_s = sun_at(frame.frame_index);
+        frame.world_time_s = clock.world_at(frame.frame_index);
         animate_frame(frame, u64{f} + 1);
         renderer::CapturedFrame a;
         renderer::CapturedFrame b;
@@ -3000,7 +3087,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera =
             view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
         frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
-        frame.sun_time_s = sun_at(frame.frame_index);
+        frame.sky_time_s = sun_at(frame.frame_index);
+        frame.world_time_s = clock.world_at(frame.frame_index);
         animate_frame(frame, 0);  // the pose the replay ended on: the world never steps back
         ok = world_before(frame.camera, WorldStep::complete, 0, 0, false);
         for (u32 k = 0; k < 8 && ok; ++k)
@@ -3039,7 +3127,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
-        frame.sun_time_s = sun_at(frame.frame_index);
+        frame.sky_time_s = sun_at(frame.frame_index);
+        frame.world_time_s = clock.world_at(frame.frame_index);
         animate_frame(frame, u64{f} + 1);
         // A few frames at the marker's camera first, so a streamed scene has its pages and the
         // occlusion history is this view's, and then the picture — and a streamed world its ring.
@@ -3072,7 +3161,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
       }
-      frame.sun_time_s = frame_sun(frame.frame_index);
+      set_clocks(frame);
       frame.overlay = game_hud_overlay(view_renderer);
       animate_frame(frame, frame.frame_index + 1);  // the last frame's pose
       renderer::CapturedFrame shot;
@@ -3109,9 +3198,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
     summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
     // The day where the last frame drew it: the path's last frame, or where the replay ended —
     // the frame the final --capture draws too; a game's is its runner's.
-    if (!game_clock(sun))
-      sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
-    summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
+    if (!game_clock(sun, world)) {
+      const u64 last = interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u);
+      sun.time_s = sun_at(last);
+      world.time_s = clock.world_at(last);
+    }
+    summary.sun =
+        renderer::sun_summary(resolved.settings, day_state(sun, world), view_renderer.stats());
     summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
 #if ENGINE_VIEW_ANIMATION
@@ -3606,6 +3699,43 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.sun_rate = v;
+    } else if (a == "--day-length") {
+      // The day's length in real seconds (renderer/clocks.h): the sun rate said the other way
+      // round, 3,600 a sixty-minute day, 0 a still sky.
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= 0.0) || !std::isfinite(v) ||
+          (v > 0.0 && v < 86'400.0 / 1.0e7)) {
+        std::fprintf(stderr,
+                     "engine-view: --day-length expects real seconds a day (3600 is a sixty-minute "
+                     "day, 0 a still sky), at least 0.00864\n");
+        return k_exit_usage;
+      }
+      options.sun_rate = renderer::sun_rate_of_day(v);
+    } else if (a == "--world-rate") {
+      // World seconds a real second: what every animation and the dunes' time-lapse run at.
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= 0.0) || v > 1.0e7) {
+        std::fprintf(stderr,
+                     "engine-view: --world-rate expects world seconds per real second, 0 to 1e7 "
+                     "(0 pauses every animation, 1 is real time)\n");
+        return k_exit_usage;
+      }
+      options.world_rate = v;
+    } else if (a == "--sky-disc-scale") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= 1.0 && v <= 20.0)) {
+        std::fprintf(stderr,
+                     "engine-view: --sky-disc-scale expects a factor on the sun's and the moon's "
+                     "discs, 1 (physical) to 20\n");
+        return k_exit_usage;
+      }
+      options.sky_disc_scale = static_cast<f32>(v);
     } else if (a == "--time-of-day") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       char* end = nullptr;
@@ -4306,6 +4436,9 @@ int run_view(int argc, char** argv) {
       if (!options.ground_time_s.has_value() && saved->has_surface_time && !options.scene.empty())
         options.ground_time_s = saved->surface_time_s;
       if (!options.time_rate_given) options.settings.time_rate = saved->time_rate;
+      // The world's rate as the keys had left it: the runner restores it (`set_clock`), and the
+      // dunes ride it.
+      options.world_rate = saved->world_rate;
     }
     game.set_time_rate(options.settings.time_rate);
   }
@@ -4320,6 +4453,9 @@ int run_view(int argc, char** argv) {
     }
   } game_scope;
 #endif
+  // Every source of the rates has been read — the flags, a replay's header, a restored state — so
+  // the dunes' motion takes its rate per real second from here (renderer/clocks.h).
+  settle_world_rate(options);
 
   // The reference path never opens a window, so it comes before the display is even asked for,
   // and neither does the offscreen one.
@@ -4475,6 +4611,7 @@ int run_view(int argc, char** argv) {
   // The sun's day (renderer.md, "The sun's day"): its clock is this loop's, advanced by each
   // frame's simulated seconds at a rate `[` and `]` change in an interactive window.
   view::SunDay sun;
+  view::WorldDay world;
   std::string sun_text = "null";
   std::string medium_text = "null";  // brief-volumetrics
   // A sky's clock and exposure (renderer.md, "One clock", "Exposure"): `--time-of-day`'s offset,
@@ -4630,6 +4767,7 @@ int run_view(int argc, char** argv) {
       exit_code = fail("mesh", error);
       break;
     }
+    look_overrides(options, scene_data);  // `--sky-disc-scale`
     if (!attach_game_scene(scene_data, error)) {
       exit_code = fail("game", error);
       break;
@@ -4905,9 +5043,10 @@ int run_view(int argc, char** argv) {
 #if ENGINE_VIEW_GAME
       // The day's rate as the window's sun starts it (below), so a live game and its offscreen
       // replay keep the same clock.
-      attach_game(session, sky_offset,
-                  renderer::frame_clock(request_of(options).clock, scene_data).sun_rate, scene_data,
-                  walker);
+      {
+        const renderer::FrameClock start = frames_clock(options, scene_data);
+        attach_game(session, sky_offset, start.sun_rate, start.world_rate, scene_data, walker);
+      }
 #endif
 #if ENGINE_VIEW_ANIMATION
       // The scene's characters on the session's tick, after the game's observer, which it chains:
@@ -4964,9 +5103,18 @@ int run_view(int argc, char** argv) {
     bool title_dirty = true;
     char shown_title[256] = "";
     sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
-    // One press of a time-lapse key: a rung of its ladder (time_controls.h), and one console line
-    // when that changed a rate. The dunes' rate goes through `TerrainMotion::set_rate`, whose rules
-    // are what keeps the sand from stepping. True when a rate changed.
+    world.start(options.world_rate.value_or(1.0));
+    // The dunes ride the world clock: their motion runs at `--time-rate` times the world's rate,
+    // and a change of the world's rate goes through `TerrainMotion::set_rate`, whose rules are
+    // what keeps the sand from stepping. A game's world rate is the runner's (`game_clock`).
+    const auto follow_world_rate = [&]() -> bool {
+      if (!time_lapse.active()) return false;
+      const f64 next = options.time_rate_base * world.rate;
+      return next != time_lapse.config().rate && time_lapse.set_rate(next);
+    };
+    // One press of a rate key: a rung of its ladder (time_controls.h), and one console line when
+    // that changed a rate — `[`/`]` the day's length, `,`/`.` the world's rate. True when a rate
+    // changed.
     const auto step_rate = [&](view::ViewControl control) -> bool {
       // A sky's exposure (renderer.md, "Exposure"): `-` and `=` half a stop darker and brighter
       // — on the rule's compensation, or on the fixed value when it is held — and `0` holds the
@@ -5006,27 +5154,25 @@ int run_view(int argc, char** argv) {
           control == view::ViewControl::sun_faster || control == view::ViewControl::dunes_faster;
       char was_text[32];
       char now_text[32];
+      char day_was_text[32];
       if (control == view::ViewControl::sun_slower || control == view::ViewControl::sun_faster) {
         const f64 was = sun.rate;
         const f64 next = view::ladder_step(view::k_sun_ladder, was, up);
         if (!sun.set_rate(next)) return false;
-        std::fprintf(stderr, "engine-view: sun x%s game s a real s (was x%s)\n",
-                     view::format_rate(next, now_text, sizeof(now_text)),
-                     view::format_rate(was, was_text, sizeof(was_text)));
+        std::fprintf(stderr, "engine-view: day %s (sun x%s game s a real s; was %s)\n",
+                     view::format_day_length(next, now_text, sizeof(now_text)),
+                     view::format_rate(next, was_text, sizeof(was_text)),
+                     view::format_day_length(was, day_was_text, sizeof(day_was_text)));
         return true;
       }
-      if (!time_lapse.active()) {
-        std::fprintf(stderr,
-                     "engine-view: the dunes cannot move here: the scene's terrain does not name "
-                     "the dune generator\n");
-        return false;
-      }
-      const f64 was = time_lapse.config().rate;
-      const f64 next = view::ladder_step(view::k_dune_ladder, was, up);
-      if (next == was || !time_lapse.set_rate(next)) return false;
-      std::fprintf(stderr, "engine-view: dunes x%s game s a real s (was x%s)\n",
+      const f64 was = world.rate;
+      const f64 next = view::ladder_step(view::k_world_ladder, was, up);
+      if (!world.set_rate(next)) return false;
+      (void)follow_world_rate();
+      std::fprintf(stderr, "engine-view: world x%s world s a real s (was x%s)%s\n",
                    view::format_rate(next, now_text, sizeof(now_text)),
-                   view::format_rate(was, was_text, sizeof(was_text)));
+                   view::format_rate(was, was_text, sizeof(was_text)),
+                   time_lapse.active() ? "; the dunes with it" : "");
       return true;
     };
     PendingFrame pending[k_pending_frames];
@@ -5411,10 +5557,12 @@ int run_view(int argc, char** argv) {
             std::fprintf(stderr, "engine-view: flying\n");
           }
         }
-        // The sun's day moves by the frame's simulated seconds — its ticks — at the rate now; a
-        // game's frame takes the runner's clock, stepped by those same ticks at the rate each had.
+        // The sky's day and the world move by the frame's simulated seconds — its ticks — at the
+        // rates now; a game's frame takes the runner's clocks, stepped by those same ticks at the
+        // rates each had, and the dunes follow a world rate its keys changed.
         sun.advance(static_cast<f64>(ticks_this_frame) / static_cast<f64>(session_hz));
-        (void)game_clock(sun);
+        world.advance(static_cast<f64>(ticks_this_frame) / static_cast<f64>(session_hz));
+        if (game_clock(sun, world)) (void)follow_world_rate();
         session_done = session_end != 0 && session.tick().value >= session_end;
         // **The camera between the last two ticks**, at the fraction of a tick the clock holds
         // past the last one it ran: a frame's camera then moves by the frame's own time, where
@@ -5462,8 +5610,11 @@ int run_view(int argc, char** argv) {
         // As offscreen: a sixtieth of a second a frame, so frame f is lit as `--frames` lights it.
         sun.time_s =
             sun.rate * static_cast<f64>(rendered) / static_cast<f64>(view::k_frame_index_hz);
+        world.time_s =
+            world.rate * static_cast<f64>(rendered) / static_cast<f64>(view::k_frame_index_hz);
       }
-      frame.sun_time_s = sky_offset + sun.time_s;
+      frame.sky_time_s = sky_offset + sun.time_s;
+      frame.world_time_s = world.time_s;
       frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
       frame.exposure = exposure_keys;
       terrain_camera = frame.camera;  // the next frame's rings follow this one
@@ -5555,9 +5706,11 @@ int run_view(int argc, char** argv) {
                         : std::strcmp(walker.collision(), "physics") == 0
                             ? view::TitleMode::walking
                             : view::TitleMode::walking_ground;
-          status.dunes = time_lapse.active();
-          status.dune_rate = time_lapse.active() ? time_lapse.config().rate : 0.0;
+          // The sky's hour as the last frame drew it, the day's length and the world's rate.
+          status.has_hour = view_renderer.stats().sky.active;
+          status.hour = static_cast<f64>(view_renderer.stats().sky.hour);
           status.sun_rate = sun.rate;
+          status.world_rate = world.rate;
           status.live = !interactive.replay;
           status.captured = pointer_captured;
           char status_text[160];
@@ -5693,9 +5846,9 @@ int run_view(int argc, char** argv) {
           write_json(renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene),
                      JsonWriteOptions{.pretty = false});
     }
-    sun_text =
-        write_json(renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats()),
-                   JsonWriteOptions{.pretty = false});
+    sun_text = write_json(
+        renderer::sun_summary(resolved.settings, day_state(sun, world), view_renderer.stats()),
+        JsonWriteOptions{.pretty = false});
     medium_text = write_json(medium_summary(medium, view_renderer.stats()),  // brief-volumetrics
                              JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_ANIMATION
@@ -5753,7 +5906,8 @@ int run_view(int argc, char** argv) {
       if (animated) summary.animation = view::animation_summary(*animated, rendered);
 #endif
       summary.time_lapse = renderer::time_lapse_summary(time_lapse, view_renderer.stats(), scene);
-      summary.sun = renderer::sun_summary(resolved.settings, day_state(sun), view_renderer.stats());
+      summary.sun =
+          renderer::sun_summary(resolved.settings, day_state(sun, world), view_renderer.stats());
       summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();

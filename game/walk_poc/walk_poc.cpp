@@ -122,7 +122,8 @@ i32 on_load(ModuleContext* context) {
   resolve(context, k_tick, "walking", f.walking);
   resolve(context, k_tick, "sprinting", f.sprinting);
   resolve(context, k_tick, "moved_m", f.moved);
-  resolve(context, k_tick, "world_time_s", f.world_time);
+  resolve(context, k_tick, "sky_time_s",
+          f.world_time);  // the sky's hour: the days are the sky's (R88)
   resolve(context, k_tick, "day_fraction", f.day_fraction);
   resolve(context, k_tick, "actions_pressed", f.pressed);
   game_action(context, "interact", f.interact);

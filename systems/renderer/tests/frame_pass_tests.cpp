@@ -96,7 +96,8 @@ FrameDesc looking(f64 time_s, u32 view_mode = ~u32{0}) {
   frame.camera.target = absolute(WorldPos::origin(), eye + towards * 100.0f);
   frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
   frame.camera.znear = 0.05f;
-  frame.sun_time_s = time_s;
+  frame.sky_time_s = time_s;
+  frame.world_time_s = time_s;  // the clocks agree here, as the one clock did (R88)
   frame.view_mode = view_mode;
   return frame;
 }

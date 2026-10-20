@@ -274,6 +274,19 @@ struct SessionHeader {
   // file, which the live session overwrote at its end: so a replay from a restored state is a
   // replay.
   JsonValue game_restored;
+  // **The clocks the session ran on** (2026-10-20, roadmap R88; renderer/clocks.h), written as the
+  // header's `clock` block when `has_clock` (every live session since): the day's rate (the sun
+  // rate, `day_length_s` beside it for a reader), the world's rate and the dunes' time-lapse rate a
+  // world second, and the `--time-of-day` hour when one was given (negative: none). A replay runs
+  // on these unless its command line names its own, so it presses the keys from where the
+  // recording did and draws every pose it drew. A header without the block replays at the flags'
+  // rates, as every recording before it did, and a header made without one writes none, so the
+  // committed fixtures stay their bytes.
+  bool has_clock = false;
+  f64 sun_rate = 0.0;
+  f64 world_rate = 1.0;
+  f64 time_rate = 0.0;
+  f64 time_of_day_h = -1.0;
 };
 
 JsonValue session_to_json(const SessionHeader& header);

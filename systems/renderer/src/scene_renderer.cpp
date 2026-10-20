@@ -501,10 +501,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
-  // The world's one clock (renderer.md, "One clock"): the sky stands at the time the ground's
-  // surface does, which the GPU scene keeps for a terrain with a detail block and a moving
-  // terrain's motion updates every frame. A terrain with neither starts it here, at the scene's own
-  // time.
+  // The ground's surface time, which the GPU scene keeps for a terrain with a detail block and a
+  // moving terrain's motion updates every frame: a terrain with neither starts it here, at the
+  // scene's own time, so a summary reads the ground's hour. The sky no longer stands on it — it
+  // stands at the frame's own hour (clocks.h) — but whoever reports the ground's time still does.
   if (sky_.active() && scene.data().terrain.enabled && !scene.ground_detail()) {
     scene.set_ground_time(scene.data().terrain.time_s);
   }
@@ -1757,7 +1757,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // **The trees' poses** (renderer.md, "The flora stage"): every swaying instance's parts posed
   // from the frame's wind and walker into this slot's region of the part-pose table, on the CPU and
   // in place, before the pool pass reads them. Zero, and nothing written, in a scene with no tree.
-  const u64 flora_table = scene.flora_frame(slot, frame.flora, frame.frame_index, frame.sun_time_s);
+  // The frame's clocks (clocks.h): the sky's hour, the scene's epoch plus the frame's sky seconds.
+  const f64 sky_time_s = scene.epoch_s() + frame.sky_time_s;
+  const u64 flora_table =
+      scene.flora_frame(slot, frame.flora, frame.frame_index, frame.world_time_s, sky_time_s);
   if (scene.skinned()) {
     const u32 span = static_cast<u32>(frame.joints.size());
     const u32 uploaded = span < scene.max_joints() ? span : scene.max_joints();
@@ -1832,11 +1835,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // one buffer. They come out of `frame_lighting` rather than being built here, because the
   // reference path tracer has to light the same scene with the same numbers at the same frame
   // index or a comparison between the two measures the lights (04 §4.8, lighting.h). The sun is
-  // where the caller's day has put it (`FrameDesc::sun_time_s`; 0 is the sun it always had).
+  // where the caller's day has put it (`FrameDesc::sky_time_s` past the epoch; 0 is the sun it
+  // always had).
   //
   // **With a sky** the lights are the sky's (lighting.h, sky.h): its provider's sun and moon at the
-  // world's one clock — the time the ground's surface stands at, plus the frame's own offset — and
-  // the frame's `gfx::SkyParams` behind the ground's detail in the same buffer.
+  // sky's hour (clocks.h) — never the ground's surface time, so a dune time-lapse at any rate
+  // leaves the sun where the sky's hour says — and the frame's `gfx::SkyParams` behind the ground's
+  // detail in the same buffer.
   const bool sky_on = sky_.active();
   frame_sky_ = FrameSky{};
   u64 sky_address = 0;
@@ -1846,7 +1851,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   Vec3 frame_sun_light{1.0f, 1.0f, 1.0f};
   FrameLighting lighting;
   if (sky_on) {
-    sky_.evaluate(scene.ground_time_s() + frame.sun_time_s, frame_sky_);
+    sky_.evaluate(sky_time_s, frame_sky_);
     frame_lighting(data, frame_sky_, lighting, frame.camera.position);
     // The run's exposure (settings) under the frame's own (keys): a frame's fixed value wins, then
     // the run's, and the compensations add.
@@ -1877,16 +1882,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     s.moon_illuminance = frame_sky_.moon ? frame_sky_.state.moon_illuminance : 0.0f;
     s.moon_key = frame_sky_.moon_key;
   } else {
-    frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting,
+    frame_lighting(data, rendered, lighting_options(settings, frame.sky_time_s), lighting,
                    frame.camera.position);
   }
   sky_params_address_ = sky_address;
-  // **The fires** (fire.h, renderer.md "Fires"): burnt at the world's one clock — the time the sky
-  // and the medium stand at — and the nearest appended to the light array after the stand-in's or
-  // the sky's lights, so a frame with none fills the array as it always did.
+  // **The fires** (fire.h, renderer.md "Fires"): burnt at the world clock (clocks.h) — their
+  // flicker is motion, which runs at the world's rate and not the day's — and the nearest appended
+  // to the light array after the stand-in's or the sky's lights, so a frame with none fills the
+  // array as it always did.
   // A fire's intensity is candela, and a sky's light is in sun units of 128,000 lux (sky.h).
-  fires_.burn(scene.ground_time_s() + frame.sun_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f,
-              frame_fires_);
+  fires_.burn(frame.world_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_fires_);
   stats_.fires = static_cast<u32>(frame_fires_.size());
   stats_.fire_lights = add_fire_lights(frame_fires_, frame.camera.position, lighting);
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
@@ -2171,10 +2176,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // morph channels, and the resolve then reads the rest attribute stream exactly as it did.
     resolve.normal_pool = scene.frame_normal_pool_address();
     resolve.sun = lighting.sun;
-    // The water's clock (water.slang, `ResolveParams::water_time_s`): the ground's surface time
-    // plus the frame's sun time, the one clock the sky reads (renderer.md, "One clock"), wrapped by
-    // `water_clock` so a long session's phase never jumps.
-    resolve.water_time_s = gfx::water_clock(scene.ground_time_s() + frame.sun_time_s);
+    // The water's clock (water.slang, `ResolveParams::water_time_s`): the world clock (clocks.h),
+    // which the waves move on whatever the day's length, wrapped by `water_clock` so a long
+    // session's phase never jumps. The sun's glitter on them is the sun's place at the sky's hour.
+    resolve.water_time_s = gfx::water_clock(frame.world_time_s);
     // The ground below the hemisphere's horizon: the scene's, shared with the reference like the
     // sun and the sky, so its escaped rays see the ground this term stands for.
     resolve.ground = lighting.ground;
@@ -3745,8 +3750,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.eye_world = frame.camera.position;
     context.gpu_eye = gpu_eye;
     context.znear = znear;
-    context.world_time_s = scene.ground_time_s() + frame.sun_time_s;
-    context.sun_time_s = frame.sun_time_s;
+    context.world_time_s = frame.world_time_s;
+    context.sky_time_s = scene.epoch_s() + frame.sky_time_s;
     context.sun_direction = lighting.sun.xyz();
     context.sun_light =
         sky_on ? frame_sun_light : Vec3{lighting.sun.w, lighting.sun.w, lighting.sun.w};

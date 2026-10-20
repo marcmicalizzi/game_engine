@@ -566,16 +566,26 @@ struct RenderSettings @version(13) {
 /// (docs/subsystems/renderer.md, "One clock"). Absent fields are the clock every call drew before
 /// this block: the ground's own hour, standing still. Both hosts turn it into the frame's
 /// `FrameDesc::sun_time_s` through one function (`renderer::frame_clock`).
-struct RenderClock @version(1) {
-  /// A sky's hour, local apparent solar time, within 0..24 (17.5 is 17:30): the offset on the one
-  /// clock that puts the ground's day at this hour. The sky, the sun and the moon move; the
-  /// ground stays at its own time. `engine-view --time-of-day`. Null: the ground's own hour.
-  /// Nothing without a sky.
+struct RenderClock @version(2) {
+  /// A sky's hour, local apparent solar time, within 0..24 (17.5 is 17:30): the sky's start, the
+  /// offset from the scene's epoch that puts its day at this hour. The sky, the sun and the moon
+  /// move; the ground stays at its own time. `engine-view --time-of-day`. Null: the scene's own
+  /// hour. Nothing without a sky.
   time_of_day: f64?
   /// The sun's day in game seconds per real second, within 0..1e7: frame f stands
   /// `sun_rate * f / 60` game seconds after the hour. `engine-view --sun-rate`. Null: the
   /// `renderer.sun.rate` tunable (0, a still sun).
   sun_rate: f64?
+  /// The same said as the day's length in real seconds (3,600 is a sixty-minute day): the rate
+  /// `86,400 / day_length_s`, 0 a still sun. Used in place of `sun_rate` when both are given.
+  /// `engine-view --day-length` (docs/subsystems/renderer.md, "One world clock, and the day's
+  /// length").
+  day_length_s: f64? @since(2)
+  /// World seconds per real second, within 0..1e7: the clock every animation (the water, the
+  /// fire, the smoke, the sway, the cloud drift) and the dunes' time-lapse run on; frame f stands
+  /// `world_rate * f / 60` world seconds in. The sky does not follow it. `engine-view
+  /// --world-rate`. Null: 1, real time.
+  world_rate: f64? @since(2)
 }
 
 /// A sky's frame as the renderer drew it (`renderer::SkyStats`; docs/subsystems/renderer.md, "The

@@ -262,21 +262,20 @@ TEST_CASE("walk: a session header's walk block reads back, and another walk vers
 
 TEST_CASE("walk: the title says whether the camera flies or walks, and on what") {
   view::TitleStatus status;
-  status.dunes = false;
   status.sun_rate = 0.0;
   status.live = false;
   char text[160];
   status.mode = view::TitleMode::walking;
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text) ==
-        "walking \xC2\xB7 sun \xC3\x97"
-        "0");
+        "walking \xC2\xB7 day still \xC2\xB7 world \xC3\x97"
+        "1");
   status.mode = view::TitleMode::walking_ground;
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text).rfind("walking (ground only) \xC2\xB7 ", 0) == 0);
   status.mode = view::TitleMode::flying;
   (void)view::format_status(status, text, sizeof(text));
-  CHECK(std::string(text).rfind("flying \xC2\xB7 sun", 0) == 0);
+  CHECK(std::string(text).rfind("flying \xC2\xB7 day", 0) == 0);
 }
 
 #if ENGINE_VIEW_TESTS_DUNES && ENGINE_VIEW_WALK_PHYSICS

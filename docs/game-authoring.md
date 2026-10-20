@@ -55,7 +55,7 @@ Build the module, run it, edit, rebuild while it runs. From a game repository ma
 
 `run.ps1` passes `--walk --game`, and `--world` where the scene streams one; the keys are
 engine-view's map (W A S D walk, Shift sprints, the mouse looks, Space jumps, E `interact`, Q `use`,
-1–4 `game_1`..`game_4`, `[` `]` the sun's day faster or slower, Escape gives the mouse back and ends).
+1–4 `game_1`..`game_4`, `[` `]` the day longer or shorter, `,` `.` the world slower or faster, Escape gives the mouse back and ends).
 A rebuild the host refuses — another ABI, a state type with an owning field, a name that no longer
 resolves — says why once on stderr and keeps the old build running. `-Offscreen` replays
 `content/sessions/walk-synthetic.jsonl` from the SDK (two seconds of walking with E pressed once,
@@ -127,9 +127,26 @@ namespace and its DLL):
 A recorded `--game` session replays to the same module state, offscreen or in a window, as long as
 the module keeps to these — they are the contract's determinism paragraph in the author's words:
 
-- **No wall clock.** The tick's `dt` and `world_time_s` are the only time; the ABI has no clock to
-  read, and `std::chrono` or `time()` would make a replay diverge. Read `dt` from the view in f64,
-  not the f32 argument, which drifts a part in ten million a tick when summed.
+- **No wall clock.** The tick's `dt`, `world_time_s` and `sky_time_s` are the only time; the ABI
+  has no clock to read, and `std::chrono` or `time()` would make a replay diverge. Read `dt` from
+  the view in f64, not the f32 argument, which drifts a part in ten million a tick when summed.
+
+**The day's length and the world's rate** (2026-10-20, roadmap R88; the engine's
+[clocks](subsystems/renderer.md#one-world-clock-and-the-days-length)). A game has two clocks to read
+and two rates to set. **`world_time_s` is the world clock** — real seconds, scaled by the world rate
+— which every animation in the engine runs on (the water, the smoke and the fire's flicker, the
+trees' sway, the cloud drift) and a module animates by too. **`sky_time_s` is the sky's hour**,
+absolute game seconds since the world's midnight epoch, and `day_fraction` where the sky stands in
+its day: count days, schedule a night, by these. **A game sets its day's length**: the length of a
+game day in real seconds, `--day-length` (or `--sun-rate`, the same said as `86,400 / length`) on its
+run line and `-DayLength` (or `-SunRate`) to `package-game.ps1` — a sixty-minute day is 3,600, and
+every animation stays at real speed whatever it is. **The dunes' time-lapse** is `--time-rate`
+(`-TimeRate`), game seconds of sand a world second: 1 is real geology, which a desert sees move over
+weeks. **The world rate is for looking, not for a game's design**: 1 by default, `--world-rate` or
+`,` and `.` in the window scale it — a pause, slow motion, a fast-forward that runs the dunes and the
+smoke with it — and the sky keeps its pace through all of it, so a tester can inspect what the world
+does at any speed. A module that reads the rate (`GameTick.world_rate`) and the day's length
+(`day_length_s`) can say so on its HUD; it never needs to divide by either.
 - **Nothing allocated in `game_tick`.** The HUD's lines go through a stack buffer the host copies;
   the module's state is the one object the host allocated when it loaded the module. A module that
   allocates per tick is not wrong, only slower and harder to reason about; a module that keeps

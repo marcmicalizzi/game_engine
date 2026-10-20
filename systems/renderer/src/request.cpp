@@ -55,6 +55,11 @@ void scene_file_options(const RenderRequest& request, SceneFileOptions& out) {
 bool settings_for(const RenderRequest& request, const SceneData& scene, RenderSettings& out,
                   std::string* error) {
   out = request.settings;
+  // The dunes' time-lapse rides the world clock (clocks.h): `time_rate` game seconds per world
+  // second, so a world rate scales it with everything else that moves, and the motion is started
+  // at the product, per real second.
+  if (request.clock.world_rate.has_value() && *request.clock.world_rate >= 0.0)
+    out.time_rate = request.settings.time_rate * *request.clock.world_rate;
   if (request.page_budget_pct > 0 && !scene.pages.pages.empty()) {
     u64 total = 0;
     for (const geometry::ClusterPageDesc& page : scene.pages.pages)
@@ -122,14 +127,23 @@ ViewSetDesc view_set_desc(const RenderSettings& resolved) {
 
 // The offset `time_of_day` puts on the world's one clock: the hours asked for, less how far into
 // its day the scene's ground already stands. Zero without a sky, whose stand-in sun has no hour.
+f64 scene_epoch_s(const SceneData& scene) noexcept {
+  return scene.terrain.enabled ? scene.terrain.time_s : 0.0;
+}
+
 FrameClock frame_clock(const ClockRequest& clock, const SceneData& scene) {
   FrameClock out;
-  out.sun_rate = clock.sun_rate.has_value() ? *clock.sun_rate : sun_rate_tunable();
+  out.epoch_s = scene_epoch_s(scene);
+  out.sun_rate = clock.day_length_s.has_value() ? sun_rate_of_day(*clock.day_length_s)
+                 : clock.sun_rate.has_value()   ? *clock.sun_rate
+                                                : sun_rate_tunable();
   if (!(out.sun_rate > 0.0)) out.sun_rate = 0.0;
+  out.world_rate = clock.world_rate.has_value() ? *clock.world_rate : 1.0;
+  if (!(out.world_rate > 0.0)) out.world_rate = 0.0;
   if (clock.time_of_day_h.has_value() && scene.sky.has_value()) {
-    const f64 start = scene.terrain.enabled ? scene.terrain.time_s : 0.0;
+    const f64 start = out.epoch_s;
     const f64 into_day = start - std::floor(start / 86400.0) * 86400.0;
-    out.offset_s = *clock.time_of_day_h * 3600.0 - into_day;
+    out.sky_start_s = *clock.time_of_day_h * 3600.0 - into_day;
   }
   return out;
 }
@@ -138,13 +152,15 @@ FrameDesc frame_at(const FrameClock& clock, const Camera& camera, u64 frame_inde
   FrameDesc frame;
   frame.camera = camera;
   frame.frame_index = frame_index;
-  frame.sun_time_s = clock.at(frame_index);
+  frame.world_time_s = clock.world_at(frame_index);
+  frame.sky_time_s = clock.sky_offset_at(frame_index);
   return frame;
 }
 
 void flight_clock(const FrameClock& clock, FlightOptions& out) {
   out.sun_rate = clock.sun_rate;
-  out.sun_time_s = clock.offset_s;
+  out.world_rate = clock.world_rate;
+  out.sky_start_s = clock.sky_start_s;
 }
 
 // ---- the moving ground ------------------------------------------------------------------------
@@ -242,6 +258,11 @@ JsonValue sun_summary(const RenderSettings& settings, const SunDayState& day) {
   out.set("start_rate", day.start_rate);
   out.set("rate_changes", day.changes);
   out.set("time_s", day.time_s);
+  out.set("day_length_s", day_length_of_rate(day.rate));
+  out.set("world_rate", day.world_rate);
+  out.set("world_start_rate", day.world_start_rate);
+  out.set("world_rate_changes", day.world_changes);
+  out.set("world_time_s", day.world_time_s);
   out.set("start_azimuth_deg", arc.azimuth_deg);
   out.set("start_elevation_deg", arc.elevation_deg);
   out.set("tilt_deg", arc.tilt_deg);
@@ -569,8 +590,23 @@ bool read_protocol_clock(const protocol::RenderClock& in, ClockRequest& out, std
     error = "clock.sun_rate must be within 0..1e7 game seconds per real second";
     return false;
   }
+  if (in.day_length_s.has_value() &&
+      !(*in.day_length_s >= 0.0 && std::isfinite(*in.day_length_s))) {
+    error = "clock.day_length_s must be a finite number of real seconds, 0 holding the sky";
+    return false;
+  }
+  if (in.day_length_s.has_value() && *in.day_length_s > 0.0 && *in.day_length_s < k_day_s / 1.0e7) {
+    error = "clock.day_length_s is shorter than the sun rate's ceiling allows (8.64 ms)";
+    return false;
+  }
+  if (in.world_rate.has_value() && !(*in.world_rate >= 0.0 && *in.world_rate <= 1.0e7)) {
+    error = "clock.world_rate must be within 0..1e7 world seconds per real second";
+    return false;
+  }
   out.time_of_day_h = in.time_of_day;
   out.sun_rate = in.sun_rate;
+  out.day_length_s = in.day_length_s;
+  out.world_rate = in.world_rate;
   return true;
 }
 
