@@ -290,7 +290,7 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
   Rig probe;
   REQUIRE_MESSAGE(probe.build(gpu.device, false, ShadowMode::Off), probe.error);
   FireDesc fire;
-  fire.position = probe.data.center + DVec3{0.0, 0.1 * probe.data.radius, 0.0};
+  fire.position = probe.data.center + DVec3{0.0, 0.1 * static_cast<f64>(probe.data.radius), 0.0};
   fire.radius_m = 0.3f;
   fire.height_m = 0.8f;
   fire.intensity = 0.4f;
@@ -391,7 +391,7 @@ TEST_CASE("volumetrics: a fire's smoke drifts downwind") {
   REQUIRE_MESSAGE(probe.build(gpu.device, false, ShadowMode::Off), probe.error);
   // Smoke and no light: the column the stand-in's sun and sky light, nothing the fire lights.
   FireDesc fire;
-  fire.position = probe.data.center + DVec3{0.0, 0.1 * probe.data.radius, 0.0};
+  fire.position = probe.data.center + DVec3{0.0, 0.1 * static_cast<f64>(probe.data.radius), 0.0};
   fire.intensity = 0.0f;
   fire.smoke_density = 1.0f;
   fire.smoke_rise_m_s = 1.0f;
