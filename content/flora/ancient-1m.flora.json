@@ -1,0 +1,14 @@
+{
+  "species": "ancient",
+  "ancient": {
+    "seed": 9,
+    "height_m": 110.0,
+    "trunk_radius_m": 6.0,
+    "hollows": 2,
+    "branches": 8,
+    "sub_branches": 6,
+    "twigs": 10,
+    "leaves": 44,
+    "triangle_budget": 1000000
+  }
+}

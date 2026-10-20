@@ -1,0 +1,8 @@
+{
+  "species": "willow",
+  "willow": {
+    "seed": 5,
+    "height_m": 11.0,
+    "triangle_budget": 60000
+  }
+}

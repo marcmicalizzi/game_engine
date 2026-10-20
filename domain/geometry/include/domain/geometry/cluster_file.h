@@ -181,10 +181,20 @@ enum class ClusterSection : u32 {
   // which is also what a mesh whose weights are all zero draws.
   MotionParts = 35,
   MotionVertices = 36,
+  // The structural table of a generated tree (docs/subsystems/flora.md, "The structural table"):
+  // one `ClusterFileStructuralPart` per part of section 35 that a structure may need to know the
+  // thickness of — its id, its radius at its base and at its tip, and flags (load-bearing,
+  // straight) — so a solver that builds platforms, bridges and ramps on a tree can anchor to it
+  // without reading the mesh. A table of its own rather than more bytes in the motion record,
+  // because that record is a deform stage's and its 32 bytes are every tree's; resident like 35.
+  // **Written only when a species emits it**, like 34 to 36: every other container is the bytes
+  // it was.
+  StructuralParts = 37,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::MotionVertices) + 1;
+inline constexpr u32 k_cluster_section_kinds =
+    static_cast<u32>(ClusterSection::StructuralParts) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -333,9 +343,27 @@ struct ClusterFileMotionVertex {
   u16 weight = 0;
 };
 
+// One part's thickness, as section 37 records it (flora.md, "The structural table"). 16 bytes.
+// `part` is the part's id in section 35, the records in ascending id and so parents first; the
+// part's axis is the segment from its `pivot` along its `direction` for its `length`, and its
+// radius is linear from `base_radius` at the pivot to `tip_radius` at the far end — exactly for a
+// part flagged `k_structural_straight`, and as its rest tangent's segment for one that curves.
+inline constexpr u32 k_structural_load_bearing = 1u;  // trunk or major limb: a structure may hang
+                                                      // from it; its base radius is at least the
+                                                      // species' declared minimum
+inline constexpr u32 k_structural_straight = 2u;      // its axis is the segment, to the millimetre
+struct ClusterFileStructuralPart {
+  u32 part = 0;
+  f32 base_radius = 0.0f;
+  f32 tip_radius = 0.0f;
+  u32 flags = 0;
+};
+
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
 static_assert(sizeof(ClusterFileMotionPart) == 32, "a cluster file motion part is 32 bytes");
 static_assert(sizeof(ClusterFileMotionVertex) == 4, "a cluster file motion vertex is 4 bytes");
+static_assert(sizeof(ClusterFileStructuralPart) == 16,
+              "a cluster file structural part is 16 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
@@ -400,6 +428,9 @@ struct ClusterFileData {
   // not empty, so a mesh without them is the bytes it was before the sections existed.
   Vector<ClusterFileMotionPart> motion_parts;
   Vector<ClusterFileMotionVertex> motion_vertices;
+  // The structural table (section 37), empty for a mesh whose generator emits none; every record
+  // names a part of `motion_parts`. Written only when not empty.
+  Vector<ClusterFileStructuralPart> structural_parts;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

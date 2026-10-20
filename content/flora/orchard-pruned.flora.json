@@ -1,0 +1,8 @@
+{
+  "species": "orchard",
+  "orchard": {
+    "seed": 2,
+    "pruned": true,
+    "triangle_budget": 40000
+  }
+}

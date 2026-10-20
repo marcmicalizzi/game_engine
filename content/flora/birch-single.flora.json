@@ -1,0 +1,12 @@
+{
+  "species": "birch",
+  "birch": {
+    "seed": 11,
+    "height_m": 18.0,
+    "stem_radius_m": 0.16,
+    "stems": 1,
+    "limbs": 14,
+    "droop": 0.8,
+    "triangle_budget": 50000
+  }
+}

@@ -37,6 +37,9 @@ struct Motion {
   Vector<geometry::ClusterFileMotionPart> parts;
   Vector<u32> vertex_part;
   Vector<f32> vertex_weight;
+  // The structural table (structure.h; flora.md, "The structural table"): empty for a species that
+  // emits none (the palm, the broadleaf, the conifer), otherwise one record per part in id order.
+  Vector<geometry::ClusterFileStructuralPart> structure;
 };
 
 // The weight as the container stores it: a 16-bit unorm, rounded to nearest.

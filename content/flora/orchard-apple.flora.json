@@ -1,0 +1,11 @@
+{
+  "species": "orchard",
+  "orchard": {
+    "seed": 8,
+    "height_m": 5.5,
+    "pruned": false,
+    "fruit": 1,
+    "leaves": 12,
+    "triangle_budget": 40000
+  }
+}

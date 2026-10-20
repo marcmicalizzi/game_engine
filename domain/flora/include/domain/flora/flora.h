@@ -53,10 +53,15 @@ namespace engine::flora {
 inline constexpr u32 k_flora_version = 3;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
-// member (`palm`, `broadleaf`, `conifer`).
+// member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
 inline constexpr const char* k_species_date_palm = "date_palm";
 inline constexpr const char* k_species_broadleaf = "broadleaf";
 inline constexpr const char* k_species_conifer = "conifer";
+inline constexpr const char* k_species_birch = "birch";
+inline constexpr const char* k_species_willow = "willow";
+inline constexpr const char* k_species_orchard = "orchard";
+inline constexpr const char* k_species_ancient =
+    "ancient";  // the megaflora (flora.md, "Megaflora")
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------
@@ -96,7 +101,7 @@ std::string flora_role(const std::string& species, u32 material);
 void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
                            geometry::ClusterFileData& out);
 
-// Solves the file's species — the palm, the broadleaf or the conifer, by `species` — into a mesh
+// Solves the file's species — whichever `species` names — into a mesh
 // and its motion contract. The report its species fills, when given; the other is left alone.
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error);

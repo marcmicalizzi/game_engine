@@ -63,6 +63,11 @@ if(TARGET engine::water AND TARGET engine::terrain AND TARGET engine::scatter AN
   # stopped at the chest, replayed offscreen to the same trajectory. Its scene needs all four.
   list(APPEND _view_tests tests/walk_water_view_tests.cpp)
 endif()
+if(TARGET engine::flora)
+  # A walk along a megaflora's major limb, replayed offscreen (docs/subsystems/flora.md,
+  # "Megaflora"): the elder-grove scene's ancient trees solved by the test to find the limb.
+  list(APPEND _view_tests tests/walk_limb_view_tests.cpp)
+endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
 # ruins and city, and `--world` stream them, and the flora capability for its mesh generator, which

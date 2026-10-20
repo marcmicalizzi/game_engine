@@ -39,6 +39,10 @@ struct TreeReport {
   u32 trunk_sides = 0;
   u32 shoot_sides = 0;  // the finest order's below the trunk, as built
   u32 steps = 0;        // rungs of the ladder walked down; 0 is the full detail
+  // The second batch of species (birch, willow, orchard, ancient); zero for the first three.
+  u32 fruit_triangles = 0;  // the orchard tree's fruit primitive
+  u32 load_bearing = 0;     // parts flagged load-bearing in the structural table
+  u32 hollows = 0;          // the ancient tree's
 };
 
 // The documented ranges; false with a sentence naming the first field out of range.
@@ -50,6 +54,27 @@ bool conifer_in_range(const Conifer& params, std::string& error);
 bool solve_broadleaf(const Broadleaf& params, assets::MeshData& out, TreeReport* report = nullptr,
                      std::string* error = nullptr, Motion* motion = nullptr);
 bool solve_conifer(const Conifer& params, assets::MeshData& out, TreeReport* report = nullptr,
+                   std::string* error = nullptr, Motion* motion = nullptr);
+
+// ---- the second batch (flora.md, "The birch", "The willow", "The orchard tree", "Megaflora") ----
+//
+// The same contract as the two above, and beside the motion contract each emits the **structural
+// table** (structure.h): `Motion::structure`, one record per part. The orchard tree with fruit
+// makes a third primitive, `fruit` (one-sided, cones on). The ancient tree's bark primitive holds
+// its buttressed, hollowed trunk as well as its limbs.
+
+bool birch_in_range(const Birch& params, std::string& error);
+bool willow_in_range(const Willow& params, std::string& error);
+bool orchard_in_range(const Orchard& params, std::string& error);
+bool ancient_in_range(const Ancient& params, std::string& error);
+
+bool solve_birch(const Birch& params, assets::MeshData& out, TreeReport* report = nullptr,
+                 std::string* error = nullptr, Motion* motion = nullptr);
+bool solve_willow(const Willow& params, assets::MeshData& out, TreeReport* report = nullptr,
+                  std::string* error = nullptr, Motion* motion = nullptr);
+bool solve_orchard(const Orchard& params, assets::MeshData& out, TreeReport* report = nullptr,
+                   std::string* error = nullptr, Motion* motion = nullptr);
+bool solve_ancient(const Ancient& params, assets::MeshData& out, TreeReport* report = nullptr,
                    std::string* error = nullptr, Motion* motion = nullptr);
 
 }  // namespace engine::flora
