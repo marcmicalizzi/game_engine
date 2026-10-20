@@ -388,6 +388,54 @@ Test-That 'a tree reconfigures when its launcher is not the one wanted, and only
     (Test-CcacheReconfigure -Plan (Plan agent '' $exe ([version]'4.13') 'E:\cc') -CachedLauncher $on.Launcher)
 }
 
+# --- the GPU server's trees: remote-build.ps1 -Prune -Stale (tools/lib/RemoteTrees.psm1) ---------------
+#
+# Here for the reason the Windows compiler cache is: tools.linux_build is the CTest test these
+# scripts' sweeps already have. No server is contacted.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/RemoteTrees.psm1') -Force
+$alive = 'D:\workspace\game_engine\.claude\worktrees\agent-alive'
+$gone = 'D:\workspace\game_engine\.claude\worktrees\agent-gone'
+$main = 'D:\workspace\game_engine'
+Test-That 'the tree id is remote-build.ps1''s: the checkout path lower-cased, as the volume id is' {
+  (Get-RemoteTreeId $main) -eq (Get-CheckoutVolumeId $main) -and (Get-RemoteTreeId 'D:\WORKSPACE\Game_Engine') -eq (Get-RemoteTreeId $main)
+}
+$idUnknown = 'cf43458762cb'
+$listing = @(
+  "T|$(Get-RemoteTreeId $alive)|2000000000|7200||",                        # no marker, matched by id
+  "T|$(Get-RemoteTreeId 'D:\x\old')|2100000000|86400|$gone|BOX",            # marker, checkout gone
+  "T|$(Get-RemoteTreeId $main)|2200000000|86400|$main|BOX",                 # marker, checkout here
+  "T|$idUnknown|1900000000|86400||",                                        # nothing names it
+  "T|3811bb688fd9|1800000000|120||",                                        # a build is writing it
+  "T|aaaaaaaaaaaa|1700000000|86400|C:\laptop\game_engine|LAPTOP",            # another machine's
+  'T|../../etc|1|86400||', 'T|ABCDEF012345|1|86400||', 'noise', ''          # never trees
+)
+$trees = ConvertFrom-RemoteTreeListing -Lines $listing
+Test-That 'the listing parses to trees, and only twelve lower-case hex digits name one' {
+  $trees.Count -eq 6 -and $trees[1].Root -eq $gone -and $trees[1].Host -eq 'BOX' -and $trees[0].Bytes -eq 2e9 -and $trees[4].AgeSeconds -eq 120
+}
+$isHere = { param($p) $p -in @($alive, $main) }
+$byId = { param($vs, $id) $vs | Where-Object { $_.Id -eq $id } | Select-Object -First 1 }
+$vs = Get-RemoteTreeVerdict -Trees $trees -Checkouts @($alive, $main) -ThisHost 'BOX' -Present $isHere
+Test-That 'a marker naming a checkout gone from disk is stale, one naming a checkout here is kept' {
+  (& $byId $vs (Get-RemoteTreeId 'D:\x\old')).Stale -and -not (& $byId $vs (Get-RemoteTreeId $main)).Stale
+}
+Test-That 'a tree with no marker is kept when its id is a checkout on disk, and stale when nothing names it' {
+  $k = & $byId $vs (Get-RemoteTreeId $alive)
+  -not $k.Stale -and $k.Root -eq $alive -and (& $byId $vs $idUnknown).Stale
+}
+Test-That 'a tree touched in the last hour and another machine''s are kept whatever else is true' {
+  -not (& $byId $vs '3811bb688fd9').Stale -and -not (& $byId $vs 'aaaaaaaaaaaa').Stale -and (& $byId $vs 'aaaaaaaaaaaa').Why -match 'LAPTOP'
+}
+Test-That '-KeepUnknown keeps what nothing names and nothing else changes' {
+  $k = Get-RemoteTreeVerdict -Trees $trees -Checkouts @($alive, $main) -ThisHost 'BOX' -Present $isHere -KeepUnknown
+  -not (& $byId $k $idUnknown).Stale -and (& $byId $k (Get-RemoteTreeId 'D:\x\old')).Stale -and @($k | Where-Object Stale).Count -eq 1
+}
+Test-That 'the listing script reads only ~/game_engine-remote and twelve-hex names' {
+  $s = Get-RemoteTreeListingScript
+  $s -match 'cd "\$HOME/game_engine-remote"' -and $s -match '\?{12}' -and $s -notmatch 'rm ' -and $s -notmatch 'ccache'
+}
+
 # --- the script's own refusals, before docker is asked anything ---------------------------------------
 
 function Invoke-Script([string[]]$arguments, [hashtable]$environment = @{}) {

@@ -422,6 +422,47 @@ targets on a quiet machine (above), and this one shared the CPU with a second bu
 tree. The warm run's 11 minutes
 are mostly what the cache does not touch: the sync, the dependencies' clone and configure, and the
 links.
+
+## Trees that outlive their checkout
+
+Every checkout that ever ran `tools/remote-build.ps1` left a tree on the server,
+`~/game_engine-remote/<checkout-id>/` — its source, its build directories and its downloaded
+dependencies — and nothing removed one, so they accumulate at a worktree's rate, as the containers'
+volumes did before `linux-build.ps1 -Prune`. Two switches, on that script's pattern:
+
+```powershell
+tools/remote-build.ps1 -Host titanxp -Prune                 # this checkout's tree, then exit
+tools/remote-build.ps1 -Host titanxp -Prune -Stale -WhatIf  # every stale tree, listed; nothing removed
+tools/remote-build.ps1 -Host titanxp -Prune -Stale          # ... and removed
+```
+
+`-Stale` prints one line per tree — `keep`, `stale` (under `-WhatIf`) or `remove`, the id, its
+size from `du -sb`, the checkout that names it, and why — and the total. The rule
+(`tools/lib/RemoteTrees.psm1`, tested in `tools.linux_build`):
+
+- **A tree touched in the last hour is kept**, whatever else is true: a build may be writing it,
+  and the sweep never races one. Its age is the newest of the tree, `src/` and `tmp/`, which every
+  run rewrites before it compiles.
+- **The id cannot name its checkout**: it is twelve hex digits of SHA-256 over the checkout's path,
+  the containers' volume id. So since batch 33 every run writes `<id>/checkout.txt` with `root=` (the
+  path) and `host=` (the machine's name). A marker naming another machine is kept, because whether
+  its checkout exists is that machine's to say; one naming this machine is stale when that checkout
+  is gone from disk.
+- **A tree with no marker** (every tree before batch 33) is kept when its id is the id of a checkout
+  of this repository on this machine's disk (`git worktree list`, each checked for a `.git`), and
+  otherwise stale: nothing names it. `-KeepUnknown` keeps those instead, for a server another clone
+  or machine has built on.
+- Only directories under `~/game_engine-remote/` named by twelve lower-case hex digits are trees;
+  the compiler cache (`~/game_engine-ccache`) and the rest of the home directory are never looked
+  at, and a removal names each tree as `./<id>` from inside that directory.
+
+**The first sweep, 2026-10-20, `-WhatIf` only** — nothing was removed; the owner decides. 91
+trees: 88 stale, every one for having no marker and no checkout on disk, **371.83 GB** between them
+(2.25 to 6.98 GB each, among them the cache follow-ups' `3811bb688fd9`); three kept — the primary
+checkout's (3.88 GB) and `cf43458762cb` (6.98 GB), whose worktree is still on disk, matched by id,
+and the gate's (7.15 GB), touched within the hour. The listing took about ten minutes, nearly all of
+it `du` walking 380 GB on the server; it reads, and writes nothing.
+
 ## What GCC 14 and clang 22 found
 
 The tree had never been compiled by either. Between them they found **one** thing, and it was in
