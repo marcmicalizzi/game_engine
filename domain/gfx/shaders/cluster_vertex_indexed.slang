@@ -30,6 +30,7 @@
 // the highest one that overflowed, with every entry that did fit collapsed. Its fragment stage is
 // cluster_vertex.slang's fs_visibility, whose input is the same flat id at location 0.
 
+#include "alpha_mask.slang"
 #include "scene.slang"
 
 // Same layout as gfx::ClusterDrawParams (128 bytes). `visible` is the run's region's records,
@@ -73,6 +74,14 @@ float4 clip_position(uint4 record, uint visible_index, uint local, out uint pair
   return mul(g_params.view_proj, float4(q, 1.0));
 }
 
+// True when the record's pair is alpha-tested and the frame carries the tables to say so.
+bool record_masked(uint4 record) {
+  const MaskTables masks = load_mask_tables(g_params.eye, load_eye(g_params.eye));
+  if (masks.materials == 0) return false;
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  return pair_masked(masks, instances[record.x], record.y);
+}
+
 [shader("vertex")]
 IndexedVertex vs_cluster_indexed(uint index : SV_VulkanVertexID) {
   const uint slot = index >> 8;
@@ -83,6 +92,9 @@ IndexedVertex vs_cluster_indexed(uint index : SV_VulkanVertexID) {
   uint pair;
   out.position = clip_position(record, visible_index, index & 0xff, pair);
   out.id_base = (pair << 8) - record.z;
+  // An alpha-tested pair is vs_cluster_indexed_masked's (below): every corner of its triangles
+  // collapses to one point here, so none rasterizes. No tables, nothing collapses.
+  if (record_masked(record)) out.position = float4(0.0, 0.0, 0.0, 0.0);
   return out;
 }
 
@@ -117,6 +129,7 @@ FallbackVertex vs_cluster_fallback(uint vertex_id : SV_VulkanVertexID,
   out.id = 0;                                  // a degenerate triangle is never rasterized
   out.position = float4(0.0, 0.0, 0.0, 0.0);  // degenerate unless the entry overflowed
   if (record.w == 0) return out;              // the indexed draw drew it
+  if (record_masked(record)) return out;      // vs_cluster_fallback_masked draws it
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[record.y];
   if (triangle >= cluster.triangle_count) return out;
@@ -126,4 +139,115 @@ FallbackVertex vs_cluster_fallback(uint vertex_id : SV_VulkanVertexID,
   out.position = clip_position(record, visible_index, (packed >> (8 * corner)) & 0xff, pair);
   out.id = (pair << 8) | (triangle & 0xff);
   return out;
+}
+
+// ---- alpha-tested clusters (docs/subsystems/renderer.md, "Alpha-tested geometry") -------------
+//
+// The indexed draw's masked variant: the same index buffer, drawn again, keeping only the
+// alpha-tested pairs the opaque stage collapsed, with the UV interpolated and the material flat;
+// and the fallback's, over the same overflowed slots.
+struct IndexedMaskedVertex {
+  float4 position : SV_Position;
+  nointerpolation uint id_base : VISIBILITY_ID;
+  nointerpolation uint material : MATERIAL;
+  float2 uv : TEXCOORD0;
+};
+
+// The masked variants' corner `local` of the record's pair: the clip position, the UV and the
+// material, or a collapsed corner when the pair is not alpha-tested.
+float4 masked_corner(uint4 record, uint visible_index, uint local, out uint pair,
+                     out uint material, out float2 uv) {
+  const MaskTables masks = load_mask_tables(g_params.eye, load_eye(g_params.eye));
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  const InstanceDesc instance = instances[record.x];
+  pair = 0;
+  material = 0;
+  uv = float2(0.0, 0.0);
+  if (!pair_masked(masks, instance, record.y)) return float4(0.0, 0.0, 0.0, 0.0);
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  material = pair_material(masks, instance, record.y);
+  uv = vertex_uv(masks, clusters[record.y].vertex_offset + local);
+  return clip_position(record, visible_index, local, pair);
+}
+
+[shader("vertex")]
+IndexedMaskedVertex vs_cluster_indexed_masked(uint index : SV_VulkanVertexID) {
+  const uint slot = index >> 8;
+  uint4* records = (uint4*)g_params.records;
+  const uint4 record = records[slot];
+  IndexedMaskedVertex out;
+  uint pair;
+  out.position = masked_corner(record, g_params.visible_offset + slot, index & 0xff, pair,
+                               out.material, out.uv);
+  out.id_base = (pair << 8) - record.z;
+  return out;
+}
+
+[shader("fragment")]
+void fs_visibility_indexed_masked(IndexedMaskedVertex v, uint primitive_id : SV_PrimitiveID) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const uint2 pixel = uint2(v.position.xy);
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
+  const uint id = v.id_base + primitive_id;
+  const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
+  Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// The fallback's masked vertex stage: the id whole (pair << 8 | triangle), as vs_cluster_fallback.
+struct FallbackMaskedVertex {
+  float4 position : SV_Position;
+  nointerpolation uint id : VISIBILITY_ID;
+  nointerpolation uint material : MATERIAL;
+  float2 uv : TEXCOORD0;
+};
+
+[shader("vertex")]
+FallbackMaskedVertex vs_cluster_fallback_masked(uint vertex_id : SV_VulkanVertexID,
+                                                uint slot : SV_VulkanInstanceID) {
+  uint4* records = (uint4*)g_params.records;
+  const uint4 record = records[slot];
+  const uint triangle = vertex_id / 3;
+  const uint corner = vertex_id - triangle * 3;
+  FallbackMaskedVertex out;
+  out.id = 0;
+  out.material = 0;
+  out.uv = float2(0.0, 0.0);
+  out.position = float4(0.0, 0.0, 0.0, 0.0);
+  if (record.w == 0) return out;
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  const ClusterDesc cluster = clusters[record.y];
+  if (triangle >= cluster.triangle_count) return out;
+  uint* triangles = (uint*)g_params.triangles;
+  const uint packed = triangles[cluster.triangle_offset + triangle];
+  uint pair;
+  out.position = masked_corner(record, g_params.visible_offset + slot,
+                               (packed >> (8 * corner)) & 0xff, pair, out.material, out.uv);
+  out.id = (pair << 8) | (triangle & 0xff);
+  return out;
+}
+
+[shader("fragment")]
+void fs_visibility_fallback_masked(FallbackMaskedVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const uint2 pixel = uint2(v.position.xy);
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
+  const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(v.id);
+  Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// The cascades' depth-only draws of masked clusters, indexed and fallback.
+[shader("fragment")]
+void fs_mask_depth_indexed(IndexedMaskedVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+}
+
+[shader("fragment")]
+void fs_mask_depth_fallback(FallbackMaskedVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
 }

@@ -42,7 +42,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1680 bytes).
+// Read through a device address; mirrors gfx::CullParams (1712 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -100,6 +100,9 @@ struct CullParams {
   // The frame's origin (scene.slang): every instance is moved into its space before any test, and
   // the planes, `camera` and `view_proj` above are in that space.
   FrameEye eye;
+  // Alpha-tested materials (scene.slang, MaskTables): set, and `eye.masks` 1, only in a frame with
+  // one. A masked pair is never sent to the software rasterizer (see cull_pair).
+  MaskTables masks;
   // Shadow casters outside the frustum (see cull_pair): convex volumes of inward planes in the
   // frame's space, each also inside the sphere `caster_reach[v]` when its w is not negative. Read
   // only with `casters` set and only by a pair the frustum test rejected.
@@ -521,6 +524,12 @@ void cull_pair(uint pair, bool vertex_draw) {
     const float distance = max(length(center - params->camera.xyz) - radius, params->camera.w);
     const float diameter_px = 2.0 * radius / distance * params->lod.x;
     software = diameter_px < params->raster.x;
+    // **An alpha-tested pair is the hardware rasterizers' alone** (renderer.md, "Alpha-tested
+    // geometry"): the software rasterizer writes the buffer from compute, a thread a triangle
+    // walking its box, and testing a mask there is a UV interpolation and a texture fetch per
+    // covered pixel with no quad to take a mip from. Only a pair that would have gone software pays
+    // the two reads, and a frame with no masked material reads nothing (`masks.materials` 0).
+    if (software && pair_masked(params->masks, instance, index)) software = false;
   }
   uint entry;
   if (software) {

@@ -71,7 +71,10 @@ inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
 // tests near the origin build with, and what a null `ClusterDrawParams::eye` means.
 struct FrameEye {
   Vec3i cell;
-  u32 pad0 = 0;
+  // 1 when this eye is a `CullParams::eye` whose block carries the scene's mask tables right after
+  // it (`CullParams::masks`): what a rasterizer reads through `ClusterDrawParams::eye` to know the
+  // frame has alpha-tested clusters (renderer.md, "Alpha-tested geometry"). 0 everywhere else.
+  u32 masks = 0;
   Vec3 local;
   f32 pad1 = 0.0f;
   Vec3 residual;
@@ -141,7 +144,20 @@ inline constexpr u32 k_caster_run = 2;
 inline constexpr u32 k_caster_volume_planes = 13;
 inline constexpr u32 k_max_caster_volumes = 5;
 
-// Mirrors CullParams in cluster_cull.slang. 1680 bytes.
+// **The mask tables** (renderer.md, "Alpha-tested geometry"): what a pass needs to tell an
+// alpha-tested cluster from an opaque one and to test its mask — the material of a pair is
+// `materials[cluster_materials[cluster] + instance.material_base]`, masked when its flags carry
+// `k_material_alpha_mask`, and the UV of a vertex is `attributes[vertex]`'s. Mirrored as
+// `MaskTables` in scene.slang.
+struct MaskTables {
+  u64 materials = 0;          // ResolveMaterial[]
+  u64 cluster_materials = 0;  // u32 per cluster of the scene
+  u64 attributes = 0;         // geometry::VertexAttributes[] parallel to the vertices
+  u64 pad = 0;
+};
+static_assert(sizeof(MaskTables) == 32);
+
+// Mirrors CullParams in cluster_cull.slang. 1712 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -222,6 +238,11 @@ struct CullParams {
   // The frame's origin (`FrameEye`): every instance is moved into its space before any test.
   // `ClusterDrawParams::eye` points the rasterizers at this field of the view's own block.
   FrameEye eye;
+  // **Alpha-tested materials** (`MaskTables`; renderer.md, "Alpha-tested geometry"): right after the
+  // eye, so a rasterizer that reads the eye through `ClusterDrawParams::eye` reaches them too when
+  // `eye.masks` says they are there. All zero, and `eye.masks` 0, in a frame with no masked
+  // material, and then no pass reads a word of it.
+  MaskTables masks;
   // **Shadow casters outside the frustum** (renderer.md, "Shadows"; the renderer's
   // caster_volume.h fits them). With `casters` set, a pair the frustum test rejects is tested
   // against these convex volumes — the view's frustum swept towards the key light, and the hull of
@@ -238,7 +259,7 @@ struct CullParams {
   u32 caster_volume_count = 0;
   u32 pad_casters[2] = {};
 };
-static_assert(sizeof(CullParams) == 1680);
+static_assert(sizeof(CullParams) == 1712);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

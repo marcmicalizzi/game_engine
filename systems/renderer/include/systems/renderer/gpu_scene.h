@@ -301,6 +301,10 @@ class GpuScene {
   // then draws with the resolve module that has the water branch, and otherwise with the one that
   // has none, since the branch costs every pixel of every frame (water.md, "Shading").
   bool has_water() const noexcept { return has_water_; }
+  // A material of the table is alpha-tested (gfx::k_material_alpha_mask; renderer.md, "Alpha-tested
+  // geometry"): the frame draws the masked variants and the ray loops test masks. False keeps every
+  // pass the one it always was.
+  bool has_masked() const noexcept { return has_masked_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
   // from the visible list, so what a frame actually uses is `Stats::deform_vertices`.
@@ -1136,6 +1140,7 @@ class GpuScene {
   u64 compactions_ = 0;
   u32 material_count_ = 0;
   bool has_water_ = false;  // a material of the table carries gfx::k_material_water
+  bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u32 cascade_count_ = 0;  // shadow cascades whose runs follow the views'

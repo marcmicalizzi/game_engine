@@ -83,7 +83,7 @@ static const uint k_instance_uv_from_corner = 2u;
 // origin, and an instance is then where it is stored, to the bit.
 struct FrameEye {
   int3 cell;
-  uint pad0;
+  uint masks;  // 1: a CullParams eye with the scene's MaskTables right after it (below)
   float3 local;
   float pad1;
   float3 residual;
@@ -145,7 +145,7 @@ FrameEye load_eye(uint64_t address) {
   if (address == 0) {
     FrameEye origin;
     origin.cell = int3(0, 0, 0);
-    origin.pad0 = 0;
+    origin.masks = 0;
     origin.local = float3(0.0, 0.0, 0.0);
     origin.pad1 = 0.0;
     origin.residual = float3(0.0, 0.0, 0.0);
@@ -292,6 +292,72 @@ struct JointMatrix {
   float4 rows[3];
 };
 
+// ---- alpha-tested materials (docs/subsystems/renderer.md, "Alpha-tested geometry") -------------
+//
+// Mirrors gfx::MaskTables (32 bytes): the scene's material table, a material index per cluster and
+// the vertex attributes, which is what it takes to tell a masked pair from an opaque one and to
+// test its mask. The cull pass has them in its block; a rasterizer reaches them through the eye it
+// is given (`ClusterDrawParams::eye` points at `CullParams::eye`, and the tables follow it there),
+// and only when that eye's `masks` word says they are there — a standalone eye, or a frame with no
+// masked material, reads as no tables at all.
+struct MaskTables {
+  uint64_t materials;          // ResolveMaterial[] (material.slang)
+  uint64_t cluster_materials;  // uint per cluster
+  uint64_t attributes;         // VertexAttributes[] parallel to the vertices
+  uint64_t pad;
+};
+
+struct MaskedEye {
+  FrameEye eye;
+  MaskTables masks;
+};
+
+// ResolveMaterial's size and its `flags` word's offset (gfx::ResolveMaterial, pinned by gfx's size
+// table), so that the cull pass and the plain rasterizers can read one word of a material without
+// declaring the bindless arrays material.slang brings.
+static const uint k_resolve_material_bytes = 112;
+static const uint k_resolve_material_flags_offset = 44;
+static const uint k_material_masked = 32u;  // gfx::k_material_alpha_mask
+
+MaskTables no_mask_tables() {
+  MaskTables t;
+  t.materials = 0;
+  t.cluster_materials = 0;
+  t.attributes = 0;
+  t.pad = 0;
+  return t;
+}
+
+// The tables a rasterizer's eye carries, or none.
+MaskTables load_mask_tables(uint64_t eye_address, FrameEye eye) {
+  if (eye_address == 0 || eye.masks == 0) return no_mask_tables();
+  return ((MaskedEye*)eye_address)->masks;
+}
+
+// The table index of the material pair (instance, cluster) shades with.
+uint pair_material(MaskTables tables, InstanceDesc instance, uint cluster) {
+  uint* cluster_materials = (uint*)tables.cluster_materials;
+  return cluster_materials[cluster] + instance.material_base;
+}
+
+bool material_is_masked(MaskTables tables, uint material) {
+  uint* flags = (uint*)(tables.materials + uint64_t(material) * k_resolve_material_bytes +
+                        k_resolve_material_flags_offset);
+  return (*flags & k_material_masked) != 0;
+}
+
+// True when the pair's material is alpha-tested; false whenever the frame carries no tables.
+bool pair_masked(MaskTables tables, InstanceDesc instance, uint cluster) {
+  if (tables.materials == 0) return false;
+  return material_is_masked(tables, pair_material(tables, instance, cluster));
+}
+
+// A vertex's UV, off the rest attribute stream (a deformed vertex keeps its UV).
+float2 vertex_uv(MaskTables tables, uint vertex) {
+  VertexAttributes* attributes = (VertexAttributes*)tables.attributes;
+  const uint packed = attributes[vertex].uv_half2;
+  return float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16));
+}
 // ---- geometry streaming (docs/plan/04-renderer.md §4.3 step 3 and §4.9) -----------------------
 //
 // A scene's clusters are laid out in fixed-size **pages**, and a viewer may hold only some of

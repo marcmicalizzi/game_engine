@@ -6,6 +6,7 @@
 // pair, so positions come off the 16-bit grid of that instance's mesh (six bytes a vertex) and go
 // into the frame, whose origin is the eye, through `instance_point` before the view projection. scene.slang holds the structs the CPU pins with size tables.
 
+#include "alpha_mask.slang"
 #include "scene.slang"
 
 struct MeshParams {
@@ -52,10 +53,16 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
   const uint cluster_id = entry.y;
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[cluster_id];
-  SetMeshOutputCounts(cluster.vertex_count, cluster.triangle_count);
+  // An alpha-tested pair is the masked variant's (mesh_main_masked, below): this draw leaves it out,
+  // and in a frame with no masked material the eye carries no tables and nothing is left out.
+  const FrameEye eye = load_eye(g_params.eye);
+  const bool keep = !pair_masked(load_mask_tables(g_params.eye, eye), instance, cluster_id);
+  const uint vertex_count = keep ? cluster.vertex_count : 0u;
+  const uint triangle_count = keep ? cluster.triangle_count : 0u;
+  SetMeshOutputCounts(vertex_count, triangle_count);
 
   const uint t = group_thread.x;
-  if (t < cluster.vertex_count) {
+  if (t < vertex_count) {
     MeshDesc* meshes = (MeshDesc*)g_params.mesh;
     const MeshDesc mesh = meshes[instance.mesh];
     // One table read per workgroup, not per vertex: where this frame's pool holds this entry's
@@ -64,13 +71,13 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
     const float3 p = load_position(mesh, base, cluster.vertex_offset, t);
     // The instance's translation from the frame's eye (scene.slang): the frame's origin is the eye,
     // so no absolute position is formed and a vertex by the eye is as fine as a float is there.
-    const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
+    const float3 from_eye = instance_from_eye(instance, eye);
     const float3 q = instance_point(instance, from_eye, p);
     verts[t].position = mul(g_params.view_proj, float4(q, 1.0));
     verts[t].pair = pair_of(instance, mesh, cluster_id);
     verts[t].cluster_id = cluster_id;
   }
-  if (t < cluster.triangle_count) {
+  if (t < triangle_count) {
     uint* triangles = (uint*)g_params.triangles;
     const uint packed = triangles[cluster.triangle_offset + t];
     tris[t] = uint3(packed & 0xff, (packed >> 8) & 0xff, (packed >> 16) & 0xff);
@@ -106,4 +113,81 @@ void fs_visibility(MeshVertex v, uint primitive_id : SV_PrimitiveID) {
   const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
   visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// ---- alpha-tested clusters (docs/subsystems/renderer.md, "Alpha-tested geometry") -------------
+//
+// The second draw of a frame with a masked material: the same run of the visible list, keeping only
+// the alpha-tested pairs mesh_main left out, with the UV per vertex and the pair's material flat.
+// The fragment stage samples the mask with the quad's derivatives and discards below the cutoff,
+// then writes exactly the word fs_visibility writes, so the tie rule, the ids and the resolve are
+// the opaque path's.
+struct MaskedMeshVertex {
+  float4 position : SV_Position;
+  nointerpolation uint pair : PAIR;
+  nointerpolation uint material : MATERIAL;  // the pair's index in the material table
+  float2 uv : TEXCOORD0;
+};
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(128, 1, 1)]
+void mesh_main_masked(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
+                      out vertices MaskedMeshVertex verts[k_max_vertices],
+                      out indices uint3 tris[k_max_triangles],
+                      out primitives MeshPrimitive prims[k_max_triangles]) {
+  const uint local = group.x;
+  const uint visible_index = g_params.visible_offset + local;
+  const uint2 entry = visible_entry(g_params.visible, local);
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  const InstanceDesc instance = instances[entry.x];
+  const uint cluster_id = entry.y;
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  const ClusterDesc cluster = clusters[cluster_id];
+  const FrameEye eye = load_eye(g_params.eye);
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  const bool keep = pair_masked(masks, instance, cluster_id);
+  const uint vertex_count = keep ? cluster.vertex_count : 0u;
+  const uint triangle_count = keep ? cluster.triangle_count : 0u;
+  SetMeshOutputCounts(vertex_count, triangle_count);
+
+  const uint t = group_thread.x;
+  if (t < vertex_count) {
+    MeshDesc* meshes = (MeshDesc*)g_params.mesh;
+    const MeshDesc mesh = meshes[instance.mesh];
+    const uint base = deform_base(mesh, instance, visible_index);
+    const float3 p = load_position(mesh, base, cluster.vertex_offset, t);
+    const float3 q = instance_point(instance, instance_from_eye(instance, eye), p);
+    verts[t].position = mul(g_params.view_proj, float4(q, 1.0));
+    verts[t].pair = pair_of(instance, mesh, cluster_id);
+    verts[t].material = pair_material(masks, instance, cluster_id);
+    verts[t].uv = vertex_uv(masks, cluster.vertex_offset + t);
+  }
+  if (t < triangle_count) {
+    uint* triangles = (uint*)g_params.triangles;
+    const uint packed = triangles[cluster.triangle_offset + t];
+    tris[t] = uint3(packed & 0xff, (packed >> 8) & 0xff, (packed >> 16) & 0xff);
+    prims[t].primitive_id = t;
+  }
+}
+
+// fs_visibility behind the mask.
+[shader("fragment")]
+void fs_visibility_masked(MaskedMeshVertex v, uint primitive_id : SV_PrimitiveID) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const uint2 pixel = uint2(v.position.xy);
+  if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
+  const uint id = (v.pair << 8) | (primitive_id & 0xff);
+  const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
+  Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
+  visibility[pixel.y * extent_width(g_params.extent) + pixel.x].max(value);
+}
+
+// The cascades' depth-only draw of a masked cluster: depth where the mask keeps the pixel, and
+// nothing else (renderer.md, "Shadows").
+[shader("fragment")]
+void fs_mask_depth(MaskedMeshVertex v) {
+  const FrameEye eye = load_eye(g_params.eye);
+  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
 }

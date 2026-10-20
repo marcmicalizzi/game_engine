@@ -15,6 +15,7 @@
 #include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
 
+#include <cstddef>
 #include <type_traits>
 
 using namespace engine;
@@ -105,7 +106,11 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // cluster's template, and `instantiate` replaced the pad word. Still 128 with multi-view: `views`
 // took over the word that held the CLAS set's capacity, because a visible run's count is bounded
 // by `pair_count` anyway (docs/plan/04-renderer.md §4.6).
-ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
+// 144, not 128: the scene's material table and material per cluster, so an alpha-tested pair is
+// built non-opaque (renderer.md, "Alpha-tested geometry"). Past the 128 bytes of push constants
+// every device guarantees, which this pass may take: it runs only on devices with
+// VK_NV_cluster_acceleration_structure, and every one of them has 256.
+ENGINE_EXPECT_SIZE(144, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
@@ -140,7 +145,14 @@ ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
 // offset
 // (`k_cull_params_eye_offset`); the block is read through an address, and the pass reads the
 // volumes only for a pair the frustum rejected in a frame that keeps casters.
-ENGINE_EXPECT_SIZE(1680, 8, gfx::CullParams);
+// 1712, not 1680: the mask tables (`MaskTables`: the material table, the material per cluster and
+// the vertex attributes) right after `eye`, so a rasterizer that reads the eye through
+// `ClusterDrawParams::eye` reaches them too (renderer.md, "Alpha-tested geometry"); the caster
+// volumes moved 32 bytes back, and nothing reads them by offset.
+ENGINE_EXPECT_SIZE(1712, 8, gfx::CullParams);
+ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
+// The mask test reads one word of a material by offset (scene.slang, `k_resolve_material_flags_offset`).
+static_assert(offsetof(gfx::ResolveMaterial, flags) == 44);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
 // expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads

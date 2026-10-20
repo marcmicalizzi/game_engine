@@ -52,6 +52,7 @@
 // draws with the water module only when its scene has a water material (`GpuScene::has_water`),
 // and the plain module compiles to the bytes it did before water existed.
 
+#include "alpha_mask.slang"
 #include "brdf.slang"
 #include "display.slang"
 #include "ground_detail.slang"
@@ -187,6 +188,8 @@ static const uint k_no_scene = 0xffffffffu;
 static const uint k_shadow_sun = 1u;
 static const uint k_shadow_lights = 2u;
 static const uint k_shadow_cascades = 4u;  // the sun's shadow is read from the cascaded maps
+// The frame has alpha-tested materials (gfx::k_shadow_alpha_masks): a shadow ray tests their masks.
+static const uint k_shadow_alpha_masks = 8u;
 
 struct FullscreenOut {
   float4 position : SV_Position;
@@ -296,6 +299,31 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
   ray.Direction = direction;
   ray.TMin = 0.0;
   ray.TMax = t_max;
+  if ((params->shadow_flags & k_shadow_alpha_masks) != 0) {
+    // **Alpha-tested casters** (renderer.md, "Alpha-tested geometry"): a masked pair is built
+    // non-opaque, so the ray cannot force opacity. Each non-opaque candidate is decided here — a
+    // masked pair by its mask at level 0, anything else non-opaque (a shadow caster) as solid — and
+    // the first one kept ends the search. A candidate's geometry index is its visible entry (the
+    // cluster path the renderer builds; its records carry it).
+    MaskTables masks = no_mask_tables();
+    masks.materials = params->materials;
+    masks.cluster_materials = params->cluster_materials;
+    masks.attributes = params->attributes;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
+    masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
+                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
+    while (masked.Proceed()) {
+      if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+      const uint2 entry = visible_entry(params->visible, masked.CandidateGeometryIndex());
+      InstanceDesc* instances = (InstanceDesc*)params->instances;
+      if (candidate_keeps(masks, params->clusters, params->triangles, instances[entry.x], entry.y,
+                          masked.CandidatePrimitiveIndex(),
+                          masked.CandidateTriangleBarycentrics())) {
+        masked.CommitNonOpaqueTriangleHit();
+      }
+    }
+    return masked.CommittedStatus() != COMMITTED_NOTHING;
+  }
   RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
   query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
   while (query.Proceed()) {

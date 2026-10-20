@@ -34,6 +34,7 @@
 // is what lets the two pictures be compared at all. `k_pt_uniform_sky` replaces both with a
 // constant, which is the white furnace the integrator is checked with.
 
+#include "alpha_mask.slang"
 #include "brdf.slang"
 #include "display.slang"
 #include "ground_detail.slang"
@@ -99,6 +100,28 @@ static const uint k_pt_uniform_sky = 1u;
 static const uint k_pt_pixel_center = 2u;
 static const uint k_pt_dither = 4u;  // the output encode dithers by the 8-bit output's 255 steps
 static const uint k_pt_roulette_depth = 3u;
+// The frame has alpha-tested materials (gfx::k_pt_alpha_masks; renderer.md, "Alpha-tested
+// geometry"): every ray decides its non-opaque candidates in its loop instead of by a flag.
+static const uint k_pt_alpha_masks = 8u;
+
+// The loop's rule for a non-opaque candidate (alpha_mask.slang): a masked pair by its mask at level
+// 0; anything else non-opaque is a shadow caster, which the camera ray leaves out (as the culling
+// flag did) and every later ray stops on (as forcing opacity did).
+bool pt_candidate_keeps(PathTraceParams* params, uint visible_index, uint primitive,
+                        float2 barycentrics, bool camera_ray) {
+  MaskTables masks = no_mask_tables();
+  masks.materials = params->materials;
+  masks.cluster_materials = params->cluster_materials;
+  masks.attributes = params->attributes;
+  const uint2 entry = visible_entry(params->visible, visible_index);
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  const InstanceDesc instance = instances[entry.x];
+  const uint material = pair_material(masks, instance, entry.y);
+  if (!material_is_masked(masks, material)) return !camera_ray;
+  ClusterDesc* clusters = (ClusterDesc*)params->clusters;
+  const float2 uv = hit_uv(masks, params->triangles, clusters[entry.y], primitive, barycentrics);
+  return mask_keeps_level0(mask_material(masks, material), uv);
+}
 
 SceneGeometry geometry_of(PathTraceParams* params) {
   SceneGeometry geo;
@@ -148,6 +171,20 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
   ray.Direction = direction;
   ray.TMin = 0.0;
   ray.TMax = t_max;
+  if ((params->flags & k_pt_alpha_masks) != 0) {
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
+    masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
+                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
+    while (masked.Proceed()) {
+      if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+      if (pt_candidate_keeps(params, masked.CandidateGeometryIndex(),
+                             masked.CandidatePrimitiveIndex(),
+                             masked.CandidateTriangleBarycentrics(), false)) {
+        masked.CommitNonOpaqueTriangleHit();
+      }
+    }
+    return masked.CommittedStatus() != COMMITTED_NOTHING;
+  }
   const uint flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
   RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
   query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
@@ -211,10 +248,19 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // kept out of the picture because it faces away from the camera. The first hit therefore
     // stays the real-time picture's, as ray_visibility.slang's does, while a bounce or a shadow
     // ray is stopped by it as by any other surface.
-    const uint flags = bounce == 0 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE;
+    // With alpha-tested materials the flags cannot do it: no flag, and the loop decides.
+    const bool masked = (params->flags & k_pt_alpha_masks) != 0;
+    const uint flags = masked ? RAY_FLAG_NONE
+                              : (bounce == 0 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE);
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
     while (query.Proceed()) {
+      if (!masked || query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+      if (pt_candidate_keeps(params, query.CandidateGeometryIndex(),
+                             query.CandidatePrimitiveIndex(),
+                             query.CandidateTriangleBarycentrics(), bounce == 0)) {
+        query.CommitNonOpaqueTriangleHit();
+      }
     }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
       radiance += throughput * environment(params, direction, bounce == 0);

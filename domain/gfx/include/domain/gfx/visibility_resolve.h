@@ -47,6 +47,10 @@ inline constexpr u32 k_no_scene = 0xFFFFFFFFu;
 inline constexpr u32 k_shadow_sun = 1u;       // the directional sun casts
 inline constexpr u32 k_shadow_lights = 2u;    // the lights of the array cast
 inline constexpr u32 k_shadow_cascades = 4u;  // the sun's shadow comes from the cascaded maps
+// The frame has alpha-tested materials (`k_material_alpha_mask`): a shadow ray decides each
+// non-opaque candidate — a masked pair by its mask, a shadow caster as solid — instead of forcing
+// opacity (renderer.md, "Alpha-tested geometry"). Clear, the query is the one it always was.
+inline constexpr u32 k_shadow_alpha_masks = 8u;
 
 // ---- cascaded shadow maps (docs/plan/04-renderer.md §4.4, docs/subsystems/renderer.md) --------
 //
@@ -209,7 +213,8 @@ struct ResolveMaterial {
   u32 samplers_mr_normal = k_same_samplers;           // low half metallic-roughness, high normal
   u32 samplers_occlusion_emissive = k_same_samplers;  // low half occlusion, high emissive
   // The UV transform, read with k_material_uv_transform: u' = x u + y v + offset.x and
-  // v' = z u + w v + offset.y. `uv_offset.zw` are unused.
+  // v' = z u + w v + offset.y. `uv_offset.z` and `.w` are an alpha-tested material's cutoff and its
+  // base colour factor's alpha (`set_alpha_mask`), and unused otherwise.
   Vec4 uv_transform{1.0f, 0.0f, 0.0f, 1.0f};
   Vec4 uv_offset{};
 };
@@ -255,7 +260,21 @@ inline constexpr u32 k_material_ground_detail = 8u;
 // UV transform never reads, so every other reader of the table — the path tracer, a debug view —
 // sees a plain untextured dielectric of the shallow colour, which is what stage 1 drew.
 inline constexpr u32 k_material_water = 16u;
+// `k_material_alpha_mask`: an alpha-tested material (glTF `alphaMode` MASK; docs/subsystems/
+// renderer.md, "Alpha-tested geometry"). Its clusters are drawn by the rasterizers' masked
+// variants, which discard where the base colour's alpha times `uv_offset.w` is below `uv_offset.z`,
+// are built non-opaque into the frame's acceleration structures so the ray loops test the same
+// mask, and never go to the software rasterizer. Packed by `set_alpha_mask`, after any
+// `set_uv_transform` (which clears those two words).
+inline constexpr u32 k_material_alpha_mask = 32u;
 
+// Marks `material` alpha-tested at `cutoff` (0..1), with the base colour factor's alpha
+// `factor_alpha`, which multiplies the texture's as glTF says.
+inline void set_alpha_mask(ResolveMaterial& material, f32 cutoff, f32 factor_alpha) noexcept {
+  material.flags |= k_material_alpha_mask;
+  material.uv_offset.z = cutoff;
+  material.uv_offset.w = factor_alpha;
+}
 // One water body's shading numbers (engine.scene.WaterBody, as the renderer's reader resolved
 // them): what `set_water_material` packs and water.slang reads.
 struct WaterShading {
