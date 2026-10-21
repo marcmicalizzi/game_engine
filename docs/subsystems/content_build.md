@@ -35,7 +35,7 @@
 - The module links no capability; a derived step is a table a host hands it.
 - `protocol::ContentBuildOptions` states the defaults `MeshOptions` has. The protocol could not use `MeshOptions` itself (it is a C++ struct, not a schema type), so the IDL repeats the numbers, and this module's test is what holds the two together.
 
-**Public API.** `domain/content_build/content_build.h` (the build, the manifest, the tasks, and the derived steps: `DerivedStep`, `DerivedEntry`, `read_derived_entries`, `DerivedTask`, `run_derived_task`, `run_derived_tasks`, `k_rule_derived_build`, `k_rule_source_unreadable`), `domain/content_build/container_stats.h` (the metrics and the container reader).
+**Public API.** `domain/content_build/content_build.h` (the build, the manifest, the tasks, and the derived steps: `DerivedStep`, `DerivedEntry`, `read_derived_entries`, `DerivedTask`, `run_derived_task`, `run_derived_tasks`, `k_rule_derived_build`, `k_rule_source_unreadable`), `domain/content_build/container_stats.h` (the metrics and the container reader), `domain/content_build/generator_hosts.h` (`GeneratorHosts`: the host seam of `assets::MeshGeneratorInputs` — a vine's or a cover's host read by the path its recipe gives, a generated mesh built in memory under the dependant's options, a `.clusters` read, a glTF imported, at most `k_host_depth` levels of hosts deep — which `build_generated`, `source_hash_of`, engine-content's `vine` and `cover` and the renderer's scene reader all use, so every host app reads a host the same way; [cover](cover.md#the-host)).
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `time`, `jobs`, `log`, `io`, `json`, `geometry`, `assets`, `atlas`, `texture`.
 

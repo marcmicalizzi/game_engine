@@ -1,0 +1,165 @@
+// The cover capability's own types (ADR-0007, ADR-0027; docs/subsystems/cover.md): the recipes of
+// the two solvers that grow over a host mesh — a climbing plant (roadmap G76) and organic cover
+// (G78). They live with the capability, so ENGINE_WITH_COVER=OFF takes them out of the build with
+// everything else it owns: a build without it refuses a `.vine.json` or a `.cover.json` mesh by
+// the mesh-generator registry's sentence.
+namespace engine.cover
+
+/// Where the host stands, as far as what grows on it is concerned (cover.md, "The exposure
+/// terms"): the light, the ground, the water and the canopy, in the **host's own frame**. A recipe
+/// that names none gets these defaults: a host standing on the ground at its own y = 0, under a sun
+/// from the south at 45 degrees, no water near, no canopy over it.
+struct HostSite @version(1) {
+  /// The yaw the host's instance is placed with, so the solver's north is the world's (north is
+  /// -z in the world, sky.md): -360 to 360 degrees, the scene's `yaw_deg`.
+  yaw_deg: f32 = 0.0 @unit(deg)
+  /// Where the light comes from, in the world: its azimuth from north towards east, 0 to 360
+  /// degrees (180: from the south), and its height above the horizon, 1 to 90 degrees.
+  light_azimuth_deg: f32 = 180.0 @unit(deg)
+  light_elevation_deg: f32 = 45.0 @unit(deg)
+  /// The ground's height in the host's frame: everything below it is earth, and the height a
+  /// surface stands above it is one of the terms. -1000 to 1000 m.
+  ground_y_m: f32 = 0.0 @unit(m)
+  /// The distance from the host to the nearest open water: 0 to 100000 m.
+  water_distance_m: f32 = 1000.0 @unit(m)
+  /// The share of the sky's light a canopy over the host takes away: 0 (open sky) to 1 (dark
+  /// forest). Beer-Lambert's exp(-k LAI) under a placed canopy is what belongs here (understory.md).
+  canopy_shade: f32 = 0.0
+  /// The climate's moisture: 0 (desert) to 1 (a temperate rain forest), 0.5 a damp temperate one.
+  wetness: f32 = 0.5
+}
+
+/// A root climber (cover.md, "The vine"; docs/experiments/vine-cover.md): common ivy (Hedera
+/// helix) by default — stems that walk the host's surface from seeds at its base, held by
+/// adventitious rootlets where the surface is rough and leaning where it is smooth, turning
+/// towards the light, branching, and carrying leaves on petioles along every stem. The walk is
+/// Luft's (2007): each step's direction a weighted sum of the last one, adhesion to the surface,
+/// phototropism, gravity and a random turn.
+struct Vine @version(1) {
+  /// Everything left to chance: where the seeds start, every turn, every branch.
+  seed: u64 = 1
+  /// Stems started at the host's base: 1 to 64.
+  seeds: u32 = 3
+  /// Seeds start on holding surface within this height of the host's lowest holding point (or of
+  /// the ground where the site's ground is above it): 0.02 to 10 m.
+  seed_band_m: f32 = 0.4 @unit(m)
+  /// Stems started at these points of the host's frame as well (snapped to the nearest holding
+  /// surface), for a vine planted where an author wants it.
+  anchors: vec3[] = []
+  /// The walk's step: 0.01 to 0.5 m.
+  step_m: f32 = 0.05 @unit(m)
+  /// The longest a seed's stem grows: 0.2 to 60 m; a branch gets a share of what its parent has
+  /// left.
+  max_length_m: f32 = 5.0 @unit(m)
+  /// The walk's weights (Luft's): the last direction, the pull onto the surface, the light, gravity
+  /// and the random turn. Each 0 to 4.
+  primary_weight: f32 = 1.0
+  adhesion_weight: f32 = 0.6
+  light_weight: f32 = 0.45
+  gravity_weight: f32 = 0.6
+  random_weight: f32 = 0.35
+  /// How far from the surface a stem still finds it: 0.005 to 1 m. Past this a stem is free.
+  adhesion_distance_m: f32 = 0.08 @unit(m)
+  /// A free stem stops growing once it has run this far without a hold: 0.05 to 5 m.
+  max_free_m: f32 = 0.5 @unit(m)
+  /// The host roughness at and above which the rootlets hold: 0 to 1. Below it a stem leans on
+  /// the surface and slides, as ivy does on glass or polished stone.
+  hold_roughness: f32 = 0.5
+  /// A stem's chance to branch at each held step: 0 to 0.5.
+  branch_chance: f32 = 0.04
+  /// A branch's angle from its parent, in the surface: 5 to 85 degrees.
+  branch_angle_deg: f32 = 40.0 @unit(deg)
+  /// Branch orders below a seed's stem: 0 to 6.
+  branch_depth: u32 = 3
+  /// The radius of the stoutest stem at its base, and of every tip: the pipe model (Delta = 2)
+  /// gives each stem tip_radius * sqrt(tips it carries), capped at `stem_radius_m`. 0.002 to 0.2 m
+  /// and 0.0005 m to the stem radius.
+  stem_radius_m: f32 = 0.012 @unit(m)
+  tip_radius_m: f32 = 0.0015 @unit(m)
+  /// A leaf's length from its base to its tip, ivy's 4 to 10 cm: 0.01 to 0.5 m; its width over
+  /// its length, 0.3 to 1.5.
+  leaf_length_m: f32 = 0.065 @unit(m)
+  leaf_width: f32 = 0.95
+  /// One leaf every this many metres along a stem, alternate sides: 0.01 to 1 m.
+  leaf_spacing_m: f32 = 0.05 @unit(m)
+  /// A petiole's reach off the stem, which stands the leaf out from the wall: 0 to 0.3 m.
+  petiole_m: f32 = 0.03 @unit(m)
+  /// Sides round a stem's tube: 3 to 12.
+  sides: u32 = 5
+  /// A tube row every this many metres of stem: 0.01 to 1 m.
+  row_m: f32 = 0.1 @unit(m)
+  /// The most triangles the mesh may have: 500 to 2,000,000; the solver coarsens the rows and
+  /// thins the leaves, never the walk, until it fits.
+  triangle_budget: u32 = 60000
+}
+
+/// A vine's recipe: the host it grows over and its parameters (`<name>.vine.json`).
+struct VineFile @version(1) {
+  /// The climbing strategy: "ivy", the root climber, is the one modelled (cover.md, "Climbing
+  /// strategies").
+  species: string = "ivy"
+  /// The host mesh, relative to this file: a generated mesh (`.rock.json`, `.flora.json`), a
+  /// `.clusters` container or a glTF.
+  host: string = ""
+  site: HostSite
+  vine: Vine
+}
+
+/// Organic cover over a host (cover.md, "The cover"): the cover mask solved from the exposure
+/// terms by the ecology's rules, the shaped cover scattered where it is dense, and, until the
+/// blended cover layer (roadmap R90) exists, a stand-in film over the host where the smooth cover is.
+struct CoverGrowth @version(1) {
+  /// Everything left to chance: where every shaped piece stands, its size and its turn.
+  seed: u64 = 1
+  /// Years the surface has stood: 0 to 500. Each kind approaches its cover as 1 - exp(-age / tau):
+  /// algae in about 2 years, moss 8, crustose lichen 40 (vine-cover.md, "The constants").
+  age_years: f32 = 25.0
+  /// How much of each kind the site's flora has: 0 (none) to 2.
+  moss: f32 = 1.0
+  lichen: f32 = 1.0
+  algae: f32 = 1.0
+  fungus: f32 = 1.0
+  /// Whether the host is dead or dying wood, the only place fungi fruit: a log, a stump, a snag.
+  dead_wood: bool = false
+  /// The radius the crevice term looks round a surface for its own shelter: 0.05 to 10 m.
+  crevice_radius_m: f32 = 0.6 @unit(m)
+  /// The mask's sampling: a holding triangle with an edge longer than this is split for the mask,
+  /// the film and the seeding, so a wall of a dozen triangles still gets patches: 0.02 to 5 m.
+  sample_m: f32 = 0.2 @unit(m)
+  /// Colonies: each kind's share is scaled by 1 - patchiness + patchiness * a seeded noise over
+  /// the surface at `patch_m`, so cover comes in patches rather than as a fog: 0 to 1, and 0.02 to
+  /// 20 m.
+  patchiness: f32 = 0.7
+  patch_m: f32 = 0.35 @unit(m)
+  /// Smoothing passes of the mask along the surface: 0 to 32.
+  smoothing: u32 = 4
+  /// The stand-in film: a host triangle whose corners' strongest smooth kind averages at least
+  /// this is drawn again, `film_offset_m` off the surface, in that kind's material. 0.05 to 1.
+  film_threshold: f32 = 0.4
+  film_offset_m: f32 = 0.004 @unit(m)
+  /// Shaped pieces a square metre where the mask is full: moss cushions, fruticose lichen tufts,
+  /// bracket fungi and mushrooms. Each 0 to 400.
+  cushions_per_m2: f32 = 40.0
+  tufts_per_m2: f32 = 12.0
+  brackets_per_m2: f32 = 6.0
+  mushrooms_per_m2: f32 = 6.0
+  /// A moss cushion's radius, Grimmia's 1 to 5 cm: 0.005 to 0.3 m; a bracket's reach, Trametes'
+  /// 2 to 10 cm: 0.01 to 0.5 m; a mushroom cap's radius, 0.005 to 0.2 m; a lichen tuft's height,
+  /// 0.005 to 0.2 m.
+  cushion_radius_m: f32 = 0.025 @unit(m)
+  bracket_reach_m: f32 = 0.05 @unit(m)
+  cap_radius_m: f32 = 0.02 @unit(m)
+  tuft_height_m: f32 = 0.025 @unit(m)
+  /// The most triangles the mesh may have: 500 to 2,000,000; the film is cut first, then the
+  /// shaped pieces thinned.
+  triangle_budget: u32 = 80000
+}
+
+/// A cover's recipe: the host it grows over, where it stands and the growth
+/// (`<name>.cover.json`).
+struct CoverFile @version(1) {
+  /// The host mesh, relative to this file, as a vine's.
+  host: string = ""
+  site: HostSite
+  cover: CoverGrowth
+}

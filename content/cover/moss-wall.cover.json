@@ -1,0 +1,5 @@
+{
+  "host": "../test-scenes/overgrown/kit/section-10m-h100.glb",
+  "site": { "light_azimuth_deg": 138.4, "light_elevation_deg": 48.9, "wetness": 0.6 },
+  "cover": { "seed": 7, "age_years": 120, "sample_m": 0.25 }
+}

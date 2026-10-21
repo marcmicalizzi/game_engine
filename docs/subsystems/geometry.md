@@ -299,7 +299,7 @@ decimated chain is cut at is FLT_MAX, which no own error reaches; the determinis
 `authored_levels_tests.cpp` hold it). On a 65 × 65 heightfield with a 9 × 9 level at 0.5 m and a
 quad at 2 m, the cut at 1080p is the plain build's up to 1 % inside 484 m from the sphere's centre,
 the 128-triangle level whole 1 % past it, and the quad past 1,887 m — the formula *d* = *e* ·
-`proj_scale` / threshold + *r*, and not nearer. A tree's chain records its levels in container **section 38** (`ClusterFileImpostor`, 48 bytes a level: what it stands for, its material and atlas, its error and the parallax and texel terms it came from), written only when a generator emits one, so every other container is the bytes it was.
+`proj_scale` / threshold + *r*, and not nearer. A tree's chain records its levels in container **section 38** (`ClusterFileImpostor`, 48 bytes a level: what it stands for, its material and atlas, its error and the parallax and texel terms it came from), written only when a generator emits one, so every other container is the bytes it was. A cover's companion ([cover](cover.md#the-mask)) records its host's **cover mask** in **section 39** (`cover_mask`: one `u32` a host vertex, four unorm8 coverages — moss, lichen, algae, fungus from the low byte — in the host container's vertex order), likewise written only by its generator; it is what the blended cover layer (roadmap R90) will read.
 
 ## UV-degenerate triangles: the repair
 

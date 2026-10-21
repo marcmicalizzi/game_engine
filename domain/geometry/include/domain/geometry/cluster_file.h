@@ -199,10 +199,17 @@ enum class ClusterSection : u32 {
   // only when a species emits a chain**, like 34 to 37, so every other container is the bytes it
   // was.
   Impostors = 38,
+  // The cover mask a cover solver wrote over its host (docs/subsystems/cover.md, "The mask"; G78):
+  // one `u32` per **host** vertex — the host container's cluster-ordered `Vertices`, or a glTF
+  // host's flattened ones — packing four unorm8 coverages, moss in bits 0..7, lichen 8..15, algae
+  // 16..23 and fungus 24..31. It lives in the **companion's** container, never the host's, so the
+  // host stays the bytes it was; it is what the blended cover layer (roadmap R90) will read through
+  // the attribute path. **Written only by the cover generator**, like 34 to 38.
+  CoverMask = 39,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Impostors) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::CoverMask) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -466,6 +473,9 @@ struct ClusterFileData {
   // The impostor chain (section 38), empty for a mesh whose generator builds none; every record
   // names one of `materials`. Written only when not empty.
   Vector<ClusterFileImpostor> impostors;
+  // The cover mask (section 39), empty for every mesh but a cover's companion; one packed word per
+  // host vertex. Written only when not empty.
+  Vector<u32> cover_mask;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

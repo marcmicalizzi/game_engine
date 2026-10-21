@@ -292,6 +292,8 @@ tiers' cut-off, so a low preset leaves the `rich` kinds out altogether.
 
 ## G76: climbing plants, a vine solver grown over a host mesh
 
+**Built** (2026-10-21) as the cover capability's vine: [cover](../subsystems/cover.md#the-vine), its grounding [vine-cover](vine-cover.md).
+
 The owner's question — can a vine be grown over a tree, a wall or a rock? — has a yes. **A growth
 walk along the host's surface**: seeds at the host's base (or where a recipe says), and each step
 the vine's tip moves along the surface's tangent plane, its direction a blend of **adhesion**
@@ -328,6 +330,8 @@ with the survivors scaled up to keep the cover's look, which is how every engine
 affordable.
 
 ## G78: organic cover — moss, lichen, fungi and algae over a host mesh
+
+**Built** (2026-10-21) as the cover capability's cover, R90 designed and the film standing in: [cover](../subsystems/cover.md#the-cover), its grounding [vine-cover](vine-cover.md).
 
 Two problems sharing the vine's host-surface query.
 

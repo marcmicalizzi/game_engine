@@ -905,6 +905,21 @@ any kind and `flora_collides(file)` says whether its instances carry a body. **T
 none of it yet**, and the scatter generator does not yet write a tier on the instances it places:
 both are the detail-tiers row's, which reads the tier from here.
 
+## The kit for companions
+
+**What grows over a mesh rather than on the ground** — a vine's stems and leaves, a cover's moss
+cushions, lichen tufts, brackets and mushroom caps — is the cover capability's ([cover](cover.md),
+roadmap G76 and G78), and it is built with this module's kit through `include/domain/flora/companion.h`
+(`src/companion.cpp`, 2026-10-21): `KitWriter` over a mesh and its `Motion`, `kit_begin_part` (a
+motion record and a structural row), `kit_polyline_tube` (a tube along any polyline, a radius and a
+bend weight a point, framed by parallel transport, its tip closed by a cone), `kit_leaf_card` (the
+understory's leaf card) and `kit_dome` (a cushion, a cap, a bracket's shelf). They are thin public
+wrappers over the kit's emitter, **added after everything else and changing none of it**: every
+species' bytes, and `k_flora_version`, stay where they were. A companion emits the motion contract
+with part 0 a root of no geometry and no part load-bearing, so the walker's collision keeps none of
+it; a tree as a host offers a climber only the triangles of its colliding parts, its trunk and
+load-bearing limbs (`assets::host_mesh_of`, read from sections 35 to 37).
+
 ## Materials
 
 Every part samples a tiled PBR set, or draws the flat colour it always drew

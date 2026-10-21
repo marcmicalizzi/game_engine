@@ -1,0 +1,5 @@
+{
+  "host": "../flora/oak.flora.json",
+  "site": { "light_azimuth_deg": 138.4, "light_elevation_deg": 48.9, "wetness": 0.6, "canopy_shade": 0.3 },
+  "cover": { "seed": 5, "age_years": 40, "sample_m": 0.15 }
+}

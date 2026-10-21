@@ -21,7 +21,7 @@ engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema image assets geometry materials texture flora_schemas
   SOURCES src/palm.cpp src/motion.cpp src/kit.cpp src/broadleaf.cpp src/conifer.cpp src/flora.cpp
           src/birch.cpp src/willow.cpp src/orchard.cpp src/ancient.cpp src/impostor.cpp src/shrub.cpp
-          src/fern.cpp src/tuft.cpp src/herb.cpp)
+          src/fern.cpp src/tuft.cpp src/herb.cpp src/companion.cpp)
 
 engine_module_tests(NAME flora
   SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/allometry_tests.cpp

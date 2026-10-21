@@ -62,6 +62,8 @@ int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
 int flora_command(int argc, char** argv);
 int rocks_command(int argc, char** argv);
+int vine_command(int argc, char** argv);   // cover_commands.cpp
+int cover_command(int argc, char** argv);  // cover_commands.cpp
 
 // The texture step `build --cache` runs, for a generated mesh's container (flora, rocks): every
 // image its records name built into `<ddc>/textures/<key>.tex`, or found there, with the paths

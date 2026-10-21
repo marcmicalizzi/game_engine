@@ -43,9 +43,52 @@ namespace engine::assets {
 // that names no set for a part falls back to (domain/materials, docs/subsystems/materials.md), or
 // none. The host finds the pack — `<repo>/content/materials`, or a directory it was told — and
 // reads it, so a generator stays a function of what it is given.
+struct MeshGeneratorHosts;
 struct MeshGeneratorInputs {
   const materials::Pack* materials = nullptr;
+  // How a generator whose file names another mesh — a vine's or a cover's host
+  // (docs/subsystems/cover.md) — reaches it; null where the host offers none, and such a
+  // generator then refuses with a sentence. Every other generator ignores it.
+  const MeshGeneratorHosts* hosts = nullptr;
 };
+
+// **A mesh another generated mesh grows over** (docs/subsystems/cover.md, "The host"): what a vine
+// or a cover solver reads of its host — every triangle at full detail in the host's own mesh
+// space, each with what its surface is — and nothing it would have to know the host's format for.
+// A container's is its finest DAG level (`host_mesh_of`), a glTF's its flattened import; the host
+// itself is never edited, and the dependant's mesh is placed with it (the same instance transform).
+struct GeneratorHostMesh {
+  Vector<Vec3> positions;  // the host's vertices: a container's cluster-ordered `Vertices`
+  Vector<u32> indices;     // three per triangle
+  // Per triangle: its material's roughness, 0 (polished) to 1, which is what says whether a root
+  // climber's rootlets hold (cover.md, "Attachment").
+  Vector<f32> roughness;
+  // Per triangle: 1 where a climber may hold — all of a rigid mesh; of a generated tree, only the
+  // triangles of the parts that stay colliders (its trunk, its load-bearing limbs; flora.md, "The
+  // structural table"), so a vine never grows over a leaf card.
+  Vector<u8> holds;
+  // The host's source hash (a generator's canonical parameters, a glTF's bytes, a container's
+  // recorded source), which a dependant's own source hash covers so a changed host is a new key.
+  u64 identity = 0;
+};
+
+// The host's side of the seam: a context and two functions, so `assets` holds no file reader and
+// the dependant names its host by the path its file wrote, relative to that file.
+struct MeshGeneratorHosts {
+  void* context = nullptr;
+  // The host's identity alone (`GeneratorHostMesh::identity`), cheaply: what a source hash needs.
+  bool (*identify)(void* context, std::string_view path, u64& out, std::string& error) = nullptr;
+  // The host's triangles. False, with a sentence, for a path that names no mesh this host reads.
+  bool (*load)(void* context, std::string_view path, GeneratorHostMesh& out,
+               std::string& error) = nullptr;
+};
+
+// A container's finest level as a host (`GeneratorHostMesh`): its leaf clusters' triangles over
+// its cluster-ordered vertices, each triangle's roughness its cluster material's, and `holds` from
+// its motion contract and structural table where it carries them (a corner of part 0 or of a part
+// flagged load-bearing or a collider holds; a triangle holds when all three do), else every
+// triangle. `identity` is the container's recorded source hash, or its build key, or zero.
+void host_mesh_of(const geometry::ClusterFileData& container, GeneratorHostMesh& out);
 
 // The key a generated mesh's container is addressed by, which every host computes the same way:
 // `geometry::cluster_cache_key(source_hash, lod, false, page_bytes)` — no weld, since a generator's
@@ -71,7 +114,18 @@ struct MeshGeneratorDesc {
   bool (*build)(std::span<const u8> bytes, const MeshGeneratorInputs& inputs,
                 const geometry::ClusterLodOptions& lod, u32 page_bytes,
                 geometry::ClusterFileData& out, std::string& error) = nullptr;
+  // Optional: the source hash of a file whose mesh depends on another's (a vine's on its host):
+  // over what `source_hash` covers **and** the host's identity through `inputs.hosts`, so a changed
+  // host is a new key and never a stale vine. A host calls `generated_source_hash`, which takes
+  // this when it is set and `source_hash` otherwise; `source_hash` alone answers without a host.
+  bool (*source_hash_with)(std::span<const u8> bytes, const MeshGeneratorInputs& inputs, u64& out,
+                           std::string& error) = nullptr;
 };
+
+// The source hash a host keys a generated mesh by: `desc.source_hash_with` with the inputs where
+// the generator has it, `desc.source_hash` otherwise.
+bool generated_source_hash(const MeshGeneratorDesc& desc, std::span<const u8> bytes,
+                           const MeshGeneratorInputs& inputs, u64& out, std::string& error);
 
 // The generator a path names: "flora" for ".../date-palm.flora.json"; empty for any other path.
 std::string_view mesh_generator_of(std::string_view path) noexcept;

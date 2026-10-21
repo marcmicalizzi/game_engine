@@ -1,0 +1,36 @@
+{
+  "format": "engine.scene.v1",
+  "name": "overgrown",
+  "camera_path": "camera-path.json",
+  "description": "Three hosts and their companions (roadmap G76 and G78): a granite boulder from the rock solver, a 10 m wall of the ruins' kit of boxes and an oak from the flora solver, each with ivy grown over it and moss, lichen and algae solved over it, every companion placed with its host's transform. The wall's kit is generated, never committed (README.md); a camera path walks round the three at eye height.",
+  "meshes": [
+    { "name": "boulder", "path": "../../rocks/granite-boulder.rock.json" },
+    { "name": "ivy on the boulder", "path": "../../cover/ivy-boulder.vine.json" },
+    { "name": "cover on the boulder", "path": "../../cover/moss-boulder.cover.json" },
+    { "name": "wall", "path": "kit/section-10m-h100.glb" },
+    { "name": "ivy on the wall", "path": "../../cover/ivy-wall.vine.json" },
+    { "name": "cover on the wall", "path": "../../cover/moss-wall.cover.json" },
+    { "name": "oak", "path": "../../flora/oak.flora.json" },
+    { "name": "ivy on the oak", "path": "../../cover/ivy-oak.vine.json" },
+    { "name": "cover on the oak", "path": "../../cover/moss-oak.cover.json" }
+  ],
+  "instances": [
+    { "mesh": 0, "name": "boulder", "translation": [-4.0, 0.0, 2.0], "ground": true },
+    { "mesh": 1, "name": "boulder: ivy", "translation": [-4.0, 0.0, 2.0], "ground": true },
+    { "mesh": 2, "name": "boulder: cover", "translation": [-4.0, 0.0, 2.0], "ground": true },
+    { "mesh": 3, "name": "wall", "translation": [-6.0, 0.0, -6.0], "ground": true },
+    { "mesh": 4, "name": "wall: ivy", "translation": [-6.0, 0.0, -6.0], "ground": true },
+    { "mesh": 5, "name": "wall: cover", "translation": [-6.0, 0.0, -6.0], "ground": true },
+    { "mesh": 6, "name": "oak", "translation": [6.0, 0.0, 0.0], "ground": true },
+    { "mesh": 7, "name": "oak: ivy", "translation": [6.0, 0.0, 0.0], "ground": true },
+    { "mesh": 8, "name": "oak: cover", "translation": [6.0, 0.0, 0.0], "ground": true }
+  ],
+  "terrain": {
+    "size": 129,
+    "extent": 64,
+    "seed": 7,
+    "dune_height": 0.05,
+    "dune_wavelength": 40,
+    "generator": "Waves"
+  }
+}

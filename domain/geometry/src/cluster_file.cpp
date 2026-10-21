@@ -265,6 +265,10 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Impostors, static_cast<u32>(sizeof(ClusterFileImpostor)),
                 data.impostors.size(), data.impostors.data());
   }
+  if (!data.cover_mask.empty()) {
+    add_section(payloads, ClusterSection::CoverMask, static_cast<u32>(sizeof(u32)),
+                data.cover_mask.size(), data.cover_mask.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -441,6 +445,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MotionVertices: return "motion_vertices";
     case ClusterSection::StructuralParts: return "structural_parts";
     case ClusterSection::Impostors: return "impostors";
+    case ClusterSection::CoverMask: return "cover_mask";
   }
   return "unknown";
 }
@@ -657,6 +662,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(sizeof(ClusterFileImpostor)));
     }
     copy_section(bytes, *chain, result.impostors);
+  }
+  // The cover mask: a file without it has none.
+  if (const ClusterFileSection* mask = found[static_cast<u32>(ClusterSection::CoverMask)];
+      mask != nullptr && mask->element_count != 0) {
+    if (mask->element_size != sizeof(u32)) {
+      return fail(error, "cluster file section cover_mask has " +
+                             std::to_string(mask->element_size) + "-byte elements, expected 4");
+    }
+    copy_section(bytes, *mask, result.cover_mask);
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -1100,6 +1114,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::StructuralParts,
     // 48 bytes a level, and only in a tree with an impostor chain.
     ClusterSection::Impostors,
+    // 4 bytes a host vertex, and only in a cover's companion.
+    ClusterSection::CoverMask,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

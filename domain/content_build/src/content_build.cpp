@@ -9,6 +9,7 @@
 #include <domain/assets/gltf.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/content_build/content_build.h>
+#include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
@@ -320,8 +321,11 @@ bool build_generated(const std::string& input, const std::string& output,
   }
   geometry::ClusterFileData data;
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
-  if (!generator->build(bytes, assets::MeshGeneratorInputs{options.materials},
-                        lod_options_of(options), options.page_bytes, data, message)) {
+  // A vine's or a cover's host is read through the same seam the renderer's scene reader uses
+  // (generator_hosts.h), under these options, so the two build one container.
+  const GeneratorHosts hosts(input, lod_options_of(options), options.page_bytes, options.materials);
+  if (!generator->build(bytes, hosts.inputs(), lod_options_of(options), options.page_bytes, data,
+                        message)) {
     error.rule = "source.unreadable";
     error.message = input + ": " + message;
     return false;
@@ -368,7 +372,9 @@ bool source_hash_of(const std::string& path, u64& out, std::string* message) {
     why = "cannot read " + path + ": " + std::string(io::status_name(status));
   if (generator != nullptr && status == io::Status::Ok) {
     const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
-    if (generator->source_hash(bytes, out, why)) return true;
+    // Identity only: a host's source hash needs no LOD options.
+    const GeneratorHosts hosts(path, geometry::ClusterLodOptions{}, 0, nullptr);
+    if (assets::generated_source_hash(*generator, bytes, hosts.inputs(), out, why)) return true;
     why = path + ": " + why;
   }
   if (message != nullptr) *message = why;

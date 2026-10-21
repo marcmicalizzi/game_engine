@@ -75,12 +75,18 @@ list(APPEND _content_tests tests/rocks_tests.cpp)
 if(TARGET engine::rocks)
   list(APPEND _content_deps rocks rocks_schemas schema)
 endif()
+# `vine` and `cover` the same way, with the cover capability (docs/subsystems/cover.md): a recipe
+# grown over the host it names into the host's companion through the cache. Linked, it is also
+# what makes `build` and `build-all` take a `.vine.json` or a `.cover.json` through the registry.
+if(TARGET engine::cover)
+  list(APPEND _content_deps cover cover_schemas flora schema)
+endif()
 list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
-          flora_commands.cpp rocks_commands.cpp
+          flora_commands.cpp rocks_commands.cpp cover_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -144,6 +150,12 @@ if(TARGET engine::rocks)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_ROCKS=1)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_ROCKS=1)
+  endif()
+endif()
+if(TARGET engine::cover)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_COVER=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_COVER=1)
   endif()
 endif()
 if(TARGET engine::npc)

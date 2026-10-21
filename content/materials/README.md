@@ -98,6 +98,12 @@ the surface one repeat covers, in metres, and the UVs it lands on are below.
 | `rock/sandstone` | sandstone | as granite | 2K | 1.0 | **not made**; the lab's generic set A stood in for the first proof |
 | `rock/basalt` | basalt | as granite | 2K | 1.0 | **not made** |
 | `rock/limestone` | limestone | as granite | 2K | 1.0 | **not made** |
+| `vine/stem` | a climbing plant's stems ([cover](../../docs/subsystems/cover.md#the-vine): ivy's young green-brown stems with their rootlets) | metres, *u* round, *v* along, as a shrub's bark | 1K | about 0.1: a stem is a centimetre or two round | **not made** |
+| `vine/leaf` | a vine's leaf cards, **one leaf per image, whole** (ivy's juvenile leaf: palmately three- to five-lobed, 4–10 cm, dark glossy green) | the card | 512 | unused | **not made**; wants alpha (R65) |
+| `moss/mat` | the cover's moss film and cushions ([cover](../../docs/subsystems/cover.md#the-cover)): a mat of moss shoots | metres over the host's surface | 1K | about 0.3 | **not made**; R90 will blend it under the mask instead of drawing a film |
+| `lichen/crust` | crustose lichen's crust and fruticose lichen's strap cards: a pale grey-green crust with its fruiting bodies | metres | 1K | about 0.2 | **not made** |
+| `algae/film` | algae's green film on damp, shaded bark and stone | metres | 512 | about 0.5 | **not made** |
+| `fungus/cap` | bracket fungi and mushroom caps: a zoned bracket's top (Trametes), a cap's | metres over the dome | 512 | about 0.05 | **not made** |
 
 **What a masked image is** (roadmap R65; [texture](../../docs/subsystems/texture.md#alpha-tested-masks)): a card role's base colour is alpha-tested — the engine draws, shadows and traces nothing where its alpha is below 0.5 — so the lab delivers the leaf or the spray **with its outline in alpha** and nothing else changes: no separate mask image, no premultiplied colour. The content build keeps the share of the image at or above 0.5 at every mip (so a far tree does not thin), and grows the leaf's colour eight texels into the cut (so a far tree has no dark halo). content/test-scenes/leaf-cards/ builds a procedural stand-in with the command in its README, for checking a set's orientation and cut before the lab's arrives.
 

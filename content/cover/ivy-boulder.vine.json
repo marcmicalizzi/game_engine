@@ -1,0 +1,6 @@
+{
+  "species": "ivy",
+  "host": "../rocks/granite-boulder.rock.json",
+  "site": { "light_azimuth_deg": 138.4, "light_elevation_deg": 48.9, "wetness": 0.6 },
+  "vine": { "seed": 3, "seeds": 3, "max_length_m": 2.5, "branch_chance": 0.05, "stem_radius_m": 0.008 }
+}

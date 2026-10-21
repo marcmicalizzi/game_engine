@@ -9,6 +9,7 @@
 
 #include <core/log/log.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
@@ -40,8 +41,14 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     return false;
   }
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
+  // A vine's or a cover's host (docs/subsystems/cover.md) is read through content_build's seam, the
+  // one engine-content uses, under this scene's LOD options and pack: the two build one container.
+  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  const content_build::GeneratorHosts hosts(path, desc.lod, page_bytes,
+                                            materials::pack_at(desc.materials));
+  const assets::MeshGeneratorInputs inputs = hosts.inputs();
   std::string generator_error;
-  if (!generator->source_hash(bytes, source_hash, generator_error)) {
+  if (!assets::generated_source_hash(*generator, bytes, inputs, source_hash, generator_error)) {
     error = path + ": " + generator_error;
     return false;
   }
@@ -57,8 +64,6 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
   }
   // The key `engine-content flora` writes under too, so either app finds what the other built —
   // with the material pack the parts fall back to in it, when there is one (materials.md).
-  const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
-  const assets::MeshGeneratorInputs inputs{materials::pack_at(desc.materials)};
   const u64 key = assets::generated_mesh_build_key(source_hash, inputs, desc.lod, page_bytes);
   std::string cache_path;
   if (desc.cache) {

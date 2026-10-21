@@ -29,6 +29,59 @@ u64 generated_mesh_build_key(u64 source_hash, const MeshGeneratorInputs& inputs,
   return pack == 0 ? key : hash_combine(key, pack);
 }
 
+bool generated_source_hash(const MeshGeneratorDesc& desc, std::span<const u8> bytes,
+                           const MeshGeneratorInputs& inputs, u64& out, std::string& error) {
+  if (desc.source_hash_with != nullptr) return desc.source_hash_with(bytes, inputs, out, error);
+  return desc.source_hash(bytes, out, error);
+}
+
+void host_mesh_of(const geometry::ClusterFileData& container, GeneratorHostMesh& out) {
+  out = GeneratorHostMesh{};
+  const geometry::ClusterLodMesh& lod = container.mesh;
+  out.positions = lod.mesh.vertices;
+  out.identity = container.source_hash != 0 ? container.source_hash : container.build_key;
+  // Which parts hold a climber: part 0 (a trunk, or a rigid mesh's only part), and a part the
+  // structural table flags load-bearing or a collider — the parts the walker's collision keeps
+  // (scene_collision.md, "What gets no body"), for the same reason: they are the wood.
+  const bool moving = container.motion_vertices.size() == lod.mesh.vertices.size() &&
+                      !container.motion_vertices.empty();
+  Vector<u8> part_holds;
+  if (moving) {
+    part_holds.resize(container.motion_parts.size() + 1u, 0u);
+    part_holds[0] = 1u;
+    for (const geometry::ClusterFileStructuralPart& record : container.structural_parts) {
+      if (record.part < part_holds.size() &&
+          (record.flags &
+           (geometry::k_structural_load_bearing | geometry::k_structural_collider)) != 0)
+        part_holds[record.part] = 1u;
+    }
+  }
+  const auto vertex_holds = [&](u32 v) {
+    if (!moving) return true;
+    const u32 part = container.motion_vertices[v].part;
+    return part < part_holds.size() && part_holds[part] != 0;
+  };
+  const bool has_lod = lod.lod.size() == lod.mesh.clusters.size();
+  for (u32 c = 0; c < lod.mesh.clusters.size(); ++c) {
+    if (has_lod && lod.lod[c].level != 0) continue;
+    const geometry::ClusterDesc& cluster = lod.mesh.clusters[c];
+    const u32 material = c < container.cluster_material.size() ? container.cluster_material[c] : 0u;
+    const f32 roughness =
+        material < container.materials.size() ? container.materials[material].roughness : 1.0f;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = lod.mesh.triangles[cluster.triangle_offset + t];
+      const u32 a = cluster.vertex_offset + (packed & 0xFFu);
+      const u32 b = cluster.vertex_offset + ((packed >> 8) & 0xFFu);
+      const u32 d = cluster.vertex_offset + ((packed >> 16) & 0xFFu);
+      out.indices.push_back(a);
+      out.indices.push_back(b);
+      out.indices.push_back(d);
+      out.roughness.push_back(roughness < 0.0f ? 0.0f : (roughness > 1.0f ? 1.0f : roughness));
+      out.holds.push_back(vertex_holds(a) && vertex_holds(b) && vertex_holds(d) ? 1u : 0u);
+    }
+  }
+}
+
 MeshGeneratorRegistry& MeshGeneratorRegistry::global() {
   // A function-local static, so a registrar in another translation unit's static initialization
   // finds it constructed whatever the order the linker put them in.

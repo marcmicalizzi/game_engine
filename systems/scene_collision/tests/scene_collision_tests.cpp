@@ -825,6 +825,60 @@ TEST_CASE(
   CHECK(z > face - c.radius - 0.1f);
 }
 
+TEST_CASE("scene_collision: a vine's or a cover's companion gets no body at all") {
+  // What the cover capability emits (cover.md, "Collision"): part 0 a root with no geometry, every
+  // stem, film, cushion and bracket on a later part with no structural flag. A slab a walker
+  // cannot step over, all of it on part 1, stands across the path at z = 10.
+  const MeshSource slab = box_mesh(Vec3{1.0f, 0.5f, 0.1f});
+  MeshSource companion;
+  for (const Vec3& p : slab.positions)
+    companion.positions.push_back(Vec3{p.x, p.y + 0.6f, p.z + 10.0f});
+  companion.indices = slab.indices;
+  const MeshSource meshes[] = {companion};
+  renderer::SceneInstance at_origin;
+  renderer::SceneData scene;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(&at_origin, 1), scene);
+  scene.sources.resize(scene.parts.size());
+  renderer::SourceMesh& source = scene.sources[0];
+  for (u32 p = 0; p < 2; ++p) {
+    geometry::ClusterFileMotionPart part;
+    part.pivot = Vec3{0.0f, 0.0f, 10.0f};
+    part.direction = Vec3{0.0f, 1.0f, 0.0f};
+    part.length = p == 0 ? 0.0f : 1.0f;
+    part.parent = p == 0 ? geometry::k_motion_no_parent : 0u;
+    source.motion_parts.push_back(part);
+    source.structural_parts.push_back(geometry::ClusterFileStructuralPart{p, 0.0f, 0.0f, 0u});
+  }
+  const geometry::ClusterMeshPart& part = scene.parts[0];
+  for (u32 v = part.first_vertex; v < scene.lod.mesh.vertices.size(); ++v)
+    source.motion_vertices.push_back(geometry::ClusterFileMotionVertex{1, 0});
+  REQUIRE(source.has_motion());
+
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  physics::ShapeId floor_shape;
+  REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
+  physics::BodyDesc floor;
+  floor.shape = floor_shape;
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
+  floor.motion = physics::MotionType::Static;
+  floor.layer = physics::Layer::Static;
+  physics::BodyId floor_body;
+  REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(0.0f, 10.0f), 0, true);
+  const Stats& s = collision.stats();
+  CHECK(s.proxy_triangles == 0u);
+  CHECK(s.flora_triangles_left_out >= 12u);
+  f32 top = 0.0f;
+  REQUIRE(hit_below(physics, 0.0f, 10.0f, top));
+  CHECK(top == doctest::Approx(0.0f).epsilon(1.0e-3));
+}
+
 TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the error") {
   const MeshSource meshes[] = {ball_mesh(3.0f, 5)};  // 8,192 triangles
   Vector<renderer::SceneInstance> placed(1);

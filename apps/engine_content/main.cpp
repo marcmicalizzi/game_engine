@@ -176,7 +176,12 @@ const char* k_usage =
     "                                          scree) into a cluster container through the\n"
     "                                          cache, or a GLB (rocks --help); present with the\n"
     "                                          rocks capability\n"
-    "  --version                            the commit this binary was built from, as JSON\n"
+    "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
+    "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
+    "                                          grow a vine or organic cover over the host its\n"
+    "                                          recipe names into the host's companion container\n"
+    "                                          (vine --help); present with the cover capability\n"
+    "  --version                           the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
@@ -1352,5 +1357,7 @@ int main(int argc, char** argv) {
   if (command == "npcs") return content::npcs_command(argc, argv);
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
+  if (command == "vine") return content::vine_command(argc, argv);
+  if (command == "cover") return content::cover_command(argc, argv);
   return usage("unknown command");
 }
