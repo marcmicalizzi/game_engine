@@ -238,6 +238,8 @@ void lay_out_pages(const SceneDesc& desc, const char* what, u32 page_bytes, Sour
   if (page_bytes > 0) options.page_bytes = page_bytes;
   if (geometry::build_cluster_pages(lod, options, pages, &page_error, &source_of_cluster)) {
     geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
+    if (!out.lod_coverage.empty())
+      geometry::permute_cluster_array(source_of_cluster, out.lod_coverage);
     return;
   }
   pages = geometry::ClusterPages{};
@@ -304,6 +306,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     out.species = container_data.generator_kind;
   }
   out.part_of_cluster = std::move(container_data.cluster_material);
+  if (container_data.lod_coverage.size() == lod.mesh.clusters.size())
+    out.lod_coverage = std::move(container_data.lod_coverage);
   if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
     out.part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), out.part_material.size());
     out.part_material.push_back(-1);
@@ -1653,6 +1657,11 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       geometry::permute_cluster_array(
           std::span<const u32>(source_of_cluster.data() + part.first_cluster, part.cluster_count),
           out.sources[m].part_of_cluster);
+      if (!out.sources[m].lod_coverage.empty()) {
+        geometry::permute_cluster_array(
+            std::span<const u32>(source_of_cluster.data() + part.first_cluster, part.cluster_count),
+            out.sources[m].lod_coverage);
+      }
     }
   }
 

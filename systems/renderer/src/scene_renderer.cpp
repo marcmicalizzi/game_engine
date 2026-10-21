@@ -1787,6 +1787,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 "cascaded shadow maps are drawn on the hw and vertex paths, never beside rays");
   // A negative override means "what the settings say", which is every caller but the reference.
   const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
+  // **The foliage threshold** (renderer.md, "The foliage threshold"; R91) follows a frame's
+  // override in proportion — the finest cut (0) is the finest foliage too, the chain's root (huge)
+  // its root — and the cross-fade runs only where a mesh carries coverage errors and the frame
+  // allows it (the reference tracer's rays have no fade table).
+  const f32 frame_foliage_px =
+      frame.lod_px >= 0.0f
+          ? frame.lod_px * (settings.lod_px > 0.0f ? settings.foliage_px / settings.lod_px : 1.0f)
+          : settings.foliage_px;
+  const f32 frame_fade = scene.has_coverage() && frame.lod_fade ? settings.lod_fade : 0.0f;
+  const u64 coverage_address = scene.has_coverage() ? scene.lod_coverage.address : 0u;
   // The occlusion history ping-pongs on the renderer's own count of frames recorded, **not** on
   // the caller's frame number: that number drives the lights, and a caller may repeat it — a
   // benchmark's warm-up holds frame 0, `render.capture` asks for the same frame twice — and a
@@ -2111,6 +2121,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (scene.has_masked()) {
       cull.eye.masks = 1;
       cull.masks = mask_tables;
+      if (frame_fade > 0.0f) cull.masks.fade = scene.fade_address(v);
     }
     // The LOD threshold is this view's: a peripheral view lets a cluster be `lod_scale` times as
     // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation). A
@@ -2128,6 +2139,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // the software split's and a streamed page's priority scale; such a frame has no software pass.
     const View& cut_view = rt_chain ? views_[shadow_lod_view] : view;
     cull.lod = Vec4{cut_view.proj_scale, frame_lod_px * cut_view.quality.lod_scale, 1.0f, 1.0f};
+    cull.coverage = coverage_address;
+    cull.foliage_px = frame_foliage_px * cut_view.quality.lod_scale;
+    cull.fade = frame_fade;
     cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
@@ -2290,6 +2304,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // pool block needs. Without culling the list is null and the pair is the entry.
     resolve.pairs = scene.pair_table.address;
     resolve.pair_entries = settings.cull ? scene.pair_entries_address(v) : 0;
+    // The shadow rays' share of the cross-fade: this view's table (alpha_mask.slang).
+    resolve.fade = frame_fade > 0.0f && scene.has_masked() ? scene.fade_address(v) : 0u;
+    resolve.fade_meshes = scene.meshes.address;
     resolve.triangles = scene.triangles.address;
     resolve.materials = scene.materials.address;
     resolve.cluster_materials = scene.cluster_materials.address;
@@ -2387,6 +2404,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       ray.clusters = scene.clusters.address;
       ray.triangles = scene.triangles.address;
       ray.masks = mask_tables;  // zero without a masked material: the culled query it always took
+      if (frame_fade > 0.0f && scene.has_masked()) ray.masks.fade = scene.fade_address(v);
       ray.caster_base = casters ? scene.visible_base(0, gfx::k_caster_run) : ~u32{0};
       vf.ray_address = ray_params_[slot].address + sizeof(gfx::RayVisibilityParams) * v;
       std::memcpy(static_cast<u8*>(ray_params_[slot].mapped) + sizeof(gfx::RayVisibilityParams) * v,
@@ -2422,10 +2440,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (scene.has_masked()) {
       cull.eye.masks = 1;
       cull.masks = mask_tables;
+      if (frame_fade > 0.0f) cull.masks.fade = scene.fade_address(scene.fade_cascade_block());
     }
     cull.lod = Vec4{lod_view.proj_scale,
                     frame_lod_px * lod_view.quality.lod_scale * settings.shadow_lod_scale, 1.0f,
                     settings.shadow_frustum ? 1.0f : 0.0f};
+    cull.coverage = coverage_address;
+    cull.foliage_px = frame_foliage_px * lod_view.quality.lod_scale * settings.shadow_lod_scale;
+    cull.fade = frame_fade;
     cull.raster = Vec4{settings.sw_px, gfx::k_raster_hardware, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
@@ -2587,6 +2609,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                     graph.import_buffer("draw_args2", scene.draw_args[1])};
   const gfx::RgBuffer rg_visible = graph.import_buffer("visible", scene.visible);
   const gfx::RgBuffer rg_pair_entries = graph.import_buffer("pair entries", scene.pair_entries);
+  // The cross-fade's tables (renderer.md, "The cross-fade"): written by the cull passes, read by
+  // the masked rasterizers, the ray path and the resolve's shadow rays.
+  const bool fading = frame_fade > 0.0f && scene.has_masked() && scene.fade.address != 0;
+  gfx::RgBuffer rg_fade{};
+  if (fading) rg_fade = graph.import_buffer("fade", scene.fade);
   gfx::RgBuffer rg_vertex_headers{};
   gfx::RgBuffer rg_vertex_records{};
   gfx::RgBuffer rg_vertex_indices{};
@@ -3029,6 +3056,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
           b.write(rg_pair_entries, gfx::Access::ComputeWrite);
+          if (fading) b.write(rg_fade, gfx::Access::ComputeWrite);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.write(rg_vertex_records, gfx::Access::ComputeWrite);
@@ -3213,6 +3241,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             read_pool(b, stage);
             read_tables(b, stage, false);
+            if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
           }
         },
         [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -3330,6 +3359,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
           read_tables(b, gfx::Access::ComputeRead, false);
+          if (fading) b.write(rg_fade, gfx::Access::ComputeWrite);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.write(rg_vertex_records, gfx::Access::ComputeWrite);
@@ -3454,6 +3484,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_pool(b, stage);
           read_tables(b, stage, false);
+          if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "shadow");
@@ -3527,6 +3558,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::MeshRead);
           }
           read_tables(b, gfx::Access::MeshRead, false);
+          if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
         },
         [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, k_zone_names[k_zone_hw][0]);
@@ -3711,6 +3743,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
             b.read(rt.clas_data, gfx::Access::RayQueryRead);
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
+            if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
             b.write(rg_vis, gfx::Access::ComputeWrite);
             read_pool(b, gfx::Access::ComputeRead);
           },
@@ -3799,6 +3832,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::FragmentRead);
           }
           read_tables(b, gfx::Access::FragmentRead, true);
+          if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
           read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);

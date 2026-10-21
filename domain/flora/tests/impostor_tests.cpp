@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -61,17 +62,30 @@ TEST_CASE("impostor chain: the solver's mesh is its bytes with the chain asked f
                     plain.indices.size() * sizeof(u32)) == 0);
   CHECK(motion.vertex_part.size() == mesh.positions.size());
   CHECK(motion.parts.size() == plain_motion.parts.size());
+  // Every finest leaf triangle names its sub-tree's card.
+  CHECK(levels.leaf_element.size() * 3u == levels.leaf_index_end - levels.leaf_first_index);
+  for (const u32 e : levels.leaf_element)
+    CHECK(e < levels.levels.front().elements);
 
   // Branch-group levels with rising errors and falling card counts, the tree's star last.
   REQUIRE(levels.levels.size() >= 2);
   CHECK(levels.levels.back().kind == flora::ImpostorKind::tree);
-  CHECK(levels.levels.back().groups == 5);
+  CHECK(levels.levels.back().groups == 4);  // four vertical planes (R91 dropped the level one)
   for (u32 k = 0; k < levels.levels.size(); ++k) {
     const flora::TreeLevel& level = levels.levels[k];
     MESSAGE("level " << k << ": merge " << level.merge << ", " << level.groups << " cards, error "
                      << level.error << " m (parallax " << level.parallax_m << ", texel "
-                     << level.texel_m << ")");
+                     << level.texel_m << "), feature " << level.feature_m << " m");
     CHECK(level.indices.size() == level.groups * 6u);
+    // The nesting: an element a card (the star is one), and every card's parent in the next level.
+    CHECK(level.element_of_triangle.size() * 3u == level.indices.size());
+    CHECK(level.elements == (level.kind == flora::ImpostorKind::tree ? 1u : level.groups));
+    if (k + 1 < levels.levels.size()) {
+      REQUIRE(level.parent_of_element.size() == level.elements);
+      for (const u32 parent : level.parent_of_element)
+        CHECK(parent < levels.levels[k + 1].elements);
+    }
+    CHECK(level.feature_m > 0.0f);
     for (const u32 i : level.indices)
       CHECK(i >= plain.positions.size());
     if (k > 0) {
@@ -105,16 +119,24 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   flora::BakedAtlas t;
   flora::bake_level(mesh, levels, tree, look, t);
   maybe_keep(tmp, t, "tree");
-  CHECK(t.width == 3 * tree.tile_px);
+  CHECK(t.width == 2 * tree.tile_px);
   CHECK(t.height == 2 * tree.tile_px);
-  // Something is drawn in every tile that has a job, and the tree's sixth tile is empty.
+  // Something is drawn in the four planes' tiles.
   u32 covered = 0;
   for (u32 i = 3; i < t.colour.size(); i += 4)
     covered += t.colour[i] != 0u ? 1u : 0u;
   CHECK(covered > t.width * t.height / 10u);
-  for (u32 y = tree.tile_px; y < t.height; ++y)
-    for (u32 x = 2 * tree.tile_px; x < t.width; ++x)
-      CHECK(t.colour[(y * t.width + x) * 4u + 3u] == 0u);
+  // The coverage bake is the same number every time, and a card is neither the geometry nor
+  // nothing: its difference is inside (0, 1).
+  const f32 card_difference = flora::measure_level(mesh, levels, cards, look, a);
+  CHECK(card_difference == flora::measure_level(mesh, levels, cards, look, b));
+  const f32 tree_difference = flora::measure_level(mesh, levels, tree, look, t);
+  MESSAGE("coverage bake: cards differ by " << card_difference << ", the star by "
+                                            << tree_difference);
+  CHECK(card_difference > 0.0f);
+  CHECK(card_difference < 1.0f);
+  CHECK(tree_difference > 0.0f);
+  CHECK(tree_difference < 1.0f);
   // Pinned on MSVC; GCC and Clang at v3 and GCC at v2 reproduce them (flora.md, "Determinism").
   const u64 hashes[4] = {bytes_hash(a.colour), bytes_hash(a.normal), bytes_hash(t.colour),
                          bytes_hash(t.normal)};
@@ -124,13 +146,14 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
       static_cast<unsigned long long>(hashes[0]), static_cast<unsigned long long>(hashes[1]),
       static_cast<unsigned long long>(hashes[2]), static_cast<unsigned long long>(hashes[3]));
   MESSAGE("bake hashes: " << line);
-  constexpr u64 k_golden[4] = {0x39ae66191f133683ull, 0xcf17ef6dd4680187ull, 0x6d4215b4e5824d5aull,
-                               0xcbc4eb14ce9b941dull};
+  // R91 moved all four: the plane fit by area (the cards) and the star's four planes (the tree).
+  constexpr u64 k_golden[4] = {0x469f99a1fc0d9277ull, 0xbcfe02bbf4e95fd4ull, 0x58ef0b36f35972d3ull,
+                               0x7afef0fcf6758503ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
 
-TEST_CASE("impostor chain: the container's levels switch where their errors say, not nearer") {
+TEST_CASE("impostor chain: each card switches on its own sub-tree, the star where its errors say") {
   flora::FloraFile file;
   file.species = flora::k_species_broadleaf;
   file.broadleaf = small_oak();
@@ -141,44 +164,70 @@ TEST_CASE("impostor chain: the container's levels switch where their errors say,
       error);
   REQUIRE(data.impostors.size() >= 2);
   const geometry::ClusterLodMesh& lod = data.mesh;
-  // Every transition the chain makes carries one sphere.
-  const Vec4 sphere = geometry::authored_lod_sphere(lod, data.impostors.front().error);
-  REQUIRE(sphere.w > 0.0f);
+  // Section 39: a coverage word a cluster, and the levels' coverage errors rising.
+  REQUIRE(data.lod_coverage.size() == lod.lod.size());
+  for (u32 k = 0; k < data.impostors.size(); ++k) {
+    const geometry::ClusterFileImpostor& r = data.impostors[k];
+    MESSAGE("level " << k << ": error " << r.error << " m, coverage " << r.coverage
+                     << " m (difference " << r.difference << ")");
+    CHECK(r.coverage > 0.0f);
+    CHECK(r.difference > 0.0f);
+    CHECK(r.difference < 1.0f);
+    if (k > 0) CHECK(r.coverage > data.impostors[k - 1].coverage);
+  }
   geometry::LodView view;
   view.znear = 0.1f;
   view.proj_scale = 1.0f / std::tan(radians(60.0f) * 0.5f) * 1080.0f * 0.5f;
   view.threshold_px = 1.0f;
-  const Vec3 centre{sphere.x, sphere.y, sphere.z};
-  const auto materials_drawn = [&](f32 distance, Vector<u32>& count) {
-    view.camera = centre + Vec3{distance, 0.0f, 0.0f};
+  const std::span<const u32> coverage(data.lod_coverage.data(), data.lod_coverage.size());
+  const auto materials_drawn = [&](Vec3 at, Vector<u32>& count) {
+    view.camera = at;
     Vector<u32> cut;
-    geometry::select_lod(lod, view, cut);
+    geometry::select_lod(lod, view, coverage, cut);
     count.assign(data.materials.size(), 0u);
     for (const u32 c : cut)
       ++count[data.cluster_material[c]];
   };
-  for (u32 k = 0; k < data.impostors.size(); ++k) {
-    const geometry::ClusterFileImpostor& level = data.impostors[k];
-    const f32 at = level.error * view.proj_scale / view.threshold_px + sphere.w;
-    MESSAGE("level " << k << " (" << std::string(level.kind == 2u ? "tree" : "cards") << ", "
-                     << level.groups << ") switches in at " << at << " m from the tree's centre");
+  // The star carries the whole tree's sphere, and the bark's hand-over is the same test: 1 % inside
+  // its distance the star is not drawn, 1 % past it nothing else is — by the geometric error alone
+  // (no foliage threshold) and by the coverage error under one.
+  const geometry::ClusterFileImpostor& star = data.impostors.back();
+  const Vec4 sphere = geometry::authored_lod_sphere(lod, star.error);
+  REQUIRE(sphere.w > 0.0f);
+  const Vec3 centre{sphere.x, sphere.y, sphere.z};
+  for (const f32 foliage : {0.0f, 3.0f}) {
+    view.foliage_px = foliage;
+    f32 at = star.error * view.proj_scale / view.threshold_px;
+    if (foliage > 0.0f) {
+      const f32 by_coverage = star.coverage * view.proj_scale / foliage;
+      at = by_coverage < at ? by_coverage : at;
+    }
+    at += sphere.w;
+    MESSAGE("the star switches in at "
+            << at << " m from the tree's centre with a foliage threshold of " << foliage << " px");
     Vector<u32> inside;
     Vector<u32> past;
-    materials_drawn(at * 0.99f, inside);
-    materials_drawn(at * 1.01f, past);
-    CHECK(inside[level.material] == 0u);
-    CHECK(past[level.material] > 0u);
-    // Past it nothing finer of the leaves draws; past the tree's, nothing else at all.
-    CHECK(past[1] == 0u);
-    if (level.kind == 2u) {
-      for (u32 m = 0; m < past.size(); ++m)
-        if (m != level.material) CHECK(past[m] == 0u);
-    } else {
-      CHECK(past[0] > 0u);  // the bark still draws under the cards
-    }
+    materials_drawn(centre + Vec3{at * 0.99f, 0.0f, 0.0f}, inside);
+    materials_drawn(centre + Vec3{at * 1.01f, 0.0f, 0.0f}, past);
+    CHECK(inside[star.material] == 0u);
+    CHECK(past[star.material] > 0u);
+    for (u32 m = 0; m < past.size(); ++m)
+      if (m != star.material) CHECK(past[m] == 0u);
   }
+  // **Per sub-tree**: somewhere between the crown's edge and twenty crown radii out, the near side
+  // of the crown is still leaves while the far side is already first-level cards — which one shared
+  // sphere could never draw.
+  view.foliage_px = 3.0f;
+  const u32 cards = data.impostors.front().material;
+  bool mixed = false;
+  for (u32 step = 2; step <= 80 && !mixed; ++step) {
+    Vector<u32> count;
+    materials_drawn(centre + Vec3{sphere.w * 0.25f * static_cast<f32>(step), 0.0f, 0.0f}, count);
+    mixed = count[1] > 0u && count[cards] > 0u;
+  }
+  CHECK(mixed);
 
-  // The section round-trips.
+  // The sections round-trip.
   test::TempDir tmp("impostor_container");
   REQUIRE_MESSAGE(geometry::write_cluster_file(tmp.file("oak.clusters"), data, &error), error);
   geometry::ClusterFileData back;
@@ -186,8 +235,8 @@ TEST_CASE("impostor chain: the container's levels switch where their errors say,
   REQUIRE(back.impostors.size() == data.impostors.size());
   CHECK(std::memcmp(back.impostors.data(), data.impostors.data(),
                     data.impostors.size() * sizeof(geometry::ClusterFileImpostor)) == 0);
+  CHECK(back.lod_coverage == data.lod_coverage);
 }
-
 TEST_CASE("impostor chain: off is the container it was") {
   flora::FloraFile file;
   file.species = flora::k_species_broadleaf;
@@ -199,6 +248,7 @@ TEST_CASE("impostor chain: off is the container it was") {
   REQUIRE(
       flora::build_flora_container(file, geometry::ClusterLodOptions{}, 0, data, nullptr, error));
   CHECK(data.impostors.empty());
+  CHECK(data.lod_coverage.empty());
   CHECK(data.materials.size() == 2);
   CHECK(data.images.empty());
 }

@@ -31,3 +31,5 @@ towards +z and `renderer.flora.wind_strength=0` calms: in a calm the grove is it
 `--tunable renderer.flora.motion=false` draws every tree rigid, which is how the costs in
 renderer.md were measured against. Walking (`--interactive --walk`) into a tree's leaves bends
 them aside; its trunk and, on the trees with a structural table, its load-bearing limbs stop you.
+
+**Foliage LOD (R91, 2026-10-21).** The trees' impostor chains now take over along the path: every card group switches on its own sub-tree's sphere and by its coverage error under `renderer.lod.foliage_px` (5 px; `--foliage-lod`), with a dithered cross-fade over 10 % of the switch (`--lod-fade`, 0 switches at once). The default ancient tree's first cards come in about 37 m from a group and its star at about 690 m; the oak's at 28 m and 434 m ([renderer](../../../docs/subsystems/renderer.md#the-foliage-threshold) has the costs before and after).

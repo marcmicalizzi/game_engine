@@ -43,6 +43,11 @@ struct BakeJob {
   BakeView view;
   Vector<BakeRange> ranges;  // into the mesh's indices
   u32 tile = 0;              // row-major in the level's atlas
+  // The card the job's geometry is drawn as (its rectangle exactly, no margin) and the tile that
+  // card samples, which for a branch-group card is the one its root's hash picks and not always the
+  // job's own: what the coverage bake compares the geometry against ("The coverage bake").
+  BakeView card;
+  u32 card_tile = 0;
 };
 
 // What an authored level stands for.
@@ -65,6 +70,19 @@ struct TreeLevel {
   // (the parallax term of `error`) and half a texel of the largest card (the bake's resolution).
   f32 parallax_m = 0.0f;
   f32 texel_m = 0.0f;
+  // How the level nests (geometry's `build_cluster_lod_hierarchy`): every triangle's element — a
+  // card, or the star as one — and every element's parent element in the next level (empty for the
+  // last), so each card switches on its own sub-tree's sphere.
+  Vector<u32> element_of_triangle;
+  Vector<u32> parent_of_element;
+  u32 elements = 0;
+  // The coverage error (R91; flora.md, "The coverage bake"): `feature_m`, the size of what the
+  // level stands in for (a leaf for the first branch-group level, a card of the level below for the
+  // next), times `difference`, what the level changes at the pixel over a ring of views (0..1).
+  // `difference` and `coverage_m` are filled by `measure_level`.
+  f32 feature_m = 0.0f;
+  f32 difference = 0.0f;
+  f32 coverage_m = 0.0f;
 };
 
 // The colours the bake shades with: the species' own factors, linear, whatever a material pack
@@ -83,6 +101,8 @@ struct TreeLevels {
   Vector<TreeLevel> levels;
   u32 leaf_first_index = 0;  // mesh.indices from here to the finest leaves' end are leaves
   u32 leaf_index_end = 0;
+  // Every finest leaf triangle's element of the first level (its sub-tree's card), in index order.
+  Vector<u32> leaf_element;
 };
 
 // How finely the chain is baked: a branch-group card's tile and a whole-tree view's, in texels;
@@ -108,5 +128,15 @@ struct BakedAtlas {
 // bark. Pure and single-threaded; the same bytes on every toolchain.
 void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
                 const BakeLook& look, BakedAtlas& out);
+
+// **The coverage bake** (flora.md, "The coverage bake"; R91): every job's geometry and the card or
+// cards that stand for it (the level's own atlas, `baked`), drawn on the CPU by the bake's
+// rasterizer from a ring of views — eight azimuths at the horizon and four at 30 degrees above and
+// below — at a resolution of four texels to `level.feature_m`, and compared texel by texel: the
+// coverage difference (the summed absolute difference over the summed larger coverage, a soft one
+// minus the overlap) and the colour difference where both draw, combined as 1 - (1 - a)(1 - c).
+// Returns that difference, 0..1. Pure; the same bytes on every toolchain.
+f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
+                  const BakeLook& look, const BakedAtlas& baked);
 
 }  // namespace engine::flora

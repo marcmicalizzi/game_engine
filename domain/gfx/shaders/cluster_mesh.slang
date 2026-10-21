@@ -175,7 +175,9 @@ void mesh_main_masked(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Gr
 [shader("fragment")]
 void fs_visibility_masked(MaskedMeshVertex v, uint primitive_id : SV_PrimitiveID) {
   const FrameEye eye = load_eye(g_params.eye);
-  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  if (!fade_keeps(masks, v.pair, uint2(v.position.xy))) discard;  // the cross-fade (R91)
+  if (!mask_keeps(mask_material(masks, v.material), v.uv)) discard;
   const uint2 pixel = uint2(v.position.xy);
   if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
   const uint id = (v.pair << 8) | (primitive_id & 0xff);
@@ -189,5 +191,7 @@ void fs_visibility_masked(MaskedMeshVertex v, uint primitive_id : SV_PrimitiveID
 [shader("fragment")]
 void fs_mask_depth(MaskedMeshVertex v) {
   const FrameEye eye = load_eye(g_params.eye);
-  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  if (!fade_keeps(masks, v.pair, uint2(v.position.xy))) discard;  // the cross-fade (R91)
+  if (!mask_keeps(mask_material(masks, v.material), v.uv)) discard;
 }

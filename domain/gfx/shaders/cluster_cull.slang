@@ -96,7 +96,7 @@ struct CullParams {
   // Terrain levels (scene.slang, TerrainLevelDesc): the frame's table, or 0. A cluster of a level
   // whose sphere is wholly inside the level's hole is dropped: the finer level draws that ground.
   uint64_t terrain;
-  uint64_t pad_terrain;
+  uint64_t coverage;  // uint per cluster: geometry::pack_lod_coverage, or 0 for none (see cull_pair)
   // The frame's origin (scene.slang): every instance is moved into its space before any test, and
   // the planes, `camera` and `view_proj` above are in that space.
   FrameEye eye;
@@ -110,7 +110,8 @@ struct CullParams {
   float4 caster_reach[k_max_caster_volumes];
   uint caster_plane_counts[k_max_caster_volumes];
   uint caster_volume_count;
-  uint pad_casters[2];
+  float foliage_px;  // the coverage errors' threshold
+  float fade;        // the cross-fade's half band, a fraction of the threshold; 0 switches at once
 };
 
 struct CullPush {
@@ -125,6 +126,37 @@ float projected_error(float4 sphere, float error, float3 camera, float znear, fl
   if (error >= k_terminal_error) return k_terminal_error;
   const float distance = length(sphere.xyz - camera) - sphere.w;
   return error / max(distance, znear) * proj_scale;
+}
+
+// ---- the foliage error and the cross-fade (geometry.md, "Two errors"; renderer.md, "The
+// cross-fade"; R91) ---------------------------------------------------------------------------------
+//
+// `geometry::lod_selects` with coverage, and `geometry::lod_fade_split`, the same formulas: a
+// transition is acceptable when its geometric error projects to the threshold or under, or its
+// coverage error to the foliage threshold or under; with a fade, the split is the smaller of the two
+// projected errors over its threshold, mapped from (1 - fade, 1 + fade) to (0, 1). A cluster with no
+// coverage reads +inf, which projects to the terminal error and is never acceptable by it, so it
+// takes the one-threshold test bit for bit.
+bool transition_acceptable(float geometric, float coverage, float threshold, float foliage) {
+  return geometric <= threshold || coverage <= foliage;
+}
+
+float over_threshold(float projected, float threshold) {
+  if (!(projected > 0.0)) return 0.0;
+  if (!(threshold > 0.0)) return k_terminal_error;
+  return projected / threshold;
+}
+
+float fade_split(float geometric, float coverage, bool fading, float threshold, float foliage,
+                 float fade, bool step_shift) {
+  if (!fading) return transition_acceptable(geometric, coverage, threshold, foliage) ? 0.0 : 1.0;
+  const float ratio = min(over_threshold(geometric, threshold), over_threshold(coverage, foliage));
+  if (step_shift) return ratio <= 1.0 - fade ? 0.0 : 1.0;
+  return clamp((ratio - (1.0 - fade)) / (2.0 * fade), 0.0, 1.0);
+}
+
+uint pack_splits(float own, float parent) {
+  return uint(own * 65535.0 + 0.5) | (uint(parent * 65535.0 + 0.5) << 16);
 }
 
 // ---- geometry streaming (docs/plan/04-renderer.md §4.9, domain/geometry/cluster_pages.h) ------
@@ -454,9 +486,14 @@ void cull_pair(uint pair, bool vertex_draw) {
     uint* page_of = (uint*)stream->page_of_cluster;
     page = page_of[index];
   }
+  // The splits this pair keeps between (the cross-fade's; 0 and 1 outside every band).
+  float split_own = 0.0;
+  float split_parent = 1.0;
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];
+    // The coverage word (geometry::pack_lod_coverage), +inf in both halves for none.
+    const uint cover = params->coverage != 0 ? ((uint*)params->coverage)[index] : 0x7C007C00u;
     const float4 own_sphere = float4(instance_point(instance, from_eye, lod.own.xyz),
                                      lod.own.w * instance.scale_max + padding);
     const float4 parent_sphere = float4(instance_point(instance, from_eye, lod.parent.xyz),
@@ -466,8 +503,32 @@ void cull_pair(uint pair, bool vertex_draw) {
     const float parent =
         projected_error(parent_sphere, lod.parent_error * instance.scale_max, params->camera.xyz,
                         params->camera.w, params->lod.x);
+    const float own_cover_error = f16tof32(cover & 0xffffu);
+    const float parent_cover_error = f16tof32(cover >> 16);
+    const float own_cover = projected_error(own_sphere, own_cover_error * instance.scale_max,
+                                            params->camera.xyz, params->camera.w, params->lod.x);
+    const float parent_cover =
+        projected_error(parent_sphere, parent_cover_error * instance.scale_max, params->camera.xyz,
+                        params->camera.w, params->lod.x);
+    const bool own_ok =
+        transition_acceptable(own, own_cover, params->lod.y, params->foliage_px);
+    const bool parent_ok =
+        transition_acceptable(parent, parent_cover, params->lod.y, params->foliage_px);
     if (params->streaming == 0) {
-      if (!(own <= params->lod.y && parent > params->lod.y)) return;
+      // The cross-fade, for a transition with a coverage error: both sides draw across the band and
+      // each keeps the pixels between its splits (alpha_mask.slang, ade_keeps).
+      const bool own_fading = params->fade > 0.0 && own_cover_error < k_terminal_error;
+      const bool parent_fading = params->fade > 0.0 && parent_cover_error < k_terminal_error;
+      if (own_fading || parent_fading) {
+        const bool opaque = !pair_masked(params->masks, instance, index);
+        split_own = fade_split(own, own_cover, own_fading, params->lod.y, params->foliage_px,
+                               params->fade, opaque);
+        split_parent = fade_split(parent, parent_cover, parent_fading, params->lod.y,
+                                  params->foliage_px, params->fade, opaque);
+        if (!(split_own < split_parent)) return;
+      } else if (!(own_ok && !parent_ok)) {
+        return;
+      }
     } else {
       const float screen_px =
           projected_size(center, radius, params->camera.xyz, params->camera.w, params->lod.x);
@@ -481,8 +542,8 @@ void cull_pair(uint pair, bool vertex_draw) {
           request_page(params, stream, page, screen_px, distance);
         return;
       }
-      if (parent <= params->lod.y) return;  // the coarser version is good enough
-      if (own > params->lod.y) {
+      if (parent_ok) return;  // the coarser version is good enough
+      if (!own_ok) {
         // Too coarse for this view: refine into the children, unless their pages are not all
         // here, in which case this cluster is the best there is and the missing pages are asked
         // for. A level-0 cluster has no children and is simply not drawn, exactly as an
@@ -502,6 +563,12 @@ void cull_pair(uint pair, bool vertex_draw) {
   if (params->streaming != 0) {
     uint* used = (uint*)stream->used;
     used[page] = 1u;
+  }
+  // The cross-fade's table (alpha_mask.slang, `fade_keeps`): every pair this view draws or casts
+  // with, its two splits and its instance, read by the masked readers of this frame only.
+  if (params->masks.fade != 0) {
+    uint2* fade = (uint2*)params->masks.fade;
+    fade[pair] = uint2(pack_splits(split_own, split_parent), instance_index);
   }
   // A caster is in the frame's ray tracing geometry and nowhere else. It is not drawn, so it is
   // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion

@@ -838,6 +838,7 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     retire(visible, retired);
     retire(shadow_args, retired);
     retire(pair_entries, retired);
+    retire(fade, retired);
     retire(sw_args, retired);
     for (u32 i = 0; i < 2; ++i) {
       retire(draw_args[i], retired);
@@ -2648,6 +2649,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
   Vector<u32> cluster_material(cluster_count_);
+  // The coverage errors (geometry.md, "Two errors"), only where a mesh carries them: empty, or a
+  // word per cluster with `k_lod_no_coverage` for every cluster of a mesh with none.
+  Vector<u32> coverage_words;
   Vector<u32> mesh_material_base(data_->parts.size(), 0u);
   // The water bodies' optics entries in the volume tier, and their meshes (water.md).
   struct WaterOpticsEntry {
@@ -2988,6 +2992,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             material >= 0 && static_cast<u32>(material) < local_count ? static_cast<u32>(material)
                                                                       : local_count;
       }
+      if (source_mesh.lod_coverage.size() == part.cluster_count) {
+        if (coverage_words.empty())
+          coverage_words.assign(cluster_count_, geometry::k_lod_no_coverage);
+        for (u32 i = 0; i < part.cluster_count; ++i)
+          coverage_words[part.first_cluster + i] = source_mesh.lod_coverage[i];
+      }
     }
   }
   if (texture_references_ != 0) {
@@ -3060,6 +3070,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
+  has_coverage_ = !coverage_words.empty();
+  if (has_coverage_ &&
+      !gfx::upload_buffer(device, coverage_words.data(), u64{cluster_count_} * sizeof(u32),
+                          k_storage, lod_coverage, error)) {
+    return false;
+  }
   return gfx::upload_buffer(device, material_table.data(),
                             u64{material_count_} * sizeof(gfx::ResolveMaterial), k_storage,
                             materials, error) &&
@@ -3093,16 +3109,21 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // one table per view serves every run, and a word from an earlier frame is never read.
   // A shadow cascade's run follows every view's three (`cascade_base`), with an argument block of
   // its own.
-  bool ok = gfx::create_buffer(device,
-                               visible_run_bytes_ * (k_visible_runs * view_count_ + cascade_count_),
-                               k_readable, false, visible, error) &&
-            (cascade_count_ == 0 ||
-             gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * cascade_count_, k_args, false,
-                                shadow_args, error)) &&
-            gfx::create_buffer(device, u64{pair_stride_} * view_count_ * sizeof(u32), k_address,
-                               false, pair_entries, error) &&
-            gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
-                               sw_args, error);
+  bool ok =
+      gfx::create_buffer(device,
+                         visible_run_bytes_ * (k_visible_runs * view_count_ + cascade_count_),
+                         k_readable, false, visible, error) &&
+      (cascade_count_ == 0 ||
+       gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * cascade_count_, k_args, false,
+                          shadow_args, error)) &&
+      gfx::create_buffer(device, u64{pair_stride_} * view_count_ * sizeof(u32), k_address, false,
+                         pair_entries, error) &&
+      // The cross-fade's tables (renderer.md, "The cross-fade"): a u32x2 per pair for every
+      // view and one the cascades share, only in a scene with coverage errors.
+      (!has_coverage_ || gfx::create_buffer(device, u64{pair_stride_} * (view_count_ + 1u) * 8u,
+                                            k_address, false, fade, error)) &&
+      gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false, sw_args,
+                         error);
   for (u32 i = 0; i < 2; ++i) {
     ok = ok &&
          gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
@@ -3596,6 +3617,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, pair_table);
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
+  gfx::destroy_buffer(device, lod_coverage);
+  gfx::destroy_buffer(device, fade);
   gfx::destroy_buffer(device, materials);
   gfx::destroy_buffer(device, skin);
   gfx::destroy_buffer(device, attributes);

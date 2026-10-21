@@ -60,15 +60,49 @@ float2 hit_uv(MaskTables tables, uint64_t triangles, ClusterDesc cluster, uint p
   return uv0 + barycentrics.x * (uv1 - uv0) + barycentrics.y * (uv2 - uv0);
 }
 
+// ---- the cross-fade (renderer.md, "The cross-fade"; R91) ----------------------------------------
+//
+// A pixel's stable threshold: a hash of its integer position and a seed (the drawn pair's instance,
+// which both sides of a transition share, so their pixels are complementary — never the pair, which
+// differs across it), in 0 .. 65534. Nothing in it is the frame's, so a still view does not shimmer.
+uint fade_hash(uint2 pixel, uint seed) {
+  uint h = pixel.x * 0x8da6b343u ^ pixel.y * 0xd8163841u ^ seed * 0xcb1ab31fu;
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  h *= 0x846ca68bu;
+  h ^= h >> 16;
+  return ((h >> 16) * 65535u) >> 16;
+}
+
+// Screen-door transparency between two levels of a fading transition: the cull pass wrote the
+// drawn pair's two splits (unorm16, own low, parent high) and its instance to the table, and the
+// pixel is kept where its hash is at or past the own split and below the parent's — so of every
+// path of the DAG exactly one cluster keeps each pixel, the visibility buffer keeps one id a pixel
+// and the tie rule stands. A pair outside every band has splits 0 and 65535 and keeps everything.
+// No table (`fade` 0, a frame with no fade) keeps everything and reads nothing.
+bool fade_keeps(MaskTables tables, uint pair, uint2 pixel) {
+  if (tables.fade == 0) return true;
+  uint2* table = (uint2*)tables.fade;
+  const uint2 entry = table[pair];
+  const uint low = entry.x & 0xffffu;
+  const uint high = entry.x >> 16;
+  if (low == 0u && high == 0xffffu) return true;
+  const uint h = fade_hash(pixel, entry.y);
+  return h >= low && h < high;
+}
+
 // **The ray loops' rule** for a non-opaque candidate of pair (instance, cluster): an alpha-tested
 // pair's mask decides, and anything else non-opaque — a shadow caster, built non-opaque so the
-// primary rays can leave it out — is solid. True keeps the hit.
+// primary rays can leave it out — is solid. True keeps the hit. A masked pair inside a fade band is
+// also kept only where the ray's pixel keeps it (`fade_keeps`, with `pair` its scene pair).
 bool candidate_keeps(MaskTables tables, uint64_t clusters, uint64_t triangles,
                      InstanceDesc instance, uint cluster_index, uint primitive,
-                     float2 barycentrics) {
+                     float2 barycentrics, uint pair, uint2 pixel) {
   if (tables.materials == 0) return true;
   const uint material = pair_material(tables, instance, cluster_index);
   if (!material_is_masked(tables, material)) return true;
+  if (!fade_keeps(tables, pair, pixel)) return false;
   ClusterDesc* all = (ClusterDesc*)clusters;
   const float2 uv = hit_uv(tables, triangles, all[cluster_index], primitive, barycentrics);
   return mask_keeps_level0(mask_material(tables, material), uv);
