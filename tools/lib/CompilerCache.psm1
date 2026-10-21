@@ -69,6 +69,36 @@ function ConvertFrom-CcacheVersion([string]$Text) {
   return $null
 }
 
+function Find-Ccache {
+  <#
+  .SYNOPSIS
+    The ccache this configure uses: the one on PATH, or else the one `winget install ccache` put in
+    %LOCALAPPDATA%\Microsoft\WinGet\Links. $null when neither has one; else Path and Where ('PATH'
+    or 'WinGet Links', for the line dev.ps1 prints).
+  .DESCRIPTION
+    winget adds its Links directory to the user's PATH, but only processes started after the
+    install see it: a shell (an agent harness's, an IDE's) started before then has no ccache on PATH
+    while one sits in Links, and every configure it ran printed `ccache: off` in a worktree that
+    should have had it on (batch 33). So Links is looked in too, by its known place rather than by
+    reading the registry's PATH, and dev.ps1 then runs `ccache --version` from the path found here.
+  .PARAMETER OnPath
+    What `Get-Command ccache` resolved, or empty.
+  .PARAMETER Exists
+    How a file is tested for, so the rule is testable without a ccache (a scriptblock over a path).
+  #>
+  param(
+    [AllowEmptyString()][string]$OnPath,
+    [AllowEmptyString()][string]$LocalAppData,
+    [scriptblock]$Exists = { param($p) Test-Path -LiteralPath $p -PathType Leaf }
+  )
+  if ($OnPath) { return [pscustomobject]@{ Path = $OnPath; Where = 'PATH' } }
+  if (-not $LocalAppData) { return $null }
+  $sep = if ($LocalAppData.Contains('/') -and -not $LocalAppData.Contains('\')) { '/' } else { '\' }
+  $links = $LocalAppData.TrimEnd('\', '/') + "${sep}Microsoft${sep}WinGet${sep}Links${sep}ccache.exe"
+  if (& $Exists $links) { return [pscustomobject]@{ Path = $links; Where = 'WinGet Links' } }
+  return $null
+}
+
 function Get-CcachePlan {
   <#
   .SYNOPSIS
@@ -99,7 +129,7 @@ function Get-CcachePlan {
     $what = if ($Kind -eq 'primary') { 'the primary checkout' } else { 'a worktree that is neither an agent''s nor the gate''s' }
     return & $off "$what (ENGINE_CCACHE=1 turns it on; a cached object's debug information names the checkout that compiled it first)"
   }
-  if (-not $Exe) { return & $off 'ccache is not on PATH (winget install ccache)' }
+  if (-not $Exe) { return & $off 'ccache is not on PATH or in WinGet''s Links (winget install ccache)' }
   if (-not $Version -or $Version -lt $script:MinimumVersion) {
     return & $off "ccache $(if ($Version) { $Version } else { 'of an unknown version' }) is older than $script:MinimumVersion, the first that supports cl.exe"
   }
@@ -178,5 +208,5 @@ function Read-CachedLauncher([string]$BuildDir) {
   return ''
 }
 
-Export-ModuleMember -Function Get-CheckoutKind, ConvertFrom-CcacheVersion, Get-CcachePlan, Get-CcacheConfigureArgs,
+Export-ModuleMember -Function Get-CheckoutKind, ConvertFrom-CcacheVersion, Find-Ccache, Get-CcachePlan, Get-CcacheConfigureArgs,
   Test-CcacheReconfigure, Read-CachedLauncher

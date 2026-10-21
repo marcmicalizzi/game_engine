@@ -467,9 +467,12 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // Taken on MSVC 14.51 (msvc-debug), 2026-10-21, when both trees gained their impostor chain (R89):
 // the cards' and the star's levels, their baked atlases as embedded PNG and section 38 are in the
 // bytes, so this is also the bake's cross-toolchain pin. They were 0x1f76b0e374bf4c0d and
-// 0xcb5b0d40cec65a2f when the crowns became the recursion (G72).
-constexpr u64 k_broadleaf_container_golden = 0xd992a4c576669847ull;
-constexpr u64 k_ancient_container_golden = 0x659369f8410a30e9ull;
+// 0xcb5b0d40cec65a2f when the crowns became the recursion (G72), and 0xd992a4c576669847 and
+// 0x659369f8410a30e9 until the chain nested per sub-tree and gained its coverage errors, section
+// 39, its four-plane star and its alpha-tested leaves (R91, 2026-10-21; MSVC 14.51 and GCC 13 at v3
+// agreed on the new pair the first time).
+constexpr u64 k_broadleaf_container_golden = 0x3fd6b14b95a983f7ull;
+constexpr u64 k_ancient_container_golden = 0xc041558b0e881523ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

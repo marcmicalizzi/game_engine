@@ -311,6 +311,9 @@ class GpuScene {
   // geometry"): the frame draws the masked variants and the ray loops test masks. False keeps every
   // pass the one it always was.
   bool has_masked() const noexcept { return has_masked_; }
+  // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
+  // them and `fade` the cross-fade's tables.
+  bool has_coverage() const noexcept { return has_coverage_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
   // from the visible list, so what a frame actually uses is `Stats::deform_vertices`.
@@ -376,6 +379,11 @@ class GpuScene {
            gfx::k_vertex_draw_index_bytes;
   }
   // This view's pair-to-entry table (`pair_entries`), as the address the cull and the resolve take.
+  // The cross-fade's table of a view, or with `view_count` the cascades' (alpha_mask.slang).
+  u64 fade_address(u32 block) const noexcept {
+    return fade.address == 0 ? 0 : fade.address + u64{block} * pair_stride_ * 8u;
+  }
+  u32 fade_cascade_block() const noexcept { return view_count_; }
   u64 pair_entries_address(u32 view) const noexcept {
     return pair_entries.address + u64{view} * pair_stride_ * sizeof(u32);
   }
@@ -802,6 +810,8 @@ class GpuScene {
   gfx::BufferResource instances;          // gfx::InstanceDesc[]
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]
   gfx::BufferResource cluster_materials;  // u32 per cluster
+  gfx::BufferResource lod_coverage;       // u32 per cluster (geometry::pack_lod_coverage), or none
+  gfx::BufferResource fade;               // u32x2 per pair per view, and the cascades'
 
   // ---- the frame's working set, sized by the scene and the view count --------------------------
   gfx::BufferResource visible;  // u32x2[3 * views * pair_count]: {instance, cluster} per entry
@@ -1147,8 +1157,9 @@ class GpuScene {
   void destroy_ray_tracing_layout() noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
-  bool has_water_ = false;   // a material of the table carries gfx::k_material_water
-  bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
+  bool has_water_ = false;     // a material of the table carries gfx::k_material_water
+  bool has_masked_ = false;    // a material of the table carries gfx::k_material_alpha_mask
+  bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u32 cascade_count_ = 0;  // shadow cascades whose runs follow the views'

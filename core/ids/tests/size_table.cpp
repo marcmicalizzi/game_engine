@@ -6,3 +6,4 @@ using namespace engine;
 
 ENGINE_EXPECT_SIZE(16, 8, Id128);
 ENGINE_EXPECT_SIZE(16, 8, IdGenerator);
+ENGINE_EXPECT_SIZE(8, 8, TimeOrderedIds);

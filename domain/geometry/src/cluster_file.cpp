@@ -265,6 +265,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Impostors, static_cast<u32>(sizeof(ClusterFileImpostor)),
                 data.impostors.size(), data.impostors.data());
   }
+  // The coverage errors, and only where a generator emitted them (geometry.md, "Two errors").
+  if (!data.lod_coverage.empty()) {
+    add_section(payloads, ClusterSection::LodCoverage, static_cast<u32>(sizeof(u32)),
+                data.lod_coverage.size(), data.lod_coverage.data());
+  }
   if (!data.cover_mask.empty()) {
     add_section(payloads, ClusterSection::CoverMask, static_cast<u32>(sizeof(u32)),
                 data.cover_mask.size(), data.cover_mask.data());
@@ -445,6 +450,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MotionVertices: return "motion_vertices";
     case ClusterSection::StructuralParts: return "structural_parts";
     case ClusterSection::Impostors: return "impostors";
+    case ClusterSection::LodCoverage: return "lod_coverage";
     case ClusterSection::CoverMask: return "cover_mask";
   }
   return "unknown";
@@ -662,6 +668,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(sizeof(ClusterFileImpostor)));
     }
     copy_section(bytes, *chain, result.impostors);
+  }
+  // The coverage errors: a file without them draws by its geometric errors alone.
+  if (const ClusterFileSection* coverage = found[static_cast<u32>(ClusterSection::LodCoverage)];
+      coverage != nullptr && coverage->element_count != 0) {
+    if (coverage->element_size != sizeof(u32) ||
+        coverage->element_count != result.mesh.mesh.clusters.size()) {
+      return fail(error, "cluster file section lod_coverage is not one word per cluster");
+    }
+    copy_section(bytes, *coverage, result.lod_coverage);
   }
   // The cover mask: a file without it has none.
   if (const ClusterFileSection* mask = found[static_cast<u32>(ClusterSection::CoverMask)];
@@ -1114,6 +1129,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::StructuralParts,
     // 48 bytes a level, and only in a tree with an impostor chain.
     ClusterSection::Impostors,
+    // 4 bytes a cluster, and only in a tree with an impostor chain: the coverage errors.
+    ClusterSection::LodCoverage,
     // 4 bytes a host vertex, and only in a cover's companion.
     ClusterSection::CoverMask,
 };

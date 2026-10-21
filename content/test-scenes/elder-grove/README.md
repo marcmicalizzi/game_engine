@@ -39,3 +39,5 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/elder-grove/scene
 
 The second line starts a walk six metres outside elder A's hollow, facing it (a live window: run
 it yourself; the tests replay their walks offscreen).
+
+**Foliage LOD (R91, 2026-10-21).** The trees' impostor chains now take over along the path: every card group switches on its own sub-tree's sphere and by its coverage error under `renderer.lod.foliage_px` (5 px; `--foliage-lod`), with a dithered cross-fade over 10 % of the switch (`--lod-fade`, 0 switches at once). The default ancient tree's first cards come in about 37 m from a group and its star at about 690 m; the oak's at 28 m and 434 m ([renderer](../../../docs/subsystems/renderer.md#the-foliage-threshold) has the costs before and after).

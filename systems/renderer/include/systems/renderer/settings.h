@@ -80,7 +80,16 @@ struct RenderSettings {
   // gfx::ResolveMode: cluster ids, triangle shading, depth, shaded, normals, uvs, the sun's shadow,
   // the textured albedo unlit, and the material's ambient occlusion as data.
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
-  f32 lod_px = 1.0f;      // screen-space error threshold for LOD selection
+  f32 lod_px = 1.0f;  // screen-space error threshold for LOD selection
+  // **The foliage LOD** (renderer.md, "The foliage threshold" and "The cross-fade"; R91): the
+  // threshold a coverage error is held to, in pixels — a card stands for a bough once what it
+  // changes at the pixel projects to this or less — and the cross-fade's half band, a fraction of
+  // the threshold (0.1 fades a switch over the projected errors 0.9 to 1.1 times it, about 10% of
+  // the distance). Negative is the tunables `renderer.lod.foliage_px`
+  // (`geometry::k_default_foliage_px`) and `renderer.lod.fade` (0.1), which is what
+  // `resolve_settings` leaves here. A scene with no coverage errors reads neither.
+  f32 foliage_px = -1.0f;
+  f32 lod_fade = -1.0f;
   f32 sw_px = 32.0f;      // Auto: clusters narrower than this go to the software rasterizer
   bool cull = true;       // GPU culling and LOD selection
   bool occlusion = true;  // two-pass occlusion culling against a Hi-Z

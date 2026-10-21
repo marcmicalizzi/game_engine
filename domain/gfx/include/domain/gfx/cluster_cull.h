@@ -153,7 +153,13 @@ struct MaskTables {
   u64 materials = 0;          // ResolveMaterial[]
   u64 cluster_materials = 0;  // u32 per cluster of the scene
   u64 attributes = 0;         // geometry::VertexAttributes[] parallel to the vertices
-  u64 pad = 0;
+  // **The cross-fade's table** (renderer.md, "The cross-fade"; R91): this block's, one `u32x2` per
+  // pair — the drawn pair's two splits as unorm16 (own low, parent high) and its instance, the
+  // hash's seed — written by the cull pass for every pair it draws or keeps as a caster, and read
+  // by every masked reader (the rasterizers' masked variants, the cascades' masked depth, the ray
+  // loops) to keep a pixel only where its hash falls between the splits (`fade_keeps`,
+  // alpha_mask.slang). 0 in a frame with no fade, and then nothing reads it.
+  u64 fade = 0;
 };
 static_assert(sizeof(MaskTables) == 32);
 
@@ -234,7 +240,13 @@ struct CullParams {
   // `InstanceDesc::terrain` names. A cluster of a level whose sphere lies wholly inside the level's
   // `hole` is dropped — the next finer level draws that ground. 0 tests nothing.
   u64 terrain = 0;
-  u64 pad_terrain = 0;
+  // **Coverage errors** (geometry.md, "Two errors"; R91): one `geometry::pack_lod_coverage` word
+  // per cluster of the scene, or 0 for none. With it the cut's test is `geometry::lod_selects`'
+  // with coverage — a transition is acceptable when its geometric error projects to `lod.y` or
+  // under, or its coverage error to `foliage_px` or under — and a cluster with no coverage
+  // (`k_lod_no_coverage`) takes the one-threshold test bit for bit. Read only with LOD selection
+  // on.
+  u64 coverage = 0;
   // The frame's origin (`FrameEye`): every instance is moved into its space before any test.
   // `ClusterDrawParams::eye` points the rasterizers at this field of the view's own block.
   FrameEye eye;
@@ -257,7 +269,13 @@ struct CullParams {
   Vec4 caster_reach[k_max_caster_volumes] = {};
   u32 caster_plane_counts[k_max_caster_volumes] = {};
   u32 caster_volume_count = 0;
-  u32 pad_casters[2] = {};
+  // The coverage errors' threshold in pixels (`RenderSettings::foliage_px`), and the cross-fade's
+  // half band as a fraction of the threshold (`RenderSettings::lod_fade`; 0 switches at once). The
+  // fade is only for a transition with a coverage error and only without streaming, and it writes
+  // `masks.fade`; an opaque pair of such a transition switches at (1 - fade) of the threshold, so
+  // its masked replacement is whole before it goes (`geometry::lod_fade_split`).
+  f32 foliage_px = 0.0f;
+  f32 fade = 0.0f;
 };
 static_assert(sizeof(CullParams) == 1712);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)

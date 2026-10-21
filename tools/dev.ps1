@@ -19,7 +19,8 @@
                 compiler cache"). A tree whose launcher no longer matches is configured again.
     build       Build the preset (configures first if needed). -Affected builds only what
                 `test -Affected` would run: the affected modules' libraries, tests and benches,
-                and the apps that link them (tools/lib/Affected.psm1, Get-AffectedTargets).
+                the apps that link them, and every app when the tools' own tests run, since
+                they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets).
     test        Run CTest for the preset. -Filter is a regex on test names. Tests take the
                 machine-wide GPU lock themselves, per GPU device, so do not wrap this in
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
@@ -114,9 +115,12 @@ function Get-CcacheSetup {
   $exe = ''
   $version = $null
   $cmd = Get-Command ccache -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  # On PATH, or where winget put it for a shell started before the install (Find-Ccache).
+  $found = Find-Ccache -OnPath "$(if ($cmd) { $cmd.Source })" -LocalAppData "$env:LOCALAPPDATA"
   # Asked only where the answer matters, so a primary checkout without ENGINE_CCACHE=1 never runs it.
-  if ($cmd -and $env:ENGINE_CCACHE -ne '0' -and ($kind -in @('agent', 'gate') -or $env:ENGINE_CCACHE -eq '1')) {
-    $exe = $cmd.Source
+  if ($found -and $env:ENGINE_CCACHE -ne '0' -and ($kind -in @('agent', 'gate') -or $env:ENGINE_CCACHE -eq '1')) {
+    $exe = $found.Path
+    $script:CcacheWhere = $found.Where
     $version = ConvertFrom-CcacheVersion "$(& $exe --version 2>$null | Select-Object -First 1)"
   }
   $script:CcachePlan = Get-CcachePlan -Kind $kind -Setting "$env:ENGINE_CCACHE" -Exe $exe -Version $version `
@@ -132,7 +136,7 @@ function Invoke-Configure {
   $cacheArgs = @(Get-CcacheConfigureArgs -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
   $args += $cacheArgs
   if ($plan.Enabled) {
-    Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version)" -ForegroundColor Cyan
+    Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version) at $($plan.Exe) (from $script:CcacheWhere)" -ForegroundColor Cyan
   } elseif ($cacheArgs.Count -gt 0 -or $env:ENGINE_CCACHE) {
     Write-Host "ccache: off ($($plan.Reason))" -ForegroundColor Cyan
   } else {
@@ -178,7 +182,7 @@ function Get-AffectedBuildTargets($result) {
   if (-not $ninja) { $ninja = 'ninja' }
   $lines = & $ninja -C $BuildDir -t targets all 2>$null
   if ($LASTEXITCODE -ne 0) { throw "ninja -t targets failed in $BuildDir ($LASTEXITCODE)" }
-  return Get-AffectedTargets -Modules $result.Modules -Available (ConvertFrom-NinjaTargets -Lines @($lines))
+  return Get-AffectedTargets -Modules $result.Modules -Apps $result.Apps -Available (ConvertFrom-NinjaTargets -Lines @($lines))
 }
 
 # What the change against -Base can reach, from the preset's module graph (tools/lib/Affected.psm1).

@@ -144,6 +144,22 @@ Test-That 'an app that links the changed module is a module of the set, so its b
   ($t -contains 'engine_engine_view') -and ($t -contains 'engine_engine_view_tests') -and -not ($t -contains 'engine_physics')
 }
 Test-That 'a change no module holds builds nothing' { (Get-AffectedTargets -Modules @() -Available $ninja).Count -eq 0 }
+$ninjaApps = $ninja + @('engine_engine_cli', 'engine_engine_cli_tests')
+$r = Affected @('tools/export-game-sdk.ps1')
+$t = Get-AffectedTargets -Modules $r.Modules -Apps $r.Apps -Available $ninjaApps
+Test-That 'a tools/-only change names every app of the graph, because the tools tests start them' { ($r.Apps -join ',') -eq 'engine_cli,engine_view' }
+Test-That 'and builds their binaries, not their tests (tools.game_sdk runs engine-view)' {
+  ($t -join ',') -eq 'engine_engine_cli,engine_engine_view'
+}
+$r = Affected @('domain/physics/src/solver.cpp', 'docs/adr/README.md')
+Test-That 'a change that does not reach the tools tests names no app' { $r.Apps.Count -eq 0 -and -not $r.Tools }
+$r = Affected @('domain/physics/src/solver.cpp', 'tools/lint.ps1')
+$t = Get-AffectedTargets -Modules $r.Modules -Apps $r.Apps -Available $ninjaApps
+Test-That 'a module and a script: the module''s targets and the apps together' {
+  ($t -contains 'engine_physics_tests') -and ($t -contains 'engine_engine_view') -and ($t -contains 'engine_engine_cli') -and -not ($t -contains 'engine_engine_view_tests')
+}
+$r = Affected @('CMakeLists.txt')
+Test-That 'when everything is selected the apps are named too' { $r.All -and ($r.Apps -join ',') -eq 'engine_cli,engine_view' }
 
 Write-Host ''
 if ($failures.Count -gt 0) {

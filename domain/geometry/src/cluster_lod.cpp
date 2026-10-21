@@ -713,6 +713,293 @@ bool widen_lod_spheres(ClusterLodMesh& mesh, f32 from_error, Vec4 sphere, std::s
 
 namespace {
 
+// A stable counting sort of `count` items by `key` (each below `keys`): the items in key order,
+// ties in item order, and where each key's run starts.
+void counting_order(u32 count, u32 keys, const auto& key, Vector<u32>& order, Vector<u32>& starts) {
+  starts.assign(keys + 1, 0u);
+  for (u32 i = 0; i < count; ++i)
+    ++starts[key(i) + 1];
+  for (u32 k = 0; k < keys; ++k)
+    starts[k + 1] += starts[k];
+  Vector<u32> cursor(starts);
+  order.assign(count, 0u);
+  for (u32 i = 0; i < count; ++i)
+    order[cursor[key(i)]++] = i;
+}
+
+// Appends `built`'s clusters to `out` with their offsets shifted, and their LOD records.
+void append_built(const ClusterMesh& built, const ClusterLodDesc& lod, bool own_is_cluster,
+                  ClusterLodMesh& out) {
+  const u32 vertex_base = out.mesh.vertices.size();
+  const u32 triangle_base = out.mesh.triangles.size();
+  for (const ClusterDesc& c : built.clusters) {
+    ClusterDesc desc = c;
+    desc.vertex_offset += vertex_base;
+    desc.triangle_offset += triangle_base;
+    out.mesh.clusters.push_back(desc);
+    ClusterLodDesc record = lod;
+    if (own_is_cluster) record.own = Vec4{c.center.x, c.center.y, c.center.z, c.radius};
+    out.lod.push_back(record);
+  }
+  out.mesh.vertices.append(std::span<const Vec3>(built.vertices.data(), built.vertices.size()));
+  out.mesh.vertex_source.append(
+      std::span<const u32>(built.vertex_source.data(), built.vertex_source.size()));
+  out.mesh.triangles.append(std::span<const u32>(built.triangles.data(), built.triangles.size()));
+}
+
+}  // namespace
+
+bool build_cluster_lod_hierarchy(std::span<const Vec3> positions, std::span<const u32> indices,
+                                 std::span<const u32> element_of_triangle,
+                                 std::span<const ClusterLodHierarchyLevel> levels,
+                                 const ClusterLodOptions& options, ClusterLodMesh& out,
+                                 std::string* error, const AttributeSource& attributes) {
+  out = ClusterLodMesh{};
+  const auto fail = [&](const char* what) {
+    if (error != nullptr) *error = std::string("build_cluster_lod_hierarchy: ") + what;
+    out = ClusterLodMesh{};
+    return false;
+  };
+  const u32 depth = static_cast<u32>(levels.size());
+  if (positions.empty() || indices.empty() || indices.size() % 3 != 0 || depth == 0)
+    return fail("need vertices, a multiple of three indices and at least one level");
+  if (element_of_triangle.size() != indices.size() / 3)
+    return fail("the finest triangles need one element each");
+  for (u32 k = 0; k < depth; ++k) {
+    const ClusterLodHierarchyLevel& level = levels[k];
+    const bool rising = level.error > 0.0f && level.error < k_lod_terminal_error &&
+                        (k == 0 || level.error > levels[k - 1].error);
+    if (!rising || level.indices.empty() || level.indices.size() % 3 != 0 ||
+        level.element_of_triangle.size() != level.indices.size() / 3 || level.elements == 0 ||
+        (k + 1 < depth && level.parent_of_element.size() != level.elements))
+      return fail(
+          "every level needs triangles, an element a triangle, a parent an element and "
+          "an error above the one below");
+    for (const u32 e : level.element_of_triangle)
+      if (e >= level.elements) return fail("a triangle names an element its level does not have");
+    if (k + 1 < depth) {
+      for (const u32 p : level.parent_of_element)
+        if (p >= levels[k + 1].elements) return fail("an element names a parent out of range");
+    }
+  }
+  for (const u32 e : element_of_triangle)
+    if (e >= levels[0].elements) return fail("a finest triangle names an element out of range");
+  for (const u32 index : indices)
+    if (index >= positions.size()) return fail("index out of range");
+  for (const ClusterLodHierarchyLevel& level : levels)
+    for (const u32 index : level.indices)
+      if (index >= positions.size()) return fail("index out of range");
+
+  // Each level's elements: their triangles (contiguous by a counting sort) and distinct vertices.
+  Vector<Vector<u32>> element_triangles(depth);  // triangle ids, by element
+  Vector<Vector<u32>> element_start(depth);
+  Vector<Vector<u32>> element_vertices(depth);
+  for (u32 k = 0; k < depth; ++k) {
+    const ClusterLodHierarchyLevel& level = levels[k];
+    counting_order(
+        static_cast<u32>(level.element_of_triangle.size()), level.elements,
+        [&](u32 t) { return level.element_of_triangle[t]; }, element_triangles[k],
+        element_start[k]);
+    element_vertices[k].assign(level.elements, 0u);
+    Vector<u32> corners;
+    for (u32 e = 0; e < level.elements; ++e) {
+      corners.clear();
+      for (u32 i = element_start[k][e]; i < element_start[k][e + 1]; ++i) {
+        const u32 t = element_triangles[k][i];
+        for (u32 c = 0; c < 3; ++c)
+          corners.push_back(level.indices[t * 3 + c]);
+      }
+      std::sort(corners.begin(), corners.end());
+      element_vertices[k][e] =
+          static_cast<u32>(std::unique(corners.begin(), corners.end()) - corners.begin());
+    }
+  }
+
+  // The groups, top-down: each level's elements ordered by their parents' places in the level
+  // above (the top in its own order), then cut into runs of at most one cluster's worth that never
+  // cross their parent's group.
+  const u32 budget_vertices = options.max_vertices;
+  const u32 budget_triangles = options.max_triangles & ~3u;
+  Vector<Vector<u32>> order(depth);         // the level's elements, grouped
+  Vector<Vector<u32>> group_start(depth);   // into `order`
+  Vector<Vector<u32>> group_of(depth);      // per element
+  Vector<Vector<u32>> parent_group(depth);  // per group: its parent's group in the level above
+  for (u32 k = depth; k-- > 0;) {
+    const ClusterLodHierarchyLevel& level = levels[k];
+    Vector<u32> rank_starts;
+    if (k + 1 == depth) {
+      order[k].resize(level.elements);
+      for (u32 e = 0; e < level.elements; ++e)
+        order[k][e] = e;
+    } else {
+      Vector<u32> rank(levels[k + 1].elements, 0u);
+      for (u32 i = 0; i < order[k + 1].size(); ++i)
+        rank[order[k + 1][i]] = i;
+      counting_order(
+          level.elements, levels[k + 1].elements,
+          [&](u32 e) { return rank[level.parent_of_element[e]]; }, order[k], rank_starts);
+    }
+    group_of[k].assign(level.elements, 0u);
+    u32 vertices = 0, triangles = 0, above = ~0u;
+    for (u32 i = 0; i < order[k].size(); ++i) {
+      const u32 e = order[k][i];
+      const u32 parent = k + 1 == depth ? 0u : group_of[k + 1][level.parent_of_element[e]];
+      const u32 v = element_vertices[k][e];
+      const u32 t = element_start[k][e + 1] - element_start[k][e];
+      const bool fresh = group_start[k].empty() || parent != above ||
+                         vertices + v > budget_vertices || triangles + t > budget_triangles;
+      if (fresh) {
+        group_start[k].push_back(i);
+        parent_group[k].push_back(parent);
+        vertices = 0;
+        triangles = 0;
+        above = parent;
+      }
+      vertices += v;
+      triangles += t;
+      group_of[k][e] = group_start[k].size() - 1;
+    }
+    group_start[k].push_back(order[k].size());
+  }
+
+  // The finest triangles of each first-level group.
+  Vector<u32> finest_order, finest_start;
+  counting_order(
+      static_cast<u32>(element_of_triangle.size()), group_start[0].size() - 1,
+      [&](u32 t) { return group_of[0][element_of_triangle[t]]; }, finest_order, finest_start);
+
+  // Spheres, bottom-up: a group holds every vertex of its elements, its finest triangles' and its
+  // child groups' spheres.
+  Vector<Vector<Vec4>> sphere(depth);
+  for (u32 k = 0; k < depth; ++k) {
+    const ClusterLodHierarchyLevel& level = levels[k];
+    const u32 groups = group_start[k].size() - 1;
+    Vector<SphereFit> fits(groups);
+    for (u32 g = 0; g < groups; ++g) {
+      for (u32 i = group_start[k][g]; i < group_start[k][g + 1]; ++i) {
+        const u32 e = order[k][i];
+        for (u32 j = element_start[k][e]; j < element_start[k][e + 1]; ++j) {
+          const u32 t = element_triangles[k][j];
+          for (u32 c = 0; c < 3; ++c) {
+            const Vec3 p = positions[level.indices[t * 3 + c]];
+            fits[g].add(Vec4{p.x, p.y, p.z, 0.0f});
+          }
+        }
+      }
+    }
+    if (k == 0) {
+      for (u32 g = 0; g < groups; ++g)
+        for (u32 i = finest_start[g]; i < finest_start[g + 1]; ++i)
+          for (u32 c = 0; c < 3; ++c) {
+            const Vec3 p = positions[indices[finest_order[i] * 3 + c]];
+            fits[g].add(Vec4{p.x, p.y, p.z, 0.0f});
+          }
+    } else {
+      for (u32 g = 0; g + 1 < group_start[k - 1].size(); ++g)
+        fits[parent_group[k - 1][g]].add(sphere[k - 1][g]);
+    }
+    sphere[k].resize(groups);
+    for (u32 g = 0; g < groups; ++g)
+      sphere[k][g] = fits[g].sphere();
+  }
+
+  // The DAG's groups are the clusters that share a parent: the runs under one group of the level
+  // above, and each top group on its own.
+  Vector<u32> sibling_base(depth + 1, 0u);
+  for (u32 k = 0; k < depth; ++k)
+    sibling_base[k + 1] = sibling_base[k] + (group_start[k].size() - 1);
+
+  ClusterBuildOptions build;
+  build.max_vertices = options.max_vertices;
+  build.max_triangles = budget_triangles;
+  build.normal_cones = options.normal_cones;
+  out.mesh.source_vertex_count = static_cast<u32>(positions.size());
+  out.mesh.source_triangle_count = static_cast<u32>(indices.size() / 3);
+  out.leaf_triangle_count = out.mesh.source_triangle_count;
+  Vector<u32> run;
+  ClusterMesh built;
+  std::string message;
+  // Each group is clustered over its own vertices alone: the meshlet builder's tables are as large
+  // as the vertex array it is handed, and a tree's crown is thousands of groups over millions of
+  // vertices — handing each the whole array made the oak's build seconds and the ancient tree's an
+  // hour. The local ids map back through `vertex_source`.
+  Vector<u32> local_of(static_cast<u32>(positions.size()), ~0u);
+  Vector<u32> global_of;
+  Vector<Vec3> local_positions;
+  Vector<u32> local_run;
+  const auto cluster_run = [&](std::string* why) {
+    global_of.clear();
+    local_positions.clear();
+    local_run.clear();
+    for (const u32 index : run) {
+      if (local_of[index] == ~0u) {
+        local_of[index] = global_of.size();
+        global_of.push_back(index);
+        local_positions.push_back(positions[index]);
+      }
+      local_run.push_back(local_of[index]);
+    }
+    for (const u32 index : global_of)
+      local_of[index] = ~0u;
+    if (!build_clusters(local_positions, local_run, build, built, why)) return false;
+    for (u32& source : built.vertex_source)
+      source = global_of[source];
+    return true;
+  };
+  // The finest: own error 0, the parent its first-level group.
+  out.level_cluster_counts.push_back(0);
+  for (u32 g = 0; g + 1 < finest_start.size(); ++g) {
+    if (finest_start[g] == finest_start[g + 1]) continue;
+    run.clear();
+    for (u32 i = finest_start[g]; i < finest_start[g + 1]; ++i)
+      for (u32 c = 0; c < 3; ++c)
+        run.push_back(indices[finest_order[i] * 3 + c]);
+    if (!cluster_run(&message)) return fail("the finest triangles of a group did not cluster");
+    ClusterLodDesc lod{};
+    lod.own_error = 0.0f;
+    lod.parent = sphere[0][g];
+    lod.parent_error = levels[0].error;
+    lod.level = 0;
+    lod.group = sibling_base[0] + g;
+    append_built(built, lod, true, out);
+    out.level_cluster_counts.back() += built.clusters.size();
+  }
+  for (u32 k = 0; k < depth; ++k) {
+    const ClusterLodHierarchyLevel& level = levels[k];
+    out.level_cluster_counts.push_back(0);
+    for (u32 g = 0; g + 1 < group_start[k].size(); ++g) {
+      run.clear();
+      for (u32 i = group_start[k][g]; i < group_start[k][g + 1]; ++i) {
+        const u32 e = order[k][i];
+        for (u32 j = element_start[k][e]; j < element_start[k][e + 1]; ++j)
+          for (u32 c = 0; c < 3; ++c)
+            run.push_back(level.indices[element_triangles[k][j] * 3 + c]);
+      }
+      if (!cluster_run(&message)) return fail("a level's group did not cluster");
+      ClusterLodDesc lod{};
+      lod.own = sphere[k][g];
+      lod.own_error = level.error;
+      const bool top = k + 1 == depth;
+      lod.parent = top ? sphere[k][g] : sphere[k + 1][parent_group[k][g]];
+      lod.parent_error = top ? k_lod_terminal_error : levels[k + 1].error;
+      lod.level = k + 1;
+      lod.group = top ? sibling_base[depth] + g : sibling_base[k + 1] + parent_group[k][g];
+      append_built(built, lod, false, out);
+      out.level_cluster_counts.back() += built.clusters.size();
+    }
+  }
+  out.group_count = sibling_base[depth] + (group_start[depth - 1].size() - 1);
+  Vector<u32> all;
+  all.append(indices);
+  for (const ClusterLodHierarchyLevel& level : levels)
+    all.append(level.indices);
+  fill_cluster_attributes(out.mesh, positions, all, attributes);
+  quantize_positions(out.mesh);  // one grid over every level
+  return true;
+}
+
+namespace {
+
 bool build_lod(std::span<const Vec3> positions, std::span<const u32> indices,
                std::span<const ClusterLodLevel> levels, const ClusterLodOptions& options,
                ClusterLodMesh& out, std::string* error, const AttributeSource& attributes) {
@@ -928,6 +1215,70 @@ bool lod_selects(const ClusterLodDesc& lod, const LodView& view) noexcept {
   const f32 own = projected_error(lod.own, lod.own_error, view);
   const f32 parent = projected_error(lod.parent, lod.parent_error, view);
   return own <= view.threshold_px && parent > view.threshold_px;
+}
+
+u32 pack_lod_coverage(f32 own, f32 parent) noexcept {
+  // Past a half's range (or not a number at all) is "none": +inf, which no threshold accepts.
+  const auto half = [](f32 v) -> u32 {
+    if (!(v >= 0.0f) || v > 65504.0f) return 0x7C00u;
+    return f32_to_f16(v);
+  };
+  return half(own) | (half(parent) << 16);
+}
+
+f32 lod_coverage_own(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed & 0xFFFFu)); }
+
+f32 lod_coverage_parent(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed >> 16)); }
+
+namespace {
+
+// A transition's acceptance, as `lod_selects` with coverage and cluster_cull.slang both write it:
+// two comparisons and no division, so a cluster with no coverage (+inf, which projects to +inf
+// and is never at or under a threshold) takes exactly the one-threshold test.
+bool transition_acceptable(Vec4 sphere, f32 error, f32 coverage, const LodView& view) noexcept {
+  if (projected_error(sphere, error, view) <= view.threshold_px) return true;
+  if (!(coverage < k_lod_terminal_error)) return false;
+  return projected_error(sphere, coverage, view) <= view.foliage_px;
+}
+
+// A projected error over its threshold, with a threshold of zero (the finest cut) making every
+// positive error infinitely too coarse and a zero error always fine.
+f32 over_threshold(f32 projected, f32 threshold) noexcept {
+  if (!(projected > 0.0f)) return 0.0f;
+  if (!(threshold > 0.0f)) return k_lod_terminal_error;
+  return projected / threshold;
+}
+
+}  // namespace
+
+bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage) noexcept {
+  return transition_acceptable(lod.own, lod.own_error, lod_coverage_own(coverage), view) &&
+         !transition_acceptable(lod.parent, lod.parent_error, lod_coverage_parent(coverage), view);
+}
+
+f32 lod_fade_split(Vec4 sphere, f32 error, f32 coverage, const LodView& view,
+                   bool step_shift) noexcept {
+  const bool fading = view.fade > 0.0f && coverage < k_lod_terminal_error;
+  if (!fading) return transition_acceptable(sphere, error, coverage, view) ? 0.0f : 1.0f;
+  const f32 geometric = over_threshold(projected_error(sphere, error, view), view.threshold_px);
+  const f32 foliage = over_threshold(projected_error(sphere, coverage, view), view.foliage_px);
+  const f32 ratio = geometric < foliage ? geometric : foliage;
+  if (step_shift) return ratio <= 1.0f - view.fade ? 0.0f : 1.0f;
+  const f32 split = (ratio - (1.0f - view.fade)) / (2.0f * view.fade);
+  return split < 0.0f ? 0.0f : (split > 1.0f ? 1.0f : split);
+}
+
+u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, std::span<const u32> coverage,
+               Vector<u32>& out) {
+  if (coverage.size() != mesh.lod.size()) return select_lod(mesh, view, out);
+  u32 count = 0;
+  for (u32 i = 0; i < mesh.lod.size(); ++i) {
+    if (lod_selects(mesh.lod[i], view, coverage[i])) {
+      out.push_back(i);
+      ++count;
+    }
+  }
+  return count;
 }
 
 u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, Vector<u32>& out) {

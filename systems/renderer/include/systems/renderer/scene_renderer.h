@@ -448,6 +448,10 @@ struct FrameDesc {
   // (docs/plan/04-renderer.md §4.8). It is per frame and not per renderer because the same
   // renderer draws both pictures of a comparison.
   f32 lod_px = -1.0f;
+  // False draws a foliage switch at once even where the settings fade it
+  // (`RenderSettings::lod_fade`): the reference tracer's rays have no fade table, so its frames
+  // take the cut without the band.
+  bool lod_fade = true;
   // Under `render_offscreen`, build every ray tracing structure this frame wants even past the
   // budget, up to the scene's whole union (docs/subsystems/renderer.md, "The ray tracing chain's
   // memory"). The reference renderer sets it: its one real-time frame is the geometry every ray of

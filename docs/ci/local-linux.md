@@ -365,7 +365,12 @@ over a ccache directory keyed by the preset, a row of its own when hosted minute
 that each follow from Windows:
 
 - **It is the owner's to install** — `winget install ccache` — and the script never downloads a
-  compiler wrapper. With none on `PATH`, or one older than **4.13**, the build is exactly what it was:
+  compiler wrapper. `configure` uses the ccache on `PATH`, or else the one winget put in
+  `%LOCALAPPDATA%\Microsoft\WinGet\Links` (`Find-Ccache`), and prints which path it used and where
+  it found it: winget adds Links to the user's `PATH`, but a shell started before the install — an
+  agent harness's, an IDE's — never sees that, and until batch 33 every configure such a shell ran
+  printed `ccache: off` in a worktree that should have had it on, so agents' briefs had to prepend
+  Links by hand. With none in either place, or one older than **4.13**, the build is exactly what it was:
   no launcher, `/Zi`, nothing on the configure line. 4.13 is the first release that calls caching
   `cl.exe` supported; the module's header lists what the tree's compiles need and the release each
   arrived in (per-invocation settings on the command line in 4.8, `/Z7` overriding an earlier `/Z`
@@ -432,7 +437,14 @@ of the affected set — the changed modules, everything that depends on them, an
 everything above its layer, with the apps among them, since an app is a module in `modules.json` —
 its library, its test executable and its bench, as `cmake --build --preset <p> --target <list>`.
 A test that runs another binary names it with `add_dependencies` (engine-cli's tests on engine-host,
-engine-view and engine-content), so it builds with the test. `test -Affected` builds the same way.
+engine-view and engine-content), so it builds with the test. The tools' own tests (`tools.*`) are
+CTest tests with no target to hang a dependency on, and `tools.game_sdk` exports and runs
+engine-view, so whenever they are selected (any change under `tools/`) every app the graph declares
+— each `engine_app()`, the `apps` layer of `modules.json` — is built too, its binary and not its
+tests; until batch 33 a `tools/`-only change built no app and `tools.game_sdk` failed on a missing
+engine-view. That is the whole app set rather than the two the tools tests start today because no
+declaration says which they start, and a list written in `Affected.psm1` would rot the first time a
+tools test began to run a third. `test -Affected` builds the same way.
 Counted with `ninja -t commands` over the targets on the 2026-10-20 tree in `msvc-debug`: a change in
 `domain/flora` — a capability, so every module above its layer — asks for 1,146 of the tree's 1,542
 compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in

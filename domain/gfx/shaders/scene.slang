@@ -304,7 +304,7 @@ struct MaskTables {
   uint64_t materials;          // ResolveMaterial[] (material.slang)
   uint64_t cluster_materials;  // uint per cluster
   uint64_t attributes;         // VertexAttributes[] parallel to the vertices
-  uint64_t pad;
+  uint64_t fade;               // uint2 per pair: the cross-fade's splits and seed (alpha_mask.slang)
 };
 
 struct MaskedEye {
@@ -324,7 +324,7 @@ MaskTables no_mask_tables() {
   t.materials = 0;
   t.cluster_materials = 0;
   t.attributes = 0;
-  t.pad = 0;
+  t.fade = 0;
   return t;
 }
 

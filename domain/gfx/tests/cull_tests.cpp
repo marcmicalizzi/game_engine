@@ -371,6 +371,68 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   REQUIRE(frames.wait(frames.end_frame()));
   CHECK(raster.survivors(args_out) == 0);
 
+  // **With coverage errors** (geometry.md, "Two errors"; R91): every cluster carries a coverage
+  // error of 0.3 times its geometric one, held to 0.6 px, so the cut is the one-pixel cut's
+  // coarser neighbour — and the GPU's survivors are `lod_selects`' with coverage, cluster for
+  // cluster, through the half floats both read.
+  Vector<u32> coverage_words;
+  for (const geometry::ClusterLodDesc& d : lod.lod) {
+    const f32 parent =
+        d.parent_error >= geometry::k_lod_terminal_error ? 1.0e30f : d.parent_error * 0.3f;
+    coverage_words.push_back(geometry::pack_lod_coverage(d.own_error * 0.3f, parent));
+  }
+  gfx::BufferResource coverage;
+  REQUIRE(gfx::upload_buffer(device, coverage_words.data(), cluster_count * sizeof(u32), k_storage,
+                             coverage, &error));
+  geometry::LodView foliage_view = view;
+  foliage_view.foliage_px = 0.6f;
+  Vector<u32> expected_coverage;
+  for (u32 i = 0; i < cluster_count; ++i) {
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    if (frustum_contains_sphere(frustum, c.center, c.radius) &&
+        geometry::lod_selects(lod.lod[i], foliage_view, coverage_words[i])) {
+      expected_coverage.push_back(i);
+    }
+  }
+  CHECK(expected_coverage.size() < expected.size());  // coarser than the one-pixel cut
+  graph.reset();
+  gfx::CullParams covered_cull = cull;
+  covered_cull.coverage = coverage.address;
+  covered_cull.foliage_px = foliage_view.foliage_px;
+  std::memcpy(params.mapped, &covered_cull, sizeof(covered_cull));
+  const gfx::RgBuffer rg_args3 = graph.import_buffer("args", args);
+  const gfx::RgBuffer rg_visible3 = graph.import_buffer("visible", visible);
+  const gfx::RgBuffer rg_args_host3 = graph.import_buffer("args_host", args_host);
+  const gfx::RgBuffer rg_visible_host3 = graph.import_buffer("visible_host", visible_host);
+  add_cull_passes(rg_args3, rg_visible3);
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        b.read(rg_args3, gfx::Access::TransferRead);
+        b.read(rg_visible3, gfx::Access::TransferRead);
+        b.write(rg_args_host3, gfx::Access::TransferWrite);
+        b.write(rg_visible_host3, gfx::Access::TransferWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
+        cb.copy_buffer(args.buffer, args_host.buffer, args_copy);
+        const gfx::BufferCopy visible_copy{0, 0, visible_bytes};
+        cb.copy_buffer(visible.buffer, visible_host.buffer, visible_copy);
+      });
+  REQUIRE(graph.compile(&error));
+  commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+  const u32 covered_count = raster.survivors(args_out);
+  Vector<u32> covered_got;
+  for (u32 i = 0; i < covered_count && i < cluster_count; ++i)
+    covered_got.push_back(visible_out[i * 2 + 1]);
+  std::sort(covered_got.begin(), covered_got.end());
+  CHECK(covered_got == expected_coverage);
+  MESSAGE("with coverage errors: visible " << covered_count << ", expected "
+                                           << expected_coverage.size());
+  gfx::destroy_buffer(device, coverage);
+
   graph.reset();
   raster.destroy(device);
   gfx::destroy_compute_pipeline(device, cull_pipeline);

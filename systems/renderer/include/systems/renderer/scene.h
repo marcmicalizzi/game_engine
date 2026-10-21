@@ -347,6 +347,10 @@ struct SourceMesh {
   // mesh's leaves first and so reorders every mesh that arrived in pages (renderer.md, "The
   // material map follows the merge").
   Vector<u32> part_of_cluster;
+  // The coverage errors (geometry.md, "Two errors"; container section 39): empty, or one
+  // `geometry::pack_lod_coverage` word per cluster, in the same order as `part_of_cluster` and
+  // reordered with it. A generated tree with an impostor chain carries them.
+  Vector<u32> lod_coverage;
   Vector<i32> part_material;   // the material of every part, -1 for none
   std::string image_dir;       // what the relative image paths are relative to
   u32 primitives = 0;          // glTF primitives merged into it; 0 from a container

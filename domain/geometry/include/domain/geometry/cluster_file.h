@@ -199,13 +199,19 @@ enum class ClusterSection : u32 {
   // only when a species emits a chain**, like 34 to 37, so every other container is the bytes it
   // was.
   Impostors = 38,
+  // A foliage mesh's coverage errors (geometry.md, "Two errors"; R91): one u32 per cluster, the own
+  // and the parent transition's coverage error as two half floats (`pack_lod_coverage`), parallel
+  // to `ClusterMaterial` and reordered with it. **Written only when a generator emits one** (a tree
+  // with an impostor chain), so every other container is the bytes it was; a reader without it
+  // draws the mesh by its geometric errors alone. Resident.
+  LodCoverage = 39,
   // The cover mask a cover solver wrote over its host (docs/subsystems/cover.md, "The mask"; G78):
   // one `u32` per **host** vertex — the host container's cluster-ordered `Vertices`, or a glTF
   // host's flattened ones — packing four unorm8 coverages, moss in bits 0..7, lichen 8..15, algae
   // 16..23 and fungus 24..31. It lives in the **companion's** container, never the host's, so the
   // host stays the bytes it was; it is what the blended cover layer (roadmap R90) will read through
   // the attribute path. **Written only by the cover generator**, like 34 to 38.
-  CoverMask = 39,
+  CoverMask = 40,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
@@ -394,7 +400,12 @@ struct ClusterFileImpostor {
   f32 error = 0.0f;
   f32 parallax = 0.0f;
   f32 texel = 0.0f;
-  u32 pad[2] = {0, 0};
+  // R91: the level's **coverage error** (metres; what drawing it instead of the finer form changes
+  // at the pixel, the cut's foliage term) and the measured difference it was taken from (0..1: the
+  // silhouette's and the colour's over a ring of views; flora.md, "The coverage bake"). Zero in a
+  // container written before them, which carries no coverage section either.
+  f32 coverage = 0.0f;
+  f32 difference = 0.0f;
 };
 
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
@@ -473,7 +484,10 @@ struct ClusterFileData {
   // The impostor chain (section 38), empty for a mesh whose generator builds none; every record
   // names one of `materials`. Written only when not empty.
   Vector<ClusterFileImpostor> impostors;
-  // The cover mask (section 39), empty for every mesh but a cover's companion; one packed word per
+  // The coverage errors (section 39): empty, or one `pack_lod_coverage` word per cluster, parallel
+  // to `cluster_material`. Written only when not empty.
+  Vector<u32> lod_coverage;
+  // The cover mask (section 40), empty for every mesh but a cover's companion; one packed word per
   // host vertex. Written only when not empty.
   Vector<u32> cover_mask;
 };
