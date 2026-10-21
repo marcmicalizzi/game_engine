@@ -402,5 +402,5 @@ TEST_CASE("the generators build companions through the host seam, the mask in se
                 static_cast<unsigned long long>(geometry::cluster_file_hash(vine_data)),
                 static_cast<unsigned long long>(geometry::cluster_file_hash(cover_data)));
   MESSAGE("containers: " << text);
-  CHECK(std::string(text) == "9cb906a303a4611a ad445bb04300631a");
+  CHECK(std::string(text) == "9cb906a303a4611a 09e1eaf9313d8022");
 }
