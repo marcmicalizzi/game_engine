@@ -783,8 +783,10 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
     // The view's centre and reach: the card's centre and the farthest geometry from it.
     const D3 centre =
         from_f32(job.card.origin) +
-        from_f32(job.card.u_axis) * (0.5 * (static_cast<f64>(job.card.u_min) + job.card.u_max)) +
-        from_f32(job.card.v_axis) * (0.5 * (static_cast<f64>(job.card.v_min) + job.card.v_max));
+        from_f32(job.card.u_axis) *
+            (0.5 * (static_cast<f64>(job.card.u_min) + static_cast<f64>(job.card.u_max))) +
+        from_f32(job.card.v_axis) *
+            (0.5 * (static_cast<f64>(job.card.v_min) + static_cast<f64>(job.card.v_max)));
     f64 reach = 0.0;
     for (const BakeRange& range : job.ranges)
       for (u32 i = range.first_index; i < range.first_index + range.index_count; ++i) {
@@ -840,7 +842,8 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
         const D3 o = from_f32(card.origin);
         const D3 cu = from_f32(card.u_axis);
         const D3 cv = from_f32(card.v_axis);
-        const f64 u0 = card.u_min, u1 = card.u_max, v0 = card.v_min, v1 = card.v_max;
+        const f64 u0 = static_cast<f64>(card.u_min), u1 = static_cast<f64>(card.u_max);
+        const f64 v0 = static_cast<f64>(card.v_min), v1 = static_cast<f64>(card.v_max);
         const D3 quad[4] = {o + cu * u0 + cv * v0, o + cu * u1 + cv * v0, o + cu * u1 + cv * v1,
                             o + cu * u0 + cv * v1};
         // The tile's inner texels hold the card (view_of's one-texel margin).

@@ -191,7 +191,7 @@ tunables::Float display_peak{"renderer.display.peak_nits", 0.0, 0.0, 10000.0,
                              "the display reports, else 1000)"};
 // The foliage LOD's two numbers (RenderSettings::foliage_px and lod_fade; R91).
 tunables::Float lod_foliage_px{
-    "renderer.lod.foliage_px", geometry::k_default_foliage_px, 0.0, 1000.0,
+    "renderer.lod.foliage_px", static_cast<f64>(geometry::k_default_foliage_px), 0.0, 1000.0,
     "The pixels a coverage error (a leaf card's) may project to before "
     "the finer foliage is drawn instead (renderer.md, The foliage threshold)"};
 tunables::Float lod_fade{"renderer.lod.fade", 0.1, 0.0, 0.5,
