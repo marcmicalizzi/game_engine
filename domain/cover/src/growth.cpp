@@ -17,7 +17,11 @@ namespace {
 constexpr u32 k_sky_rays = 32;
 constexpr u32 k_pieces_per_triangle = 64;  // a cap, so one huge triangle cannot take the budget
 
-bool in(f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; }
+template <typename T>
+bool in(T value, f64 lo, f64 hi) {
+  const f64 v = static_cast<f64>(value);
+  return v >= lo && v <= hi;
+}
 f64 clamp01(f64 v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 f64 smoothstep(f64 lo, f64 hi, f64 v) {
   const f64 t = clamp01((v - lo) / (hi - lo));

@@ -16,7 +16,11 @@ constexpr f64 k_pi = 3.14159265358979323846;
 constexpr f64 k_surface_lift = 1e-3;  // a walked point stands this far off the surface
 constexpr u32 k_step_cap = 200000;    // steps over every stem: a recipe's lengths stay far below
 
-bool in(f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; }
+template <typename T>
+bool in(T value, f64 lo, f64 hi) {
+  const f64 v = static_cast<f64>(value);
+  return v >= lo && v <= hi;
+}
 
 P3 rotate(P3 v, P3 axis, f64 angle) {
   const f64 c = det::cos(angle);
@@ -69,7 +73,7 @@ bool vine_in_range(const Vine& v, std::string& error) {
   if (!in(v.branch_angle_deg, 5.0, 85.0)) return bad("branch_angle_deg");
   if (v.branch_depth > 6) return bad("branch_depth");
   if (!in(v.stem_radius_m, 0.002, 0.2)) return bad("stem_radius_m");
-  if (!in(v.tip_radius_m, 0.0005, v.stem_radius_m)) return bad("tip_radius_m");
+  if (!in(v.tip_radius_m, 0.0005, static_cast<f64>(v.stem_radius_m))) return bad("tip_radius_m");
   if (!in(v.leaf_length_m, 0.01, 0.5)) return bad("leaf_length_m");
   if (!in(v.leaf_width, 0.3, 1.5)) return bad("leaf_width");
   if (!in(v.leaf_spacing_m, 0.01, 1.0)) return bad("leaf_spacing_m");
@@ -264,7 +268,7 @@ bool grow_vine(const HostSurface& surface, const HostBvh& bvh, const HostSite& s
       stem.normals.push_back(normal);
       stem.held.push_back(held ? 1u : 0u);
       stem.free_run.push_back(free);
-      if (held && w.depth < params.branch_depth && walk.unit() < params.branch_chance) {
+      if (held && w.depth < params.branch_depth && walk.unit() < static_cast<f64>(params.branch_chance)) {
         Walker child;
         child.p = next;
         child.n = normal;
