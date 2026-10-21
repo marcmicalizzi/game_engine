@@ -220,6 +220,10 @@ constexpr const char* k_usage =
     "                   uploads one texture per distinct image content and every mesh that samples\n"
     "                   it shares it; this is the old behaviour, for measuring what that saves\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
+    "  --foliage-lod <px>  the coverage errors' threshold: a leaf card replaces the leaves once what it\n"
+    "                   changes projects to this or less (default renderer.lod.foliage_px, 5)\n"
+    "  --lod-fade <f>   the foliage switch's cross-fade half band, a fraction of the threshold\n"
+    "                   (default renderer.lod.fade, 0.1; 0 switches at once)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
@@ -3426,7 +3430,7 @@ int run_view(int argc, char** argv) {
        : a == "--orbit" ? options.orbit
                         : options.settings.deform_amplitude) = px;
     } else if (a == "--side-yaw" || a == "--panini-d" || a == "--peripheral-lod" ||
-               a == "--warmup-seconds") {
+               a == "--warmup-seconds" || a == "--foliage-lod" || a == "--lod-fade") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 v = 0.0f;
       if (!parse_f32_zero_ok(value, v)) {
@@ -3438,6 +3442,8 @@ int run_view(int argc, char** argv) {
       if (a == "--panini-d") options.settings.panini_d = v;
       if (a == "--peripheral-lod") options.settings.peripheral_lod = v;
       if (a == "--warmup-seconds") options.warmup_seconds = v;
+      if (a == "--foliage-lod") options.settings.foliage_px = v;
+      if (a == "--lod-fade") options.settings.lod_fade = v;
     } else if (a == "--views") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_view_layout(value, options.settings.views)) {

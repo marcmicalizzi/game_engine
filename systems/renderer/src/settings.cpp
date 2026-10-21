@@ -189,6 +189,14 @@ namespace {
 tunables::Float display_peak{"renderer.display.peak_nits", 0.0, 0.0, 10000.0,
                              "The peak luminance an HDR picture rolls off towards, nits (0: what "
                              "the display reports, else 1000)"};
+// The foliage LOD's two numbers (RenderSettings::foliage_px and lod_fade; R91).
+tunables::Float lod_foliage_px{
+    "renderer.lod.foliage_px", geometry::k_default_foliage_px, 0.0, 1000.0,
+    "The pixels a coverage error (a leaf card's) may project to before "
+    "the finer foliage is drawn instead (renderer.md, The foliage threshold)"};
+tunables::Float lod_fade{"renderer.lod.fade", 0.1, 0.0, 0.5,
+                         "The cross-fade's half band at a foliage switch, a fraction of the "
+                         "threshold; 0 switches at once"};
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,
                                     "The luminance an HDR picture shows a diffuse white at, nits "
                                     "(0: Windows' SDR white level for the display, else 200)"};
@@ -229,6 +237,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                       const SceneData* scene, ResolvedSettings& out) {
   out = ResolvedSettings{};
   RenderSettings s = requested;
+  if (s.foliage_px < 0.0f) s.foliage_px = static_cast<f32>(lod_foliage_px.get());
+  if (s.lod_fade < 0.0f) s.lod_fade = static_cast<f32>(lod_fade.get());
+  if (s.lod_fade > 0.5f) s.lod_fade = 0.5f;
   if (!s.cull && s.raster == RasterMode::Auto) s.raster = RasterMode::Hardware;
   if (!features.mesh_shader && (s.raster == RasterMode::Direct ||
                                 s.raster == RasterMode::Hardware || s.raster == RasterMode::Auto)) {

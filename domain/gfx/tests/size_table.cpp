@@ -219,8 +219,9 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // placed at their corners").
 // 416, not 400: the output's display — the encoding (SDR, PQ, scRGB), paper white and the peak in
 // nits — for the HDR encodes E39 measures (display.h, "HDR output"; 2026-10-09). No pad word was
-// left, so it is a row of its own.
-ENGINE_EXPECT_SIZE(416, 8, gfx::ResolveParams);
+// left, so it is a row of its own. 432, not 416: the cross-fade's table for the shadow rays
+// (`fade`, R91; renderer.md, "The cross-fade"), a row of its own again.
+ENGINE_EXPECT_SIZE(432, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

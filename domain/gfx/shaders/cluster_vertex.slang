@@ -129,7 +129,9 @@ MaskedClusterVertex vs_cluster_masked(uint vertex_id : SV_VertexID,
 [shader("fragment")]
 void fs_visibility_masked(MaskedClusterVertex v) {
   const FrameEye eye = load_eye(g_params.eye);
-  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  if (!fade_keeps(masks, v.id >> 8, uint2(v.position.xy))) discard;  // the cross-fade (R91)
+  if (!mask_keeps(mask_material(masks, v.material), v.uv)) discard;
   const uint2 pixel = uint2(v.position.xy);
   if (pixel.x >= extent_width(g_params.extent) || pixel.y >= extent_height(g_params.extent)) return;
   const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(v.id);
@@ -141,5 +143,7 @@ void fs_visibility_masked(MaskedClusterVertex v) {
 [shader("fragment")]
 void fs_mask_depth(MaskedClusterVertex v) {
   const FrameEye eye = load_eye(g_params.eye);
-  if (!mask_keeps(mask_material(load_mask_tables(g_params.eye, eye), v.material), v.uv)) discard;
+  const MaskTables masks = load_mask_tables(g_params.eye, eye);
+  if (!fade_keeps(masks, v.id >> 8, uint2(v.position.xy))) discard;  // the cross-fade (R91)
+  if (!mask_keeps(mask_material(masks, v.material), v.uv)) discard;
 }

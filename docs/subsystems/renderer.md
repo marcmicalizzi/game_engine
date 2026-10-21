@@ -653,14 +653,85 @@ variants rasterize them, the ray loops and the shadow maps test the same mask, a
 the baked normal through the triangle's own tangent frame (`tangent_frame`, `material.slang`) with
 the frame's lights as it shades any normal-mapped surface — so a card's leaves are lit by the sun
 and the sky they face, not the flat card's normal. What a dedicated material kind would add, and is
-not built: **view-chosen frames** (an octahedral atlas blended by the view direction; the coverage
+not built: **view-chosen frames** (an octahedral atlas blended by the view direction, R90; the coverage
 would then depend on the view, which every rasterizer's masked variant, every ray loop and the
 cascades would have to compute alike to keep the visibility buffer and the ray path word for word),
-the baked depth offsetting a shadow ray's origin to where the leaf was, and a **dithered
-cross-fade** at a level's switch, which needs both levels drawn across a band of distance with
-complementary screen-space masks — today a level switches whole at its distance, and the errors are
-honest enough that the switch is at a pixel of parallax.
+and the baked depth offsetting a shadow ray's origin to where the leaf was.
 
+### The foliage threshold
+
+R91 (2026-10-21; [tree allometry](../experiments/tree-allometry.md#r91-foliage-lod-that-takes-over-2026-10-21)
+has the sources). A card standing for a bough is judged by its coverage and its colour at the pixel,
+not by the parallax of a point off its plane, so the cut holds a foliage level's **coverage error**
+([flora](flora.md#the-impostor-chain) measures it, [geometry](geometry.md#two-errors-the-geometric-and-the-coverage)
+has the formula) to its own threshold: `RenderSettings::foliage_px`, the tunable
+`renderer.lod.foliage_px`, `engine-view --foliage-lod <px>`; `--lod` stays the geometric one. A
+frame's override of the geometric threshold (`FrameDesc::lod_px`) moves the foliage threshold in
+proportion, so the finest cut is the finest foliage and the chain's root its root; a view's
+`lod_scale` and the cascades' `shadow_lod_scale` multiply both. **The default, 5 px**, is fitted to
+the owner's observation that the 12 m oak's first cards hold the picture at 28 m (R89's capture at
+`--lod 60`): its first level's coverage error is 0.15 m (a 0.17 m leaf times the measured difference
+0.90), which projects to 5 px at 28 m at 1080p — where the leaf itself is 5.6 px. The switch
+distances that follow, from a card group's near side at 1080p (a group's sphere is its sub-trees',
+0.7 to 7 m on the oak, 0.7 to 46 m on the ancient tree): the oak's four card levels at 28, 172, 288 and
+421 m and its star at 434 m from the tree's centre (R89: 589 m to 7.9 km); the default ancient tree's
+five at 37, 189, 305, 434 and 582 m and its star at 691 m (R89: 832 m to 67 km). Both scenes' camera
+paths now draw cards. A scene with no coverage errors reads none of it and draws byte-identically: the
+cull pass's test with a coverage of +inf is the one-threshold test bit for bit.
+
+### The cross-fade
+
+A foliage switch is hidden by a dithered cross-fade across a band of projected error, 0.9 to 1.1 times
+the threshold by default (`RenderSettings::lod_fade` half band, tunable `renderer.lod.fade` 0.1,
+`engine-view --lod-fade`; 0 switches at once), about 10 % of the distance. Across it both levels are
+drawn and **each pixel keeps one**: the cull pass computes each drawn pair's two splits
+(`geometry::lod_fade_split`) and writes them and the pair's instance to the view's fade table
+(`MaskTables::fade`; gfx.md), and every masked reader keeps the pixel where its stable hash of the
+pixel and the instance lies between them (`fade_keeps`, `alpha_mask.slang`) — screen-door transparency
+through the masked variants' discard, so the visibility buffer keeps one id a pixel and the tie rule
+stands. Both sides of a transition hash the same pixels with the same seed (the instance, never the
+pair), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
+still view does not shimmer. The ray path's loops hash the dispatch's pixel, the resolve's shadow rays
+the resolved pixel, and the cascades the shadow map's texel against a table of their own (their LOD
+can be scaled), so every path sees one of the two levels per sample. With the chain the finest leaves
+are alpha-tested even with no pack's image (flora.md), because an opaque side cannot dither: an
+opaque cluster of a fading mesh — the bark under the star — switches at the band's fine end, so its
+masked replacement is whole before it goes. The reference tracer's frames take no fade
+(`FrameDesc::lod_fade`), since its rays have no table.
+
+**What holds** (`impostor_view_tests.cpp`, the 8 m oak at 480 × 480, the camera 15 m off while the
+threshold sweeps from 0.8 to 1.25 times the settings' over 20 frames, so only the switch moves): the
+first cards' share of the tree's pixels moves at most 3.8 % a frame faded against 9.5 % switched at
+once; the largest frame-to-frame mean change of an 8 × 8 block is 0.28 of 255 faded against 0.42; 2 × 2
+blocks holding both leaves and cards number 11,346 faded against 3,105 (the screen door). The vertex
+path's ids equal the mesh path's in every one of the 4.6 million pixels, faded or not; the ray path's
+differ in 2,475 faded and 2,372 at once, the masks' level-0 sampling the ray loops always had. **Not
+tested**: the cascades' masked depth against a reference inside the band (they run, keyed by texel).
+
+**What it costs** (msvc-debug, RTX 5090, 1080p, each scene's camera path with traced shadows,
+`--offscreen --repeat 1 --warmup 60 --wait-quiet 60`, 2026-10-21; neither run found a quiet machine —
+before, others held 97–100 % of the CPU, after 21–50 % — so every number is an upper bound):
+
+| | Elder grove, before → after | Grove, before → after |
+|---|---|---|
+| GPU total ms, median / p95 / p99 | 2.06 / 2.51 / 2.89 → 1.59 / 2.20 / 2.36 | 0.67 / 0.81 / 0.97 → 0.85 / 1.01 / 1.14 |
+| rt, CLAS, raster, resolve (median ms) | 1.29, 0.99, 0.092, 0.36 → 0.68, 0.45, 0.055, 0.70 | 0.31, 0.13, 0.041, 0.26 → 0.29, 0.11, 0.042, 0.46 |
+| Visible pairs, shadow casters (median) | 22,692, 20,005 → 7,429, 10,286 | 4,021, 88 → 3,154, 88 |
+| Scene clusters | 129,403 → 74,823 | 5,465 → 4,328 |
+| GPU memory the engine used | 1,143 → 875 MiB | 423 → 393 MiB |
+| Frames that allocated | 0 → 0 | 0 → 0 |
+
+The cards take over: a third of the elder grove's visible pairs, half its ray-tracing chain and 268
+MiB less memory, and its GPU total back from 2.06 toward the 0.78 ms it took before G73's leaves (the
+cut no longer pays for every leaf of the far crown). **The resolve went the other way**, 0.36 to
+0.70 ms and 0.26 to 0.46: the leaves are alpha-tested now, so every shadow ray that meets a leaf
+decides it in the ray loop instead of forcing it opaque, and that is the band's price on every frame,
+not only inside it. Building an always-kept mask opaque into the structures outside the band (an
+opacity micromap's job, or a per-entry opacity bit in the CLAS records) would take most of it back;
+not built. The cull pass writes one 8-byte table entry per drawn pair and the masked fragments read
+one (`cull` 0.023 → 0.019 ms, `hw` 0.092 → 0.055: the band's cost is inside the noise of fewer pairs).
+The fade's tables are a `u32x2` per pair per view and one for the cascades (2.2 MB at the elder
+grove's 136,464 pairs).
 ## The sky above, the ground below
 
 **The resolve's whole indirect term is a hemisphere of two uniform halves** (2026-09-25): the sky

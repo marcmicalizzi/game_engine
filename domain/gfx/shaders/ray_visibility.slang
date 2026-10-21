@@ -79,11 +79,15 @@ uint hit_key(RayVisibilityParams* params, uint entry, uint primitive) {
 }
 
 // The loop's rule for a non-opaque candidate of a drawn entry: its mask, if its pair has one.
-bool candidate_passes(RayVisibilityParams* params, uint entry, uint primitive, float2 barycentrics) {
+bool candidate_passes(RayVisibilityParams* params, uint entry, uint primitive, float2 barycentrics,
+                      uint2 pixel) {
   const uint2 pair = visible_entry(params->visible, entry);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
-  return candidate_keeps(params->masks, params->clusters, params->triangles, instances[pair.x],
-                         pair.y, primitive, barycentrics);
+  const InstanceDesc instance = instances[pair.x];
+  MeshDesc* meshes = (MeshDesc*)params->meshes;
+  return candidate_keeps(params->masks, params->clusters, params->triangles, instance, pair.y,
+                         primitive, barycentrics, pair_of(instance, meshes[instance.mesh], pair.y),
+                         pixel);
 }
 
 [shader("compute")]
@@ -139,7 +143,7 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
           hit_entry(params, query.CandidateGeometryIndex(), query.CandidateInstanceID());
       if (entry >= params->caster_base) continue;
       if (candidate_passes(params, entry, query.CandidatePrimitiveIndex(),
-                           query.CandidateTriangleBarycentrics())) {
+                           query.CandidateTriangleBarycentrics(), id.xy)) {
         query.CommitNonOpaqueTriangleHit();
       }
     }
@@ -175,7 +179,7 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
       if (entry >= params->caster_base) continue;
       // A masked candidate the mask cuts away is not a surface at this distance.
       if (masked_frame && !candidate_passes(params, entry, scan.CandidatePrimitiveIndex(),
-                                            scan.CandidateTriangleBarycentrics())) {
+                                            scan.CandidateTriangleBarycentrics(), id.xy)) {
         continue;
       }
       key = max(key, hit_key(params, entry, scan.CandidatePrimitiveIndex()));

@@ -206,6 +206,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   frame.world_time_s = settings.world_time_s;
   frame.sky_time_s = settings.sky_time_s;
   frame.lod_px = settings.finest ? 0.0f : -1.0f;
+  frame.lod_fade = false;  // its rays have no fade table: the cut without the band
   // Every structure the frame wants, budget or not: the converged picture traces nothing else, and
   // the finest cut is every leaf in view (docs/subsystems/renderer.md, "The ray tracing chain's
   // memory"). The chain returns under its budget on the next real-time frame.

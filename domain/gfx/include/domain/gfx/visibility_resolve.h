@@ -652,6 +652,13 @@ struct ResolveParams {
   // wrap, and a replay draws the same water. Zero stands the waves still at their phase at time 0.
   // It took the block's last pad word (2026-10-17), so the size is unchanged.
   f32 water_time_s = 0.0f;
+  // **The cross-fade's table** for the shadow rays (`MaskTables::fade`, renderer.md, "The
+  // cross-fade"; R91): this view's, so a shadow ray keeps a fading caster's hit only where the
+  // receiver's pixel's hash falls between that caster's splits — each pixel's ray meets one of the
+  // two levels, as the picture does. 0 in a frame with no fade. A new 16-byte row: the block grew
+  // from 416 to 432 bytes.
+  u64 fade = 0;
+  u64 fade_meshes = 0;  // MeshDesc[]: how a caster's entry becomes the pair the table is indexed by
 };
 // The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
 // short enough that a float holds a millisecond of it.
@@ -661,7 +668,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 416);
+static_assert(sizeof(ResolveParams) == 432);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

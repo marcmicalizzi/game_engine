@@ -279,6 +279,60 @@ field, against its finest leaves (`impostor_view_tests.cpp`): the silhouettes sh
 86,351 pixels (the oblique planes and the level one add a fringe of 24,052 the tree does not have;
 7,785 are the tree's alone) and where both draw the colour differs by 12.5 of 255 on average.
 
+### R91: foliage LOD that takes over (2026-10-21)
+
+**What the literature and the shipped pipelines do.** Foliage is switched by what it looks like at
+the pixel, not by geometric error. Deussen, Colditz, Stamminger and Drettakis ("Interactive
+visualization of complex plant ecosystems", IEEE Visualization 2002) replace a plant's leaves by
+points and lines **by their projected size** — a leaf that covers under a pixel or two is drawn as a
+point — which is the "LOD by projected leaf size" rule; SpeedTree's runtime picks a tree's level by
+its **screen size** and, as Unity's port documents it, fades by "the percentage of the object's
+current screen height compared to the whole range of the LOD"
+([Unity, `LODFadeMode.SpeedTree`](https://docs.unity3d.com/ja/2019.4/ScriptReference/LODFadeMode.html));
+Simplygon's foliage impostors and the billboard clouds above are judged by how much of the
+silhouette and colour they keep. The switch is hidden by a **dithered cross-fade**: screen-door
+transparency (Mulder, Groen and van Wijk, "Pixel masks for screen-door transparency", IEEE
+Visualization 1998), each pixel keeping the outgoing or the incoming level by a threshold pattern,
+which is what Unreal's per-material "Dithered LOD Transition" does — both levels drawn over the
+transition, the outgoing one's pixels made transparent by a dither, enabled per material and since
+UE 4.9 off unless the material asks
+([Epic's forum](https://forums.unrealengine.com/t/381810),
+[AMD on its velocity mismatch](https://gpuopen.com/learn/fsr-2-1-unreal-engine-plugin-part2/)), and
+the older "screen door fade" foliage option before it
+([forum](https://forums.unrealengine.com/t/screen-door-fade/276556)). Foliage tolerates it where a wall
+does not because foliage is already a high-frequency mask of holes: a screen door over a crown reads as
+more leaves and gaps, over a wall as noise on a flat surface. Shipped switch distances for impostors
+are tens to hundreds of metres for a tree, not kilometres.
+
+**What R91 built** ([flora](../subsystems/flora.md#the-impostor-chain),
+[geometry](../subsystems/geometry.md#two-errors-the-geometric-and-the-coverage),
+[renderer](../subsystems/renderer.md#the-foliage-threshold)): a coverage error per level — a feature's
+size times the difference the coverage bake measures over a ring of sixteen views — held to its own
+threshold (5 px, fitted to the oak's cards holding at 28 m), every card group switching on its own
+sub-tree's sphere, and a dithered cross-fade over 0.9 to 1.1 times the threshold through the masked
+variants' discard on every path. The trade against the frame budget: a card at four texels a leaf
+differs from its leaves by eight or nine tenths, so the threshold does the perceptual work and the
+measured difference orders the levels and the species; R90's octahedral frames would lower the star's.
+
+**Where it switches now** (1080p, a 60° field, the default 5 px; from a card group's near side, the
+star from the tree's centre):
+
+| | Oak (12 m) | Default ancient tree (100 m) |
+|---|---|---|
+| first cards | 28 m (R89: 589 m) | 37 m (R89: 832 m) |
+| second | 172 m | 189 m |
+| third | 288 m | 305 m |
+| fourth | 421 m | 434 m |
+| fifth | — | 582 m |
+| the star | 434 m (R89: 7.9 km) | 691 m (R89: 67 km) |
+
+**What it costs** (the renderer's table, [renderer](../subsystems/renderer.md#the-cross-fade)): the elder
+grove's GPU total 2.06 → 1.59 ms median along its path (visible pairs 22,692 → 7,429, the ray-tracing
+chain halved, 268 MiB less), the grove's 0.67 → 0.85 ms because the alpha-tested leaves' shadow rays
+went from forced opaque to the mask loop (resolve 0.26 → 0.46 ms) — upper bounds, neither machine
+quiet. **The container build** with the chain nested: the default ancient tree's took 1,648 s in
+msvc-debug before each group was clustered over its own vertices (the meshlet builder's tables are
+the size of the vertex array it is handed), the 12 m oak's 12.5 s.
 ## G74: what self-organising growth would add
 
 The recursion here is **architectural**: its branching follows from sizes and ratios, not from the

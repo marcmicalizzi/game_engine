@@ -141,7 +141,13 @@ struct ResolveParams {
 #else
   uint display_pad;
 #endif
+  uint64_t fade;         // MaskTables::fade for the shadow rays (R91); 0 in a frame with no fade
+  uint64_t fade_meshes;  // MeshDesc[], read with ade: a caster's entry to its scene pair
 };
+
+// The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
+// entry point, so the shading functions between need no new parameter.
+static uint2 g_fade_pixel = uint2(0, 0);
 
 // The output encode's target, gathered from the block (display.slang's `DisplayTarget`).
 DisplayTarget display_target(ResolveParams* params) {
@@ -309,6 +315,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
     masks.materials = params->materials;
     masks.cluster_materials = params->cluster_materials;
     masks.attributes = params->attributes;
+    masks.fade = params->fade;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
     masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
                           RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
@@ -316,9 +323,16 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       const uint2 entry = visible_entry(params->visible, masked.CandidateGeometryIndex());
       InstanceDesc* instances = (InstanceDesc*)params->instances;
-      if (candidate_keeps(masks, params->clusters, params->triangles, instances[entry.x], entry.y,
-                          masked.CandidatePrimitiveIndex(),
-                          masked.CandidateTriangleBarycentrics())) {
+      const InstanceDesc instance = instances[entry.x];
+      // The pair, for the fade's table; read only in a frame with a fade.
+      uint pair = 0u;
+      if (params->fade != 0) {
+        MeshDesc* meshes = (MeshDesc*)params->fade_meshes;
+        pair = pair_of(instance, meshes[instance.mesh], entry.y);
+      }
+      if (candidate_keeps(masks, params->clusters, params->triangles, instance, entry.y,
+                          masked.CandidatePrimitiveIndex(), masked.CandidateTriangleBarycentrics(),
+                          pair, g_fade_pixel)) {
         masked.CommitNonOpaqueTriangleHit();
       }
     }
@@ -646,6 +660,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (pixel.x >= params->width || pixel.y >= params->height) {
     return sky_pixel(params, source, noise_pixel);
   }
+  g_fade_pixel = pixel;
   // A whole 32x32 tile with nothing in it: the visibility word is not read at all, which is the
   // fixed cost the discard above could not touch. The mask is the Hi-Z build's by-product and is
   // exact — the pass that wrote it read every word of the tile — so a tile it calls empty holds

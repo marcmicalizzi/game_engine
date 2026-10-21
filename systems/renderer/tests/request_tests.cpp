@@ -51,6 +51,14 @@ const Row k_settings_rows[] = {
     ENGINE_ROW(shadows, "shadows", ""),
     ENGINE_ROW(view_mode, "view", ""),
     ENGINE_ROW(lod_px, "lod_px", ""),
+    ENGINE_ROW(
+        foliage_px, nullptr,
+        "the tunable renderer.lod.foliage_px a host sets (engine-view --foliage-lod); a call's "
+        "foliage follows its lod_px in proportion, as a frame's override does (R91)"),
+    ENGINE_ROW(
+        lod_fade, nullptr,
+        "the tunable renderer.lod.fade a host sets (engine-view --lod-fade); a capture of the "
+        "band is the renderer tests' (impostor_view_tests.cpp)"),
     ENGINE_ROW(sw_px, "sw_px", ""),
     ENGINE_ROW(cull, "cull", ""),
     ENGINE_ROW(occlusion, "occlusion", ""),
@@ -197,6 +205,7 @@ const FrameRow k_frame_rows[] = {
     {"view_mode", "the renderer's own override (the normals channel); a call's is settings.view"},
     {"lod_px",
      "the reference renderer's own override (its finest cut); a call's is settings.lod_px"},
+    {"lod_fade", "the reference renderer's own (its rays have no fade table)"},
     {"rt_complete", "the reference renderer's own"},
     {"color", "a presenting host's swapchain image; render.* draws into the renderer's own target"},
     {"final_layout", "a presenting host's"},
@@ -229,14 +238,14 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
                           s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
-                          s45, s46, s47, s48, s49, s50] = settings;
-  static_assert(std::size(k_settings_rows) == 51, "one row per RenderSettings field");
+                          s45, s46, s47, s48, s49, s50, s51, s52] = settings;
+  static_assert(std::size(k_settings_rows) == 53, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;
   [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14,
-                          f15, f16, f17] = frame;
-  static_assert(std::size(k_frame_rows) == 18, "one row per FrameDesc field");
+                          f15, f16, f17, f18] = frame;
+  static_assert(std::size(k_frame_rows) == 19, "one row per FrameDesc field");
   for (const FrameRow& row : k_frame_rows) {
     CHECK_MESSAGE(std::strlen(row.source) > 0, row.field);
   }
