@@ -78,18 +78,30 @@ bool Id128::from_hex(std::string_view text, Id128& out) noexcept {
   return true;
 }
 
+Id128 TimeOrderedIds::next(u64 now_ms) noexcept {
+  // A fresh millisecond starts its sequence at a random point in the lower half, so ids from
+  // two processes in the same millisecond rarely share a high word and one millisecond still
+  // has at least 32768 ids before it borrows from the next.
+  const u64 start = (now_ms << 16) | (t_rng.next() & 0x7FFFull);
+  u64 last = last_.load(std::memory_order_relaxed);
+  u64 issued = 0;
+  do {
+    issued = start > last ? start : last + 1;
+  } while (!last_.compare_exchange_weak(last, issued, std::memory_order_relaxed));
+  // `issued` is never zero (it is above `last`, or above a zero `last` by one), so the id is
+  // never null.
+  return Id128{issued, t_rng.next()};
+}
+
+namespace {
+constinit TimeOrderedIds g_process_ids;
+}  // namespace
+
 Id128 Id128::generate() noexcept {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   const u64 ms =
       static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-  Id128 id;
-  do {
-    const u64 r0 = t_rng.next();
-    const u64 r1 = t_rng.next();
-    id.hi = (ms << 16) | (r0 & 0xFFFFull);
-    id.lo = r1;
-  } while (id.is_null());
-  return id;
+  return g_process_ids.next(ms);
 }
 
 Id128 Id128::from_seed(u64 seed, u64 counter) noexcept {

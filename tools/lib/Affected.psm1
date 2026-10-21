@@ -15,6 +15,10 @@
 #   - What no module owns and everything is built from — the build system, the test support, the
 #     vendored code, the schema compiler, the committed content — selects everything, and says so.
 #   - Documentation selects nothing but the checks that always run.
+#   - The tools' own tests (`tools.*`) start the apps they test (tools.game_sdk exports and runs
+#     engine-view; the e10 harness reads this tree's binaries), and CTest records no target a
+#     test needs, so when they run every app the graph declares is built with them (`Apps`): the
+#     app set comes from engine_app() through modules.json, not from a list written here.
 # The lint and the documentation check always run: they are seconds, and they are the two checks a
 # change of any kind can fail.
 
@@ -30,7 +34,9 @@ function Get-AffectedTests {
   .OUTPUTS
     A hashtable: All (bool), Reason (why everything, or $null), Modules (affected module names,
     sorted), Changed (module names holding a changed file), Tools (bool: the tools' own tests),
-    Filter (a CTest -R regex, or $null when All), Notes (strings worth printing).
+    Filter (a CTest -R regex, or $null when All), Apps (the apps to build because the tools'
+    tests run: every module of the apps layer when Tools, else none), Notes (strings worth
+    printing).
   #>
   param(
     [Parameter(Mandatory)] [object[]]$Modules,   # modules.json's "modules": name, layer, path, optional, deps
@@ -73,9 +79,11 @@ function Get-AffectedTests {
     if (-not $all) { $all = "$path is built into or read by everything" }
   }
 
+  $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
   if ($all) {
     return @{ All = $true; Reason = $all; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
-              Changed = @($changedModules | Sort-Object); Tools = $true; Filter = $null; Notes = $notes.ToArray() }
+              Changed = @($changedModules | Sort-Object); Tools = $true; Filter = $null; Apps = $apps
+              Notes = $notes.ToArray() }
   }
 
   # Everything that depends on a changed module, transitively.
@@ -113,8 +121,9 @@ function Get-AffectedTests {
   }
   foreach ($t in $script:AlwaysTests) { $parts.Add('^' + [regex]::Escape($t) + '$') }
   if ($tools) { $parts.Add('^tools\.') }
+  if (-not $tools) { $apps = @() }
   return @{ All = $false; Reason = $null; Modules = $names; Changed = @($changedModules | Sort-Object)
-            Tools = $tools; Filter = ($parts -join '|'); Notes = $notes.ToArray() }
+            Tools = $tools; Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
 }
 
 function Get-ChangedPaths {
@@ -149,10 +158,15 @@ function Get-AffectedTargets {
     on its game modules), so building the test target builds them. What the selected tests do not
     need is not built: a change in domain/flora compiles what can reach flora's tests and not the
     city, the muscle system or the editor. Sorted, so the same change asks for the same build.
+
+    -Apps (Get-AffectedTests' Apps) adds each named app's binary, engine_<app>, and not its tests:
+    the tools' tests start the apps but run none of their tests. An app's own add_dependencies
+    bring what it starts (engine-view its game modules, engine-mcp engine-host).
   #>
   param(
     [AllowEmptyCollection()] [string[]]$Modules = @(),
-    [AllowEmptyCollection()] [string[]]$Available = @()
+    [AllowEmptyCollection()] [string[]]$Available = @(),
+    [AllowEmptyCollection()] [string[]]$Apps = @()
   )
   $have = New-Object System.Collections.Generic.HashSet[string]
   foreach ($t in $Available) { if ($t) { [void]$have.Add($t) } }
@@ -162,6 +176,7 @@ function Get-AffectedTargets {
       if ($have.Contains($t)) { [void]$out.Add($t) }
     }
   }
+  foreach ($a in $Apps) { if ($have.Contains("engine_$a")) { [void]$out.Add("engine_$a") } }
   return @($out)
 }
 

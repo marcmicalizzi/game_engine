@@ -6,6 +6,7 @@
 .DESCRIPTION
   tools/remote-build.ps1 -Host <ssh alias> [-Preset <name>] [-Test] [-Filter <regex>]
                          [-Jobs <n>] [-Clean] [-Fetch <dir>] [-Sync:$false]
+  tools/remote-build.ps1 -Host <ssh alias> -Prune [-Stale [-KeepUnknown]] [-WhatIf]
 
   The third way to build Linux here, beside the hosted runner and `tools/linux-build.ps1`'s
   container, and the only one that is a **real machine**: a named CPU, a real kernel, the
@@ -27,6 +28,17 @@
                 every test binary's own output), the failed-test list, and the `gpu.adapters`
                 report taken on the remote machine.
     -Sync:$false  build what is already on the remote machine.
+    -Prune      remove this checkout's tree on the server (~/game_engine-remote/<id>, about 2 GB
+                with its build and dependencies) and say what it held, then exit. Run it once you
+                are done with the server; nothing else removes a tree. The compiler cache stays.
+    -Stale      with -Prune: sweep the server instead — every tree whose checkout is gone from
+                this machine's disk, or that nothing names (no checkout.txt marker, and its id is
+                no checkout on disk), one line per tree with its size and why, and the total. A
+                tree touched in the last hour and one another machine's checkout wrote are kept.
+                tools/lib/RemoteTrees.psm1 has the rule; docs/ci/remote-linux.md, "Trees that
+                outlive their checkout", why.
+    -KeepUnknown  with -Stale: keep the trees nothing names.
+    -WhatIf     with -Prune: print the same lines and remove nothing. Run it first.
 
   Every compile goes through the server's ccache (~/game_engine-ccache, 30 GB, shared by every
   checkout's tree there), and the build prints two lines of cache statistics. ENGINE_CCACHE=0
@@ -56,7 +68,8 @@
   get one, which is also why five CTest tests do not exist there; docs/ci/remote-linux.md lists
   them.
 #>
-[CmdletBinding()]
+# SupportsShouldProcess for -WhatIf, which only -Prune honours; a build refuses it.
+[CmdletBinding(SupportsShouldProcess)]
 param(
   # `Host` cannot be a PowerShell variable name — $Host is an automatic, read-only, AllScope
   # variable and a parameter of that name fails at bind time — so the switch the caller types is
@@ -70,7 +83,10 @@ param(
   [int]$Jobs = 0,
   [switch]$Clean,
   [string]$Fetch,
-  [switch]$Sync = $true
+  [switch]$Sync = $true,
+  [switch]$Prune,
+  [switch]$Stale,
+  [switch]$KeepUnknown
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,7 +135,9 @@ $RemoteDeps = "$RemoteRoot/deps"
 $RemoteCcacheDir = '$HOME/game_engine-ccache'
 $RemoteCcacheBase = '$HOME/game_engine-remote'
 $NoCcache = $env:ENGINE_CCACHE -eq '0'
-Import-Module (Join-Path $PSScriptRoot 'lib/LinuxVolumes.psm1') -Force -Function Get-CcacheReportScript, Get-CcacheMaxSize
+Import-Module (Join-Path $PSScriptRoot 'lib/LinuxVolumes.psm1') -Force -Function Get-CcacheReportScript, Get-CcacheMaxSize,
+  ConvertFrom-WorktreePorcelain, ConvertTo-CheckoutRoot, Format-DockerSize
+Import-Module (Join-Path $PSScriptRoot 'lib/RemoteTrees.psm1') -Force
 
 # ssh, with the output left on the caller's streams and the status in $LASTEXITCODE. It is never
 # wrapped in a function that returns the status, because a PowerShell function returns its whole
@@ -322,7 +340,74 @@ foreach ($tool in @('ssh', 'scp', 'tar', 'git')) {
   }
 }
 
+# --- -Prune ------------------------------------------------------------------------------------
+#
+# The facts are gathered here and judged in tools/lib/RemoteTrees.psm1 (Get-RemoteTreeVerdict), a
+# pure function tools/linux-build.Tests.ps1 checks over servers written down in the test.
+
+# This repository's checkouts on this machine's disk, in $Root's spelling (the tree id hashes it).
+function Get-LocalCheckouts {
+  $porcelain = & git -C $Root worktree list --porcelain 2>$null
+  if ($LASTEXITCODE -ne 0) { throw "git worktree list failed in $Root; -Stale judges trees by the repository's checkouts" }
+  $roots = @()
+  foreach ($w in (ConvertFrom-WorktreePorcelain -Lines @($porcelain))) {
+    if ($w.Bare) { continue }
+    $r = ConvertTo-CheckoutRoot $w.Path
+    if (Test-Path -LiteralPath (Join-Path $r '.git')) { $roots += $r }
+  }
+  return , $roots
+}
+
+function Invoke-RemotePrune {
+  $listing = @(Invoke-Remote (Get-RemoteTreeListingScript))
+  if ($LASTEXITCODE -ne 0) { throw "listing ~/game_engine-remote on $Server failed ($LASTEXITCODE)" }
+  $trees = ConvertFrom-RemoteTreeListing -Lines $listing
+  $present = { param($p) Test-Path -LiteralPath (Join-Path $p '.git') }
+  if ($Stale) {
+    $verdicts = Get-RemoteTreeVerdict -Trees $trees -Checkouts (Get-LocalCheckouts) -ThisHost $env:COMPUTERNAME `
+                                      -Present $present -KeepUnknown:$KeepUnknown
+    Write-Step "checkout trees under ${Server}:~/game_engine-remote$(if ($WhatIfPreference) { ' (-WhatIf: nothing is removed)' })"
+  } else {
+    # This checkout's own tree, removed whatever the rule would say of it: asking is the reason.
+    $verdicts = @($trees | Where-Object { $_.Id -eq $CheckoutId } |
+      ForEach-Object { [pscustomobject]@{ Id = $_.Id; Bytes = $_.Bytes; Root = $Root; Stale = $true; Why = 'this checkout''s tree' } })
+    Write-Step "this checkout's tree on $Server$(if ($WhatIfPreference) { ' (-WhatIf: nothing is removed)' })"
+    if ($verdicts.Count -eq 0) { Write-Host "${RemoteRel} does not exist" }
+  }
+  $ordered = @($verdicts | Sort-Object @{ Expression = { -not $_.Stale } }, @{ Expression = { $_.Root } }, Id)
+  $count = 0
+  $bytes = 0.0
+  $remove = @()
+  foreach ($v in $ordered) {
+    $size = if ($null -ne $v.Bytes) { Format-DockerSize $v.Bytes } else { '?' }
+    $line = '{0,-7} {1}  {2,9}  {3}  ({4})' -f $(if (-not $v.Stale) { 'keep' } elseif ($WhatIfPreference) { 'stale' } else { 'remove' }),
+      $v.Id, $size, $(if ($v.Root) { $v.Root } else { '-' }), $v.Why
+    Write-Host $line -ForegroundColor $(if ($v.Stale -and $WhatIfPreference) { 'Yellow' } else { 'Gray' })
+    if (-not $v.Stale) { continue }
+    $count++
+    if ($null -ne $v.Bytes) { $bytes += $v.Bytes }
+    $remove += $v.Id
+  }
+  if ($WhatIfPreference) {
+    Write-Host ("-WhatIf: {0} tree(s), {1}, would be removed; nothing was." -f $count, (Format-DockerSize $bytes))
+    exit 0
+  }
+  if ($remove.Count -eq 0) { Write-Host 'nothing to remove'; exit 0 }
+  # Each id is twelve hex digits by construction (ConvertFrom-RemoteTreeListing refuses anything
+  # else), so the command names nothing outside ~/game_engine-remote.
+  $rm = @('cd "$HOME/game_engine-remote" || exit 1', ('rm -rf ' + (($remove | ForEach-Object { "./$_" }) -join ' ')))
+  Invoke-Remote ($rm -join "`n")
+  if ($LASTEXITCODE -ne 0) { Write-Host "rm on $Server failed ($LASTEXITCODE)" -ForegroundColor Red; exit 1 }
+  Write-Host ("reclaimed {0} from {1} tree(s); the compiler cache ~/game_engine-ccache is left alone" -f (Format-DockerSize $bytes), $count)
+  exit 0
+}
+
+if ($Stale -and -not $Prune) { throw '-Stale is a -Prune option: tools/remote-build.ps1 -Host <alias> -Prune -Stale -WhatIf' }
+if ($KeepUnknown -and -not $Stale) { throw '-KeepUnknown is a -Prune -Stale option' }
+if ($WhatIfPreference -and -not $Prune) { throw '-WhatIf applies to -Prune only; a build has no dry run' }
+
 Test-Reachable
+if ($Prune) { Invoke-RemotePrune }
 if ($Sync) { Invoke-SyncTree }
 
 $jobCount = Get-RemoteJobs
@@ -335,6 +420,9 @@ $lines = @('set -e', "cd `"$RemoteSrc`"")
 # and not in the system's /tmp: on 2026-10-05 the server's root filesystem was full, a compile died
 # with "error writing to /tmp/cc….s: No space left on device", and the build had done nothing wrong.
 $lines += "mkdir -p `"$RemoteRoot/tmp`" && export TMPDIR=`"$RemoteRoot/tmp`""
+# What names this tree's checkout, for -Prune -Stale: the id is a hash and cannot be read back.
+$sq = { param($s) "'" + ($s -replace "'", "'\''") + "'" }
+$lines += "printf 'root=%s\nhost=%s\n' $(& $sq $Root) $(& $sq "$env:COMPUTERNAME") > `"$RemoteRoot/checkout.txt`""
 if ($Clean) { $lines += "rm -rf `"build/$Preset`"" }
 # The compiler cache: the containers' launcher and the same reason for switching precompiled
 # headers off (tools/lib/LinuxVolumes.psm1, Get-PresetScript; SDL3 and Jolt use them, and ccache
