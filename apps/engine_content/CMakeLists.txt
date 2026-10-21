@@ -72,6 +72,8 @@ endif()
 # runs either way, and without the capability checks the refusal. Linked, it is also what makes
 # `build` and `build-all` take a `.rock.json` through the mesh-generator registry.
 list(APPEND _content_tests tests/rocks_tests.cpp)
+# `vine` and `cover` end to end over a small boulder; without the capability, the refusal.
+list(APPEND _content_tests tests/cover_tests.cpp)
 if(TARGET engine::rocks)
   list(APPEND _content_deps rocks rocks_schemas schema)
 endif()

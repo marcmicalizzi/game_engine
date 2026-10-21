@@ -268,7 +268,8 @@ bool grow_vine(const HostSurface& surface, const HostBvh& bvh, const HostSite& s
       stem.normals.push_back(normal);
       stem.held.push_back(held ? 1u : 0u);
       stem.free_run.push_back(free);
-      if (held && w.depth < params.branch_depth && walk.unit() < static_cast<f64>(params.branch_chance)) {
+      if (held && w.depth < params.branch_depth &&
+          walk.unit() < static_cast<f64>(params.branch_chance)) {
         Walker child;
         child.p = next;
         child.n = normal;

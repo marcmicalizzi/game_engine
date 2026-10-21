@@ -207,7 +207,7 @@ the same seed is the same vine and its bytes are pinned; moss favours a shaded n
 ground over a sunlit smooth top (0.49 against 0.03) and lichen the reverse; the cushions' count
 follows the mask (none at 2 years, 241 at 40, the integral's prediction within four sigma); and the
 generators through the host seam, the key moving with the host, section 39 round-tripping, the
-containers pinned. `scene_collision`'s companion test holds the collision rule. `tests/size_table.cpp`
+containers pinned. `scene_collision`'s companion test holds the collision rule, and engine-content's `tests/cover_tests.cpp` runs `vine` and `cover` end to end over a small boulder (built, a cache hit, `build` under the same source hash, a new key when the host's recipe changes, the mask's words; without the capability, the refusal). `tests/size_table.cpp`
 pins `P3` and `Exposure`, the per-triangle records a host's memory is made of.
 
 ## Capability contract (ADR-0027)
