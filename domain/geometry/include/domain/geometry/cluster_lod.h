@@ -193,6 +193,64 @@ Vec4 authored_lod_sphere(const ClusterLodMesh& mesh, f32 from_error, Vec4 with =
 bool widen_lod_spheres(ClusterLodMesh& mesh, f32 from_error, Vec4 sphere,
                        std::string* error = nullptr);
 
+// ---- an authored hierarchy: one sphere a sub-tree (geometry.md, "Authored levels") -------------
+//
+// `build_cluster_lod_levels` gives every authored transition one sphere, so a 115 m crown switches
+// whole from its near side. A caller that knows how its coarse forms **nest** — a tree's leaves
+// each belong to one card of the first branch-group level, each card to one card of the next, the
+// last to the whole-tree star — hands that nesting over instead, and every transition then carries
+// the sphere of exactly what it replaces: the far side of a crown is cards while the near side is
+// leaves. Level k's triangles are partitioned into **elements** (a card, a plane star), each with
+// its parent element in level k + 1; the finest triangles each name their element of level 0.
+//
+// The builder groups top-down: the last level's elements in their order, consecutive runs of at
+// most one cluster's worth (`max_vertices`, `max_triangles`); then each group's children in the
+// order of their parents, runs again, never crossing their parent group; the finest triangles of
+// each first-level group are clustered on their own. A group's clusters share one transition — its
+// sphere, enclosing every vertex it stands for and every child group's sphere, and the level's
+// error — and its children's parent transition is that same one, so the projected error rises along
+// every path and the cut is one cluster on every path for any view (no decimation runs: a leaf
+// cluster's own error is 0 and its parent is its first card group). The groups, in the DAG's sense
+// (the clusters that share a parent), are the runs under one parent group.
+struct ClusterLodHierarchyLevel {
+  std::span<const u32> indices;              // triangles over the same positions
+  std::span<const u32> element_of_triangle;  // per triangle of `indices`
+  std::span<const u32> parent_of_element;    // per element: its element of the next level
+  u32 elements = 0;
+  f32 error = 0.0f;  // mesh-space, rising
+};
+
+bool build_cluster_lod_hierarchy(std::span<const Vec3> positions, std::span<const u32> indices,
+                                 std::span<const u32> element_of_triangle,
+                                 std::span<const ClusterLodHierarchyLevel> levels,
+                                 const ClusterLodOptions& options, ClusterLodMesh& out,
+                                 std::string* error = nullptr,
+                                 const AttributeSource& attributes = {});
+
+// ---- the foliage error (geometry.md, "Two errors") ---------------------------------------------
+//
+// A transition may carry, beside its geometric error, a **coverage error**: what drawing the
+// coarser form changes at the pixel for foliage, where a card is judged by its coverage and colour
+// and not by the parallax of a point off its plane (flora.md, "The impostor chain"). It is a
+// length, so it projects like the geometric one, and it is held to its own threshold
+// (`LodView::foliage_px`). A transition is **acceptable** when either projected error is at or
+// under its threshold:
+//
+//   acceptable(t) = proj(t.sphere, t.error) <= threshold_px || proj(t.sphere, t.coverage) <=
+//   foliage_px draw c        = acceptable(c.own) && !acceptable(c.parent)
+//
+// which needs no division and, with no coverage (+inf), is the one-threshold rule bit for bit. One
+// u32 per cluster carries the own and the parent coverage as two halves (`pack_lod_coverage`, low
+// half own); a mesh with none has none. The builder of a mesh with coverage keeps both errors
+// rising along every path, so the cut is still one cluster on every path.
+inline constexpr u32 k_lod_no_coverage = 0x7C007C00u;  // both halves +inf: the geometric rule
+// The foliage threshold's default, `renderer.lod.foliage_px` (renderer.md, "The foliage threshold"
+// has where the number comes from).
+inline constexpr f32 k_default_foliage_px = 5.0f;
+u32 pack_lod_coverage(f32 own, f32 parent) noexcept;  // rounded to half floats
+f32 lod_coverage_own(u32 packed) noexcept;
+f32 lod_coverage_parent(u32 packed) noexcept;
+
 // View-dependent selection, the reference for the GPU pass. Errors are projected to screen
 // pixels the way clusterlod documents: error / max(distance - radius, znear) * proj_scale.
 struct LodView {
@@ -201,11 +259,31 @@ struct LodView {
   // cot(fov_y / 2) * viewport_height / 2: mesh-space size at distance 1 to pixels.
   f32 proj_scale = 0.0f;
   f32 threshold_px = 1.0f;
+  // The coverage errors' threshold (`renderer.lod.foliage_px`): read only for a cluster with one.
+  f32 foliage_px = 0.0f;
+  // The cross-fade's half band, as a fraction of the threshold (renderer.md, "The cross-fade"): 0
+  // switches a transition at once; f fades it over projected errors from (1 - f) to (1 + f) times
+  // the threshold. Read only for a transition with a coverage error.
+  f32 fade = 0.0f;
 };
 f32 projected_error(Vec4 sphere, f32 error, const LodView& view) noexcept;
 bool lod_selects(const ClusterLodDesc& lod, const LodView& view) noexcept;
+bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage) noexcept;
+// The cross-fade's split of one transition: 0 when its coarser side is acceptable outright, 1 when
+// it is not at all, and between them across the band, by the smaller of the two projected errors
+// over its threshold. A cluster draws the pixels whose stable hash h (in [0, 1)) has
+// split(own) <= h < split(parent), so the two sides of a transition share every pixel between them
+// and exactly one cluster of every path keeps each pixel. A transition with no coverage, or a fade
+// of 0, splits at 0 or 1 by `lod_selects`' rule; `step_shift` moves that rule's threshold by
+// (1 - fade), which is how an opaque cluster of a fading mesh stays until its masked replacement is
+// whole (renderer.md, "The cross-fade").
+f32 lod_fade_split(Vec4 sphere, f32 error, f32 coverage, const LodView& view,
+                   bool step_shift = false) noexcept;
 // Appends the indices of the selected clusters; returns how many.
 u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, Vector<u32>& out);
+// The same with a coverage word per cluster (empty: none).
+u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, std::span<const u32> coverage,
+               Vector<u32>& out);
 // The same with a threshold on raw mesh-space error (no camera): own <= t < parent.
 u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
 

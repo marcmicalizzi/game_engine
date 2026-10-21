@@ -1173,6 +1173,28 @@ int info(const std::string& path) {
       level.set("texel_m", JsonValue(static_cast<f64>(r.texel)));
       level.set("switch_1080p_m", JsonValue(static_cast<f64>(r.error) * 935.30743608719377 +
                                             static_cast<f64>(sphere.w)));
+      // R91: the coverage error, the difference it was measured from, and the level's groups —
+      // every card group switches on its own sphere (geometry.md, "An authored hierarchy") — with
+      // where a group switches under the default foliage threshold, from its sphere's near side.
+      level.set("coverage_m", JsonValue(static_cast<f64>(r.coverage)));
+      level.set("difference", JsonValue(static_cast<f64>(r.difference)));
+      f64 smallest = 0.0, largest = 0.0;
+      u32 groups = 0;
+      for (const geometry::ClusterLodDesc& d : lod.lod) {
+        if (d.own_error != r.error) continue;
+        const f64 radius = static_cast<f64>(d.own.w);
+        smallest = groups == 0 || radius < smallest ? radius : smallest;
+        largest = radius > largest ? radius : largest;
+        ++groups;
+      }
+      level.set("group_radius_min_m", JsonValue(smallest));
+      level.set("group_radius_max_m", JsonValue(largest));
+      if (!data.lod_coverage.empty() && r.coverage > 0.0f) {
+        const f64 geometric = static_cast<f64>(r.error) * 935.30743608719377;
+        const f64 foliage = static_cast<f64>(r.coverage) * 935.30743608719377 /
+                            static_cast<f64>(geometry::k_default_foliage_px);
+        level.set("foliage_switch_1080p_m", JsonValue(foliage < geometric ? foliage : geometric));
+      }
       chain.push_back(std::move(level));
     }
     summary.set("impostors", std::move(chain));

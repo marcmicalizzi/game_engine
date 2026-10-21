@@ -394,7 +394,7 @@ preset chosen. The broadleaf and the ancient tree build it (`card_bake_px`, defa
 |---|---|---|
 | finest | the plan's leaves, decimated as before, cut where the first card level's error starts | the simplifier's |
 | branch-group *k* (*k* = 1, 2, …) | **one card a sub-tree**: every spray's leaves gather on their root *k* orders up (never past a part — the ladder's merge rule), and the sub-tree becomes one two-sided masked quad in the plane its leaves lie nearest (the least-variance plane of their vertices, a fixed-sweep Jacobi in double) the size of their extent in it, riding the root's part | the farthest any leaf vertex of any sub-tree lies from its card — the parallax a card cannot show — or half a baked texel on the largest card, whichever is larger |
-| the tree | a **star of planes**: four vertical through the trunk's axis 45° apart and one level at the crown's mid-height, each two-sided, each the tree's extent in it; the bark hands over to it (its DAG's last level is an empty one at the same error) | the farthest any vertex lies from any of the five planes — about the crown's radius |
+| the tree | a **star of planes**: four vertical through the trunk's axis 45° apart, each two-sided, each the tree's extent in it (R91 dropped the level plane R89 had at the crown's mid-height: from near that height it was edge-on, a thin dark line across the tree, and hiding it by the view's angle would make the coverage a function of the view on every path; from high above the four read as a cross, which is R90's octahedral frames' case); the bark hands over to it (its DAG's last level is an empty one at the same error) | the farthest any vertex lies from any of the four planes — about the crown's radius |
 
 The levels stop where a step merges nothing more (every root a part) or at six. **The error formula**:
 a card shows its geometry exactly from its baked view; seen at an angle θ off it, a point *δ* from the
@@ -403,8 +403,7 @@ plane is drawn *δ* sin θ from where it is, so over every view the error is *δ
 centre (*r* the sphere the chain's transitions share). That is honest and it is large: the 12 m oak's
 first card level switches in at about 580 m at 1080p and its star at about 7.8 km; the elder grove's
 in [tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves).
-A per-card error (each card switching on its own sphere) would bring the cards in far sooner, and
-needs the finest leaves clustered by sub-tree, which the decimated chain under them is not.
+R91 brought them in: each card group switches on its own sub-tree's sphere, and by its coverage error under its own threshold (below), so the oak's first cards come in about 28 m from a group and the star at about 420 m.
 
 **The bake** (`bake_level`, `src/impostor.cpp`): an orthographic view per tile from the plane's front,
 rasterized on the CPU — vertices snapped to 1/256 of a texel, edge functions in 64-bit integers with
@@ -417,7 +416,7 @@ leaves to the ellipse the card holds. A branch-group level bakes **16 representa
 (spread evenly over the groups' order) into a 4 × 4 atlas of 64-texel tiles, and every card samples
 one of them by its root's hash — tens of thousands of sub-trees each baked would be hundreds of
 megabytes, and a sub-tree's picture is statistically its neighbours'. The tree bakes its five planes
-into a 3 × 2 atlas of 256-texel tiles (768 × 512) of the bark and the finest leaves. Each atlas pair
+into a 2 × 2 atlas of 256-texel tiles (512 × 512) of the bark and the finest leaves. Each atlas pair
 is embedded in the container as PNG (sections 21 and 22) and drawn by a material of its own after the
 species' — white, alpha-tested at one half, two-sided, the colour as base colour and the normal as a
 normal map — so the texture step builds them like any embedded image (BC7 and BC5 with mips), and
@@ -425,11 +424,26 @@ the renderer draws them with R65's masked variants and its ordinary tangent fram
 shader. **Section 38** (`ClusterFileImpostor`, 48 bytes a level) records what each level is, its
 material, atlas and error; `engine-content info` prints it as `impostors`.
 
+**The plane fit is by area** (R91): each triangle counts by its area with its exact second moment, where R89 averaged the vertices — a spray's cards share their centre-line vertices, so the twig's line outweighed the leaves either side of it and a sub-tree of a few sprays could take the plane through its twigs edge-on to the leaves and bake as a sliver.
+
+**Every card switches on its own sub-tree** (R91; [geometry](geometry.md#an-authored-hierarchy-one-sphere-a-sub-tree)). The solver records how the chain nests — every finest leaf triangle's first-level card (`TreeLevels::leaf_element`), every card's card one level up (`TreeLevel::parent_of_element`; a sub-tree's root k + 1 orders up is its k-th root's one order up, so all of a card's sprays agree), and the last level's cards in the star — and the leaves' part is built by `build_cluster_lod_hierarchy`: a group of up to a cluster's worth of cards (16 quads) switches on the sphere of exactly the sub-trees it stands for, so the far side of a crown is cards while the near side is leaves. The bark is decimated as before and hands over to the star, the one transition the parts share. With the chain, the finest leaves are alpha-tested even without a pack's image (a mask of the factor alone keeps every pixel), so the cross-fade into the first cards is a screen door on both sides.
+
+**The coverage bake** (`measure_level`, R91). A card is judged by what it changes at the pixel, not by the parallax of a point off its plane, so each level also carries a **coverage error**: its `feature_m` — what it stands in for, the square root of an element's area: a leaf for the first branch-group level, a card of the level below for the next, the last level's card for the star — times its **difference** D, measured at build time. The bake's own fixed-point rasterizer draws each representative sub-tree's finest geometry (shaded flat, cut to the leaf where the bake cuts) and the card that stands for it (its tile of the level's atlas, masked at one half, nearest texel) from a ring of sixteen orthographic views — eight azimuths at the horizon, four 30° above and four below — at four texels to the feature (16 to 96 a side, 2 × 2 samples a texel), and pools, texel by texel, the coverage difference Σ|a − b| / Σ max(a, b) (a soft one minus the overlap) and the mean colour difference where both draw; D = 1 − (1 − coverage)(1 − colour). The star compares the whole tree with its four planes. The errors are kept rising level by level. Section 38's last two words carry the coverage error and D; section 39 carries each cluster's own and parent coverage (geometry.md, "Two errors"). Measured (`engine-content info`, 2026-10-21):
+
+| | Oak (12 m): coverage error, D | Ancient tree (100 m): coverage error, D |
+|---|---|---|
+| first cards | 0.15 m, 0.90 | 0.20 m, 0.89 |
+| second | 0.92 m, 0.86 | 1.01 m, 0.84 |
+| third | 1.54 m, 0.83 | 1.63 m, 0.79 |
+| fourth | 2.25 m, 0.77 | 2.32 m, 0.75 |
+| fifth | — | 3.11 m, 0.69 |
+| the star | 2.25 m (raised to the level below's), 0.28 | 3.12 m (raised), 0.45 |
+
+A card differs from its leaves by eight or nine tenths at four texels a leaf — one plane for a three-dimensional spray, a tile shared with fifteen other sub-trees, edge-on from some of the ring — which is what the threshold is fitted against ([renderer](renderer.md#the-foliage-threshold)). The star differs least because at four texels to a top-level card its planes and the crown are both blobs.
+
 **What it holds**: the solver's mesh is its bytes with the chain asked for (the cards are appended
-after everything, their triangles kept apart); the atlases are the same bytes every time and on
-every toolchain (`impostor_tests.cpp` pins the 8 m oak's card and tree atlases); each level of the
-container is chosen 1 % past its switch distance and not 1 % inside it, with the finer leaves gone
-past it and the bark too past the tree's; the section round-trips. Drawn (`systems/renderer/tests/impostor_view_tests.cpp`), the 8 m oak's star from its +z plane's baked view shares 63% of its silhouette with the finest leaves' and is within 12.5 of 255 in colour where both draw — bounds of one half and 50 held by the test ([tree allometry](../experiments/tree-allometry.md#what-r89-built-and-where-it-switches-2026-10-21) has the costs). **Not built**: a true octahedral
+after everything, their triangles kept apart); the atlases and the coverage bake are the same bytes every time and on
+every toolchain (`impostor_tests.cpp` pins the 8 m oak's card and tree atlases); every card names a parent and every leaf a card; the star is chosen 1 % past its switch distance and not 1 % inside it, by the geometric error alone and by the coverage error under a foliage threshold, with nothing else drawn past it; some distance draws the crown's near leaves and far cards at once; sections 38 and 39 round-trip. Drawn (`systems/renderer/tests/impostor_view_tests.cpp`), the 8 m oak's star from its +z plane's baked view shares 63% of its silhouette with the finest leaves' and is within 12.5 of 255 in colour where both draw — bounds of one half and 50 held by the test ([tree allometry](../experiments/tree-allometry.md#what-r89-built-and-where-it-switches-2026-10-21) has the costs). **Not built**: a true octahedral
 atlas (the brief's 8 × 8 views blended by direction) needs coverage that depends on the view, and
 R65's mask is a function of the UV alone on every path — the rasterizers, the rays and the shadow
 maps — which a static star of planes satisfies and a view-chosen octahedral frame does not; and the

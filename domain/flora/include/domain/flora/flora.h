@@ -50,7 +50,10 @@ namespace engine::flora {
 // of
 //    metres, so a tiled set's `tile_m` is its physical repeat (flora.md, "Materials"); the trunk's
 //    were in circumferences, a frond's in its own length.
-inline constexpr u32 k_flora_version = 3;
+// 4: the impostor chain nests (every card switches on its own sub-tree's sphere), carries coverage
+//    errors (section 38's two words and section 39), and its star has four planes, not five (R91;
+//    flora.md, "The impostor chain"); an entry built at 3 switches its cards a kilometre out.
+inline constexpr u32 k_flora_version = 4;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
