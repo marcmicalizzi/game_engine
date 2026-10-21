@@ -343,7 +343,7 @@ TEST_CASE("the shaped cover's count follows the mask") {
   CHECK(static_cast<f64>(old.cushions) < expected + 4.0 * std::sqrt(expected) + 2.0);
 }
 
-TEST_CASE("the generators build companions through the host seam, the mask in section 39") {
+TEST_CASE("the generators build companions through the host seam, the mask in section 40") {
   const assets::MeshGeneratorRegistry& registry = assets::MeshGeneratorRegistry::global();
   const assets::MeshGeneratorDesc* vine = registry.find("vine");
   const assets::MeshGeneratorDesc* cover = registry.find("cover");

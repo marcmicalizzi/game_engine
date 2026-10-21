@@ -11,7 +11,7 @@
 // shade — scaled by how far the kind has come in the surface's age (1 - exp(-age / tau)), moss
 // taking its share first and lichen and algae what it leaves; then carried to the welded vertices
 // by area, smoothed along the surface and sharpened. Written per **host** vertex into the
-// companion's container (section 39), never into the host.
+// companion's container (section 40), never into the host.
 //
 // **(b) The shaped cover**: moss cushions, fruticose lichen tufts, bracket fungi and mushrooms
 // where the mask is dense, each a copy of one of a few kit shapes (flora/companion.h) on the
@@ -70,7 +70,7 @@ void solve_cover_mask(const HostSurface& surface, const Vector<Exposure>& exposu
                       const HostSite& site, const CoverGrowth& params, Vector<f32>& out);
 
 // The mask per host vertex, four unorm8 a word (moss, lichen, algae, fungus from the low byte):
-// section 39's layout.
+// section 40's layout.
 void pack_cover_mask(const HostSurface& surface, const Vector<f32>& welded, Vector<u32>& out);
 
 // The whole cover: the mask, the film and the shaped pieces. `out` and `motion` are replaced;

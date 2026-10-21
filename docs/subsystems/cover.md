@@ -129,7 +129,7 @@ lichen 40 years) and its **colonies** (1 − patchiness + patchiness · a seeded
 noise at `patch_m`); moss takes its share, lichen (1 − moss) of its own, algae (1 − moss)(1 −
 lichen). Carried to the welded vertices by area, smoothed `smoothing` Jacobi passes along the
 surface (over the vertices that carry cover), and sharpened by smoothstep(0.1, 0.8), so a patch has
-an edge. **Written per host vertex** into the companion's container as section 39 (`cover_mask`,
+an edge. **Written per host vertex** into the companion's container as section 40 (`cover_mask`,
 geometry.md): four unorm8 a word, moss in the low byte, then lichen, algae, fungus — the host
 container's cluster-ordered vertices, or a glTF host's flattened ones.
 
@@ -154,7 +154,7 @@ coarse — a patch's edge is a triangle's at `sample_m` — and costs a triangle
 brief's other stand-in, baking the mask into the host's vertex colour, is not possible: no
 material reads a vertex colour (the glTF import reads none, assets.md) and baking would edit the
 host. **R90's design**: the resolve reads the mask through the attribute path — the companion's
-section 39, uploaded beside the host's vertices in the host's vertex order, one u32 a vertex — and
+section 40, uploaded beside the host's vertices in the host's vertex order, one u32 a vertex — and
 a second material index per cluster (the cover set's), and blends the second set's base colour,
 normal and roughness under the mask's weight per pixel, interpolated by the barycentrics the resolve
 already has; the film's triangles then go away. It needs the material system's sets (G60) and one
@@ -206,7 +206,7 @@ than a smooth one (1,561 held steps against none, the smooth host's stems leanin
 the same seed is the same vine and its bytes are pinned; moss favours a shaded north crevice by the
 ground over a sunlit smooth top (0.49 against 0.03) and lichen the reverse; the cushions' count
 follows the mask (none at 2 years, 241 at 40, the integral's prediction within four sigma); and the
-generators through the host seam, the key moving with the host, section 39 round-tripping, the
+generators through the host seam, the key moving with the host, section 40 round-tripping, the
 containers pinned. `scene_collision`'s companion test holds the collision rule, and engine-content's `tests/cover_tests.cpp` runs `vine` and `cover` end to end over a small boulder (built, a cache hit, `build` under the same source hash, a new key when the host's recipe changes, the mask's words; without the capability, the refusal). `tests/size_table.cpp`
 pins `P3` and `Exposure`, the per-triangle records a host's memory is made of.
 
