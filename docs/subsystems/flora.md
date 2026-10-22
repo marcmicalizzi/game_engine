@@ -1299,6 +1299,20 @@ threshold that knows a strip's width — not more tuning of the solver.
 
 ## Not yet
 
+- **After G79–G81 (2026-10-22)**: the emergent megaflora's crown is too thin for its references
+  (G82); the conifer has no impostor chain, so a lone spruce at 60 m is still specks (G83); the
+  forest's frame after its spruces and birches doubled and tripled their triangles is unmeasured
+  (G84). **What the two consumer games should change** (neither repo was edited): the forest stress
+  test (`forest_wildlife_poc`) needs a `conifer/needles` image that is one irregular foliated shoot
+  25–35% opaque with needles at least 2 texels wide at 512 — its fishbone image is 17% opaque and
+  periodic, which no mip chain keeps ([conifer shoots](../experiments/conifer-shoots.md)) — and its
+  birch recipes should drop `stems: 1` and `limbs: 14` and vary their seeds, so the seed draws the
+  clumps (`clump_chance` 0.5 or more for a cut-over or browsed stand); the fantasy RPG's anchor trees
+  (`divine-rpg`, `anchor-a`/`anchor-b`) state their runs and reaches and so get an emergent crown
+  whose wood shortens nearly every limb (the lowest keeps 0.8 of its 48 m), and want
+  `"habit": "spreading"` or `"mixed"` with `limb_run_m` dropped (the habit gives about 10 m) or set
+  to what `ancient_limbs` says the wood keeps, revalidating their structural part ids after.
+
 - **The sets themselves** (G60's other half): the engine reads a recipe's block and a pack's
   roles ([materials](#materials)); the palm's three roles have the lab's candidates, and the oak's,
   the spruce's and the leaf cards' have nothing yet ([content/materials/README.md](../../content/materials/README.md)
