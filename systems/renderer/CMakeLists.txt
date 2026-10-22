@@ -37,7 +37,8 @@ engine_module(NAME renderer LAYER systems
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/tile_layout.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp src/scene_fire.cpp)
+          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
+          src/flora_poser.cpp src/scene_fire.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -80,7 +81,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # A tree's impostor chain drawn, against the full tree from a baked view (R89).
                     tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.
-                    tests/flora_motion_tests.cpp)
+                    tests/flora_motion_tests.cpp
+                    # The trees posed on a pool: every worker count the serial loop's bytes.
+                    tests/flora_poser_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.
@@ -120,6 +123,8 @@ if(TARGET engine::sky)
        tests/banding_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
+# What posing the trees costs on the frame's thread and on the poser's pool (flora_poser.h).
+engine_module_bench(NAME renderer SOURCES bench/flora_bench.cpp)
 if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_SKY_TESTS_TERRAIN=1)
 endif()

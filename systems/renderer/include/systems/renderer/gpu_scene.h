@@ -35,6 +35,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/flora_poser.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
@@ -520,7 +521,8 @@ class GpuScene {
   // trees): the wind the frame names, or the ground's record at the sky's hour `sky_time_s` (the
   // weather follows the day), or the tunables'; the sway runs on the world clock `world_time_s`
   // (clocks.h), and the push's ease advances by the frame ticks since the last call. Allocates
-  // nothing.
+  // nothing; the instances are posed on the poser's pool when the scene made one (flora_poser.h),
+  // to the same bytes as on this thread.
   u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                   f64 sky_time_s) noexcept;
   struct FloraStats {
@@ -530,6 +532,8 @@ class GpuScene {
     f32 max_padding = 0.0f;    // the largest sphere padding the sway gave an instance, metres
     f32 wind_strength = 0.0f;  // this frame's, over a record's mean
     Vec2 wind_to{};            // where it blew to, x and z
+    u32 chunks = 0;            // the poser's chunks (1: one run on the frame's thread)
+    u32 workers = 0;           // its pool's threads besides the frame's; 0 is no pool
   };
   const FloraStats& flora_stats() const noexcept { return flora_stats_; }
   // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
@@ -1062,21 +1066,14 @@ class GpuScene {
   // The trees' (renderer.md, "The flora stage"): per scene mesh its motion as the stage reads it
   // (empty for a rigid mesh) and its rest bounds in mesh space; per swaying instance where its run
   // of the table starts, its seed, its mesh frame's inverse and its last frame index; per part the
-  // push's state; the ground asked for the wind when the scene's sand detail made none.
-  struct FloraInstance {
-    u32 instance = 0;
-    u32 mesh = 0;
-    u32 first_part = 0;
-    u32 seed = 0;
-    Vec3 inverse[3] = {};  // rows: the instance's 3x3 inverted, world to mesh
-    f32 inverse_scale = 1.0f;
-    u64 last_tick = 0;
-    bool posed = false;
-  };
+  // push's state; the ground asked for the wind when the scene's sand detail made none; and the
+  // poser, which runs the instances on a pool of its own when there are enough parts to pay for it
+  // (flora_poser.h).
   Vector<FloraMesh> flora_meshes_;
   Vector<Vec4> flora_bounds_;  // per mesh: mesh-space centre and radius of its rest vertices
   Vector<FloraInstance> flora_instances_;
   Vector<FloraPartState> flora_state_;
+  FloraPoser flora_poser_;
   u32 flora_parts_ = 0;
   gfx::BufferResource flora_motion_;  // geometry::ClusterFileMotionVertex per scene-wide vertex
   gfx::BufferResource flora_poses_;   // k_joint_slots regions of gfx::FloraPartPose[flora_parts_]

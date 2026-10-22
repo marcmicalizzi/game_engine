@@ -1614,11 +1614,20 @@ bool GpuScene::create_flora(std::string* error) {
     return false;
   }
   if (data_->terrain.enabled) flora_ground_ = std::make_unique<TerrainSampler>(data_->terrain);
+  // The poser's chunks and, for a scene with enough parts, its pool (renderer.md, "Who poses the
+  // trees"): the tunable read once, here.
+  flora_poser_.prepare(
+      std::span<const FloraInstance>(flora_instances_.data(), flora_instances_.size()),
+      std::span<const FloraMesh>(flora_meshes_.data(), flora_meshes_.size()),
+      flora_workers_tunable());
   flora_stats_.instances = flora_instances_.size();
   flora_stats_.parts = flora_parts_;
+  flora_stats_.chunks = flora_poser_.chunk_count();
+  flora_stats_.workers = flora_poser_.worker_count();
   ENGINE_LOG_INFO(
       log_renderer, "trees sway", log::field("instances", flora_stats_.instances),
-      log::field("parts", flora_parts_),
+      log::field("parts", flora_parts_), log::field("chunks", flora_poser_.chunk_count()),
+      log::field("workers", flora_poser_.worker_count()),
       log::field("motion_bytes", u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex)),
       log::field("table_bytes", table_bytes),
       log::field("max_padding_m", flora_stats_.max_padding));
@@ -1664,55 +1673,26 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   to = to_length > 0.0f ? to * (1.0f / to_length) : Vec2{1.0f, 0.0f};
   flora_stats_.wind_strength = strength;
   flora_stats_.wind_to = to;
-  flora_stats_.pushed_parts = 0;
-  flora_moving_ = false;
   // The sway's clock is the world's (a host at 60 frames a second with the world at real time hands
-  // `frame_index / 60`, the number this was before the clocks were split).
-  const f64 time_s = world_time_s;
-  auto* region = static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_parts_;
-  for (FloraInstance& fi : flora_instances_) {
-    const FloraMesh& tree = flora_meshes_[fi.mesh];
-    const gfx::InstanceDesc& placed = instance_table_[fi.instance];
-    auto to_mesh = [&](Vec3 v) {
-      return Vec3{dot(fi.inverse[0], v), dot(fi.inverse[1], v), dot(fi.inverse[2], v)};
-    };
-    FloraWind wind;
-    const Vec3 along = to_mesh(Vec3{to.x, 0.0f, to.y});
-    const f32 along_length = length(along);
-    wind.to = along_length > 0.0f ? along * (1.0f / along_length) : Vec3{1.0f, 0.0f, 0.0f};
-    wind.strength = strength;
-    FloraPush push;
-    if (frame.walker) {
-      // The walker's feet from the instance's own place, in f64 to the cell and float after: the
-      // mesh frame's, never a world position in a float.
-      const WorldPos origin{
-          static_cast<f64>(placed.cell.x) * k_world_cell_m + static_cast<f64>(placed.rows[0].w),
-          static_cast<f64>(placed.cell.y) * k_world_cell_m + static_cast<f64>(placed.rows[1].w),
-          static_cast<f64>(placed.cell.z) * k_world_cell_m + static_cast<f64>(placed.rows[2].w)};
-      const Vec3 feet = to_mesh(relative(frame.walker_feet, origin));
-      push.radius = frame.walker_radius * fi.inverse_scale;
-      push.height = frame.walker_height * fi.inverse_scale;
-      push.feet = feet;
-      // Only a tree the capsule can reach is tested part by part.
-      const Vec4 bound = flora_bounds_[fi.mesh];
-      const Vec3 centre{bound.x, bound.y, bound.z};
-      const Vec3 mid = feet + Vec3{0.0f, push.height * 0.5f, 0.0f};
-      push.active = length(mid - centre) < bound.w + push.height + push.radius;
-    }
-    const u32 ticks =
-        fi.posed && frame_index > fi.last_tick
-            ? static_cast<u32>(std::min<u64>(frame_index - fi.last_tick, k_flora_push_ease_ticks))
-            : 0u;
-    const std::span<FloraPartState> state(flora_state_.data() + fi.first_part, tree.part_count());
-    flora_part_poses(tree, wind, time_s, fi.seed, push, ticks, state,
-                     std::span<gfx::FloraPartPose>(region + fi.first_part, tree.part_count()));
-    for (const FloraPartState& s : state)
-      flora_stats_.pushed_parts += s.ease > 0.0f ? 1u : 0u;
-    for (u32 p = 0; p < tree.part_count() && !flora_moving_; ++p)
-      flora_moving_ = region[fi.first_part + p].axis.w != 0.0f;
-    fi.last_tick = frame_index;
-    fi.posed = true;
-  }
+  // `frame_index / 60`, the number this was before the clocks were split). Every instance is posed
+  // by the poser, on its pool when the scene has enough parts to pay for one (flora_poser.h).
+  FloraPoseFrame pose_frame;
+  pose_frame.wind_to = to;
+  pose_frame.wind_strength = strength;
+  pose_frame.time_s = world_time_s;
+  pose_frame.frame_index = frame_index;
+  pose_frame.flora = &frame;
+  FloraPoseInputs inputs;
+  inputs.instances = std::span<FloraInstance>(flora_instances_.data(), flora_instances_.size());
+  inputs.meshes = std::span<const FloraMesh>(flora_meshes_.data(), flora_meshes_.size());
+  inputs.bounds = std::span<const Vec4>(flora_bounds_.data(), flora_bounds_.size());
+  inputs.placed =
+      std::span<const gfx::InstanceDesc>(instance_table_.data(), instance_table_.size());
+  inputs.state = std::span<FloraPartState>(flora_state_.data(), flora_state_.size());
+  inputs.region = static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_parts_;
+  const FloraPoseResult posed = flora_poser_.pose(inputs, pose_frame);
+  flora_stats_.pushed_parts = posed.pushed_parts;
+  flora_moving_ = posed.moving;
   return flora_poses_.address + u64{slot} * flora_parts_ * sizeof(gfx::FloraPartPose);
 }
 // ---- terrain levels (renderer.md, "The dunes in time-lapse")
@@ -3592,6 +3572,7 @@ void GpuScene::destroy() noexcept {
   flora_bounds_.clear();
   flora_instances_.clear();
   flora_state_.clear();
+  flora_poser_.reset();
   flora_parts_ = 0;
   flora_ground_.reset();
   flora_stats_ = FloraStats{};
