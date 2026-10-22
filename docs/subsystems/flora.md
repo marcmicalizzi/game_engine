@@ -338,7 +338,7 @@ and the other [0, −1]), so a one-leaf image sampled with repeat lies on every 
 
 **A bigger tree is more tree, not a scaled-up one** (roadmap G73, 2026-10-20; the sources, the
 constants and the measurements are [tree allometry](../experiments/tree-allometry.md)). The
-broadleaf's and the ancient tree's crowns are one recursion (`kit.h`, "the allometric crown") from
+broadleaf's and the ancient tree's crowns (and the shrub's and, since G81, the [birch's](#the-birch)) are one recursion (`kit.h`, "the allometric crown") from
 the shoots of their named orders — the broadleaf's limbs and its trunk's top, the ancient tree's
 limbs past their runs and its trunk's top — down to a **terminal twig of the species' own size**,
 and the leaves on it are **one leaf a card, at the species' size**, on a 3 m tree and a 150 m one.
@@ -396,7 +396,7 @@ allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-mil
 budget ladder above picks **one** rung for a whole tree; the chain gives the same tree's coarser
 forms to the cluster DAG as **authored levels** above its finest leaves
 ([geometry](geometry.md#authored-levels)), so a far tree draws them and a near one its leaves, with no
-preset chosen. The broadleaf and the ancient tree build it (`card_bake_px`, default 64, and
+preset chosen. The broadleaf, the ancient tree and (since G81) the birch build it (`card_bake_px`, default 64, and
 `impostor_px`, default 256; 0 turns either off); every other species is the container it was.
 
 | Level | What it is | Its error |
@@ -550,27 +550,58 @@ four rungs; on 8,000 it is 3,514 (laterals folded); everything at its most expen
 
 ### The birch
 
-`engine.flora.Birch` (`src/birch.cpp`; `birch.flora.json`, 14 m and two stems, and
-`birch-single.flora.json`, 18 m and one). **One to three stems** from one foot: the first nearly
-upright, the others leaning out by `stem_spread_deg` on the circle's even turns from a seeded
-azimuth, a little shorter and thinner, every stem straightening towards the light along its length
-so a leaning stem bows back up — and every stem is a **load-bearing** part of its own, the first
-part 0 and the others hanging from it at their feet. `limbs` short, steep limbs up each stem's crown
-from `crown_base` on the golden angle, `limb_angle_deg` from the stem (the upper ones a half more
-upright), `limb_length` of the height long falling to 0.4 of it at the top: a crown about a third as
-wide as the tree is tall (the default reaches 4.4 m from its foot at 14 m), narrower than the oak's.
-`twigs` **drooping twigs** on every limb from a fifth of the way out, and a tuft on every stem's top:
-each a spray of `leaves` small cards a side whose axis turns towards the ground along its length
-by up to `droop` × 80°, the further out on its limb the more (the default's twig tips hang 0.20 m
-below the line they left their limb on). The bark is white (`bark`, cones on) and its tubes' UVs are
-in metres, so a tiled white-with-lenticels set lies on it unstretched. Parts: every stem, limb and
-twig — 338 on the default.
+`engine.flora.Birch` (`src/birch.cpp`; version 2 since G81, 2026-10-22, grounded in
+[the birch](../experiments/birch.md); recipes `birch.flora.json`, 14 m and two stems,
+`birch-single.flora.json`, 18 m and one, and `birch-clump.flora.json`, a seeded clump). A silver
+birch (Betula pendula): white stems, a narrow ovoid crown, and from its limbs the
+[allometric recursion](#allometry) down to **slender pendulous branchlets** carrying small leaves
+by the leaf area index. Version 1 was three named orders — 312 twigs of 9 cm cards on the default,
+a realised LAI well under 1 — which the owner's forest read as a few limbs and strings of leaves.
 
-**The budget** (default 50,000; 8,000 to 2,000,000) and the ladder are the broadleaf's: limb rows,
-then cross-sections, the stems' rows halved, the cards halved repeatedly, the last rows. The default
-is 18,796 at full detail (bark 3,820, leaves 14,976: 312 twigs of 12 cards a side); on 12,000 it is
-8,664 (6 cards), on 8,000 4,920 (3); everything at its most expensive (3 stems of 16 limbs of 16
-twigs, 30 cards) holds 8,000 with 5,352.
+**The stems.** `stems` names 1 to 5, or **0 lets the seed choose** (the default): from a splitmix64
+stream of its own, a clump with `clump_chance` (0.3) and then one more stem at even odds at each
+count up to `max_stems` (5) — half the clumps two stems, a quarter three. Because the count has its
+own stream, **a seeded birch of n stems is byte for byte the birch with `stems = n`**, and
+`birch_stems` says which a seed gives. A single stem stands at the origin, nearly upright. A
+clump's stems are sprouts from one stump's root collar: their feet on a ring nine tenths of the
+stoutest stem's radius out at the ground, each leaning outwards by about `stem_spread_deg` (the
+stoutest half that) and straightening towards the light, the stoutest the tallest, the others 0.6
+to 0.95 of its radius and shorter by elastic similarity (H ∝ D^(2/3)). Every stem is a
+**load-bearing** part: the stoutest part 0, the others hanging from it at their feet.
+
+**The crown.** `limbs` scaffold limbs on the stoutest stem (a clump's others in proportion to
+their radius) leave it between `crown_base` and nine tenths of its height on the golden angle,
+`limb_angle_deg` from the stem (the upper ones a half more upright), their lengths `limb_length` of
+the stem's height along an ellipse widest two fifths of the way up the crown — the ovoid — their
+ends arching down by a quarter of the droop. By the pipe rule the stem's top keeps `leader_share`
+(0.35: the leader runs to the top) and the limbs share the rest. From every limb (`branches`
+laterals) and every stem's top the recursion grows to the 1.5 mm, 0.6 m branchlet, and **the
+branchlets hang**: a shoot of radius class `droop_class` or finer leaves its parent turned towards
+the ground by `droop` × 80° (its parents' class half that, never past straight down; `CrownSpec`'s
+`droop`, which no other species sets, so their bytes are as they were) — the default's terminal
+twigs point 40° below level on average, and above level with no droop. The leaves are cards of the
+species' own leaf (5 cm, `leaf_width` 0.7), as many as `leaf_area_index` (4.5) over the crown's
+footprint asks, end to end along each side of a branchlet from its tip, lifted 30° out of the
+spray's plane so a hanging branchlet's cards are not edge-on from half the azimuths. The default
+reaches 4.3 m from its foot at 14 m. The bark is white (`bark`, cones on), its tubes' UVs in metres.
+Parts: every stem and limb and the recursion's shoots of the part class and up (at most 160) — 42
+on the default; the birch emits the structural table (stems load-bearing, the rest not) and builds
+the [impostor chain](#the-impostor-chain) like the broadleaf (`card_bake_px`, `impostor_px`).
+
+**The budget** (default 50,000; 8,000 to 2,000,000). A full crown is more leaves than any forest
+budget holds — the default at full detail is 69,498 cards of 6.0 cm, 152,945 triangles — so **the
+cards stand for more leaves rather than the crown losing them**: the leaves fill what the wood
+leaves of the budget, two triangles a card, each card grown to keep the leaf area. While the cards
+would have to be larger than twice the finest the branchlets hold, the wood gives way first (the
+broadleaf's rungs: the finest wood folded, rows, cross-sections, the folded orders up to the part
+class, the coarsest tubes); then cards up to four times the finest; only past that the broadleaf's
+merge into branch-group cards, the halvings and the last rows. No rung moves a shoot or drops a
+part, and every rung short of the merge keeps the LAI. The default is 49,997 (bark 13,949: no rung
+walked; 18,024 cards of 11.7 cm, LAI 4.23 over 38.4 m²); on the forest's 36,000, 35,997 (bark
+1,141, five rungs, 17,428 cards of 11.9 cm); a clump of two to five stems on 36,000 has cards of
+13.8 to 15.7 cm and never merges; everything at its most expensive (five 30 m stems of 0.5 m, 24
+limbs of 8 laterals, branching ratio 6, 1 mm branchlets, 30 cards) holds 8,000 with 6,941, merged.
+The `birch` and `birch-single` rows of the harness table below are version 1's.
 
 ### The willow
 
@@ -868,8 +899,8 @@ part, nor from a parent into its child where the child leaves it. A part with no
 leaf cards, a willow's curtain) records radii of zero. The megaflora's trunk records its **core**:
 its buttresses stand outside the core radius in the bottom `buttress_height_m` (up to 1.3 of it),
 and its hollows cut into it where `ancient_hollows` says. The minimum radii a load-bearing part
-reaches inside each species' ranges: birch 0.0195 m (its thinnest third stem), willow 0.08 m,
-orchard 0.04 m, ancient 0.25 m (since G79 a threshold: a run or a limb segment is load-bearing when
+reaches inside each species' ranges: birch 0.018 m (the thinnest clump stem of the thinnest birch,
+0.03 m × 0.6), willow 0.08 m, orchard 0.04 m, ancient 0.25 m (since G79 a threshold: a run or a limb segment is load-bearing when
 it is at least that at its base, so a limb's segments carry the flag as far out as they are that
 thick); the default ancient tree's load-bearing parts are its 5 m core, its seven runs 1.2 m at the
 lowest limb to 0.69 m at the highest (2.4 m to 1.4 m thick), every limb's first segment past its run
@@ -1156,7 +1187,7 @@ and walks in under the crowns: a scene to fly that needs no sample asset. Beside
 `oak.flora.json` (a broadleaf), `spruce-tall.flora.json` and `spruce-young.flora.json` (conifers);
 [`content/test-scenes/grove/`](../../content/test-scenes/grove/README.md) stands four oaks, seven
 spruces and a palm on a nearly flat ground with a camera path round and into them. The second
-batch's recipes are `birch.flora.json`, `birch-single.flora.json`, `willow.flora.json`,
+batch's recipes are `birch.flora.json`, `birch-single.flora.json`, `birch-clump.flora.json`, `willow.flora.json`,
 `orchard-pruned.flora.json`, `orchard-apple.flora.json`, `ancient.flora.json`,
 `ancient-rising.flora.json` (90 m, its limbs' runs rising at 20° and more) and
 `ancient-1m.flora.json`; [`content/test-scenes/elder-grove/`](../../content/test-scenes/elder-grove/README.md)
@@ -1360,7 +1391,7 @@ new draws are each their own statement and their own streams — the limbs' layo
 five draws a limb, every named segment one stream (limb × 512 + its index) with nine, the bole's
 stubs one stream with five a stub, made whether or not a stub has room — and a limb shortened by
 its wood is grown again from the same draws, so a recipe's tree never depends on how the sizing
-went.
+went. **The birch's version 2 (G81) moved the birch's pin and no other, and not `k_flora_version`**: it appended fields (`@version(2)`), so every birch file's canonical parameters and key changed anyway; the kit's one change, `CrownSpec::droop`, is zero for every other species and adds no draw, and the broadleaf's and the shrub's pins hold (the ancient tree's moved with G79, above). The default single birch on a 400,000 budget and a three-stem clump are pinned, and a seeded clump is held to the bytes of the birch naming its count.
 
 **Owned data.** The species' parameter types and the solver. Nothing persistent: a palm is derived
 data, rebuilt from its parameters.
@@ -1407,7 +1438,7 @@ data, rebuilt from its parameters.
   rung, one seed one tree and another seed another, pinned by hash, the mesh the same whether the
   contract is asked for or not; the structural table one row a part in order, radii never growing
   along a part or into a child, every load-bearing part at least its species' minimum; the birch's
-  crown within a third of its height of its foot and its twigs hanging below their straight lines;
+  crown within 0.34 of its height of its foot, its branchlets hanging (and not with no droop), its realised LAI within 15% of the asked at full detail, on its default and on 36,000 for one to five stems, never merged there; a seeded clump byte for byte the birch naming its count, and the seed's clump share within 5% of its chance over 1,000 seeds;
   every willow curtain its own part, hanging, never under the ground; the orchard tree flat-topped
   and broader than tall when pruned and taller when free, its fruit a third one-sided primitive of
   eight triangles a fruit, and fruit a budget cannot hold refused; the ancient tree's trunk and runs
@@ -1464,7 +1495,7 @@ data, rebuilt from its parameters.
   (`flora_scene_tests.cpp`).
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`), `include/domain/flora/understory.h` (the understory: `shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`, `shrub_collides`, `k_shrub_collider_radius_m`, `solve_shrub`, `solve_fern`, `solve_tuft`, `solve_herb`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
+`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`, `birch_crown`; the birch's `solve_birch_chain` and its seeded stem count, `birch_stems`), `include/domain/flora/understory.h` (the understory: `shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`, `shrub_collides`, `k_shrub_collider_radius_m`, `solve_shrub`, `solve_fern`, `solve_tuft`, `solve_herb`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
 `k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/structure.h` (the structural table: `StructuralPart`, `k_load_bearing`, `k_straight`, `k_collider`, `structural_point`, `structural_radius`, `load_bearing_min_radius`, `Hollow`, `ancient_hollows`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
 `k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `k_species_birch`, `k_species_willow`, `k_species_orchard`, `k_species_ancient`, `k_species_shrub`, `k_species_fern`, `k_species_tuft`, `k_species_herb`, `solve_flora`, `flora_detail_tier`, `flora_collides`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key` (with the pack), `flora_role`, `apply_flora_materials`, `build_flora_container`

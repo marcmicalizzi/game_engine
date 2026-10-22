@@ -196,45 +196,82 @@ struct Conifer @version(2) {
   dead_share: f32 = 0.12 @since(2)
 }
 
-/// A birch (flora.md, "The birch"): one to three slender white stems from one foot, a narrow crown
-/// of short limbs on the golden angle, and fine twigs that droop at the crown's edge, each a spray
-/// of small leaf cards. Defaults make a 14 m two-stemmed birch.
-struct Birch @version(1) {
-  /// Everything left to chance: the stems' azimuths, every limb's and twig's turn and spread.
+/// A birch (flora.md, "The birch"; the grounding is docs/experiments/birch.md): one slender white
+/// stem, or a clump of up to five from one root collar, a narrow ovoid crown of many steep limbs on
+/// the golden angle, and from them the allometric recursion down to slender pendulous branchlets
+/// carrying small leaves by the leaf area index (Betula pendula). Defaults make a 14 m birch whose
+/// stem count is the seed's choice.
+struct Birch @version(2) {
+  /// Everything left to chance: the stem count (when `stems` is 0), the stems' azimuths, every
+  /// limb's and shoot's turn and spread.
   seed: u64 = 1
-  /// The tallest stem's top above the ground: 3 to 30 m (the others a little shorter).
+  /// The tallest stem's top above the ground: 3 to 30 m (a clump's others shorter).
   height_m: f32 = 14.0 @unit(m)
-  /// The tallest stem's radius at the ground: 0.03 to 0.5 m (the others thinner).
+  /// The stoutest stem's radius at the ground: 0.03 to 0.5 m (a clump's others 0.6 to 0.95 of it).
   stem_radius_m: f32 = 0.13 @unit(m)
-  /// Stems from the one foot: 1 to 3.
-  stems: u32 = 2
-  /// How far from vertical the second and third stems leave the foot: 0 to 30 degrees.
-  stem_spread_deg: f32 = 12.0 @unit(deg)
+  /// Stems from the root collar: 1 to 5, or 0 for the seed's choice by `clump_chance` and
+  /// `max_stems` (version 1 read 1 to 3, default 2).
+  stems: u32 = 0
+  /// How far from vertical a clump's stems leave the collar: 0 to 35 degrees (the stoutest half
+  /// as far; they straighten towards the light).
+  stem_spread_deg: f32 = 15.0 @unit(deg)
   /// Where the crown begins on a stem, as a share of its height: 0.15 to 0.8.
-  crown_base: f32 = 0.4
-  /// Limbs on every stem: 2 to 16.
-  limbs: u32 = 12
-  /// The lowest limb's angle from its stem: 15 to 80 degrees (the upper limbs a half more upright).
-  limb_angle_deg: f32 = 45.0 @unit(deg)
-  /// The lowest limb's length as a share of the height: 0.08 to 0.5 (the upper limbs shorter).
-  limb_length: f32 = 0.24
-  /// Twigs on every limb, and on every stem's top: 2 to 16.
-  twigs: u32 = 12
-  /// A twig's length: 0.2 to 3 m.
-  twig_length_m: f32 = 1.1 @unit(m)
-  /// How far the twigs hang: 0 not at all, 1 the outermost turned 80 degrees towards the ground
-  /// along their length.
-  droop: f32 = 0.6
+  crown_base: f32 = 0.35
+  /// Scaffold limbs on the stoutest stem (a clump's others in proportion to their radius): 2 to 24.
+  limbs: u32 = 20
+  /// The lowest limb's angle from its stem, and the recursion's shoots' from theirs: 15 to 80
+  /// degrees (the upper limbs a half more upright).
+  limb_angle_deg: f32 = 40.0 @unit(deg)
+  /// The longest limb's length as a share of its stem's height: 0.08 to 0.5 (the others by the
+  /// crown's ovoid).
+  limb_length: f32 = 0.18
+  /// The most laterals a shoot of the recursion bears (a cap on `branching_ratio` - 1; version 1's
+  /// twigs on every limb): 1 to 16.
+  twigs: u32 = 8
+  /// The terminal branchlet's length, a species constant: 0.1 to 3 m.
+  twig_length_m: f32 = 0.6 @unit(m)
+  /// How far the branchlets hang: 0 not at all, 1 turned 80 degrees towards the ground (their
+  /// parents half as far, the limbs' ends arching by a fraction of it).
+  droop: f32 = 0.7
   /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
   wander_deg: f32 = 6.0 @unit(deg)
-  /// Leaf cards along each side of a twig: 1 to 30.
-  leaves: u32 = 12
-  /// A leaf card's length, out from the twig: 0.02 to 0.25 m.
-  leaf_length_m: f32 = 0.09 @unit(m)
-  /// A leaf's angle from its twig, towards the tip: 10 to 85 degrees.
+  /// The most leaf cards along each side of a branchlet (the count is `leaf_area_index`'s): 1 to 30.
+  leaves: u32 = 16
+  /// A leaf card's length — one leaf, a species constant (Betula pendula 3 to 7 cm): 0.02 to 0.25 m.
+  leaf_length_m: f32 = 0.05 @unit(m)
+  /// A leaf's angle from its branchlet, towards the tip: 10 to 85 degrees.
   leaf_angle_deg: f32 = 55.0 @unit(deg)
   /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The birch").
   triangle_budget: u32 = 50000
+  // ---- a fuller crown and seeded clumps (G81; flora.md "The birch", docs/experiments/birch.md).
+  /// The chance a birch whose `stems` is 0 is a clump of sprouts from one stump rather than a
+  /// single stem: 0 to 1.
+  clump_chance: f32 = 0.3 @since(2)
+  /// The most stems a seeded clump has: 2 to 5 (half the clumps have two, a quarter three, ...).
+  max_stems: u32 = 5 @since(2)
+  /// Laterals on every limb: 1 to 8.
+  branches: u32 = 5 @since(2)
+  /// The terminal branchlet's radius at its base, a species constant: 0.001 to 0.008 m. The
+  /// recursion stops where a shoot's thinnest child would be thinner.
+  twig_radius_m: f32 = 0.0015 @unit(m) @since(2)
+  /// The pipe model's exponent (flora.md, "Allometry"): 1.8 to 3.
+  area_exponent: f32 = 2.0 @since(2)
+  /// Children a shoot of the recursion bears, its leader included: 2 to 6.
+  branching_ratio: u32 = 4 @since(2)
+  /// A child's length over its parent's: 0.4 to 0.9.
+  length_ratio: f32 = 0.63 @since(2)
+  /// The leader's share of a node's cross-section: 0.1 to 0.7 (a birch's leader dominates).
+  leader_share: f32 = 0.35 @since(2)
+  /// One-sided leaf area over the crown's footprint, which sets the leaf count: 0.5 to 8 (silver
+  /// birch stands 2.5 to 4.4).
+  leaf_area_index: f32 = 4.5 @since(2)
+  /// A leaf card's width over its length: 0.1 to 1.
+  leaf_width: f32 = 0.7 @since(2)
+  /// A branch-group card's baked tile, texels a side; 0 bakes no branch-group levels (flora.md, "The
+  /// impostor chain"): 0, or 16 to 256.
+  card_bake_px: u32 = 64 @since(2)
+  /// A whole-tree impostor view, texels a side; 0 makes no impostor: 0, or 32 to 1024.
+  impostor_px: u32 = 256 @since(2)
 }
 
 /// A weeping willow (flora.md, "The willow"): a short thick trunk, limbs arching out and up from

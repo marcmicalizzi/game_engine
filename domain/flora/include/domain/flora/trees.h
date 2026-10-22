@@ -60,6 +60,9 @@ struct TreeReport {
   f32 leaf_area_index = 0.0f;  // the realised LAI: leaf_area_m2 over footprint_m2
   // The understory (G75; understory.h).
   u32 colliders = 0;  // a shrub's stems flagged k_structural_collider
+  // The birch (G81; zero for the others).
+  u32 stems = 0;          // stems from the root collar, named or the seed's choice
+  f32 twig_slope = 0.0f;  // the terminal twigs' mean direction's height, -1 straight down
 };
 
 // One shoot of an allometric crown (G72), for a test or a tool to check the structure against the
@@ -115,10 +118,18 @@ bool solve_broadleaf_chain(const Broadleaf& params, assets::MeshData& out, TreeR
                            std::string* error, Motion* motion, TreeLevels* levels);
 bool solve_ancient_chain(const Ancient& params, assets::MeshData& out, TreeReport* report,
                          std::string* error, Motion* motion, TreeLevels* levels);
+bool solve_birch_chain(const Birch& params, assets::MeshData& out, TreeReport* report,
+                       std::string* error, Motion* motion, TreeLevels* levels);
 
 // The crown's structure as the solver grows it, independent of the budget (G72): what the pipe
 // rule, the twig size and the order count are checked against. False for parameters out of range.
 bool broadleaf_crown(const Broadleaf& params, Vector<CrownShoot>& out);
 bool ancient_crown(const Ancient& params, Vector<CrownShoot>& out);
+bool birch_crown(const Birch& params, Vector<CrownShoot>& out);
+
+// The birch's stem count (G81): `stems` when the parameters name one, else the seed's draw from a
+// stream of its own — a clump with `clump_chance`, of two stems and one more at even odds up to
+// `max_stems`. A seeded birch of n stems is byte for byte the birch with `stems = n`.
+u32 birch_stems(const Birch& params);
 
 }  // namespace engine::flora

@@ -315,6 +315,19 @@ Axis segment_axis(const CrownNode& n) {
   return a;
 }
 
+// `dir` turned towards straight down by `angle` in the plane the two span, stopping at straight
+// down (the pendulous habit, CrownSpec::droop).
+D3 hang_towards_ground(D3 dir, f64 angle) {
+  const D3 down{0.0, -1.0, 0.0};
+  const f64 c = dot(dir, down);
+  const D3 across = down - dir * c;
+  const f64 a = length_of(across);
+  if (a < 1e-9) return dir;
+  const f64 ca = det::cos(angle);
+  if (ca <= c) return down;
+  return normalized(dir * ca + across * (det::sin(angle) / a));
+}
+
 // The radius-only pass: how many recursion shoots of each class a root's sub-tree holds.
 void count_classes(const CrownSpec& spec, f64 radius, u32 laterals, Vector<u32>& counts) {
   const f64 inv = 1.0 / spec.area_exponent;
@@ -367,7 +380,14 @@ struct Grower {
         length = spec.twig_length;
       }
       D3 radial;
-      const D3 dir = branch_direction(along, s, around, spread, &radial);
+      D3 dir = branch_direction(along, s, around, spread, &radial);
+      if (spec.droop > 0.0) {
+        const i32 cls = terminal ? 0 : class_of(spec, r);
+        if (cls <= spec.droop_class) {
+          const f64 classes = static_cast<f64>(spec.droop_class + 1);
+          dir = hang_towards_ground(dir, spec.droop * (classes - static_cast<f64>(cls)) / classes);
+        }
+      }
       const f64 r_here = lerp(parent.r0, parent.r1, s / along.length);
       CrownNode child;
       child.base = axis_point(along, s) + radial * (0.4 * r_here);

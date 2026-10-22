@@ -1,0 +1,10 @@
+{
+  "species": "birch",
+  "birch": {
+    "seed": 5,
+    "height_m": 13.0,
+    "stems": 0,
+    "clump_chance": 1.0,
+    "triangle_budget": 36000
+  }
+}

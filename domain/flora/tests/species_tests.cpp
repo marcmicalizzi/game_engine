@@ -212,41 +212,191 @@ void check_straight_tubes(const assets::MeshData& mesh, const flora::Motion& mot
 
 }  // namespace
 
-TEST_CASE("flora: the birch — slender stems from one foot, a narrow crown, drooping twigs") {
-  const flora::Birch p;
-  const u32 parts = p.stems * (1 + p.limbs + p.limbs * p.twigs + p.twigs);
-  check_species(flora::k_species_birch, p, flora::solve_birch, parts, {12000u, 8000u},
-                0x977c615c8a5c0094ull);
+// The parts a birch has: every named shoot and every recursion shoot of the part class and up.
+u32 birch_parts(const flora::Birch& p) {
+  Vector<flora::CrownShoot> crown;
+  REQUIRE(flora::birch_crown(p, crown));
+  u32 parts = 0;
+  for (const flora::CrownShoot& s : crown)
+    if ((s.flags & flora::k_crown_shoot_part) != 0u) ++parts;
+  return parts;
+}
+
+TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlets, full by its LAI") {
+  // At full detail every card is one leaf of the species' size; the default budget is a rung of
+  // the ladder below it (a 14 m birch carries tens of thousands of leaves).
+  flora::Birch full;
+  full.stems = 1;
+  full.triangle_budget = 400000;
+  check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0xb8555e8ebde5d8eaull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
   std::string error;
+  REQUIRE(flora::solve_birch(full, mesh, &report, &error, &motion));
+  MESSAGE("the birch at full detail: "
+          << report.triangles << " triangles, " << report.twigs << " branchlets over "
+          << report.orders << " orders, " << report.leaf_cards << " cards of " << report.card_length
+          << " m, LAI " << report.leaf_area_index << " over " << report.footprint_m2
+          << " m2, twig slope " << report.twig_slope);
+  CHECK(report.card_length <= 1.25f * full.leaf_length_m);
+  CHECK(report.leaf_area_index > 0.85f * full.leaf_area_index);
+  CHECK(report.leaf_area_index < 1.15f * full.leaf_area_index);
+  flora::Birch p;
+  p.stems = 1;
   REQUIRE(flora::solve_birch(p, mesh, &report, &error, &motion));
-  // The stems: load-bearing, the first part and the next, from one foot.
-  CHECK(report.load_bearing == p.stems);
-  CHECK(motion.parts[1].parent == 0u);
-  CHECK(std::abs(motion.parts[1].pivot.y) < 1e-6f);
+  MESSAGE("the birch on its default budget: "
+          << report.triangles << " triangles (bark " << report.wood_triangles << ") after "
+          << report.steps << " steps, " << report.parts << " parts, " << report.leaf_cards
+          << " cards of " << report.card_length << " m, LAI " << report.leaf_area_index);
+  CHECK(report.stems == 1u);
+  CHECK(report.load_bearing == 1u);
+  // The fine orders: the recursion reaches the species' branchlet, a thousand and more of them.
+  CHECK(report.orders >= 6u);
+  CHECK(report.twigs >= 1000u);
+  // Full on the default budget too: the leaf area over the footprint is the asked LAI's, each card
+  // standing for a few leaves (version 1's crown was about 0.5).
+  CHECK(report.merge_level == 0u);
+  CHECK(report.card_length <= 2.5f * p.leaf_length_m);
+  CHECK(report.leaf_area_index > 0.85f * p.leaf_area_index);
+  CHECK(report.leaf_area_index < 1.15f * p.leaf_area_index);
   // The crown is narrow: nothing reaches further from the foot than a third of the height.
   f32 reach = 0.0f;
   for (const Vec3& v : mesh.positions)
     reach = std::max(reach, std::sqrt(v.x * v.x + v.z * v.z));
   MESSAGE("the birch's crown reaches " << reach << " m from its foot, " << p.height_m << " m tall");
-  CHECK(reach < 0.36f * p.height_m);
-  // The twigs droop: on average a twig's tip (its last station) hangs below where it would be had
-  // the twig kept the direction it left its limb in.
-  f64 fall = 0.0;
-  u32 tips = 0;
-  const u32 first_twig = p.stems * (1 + p.limbs);
-  for (u32 v = 0; v < mesh.positions.size(); ++v) {
-    const u32 k = motion.vertex_part[v];
-    if (k < first_twig || motion.vertex_weight[v] < 0.999f) continue;
-    const flora::MotionPart& t = motion.parts[k];
-    fall += static_cast<f64>(mesh.positions[v].y - (t.pivot.y + t.direction.y * t.length));
-    ++tips;
+  CHECK(reach < 0.34f * p.height_m);
+  // Pendulous: the branchlets hang, on average more than 30 degrees below level — and without
+  // the droop they do not.
+  CHECK(report.twig_slope < -0.5f);
+  flora::Birch upright = p;
+  upright.droop = 0.0f;
+  flora::TreeReport upright_report;
+  REQUIRE(flora::solve_birch(upright, mesh, &upright_report, &error, nullptr));
+  CHECK(upright_report.twig_slope > 0.0f);
+  // On the forest's budget the crown keeps its leaf area: fewer cards, each standing for a few
+  // leaves, never merged into branch-group cards.
+  flora::Birch forest = p;
+  forest.triangle_budget = 36000;
+  flora::TreeReport forest_report;
+  REQUIRE(flora::solve_birch(forest, mesh, &forest_report, &error, nullptr));
+  MESSAGE("on 36,000: " << forest_report.triangles << " triangles after " << forest_report.steps
+                        << " steps, " << forest_report.leaf_cards << " cards of "
+                        << forest_report.card_length << " m, LAI "
+                        << forest_report.leaf_area_index);
+  CHECK(forest_report.merge_level == 0u);
+  CHECK(forest_report.leaf_area_index > 0.8f * p.leaf_area_index);
+  CHECK(forest_report.card_length <= 3.0f * p.leaf_length_m);
+}
+
+TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load-bearing") {
+  std::string error;
+  // Named counts: n stems, every one load-bearing, the stoutest part 0 and the others hanging
+  // from it at their feet, all on the collar at the ground.
+  for (u32 n = 1; n <= 5; ++n) {
+    CAPTURE(n);
+    flora::Birch p;
+    p.stems = n;
+    p.triangle_budget = 36000;
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeReport report;
+    REQUIRE_MESSAGE(flora::solve_birch(p, mesh, &report, &error, &motion), error);
+    check_tree(flora::k_species_birch, mesh, motion, report, p.triangle_budget);
+    CHECK(report.stems == n);
+    CHECK(report.load_bearing == n);
+    for (u32 k = 0; k < n; ++k) {
+      const flora::MotionPart& stem = motion.parts[k];
+      CHECK((motion.structure[k].flags & flora::k_load_bearing) != 0u);
+      CHECK(stem.parent == (k == 0 ? geometry::k_motion_no_parent : 0u));
+      CHECK(std::abs(stem.pivot.y) < 1e-6f);
+      CHECK(std::sqrt(stem.pivot.x * stem.pivot.x + stem.pivot.z * stem.pivot.z) <=
+            p.stem_radius_m + 1e-6f);
+      // A clump's stems lean out from the collar; a single stem stands nearly upright.
+      if (n > 1) {
+        const f32 out = stem.pivot.x * stem.direction.x + stem.pivot.z * stem.direction.z;
+        CHECK(out > 0.0f);
+      } else {
+        CHECK(stem.direction.y > 0.99f);
+      }
+    }
+    MESSAGE(n << " stems on 36,000: " << report.triangles << " triangles (bark "
+              << report.wood_triangles << "), " << report.parts << " parts, " << report.twigs
+              << " branchlets, " << report.steps << " steps, merge " << report.merge_level
+              << ", cards " << report.card_length << " m, LAI " << report.leaf_area_index
+              << " over " << report.footprint_m2 << " m2");
+    CHECK(report.merge_level == 0u);
+    CHECK(report.leaf_area_index > 0.8f * p.leaf_area_index);
   }
-  REQUIRE(tips > 0u);
-  MESSAGE("the twigs' tips hang " << -fall / tips << " m below their straight line on average");
-  CHECK(fall / tips < -0.1);
+
+  // The seed's choice: a clump with `clump_chance`, its count falling by half at each step up to
+  // `max_stems`.
+  flora::Birch s;
+  u32 counts[6] = {0, 0, 0, 0, 0, 0};
+  constexpr u32 k_seeds = 1000;
+  for (u32 seed = 1; seed <= k_seeds; ++seed) {
+    s.seed = seed;
+    const u32 n = flora::birch_stems(s);
+    REQUIRE(n >= 1u);
+    REQUIRE(n <= s.max_stems);
+    ++counts[n];
+  }
+  const f64 clumps = static_cast<f64>(k_seeds - counts[1]) / static_cast<f64>(k_seeds);
+  MESSAGE("seeded: " << counts[1] << " single, " << counts[2] << " of two, " << counts[3]
+                     << " of three, " << counts[4] << " of four, " << counts[5] << " of five");
+  CHECK(std::abs(clumps - static_cast<f64>(s.clump_chance)) < 0.05);
+  CHECK(counts[2] > counts[3]);
+  CHECK(counts[3] > counts[4]);
+  CHECK(counts[5] > 0u);
+  s.max_stems = 3;
+  for (u32 seed = 1; seed <= 200; ++seed) {
+    s.seed = seed;
+    CHECK(flora::birch_stems(s) <= 3u);
+  }
+  s = flora::Birch{};
+  s.clump_chance = 0.0f;
+  for (u32 seed = 1; seed <= 50; ++seed) {
+    s.seed = seed;
+    CHECK(flora::birch_stems(s) == 1u);
+  }
+  s.clump_chance = 1.0f;
+  for (u32 seed = 1; seed <= 50; ++seed) {
+    s.seed = seed;
+    CHECK(flora::birch_stems(s) >= 2u);
+  }
+  // A named count is the seed's no matter the chance.
+  s.stems = 4;
+  s.clump_chance = 0.0f;
+  CHECK(flora::birch_stems(s) == 4u);
+
+  // The count has a stream of its own, so nothing else moves: a seeded clump of n stems is the
+  // birch with `stems = n` byte for byte, and its clump chance changes nothing but the count.
+  flora::Birch seeded;
+  seeded.triangle_budget = 36000;
+  for (u32 seed = 1; seed < 100; ++seed) {
+    seeded.seed = seed;
+    if (flora::birch_stems(seeded) == 3u) break;
+  }
+  REQUIRE(flora::birch_stems(seeded) == 3u);
+  flora::Birch named = seeded;
+  named.stems = 3;
+  named.clump_chance = 0.0f;
+  assets::MeshData a;
+  assets::MeshData b;
+  flora::Motion am;
+  flora::Motion bm;
+  REQUIRE(flora::solve_birch(seeded, a, nullptr, &error, &am));
+  REQUIRE(flora::solve_birch(named, b, nullptr, &error, &bm));
+  CHECK(tree_hash(a, am) == tree_hash(b, bm));
+
+  // A pinned clump, on every rung the same parts.
+  flora::Birch clump;
+  clump.stems = 3;
+  clump.seed = 5;
+  clump.triangle_budget = 400000;
+  check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
+                {50000u, 36000u, 12000u}, 0x35e3f4c15bb79d5dull);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {
@@ -594,7 +744,7 @@ TEST_CASE("flora: the structural table round-trips through the container, append
 TEST_CASE("flora: the second batch's ranges, ends and refusals") {
   std::string error;
   flora::Birch b;
-  b.stems = 4;
+  b.stems = 6;
   CHECK_FALSE(flora::birch_in_range(b, error));
   CHECK(error.find("stems") != std::string::npos);
   flora::Willow w;
@@ -628,8 +778,13 @@ TEST_CASE("flora: the second batch's ranges, ends and refusals") {
   flora::Motion motion;
   flora::TreeReport report;
   flora::Birch wb;
-  wb.stems = 3;
-  wb.limbs = 16;
+  wb.stems = 5;
+  wb.limbs = 24;
+  wb.branches = 8;
+  wb.branching_ratio = 6;
+  wb.height_m = 30.0f;
+  wb.stem_radius_m = 0.5f;
+  wb.twig_radius_m = 0.001f;
   wb.twigs = 16;
   wb.leaves = 30;
   wb.triangle_budget = 8000;
@@ -701,7 +856,7 @@ TEST_CASE("flora: the second batch's ranges, ends and refusals") {
   flora::Birch sb;
   sb.height_m = 3.0f;
   sb.stem_radius_m = 0.03f;
-  sb.stems = 3;
+  sb.stems = 5;
   sb.limbs = 2;
   sb.twigs = 2;
   sb.leaves = 1;
