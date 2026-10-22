@@ -1,0 +1,10 @@
+{
+  "species": "ancient",
+  "ancient": {
+    "habit": "emergent",
+    "seed": 3,
+    "height_m": 100.0,
+    "trunk_radius_m": 5.0,
+    "triangle_budget": 1500000
+  }
+}

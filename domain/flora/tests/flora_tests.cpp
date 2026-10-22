@@ -597,8 +597,9 @@ TEST_CASE(
   // the bytes it was before them.
   // 0x5ab6c0536295b350 at k_flora_version 2; the palm's UVs in metres moved it (version 3), and
   // 0x178ae32e3572bd96 was version 3's: the version is in the build key the container records, so
-  // version 4 (the trees' impostor chain, R91) moved it with no byte of the palm's mesh moving.
-  constexpr u64 k_golden = 0x1fc747f1b4eb758bull;
+  // version 4 (the trees' impostor chain, R91) moved it with no byte of the palm's mesh moving,
+  // and 0x1fc747f1b4eb758b was version 4's, until version 5 (the megaflora's habits, G79).
+  constexpr u64 k_golden = 0xf5eeb4a2203dcbbdull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -706,8 +707,9 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // container from before the contract existed, until the crown's spiral moved the mesh
   // (k_flora_version 2), and 0xeb471d9e96454476 until the UVs went to metres (3), so a change that
   // moves only the contract is told apart from one that moves the mesh; 0x31af079d27301ce7 until
-  // k_flora_version 4 moved the build key it records (R91; the palm's mesh did not move).
-  constexpr u64 k_rigid_golden = 0x4cbe7ab61460f083ull;
+  // k_flora_version 4 moved the build key it records (R91; the palm's mesh did not move), and
+  // 0x4cbe7ab61460f083 until version 5 did the same (G79, the megaflora's habits).
+  constexpr u64 k_rigid_golden = 0x1cbf4f684b7db8dfull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));

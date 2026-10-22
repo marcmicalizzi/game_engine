@@ -296,12 +296,32 @@ struct Orchard @version(1) {
   triangle_budget: u32 = 40000
 }
 
+/// The architecture of an ancient tree's crown (flora.md, "Megaflora"; docs/experiments/
+/// megaflora-habits.md): where on the trunk its limbs leave, how many, their angles, whether the
+/// trunk carries through to the top or dissolves into the limbs, and how wide the crown is against
+/// the tree's height.
+enum AncientHabit : u8 {
+  /// Very tall: a long clear bole, the limbs in the top half, the trunk carrying through to the top
+  /// (excurrent), the limbs leaving near level and turning up, a crown about 0.4 of the height wide
+  /// — the giant sequoia, an old Douglas-fir.
+  emergent
+  /// Very wide: a short trunk dissolving into a few great limbs (decurrent) that fork again and
+  /// again into a dome about 1.5 times as wide as the tree is tall, where the wood allows it — the
+  /// open-grown oak, the monkeypod.
+  spreading
+  /// The two together, the rarer and the fantastical: an emergent's clear bole carrying a
+  /// spreading crown on top, about 0.9 of the height wide (the tropical emergents — kapok,
+  /// tualang — come closest).
+  mixed
+}
+
 /// An ancient tree, the megaflora regime (flora.md, "Megaflora"): a trunk metres thick flaring into
-/// buttress roots at its foot, with doorway-sized hollows, and major limbs leaving it high up that
-/// run straight and near-horizontal for their first stretch — where platforms go — before they
-/// turn up and branch as a broadleaf does at a larger scale, carrying a canopy of leaf-cluster
-/// cards. Its parts carry the structural table (section 37). Defaults make a 100 m tree.
-struct Ancient @version(3) {
+/// buttress roots at its foot, with doorway-sized hollows, and major limbs whose first stretch is a
+/// straight run — where platforms go — and which then meander and fork as the habit says, each
+/// limb no longer than its wood could carry, down to the allometric crown. Its parts carry the
+/// structural table (section 37). Defaults make a 100 m emergent tree; a limb field left at 0 is
+/// the habit's.
+struct Ancient @version(4) {
   /// Everything left to chance: the buttresses', hollows' and limbs' azimuths, every shoot's turn.
   seed: u64 = 1
   /// The crown's top above the ground: 40 to 150 m.
@@ -331,22 +351,27 @@ struct Ancient @version(3) {
   hollow_sill_m: f32 = 0.3 @unit(m)
   /// From one hollow's floor to the next one's: 3 to 60 m.
   hollow_spacing_m: f32 = 14.0 @unit(m)
-  /// Major limbs: 2 to 12.
-  limbs: u32 = 9
-  /// The lowest major limb leaves the trunk this high: 8 to 110 m.
-  limb_low_m: f32 = 30.0 @unit(m)
-  /// The highest major limb leaves the trunk this high: `limb_low_m` to 0.75 of the height.
-  limb_high_m: f32 = 62.0 @unit(m)
+  /// Major limbs: 2 to 12; 0, the habit's (emergent 10, spreading 6, mixed 7).
+  limbs: u32 = 0
+  /// The lowest major limb leaves the trunk this high: 8 to 110 m; 0, the habit's share of the
+  /// height (emergent 0.5, spreading 0.2, mixed 0.55).
+  limb_low_m: f32 = 0.0 @unit(m)
+  /// The highest major limb leaves the trunk this high: `limb_low_m` to 0.75 of the height; 0, the
+  /// habit's share (emergent 0.75, spreading 0.3, mixed 0.7).
+  limb_high_m: f32 = 0.0 @unit(m)
   /// The lowest limb's radius where it leaves the trunk: 0.5 to 2.5 m (1 to 5 m thick; the upper
-  /// limbs thinner).
-  limb_radius_m: f32 = 1.6 @unit(m)
+  /// limbs thinner); 0, the habit's share of the trunk's core there.
+  limb_radius_m: f32 = 0.0 @unit(m)
   /// A limb's first run's rise above horizontal: -5 to 30 degrees.
   limb_rise_deg: f32 = 4.0 @unit(deg)
   /// The lowest limb's first run, straight, from inside the trunk (half its core radius out from
-  /// the axis): 4 to 60 m, and at least 2 m past the core (the upper limbs' shorter).
-  limb_run_m: f32 = 24.0 @unit(m)
-  /// The lowest limb's length past its first run, turning up and branching: 4 to 80 m.
-  limb_reach_m: f32 = 36.0 @unit(m)
+  /// the axis): 4 to 60 m, and at least 2 m past the core (the upper limbs' shorter); 0, the
+  /// habit's share of the limb. Asked, not promised: a limb is shortened, run and all, until the
+  /// wood can carry it (flora.md, "Limbs a wood could carry").
+  limb_run_m: f32 = 0.0 @unit(m)
+  /// The lowest limb's length past its first run, meandering and forking: 4 to 80 m; 0, what the
+  /// habit's crown width leaves. Asked, not promised, like the run.
+  limb_reach_m: f32 = 0.0 @unit(m)
   /// Branches on every limb past its run, and on the trunk's top: 2 to 10.
   branches: u32 = 6
   /// A branch's angle from its parent: 15 to 80 degrees.
@@ -399,6 +424,20 @@ struct Ancient @version(3) {
   card_bake_px: u32 = 64 @since(3)
   /// A whole-tree impostor view, texels a side; 0 makes no impostor: 0, or 32 to 1024.
   impostor_px: u32 = 256 @since(3)
+  // ---- the habit and the wood (G79; flora.md "Megaflora", docs/experiments/megaflora-habits.md).
+  /// The crown's architecture; the limb fields above left at 0 are its.
+  habit: AncientHabit = emergent @since(4)
+  /// The crown's width over the tree's height, which sets how far the limbs reach: 0.2 to 2.5; 0,
+  /// the habit's (emergent 0.4, spreading 1.5, mixed 0.9). The wood may stop the limbs short.
+  crown_spread: f32 = 0.0 @since(4)
+  /// How many times a major limb forks past its run: 1 to 4; 0, the habit's (emergent 2,
+  /// spreading 3, mixed 3).
+  forks: u32 = 0 @since(4)
+  /// The green wood's modulus of rupture, which caps how far a limb reaches at its thickness and
+  /// angle: 20 to 150 MPa (green white oak about 50).
+  wood_rupture_mpa: f32 = 50.0 @since(4)
+  /// The green wood's density, water and all: 300 to 1300 kg/m3 (green white oak about 1000).
+  wood_density: f32 = 1000.0 @since(4)
 }
 
 /// A tiled PBR set a part's material samples (flora.md, "Materials"): the images' paths, relative

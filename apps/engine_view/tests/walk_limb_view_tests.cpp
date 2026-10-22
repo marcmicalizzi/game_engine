@@ -4,7 +4,8 @@
 // its lowest major limb's straight run from the structural table, and a session written by the
 // test starts a walker standing on that run 2.5 m out from the bark, facing along it, and holds W —
 // replayed **offscreen**, so no window opens. Where the build has physics and the scene's collision
-// the tree is a static body and the walker walks along the limb; the test holds the first 15 m and
+// the tree is a static body and the walker walks along the limb; the test holds the first 15 m (or
+// as much of the run as its wood left, G79) and
 // reports the rest: where the walker is every second, what it does where the run ends, and on the
 // second tree's limb, which rises at 20 degrees. Compiled where the flora capability is; needs a
 // device, and skips without.
@@ -25,6 +26,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -307,9 +309,13 @@ TEST_CASE("engine-view: a walker walks along a megaflora's major limb, offscreen
   report(level, start, walked, params, "level limb");
 #if ENGINE_VIEW_WALK_PHYSICS
   REQUIRE(walked.collision == "physics");
-  // The first 15 m: on the limb at every second — the feet on its bark within the capsule's
-  // padding, never more than a few centimetres off it, and never beside it.
-  const u32 fifteen = static_cast<u32>(std::ceil(15.0f / params.speed)) + 1;
+  // The first 15 m, or as much of the run as its wood left past the start less a metre (G79: a
+  // limb is no longer than its wood could carry, run and all): on the limb at every second — the
+  // feet on its bark within the capsule's padding, never more than a few centimetres off it, and
+  // never beside it.
+  const f32 held = std::min(15.0f, level.length - start - 1.0f);
+  REQUIRE(held >= 8.0f);
+  const u32 fifteen = static_cast<u32>(std::ceil(held / params.speed)) + 1;
   REQUIRE(walked.markers.size() > fifteen);
   const Vec3 flat = Vec3{level.direction.x, 0.0f, level.direction.z} *
                     (1.0f / std::sqrt(level.direction.x * level.direction.x +
@@ -325,7 +331,7 @@ TEST_CASE("engine-view: a walker walks along a megaflora's major limb, offscreen
     CHECK(std::abs(d.x * flat.z - d.z * flat.x) < 0.5f * level.radius_at(s));
   }
   const Vec3 d15 = walked.markers[fifteen - 1] - level.top(start);
-  CHECK(d15.x * flat.x + d15.z * flat.z >= 14.5f);
+  CHECK(d15.x * flat.x + d15.z * flat.z >= held - 0.5f);
 #else
   CHECK(walked.collision == "ground-follow");
 #endif

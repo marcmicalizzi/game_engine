@@ -1,0 +1,11 @@
+{
+  "species": "ancient",
+  "ancient": {
+    "habit": "spreading",
+    "seed": 5,
+    "height_m": 50.0,
+    "trunk_radius_m": 3.0,
+    "buttress_height_m": 4.0,
+    "triangle_budget": 1500000
+  }
+}

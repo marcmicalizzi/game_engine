@@ -70,4 +70,27 @@ struct Hollow {
 // mesh space. False, with nothing written, for parameters out of range.
 bool ancient_hollows(const Ancient& params, Vector<Hollow>& out);
 
+// One major limb of the megaflora as its wood allowed it (flora.md, "Limbs a wood could carry"):
+// where its run leaves the trunk and how thick it is there, the length asked of it (its run and
+// the path past it to its farthest tip), what share of that the wood let it keep, how far it then
+// reaches from the trunk's axis seen from above (to its named segments' farthest tip; the crown
+// grows on past it), the largest bending stress at any of its segments' bases against the
+// allowable stress, and its named segments past the run and the broken stubs among them.
+struct AncientLimb {
+  f32 height_m = 0.0f;
+  f32 base_radius_m = 0.0f;
+  f32 asked_m = 0.0f;
+  f32 scale = 1.0f;  // (0, 1]
+  f32 reach_m = 0.0f;
+  f32 peak_stress_mpa = 0.0f;
+  f32 allowable_mpa = 0.0f;
+  u32 segments = 0;
+  u32 broken = 0;
+};
+
+// The limbs `solve_ancient` grows for these parameters, in the structural table's order (limb i's
+// run is part 1 + 2i), computed without a mesh. False, with nothing written, for parameters out
+// of range.
+bool ancient_limbs(const Ancient& params, Vector<AncientLimb>& out);
+
 }  // namespace engine::flora

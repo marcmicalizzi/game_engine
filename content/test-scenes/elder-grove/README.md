@@ -7,9 +7,11 @@ the renderer's own waves (10 cm of relief, 256 m a side at 2 m):
 
 - **elder A** (`content/flora/ancient.flora.json`) at x = −30: 100 m, a 10 m trunk flaring into six
   buttresses with a doorway-sized hollow at its foot, and nine major limbs from 30 to 62 m whose
-  first runs are straight and near level — where platforms go;
+  first runs are straight and near level — where platforms go — and which then fork, meander and
+  turn up; the recipe spells out the limb fields the default tree had before the habits (G79), and
+  the wood keeps 15 m of the lowest run's asked 24;
 - **elder B** (`ancient-rising.flora.json`) at x = 30: 90 m, two hollows, eight limbs from 30 to
-  55 m whose runs rise at 20 degrees and more — ramps rather than floors;
+  55 m whose 24 m runs rise at 20 degrees and more — ramps rather than floors;
 - the willows (`willow.flora.json`), the birches (`birch.flora.json`, `birch-single.flora.json`)
   and the orchard row at z = 78 (`orchard-pruned.flora.json`, its middle tree
   `orchard-apple.flora.json`, free and fruiting).
@@ -27,7 +29,12 @@ seven containers. **The two elders' crowns are the allometric recursion** (G73, 
 tree of the species, and many of them — elder A 1,419,335 triangles, 214,834 twigs over 12 orders and
 564,920 leaf cards over a 57 m crown (a leaf area index of 2.9), elder B 1,050,182 triangles and
 147,180 twigs — on the default budget of 1,500,000, which holds them at the leaf's own size. Until then
-elder A was 196,301 triangles with 5 m twigs of 1.4 m cards. In msvc-debug the first load builds elder
+elder A was 196,301 triangles with 5 m twigs of 1.4 m cards. **Since the habits** (G79, 2026-10-22;
+[flora](../../../docs/subsystems/flora.md#megaflora)) their limbs fork, meander and are no longer
+than their wood could carry, and their crowns are narrower: elder A 606,450 triangles, 195,576 twigs
+and 177,812 cards over a 3,201 m² footprint, elder B 386,241 and 138,421 twigs; msvc-release builds
+elder A's container in 4.2 s and elder B's in 2.8 s. The GPU and pool numbers below are from before
+the habits, on the larger trees. In msvc-debug the first load builds elder
 A's container in about 49 s and elder B's in 30 s; at 1080p the camera path costs the GPU 2.0 ms a
 frame (median; 0.78 before), and the deformed-vertex pool takes the scene's 7.8 million tree vertices,
 93.5 MB ([tree allometry](../../../docs/experiments/tree-allometry.md#what-it-costs) has the table).

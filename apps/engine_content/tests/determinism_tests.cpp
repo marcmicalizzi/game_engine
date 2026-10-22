@@ -470,9 +470,12 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // 0xcb5b0d40cec65a2f when the crowns became the recursion (G72), and 0xd992a4c576669847 and
 // 0x659369f8410a30e9 until the chain nested per sub-tree and gained its coverage errors, section
 // 39, its four-plane star and its alpha-tested leaves (R91, 2026-10-21; MSVC 14.51 and GCC 13 at v3
-// agreed on the new pair the first time).
-constexpr u64 k_broadleaf_container_golden = 0x3fd6b14b95a983f7ull;
-constexpr u64 k_ancient_container_golden = 0xc041558b0e881523ull;
+// agreed on the new pair the first time). 0x3fd6b14b95a983f7 and 0xc041558b0e881523 until the
+// megaflora's habits (G79, 2026-10-22): the ancient tree's limbs fork, meander and are sized by
+// their wood, and `k_flora_version` 5, which every flora container records, moved the broadleaf's
+// row with no byte of its mesh moving.
+constexpr u64 k_broadleaf_container_golden = 0x7ce40379c5c5c20bull;
+constexpr u64 k_ancient_container_golden = 0xa0dfab27e0849f1full;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

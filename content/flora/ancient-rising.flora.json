@@ -10,6 +10,7 @@
     "limb_high_m": 55.0,
     "limb_rise_deg": 21.85,
     "limb_radius_m": 1.4,
+    "limb_run_m": 24.0,
     "triangle_budget": 1500000
   }
 }

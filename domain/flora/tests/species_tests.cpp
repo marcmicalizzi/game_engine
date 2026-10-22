@@ -323,40 +323,52 @@ TEST_CASE("flora: the orchard tree — a low broad crown, pruned flat or free, w
 
 TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canopy, its structure") {
   const flora::Ancient p;
-  // Parts: the trunk, the runs and the limbs past them, and the recursion's shoots of the part
-  // class and up — 972 on the default (flora.md, "Megaflora"); the finer shoots and the twigs, of
-  // which there are 214,834, ride them.
+  // Parts: the trunk, the runs, the limbs' named segments past them, the dead stubs on the bole,
+  // and the recursion's shoots of the part class and up (flora.md, "Megaflora"); the finer shoots
+  // and the twigs ride them. 972 until the habits (G79).
   Vector<flora::CrownShoot> crown;
   REQUIRE(flora::ancient_crown(p, crown));
   u32 parts = 0;
   for (const flora::CrownShoot& s : crown)
     parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
-  CHECK(parts == 972u);
-  // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72).
+  CHECK(parts == 496u);
+  // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72), 0xf43a0a8e4b677b3f
+  // until the habits and the limbs a wood could carry (G79).
   check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 20000u},
-                0xf43a0a8e4b677b3full);
+                0x19b81c05b8285745ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
   std::string error;
   REQUIRE(flora::solve_ancient(p, mesh, &report, &error, &motion));
   check_straight_tubes(mesh, motion, 1);
-  // The trunk and every major limb are load-bearing; the trunk and every run are straight; the
-  // runs leave the trunk between `limb_low_m` and `limb_high_m`, near-horizontal, metres thick.
-  CHECK(report.load_bearing == 1 + 2 * p.limbs);
+  // The trunk, every run and every limb's first segment past it are load-bearing, and its later
+  // segments while they are thick enough; the trunk and every run are straight; the runs leave the
+  // trunk in the emergent habit's band, half to three quarters of the height up, the lowest near
+  // level and the highest rising by up to the habit's 25 degrees more, metres thick.
+  Vector<flora::AncientLimb> limbs;
+  REQUIRE(flora::ancient_limbs(p, limbs));
+  u32 bearing = 0;
+  for (const flora::StructuralPart& s : motion.structure)
+    bearing += (s.flags & flora::k_load_bearing) != 0u ? 1u : 0u;
+  CHECK(report.load_bearing == bearing);
+  CHECK(report.load_bearing >= 1 + 2 * limbs.size());
   CHECK((motion.structure[0].flags & flora::k_straight) != 0u);
-  for (u32 i = 0; i < p.limbs; ++i) {
+  const f32 low = 0.5f * p.height_m;
+  for (u32 i = 0; i < limbs.size(); ++i) {
     CAPTURE(i);
     const flora::MotionPart& run = motion.parts[1 + 2 * i];
     const flora::StructuralPart& s = motion.structure[1 + 2 * i];
     CHECK(run.parent == 0u);
     CHECK((s.flags & flora::k_straight) != 0u);
-    CHECK(run.pivot.y >= p.limb_low_m - 0.01f);
-    CHECK(run.pivot.y <= p.limb_high_m + 0.01f);
+    CHECK((s.flags & flora::k_load_bearing) != 0u);
+    CHECK((motion.structure[2 + 2 * i].flags & flora::k_load_bearing) != 0u);
+    CHECK(run.pivot.y >= low - 0.01f);
+    CHECK(run.pivot.y <= 0.75f * p.height_m + 0.01f);
     CHECK(2.0f * s.base_radius >= 1.0f);
     const f32 rise = std::asin(run.direction.y) * 57.29578f;
-    CHECK(rise < p.limb_rise_deg + 11.0f);
-    CHECK(rise > p.limb_rise_deg - 3.0f);
+    CHECK(rise < p.limb_rise_deg + 25.0f + 3.01f);
+    CHECK(rise > p.limb_rise_deg - 3.01f);
     CHECK(motion.parts[2 + 2 * i].parent == 1 + 2 * i);  // the limb past its run
   }
   // The buttresses: at the ground the bark reaches past the core; well above them it is the core.
@@ -373,7 +385,7 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
     const f32 r = std::sqrt(dot(off, off));
     const f32 y = mesh.positions[v].y;
     if (y > -0.5f && y < 0.5f) foot = std::max(foot, r);
-    if (y > p.buttress_height_m * 1.4f && y < p.limb_low_m && along < trunk.length) {
+    if (y > p.buttress_height_m * 1.4f && y < low && along < trunk.length) {
       above = std::max(above, r - flora::structural_radius(core, trunk, along));
       above_min = std::min(above_min, r - flora::structural_radius(core, trunk, along));
     }
@@ -425,6 +437,126 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
     MESSAGE("a hollow " << h.width << " x " << h.height << " m, " << h.depth << " m deep, its sill "
                         << h.sill.y << " m up");
   }
+}
+
+// The megaflora's habits (G79; flora.md "Megaflora", docs/experiments/megaflora-habits.md): the
+// emergent's crown high on a long bole and narrow, the spreading one's low and broad, the mixed
+// one's high and broad; every limb no longer than its wood could carry; a straight, near-level,
+// load-bearing run on every habit's lowest limb.
+TEST_CASE("flora: the ancient tree's habits, and limbs a wood could carry") {
+  struct Measured {
+    f32 width = 0.0f;   // the leaves' extent across, seen from above, the widest of two axes
+    f32 top = 0.0f;     // the highest vertex
+    f32 lowest = 0.0f;  // the lowest run's height
+  };
+  const auto measure = [](const flora::Ancient& p, const char* name) {
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeReport report;
+    std::string error;
+    REQUIRE_MESSAGE(flora::solve_ancient(p, mesh, &report, &error, &motion), error);
+    check_tree(flora::k_species_ancient, mesh, motion, report, p.triangle_budget);
+    check_straight_tubes(mesh, motion, 1);
+    Measured m;
+    f32 x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
+    const assets::Primitive& leaves = mesh.primitives[1];
+    for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; ++i) {
+      const Vec3 v = mesh.positions[mesh.indices[i]];
+      x0 = std::min(x0, v.x);
+      x1 = std::max(x1, v.x);
+      z0 = std::min(z0, v.z);
+      z1 = std::max(z1, v.z);
+    }
+    for (const Vec3& v : mesh.positions)
+      m.top = std::max(m.top, v.y);
+    m.width = std::max(x1 - x0, z1 - z0);
+    // The lowest limb's run: part 1, straight, load-bearing, near level.
+    const flora::MotionPart& run = motion.parts[1];
+    const flora::StructuralPart& s = motion.structure[1];
+    m.lowest = run.pivot.y;
+    CHECK((s.flags & flora::k_straight) != 0u);
+    CHECK((s.flags & flora::k_load_bearing) != 0u);
+    const f32 rise = std::asin(run.direction.y) * 57.29578f;
+    CHECK(rise < p.limb_rise_deg + 4.0f);
+    // Every limb inside its wood's strength, and the report's limbs the table's runs.
+    Vector<flora::AncientLimb> limbs;
+    REQUIRE(flora::ancient_limbs(p, limbs));
+    u32 shortened = 0;
+    u32 segments = 0;
+    u32 broken = 0;
+    for (u32 i = 0; i < limbs.size(); ++i) {
+      CAPTURE(i);
+      const flora::AncientLimb& l = limbs[i];
+      CHECK(l.peak_stress_mpa <= l.allowable_mpa * 1.001f);
+      CHECK(l.scale > 0.0f);
+      CHECK(l.scale <= 1.0f);
+      CHECK(std::abs(motion.structure[1 + 2 * i].base_radius - l.base_radius_m) < 1e-5f);
+      shortened += l.scale < 1.0f ? 1u : 0u;
+      segments += l.segments;
+      broken += l.broken;
+    }
+    MESSAGE(std::string(name) << ": " << m.width << " m across, " << m.top << " m tall (W/H "
+                              << m.width / m.top << "), lowest run " << m.lowest << " m up at "
+                              << rise << " degrees, " << s.base_radius * 2.0f << " m thick, "
+                              << run.length << " m long; " << limbs.size() << " limbs, " << segments
+                              << " segments, " << broken << " broken, " << shortened
+                              << " shortened by their wood; " << report.triangles
+                              << " triangles after " << report.steps << " steps, " << report.parts
+                              << " parts, " << report.load_bearing << " load-bearing");
+    for (const flora::AncientLimb& l : limbs) {
+      MESSAGE("  limb at " << l.height_m << " m, r " << l.base_radius_m << " m, asked " << l.asked_m
+                           << " m, kept " << l.scale << ", reach " << l.reach_m << " m, peak "
+                           << l.peak_stress_mpa << " of " << l.allowable_mpa << " MPa");
+    }
+    return m;
+  };
+  flora::Ancient emergent;
+  emergent.habit = flora::AncientHabit::emergent;
+  flora::Ancient spreading;
+  spreading.habit = flora::AncientHabit::spreading;
+  spreading.height_m = 50.0f;
+  spreading.trunk_radius_m = 3.0f;
+  spreading.buttress_height_m = 4.0f;
+  spreading.hollow_spacing_m = 6.0f;
+  flora::Ancient mixed;
+  mixed.habit = flora::AncientHabit::mixed;
+  mixed.height_m = 80.0f;
+  mixed.trunk_radius_m = 4.0f;
+  const Measured e = measure(emergent, "emergent, 100 m");
+  const Measured s = measure(spreading, "spreading, 50 m");
+  const Measured m = measure(mixed, "mixed, 80 m");
+  // The emergent's crown on the top half of a long bole, the spreading one's on a short trunk.
+  CHECK(e.lowest > 0.45f * emergent.height_m);
+  CHECK(s.lowest < 0.3f * spreading.height_m);
+  CHECK(m.lowest > 0.45f * mixed.height_m);
+  // Crown width against height: narrow, broad, between.
+  CHECK(e.width / e.top < 0.65f);
+  CHECK(s.width / s.top > 1.1f);
+  CHECK(m.width / m.top > e.width / e.top);
+
+  // A recipe asking for what no wood could carry — the forest village's anchor tree, 20 m of run
+  // and 28 m past it near level on 1.6 m limbs (2026-10-22) — gets limbs its wood can carry.
+  flora::Ancient anchor;
+  anchor.seed = 101;
+  anchor.height_m = 80.0f;
+  anchor.trunk_radius_m = 4.5f;
+  anchor.limbs = 7;
+  anchor.limb_low_m = 18.0f;
+  anchor.limb_high_m = 48.0f;
+  anchor.limb_rise_deg = 2.0f;
+  anchor.limb_run_m = 20.0f;
+  anchor.limb_reach_m = 28.0f;
+  measure(anchor, "the forest village's anchor A");
+  Vector<flora::AncientLimb> limbs;
+  REQUIRE(flora::ancient_limbs(anchor, limbs));
+  CHECK(limbs[0].scale < 1.0f);  // the lowest limb, asked 48 m at 2 degrees, is shortened
+  anchor.seed = 203;
+  anchor.height_m = 75.0f;
+  anchor.trunk_radius_m = 4.0f;
+  anchor.limb_high_m = 45.0f;
+  anchor.limb_rise_deg = 3.0f;
+  anchor.limb_reach_m = 26.0f;
+  measure(anchor, "the forest village's anchor B");
 }
 
 TEST_CASE("flora: the structural table round-trips through the container, appended after 36") {
@@ -487,6 +619,7 @@ TEST_CASE("flora: the second batch's ranges, ends and refusals") {
   a = flora::Ancient{};
   a.hollows = 3;
   a.hollow_spacing_m = 13.0f;
+  a.limb_low_m = 30.0f;  // the default's limbs start at half the height (G79)
   CHECK_FALSE(flora::ancient_in_range(a, error));
   CHECK(error.find("hollow_sill_m") != std::string::npos);
 

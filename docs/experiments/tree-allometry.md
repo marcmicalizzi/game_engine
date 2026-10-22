@@ -47,7 +47,10 @@ broadleaf's `twigs` and the ancient tree's `sub_branches` and `twigs` cap a shoo
 ## What the default recipes come to
 
 From `tests/allometry_tests.cpp`, `engine-content flora` and the species tests, msvc-debug,
-2026-10-20:
+2026-10-20. **The ancient tree's column is the tree before its habits** (G79, 2026-10-22): its limbs
+now fork, meander and are sized by their wood, and its default is an emergent crown 53 m across
+that carries a quarter of these leaves; [megaflora habits](megaflora-habits.md#what-the-recipes-come-to)
+has what it and the other recipes come to now.
 
 | | Default broadleaf, before → after | Default ancient tree, before → after |
 |---|---|---|

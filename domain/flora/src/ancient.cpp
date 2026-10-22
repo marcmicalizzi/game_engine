@@ -1,5 +1,5 @@
 // The ancient tree's solver, the megaflora regime (trees.h, structure.h; docs/subsystems/flora.md,
-// "Megaflora").
+// "Megaflora"; the habits and the limbs' mechanics, docs/experiments/megaflora-habits.md).
 #include "kit.h"
 
 #include <domain/flora/flora.h>
@@ -22,15 +22,164 @@ enum class Stream : u64 {
   buttresses = 52,
   hollows = 53,
   limbs = 54,
+  stubs = 55,
+  segments = 4096,  // a limb's named segments: limb * 512 + segment from here
   crown = 1000000,  // the recursion's shoots, one stream each from here
 };
 
+constexpr u32 k_none = 0xFFFFFFFFu;
 constexpr f64 k_sink_m = 1.0;      // the foot below the ground, so the flare meets any ground
 constexpr f64 k_fin_width = 0.12;  // a buttress's half-width at its root, a share of the gap
 constexpr f64 k_run_inset = 0.5;   // a limb's run starts this share of the core radius out
 constexpr f64 k_run_taper = 0.85;  // a run's tip radius over its base's
 constexpr u32 k_crown_rows = 16;   // the structure's resolution past the runs
 constexpr u32 k_part_cap = 2000;   // the recursion's motion parts: thousands a tree, not millions
+
+// ---- the limbs' mechanics (flora.md, "Limbs a wood could carry"; megaflora-habits.md) ----------
+//
+// A limb system carries about its base's cross-section of wood all the way out to its tips (the
+// pipe model, Shinozaki et al. 1964; Leonardo's rule), so its weight per metre of path is the
+// wood's green weight times that section, and the bending moment at the base of each of its
+// segments is that weight times its lever arm, summed over everything the segment carries. The
+// stress 4M/(pi r^3) at every segment's base is held under the green wood's modulus of rupture
+// times the duration-of-load factor over the static safety factor; a limb asked to reach further is
+// shortened, run and all, until it is.
+constexpr f64 k_gravity = 9.81;       // m/s^2
+constexpr f64 k_load_duration = 0.6;  // a decade's sustained load over the ten-minute test's
+constexpr f64 k_safety = 2.0;         // the static factor of safety a stem keeps (Niklas 1997)
+constexpr f64 k_lateral = 2.5;  // a limb segment's crown laterals, in branch_length of its length
+constexpr f64 k_crown_load = 2.5;         // the crown past a terminal, in its laterals' lengths
+constexpr f64 k_sag_deg = 14.0;           // the droop of a level segment at its wood's limit
+constexpr f64 k_segment_taper = 0.92;     // an inner segment's tip radius over its base's
+constexpr f64 k_load_bearing_min = 0.25;  // the thinnest named limb part flagged load-bearing
+
+// ---- the habits (megaflora-habits.md has the sources for every number) --------------------------
+
+struct Habit {
+  f64 low = 0.0;   // the lowest limb, a share of the height
+  f64 high = 0.0;  // the highest limb
+  u32 limbs = 0;
+  f64 limb_share = 0.0;  // the lowest limb's radius over the trunk's core where it leaves
+  f64 thinning = 0.0;    // the highest limb's radius loss
+  f64 spread = 0.0;      // the crown's width over the tree's height
+  f64 run_share = 0.0;   // the run's share of a limb's length
+  f64 rise_gain = 0.0;   // degrees the highest run rises above the lowest
+  f64 ascent0 = 0.0;     // degrees the limb past its run turns up (at upturn 1)
+  f64 ascent = 0.0;      // degrees each later segment turns up
+  u32 forks = 0;
+  f64 shrink = 0.0;      // a fork daughter's length over its parent's
+  f64 fork_angle = 0.0;  // degrees between a fork's two daughters
+  f64 fork_roll = 0.0;   // degrees a fork's plane tilts from level
+  f64 meander = 0.0;     // degrees a segment swings from side to side
+  f64 cone = 0.0;        // the highest limb's reach loss
+  bool excurrent = false;
+  f64 broken = 0.0;  // the chance a last fork's lesser daughter is a broken stub
+  u32 stubs = 0;     // dead stubs on the clear bole
+};
+
+// The giant sequoia and the old Douglas-fir: first big limb at about half the height, a crown
+// about 0.4 of the height wide, a few great limbs leaving near level and turning up, crooked, the
+// trunk through to the top.
+constexpr Habit k_emergent{.low = 0.5,
+                           .high = 0.75,
+                           .limbs = 7,
+                           .limb_share = 0.42,
+                           .thinning = 0.45,
+                           .spread = 0.6,
+                           .run_share = 0.25,
+                           .rise_gain = 25.0,
+                           .ascent0 = 50.0,
+                           .ascent = 25.0,
+                           .forks = 2,
+                           .shrink = 0.8,
+                           .fork_angle = 50.0,
+                           .fork_roll = 60.0,
+                           .meander = 35.0,
+                           .cone = 0.35,
+                           .excurrent = true,
+                           .broken = 0.2,
+                           .stubs = 4};
+// The open-grown oak and the monkeypod: the trunk dividing at a fifth to a third of the height
+// into a few great limbs that fork again and again into a dome half as wide again as it is tall.
+constexpr Habit k_spreading{.low = 0.2,
+                            .high = 0.3,
+                            .limbs = 6,
+                            .limb_share = 0.45,
+                            .thinning = 0.15,
+                            .spread = 1.5,
+                            .run_share = 0.3,
+                            .rise_gain = 45.0,
+                            .ascent0 = 15.0,
+                            .ascent = 15.0,
+                            .forks = 4,
+                            .shrink = 0.85,
+                            .fork_angle = 60.0,
+                            .fork_roll = 15.0,
+                            .meander = 28.0,
+                            .cone = 0.0,
+                            .excurrent = false,
+                            .broken = 0.1,
+                            .stubs = 0};
+// An emergent's bole carrying a spreading crown.
+constexpr Habit k_mixed{.low = 0.55,
+                        .high = 0.7,
+                        .limbs = 8,
+                        .limb_share = 0.42,
+                        .thinning = 0.2,
+                        .spread = 0.9,
+                        .run_share = 0.3,
+                        .rise_gain = 35.0,
+                        .ascent0 = 15.0,
+                        .ascent = 15.0,
+                        .forks = 4,
+                        .shrink = 0.85,
+                        .fork_angle = 60.0,
+                        .fork_roll = 20.0,
+                        .meander = 25.0,
+                        .cone = 0.1,
+                        .excurrent = false,
+                        .broken = 0.12,
+                        .stubs = 3};
+
+const Habit& habit_of(AncientHabit h) {
+  switch (h) {
+    case AncientHabit::spreading: return k_spreading;
+    case AncientHabit::mixed: return k_mixed;
+    case AncientHabit::emergent: break;
+  }
+  return k_emergent;
+}
+
+// The stated fields and the habit's, resolved: what every function below reads.
+struct Shape {
+  const Habit* h = &k_emergent;
+  f64 low = 0.0;
+  f64 high = 0.0;
+  u32 limbs = 0;
+  f64 spread = 0.0;
+  u32 forks = 0;
+  f64 allowable = 0.0;  // Pa
+  f64 weight = 0.0;     // N/m^3, the green wood's
+};
+
+Shape shape_of(const Ancient& p) {
+  Shape s;
+  s.h = &habit_of(p.habit);
+  const Habit& h = *s.h;
+  const f64 height = static_cast<f64>(p.height_m);
+  const f64 low = static_cast<f64>(p.limb_low_m);
+  const f64 high = static_cast<f64>(p.limb_high_m);
+  s.low = low > 0.0 ? low : h.low * height;
+  s.high = high > 0.0 ? high : h.high * height;
+  if (low <= 0.0 && s.low > s.high) s.low = s.high;
+  if (high <= 0.0 && s.high < s.low) s.high = s.low;
+  s.limbs = p.limbs > 0 ? p.limbs : h.limbs;
+  s.spread = p.crown_spread > 0.0f ? static_cast<f64>(p.crown_spread) : h.spread;
+  s.forks = p.forks > 0 ? p.forks : h.forks;
+  s.allowable = static_cast<f64>(p.wood_rupture_mpa) * 1.0e6 * k_load_duration / k_safety;
+  s.weight = static_cast<f64>(p.wood_density) * k_gravity;
+  return s;
+}
 
 // ---- the layout: the trunk's frame, its buttresses and its hollows ------------------------------
 
@@ -62,9 +211,16 @@ struct Layout {
 
 f64 core_radius(const Layout& l, f64 arc) { return lerp(l.r0, l.r1, clamp01(arc / l.length)); }
 D3 radial_at(const Layout& l, f64 angle) { return l.n * det::cos(angle) + l.b * det::sin(angle); }
-f64 trunk_top_y(const Ancient& p) {
+// The trunk's top: an excurrent trunk carries through, 8% of the height past its highest limb and
+// 0.8 to 0.9 of it; a decurrent one ends where it dissolves into its limbs.
+f64 trunk_top_y(const Ancient& p, const Shape& s) {
   const f64 h = static_cast<f64>(p.height_m);
-  f64 top = static_cast<f64>(p.limb_high_m) + 0.08 * h;
+  if (!s.h->excurrent) {
+    f64 top = s.high + (0.02 * h > 1.0 ? 0.02 * h : 1.0);
+    if (top > 0.9 * h) top = 0.9 * h;
+    return top;
+  }
+  f64 top = s.high + 0.08 * h;
   if (top < 0.8 * h) top = 0.8 * h;
   if (top > 0.9 * h) top = 0.9 * h;
   return top;
@@ -87,7 +243,7 @@ f64 wrap(f64 a) {
   return a;
 }
 
-Layout lay_out(const Ancient& p) {
+Layout lay_out(const Ancient& p, const Shape& s) {
   Layout l;
   Rng trunk_rng = stream_of(p.seed, static_cast<u64>(Stream::trunk));
   const f64 azimuth = trunk_rng.unit() * 2.0 * k_pi;
@@ -97,9 +253,16 @@ Layout lay_out(const Ancient& p) {
   l.n = perpendicular(l.t, D3{1.0, 0.0, 0.0});
   l.b = cross(l.t, l.n);
   l.base = D3{0.0, -k_sink_m, 0.0};
-  l.length = (trunk_top_y(p) + k_sink_m) / l.t.y;
+  l.length = (trunk_top_y(p, s) + k_sink_m) / l.t.y;
   l.r0 = static_cast<f64>(p.trunk_radius_m);
   l.r1 = l.r0 * static_cast<f64>(p.taper);
+  if (!s.h->excurrent) {
+    // A decurrent trunk stops where it dissolves into its limbs, so it tapers only as far as an
+    // excurrent one of the tree's height would have by then: `taper` is the core's share at the
+    // tree's top, and the limbs take the section the trunk still has (the pipe rule).
+    const f64 top = trunk_top_y(p, s) / static_cast<f64>(p.height_m);
+    l.r1 = l.r0 * (1.0 - (1.0 - static_cast<f64>(p.taper)) * top);
+  }
 
   // The buttresses: evenly round the foot from a seeded turn, each nudged, each its own reach and
   // height.
@@ -291,14 +454,374 @@ u32 trunk_triangles(const Grid& g, const Vector<Window>& windows) {
 
 // ---- the structure ----------------------------------------------------------------------------
 //
-// The named orders — the trunk, every major limb's straight run and the limb past it — and from
-// every limb and from the trunk's top the allometric recursion (kit.h, "the allometric crown") down
-// to the species' own twig. Grown once; it never depends on the budget.
+// The named orders — the trunk, every major limb's straight run, and past it the limb's own
+// segments, meandering and forking as the habit says, each limb no longer than its wood could
+// carry — and from every limb's last segments, a little from its inner ones, and from the trunk's
+// top the allometric recursion (kit.h, "the allometric crown") down to the species' own twig. Grown
+// once; it never depends on the budget.
+
+// A limb's draws, made once, before anything is sized: the wood's cap only ever scales what they
+// say, so a limb shortened by its wood is the same limb, shorter.
+struct LimbDraw {
+  f64 f = 0.0;       // up the limb band, 0 to 1
+  f64 arc = 0.0;     // where the run leaves the trunk's axis
+  D3 dir;            // the run's direction
+  D3 pivot;          // the run's base, inside the trunk
+  f64 core = 0.0;    // the trunk's core radius there
+  f64 radius = 0.0;  // the run's base radius
+  f64 run = 0.0;     // asked
+  f64 past = 0.0;    // asked: the path past the run to the farthest tip
+  f64 run_min = 0.0;
+};
+
+f64 limb_radius_of(const Ancient& p, const Shape& s, const Layout& l) {
+  if (p.limb_radius_m > 0.0f) return static_cast<f64>(p.limb_radius_m);
+  f64 r = s.h->limb_share * core_radius(l, (s.low + k_sink_m) / l.t.y);
+  if (r < 0.5) r = 0.5;
+  if (r > 2.5) r = 2.5;
+  return r;
+}
+
+Vector<LimbDraw> limb_draws(const Ancient& p, const Shape& s, const Layout& l) {
+  const Habit& h = *s.h;
+  Vector<LimbDraw> out;
+  Rng rng = stream_of(p.seed, static_cast<u64>(Stream::limbs));
+  const f64 turn = rng.unit() * 2.0 * k_pi;
+  const f64 height = static_cast<f64>(p.height_m);
+  const f64 radius = limb_radius_of(p, s, l);
+  for (u32 i = 0; i < s.limbs; ++i) {
+    LimbDraw d;
+    d.f = s.limbs > 1 ? static_cast<f64>(i) / static_cast<f64>(s.limbs - 1) : 0.0;
+    const f64 y = s.low + (s.high - s.low) * d.f;
+    d.arc = (y + k_sink_m) / l.t.y;
+    d.core = core_radius(l, d.arc);
+    // Five draws a limb, always: where round the trunk, its rise, its vigour, its thickness and
+    // its reach.
+    const f64 around_j = rng.symmetric();
+    const f64 rise_j = rng.symmetric();
+    const f64 vigour_j = rng.unit();
+    const f64 radius_j = rng.unit();
+    const f64 reach_j = rng.unit();
+    const f64 around = turn + static_cast<f64>(i) * k_golden_angle + 0.45 * around_j;
+    f64 rise = static_cast<f64>(p.limb_rise_deg) + h.rise_gain * d.f + 3.0 * rise_j;
+    if (rise > 45.0) rise = 45.0;
+    if (rise < -5.0) rise = -5.0;
+    rise *= k_degree;
+    D3 out_dir = radial_at(l, around);
+    out_dir = normalized(D3{out_dir.x, 0.0, out_dir.z});
+    d.dir = normalized(out_dir * det::cos(rise) + k_up * det::sin(rise));
+    d.pivot = l.base + l.t * d.arc + out_dir * (k_run_inset * d.core);
+    d.radius = radius * (1.0 - h.thinning * d.f) * (0.9 + 0.2 * radius_j);
+    d.run_min = (1.0 - k_run_inset) * d.core + 2.0;
+    // The habit's length: out to the crown's edge, the upper limbs of a cone shorter.
+    f64 reach = 0.5 * s.spread * height - d.core;
+    if (reach < 6.0) reach = 6.0;
+    reach *= (1.0 - h.cone * d.f) * (0.85 + 0.3 * vigour_j);
+    if (p.limb_run_m > 0.0f) {
+      d.run = static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * d.f);
+    } else {
+      d.run = h.run_share * reach;
+      if (d.run < k_run_inset * d.core + 4.0) d.run = k_run_inset * d.core + 4.0;
+    }
+    if (d.run < d.run_min) d.run = d.run_min;
+    if (p.limb_reach_m > 0.0f) {
+      d.past = static_cast<f64>(p.limb_reach_m) * (1.0 - 0.4 * d.f) * (0.9 + 0.2 * reach_j);
+    } else {
+      d.past = reach - d.run;
+      if (d.past < 0.4 * reach) d.past = 0.4 * reach;
+      d.past *= 0.9 + 0.2 * reach_j;
+    }
+    if (d.past < 4.0) d.past = 4.0;
+    out.push_back(d);
+  }
+  return out;
+}
+
+// A limb segment's centre line: `rows` even steps from its base, sagging under its load over its
+// first half and turning up towards the light over its second (the oak's elbow; reaction wood
+// recurving a loaded limb, Alméras and Fournier 2009), swinging from side to side by `meander`
+// on a seeded wave, and wandering a little at every step. Frames are transported as `grow_axis`'s.
+Axis grow_limb(D3 base, D3 direction, f64 length, u32 rows, f64 sag, f64 rise, f64 meander,
+               f64 phase, f64 waves, f64 wiggle, Rng& rng) {
+  Axis a;
+  a.length = length;
+  const f64 step = length / static_cast<f64>(rows);
+  D3 t = normalized(direction);
+  D3 n = perpendicular(t, (t.y < 0.9 && t.y > -0.9) ? k_up : D3{1.0, 0.0, 0.0});
+  D3 p = base;
+  const f64 per_row = 1.0 / static_cast<f64>(rows);
+  for (u32 r = 0; r <= rows; ++r) {
+    a.point.push_back(p);
+    a.tangent.push_back(t);
+    a.normal.push_back(n);
+    a.arc.push_back(step * static_cast<f64>(r));
+    if (r == rows) break;
+    const f64 u = (static_cast<f64>(r) + 0.5) * per_row;
+    // Down over the first 55%, up over the last 60%: the sag taken back and the rise beyond it.
+    f64 vertical = 0.0;
+    if (u < 0.55) vertical -= sag / 0.55 * per_row;
+    if (u > 0.4) vertical += (sag + rise) / 0.6 * per_row;
+    D3 next = t;
+    const D3 hinge = cross(t, k_up);
+    const f64 s = length_of(hinge);
+    if (s > 1e-6 && !(vertical > 0.0 && t.y > 0.97) && !(vertical < 0.0 && t.y < -0.6))
+      next = rotate(next, hinge * (1.0 / s), vertical);
+    // The side to side swing: the heading follows meander * sin(2 pi (phase + waves u)).
+    const f64 swing =
+        meander * 2.0 * k_pi * waves * det::cos(2.0 * k_pi * (phase + waves * u)) * per_row;
+    if (next.y < 0.95 && next.y > -0.95) next = rotate(next, perpendicular(next, k_up), swing);
+    if (wiggle > 0.0) {
+      const D3 b = cross(next, n);
+      next = rotate(next, n, wiggle * rng.symmetric());
+      next = rotate(next, normalized(b), wiggle * rng.symmetric());
+    }
+    next = normalized(next);
+    p = p + normalized(t + next) * step;
+    t = next;
+    n = perpendicular(t, n);
+  }
+  return a;
+}
+
+// A limb's named segments past its run, in preorder: a segment's descendants follow it, up to
+// `end`.
+struct Segment {
+  Axis axis;
+  f64 r0 = 0.0;
+  f64 r1 = 0.0;
+  u32 parent = k_none;  // into the limb's segments; k_none for the first, whose parent is the run
+  u32 end = 0;
+  u32 level = 0;
+  bool terminal = false;  // the crown grows from it
+  bool broken = false;    // a broken stub: short, blunt, bare
+};
+
+struct LimbGeo {
+  Axis run;
+  f64 run_r0 = 0.0;
+  f64 run_r1 = 0.0;
+  Vector<Segment> segs;
+  f64 branch_length = 0.0;  // the recipe's: a segment's laterals over its length, by k_lateral
+};
+
+struct LimbBuilder {
+  const Ancient& p;
+  const Shape& s;
+  const CrownSpec& spec;
+  u32 limb = 0;
+  const Vector<f64>* sag = nullptr;  // each segment's load ratio, for its droop
+  LimbGeo geo;
+
+  void segment(u32 parent, D3 base, D3 dir, f64 r0, f64 nominal, u32 level, bool broken) {
+    const Habit& h = *s.h;
+    const u32 index = geo.segs.size();
+    geo.segs.push_back(Segment{});
+    Rng r = stream_of(p.seed, static_cast<u64>(Stream::segments) + 512u * limb + index);
+    // Nine draws a segment, always.
+    const f64 length_j = r.unit();
+    const f64 phase = r.unit();
+    const f64 waves_j = r.unit();
+    const u64 wiggle_seed = r.next();
+    const f64 side = r.unit();
+    const f64 roll_j = r.symmetric();
+    const f64 share_j = r.symmetric();
+    const f64 three_j = r.unit();
+    const f64 broken_j = r.unit();
+    f64 length = nominal * (0.85 + 0.3 * length_j);
+    if (broken) length *= 0.3;
+    const f64 level_c2 = 1.0 - dir.y * dir.y;  // cos^2 of its elevation: only a level limb sags
+    const f64 ratio = sag != nullptr && index < sag->size() ? (*sag)[index] : 0.0;
+    const f64 droop = k_sag_deg * k_degree * ratio * level_c2;
+    const f64 upturn = 0.6 + 0.4 * static_cast<f64>(p.upturn);
+    const f64 rise = broken ? 0.0 : (level == 0 ? h.ascent0 : h.ascent) * k_degree * upturn;
+    Rng wiggle(wiggle_seed);
+    Axis axis = grow_limb(base, dir, length, k_crown_rows, droop, rise, h.meander * k_degree, phase,
+                          0.5 + waves_j, 0.5 * static_cast<f64>(p.wander_deg) * k_degree, wiggle);
+    const bool terminal = !broken && level >= s.forks;
+    const f64 r1 =
+        terminal ? crown_leader_radius(spec, r0) : r0 * (broken ? 0.85 : k_segment_taper);
+    const D3 tip = axis.point.back();
+    const D3 t = axis.tangent.back();
+    const D3 last_normal = axis.normal.back();
+    {
+      Segment& seg = geo.segs[index];
+      seg.axis = std::move(axis);
+      seg.r0 = r0;
+      seg.r1 = r1;
+      seg.parent = parent;
+      seg.level = level;
+      seg.terminal = terminal;
+      seg.broken = broken;
+    }
+    if (!terminal && !broken) {
+      // The fork: two daughters (at the first fork sometimes three) sharing the parent's section
+      // by the pipe rule, the greater one deviating the less — their sections' directions sum to
+      // the parent's (Murray 1927) — in a plane the habit tilts from level.
+      D3 across = cross(k_up, t);
+      if (length_of(across) < 1e-6) across = last_normal;
+      across = normalized(across);
+      const D3 upish = normalized(cross(t, across));
+      const f64 roll = (h.fork_roll + 25.0 * roll_j) * k_degree;
+      D3 e = across * det::cos(roll) + upish * det::sin(roll);
+      if (side < 0.5) e = e * -1.0;
+      const bool three = level == 0 && s.forks >= 2 && three_j < 0.2;
+      const f64 a1 = three ? 0.44 : 0.62 + 0.12 * share_j;
+      const f64 a2 = three ? 0.32 : 1.0 - a1;
+      const f64 total = h.fork_angle * (1.0 + 0.15 * share_j) * k_degree;
+      const f64 ct = det::cos(total);
+      const f64 st = det::sin(total);
+      const f64 rx = a1 + a2 * ct;
+      const f64 ry = a2 * st;
+      const f64 rr = std::sqrt(rx * rx + ry * ry);
+      const f64 c1 = rx / rr;
+      const f64 s1 = ry / rr;
+      const f64 c2 = ct * c1 + st * s1;
+      const f64 s2 = st * c1 - ct * s1;
+      const D3 d1 = normalized(t * c1 + e * s1);
+      const D3 d2 = normalized(t * c2 - e * s2);
+      const f64 inv = 1.0 / static_cast<f64>(p.area_exponent);
+      const bool last = level + 1 >= s.forks;
+      const bool snap = last && broken_j < h.broken;
+      const f64 next = nominal * h.shrink;
+      segment(index, tip, d1, r1 * det::exp(det::log(a1) * inv), next, level + 1, false);
+      segment(index, tip, d2, r1 * det::exp(det::log(a2) * inv), next, level + 1, snap && !three);
+      if (three) {
+        const D3 d3 =
+            normalized(t * det::cos(0.5 * total) + normalized(cross(t, e)) * det::sin(0.5 * total));
+        segment(index, tip, d3, r1 * det::exp(det::log(1.0 - a1 - a2) * inv), next, level + 1,
+                snap);
+      }
+    }
+    geo.segs[index].end = geo.segs.size();
+  }
+
+  void build(const LimbDraw& d, f64 k) {
+    geo = LimbGeo{};
+    f64 run = d.run * k;
+    if (run < d.run_min) run = d.run_min;
+    {
+      Rng none(0);
+      geo.run = grow_axis(d.pivot, d.dir, run, 8, k_up, 0.0, 0.0, none);
+    }
+    geo.run_r0 = d.radius;
+    geo.run_r1 = d.radius * k_run_taper;
+    f64 sum = 0.0;
+    f64 term = 1.0;
+    for (u32 j = 0; j <= s.forks; ++j) {
+      sum += term;
+      term *= s.h->shrink;
+    }
+    const f64 past = d.past * k;
+    geo.branch_length = static_cast<f64>(p.branch_length);
+    segment(k_none, geo.run.point.back(), d.dir, geo.run_r1, past / sum, 0, false);
+  }
+};
+
+// The load ratio — bending stress over the allowable — at the base of the run (element 0) and of
+// every segment (1 + j), by the rule at the top of the file.
+f64 load_ratios(const LimbGeo& g, const Shape& s, Vector<f64>& ratios) {
+  struct Sample {
+    D3 at;
+    f64 w = 0.0;
+    u32 seg = 0;  // k_none for the run's own
+  };
+  Vector<Sample> samples;
+  const auto add_axis = [&](const Axis& a, f64 radius, u32 seg) {
+    const f64 area = k_pi * radius * radius;
+    for (u32 q = 0; q + 1 < a.point.size(); ++q) {
+      Sample sm;
+      sm.at = (a.point[q] + a.point[q + 1]) * 0.5;
+      sm.w = s.weight * area * length_of(a.point[q + 1] - a.point[q]);
+      sm.seg = seg;
+      samples.push_back(sm);
+    }
+  };
+  add_axis(g.run, g.run_r0, k_none);
+  for (u32 j = 0; j < g.segs.size(); ++j) {
+    const Segment& seg = g.segs[j];
+    add_axis(seg.axis, seg.r0, j);
+    if (seg.terminal) {
+      // The crown it carries, at a lever a third of its reach on along the segment's heading.
+      const f64 reach = k_crown_load * k_lateral * g.branch_length * seg.axis.length;
+      D3 heading = seg.axis.tangent.back();
+      heading = D3{heading.x, 0.0, heading.z};
+      Sample sm;
+      sm.at = seg.axis.point.back() + heading * (0.35 * reach);
+      sm.w = s.weight * k_pi * seg.r0 * seg.r0 * reach;
+      sm.seg = j;
+      samples.push_back(sm);
+    }
+  }
+  const auto ratio_at = [&](D3 base, f64 radius, u32 first, u32 end, bool all) {
+    f64 mx = 0.0;
+    f64 mz = 0.0;
+    for (const Sample& sm : samples) {
+      if (!all && (sm.seg == k_none || sm.seg < first || sm.seg >= end)) continue;
+      mx += sm.w * (sm.at.x - base.x);
+      mz += sm.w * (sm.at.z - base.z);
+    }
+    const f64 moment = std::sqrt(mx * mx + mz * mz);
+    return 4.0 * moment / (k_pi * radius * radius * radius) / s.allowable;
+  };
+  ratios.clear();
+  ratios.push_back(ratio_at(g.run.point[0], g.run_r0, 0, 0, true));
+  f64 peak = ratios[0];
+  for (u32 j = 0; j < g.segs.size(); ++j) {
+    const Segment& seg = g.segs[j];
+    const f64 r = ratio_at(seg.axis.point[0], seg.r0, j, seg.end, false);
+    ratios.push_back(r);
+    if (r > peak) peak = r;
+  }
+  return peak;
+}
+
+// What one limb came to: the geometry, and how much of the asked length the wood allowed.
+struct Limb {
+  LimbGeo geo;
+  f64 scale = 1.0;
+  f64 peak = 0.0;  // the largest load ratio left
+  Vector<f64> ratios;
+};
+
+Limb solve_limb(const Ancient& p, const Shape& s, const CrownSpec& spec, const LimbDraw& d,
+                u32 index) {
+  LimbBuilder b{p, s, spec, index, nullptr, {}};
+  b.build(d, 1.0);
+  Vector<f64> first;
+  const f64 peak = load_ratios(b.geo, s, first);
+  Limb out;
+  out.scale = peak > 1.0 ? std::sqrt(1.0 / peak) : 1.0;
+  // The droop follows how near its limit each segment is once the limb is sized: a scale of k
+  // multiplies every moment by k^2 and leaves the sections.
+  Vector<f64> sag;
+  for (u32 j = 1; j < first.size(); ++j) {
+    const f64 r = first[j] * out.scale * out.scale;
+    sag.push_back(r > 1.0 ? 1.0 : r);
+  }
+  b.sag = &sag;
+  for (u32 pass = 0; pass < 6; ++pass) {
+    b.build(d, out.scale);
+    out.peak = load_ratios(b.geo, s, out.ratios);
+    if (out.peak <= 1.0) break;
+    out.scale *= std::sqrt(1.0 / out.peak) * 0.999;
+  }
+  out.geo = std::move(b.geo);
+  return out;
+}
+
+struct Stub {
+  Axis axis;
+  f64 r0 = 0.0;
+  f64 r1 = 0.0;
+};
 
 struct Named {
   u32 trunk = 0;
   Vector<u32> runs;
-  Vector<u32> limbs;
+  Vector<u32> limbs;  // each limb's first segment past its run
+  Vector<u32> forks;  // every later segment, limb by limb, parents first
+  Vector<u32> stubs;  // the dead stubs on the bole
+  Vector<AncientLimb> report;
 };
 
 CrownSpec spec_of(const Ancient& p) {
@@ -323,72 +846,141 @@ CrownSpec spec_of(const Ancient& p) {
   return s;
 }
 
-Crown grow(const Ancient& p, const Layout& l, const CrownSpec& spec, Named& named) {
+// Dead stubs on an emergent's clear bole: the lower limbs it shed, broken off short and drooping.
+Vector<Stub> stubs_of(const Ancient& p, const Shape& s, const Layout& l, f64 limb_radius) {
+  Vector<Stub> out;
+  const u32 count = s.h->stubs;
+  if (count == 0) return out;
+  const f64 height = static_cast<f64>(p.height_m);
+  f64 lo = 0.25 * height;
+  if (lo < 1.2 * static_cast<f64>(p.buttress_height_m))
+    lo = 1.2 * static_cast<f64>(p.buttress_height_m);
+  for (const Doorway& d : l.doors) {
+    const f64 top = d.lintel * l.t.y - k_sink_m + 2.0;
+    if (lo < top) lo = top;
+  }
+  const f64 hi = s.low - 3.0;
+  Rng rng = stream_of(p.seed, static_cast<u64>(Stream::stubs));
+  for (u32 k = 0; k < count; ++k) {
+    // Five draws a stub, always, whether or not there is room for it.
+    const f64 y_j = rng.unit();
+    const f64 around = rng.unit() * 2.0 * k_pi;
+    const f64 droop_j = rng.unit();
+    const f64 length_j = rng.unit();
+    const f64 radius_j = rng.unit();
+    if (hi <= lo) continue;
+    const f64 y = lo + (hi - lo) * y_j;
+    const f64 arc = (y + k_sink_m) / l.t.y;
+    const f64 core = core_radius(l, arc);
+    D3 out_dir = radial_at(l, around);
+    out_dir = normalized(D3{out_dir.x, 0.0, out_dir.z});
+    const f64 droop = (-15.0 + 20.0 * droop_j) * k_degree;
+    const D3 dir = normalized(out_dir * det::cos(droop) + k_up * det::sin(droop));
+    Stub stub;
+    const f64 length = 0.4 * core + 1.2 + 2.3 * length_j;
+    Rng none(0);
+    stub.axis = grow_axis(l.base + l.t * arc + out_dir * (0.6 * core), dir, length, 2, k_up, 0.0,
+                          0.0, none);
+    stub.r0 = (0.12 + 0.18 * radius_j) * limb_radius;
+    if (stub.r0 < 0.15) stub.r0 = 0.15;
+    stub.r1 = 0.8 * stub.r0;
+    out.push_back(std::move(stub));
+  }
+  return out;
+}
+
+Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& spec, Named& named) {
   Crown crown;
-  const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
   {
     Rng none(0);
     const Axis trunk = grow_axis(l.base, l.t, l.length, 32, k_up, 0.0, 0.0, none);
     named.trunk = crown_add_named(crown, trunk, l.r0, l.r1, k_crown_none);
   }
-
-  // The major limbs, up the trunk on the golden angle from `limb_low_m` to `limb_high_m`: each a
-  // straight run out from inside the trunk, near-horizontal — where platforms go — and then the
-  // limb past it, turning up towards the light, from which the crown grows.
-  Rng limb_rng = stream_of(p.seed, static_cast<u64>(Stream::limbs));
-  const f64 turn = limb_rng.unit() * 2.0 * k_pi;
-  const f64 low = static_cast<f64>(p.limb_low_m);
-  const f64 high = static_cast<f64>(p.limb_high_m);
+  const Vector<LimbDraw> draws = limb_draws(p, s, l);
   Vector<CrownRoot> roots;
-  for (u32 i = 0; i < p.limbs; ++i) {
-    const f64 f = static_cast<f64>(i) / static_cast<f64>(p.limbs - 1);
-    const f64 y = low + (high - low) * f;
-    const f64 arc = (y + k_sink_m) / l.t.y;
-    const f64 around = turn + static_cast<f64>(i) * k_golden_angle + 0.2 * limb_rng.symmetric();
-    const f64 jitter = limb_rng.symmetric();
-    f64 rise = static_cast<f64>(p.limb_rise_deg) + 8.0 * f + 2.0 * jitter;
-    if (rise > 40.0) rise = 40.0;
-    rise *= k_degree;
-    D3 out = radial_at(l, around);
-    out = normalized(D3{out.x, 0.0, out.z});
-    const D3 dir = normalized(out * det::cos(rise) + k_up * det::sin(rise));
-    const D3 pivot = l.base + l.t * arc + out * (k_run_inset * core_radius(l, arc));
-    Axis run;
-    {
-      Rng none(0);
-      run = grow_axis(pivot, dir, static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * f), 8, k_up, 0.0,
-                      0.0, none);
+  f64 reach_sum = 0.0;
+  for (u32 i = 0; i < draws.size(); ++i) {
+    const LimbDraw& d = draws[i];
+    const Limb limb = solve_limb(p, s, spec, d, i);
+    const LimbGeo& g = limb.geo;
+    const u32 run = crown_add_named(crown, g.run, g.run_r0, g.run_r1, named.trunk);
+    named.runs.push_back(run);
+    Vector<u32> nodes;
+    AncientLimb report;
+    report.height_m = static_cast<f32>(d.arc * l.t.y - k_sink_m);
+    report.base_radius_m = static_cast<f32>(g.run_r0);
+    report.asked_m = static_cast<f32>(d.run + d.past);
+    report.scale = static_cast<f32>(limb.scale);
+    report.allowable_mpa = static_cast<f32>(s.allowable * 1.0e-6);
+    f64 peak = 0.0;
+    for (const f64 r : limb.ratios)
+      if (r > peak) peak = r;
+    report.peak_stress_mpa = static_cast<f32>(peak * s.allowable * 1.0e-6);
+    const D3 axis_at = l.base + l.t * d.arc;
+    f64 reach = 0.0;
+    for (u32 j = 0; j < g.segs.size(); ++j) {
+      const Segment& seg = g.segs[j];
+      const u32 parent = seg.parent == k_none ? run : nodes[seg.parent];
+      const u32 node = crown_add_named(crown, seg.axis, seg.r0, seg.r1, parent);
+      nodes.push_back(node);
+      if (j == 0) {
+        named.limbs.push_back(node);
+      } else {
+        named.forks.push_back(node);
+      }
+      const D3 off = seg.axis.point.back() - axis_at;
+      const f64 flat = std::sqrt(off.x * off.x + off.z * off.z);
+      if (flat > reach) reach = flat;
+      if (seg.broken) {
+        ++report.broken;
+        continue;
+      }
+      CrownRoot root;
+      root.node = node;
+      if (seg.terminal) {
+        root.radius = seg.r0;
+        root.laterals = p.branches;
+        root.lateral_length = k_lateral * g.branch_length * seg.axis.length;
+        root.from = 0.15;
+        root.to = 0.95;
+      } else {
+        // A few shoots on the inner limb: an old limb's inside is mostly bare, its leaves out where
+        // the light is.
+        root.radius = 0.4 * seg.r0;
+        root.laterals = 3;
+        root.lateral_length = 0.8 * k_lateral * g.branch_length * seg.axis.length;
+        root.from = 0.35;
+        root.to = 0.85;
+        root.spread_scale = 1.2;
+      }
+      roots.push_back(root);
     }
-    const f64 run_r0 = static_cast<f64>(p.limb_radius_m) * (1.0 - 0.35 * f);
-    const f64 run_r1 = run_r0 * k_run_taper;
-    const D3 run_tip = run.point.back();
-    named.runs.push_back(crown_add_named(crown, run, run_r0, run_r1, named.trunk));
-
-    const f64 reach =
-        static_cast<f64>(p.limb_reach_m) * (1.0 - 0.4 * f) * (0.9 + 0.2 * limb_rng.unit());
-    const f64 sweep = (0.6 + 0.4 * static_cast<f64>(p.upturn)) * 60.0 * k_degree;
-    const Axis limb =
-        grow_axis(run_tip, dir, reach, k_crown_rows, k_up, sweep / reach, wander * 0.5, limb_rng);
-    CrownRoot root;
-    root.node =
-        crown_add_named(crown, limb, run_r1, crown_leader_radius(spec, run_r1), named.runs.back());
-    named.limbs.push_back(root.node);
-    root.radius = run_r1;
-    root.laterals = p.branches;
-    root.lateral_length = static_cast<f64>(p.branch_length) * reach;
-    root.from = 0.15;
-    root.to = 0.95;
-    roots.push_back(root);
+    report.segments = g.segs.size();
+    report.reach_m = static_cast<f32>(reach);
+    named.report.push_back(report);
+    reach_sum += d.past * limb.scale;
   }
-  // A crown on the trunk's top, where the limbs stop.
+  const f64 mean_past = draws.empty() ? 0.0 : reach_sum / static_cast<f64>(draws.size());
+  for (const Stub& stub : stubs_of(p, s, l, limb_radius_of(p, s, l)))
+    named.stubs.push_back(crown_add_named(crown, stub.axis, stub.r0, stub.r1, named.trunk));
+  // A crown on the trunk's top: an excurrent trunk's leader, or where a decurrent one dissolves.
   CrownRoot top;
   top.node = named.trunk;
   top.radius = l.r1;
   top.laterals = p.branches;
-  top.lateral_length = static_cast<f64>(p.branch_length) * static_cast<f64>(p.limb_reach_m) * 0.8;
+  top.lateral_length = static_cast<f64>(p.branch_length) * mean_past * 0.8;
   top.from = 0.86;
   top.to = 1.0;
   top.spread_scale = 0.8;
+  if (!s.h->excurrent) {
+    // Where a decurrent trunk dissolves its limbs have taken nearly all its section: a few shoots
+    // between them, not a crown of its own.
+    top.radius = 0.3 * l.r1;
+    top.laterals = 3;
+    top.lateral_length = 0.5 * static_cast<f64>(p.branch_length) * mean_past;
+    top.from = 0.7;
+    top.spread_scale = 1.4;
+  }
   roots.push_back(top);
   crown_grow(crown, spec, roots, 3);
   return crown;
@@ -411,16 +1003,42 @@ struct Plan {
   u32 trunk_sides = 96;
   u32 trunk_rows = 0;
   bool fin_flanks = true;
-  u32 sides[3] = {0, 32, 24};  // by order: (trunk), run, limb past it
+  u32 sides[3] = {0, 32, 24};  // by order: (trunk), run, the limb past it (the most a segment has)
   u32 rows[3] = {0, 12, 20};
+  f64 named_edge_m = 0.2;  // a limb segment's circumference step
+  f64 named_row_m = 1.5;   // a limb segment's rows: one per this many metres
   CrownPlan crown;
 };
 
-u32 count_triangles(const Ancient& p, const Layout& l, const Crown& crown, const Plan& plan) {
+u32 segment_sides(const Plan& plan, f64 radius) {
+  const u32 floor = plan.sides[2] < 6 ? plan.sides[2] : 6;
+  const f64 s = 2.0 * k_pi * radius / plan.named_edge_m;
+  if (s <= static_cast<f64>(floor)) return floor;
+  return s >= static_cast<f64>(plan.sides[2]) ? plan.sides[2] : static_cast<u32>(s) + 1;
+}
+u32 segment_rows(const Plan& plan, f64 length) {
+  const u32 floor = plan.rows[2] < 3 ? plan.rows[2] : 3;
+  const f64 r = length / plan.named_row_m;
+  if (r <= static_cast<f64>(floor)) return floor;
+  return r >= static_cast<f64>(plan.rows[2]) ? plan.rows[2] : static_cast<u32>(r) + 1;
+}
+u32 stub_sides(const Plan& plan) { return plan.sides[2] < 8 ? plan.sides[2] : 8; }
+
+u32 count_triangles(const Ancient& p, const Layout& l, const Crown& crown, const Named& named,
+                    const Plan& plan) {
   const Grid g = trunk_grid(l, p, plan.trunk_rows, plan.trunk_sides, plan.fin_flanks);
-  return trunk_triangles(g, windows_of(l, g)) +
-         p.limbs * tube_triangles(plan.rows[1], plan.sides[1]) +
-         p.limbs * tube_triangles(plan.rows[2], plan.sides[2]) + crown_triangles(crown, plan.crown);
+  u32 n = trunk_triangles(g, windows_of(l, g)) +
+          named.runs.size() * tube_triangles(plan.rows[1], plan.sides[1]);
+  const auto segment = [&](u32 node) {
+    const CrownNode& c = crown.nodes[node];
+    n += tube_triangles(segment_rows(plan, c.length), segment_sides(plan, c.r0));
+  };
+  for (const u32 node : named.limbs)
+    segment(node);
+  for (const u32 node : named.forks)
+    segment(node);
+  n += named.stubs.size() * tube_triangles(2, stub_sides(plan));
+  return n + crown_triangles(crown, plan.crown);
 }
 
 // The ladder (flora.md, "The budget"): the finest wood first, then rows and cross-sections from
@@ -430,7 +1048,8 @@ u32 count_triangles(const Ancient& p, const Layout& l, const Crown& crown, const
 // stay on every rung, so a doorway is its size and a buttress keeps its ridge. No rung moves a
 // shoot or drops a part: the skeleton, the part list and the structural table are the same bytes
 // on every rung (graphics presets pick rungs; gameplay must not change with them).
-bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& plan, u32& steps) {
+bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, const Named& named,
+                  Plan& plan, u32& steps) {
   plan = Plan{};
   const u32 trunk_rows = static_cast<u32>(l.length / 0.6);
   plan.trunk_rows = trunk_rows < 24 ? 24 : (trunk_rows > 160 ? 160 : trunk_rows);
@@ -440,7 +1059,7 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
   plan.crown.wood_class =
       2;  // shoots under two pipe steps over a twig (2.6 cm) fold from the start
   steps = 0;
-  const auto fits = [&] { return count_triangles(p, l, crown, plan) <= p.triangle_budget; };
+  const auto fits = [&] { return count_triangles(p, l, crown, named, plan) <= p.triangle_budget; };
   if (fits()) return true;
   const auto step = [&](auto&& change) {
     change();
@@ -452,6 +1071,7 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
         plan.crown.row_m = 2.0;
         plan.rows[2] = 12;
         plan.rows[1] = 8;
+        plan.named_row_m = 3.0;
       })) {
     return true;
   }
@@ -465,6 +1085,7 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
         plan.trunk_sides = 64;
         plan.sides[1] = 24;
         plan.sides[2] = 16;
+        plan.named_edge_m = 0.35;
       })) {
     return true;
   }
@@ -477,6 +1098,7 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
         plan.crown.max_sides = 5;
         plan.sides[2] = 10;
         plan.sides[1] = 16;
+        plan.named_edge_m = 0.6;
       })) {
     return true;
   }
@@ -500,6 +1122,8 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
         plan.rows[1] = 3;
         plan.sides[2] = 6;
         plan.rows[2] = 4;
+        plan.named_edge_m = 1.0;
+        plan.named_row_m = 6.0;
         plan.crown.max_sides = 4;
         plan.crown.row_m = 4.0;
       })) {
@@ -512,6 +1136,8 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, Plan& p
     plan.rows[1] = 2;
     plan.sides[2] = 4;
     plan.rows[2] = 2;
+    plan.named_edge_m = 2.0;
+    plan.named_row_m = 10.0;
     plan.crown.max_sides = 3;
     plan.crown.row_m = 8.0;
   });
@@ -686,16 +1312,20 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
     return bad("hollow_sill_m", "0 to 60 m");
   if (!(p.hollow_spacing_m >= 3.0f && p.hollow_spacing_m <= 60.0f))
     return bad("hollow_spacing_m", "3 to 60 m");
-  if (!(p.limbs >= 2u && p.limbs <= 12u)) return bad("limbs", "2 to 12");
-  if (!(p.limb_low_m >= 8.0f && p.limb_low_m <= 110.0f)) return bad("limb_low_m", "8 to 110 m");
-  if (!(p.limb_high_m >= p.limb_low_m && p.limb_high_m <= 0.75f * p.height_m))
-    return bad("limb_high_m", "limb_low_m to 0.75 of height_m");
-  if (!(p.limb_radius_m >= 0.5f && p.limb_radius_m <= 2.5f))
-    return bad("limb_radius_m", "0.5 to 2.5 m");
+  // A limb field of 0 is the habit's.
+  if (!(p.limbs == 0u || (p.limbs >= 2u && p.limbs <= 12u)))
+    return bad("limbs", "0 (the habit's), or 2 to 12");
+  if (!(p.limb_low_m == 0.0f || (p.limb_low_m >= 8.0f && p.limb_low_m <= 110.0f)))
+    return bad("limb_low_m", "0 (the habit's), or 8 to 110 m");
+  if (!(p.limb_high_m >= 0.0f)) return bad("limb_high_m", "0 (the habit's), or a height");
+  if (!(p.limb_radius_m == 0.0f || (p.limb_radius_m >= 0.5f && p.limb_radius_m <= 2.5f)))
+    return bad("limb_radius_m", "0 (the habit's), or 0.5 to 2.5 m");
   if (!(p.limb_rise_deg >= -5.0f && p.limb_rise_deg <= 30.0f))
     return bad("limb_rise_deg", "-5 to 30 degrees");
-  if (!(p.limb_run_m >= 4.0f && p.limb_run_m <= 60.0f)) return bad("limb_run_m", "4 to 60 m");
-  if (!(p.limb_reach_m >= 4.0f && p.limb_reach_m <= 80.0f)) return bad("limb_reach_m", "4 to 80 m");
+  if (!(p.limb_run_m == 0.0f || (p.limb_run_m >= 4.0f && p.limb_run_m <= 60.0f)))
+    return bad("limb_run_m", "0 (the habit's), or 4 to 60 m");
+  if (!(p.limb_reach_m == 0.0f || (p.limb_reach_m >= 4.0f && p.limb_reach_m <= 80.0f)))
+    return bad("limb_reach_m", "0 (the habit's), or 4 to 80 m");
   if (!(p.branches >= 2u && p.branches <= 10u)) return bad("branches", "2 to 10");
   if (!(p.branch_angle_deg >= 15.0f && p.branch_angle_deg <= 80.0f))
     return bad("branch_angle_deg", "15 to 80 degrees");
@@ -729,18 +1359,36 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
     return bad("card_bake_px", "0, or 16 to 256");
   if (p.impostor_px != 0u && !(p.impostor_px >= 32u && p.impostor_px <= 1024u))
     return bad("impostor_px", "0, or 32 to 1024");
-  // What the fields allow only together. A run must leave the trunk: past the core where it
-  // starts, at every limb's height.
-  const Layout l = lay_out(p);
-  for (u32 i = 0; i < p.limbs; ++i) {
-    const f64 f = static_cast<f64>(i) / static_cast<f64>(p.limbs - 1);
-    const f64 y = static_cast<f64>(p.limb_low_m) +
-                  (static_cast<f64>(p.limb_high_m) - static_cast<f64>(p.limb_low_m)) * f;
-    const f64 r = core_radius(l, (y + k_sink_m) / l.t.y);
-    if (static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * f) < (1.0 - k_run_inset) * r + 2.0) {
-      return bad("limb_run_m", "at least 2 m past the trunk's core at every limb, " +
-                                   std::to_string(static_cast<i32>((1.0 - k_run_inset) * r + 2.0)) +
-                                   " m and more here");
+  if (!(p.habit == AncientHabit::emergent || p.habit == AncientHabit::spreading ||
+        p.habit == AncientHabit::mixed)) {
+    return bad("habit", "emergent, spreading or mixed");
+  }
+  if (!(p.crown_spread == 0.0f || (p.crown_spread >= 0.2f && p.crown_spread <= 2.5f)))
+    return bad("crown_spread", "0 (the habit's), or 0.2 to 2.5");
+  if (!(p.forks <= 4u)) return bad("forks", "0 (the habit's), or 1 to 4");
+  if (!(p.wood_rupture_mpa >= 20.0f && p.wood_rupture_mpa <= 150.0f))
+    return bad("wood_rupture_mpa", "20 to 150 MPa");
+  if (!(p.wood_density >= 300.0f && p.wood_density <= 1300.0f))
+    return bad("wood_density", "300 to 1300 kg/m3");
+  // What the fields allow only together, the habit's filled in: the limb band inside the tree.
+  const Shape s = shape_of(p);
+  const f64 height = static_cast<f64>(p.height_m);
+  if (!(s.low >= 8.0)) return bad("limb_low_m", "the lowest limb at least 8 m up");
+  if (!(s.high >= s.low && s.high <= 0.75 * height))
+    return bad("limb_high_m", "limb_low_m to 0.75 of height_m");
+  // A stated run must leave the trunk: past the core where it starts, at every limb's height.
+  const Layout l = lay_out(p, s);
+  if (p.limb_run_m > 0.0f) {
+    for (u32 i = 0; i < s.limbs; ++i) {
+      const f64 f = static_cast<f64>(i) / static_cast<f64>(s.limbs - 1);
+      const f64 y = s.low + (s.high - s.low) * f;
+      const f64 r = core_radius(l, (y + k_sink_m) / l.t.y);
+      if (static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * f) < (1.0 - k_run_inset) * r + 2.0) {
+        return bad("limb_run_m",
+                   "at least 2 m past the trunk's core at every limb, " +
+                       std::to_string(static_cast<i32>((1.0 - k_run_inset) * r + 2.0)) +
+                       " m and more here");
+      }
     }
   }
   // A hollow is a doorway under the limbs, no wider than its trunk allows, and two never overlap.
@@ -748,8 +1396,8 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
     if (p.hollows > 1 && !(p.hollow_spacing_m >= p.hollow_height_m + 1.0f))
       return bad("hollow_spacing_m", "at least hollow_height_m + 1 m");
     const Doorway& top = l.doors.back();
-    if (top.lintel * l.t.y - k_sink_m > static_cast<f64>(p.limb_low_m) - 2.0)
-      return bad("hollow_sill_m", "every hollow's top at least 2 m under limb_low_m");
+    if (top.lintel * l.t.y - k_sink_m > s.low - 2.0)
+      return bad("hollow_sill_m", "every hollow's top at least 2 m under the lowest limb");
     for (const Doorway& d : l.doors) {
       if (d.half_angle > 0.6)
         return bad("hollow_width_m", "at most 1.2 times the core radius at the hollow");
@@ -771,18 +1419,19 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
     if (error != nullptr) *error = message;
     return false;
   }
-  const Layout l = lay_out(p);
+  const Shape shape = shape_of(p);
+  const Layout l = lay_out(p, shape);
   const CrownSpec spec = spec_of(p);
   Named named;
-  Crown crown = grow(p, l, spec, named);
+  Crown crown = grow(p, shape, l, spec, named);
   place_leaves(p, crown);
   Plan plan;
   u32 steps = 0;
-  if (!plan_ancient(p, l, crown, plan, steps)) {
+  if (!plan_ancient(p, l, crown, named, plan, steps)) {
     if (error != nullptr) {
       *error = "engine.flora.Ancient.triangle_budget " + std::to_string(p.triangle_budget) +
                " cannot hold this tree: its coarsest form needs " +
-               std::to_string(count_triangles(p, l, crown, plan)) + " triangles";
+               std::to_string(count_triangles(p, l, crown, named, plan)) + " triangles";
     }
     return false;
   }
@@ -803,17 +1452,34 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
   build_trunk(l, p, grid, windows, emit);
   trunk_normals(out, trunk_vertex, 0, out.indices.size(), grid.arcs.size(), grid.angles.size());
 
-  // The runs and the limbs past them, in pairs, load-bearing; the runs straight.
+  // The runs and the first segments past them, in pairs; the runs straight. Then every later
+  // segment, limb by limb, parents first; then the dead stubs. A limb part at least
+  // `k_load_bearing_min` thick at its base is load-bearing.
   u32 load_bearing = 1;
-  for (u32 i = 0; i < p.limbs; ++i) {
+  const auto bearing = [&](f64 r0) {
+    if (r0 < k_load_bearing_min) return 0u;
+    ++load_bearing;
+    return k_load_bearing;
+  };
+  const auto emit_segment = [&](u32 node) {
+    CrownNode& seg = crown.nodes[node];
+    seg.part =
+        emit_tube_part(emit, crown.axes[seg.axis], seg.r0, seg.r1, segment_rows(plan, seg.length),
+                       segment_sides(plan, seg.r0), crown.nodes[seg.parent].part, bearing(seg.r0));
+  };
+  for (u32 i = 0; i < named.runs.size(); ++i) {
     CrownNode& run = crown.nodes[named.runs[i]];
     run.part =
         emit_tube_part(emit, crown.axes[run.axis], run.r0, run.r1, plan.rows[1], plan.sides[1],
-                       crown.nodes[named.trunk].part, k_load_bearing | k_straight);
-    CrownNode& limb = crown.nodes[named.limbs[i]];
-    limb.part = emit_tube_part(emit, crown.axes[limb.axis], limb.r0, limb.r1, plan.rows[2],
-                               plan.sides[2], run.part, k_load_bearing);
-    load_bearing += 2;
+                       crown.nodes[named.trunk].part, bearing(run.r0) | k_straight);
+    emit_segment(named.limbs[i]);
+  }
+  for (const u32 node : named.forks)
+    emit_segment(node);
+  for (const u32 node : named.stubs) {
+    CrownNode& stub = crown.nodes[node];
+    stub.part = emit_tube_part(emit, crown.axes[stub.axis], stub.r0, stub.r1, 2, stub_sides(plan),
+                               crown.nodes[named.trunk].part, 0u);
   }
   crown_emit_wood(crown, plan.crown, emit, true);
   assets::Primitive bark;
@@ -887,9 +1553,10 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
 bool ancient_crown(const Ancient& p, Vector<CrownShoot>& out) {
   std::string error;
   if (!ancient_in_range(p, error)) return false;
-  const Layout l = lay_out(p);
+  const Shape s = shape_of(p);
+  const Layout l = lay_out(p, s);
   Named named;
-  crown_table(grow(p, l, spec_of(p), named), out);
+  crown_table(grow(p, s, l, spec_of(p), named), out);
   return true;
 }
 
@@ -897,7 +1564,7 @@ bool ancient_hollows(const Ancient& p, Vector<Hollow>& out) {
   std::string error;
   if (!ancient_in_range(p, error)) return false;
   out.clear();
-  const Layout l = lay_out(p);
+  const Layout l = lay_out(p, shape_of(p));
   for (const Doorway& d : l.doors) {
     const D3 radial = radial_at(l, d.angle);
     Hollow h;
@@ -912,15 +1579,26 @@ bool ancient_hollows(const Ancient& p, Vector<Hollow>& out) {
   return true;
 }
 
+bool ancient_limbs(const Ancient& p, Vector<AncientLimb>& out) {
+  std::string error;
+  if (!ancient_in_range(p, error)) return false;
+  const Shape s = shape_of(p);
+  const Layout l = lay_out(p, s);
+  Named named;
+  grow(p, s, l, spec_of(p), named);
+  out = std::move(named.report);
+  return true;
+}
+
 f32 load_bearing_min_radius(std::string_view species) noexcept {
   // The smallest base radius any load-bearing part reaches inside the species' ranges: the
   // thinnest third stem of the thinnest birch (0.03 m x 0.65), the thinnest trunks of the willow
-  // and the orchard tree, and the megaflora's highest limb past its run at the thinnest limb
-  // radius (0.5 m x 0.65 x 0.85).
+  // and the orchard tree, and the megaflora's threshold: a named limb part is flagged
+  // load-bearing only when it is at least `k_load_bearing_min` (0.25 m) at its base.
   if (species == k_species_birch) return 0.0195f;
   if (species == k_species_willow) return 0.08f;
   if (species == k_species_orchard) return 0.04f;
-  if (species == k_species_ancient) return 0.27f;
+  if (species == k_species_ancient) return static_cast<f32>(k_load_bearing_min);
   return 0.0f;
 }
 

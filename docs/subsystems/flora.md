@@ -351,7 +351,7 @@ Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending 
 | A shoot of the recursion bears `branching_ratio` − 1 laterals along its distal part and a leader at its tip; the named roots bear `branches` laterals | `branching_ratio` (4) the species' | Horton–Strahler's bifurcation ratio, 3 to 5 |
 | A child is `length_ratio` of its parent's length; a root's laterals `branch_length` of its length | `length_ratio` (0.63) the species' | WBE's n^(−1/3) |
 | A shoot whose thinnest child would be thinner than `twig_radius_m` is a **terminal twig**, `twig_length_m` long | the twig's radius and length are the species', never the tree's | Corner's rules; WBE's invariant terminal unit |
-| So the twigs number about (R / r_twig)^Δ and the orders about 1 + log_Rb of that | both scale with size: the oak's 3,384 twigs over 8 orders, the ancient tree's 214,834 over 12 | follows |
+| So the twigs number about (R / r_twig)^Δ and the orders about 1 + log_Rb of that | both scale with size: the oak's 3,384 twigs over 8 orders, the ancient tree's 214,834 over 12 (its wide crown before the habits, G79) | follows |
 | The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side | LAI and the leaf the species'; the footprint (the convex hull of every shoot tip from above) scales | the leaf area index (Asner et al. 2003) |
 | The broadleaf's `trunk_radius_m` of 0 is 0.35 m × (H / 12 m)^(1 / `allometry_exponent`) | the exponent the species' (2/3) | McMahon's elastic similarity, H ∝ D^(2/3) |
 | The crown's radius is the limbs' reach, a share of the height for the broadleaf | scales as H ∝ D^(2/3) | crown ∝ D^0.6–0.8 |
@@ -581,8 +581,10 @@ expensive (8 limbs of 8 branches of 12 spurs, 30 cards) holds 8,000 with 5,536.
 **The `oak`, `ancient`, `ancient-rising` and `ancient-1m` rows below are the trees from before the
 allometric crown (G73, 2026-10-20)**: their recipes now make different meshes (the oak 50,340
 triangles at merge 0, the two elders 1,419,335 and 1,050,182, `ancient-1m` 454,886 on its first
-merged rung), whose numbers are in [tree allometry](../experiments/tree-allometry.md); the rows are
-kept as what those trees measured.
+merged rung), whose numbers are in [tree allometry](../experiments/tree-allometry.md), and since the
+habits (G79, 2026-10-22) different again (the elders 606,450 and 386,241, `ancient-1m` 435,153 with
+no rung walked; [megaflora habits](../experiments/megaflora-habits.md#what-the-recipes-come-to));
+the rows are kept as what those trees measured.
 
 The same measurements as the palms' (below), over the three recipes, 2026-10-18:
 
@@ -649,8 +651,10 @@ and the default or `ancient-1m` for the trees the camera walks under.
 
 ## Megaflora
 
-`engine.flora.Ancient` (`src/ancient.cpp`; `ancient.flora.json`, 100 m, and `ancient-1m.flora.json`,
-110 m on a million triangles): a tree large enough to build a village in — the fantasy RPG's elven
+`engine.flora.Ancient` (`src/ancient.cpp`; `ancient-emergent.flora.json`, `ancient-spreading.flora.json`
+and `ancient-mixed.flora.json`, one of each habit; `ancient.flora.json` and `ancient-rising.flora.json`,
+the elder grove's two; `ancient-1m.flora.json`, 110 m on a million triangles): a tree large enough to
+build a village in — the fantasy RPG's elven
 villages span trees, with platforms, bridges, ramps and huts in and between them (roadmap G63) —
 so its trunk is 4 to 25 m across, it stands 40 to 150 m, and its major limbs are 1 to 5 m thick.
 
@@ -669,7 +673,7 @@ on a 40 m tree and a 150 m one, and its size shows as more orders and more twigs
 **The trunk** is straight — a lean of up to 8° and no wander — so the structural rule holds for it
 exactly; its foot is sunk a metre (`k_sink_m`) so the flare meets uneven ground. Its **core** tapers
 linearly from `trunk_radius_m` to `taper` of it at the trunk's top (0.8 of the height, or 8% of it
-above the highest limb, at most 0.9). **Buttresses**: `buttresses` fins evenly round the foot from a
+above the highest limb, at most 0.9; a decurrent habit's trunk ends lower, below). **Buttresses**: `buttresses` fins evenly round the foot from a
 seeded turn, each nudged by up to a quarter of the gap, each its own reach (`buttress_reach` of the
 core ± 25%) and height (`buttress_height_m` ± 30%); the surface's radius is the core's times
 (1 + Σ reach × (1 − h/height)² × (1 − x²)³), *x* the angle from the fin's ridge over its half-width
@@ -689,43 +693,108 @@ flat floor at the sill, a flat lintel, jambs parallel to the axis. `flora::ancie
 which is what a hut placed in one reads; the test fires a segment through the doorway (open), on
 into the back wall (closed) and down from inside onto the floor.
 
-**The major limbs**: `limbs` of them from `limb_low_m` to `limb_high_m` up the trunk on the golden
-angle, each two parts. **The run** is straight and near-horizontal — `limb_rise_deg` above level,
-plus up to 8° for the highest limb and ±2° from the seed — from inside the trunk (half the core
-radius out from its axis), `limb_run_m` long (the highest 0.65 of it), `limb_radius_m` thick at its
-base (the highest 0.65 of it) tapering to 0.85 of that: **that is where platforms go**, and it is
-load-bearing and straight. **The limb past it** continues from the run's tip, turning up towards
-the light by (0.6 + 0.4 `upturn`) × 60° over `limb_reach_m` (the highest 0.6 of it) with half the
-wander, load-bearing and curved, and from it and from the trunk's top the [allometric
-recursion](#allometry) grows: `branches` laterals on the limb from 0.15 of the way out, each
-`branch_length` (0.3) of its reach, and then self-similar orders by the pipe rule down to the
-species' twig, 6 mm in radius and 0.8 m long, whose cards are leaves 0.3 m long. On the default
-100 m tree: 214,834 twigs over 12 orders, 286,441 shoots, 564,920 cards over a 10,169 m² footprint
-(a 57 m crown radius) — a realised LAI of 2.93 — and **972 parts**: the trunk, the nine runs and
-the nine limbs past them (the 19 load-bearing ones), and the 953 recursion shoots of the part class
-(4, shoots over about 10 cm in radius) and up. The trunk's 5 m core carries more area than its
-limbs and crown need (theirs is a 3.9 m core's): the heartwood of the shed limbs' disused pipes, as
-in a giant.
+**The habit** (`habit`, G79; [megaflora habits](../experiments/megaflora-habits.md) has the
+sources): the crown's architecture, and every limb field left at 0 is its.
 
-**The budget** (default 1,500,000; 20,000 to 4,000,000). The default 100 m tree is 1,419,335
-triangles at full detail — bark 289,495 (the trunk 96 columns plus 30 pinned by 135 rows, runs 32
-× 12, limbs 24 × 20, the recursion's parts and its shoots of class 2 and up), leaves 1,129,840 — with
-no rung walked; the default was 300,000 until G73 and was raised to what holds the 100 m tree's
-leaves at their own size, which the elder grove affords twice ([what it
-costs](../experiments/tree-allometry.md#what-it-costs)). The ladder ([above](#the-budget-of-a-crown)):
-the parts' and the limbs' rows; the recursion's cross-sections; the trunk's columns and the runs'
-and limbs' sides; the folded wood class by class to the part class; the trunk's rows halved; every
-order's sides again; the trunk to 40 columns and its rows halved again; then the merges — the
-**ninth rung**, on any budget under about 1.15 million — and the halvings; and last two rungs of
-everything's rows and sides (the fins' flank pins go, their ridges stay). On 1,000,000 it is
-449,070 (merge 1, cards 1.22 m), on 250,000 140,410 (merge 2, 2.52 m), on 100,000 57,642 (merge 3),
-and its floor, **20,000**, holds 15,964 after 27 rungs (it was 12,000 until the recursion's 953
-parts, each a tube on every rung, needed more). Everything at its most limbs and laterals holds the
-floor too (19,834, 1,173 parts): the part cap is what bounds it. `ancient-1m` (110 m on a million
-triangles) is now the first merged rung's example: 454,886 triangles of 1.22 m cards. **What it
-costs** (msvc-debug, a shared machine, so upper bounds): the default's container builds in 48.8 s
-(68,013 clusters, 17 levels, 4,167,147 vertices), `ancient-rising`'s in 30.0 s; the elder grove's
-frame and pool before and after are in [tree allometry](../experiments/tree-allometry.md#what-it-costs).
+| | `emergent` (the default) | `spreading` | `mixed` |
+|---|---|---|---|
+| Real form | the giant sequoia, an old Douglas-fir | the open-grown oak, the monkeypod | the two together; the tropical emergents come closest — the rarer, fantastical choice |
+| Limbs (`limbs`) | 7 | 6 | 8 |
+| The limb band (`limb_low_m`, `limb_high_m`) | 0.5 to 0.75 of the height | 0.2 to 0.3 | 0.55 to 0.7 |
+| The trunk | excurrent: through to 0.8–0.9 of the height, a crown on its top | decurrent: ends 2% of the height above its highest limb, where it dissolves into them | decurrent |
+| Crown width over height (`crown_spread`) | 0.6 | 1.5 | 0.9 |
+| The lowest limb's radius (`limb_radius_m`) | 0.42 of the core there | 0.45 | 0.42 |
+| The highest run's rise above the lowest's | 25° | 45° | 35° |
+| Forks past the run (`forks`) | 2 | 4 | 4 |
+| The limb past its run turns up by | 50° (× (0.6 + 0.4 `upturn`)) | 15° | 15° |
+| Dead stubs on the clear bole | 4 | none | 3 |
+
+A decurrent trunk tapers only as far as an excurrent one of the tree's height would have where it
+stops — `taper` is then the core's share at the tree's top — so the limbs take the section it
+still has. **A stated field keeps working**: an old recipe's `limb_low_m`, `limb_run_m` or
+`limb_reach_m` is the band, the run or the length asked, and the habit fills in what it does not
+say (`Ancient` version 4 made the six limb fields' defaults 0 and added `habit`, `crown_spread`,
+`forks`, `wood_rupture_mpa` and `wood_density`; a version-3 file reads as it did, its unstated
+limb fields the default habit's).
+
+**The major limbs**: `limbs` of them through the band on the golden angle, each round the trunk by
+up to 0.45 rad more from the seed, each its own vigour (±15% of its length), thickness (±10%) and
+rise (±3°); the upper ones thinner by the habit's share. **The run** is straight — `limb_rise_deg`
+above level for the lowest (default 4°) and the habit's rise more for the highest — from inside the
+trunk (half the core radius out from its axis), tapering to 0.85 of its base: **that is where
+platforms go**, straight, and load-bearing at 0.25 m and more. Asked, a run is `limb_run_m` (the
+highest 0.65 of it); unasked it is the habit's share of the limb (0.25 to 0.3) and at least 4 m past
+the bark, so every habit's lowest limb has one. **Past the run** the limb is a chain of named
+segments: the first, then a fork into two daughters (at the first fork one time in five three) at
+the end of every segment for `forks` levels, each daughter 0.8 (emergent) or 0.85 of its parent's
+length. The daughters share their parent's section by the pipe rule (`area_exponent`), the greater
+0.5 to 0.74 of it, and **the greater one deviates the less**: the two directions weighted by their
+sections sum to the parent's (Murray 1927), the fork's whole angle 50° to 65° in a plane the habit
+tilts from level (a spreading tree's daughters splay sideways, an emergent's one up and one out).
+Every segment swings from side to side on a seeded wave by up to the habit's 14° to 35°, wanders by
+half `wander_deg` a step, droops under its load over its first half and turns up over its second
+([below](#limbs-a-wood-could-carry)); an inner segment tapers to 0.92 of its base, a last one to the
+recursion's leader. One time in five to ten the last fork's lesser daughter is **a broken stub** —
+three tenths of its length, blunt and bare — and an emergent's or a mixed tree's clear bole carries
+the habit's few **dead stubs** of shed limbs, short and drooping, never in a hollow. From the last
+segments the [allometric recursion](#allometry) grows (`branches` laterals from 0.15 of the way out,
+each 2.5 × `branch_length` of the segment's own length, then self-similar orders by the pipe rule
+down to the species' twig, 6 mm in radius and 0.8 m long, whose cards are leaves 0.3 m long); an
+inner segment carries three short shoots sharing a sixth of its section, because an old limb's inside is
+mostly bare and its leaves are out where the light is, and the trunk's top a crown (an excurrent
+trunk's) or a few shoots between its limbs (a decurrent one's).
+
+On the default 100 m tree: 7 limbs from 50 to 75 m up, 58 named segments past their runs (3 broken),
+4 stubs, and **496 parts** — the trunk, the runs, the segments, the stubs and the recursion's shoots
+of the part class and up; a crown 55 m across and 93 m tall. The spreading recipe
+(`ancient-spreading.flora.json`, 50 m) is 70 m across and 39 m tall on six limbs, 231 segments; the
+mixed (`ancient-mixed.flora.json`, 80 m) 67 by 81 m on eight, 308; `ancient-emergent.flora.json` is
+a 100 m emergent of another seed. **The old straight-limbed tree is gone**: `ancient.flora.json`
+(elder A) spells out the old defaults' limb fields — nine limbs from 30 to 62 m, 1.6 m thick, a
+24 m run and 36 m past it — and gets them as its wood allows, the lowest run 15.1 m.
+
+### Limbs a wood could carry
+
+**A limb is never longer than its wood could carry** ([megaflora
+habits](../experiments/megaflora-habits.md#limbs-a-wood-could-carry) has the model's sources and the
+numbers it comes to). By the pipe model a limb system carries about its base's section of wood out to
+its tips, so the bending moment at the base of each of its parts — the run and every segment — is the
+green wood's weight (`wood_density`, 1,000 kg/m³) times the sections times their horizontal lever
+arms, summed as vectors over everything the part carries, with the crown the recursion grows past
+each last segment counted as its section over 2.5 of its laterals' length a third of that on. The
+stress at the part's base, 4M / (π r³), is held under the allowable: the green wood's modulus of
+rupture (`wood_rupture_mpa`, 50 MPa, green white oak) times 0.6 for a decade's sustained load over a
+static factor of safety of 2 — 15 MPa. **A limb asked for more is shortened, run and all, by one
+factor**: lengths scale and sections stay, so moments scale by its square, and k = √(1 / peak) puts
+the worst part on the limit. The limb is grown at its asked length, sized, and grown again at its
+size (the draws were all made first, so a shortened limb is the same limb, shorter); the run never
+falls below 2 m past the bark. Level and loaded, a segment **droops** — a turn down over its first
+half of up to 14° at its wood's limit, in proportion to its load and to how level it is, and the turn
+back up and beyond over its second: the elbow of an oak's long low limb, which is a limb's base angle
+falling as it grew heavier and its tip recurving by reaction wood, not the elastic sag (centimetres
+on a limb metres thick). `flora::ancient_limbs` (`structure.h`) gives each limb's height and base
+radius, the length asked, the share the wood kept, its reach seen from above, its peak stress against
+the allowable, and its segments and broken stubs, from the parameters alone; the test holds every
+limb under its allowable stress. On the default tree no limb is shortened (the worst at 14.2 of 15
+MPa); on the spreading recipe five of six are, to 0.64 to 0.86 of what they were asked; on the forest
+village's anchor recipes (20 m runs and 28 m past them near level) every limb but one, the lowest to
+0.81.
+
+**The budget** (default 1,500,000; 20,000 to 4,000,000). The default 100 m tree is 321,954 triangles
+at full detail — bark 160,046 (the trunk 96 columns plus the pinned ones by a row a 0.6 m, the runs 32 ×
+12, every segment one row a 1.5 m and one side per 0.2 m of circumference up to 20 rows and 24 sides,
+the stubs, the recursion's parts and its shoots of class 2 and up), leaves 161,908 — with no rung
+walked; it was 1,419,335 until the habits, its wide crown's footprint carrying four times the leaves
+(the leaf count is the leaf area index over the footprint). The ladder ([above](#the-budget-of-a-crown)):
+the parts', the runs' and the segments' rows; the recursion's cross-sections; the trunk's columns and
+the runs' and segments' sides; the folded wood class by class to the part class; the trunk's rows
+halved; every order's sides again; the trunk to 40 columns and its rows halved again; then the
+merges and the halvings; and last two rungs of everything's rows and sides (the fins' flank pins go,
+their ridges stay). On 100,000 it is 50,882 after 10 rungs, and its floor, **20,000**, holds 18,114
+after 12; everything at its most limbs and laterals holds it too (14,357 after 27 rungs, 746 parts):
+the part cap is what bounds it. `ancient-1m` (110 m on a million triangles) is 435,153 with no rung
+walked. **What it costs** (msvc-release, a shared machine, so upper bounds): `engine-content flora`
+builds elder A's container in 4.2 s (22,800 clusters, 13 levels), the emergent recipe's in 2.7 s.
 
 ### The structural table
 
@@ -754,18 +823,21 @@ leaf cards, a willow's curtain) records radii of zero. The megaflora's trunk rec
 its buttresses stand outside the core radius in the bottom `buttress_height_m` (up to 1.3 of it),
 and its hollows cut into it where `ancient_hollows` says. The minimum radii a load-bearing part
 reaches inside each species' ranges: birch 0.0195 m (its thinnest third stem), willow 0.08 m,
-orchard 0.04 m, ancient 0.27 m (the highest limb past its run at the thinnest limb radius); the
-default ancient tree's load-bearing parts are its 5 m core and runs 1.6 m at the lowest limb to
-1.04 m at the highest — 3.2 m to 2.1 m thick.
+orchard 0.04 m, ancient 0.25 m (since G79 a threshold: a run or a limb segment is load-bearing when
+it is at least that at its base, so a limb's segments carry the flag as far out as they are that
+thick); the default ancient tree's load-bearing parts are its 5 m core, its seven runs 1.2 m at the
+lowest limb to 0.69 m at the highest (2.4 m to 1.4 m thick), every limb's first segment past its run
+and its later segments down to 0.25 m — 56 parts.
 
 **In the container** the table is **section 37**, `structural_parts`, resident, appended after the
 motion contract and **written only when a species emits it**: the palm, the broadleaf and the
 conifer emit none — the shared helper that opens a part (`Emitter::begin_part`) knows no radius, and
 their solvers' code paths stay as they were, so their containers are the bytes they were — and an
 imported mesh's container never has it. A reader refuses a record naming a part the motion table
-does not have, or out of order. The default ancient tree's table is 972 rows (15,552 bytes); the
-first 19 are what a village plan reads: the trunk (5.0 → 2.0 m), and nine runs and nine limbs past
-them.
+does not have, or out of order. The default ancient tree's table is 496 rows (7,936 bytes); the
+first 15 are what a village plan reads: the trunk (5.0 → 2.0 m), and seven runs, each followed by
+the first segment of its limb past it (part 1 + 2i is limb i's run, the order `ancient_limbs`
+reports them in); the limbs' later segments, the bole's stubs and the recursion come after.
 
 ### Walking a limb
 
@@ -776,16 +848,17 @@ coarsest cut of its DAG within 5 cm, so a limb is walkable if a walker can get o
 [`elder-grove`](../../content/test-scenes/elder-grove/README.md) (copied with its recipes into the
 test's scratch directory), it solves each ancient tree's recipe, takes the lowest run from the
 structural table, and starts a walker standing on it 2.5 m out from the bark, facing along it, W
-held, replayed **offscreen** (msvc-debug, RTX 5090, 2026-10-19; the walker's defaults: capsule 1.8 m
-by 0.3 m, 1.5 m/s, 40° slope limit, 0.35 m step):
+held, replayed **offscreen** (msvc-debug, RTX 5090, 2026-10-22; the walker's defaults: capsule 1.8 m
+by 0.3 m, 1.5 m/s, 40° slope limit, 0.35 m step). **The case holds the first 15 m, or as much of the
+run as its wood left past the start less a metre** (since G79 a run is no longer than its wood could
+carry, and elder A's asked 24 m keeps 15.1):
 
-- **The near-level run** (elder A, 30.0 m up, 3.7° above level, 24 m long, 3.2 m thick tapering to
-  2.72): the walker walks the whole 19.4 m of it at 1.49 m/s, **its feet within 0.5 mm of the
-  bark** and 1.4 mm aside at its end — the case holds the first 15 m to 15 cm. **At the run's end**
-  it walks on, onto the limb past the run, which turns up: it climbs it for 14 s, its feet 6.4 m
-  over the run's line 45 m out, until the limb steepens and narrows (its radius falling towards
-  the branches), where it slides back a metre and walks **off the side** and falls 33 m to the
-  ground, then walks on across the grove until something stops it.
+- **The near-level run** (elder A, 30.0 m up, 3.6° above level, 15.1 m kept of the 24 asked, 2.9 m
+  thick tapering to 2.48): the walker walks the 10.5 m of it past its start at 1.5 m/s, **its feet
+  within 0.9 mm of the bark** and 0.05 mm aside at its end — the case holds those 9.6 m to 15 cm.
+  **At the run's end** it walks on, onto the limb's first segment past it, which meanders and turns
+  up: its feet 0.4 m over the run's line 16 m out, it walks **off the side** at 17 m and falls 32 m
+  to the ground, then walks on across the grove until something stops it.
 - **The 20° run** (elder B, 30.0 m up, 20.0° above level, 2.8 m thick): it climbs at 1.41 m/s
   along the slope, but **drifts sideways off the crest** — 0.28 m aside after 13 m, 0.76 m after
   17 m, its feet sinking 0.2 m below the crest line as it moves onto the limb's flank — and, on the
@@ -1229,7 +1302,15 @@ ancient tree on a 100,000 rung, so the merged cards are in the bytes), which GCC
 (`build_spray_profile`, `build_blade`, `build_leaf_card`), its species are new members of the flora
 file that no tree's canonical form carries, and a tree's detail tier is a rule rather than a field;
 the four defaults are pinned in `tests/understory_tests.cpp`, one stream a stem, frond, blade or
-leaf row, every draw its own statement.
+leaf row, every draw its own statement. **The megaflora's habits (G79) moved the ancient tree's pins and
+`k_flora_version` (5)**: its limbs are a different structure, so its hash, its parts and its
+container row moved, and every flora container records the version, so the palm's two container
+pins and the broadleaf's container row moved with no byte of their meshes moving. The ancient tree's
+new draws are each their own statement and their own streams — the limbs' layout one stream with
+five draws a limb, every named segment one stream (limb × 512 + its index) with nine, the bole's
+stubs one stream with five a stub, made whether or not a stub has room — and a limb shortened by
+its wood is grown again from the same draws, so a recipe's tree never depends on how the sizing
+went.
 
 **Owned data.** The species' parameter types and the solver. Nothing persistent: a palm is derived
 data, rebuilt from its parameters.
@@ -1274,10 +1355,15 @@ data, rebuilt from its parameters.
   every willow curtain its own part, hanging, never under the ground; the orchard tree flat-topped
   and broader than tall when pruned and taller when free, its fruit a third one-sided primitive of
   eight triangles a fruit, and fruit a budget cannot hold refused; the ancient tree's trunk and runs
-  straight to 2 mm of their structural radii, its runs between `limb_low_m` and `limb_high_m`,
-  near-horizontal and at least a metre thick, its foot flaring past the core and the core exact
-  above the buttresses, each hollow open through its doorway, closed at its back and floored; the
-  table round-trips through section 37 and the palm's container has none;
+  straight to 2 mm of their structural radii, its runs in the habit's band, the lowest near level and
+  none more than the habit's rise above it, load-bearing and at least a metre thick, its foot flaring
+  past the core and the core exact above the buttresses, each hollow open through its doorway, closed
+  at its back and floored; its habits (G79): the emergent's lowest run above 0.45 of the height and
+  its crown under 0.65 of its height across, the spreading one's under 0.3 and over 1.1, the mixed
+  one's high and wider than the emergent's, every habit's lowest run straight, near level and
+  load-bearing, and every limb of every habit and of the forest village's anchor recipes under its
+  wood's allowable stress, the anchor's lowest limb shortened; the table round-trips through section
+  37 and the palm's container has none;
 - the allometric crown (`tests/allometry_tests.cpp`): the same species at 8 and 32 m (the
   broadleaf) and at 45 and 100 m (the ancient tree) draws cards of `leaf_length_m` to the millimetre;
   the broadleaf at 6, 12 and 24 m has more orders as it grows, each within one of
@@ -1286,7 +1372,7 @@ data, rebuilt from its parameters.
   the realised LAI, measured as the leaf cards' area over the convex hull of their vertices, is
   within a fifth of the field on the default broadleaf and ancient tree; a recipe setting the old
   fields (`sub_branches`, `twigs`, `leaves`) validates, builds and is capped by them; the parts are
-  dense and parent-first, 230 on the default broadleaf and 972 on the default ancient tree
+  dense and parent-first, 230 on the default broadleaf and 496 on the default ancient tree
   (`flora_tests.cpp`, `species_tests.cpp`); and down the ladder every rung holds its budget, merges
   no less finely than the rung above, and keeps the part list and the structural table byte for
   byte, with the load-bearing surfaces' movement between the finest rung and the floor measured;

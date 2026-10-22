@@ -408,7 +408,10 @@ TEST_CASE("flora allometry: how far the load-bearing surfaces move down the ladd
   };
   f32 run_worst = 0.0f;
   f32 limb_worst = 0.0f;
-  for (u32 i = 0; i < fine_p.limbs; ++i) {
+  // The habit's limbs (G79: `limbs` 0 is the habit's count).
+  Vector<flora::AncientLimb> limbs;
+  REQUIRE(flora::ancient_limbs(fine_p, limbs));
+  for (u32 i = 0; i < limbs.size(); ++i) {
     for (u32 k = 0; k < 2; ++k) {
       const u32 part = 1 + 2 * i + k;
       REQUIRE((fine.motion.structure[part].flags & flora::k_load_bearing) != 0u);
