@@ -8,7 +8,8 @@
     "whorls": 9,
     "branches_per_whorl": 5,
     "crown_radius_m": 1.3,
-    "needle_length_m": 0.18,
+    "needle_length_m": 0.3,
+    "dead_share": 0.0,
     "triangle_budget": 20000
   }
 }

@@ -494,16 +494,59 @@ fewer up the crown by `thinning`, so the top tiers are sparse — at an angle fr
 from `bottom_angle_deg` at the lowest (past 90°: hanging below level) to `top_angle_deg` at the
 top, `crown_radius_m` long at the bottom shrinking to a tenth at the top (as (1 − *t*)^0.9 of the
 crown's height, a cone with full shoulders), each tip turning back up towards the light by
-`upturn`. A branch is a woody tube and a **spray of needle-bundle cards** from a sixth of the way
-out to its tip, `needle_cards` a side on the longest branch and fewer in proportion to length,
-`needle_length_m` long, splayed 60° forward and 15° up; the leader carries a tuft. Parts: the trunk
-(which owns the tuft) and every branch, the branch's tube and spray one part — 136 on the default.
+`upturn`. Between two whorls stand `interwhorl` shorter branches (0.45 ± 0.15 of the whorl length
+there, a seeded azimuth each). The model is a Norway spruce's shoots (G80; the sources and the
+numbers are [conifer shoots](../experiments/conifer-shoots.md)):
 
-**The budget** (default 40,000; 8,000 to 2,000,000). The default is 12,882 triangles at full detail
-— bark 5,510, needles 7,372 — and the ladder: branch rows 3, then 2; trunk sides 8; branch sides 3;
-the trunk's rows halved; the cards halved repeatedly; branch rows 1; trunk sides 6; and last the
-branches' woody tubes, their sprays then reaching to the trunk. On 8,000 it is 6,109 (12 cards a
-side); everything at its most expensive (60 whorls of 10, 60 cards, 60 m) holds 8,000 with 2,654.
+- **A branch is thin and needled on its outer years.** Its base radius is Colin and Houllier's
+  largest branch of a whorl (15.9 mm + 0.978 mm per cm of breast-height diameter, halved) times its
+  length over the crown's reach to the 0.8 — 3.2 cm at the default's crown foot. Its needles are on
+  its outer `needle_years` × `shoot_growth_m` (6 years of 0.2 m: 1.2 m), so a long branch's inner part
+  is bare wood, as a real spruce's is.
+- **Second-order laterals**, `laterals_per_m` a metre (10) alternating sides along the branch's outer
+  two needled reaches, each as long as its age allows (`lateral_length_m`, 0.7 m, a needled reach in
+  from the tip; 0.3 of it at the tip; never past 0.4 of the branch), leave at 55° in the branch's
+  level plane and **hang by `pendulous`**: dipped by 0.35 × `pendulous` and turned towards the ground
+  by 3 × `pendulous` radians over their length. Their spray's plane holds the branch's direction, so
+  a hanging lateral is a curtain (a comb spruce, 1) and a level one a plate (a plate spruce, 0); the
+  default 0.7 is between brush and comb.
+- **Cards stand for foliated shoots**, not needle bundles: a spray on the branch's own needled part
+  (`needle_cards` a side on the longest, every other shoot at the same spacing, `needle_length_m`
+  0.45 m long, splayed 55° forward) and one on every lateral (cards 0.8 as long, 50°, drooping with
+  the habit). A real branch carries 20–40 laterals a metre three or four fronds deep; the solver
+  builds 10 and makes each lateral's cards wide enough to reach over the next one's, which is the
+  budget's trade. Every card lifts out of its spray's plane by 10° at the crown's foot and 35° at its
+  top — flat shade shoots, bushy sun shoots — so no crown is all edge-on to an eye at its height. The
+  leader carries a tuft.
+- **The seed leaves branches out**, on streams of their own: `missing_branches` (0.05) of the branch
+  slots are empty, half of those leaving a broken stub a twelfth of the branch long;
+  `sparse_whorls` (0.08) of the whorls lose each branch with even odds; and the lowest `dead_share`
+  (0.12) of the crown's whorls are **dead** — bare wood four fifths as thick, broken at 35–90 % of
+  their length, no needles (a spruce keeps its dead branches; a closed stand's recipe raises it).
+  The fates are one draw a whorl and four a slot, whatever they decide, and a slot's laterals have a
+  stream of their own, so a missing branch moves nothing else: the whorls draw exactly what they drew
+  before G80.
+
+Parts: the trunk (which owns the tuft) and every branch, dead or alive, the branch's tube and all
+its sprays one part, a lateral's vertices weighted by their arc from the branch's base — 179 on the
+default.
+
+**What a pack's needle image should be**: one foliated shoot per image, its axis along *v*, about
+25–35 % opaque and irregular, every needle two texels wide at 512 (conifer shoots, "What a pack's
+needle image should be"). A periodic image defeats the build's coverage-preserving mips, which is
+half of why the first forest's spruces read as bare branches.
+
+**The budget** (default 40,000; 8,000 to 2,000,000). The default is 23,742 triangles at full detail
+— bark 7,058, needles 16,684 — where before G80 it was 12,882 (5,510 and 7,372); the forest's three
+recipes are 26,000 to 29,200 on their 40,000 ([the table](../experiments/conifer-shoots.md#the-budget)).
+The ladder: branch rows 3, then 2; trunk sides 8; branch sides 3; the trunk's rows halved; the cards
+halved repeatedly, on every spray; then the laterals **folded into their branch's own spray**, its
+cards as long as the longest lateral (the merge the allometric crowns make, a detail rung, not a
+structural one: no part moves); branch rows 1; trunk sides 6; and last the live branches' woody
+tubes, their sprays then reaching to the trunk. A dead branch keeps a tube on every rung (one row of
+three sides at the last), since nothing else stands for it. On 20,000 the default is 19,874 after
+four rungs; on 8,000 it is 3,514 (laterals folded); everything at its most expensive (60 whorls of
+10, six interwhorl branches, 20 laterals a metre of 2.5 m, 60 cards, 60 m) holds 8,000 with 4,066.
 
 ### The birch
 
@@ -584,7 +627,10 @@ triangles at merge 0, the two elders 1,419,335 and 1,050,182, `ancient-1m` 454,8
 merged rung), whose numbers are in [tree allometry](../experiments/tree-allometry.md), and since the
 habits (G79, 2026-10-22) different again (the elders 606,450 and 386,241, `ancient-1m` 435,153 with
 no rung walked; [megaflora habits](../experiments/megaflora-habits.md#what-the-recipes-come-to));
-the rows are kept as what those trees measured.
+the rows are kept as what those trees measured. **The two spruce rows are from before the conifer's
+shoots (G80, 2026-10-22)**: `spruce-tall` is now 23,450 triangles and `spruce-young` 4,062
+([conifer shoots](../experiments/conifer-shoots.md#the-budget)); the harness has not been run on them
+since.
 
 The same measurements as the palms' (below), over the three recipes, 2026-10-18:
 
@@ -1292,7 +1338,10 @@ structural table) in `tests/species_tests.cpp`; a change that moves one bumps
 `flora::k_flora_version` and the number in the same commit. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
-an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The allometric crown (G73) moved the broadleaf's and the
+an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The conifer's shoots (G80) moved the conifer's pin and not
+`k_flora_version`**, for the reason the allometric crown gives next: its new fields (`@version(2)`)
+are in every conifer file's canonical parameters, so every conifer key changed anyway, a version-1
+recipe's included, and no other species' did. **The allometric crown (G73) moved the broadleaf's and the
 ancient tree's pins and not `k_flora_version`**: it appended fields to both species (`@version(2)`),
 so every broadleaf and ancient file's canonical parameters — and with them its source hash and its
 cache key — changed anyway, while a version bump would have moved every other species' container
@@ -1338,6 +1387,12 @@ data, rebuilt from its parameters.
   (bark one-sided, leaves two-sided), each spray one connected surface, the motion parts the same
   bits on every rung, one seed one tree and another seed another, both pinned by hash; a file's
   species picks the solver and its canonical form carries that species alone;
+- the conifer's shoots (G80): a long live branch has no needle inside two needled reaches of its
+  tip, the dead branches none at all, and with no dead zone and nothing missing every branch is
+  needled; a missing share and sparse whorls drop parts and leave broken stubs while every part that
+  stays keeps its pivot and direction to the bit; a comb habit's needles hang further below their
+  branches than a plate's; a version-1 recipe reads and solves in its budget; the new fields are
+  refused out of range by name;
 - the motion contract: a record per vertex, part ids dense with the trunk 0 and every parent
   before its children, every part reaching weight 0 at its root and 1 at its tip, and its weights
   an arc-length parameter (the centroids of its vertices binned by weight lie along it at the

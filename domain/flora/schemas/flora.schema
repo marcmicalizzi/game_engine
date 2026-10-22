@@ -131,11 +131,15 @@ struct Broadleaf @version(3) {
   impostor_px: u32 = 256 @since(3)
 }
 
-/// A conifer (flora.md, "The conifer"): a pine or spruce of a straight trunk and whorls of
-/// branches in tiers, longest at the bottom and thinning upward, each branch a woody shoot carrying
-/// a spray of needle-bundle cards. Defaults make a 16 m spruce.
-struct Conifer @version(1) {
-  /// Everything left to chance: the lean's azimuth, every whorl's turn, every branch's spread.
+/// A conifer (flora.md, "The conifer"): a spruce or pine of a straight trunk and whorls of
+/// branches in tiers, longest at the bottom and thinning upward. Each live branch is a woody shoot
+/// whose outer, needled years carry second-order laterals — level plates or hanging curtains, by
+/// `pendulous` — and every shoot a spray of foliated-shoot cards; the seed leaves some branches
+/// out and thins some whorls, and the lowest `dead_share` of the crown is dead, bare wood.
+/// Defaults make a 16 m Norway spruce.
+struct Conifer @version(2) {
+  /// Everything left to chance: the lean's azimuth, every whorl's turn, every branch's spread, and
+  /// (on streams of their own) the laterals and which branches are missing or dead.
   seed: u64 = 1
   /// The leader's top above the ground: 1 to 60 m.
   height_m: f32 = 16.0 @unit(m)
@@ -159,13 +163,37 @@ struct Conifer @version(1) {
   top_angle_deg: f32 = 55.0 @unit(deg)
   /// How far a branch's tip turns back up towards the light: 0 to 1.
   upturn: f32 = 0.5
-  /// Needle-bundle cards along each side of the longest branch (shorter ones in proportion):
-  /// 2 to 60.
-  needle_cards: u32 = 24
-  /// A needle-bundle card's length, out from its branch: 0.03 to 1 m.
-  needle_length_m: f32 = 0.42 @unit(m)
+  /// Foliated-shoot cards along each side of the longest branch's needled part; every other
+  /// shoot, the laterals included, takes the same spacing: 2 to 60.
+  needle_cards: u32 = 6
+  /// A foliated-shoot card's length on a branch's own axis, out from it (a lateral's are 0.8 of
+  /// it): 0.03 to 1 m.
+  needle_length_m: f32 = 0.45 @unit(m)
   /// The most triangles the mesh may have: 8,000 to 2,000,000 (flora.md, "The conifer").
   triangle_budget: u32 = 40000
+  /// How many years a shoot keeps its needles: 2 to 15 (Norway spruce 5 to 7 in the lowlands, more
+  /// in the mountains). With `shoot_growth_m` it says how much of a branch is needled: its outer
+  /// years, the rest bare wood.
+  needle_years: f32 = 6.0 @since(2)
+  /// A branch's yearly extension: 0.02 to 0.6 m.
+  shoot_growth_m: f32 = 0.2 @unit(m) @since(2)
+  /// Shorter, thinner branches between two whorls (a spruce's interwhorl branches): 0 to 6.
+  interwhorl: u32 = 2 @since(2)
+  /// Second-order laterals per metre along a branch's outer part, both sides together: 0 to 20.
+  laterals_per_m: f32 = 10.0 @since(2)
+  /// The oldest laterals' length: 0.05 to 2.5 m; younger ones towards the tip are shorter, and none
+  /// is longer than 0.4 of its branch.
+  lateral_length_m: f32 = 0.7 @unit(m) @since(2)
+  /// How the laterals hang: 0 level plates (a plate spruce), 1 curtains hanging from the branch (a
+  /// comb spruce): 0 to 1.
+  pendulous: f32 = 0.7 @since(2)
+  /// The chance that a branch is missing, half of them leaving a broken stub: 0 to 0.5.
+  missing_branches: f32 = 0.05 @since(2)
+  /// The chance that a whorl is sparse, each of its branches missing with even odds: 0 to 0.5.
+  sparse_whorls: f32 = 0.08 @since(2)
+  /// The share of the crown's whorls, from the lowest, whose branches are dead — bare, thinner,
+  /// broken short and drooping (a spruce keeps its dead branches): 0 to 0.9.
+  dead_share: f32 = 0.12 @since(2)
 }
 
 /// A birch (flora.md, "The birch"): one to three slender white stems from one foot, a narrow crown

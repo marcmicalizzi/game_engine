@@ -855,8 +855,9 @@ TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, 
   std::string error;
   REQUIRE_MESSAGE(flora::solve_conifer(p, mesh, &report, &error, &motion), error);
   // Parts: the trunk and every branch; the whorls thin upward, so the top has fewer.
-  check_species("conifer", p, flora::solve_conifer, report.parts, 0xd849a6672e26415aull);
-  CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl);
+  // 0xd849a6672e26415a until the laterals, the interwhorl branches and the branches' fates (G80).
+  check_species("conifer", p, flora::solve_conifer, report.parts, 0x2a62d51b98e2dd20ull);
+  CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl + (p.whorls - 1) * p.interwhorl);
   CHECK(report.parts > 1 + p.whorls * 2);
   // A cone: the lowest branches reach furthest, the highest least.
   f32 low_reach = 0.0f;
@@ -869,6 +870,168 @@ TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, 
   CHECK(low_reach > 2.0f * high_reach);
 }
 
+namespace {
+
+struct ConiferBuild {
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+};
+
+ConiferBuild build_conifer(const flora::Conifer& p) {
+  ConiferBuild b;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_conifer(p, b.mesh, &b.report, &error, &b.motion), error);
+  return b;
+}
+
+// Per part, the smallest bend weight of its needle vertices (2 for a part with none).
+Vector<f32> lowest_needle_weight(const ConiferBuild& b) {
+  Vector<f32> lowest(b.motion.parts.size(), 2.0f);
+  const assets::Primitive& leaves = b.mesh.primitives[1];
+  for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; ++i) {
+    const u32 v = b.mesh.indices[i];
+    const u32 part = b.motion.vertex_part[v];
+    lowest[part] = std::min(lowest[part], b.motion.vertex_weight[v]);
+  }
+  return lowest;
+}
+
+}  // namespace
+
+// G80 (flora.md, "The conifer"; experiments/conifer-shoots.md): the needles are on the outer
+// years of the live branches — a long branch's inner part is bare — and the dead branches of the
+// self-pruned zone carry none.
+TEST_CASE("flora: the conifer's needles sit on its branches' outer years, none on the dead") {
+  flora::Conifer p;
+  p.crown_radius_m = 6.0f;  // branches long enough to have a bare inner part
+  const ConiferBuild b = build_conifer(p);
+  const Vector<f32> lowest = lowest_needle_weight(b);
+  const f32 needled = p.needle_years * p.shoot_growth_m;
+  u32 bare = 0;
+  u32 long_live = 0;
+  for (u32 k = 1; k < b.motion.parts.size(); ++k) {
+    CAPTURE(k);
+    if (lowest[k] > 1.5f) {
+      ++bare;
+      continue;
+    }
+    // Laterals reach in at most two needled reaches from the tip; the branch's own needles one.
+    const f32 length = b.motion.parts[k].length;
+    if (length > 2.5f * needled) {
+      ++long_live;
+      CHECK(lowest[k] >= (length - 2.0f * needled) / length - 1e-3f);
+    }
+  }
+  MESSAGE("conifer: " << bare << " dead branches of " << b.motion.parts.size() - 1 << ", "
+                      << long_live << " live branches long enough to be bare inside, "
+                      << b.report.leaf_cards << " cards, " << b.report.leaf_area_m2
+                      << " m2 of them");
+  CHECK(bare > 0u);
+  CHECK(long_live > 0u);
+  // With no dead zone and nothing missing, every branch is needled.
+  p.dead_share = 0.0f;
+  p.missing_branches = 0.0f;
+  p.sparse_whorls = 0.0f;
+  const ConiferBuild live = build_conifer(p);
+  const Vector<f32> live_lowest = lowest_needle_weight(live);
+  for (u32 k = 1; k < live.motion.parts.size(); ++k) {
+    CAPTURE(k);
+    CHECK(live_lowest[k] < 1.5f);
+  }
+  // The leaf cards and their area are reported.
+  CHECK(b.report.leaf_cards > 0u);
+  CHECK(b.report.leaf_area_m2 > 0.0f);
+  CHECK(b.report.shoots > b.report.parts);
+}
+
+// G80: a seeded share of the branches is missing — some leave a broken stub — drawn on a stream
+// of its own, so every branch that stays stands exactly where it stood.
+TEST_CASE("flora: the conifer's missing branches move none that stay") {
+  flora::Conifer full;
+  full.missing_branches = 0.0f;
+  full.sparse_whorls = 0.0f;
+  flora::Conifer gappy = full;
+  gappy.missing_branches = 0.35f;
+  gappy.sparse_whorls = 0.3f;
+  const ConiferBuild a = build_conifer(full);
+  const ConiferBuild b = build_conifer(gappy);
+  CHECK(b.motion.parts.size() < a.motion.parts.size());
+  u32 stubs = 0;
+  u32 next = 1;  // parts come in the same order, so a walk finds every survivor in turn
+  for (u32 k = 1; k < b.motion.parts.size(); ++k) {
+    CAPTURE(k);
+    const flora::MotionPart& part = b.motion.parts[k];
+    while (next < a.motion.parts.size() && !(a.motion.parts[next].pivot.x == part.pivot.x &&
+                                             a.motion.parts[next].pivot.y == part.pivot.y &&
+                                             a.motion.parts[next].pivot.z == part.pivot.z))
+      ++next;
+    REQUIRE(next < a.motion.parts.size());
+    const flora::MotionPart& was = a.motion.parts[next];
+    CHECK(part.direction.x == was.direction.x);
+    CHECK(part.direction.y == was.direction.y);
+    CHECK(part.direction.z == was.direction.z);
+    if (part.length < 0.2f * was.length) ++stubs;
+    ++next;
+  }
+  MESSAGE("conifer: " << a.motion.parts.size() - b.motion.parts.size() << " branches gone, "
+                      << stubs << " broken stubs");
+  CHECK(stubs > 0u);
+  // The other draws did not move either: the trunk is the same bits.
+  REQUIRE(a.mesh.positions.size() > 0);
+  CHECK(a.mesh.positions[0].x == b.mesh.positions[0].x);
+  CHECK(a.mesh.positions[0].y == b.mesh.positions[0].y);
+}
+
+// G80: a comb spruce's laterals hang from their branches as curtains; a plate spruce's lie level.
+TEST_CASE("flora: the conifer's laterals hang by its pendulous habit") {
+  flora::Conifer plate;
+  plate.pendulous = 0.0f;
+  flora::Conifer comb = plate;
+  comb.pendulous = 1.0f;
+  const ConiferBuild a = build_conifer(plate);
+  const ConiferBuild b = build_conifer(comb);
+  REQUIRE(a.motion.parts.size() == b.motion.parts.size());
+  const auto mean_drop = [](const ConiferBuild& t) {
+    const assets::Primitive& leaves = t.mesh.primitives[1];
+    f64 drop = 0.0;
+    u32 n = 0;
+    for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; ++i) {
+      const u32 v = t.mesh.indices[i];
+      const u32 part = t.motion.vertex_part[v];
+      if (part == 0) continue;
+      drop +=
+          static_cast<f64>(t.motion.parts[part].pivot.y) - static_cast<f64>(t.mesh.positions[v].y);
+      ++n;
+    }
+    return drop / static_cast<f64>(n);
+  };
+  const f64 plate_drop = mean_drop(a);
+  const f64 comb_drop = mean_drop(b);
+  MESSAGE("needles below their branch's base: plate " << plate_drop << " m, comb " << comb_drop
+                                                      << " m");
+  CHECK(comb_drop > plate_drop + 0.1);
+}
+
+// G80: a recipe written for version 1 of the conifer — no laterals, no fates — still reads, and
+// solves in its budget with the new fields at their defaults.
+TEST_CASE("flora: a version 1 conifer recipe still reads") {
+  flora::FloraFile file;
+  std::string error;
+  REQUIRE_MESSAGE(
+      flora::read_flora_file(
+          R"({"species":"conifer","conifer":{"seed":3,"height_m":22.0,"needle_cards":24,)"
+          R"("needle_length_m":0.42,"triangle_budget":50000}})",
+          file, error),
+      error);
+  CHECK(file.conifer.needle_cards == 24u);
+  CHECK(file.conifer.interwhorl == flora::Conifer{}.interwhorl);
+  assets::MeshData mesh;
+  flora::TreeReport report;
+  REQUIRE_MESSAGE(flora::solve_conifer(file.conifer, mesh, &report, &error), error);
+  CHECK(report.triangles <= 50000u);
+}
+
 TEST_CASE("flora: the branching species' ranges, ends and refusals") {
   std::string error;
   flora::Broadleaf b;
@@ -879,6 +1042,18 @@ TEST_CASE("flora: the branching species' ranges, ends and refusals") {
   c.whorls = 61;
   CHECK_FALSE(flora::conifer_in_range(c, error));
   CHECK(error.find("whorls") != std::string::npos);
+  c = flora::Conifer{};
+  c.interwhorl = 7;
+  CHECK_FALSE(flora::conifer_in_range(c, error));
+  CHECK(error.find("engine.flora.Conifer.interwhorl") != std::string::npos);
+  c = flora::Conifer{};
+  c.pendulous = 1.5f;
+  CHECK_FALSE(flora::conifer_in_range(c, error));
+  CHECK(error.find("engine.flora.Conifer.pendulous") != std::string::npos);
+  c = flora::Conifer{};
+  c.dead_share = 0.95f;
+  CHECK_FALSE(flora::conifer_in_range(c, error));
+  CHECK(error.find("engine.flora.Conifer.dead_share") != std::string::npos);
   // Everything at its most expensive at once, on the smallest budget: the bottom rung holds.
   flora::Broadleaf wb;
   wb.limbs = 12;
@@ -899,6 +1074,12 @@ TEST_CASE("flora: the branching species' ranges, ends and refusals") {
   wc.thinning = 0.0f;
   wc.needle_cards = 60;
   wc.height_m = 60.0f;
+  wc.interwhorl = 6;
+  wc.laterals_per_m = 20.0f;
+  wc.lateral_length_m = 2.5f;
+  wc.dead_share = 0.0f;
+  wc.missing_branches = 0.0f;
+  wc.sparse_whorls = 0.0f;
   wc.triangle_budget = 8000;
   REQUIRE_MESSAGE(flora::solve_conifer(wc, mesh, &report, &error, &motion), error);
   check_tree(mesh, motion, report, wc.triangle_budget, false);
