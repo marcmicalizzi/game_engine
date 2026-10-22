@@ -22,6 +22,7 @@
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -859,13 +860,15 @@ struct SkinnedRig {
   SceneRenderer renderer;
   std::string error;
   bool build(const gfx::Device& device, const Bar& bar, std::span<const SceneInstance> others,
-             bool dynamic, const RenderSettings& settings, Vec3 bar_at = k_bar_at) {
+             bool dynamic, const RenderSettings& settings, Vec3 bar_at = k_bar_at,
+             u32 frames_in_flight = 2) {
     if (!make_skinned_scene(bar, others, dynamic, bar_at, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (!scene.create(device, data, resolved, &error)) return false;
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    rd.frames_in_flight = frames_in_flight;
     return renderer.create(device, scene, resolved, rd, &error);
   }
 };
@@ -1141,5 +1144,185 @@ TEST_CASE(
     CHECK_FALSE(dynamic.renderer.move_instances(std::span<const u32>(&index, 1),
                                                 std::span<const SceneInstance>(&box, 1), &error));
     CHECK(error.find("a mesh it is not") != std::string::npos);
+  }
+}
+
+// **Instances moved in a scene read whole** (renderer.md, "Moving an instance"; roadmap R93). A
+// scene read whole has one instance table, which every frame in flight reads; a move rides the next
+// frame's record upload, a copy the render graph orders after the frames in flight and before that
+// frame's readers, and nothing waits. Here three instances of a scene read whole — the skinned bar,
+// the box beside it and a box of the tile (instances 0, 1 and 5: two copy regions) — walk a step a
+// frame for six steps, and inside each step they are moved again before each of `frames_in_flight
+// + 1` frames that are submitted and not waited for, so every frame's copy overwrites records the
+// frames before it may still be reading. Then a last move, and the frame captured after it is
+// compared word for word — ids, depth, colour — with the scene loaded with those placements. On the
+// mesh path, the vertex path, the cascaded maps with three frames in flight, and the ray-traced
+// raster with traced shadows where the device has them. And **nothing waited**: the moves and the
+// frames in flight made no device wait on this thread (`gfx::device_waits_on_thread`) but the ray
+// tracing chain's own resizes, which the renderer counts, and a move alone made none at all.
+TEST_CASE(
+    "moving instances: a scene read whole moved every frame with frames in flight draws the "
+    "loaded scene and never waits") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};  // the bar is instance 0
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> tile = renumbered(tile_a());
+  const Vector<SceneInstance> start = join({&head, &tile});  // instances 1.. of the scene
+  // Where each moved instance stands at step `s` (fractional between frames).
+  const auto bar_at = [](f32 s) { return Vec3{-3.0f + 0.6f * s, -1.0f, 1.8f}; };
+  const auto others_at = [&](f32 s) {
+    Vector<SceneInstance> out = start;
+    out[0] = placed(1, Vec3{1.5f * std::sin(0.8f * s), 0.0f, -0.4f * s}, 1.0f, 0.25f * s);
+    out[4] = placed(1, Vec3{-4.0f - 0.3f * s, 0.25f * s, 3.0f - 0.5f * s}, 1.0f, 0.6f - 0.1f * s);
+    return out;
+  };
+  const u32 moved[3] = {0, 1, 5};
+  const auto placements_at = [&](f32 s, SceneInstance* out) {
+    const Vector<SceneInstance> others = others_at(s);
+    out[0] = bar_placement(bar_at(s));
+    out[1] = others[0];
+    out[2] = others[4];
+  };
+  const bool traces =
+      gpu.device.features().cluster_acceleration_structure && gpu.device.features().ray_query;
+  struct Mode {
+    const char* name;
+    RasterMode raster;
+    ShadowMode shadows;
+    bool occlusion;
+    u32 in_flight;
+  };
+  const Mode modes[4] = {
+      {"mesh path, occlusion", RasterMode::Hardware, ShadowMode::Off, true, 2},
+      {"vertex path", RasterMode::Vertex, ShadowMode::Off, false, 2},
+      {"mesh path, cascaded maps, 3 in flight", RasterMode::Hardware, ShadowMode::Cascaded, false,
+       3},
+      {"ray-traced raster and shadows", RasterMode::RayTrace, ShadowMode::RayTraced, false, 2},
+  };
+  for (const Mode& mode : modes) {
+    const std::string name = mode.name;
+    CAPTURE(name);
+    if (mode.raster == RasterMode::RayTrace && !traces) {
+      MESSAGE(name << ": skipped, the device traces no cluster acceleration structures");
+      continue;
+    }
+    RenderSettings settings;
+    settings.raster = mode.raster;
+    settings.shadows = mode.shadows;
+    settings.occlusion = mode.occlusion;
+    SkinnedRig moving;
+    REQUIRE_MESSAGE(
+        moving.build(gpu.device, bar, std::span<const SceneInstance>(start.data(), start.size()),
+                     false, settings, bar_at(0.0f), mode.in_flight),
+        moving.error);
+    REQUIRE_FALSE(moving.scene.dynamic());
+    REQUIRE(moving.resolved.deform_pass);
+    if (moving.resolved.settings.raster != mode.raster) {
+      MESSAGE(name << ": skipped, the device resolves that raster mode to another");
+      continue;
+    }
+    std::string error;
+    // Two frames first, so whatever a first frame makes is made.
+    for (u32 f = 0; f < 2; ++f) {
+      moving.renderer.begin_frame();
+      REQUIRE_MESSAGE(moving.renderer.submit_frame(posed(), &error) != 0, error);
+    }
+    u64 waits = 0;
+    u64 move_waits = 0;
+    u64 resizes = 0;
+    const u64 uploads_before = moving.scene.record_uploads();
+    u32 frames = 0;
+    f32 first_centre = 0.0f;
+    f32 last_centre = 0.0f;
+    for (u32 k = 0; k < 6; ++k) {
+      CAPTURE(k);
+      const f32 at = static_cast<f32>(k) + 1.0f;
+      const u32 between = mode.in_flight + 1;
+      for (u32 j = 0; j < between; ++j) {
+        const f32 s = at - 1.0f + static_cast<f32>(j + 1) / static_cast<f32>(between + 1);
+        SceneInstance placements[3];
+        placements_at(s, placements);
+        const u32 grows = moving.renderer.stats().rt.grows;
+        const u32 shrinks = moving.renderer.stats().rt.shrinks;
+        const u64 before = gfx::device_waits_on_thread();
+        REQUIRE_MESSAGE(
+            moving.renderer.move_instances(std::span<const u32>(moved, 3),
+                                           std::span<const SceneInstance>(placements, 3), &error),
+            error);
+        move_waits += gfx::device_waits_on_thread() - before;
+        moving.renderer.begin_frame();
+        REQUIRE_MESSAGE(moving.renderer.submit_frame(posed(), &error) != 0, error);
+        ++frames;
+        waits += gfx::device_waits_on_thread() - before;
+        resizes += (moving.renderer.stats().rt.grows - grows) +
+                   (moving.renderer.stats().rt.shrinks - shrinks);
+      }
+      // The step's last move, with the frames above still in flight, and the frame after it.
+      SceneInstance placements[3];
+      placements_at(at, placements);
+      const u64 before = gfx::device_waits_on_thread();
+      REQUIRE_MESSAGE(
+          moving.renderer.move_instances(std::span<const u32>(moved, 3),
+                                         std::span<const SceneInstance>(placements, 3), &error),
+          error);
+      move_waits += gfx::device_waits_on_thread() - before;
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(moving.renderer.capture(posed(), channels(), shot, &error), error);
+
+      const Vector<SceneInstance> others = others_at(at);
+      SkinnedRig loaded;
+      REQUIRE_MESSAGE(loaded.build(gpu.device, bar,
+                                   std::span<const SceneInstance>(others.data(), others.size()),
+                                   false, settings, bar_at(at), mode.in_flight),
+                      loaded.error);
+      CapturedFrame expected;
+      REQUIRE_MESSAGE(loaded.renderer.capture(posed(), channels(), expected, &error), error);
+      const Difference d = compare(shot, expected);
+      u32 bar_pixels = 0;
+      f32 centre = 0.0f;
+      for (u32 p = 0; p < shot.width * shot.height; ++p) {
+        if (shot.ids[u64{p} * k_id_words] != 0) continue;
+        ++bar_pixels;
+        centre += static_cast<f32>(p % shot.width);
+      }
+      centre = bar_pixels > 0 ? centre / static_cast<f32>(bar_pixels) : -1.0f;
+      MESSAGE(name << ", step " << k << ": the bar at x " << bar_at(at).x << " over " << bar_pixels
+                   << " pixels (centre column " << centre << "); " << d.ids << " id, " << d.depth
+                   << " depth and " << d.color
+                   << " colour differences against the scene loaded whole");
+      CHECK(bar_pixels > 50);
+      CHECK(shot.covered == expected.covered);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+      CHECK(d.color == 0);
+      if (k == 0) first_centre = centre;
+      last_centre = centre;
+    }
+    MESSAGE(name << ": " << frames << " frames submitted after a move and not waited for, " << waits
+                 << " device waits among them, " << resizes << " ray tracing chain resizes; "
+                 << move_waits << " waits in the moves; "
+                 << moving.scene.record_uploads() - uploads_before << " records uploaded");
+    CHECK(last_centre - first_centre > 20.0f);  // the bar walked 3 m to the right
+    CHECK(move_waits == 0);
+    CHECK(waits == resizes);
+    if (mode.raster != RasterMode::RayTrace && mode.shadows != ShadowMode::RayTraced)
+      CHECK(waits == 0);
+    // Three records a frame that follows a move, the step's last move included: a move between
+    // frames is uploaded once, by the next frame, whatever the frames in flight are doing.
+    CHECK(moving.scene.record_uploads() - uploads_before == u64{3} * (frames + 6));
   }
 }

@@ -1,3 +1,4 @@
+#include "device_waits.h"
 #include "volk_instance.h"
 
 #include <core/base/assert.h>
@@ -701,9 +702,16 @@ void Device::destroy() noexcept {
 
 namespace {
 thread_local u64 t_buffers_created = 0;
+thread_local u64 t_device_waits = 0;
 }  // namespace
 
 u64 buffers_created_on_thread() noexcept { return t_buffers_created; }
+
+u64 device_waits_on_thread() noexcept { return t_device_waits; }
+
+namespace detail {
+void count_device_wait() noexcept { ++t_device_waits; }
+}  // namespace detail
 
 bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_visible,
                    BufferResource& out, std::string* error) {
@@ -797,6 +805,7 @@ void destroy_image(const Device& device, ImageResource& image) noexcept {
 // ---- commands --------------------------------------------------------------------------------
 
 bool submit_immediate(const Device& device, RecordFn record, void* context, std::string* error) {
+  detail::count_device_wait();
   const Handles& h = device.handles();
   VkCommandBufferAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;

@@ -205,7 +205,9 @@ struct AnimationTicks {
 // placement and its tier row at the tick too; the renderer's instance table takes every actor that
 // moved since the last frame in **one** `SceneRenderer::move_instances` before the next frame
 // (`flush`), as a prop reaches the picture on the frame after the tick that changed it — one call
-// a frame rather than one a tick, because the call waits for the device.
+// a frame rather than one a tick, since only where an actor stands when the frame is drawn can be
+// seen. The call waits for nothing (since 2026-10-22 not in a scene read whole either): the moves
+// ride the next frame's record upload (renderer.md, "Moving an instance").
 //
 // **What is state and what is replayed.** `to_json` is every actor's placement and its player
 // (`AnimationPlayer` as its schema writes it) plus a fade in flight, the state file's `actors`, and

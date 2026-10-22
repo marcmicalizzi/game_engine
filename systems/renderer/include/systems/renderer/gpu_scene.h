@@ -244,11 +244,14 @@ class GpuScene {
   // **Places loaded instances again** (`SceneRenderer::move_instances`; renderer.md, "Moving an
   // instance"): instance `indices[i]` takes `placements[i]`'s transform and origin through its
   // mesh's fit, as the load placed it, and keeps everything else — mesh, pairs, material base,
-  // deformation — so nothing laid out per pair or per instance moves. In a scene read whole the
-  // entries are written into the device table at once (a blocking submission), which is why **no
-  // frame may be in flight** (the caller waits first). In a dynamic scene they are marked pending
-  // for every table set, as a tail block's slots are, and the next `prepare_tables` copies them:
-  // nothing is written to the device and nothing waits. Refused, with nothing written, for an index
+  // deformation — so nothing laid out per pair or per instance moves. **Nothing is written to the
+  // device and nothing waits**: in a scene read whole the entries are marked for the next frame's
+  // record upload (`prepare_records`), which copies them into the one table inside that frame's
+  // command stream, ordered after every frame in flight by the render graph; in a dynamic scene
+  // they are marked pending for every table set, as a tail block's slots are, and the next
+  // `prepare_tables` copies them. Until 2026-10-22 a scene read whole waited for the device and
+  // wrote the table with a blocking submission (renderer.md, "Moving an instance"). Refused, with
+  // nothing written, for an index
   // past the instances, a dynamic scene's tail slot (past `static_instance_count()`), a placement
   // of another mesh, or a translation off the world grid.
   bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
@@ -266,6 +269,28 @@ class GpuScene {
   // it. Nothing for a scene read whole.
   bool reserve_table_sets(u32 frames_in_flight, std::string* error = nullptr);
   u32 table_sets() const noexcept { return sets_.size(); }
+  // **The records a frame uploads** (renderer.md, "Moving an instance"): the instance records moved
+  // since the last frame (`place_instances` in a scene read whole) or placed at a terrain ring
+  // chunk's corner, and the mesh records of ring slots turned on or off, each written once with the
+  // state it ends in. `prepare_records`, called by the frame about to be recorded in frame slot
+  // `slot` (whose last frame is done), stages them in that slot's own host-visible staging and
+  // hands over the copies; the frame records them in a transfer pass whose first barrier waits for
+  // every earlier command on the queue, so the frames in flight finish reading the old records
+  // before the copy writes, and every pass of the frame that reads a table is ordered after it.
+  // `reserve_record_staging` makes the slots' staging once, when the renderer is made, for a scene
+  // that can write records at all (one read whole, or one with ring slots); a frame that stages
+  // more than its slot holds makes the slot's staging again, larger.
+  struct RecordUpdate {
+    gfx::BufferResource staging;        // the frame slot's
+    Vector<gfx::BufferCopy> instances;  // staging -> `instances`, one region per run of slots
+    Vector<gfx::BufferCopy> meshes;     // staging -> `meshes`, one region per run of meshes
+    u64 bytes = 0;
+  };
+  bool reserve_record_staging(u32 frames_in_flight, std::string* error = nullptr);
+  bool prepare_records(u32 slot, RecordUpdate& out, std::string* error = nullptr);
+  // The instance and mesh records the frames have uploaded, and the bytes.
+  u64 record_uploads() const noexcept { return record_uploads_; }
+  u64 record_upload_bytes() const noexcept { return record_upload_bytes_; }
   // What the frame about to be recorded in frame slot `slot` has to write into the tables it reads
   // (a dynamic scene only; `write` is false for one read whole and on every frame after the first
   // since the last change). Flips `instances` and `pair_table` to the next set when anything
@@ -638,12 +663,14 @@ class GpuScene {
   bool terrain_chunk_upload(u32 level, TerrainChunk& chunk, std::string* error = nullptr);
   // **The terrain's staging ring** (renderer.md, "What a frame waits for"): one host-visible,
   // persistently mapped buffer, made and touched once when the scene is, that every chunk staged
-  // for upload and every frame's slot records are written into, a frame's share released when its
-  // slot comes round again. Until 2026-10-04 each chunk and each frame's records made a buffer of
-  // their own — an allocation on the frame's thread, and first-touch page faults on every byte
-  // staged. A staging that does not fit (an offscreen frame that uploads a whole rebuild, or the
-  // first fill) gets a buffer of its own, counted in `terrain_staging_overflows`; a window's frame
-  // stages no more than fits (`terrain_chunk_fits`) and leaves the rest for the next.
+  // for upload is written into, a frame's share released when its slot comes round again. Until
+  // 2026-10-04 each chunk and each frame's records made a buffer of their own — an allocation on
+  // the frame's thread, and first-touch page faults on every byte staged; since 2026-10-22 the
+  // slots' records go through the frame slot's record staging instead (`prepare_records`), which a
+  // frame never has to leave for later. A staging that does not fit (an offscreen frame that
+  // uploads a whole rebuild, or the first fill) gets a buffer of its own, counted in
+  // `terrain_staging_overflows`; a window's frame stages no more than fits (`terrain_chunk_fits`)
+  // and leaves the rest for the next.
   bool terrain_chunk_fits(const TerrainChunk& chunk) const noexcept;
   u64 terrain_staging_bytes() const noexcept { return staging_ring_.size; }
   u64 terrain_staging_peak() const noexcept { return ring_peak_; }
@@ -676,8 +703,8 @@ class GpuScene {
     };
     Vector<Copy> copies;
     Vector<gfx::BufferResource> fields;  // every field buffer the table names
-    // The rings' chunk uploads and their slots' mesh records: copies into the scene's geometry
-    // buffers, which every pass that reads geometry then has to be ordered after.
+    // The rings' chunk uploads: copies into the scene's geometry buffers, which every pass that
+    // reads geometry then has to be ordered after. (The slots' records are `prepare_records`'.)
     struct GeometryCopy {
       gfx::BufferHandle src;
       gfx::BufferHandle dst;
@@ -1056,9 +1083,13 @@ class GpuScene {
   Vector<gfx::BufferResource> field_retired_;
   u32 field_staging_made_ = 0;
   Vector<u32> pending_mesh_writes_;  // mesh indices whose MeshDesc the next frame writes
-  // Instance indices whose InstanceDesc the next frame writes: a ring slot turned on at its chunk's
-  // corner (renderer.md, "The ground's tiles are placed at their corners").
+  // Instance indices whose InstanceDesc the next frame writes, in a scene read whole: a ring slot
+  // turned on at its chunk's corner (renderer.md, "The ground's tiles are placed at their
+  // corners"), and an instance moved (`place_instances`).
   Vector<u32> pending_instance_writes_;
+  Vector<gfx::BufferResource> record_staging_;  // one per frame slot (`prepare_records`)
+  u64 record_uploads_ = 0;
+  u64 record_upload_bytes_ = 0;
   Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
   TerrainLevelSet* rings_ = nullptr;  // during `create` only
   // The sand's detail: the terrain's ground, for its wind, and the time its surface stands at.

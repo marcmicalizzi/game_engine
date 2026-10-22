@@ -1,3 +1,5 @@
+#include "device_waits.h"
+
 #include <core/base/assert.h>
 #include <core/log/log.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
@@ -190,6 +192,7 @@ bool FrameContext::wait(u64 value, u64 timeout_ns) const noexcept {
 }
 
 void FrameContext::wait_idle() const noexcept {
+  detail::count_device_wait();
   if (device_ != nullptr) vkDeviceWaitIdle(device_->handles().device);
 }
 

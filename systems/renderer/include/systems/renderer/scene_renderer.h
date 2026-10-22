@@ -648,12 +648,15 @@ class SceneRenderer {
 
   // **Moves loaded instances** (renderer.md, "Moving an instance"): instance `indices[i]` is placed
   // as `placements[i]` places it — the mesh's fit, then the transform, at `origin` — keeping its
-  // mesh, its pairs, its material base and its deformation. In a scene read whole it waits for the
-  // device, then writes the changed entries of the instance table; every pass reads the table each
-  // frame (the cull pass, the rasterizers, the resolve, the top-level structure's records), so the
-  // next frame draws them where they now stand. In a dynamic scene it waits for nothing: the moved
-  // entries ride the next frame's flip to a table set no frame in flight reads, as a tail's change
-  // does ("Instances that come and go"). The scene's bounds are the load's. Refused, with nothing
+  // mesh, its pairs, its material base and its deformation. **It waits for nothing**: the next
+  // frame draws them where they now stand, and the frames in flight where they stood. In a scene
+  // read whole the changed entries ride the next frame's record upload, a copy into the one
+  // instance table that the render graph orders after every frame in flight and before every pass
+  // that reads the table (the cull pass, the rasterizers, the resolve, the top-level structure's
+  // records); until 2026-10-22 it waited for the device and wrote them at once. In a dynamic scene
+  // they ride the next frame's flip to a table set no frame in flight reads, as a tail's change
+  // does
+  // ("Instances that come and go"). The scene's bounds are the load's. Refused, with nothing
   // moved, for an index past the scene's instances, a dynamic scene's tail slot (the tail is
   // `set_dynamic_instances`'), or a placement naming another mesh. Never between `begin_frame` and
   // `submit_frame`.
@@ -860,6 +863,9 @@ class SceneRenderer {
   GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
   GpuScene::TerrainUpdate terrain_frame_;
+  // The frame being recorded's record upload: instances moved and ring slots' records since the
+  // last frame (GpuScene::prepare_records); its lists are kept, so a frame of moves allocates none.
+  GpuScene::RecordUpdate records_;
   Vector<gfx::BufferResource> retired_;  // a change's outgrown buffers, on their way to deferral
   Stats stats_;
   gfx::CommandList commands_;  // the frame between begin_frame and submit_frame

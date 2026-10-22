@@ -368,6 +368,12 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
+  // And the records a frame uploads in a scene read whole (or a ring slot's): one staging per frame
+  // slot, so a move written between frames waits for nothing (GpuScene::prepare_records).
+  if (!scene.reserve_record_staging(desc.frames_in_flight, error)) {
+    destroy();
+    return false;
+  }
   // Geometry residency, when the scene was built streamed. It owns the page manager, the staging
   // ring's bookkeeping and the per-slot feedback buffers; the frame owns the passes that clear the
   // feedback, copy the pages in, and copy the feedback out.
@@ -1708,6 +1714,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // fields the host handed over since the last frame, which this frame copies onto the device
   // before either pass runs. Nothing for a scene whose terrain does not move.
   scene.terrain_prepare(slot, terrain_frame_);
+  // The instance records moved since the last frame (`move_instances` in a scene read whole) and
+  // the ring slots' records, staged in this slot's own staging for the "record upload" pass below,
+  // which copies them into the tables before anything reads them (GpuScene::prepare_records).
+  if (!scene.prepare_records(slot, records_, error)) return false;
   phase_ns_[1] = time::monotonic_ns();
   const u64 terrain_table = terrain_frame_.table;
   // The pairs there are, which is what the cull dispatches over and bounds-checks against, and the
@@ -2722,38 +2732,47 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     for (u32 f = 0; f < terrain_field_count; ++f)
       b.read(rg_terrain_fields[f], gfx::Access::ComputeRead);
   };
-  // The rings' chunk uploads and slot records (GpuScene::terrain_chunk_upload/show): copies into
-  // the scene's geometry buffers, which every pass reads. On such a frame the buffers are imported
-  // as last read everywhere — so the copies wait for the frames in flight that may still read a
-  // slot being reused — and every pass that reads geometry declares it (`read_pool`), so the graph
-  // orders it after the copies. Every other frame declares nothing, as a scene read whole never
-  // has.
+  // The rings' chunk uploads (GpuScene::terrain_chunk_upload) and the frame's record upload — the
+  // instance records moved since the last frame, a ring slot's records (GpuScene::prepare_records):
+  // copies into buffers that every pass reads and that the frames in flight may still be reading.
+  // On such a frame each buffer written is imported as last read everywhere, so the copy's first
+  // barrier waits for every command submitted before it on the queue — the frames in flight
+  // included, which is the write-after-read the copy has against them (renderer.md, "Moving an
+  // instance") — and every pass that reads one declares it (`read_pool`, `read_ring_geometry`), so
+  // the graph orders it after the copies. Every other frame declares nothing, as a scene read whole
+  // never has.
   const bool terrain_geometry = !terrain_frame_.geometry.empty();
+  const bool instance_records = !records_.instances.empty();
+  const bool mesh_records = !records_.meshes.empty();
   struct TerrainGeometry {
     gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
-    gfx::RgBuffer instances;  // a slot turned on stands at its chunk's corner
+    gfx::RgBuffer instances;  // an instance moved, or a slot turned on at its chunk's corner
+    gfx::RgBuffer staging;    // this frame slot's record staging
   } tg{};
+  const auto import_read = [&](const char* name, const gfx::BufferResource& buffer) {
+    return buffer.buffer.valid()
+               ? graph.import_buffer(name, buffer, gfx::PipelineStage::AllCommands,
+                                     gfx::MemoryAccess::MemoryRead)
+               : gfx::RgBuffer{};
+  };
   if (terrain_geometry) {
-    const auto import = [&](const char* name, const gfx::BufferResource& buffer) {
-      return buffer.buffer.valid()
-                 ? graph.import_buffer(name, buffer, gfx::PipelineStage::AllCommands,
-                                       gfx::MemoryAccess::MemoryRead)
-                 : gfx::RgBuffer{};
-    };
-    tg.clusters = import("ring clusters", scene.clusters);
-    tg.lods = import("ring lods", scene.lods);
-    tg.quantized = import("ring quantized", scene.quantized);
-    tg.attributes = import("ring attributes", scene.attributes);
-    tg.triangles = import("ring triangles", scene.triangles);
-    tg.meshes = import("ring meshes", scene.meshes);
-    tg.instances = import("ring instances", scene.instances);
+    tg.clusters = import_read("ring clusters", scene.clusters);
+    tg.lods = import_read("ring lods", scene.lods);
+    tg.quantized = import_read("ring quantized", scene.quantized);
+    tg.attributes = import_read("ring attributes", scene.attributes);
+    tg.triangles = import_read("ring triangles", scene.triangles);
     if (rt_chain) {
-      tg.vertices = import("ring vertices", scene.vertices);
-      tg.indices8 = import("ring indices8", scene.indices8);
+      tg.vertices = import_read("ring vertices", scene.vertices);
+      tg.indices8 = import_read("ring indices8", scene.indices8);
     }
   }
-  auto read_ring_geometry = [&, terrain_geometry](gfx::PassBuilder& b, gfx::Access access) {
-    if (!terrain_geometry) return;
+  if (mesh_records) tg.meshes = import_read("mesh records", scene.meshes);
+  if (instance_records) tg.instances = import_read("instance records", scene.instances);
+  if (instance_records || mesh_records) {
+    tg.staging = graph.import_buffer("record staging", records_.staging, gfx::PipelineStage::Host,
+                                     gfx::MemoryAccess::HostWrite);
+  }
+  auto read_ring_geometry = [&](gfx::PassBuilder& b, gfx::Access access) {
     for (const gfx::RgBuffer handle :
          {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
           tg.indices8, tg.instances}) {
@@ -2969,9 +2988,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
           }
           if (terrain_geometry) {
-            for (const gfx::RgBuffer handle :
-                 {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes,
-                  tg.vertices, tg.indices8, tg.instances}) {
+            for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
+                                               tg.triangles, tg.vertices, tg.indices8}) {
               if (handle.valid()) b.write(handle, gfx::Access::TransferWrite);
             }
           }
@@ -2986,6 +3004,33 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           for (const GpuScene::TerrainUpdate::GeometryCopy& copy : terrain_frame_.geometry)
             cb.copy_buffer(copy.src, copy.dst, copy.region);
           timer.end(cb);
+        });
+  }
+  // **The record upload** (renderer.md, "Moving an instance"): the instance records moved since the
+  // last frame and the ring slots' records, out of this frame slot's staging into the one instance
+  // table and the mesh table, a region per run of consecutive records. The tables were imported as
+  // last read everywhere, so the barrier in front of this pass waits for the frames in flight to
+  // finish reading the records it overwrites; every reader below declares them, so none runs
+  // before it. Untimed: a few hundred bytes, which no zone would resolve.
+  if (instance_records || mesh_records) {
+    graph.add_pass(
+        "record upload", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(tg.staging, gfx::Access::TransferRead);
+          if (tg.instances.valid()) b.write(tg.instances, gfx::Access::TransferWrite);
+          if (tg.meshes.valid()) b.write(tg.meshes, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          if (!records_.instances.empty()) {
+            cb.copy_buffer(records_.staging.buffer, scene.instances.buffer,
+                           std::span<const gfx::BufferCopy>(records_.instances.data(),
+                                                            records_.instances.size()));
+          }
+          if (!records_.meshes.empty()) {
+            cb.copy_buffer(
+                records_.staging.buffer, scene.meshes.buffer,
+                std::span<const gfx::BufferCopy>(records_.meshes.data(), records_.meshes.size()));
+          }
         });
   }
 
@@ -3101,7 +3146,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (cache_rebuilds == 0) return;
     graph.add_pass(
         "deform cache", gfx::PassKind::Compute,
-        [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
+        [&](gfx::PassBuilder& b) {
+          b.write(rg_pool, gfx::Access::ComputeWrite);
+          read_pool(b, gfx::Access::ComputeRead);  // the instance it rebuilds, and its mesh
+        },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "deform cache");
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_cache.pipeline);
@@ -3557,6 +3605,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, gfx::Access::MeshRead);
             b.read(rg_slots, gfx::Access::MeshRead);
           }
+          read_pool(b, gfx::Access::MeshRead);
           read_tables(b, gfx::Access::MeshRead, false);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
         },
@@ -4176,11 +4225,13 @@ bool SceneRenderer::read_last_frame(const CaptureChannels& channels, CapturedFra
 bool SceneRenderer::move_instances(std::span<const u32> indices,
                                    std::span<const SceneInstance> placements, std::string* error) {
   ENGINE_ASSERT(!recording_, "SceneRenderer::move_instances: between begin_frame and submit_frame");
-  // A dynamic scene's table sets take the move as they take a tail's change: into the set the next
-  // frame flips to, with no frame in flight reading it, so nothing waits (renderer.md, "Instances
-  // that come and go"). A scene read whole has one table, which every frame in flight reads and the
-  // move writes at once; so no frame may be in flight.
-  if (!scene_->dynamic()) frames_.wait_idle();
+  // Nothing waits (renderer.md, "Moving an instance"). A dynamic scene's table sets take the move
+  // as they take a tail's change: into the set the next frame flips to, which no frame in flight
+  // reads ("Instances that come and go"). A scene read whole has one table, which every frame in
+  // flight reads: the move rides the next frame's record upload, whose copy the render graph orders
+  // after those frames and before that frame's readers. Until 2026-10-22 this waited for the device
+  // here and wrote the table with a blocking submission, which made a host that moves actors every
+  // frame pay its CPU and GPU time one after the other (docs/experiments/forest-cpu-2026-10-21.md).
   return scene_->place_instances(indices, placements, error);
 }
 

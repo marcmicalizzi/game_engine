@@ -77,8 +77,9 @@ class Viewport {
   // **A preview**: instance `instance` drawn as `placed` places it while the document still
   // says otherwise — what the gizmo shows while its button is held, so that a drag writes nothing
   // until it is released (one gesture, one command). It is `SceneRenderer::move_instances`, the
-  // call `sync` makes for a transaction, so it waits for the device: a pointer event's cost. One
-  // instance at a time; the box follows it. Never between `begin_frame` and `submit_frame`.
+  // call `sync` makes for a transaction, which waits for nothing: the next frame draws it there
+  // (until 2026-10-22 it waited for the device, a pointer event's cost). One instance at a time;
+  // the box follows it. Never between `begin_frame` and `submit_frame`.
   bool preview(u32 instance, const renderer::SceneInstance& placed, std::string& error);
   // Puts the previewed instance back where the document has it: a cancelled or empty drag.
   bool cancel_preview(std::string& error);

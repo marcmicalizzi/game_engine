@@ -58,6 +58,11 @@ void destroy_buffer(const Device& device, BufferResource& buffer) noexcept;
 // and the device allocator's — so a frame loop's test counts these to show the loop makes none in
 // steady state (docs/subsystems/renderer.md, "What a frame waits for").
 u64 buffers_created_on_thread() noexcept;
+// The times the calling thread has stopped for the device since it started: a `submit_immediate`
+// (a submission and a wait for its fence) or a `FrameContext::wait_idle` (the device drained). A
+// frame loop's test counts these to show that what a host does between frames — moving instances,
+// say — never makes the CPU wait for the GPU (docs/subsystems/renderer.md, "Moving an instance").
+u64 device_waits_on_thread() noexcept;
 // Creates a device-local buffer with `usage` plus TransferDst and ShaderDeviceAddress, fills it
 // from `data` through a staging buffer, and waits for the copy. For setup-time uploads.
 bool upload_buffer(const Device& device, const void* data, u64 bytes, BufferUsage usage,

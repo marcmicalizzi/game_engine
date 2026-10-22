@@ -60,8 +60,9 @@ class EditorInput {
   bool handle(const window::Event& event, bool over_panels, bool keys_free,
               EditorDocument& document, Viewport& viewport, std::string& error);
   // Moves a drag's preview to where this frame's events left the pointer: once a frame, after the
-  // events and before the frame is drawn, because a preview is a `move_instances` that waits for
-  // the device and a mouse can send a thousand moves a second.
+  // events and before the frame is drawn, because only the last of a frame's pointer moves can be
+  // seen and a mouse can send a thousand a second. (A preview is a `move_instances`, which has
+  // waited for nothing since 2026-10-22; until then each one waited for the device.)
   bool flush(Viewport& viewport, std::string& error);
 
   // What the toolbar's buttons and the keys do; each cancels a drag in progress first.

@@ -1022,6 +1022,103 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   return true;
 }
 
+namespace {
+
+// A frame slot's record staging: half as much again as asked for, in 64 KiB steps, and never less
+// than 64 KiB, which is 680 instance records — the forest's 208 animals moving every frame use
+// 20 KiB of it.
+u64 record_staging_size(u64 bytes) noexcept {
+  const u64 want = bytes + bytes / 2;
+  return std::max<u64>(64 * 1024, (want + 65535) / 65536 * 65536);
+}
+
+// Sorted, without repeats, in place: a list that only grows to what it held before allocates
+// nothing.
+void sort_unique(Vector<u32>& list) {
+  std::sort(list.begin(), list.end());
+  list.erase(std::unique(list.begin(), list.end()), list.end());
+}
+
+}  // namespace
+
+bool GpuScene::reserve_record_staging(u32 frames_in_flight, std::string* error) {
+  // A dynamic scene's instance records ride its table sets; only its ring slots' mesh records come
+  // through here. A scene read whole can move any of its instances.
+  if (device_ == nullptr || (dynamic_ && ring_slots_.empty())) return true;
+  // The most a frame of ring swaps writes: every slot's mesh and instance records, off and on.
+  u32 all_slots = 0;
+  for (const RingSlots& ring : ring_slots_)
+    all_slots += ring.slots.size();
+  const u64 size = record_staging_size(
+      u64{2} * all_slots * (sizeof(gfx::MeshDesc) + sizeof(gfx::InstanceDesc)) + 16);
+  if (record_staging_.size() < frames_in_flight) record_staging_.resize(frames_in_flight);
+  for (gfx::BufferResource& staging : record_staging_) {
+    if (staging.size >= size) continue;
+    gfx::destroy_buffer(*device_, staging);
+    if (!gfx::create_buffer(*device_, size, gfx::BufferUsage::TransferSrc, true, staging, error))
+      return false;
+    // Touched once, here, as the terrain's ring is: a mapped page first written inside a frame is a
+    // fault the frame's thread pays for (renderer.md, "What a frame waits for").
+    std::memset(staging.mapped, 0, static_cast<usize>(size));
+  }
+  return true;
+}
+
+bool GpuScene::prepare_records(u32 slot, RecordUpdate& out, std::string* error) {
+  out.staging = gfx::BufferResource{};
+  out.instances.clear();
+  out.meshes.clear();
+  out.bytes = 0;
+  if (!instances.buffer.valid()) pending_instance_writes_.clear();
+  if (!meshes.buffer.valid()) pending_mesh_writes_.clear();
+  if (pending_instance_writes_.empty() && pending_mesh_writes_.empty()) return true;
+  // Each record once, with the state it ends in: a slot moved twice since the last frame, or turned
+  // off and on, is one record.
+  sort_unique(pending_instance_writes_);
+  sort_unique(pending_mesh_writes_);
+  const u64 instance_bytes = u64{pending_instance_writes_.size()} * sizeof(gfx::InstanceDesc);
+  const u64 mesh_at = (instance_bytes + 15) & ~u64{15};
+  const u64 bytes = mesh_at + u64{pending_mesh_writes_.size()} * sizeof(gfx::MeshDesc);
+  if (slot >= record_staging_.size()) record_staging_.resize(slot + 1);
+  gfx::BufferResource& staging = record_staging_[slot];
+  if (staging.size < bytes) {
+    // The slot's last frame is done, so its staging can go now (as a dynamic scene's table staging
+    // does, `prepare_tables`). A frame that writes more records than any before it pays for this
+    // once; a steady stream of moves never does.
+    gfx::destroy_buffer(*device_, staging);
+    if (!gfx::create_buffer(*device_, record_staging_size(bytes), gfx::BufferUsage::TransferSrc,
+                            true, staging, error)) {
+      return false;
+    }
+  }
+  auto* base = static_cast<u8*>(staging.mapped);
+  // One copy region per run of consecutive records, so a move of every instance is one region
+  // rather than one per instance (a copy is encoded region by region on the frame's thread:
+  // docs/experiments/frame-thread-spikes-2026-10-04.md).
+  const auto stage = [&](const Vector<u32>& list, u64 at, u64 size, const void* records,
+                         Vector<gfx::BufferCopy>& copies) {
+    for (u32 k = 0; k < list.size(); ++k) {
+      std::memcpy(base + at + u64{k} * size, static_cast<const u8*>(records) + u64{list[k]} * size,
+                  static_cast<usize>(size));
+      if (k > 0 && list[k] == list[k - 1] + 1) {
+        copies.back().size += size;
+      } else {
+        copies.push_back(gfx::BufferCopy{at + u64{k} * size, u64{list[k]} * size, size});
+      }
+    }
+  };
+  stage(pending_instance_writes_, 0, sizeof(gfx::InstanceDesc), instance_table_.data(),
+        out.instances);
+  stage(pending_mesh_writes_, mesh_at, sizeof(gfx::MeshDesc), mesh_descs_.data(), out.meshes);
+  record_uploads_ += pending_instance_writes_.size() + pending_mesh_writes_.size();
+  record_upload_bytes_ += bytes;
+  pending_instance_writes_.clear();
+  pending_mesh_writes_.clear();
+  out.staging = staging;
+  out.bytes = bytes;
+  return true;
+}
+
 u32 GpuScene::tail_index(u32 slot) const noexcept {
   if (!dynamic_ || slot < static_instances_ || slot >= instance_count_) return ~0u;
   const TileBlock* block = layout_.block_of_slot(slot);
@@ -1967,80 +2064,8 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   }
   out.table =
       terrain_table_.address + u64{region} * terrain_.size() * sizeof(gfx::TerrainLevelDesc);
-  // The rings' chunk uploads since the last frame, and the records of every slot turned on or off,
-  // each written once with the state it ends in (a slot turned off and another on in one frame are
-  // two records, never one written twice).
-  if (!pending_mesh_writes_.empty() && meshes.buffer.valid()) {
-    std::sort(pending_mesh_writes_.begin(), pending_mesh_writes_.end());
-    pending_mesh_writes_.erase(
-        std::unique(pending_mesh_writes_.begin(), pending_mesh_writes_.end()),
-        pending_mesh_writes_.end());
-    // Through the staging ring, which this frame's share of is released when its slot comes round;
-    // until 2026-10-04 a buffer made for them every frame that turned a slot on or off.
-    const u64 bytes = u64{pending_mesh_writes_.size()} * sizeof(gfx::MeshDesc);
-    u64 ring_at = 0;
-    const bool in_ring = ring_take(bytes, ring_at);
-    gfx::BufferResource staging = in_ring ? staging_ring_ : gfx::BufferResource{};
-    std::string error;
-    if (!in_ring && staging_ring_.mapped != nullptr) {
-      ++ring_overflows_;
-      ring_overflow_bytes_ += bytes;
-    }
-    if (in_ring ||
-        gfx::create_buffer(*device_, bytes, gfx::BufferUsage::TransferSrc, true, staging, &error)) {
-      auto* descs = reinterpret_cast<gfx::MeshDesc*>(static_cast<u8*>(staging.mapped) + ring_at);
-      for (u32 k = 0; k < pending_mesh_writes_.size(); ++k) {
-        const u32 mesh = pending_mesh_writes_[k];
-        descs[k] = mesh_descs_[mesh];
-        pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
-            staging.buffer, meshes.buffer,
-            gfx::BufferCopy{ring_at + u64{k} * sizeof(gfx::MeshDesc),
-                            u64{mesh} * sizeof(gfx::MeshDesc), sizeof(gfx::MeshDesc)}});
-      }
-      pending_geometry_bytes_ += bytes;
-      if (!in_ring) pending_staging_.push_back(staging);
-    } else {
-      ENGINE_LOG_ERROR(log_renderer, "a terrain ring's slot records could not be staged",
-                       log::field("error", error));
-    }
-    pending_mesh_writes_.clear();
-  }
-  // The instances of the slots turned on, at their chunks' corners, the same way: each written once
-  // with where it ends.
-  if (!pending_instance_writes_.empty() && instances.buffer.valid()) {
-    std::sort(pending_instance_writes_.begin(), pending_instance_writes_.end());
-    pending_instance_writes_.erase(
-        std::unique(pending_instance_writes_.begin(), pending_instance_writes_.end()),
-        pending_instance_writes_.end());
-    const u64 bytes = u64{pending_instance_writes_.size()} * sizeof(gfx::InstanceDesc);
-    u64 ring_at = 0;
-    const bool in_ring = ring_take(bytes, ring_at);
-    gfx::BufferResource staging = in_ring ? staging_ring_ : gfx::BufferResource{};
-    std::string error;
-    if (!in_ring && staging_ring_.mapped != nullptr) {
-      ++ring_overflows_;
-      ring_overflow_bytes_ += bytes;
-    }
-    if (in_ring ||
-        gfx::create_buffer(*device_, bytes, gfx::BufferUsage::TransferSrc, true, staging, &error)) {
-      auto* descs =
-          reinterpret_cast<gfx::InstanceDesc*>(static_cast<u8*>(staging.mapped) + ring_at);
-      for (u32 k = 0; k < pending_instance_writes_.size(); ++k) {
-        const u32 instance = pending_instance_writes_[k];
-        descs[k] = instance_table_[instance];
-        pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
-            staging.buffer, instances.buffer,
-            gfx::BufferCopy{ring_at + u64{k} * sizeof(gfx::InstanceDesc),
-                            u64{instance} * sizeof(gfx::InstanceDesc), sizeof(gfx::InstanceDesc)}});
-      }
-      pending_geometry_bytes_ += bytes;
-      if (!in_ring) pending_staging_.push_back(staging);
-    } else {
-      ENGINE_LOG_ERROR(log_renderer, "a terrain ring's slot instances could not be staged",
-                       log::field("error", error));
-    }
-    pending_instance_writes_.clear();
-  }
+  // The rings' chunk uploads since the last frame (the records of the slots they turn on or off are
+  // `prepare_records`', which every frame runs).
   // Swapped and cleared rather than moved from, so both lists keep what they grew to and a frame
   // of chunk uploads allocates nothing once they have (the long-flight test counts it).
   std::swap(out.geometry, pending_geometry_);
@@ -3559,6 +3584,11 @@ void GpuScene::destroy() noexcept {
   pending_geometry_.clear();
   pending_geometry_bytes_ = 0;
   pending_mesh_writes_.clear();
+  pending_instance_writes_.clear();
+  for (gfx::BufferResource& staging : record_staging_)
+    gfx::destroy_buffer(device, staging);
+  record_staging_.clear();
+  record_uploads_ = record_upload_bytes_ = 0;
   ring_slots_.clear();
   slot_parts_.clear();
   mesh_descs_.clear();
@@ -3703,27 +3733,19 @@ bool GpuScene::place_instances(std::span<const u32> indices,
     gfx::set_instance_placement(entry, mat4_from_transform(placements[i].transform) * fit,
                                 instance_translation(placements[i], fit));
   }
-  if (dynamic_) {
-    // **A dynamic scene's move rides the next flip** (renderer.md, "Instances that come and go"):
-    // the slot is marked pending for every table set, as a tail block's slots are, so the next
-    // frame flips to a set no frame in flight reads and copies the moved record into it, with the
-    // chain's top-level record of the slot, before anything reads either; the frames in flight
-    // keep reading theirs. Nothing is written to the device here and nothing waits. Nothing else
-    // holds the placement: the deformed-vertex pool is in mesh space, and `tlas_references`
-    // writes the chain's transforms from the frame's instance table.
-    for (const u32 index : indices)
-      mark_instance_written(index);
-    return true;
-  }
-  return gfx::submit_immediate(
-      *device_,
-      [&](gfx::CommandList commands) {
-        for (const u32 index : indices) {
-          commands.update_buffer(instances.buffer, u64{index} * sizeof(gfx::InstanceDesc),
-                                 sizeof(gfx::InstanceDesc), &instance_table_[index]);
-        }
-      },
-      error);
+  // **A move rides the next frame** (renderer.md, "Moving an instance"). In a dynamic scene the
+  // slot is marked pending for every table set, as a tail block's slots are, so the next frame
+  // flips to a set no frame in flight reads and copies the moved record into it, with the chain's
+  // top-level record of the slot, before anything reads either; the frames in flight keep reading
+  // theirs. In a scene read whole the record joins the next frame's record upload
+  // (`prepare_records`): copied into the one table in that frame's command stream, after a barrier
+  // that waits for every frame before it on the queue, and before any of its passes reads the
+  // table. Either way nothing is written to the device here and nothing waits. Nothing else holds
+  // the placement: the deformed-vertex pool is in mesh space, and `tlas_references` writes the
+  // chain's transforms from the frame's instance table.
+  for (const u32 index : indices)
+    mark_instance_written(index);
+  return true;
 }
 
 bool GpuScene::pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcept {
