@@ -751,7 +751,7 @@ of the part class and up; a crown 55 m across and 93 m tall. The spreading recip
 mixed (`ancient-mixed.flora.json`, 80 m) 67 by 81 m on eight, 308; `ancient-emergent.flora.json` is
 a 100 m emergent of another seed. **The old straight-limbed tree is gone**: `ancient.flora.json`
 (elder A) spells out the old defaults' limb fields — nine limbs from 30 to 62 m, 1.6 m thick, a
-24 m run and 36 m past it — and gets them as its wood allows, the lowest run 15.1 m.
+24 m run and 36 m past it — and gets them as its wood allows, the lowest run 15.0 m.
 
 ### Limbs a wood could carry
 
@@ -851,18 +851,19 @@ structural table, and starts a walker standing on it 2.5 m out from the bark, fa
 held, replayed **offscreen** (msvc-debug, RTX 5090, 2026-10-22; the walker's defaults: capsule 1.8 m
 by 0.3 m, 1.5 m/s, 40° slope limit, 0.35 m step). **The case holds the first 15 m, or as much of the
 run as its wood left past the start less a metre** (since G79 a run is no longer than its wood could
-carry, and elder A's asked 24 m keeps 15.1):
+carry, and elder A's asked 24 m keeps 15.0):
 
-- **The near-level run** (elder A, 30.0 m up, 3.6° above level, 15.1 m kept of the 24 asked, 2.9 m
+- **The near-level run** (elder A, 30.0 m up, 3.6° above level, 15.0 m kept of the 24 asked, 2.9 m
   thick tapering to 2.48): the walker walks the 10.5 m of it past its start at 1.5 m/s, **its feet
-  within 0.9 mm of the bark** and 0.05 mm aside at its end — the case holds those 9.6 m to 15 cm.
+  within 1.3 mm of the bark** and 0.06 mm aside at its end — the case holds those 9.5 m to 15 cm.
   **At the run's end** it walks on, onto the limb's first segment past it, which meanders and turns
-  up: its feet 0.4 m over the run's line 16 m out, it walks **off the side** at 17 m and falls 32 m
-  to the ground, then walks on across the grove until something stops it.
-- **The 20° run** (elder B, 30.0 m up, 20.0° above level, 2.8 m thick): it climbs at 1.41 m/s
-  along the slope, but **drifts sideways off the crest** — 0.28 m aside after 13 m, 0.76 m after
-  17 m, its feet sinking 0.2 m below the crest line as it moves onto the limb's flank — and, on the
-  limb past the run, walks off its side at 1.3 m aside and falls 39 m.
+  up: its feet 0.2 m over the run's line 16 m out, it walks **off the side** at 17.5 m and falls
+  32 m to the ground, then walks on across the grove until something stops it.
+- **The 20° run** (elder B, 30.0 m up, 19.1° above level, 24 m long — its wood keeps all of it,
+  a rising limb's lever being short — 2.7 m thick): it climbs at 1.34 m/s along the slope, but
+  **drifts sideways off the crest** — 0.42 m aside after 13 m, 0.83 m after 17.6 m, its feet
+  sinking 0.25 m below the crest line as it moves onto the limb's flank — and walks off its side at
+  1.0 m aside and falls 39 m.
 
 **What the walker lacks for ramps and platforms.** It has a 40° slope limit and a 0.35 m step and
 **nothing else**: it does not refuse a ledge, so it walks off the end or the side of any limb or

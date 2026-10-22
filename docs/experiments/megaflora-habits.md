@@ -122,7 +122,7 @@ msvc-debug and msvc-release (the same bytes), the solver's report and `ancient_l
 | default (`Ancient{}`) | emergent | 55 × 93 m | 50 m up, 7.4 m, 2.4 m thick | 7, 58, 3 | 0 (the worst at 14.2 of 15 MPa) | 321,954 (1.5 M) | 496 |
 | `ancient-spreading` (50 m) | spreading | 70 × 39 m | 10 m up, 9.9 m, 2.2 m thick | 6, 231, 6 | 5 (kept 0.64 to 0.86) | 365,401 (1.5 M) | 1,389 |
 | `ancient-mixed` (80 m) | mixed | 67 × 81 m | 44 m up, 9.6 m, 2.0 m thick | 8, 308, 10 | 6 (0.70 to 0.87) | 450,697 (1.5 M) | 1,632 |
-| `ancient` (elder A: the old limb fields spelled out) | emergent | — | 30 m up, 15.1 m kept of 24, 2.9 m thick | 9 | — | 606,450 (1.5 M; 1,419,335 before) | 878 |
+| `ancient` (elder A: the old limb fields spelled out) | emergent | — | 30 m up, 15.0 m kept of 24, 2.9 m thick | 9 | — | 606,450 (1.5 M; 1,419,335 before) | 878 |
 | `ancient-rising` (elder B) | emergent | — | 30 m up at 19°, 24 m, 2.7 m thick | 8 | — | 386,241 (1.5 M; 1,050,182 before) | 626 |
 | the forest village's anchor A | emergent | 74 × 74 m | 18 m up, 16.1 m kept of 20, 3.3 m thick | 7, 52, 3 | 6 (the lowest kept 0.81 of 48 m) | 593,832 (1.5 M) | 704 |
 | the forest village's anchor B | emergent | 69 × 71 m | 18 m up, 15.9 m kept of 20, 2.6 m thick | 7, 61, 3 | 7 (the lowest kept 0.80 of 46 m) | 469,148 (1.5 M) | 519 |
