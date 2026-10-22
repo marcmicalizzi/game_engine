@@ -92,8 +92,9 @@ inline bool make_grove(u32 trees, f32 spacing, Grove& g) {
     placed.mesh = i % 2;
     gfx::set_instance_placement(
         placed, linear,
-        WorldPos{spacing * static_cast<f64>(i % row) + 0.37, 0.25 * static_cast<f64>(i % 5),
-                 spacing * static_cast<f64>(i / row) - 0.61});
+        WorldPos{static_cast<f64>(spacing) * static_cast<f64>(i % row) + 0.37,
+                 0.25 * static_cast<f64>(i % 5),
+                 static_cast<f64>(spacing) * static_cast<f64>(i / row) - 0.61});
     // As GpuScene lays a tree out: its seed, and its 3x3 inverted once.
     FloraInstance fi;
     fi.instance = i;
