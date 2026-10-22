@@ -556,7 +556,8 @@ constexpr const char* k_usage =
     "  --dump-action-map <f>  write the action map a session would fly with (--input-map's, or\n"
     "                   engine-view's own) and its hash to <f>, and exit: the file a game pins\n"
     "  --tunables <f>   load tunable values from a JSON object file (view.fly.* among them)\n"
-    "  --tunable <s>    set tunables: \"view.fly.speed=20,view.fly.look=0.003\"\n"
+    "  --tunable <s>    set tunables: \"view.fly.speed=20,view.fly.look=0.003\"; repeatable, the\n"
+    "                   flags combine in order and a later value for a name wins\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -3858,7 +3859,13 @@ int run_view(int argc, char** argv) {
     } else if (a == "--tunables") {
       if (!next_value(argc, argv, i, a, options.tunables_file)) return k_exit_usage;
     } else if (a == "--tunable") {
-      if (!next_value(argc, argv, i, a, options.tunable_overrides)) return k_exit_usage;
+      // Repeated flags accumulate, in order, into one comma list, so a later value for the same
+      // name wins exactly as it does within one list; replacing the list dropped every earlier
+      // flag's settings without a word.
+      std::string spec;
+      if (!next_value(argc, argv, i, a, spec)) return k_exit_usage;
+      if (!options.tunable_overrides.empty()) options.tunable_overrides.push_back(',');
+      options.tunable_overrides += spec;
     } else if (a == "--census") {
       options.census = true;
     } else if (a == "--census-pixels") {

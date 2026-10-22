@@ -774,6 +774,25 @@ TEST_CASE("engine-view: an offscreen time-lapse and sun's day carry both summary
   // Without --time-rate, offscreen, nothing moves the sand and there is no time-lapse.
   REQUIRE(still_summary.find("time_lapse") != nullptr);
   CHECK(still_summary.find("time_lapse")->is_null());
+
+  // Repeated `--tunable` flags combine in order, a later value for a name winning as it does in one
+  // list: the first flag's tilt survives the second, and the second's rate replaces the first's.
+  // A second flag used to replace the first whole, which here would leave a still sun at 40°.
+  args = common;
+  for (const char* a : {"--tunable", "renderer.sun.rate=60,renderer.sun.arc_tilt_deg=30",
+                        "--tunable", "renderer.sun.rate=3600"})
+    args.push_back(a);
+  const Run both = run_view(args);
+  REQUIRE_MESSAGE(both.exit_code == 0, both.output);
+  JsonValue both_summary;
+  REQUIRE(summary_of(both, both_summary));
+  const JsonValue* both_sun = both_summary.find("sun");
+  REQUIRE(both_sun != nullptr);
+  CHECK(number_of(both_sun, "rate") == 3'600.0);
+  CHECK(number_of(both_sun, "tilt_deg") == 30.0);
+  // And a bad entry in an earlier flag is still refused rather than dropped.
+  CHECK(run_view({"--tunable", "view.fly.nothing=1", "--tunable", "view.fly.speed=20"}).exit_code ==
+        2);
 }
 
 TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc twice") {
