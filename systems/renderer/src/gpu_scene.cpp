@@ -1101,10 +1101,10 @@ bool GpuScene::prepare_records(u32 slot, RecordUpdate& out, std::string* error) 
   // One copy region per run of consecutive records, so a move of every instance is one region
   // rather than one per instance (a copy is encoded region by region on the frame's thread:
   // docs/experiments/frame-thread-spikes-2026-10-04.md).
-  const auto stage = [&](const Vector<u32>& list, u64 at, u64 size, const void* records,
+  const auto stage = [&](const Vector<u32>& list, u64 at, u64 size, const void* from,
                          Vector<gfx::BufferCopy>& copies) {
     for (u32 k = 0; k < list.size(); ++k) {
-      std::memcpy(base + at + u64{k} * size, static_cast<const u8*>(records) + u64{list[k]} * size,
+      std::memcpy(base + at + u64{k} * size, static_cast<const u8*>(from) + u64{list[k]} * size,
                   static_cast<usize>(size));
       if (k > 0 && list[k] == list[k - 1] + 1) {
         copies.back().size += size;
