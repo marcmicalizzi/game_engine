@@ -4,12 +4,12 @@
 // **Every row sleeps between frames, untimed**, because a frame does: the pool's workers spin a
 // little after a frame's chunks and then sleep, so the frame after pays their wake-up, and a bench
 // that posed back to back would find them spinning and measure a pool no frame ever has. The sleep
-// is 4 ms, past the workers' spin.
+// is 1 ms, past the workers' spin (2,000 pauses, about 0.1 ms here); it is also why the small rows
+// take a while: the runner fills its minimum time with timed iterations, each behind a sleep.
 //
-// Rows: `serial` is the loop on this thread (what every scene paid before the pool); `split` is the
-// pool with every grove cut as finely as it will go (64 parts a chunk), which shows where a pool
-// starts to pay; `poser` is what the renderer does, cut at `k_flora_chunk_parts`, so a small grove
-// is `serial` again. Items are parts.
+// Rows: `serial` is the loop on this thread (what every scene paid before the pool); `poser` is
+// what the renderer does, cut at `k_flora_chunk_parts`, so a grove too small for two chunks is
+// `serial` again; `split` cuts at half that, to show what a finer cut would buy. Items are parts.
 #include "../tests/flora_grove.h"
 
 #include <core/base/types.h>
@@ -35,7 +35,7 @@ void run(bench::State& state, u32 trees, Mode mode) {
   if (mode != Mode::Serial) {
     poser.prepare(std::span<const FloraInstance>(g.instances.data(), g.instances.size()),
                   std::span<const FloraMesh>(g.meshes.data(), g.meshes.size()), 0,
-                  mode == Mode::Split ? 64u : k_flora_chunk_parts);
+                  mode == Mode::Split ? k_flora_chunk_parts / 2 : k_flora_chunk_parts);
   }
   FrameFlora flora;
   FloraPoseFrame frame;
@@ -45,7 +45,7 @@ void run(bench::State& state, u32 trees, Mode mode) {
   u64 f = 0;
   while (state.keep_running()) {
     state.pause_timing();
-    std::this_thread::sleep_for(std::chrono::milliseconds(bench::smoke_mode() ? 0 : 4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(bench::smoke_mode() ? 0 : 1));
     ++f;
     frame.frame_index = f;
     frame.time_s = static_cast<f64>(f) / 60.0;
@@ -73,6 +73,7 @@ void run(bench::State& state, u32 trees, Mode mode) {
   }
 
 FLORA_ROWS(4)
+FLORA_ROWS(8)
 FLORA_ROWS(16)
 FLORA_ROWS(64)
 FLORA_ROWS(256)

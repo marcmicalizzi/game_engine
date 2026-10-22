@@ -84,10 +84,11 @@ struct FloraPoseInputs {
 FloraPoseResult flora_pose_instances(const FloraPoseInputs& in, const FloraPoseFrame& frame,
                                      u32 begin, u32 end) noexcept;
 
-// The fewest parts a chunk is cut to, and so the fewest a scene needs for a second thread: tens of
-// microseconds of posing in a release build, several times a sleeping worker's wake-up
-// (`engine_renderer_bench`'s `renderer.flora.pose.*` rows; renderer.md, "Who poses the trees").
-inline constexpr u32 k_flora_chunk_parts = 512;
+// The fewest parts a chunk is cut to, and so half the fewest a scene needs for a pool: measured
+// (`engine_renderer_bench`, `renderer.flora.pose.*`), eight trees of 208 parts in three chunks
+// beat the serial loop, while half this cut lost at four trees (renderer.md, "Who poses the
+// trees").
+inline constexpr u32 k_flora_chunk_parts = 64;
 // The most chunks: `jobs::JobSystem::parallel_for` keeps 64 in place before it allocates.
 inline constexpr u32 k_flora_max_chunks = 64;
 
