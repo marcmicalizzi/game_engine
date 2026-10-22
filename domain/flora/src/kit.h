@@ -278,6 +278,12 @@ struct CrownSpec {
   u32 part_cap = 2000;     // the most recursion shoots that are motion parts
   u64 seed = 1;
   u64 stream = 1000;  // the streams of the recursion's shoots start here
+  // The pendulous habit (G81, the birch; zero for every other species, whose bytes it leaves as
+  // they were): a shoot of radius class `droop_class` or finer leaves its parent turned towards the
+  // ground by `droop` radians times (droop_class + 1 - class) / (droop_class + 1) — the branchlets
+  // hang, their parents arch — never past straight down. No draw is added.
+  f64 droop = 0.0;
+  i32 droop_class = 0;
 };
 
 struct CrownNode {

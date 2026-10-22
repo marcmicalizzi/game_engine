@@ -914,10 +914,10 @@ bool ancient_hollows(const Ancient& p, Vector<Hollow>& out) {
 
 f32 load_bearing_min_radius(std::string_view species) noexcept {
   // The smallest base radius any load-bearing part reaches inside the species' ranges: the
-  // thinnest third stem of the thinnest birch (0.03 m x 0.65), the thinnest trunks of the willow
+  // thinnest clump stem of the thinnest birch (0.03 m x 0.6), the thinnest trunks of the willow
   // and the orchard tree, and the megaflora's highest limb past its run at the thinnest limb
   // radius (0.5 m x 0.65 x 0.85).
-  if (species == k_species_birch) return 0.0195f;
+  if (species == k_species_birch) return 0.018f;
   if (species == k_species_willow) return 0.08f;
   if (species == k_species_orchard) return 0.04f;
   if (species == k_species_ancient) return 0.27f;

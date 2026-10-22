@@ -239,7 +239,7 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
   if (file.species == k_species_conifer)
     return solve_conifer(file.conifer, mesh, tree_report, &error, &motion);
   if (file.species == k_species_birch)
-    return solve_birch(file.birch, mesh, tree_report, &error, &motion);
+    return solve_birch_chain(file.birch, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_willow)
     return solve_willow(file.willow, mesh, tree_report, &error, &motion);
   if (file.species == k_species_orchard)
