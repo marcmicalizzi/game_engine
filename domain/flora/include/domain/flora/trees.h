@@ -6,11 +6,13 @@
 // **What comes out.** An `assets::MeshData` with two primitives, each its own material:
 //
 //   0  bark     the trunk and the woody shoots, closed tubes, one-sided, built with cones on
-//   1  leaves   the broadleaf's leaf cards or the conifer's needle-bundle cards, two-sided sprays
-//               (one connected surface a twig), built with cones off
+//   1  leaves   the broadleaf's leaf cards or the conifer's foliated-shoot cards, two-sided sprays
+//               (one connected surface a twig, or a conifer's branch or lateral), built with cones
+//               off
 //
 // and a `Motion` (motion.h): the trunk part 0, then every woody shoot, then — the broadleaf — every
-// twig, each hanging from the shoot it grew on; a conifer's needle sprays belong to their branch.
+// twig, each hanging from the shoot it grew on; a conifer's needle sprays, its laterals' included,
+// belong to their branch.
 // The structure (where every shoot is, how long, which way) never depends on the budget, so the
 // parts are the same on every rung of the ladder.
 //
@@ -44,7 +46,8 @@ struct TreeReport {
   u32 fruit_triangles = 0;  // the orchard tree's fruit primitive
   u32 load_bearing = 0;     // parts flagged load-bearing in the structural table
   u32 hollows = 0;          // the ancient tree's
-  // The allometric crown (G72: the broadleaf and the ancient tree; zero for the others).
+  // The allometric crown (G72: the broadleaf and the ancient tree; zero for the others, except that
+  // the conifer (G80) fills leaf_cards and leaf_area_m2).
   u32 twigs = 0;               // terminal twigs in the structure, leafy or not
   u32 orders = 0;              // the most orders from the trunk to a twig, both counted
   u32 leaf_cards = 0;          // cards built, both sides of every spray

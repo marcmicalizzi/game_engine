@@ -6,6 +6,7 @@
     "trunk_radius_m": 0.38,
     "whorls": 28,
     "crown_radius_m": 3.6,
+    "dead_share": 0.2,
     "triangle_budget": 50000
   }
 }
