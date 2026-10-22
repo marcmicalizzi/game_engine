@@ -1076,6 +1076,12 @@ bool GpuScene::prepare_records(u32 slot, RecordUpdate& out, std::string* error) 
   // off and on, is one record.
   sort_unique(pending_instance_writes_);
   sort_unique(pending_mesh_writes_);
+  // A frame has at most a region per record, so the region lists are kept at the record lists'
+  // capacity — which for a ring's slots is reserved at load for every slot off and on — and a frame
+  // with more runs than any before it allocates nothing (the frame loop test's second flight over
+  // the endless desert found the one allocation a list grown on demand made).
+  out.instances.reserve(pending_instance_writes_.capacity());
+  out.meshes.reserve(pending_mesh_writes_.capacity());
   const u64 instance_bytes = u64{pending_instance_writes_.size()} * sizeof(gfx::InstanceDesc);
   const u64 mesh_at = (instance_bytes + 15) & ~u64{15};
   const u64 bytes = mesh_at + u64{pending_mesh_writes_.size()} * sizeof(gfx::MeshDesc);
