@@ -112,3 +112,11 @@ compiler/device combination, not an attribution to either alone. Addressing now 
 unsigned magnitude's remainder and applies its sign explicitly. The probe compares against
 double-precision world coordinates, including negative cells and points 100,000 km out, and
 checks projected slopes and preservation of a flat normal map.
+
+## Combined static streaming gate (2026-10-23)
+
+The combined W67/W68 gate at `4b31ac77` used an external copy of the same native v6 fixture with the 61 duplicate floor/land meshes removed. The original heightfield hash above, collision data and authored transforms were retained. Native materials remained enabled with `--terrain-tiles --terrain-far 2 --time-rate 0`; the ordinary geometry-page streaming switch stayed off. The south/west shore, forest return and close steep-slope captures were inspected. The native surface and analytic water bottom remain continuous, and none of the four traced captures reports an RT overflow or a dropped instance/caster.
+
+A 240-frame replay advances all thirteen wildlife poses at full animation detail (`--anim-lod off`) with flora wind, while the terrain remains at time/rate zero. It records nine tile swaps, 40 chunks built and 34 dropped, no failed rebuild, no layout lag, no refused game ground/move calls, and no frame-thread allocation or device buffer. A separate 61-frame camera travel records 26 swaps, 170 chunks built and 144 dropped, also without a failed rebuild. All six levels evaluate zero future fields in both runs. These are functional checks on a shared RTX 5090 workstation; the raw reports preserve machine state and are not new frame-cost measurements. The five existing frame-budget runs pass without a rebaseline.
+
+Evidence, commands, scene/cache provenance, frames, reports and inspected PNGs are under `D:/workspace/game_engine_local/acceptance/terrain-batch-20261023/`. The stock document-host follow-up and complete gate results are recorded in [static authored streaming](authored-terrain-streaming.md#combined-gate-and-document-host-follow-up).

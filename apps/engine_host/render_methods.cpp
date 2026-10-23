@@ -483,7 +483,10 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
       error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
       return false;
     }
-    if (!changes.rebuild) {
+    // Tile drawing changes the scene's source grid into a small hidden carrier at load.
+    // Re-read even an unchanged document when that load intent changes.
+    if (!changes.rebuild &&
+        scene->request.settings.terrain_tiles == request.settings.terrain_tiles) {
       renderer::RenderSettings settings;
       if (!renderer::settings_for(request, scene->data, settings, &message)) {
         error = invalid("settings.morph: " + message);
@@ -534,6 +537,7 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   desc.ddc = params.ddc;
   desc.cache = params.cache;
   desc.stream = request.settings.stream;
+  desc.terrain_tiles = request.settings.terrain_tiles;
   desc.page_bytes = params.page_bytes;
   renderer::SceneData data;
   if (!renderer::load_scene(desc, data, message)) {

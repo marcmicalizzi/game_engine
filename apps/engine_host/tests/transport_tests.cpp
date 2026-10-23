@@ -9,6 +9,7 @@
 // for the first's commit, undo and redo, in order; the refusal on stdio; a subscriber that never
 // reads, its bounded queue and the dropped count; unsubscribing; and the scene's events after a
 // move and a rebuild. tools/host-ws.Tests.ps1 drives the same host with an independent client.
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/platform/process.h>
@@ -677,6 +678,73 @@ TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dr
                                           << " events after " << last_stalled
                                           << " transactions with a queue of 4");
 }
+
+#if defined(ENGINE_HOST_TEST_TILESET)
+TEST_CASE("listen: document terrain tile intent rebuilds a bounded carrier") {
+  test::TempDir tmp("engine_host_document_terrain_tiles");
+  const std::string doc = tmp.file("doc");
+  ListeningHost host({"--doc", doc, "--create", "--actor", "shell"});
+  // A 65-point authored source distinguishes its 8,192-triangle grid from the tiled load's
+  // 17-point (512-triangle) hidden material carrier. All source/cache files belong to this fixture.
+  write_file(doc + "/AGENTS.md", "test cache root\n");
+  std::vector<f32> heights(65 * 65);
+  for (u32 z = 0; z < 65; ++z)
+    for (u32 x = 0; x < 65; ++x)
+      heights[z * 65 + x] = static_cast<f32>(x * x + z * z) * 0.001f;
+  const std::string bytes(reinterpret_cast<const char*>(heights.data()),
+                          heights.size() * sizeof(f32));
+  write_file(doc + "/ground.f32", bytes);
+  char hash[17];
+  std::snprintf(hash, sizeof(hash), "%016llx",
+                static_cast<unsigned long long>(hash_bytes(bytes.data(), bytes.size())));
+  write_file(
+      doc + "/ground.json",
+      std::string(
+          R"({"format":"engine.terrain.heightfield","version":1,"width":65,"height":65,"spacing_mm":1000,"origin_mm":[-32000,-32000],"vertical_mm_per_unit":1000,"data":"ground.f32","data_hash":")") +
+          hash + "\"}");
+  Client c;
+  REQUIRE(c.connect(host.port, host.token));
+  const std::string session = host.session;
+  const JsonValue made = c.call(
+      "doc.apply",
+      R"({"session":")" + session +
+          R"(","commands":[{"kind":"CreateObject","id":"00000000000000200000000000000001","type":"engine.terrain.Heightfield","value":{"source":"ground.json"}}],"attribution":{"rationale":"authored terrain load fixture"}})");
+  REQUIRE_MESSAGE(error_code(made) == 0, write_json(made));
+  REQUIRE(at(at(made, "result"), "committed").as_bool());
+  const auto load = [&](bool tiles) {
+    return c.call("render.load",
+                  R"({"session":")" + session + R"(","ddc":)" + json_text(tmp.file("ddc")) +
+                      R"(,"settings":{"terrain_tiles":)" + (tiles ? "true" : "false") + "}}");
+  };
+  const JsonValue first = load(true);
+  if (error_code(first) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << write_json(first));
+    return;
+  }
+  REQUIRE_MESSAGE(error_code(first) == 0, write_json(first));
+  const JsonValue& initial = at(first, "result");
+  const std::string scene = std::string(at(initial, "scene").as_string());
+  const i64 revision = at(initial, "revision").as_int();
+  const i64 tiled_leaves = at(initial, "leaf_clusters").as_int();
+  CHECK(at(initial, "rebuilt").as_bool());
+  CHECK(at(initial, "triangles").as_int() == 2 * 16 * 16);
+  const auto check_load = [&](bool tiles, bool rebuilt, i64 triangles) {
+    const JsonValue response = load(tiles);
+    REQUIRE_MESSAGE(error_code(response) == 0, write_json(response));
+    const JsonValue& info = at(response, "result");
+    CHECK(at(info, "scene").as_string() == scene);
+    CHECK(at(info, "revision").as_int() == revision);
+    CHECK(at(info, "rebuilt").as_bool() == rebuilt);
+    CHECK(at(info, "triangles").as_int() == triangles);
+    CHECK(at(info, "moved").as_int() == 0);
+    if (!tiles) CHECK(at(info, "leaf_clusters").as_int() > tiled_leaves);
+  };
+  check_load(true, false, 2 * 16 * 16);
+  check_load(false, true, 2 * 64 * 64);
+  check_load(true, true, 2 * 16 * 16);
+  check_load(true, false, 2 * 16 * 16);
+}
+#endif
 
 TEST_CASE("listen: render.load of a session, the camera it framed, records, a kept capture") {
   test::TempDir tmp("engine_host_listen_render");

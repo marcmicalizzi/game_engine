@@ -76,6 +76,9 @@ add_custom_target(engine_shell_files DEPENDS ${_shell_outputs})
 add_dependencies(engine_engine_host engine_shell_files)
 
 if(TARGET engine_engine_host_tests)
+  if(TARGET engine::tileset)
+    target_compile_definitions(engine_engine_host_tests PRIVATE ENGINE_HOST_TEST_TILESET=1)
+  endif()
   # transport_tests.cpp starts engine-host with --listen and drives it through foundation/net's own
   # client (engine_app above links the host's modules into it and marks it as one that can wait for
   # the GPU lock, since render.load {session} and A32's camera open a device).
