@@ -126,13 +126,18 @@ The mesh is a function of the block and the ground in f32/f64 + − × ÷ and sq
 
 **Performance notes.** Nothing per frame on the CPU. The mesh and the depth map are built once per scene read: a 20 m pool is 1,426 ground heights for the mesh and 14,641 for the map, the oasis 25,921 for its map, and a 1,024-texel map at most a million.
 
+W67's CPU case (`tests/tileset_ground_tests.cpp`, linked only when the tileset capability exists)
+checks an authored bowl through the stock `TerrainSampler`: native streamed lattice heights,
+the ground view used for wading, mesh vertex depths and quantized depth-map samples agree.
+Terrain streaming does not introduce a second bottom for water.
+
 ## Capability contract (ADR-0027)
 
 This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way.
 
 | Registration point | This capability | Status |
 |---|---|---|
-| Capabilities it requires | none | stands alone; its tests link the terrain, sky and scatter capabilities for the oasis scene |
+| Capabilities it requires | none | stands alone; tests link terrain, sky and scatter for the oasis scene, and tileset for an authored bowl |
 | Component and event types | none | a body is scene data (`engine.scene.WaterBody`, the scene format's), not entity state |
 | Tick scheduler entry | none | nothing ticks: the waves are a function of the frame's clock, drawn by the resolve |
 | Render-graph passes | none | the surface is an instance; its shading is a material class of the resolve |
@@ -143,7 +148,7 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 | LOD policy | the cluster DAG of its mesh | done |
 | Determinism | derived: drawn, and `depth_at` a function of position | done |
 | Zero cost when unused | a scene with no block calls nothing; no material carries the flag | done |
-| Tests and size table | `tests/water_tests.cpp`, `tests/water_scene_tests.cpp`, `tests/size_table.cpp` | done |
+| Tests and size table | `tests/water_tests.cpp`, `tests/water_scene_tests.cpp`, `tests/tileset_ground_tests.cpp`, `tests/size_table.cpp` | done |
 | Bench | none: no hot path on the CPU | |
 | Removal proof | `ENGINE_WITH_WATER`, off in the minimal build | works: a block is refused with a sentence |
 

@@ -1,3 +1,4 @@
+#include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace engine::tileset {
 
@@ -675,15 +677,42 @@ struct TileSet::Level {
   i64 imin = 0, imax = 0, jmin = 0, jmax = 0;
   i32 tx0 = 0, tz0 = 0;
   u32 ntx = 0, ntz = 0;
-  std::unique_ptr<std::atomic<const i32*>[]> slots;
-  Vector<std::unique_ptr<i32[]>> owned;  // behind the set's lock
 };
 
-TileSet::TileSet() = default;
+// Bounded FIFO, shared by every level. A lattice call holds the lock while reading, so eviction
+// cannot invalidate a tile a worker is sampling. The last-tile hint avoids a hash per point in
+// each row; neither the index nor the payloads are sized by the source extent.
+struct TileSet::Cache {
+  struct Key {
+    i64 spacing;
+    i32 x, z;
+    bool operator==(const Key&) const = default;
+  };
+  struct KeyHash {
+    u64 operator()(const Key& key) const noexcept { return hash_bytes(&key, sizeof(key)); }
+  };
+  struct Entry {
+    Key key;
+    std::unique_ptr<i32[]> grid;
+  };
+  HashMap<Key, u32, KeyHash> index;
+  Vector<Entry> entries;
+  u32 capacity = 0;
+  u32 next = 0;
+  u32 evictions = 0;
+  u64 payload_bytes = 0;
+  Key hint_key{};
+  const i32* hint = nullptr;
+};
+
+TileSet::TileSet(u64 cache_bytes) : cache_(std::make_unique<Cache>()), cache_bytes_(cache_bytes) {}
 TileSet::~TileSet() = default;
 
 bool TileSet::open(const std::string& manifest_path, std::string& error) {
   levels_.clear();
+  *cache_ = Cache{};
+  reads_.store(0, std::memory_order_relaxed);
+  failures_.store(0, std::memory_order_relaxed);
   std::string bytes;
   JsonValue json;
   if (!read_json_file(manifest_path, bytes, json, error)) return false;
@@ -706,6 +735,15 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
     return false;
   }
   dir_ = std::string(io::parent_path(manifest_path));
+  const u64 payload = (u64{manifest_.cells} + 3) * (manifest_.cells + 3) * sizeof(i32);
+  if (cache_bytes_ < payload) {
+    error = "the tile cache budget cannot hold one tile (" + std::to_string(payload) + " bytes)";
+    return false;
+  }
+  cache_->payload_bytes = payload;
+  cache_->capacity = static_cast<u32>(std::min<u64>(cache_bytes_ / payload, (u64{1} << 26)));
+  cache_->entries.reserve(cache_->capacity);
+  cache_->index.reserve(cache_->capacity);
   for (const TileSetLevel& record : manifest_.levels) {
     auto level = std::make_unique<Level>();
     level->spacing = record.spacing_mm;
@@ -728,9 +766,6 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
     }
     level->ntx = static_cast<u32>(ntx);
     level->ntz = static_cast<u32>(ntz);
-    level->slots = std::make_unique<std::atomic<const i32*>[]>(static_cast<usize>(ntx * ntz));
-    for (i64 k = 0; k < ntx * ntz; ++k)
-      level->slots[static_cast<u32>(k)].store(nullptr, std::memory_order_relaxed);
     levels_.push_back(std::move(level));
   }
   return true;
@@ -740,12 +775,15 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz) const noexcept {
   const i64 kx = i64{tx} - level.tx0;
   const i64 kz = i64{tz} - level.tz0;
   if (kx < 0 || kz < 0 || kx >= level.ntx || kz >= level.ntz) return nullptr;
-  std::atomic<const i32*>& slot = level.slots[static_cast<u32>(kz * level.ntx + kx)];
-  const i32* held = slot.load(std::memory_order_acquire);
-  if (held != nullptr) return held;
-  std::lock_guard<std::mutex> lock(mutex_);
-  held = slot.load(std::memory_order_acquire);
-  if (held != nullptr) return held;
+  Cache& cache = *cache_;
+  const Cache::Key key{level.spacing, tx, tz};
+  if (cache.hint != nullptr && key == cache.hint_key) return cache.hint;
+  if (const u32* index = cache.index.find_value(key)) {
+    cache.hint_key = key;
+    cache.hint = cache.entries[*index].grid.get();
+    return cache.hint;
+  }
+  cache.hint = nullptr;
   std::string bytes;
   const std::string path = io::join_path(dir_, tile_file(level.spacing, tx, tz));
   TileHeader header;
@@ -763,27 +801,43 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz) const noexcept {
   const usize count = (bytes.size() - sizeof(header)) / sizeof(i32);
   auto grid = std::make_unique<i32[]>(count);
   std::memcpy(grid.get(), bytes.data() + sizeof(header), count * sizeof(i32));
-  held = grid.get();
-  const_cast<Level&>(level).owned.push_back(std::move(grid));
-  slot.store(held, std::memory_order_release);
+  u32 index = cache.entries.size();
+  if (index == cache.capacity) {
+    index = cache.next;
+    cache.next = (cache.next + 1) % cache.capacity;
+    cache.index.erase(cache.entries[index].key);
+    cache.entries[index] = Cache::Entry{key, std::move(grid)};
+    ++cache.evictions;
+  } else {
+    cache.entries.push_back(Cache::Entry{key, std::move(grid)});
+  }
+  cache.index.try_emplace(key, index);
+  cache.hint_key = key;
+  cache.hint = cache.entries[index].grid.get();
   reads_.fetch_add(1, std::memory_order_relaxed);
-  return held;
+  return cache.hint;
 }
 
-i32 TileSet::value(const Level& level, i64 i, i64 j) const noexcept {
+f64 TileSet::value(const Level& level, i64 i, i64 j) const noexcept {
   const i64 c = manifest_.cells;
   const i64 ci = clamp_i64(i, level.imin, level.imax);
   const i64 cj = clamp_i64(j, level.jmin, level.jmax);
   const i32 tx = static_cast<i32>(floor_div(ci, c));
   const i32 tz = static_cast<i32>(floor_div(cj, c));
   const i32* grid = tile(level, tx, tz);
-  if (grid == nullptr) return 0;
+  if (grid == nullptr) return std::numeric_limits<f64>::quiet_NaN();
   const i64 li = ci - i64{tx} * c + 1;
   const i64 lj = cj - i64{tz} * c + 1;
   return grid[lj * (c + 3) + li];
 }
 
 f64 TileSet::point_mm(i64 x_mm, i64 z_mm) const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return point_mm_locked(x_mm, z_mm);
+}
+
+f64 TileSet::point_mm_locked(i64 x_mm, i64 z_mm) const noexcept {
+  if (!is_open()) return std::numeric_limits<f64>::quiet_NaN();
   // `bilinear` above, over the tiles: the same arithmetic, operation for operation, so a level a
   // build wrote from it and a point asked of the reader agree.
   const Level& f = *levels_[0];
@@ -818,6 +872,8 @@ bool TileSet::has_filter(i64 spacing_mm) const noexcept {
 bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32 nz,
                       u32 block_begin, u32 block_end, std::span<f32> out) const noexcept {
   if (!is_open() || spacing_mm < 1 || out.size() != static_cast<usize>(nx) * nz) return false;
+  if (block_begin > block_end || block_end > scene_gen::window_blocks(nx, nz)) return false;
+  std::lock_guard<std::mutex> lock(mutex_);
   const Level* level = nullptr;
   i64 ratio = 0;  // world lattice index to the level's: times this; 0, the bilinear surface
   if (filter_mm > 0) {
@@ -841,13 +897,20 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
       const i64 j = i64{j0} + z;
       for (u32 x = bx; x < ex; ++x) {
         const i64 i = i64{i0} + x;
-        const f64 mm = level != nullptr ? static_cast<f64>(value(*level, i * ratio, j * ratio))
-                                        : point_mm(i * spacing_mm, j * spacing_mm);
+        const f64 mm = level != nullptr ? value(*level, i * ratio, j * ratio)
+                                        : point_mm_locked(i * spacing_mm, j * spacing_mm);
+        if (!std::isfinite(mm)) return false;
         out[static_cast<u32>(z) * nx + x] = static_cast<f32>(mm / 1000.0);
       }
     }
   }
   return true;
+}
+
+TileSet::CacheStats TileSet::cache_stats() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return CacheStats{cache_bytes_, cache_->payload_bytes * cache_->entries.size(),
+                    cache_->entries.size(), cache_->evictions};
 }
 
 namespace {

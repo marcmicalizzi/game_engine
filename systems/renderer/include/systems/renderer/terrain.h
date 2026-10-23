@@ -179,8 +179,9 @@ f32 terrain_height(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 // **A provider it cannot make** — a name this executable does not carry, or a description the
 // provider refuses (a dune time out of range, a band table the field cannot be built from) — leaves
 // the sampler drawing the waves over the same description, as a build without the terrain
-// capability always did, with `ok()` false and the sentence in `error()`. The scene reader refuses
-// such a file with that sentence; everything else gets a ground.
+// capability always did, with `ok()` false and the sentence in `error()`. The scene reader and
+// terrain mesh builder refuse that description with the sentence; direct sampler queries retain
+// the fallback.
 class TerrainSampler {
  public:
   explicit TerrainSampler(const TerrainDesc& desc) noexcept;

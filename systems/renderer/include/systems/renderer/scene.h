@@ -215,6 +215,9 @@ struct SceneDesc {
   Vector<SceneInstance> instances;  // empty: one identity instance of every mesh
   u32 grid_instances = 0;           // n: n x n copies of mesh 0, varied in rotation and scale
   Procedural procedural = Procedural::heightfield;  // which mesh an empty path builds
+  // A still authored terrain drawn from tile levels needs only a small material/UV carrier,
+  // independent of its heightfield's extent and resolution (ADR-0057).
+  bool terrain_tiles = false;
   // What the LOD builder is told about every mesh of this scene: the per-cluster limits, the
   // attribute weights, and the seam rules (docs/subsystems/geometry.md, "What the simplifier is
   // given, and why"). It is **part of the derived-data cache key**, so a scene built with
@@ -301,6 +304,7 @@ struct SceneFileOptions {
   // block's defaults then): engine-view `--world`. The same scene read without it is today's
   // whole read, which is what E35 compares a streamed world against.
   bool world = false;
+  bool terrain_tiles = false;  // the request's terrain layout, before building a scene grid
   // The game time the ground stands at, in place of the file's `Terrain.time`: engine-view
   // `--ground-time`, `render.load`'s `ground_time_s` (request.h). The terrain mesh is built at it,
   // anything placed on the ground stands on it there, and a sky's one clock starts from it. A

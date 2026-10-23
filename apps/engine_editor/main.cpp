@@ -799,6 +799,7 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
       }
       const renderer::Camera view = camera.view();
       input.set_view(document, viewport, view, options.width, options.height, scale.y);
+      viewport.advance_ground(view);
       ui.frame(1.0f / 60.0f, options.width, options.height, document, viewport, view, input);
       renderer::OverlayDrawData overlay;
       if (!ui.render(viewport.renderer(), overlay, error)) {
@@ -1529,6 +1530,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       }
       const renderer::Camera view = camera.view();
       host.state.camera = editor::framed_camera(view);
+      viewport.advance_ground(view);
       host.state.width = width;
       host.state.height = height;
       input.set_view(document, viewport, view, width, height, scale.y);

@@ -1,5 +1,7 @@
 # gfx (domain)
 
+**Terrain stitch markers** (2026-10-23, W67): `terrain_level_normal` encodes a level as a direction tilted 45 degrees downward. The terrain stage recognizes `y < -0.5`, with the x/z angle still naming one of sixteen levels. A steep authored heightfield can have an almost horizontal real normal, so the former horizontal encoding was ambiguous and could select an absent level. Heightfield surface normals cannot point down; ring skirts never carry the named-level flag. Mirrored type sizes are unchanged. See [the renderer's terrain contract](renderer.md#the-ground-from-the-worlds-tiles).
+
 **Purpose.** The RHI (docs/plan/04-renderer.md, ADR-0006): a thin, API-neutral layer over Vulkan 1.3/1.4 that the render graph and every renderer system build on. Phase 1 starts here with device discovery: enumerate the physical devices the loader exposes with the properties needed to choose a device and a capability tier, so experiment E2 (cluster acceleration structures on the development GPU) has data before any rendering code exists.
 
 **Today.** Device discovery and creation, resources, one-shot submission, frames in flight, render graph v0 with raster passes, bindless resources, the first mesh-shader pipeline drawing the cluster geometry format, a swapchain, and image capture.

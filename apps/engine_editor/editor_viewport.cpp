@@ -21,6 +21,8 @@ bool Viewport::build(const gfx::Device& device, const doc::Document& document,
 bool Viewport::load(std::string& error) {
   renderer::SceneDesc desc = scene_.desc;
   desc.ddc = options_.ddc;
+  desc.terrain_tiles = desc.terrain.enabled && !renderer::terrain_moves(desc.terrain) &&
+                       renderer::terrain_has_millimetres(desc.terrain);
   data_ = renderer::SceneData{};
   if (!renderer::load_scene(desc, data_, error)) return false;
   // Each mesh's box from its vertices, read now while the merged float positions exist: what the
@@ -42,7 +44,9 @@ bool Viewport::load(std::string& error) {
     mesh_lo_[m] = lo;
     mesh_hi_[m] = hi;
   }
-  renderer::resolve_settings(options_.settings, device_->features(), &data_, resolved_);
+  renderer::RenderSettings settings = options_.settings;
+  settings.terrain_tiles = settings.terrain_tiles || desc.terrain_tiles;
+  renderer::resolve_settings(settings, device_->features(), &data_, resolved_);
   const renderer::RenderAvailability availability =
       renderer::check_availability(resolved_, device_->features());
   if (availability != renderer::RenderAvailability::Ok) {
@@ -50,7 +54,16 @@ bool Viewport::load(std::string& error) {
     return false;
   }
   gpu_ = std::make_unique<renderer::GpuScene>();
-  if (!gpu_->create(*device_, data_, resolved_, &error)) return false;
+  if (resolved_.terrain_levels) {
+    ground_ = std::make_unique<renderer::MovingGround>();
+    if (!ground_->prepare(data_, resolved_, framing_camera(), &error, !options_.offscreen))
+      return false;
+  }
+  if (!gpu_->create(*device_, data_, resolved_, &error,
+                    ground_ != nullptr ? ground_->level_set() : nullptr))
+    return false;
+  if (ground_ != nullptr && !ground_->start(*gpu_, resolved_, options_.offscreen, &error))
+    return false;
   renderer::SceneRenderer::Desc rd;
   rd.width = options_.width;
   rd.height = options_.height;
@@ -64,10 +77,18 @@ bool Viewport::load(std::string& error) {
 
 void Viewport::destroy() noexcept {
   preview_instance_ = ~0u;
+  if (ground_ != nullptr) ground_->finish();
   if (renderer_ != nullptr) renderer_->destroy();
   renderer_.reset();
   if (gpu_ != nullptr) gpu_->destroy();
   gpu_.reset();
+  ground_.reset();
+}
+
+void Viewport::advance_ground(const renderer::Camera& camera) {
+  if (ground_ == nullptr) return;
+  ground_->follow_tiles(camera.position);
+  ground_->frame(camera);
 }
 
 bool Viewport::sync(const doc::Document& document, bool& rebuilt, std::string& error) {

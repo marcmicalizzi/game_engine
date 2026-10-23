@@ -39,6 +39,7 @@ void set_error(std::string* error, std::string text) {
 
 void scene_file_options(const RenderRequest& request, SceneFileOptions& out) {
   out.ground_time_s = request.ground_time_s;
+  out.terrain_tiles = request.settings.terrain_tiles;
 }
 
 // The static shape stage's weights (renderer.md, "Morphed instances"). **The asset's own weights

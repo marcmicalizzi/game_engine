@@ -504,6 +504,9 @@ constexpr scene_gen::GroundProviderDesc k_glide_mm{
     .make = &glide_make,
     .flags = scene_gen::k_ground_moves | scene_gen::k_ground_millimetres};
 const scene_gen::Registrar k_glide_mm_registrar{k_glide_mm};
+constexpr scene_gen::GroundProviderDesc k_still_mm{
+    .name = "scene-gen-test-still-mm", .make = &saw_make, .flags = scene_gen::k_ground_millimetres};
+const scene_gen::Registrar k_still_mm_registrar{k_still_mm};
 
 }  // namespace
 
@@ -524,6 +527,7 @@ TEST_CASE("renderer: the world's tiles are drawn only from a ground with millime
     bool tiles;
   };
   const Case cases[] = {{"scene-gen-test-glide-mm", true},
+                        {"scene-gen-test-still-mm", true},
                         {"scene-gen-test-glide", false},  // moves, and says nothing of millimetres
                         {"waves", false}};                // neither
   for (const Case& c : cases) {
@@ -541,7 +545,7 @@ TEST_CASE("renderer: the world's tiles are drawn only from a ground with millime
       CHECK_MESSAGE(resolved.terrain_tiles == c.tiles, c.provider);
       // A ground that moves keeps its levels (the time-lapse draws the grid) whether or not it
       // gets the tiles.
-      CHECK(resolved.terrain_levels == terrain_moves(data.terrain));
+      CHECK(resolved.terrain_levels == (terrain_moves(data.terrain) || c.tiles));
     }
   }
 }

@@ -71,13 +71,14 @@ TEST_CASE("scene_collision: a walker stands on a tiles ground, the set's surface
   REQUIRE_MESSAGE(desc->make(entry, scene_gen::Context{}, ground, &error), error);
   const tileset::TileSet* set = tileset::tile_set_of(ground);
   REQUIRE(set != nullptr);
-  const scene_gen::TileSource source = set->source();
+  const scene_gen::TileSource source = ground.tiles();
+  CHECK(source == set->source());
 
   renderer::SceneData scene;
   physics::World physics;
   REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
   SceneCollision collision;
-  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error, &source), error);
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error), error);
   world::World ring(one_ring());
   ring.add_consumer(collision.consumer());
   sim::ObserverSet observer;

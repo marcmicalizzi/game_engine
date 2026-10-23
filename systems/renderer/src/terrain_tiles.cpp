@@ -395,7 +395,7 @@ void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f3
       out.lattice_j.push_back(lj);
       // Which level draws it: a corner the coarsest tile round it, an edge along a coarser tile
       // that tile, anything else this tile. A heightfield normal by central differences over the
-      // apron, or the drawing level named in a horizontal one.
+      // apron, or the drawing level named in a downward one.
       u8 from = spec.level;
       const bool on_x0 = i == 0, on_x1 = i == c, on_z0 = j == 0, on_z1 = j == c;
       if ((on_x0 || on_x1) && (on_z0 || on_z1)) {
@@ -907,8 +907,11 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
       spec.uv_size_mm = uv_size_mm_;
       const u32 a = spec.cells + 3;
       Vector<f32> h(static_cast<usize>(a) * a);
-      (void)source_.filtered(terrain.time_s, spec.spacing_mm, lattice_[level].filter_mm, -1, -1, a,
-                             a, std::span<f32>(h.data(), h.size()));
+      if (!source_.filtered(terrain.time_s, spec.spacing_mm, lattice_[level].filter_mm, -1, -1, a,
+                            a, std::span<f32>(h.data(), h.size())))
+        return fail(
+            "world tiles: the source refused an empty ring's sizing tile (missing tile or "
+            "unsupported filter)");
       TerrainTileMesh mesh;
       build_terrain_tile_mesh(spec, std::span<const f32>(h.data(), h.size()), mesh);
       geometry::ClusterLodMesh lod;

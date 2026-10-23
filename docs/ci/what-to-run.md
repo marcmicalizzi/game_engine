@@ -36,6 +36,11 @@ presets that build them, not by the whole gate again.
   built into or read by everything: a change there runs everything, and the run says why.
 - Documentation selects nothing; the lint, the licence check (`lint.licenses`) and the
   documentation check run in every case.
+- `test -Filter` narrows CTest only; its default build still builds the whole preset. It cannot
+  be combined with `-Affected`. On a fresh worktree whose affected targets alone were built,
+  a filtered follow-up can therefore compile hundreds of unrelated targets (650 additional
+  build steps in W67's 2026-10-23 follow-up). Account for that build when choosing the command;
+  the filter's small test count does not imply a small build.
 - A module's tests are the test named after it, its bench's smoke run (`bench.<module>`), and a part
   of its tests registered as a test of its own, `<module>.<part>` — so far `engine_view.frame_loop`,
   whose three flights would double `engine_view`'s run.

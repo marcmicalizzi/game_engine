@@ -102,6 +102,21 @@ TEST_CASE("engine-view: a scene naming a built tile set draws it, offscreen") {
     other += std::memcmp(&picture.pixels[p * 4], &picture.pixels[0], 3) != 0 ? 1u : 0u;
   MESSAGE(other << " of " << picture.width * picture.height << " pixels differ from the first");
   CHECK(other > picture.width * picture.height / 20);
+  // The real viewer, at a stopped terrain clock, must select terrain levels for the authored
+  // provider. This flag streams terrain tiles and leaves flora/skin motion available.
+  const Run streamed = run_app(view_exe(), {"--offscreen",   "--scene",
+                                            scene,           "--terrain-tiles",
+                                            "--terrain-far", "1",
+                                            "--time-rate",   "0",
+                                            "--frames",      "2",
+                                            "--width",       "160",
+                                            "--height",      "96",
+                                            "--shadows",     "off",
+                                            "--capture",     tmp.file("streamed.png"),
+                                            "--ddc",         tmp.file("ddc")});
+  REQUIRE_MESSAGE(streamed.exit_code == 0, streamed.output);
+  CHECK_MESSAGE(streamed.output.find("\"layout\":\"tiles\"") != std::string::npos, streamed.output);
+  CHECK(streamed.output.find("trees drawn rigid") == std::string::npos);
 }
 
 TEST_CASE(

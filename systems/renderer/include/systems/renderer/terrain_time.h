@@ -530,6 +530,7 @@ class TerrainMotion {
     u64 evaluated = 0;  // the samples the source was asked for (the rest were copied)
     // A re-centre's pairs: per ring level, the pair to carry over to the new layout.
     Pair pairs[k_max_terrain_levels];
+    bool ok = true;
     bool done = false;
   };
   // A re-centre's chunks, on the ring worker: the rule for a camera at (x, z), the chunks it
@@ -550,7 +551,7 @@ class TerrainMotion {
   void worker_main();
   void ring_worker_main();
   // A level's heights over a window at a time: from its tile source, or the scene's sampler.
-  void evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
+  bool evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
                       Vector<f32>& out);
   // When a level's next field after `from_s` is due by the cadence rule.
   f64 next_time_of(const Level& level, f64 from_s) const noexcept;
@@ -592,6 +593,7 @@ class TerrainMotion {
   jobs::JobSystem* jobs_ = nullptr;
   std::unique_ptr<TerrainDesc> desc_;
   std::unique_ptr<TerrainSampler> sampler_;
+  bool source_moves_ = false;
   Vector<Level> levels_;
   f64 start_s_ = 0.0;
   f64 game_s_ = 0.0;

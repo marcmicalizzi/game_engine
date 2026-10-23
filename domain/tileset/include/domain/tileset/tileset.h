@@ -139,11 +139,16 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ---- the reader ---------------------------------------------------------------------------------
 
 // **A built tile set, read back** (docs/subsystems/tileset.md, "The reader"). Tiles are read on
-// first ask and kept; a reader is asked from several jobs at once (tile_source.h), so a tile's
-// read is behind a lock and, once read, never moves. Not movable: `source()` points at it.
+// first ask and retained within a bounded cache. Concurrent lattice/point requests hold the
+// reader's lock while sampling, so eviction cannot invalidate their data. Not movable:
+// `source()` points at it. Open/reopen is exclusive with all requests.
 class TileSet {
  public:
-  TileSet();
+  // Tile payload budget; cache indices are bounded by the same number of tiles. Revisited
+  // tiles may be read again after eviction. The index holds at most 2^26 entries even with a
+  // larger budget; this limits cache metadata, not source extent. The provider uses
+  // tileset.cache_mib.
+  explicit TileSet(u64 cache_bytes = 64ull * 1024 * 1024);
   ~TileSet();
   TileSet(const TileSet&) = delete;
   TileSet& operator=(const TileSet&) = delete;
@@ -173,12 +178,24 @@ class TileSet {
   // Tiles read so far, and reads that failed (a tile missing or not the manifest's).
   u32 reads() const noexcept { return reads_.load(std::memory_order_relaxed); }
   u32 failures() const noexcept { return failures_.load(std::memory_order_relaxed); }
+  struct CacheStats {
+    u64 budget_bytes = 0;
+    u64 resident_bytes = 0;
+    u32 tiles = 0;
+    u32 evictions = 0;
+  };
+  CacheStats cache_stats() const noexcept;
 
   struct Level;
 
  private:
   const i32* tile(const Level& level, i32 tx, i32 tz) const noexcept;
-  i32 value(const Level& level, i64 i, i64 j) const noexcept;
+  f64 value(const Level& level, i64 i, i64 j) const noexcept;
+  f64 point_mm_locked(i64 x_mm, i64 z_mm) const noexcept;
+
+  struct Cache;
+  std::unique_ptr<Cache> cache_;
+  u64 cache_bytes_;
 
   TileSetManifest manifest_;
   std::string dir_;
@@ -192,9 +209,8 @@ class TileSet {
 std::string tile_file(i64 spacing_mm, i32 tx, i32 tz);
 
 // **The set behind a `tiles` ground** (the capability's typed accessor, scene_gen.md): null for a
-// ground another provider made. A host hands `tile_set_of(provider)->source()` to the renderer
-// and the collision, which refuses a filter the set lacks — the provider's own `tiles()` goes
-// through its `grid`, which cannot refuse (docs/subsystems/tileset.md, "What the seam lacks").
+// ground another provider made. For capability-specific inspection; ordinary consumers use
+// `provider.tiles()`, which returns the same native source with its refusal contract.
 const TileSet* tile_set_of(const scene_gen::GroundProvider& provider) noexcept;
 
 }  // namespace engine::tileset

@@ -180,7 +180,7 @@ struct TerrainLevelDesc {
   float blend;    // 0 draws a, 1 draws b
   float padding;  // replaces InstanceDesc::bounds_padding for the level's clusters
   float skirt;    // a skirt vertex (its rest normal points down) hangs this far under the field
-  // k_terrain_level_named: a vertex whose rest normal is horizontal is drawn from the level it
+  // k_terrain_level_named: a vertex whose rest normal points below y = -0.5 is drawn from the level it
   // names (a world tile's border along a coarser tile; gfx::TerrainLevelDesc::flags).
   uint flags;
   int spacing_mm;  // a world-lattice level's millimetres between points; 0 for the scene's grid

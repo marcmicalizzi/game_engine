@@ -30,6 +30,23 @@
 using namespace engine;
 using namespace engine::renderer;
 
+TEST_CASE("world tiles: stitch level markers cannot be mistaken for steep surface normals") {
+  for (u32 level = 0; level < k_max_terrain_levels; ++level) {
+    const Vec3 n =
+        geometry::decode_normal_oct(geometry::encode_normal_oct(gfx::terrain_level_normal(level)));
+    REQUIRE(n.y < -0.5f);
+    const i32 turn = static_cast<i32>(
+        std::round(static_cast<f64>(std::atan2(n.z, n.x)) * (8.0 / 3.14159265358979)));
+    CHECK(static_cast<u32>((turn + 16) % 16) == level);
+  }
+  for (const f32 slope : {4.0f, 16.0f, 1024.0f, 1.0e8f}) {
+    const Vec3 n =
+        geometry::decode_normal_oct(geometry::encode_normal_oct(normalize(Vec3{-slope, 1, slope})));
+    CHECK(std::abs(n.y) < 0.25f);  // the former marker test misread these cliffs
+    CHECK_FALSE(n.y < -0.5f);
+  }
+}
+
 namespace {
 
 // The camera on the ground plane at float32 metres by the origin, exactly widened: what these tests
@@ -484,7 +501,7 @@ TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its v
   // The edges along tiles of its own level keep every vertex.
   CHECK(on(fb, at_x(0)).size() == 16);
   CHECK(on(fb, at_z(8000)).size() == 16);
-  // And every vertex it shares with a coarser tile names that tile's level, in a horizontal rest
+  // And every vertex it shares with a coarser tile names that tile's level, in a downward rest
   // normal that decodes to it; the corners name the coarsest tile round them.
   u32 named = 0;
   u32 bad = 0;
@@ -505,7 +522,7 @@ TEST_CASE("world tiles: a tile beside a coarser one has its edge and draws its v
       const Vec3 nrm = fine.normals[v];
       const i32 sixteenths = static_cast<i32>(
           std::lround(static_cast<f64>(std::atan2(nrm.z, nrm.x)) * 8.0 / 3.14159265358979));
-      bad += !(std::abs(nrm.y) < 0.25f);
+      bad += !(nrm.y < -0.5f);
       bad += static_cast<u32>((sixteenths + 16) % 16) != want;
       // A vertex drawn from a coarser level is on that level's lattice.
       const i64 coarse = want == 1 ? 2000 : 1000;

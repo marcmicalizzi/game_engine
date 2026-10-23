@@ -560,7 +560,7 @@ struct TerrainLevelDesc {
   // Metres a ring's skirt hangs below its border: a vertex whose rest normal points straight down
   // is a skirt's (renderer::GpuScene marks them so), and is written that far under the field.
   f32 skirt = 0.0f;
-  // `k_terrain_level_named`: a vertex of this level whose rest normal is horizontal is **drawn
+  // `k_terrain_level_named`: a vertex whose rest normal points below y = -0.5 is **drawn
   // from the level it names** — the level at `round(atan2(n.z, n.x) / (pi / 8)) mod 16`, its
   // lattice point, height and normal — rather than from this one: a world tile's border along a
   // coarser tile, which both tiles then draw from one description (renderer.md, "The ground from
@@ -574,14 +574,14 @@ struct TerrainLevelDesc {
 };
 inline constexpr u32 k_terrain_level_named = 1u << 0;
 // The rest normal that names terrain level `level` (0..15) for `k_terrain_level_named`:
-// horizontal, at `level` sixteenths of a turn from +x towards +z — eighths until the far levels
-// (renderer.md, "Ground to the horizon") took the tile levels past eight; 22.5 degrees apart is
-// still a hundred times the octahedral encoding's step. Far from any heightfield normal, whose y is
-// above cos 60 degrees on any sand, and from a skirt's, which points down.
+// At `level` sixteenths of a turn from +x towards +z, tilted down 45 degrees. A real heightfield
+// normal has positive y at any slope; horizontal markers confused authored cliffs with level
+// indices (W67). Ring skirts use the downward direction too, but never the named-level flag.
 inline Vec3 terrain_level_normal(u32 level) noexcept {
   constexpr f32 k_sixteenth = 0.39269908169872415481f;
+  constexpr f32 k_diagonal = 0.7071067811865475f;
   const f32 a = static_cast<f32>(level & 15u) * k_sixteenth;
-  return Vec3{std::cos(a), 0.0f, std::sin(a)};
+  return Vec3{std::cos(a) * k_diagonal, -k_diagonal, std::sin(a) * k_diagonal};
 }
 
 // GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 64 bytes, read through a

@@ -439,9 +439,9 @@ void evaluate_window(const TerrainSampler& sampler, jobs::JobSystem* jobs, f64 t
 }
 
 // The same from a tile source, on the world's lattice at the level's spacing: a tile level's
-// fields (renderer.md, "The ground from the world's tiles"). A block the source has nothing for is
-// left at zero, which no tile of the level reads.
-void evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs, f64 time_s,
+// fields (renderer.md, "The ground from the world's tiles"). Refusal is carried back to the
+// caller: a missing tile or filter must never become a zero-height field (ADR-0057).
+bool evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs, f64 time_s,
                      const TerrainLattice& lattice, const gfx::TerrainField& window,
                      Vector<f32>& out) {
   out.assign(static_cast<usize>(window.nx) * window.nz, 0.0f);
@@ -450,15 +450,17 @@ void evaluate_window(const scene_gen::TileSource& source, jobs::JobSystem* jobs,
   const i64 spacing_mm = lattice.spacing_mm;
   const i64 filter_mm = lattice.filter_mm;
   if (jobs == nullptr) {
-    (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx, window.nz,
-                          0, blocks, heights);
-    return;
+    return source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx,
+                           window.nz, 0, blocks, heights);
   }
   const u32 per = blocks_per_job(*jobs, blocks);
+  std::atomic<bool> ok{true};
   jobs->parallel_for(jobs::Pool::Performance, (blocks + per - 1) / per, 1, [&](u32 begin, u32 end) {
-    (void)source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx, window.nz,
-                          begin * per, std::min(blocks, end * per), heights);
+    if (!source.filtered(time_s, spacing_mm, filter_mm, window.i0, window.j0, window.nx, window.nz,
+                         begin * per, std::min(blocks, end * per), heights))
+      ok.store(false, std::memory_order_relaxed);
   });
+  return ok.load(std::memory_order_relaxed);
 }
 
 bool same_window(const gfx::TerrainField& a, const gfx::TerrainField& b) noexcept {
@@ -473,12 +475,13 @@ f64 ms_since(i64 started) noexcept {
 
 }  // namespace
 
-void TerrainMotion::evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
+bool TerrainMotion::evaluate_level(const Level& level, f64 time_s, const gfx::TerrainField& window,
                                    Vector<f32>& out) {
   if (level.source != nullptr) {
-    evaluate_window(*level.source, jobs_, time_s, level.lattice, window, out);
+    return evaluate_window(*level.source, jobs_, time_s, level.lattice, window, out);
   } else {
     evaluate_window(*sampler_, jobs_, time_s, level.lattice, window, out);
+    return true;
   }
 }
 
@@ -529,6 +532,11 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
   if (config_.wait) scene.set_terrain_upload_budget(0);
   desc_ = std::make_unique<TerrainDesc>(scene.data().terrain);
   sampler_ = std::make_unique<TerrainSampler>(*desc_);
+  const scene_gen::TileSource* source = rings_ != nullptr ? rings_->source() : nullptr;
+  source_moves_ = source != nullptr ? source->moves() : sampler_->moves();
+  // The level machinery also streams still ground. Time controls must not turn an authored
+  // surface into a time-lapse or ask it for duplicate future fields.
+  if (!source_moves_) config_.rate = 0.0;
   start_s_ = desc_->time_s;
   game_s_ = 0.0;
   real_s_ = 0.0;
@@ -601,7 +609,11 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
     // grid under the world's tiles draws nothing and is given nothing.
     const i64 started = time::monotonic_ns();
     Vector<f32> heights;
-    if (!level.hidden) evaluate_level(level, start_s_, level.window, heights);
+    if (!level.hidden && !evaluate_level(level, start_s_, level.window, heights))
+      return fail("terrain source refused a field at spacing " +
+                  std::to_string(level.lattice.spacing_mm) + " mm, filter " +
+                  std::to_string(level.lattice.filter_mm) +
+                  " mm (missing tile or unsupported filter)");
     f64 padding = 0.0;
     if (k == 0) {
       level.rest = heights;
@@ -672,6 +684,7 @@ bool TerrainMotion::start(GpuScene& scene, TerrainLevelSet* rings, const TimeLap
 
 bool TerrainMotion::set_rate(f64 rate) noexcept {
   if (!active() || !(rate >= 0.0) || !std::isfinite(rate)) return false;
+  if (!source_moves_) return true;  // still terrain stays at its authored time
   if (rate == config_.rate) return true;
   const f64 was = config_.rate;
   config_.rate = rate;
@@ -692,6 +705,9 @@ bool TerrainMotion::set_rate(f64 rate) noexcept {
 }
 
 void TerrainMotion::finish() {
+  // Hosts finish before destroying their GPU scene, then the owning destructor finishes again.
+  // A second finish must not touch that scene through the retained pointer used by summaries.
+  if (!worker_.joinable() && !ring_worker_.joinable()) return;
   if (ring_worker_.joinable()) {
     {
       std::unique_lock<std::mutex> lock(ring_mutex_);
@@ -781,7 +797,7 @@ const f32* TerrainMotion::field_heights(Level& level, f64 time_s, const gfx::Ter
     if (c.time_s == time_s && same_window(c.window, window)) return c.heights.data();
   }
   // Not kept (it should have been): made again, which costs a field and changes nothing.
-  field_over(level, time_s, window, scratch);
+  if (field_over(level, time_s, window, scratch) == ~u64{0}) return nullptr;
   return scratch.data();
 }
 
@@ -810,7 +826,7 @@ u64 TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField&
     oj1 = std::min(wj1, from->window.j0 + static_cast<i32>(from->window.nz));
   }
   if (from == nullptr || oi0 >= oi1 || oj0 >= oj1) {
-    evaluate_level(level, time_s, window, out);
+    if (!evaluate_level(level, time_s, window, out)) return ~u64{0};
     return samples_of(window);
   }
   for (i32 j = oj0; j < oj1; ++j) {
@@ -823,6 +839,7 @@ u64 TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField&
   }
   Vector<f32> part;
   u64 evaluated = 0;
+  bool ok = true;
   const auto evaluate_rect = [&](i32 i0, i32 j0, i32 i1, i32 j1) {
     if (i0 >= i1 || j0 >= j1) return;
     gfx::TerrainField rect{};
@@ -831,7 +848,10 @@ u64 TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField&
     rect.nx = static_cast<u32>(i1 - i0);
     rect.nz = static_cast<u32>(j1 - j0);
     evaluated += samples_of(rect);
-    evaluate_level(level, time_s, rect, part);
+    if (!evaluate_level(level, time_s, rect, part)) {
+      ok = false;
+      return;
+    }
     for (i32 j = j0; j < j1; ++j) {
       std::memcpy(out.data() + static_cast<usize>(j - window.j0) * window.nx +
                       static_cast<usize>(i0 - window.i0),
@@ -842,7 +862,7 @@ u64 TerrainMotion::field_over(Level& level, f64 time_s, const gfx::TerrainField&
   evaluate_rect(window.i0, oj1, wi1, wj1);        // and after it
   evaluate_rect(window.i0, oj0, oi0, oj1);        // the overlap's rows, to its left
   evaluate_rect(oi1, oj0, wi1, oj1);              // and to its right
-  return evaluated;
+  return ok ? evaluated : ~u64{0};
 }
 
 void TerrainMotion::keep_field(Level& level, f64 time_s, const gfx::TerrainField& window,
@@ -864,11 +884,18 @@ void TerrainMotion::run_field(Task& task) {
   Level& level = levels_[task.level];
   const i64 started = time::monotonic_ns();
   Vector<f32> heights;
-  evaluate_level(level, task.time_s, task.window, heights);
+  if (!evaluate_level(level, task.time_s, task.window, heights)) {
+    task.ok = false;
+    return;
+  }
   const usize n = heights.size();
   const std::span<const f32> field(heights.data(), n);
   Vector<f32> scratch;
   const f32* from = field_heights(level, task.from_s, task.window, scratch);
+  if (from == nullptr) {
+    task.ok = false;
+    return;
+  }
   task.delta_m =
       terrain_field_delta(std::span<const f32>(from, n), task.window, field, task.window);
   if (task.level == 0) {
@@ -918,10 +945,20 @@ void TerrainMotion::run_pairs(Task& task) {
     const f32* pa = nullptr;
     const f32* pb = nullptr;
     if (p.window_changed) {
-      task.evaluated += field_over(level, p.a.time_s, w, ha);
+      const u64 a_samples = field_over(level, p.a.time_s, w, ha);
+      if (a_samples == ~u64{0}) {
+        task.ok = false;
+        return;
+      }
+      task.evaluated += a_samples;
       pa = ha.data();
       if (p.has_b) {
-        task.evaluated += field_over(level, p.b.time_s, w, hb);
+        const u64 b_samples = field_over(level, p.b.time_s, w, hb);
+        if (b_samples == ~u64{0}) {
+          task.ok = false;
+          return;
+        }
+        task.evaluated += b_samples;
         pb = hb.data();
         p.b.delta_m = terrain_field_delta(std::span<const f32>(pa, count), w,
                                           std::span<const f32>(pb, count), w);
@@ -929,6 +966,10 @@ void TerrainMotion::run_pairs(Task& task) {
     } else {
       pa = field_heights(level, p.a.time_s, w, ha);
       if (p.has_b) pb = field_heights(level, p.b.time_s, w, hb);
+    }
+    if (pa == nullptr || (p.has_b && pb == nullptr)) {
+      task.ok = false;
+      return;
     }
     // A field over a moved window is the same heights at every point the old one had (a function
     // of the point and the time), so what it measured over the chunks kept still holds and only
@@ -1115,6 +1156,14 @@ void TerrainMotion::take_finished() {
 // A field the worker finished goes to the scene, which the next frame copies into its slot.
 void TerrainMotion::take_field(Task& finished) {
   Level& level = levels_[finished.level];
+  if (!finished.ok) {
+    scene_->terrain_retire(finished.staging);
+    drop_ahead(finished.level);
+    set_rate(0.0);
+    ENGINE_LOG_ERROR(log_renderer, "terrain source refused a field; surface time stopped",
+                     log::field("level", finished.level));
+    return;
+  }
   const u32 e = level.ahead > 0 ? level.ahead - 1 : 0;
   if (frozen(finished.level) || level.ahead == 0 ||
       level.next_state[e] != Level::Next::evaluating) {
@@ -1384,6 +1433,11 @@ void TerrainMotion::take_pairs(Task& finished) {
   }
   for (u32 k = 0; k < k_max_terrain_levels; ++k)
     pending_[k] = std::move(finished.pairs[k]);
+  if (!finished.ok) {
+    abandon_recentre(
+        "terrain source refused the moved field window (missing tile or unsupported filter)");
+    return;
+  }
   for (u32 k = 1; k < levels_.size(); ++k) {
     Pair& p = pending_[k];
     if (!p.window_changed) continue;

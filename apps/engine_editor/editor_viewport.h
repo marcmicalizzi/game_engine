@@ -19,6 +19,7 @@
 #include <domain/gfx/rhi.h>
 #include <systems/doc_scene/doc_scene.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -63,6 +64,9 @@ class Viewport {
 
   // A camera that frames the whole scene (the renderer's orbit at the scene's bounds).
   renderer::Camera framing_camera() const noexcept;
+  // Before recording a frame: the shared terrain levels follow this camera, also while time is
+  // stopped. The source and its workers are owned by this viewport.
+  void advance_ground(const renderer::Camera& camera);
 
   // The record under pixel (`x`, `y`) of the frame last drawn: the null id over nothing, over the
   // stand-in ground, or outside the picture. Reads the visibility buffer
@@ -100,6 +104,7 @@ class Viewport {
   doc_scene::DocumentScene scene_;
   renderer::SceneData data_;
   renderer::ResolvedSettings resolved_;
+  std::unique_ptr<renderer::MovingGround> ground_;
   std::unique_ptr<renderer::GpuScene> gpu_;
   std::unique_ptr<renderer::SceneRenderer> renderer_;
   Vector<Vec3> mesh_lo_;  // each mesh's box, in its own space before the fit

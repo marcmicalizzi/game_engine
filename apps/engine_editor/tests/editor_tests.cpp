@@ -15,6 +15,7 @@
 #include "../editor_viewport.h"
 #include "../viewport_math.h"
 
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
@@ -32,6 +33,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +43,70 @@
 #include <vector>
 
 using namespace engine;
+
+TEST_CASE(
+    "engine-editor: an authored ground streams through the stock viewport at zero time rate") {
+  if (scene_gen::GeneratorRegistry::global().find_ground("tiles") == nullptr) return;
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE(error);
+    return;
+  }
+  if (!device.features().buffer_int64_atomics) return;
+  const test::TempDir tmp("editor_authored_terrain");
+  REQUIRE(io::write_file(tmp.file("AGENTS.md"), "test cache root\n") == io::Status::Ok);
+  Vector<f32> heights(65 * 65);
+  for (u32 z = 0; z < 65; ++z)
+    for (u32 x = 0; x < 65; ++x)
+      heights[z * 65 + x] =
+          static_cast<f32>((static_cast<i32>(x) - 32) * (static_cast<i32>(x) - 32) +
+                           (static_cast<i32>(z) - 32) * (static_cast<i32>(z) - 32)) *
+          0.001f;
+  const std::string bytes(reinterpret_cast<const char*>(heights.data()),
+                          heights.size() * sizeof(f32));
+  char hash[17];
+  std::snprintf(hash, sizeof(hash), "%016llx",
+                static_cast<unsigned long long>(hash_bytes(bytes.data(), bytes.size())));
+  REQUIRE(io::write_file(tmp.file("ground.f32"), bytes) == io::Status::Ok);
+  const std::string header =
+      std::string(
+          R"({"format":"engine.terrain.heightfield","version":1,"width":65,"height":65,"spacing_mm":1000,"origin_mm":[-32000,-32000],"vertical_mm_per_unit":1000,"data":"ground.f32","data_hash":")") +
+      hash + "\"}";
+  REQUIRE(io::write_file(tmp.file("ground.json"), header) == io::Status::Ok);
+  doc::Document document;
+  document.add_layer("base", doc::LayerRole::Base);
+  JsonValue props = JsonValue::object();
+  props["source"] = JsonValue("ground.json");
+  REQUIRE(
+      document.apply(doc::cmd_create(Id128{0x20, 1}, "engine.terrain.Heightfield", Id128{}, props),
+                     nullptr, nullptr));
+  editor::Viewport viewport;
+  editor::Viewport::Options options;
+  options.width = 128;
+  options.height = 96;
+  options.settings.shadows = renderer::ShadowMode::Off;
+  options.settings.time_rate = 0;
+  options.settings.terrain_far_levels = 1;
+  options.ddc = tmp.file("ddc");
+  REQUIRE_MESSAGE(viewport.build(device, document, tmp.path(), options, error), error);
+  CHECK(viewport.data().terrain.size == 17);
+  renderer::FrameDesc frame;
+  frame.camera.position = WorldPos{0, 20, 7};
+  frame.camera.target = WorldPos{0, 0, -2};
+  renderer::CaptureChannels channels;
+  channels.depth = true;
+  renderer::CapturedFrame first, returned;
+  viewport.advance_ground(frame.camera);
+  REQUIRE_MESSAGE(viewport.renderer().capture(frame, channels, first, &error), error);
+  for (f64 x : {33.0, 129.0, 4096.0, 0.0}) {
+    frame.camera.position.x = frame.camera.target.x = x;
+    viewport.advance_ground(frame.camera);
+    REQUIRE_MESSAGE(viewport.renderer().capture(frame, channels, returned, &error), error);
+  }
+  CHECK(first.depth == returned.depth);
+  CHECK(first.color == returned.color);
+}
 
 namespace {
 

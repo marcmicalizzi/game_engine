@@ -303,7 +303,8 @@ struct ResolvedSettings {
   // time-lapse"): its instance is deformed, and the pool pass writes its heights blended between
   // two evaluated fields of the dune generator. True when the scene's terrain is the generator's
   // and the settings move it (`time_rate` above zero), may move it later (`time_rate_live`) or ask
-  // for its rings; it turns `deform_pass` on with it.
+  // for its rings; also true for still millimetre-capable terrain requested as tiles (ADR-0057).
+  // It turns `deform_pass` on with it.
   bool terrain_levels = false;
   // The terrain rings are drawn as levels beside the scene's grid (`RenderSettings::terrain_rings`
   // on a scene with terrain levels, read whole): the host builds a `TerrainRingSet` and hands it

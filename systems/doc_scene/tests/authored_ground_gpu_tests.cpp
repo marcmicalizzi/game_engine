@@ -4,10 +4,10 @@
 // handed the same heightfield computed directly in memory: the quantized points at the rings and
 // each far level's box filter summed in one loop, the edge held past the data. It is the renderer's
 // own "a tile set built ahead and read back" case (systems/renderer/tests/
-// terrain_tiles_gpu_tests.cpp) with an authored heightfield in place of the dunes: the scene is
-// still a dune scene, because the renderer draws the world's tiles only for a ground that moves
-// (renderer.md, "What is refused"), and under tiles the scene's grid carries only the material and
-// the UV frame; every height drawn is the source's. Offscreen, on the device the GPU lock gives.
+// terrain_tiles_gpu_tests.cpp) with an authored heightfield in place of the dunes. The original
+// comparison retains its dune-scene material fixture; a separate case below uses the stock
+// authored-provider setup. Under tiles the scene's grid carries only the material and UV frame;
+// every height drawn is the source's. Offscreen, on the device the GPU lock gives.
 //
 // Here, beside the document's mapping, because it needs the renderer, the tile-set capability and
 // the terrain capability at once, and `systems/renderer`'s own tests are not this capability's.
@@ -18,6 +18,7 @@
 #include <domain/tileset/tileset.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -195,6 +196,99 @@ struct DirectSource {
 constexpr scene_gen::TileSourceOps k_direct_ops{.heights = &DirectSource::heights};
 
 }  // namespace
+
+TEST_CASE(
+    "authored ground: the stock terrain setup streams still heights and returns after a teleport") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  test::TempDir tmp{"authored_stock_streaming"};
+  const auto field =
+      tileset::synth_heightfield(tileset::SynthKind::ridge, 129, 500, 11, -32000, -32000);
+  std::string error;
+  REQUIRE(tileset::write_heightfield(tmp.file("ridge.json"), field, error));
+  tileset::BuildOptions options;
+  options.cells = 16;
+  options.far_levels = 1;  // the stock outer ring is 2 m, its first filtered level 8 m
+  tileset::BuildResult built;
+  REQUIRE(tileset::ensure_tileset(tmp.file("ridge.json"), options, "", tmp.file("ddc"), false,
+                                  built, error));
+  SceneDesc desc = dune_scene(tmp.file("ddc"));
+  desc.terrain.provider = "tiles";
+  desc.terrain.tiles.emplace();
+  desc.terrain.tiles->manifest = built.manifest;
+  desc.terrain.size = 4097;  // ignored carrier resolution: the native source is streamed
+  desc.world.enabled = desc.world.ground = true;
+  desc.world.ring_count = 3;
+  for (u32 r = 0; r < 3; ++r) {
+    desc.world.radius[r] = 1.5f * static_cast<f32>(1u << r);
+    desc.world.ground_cells[r] = 64u >> r;
+  }
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CHECK(data.terrain.size == 17);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.time_rate = 86400;
+  settings.terrain_far_levels = 1;
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  REQUIRE(resolved.terrain_tiles);
+  Camera camera = camera_between(Vec3{3, 55, 7}, Vec3{3, 0, -8}, 0.1f);
+  MovingGround ground;
+  REQUIRE_MESSAGE(ground.prepare(data, resolved, camera, &error), error);
+  REQUIRE(ground.tile_source() != nullptr);
+  CHECK_FALSE(ground.tile_source()->moves());
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error, ground.level_set()), error);
+  REQUIRE_MESSAGE(ground.start(scene, resolved, true, &error), error);
+  CHECK(ground.motion().config().rate == 0.0);
+  CHECK(ground.motion().set_rate(600));
+  CHECK(ground.motion().config().rate == 0.0);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 128;
+  rd.height = 96;
+  REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+  CaptureChannels channels;
+  channels.depth = true;
+  CapturedFrame first, returned;
+  FrameDesc frame;
+  frame.camera = camera;
+  ground.frame(camera);
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, first, &error), error);
+  u64 capacity = 0;
+  for (u32 k = 1; k < scene.terrain_level_count(); ++k)
+    capacity += scene.terrain_field_capacity(k) + scene.terrain_slots(k);
+  const f64 path[] = {31.5, 32.5, 96, 160, 96, 32.5, 31.5, -96, 4096, -8192, 3};
+  for (f64 x : path) {
+    const DVec3 shift{x - camera.position.x, 0, 0};
+    frame.camera.position = camera.position + shift;
+    frame.camera.target = camera.target + shift;
+    ground.follow_tiles(frame.camera.position);
+    ground.frame(frame.camera);
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, returned, &error), error);
+    CHECK(ground.motion().level_stats(1).surface_s == data.terrain.time_s);
+    CHECK(ground.motion().ring_stats().failed == 0);
+  }
+  CHECK(first.depth == returned.depth);
+  CHECK(first.color == returned.color);
+  u64 after = 0;
+  for (u32 k = 1; k < scene.terrain_level_count(); ++k)
+    after += scene.terrain_field_capacity(k) + scene.terrain_slots(k);
+  CHECK(capacity == after);
+  // A source with no requested mip must fail through the stock path, not silently point-sample.
+  ground.finish();
+  renderer.destroy();
+  scene.destroy();
+  settings.terrain_far_levels = 2;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  MovingGround unsupported;
+  CHECK_FALSE(unsupported.prepare(data, resolved, camera, &error));
+  CHECK_FALSE(error.empty());
+}
 
 TEST_CASE("authored ground: a built tile set draws its heightfield, pixel for pixel") {
   Gpu gpu;

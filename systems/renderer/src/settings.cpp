@@ -401,10 +401,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // rate, and they take the rings' place.
   const bool tiles_asked =
       s.terrain_tiles || (scene != nullptr && scene->world.enabled && scene->world.ground);
-  out.terrain_levels = scene != nullptr &&
-                       (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live || tiles_asked) &&
-                       scene->terrain.enabled && scene->terrain_mesh != ~0u &&
-                       terrain_moves(scene->terrain);
+  const bool millimetres = scene != nullptr && terrain_has_millimetres(scene->terrain);
+  // Streamed terrain is a layout, independent of time (ADR-0057). The native source and its
+  // supported filters are checked when MovingGround builds the layout through the registry.
+  out.terrain_levels = scene != nullptr && scene->terrain.enabled && scene->terrain_mesh != ~0u &&
+                       ((tiles_asked && millimetres) ||
+                        (terrain_moves(scene->terrain) && (s.time_rate > 0.0 || s.terrain_rings ||
+                                                           s.time_rate_live || tiles_asked)));
   // The rings and the tiles are more meshes in the scene, laid out once beside its own: not for a
   // streamed scene, whose clusters live in pages, and not with cluster templates, which are built
   // once per mesh from a rest pose a slot does not have.
@@ -415,18 +418,18 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // are the stand-in ground of a scene that names no generator, float arithmetic of absolute
   // metres drawn as the scene's grid round the origin, and are refused here rather than given
   // millimetre entries (scene_gen.md, "Far from the origin", says why that is the line).
-  const bool millimetres = scene != nullptr && terrain_has_millimetres(scene->terrain);
   out.terrain_tiles = out.terrain_levels && tiles_asked && !paged && millimetres;
   if (tiles_asked && !out.terrain_tiles && scene != nullptr) {
-    ENGINE_LOG_WARN(log_renderer, "the ground is not drawn from the world's tiles",
-                    log::field("reason", paged ? "a scene streamed in pages"
-                                         : !out.terrain_levels
-                                             ? "its terrain's ground does not move"
-                                             : "its terrain's ground provider has no millimetre "
-                                               "entries: a tile past 16 km would stand on the "
-                                               "heights of a float32 metre"));
+    ENGINE_LOG_WARN(
+        log_renderer, "the ground is not drawn from the world's tiles",
+        log::field("reason", paged          ? "a scene streamed in pages"
+                             : !millimetres ? "its terrain's ground provider has no millimetre "
+                                              "entries: a tile past 16 km would stand on the "
+                                              "heights of a float32 metre"
+                                            : "the scene has no terrain mesh"));
   }
-  out.terrain_rings = out.terrain_levels && s.terrain_rings && !paged && !out.terrain_tiles;
+  out.terrain_rings = out.terrain_levels && s.terrain_rings && !paged && !out.terrain_tiles &&
+                      terrain_has_rings(scene->terrain);
   if (s.terrain_rings && out.terrain_tiles) {
     s.terrain_rings = false;
     ENGINE_LOG_WARN(log_renderer, "terrain rings ignored",

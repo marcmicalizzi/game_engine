@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <schemas/scene.h>
 #include <string>
+#include <thread>
 
 using namespace engine;
 using namespace engine::tileset;
@@ -399,7 +401,7 @@ TEST_CASE("tileset: the tiles ground provider, through the registry") {
   CHECK(ground.floor_mm(-23750, -15750) == set->height_mm(-23750, -15750));
   CHECK(ground.view().surface_mm(-20000, -10000) ==
         static_cast<f64>(set->height_mm(-20000, -10000)));
-  // Its tile source is its grid: the set's, a chain level where it has one.
+  // Its native tile source retains the set's filtering and refusal contract.
   const scene_gen::TileSource through = ground.tiles();
   Vector<f32> a(24 * 24);
   Vector<f32> b(24 * 24);
@@ -411,10 +413,7 @@ TEST_CASE("tileset: the tiles ground provider, through the registry") {
   for (u32 z = 0; z < 24; ++z)
     for (u32 x = 0; x < 24; ++x)
       CHECK(a[z * 24 + x] == metres(g.at_world(-50 + i64{x}, -40 + i64{z})));
-  // A grid cannot refuse, so a filter the chain lacks answers the points there; the set's own
-  // source refuses it.
-  REQUIRE(through.filtered(0.0, 3000, 3000, 0, 0, 2, 2, std::span<f32>(a.data(), 4)));
-  CHECK(a[0] == set->height_mm(0, 0));
+  CHECK_FALSE(through.filtered(0.0, 3000, 3000, 0, 0, 2, 2, std::span<f32>(a.data(), 4)));
   CHECK_FALSE(set->source().filtered(0.0, 3000, 3000, 0, 0, 2, 2, std::span<f32>(a.data(), 4)));
 
   // The refusals, each a sentence.
@@ -430,6 +429,96 @@ TEST_CASE("tileset: the tiles ground provider, through the registry") {
   missing.tiles->manifest = "nowhere/manifest.json";
   CHECK_FALSE(desc->make(missing, context, ground, &error));
   CHECK(error.find("could not open its set") != std::string::npos);
+}
+
+TEST_CASE("tileset: residency is bounded across travel, eviction, return and concurrent reads") {
+  SmallSet s;
+  const u64 tile_bytes = u64{s.options.cells + 3} * (s.options.cells + 3) * sizeof(i32);
+  TileSet set(tile_bytes * 2);
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const Grid expected = grid_of(s.field, s.options);
+  const auto ask = [&](i32 x, i32 z) {
+    f32 h = 0.0f;
+    REQUIRE(set.source().heights(1e9, 500, x, z, 1, 1, std::span<f32>(&h, 1)));
+    CHECK(h == metres(expected.at_world(x, z)));
+    CHECK(set.cache_stats().resident_bytes <= tile_bytes * 2);
+    CHECK(set.cache_stats().tiles <= 2);
+  };
+  for (i32 x = -48; x <= 48; x += 8)
+    ask(x, 0);
+  for (i32 x = 48; x >= -48; x -= 8)
+    ask(x, 0);
+  ask(-100000, 100000);  // finite edge holding on a distant teleport
+  ask(0, 0);
+  CHECK(set.cache_stats().evictions > 0);
+  CHECK(set.failures() == 0);
+  // Several jobs use the same source while its two slots are continually replaced.
+  std::thread a([&] {
+    for (i32 i = 0; i < 100; ++i)
+      ask(-48 + i % 96, -16);
+  });
+  std::thread b([&] {
+    for (i32 i = 0; i < 100; ++i)
+      ask(48 - i % 96, 32);
+  });
+  a.join();
+  b.join();
+}
+
+TEST_CASE("tileset: missing or corrupt tile data is refused, never zero ground") {
+  SmallSet s;
+  // The source covers (0,0); use a fresh reader so an earlier cached copy cannot mask damage.
+  const std::string file = io::join_path(io::parent_path(s.built.manifest), tile_file(500, 0, 0));
+  std::string original;
+  REQUIRE(io::read_file(file, original) == io::Status::Ok);
+  for (const bool corrupt : {false, true}) {
+    if (corrupt)
+      REQUIRE(io::write_file(file, "broken") == io::Status::Ok);
+    else {
+      std::error_code ec;
+      REQUIRE(std::filesystem::remove(file, ec));
+    }
+    TileSet set;
+    REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+    f32 h = 123.0f;
+    CHECK_FALSE(set.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+    CHECK(set.failures() > 0);
+    CHECK(std::isnan(set.height_mm(0, 0)));
+    REQUIRE(io::write_file(file, original) == io::Status::Ok);
+    CHECK(set.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+  }
+}
+
+TEST_CASE("tileset: a fixed footprint reads the same bounded data as source extent grows") {
+  for (const u32 side : {129u, 257u, 513u}) {
+    const test::TempDir tmp("tileset_extent");
+    const auto field = synth_heightfield(SynthKind::ridge, side, 500, 9);
+    BuildOptions options;
+    options.cells = 16;
+    options.far_levels = 0;
+    std::string error;
+    REQUIRE(write_heightfield(tmp.file("field.json"), field, error));
+    BuildResult built;
+    REQUIRE(
+        ensure_tileset(tmp.file("field.json"), options, tmp.file("set"), "", false, built, error));
+    const u64 payload = 19u * 19u * sizeof(i32);
+    TileSet set(payload * 4);
+    REQUIRE(set.open(built.manifest, error));
+    CHECK(set.reads() == 0);
+    CHECK(set.cache_stats().resident_bytes == 0);
+    Vector<f32> heights(17 * 17);
+    REQUIRE(set.source().heights(0, 500, 24, 24, 17, 17,
+                                 std::span<f32>(heights.data(), heights.size())));
+    const Grid grid = grid_of(field, options);
+    for (u32 z = 0; z < 17; ++z)
+      for (u32 x = 0; x < 17; ++x)
+        CHECK(heights[z * 17 + x] == metres(grid.at_world(24 + x, 24 + z)));
+    CHECK(set.reads() == 4);
+    CHECK(set.cache_stats().resident_bytes == payload * 4);
+    CHECK(set.cache_stats().evictions == 0);
+    MESSAGE(side << " source points a side: " << set.reads() << " reads, "
+                 << set.cache_stats().resident_bytes << " resident payload bytes for 289 samples");
+  }
 }
 
 TEST_CASE("tileset: a terrain naming a heightfield builds its set through the cache on a miss") {

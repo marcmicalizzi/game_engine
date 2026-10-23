@@ -1103,6 +1103,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     return false;
   }
   out.name = file.name;
+  out.terrain_tiles = options.terrain_tiles;
   out.file_hash = hash_bytes(text.data(), text.size());
   // The sky (sky.h, ADR-0048): its provider is found and made here, as a terrain's ground provider
   // is below, so a name this executable does not carry, or an entry the provider refuses, refuses
@@ -1551,6 +1552,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     return false;
   }
   SceneDesc resolved = desc;
+  // The grid is hidden under terrain tiles; retaining an authored multi-kilometre source grid
+  // here defeats streaming before the first frame. Its extent remains the material's UV frame.
+  if ((resolved.terrain_tiles || (resolved.world.enabled && resolved.world.ground)) &&
+      resolved.terrain.enabled && terrain_has_millimetres(resolved.terrain) &&
+      !terrain_moves(resolved.terrain) && !resolved.stream)
+    resolved.terrain.size = 17;
   // The derived-data cache lives at <repo>/ddc, found by walking up from the executable to the
   // directory that holds AGENTS.md, unless a root was named. With no root there is nowhere to
   // keep a built mesh, so the cache is simply off.

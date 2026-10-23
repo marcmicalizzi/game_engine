@@ -439,9 +439,10 @@ bool SceneCollision::build_ground(Tile& tile) {
     tile.heights.resize(n * n);
     // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
     // time (a still source's one surface), which for the scene's own ground is the same bits.
-    if (explicit_source_) {
-      (void)source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
-                            std::span<f32>(tile.heights.data(), tile.heights.size()));
+    if (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr)) {
+      if (!source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
+                           std::span<f32>(tile.heights.data(), tile.heights.size())))
+        return false;
     } else {
       ground_->grid(scene_gen::ring_lattice(spacing_mm_), i0, j0, n, n,
                     std::span<f32>(tile.heights.data(), tile.heights.size()));

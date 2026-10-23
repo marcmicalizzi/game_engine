@@ -26,6 +26,11 @@ engine_module_tests(NAME water
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
+# W67: the native authored source and water's ground view must describe the same bottom.
+if(TARGET engine_water_tests AND TARGET engine::tileset)
+  target_sources(engine_water_tests PRIVATE tests/tileset_ground_tests.cpp)
+  target_link_libraries(engine_water_tests PRIVATE engine::tileset)
+endif()
 # The oasis pool stands in the dunes under the earth's sky with scattered rocks at its shore, which
 # are three capabilities': linked as a host links them (their registrars name the generators), and
 # the cases over that scene compiled only where all three are.

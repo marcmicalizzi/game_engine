@@ -16,7 +16,7 @@
 engine_schema_library(NAME tileset_schemas SCHEMAS schemas/tileset.schema CAPABILITY tileset)
 
 engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash json schema schemas tileset_schemas io geometry scene_gen
+  DEPS base containers math hash json schema schemas tileset_schemas io geometry scene_gen tunables
   SOURCES src/tileset.cpp src/ground.cpp)
 
 engine_module_tests(NAME tileset

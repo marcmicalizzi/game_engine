@@ -7,6 +7,7 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/tileset.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 
 #include <memory>
 #include <schemas/scene.h>
@@ -15,7 +16,11 @@ namespace engine::tileset {
 
 namespace {
 
+tunables::Int cache_mib{"tileset.cache_mib", 64, 1, 16384,
+                        "Resident authored terrain tile payload per provider, MiB"};
+
 struct TilesGround {
+  TilesGround() : set(static_cast<u64>(cache_mib.get()) * 1024 * 1024) {}
   TileSet set;
 };
 
@@ -38,10 +43,12 @@ f32 tiles_surface_mm(const void* state, i64 x_mm, i64 z_mm) noexcept {
   return set_of(state).height_mm(x_mm, z_mm);
 }
 
+scene_gen::TileSource tiles_source(const void* state) noexcept { return set_of(state).source(); }
+
 // A grid: the scene's own (its float coordinates' nearest millimetres) or a window of the world's
 // lattice. **It cannot refuse** (`GroundOps::grid` returns nothing), so a lattice filtered to a
-// spacing the chain lacks is answered with the ground at its points; a reader that must be told
-// takes the set's own source (`tile_set_of(provider)->source()`), which refuses it.
+// spacing the chain lacks is answered with the ground at its points. Lattice consumers instead
+// get the set's native source through `GroundProvider::tiles()`, which retains refusals.
 void tiles_grid(const void* state, const scene_gen::Lattice& lattice, i32 i0, i32 j0, u32 nx,
                 u32 nz, std::span<f32> heights) noexcept {
   const TileSet& set = set_of(state);
@@ -72,6 +79,7 @@ constexpr scene_gen::GroundOps k_tiles_ops{
     .height_mm = &tiles_height_mm,
     .surface_mm = &tiles_surface_mm,
     .floor_mm = &tiles_surface_mm,
+    .tile_source = &tiles_source,
 };
 
 std::string resolve(std::string_view dir, const std::string& path) {

@@ -762,6 +762,10 @@ bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector
     return false;
   }
   const TerrainSampler field(desc);
+  if (!field.ok()) {
+    if (error != nullptr) *error = field.error();
+    return false;
+  }
   const u32 n = desc.size;
   const f32 extent = desc.extent;
   positions.clear();
@@ -774,6 +778,10 @@ bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector
   Vector<f32> heights(n * n);
   field.provider().grid(terrain_scene_lattice(desc), 0, 0, n, n,
                         std::span<f32>(heights.data(), heights.size()));
+  if (std::any_of(heights.begin(), heights.end(), [](f32 h) { return !std::isfinite(h); })) {
+    if (error != nullptr) *error = "terrain: the ground has missing or non-finite height data";
+    return false;
+  }
   positions.resize(n * n);
   uvs.resize(n * n);
   for (u32 zi = 0; zi < n; ++zi) {
