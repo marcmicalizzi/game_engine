@@ -1,6 +1,6 @@
 # The build stamp: which commit an app was built from, so a tool that measures with a binary can
 # refuse one older than the source it reports (tools/e10-harness.ps1; docs/content-generation.md,
-# "Which binaries"). Every app links it (engine_app) and `--version` prints it.
+# "Which binaries"). Every app links it (engine_app); apps exposing `--version` print it.
 #
 # **Captured at build time, not at configure time.** CMake does not re-run on a commit, so a commit
 # captured at configure would name the tree as it was when the build directory was configured —
