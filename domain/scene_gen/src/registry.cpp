@@ -273,6 +273,7 @@ constexpr TileSourceOps k_still_tiles{.heights = &still_heights, .travel_m = nul
 
 TileSource GroundProvider::tiles() const noexcept {
   if (!valid()) return TileSource{};
+  if (ops_->tile_source != nullptr) return ops_->tile_source(state_);
   return TileSource{moves() ? &k_moving_tiles : &k_still_tiles, this};
 }
 

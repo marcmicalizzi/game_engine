@@ -60,3 +60,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0054](0054-the-tools-ui-is-dear-imgui-drawn-by-the-renderer.md) | The in-engine tools UI is Dear ImGui, drawn by the renderer's overlay pass | Proposed |
 | [0055](0055-the-muscle-line-tier-scheme-schedule-and-failure-semantics.md) | The muscle line tier: the adopted scheme, the fixed schedule and the failure semantics | Proposed |
 | [0056](0056-one-world-clock-and-the-days-length.md) | One world clock, and the day's length: the sky at a day length in real seconds, every animation on a world clock a world rate scales, the dunes riding it (supersedes ADR-0048 decision 5) | Proposed |
+| [0057](0057-ground-providers-expose-their-native-tile-source.md) | A ground provider exposes its native tile source | Proposed |

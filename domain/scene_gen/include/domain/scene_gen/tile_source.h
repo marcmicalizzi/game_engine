@@ -32,7 +32,7 @@ struct TileSourceOps {
   // ground over `filter_mm` (0: at the point), at game time `time_s`: `nx * nz` metres, rows of x
   // in order of z, blocks [block_begin, block_end) of `window_blocks(nx, nz)` (a caller spreads the
   // blocks over as many jobs as it likes and gets the same bytes). A source that does not move
-  // answers every time with its one surface. False, writing nothing, when the source has nothing
+  // answers every time with its one surface. False (discard the output) when the source has nothing
   // there: a spacing or a filter a tile set was not built at, a window outside it. **Thread-safe**:
   // a renderer's field is asked for from several jobs at once, and its tiles are built on a worker
   // while the frame asks for a field.

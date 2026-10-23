@@ -196,6 +196,8 @@ The checklist. `tools/new-capability.ps1` ([08 §8.5](08-toolchain.md#85-build-s
 
 What a capability must never need: edits to `core/`, `foundation/`, the render graph, the scheduler, the content build's driver, or another capability. A capability that genuinely needs one because the registration point does not exist yet extends this table first, as a plan change and an ADR, and lands that before the capability does.
 
+**Terrain source extension, 2026-10-23 ([ADR-0057](../adr/0057-ground-providers-expose-their-native-tile-source.md), W67).** A ground provider may expose its native `TileSource` through `GroundOps::tile_source`. This carries an authored set's filtering and refusal contract through the registry without a renderer dependency on that capability; the existing procedural adapter remains the default. Source capability and motion are separate: still authored terrain can use streamed terrain levels.
+
 ### 2.8.1 The first capability built through the contract
 
 **Status, 2026-09-18.** [`systems/animation`](../subsystems/animation.md) is the first capability built end to end through the table above, and the point of building it was as much to find out what the contract is like from the inside as to get an animation system. What follows is that report, because a contract nobody has used is a proposal.

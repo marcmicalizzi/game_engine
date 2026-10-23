@@ -39,6 +39,17 @@ bool tilt_make(const scene::Terrain& entry, const Context&, GroundProvider& out,
 constexpr GroundProviderDesc k_tilt{.name = "scene-gen-test-tilt", .make = &tilt_make};
 const Registrar k_tilt_registrar{k_tilt};
 
+bool native_heights(const void*, f64, i64 spacing, i64 filter, i32, i32, u32, u32, u32, u32,
+                    std::span<f32> out) noexcept {
+  if (filter != 0 && (filter != spacing || spacing != 8000)) return false;
+  std::fill(out.begin(), out.end(), 7.0f);
+  return true;
+}
+constexpr TileSourceOps k_native_source{.heights = &native_heights};
+TileSource native_source(const void* state) noexcept { return TileSource{&k_native_source, state}; }
+constexpr GroundOps k_native_ground{
+    .destroy = &tilt_destroy, .height = &tilt_height, .tile_source = &native_source};
+
 // A placement generator of this test's own: one instance of one mesh at the origin.
 bool one_open(const JsonValue&, const Context&, void** state, std::string*) {
   *state = nullptr;
@@ -59,6 +70,20 @@ constexpr PlacementGeneratorDesc k_one{
 const Registrar k_one_registrar{k_one};
 
 }  // namespace
+
+TEST_CASE("scene_gen: a native source preserves refusals and survives moving its owning handle") {
+  GroundProvider ground(&k_native_ground, new Tilt{2.0f});
+  CHECK_FALSE(ground.moves());
+  const TileSource source = ground.tiles();
+  CHECK_FALSE(source.moves());
+  GroundProvider moved = std::move(ground);
+  f32 h = 0;
+  CHECK_FALSE(ground.tiles().valid());
+  CHECK_FALSE(source.filtered(0, 4000, 4000, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+  CHECK(source.filtered(1e9, 8000, 8000, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+  CHECK(h == 7.0f);
+  CHECK(moved.height(1.0f, 0.0f) == 2.0f);
+}
 
 TEST_CASE("scene_gen: a generator registered from its own source is found by its name") {
   const GeneratorRegistry& registry = GeneratorRegistry::global();

@@ -505,6 +505,9 @@ struct GroundOps {
   // its own. Null: `GroundProvider::surface_mm`/`floor_mm` fall back (below).
   f32 (*surface_mm)(const void* state, i64 x_mm, i64 z_mm) noexcept = nullptr;
   f32 (*floor_mm)(const void* state, i64 x_mm, i64 z_mm) noexcept = nullptr;
+  // Native lattice requests, including their filter/refusal contract (ADR-0057). Null keeps the
+  // procedural adapter through evaluate/grid. Non-owning: this state outlives every reader.
+  TileSource (*tile_source)(const void* state) noexcept = nullptr;
 };
 
 class GroundProvider {
@@ -570,7 +573,8 @@ class GroundProvider {
   // **This ground as a tile source** (tile_source.h; scene_gen.md, "The tile source"): the heights
   // of a window of the world's lattice through `evaluate` at the time asked for, or, for a ground
   // that does not move, through `grid` at its own time whatever the time; and `travel_m` when it
-  // moves. The provider's heights to the bit. Valid while this lives and is not moved.
+  // moves. A native `GroundOps::tile_source` takes precedence, preserving its refusals. The
+  // provider's heights to the bit. Valid while this lives and is not moved.
   TileSource tiles() const noexcept;
   // For the capability that made it, which alone knows what the state is (its typed accessor).
   const GroundOps* ops() const noexcept { return ops_; }
