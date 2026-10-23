@@ -1,6 +1,7 @@
 # 04 — Renderer Architecture
 
-**Status, native authored terrain materials (2026-10-23, W68):** in progress. Authored colour,
+**Status, native authored terrain materials (2026-10-23, W68):** implemented and validated
+(`0d4a16c6`). Authored colour,
 normal and roughness layers belong on the same native surface as terrain LOD, with finite map
 coverage and world-anchored triplanar detail. The resolve, reference and analytic water bottom
 share the evaluator; the [grounding and validation](../experiments/native-terrain-materials.md)

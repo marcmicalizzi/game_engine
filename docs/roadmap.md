@@ -196,7 +196,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W64 | World tile index past 6.9e10 m | done (2026-10-07, refused where positions enter: `world::tile_reachable`) | W56 | S | design | [world](subsystems/world.md#where-an-observer-is) |
 | W65 | Lights placed by cell on the GPU | open | W57 | S | routine | [renderer](subsystems/renderer.md#the-frames-origin) |
 | W66 | An authored heightfield in the document and the editor: the record (done here), then the renderer carrying the `tiles` block into its provider, then the editor's brush and write-back | in progress (e81a222a: the `engine.terrain.Heightfield` record and its mapping; next the renderer's pass-through, then the brush) | W23 | M | design | [tileset](subsystems/tileset.md#the-record) |
-| W68 | Authored layers and detail on one native terrain surface: map and triplanar sampling, filtered coverage, consistent normals/roughness and water-bottom shading; remove the v6 duplicate floor | in progress (2026-10-23; isolated native-terrain-materials worktree) | W24 | M | design | [native materials](experiments/native-terrain-materials.md) |
+| W68 | Authored layers and detail on one native terrain surface: map and triplanar sampling, filtered coverage, consistent normals/roughness and water-bottom shading; remove the v6 duplicate floor | done (0d4a16c6; v6 one-surface shore, forest and steep-slope acceptance; Windows/Linux affected checks) | W24 | M | design | [native materials](experiments/native-terrain-materials.md) |
 
 ## D — The data model and documents
 
