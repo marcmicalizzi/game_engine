@@ -9,6 +9,7 @@
 #include <cstring>
 #include <renderer_log.h>
 #include <shaders/path_trace.spv.h>
+#include <shaders/path_trace_terrain.spv.h>
 
 namespace engine::renderer {
 
@@ -96,6 +97,8 @@ bool ReferenceRenderer::create(const gfx::Device& device, GpuScene& scene, Scene
   }
   shaders_.add_embedded("path_trace", shaders::k_path_trace_spirv,
                         shaders::k_path_trace_spirv_size);
+  shaders_.add_embedded("path_trace_terrain", shaders::k_path_trace_terrain_spirv,
+                        shaders::k_path_trace_terrain_spirv_size);
   std::string manifest = desc.shader_manifest;
   if (manifest.empty()) {
     const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -124,7 +127,8 @@ bool ReferenceRenderer::create(const gfx::Device& device, GpuScene& scene, Scene
 }
 
 bool ReferenceRenderer::create_pipelines(std::string* error) {
-  const gfx::Shader* shader = shaders_.get("path_trace", error);
+  const gfx::Shader* shader =
+      shaders_.get(scene_->has_terrain_materials() ? "path_trace_terrain" : "path_trace", error);
   if (shader == nullptr) return false;
   const gfx::DescriptorSetLayoutHandle set_layout = scene_->bindless().layout();
   const std::span<const gfx::DescriptorSetLayoutHandle> layouts(&set_layout, 1);

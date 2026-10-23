@@ -98,6 +98,7 @@ struct TerrainDesc {
   // docs/subsystems/tileset.md), carried to the provider with its paths resolved against the scene
   // file's directory. Empty for every other ground.
   std::optional<scene::TerrainTileSet> tiles;
+  std::optional<scene::TerrainMaterials> materials;
   // With `dunes`: the wind's day and the storms' transport gains (terrain.md, "The day's wind",
   // "A storm scales transport"; `engine.scene.Terrain` version 5). The defaults are the record as
   // it was and leave the hash as it was.

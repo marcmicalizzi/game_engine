@@ -143,6 +143,13 @@ TEST_CASE("doc_scene: a heightfield record's changes, and the refusals") {
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
   REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  // Materials are part of the native ground, carried to the viewport and rebuilt on edit.
+  set(w.d, id_of(1), "materials", R"({"layers":[{"name":"soil","tint":[0.2,0.3,0.1]}]})");
+  REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
+  CHECK(changes.rebuild);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE(scene.desc.terrain.materials.has_value());
+  CHECK(scene.desc.terrain.materials->layers[0].name == "soil");
   // Deleted: a rebuild, and the scene has no ground.
   remove(w.d, id_of(1));
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));

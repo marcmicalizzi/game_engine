@@ -12,6 +12,7 @@
 #include <systems/renderer/rt_capacity.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <renderer_log.h>
@@ -2772,6 +2773,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
+      if (m == data_->terrain_mesh && data_->terrain.materials.has_value() &&
+          u64{mesh_data.materials.size()} < u64{data_->terrain.materials->layers.size()} + 1u) {
+        if (error != nullptr)
+          *error = "terrain.materials: the cached ground has an incomplete layer table";
+        return false;
+      }
       mesh_material_base[m] = material_table.size();
       Vector<BuiltImage> built;
       u32 sampled_images = 0;
@@ -2886,6 +2893,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         scene_textures.add(made);
         return image_slot[index];
       };
+      u32 source_material_index = 0;
       for (const assets::Material& source : mesh_data.materials) {
         gfx::ResolveMaterial material;
         material.albedo =
@@ -2988,6 +2996,35 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           if (!upload_water_depth(data_->mesh_info[m].water->depth, frame)) return false;
           gfx::set_water_depth_map(material, optics, frame);
         }
+        if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {
+          const auto& terrain_materials = *data_->terrain.materials;
+          if (source_material_index == 0) {
+            material.flags |= gfx::k_material_terrain_layers;
+            material.flags &= ~gfx::k_material_ground_detail;
+            material.uv_offset.z = std::bit_cast<f32>(mesh_material_base[m] + 1);
+            material.uv_offset.w =
+                std::bit_cast<f32>(static_cast<u32>(terrain_materials.layers.size()));
+            material.normal_scale = terrain_materials.detail_near_m;
+            material.occlusion_strength = terrain_materials.detail_far_m;
+            TerrainUvFrame frame;
+            if (!terrain_uv_frame(data_->terrain, frame, error)) return false;
+            material.flags &= ~gfx::k_material_uv_transform;
+            material.uv_transform =
+                Vec4{std::bit_cast<f32>(static_cast<i32>(frame.x0_mm)),
+                     std::bit_cast<f32>(static_cast<i32>(frame.z0_mm)),
+                     static_cast<f32>(1.0 / static_cast<f64>(frame.size_mm)), 0};
+          } else if (source_material_index <= terrain_materials.layers.size()) {
+            const auto& layer = terrain_materials.layers[source_material_index - 1];
+            material.flags &= ~(gfx::k_material_uv_transform | gfx::k_material_ground_detail);
+            if (layer.projection == scene::TerrainProjection::Map)
+              material.flags |= gfx::k_material_terrain_map;
+            material.uv_scale = std::round(layer.tile_m * 1000.0f);
+            material.uv_transform = material.emissive;  // linear colour and roughness means
+            material.emissive = Vec4{};
+            material.uv_offset = Vec4{layer.weight, 0, 0, 0};
+          }
+        }
+        ++source_material_index;
         material_table.push_back(material);
         if (volume || (material.flags & gfx::k_material_water_depth_map) != 0)
           material_table.push_back(optics);
@@ -3074,9 +3111,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   material_count_ = material_table.size();
   has_water_ = false;
+  has_terrain_materials_ = false;
   has_masked_ = false;
   for (const gfx::ResolveMaterial& material : material_table) {
     if ((material.flags & gfx::k_material_water) != 0) has_water_ = true;
+    if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh

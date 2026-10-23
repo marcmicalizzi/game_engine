@@ -10,6 +10,7 @@
 
 #include <core/json/json.h>
 #include <foundation/image/decode.h>
+#include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
@@ -101,6 +102,35 @@ TEST_CASE("engine-view: a scene naming a built tile set draws it, offscreen") {
     other += std::memcmp(&picture.pixels[p * 4], &picture.pixels[0], 3) != 0 ? 1u : 0u;
   MESSAGE(other << " of " << picture.width * picture.height << " pixels differ from the first");
   CHECK(other > picture.width * picture.height / 20);
+}
+
+TEST_CASE(
+    "engine-view: authored material layers draw on native ground through the stock scene path") {
+  const test::TempDir tmp("engine_view_native_materials");
+  const u8 colour[] = {20, 180, 40, 255};
+  REQUIRE(image::write_png(tmp.file("ground.png"), 1, 1, 4, colour) == io::Status::Ok);
+  const std::string scene = tmp.file("scene.json");
+  REQUIRE(io::write_file(scene, scene_text("waves", R"(,"dune_height":0,
+    "materials":{"layers":[{"base_color":"ground.png","projection":"Map"}]})")) == io::Status::Ok);
+  const std::string capture = tmp.file("native.png");
+  const Run drawn =
+      run_app(view_exe(), {"--offscreen", "--scene", scene, "--frames", "2", "--width", "160",
+                           "--height", "96", "--view", "albedo", "--shadows", "off", "--capture",
+                           capture, "--ddc", tmp.file("ddc")});
+  if (drawn.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << drawn.output);
+    return;
+  }
+  REQUIRE_MESSAGE(drawn.exit_code == 0, drawn.output);
+  image::Image picture;
+  REQUIRE(image::read_image(capture, picture) == io::Status::Ok);
+  u32 green = 0;
+  for (u32 p = 0; p < picture.width * picture.height; ++p)
+    green += picture.pixels[4 * p + 1] > picture.pixels[4 * p] * 2 &&
+                     picture.pixels[4 * p + 1] > picture.pixels[4 * p + 2] * 2
+                 ? 1u
+                 : 0u;
+  CHECK(green > 500);
 }
 
 TEST_CASE("engine-view: a ground provider no build has is refused, naming tiles among its own") {

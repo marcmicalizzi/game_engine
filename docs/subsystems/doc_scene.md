@@ -12,6 +12,12 @@
 
 ## The mapping
 
+**Native ground materials (W68).** `engine.terrain.Heightfield` version 2 adds optional
+`materials`, the scene's `TerrainMaterials` block ([renderer](renderer.md#native-authored-terrain-materials)).
+Its image paths resolve against the document directory and it passes through to the renderer's
+native ground. A material edit rebuilds the scene just as a source edit does; renaming the record
+still changes no drawing. Old records without the block keep the existing palette.
+
 - **One live placement is one instance.** `read_document_scene` walks `Document::objects()`, which is sorted by id, so the instance order — and with it every pair and every visibility id — is a function of the document's content alone, never of the order records were made in.
 - **One distinct path is one mesh**, in the order the records first name it; every record naming it shares it, so a hundred crates are one mesh's clusters.
 - **Placed exactly as a scene file's `Instance`** (`renderer/src/scene.cpp`): the world position whole in `SceneInstance::origin` (ADR-0053: no float on the way to the cell), `yaw_deg` about +y after `rotation`, `scale` when given. A record's unknown properties are left alone — the document validates its records against their types (`Document::validate`), and a viewport that refused to draw a record over a property it does not read would hide the record, not the problem. A placement whose properties do not read as the type, or that names no mesh, is refused with the record's id.

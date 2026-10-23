@@ -23,6 +23,7 @@
 #include <core/math/math.h>
 #include <core/memory/memory.h>
 #include <domain/gfx/device.h>
+#include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -446,6 +447,83 @@ Camera looking_across(Vec3 eye_ground, f32 ground_y) {
 }
 
 }  // namespace
+
+TEST_CASE(
+    "world tiles: native material paintings agree with world positions across tiles and LOD") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const test::TempDir tmp("native_material_tiles");
+  Vector<u8> colours(256u * 256u * 4u);
+  for (u32 z = 0; z < 256; ++z)
+    for (u32 x = 0; x < 256; ++x) {
+      const u32 p = (z * 256 + x) * 4;
+      colours[p] = static_cast<u8>(x);
+      colours[p + 1] = static_cast<u8>(z);
+      colours[p + 2] = 64;
+      colours[p + 3] = 255;
+    }
+  const std::string painting = tmp.file("painting.png");
+  REQUIRE(image::write_png(painting, 256, 256, 4, {colours.data(), colours.size()}) ==
+          io::Status::Ok);
+  SceneDesc desc = dune_scene(tmp.file("ddc"), 17, 64.0f);
+  desc.cache = false;
+  desc.terrain.materials.emplace();
+  scene::TerrainMaterialLayer layer;
+  layer.base_color = painting;
+  layer.projection = scene::TerrainProjection::Map;
+  desc.terrain.materials->layers.push_back(layer);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.view_mode = static_cast<u32>(gfx::ResolveMode::Albedo);
+  const TerrainTilesDesc tiles = small_tiles();
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  TileRig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, 192, 128, still_lapse(), &pool, &tiles,
+                            WorldPos::origin()),
+                  rig.error);
+  CaptureChannels channels;
+  channels.depth = true;
+  for (const f32 x : {0.0f, 8.0f}) {
+    const Camera camera = looking_down_at(Vec3{x, 0, 0}, 32.0f);
+    rig.follow(camera);
+    for (const f32 cut : {0.0f, 2.0f}) {
+      FrameDesc frame;
+      frame.camera = camera;
+      frame.lod_px = cut;
+      frame.view_mode = settings.view_mode;
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      const Mat4 inv = inverse(rig.renderer.views()[0].view_proj);
+      u32 checked = 0, wrong = 0;
+      for (u32 py = 0; py < shot.height; ++py)
+        for (u32 px = 0; px < shot.width; ++px) {
+          Vec3 point;
+          if (!unproject(shot, inv, relative(camera.position, WorldPos::origin()), px, py, point))
+            continue;
+          const f32 uv[2] = {(point.x + 64.0f) / 128.0f, (point.z + 64.0f) / 128.0f};
+          for (u32 axis = 0; axis < 2; ++axis) {
+            const f64 texel = std::clamp(static_cast<f64>(uv[axis]) * 256.0 - 0.5, 0.0, 255.0);
+            const f64 lo = std::floor(texel);
+            const auto linear_of = [](f64 code) {
+              const f64 v = code / 255.0;
+              return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+            };
+            const f64 a = linear_of(lo);
+            const f64 b = linear_of(std::min(lo + 1.0, 255.0));
+            const f64 expected = std::pow(a + (b - a) * (texel - lo), 1.0 / 2.2) * 255.0;
+            wrong +=
+                std::abs(shot.color[4 * (py * shot.width + px) + axis] - expected) > 2.0 ? 1u : 0u;
+          }
+          ++checked;
+        }
+      REQUIRE(checked > 10000);
+      CHECK(wrong == 0);
+    }
+  }
+}
 
 TEST_CASE("world tiles: the erg from tiles is the grid's picture inside its extent, and goes on") {
   Gpu gpu;

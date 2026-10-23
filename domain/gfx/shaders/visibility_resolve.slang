@@ -522,6 +522,18 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     const float2 uv = o.ground_uv + bottom.xz * o.ground_uv_per_m;
     albedo = water_ground_albedo(materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
                                  dp_dy.xz * o.ground_uv_per_m);
+#ifdef MATERIAL_TERRAIN
+    if ((materials[o.ground].flags & k_material_terrain_layers) != 0) {
+      float3 bottom_normal;
+      const float3 point = bottom + instance_from_eye(instance, params->eye);
+      const MaterialSample sampled = sample_terrain_material(
+          geo, materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
+          dp_dy.xz * o.ground_uv_per_m, point, n_b, dp_dx, dp_dy,
+          length(point - params->camera.xyz), true, bottom_normal);
+      albedo = sampled.albedo;
+      n_b = bottom_normal;
+    }
+#endif
   }
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
@@ -734,10 +746,28 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const float o = sample_occlusion(material, uv, duv_dx, duv_dy);
     return float4(o, o, o, 1.0);
   }
+#ifdef MATERIAL_TERRAIN
+  MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
+  float3 terrain_normal = s.normal;
+  if ((material.flags & k_material_terrain_layers) != 0) {
+    float3 dp_dx;
+    float3 dp_dy;
+    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
+    screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
+                              params->height, dp_dx, dp_dy);
+    sampled = sample_terrain_material(geo, material, surface_uv, duv_dx, duv_dy, s.position,
+                                      s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal);
+  }
+#else
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
+#endif
   float3 albedo = sampled.albedo;
   if (params->mode == 7) return float4(display_encode(albedo), 1.0);
+#ifdef MATERIAL_TERRAIN
+  float3 shading_normal = terrain_normal;
+#else
   float3 shading_normal = s.normal;
+#endif
   if (material.normal_texture != k_no_texture) {
     float3 tangent;
     float3 bitangent;

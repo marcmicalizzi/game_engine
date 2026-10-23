@@ -540,6 +540,58 @@ and the same ninety-three fewer.
 
 ## Materials
 
+### Native authored terrain materials
+
+`Terrain.materials` (scene schema version 8, W68) optionally puts authored layers on the native
+heightfield, rings and world tiles. It adds no second floor and changes no height or collision.
+Layers composite in array order over the existing ground palette, using `weight` times the
+optional mask's R channel. Masks are linear, clamped in the scene terrain's map frame. A layer
+may be colour factors alone or name base colour (sRGB), an OpenGL (+Y) tangent-space normal,
+and linear roughness read from R. Image paths resolve against the scene file. Missing images,
+invalid numbers, empty layers and a count exceeding the scene's `layer_budget` are refused.
+`materials` and the legacy sand `detail` block are alternative surface-detail paths; naming both
+is refused, so an authored block never silently disables requested sand ripples.
+
+```json
+"materials": {
+  "layer_budget": 4, "detail_near_m": 32, "detail_far_m": 128,
+  "layers": [
+    {"name": "painted landscape", "projection": "Map", "base_color": "ground.png"},
+    {"name": "rock detail", "projection": "Triplanar", "tile_m": 1.5,
+     "base_color": "rock.png", "normal": "rock-normal.png", "roughness": "rock-rough.png",
+     "mask": "rock-coverage.png"}
+  ]
+}
+```
+
+`Map` preserves finite landscape paintings. `Triplanar` repeats at `tile_m` (rounded to whole
+millimetres), blends the axis projections by the fourth power of the surface normal's absolute
+components, and projects each normal map's slopes into the surface tangent plane. A flat normal
+map preserves the input normal on every slope. Phase comes from integer world cells and the
+frame-local point; map coordinates also come from that point, avoiding chunk-dependent half-UV
+rounding at tile/LOD boundaries. Normals and fine colour/roughness fade across the authored
+near/far eye distances to the layer's linear texel means. `Map` retains its painting, filtered
+by the existing texture mips. These are content settings, not geological altitude rules.
+
+The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
+The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged
+scene objects or reflections. Separate `_terrain` modules are selected only for scenes that
+name layers. `ResolveMaterial` remains 112 bytes; the root stores an absolute first-layer index
+and count and the map frame, and each layer adds one table entry with ordinary texture slots.
+Its occlusion slot carries coverage; it is never applied as ambient occlusion. Cold containers
+transport the decoded colour/roughness means in the unreferenced layer materials' emissive and
+metallic factors; upload moves them into the layer's otherwise-unused UV transform and clears
+emission/metallicity. No cluster directly names those entries.
+
+Sources and choices, costs and validation: [native terrain materials](../experiments/native-terrain-materials.md).
+`terrain_materials.h` provides validation, source-image preparation and content hashing; every
+image's bytes enter the terrain cache key, independent of its directory. Textures use the existing
+embedded-image build, compression, mip and sharing path. Per-tile material-page streaming is the
+remaining W25 work; this surface contract makes no claim of bounded texture residency for an
+arbitrarily large coverage image.
+Changing a layer or image currently rebuilds the grid's cached container too; geometry and material
+cache identities are not split. A streamed terrain keeps that grid as its small material carrier.
+
 **What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
 material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
 occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.

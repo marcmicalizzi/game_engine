@@ -333,6 +333,7 @@ class GpuScene {
   // then draws with the resolve module that has the water branch, and otherwise with the one that
   // has none, since the branch costs every pixel of every frame (water.md, "Shading").
   bool has_water() const noexcept { return has_water_; }
+  bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
   // A material of the table is alpha-tested (gfx::k_material_alpha_mask; renderer.md, "Alpha-tested
   // geometry"): the frame draws the masked variants and the ray loops test masks. False keeps every
   // pass the one it always was.
@@ -1185,7 +1186,8 @@ class GpuScene {
   void destroy_ray_tracing_layout() noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
-  bool has_water_ = false;     // a material of the table carries gfx::k_material_water
+  bool has_terrain_materials_ = false;  // a native ground root actually exists in the table
+  bool has_water_ = false;              // a material of the table carries gfx::k_material_water
   bool has_masked_ = false;    // a material of the table carries gfx::k_material_alpha_mask
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;

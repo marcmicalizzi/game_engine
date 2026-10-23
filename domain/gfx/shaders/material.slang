@@ -673,4 +673,7 @@ float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
 // integrators end on it (through `display_output`, with the dither), so a reference image and a
 // real-time image are in the same space and FLIP compares pictures rather than transfer curves.
 
+#ifdef MATERIAL_TERRAIN
+#include "terrain_material.slang"
+#endif
 #endif  // ENGINE_MATERIAL_SLANG

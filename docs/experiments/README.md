@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| W68 | [native-terrain-materials.md](native-terrain-materials.md) | Authored layers on the native terrain, steep-slope projection and the v6 overlap regression |
 | E1 | [e1-raster-crossover.md](e1-raster-crossover.md) | hardware against software rasterization of small clusters ([ADR-0024](../adr/0024-hardware-rasterization-first.md)) |
 | E1 on Pascal | [e1-pascal-rerun.md](e1-pascal-rerun.md) | the same sweep on a GPU without mesh shaders (TITAN Xp, 2026-09-24): the vertex path against the software rasterizer, occlusion culling and the Hi-Z on the baseline tier, and a same-build control on the RTX 5090 |
 | E2 | [e2-cluster-acceleration.md](e2-cluster-acceleration.md) | cluster acceleration structures against one bottom-level structure per cut ([ADR-0025](../adr/0025-cluster-acceleration-structures.md)) |

@@ -33,7 +33,7 @@ engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
   SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
-          src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
+          src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/tile_layout.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
@@ -75,6 +75,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The world's tiles on the CPU: the first fill, a tile's mesh and its seams,
                     # the set's keys, rebuilds and windows, from a tile source of the test's own.
                     tests/terrain_tiles_tests.cpp
+                    tests/terrain_materials_tests.cpp
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
                     tests/flora_scene_tests.cpp

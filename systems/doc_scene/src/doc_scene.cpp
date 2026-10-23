@@ -5,6 +5,7 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #include <systems/doc_scene/doc_scene.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
 #include <cmath>
@@ -113,7 +114,8 @@ bool read_heightfield_record(const doc::Document& document, Id128 id, terrain::H
 // Whether two reads of the record draw the same ground: its name is not drawn.
 bool same_ground(const terrain::Heightfield& a, const terrain::Heightfield& b) noexcept {
   return a.source == b.source && a.origin.x == b.origin.x && a.origin.y == b.origin.y &&
-         a.origin.z == b.origin.z && a.vertical_scale == b.vertical_scale;
+         a.origin.z == b.origin.z && a.vertical_scale == b.vertical_scale &&
+         a.materials == b.materials;
 }
 
 i64 header_int(const JsonValue& header, std::string_view key, i64 fallback) {
@@ -161,6 +163,16 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   tiles.origin = record.origin;
   tiles.vertical_scale = record.vertical_scale;
   entry.tiles = std::move(tiles);
+  entry.materials = record.materials;
+  if (entry.materials.has_value()) {
+    for (auto& layer : entry.materials->layers)
+      for (auto* path : {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask})
+        if (!path->empty()) *path = resolve_path(base_dir, *path);
+    if (!renderer::validate_terrain_materials(*entry.materials, &error)) {
+      error = where + ": " + error;
+      return false;
+    }
+  }
   const f64 x0 = static_cast<f64>(origin[0]) / 1000.0 + record.origin.x;
   const f64 z0 = static_cast<f64>(origin[1]) / 1000.0 + record.origin.z;
   const f64 x1 = x0 + static_cast<f64>((width - 1) * spacing) / 1000.0;
@@ -190,6 +202,7 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   out.desc.terrain.extent = entry.extent;
   out.desc.terrain.seed = 0;
   out.desc.terrain.tiles = entry.tiles;
+  out.desc.terrain.materials = entry.materials;
   out.terrain_record = id;
   out.heightfield = record;
   out.terrain = std::move(entry);

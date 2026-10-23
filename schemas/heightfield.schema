@@ -6,13 +6,14 @@
 // (domain/terrain/schemas/terrain.schema) already generates <schemas/terrain.h>, and a target that
 // links both would include whichever it found first.
 namespace engine.terrain
+import "scene.schema"
 
 /// **An authored heightfield in the world** (`@kind(record)`): the ground a document's scene stands
 /// on, drawn by the `tiles` ground provider from the set `engine-content terrain-tiles` builds from
 /// `source`. One live record per document (two are refused, naming both). A change of `source`,
 /// `origin` or `vertical_scale` rebuilds the scene's ground; a change of `name` changes nothing
 /// drawn.
-struct Heightfield @version(1) @kind(record) {
+struct Heightfield @version(2) @kind(record) {
   name: string
   /// The `engine.terrain.heightfield/1` header (a JSON file beside its raw float32 grid), relative to
   /// the document's directory (or absolute).
@@ -22,4 +23,6 @@ struct Heightfield @version(1) @kind(record) {
   origin: worldpos @unit(m)
   /// The heights times this, (0, 1000].
   vertical_scale: f32 = 1
+  /// Authored layers on this ground's native surface. Paths are relative to the document.
+  materials: engine.scene.TerrainMaterials? @since(2)
 }

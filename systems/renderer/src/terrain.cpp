@@ -4,6 +4,7 @@
 #include <domain/texture/texture_build.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
 #include <bit>
@@ -545,6 +546,7 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   // the finest lattice it records (spacing, origin, size, vertical scale and offset, chain); a set
   // built on load by its source header's grid hash and lattice and the block's own transform
   // (origin, vertical scale) and build options, which are what the build key would be made of.
+  if (desc.materials.has_value()) h = hash_combine(h, terrain_materials_hash(*desc.materials));
   if (desc.tiles.has_value()) {
     const scene::TerrainTileSet& t = *desc.tiles;
     h = hash_combine(h, 0x54494C4553455Full);  // "TILESET_"

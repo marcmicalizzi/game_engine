@@ -260,6 +260,13 @@ inline constexpr u32 k_material_ground_detail = 8u;
 // UV transform never reads, so every other reader of the table — the path tracer, a debug view —
 // sees a plain untextured dielectric of the shallow colour, which is what stage 1 drew.
 inline constexpr u32 k_material_water = 16u;
+// Optional native terrain layers (renderer.md, "Native authored terrain materials"). The root
+// material's uv_offset.zw bit-cast the absolute first layer index and count; normal_scale and
+// occlusion_strength hold the near/far detail distances. Layer entries retain ordinary texture
+// slots; uv_offset.x is coverage and uv_scale is the integer repeat pitch in millimetres.
+// Their occlusion slot is a linear coverage mask, not AO. No hot record grows (112 bytes).
+inline constexpr u32 k_material_terrain_layers = 512u;
+inline constexpr u32 k_material_terrain_map = 1024u;
 // `k_material_alpha_mask`: an alpha-tested material (glTF `alphaMode` MASK; docs/subsystems/
 // renderer.md, "Alpha-tested geometry"). Its clusters are drawn by the rasterizers' masked
 // variants, which discard where the base colour's alpha times `uv_offset.w` is below `uv_offset.z`,

@@ -291,8 +291,19 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
         s.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
                                  params->terrain_uv_per_mm);
     const float2 uv = material_uv(material, surface_uv * material.uv_scale);
+#ifdef MATERIAL_TERRAIN
+    MaterialSample sampled = sample_material(material, uv);
+    float3 shading_normal = s.normal;
+    if ((material.flags & k_material_terrain_layers) != 0) {
+      sampled = sample_terrain_material(geo, material, surface_uv, float2(0), float2(0),
+                                        s.position, s.normal, float3(0), float3(0),
+                                        length(s.position - params->camera.xyz), false,
+                                        shading_normal);
+    }
+#else
     const MaterialSample sampled = sample_material(material, uv);
     float3 shading_normal = s.normal;
+#endif
     if (material.normal_texture != k_no_texture) {
       float3 tangent;
       float3 bitangent;

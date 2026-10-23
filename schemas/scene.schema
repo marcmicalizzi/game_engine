@@ -694,16 +694,45 @@ struct TerrainTileSet @version(1) {
   far_levels: u32 = 6
 }
 
-/// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
-/// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
-/// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
-/// Version 2 added the generator; a version 1 terrain reads as the waves it always drew. Version 4
-/// added `provider`, the ground provider's name (ADR-0046), which `generator` is read as when it is
-/// empty. Version 5 added the wind's day (`diurnal_*`) and the storms' transport gains
-/// (`storm_gain`, `storm_gains`); their defaults are the record as it was, to the bit. Version 6
-/// added `detail`, the sand's ripples and grain; absent, the terrain draws as it did. Version 7
-/// added `tiles`, the `tiles` provider's authored set (`TerrainTileSet`); absent, as before.
-struct Terrain @version(7) {
+/// World-anchored detail or a finite painting in the scene terrain's map frame.
+enum TerrainProjection : u8 {
+  Triplanar
+  Map
+}
+
+/// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
+/// linear, read from R. Paths are relative to the scene. Layers composite in array order.
+struct TerrainMaterialLayer @version(1) {
+  name: string
+  base_color: string
+  normal: string
+  roughness: string
+  /// Optional coverage in the terrain's map frame, clamped outside it. Empty means full coverage.
+  mask: string
+  /// Linear colour factor; absent is white.
+  tint: vec3?
+  roughness_factor: f32 = 0.9
+  normal_scale: f32 = 1
+  weight: f32 = 1
+  /// Triplanar repeats at tile_m metres; Map uses the terrain's existing finite UV frame.
+  projection: TerrainProjection = Triplanar
+  /// Rounded to whole millimetres for world-stable addressing; positive, fitting signed i64.
+  tile_m: f32 = 1
+}
+
+struct TerrainMaterials @version(1) {
+  layers: TerrainMaterialLayer[]
+  /// Configurable work budget: excess layers are refused, never dropped.
+  layer_budget: u32 = 8
+  /// Triplanar detail fades to the map's mip-chain average over these eye distances, metres.
+  detail_near_m: f32 = 32
+  detail_far_m: f32 = 128
+}
+
+/// Terrain built into the native cluster LOD DAG. Version 2 added the generator, version 4 the
+/// provider name, version 5 wind transport, version 6 sand detail, version 7 authored tile sets,
+/// and version 8 authored materials. Absent optional blocks preserve the earlier behavior.
+struct Terrain @version(8) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -771,6 +800,8 @@ struct Terrain @version(7) {
   /// opens, or the heightfield it builds one from through the derived-data cache. Null for every
   /// other provider, and refused beside one.
   tiles: TerrainTileSet? @since(7)
+  /// Authored colour/normal/roughness on the native surface, shared by the grid, rings and tiles.
+  materials: TerrainMaterials? @since(8)
 }
 
 

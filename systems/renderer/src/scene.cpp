@@ -17,6 +17,7 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
 #include <cmath>
@@ -356,6 +357,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
 // and only exists when the heightfield is the whole scene).
 bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
                   geometry::ClusterPages& pages, std::string& error) {
+  if (desc.terrain.materials.has_value() && desc.terrain.has_detail) {
+    error = "terrain.materials and terrain.detail are alternative surface-detail paths; name one";
+    return false;
+  }
+  if (desc.terrain.materials.has_value() &&
+      !validate_terrain_materials(*desc.terrain.materials, &error))
+    return false;
   const u64 hash = terrain_hash(desc.terrain);
   out.source_hash = hash;
   // The grid is a heightfield over the ground plane, so its levels are built never to fold over it
@@ -456,6 +464,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(0);
   }
+  if (!append_terrain_materials(desc.terrain, out.data, &error)) return false;
   const f64 maps_ms = static_cast<f64>(time::monotonic_ns() - maps_start_ns) / 1.0e6;
   out.part_of_cluster.assign(lod.mesh.clusters.size(), 0u);
   out.primitives = 1;
@@ -1277,6 +1286,17 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.terrain.provider = t.provider;
+    out.terrain.materials = t.materials;
+    if (out.terrain.materials.has_value()) {
+      for (auto& layer : out.terrain.materials->layers) {
+        for (auto* p : {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask})
+          if (!p->empty() && !dir.empty() && !io::is_absolute_path(*p)) *p = io::join_path(dir, *p);
+      }
+      if (!validate_terrain_materials(*out.terrain.materials, &error)) {
+        error = path + ": " + error;
+        return false;
+      }
+    }
     // An authored tile set (`Terrain.tiles`, docs/subsystems/tileset.md): its paths resolved
     // against the file's directory, and the provider it implies; beside another provider it is two
     // answers to one question.
@@ -1349,6 +1369,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     // The sand's detail (renderer.md, "The sand close up"): the scene's numbers, checked here so a
     // number the mechanism cannot draw is refused with the file rather than drawn wrong.
     out.terrain.has_detail = t.detail.has_value();
+    if (out.terrain.has_detail && out.terrain.materials.has_value()) {
+      error =
+          path +
+          ": terrain.materials and terrain.detail are alternative surface-detail paths; name one";
+      return false;
+    }
     out.terrain.detail = t.detail.has_value() ? *t.detail : scene::TerrainDetail{};
     if (out.terrain.has_detail) {
       std::string why;
