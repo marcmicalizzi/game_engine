@@ -1899,6 +1899,22 @@ R91's 0.1 change 745 colours and 771 depths in 13 of them — every one a tile c
 outer ring at about 410–440 m, whose larger form no longer fits its block, so its instances take
 other slots and the dither's seed with them, exactly the case stated above.
 
+**What is still the load's, and the order it should go in** (2026-10-24, from the startup trace's
+measurements of the v7 forest: 15.7 s to ready with the OS cache warm, all on the main thread). The
+pairs are per tile now; the **work** is not. (1) Every file instance is still stood on the ground
+when the scene file is read (1.8 s warm, 39.6 s cold for v7's 12,330, the tile set's files read one
+at a time): a streamed instance's height belongs to its tile's activation — the `authored` set
+carrying the file's `ground` and `y` and the generator standing each placement on `Context::ground`
+at `tile`, the same millimetre query the reader makes so the whole read and the streamed one stay
+equal — and the prefix's kept instances at load. (2) Every mesh of the scene and every image its
+materials name are loaded and uploaded whole (6–8.5 s of the load); the residency design (roadmap
+W47, W10) is to load the observer's neighbourhood first — the meshes and textures the inner rings'
+tiles name, then outward — with a tile withheld until its meshes are resident, as the pair budget
+withholds one now. (3) `build_cache_textures` reads and hashes every source image once per mesh that
+uses it, with a job pool made and joined per mesh, and `find_built_textures` does it again: one hash
+per distinct image and one pool per load would save about 4 s and 2.7 GB of reads. None of the three
+is built here; each is a stage of its own.
+
 ### The pair accounting
 
 **Before anything is made, the scene's fixed parts and the least its tail must hold are counted
