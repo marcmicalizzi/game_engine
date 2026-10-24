@@ -319,16 +319,25 @@ constexpr scene_gen::GroundOps k_probe_ops{.destroy = nullptr,
                                            .height = &probe_height,
                                            .floor = nullptr,
                                            .grid = &probe_grid,
+                                           .evaluate = nullptr,
+                                           .travel_m = nullptr,
+                                           .wind = nullptr,
+                                           .transport = nullptr,
+                                           .make_rings = nullptr,
+                                           .open_tiles = nullptr,
+                                           .record = nullptr,
                                            .height_mm = &probe_height_mm,
                                            .surface_mm = &probe_surface_mm,
                                            .floor_mm = &probe_surface_mm,
+                                           .tile_source = nullptr,
                                            .masks = &probe_masks};
 bool probe_make(const scene::Terrain&, const scene_gen::Context&, scene_gen::GroundProvider& out,
                 std::string*) {
   out = scene_gen::GroundProvider(&k_probe_ops, nullptr);
   return true;
 }
-constexpr scene_gen::GroundProviderDesc k_probe_provider{.name = "mask_probe", .make = &probe_make};
+constexpr scene_gen::GroundProviderDesc k_probe_provider{
+    .name = "mask_probe", .make = &probe_make, .flags = 0};
 const scene_gen::Registrar k_probe_registrar{k_probe_provider};
 }  // namespace
 

@@ -286,7 +286,7 @@ TEST_CASE("gfx: the mask sampler reads one tile's table and filters its mips at 
           ((static_cast<u32>(tx) + 4 * static_cast<u32>(tz)) | 0xFFFF0000u | (7u << 8)));
     const u32 m0 = std::min(static_cast<u32>(e.level), mips - 1);
     const u32 m1 = std::min(m0 + 1, mips - 1);
-    const f64 blend = m0 == mips - 1 ? 0.0 : e.level - m0;
+    const f64 blend = m0 == mips - 1 ? 0.0 : static_cast<f64>(e.level) - m0;
     f64 want[5] = {};
     for (u32 k = 0; k < 2; ++k) {
       const u32 m = k == 0 ? m0 : m1;
@@ -307,7 +307,7 @@ TEST_CASE("gfx: the mask sampler reads one tile's table and filters its mips at 
     }
     const f32 have[5] = {got[2 * i].x, got[2 * i].y, got[2 * i].z, got[2 * i].w, got[2 * i + 1].x};
     for (u32 ch = 0; ch < 5; ++ch)
-      CHECK(std::abs(have[ch] - want[ch]) < 2e-4);
+      CHECK(std::abs(static_cast<f64>(have[ch]) - want[ch]) < 2e-4);
   }
   MESSAGE(valid << " points read their tile, " << invalid << " past the level or its gap");
   CHECK(valid > 300);

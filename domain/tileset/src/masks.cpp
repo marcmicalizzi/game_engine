@@ -177,20 +177,20 @@ bool make_field(const TileSet& set, const MaskInputs& in, Field& f, std::string&
     f.scree = layer_of(in, p.scree);
     f.bedrock = layer_of(in, p.bedrock);
     f.snow = layer_of(in, p.snow);
-    const f64 b = p.slope_blend_deg;
-    f.scree_lo = slope_of_deg(p.scree_deg - b);
-    f.scree_hi = slope_of_deg(p.scree_deg + b);
-    f.rock_lo = slope_of_deg(p.bedrock_deg - b);
-    f.rock_hi = slope_of_deg(p.bedrock_deg + b);
-    f.sluff_lo = slope_of_deg(p.snow_max_deg - b);
-    f.sluff_hi = slope_of_deg(p.snow_max_deg + b);
-    f.snowline = p.snowline_m;
-    f.snow_blend = p.snow_blend_m;
-    f.snow_aspect = p.snow_aspect_m;
-    const f64 len =
-        std::sqrt(static_cast<f64>(p.pole_x) * p.pole_x + static_cast<f64>(p.pole_z) * p.pole_z);
-    f.pole_x = p.pole_x / len;
-    f.pole_z = p.pole_z / len;
+    const auto d = [](f32 v) { return static_cast<f64>(v); };
+    const f64 b = d(p.slope_blend_deg);
+    f.scree_lo = slope_of_deg(d(p.scree_deg) - b);
+    f.scree_hi = slope_of_deg(d(p.scree_deg) + b);
+    f.rock_lo = slope_of_deg(d(p.bedrock_deg) - b);
+    f.rock_hi = slope_of_deg(d(p.bedrock_deg) + b);
+    f.sluff_lo = slope_of_deg(d(p.snow_max_deg) - b);
+    f.sluff_hi = slope_of_deg(d(p.snow_max_deg) + b);
+    f.snowline = d(p.snowline_m);
+    f.snow_blend = d(p.snow_blend_m);
+    f.snow_aspect = d(p.snow_aspect_m);
+    const f64 len = std::sqrt(d(p.pole_x) * d(p.pole_x) + d(p.pole_z) * d(p.pole_z));
+    f.pole_x = d(p.pole_x) / len;
+    f.pole_z = d(p.pole_z) / len;
   }
   for (const scene::TerrainMaskPaint& paint : m.paint) {
     Image img;
@@ -209,7 +209,7 @@ bool make_field(const TileSet& set, const MaskInputs& in, Field& f, std::string&
     if (src.radius_m > 0) {
       r.cx = src.center.x;
       r.cz = src.center.z;
-      r.radius = src.radius_m;
+      r.radius = static_cast<f64>(src.radius_m);
       r.min_x = r.cx - r.radius;
       r.max_x = r.cx + r.radius;
       r.min_z = r.cz - r.radius;
@@ -230,9 +230,9 @@ bool make_field(const TileSet& set, const MaskInputs& in, Field& f, std::string&
     r.base = layer_of(in, src.base);
     r.bed = layer_of(in, src.bed);
     r.margin = layer_of(in, src.margin);
-    r.feather = src.feather_m;
-    r.margin_m = r.margin >= 0 ? src.margin_m : 0.0;
-    r.wet_m = src.wet_m;
+    r.feather = static_cast<f64>(src.feather_m);
+    r.margin_m = r.margin >= 0 ? static_cast<f64>(src.margin_m) : 0.0;
+    r.wet_m = static_cast<f64>(src.wet_m);
     r.reach = std::max(r.margin_m, r.wet_m);
     f.regions.push_back(std::move(r));
   }

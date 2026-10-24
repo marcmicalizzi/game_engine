@@ -117,7 +117,9 @@ TEST_CASE("tileset: the synthetic shapes are what their names say") {
   SynthKind kind{};
   CHECK(parse_synth_kind("basin", kind));
   CHECK(kind == SynthKind::basin);
-  CHECK_FALSE(parse_synth_kind("mountain", kind));
+  CHECK(parse_synth_kind("mountain", kind));
+  CHECK(kind == SynthKind::mountain);
+  CHECK_FALSE(parse_synth_kind("volcano", kind));
 }
 
 TEST_CASE("tileset: a heightfield round-trips, and a grid that is not its header's is refused") {
