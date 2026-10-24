@@ -1,0 +1,15 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "streamed-forest",
+  "description": "Forty seconds across the forest above the crowns from the south-west edge to the north-east, past the ancient, then ten coming down among the trunks.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    { "time": 0.0, "position": [-700.0, 30.0, -600.0], "ground": true, "target": [-400.0, 12.0, -350.0], "target_ground": true },
+    { "time": 15.0, "position": [-200.0, 28.0, -200.0], "ground": true, "target": [120.0, 30.0, -80.0], "target_ground": true },
+    { "time": 28.0, "position": [200.0, 35.0, 50.0], "ground": true, "target": [500.0, 10.0, 350.0], "target_ground": true },
+    { "time": 40.0, "position": [600.0, 25.0, 450.0], "ground": true, "target": [700.0, 2.0, 600.0], "target_ground": true },
+    { "time": 50.0, "position": [640.0, 2.0, 520.0], "ground": true, "target": [700.0, 2.0, 600.0], "target_ground": true }
+  ]
+}

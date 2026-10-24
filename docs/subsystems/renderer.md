@@ -1836,8 +1836,10 @@ the terrain, and everything in a paged scene (`--stream`), whose forms would nee
 their own. `--world-instances whole` keeps them all in the prefix as before.
 
 **A far form per ring, so a far tree is a few pairs.** A tile in ring *r* (r ≥ 1) has its centre at
-least ring *r* − 1's radius from the observer, so every origin on it is at least
-`(radius[r − 1] − √2/2) × tile` away. For every mesh the entry uses and every ring past the first,
+least ring *r* − 1's radius from the observer once the ring is updated, so every origin on it is
+at least `(radius[r − 1] − √2/2 − 1/4) × tile` away — the quarter tile is the camera's way between
+two updates, since a tile coming in keeps its outer form until the first update past the boundary
+promotes it (8 m at 32 m tiles, 480 m/s at 60 updates a second). For every mesh the entry uses and every ring past the first,
 the load cuts a **distance form** at that distance (`geometry::extract_lod_form`,
 [geometry](geometry.md#distance-forms)): the clusters the mesh can select from any camera that far,
 the frontier's own error zeroed, everything else its own bit for bit — the same spheres, errors,

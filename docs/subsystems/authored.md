@@ -24,7 +24,7 @@ has no `authored` and the reader keeps the instances in the prefix, exactly as b
 its origin is on (`anchor_tile`: the floor of x and z over the tile edge), however far its crown
 reaches. What keeps a large crown right is not where it is filed but what each ring draws: the
 reader cuts every form a ring hands out to what the mesh can draw from the nearest a camera can be
-to an origin on a tile of that ring — `(radius[r − 1] − √2/2) × tile` — with every sphere's offset
+to an origin on a tile of that ring — `(radius[r − 1] − √2/2 − 1/4) × tile`, the quarter the camera's way between two ring updates — with every sphere's offset
 from the origin counted ([geometry](geometry.md#distance-forms)). A crown that reaches into a nearer
 tile is drawn in the form its own origin allows, which already holds every cluster its near side can
 select, and no tile needs to know its neighbours'. That is the one rule; widening the rings or

@@ -1011,12 +1011,14 @@ FitParts fit_parts(const MeshFit& fit, std::span<const Vec3> vertices) {
 // ---- a streamed world's own instances (renderer.md, "Authored instances per tile") -------------
 
 // The nearest an observer can be to an origin filed on a tile of ring `r` (r >= 1), metres: the
-// ring's tiles have their centres at least ring r - 1's radius away (the tile ring bands by the
-// centre, `sim::TierAssignment::tier_of`), and an origin is at most half a diagonal from its
-// tile's centre. Zero or less: no bound.
+// ring's tiles have their centres at least ring r - 1's radius away once the ring is updated (it
+// bands by the centre, `sim::TierAssignment::tier_of`), an origin is at most half a diagonal from
+// its tile's centre, and a quarter tile more is the camera's way between two updates — a tile
+// coming in is promoted at the first update past the boundary, and until then still draws the form
+// it had (8 m at 32 m tiles: 480 m/s at 60 updates a second). Zero or less: no bound.
 f32 ring_floor_m(const WorldDesc& world, u32 r) noexcept {
   const f32* radius = world.ring_count > 0 ? world.radius : k_default_world_ring_radius;
-  return (radius[r - 1] - 0.70710678f) * world.tile_size;
+  return (radius[r - 1] - 0.70710678f - 0.25f) * world.tile_size;
 }
 
 u32 world_ring_count(const WorldDesc& world) noexcept {

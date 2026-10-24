@@ -572,12 +572,10 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
 bool ViewWorld::is_handover(const world::TileEvent& event) const noexcept {
   if (event.kind != world::TileEventKind::ChangeRing) return false;
   if (!placements_.occupied(event.tile)) return false;
-  const u32 n = placements_config_.ring_count;
-  const world::RingRuins from =
-      event.from < n ? placements_config_.ruins[event.from] : world::RingRuins::Walls;
-  const world::RingRuins to =
-      event.to < n ? placements_config_.ruins[event.to] : world::RingRuins::Walls;
-  return from != to;
+  // Whatever the entries on the tile draw the two rings as: the ruins' blocks, sections and walls,
+  // and a scene's own trees in the distance form each ring allows (renderer.md, "Authored
+  // instances per tile").
+  return placements_.redraws(event.tile, event.from, event.to);
 }
 
 const char* ViewWorld::drawn_as(u8 ring) const noexcept {

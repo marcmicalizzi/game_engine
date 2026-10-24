@@ -1,0 +1,39 @@
+{
+  "format": "engine.scene.v1",
+  "name": "streamed-forest",
+  "camera_path": "camera-path.json",
+  "description": "Three thousand of the flora capability's own trees - oaks and birches with their card levels, tall and young spruces with none - scattered over two kilometres of rolling ground, and one ancient tree, streamed tile by tile through the world's four rings: every tree is an instance of the scene's own that the authored placement generator files under its tile and draws in the distance form its ring allows, while the ancient, which reaches past a tile, stays in the prefix (README.md).",
+  "terrain": {
+    "size": 257,
+    "extent": 2048,
+    "seed": 7,
+    "dune_height": 4.0,
+    "dune_wavelength": 260,
+    "generator": "Waves"
+  },
+  "world": {
+    "tile_size": 32,
+    "rings": [
+      { "radius": 1.5 },
+      { "radius": 6 },
+      { "radius": 16 },
+      { "radius": 34 }
+    ]
+  },
+  "meshes": [
+    { "name": "oak", "path": "../../flora/oak.flora.json" },
+    { "name": "birch", "path": "../../flora/birch.flora.json" },
+    { "name": "spruce-tall", "path": "../../flora/spruce-tall.flora.json" },
+    { "name": "spruce-young", "path": "../../flora/spruce-young.flora.json" },
+    { "name": "ancient", "path": "../../flora/ancient.flora.json" }
+  ],
+  "instances": [
+    { "mesh": 4, "name": "the ancient", "translation": [120.0, 0.0, -80.0], "ground": true, "yaw_deg": 30 }
+  ],
+  "scatters": [
+    { "mesh": 0, "name": "oaks", "center": [0, 0, 0], "radius_min": 0, "radius_max": 950, "count": 900, "seed": 101, "scale_min": 0.8, "scale_max": 1.2 },
+    { "mesh": 1, "name": "birches", "center": [0, 0, 0], "radius_min": 0, "radius_max": 950, "count": 800, "seed": 102, "scale_min": 0.8, "scale_max": 1.15 },
+    { "mesh": 2, "name": "tall spruces", "center": [0, 0, 0], "radius_min": 0, "radius_max": 950, "count": 700, "seed": 103, "scale_min": 0.85, "scale_max": 1.15 },
+    { "mesh": 3, "name": "young spruces", "center": [0, 0, 0], "radius_min": 0, "radius_max": 950, "count": 600, "seed": 104, "scale_min": 0.8, "scale_max": 1.3 }
+  ]
+}

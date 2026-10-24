@@ -137,6 +137,10 @@ class PlacementTiles {
   const PlacementTilesConfig& config() const noexcept { return config_; }
   // Whether some streamed entry puts anything on `tile`.
   bool occupied(TileCoord tile) const noexcept;
+  // Whether some entry on `tile` draws rings `from` and `to` differently (its generator's
+  // `representation`): a ring change it builds the tile again for, which is a handover a host can
+  // measure. A generator with no `representation` draws every ring its own.
+  bool redraws(TileCoord tile, u8 from, u8 to) const noexcept;
   // The instances one active tile holds; empty for another tile.
   std::span<const renderer::SceneInstance> tile_instances(TileCoord tile) const noexcept;
   // Where each active tile's instances sit in the tail, in tile order: what a caller swapping one
