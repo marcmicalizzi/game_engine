@@ -939,6 +939,27 @@ The summary's `game` block (and so the report's) gains **`actors`** — per acto
 
 **Testing.** With no GPU (`tests/game_runner_tests.cpp`, the fixture loaded by the runner and ticked by hand): a second of walking drains 0.25 and the HUD says the meter and the day; `interact` pressed on a tick is read on that tick once; a rebuild of the fixture compiled in the test's scratch directory with a state field added is swapped in by the poll with thirst carried and the new field at its default, and the next second drains from there; an unknown action and a file that is not a library are refused; a module failing at tick 30 ends the run at tick 30 with its line; a saved run nearly out of water ends through `end_run` with its seconds and distance, and the state file reads back in a second runner; a state file of another type is refused naming both; and a placement the host names within reach refills the meter. End to end (`tests/game_view_tests.cpp`, offscreen, over a 128 m window of the committed erg): a 480-tick walk with E pressed once ticks the module 480 times, its metres are the walker's to a millionth, and the report carries the game and the walk; a run with a quarter-second of water left ends through `end_run` long before the recording does, its state file holding the ended run; `--game-state` run twice walks the second on top of the first; the bad-action build is refused before any device, exit 1, the report written; the failing build ends the session at tick 30, in the eighth frame, reason `game_error`; and **a live walk in a window on the test's desktop, injected and recorded with `--game`, replays offscreen to the same module state and trajectory hash**. Over the ruins-walk scene streamed with `--world` (`tests/walk_ruins_view_tests.cpp`), a walker standing beside the building finds the `ruins` within 6 m on every one of its 240 ticks from the first frame (241 queries, 241 found) and drinks the whole time.
 
+## `--startup-trace`: from launch to ready
+
+`engine-view --startup-trace <out.json>` records the run's startup with the core trace ([profiling](profiling.md#the-startup-trace); `apps/engine_view/startup.h`, roadmap W69) from the **process's launch as the OS recorded it** — not from `main`, so the loader and static initialization count — and writes it as Chrome trace JSON (open it in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev)). The summary line gains a `startup` block (`FlythroughSummary.startup`, version 15; null without the flag): the milestones below in milliseconds from the launch, the main thread's stages with wall, CPU, bytes read and waits, the other threads' busy time, and the process before ready — CPU, bytes read, page faults, peak working set and commit, and the time spent on a CPU, reading, or neither. A measurement quotes it with the summary's `machine_state`: the stages are wall time, and beside other load a CPU-bound stage stretches while its `cpu_ms` does not. Off, nothing records and nothing changes.
+
+**The milestones**, held monotone in this order (one reached earlier is reported at the time of the one before it):
+
+| milestone | reached when |
+|---|---|
+| `main` | `main` began |
+| `device` | the Vulkan device exists |
+| `scene_loaded` | `renderer::load_scene` returned: meshes from the cache or built, instances expanded |
+| `gpu_scene` | the GPU scene is uploaded |
+| `first_frame` | the first frame's GPU results have been read back (offscreen there is no present; a window's would be its first present) |
+| `player_controllable` | the input has moved the player — the walker has taken a tick (a run with no walker: the first frame) |
+| `ground_collision_ready` | the ground under the feet has collision: the walker is placed and, for the physical walker, a collision tile is held under its feet (`Walker::ground_ready`) |
+| `nearby_stable` | **nearby quality stable**: for 30 consecutive frames the world's ring activated, changed and deferred nothing, no geometry page was pending or in flight, the drawn ground's layout built no tile and lagged the camera by nothing, and the two above held; dated from the first of the 30 |
+
+Today the per-frame milestones are recorded by a **replay** (`--replay-input`, offscreen or not); a camera path's frames are flown inside the renderer's benchmark and record `device` through `gpu_scene` only, and the window's live session records the stages before its loop. Offscreen a frame waits for its ground's layout, so `nearby_stable` follows the first frame closely there; in a window the layout lags, and the gap between the two is the stall a player meets.
+
+**Over the protocol** `render.load` with `"startup_trace": true` records the load and answers the same block in `RenderSceneInfo.startup`, timed from the call, its milestones `scene_read` and `scene_loaded`; it is refused while another trace records in the process.
+
 ## `--report`: what a tester sends back
 
 **One file, written at exit whichever way the run ended** (`report.h`, `report.cpp`; roadmap P21). A build that reaches another person's machine — a packaged game, a bundle of tests — comes back as whatever that person attaches, and someone with no checkout and no idea which console line matters can attach one file. `--report <file.json>` writes it: on success, on a failure the process can still write after (a scene that does not load, a device that is not there, a game module that fails), and after a window was closed or Escape ended the session. It says where it is on stderr.

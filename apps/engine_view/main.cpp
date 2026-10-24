@@ -25,6 +25,7 @@
 #include "fly_camera.h"
 #include "pacing.h"
 #include "report.h"
+#include "startup.h"
 #if ENGINE_VIEW_GAME
 #include "game_hud.h"
 #include "game_runner.h"
@@ -42,6 +43,7 @@
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 #include <core/platform/thread.h>
+#include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_pages.h>
@@ -182,6 +184,7 @@ constexpr const char* k_usage =
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
+    "                   [--startup-trace <trace.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--fullscreen]\n"
     "                   [--no-present-timing]\n"
@@ -503,6 +506,11 @@ constexpr const char* k_usage =
     "                   sends back: the summary line, the machine (adapter, driver, tier, OS,\n"
     "                   CPU baseline), frame times (median, p95, p99, worst), the walk, a\n"
     "                   --game module's result or error, and why the run ended\n"
+    "  --startup-trace <f>  record the startup from the process's launch: stages with wall,\n"
+    "                   CPU, bytes read and waits on every thread, the process sampled every\n"
+    "                   20 ms, and the milestones up to nearby_stable; written to <f> as Chrome\n"
+    "                   trace JSON (chrome://tracing, Perfetto) and summarized as the summary's\n"
+    "                   \"startup\" block\n"
     "  --windowed       --replay-input: fly the replay in the window at its recorded pace even\n"
     "                   with --benchmark, which then writes a record per presented frame like a\n"
     "                   live session's: the fair before and after of a presentation change;\n"
@@ -615,6 +623,7 @@ struct Options {
   bool validation = false;
   u32 grid = 257;
   std::string log_spec;
+  std::string startup_trace;  // `--startup-trace <out.json>` (startup.h)
   std::string shaders;
   std::string mesh;        // glTF or .clusters file; empty renders a procedural scene
   std::string procedural;  // which one: "" / "heightfield", or "shredded-atlas"
@@ -1002,6 +1011,7 @@ bool reference_progress(u32 done, u32 total, void*) {
 // run ended. One per process, so the two refusals below can note the first failure in it without
 // every caller passing it along.
 view::RunReport g_report;
+i64 g_main_ns = 0;  // when `main` began, on the startup trace's clock
 
 // printf into a string: the windowed summary is formatted once and both printed and kept for the
 // report, so the report holds the same bytes the console got.
@@ -2322,7 +2332,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
   device_options.adapter_index = options.adapter;
   device_options.validation = options.validation;
   gfx::Device device;
-  if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
+  view::StartupTrace& startup = view::startup_trace();  // `--startup-trace` (startup.h)
+  {
+    ENGINE_STARTUP_STAGE("device");
+    if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
+  }
+  startup.milestone("device");
 
   int exit_code = 0;
   renderer::SceneData scene_data;
@@ -2424,6 +2439,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       file_options.overlay = options.overlay;
       file_options.world = options.world;
       renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
+      ENGINE_STARTUP_STAGE_DETAIL("scene file", options.scene);
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
@@ -2446,15 +2462,23 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
 #if ENGINE_VIEW_ANIMATION
     // ---- the animated world, as the window has it: the clips, then the entities -------------
-    if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
-      exit_code = fail("clips", error);
-      break;
+    {
+      ENGINE_STARTUP_STAGE("animation clips");
+      if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
+        exit_code = fail("clips", error);
+        break;
+      }
     }
 #endif
-    if (!renderer::load_scene(desc, scene_data, error)) {
-      exit_code = fail("mesh", error);
-      break;
+    {
+      ENGINE_STARTUP_STAGE("load scene");
+      if (!renderer::load_scene(desc, scene_data, error)) {
+        exit_code = fail("mesh", error);
+        break;
+      }
     }
+    startup.milestone("scene_loaded");
+    profiling::TraceStage attach_stage("attach");
     look_overrides(options, scene_data);  // `--sky-disc-scale`
     if (!attach_game_scene(scene_data, error)) {
       exit_code = fail("game", error);
@@ -2467,6 +2491,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       break;
     }
 #endif
+    attach_stage.end();
     // The frames' clock: `--time-of-day`'s offset and `--sun-rate`, through the renderer's
     // `frame_clock`, which `render.*`'s `clock` goes through too.
     clock = frames_clock(options, scene_data);
@@ -2519,15 +2544,20 @@ int run_offscreen(Options& options, Interactive& interactive) {
               ? renderer::camera_path_frame(path, 0, frames)
               : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
       if (interactive.on) first.position = interactive.header.start.position;
+      ENGINE_STARTUP_STAGE("ground prepare");
       if (!ground.prepare(scene_data, resolved, first, &error)) {
         exit_code = fail(ground.stage(), error);
         break;
       }
     }
-    if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
-      exit_code = fail("scene", error);
-      break;
+    {
+      ENGINE_STARTUP_STAGE("gpu scene");
+      if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
+        exit_code = fail("scene", error);
+        break;
+      }
     }
+    startup.milestone("gpu_scene");
     // The occlusion check's second scene is built before a page source could release the host
     // streams it uploads from; streaming and the check were refused together above anyway.
     if (options.verify_occlusion) {
@@ -2563,13 +2593,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
     renderer_desc.display = gfx::present_format_encoding(options.present_format);
     if (renderer_desc.display != gfx::DisplayEncoding::Sdr)
       renderer_desc.color_format = gfx::display_encoding_format(renderer_desc.display);
-    if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
-      exit_code = fail("renderer", error);
-      break;
-    }
-    if (!start_medium(medium, device, view_renderer, scene_data, options, error)) {
-      exit_code = fail("medium", error);  // brief-volumetrics
-      break;
+    {
+      ENGINE_STARTUP_STAGE("renderer");
+      if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+        exit_code = fail("renderer", error);
+        break;
+      }
+      if (!start_medium(medium, device, view_renderer, scene_data, options, error)) {
+        exit_code = fail("medium", error);  // brief-volumetrics
+        break;
+      }
     }
     auto camera_at = [&](u32 f) {
       return have_path
@@ -2609,15 +2642,19 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // two evaluated fields every frame. Offscreen, a field the surface has caught up with is waited
     // for, and fields are timed by the dunes' motion alone, so two runs of `--frames N` draw the
     // same pictures on the same frames however fast the machine evaluates.
-    if (!ground.start(scene, resolved, true, &error)) {
-      exit_code = fail(ground.stage(), error);
-      break;
+    {
+      ENGINE_STARTUP_STAGE("ground start");
+      if (!ground.start(scene, resolved, true, &error)) {
+        exit_code = fail(ground.stage(), error);
+        break;
+      }
     }
     // A streamed world (world_view.h): its ring round the camera, updated before every frame from
     // that frame's camera. Everything that draws below calls `world_before` first; so does the
     // time-lapse's tick. The world's ring also decides the world's tiles the ground is drawn from.
 #if ENGINE_VIEW_WORLD
     if (scene_data.world.enabled || ground.tiles() != nullptr) {
+      ENGINE_STARTUP_STAGE("world create");
       if (!view_world.create(scene_data, view_renderer, &error, ground.tiles())) {
         exit_code = fail("world", error);
         break;
@@ -2660,6 +2697,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // ---- a recorded session, flown again ----------------------------------------------------
       // With the recording's walk numbers, on the scene as loaded (walk.h): a recorded walk
       // replays bit for bit over the scene it was recorded on.
+      profiling::TraceStage session_stage("session");
       if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error,
                         ground.tile_source())) {
         exit_code = fail("walk", error);
@@ -2687,6 +2725,29 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("replay", error);
         break;
       }
+      session_stage.end();
+      // What each frame says about readiness (startup.h), from what the loop already holds.
+      const auto readiness = [&]() {
+        view::Readiness r;
+        r.frame_done = !records.empty();
+        r.controllable = !walker.available() || walker.stats().ticks > 0;
+        r.collision = !walker.available() || walker.ground_ready();
+        r.world_settled = true;
+#if ENGINE_VIEW_WORLD
+        if (view_world.valid()) {
+          const world::UpdateStats& last = view_world.world().last();
+          r.world_settled = last.activated == 0 && last.changed == 0 &&
+                            last.deferred_promotions == 0 && last.deferred_demotions == 0;
+        }
+#endif
+        if (!records.empty()) {
+          const scene::FrameRecord& last = records.back();
+          r.pages_settled = last.pending == 0 && last.loads_in_flight == 0;
+          r.ground_settled = !last.terrain.has_value() ||
+                             (last.terrain->chunks_built == 0 && last.terrain->layout_lag_m == 0.0);
+        }
+        return r;
+      };
       if (!options.benchmark.empty()) {
         const bench::MachineState before = wait_for_quiet(options.wait_quiet_s);
         if (options.require_quiet && !bench::is_quiet(before, bench::QuietThresholds{})) {
@@ -2709,6 +2770,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       bool ok = true;
       for (u32 f = 0; f < frames; ++f) {
         const i64 start = time::monotonic_ns();
+        ENGINE_STARTUP_STAGE("frame");
+        profiling::trace_items(f);
         // A streamed world follows the camera a frame behind: the tail changes between frames, and
         // this frame's camera is only known once its ticks have run, after `begin_frame`.
         if (!world_before(session.camera(), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
@@ -2728,6 +2791,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         }
         view_renderer.begin_frame();
         take_folded(view_renderer, folded, pending, records);
+        startup.frame(readiness());
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -3232,6 +3296,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
+    if (startup.on()) {
+      std::string why;
+      summary.startup = startup.finish(&why);
+      if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
+    }
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
       const io::Status status = write_benchmark(
@@ -3340,7 +3409,8 @@ int dump_action_map(const Options& options) {
 }
 
 int main(int argc, char** argv) {
-  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
+  engine::platform::require_cpu_baseline();       // ADR-0031, first statement
+  g_main_ns = engine::profiling::trace_now_ns();  // `--startup-trace`'s "main" milestone
   const int code = run_view(argc, argv);
   // `--report`: written whichever way the run ended, as long as the process can still write.
   if (!g_report.path.empty()) {
@@ -3837,6 +3907,8 @@ int run_view(int argc, char** argv) {
     } else if (a == "--report") {
       if (!next_value(argc, argv, i, a, g_report.path)) return k_exit_usage;
       g_report.frames.enable();
+    } else if (a == "--startup-trace") {
+      if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
     } else if (a == "--game") {
       if (!next_value(argc, argv, i, a, options.game)) return k_exit_usage;
       options.interactive = true;  // a game is played from the session, live or replayed
@@ -4336,6 +4408,15 @@ int run_view(int argc, char** argv) {
     stderr_sink.set_min_level(log::Level::Trace);
     log::apply_level_spec("warn");
     log::apply_level_spec(options.log_spec);
+  }
+  // The startup trace from here on, dated from the process's launch (startup.h): before the
+  // tunables and the device, so everything that costs time before the first frame is in it.
+  if (!options.startup_trace.empty()) {
+    std::string why;
+    if (!view::startup_trace().start(options.startup_trace, g_main_ns, &why)) {
+      std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
+      return k_exit_usage;
+    }
   }
 
   // Tunables before anything reads one: the renderer's, and the interactive camera's, which a

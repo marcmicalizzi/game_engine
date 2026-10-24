@@ -32,7 +32,7 @@ engine_schema_library(NAME world_schemas
 # it. So the world links no generator, names none, and a world without one (a game with no desert)
 # streams its document and its store as it always did.
 set(_world_deps base containers math hash log time ids jobs tunables json io input schema schemas
-                sim doc renderer store world_schemas scene_gen)
+                sim doc renderer store world_schemas scene_gen profiling)
 set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_store.cpp
                    src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
                    src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp

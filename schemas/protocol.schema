@@ -762,7 +762,7 @@ struct RenderViewStats @version(2) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(6) {
+struct RenderLoadParams @version(7) {
   /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads a **procedural**
   /// scene, which is what needs no content at all; `procedural` says which one.
   mesh: string
@@ -814,13 +814,18 @@ struct RenderLoadParams @version(6) {
   /// (`RenderSceneInfo.moved` and `rebuilt` say which); `grid_instances`, `overlay` and
   /// `ground_time_s` do not apply to it.
   session: string @since(6)
+  /// Record the load in the startup trace (engine-view's `--startup-trace`; docs/subsystems/apps.md,
+  /// "--startup-trace: from launch to ready") and answer its summary in `RenderSceneInfo.startup`:
+  /// the same block, timed from the call, its milestones `scene_read` and `scene_loaded`. Refused
+  /// while another trace is recording in the process.
+  startup_trace: bool = false @since(7)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
 ///
 /// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
 /// it rounded to a float32. The JSON is the same three numbers.
-struct RenderSceneInfo @version(4) {
+struct RenderSceneInfo @version(5) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -863,6 +868,9 @@ struct RenderSceneInfo @version(4) {
   revision: u64 = 0 @since(4)
   moved: u32 = 0 @since(4)
   rebuilt: bool = false @since(4)
+  /// `render.load` with `startup_trace`: the startup block of the load (engine-view's summary
+  /// `startup`). Null otherwise.
+  startup: json @since(5)
 }
 
 /// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.

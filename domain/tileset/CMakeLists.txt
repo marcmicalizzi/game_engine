@@ -17,6 +17,7 @@ engine_schema_library(NAME tileset_schemas SCHEMAS schemas/tileset.schema CAPABI
 
 engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema schemas tileset_schemas io geometry scene_gen tunables
+       profiling
   SOURCES src/tileset.cpp src/ground.cpp)
 
 engine_module_tests(NAME tileset

@@ -1,4 +1,5 @@
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/world/world.h>
@@ -41,6 +42,7 @@ u16 World::add_consumer(const TileConsumer& consumer) {
 }
 
 const UpdateStats& World::update(const sim::ObserverSet& observers, u64 tick, bool unlimited) {
+  ENGINE_STARTUP_STAGE("world update");  // the startup trace: the first fill's updates
   last_ = UpdateStats{};
   last_.tick = tick;
   tick_ = tick;

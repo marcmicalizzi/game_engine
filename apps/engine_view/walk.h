@@ -197,6 +197,11 @@ class Walker {
   // ground-follow's not being in a jump. False before the first drop. Read only: a game asks it
   // (game_runner.h), and nothing the walker computes depends on it being asked.
   bool on_ground() const noexcept;
+  // **Whether the ground under the feet is ready** (apps.md, "--startup-trace"): placed, and, for
+  // the physical walker, a collision tile held under the feet (`SceneCollision::ground_height`
+  // answers there); the ground-follow stands on the provider's heights, ready once placed. Read
+  // only, like `on_ground`.
+  bool ground_ready() const noexcept;
   // **The ground's height at (x, z)** (game_runner.h `ground_height`, module_abi.h ABI 5): the
   // provider's height at the nearest millimetre, the function the ground-follow stands on — at the
   // terrain's own time on still ground, the drawn pair blended as the frame draws it on moving

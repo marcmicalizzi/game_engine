@@ -8,6 +8,7 @@
 #include "scene_flora.h"
 
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_pages.h>
@@ -44,6 +45,7 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
   // A vine's or a cover's host (docs/subsystems/cover.md) is read through content_build's seam, the
   // one engine-content uses, under this scene's LOD options and pack: the two build one container.
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
+  profiling::TraceStage inputs_stage("generator inputs");
   const content_build::GeneratorHosts hosts(path, desc.lod, page_bytes,
                                             materials::pack_at(desc.materials));
   const assets::MeshGeneratorInputs inputs = hosts.inputs();
@@ -52,6 +54,7 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     error = path + ": " + generator_error;
     return false;
   }
+  inputs_stage.end();
   // A scene that names a mesh by its bytes gets those bytes or nothing, as a glTF's does; for a
   // generated mesh the bytes are the parameters, canonicalized.
   if (expected_hash != 0 && source_hash != expected_hash) {
@@ -71,8 +74,10 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     cache = "miss";
     if (io::exists(cache_path)) {
       std::string read_error;
-      if (geometry::read_cluster_file(cache_path, data, &read_error) &&
-          data.source_hash == source_hash && data.build_key == key) {
+      profiling::TraceStage read_stage("cluster read");
+      const bool read = geometry::read_cluster_file(cache_path, data, &read_error);
+      read_stage.end();
+      if (read && data.source_hash == source_hash && data.build_key == key) {
         cache = "hit";
         container = cache_path;
         // A recipe's image paths are relative to the recipe, which is this path whatever path the
@@ -82,8 +87,14 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
       }
       ENGINE_LOG_WARN(log_renderer, "cluster cache entry ignored", log::field("path", cache_path),
                       log::field("error", read_error.empty() ? "a different build" : read_error));
+      // An accidental rebuild: an entry under this key that this build will not use (startup
+      // trace, "accidental rebuilds"); the stage's detail says why.
+      profiling::trace_end(profiling::trace_begin(
+          "cache entry ignored", read_error.empty() ? std::string_view("a different build")
+                                                    : std::string_view(read_error)));
     }
   }
+  ENGINE_STARTUP_STAGE_DETAIL("generate", path);
   if (!generator->build(bytes, inputs, desc.lod, page_bytes, data, generator_error)) {
     error = path + ": " + generator_error;
     return false;

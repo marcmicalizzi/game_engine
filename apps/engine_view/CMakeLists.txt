@@ -41,7 +41,7 @@ endif()
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
-                tests/game_view_tests.cpp
+                tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
                 ${_view_interactive})
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
@@ -128,8 +128,9 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp ${_view_interactive} ${_view_world} ${_view_game} ${_view_animation}
-  DEPS ${_view_deps}
+  SOURCES main.cpp report.cpp startup.cpp ${_view_interactive} ${_view_world} ${_view_game}
+          ${_view_animation}
+  DEPS ${_view_deps} profiling
   E2E_TESTS ${_view_tests})
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
 # (domain/gfx/backend/vulkan/: the swapchain, the device's instance for the surface); the renderer

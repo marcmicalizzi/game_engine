@@ -3,6 +3,7 @@
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
@@ -1361,6 +1362,7 @@ bool TerrainTileSet::build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 ti
 // they replace kept as `previous_` until the next rebuild.
 bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::JobSystem* jobs,
                              u32& moved, std::string* error) {
+  ENGINE_STARTUP_STAGE("tile rebuild");
   const i64 rebuild_started = time::monotonic_ns();
   moved = 0;
   LevelMap level_of;
