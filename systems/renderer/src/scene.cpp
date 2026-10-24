@@ -994,6 +994,252 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   return true;
 }
 
+// A mesh's fit (`MeshFit`) from the box of its vertices — every level's, which for an edge-collapse
+// DAG are a subset of the source's, so the box is the source's box: the uniform scale and the
+// point that goes to the origin. The one place the load computes it, for the instances' placement
+// and for the authored instances' reach.
+struct FitParts {
+  f32 scale = 1.0f;
+  Vec3 anchor{};
+};
+FitParts fit_parts(const MeshFit& fit, std::span<const Vec3> vertices) {
+  Vec3 lo{1e30f, 1e30f, 1e30f};
+  Vec3 hi{-1e30f, -1e30f, -1e30f};
+  for (const Vec3 p : vertices) {
+    lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+  }
+  const Vec3 size = hi - lo;
+  const f32 longest = std::max(size.x, std::max(size.y, size.z));
+  FitParts out;
+  out.scale = fit.height > 0.0f ? (size.y > 0.0f ? fit.height / size.y : 1.0f)
+                                : (longest > 0.0f ? fit.extent / longest : 1.0f);
+  out.anchor =
+      Vec3{0.5f * (lo.x + hi.x), fit.ground ? lo.y : 0.5f * (lo.y + hi.y), 0.5f * (lo.z + hi.z)};
+  return out;
+}
+
+// ---- a streamed world's own instances (renderer.md, "Authored instances per tile") -------------
+
+// The nearest an observer can be to an origin filed on a tile of ring `r` (r >= 1), metres: the
+// ring's tiles have their centres at least ring r - 1's radius away once the ring is updated (it
+// bands by the centre, `sim::TierAssignment::tier_of`), an origin is at most half a diagonal from
+// its tile's centre, and a quarter tile more is the camera's way between two updates — a tile
+// coming in is promoted at the first update past the boundary, and until then still draws the form
+// it had (8 m at 32 m tiles: 480 m/s at 60 updates a second). Zero or less: no bound.
+f32 ring_floor_m(const WorldDesc& world, u32 r) noexcept {
+  const f32* radius = world.ring_count > 0 ? world.radius : k_default_world_ring_radius;
+  return (radius[r - 1] - 0.70710678f - 0.25f) * world.tile_size;
+}
+
+u32 world_ring_count(const WorldDesc& world) noexcept {
+  return world.ring_count > 0 ? world.ring_count : k_default_world_ring_count;
+}
+
+// Hands the file's own rigid instances to the "authored" generator (authored.md) and makes each
+// ring's distance form of their meshes (geometry.md, "Distance forms"): appended after every mesh
+// the scene has, each a mesh of its own with its source's fit, materials and grid. Nothing happens
+// unless the world streams, the rules allow it, the registry has the generator and the scene is not
+// paged; what stays in the prefix is counted by why.
+bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
+                     Vector<geometry::ClusterLodMesh>& dags, bool paged, SceneData& out,
+                     std::string& error) {
+  AuthoredStats& stats = out.authored;
+  const AuthoredStreaming& rules = resolved.authored;
+  const u32 first = resolved.authored_first;
+  const u32 count = resolved.authored_count;
+  if (!resolved.world.enabled || !rules.enabled || count == 0) return true;
+  if (scene_gen::GeneratorRegistry::global().find_placement("authored") == nullptr) return true;
+  if (resolved.mesh_info.size() != resolved.meshes.size() ||
+      u64{first} + count > resolved.instances.size()) {
+    return true;
+  }
+  if (paged) {
+    stats.kept_paged = count;
+    return true;
+  }
+  const u32 meshes = resolved.meshes.size();
+  const f32 tile = resolved.world.tile_size;
+  const f32 max_reach = rules.max_reach_m > 0.0f ? rules.max_reach_m : tile;
+  // Per mesh, measured on first use: the fit, and how far the fitted mesh reaches from its origin.
+  Vector<FitParts> fit(meshes);
+  Vector<f32> reach(meshes, -1.0f);
+  Vector<f32> scale_max(meshes, 0.0f);
+  Vector<u8> take(count, 0);
+  u32 taken = 0;
+  for (u32 i = 0; i < count; ++i) {
+    const SceneInstance& instance = resolved.instances[first + i];
+    const u32 m = instance.mesh;
+    const geometry::ClusterMesh& mesh = dags[m].mesh;
+    if (instance.animation.play || instance.joints > 0 || !mesh.skin.empty() ||
+        !mesh.morph_channels.empty() || resolved.meshes[m].empty()) {
+      ++stats.kept_deformed;
+      continue;
+    }
+    if (reach[m] < 0.0f) {
+      const MeshFit& mf = resolved.mesh_info[m].fit;
+      if (mf.active())
+        fit[m] = fit_parts(mf, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()));
+      f32 most = 0.0f;
+      for (const geometry::ClusterDesc& c : mesh.clusters)
+        most = std::max(most, length(c.center - fit[m].anchor) + c.radius);
+      reach[m] = most * fit[m].scale;
+    }
+    const Vec3 s = instance.transform.scale;
+    const f32 scale = std::max(std::fabs(s.x), std::max(std::fabs(s.y), std::fabs(s.z)));
+    if (reach[m] * scale > max_reach) {
+      ++stats.kept_reach;
+      continue;
+    }
+    take[i] = 1;
+    ++taken;
+    scale_max[m] = std::max(scale_max[m], scale);
+  }
+  if (taken == 0) return true;
+
+  // Each used mesh's form set: the scene mesh each ring draws, the full mesh innermost.
+  const u32 rings = world_ring_count(resolved.world);
+  const f32 proj = rules.proj_scale > 0.0f ? rules.proj_scale : k_default_form_proj_scale;
+  out.form_source.resize(meshes);
+  for (u32 m = 0; m < meshes; ++m)
+    out.form_source[m] = m;
+  scene::AuthoredSet set;
+  set.tile_size = tile;
+  Vector<u32> set_of(meshes, ~0u);
+  Vector<u32> resident;  // the entry's resident meshes, as scene meshes
+  Vector<u32> slot_of;   // per scene mesh, its place in `resident`; grown as meshes are made
+  slot_of.resize(meshes, ~0u);
+  const auto slot = [&](u32 scene_mesh) {
+    if (slot_of.size() <= scene_mesh) slot_of.resize(scene_mesh + 1, ~0u);
+    if (slot_of[scene_mesh] == ~0u) {
+      slot_of[scene_mesh] = resident.size();
+      resident.push_back(scene_mesh);
+    }
+    return slot_of[scene_mesh];
+  };
+  for (u32 m = 0; m < meshes; ++m) {
+    if (!(scale_max[m] > 0.0f)) continue;
+    scene::AuthoredForms forms;
+    forms.rings.push_back(slot(m));
+    u32 drawn = m;
+    u32 kept = dags[m].mesh.clusters.size();
+    for (u32 r = 1; r < rings; ++r) {
+      const f32 floor_m = ring_floor_m(resolved.world, r);
+      if (floor_m > 0.0f) {
+        geometry::LodFormCut cut;
+        cut.origin = fit[m].anchor;
+        cut.distance = floor_m / (fit[m].scale * scale_max[m]);
+        cut.proj_scale = proj;
+        cut.threshold_px = rules.threshold_px;
+        cut.foliage_px = rules.foliage_px;
+        cut.fade = rules.fade;
+        geometry::ClusterLodMesh form;
+        Vector<u32> coverage;
+        geometry::LodFormMap map;
+        const SourceMesh& source = sources[m];
+        if (!geometry::extract_lod_form(
+                dags[m],
+                std::span<const u32>(source.lod_coverage.data(), source.lod_coverage.size()), cut,
+                form, coverage, map, &error)) {
+          error =
+              resolved.mesh_info[m].name + ": its ring " + std::to_string(r) + " form: " + error;
+          return false;
+        }
+        // A form that keeps what the ring inside it drew is that one: the cut only ever drops
+        // more as the distance grows, so the same count is the same clusters.
+        if (map.clusters.size() < kept) {
+          SourceMesh copy = source;
+          copy.part_of_cluster.clear();
+          for (const u32 c : map.clusters)
+            copy.part_of_cluster.push_back(source.part_of_cluster[c]);
+          copy.lod_coverage = std::move(coverage);
+          if (source.motion_vertices.size() == dags[m].mesh.vertices.size()) {
+            copy.motion_vertices.clear();
+            for (const u32 v : map.vertices)
+              copy.motion_vertices.push_back(source.motion_vertices[v]);
+          } else {
+            copy.motion_vertices.clear();
+            copy.motion_parts.clear();
+          }
+          drawn = resolved.meshes.size();
+          kept = map.clusters.size();
+          std::string path = resolved.meshes[m];  // a copy: never push a Vector's own element
+          resolved.meshes.push_back(std::move(path));
+          SceneMeshInfo info = resolved.mesh_info[m];
+          info.name += " (ring " + std::to_string(r) + ")";
+          info.origin = "form";
+          resolved.mesh_info.push_back(std::move(info));
+          sources.push_back(std::move(copy));
+          dags.push_back(std::move(form));
+          out.form_source.push_back(m);
+          ++stats.forms;
+          stats.form_clusters += kept;
+        }
+      }
+      forms.rings.push_back(slot(drawn));
+    }
+    set_of[m] = set.forms.size();
+    set.forms.push_back(std::move(forms));
+  }
+
+  // The set, in the file's order with each instance's place in it as its id, and the prefix
+  // without it. The floor: the most pairs one tile's instances hold drawn whole.
+  Vector<SceneInstance> kept_instances;
+  kept_instances.reserve(resolved.instances.size() - taken);
+  Vector<std::pair<u64, u64>> tile_pairs;  // (tile key, pairs), sorted afterwards
+  tile_pairs.reserve(taken);
+  set.instances.reserve(taken);
+  for (u32 i = 0; i < resolved.instances.size(); ++i) {
+    const SceneInstance& instance = resolved.instances[i];
+    if (i < first || i >= first + count || take[i - first] == 0) {
+      kept_instances.push_back(instance);
+      continue;
+    }
+    scene::AuthoredInstance a;
+    a.forms = set_of[instance.mesh];
+    a.translation = WorldPos{instance.origin.x + static_cast<f64>(instance.transform.position.x),
+                             instance.origin.y + static_cast<f64>(instance.transform.position.y),
+                             instance.origin.z + static_cast<f64>(instance.transform.position.z)};
+    a.rotation = instance.transform.rotation;
+    a.scale = instance.transform.scale;
+    a.id = i - first + 1;
+    set.instances.push_back(a);
+    const u64 pairs = dags[instance.mesh].mesh.clusters.size();
+    stats.whole_pairs += pairs;
+    const i64 tx = static_cast<i64>(std::floor(a.translation.x / static_cast<f64>(tile)));
+    const i64 tz = static_cast<i64>(std::floor(a.translation.z / static_cast<f64>(tile)));
+    tile_pairs.push_back(
+        {(static_cast<u64>(static_cast<u32>(tx)) << 32) | static_cast<u64>(static_cast<u32>(tz)),
+         pairs});
+  }
+  std::sort(tile_pairs.begin(), tile_pairs.end());
+  u64 floor_pairs = 0;
+  for (u32 i = 0; i < tile_pairs.size();) {
+    u64 sum = 0;
+    u32 j = i;
+    for (; j < tile_pairs.size() && tile_pairs[j].first == tile_pairs[i].first; ++j)
+      sum += tile_pairs[j].second;
+    floor_pairs = std::max(floor_pairs, sum);
+    i = j;
+  }
+  out.tail_floor_pairs = static_cast<u32>(std::min<u64>(floor_pairs, 0xFFFFFFFFu));
+  resolved.instances = std::move(kept_instances);
+  StreamedPlacements entry;
+  entry.generator = "authored";
+  entry.params = schema::to_json(set);
+  entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
+  entry.meshes = std::move(resident);
+  resolved.streamed.push_back(std::move(entry));
+  stats.streamed = taken;
+  ENGINE_LOG_INFO(log_renderer, "instances streamed by the world", log::field("streamed", taken),
+                  log::field("kept_deformed", stats.kept_deformed),
+                  log::field("kept_reach", stats.kept_reach), log::field("forms", stats.forms),
+                  log::field("form_clusters", stats.form_clusters),
+                  log::field("whole_pairs", stats.whole_pairs),
+                  log::field("tile_floor_pairs", out.tail_floor_pairs));
+  return true;
+}
+
 }  // namespace
 
 void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
@@ -1471,6 +1717,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     if (file.fires[i].ground) out.fires[i].position.y += ground_at_world(file.fires[i].position);
   }
 
+  // The file's own instances and its scatters', the run a streamed world may hand to the
+  // "authored" generator (`load_scene`; renderer.md, "Authored instances per tile").
+  out.authored_first = out.instances.size();
+  out.authored.enabled = options.world_instances;
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
     if (entry.mesh >= file_meshes) {
@@ -1567,6 +1817,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
+  // The file's own instances and its scatters' are the run a streamed world may stream.
+  out.authored_count = out.instances.size() - out.authored_first;
   // The placement entries — the ruins, and any generator by name — through the scene-generator
   // registry, after the ground they stand on: expanded here, or in a streamed world left for the
   // world to expand tile by tile.
@@ -1649,6 +1901,15 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
         error = resolved.mesh_info[m].name + ": " + error;
       return false;
     }
+  }
+  // A streamed world's own instances, before the merge: their forms are meshes of their own
+  // (renderer.md, "Authored instances per tile").
+  {
+    bool paged_scene = resolved.stream;
+    for (const geometry::ClusterPages& table : tables)
+      paged_scene = paged_scene && !table.pages.empty();
+    if (!stream_authored(resolved, out.sources, dags, paged_scene, out, error)) return false;
+    tables.resize(dags.size());
   }
   out.terrain = resolved.terrain;
   out.terrain_mesh = ~0u;
@@ -1774,23 +2035,19 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     for (u32 m = 0; m < out.parts.size(); ++m) {
       const MeshFit& fit = resolved.mesh_info[m].fit;
       if (!fit.active()) continue;
+      // A distance form is placed exactly as the mesh it was cut from: its own vertices are only
+      // some of that mesh's, so their box is not the one the fit was measured on.
+      if (m < out.form_source.size() && out.form_source[m] != m) {
+        fit_of_mesh[m] = fit_of_mesh[out.form_source[m]];
+        continue;
+      }
       const u32 first = out.parts[m].first_vertex;
       const u32 end =
           m + 1 < out.parts.size() ? out.parts[m + 1].first_vertex : out.lod.mesh.vertices.size();
-      Vec3 lo{1e30f, 1e30f, 1e30f};
-      Vec3 hi{-1e30f, -1e30f, -1e30f};
-      for (u32 v = first; v < end; ++v) {
-        const Vec3 p = out.lod.mesh.vertices[v];
-        lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
-        hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
-      }
-      const Vec3 size = hi - lo;
-      const f32 longest = std::max(size.x, std::max(size.y, size.z));
-      const f32 scale = fit.height > 0.0f ? (size.y > 0.0f ? fit.height / size.y : 1.0f)
-                                          : (longest > 0.0f ? fit.extent / longest : 1.0f);
-      const Vec3 anchor{0.5f * (lo.x + hi.x), fit.ground ? lo.y : 0.5f * (lo.y + hi.y),
-                        0.5f * (lo.z + hi.z)};
-      fit_of_mesh[m] = scaling(Vec3{scale, scale, scale}) * translation(-anchor);
+      const FitParts parts =
+          fit_parts(fit, std::span<const Vec3>(out.lod.mesh.vertices.data() + first, end - first));
+      fit_of_mesh[m] =
+          scaling(Vec3{parts.scale, parts.scale, parts.scale}) * translation(-parts.anchor);
     }
   }
   u32 pair_count = 0;

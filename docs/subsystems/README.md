@@ -72,6 +72,7 @@ One page per module, created in the same change that creates the module. Templat
 | flora (capability) | domain | [flora.md](flora.md) |
 | rocks | domain | [rocks.md](rocks.md) |
 | cover (capability) | domain | [cover.md](cover.md) |
+| authored (capability) | domain | [authored.md](authored.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |

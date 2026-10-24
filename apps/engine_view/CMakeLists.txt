@@ -63,6 +63,11 @@ if(TARGET engine::water AND TARGET engine::terrain AND TARGET engine::scatter AN
   # stopped at the chest, replayed offscreen to the same trajectory. Its scene needs all four.
   list(APPEND _view_tests tests/walk_water_view_tests.cpp)
 endif()
+if(TARGET engine::flora AND TARGET engine::authored AND TARGET engine::world)
+  # A streamed world's own trees (renderer.md, "Authored instances per tile"): the whole read's
+  # picture where every tile is in the inner ring, and no pixel changed by a ring's handover.
+  list(APPEND _view_tests tests/authored_view_tests.cpp)
+endif()
 if(TARGET engine::flora)
   # A walk along a megaflora's major limb, replayed offscreen (docs/subsystems/flora.md,
   # "Megaflora"): the elder-grove scene's ancient trees solved by the test to find the limb.
@@ -79,7 +84,7 @@ endif()
 if(TARGET engine::volumetrics)
   list(APPEND _view_deps volumetrics)
 endif()
-foreach(_gen city cover flora rocks ruins scatter sky terrain tileset water)
+foreach(_gen authored city cover flora rocks ruins scatter sky terrain tileset water)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()

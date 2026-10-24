@@ -287,6 +287,51 @@ u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, std::span<const 
 // The same with a threshold on raw mesh-space error (no camera): own <= t < parent.
 u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
 
+// ---- a distance form (geometry.md, "Distance forms") --------------------------------------------
+//
+// **What a mesh can draw from a camera at least `distance` from `origin`**, as a mesh of its own: a
+// streamed world hands a tile from its full mesh to this when the tile's ring guarantees the
+// camera is that far from every instance on it (world.md, "An authored world"), so a far tree is
+// the few pairs of its cards and its star instead of every cluster of its leaves. A transition is
+// **acceptable outright from the cut** when, for every camera at least `distance` from `origin`,
+// its projected geometric error is at most (1 - fade) of `threshold_px` or its projected coverage
+// error at most (1 - fade) of `foliage_px` — the camera's worst case being `distance` minus the
+// sphere's offset from `origin` minus its radius, so a large mesh's far spheres count for what they
+// reach. The form keeps every cluster whose **parent** transition is not acceptable outright and
+// drops the rest (their parents and coarser draw instead, from that far); errors rise and spheres
+// enclose along every path, so what is kept is the top of the DAG. A kept cluster whose **own**
+// transition is acceptable outright is the form's **frontier**: its own error and own coverage
+// become 0 and its level 0, so the form draws it from nearer too and is never empty; every other
+// field of every kept cluster — the spheres, the parent errors, the cone, the vertices, the
+// attributes, the triangles and the 16-bit grid — is the source's bit for bit. So from at least
+// `distance` the form and the full mesh select the same clusters with the same fade splits for any
+// view whose projection is at most `proj_scale` and whose thresholds are at least the cut's
+// (`lod_forms_tests.cpp` holds it).
+struct LodFormCut {
+  Vec3 origin{};          // the point the distance is measured from, in the mesh's own space
+  f32 distance = 0.0f;    // the nearest a camera comes to it, mesh units
+  f32 znear = 0.1f;       // LodView's
+  f32 proj_scale = 0.0f;  // LodView's: the largest the views it serves have
+  f32 threshold_px = 1.0f;
+  f32 foliage_px = 0.0f;  // 0: no coverage error is acceptable outright
+  f32 fade = 0.0f;        // the cross-fade's half band
+};
+// What `extract_lod_form` kept, for a caller with streams of its own per cluster or per vertex.
+struct LodFormMap {
+  Vector<u32> clusters;  // per form cluster, its index in the source
+  Vector<u32> vertices;  // per form vertex, its index in the source's `mesh.vertices`
+  u32 frontier = 0;      // form clusters whose own transition was zeroed
+};
+// Fails, with a sentence, on a mesh with morph channels or a skin (a deformed mesh's spheres are
+// not its rest pose's), on a coverage stream not parallel to the clusters, and on a cut that keeps
+// nothing. `coverage` may be empty (no coverage errors); `coverage_out` then is too.
+bool extract_lod_form(const ClusterLodMesh& mesh, std::span<const u32> coverage,
+                      const LodFormCut& cut, ClusterLodMesh& out, Vector<u32>& coverage_out,
+                      LodFormMap& map, std::string* error = nullptr);
+// Whether one transition is acceptable outright from `cut` (the rule above), exposed for the
+// tests and for a caller that reports which levels a form keeps.
+bool lod_acceptable_from(Vec4 sphere, f32 error, f32 coverage, const LodFormCut& cut) noexcept;
+
 // Merges DAGs built over parts of one mesh (a glTF primitive per material, for example) into
 // one: the vertex, attribute, and triangle streams are concatenated with the offsets shifted,
 // source vertex indices and group indices shift by the parts before, level counts add up, and

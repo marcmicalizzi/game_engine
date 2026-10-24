@@ -980,6 +980,32 @@ struct PlacementEntry @version(2) {
   stream: bool = true @since(2)
 }
 
+struct AuthoredForms {
+  rings: u32[]
+}
+struct AuthoredInstance {
+  /// Which of the set's form sets it draws.
+  forms: u32 = 0
+  translation: worldpos @unit(m)
+  rotation: quat
+  scale: vec3
+  /// Stable within the entry: the instance's place in the scene file's own list, plus one, so a
+  /// reload names it the same whichever tiles came in first.
+  id: u32 = 0
+}
+
+/// A streamed world's authored set: the scene file's own `instances` as the `authored` placement
+/// generator's parameters (docs/subsystems/authored.md). The scene reader writes it when the world
+/// streams the instances a tile at a time (renderer.md, "Authored instances per tile"); nothing in a
+/// scene file spells it. Every instance is filed under the tile its origin is on.
+struct AuthoredSet @version(1) {
+  /// The world's tile edge, metres, which the set's tiles are on.
+  tile_size: f32 = 32
+  /// Per form set: the resident mesh each ring draws, innermost first (an index into the entry's
+  /// resident meshes); a ring past the last draws the last.
+  forms: AuthoredForms[]
+  instances: AuthoredInstance[]
+}
 /// How a sky's exposure is chosen (docs/subsystems/renderer.md, "Exposure").
 enum SkyExposure : u8 {
   /// Metered from the light at the eye by the renderer's declared rule (incident-light metering at

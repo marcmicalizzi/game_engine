@@ -316,6 +316,45 @@ A transition may also carry a **coverage error** (R91; what drawing the coarser 
 A cluster carries its own and its parent transition's coverage as two half floats in one word (`pack_lod_coverage`; container **section 39**, `lod_coverage`, written only when a generator emits it and reordered with `cluster_material`), and a cluster with none reads +inf (`k_lod_no_coverage`), which projects to the terminal error and is never acceptable by it — so a mesh without coverage takes the one-threshold test **bit for bit**. Both errors rise along every path of a mesh that has them (the flora builder keeps the coverage rising level by level, and the bark's transitions all take the star's coverage, which its hand-over meets), so acceptance is monotonic and the cut stays one cluster a path. The cull test (`cull_tests.cpp`) holds the GPU's survivors to `lod_selects` with coverage cluster for cluster.
 
 **The cross-fade's split** (`lod_fade_split`, `fade_split` in the shader; renderer.md, "The cross-fade"): with a fade f > 0 and a coverage error on the transition, ρ = min(proj_g / threshold_px, proj_c / foliage_px) and split = clamp((ρ − (1 − f)) / 2f, 0, 1); a cluster draws the pixels whose stable hash h ∈ [0, 1) has split(own) ≤ h < split(parent). Splits are monotonic along a path, so of every path exactly one cluster keeps each pixel; with f = 0 the splits are 0 or 1 by `acceptable` and the rule is the cut's. An opaque cluster of a fading mesh takes a step at ρ ≤ 1 − f instead (`step_shift`), so it stays until its masked replacement is whole: a transition from masked into opaque would open holes across the band, and no builder makes one.
+## Distance forms
+
+Roadmap W47 (2026-10-24). A cluster DAG answers "which clusters at this distance", but a scene's
+pairs are every cluster of every instance whatever the distance, so a forest of fifteen thousand
+trees of 1,000–12,000 clusters each is past the visibility id's 2^24 pairs before the first frame,
+however few of them a far tree draws. A streamed world can do better because its rings bound the
+camera's distance to every instance on a tile ([world](world.md#an-authored-world)): a tile in
+ring *r* is at least ring *r* − 1's radius from the observer. So `extract_lod_form` cuts a mesh to
+**what it can draw from a camera at least a distance away** — a mesh of its own, whose pairs are
+only those clusters.
+
+**The rule** (`LodFormCut`: an origin, the distance, the projection and the two thresholds and the
+fade). A transition is *acceptable outright from the cut* when, from every camera at least that far
+from the origin, it projects to at most (1 − fade) of its threshold — geometric against
+`threshold_px` or coverage against `foliage_px`, as `transition_acceptable` takes either — with the
+camera's worst case the distance minus the sphere's offset from the origin minus its radius, so a
+crown's far spheres count for what they reach. The form keeps every cluster whose *parent*
+transition is not acceptable outright: a dropped cluster's parent (or something coarser) always
+draws instead from that far, so nothing it drops is ever selected. A kept cluster whose *own*
+transition is acceptable outright is the form's **frontier**; its own error and own coverage become
+0 and its level 0, so the form draws it from nearer too and is never empty. Errors rise and spheres
+enclose along every path, so what is kept is the top of the DAG and the frontier is one cluster on
+every path. Every other field of every kept cluster — both spheres, the parent error and coverage,
+the cone, the vertices, the attributes, the triangles, and the 16-bit grid with its origin and
+step — is the source's bit for bit.
+
+**What holds** (`lod_forms_tests.cpp`, on authored_levels_tests.cpp's heightfield with two authored
+levels and a coverage word a tenth of each error): a cut at zero is the mesh; at 20, 60, 250 and
+2,000 m, with no fade and with R91's 0.1, 144 cameras round the origin at the cut's distance and
+beyond, level and raised, at the cut's projection and at half of it, select **the same clusters**
+from the form as from the mesh, with the same parent fade splits; nearer than the cut the form
+still selects a cut; far enough only the root level is left (the authored quad); a skinned mesh and
+a coverage stream of the wrong length are refused with a sentence. **What the guarantee does not
+cover**: a view with a larger projection than the cut's (a taller window, a narrower field of view)
+or a smaller threshold wants finer clusters than the form kept, and draws the form's frontier
+instead — coarser, never a hole. The renderer builds its forms for the session's own projection
+([renderer](renderer.md#authored-instances-per-tile)), so it is a window resized after the scene is
+read, or a capture at another size, that sees it.
+
 ## UV-degenerate triangles: the repair
 
 **What it repairs.** E10 ([experiment](../experiments/e10-generated-props.md)) found that the commonest atlas failure on generated props is not fragmentation but a single island of **no area** in an otherwise sound atlas: eight of twenty Meshy props, all four of Tripo's island failures, and both TRELLIS.2 samples failed the harness's one-texel check on one to a few triangles, in atlases whose median island was hundreds to tens of thousands of texels. Nothing about such an island needs a texture pipeline. It covers less than a texel, so nothing in it can be sampled as itself at any mip, and no seam-respecting simplification can coarsen it; folding it into the island beside it loses nothing and needs no repack and no rebake. `geometry::repair_uv_degenerate_triangles` (`uv_repair.h`) does that, and both builders run it through `assets::repair_uv_degenerate_triangles` **after the load and before the weld** — `engine-content build` and the renderer's glTF path behind `engine-view --mesh`, which share cache entries and must build the same bytes.

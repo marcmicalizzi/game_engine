@@ -78,7 +78,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/terrain_materials_tests.cpp
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
-                    tests/flora_scene_tests.cpp
+                    tests/flora_scene_tests.cpp tests/authored_scene_tests.cpp
                     # A tree's impostor chain drawn, against the full tree from a baked view (R89).
                     tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.
@@ -140,7 +140,7 @@ if(TARGET engine_renderer_tests)
 endif()
 # The generators reach the scene reader through the registry, so the tests that read a scene naming
 # one link its capability as a host does: its registrar is what makes the name one the reader knows.
-foreach(_gen ruins sky terrain)
+foreach(_gen authored ruins sky terrain)
   if(TARGET engine_renderer_tests AND TARGET engine::${_gen})
     target_link_libraries(engine_renderer_tests PRIVATE engine::${_gen})
   endif()

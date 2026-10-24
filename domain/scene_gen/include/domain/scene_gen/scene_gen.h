@@ -183,6 +183,10 @@ struct Placement {
   Vec3 scale = Vec3::one();
   u32 mesh = 0;
   u8 tag = 0;
+  // A stable name the generator gives the placement within its entry, 0 for none: the same
+  // whenever and in whatever order its tile comes in (the `authored` generator's, its place in the
+  // scene file's own list plus one). It sits in what was padding, so the struct is 64 bytes still.
+  u32 id = 0;
   // The rotation and scale as a transform with no translation: what a reader turns the mesh's fit
   // by, in float32 at the size of the mesh, before it adds `position` in f64.
   Transform3 turn() const noexcept { return Transform3{Vec3{}, rotation, scale}; }

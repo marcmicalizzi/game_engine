@@ -11,11 +11,13 @@
 #include <core/schema/json_reflect.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 #include <foundation/store/event_log.h>
 #include <systems/world/input_observer.h>
+#include <systems/world/placement_tiles.h>
 #include <systems/world/save_game.h>
 #include <systems/world/state_hash.h>
 #include <systems/world/tile_store.h>
@@ -28,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <schemas/scene.h>
 #include <string>
 
 using namespace engine;
@@ -292,6 +295,120 @@ TEST_CASE("world save: a ring restored from the tiles it held goes on as the rin
   const u8 outside[1] = {5};
   CHECK_FALSE(fresh.restore(one, outside, observers_at(0), 1, &why));
   CHECK(fresh.ring().active_count() == 0);
+}
+
+// A streamed world whose placements are a scene's own instances (the `authored` generator,
+// authored.md): three meshes — a tree, its ring-1 form, its ring-2 form — and 400 instances over
+// 600 m, as `load_scene` would hand them over, with cluster counts the pair budget can see.
+renderer::SceneData authored_scene() {
+  renderer::SceneData scene;
+  const u32 clusters[3] = {40, 12, 3};
+  u32 first = 0;
+  for (const u32 count : clusters) {
+    geometry::ClusterMeshPart part;
+    part.first_cluster = first;
+    part.cluster_count = count;
+    scene.parts.push_back(part);
+    first += count;
+  }
+  scene.lod.mesh.clusters.resize(first);
+  scene.lod.lod.resize(first);
+  scene::AuthoredSet set;
+  set.tile_size = 32.0f;
+  scene::AuthoredForms forms;
+  forms.rings = {0, 1, 2};
+  set.forms.push_back(forms);
+  u32 state = 12345u;
+  for (u32 i = 0; i < 400; ++i) {
+    state = state * 1664525u + 1013904223u;
+    const f64 x = static_cast<f64>(state % 60000u) * 0.01 - 300.0;
+    state = state * 1664525u + 1013904223u;
+    const f64 z = static_cast<f64>(state % 60000u) * 0.01 - 300.0;
+    scene::AuthoredInstance a;
+    a.translation = WorldPos{x, 0.0, z};
+    a.rotation = Quat::identity();
+    a.scale = Vec3{1.0f, 1.0f, 1.0f};
+    a.id = i + 1;
+    set.instances.push_back(a);
+  }
+  renderer::StreamedPlacements entry;
+  entry.generator = "authored";
+  entry.params = schema::to_json(set);
+  entry.where = "test: instances";
+  entry.meshes = {0, 1, 2};
+  scene.streamed.push_back(std::move(entry));
+  scene.dynamic = true;
+  scene.world.enabled = true;
+  return scene;
+}
+
+TEST_CASE("world save: a streamed world's own instances go on after a restore as they would have") {
+  if (scene_gen::GeneratorRegistry::global().find_placement("authored") == nullptr) {
+    MESSAGE("no authored generator in this build");
+    return;
+  }
+  const renderer::SceneData scene = authored_scene();
+  RingParams params;
+  params.ring_count = 3;
+  params.radius[0] = 1.5f;
+  params.radius[1] = 4.0f;
+  params.radius[2] = 7.0f;
+  params.max_activations = 3;
+  params.max_deactivations = 2;
+  PlacementTilesConfig config;
+  config.ring_count = 3;
+  auto observers_at = [](u32 step) {
+    sim::ObserverSet set;
+    const f64 t = static_cast<f64>(step);
+    set.add(WorldPos{-250.0 + t * 7.0, 0.0, step < 30 ? t * 3.0 : 90.0 - (t - 30.0) * 5.0}, 1.0f);
+    return set;
+  };
+  World through(params);
+  PlacementTiles a;
+  std::string error;
+  REQUIRE_MESSAGE(a.create(scene, config, &error), error);
+  through.add_consumer(a.consumer());
+  a.set_ring(&through.ring());
+  for (u32 step = 0; step < 40; ++step)
+    through.update(observers_at(step), step);
+  REQUIRE(a.tail().size() > 0);
+  Vector<TileCoord> tiles;
+  Vector<u8> rings;
+  for (u32 i = 0; i < through.ring().active_count(); ++i) {
+    tiles.push_back(tile_of_key(through.ring().active_keys()[i]));
+    rings.push_back(through.ring().active_rings()[i]);
+  }
+  World restored(params);
+  PlacementTiles b;
+  REQUIRE_MESSAGE(b.create(scene, config, &error), error);
+  restored.add_consumer(b.consumer());
+  b.set_ring(&restored.ring());
+  const char* why = nullptr;
+  REQUIRE_MESSAGE(restored.restore({tiles.data(), tiles.size()}, {rings.data(), rings.size()},
+                                   observers_at(39), 39, &why),
+                  (why != nullptr ? why : ""));
+  u32 compared = 0;
+  for (u32 step = 39; step < 80; ++step) {
+    if (step > 39) {
+      through.update(observers_at(step), step);
+      restored.update(observers_at(step), step);
+    }
+    CAPTURE(step);
+    const std::span<const renderer::SceneInstance> x = a.tail();
+    const std::span<const renderer::SceneInstance> y = b.tail();
+    REQUIRE(x.size() == y.size());
+    for (u32 i = 0; i < x.size(); ++i) {
+      CHECK(x[i].mesh == y[i].mesh);
+      CHECK(x[i].origin.x == y[i].origin.x);
+      CHECK(x[i].origin.z == y[i].origin.z);
+    }
+    compared += static_cast<u32>(x.size());
+  }
+  CHECK(compared > 1000);
+  // Every ring drew its own form: the tail named all three meshes along the way.
+  CHECK(a.stats().built[0] > 0);
+  CHECK(a.stats().built[1] > 0);
+  CHECK(a.stats().built[2] > 0);
 }
 
 TEST_CASE("world save: a player's input state is a fold of its log, however it is fed") {

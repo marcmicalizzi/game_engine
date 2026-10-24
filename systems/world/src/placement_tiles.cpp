@@ -139,6 +139,20 @@ bool PlacementTiles::occupied(TileCoord tile) const noexcept {
   return false;
 }
 
+bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
+  const scene_gen::TileCoord at{tile.x, tile.z};
+  for (const std::unique_ptr<Entry>& entry : entries_) {
+    const scene_gen::PlacementGeneratorDesc& g = *entry->generator;
+    if (g.occupies != nullptr && !g.occupies(entry->state, at)) continue;
+    if (g.representation == nullptr ||
+        g.representation(entry->state, context_for(*entry, from)) !=
+            g.representation(entry->state, context_for(*entry, to))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::span<const renderer::SceneInstance> PlacementTiles::tile_instances(
     TileCoord tile) const noexcept {
   const TileBlock* block = tiles_.find_value(tile_key(tile));
@@ -355,19 +369,7 @@ bool PlacementTiles::change_ring(void* context, const TileEvent& event) {
   // Only when some entry on the tile draws the two rings differently (the ruins: sections with
   // debris to walls only is a change, and so is anything to or from blocks); two rings that draw
   // the same need nothing built again.
-  const scene_gen::TileCoord at{event.tile.x, event.tile.z};
-  bool same = true;
-  for (const std::unique_ptr<Entry>& entry : self->entries_) {
-    const scene_gen::PlacementGeneratorDesc& g = *entry->generator;
-    if (g.occupies != nullptr && !g.occupies(entry->state, at)) continue;
-    if (g.representation == nullptr ||
-        g.representation(entry->state, self->context_for(*entry, event.from)) !=
-            g.representation(entry->state, self->context_for(*entry, event.to))) {
-      same = false;
-      break;
-    }
-  }
-  if (same) {
+  if (!self->redraws(event.tile, event.from, event.to)) {
     if (TileBlock* held = self->tiles_.find_value(tile_key(event.tile))) held->ring = event.to;
     return true;
   }
@@ -439,9 +441,21 @@ void PlacementTiles::commit(void* context) {
   self->tail_.clear();
   self->tail_tags_.clear();
   u32 buildings = 0;
+  PlacementTilesStats& stats = self->stats_;
+  for (u32 r = 0; r < k_max_rings; ++r) {
+    stats.ring_tiles[r] = stats.ring_instances[r] = stats.ring_pairs[r] = 0;
+    stats.ring_withheld[r] = 0;
+  }
   for (u32 i = 0; i < self->tiles_.size(); ++i) {
     const TileBlock& block = self->tiles_.value_at(i);
-    if (block.withheld) continue;
+    const u32 ring = block.ring < k_max_rings ? block.ring : k_max_rings - 1;
+    if (block.withheld) {
+      ++stats.ring_withheld[ring];
+      continue;
+    }
+    ++stats.ring_tiles[ring];
+    stats.ring_instances[ring] += block.instances.size();
+    stats.ring_pairs[ring] += block.pairs;
     buildings += block.buildings;
     for (const renderer::SceneInstance& instance : block.instances)
       self->tail_.push_back(instance);

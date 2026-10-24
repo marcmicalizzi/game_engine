@@ -352,6 +352,50 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // layout ever has to move for a ring (renderer.md, "The rings in the scene").
   // A scene whose instances come and go takes them too: they are its load's prefix, and the tail's
   // blocks follow them (renderer.md, "Instances that come and go").
+  //
+  // **The pair accounting, before anything is made** (renderer.md, "The pair accounting"): the
+  // load's prefix, the rings' slots and the least a streamed tail must hold — the most pairs one
+  // tile of the scene's streamed instances holds drawn whole (`SceneData::tail_floor_pairs`) —
+  // against what the visibility id names, or for a scene whose instances come and go with the
+  // chain, what the device's cluster geometry indices name over the views (`pair_limit`). Until
+  // 2026-10-24 the rings were checked level by level as they were laid out, with a sentence that
+  // named no number, and the full v8 forest was refused there with its prefix the real cause.
+  {
+    u64 slot_pairs = 0;
+    if (rings != nullptr && resolved.terrain_levels && rings->valid() && !streamed_) {
+      for (u32 level = 1; level < rings->level_count(); ++level) {
+        const TerrainLevelSet::Capacity c = rings->capacity(level);
+        if (c.slots != 0 && c.clusters_per_slot != 0)
+          slot_pairs += u64{c.slots} * c.clusters_per_slot;
+      }
+    }
+    u64 limit = k_max_pairs;
+    const char* named = "the visibility id names";
+    if (dynamic_ && ray_tracing_) {
+      gfx::ClusterAsProperties props;
+      if (gfx::cluster_as_properties(device, props) && props.max_geometry_index > 0) {
+        const u64 per_pair =
+            u64{view_count_} * (resolved.casters ? u64{gfx::k_caster_run + 1} : u64{1});
+        const u64 rt = (u64{props.max_geometry_index} + 1) / per_pair;
+        if (rt < limit) {
+          limit = rt;
+          named = "the ray tracing chain's geometry indices name over the views";
+        }
+      }
+    }
+    accounted_slot_pairs_ = slot_pairs;
+    PairAccount account;
+    account.instances = data.instances.size();
+    account.prefix_pairs = pair_count_;
+    account.slot_pairs = slot_pairs;
+    account.tail_floor = dynamic_ ? u64{data.tail_floor_pairs} : 0u;
+    account.limit = limit;
+    account.named = named;
+    if (!pairs_fit(account, error)) {
+      destroy();
+      return false;
+    }
+  }
   if (rings != nullptr && resolved.terrain_levels && rings->valid() && !streamed_) {
     if (!lay_out_rings(resolved, *rings, error)) {
       destroy();
@@ -2133,6 +2177,21 @@ void GpuScene::give_range(Vector<Range>& free, Range range) noexcept {
   }
 }
 
+bool pairs_fit(const PairAccount& a, std::string* error) noexcept {
+  const u64 total = a.prefix_pairs + a.slot_pairs + a.tail_floor;
+  if (total <= a.limit) return true;
+  if (error != nullptr) {
+    *error = "the scene's pairs do not fit: its " + std::to_string(a.instances) +
+             " loaded instances hold " + std::to_string(a.prefix_pairs) +
+             " pairs, the terrain rings' slots " + std::to_string(a.slot_pairs) +
+             " and one tile of its streamed instances " + std::to_string(a.tail_floor) + ", " +
+             std::to_string(total) + " of the " + std::to_string(a.limit) + " " + a.named +
+             "; stream the scene's instances (--world), place fewer, or lower terrain.rings.* "
+             "and --terrain-far";
+  }
+  return false;
+}
+
 bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& rings,
                              std::string* error) {
   (void)resolved;
@@ -2194,7 +2253,8 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
       if (error != nullptr)
         *error =
             "the terrain rings' slots would take the scene past the 2^24 pairs the "
-            "visibility id names; lower terrain.rings.*";
+            "visibility id names (" +
+            std::to_string(u64{pair_count_} + slot_clusters) + "); lower terrain.rings.*";
       return false;
     }
     cluster_count_ += static_cast<u32>(slot_clusters);

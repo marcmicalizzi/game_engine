@@ -73,6 +73,21 @@ inline constexpr u32 k_visible_runs = 3;
 // in 32 bits (gfx.md, "The tie rule"). Past it two pairs would share an id and the picture would be
 // wrong without a word, so a scene — or a tail of instances — that would pass it is refused.
 inline constexpr u32 k_max_pairs = 1u << 24;
+
+// **The pair accounting** (renderer.md, "The pair accounting"): what a scene's fixed parts — the
+// load's prefix and the terrain rings' reserved slots — and the least a streamed tail must hold
+// (the most pairs one tile of the scene's streamed instances holds drawn whole) take of what the
+// pair space names, checked by `GpuScene::create` before anything is made. False, with one
+// sentence naming the numbers and what to lower, when they do not fit.
+struct PairAccount {
+  u64 instances = 0;     // the load's instances
+  u64 prefix_pairs = 0;  // their pairs
+  u64 slot_pairs = 0;    // the terrain rings' slots'
+  u64 tail_floor = 0;    // a streamed tile's, drawn whole
+  u64 limit = k_max_pairs;
+  const char* named = "the visibility id names";  // what `limit` is
+};
+bool pairs_fit(const PairAccount& account, std::string* error) noexcept;
 static_assert(gfx::k_caster_run < k_visible_runs);
 
 // The vertex path's index budget per region, in triangles of twelve bytes: how much of one hardware
@@ -206,6 +221,9 @@ class GpuScene {
   // chain the most the device's cluster geometry indices name over the views' runs (renderer.md,
   // "The ray tracing chain's index space"). What a world's placements consumer budgets against.
   u32 pair_limit() const noexcept { return pair_limit_; }
+  // The terrain rings' reserved slots' pairs, as the pair accounting counted them before the scene
+  // was made (renderer.md, "The pair accounting"): `static_pair_count()` less the load's own.
+  u64 ring_slot_pairs() const noexcept { return accounted_slot_pairs_; }
   // A change grew the stride or the instance capacity of a scene whose pool or ray tracing chain
   // is laid out by them: `relayout` makes them again, and must be called with no frame in flight
   // before the next frame is recorded (`SceneRenderer::set_dynamic_instances` waits for the device
@@ -1162,6 +1180,7 @@ class GpuScene {
   bool dynamic_ = false;
   u32 static_instances_ = 0;
   u32 static_pairs_ = 0;
+  u64 accounted_slot_pairs_ = 0;          // the rings' slots, as the accounting counted them
   Vector<u32> mesh_material_base_;        // each mesh's first material, for an instance added later
   u32 instance_capacity_ = 0;             // a dynamic scene's instance buffers, in slots
   u32 null_mesh_ = 0;                     // the mesh a hole's null instance names: no clusters

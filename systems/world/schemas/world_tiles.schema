@@ -120,7 +120,7 @@ struct TileHandover @version(2) {
   pairs_after: u32 = 0
 }
 /// A world's run, the last line of engine-view's world log: what the ring did and what it cost.
-struct TileWorldSummary @version(1) {
+struct TileWorldSummary @version(2) {
   format: string = "engine.world-log.v1"
   tile_size: f32 = 0
   radius: f32[]
@@ -149,4 +149,25 @@ struct TileWorldSummary @version(1) {
   insert_ms: f64 = 0
   insert_ms_max: f64 = 0
   handed: u64 = 0
+  /// The pair accounting at the end of the run (docs/subsystems/renderer.md, "The pair
+  /// accounting"; version 2): the loaded prefix's pairs, the terrain rings' slots among them, what
+  /// the tail may reach (the visibility id's 2^24, or the ray tracing chain's), and the tail's now.
+  prefix_pairs: u64 = 0 @since(2)
+  slot_pairs: u64 = 0 @since(2)
+  pair_limit: u64 = 0 @since(2)
+  tail_pairs: u64 = 0 @since(2)
+  /// Per ring, innermost first, at the end: the tiles drawn, their instances and pairs, and the
+  /// tiles held but withheld by the pair budget.
+  ring_tiles: u32[] @since(2)
+  ring_instances: u32[] @since(2)
+  ring_pairs: u32[] @since(2)
+  ring_withheld: u32[] @since(2)
+  /// The scene's own instances (renderer.md, "Authored instances per tile"): streamed a tile at a
+  /// time, kept in the prefix because they deform or reach farther than a tile, the distance forms
+  /// made and their clusters, and the most pairs one tile of them holds drawn whole.
+  authored_streamed: u32 = 0 @since(2)
+  authored_kept: u32 = 0 @since(2)
+  authored_forms: u32 = 0 @since(2)
+  authored_form_clusters: u32 = 0 @since(2)
+  authored_tile_floor: u32 = 0 @since(2)
 }

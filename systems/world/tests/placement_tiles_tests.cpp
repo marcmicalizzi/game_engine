@@ -177,6 +177,15 @@ struct Fixture {
 
 }  // namespace
 
+TEST_CASE("placement tiles: the renderer's mirror of the default rings is the world's") {
+  // `renderer::k_default_world_ring_radius` is what a streamed world's distance forms are cut for
+  // when its scene names no rings (renderer.md, "Authored instances per tile").
+  const RingParams defaults;
+  CHECK(defaults.ring_count == renderer::k_default_world_ring_count);
+  for (u32 r = 0; r < k_max_rings; ++r)
+    CHECK(defaults.radius[r] == renderer::k_default_world_ring_radius[r]);
+}
+
 TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the ring's form") {
   Fixture f;
   REQUIRE(f.scene.streamed.size() == 1);
