@@ -1,8 +1,9 @@
 // A streamed world's own instances (renderer.md, "Authored instances per tile"; authored.md): the
 // reader hands the file's rigid instances to the `authored` generator with a distance form of each
-// mesh per ring, keeps what deforms or reaches farther than a tile in the prefix, and every tile the
-// generator answers in the innermost ring is the whole read's instances on it, field for field. And
-// the pair accounting's sentence. No device: everything here is the load and the CPU's placement.
+// mesh per ring, keeps what deforms or reaches farther than a tile in the prefix, and every tile
+// the generator answers in the innermost ring is the whole read's instances on it, field for field.
+// And the pair accounting's sentence. No device: everything here is the load and the CPU's
+// placement.
 //
 // Compiled with the flora capability (the trees) and the authored one (the generator), as a host
 // links them; without either there is nothing to stream and the cases are not compiled.
@@ -14,11 +15,11 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
-#include <schemas/scene.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
 #include <fstream>
+#include <schemas/scene.h>
 #include <string>
 
 using namespace engine;

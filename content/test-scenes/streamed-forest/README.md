@@ -29,3 +29,9 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/streamed-forest/s
 
 `--world-instances whole` reads the same scene with every tree in the prefix, which is what a
 streamed world did before 2026-10-24.
+
+**Measured** (2026-10-24, RTX 5090, release, 600 frames, a shared machine — upper bounds; the
+numbers with their `machine_state` are in [renderer](../../../docs/subsystems/renderer.md#authored-instances-per-tile)):
+streamed, 30,925 prefix pairs and a tail of 253,597 at the end of the path (rings 0–3: 5, 102, 474
+and 1,457 trees, 5,283, 92,876, 139,953 and 15,485 pairs), 0.62 ms of GPU at the median; read whole,
+2,910,325 pairs and 2.81 ms. Its 1,532 handovers change no pixel with `--lod-fade 0`.

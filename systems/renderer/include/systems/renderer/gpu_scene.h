@@ -1175,7 +1175,7 @@ class GpuScene {
   bool dynamic_ = false;
   u32 static_instances_ = 0;
   u32 static_pairs_ = 0;
-  u64 accounted_slot_pairs_ = 0;  // the rings' slots, as the accounting counted them
+  u64 accounted_slot_pairs_ = 0;          // the rings' slots, as the accounting counted them
   Vector<u32> mesh_material_base_;        // each mesh's first material, for an instance added later
   u32 instance_capacity_ = 0;             // a dynamic scene's instance buffers, in slots
   u32 null_mesh_ = 0;                     // the mesh a hole's null instance names: no clusters

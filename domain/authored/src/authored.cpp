@@ -1,14 +1,13 @@
 // The `authored` placement generator (authored.h; docs/subsystems/authored.md).
 
-#include <domain/authored/authored.h>
-
 #include <core/containers/vector.h>
 #include <core/schema/json_reflect.h>
-#include <schemas/scene.h>
+#include <domain/authored/authored.h>
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <schemas/scene.h>
 #include <string>
 
 namespace engine::authored {
@@ -136,8 +135,7 @@ bool expand(void* state, const scene_gen::Context&, scene_gen::Placements& out, 
   return true;
 }
 
-bool meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
-            std::string*) {
+bool meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out, std::string*) {
   out.clear();
   return true;
 }

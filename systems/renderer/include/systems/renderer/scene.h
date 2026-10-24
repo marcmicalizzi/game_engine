@@ -235,8 +235,8 @@ struct AuthoredStreaming {
   f32 proj_scale = 0.0f;
   f32 threshold_px = 1.0f;  // `RenderSettings::lod_threshold`
   f32 foliage_px = geometry::k_default_foliage_px;
-  f32 fade = 0.1f;          // `RenderSettings::lod_fade`
-  f32 max_reach_m = 0.0f;   // 0: the world's tile edge
+  f32 fade = 0.1f;         // `RenderSettings::lod_fade`
+  f32 max_reach_m = 0.0f;  // 0: the world's tile edge
 };
 
 // The rules a host's session cuts its forms for: its projection (the views' height and vertical

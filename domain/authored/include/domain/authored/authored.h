@@ -10,14 +10,14 @@
 // them like any other entry.
 //
 // **The rules.** An instance is filed under the tile its origin is on (`anchor_tile`), however far
-// its mesh reaches: the reader has already cut every form its rings draw to the nearest a camera can
-// be to an origin on a tile of that ring, every sphere's offset from the origin counted, so a crown
-// that reaches into a nearer tile is drawn in the form its own origin allows and no tile needs to
-// know its neighbours'. A tile's placements are its instances in the order of their ids, each drawn
-// in its form set's mesh for the tile's ring (the last ring's past the end); the id is the
-// instance's place in the scene file's own list plus one, so it is the same whichever tiles came in
-// first and on every reload. Nothing here reads the ground, the seed or the earlier entries: the set
-// is the scene's, already standing where the file stood it.
+// its mesh reaches: the reader has already cut every form its rings draw to the nearest a camera
+// can be to an origin on a tile of that ring, every sphere's offset from the origin counted, so a
+// crown that reaches into a nearer tile is drawn in the form its own origin allows and no tile
+// needs to know its neighbours'. A tile's placements are its instances in the order of their ids,
+// each drawn in its form set's mesh for the tile's ring (the last ring's past the end); the id is
+// the instance's place in the scene file's own list plus one, so it is the same whichever tiles
+// came in first and on every reload. Nothing here reads the ground, the seed or the earlier
+// entries: the set is the scene's, already standing where the file stood it.
 
 #include <core/base/types.h>
 #include <core/math/world.h>

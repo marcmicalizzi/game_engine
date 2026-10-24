@@ -1003,8 +1003,8 @@ FitParts fit_parts(const MeshFit& fit, std::span<const Vec3> vertices) {
   FitParts out;
   out.scale = fit.height > 0.0f ? (size.y > 0.0f ? fit.height / size.y : 1.0f)
                                 : (longest > 0.0f ? fit.extent / longest : 1.0f);
-  out.anchor = Vec3{0.5f * (lo.x + hi.x), fit.ground ? lo.y : 0.5f * (lo.y + hi.y),
-                    0.5f * (lo.z + hi.z)};
+  out.anchor =
+      Vec3{0.5f * (lo.x + hi.x), fit.ground ? lo.y : 0.5f * (lo.y + hi.y), 0.5f * (lo.z + hi.z)};
   return out;
 }
 
@@ -1095,8 +1095,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   scene::AuthoredSet set;
   set.tile_size = tile;
   Vector<u32> set_of(meshes, ~0u);
-  Vector<u32> resident;   // the entry's resident meshes, as scene meshes
-  Vector<u32> slot_of;    // per scene mesh, its place in `resident`; grown as meshes are made
+  Vector<u32> resident;  // the entry's resident meshes, as scene meshes
+  Vector<u32> slot_of;   // per scene mesh, its place in `resident`; grown as meshes are made
   slot_of.resize(meshes, ~0u);
   const auto slot = [&](u32 scene_mesh) {
     if (slot_of.size() <= scene_mesh) slot_of.resize(scene_mesh + 1, ~0u);
@@ -1130,8 +1130,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                 dags[m],
                 std::span<const u32>(source.lod_coverage.data(), source.lod_coverage.size()), cut,
                 form, coverage, map, &error)) {
-          error = resolved.mesh_info[m].name + ": its ring " + std::to_string(r) +
-                  " form: " + error;
+          error =
+              resolved.mesh_info[m].name + ": its ring " + std::to_string(r) + " form: " + error;
           return false;
         }
         // A form that keeps what the ring inside it drew is that one: the cut only ever drops
@@ -1197,9 +1197,9 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     stats.whole_pairs += pairs;
     const i64 tx = static_cast<i64>(std::floor(a.translation.x / static_cast<f64>(tile)));
     const i64 tz = static_cast<i64>(std::floor(a.translation.z / static_cast<f64>(tile)));
-    tile_pairs.push_back({(static_cast<u64>(static_cast<u32>(tx)) << 32) |
-                              static_cast<u64>(static_cast<u32>(tz)),
-                          pairs});
+    tile_pairs.push_back(
+        {(static_cast<u64>(static_cast<u32>(tx)) << 32) | static_cast<u64>(static_cast<u32>(tz)),
+         pairs});
   }
   std::sort(tile_pairs.begin(), tile_pairs.end());
   u64 floor_pairs = 0;
@@ -1989,10 +1989,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       const u32 first = out.parts[m].first_vertex;
       const u32 end =
           m + 1 < out.parts.size() ? out.parts[m + 1].first_vertex : out.lod.mesh.vertices.size();
-      const FitParts parts = fit_parts(
-          fit, std::span<const Vec3>(out.lod.mesh.vertices.data() + first, end - first));
-      fit_of_mesh[m] = scaling(Vec3{parts.scale, parts.scale, parts.scale}) *
-                       translation(-parts.anchor);
+      const FitParts parts =
+          fit_parts(fit, std::span<const Vec3>(out.lod.mesh.vertices.data() + first, end - first));
+      fit_of_mesh[m] =
+          scaling(Vec3{parts.scale, parts.scale, parts.scale}) * translation(-parts.anchor);
     }
   }
   u32 pair_count = 0;

@@ -1,9 +1,9 @@
 // End to end: a streamed world's own trees (renderer.md, "Authored instances per tile";
 // authored.md). The scene's instances — small oaks with their card levels and spruces with none —
-// handed to the `authored` generator a tile at a time draw the whole read's picture where every tile
-// is in the inner ring, and a tile handed from one ring's form to the next changes no pixel of a
-// still frame (engine-view's handover pass, with the cross-fade off). Compiled with the flora, world
-// and authored capabilities; skips (exit 3) on a machine with no Vulkan device.
+// handed to the `authored` generator a tile at a time draw the whole read's picture where every
+// tile is in the inner ring, and a tile handed from one ring's form to the next changes no pixel of
+// a still frame (engine-view's handover pass, with the cross-fade off). Compiled with the flora,
+// world and authored capabilities; skips (exit 3) on a machine with no Vulkan device.
 #include "view_process.h"
 
 #include <core/json/json.h>
@@ -70,9 +70,20 @@ std::string scene_text(const char* world) {
 }
 
 std::vector<std::string> base_args(const test::TempDir& tmp, const char* scene, const char* path) {
-  return {"--scene",  tmp.file(scene), "--camera-path", tmp.file(path), "--offscreen",
-          "--width",  "320",           "--height",      "180",          "--shadows",
-          "off",      "--tunable",     "renderer.flora.motion=false",   "--ddc",
+  return {"--scene",
+          tmp.file(scene),
+          "--camera-path",
+          tmp.file(path),
+          "--offscreen",
+          "--width",
+          "320",
+          "--height",
+          "180",
+          "--shadows",
+          "off",
+          "--tunable",
+          "renderer.flora.motion=false",
+          "--ddc",
           tmp.file("ddc")};
 }
 

@@ -1821,8 +1821,9 @@ Roadmap W69 (2026-10-24). **A streamed world's own instances come and go with th
 Until this date a scene file's `instances` (and its `scatters`) were the load's prefix whether the
 scene streamed or not, so every cluster of every tree was a pair however far it stood, and only a
 generator's placements streamed. The full v8 forest — 16,675 file instances of 74 meshes, trees of
-1,000 to 12,000 clusters — was refused before its first frame: its prefix alone was some 27 million
-pairs against the visibility id's 16,777,216, and the sentence it got blamed the terrain rings.
+1,000 to 12,000 clusters — was refused before its first frame: its 16,680 loaded instances held
+28,333,343 pairs and the rings' slots 292,408, 28.6 million against the visibility id's 16,777,216,
+and the sentence it got blamed the terrain rings.
 
 **What moves.** When the world streams (`--world` or the file's `world` block) and the registry has
 the placement generator `authored` ([authored](authored.md)), `load_scene` hands the file's own
@@ -1866,6 +1867,37 @@ dither seeds by the instance slot (R91), so a handover whose tile block is not r
 the frames that fade lasts. **Streamed trees are rigid**: a tail instance has no deform entry
 (above), so the trees streamed this way do not sway in the wind, and the prefix's — the landmarks —
 still do; a deformed tail is that stage of its own.
+
+**What it measured** (2026-10-24, RTX 5090, release, offscreen 1600 × 900, `--raster hw --shadows
+csm`; the machine was shared with the frame-budget gate's flights and other agents' builds throughout
+— `machine_state` 9–55 % of the CPU and up to 100 % of the GPU by others at the starts — so every
+time is an upper bound). **The full v8 forest** (the proof of concept's scene as read-only data, its
+caches copied to scratch, with a `world` block of 32 m tiles in rings of 1.5, 6 and 40 tiles — 48 m,
+192 m, 1,280 m): it initializes. The load streams 16,556 instances and keeps 119 (52 animated, 67
+reaching past a tile: the two ancients, the rock sites, the logs), cutting 90 forms of 12,031
+clusters; the prefix is 904,053 pairs and the rings' slots 622,008, so the fixed parts are 1.53 M of
+the 16.78 M (5.59 M with the ray tracing chain's index space over three runs). At the hardwoods view
+the tail is 1,943,164 pairs — ring 0 6 tiles, 20 trees, 45,646 pairs; ring 1 104 tiles, 270 trees,
+900,885; ring 2 2,425 tiles, 13,110 trees, 996,633 — and no tile is withheld. Along a 60 s crossing
+of the region at 40 m over the ground (1,800 frames, about 75 m/s) the tail peaks at 2.26 M pairs
+(14,459 trees, frame 272), no tile is ever withheld, the frame's GPU time is 2.46 ms at the median
+and 8.2 ms at p99 (cull 0.15 / 1.96, shadows 1.24 / 3.79), the CPU's 1.1 ms, and the GPU memory
+3.6 GiB; the wall time (17.7 ms median, a 5.4 s first frame) is the world's — every ring's tiles and
+the drawn ground's built as the flight crosses them. **Ray tracing**: `--shadows rt` and
+`--raster rt --shadows rt` are both accepted (7.4 and 7.2 ms of GPU at the median, the chain's
+structures 0.9 GB under `--rt-budget-mib 1024`, nothing dropped), where v7's staged scene had
+reserved 5,815,332 pairs and a geometry index of 17,445,995. **At the owner's 11520 × 2160**
+(`--views surround3`) the forms are cut for a projection 2.4 times larger, so they keep more (85 forms
+of 19,465 clusters) and ring 2 holds 1.46 M pairs where 1600 × 900 held 0.40 M at the same place; the
+tail is 1.56 M and nothing is withheld. The pair count depends on the resolution only through the
+forms; what the resolution costs is the GPU's (14.3 ms median there). **The streamed-forest test
+scene** (`content/test-scenes/streamed-forest`, 3,000 trees and an ancient): 284,522 pairs streamed
+against 2,910,325 read whole (`--world-instances whole`), 0.62 ms of GPU at the median against 2.81
+(the whole read's trees also sway, 0.2 ms of the difference). **The handover** along its path: 1,532
+handovers over 1.92 M of their tiles' pixels change **0 pixels** with the cross-fade off, and with
+R91's 0.1 change 745 colours and 771 depths in 13 of them — every one a tile coming in from the
+outer ring at about 410–440 m, whose larger form no longer fits its block, so its instances take
+other slots and the dither's seed with them, exactly the case stated above.
 
 ### The pair accounting
 

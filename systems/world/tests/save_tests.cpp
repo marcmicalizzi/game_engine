@@ -11,12 +11,11 @@
 #include <core/schema/json_reflect.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 #include <foundation/store/event_log.h>
-#include <domain/scene_gen/scene_gen.h>
-#include <schemas/scene.h>
 #include <systems/world/input_observer.h>
 #include <systems/world/placement_tiles.h>
 #include <systems/world/save_game.h>
@@ -31,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <schemas/scene.h>
 #include <string>
 
 using namespace engine;

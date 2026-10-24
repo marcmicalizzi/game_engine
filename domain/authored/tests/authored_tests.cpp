@@ -1,15 +1,16 @@
 // The `authored` placement generator (docs/subsystems/authored.md): a scene's own instances filed
-// by the tile their origin is on, each tile's in the order of their ids, in the form its ring draws.
+// by the tile their origin is on, each tile's in the order of their ids, in the form its ring
+// draws.
 
 #include <core/schema/json_reflect.h>
 #include <domain/authored/authored.h>
 #include <domain/scene_gen/scene_gen.h>
-#include <schemas/scene.h>
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <schemas/scene.h>
 #include <string>
 
 using namespace engine;
@@ -44,8 +45,8 @@ scene::AuthoredSet fixture() {
   };
   add(0, 5.0, 7.0, 4);
   add(1, 40.0, 3.0, 2);
-  add(0, 31.9, 0.1, 1);  // tile (0, 0) too, and first by id
-  add(0, -0.5, -64.0, 3);  // tile (-1, -2)
+  add(0, 31.9, 0.1, 1);     // tile (0, 0) too, and first by id
+  add(0, -0.5, -64.0, 3);   // tile (-1, -2)
   add(1, 1.0e6, 2.0e6, 5);  // far: tile (31250, 62500)
   return set;
 }
@@ -144,8 +145,8 @@ TEST_CASE("authored: a tile's placements and their ids survive a reload in any o
   std::reverse(set.instances.begin(), set.instances.end());
   Opened b;
   REQUIRE_MESSAGE(open_set(set, b, error), error);
-  for (const scene_gen::TileCoord t : {scene_gen::TileCoord{0, 0}, scene_gen::TileCoord{1, 0},
-                                       scene_gen::TileCoord{-1, -2}}) {
+  for (const scene_gen::TileCoord t :
+       {scene_gen::TileCoord{0, 0}, scene_gen::TileCoord{1, 0}, scene_gen::TileCoord{-1, -2}}) {
     const Vector<scene_gen::Placement> x = tile_of(a, t, 1);
     const Vector<scene_gen::Placement> y = tile_of(b, t, 1);
     REQUIRE(x.size() == y.size());

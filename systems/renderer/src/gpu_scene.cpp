@@ -2246,10 +2246,10 @@ bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& 
     const u64 slot_clusters = u64{c.slots} * c.clusters_per_slot;
     if (u64{pair_count_} + slot_clusters > k_max_pairs) {
       if (error != nullptr)
-        *error = "the terrain rings' slots would take the scene past the 2^24 pairs the "
-                 "visibility id names (" +
-                 std::to_string(u64{pair_count_} + slot_clusters) +
-                 "); lower terrain.rings.*";
+        *error =
+            "the terrain rings' slots would take the scene past the 2^24 pairs the "
+            "visibility id names (" +
+            std::to_string(u64{pair_count_} + slot_clusters) + "); lower terrain.rings.*";
       return false;
     }
     cluster_count_ += static_cast<u32>(slot_clusters);

@@ -1230,7 +1230,8 @@ f32 lod_coverage_own(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(p
 
 f32 lod_coverage_parent(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed >> 16)); }
 
-// ---- distance forms (geometry.md, "Distance forms") ----------------------------------------------
+// ---- distance forms (geometry.md, "Distance forms")
+// ----------------------------------------------
 
 bool lod_acceptable_from(Vec4 sphere, f32 error, f32 coverage, const LodFormCut& cut) noexcept {
   if (!(error < k_lod_terminal_error) && !(coverage < k_lod_terminal_error)) return false;

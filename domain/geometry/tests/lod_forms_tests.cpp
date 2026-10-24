@@ -1,6 +1,6 @@
 // Distance forms (geometry.md, "Distance forms"): what a mesh can draw from a camera at least a
-// distance away, as a mesh of its own — its clusters the source's bit for bit, and from that far the
-// same selection as the source for every view.
+// distance away, as a mesh of its own — its clusters the source's bit for bit, and from that far
+// the same selection as the source for every view.
 
 #include <domain/geometry/cluster_lod.h>
 
@@ -247,7 +247,7 @@ TEST_CASE("distance forms: what has no form is refused with a sentence") {
                                coverage, map, &error));
   CHECK(error.find("coverage") != std::string::npos);
   f.lod.mesh.skin.resize(f.lod.mesh.vertices.size());
-  CHECK_FALSE(extract_lod_form(f.lod, f.coverage, cut_at(view_1080p(), 10.0f, 0.1f), form,
-                               coverage, map, &error));
+  CHECK_FALSE(extract_lod_form(f.lod, f.coverage, cut_at(view_1080p(), 10.0f, 0.1f), form, coverage,
+                               map, &error));
   CHECK(error.find("skinned") != std::string::npos);
 }
