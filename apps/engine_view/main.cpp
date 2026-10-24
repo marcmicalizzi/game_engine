@@ -3412,6 +3412,8 @@ int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();       // ADR-0031, first statement
   g_main_ns = engine::profiling::trace_now_ns();  // `--startup-trace`'s "main" milestone
   const int code = run_view(argc, argv);
+  // A run that ended before its summary still writes its trace, as far as it got (startup.h).
+  (void)engine::view::startup_trace().finish(nullptr);
   // `--report`: written whichever way the run ended, as long as the process can still write.
   if (!g_report.path.empty()) {
     g_report.exit_code = code;

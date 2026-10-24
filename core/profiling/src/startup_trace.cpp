@@ -71,6 +71,19 @@ struct State {
   std::mutex mutex;
   std::condition_variable wake;
   bool stopping = false;
+
+  // A process that exits with the trace still recording (a run that failed before its summary)
+  // joins the sampler here: a joinable thread destroyed at exit is std::terminate.
+  ~State() {
+    if (sampler.joinable()) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        stopping = true;
+      }
+      wake.notify_all();
+      sampler.join();
+    }
+  }
 };
 
 State& state() {
