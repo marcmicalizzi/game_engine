@@ -175,7 +175,7 @@ constexpr const char* k_usage =
     "                   [--benchmark <out.jsonl>] [--repeat <n>] [--warmup <frames>] [--census]\n"
     "                   [--warmup-seconds <s>] [--census-pixels]\n"
     "                   [--verify-occlusion] [--marker-captures <dir>] [--capture-channels <list>]\n"
-    "                   [--require-quiet] [--wait-quiet <seconds>]\n"
+    "                   [--require-quiet] [--wait-quiet <seconds>] [--terrain-async]\n"
     "                   [--world] [--world-log <out.jsonl>] [--world-handover <out.jsonl>]\n"
     "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--walk]\n"
     "                   [--record-input <log.jsonl>]\n"
@@ -448,6 +448,9 @@ constexpr const char* k_usage =
     "                   writes both of one frame\n"
     "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
     "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
+    "  --terrain-async  offscreen: the ground's rebuilds run behind the frames, as a window's do,\n"
+    "                   instead of inside the frame that asks for them (a replay that measures\n"
+    "                   what a window's walker meets)\n"
     "  --world          stream the scene tile by tile round the camera (the world capability,\n"
     "                   docs/subsystems/world.md): its ruins entries are assembled a tile at a time\n"
     "                   as the ring activates them — blocks in the inner ring, sections beyond —\n"
@@ -598,8 +601,11 @@ struct Options {
   std::string pace = "auto";
   i64 present_max_hz = -1;     // --present-max-hz; -1 takes view.present.max_hz
   bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
-  bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
-  bool borderless = false;     // --borderless: no decorations, at the primary display's corner
+  // --terrain-async: an offscreen run's ground rebuilds behind the frames, as a window's
+  // (apps.md, "The frame record's walk"), rather than waited for inside the frame.
+  bool terrain_async = false;
+  bool windowed = false;    // --windowed: a replay's --benchmark flies in the window
+  bool borderless = false;  // --borderless: no decorations, at the primary display's corner
   bool fullscreen = false;  // --fullscreen: desktop fullscreen from the start (Alt+Enter toggles)
   // --present-bits: the bits a channel the window's swapchain asks for. 0 is `auto`, 10 where the
   // surface offers A2B10G10R10 in the sRGB non-linear colour space and 8 otherwise; the renderer's
@@ -1459,6 +1465,8 @@ struct PendingFrame {
   f64 pose_time = 0.0;
   // The time-lapse as the frame drew it (FrameRecord's `terrain`).
   std::optional<scene::FrameTerrain> terrain;
+  // The walker's ticks of this frame (FrameRecord's `walk`).
+  std::optional<scene::FrameWalk> walk;
 };
 constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
@@ -1488,6 +1496,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pose_pitch = p.pose.pitch;
   record.pose_time = p.pose_time;
   record.terrain = p.terrain;
+  record.walk = p.walk;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -2367,6 +2376,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
   view::Walker walker;  // a recorded walk's (walk.h): outlives the session, which points at it
+  view::WalkProbe walk_probe;  // the records' `walk` (walk.h)
   view::FlySession session;
 #if ENGINE_VIEW_ANIMATION
   // The scene's characters (animation.h): stepped on the replay's tick, from the session's tick
@@ -2609,7 +2619,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // two evaluated fields every frame. Offscreen, a field the surface has caught up with is waited
     // for, and fields are timed by the dunes' motion alone, so two runs of `--frames N` draw the
     // same pictures on the same frames however fast the machine evaluates.
-    if (!ground.start(scene, resolved, true, &error)) {
+    if (!ground.start(scene, resolved, !options.terrain_async, &error)) {
       exit_code = fail(ground.stage(), error);
       break;
     }
@@ -2665,6 +2675,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("walk", error);
         break;
       }
+      walk_probe.start(walker, ground.tile_source());
       walker.set_drawn(drawn_ground(time_lapse, scene_data));
 #if ENGINE_VIEW_WATER
       wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
@@ -2733,7 +2744,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
         poll_game();  // a rebuilt game module, between this frame's ticks and the last's
+        walk_probe.begin(time_lapse.recentre_stage());
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
+        const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
@@ -2749,6 +2762,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         p.submission = submissions;
         p.frame = f;
         p.terrain = renderer::frame_terrain(time_lapse);
+        p.walk.reset();
+        if (walker.available()) p.walk = walked;
         p.ticks = static_cast<u32>(session.tick().value - before_tick);
         p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(tick_hz);
         p.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
@@ -3678,6 +3693,8 @@ int run_view(int argc, char** argv) {
       options.settings.share_textures = false;
     } else if (a == "--no-lights") {
       options.settings.lights = false;
+    } else if (a == "--terrain-async") {
+      options.terrain_async = true;
     } else if (a == "--orbit-lights") {
       options.settings.orbit_lights = true;
     } else if (a == "--sun") {
@@ -4638,7 +4655,9 @@ int run_view(int argc, char** argv) {
 #if ENGINE_VIEW_WATER
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
-  view::Walker walker;  // the walk mode (walk.h): outlives the session, which points at it
+  view::Walker walker;         // the walk mode (walk.h): outlives the session, which points at it
+  view::WalkProbe walk_probe;  // the records' `walk` (walk.h)
+  scene::FrameWalk walked;
   view::FlySession session;
   view::EdgeEvents edge;               // live: converted this frame, fed at the next tick
   input::InputLog recording;           // --record-input
@@ -5044,6 +5063,7 @@ int run_view(int argc, char** argv) {
         exit_code = fail("walk", error);
         break;
       }
+      walk_probe.start(walker, ground.tile_source());
       walker.set_drawn(drawn_ground(time_lapse, scene_data));
 #if ENGINE_VIEW_WATER
       wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
@@ -5510,6 +5530,7 @@ int run_view(int argc, char** argv) {
         // above).
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
         poll_game();  // a rebuilt game module, between the last frame's ticks and this one's
+        walk_probe.begin(time_lapse.recentre_stage());
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -5524,6 +5545,7 @@ int run_view(int argc, char** argv) {
             }
             edge.clear();
           }
+          walked = walk_probe.end();
           while (capture_seen != session.capture_presses()) {
             ++capture_seen;
             // Escape, at the tick it was pressed on: with the pointer held, give it back (the
@@ -5689,6 +5711,8 @@ int run_view(int argc, char** argv) {
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
           p.terrain = renderer::frame_terrain(time_lapse);
+          p.walk.reset();
+          if (walker.available()) p.walk = walked;
           p.ticks = ticks_this_frame;
           // A session's simulated time, or the path time a windowed flight drew.
           p.time = path_in_window

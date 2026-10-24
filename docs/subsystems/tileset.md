@@ -59,6 +59,12 @@ temporarily holds the incoming payload and its file-read buffer, each one tile i
 
 `point_mm`/`height_mm(x_mm, z_mm)` are the bilinear surface at whole millimetres, the edge held: what placement and a camera key stand on.
 
+### The reader's lock
+
+**What it costs, and who waits** (2026-10-24, roadmap W69). `reader_stats()` counts, over every thread, the lock taken, the nanoseconds callers waited for it and held it (and the most of each once), tiles found resident and read from disk with their bytes and read time, and waits for another caller's read of the same tile; `TileSet::thread_reader_stats()` is the calling thread's share over every set, so a host's frame thread can tell its own waits from the terrain workers' (engine-view's records carry both, [apps](apps.md#walking)). `tile_set_of(source)` finds the set behind a `TileSet::source()`, for a host that holds only the renderer's source. Counters only: nothing a request answers reads them.
+
+**What they found.** One lock held over a whole window's evaluation, tile reads from disk included, put a walker's tick behind every terrain worker of a rebuild: after a flight to the forest POC's summit the frame thread waited 636 ms for it in one frame while holding it 0.4 ms ([the measurement](../experiments/walk-stalls-2026-10-24.md)).
+
 ## The provider: `tiles`
 
 Registered from `src/ground.cpp` through the registry (`k_ground_provider`, flags `k_ground_millimetres` only). A scene's terrain names it with `"provider": "tiles"` and a `tiles` block (`engine.scene.TerrainTileSet`, `Terrain` version 7): `manifest`, a built set's manifest; or `heightfield`, a source the provider builds into the derived-data cache on a miss through `ensure_tileset` — **the content step as a library call**, as a scene mesh's clusters are built on a miss — with the block's `origin` (x, z added to the source's origin in whole spacings; y added to every height), `vertical_scale`, `ddc` (empty: the repository's, found from the heightfield's directory) and build options. Paths resolve against the scene's directory (`Context::dir`).

@@ -371,6 +371,12 @@ void SceneCollision::blend_heights(Tile& tile, f64 blend) {
 }
 
 bool SceneCollision::make_ground_body(Tile& tile) {
+  const i64 start = time::monotonic_ns();
+  struct Count {
+    i64 start;
+    i64& into;
+    ~Count() { into += time::monotonic_ns() - start; }
+  } count{start, stats_.body_ns};
   physics::HeightfieldDesc desc;
   desc.heights = std::span<const f32>(tile.heights.data(), tile.heights.size());
   desc.sample_count = tile.n;
@@ -435,23 +441,33 @@ bool SceneCollision::build_ground(Tile& tile) {
   const i32 i0 = static_cast<i32>(tile.i0);
   const i32 j0 = static_cast<i32>(tile.j0);
   tile.moving = time_.moving && source_.moves();
+  const i64 sample_start = time::monotonic_ns();
+  auto sampled = [&] {
+    const i64 dt = time::monotonic_ns() - sample_start;
+    stats_.ground_sample_ns += dt;
+    stats_.max_ground_sample_ns = std::max(stats_.max_ground_sample_ns, dt);
+  };
   if (!tile.moving) {
     tile.heights.resize(n * n);
     // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
     // time (a still source's one surface), which for the scene's own ground is the same bits.
     if (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr)) {
-      if (!source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
-                           std::span<f32>(tile.heights.data(), tile.heights.size())))
-        return false;
+      const bool ok = source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
+                                      std::span<f32>(tile.heights.data(), tile.heights.size()));
+      sampled();
+      if (!ok) return false;
     } else {
       ground_->grid(scene_gen::ring_lattice(spacing_mm_), i0, j0, n, n,
                     std::span<f32>(tile.heights.data(), tile.heights.size()));
+      sampled();
     }
     tile.field_a.clear();
     tile.field_b.clear();
     return make_ground_body(tile);
   }
-  if (!pair_fields(tile)) return false;
+  const bool paired = pair_fields(tile);
+  sampled();
+  if (!paired) return false;
   blend_heights(tile, time_.blend);
   return make_ground_body(tile);
 }
@@ -800,6 +816,17 @@ bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldP
 // tile holds (a ruin laid in blocks is hundreds of pieces), with the compound's own tree doing the
 // culling the broadphase would otherwise do per piece.
 bool SceneCollision::build_placements(Tile& tile) {
+  const i64 start = time::monotonic_ns();
+  const i64 bodies_before = stats_.body_ns;
+  struct Count {
+    i64 start;
+    i64 bodies_before;
+    Stats& stats;
+    // The placements' share, less the body made at the end, which is counted as a body.
+    ~Count() {
+      stats.placement_ns += time::monotonic_ns() - start - (stats.body_ns - bodies_before);
+    }
+  } count{start, bodies_before, stats_};
   children_.clear();
   bool ok = true;
   const u64 key = world::tile_key(tile.coord);
@@ -848,6 +875,12 @@ bool SceneCollision::build_placements(Tile& tile) {
   }
   u32 triangles = 0;
   (void)physics_->shape_memory(tile.placements_shape, false, tile.compound_bytes, triangles);
+  const i64 body_start = time::monotonic_ns();
+  struct BodyCount {
+    i64 start;
+    i64& into;
+    ~BodyCount() { into += time::monotonic_ns() - start; }
+  } body_count{body_start, stats_.body_ns};
   physics::BodyDesc body;
   body.shape = tile.placements_shape;
   body.transform.position = corner;

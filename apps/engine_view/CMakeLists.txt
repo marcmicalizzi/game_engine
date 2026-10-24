@@ -180,6 +180,15 @@ if(TARGET engine::world)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WORLD=1)
   endif()
 endif()
+# The frame record's walk (apps.md, "The frame record's walk") reads an authored ground's reader
+# counters through the tile-set capability's typed accessor where it is linked; without it the
+# reader's numbers are zero.
+if(TARGET engine::tileset)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_TILESET=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TILESET=1)
+  endif()
+endif()
 if(TARGET engine::scene_collision)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WALK_PHYSICS=1)
   if(TARGET engine_engine_view_tests)

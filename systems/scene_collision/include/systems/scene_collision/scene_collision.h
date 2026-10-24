@@ -167,6 +167,14 @@ struct Stats {
   f64 max_lift_m = 0.0;
   i64 activate_ns = 0;
   i64 max_activate_ns = 0;
+  // Where an activation's wall time goes (docs: "What an activation costs"): the ground's heights
+  // asked of the tile source (`ground_sample_ns`, the most once), the placements gathered and their
+  // proxies and compound made (`placement_ns`), and the shapes and bodies the physics world made
+  // for them (`body_ns`).
+  i64 ground_sample_ns = 0;
+  i64 max_ground_sample_ns = 0;
+  i64 placement_ns = 0;
+  i64 body_ns = 0;
   i64 deactivate_ns = 0;
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;

@@ -3,6 +3,7 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
+#include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/tileset.h>
@@ -705,8 +706,102 @@ struct TileSet::Cache {
   const i32* hint = nullptr;
 };
 
-TileSet::TileSet(u64 cache_bytes) : cache_(std::make_unique<Cache>()), cache_bytes_(cache_bytes) {}
+// The reader's counters (`ReaderStats`): relaxed atomics, the most of each raised by a compare
+// and swap. Nothing a request answers reads them.
+struct TileSet::Counters {
+  std::atomic<u64> locks{0};
+  std::atomic<u64> lock_wait_ns{0};
+  std::atomic<u64> max_lock_wait_ns{0};
+  std::atomic<u64> lock_hold_ns{0};
+  std::atomic<u64> max_lock_hold_ns{0};
+  std::atomic<u64> hits{0};
+  std::atomic<u64> misses{0};
+  std::atomic<u64> io_bytes{0};
+  std::atomic<u64> io_ns{0};
+  std::atomic<u64> load_waits{0};
+  std::atomic<u64> load_wait_ns{0};
+};
+
+namespace {
+
+// The calling thread's share, over every set (`TileSet::thread_reader_stats`).
+thread_local TileSet::ReaderStats t_reader;
+
+void raise(std::atomic<u64>& most, u64 value) noexcept {
+  u64 seen = most.load(std::memory_order_relaxed);
+  while (value > seen && !most.compare_exchange_weak(seen, value, std::memory_order_relaxed)) {
+  }
+}
+
+u64 elapsed_ns(i64 from, i64 to) noexcept { return to > from ? static_cast<u64>(to - from) : 0; }
+
+// The reader's lock, timed: the wait to take it and the time it was held, into the set's counters
+// and the calling thread's.
+class TimedLock {
+ public:
+  TimedLock(std::mutex& mutex, TileSet::Counters& counters) noexcept
+      : mutex_(mutex), counters_(counters) {
+    const i64 asked = time::monotonic_ns();
+    mutex_.lock();
+    taken_ = time::monotonic_ns();
+    const u64 wait = elapsed_ns(asked, taken_);
+    counters_.locks.fetch_add(1, std::memory_order_relaxed);
+    counters_.lock_wait_ns.fetch_add(wait, std::memory_order_relaxed);
+    raise(counters_.max_lock_wait_ns, wait);
+    ++t_reader.locks;
+    t_reader.lock_wait_ns += wait;
+    t_reader.max_lock_wait_ns = std::max(t_reader.max_lock_wait_ns, wait);
+  }
+  ~TimedLock() {
+    const u64 hold = elapsed_ns(taken_, time::monotonic_ns());
+    mutex_.unlock();
+    counters_.lock_hold_ns.fetch_add(hold, std::memory_order_relaxed);
+    raise(counters_.max_lock_hold_ns, hold);
+    t_reader.lock_hold_ns += hold;
+    t_reader.max_lock_hold_ns = std::max(t_reader.max_lock_hold_ns, hold);
+  }
+  TimedLock(const TimedLock&) = delete;
+  TimedLock& operator=(const TimedLock&) = delete;
+
+ private:
+  std::mutex& mutex_;
+  TileSet::Counters& counters_;
+  i64 taken_ = 0;
+};
+
+}  // namespace
+
+TileSet::TileSet(u64 cache_bytes)
+    : cache_(std::make_unique<Cache>()),
+      cache_bytes_(cache_bytes),
+      counters_(std::make_unique<Counters>()) {}
 TileSet::~TileSet() = default;
+
+TileSet::ReaderStats TileSet::reader_stats() const noexcept {
+  const Counters& c = *counters_;
+  ReaderStats out;
+  out.locks = c.locks.load(std::memory_order_relaxed);
+  out.lock_wait_ns = c.lock_wait_ns.load(std::memory_order_relaxed);
+  out.max_lock_wait_ns = c.max_lock_wait_ns.load(std::memory_order_relaxed);
+  out.lock_hold_ns = c.lock_hold_ns.load(std::memory_order_relaxed);
+  out.max_lock_hold_ns = c.max_lock_hold_ns.load(std::memory_order_relaxed);
+  out.hits = c.hits.load(std::memory_order_relaxed);
+  out.misses = c.misses.load(std::memory_order_relaxed);
+  out.io_bytes = c.io_bytes.load(std::memory_order_relaxed);
+  out.io_ns = c.io_ns.load(std::memory_order_relaxed);
+  out.load_waits = c.load_waits.load(std::memory_order_relaxed);
+  out.load_wait_ns = c.load_wait_ns.load(std::memory_order_relaxed);
+  return out;
+}
+
+TileSet::ReaderStats TileSet::thread_reader_stats(bool take_max) noexcept {
+  const ReaderStats out = t_reader;
+  if (take_max) {
+    t_reader.max_lock_wait_ns = 0;
+    t_reader.max_lock_hold_ns = 0;
+  }
+  return out;
+}
 
 bool TileSet::open(const std::string& manifest_path, std::string& error) {
   levels_.clear();
@@ -779,6 +874,8 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz) const noexcept {
   const Cache::Key key{level.spacing, tx, tz};
   if (cache.hint != nullptr && key == cache.hint_key) return cache.hint;
   if (const u32* index = cache.index.find_value(key)) {
+    counters_->hits.fetch_add(1, std::memory_order_relaxed);
+    ++t_reader.hits;
     cache.hint_key = key;
     cache.hint = cache.entries[*index].grid.get();
     return cache.hint;
@@ -787,7 +884,16 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz) const noexcept {
   std::string bytes;
   const std::string path = io::join_path(dir_, tile_file(level.spacing, tx, tz));
   TileHeader header;
-  if (io::read_file(path, bytes) != io::Status::Ok || bytes.size() != tile_bytes(manifest_.cells)) {
+  const i64 read_start = time::monotonic_ns();
+  const io::Status status = io::read_file(path, bytes);
+  const u64 read_ns = elapsed_ns(read_start, time::monotonic_ns());
+  counters_->misses.fetch_add(1, std::memory_order_relaxed);
+  counters_->io_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+  counters_->io_ns.fetch_add(read_ns, std::memory_order_relaxed);
+  ++t_reader.misses;
+  t_reader.io_bytes += bytes.size();
+  t_reader.io_ns += read_ns;
+  if (status != io::Status::Ok || bytes.size() != tile_bytes(manifest_.cells)) {
     failures_.fetch_add(1, std::memory_order_relaxed);
     return nullptr;
   }
@@ -832,7 +938,7 @@ f64 TileSet::value(const Level& level, i64 i, i64 j) const noexcept {
 }
 
 f64 TileSet::point_mm(i64 x_mm, i64 z_mm) const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
+  TimedLock lock(mutex_, *counters_);
   return point_mm_locked(x_mm, z_mm);
 }
 
@@ -873,7 +979,7 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
                       u32 block_begin, u32 block_end, std::span<f32> out) const noexcept {
   if (!is_open() || spacing_mm < 1 || out.size() != static_cast<usize>(nx) * nz) return false;
   if (block_begin > block_end || block_end > scene_gen::window_blocks(nx, nz)) return false;
-  std::lock_guard<std::mutex> lock(mutex_);
+  TimedLock lock(mutex_, *counters_);
   const Level* level = nullptr;
   i64 ratio = 0;  // world lattice index to the level's: times this; 0, the bilinear surface
   if (filter_mm > 0) {
@@ -908,7 +1014,7 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
 }
 
 TileSet::CacheStats TileSet::cache_stats() const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
+  TimedLock lock(mutex_, *counters_);
   return CacheStats{cache_bytes_, cache_->payload_bytes * cache_->entries.size(),
                     cache_->entries.size(), cache_->evictions};
 }
@@ -926,6 +1032,11 @@ constexpr scene_gen::TileSourceOps k_set_ops{.heights = &set_heights, .travel_m 
 
 scene_gen::TileSource TileSet::source() const noexcept {
   return is_open() ? scene_gen::TileSource{&k_set_ops, this} : scene_gen::TileSource{};
+}
+
+const TileSet* tile_set_of(const scene_gen::TileSource& source) noexcept {
+  if (source.ops() != &k_set_ops || source.state() == nullptr) return nullptr;
+  return static_cast<const TileSet*>(source.state());
 }
 
 }  // namespace engine::tileset

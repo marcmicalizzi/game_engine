@@ -374,6 +374,10 @@ class TerrainMotion {
     f64 host_ms = 0.0;
   };
   const FrameLayout& frame_layout() const noexcept { return frame_layout_; }
+  // Where the re-centre in flight stands (`Recentre` below): 0 none, 1 rebuilding on the ring
+  // worker, 2 uploading, 3 pairs asked, 4 pairing on the field worker, 5 swapping. A host's
+  // frame record says it beside the walker's numbers (apps.md, "The frame record's walk").
+  u32 recentre_stage() const noexcept { return static_cast<u32>(recentre_); }
   // The most the layout fell behind over the run, metres and frames (RingStats-like, for a
   // summary).
   f64 max_layout_lag_m() const noexcept { return max_lag_m_; }
