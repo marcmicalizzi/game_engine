@@ -63,13 +63,17 @@ OS-cold over OS-warm, same derived data, same spawn:
 
 ## The spawns
 
-| spawn | caches | first_frame | nearby_stable | others' CPU start/end |
-|---|---|---:|---:|---|
-| lake | OS-warm | 15,370 | 15,689 | 22% / 24% |
-| core | OS-warm | (see below) | | |
-| mountain | OS-warm | (see below) | | |
+| spawn | caches | scene_loaded | gpu_scene | first_frame | nearby_stable | read before ready | others' CPU start/end |
+|---|---|---:|---:|---:|---:|---:|---|
+| lake | OS-warm | 7,514 | 12,620 | 15,370 | 15,689 | 4,407 MiB | 22% / 24% |
+| core | OS-warm | 7,125 | 12,351 | 14,747 | 17,428 | 4,401 MiB | 18% / 64% |
+| mountain | OS-warm | 7,503 | 12,873 | 18,975 | 18,975 | 4,403 MiB | 26% / 37% |
+| lake | **uncooked** (an empty cache of our own) | 73,201 | 78,773 | 81,369 | 81,833 | 4,325 MiB | 20% / 6% |
+| lake | the same cache, second run | 7,476 | 21,769 | 25,201 | 25,638 | 4,406 MiB | 78% / 49% |
 
-The work before ready does not depend on the spawn beyond the ground round it (`ground prepare`, `ground start`, `session`): the scene file, the meshes, the textures and the GPU scene are the whole region's wherever the player starts. That is what a bounded initial working set would change (below).
+The work before ready does not depend on the spawn beyond the ground round it: `scene_loaded` and `gpu_scene` are within 0.5 s of each other at all three spawns and the bytes read within 6 MiB, because the scene file, the meshes, the textures and the GPU scene are the whole region's wherever the player starts. The mountain's 6 s from `gpu_scene` to its first frame is the renderer and the summit's ground; the core's 2.7 s from its first frame to `nearby_stable` is the world's ring still settling as the walk began. That is what a bounded initial working set would change (below).
+
+**Uncooked**, the derived data is built in the run: the tile set from the authored heightfield in `scene file` (10.3 s), every mesh and texture in `load scene` (61.6 s wall, 40.8 s of the frame thread's CPU and 543 s of the process's — the builds run on the job system's workers), and nothing else changes; the run after it reads what it built, no entry missed (`cache entry ignored` never fired in any run: **no accidental rebuilds**), and its slower `gpu scene` (7.3 s over 2.5 s CPU) is the 78% the other processes held at its start.
 
 ## What the trace says the residency work would save
 
