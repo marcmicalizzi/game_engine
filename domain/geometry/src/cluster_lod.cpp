@@ -1230,6 +1230,131 @@ f32 lod_coverage_own(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(p
 
 f32 lod_coverage_parent(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed >> 16)); }
 
+// ---- distance forms (geometry.md, "Distance forms") ----------------------------------------------
+
+bool lod_acceptable_from(Vec4 sphere, f32 error, f32 coverage, const LodFormCut& cut) noexcept {
+  if (!(error < k_lod_terminal_error) && !(coverage < k_lod_terminal_error)) return false;
+  // The nearest any camera at least `distance` from the origin comes to the sphere's surface, in
+  // f64 and with a ten-thousandth of slack, so the bound holds for the f32 arithmetic the cull pass
+  // and `lod_selects` do at a camera exactly that far.
+  const f64 dx = static_cast<f64>(sphere.x) - cut.origin.x;
+  const f64 dy = static_cast<f64>(sphere.y) - cut.origin.y;
+  const f64 dz = static_cast<f64>(sphere.z) - cut.origin.z;
+  const f64 offset = std::sqrt(dx * dx + dy * dy + dz * dz);
+  f64 nearest = static_cast<f64>(cut.distance) - offset - static_cast<f64>(sphere.w);
+  nearest = nearest > static_cast<f64>(cut.znear) ? nearest : static_cast<f64>(cut.znear);
+  const f64 keep = (1.0 - static_cast<f64>(cut.fade)) * (1.0 - 1.0e-4);
+  const f64 scale = static_cast<f64>(cut.proj_scale) / nearest;
+  if (error < k_lod_terminal_error &&
+      static_cast<f64>(error) * scale <= keep * static_cast<f64>(cut.threshold_px))
+    return true;
+  return cut.foliage_px > 0.0f && coverage < k_lod_terminal_error &&
+         static_cast<f64>(coverage) * scale <= keep * static_cast<f64>(cut.foliage_px);
+}
+
+bool extract_lod_form(const ClusterLodMesh& mesh, std::span<const u32> coverage,
+                      const LodFormCut& cut, ClusterLodMesh& out, Vector<u32>& coverage_out,
+                      LodFormMap& map, std::string* error) {
+  const ClusterMesh& src = mesh.mesh;
+  const u32 count = src.clusters.size();
+  if (mesh.lod.size() != count) {
+    if (error != nullptr) *error = "the mesh's LOD descriptions are not parallel to its clusters";
+    return false;
+  }
+  if (!coverage.empty() && coverage.size() != count) {
+    if (error != nullptr) *error = "the coverage stream is not parallel to the clusters";
+    return false;
+  }
+  if (!src.skin.empty() || !src.morph_channels.empty()) {
+    if (error != nullptr)
+      *error = "a skinned or morphed mesh has no distance form: its spheres are its rest pose's";
+    return false;
+  }
+  const auto own_coverage = [&](u32 c) {
+    return coverage.empty() ? k_lod_terminal_error : lod_coverage_own(coverage[c]);
+  };
+  const auto parent_coverage = [&](u32 c) {
+    return coverage.empty() ? k_lod_terminal_error : lod_coverage_parent(coverage[c]);
+  };
+  map.clusters.clear();
+  map.vertices.clear();
+  map.frontier = 0;
+  for (u32 c = 0; c < count; ++c) {
+    const ClusterLodDesc& lod = mesh.lod[c];
+    if (!lod_acceptable_from(lod.parent, lod.parent_error, parent_coverage(c), cut))
+      map.clusters.push_back(c);
+  }
+  if (map.clusters.empty()) {
+    if (error != nullptr) *error = "the cut keeps no cluster of the mesh";
+    return false;
+  }
+  out = ClusterLodMesh{};
+  coverage_out.clear();
+  ClusterMesh& dst = out.mesh;
+  const bool ids = !src.vertex_ids.empty();
+  const bool sources = !src.vertex_source.empty();
+  u32 vertices = 0;
+  u32 triangles = 0;
+  for (const u32 c : map.clusters) {
+    vertices += src.clusters[c].vertex_count;
+    triangles += src.clusters[c].triangle_count;
+  }
+  dst.clusters.reserve(map.clusters.size());
+  dst.vertices.reserve(vertices);
+  dst.attributes.reserve(vertices);
+  dst.triangles.reserve(triangles);
+  dst.quantized.reserve(3 * vertices + 1);
+  if (sources) dst.vertex_source.reserve(vertices);
+  if (ids) dst.vertex_ids.reserve(vertices);
+  map.vertices.reserve(vertices);
+  out.lod.reserve(map.clusters.size());
+  u32 top_level = 0;
+  for (const u32 c : map.clusters) {
+    const ClusterDesc& from = src.clusters[c];
+    ClusterDesc cluster = from;
+    cluster.vertex_offset = dst.vertices.size();
+    cluster.triangle_offset = dst.triangles.size();
+    for (u32 v = from.vertex_offset; v < from.vertex_offset + from.vertex_count; ++v) {
+      map.vertices.push_back(v);
+      dst.vertices.push_back(src.vertices[v]);
+      dst.attributes.push_back(src.attributes[v]);
+      for (u32 k = 0; k < 3; ++k)
+        dst.quantized.push_back(src.quantized[3 * v + k]);
+      if (sources) dst.vertex_source.push_back(src.vertex_source[v]);
+      if (ids) dst.vertex_ids.push_back(src.vertex_ids[v]);
+    }
+    for (u32 t = from.triangle_offset; t < from.triangle_offset + from.triangle_count; ++t)
+      dst.triangles.push_back(src.triangles[t]);
+    dst.clusters.push_back(cluster);
+    ClusterLodDesc lod = mesh.lod[c];
+    u32 packed = coverage.empty() ? 0u : coverage[c];
+    if (lod_acceptable_from(lod.own, lod.own_error, own_coverage(c), cut)) {
+      // The frontier: drawn from nearer too, as the form's own finest.
+      lod.own_error = 0.0f;
+      lod.level = 0;
+      packed &= 0xFFFF0000u;  // own coverage +0: acceptable at any distance
+      ++map.frontier;
+    }
+    top_level = lod.level > top_level ? lod.level : top_level;
+    out.lod.push_back(lod);
+    if (!coverage.empty()) coverage_out.push_back(packed);
+  }
+  if (dst.quantized.size() % 2 != 0) dst.quantized.push_back(0);
+  dst.quant_origin = src.quant_origin;
+  dst.quant_scale = src.quant_scale;
+  dst.vertex_id_source = src.vertex_id_source;
+  dst.source_vertex_count = src.source_vertex_count;
+  dst.source_triangle_count = src.source_triangle_count;
+  out.level_cluster_counts.assign(top_level + 1, 0u);
+  for (const ClusterLodDesc& lod : out.lod)
+    ++out.level_cluster_counts[lod.level];
+  out.group_count = mesh.group_count;
+  for (u32 i = 0; i < out.lod.size(); ++i) {
+    if (out.lod[i].level == 0) out.leaf_triangle_count += dst.clusters[i].triangle_count;
+  }
+  return true;
+}
+
 namespace {
 
 // A transition's acceptance, as `lod_selects` with coverage and cluster_cull.slang both write it:
