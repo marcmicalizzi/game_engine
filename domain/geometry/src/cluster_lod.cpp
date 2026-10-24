@@ -1238,9 +1238,9 @@ bool lod_acceptable_from(Vec4 sphere, f32 error, f32 coverage, const LodFormCut&
   // The nearest any camera at least `distance` from the origin comes to the sphere's surface, in
   // f64 and with a ten-thousandth of slack, so the bound holds for the f32 arithmetic the cull pass
   // and `lod_selects` do at a camera exactly that far.
-  const f64 dx = static_cast<f64>(sphere.x) - cut.origin.x;
-  const f64 dy = static_cast<f64>(sphere.y) - cut.origin.y;
-  const f64 dz = static_cast<f64>(sphere.z) - cut.origin.z;
+  const f64 dx = static_cast<f64>(sphere.x) - static_cast<f64>(cut.origin.x);
+  const f64 dy = static_cast<f64>(sphere.y) - static_cast<f64>(cut.origin.y);
+  const f64 dz = static_cast<f64>(sphere.z) - static_cast<f64>(cut.origin.z);
   const f64 offset = std::sqrt(dx * dx + dy * dy + dz * dz);
   f64 nearest = static_cast<f64>(cut.distance) - offset - static_cast<f64>(sphere.w);
   nearest = nearest > static_cast<f64>(cut.znear) ? nearest : static_cast<f64>(cut.znear);

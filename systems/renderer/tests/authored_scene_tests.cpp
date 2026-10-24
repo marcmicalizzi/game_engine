@@ -25,6 +25,8 @@
 using namespace engine;
 using namespace engine::renderer;
 
+#if ENGINE_RENDERER_TESTS_FLORA
+
 namespace {
 
 bool write_text(const std::string& path, const std::string& text) {
@@ -80,6 +82,8 @@ bool generator_present() {
 }
 
 }  // namespace
+
+#endif
 
 TEST_CASE("authored scene: the pair accounting names its numbers") {
   PairAccount a;
