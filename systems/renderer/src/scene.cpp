@@ -12,6 +12,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
 #include <foundation/image/png.h>
@@ -365,7 +366,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
     return false;
   }
   if (desc.terrain.materials.has_value() &&
-      !validate_terrain_materials(*desc.terrain.materials, &error))
+      !validate_terrain_materials(*desc.terrain.materials, &error, desc.terrain.masks.has_value()))
     return false;
   const u64 hash = terrain_hash(desc.terrain);
   out.source_hash = hash;
@@ -1306,10 +1307,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     out.terrain.materials = t.materials;
     if (out.terrain.materials.has_value()) {
       for (auto& layer : out.terrain.materials->layers) {
-        for (auto* p : {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask})
+        for (auto* p :
+             {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height})
           if (!p->empty() && !dir.empty() && !io::is_absolute_path(*p)) *p = io::join_path(dir, *p);
       }
-      if (!validate_terrain_materials(*out.terrain.materials, &error)) {
+      if (!validate_terrain_materials(*out.terrain.materials, &error, t.masks.has_value())) {
         error = path + ": " + error;
         return false;
       }
@@ -1332,6 +1334,36 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       resolve_path(tiles.ddc);
       out.terrain.tiles = std::move(tiles);
       if (out.terrain.provider.empty()) out.terrain.provider = "tiles";
+    }
+    // Ground materials by place (`Terrain.masks`, renderer.md): weights of the materials' palette,
+    // built over an authored tile set by the `tiles` provider; its images resolved against the
+    // file's directory and its regions' water bodies against the file's `water`, so the build and
+    // its key see shapes and paths, never names.
+    if (t.masks.has_value()) {
+      if (!t.materials.has_value()) {
+        error = path +
+                ": terrain.masks weigh the palette of terrain.materials, which the terrain "
+                "does not name";
+        return false;
+      }
+      if (!t.tiles.has_value()) {
+        error = path +
+                ": terrain.masks are built over an authored tile set; the terrain names no "
+                "\"tiles\" block";
+        return false;
+      }
+      scene::TerrainMasks masks = *t.masks;
+      const auto resolve_image = [&](std::string& p) {
+        if (!p.empty() && !dir.empty() && !io::is_absolute_path(p)) p = io::join_path(dir, p);
+      };
+      for (auto& paint : masks.paint)
+        resolve_image(paint.image);
+      if (masks.index.has_value()) resolve_image(masks.index->image);
+      if (!scene_gen::resolve_mask_water({file.water.data(), file.water.size()}, masks, &error)) {
+        error = path + ": " + error;
+        return false;
+      }
+      out.terrain.masks = std::move(masks);
     }
     out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes || t.provider == "dunes"
                                 ? TerrainGenerator::dunes

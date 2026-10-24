@@ -1,0 +1,4 @@
+# Written by `engine-content terrain-synth` (README.md): the heightfield's grid is binary and is
+# never committed; the header beside it names the grid's hash, so it is written with it.
+ground.json
+ground.f32

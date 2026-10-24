@@ -4,6 +4,7 @@
 // all pass through it.
 #include <core/hash/hash.h>
 #include <core/math/math.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/terrain_features.h>
 
 #include <algorithm>
@@ -104,4 +105,36 @@ f32 basin_weight(std::span<const scene::Basin> basins, f32 x, f32 z) noexcept {
   return best;
 }
 
+}  // namespace engine::scene_gen
+
+namespace engine::scene_gen {
+bool resolve_mask_water(std::span<const scene::WaterBody> water, scene::TerrainMasks& masks,
+                        std::string* error) {
+  for (scene::TerrainMaskRegion& region : masks.regions) {
+    if (region.water_body.empty()) continue;
+    if (!region.polygon.empty() || region.radius_m > 0) {
+      if (error != nullptr)
+        *error = "terrain.masks: region \"" + region.name + "\" names the water body \"" +
+                 region.water_body + "\" and an outline of its own; give it one";
+      return false;
+    }
+    const scene::WaterBody* found = nullptr;
+    for (const scene::WaterBody& body : water)
+      if (body.name == region.water_body) found = &body;
+    if (found == nullptr) {
+      if (error != nullptr)
+        *error = "terrain.masks: region \"" + region.name + "\" names the water body \"" +
+                 region.water_body + "\", which the scene's water does not have";
+      return false;
+    }
+    if (found->shape.circle.has_value()) {
+      region.center = found->shape.circle->center;
+      region.radius_m = found->shape.circle->radius_m;
+    } else {
+      region.polygon = found->shape.polygon;
+    }
+    region.water_body.clear();
+  }
+  return true;
+}
 }  // namespace engine::scene_gen

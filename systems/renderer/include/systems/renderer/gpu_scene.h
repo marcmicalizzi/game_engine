@@ -334,6 +334,10 @@ class GpuScene {
   // has none, since the branch costs every pixel of every frame (water.md, "Shading").
   bool has_water() const noexcept { return has_water_; }
   bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
+  // The terrain's mask level as uploaded (renderer.md, "Ground materials by place"): its bytes on
+  // the GPU (page table and tiles) and its resident tiles; zero for a terrain without masks.
+  u64 terrain_mask_bytes() const noexcept { return terrain_mask_bytes_; }
+  u32 terrain_mask_tiles() const noexcept { return terrain_mask_tiles_; }
   // A material of the table is alpha-tested (gfx::k_material_alpha_mask; renderer.md, "Alpha-tested
   // geometry"): the frame draws the masked variants and the ray loops test masks. False keeps every
   // pass the one it always was.
@@ -843,7 +847,8 @@ class GpuScene {
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]
   gfx::BufferResource cluster_materials;  // u32 per cluster
   gfx::BufferResource lod_coverage;       // u32 per cluster (geometry::pack_lod_coverage), or none
-  gfx::BufferResource fade;               // u32x2 per pair per view, and the cascades'
+  gfx::BufferResource terrain_masks;  // the terrain's mask level: page table, then tiles, or none
+  gfx::BufferResource fade;           // u32x2 per pair per view, and the cascades'
 
   // ---- the frame's working set, sized by the scene and the view count --------------------------
   gfx::BufferResource visible;  // u32x2[3 * views * pair_count]: {instance, cluster} per entry
@@ -1187,7 +1192,9 @@ class GpuScene {
   u64 compactions_ = 0;
   u32 material_count_ = 0;
   bool has_terrain_materials_ = false;  // a native ground root actually exists in the table
-  bool has_water_ = false;              // a material of the table carries gfx::k_material_water
+  u64 terrain_mask_bytes_ = 0;
+  u32 terrain_mask_tiles_ = 0;
+  bool has_water_ = false;     // a material of the table carries gfx::k_material_water
   bool has_masked_ = false;    // a material of the table carries gfx::k_material_alpha_mask
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;

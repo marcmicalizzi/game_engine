@@ -1,0 +1,15 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "ground-by-place",
+  "description": "Twenty seconds: over the sandy pond's gravel shore, along the trail through the forest litter past the clearing, to the mountain's foot looking up its meadow, scree, bedrock and snow, and over the boggy pond's mud.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.3,
+  "keys": [
+    {"time": 0.0, "position": [-262.0, 4.0, 196.0], "ground": true, "target": [-252.0, 1.5, 225.0]},
+    {"time": 5.0, "position": [-150.0, 2.0, 140.0], "ground": true, "target": [-120.0, 1.0, 100.0]},
+    {"time": 10.0, "position": [-20.0, 2.0, 60.0], "ground": true, "target": [179.0, 120.0, -179.0]},
+    {"time": 15.0, "position": [30.0, 40.0, -10.0], "ground": true, "target": [179.0, 150.0, -179.0]},
+    {"time": 20.0, "position": [60.0, 5.0, 270.0], "ground": true, "target": [51.0, 0.5, 307.0]}
+  ]
+}

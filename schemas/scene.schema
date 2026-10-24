@@ -702,7 +702,7 @@ enum TerrainProjection : u8 {
 
 /// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
 /// linear, read from R. Paths are relative to the scene. Layers composite in array order.
-struct TerrainMaterialLayer @version(1) {
+struct TerrainMaterialLayer @version(2) {
   name: string
   base_color: string
   normal: string
@@ -718,21 +718,129 @@ struct TerrainMaterialLayer @version(1) {
   projection: TerrainProjection = Triplanar
   /// Rounded to whole millimetres for world-stable addressing; positive, fitting signed i64.
   tile_m: f32 = 1
+  /// Optional height detail, linear, read from R (0 low, 1 high): with `Terrain.masks`, layers blend
+  /// by height where their weights overlap (renderer.md, "Ground materials by place"). Empty: the
+  /// layer stands at mid height.
+  height: string @since(2)
+  /// How much water the substrate's pores take, [0, 1] (Lagarde 2013): wet ground darkens by up to
+  /// 0.8 of this and loses up to 0.4 of it in roughness. Sand and soil near 1, rock near 0.
+  porosity: f32 = 0.5 @since(2)
 }
 
 struct TerrainMaterials @version(1) {
+  /// The layers. With `Terrain.masks` they are a **palette** of any number (up to 254) of which
+  /// each mask tile names at most `layer_budget`.
   layers: TerrainMaterialLayer[]
-  /// Configurable work budget: excess layers are refused, never dropped.
+  /// Configurable work budget: excess layers are refused, never dropped. With `Terrain.masks` it is
+  /// the per-tile budget, 1 to 4 (a mask texel carries four weights), and a tile whose authored
+  /// inputs name more is refused by the build with a sentence naming the tile.
   layer_budget: u32 = 8
   /// Triplanar detail fades to the map's mip-chain average over these eye distances, metres.
   detail_near_m: f32 = 32
   detail_far_m: f32 = 128
 }
 
-/// Terrain built into the native cluster LOD DAG. Version 2 added the generator, version 4 the
-/// provider name, version 5 wind transport, version 6 sand detail, version 7 authored tile sets,
-/// and version 8 authored materials. Absent optional blocks preserve the earlier behavior.
-struct Terrain @version(8) {
+/// A region of the ground given its own material (renderer.md, "Ground materials by place"): a
+/// polygon of world positions (x and z; y is not read; simple, either winding) or a circle (`radius_m`
+/// above zero about `center`), or a scene water body's shape by its name.
+struct TerrainMaskRegion @version(1) {
+  name: string
+  polygon: worldpos[]
+  center: worldpos @unit(m)
+  radius_m: f32 = 0 @unit(m)
+  /// A body of the scene's `water` whose outline this region takes (its polygon or circle); the
+  /// region names no polygon or circle of its own then.
+  water_body: string
+  /// The palette layer the region is given outright, over everything below it.
+  material: string
+  /// The palette layer that stands in for the priors' soil inside the region; the priors' scree,
+  /// bedrock and snow still lie where they lie. Exclusive with `material`.
+  base: string
+  /// The edge's blend, metres, inward from the outline: 0 is a hard edge.
+  feather_m: f32 = 2 @unit(m)
+  /// A water body's bed, under the water: the region's inside. Empty: none.
+  bed: string
+  /// A water body's margin: this layer within `margin_m` outside the outline, fading out.
+  margin: string
+  margin_m: f32 = 3 @unit(m)
+  /// Wetness: 1 inside, falling to 0 at `wet_m` outside the outline. 0: the region wets nothing.
+  wet_m: f32 = 0 @unit(m)
+}
+
+/// A painted weight map: the image's R (linear, 0 to 1) over the terrain's map frame is how much of
+/// `material` lies there, laid over what is below it.
+struct TerrainMaskPaint @version(1) {
+  material: string
+  image: string
+}
+
+/// A painted index map over the map frame: a texel's R names `materials[R]` outright (nearest, no
+/// filter: an index does not blend); 255, or past the list, names nothing.
+struct TerrainMaskIndex @version(1) {
+  image: string
+  materials: string[]
+}
+
+/// **Generated priors** (docs/experiments/ground-materials-grounding.md): where the substrates lie by
+/// slope, elevation and aspect, the defaults the published ranges. Each role names a palette layer;
+/// empty switches the role off. Angles are degrees of slope, elevations world metres.
+struct TerrainMaskPriors @version(1) {
+  soil: string
+  scree: string
+  bedrock: string
+  snow: string
+  /// Scree from about the angle of repose of talus (33-35 degrees measured below Alpine walls).
+  scree_deg: f32 = 32 @unit(deg)
+  /// Bare bedrock past the threshold hillslope (about 30 degrees mean, steeper locally).
+  bedrock_deg: f32 = 42 @unit(deg)
+  /// The width of each slope transition, degrees either side.
+  slope_blend_deg: f32 = 3 @unit(deg)
+  /// The snowline on a level or east/west-facing slope, world metres; snow fades in over
+  /// `snow_blend_m` about it. A very high value (the default) is no snow.
+  snowline_m: f32 = 100000 @unit(m)
+  snow_blend_m: f32 = 60 @unit(m)
+  /// How much lower the snow lies on a slope facing the pole (and higher facing the equator), metres.
+  snow_aspect_m: f32 = 150 @unit(m)
+  /// The direction the pole lies in over (x, z), normalized when read: (0, -1), the default, is
+  /// north towards -z, a scene authored with +x east and +z south.
+  pole_x: f32 = 0
+  pole_z: f32 = -1
+  /// Snow sluffs off slopes steeper than this (about 60 degrees, Snow Sense / Avalanche Canada).
+  snow_max_deg: f32 = 55 @unit(deg)
+}
+
+/// **Ground materials by place** (renderer.md, "Ground materials by place"; tileset.md, "The mask
+/// level"): the inputs a mask level is built from, composited in this order, each over the last —
+/// the priors, the painted weight maps, the index map, the regions — into a level of the tile set,
+/// one small image a tile naming at most `materials.layer_budget` palette layers. Needs the `tiles`
+/// provider and `materials`. Absent: the terrain draws as before.
+struct TerrainMasks @version(1) {
+  /// The mask's point spacing, millimetres, 250 to 4000: its points are the world's lattice at this
+  /// spacing, so a mask needs no alignment with the heightfield's.
+  spacing_mm: i64 = 1000 @unit(mm)
+  /// Cells a mask tile side, a power of two from 4 to 256.
+  tile_cells: u32 = 32
+  priors: TerrainMaskPriors?
+  paint: TerrainMaskPaint[]
+  index: TerrainMaskIndex?
+  regions: TerrainMaskRegion[]
+  /// The scene's wetness everywhere, [0, 1]: after rain. Regions' `wet_m` add to it.
+  wetness: f32 = 0
+  /// Height-blend depth, [0, 1]: how far below the highest layer another still shows where weights
+  /// overlap (Mishkinis 2013's 0.2). 0: linear weights.
+  height_blend: f32 = 0.2
+  /// The resident budget for the level's tiles on the GPU, MiB; a level larger is refused.
+  resident_mib: u32 = 256
+}
+
+/// Terrain built into the native cluster LOD DAG. It is built into a cluster LOD DAG like any mesh,
+/// and its derived-data cache entry is keyed by these fields, so it is content-addressed like a
+/// file; every default added later is the record as it was, to the bit. Version 2 added the
+/// generator (a version 1 terrain reads as the waves it always drew), version 4 the provider name
+/// (ADR-0046), version 5 the wind's day and the storms' gains, version 6 sand detail, version 7
+/// authored tile sets, version 8 authored materials, and version 9 `masks`, ground materials by
+/// place. Absent optional blocks preserve the earlier behavior.
+struct Terrain @version(9) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -802,6 +910,8 @@ struct Terrain @version(8) {
   tiles: TerrainTileSet? @since(7)
   /// Authored colour/normal/roughness on the native surface, shared by the grid, rings and tiles.
   materials: TerrainMaterials? @since(8)
+  /// Ground materials by place: the palette's per-tile masks (`TerrainMasks`).
+  masks: TerrainMasks? @since(9)
 }
 
 

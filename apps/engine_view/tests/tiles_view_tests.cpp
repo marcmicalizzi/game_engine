@@ -148,6 +148,89 @@ TEST_CASE(
   CHECK(green > 500);
 }
 
+TEST_CASE(
+    "engine-view: ground masks draw their regions through the stock scene path, and a level "
+    "handover changes none") {
+  // A flat authored ground, 64 m at 50 cm, whose mask gives the west half a red layer and the
+  // east half a blue one (renderer.md, "Ground materials by place"; tileset.md, "The mask level").
+  const test::TempDir tmp("engine_view_masks");
+  const std::string heightfield = tmp.file("flat.json");
+  const Run synth =
+      run_app(content_exe(), {"terrain-synth", heightfield, "--kind", "flat", "--size", "129",
+                              "--spacing-mm", "500", "--origin-mm", "-32000,-32000"});
+  REQUIRE_MESSAGE(synth.exit_code == 0, synth.output);
+  const std::string scene = tmp.file("scene.json");
+  REQUIRE(io::write_file(scene, R"({"format": "engine.scene.v1", "name": "masks-view",
+  "camera_path": "path.json",
+  "terrain": {"size": 17, "extent": 32, "provider": "tiles",
+    "tiles": {"heightfield": "flat.json", "cells": 32, "ddc": "ddc"},
+    "materials": {"layer_budget": 2, "layers": [
+      {"name": "red", "tint": [0.8, 0.02, 0.02]}, {"name": "blue", "tint": [0.02, 0.02, 0.8]}]},
+    "masks": {"spacing_mm": 1000, "tile_cells": 8, "regions": [
+      {"name": "west", "polygon": [[-40, 0, -40], [0.25, 0, -40], [0.25, 0, 40], [-40, 0, 40]],
+       "material": "red", "feather_m": 0},
+      {"name": "east", "polygon": [[0.25, 0, -40], [40, 0, -40], [40, 0, 40], [0.25, 0, 40]],
+       "material": "blue", "feather_m": 0}]}}})") == io::Status::Ok);
+  // Looking down at the seam from 24 m, a little tilted, so near and far levels share the view.
+  REQUIRE(io::write_file(tmp.file("path.json"), R"({"format": "engine.camera-path.v1",
+  "name": "down", "interpolation": "Linear", "fps": 60, "znear": 0.2, "keys": [
+  {"time": 0, "position": [0, 24, 18], "target": [0, 0, -4]},
+  {"time": 10, "position": [0, 24, 18], "target": [0, 0, -4]}]})") == io::Status::Ok);
+  const auto draw = [&](const char* name, std::vector<std::string> extra) {
+    std::vector<std::string> args = {"--offscreen", "--scene",         scene,       "--frames",
+                                     "3",           "--width",         "160",       "--height",
+                                     "96",          "--shadows",       "off",       "--time-rate",
+                                     "0",           "--terrain-tiles", "--capture", tmp.file(name)};
+    args.push_back("--camera-path");
+    args.push_back(tmp.file("path.json"));
+    for (std::string& e : extra)
+      args.push_back(std::move(e));
+    const Run run = run_app(view_exe(), args);
+    image::Image picture;
+    if (run.exit_code == 0) REQUIRE(image::read_image(tmp.file(name), picture) == io::Status::Ok);
+    return std::make_pair(run, std::move(picture));
+  };
+  // 0: neither, 1: red, 2: blue — the layer a pixel shows.
+  const auto classes = [](const image::Image& p) {
+    std::vector<u8> out(p.width * p.height);
+    for (u32 i = 0; i < out.size(); ++i) {
+      const u32 r = p.pixels[4 * i], g = p.pixels[4 * i + 1], b = p.pixels[4 * i + 2];
+      out[i] = r > 2 * g && r > 2 * b ? 1 : (b > 2 * r && b > 2 * g ? 2 : 0);
+    }
+    return out;
+  };
+  auto [near_run, near] = draw("near.png", {"--view", "albedo", "--terrain-far", "1"});
+  if (near_run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << near_run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(near_run.exit_code == 0, near_run.output);
+  const std::vector<u8> a = classes(near);
+  u32 red = 0, blue = 0, wrong_side = 0;
+  for (u32 y = 0; y < near.height; ++y)
+    for (u32 x = 0; x < near.width; ++x) {
+      const u8 c = a[y * near.width + x];
+      red += c == 1 ? 1u : 0u;
+      blue += c == 2 ? 1u : 0u;
+      // The seam is at x = 0.25 m, the picture's middle column: west is left.
+      if ((c == 1 && x > near.width / 2 + 8) || (c == 2 && x + 8 < near.width / 2)) ++wrong_side;
+    }
+  MESSAGE(red << " red, " << blue << " blue, " << wrong_side << " on the wrong side");
+  CHECK(red > 3000);
+  CHECK(blue > 3000);
+  CHECK(wrong_side == 0);
+  // **A level handover changes no material**: the same view drawn with three far levels instead
+  // of one; on flat ground the levels' geometry agrees, so every pixel shows the same layer.
+  auto [far_run, far] = draw("far.png", {"--view", "albedo", "--terrain-far", "3"});
+  REQUIRE_MESSAGE(far_run.exit_code == 0, far_run.output);
+  const std::vector<u8> b = classes(far);
+  u32 differ = 0;
+  for (u32 i = 0; i < a.size(); ++i)
+    differ += a[i] != b[i] ? 1u : 0u;
+  CHECK(differ == 0);
+  // The path tracer reads the same masks too: engine-view's --reference has its own window path,
+  // so that agreement is the renderer's test (terrain_materials_tests.cpp).
+}
 TEST_CASE("engine-view: a ground provider no build has is refused, naming tiles among its own") {
   const test::TempDir tmp("engine_view_tiles_refused");
   const std::string scene = tmp.file("scene.json");

@@ -120,3 +120,51 @@ The combined W67/W68 gate at `4b31ac77` used an external copy of the same native
 A 240-frame replay advances all thirteen wildlife poses at full animation detail (`--anim-lod off`) with flora wind, while the terrain remains at time/rate zero. It records nine tile swaps, 40 chunks built and 34 dropped, no failed rebuild, no layout lag, no refused game ground/move calls, and no frame-thread allocation or device buffer. A separate 61-frame camera travel records 26 swaps, 170 chunks built and 144 dropped, also without a failed rebuild. All six levels evaluate zero future fields in both runs. These are functional checks on a shared RTX 5090 workstation; the raw reports preserve machine state and are not new frame-cost measurements. The five existing frame-budget runs pass without a rebaseline.
 
 Evidence, commands, scene/cache provenance, frames, reports and inspected PNGs are under `D:/workspace/game_engine_local/acceptance/terrain-batch-20261023/`. The stock document-host follow-up and complete gate results are recorded in [static authored streaming](authored-terrain-streaming.md#combined-gate-and-document-host-follow-up).
+
+## Ground materials by place: costs
+
+Status, 2026-10-24 (W72, [renderer](../subsystems/renderer.md#ground-materials-by-place)): the
+palette and per-tile mask level on the same native surface. Windows `msvc-debug`, i9-10980XE, RTX
+5090, NVIDIA 617.42, 1600 × 900, `content/test-scenes/ground-by-place` along its 20 s camera path
+(1,201 frames, the harness's warm-up), terrain tiles with two far levels, world time stopped,
+`--wait-quiet 30`, no GPU lock held around the runs (engine-view takes it per device). Four
+variants of one scene and one heightfield: the plain ground palette (no layers, the control), a
+mask naming **one** layer everywhere (priors with soil alone), the priors' **four** roles with no
+regions, and the full scene's **eleven**-layer palette with its regions (every tile still at most
+four; the brief's "eight resident" is this run, which crosses eight to eleven of them along the
+path).
+
+| Run | Resolve GPU median | Resolve p95 | Total GPU median | `quiet` | Others' CPU start → end | GPU util | Lock |
+|---|---:|---:|---:|---|---|---|---|
+| control (plain palette) | 0.151680 ms | 0.211648 ms | 0.742464 ms | false | 81.6% → 97.2% | 6% → 7% | another agent's engine-view |
+| 1 layer | 0.203968 ms | 0.318688 ms | 0.785600 ms | true | 9.5% → 7.7% | 0% → 2% | none |
+| 4 layers (priors) | 0.231680 ms | 0.314784 ms | 0.825920 ms | false | 9.0% → 14.3% | 0% → 1% | none |
+| 11-layer palette, ≤ 4 a tile | 0.228256 ms | 0.317344 ms | 0.772192 ms | false | 28.6% → 100% | 0% → 1% | a frame-budget run at the end |
+
+The masked resolve costs about 0.05 ms over the plain palette with one layer and about 0.08 ms with
+up to four, and **the palette's size costs nothing**: eleven layers resident draw as four, because a
+pixel reads one tile's table and evaluates only the layers it names. These are tint-only layers
+(no texture reads beyond the mask's eight words a mip), so the increment is the mask lookup, the
+blend and the wetness; textured layers add W68's per-layer triplanar reads (its 0.23 ms for three).
+Only the one-layer run is quiet: the others ran beside another agent's merge gate (others' CPU up
+to 100%) while the GPU itself stayed at 0–7% utilization, so their GPU times are read as upper
+bounds, not costs. Every run, the control included, records the same 359 frame-loop allocations on
+the same 257–259 frames — the terrain tiles' own chunk builds — and no device buffer, so the masks
+add none. Raw frames and full machine states:
+`D:/workspace/game_engine_local/ground-materials/costs/<run>/frames.jsonl`.
+
+**Bytes**: a mask tile of 32 cells at 1 m is 1,873 words (7,492 bytes: the table, 1,497 points of
+four weights across six mips, and their wetness), 7.3 bytes a square metre; the scene's level is
+1,089 tiles over 1 km², 8.19 MB of files and 8.16 MB on the GPU with its 4 KB page table. A 4 km
+square at 1 m would be about 117 MB, a 10 km square 730 MB — 183 MB at 2 m — which is why the level
+is refused above its `resident_mib` (256 by default) until it streams (W25).
+
+**What changed for W68's scenes** (the record, 2026-10-24): the root names a `gfx::TerrainRecord`
+instead of bit-casting into its own fields, and the layer evaluation moved into a function the mask
+path shares; the arithmetic of a scene without masks is W68's operation for operation (the map
+frame's float conversion keeps W68's form within 16.7 km of the map's corner, and its `1 / side`
+is the same f32 of an f64 the root carried). The W68 tests pass unchanged — the native layer
+shading, cache-path depth equality, and the painted coordinate field across three tile levels and
+two cuts within two codes. A byte comparison of a W68 scene's frame against `main`'s build was not
+run (it needs a second build of the base); scenes without terrain layers use shader modules whose
+sources did not change.

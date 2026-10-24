@@ -272,6 +272,14 @@ ENGINE_EXPECT_SIZE(352, 8, gfx::PathTraceParams);
 // cluster's index, so it is a handful of cache lines a frame whatever its size; one transform per
 // material rather than one per slot is what kept it from 208 (gfx.md, "The material table").
 ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
+// A terrain's record (renderer.md, "Ground materials by place"; 2026-10-24): one material-table
+// entry no cluster names, so it is exactly a ResolveMaterial's size and is bit-cast into the table.
+// It gives names to what W68 bit-cast into the root's normal scale, occlusion strength and UV words
+// (the layers' range, the detail distances, the map frame), which an ungated reader would have read
+// as a material's; the root now overloads one word, uv_offset.z, its record's index. Eight-aligned
+// for the mask buffer's device address.
+ENGINE_EXPECT_SIZE(112, 8, gfx::TerrainRecord);
+static_assert(offsetof(gfx::TerrainRecord, mask) == 32);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
 

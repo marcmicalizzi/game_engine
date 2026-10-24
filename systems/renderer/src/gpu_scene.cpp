@@ -11,6 +11,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
 #include <bit>
@@ -2633,6 +2634,28 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
 }
 
 bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* error) {
+  // The terrain's mask level, whole, before the table that names its address (renderer.md,
+  // "Ground materials by place"): the page table and every tile the provider built.
+  gfx::TerrainRecord terrain_mask_record;
+  terrain_mask_bytes_ = 0;
+  terrain_mask_tiles_ = 0;
+  if (data_->terrain.enabled && data_->terrain.masks.has_value() &&
+      data_->terrain.materials.has_value()) {
+    TerrainMaskUpload upload;
+    if (!prepare_terrain_masks(data_->terrain, upload, error)) return false;
+    if (!upload.words.empty()) {
+      if (!gfx::upload_buffer(*device_, upload.words.data(), u64{upload.words.size()} * sizeof(u32),
+                              k_storage, terrain_masks, error))
+        return false;
+      terrain_mask_record = upload.record;
+      terrain_mask_record.mask = terrain_masks.address;
+      terrain_mask_bytes_ = u64{upload.words.size()} * sizeof(u32);
+      terrain_mask_tiles_ = upload.tiles;
+      ENGINE_LOG_INFO(log_renderer, "terrain masks", log::field("tiles", upload.tiles),
+                      log::field("bytes", terrain_mask_bytes_),
+                      log::field("palette", data_->terrain.materials->layers.size()));
+    }
+  }
   ENGINE_STARTUP_STAGE("upload materials");
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
@@ -3002,31 +3025,49 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           gfx::set_water_depth_map(material, optics, frame);
         }
         if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {
+          // The native terrain's entries (renderer.md, "Native authored terrain materials",
+          // "Ground materials by place"): the root, an ordinary material that names its record by
+          // one word; the layers (the palette, with masks); then the record, which no cluster
+          // names.
           const auto& terrain_materials = *data_->terrain.materials;
+          const u32 layers = static_cast<u32>(terrain_materials.layers.size());
           if (source_material_index == 0) {
-            material.flags |= gfx::k_material_terrain_layers;
+            if (source.alpha_mode == assets::k_alpha_mask) {
+              if (error != nullptr)
+                *error = "terrain.materials: the terrain's own material cannot be alpha-tested";
+              return false;
+            }
             material.flags &= ~gfx::k_material_ground_detail;
-            material.uv_offset.z = std::bit_cast<f32>(mesh_material_base[m] + 1);
-            material.uv_offset.w =
-                std::bit_cast<f32>(static_cast<u32>(terrain_materials.layers.size()));
-            material.normal_scale = terrain_materials.detail_near_m;
-            material.occlusion_strength = terrain_materials.detail_far_m;
-            TerrainUvFrame frame;
-            if (!terrain_uv_frame(data_->terrain, frame, error)) return false;
-            material.flags &= ~gfx::k_material_uv_transform;
-            material.uv_transform =
-                Vec4{std::bit_cast<f32>(static_cast<i32>(frame.x0_mm)),
-                     std::bit_cast<f32>(static_cast<i32>(frame.z0_mm)),
-                     static_cast<f32>(1.0 / static_cast<f64>(frame.size_mm)), 0};
-          } else if (source_material_index <= terrain_materials.layers.size()) {
+            gfx::set_terrain_root(material, mesh_material_base[m] + layers + 1);
+          } else if (source_material_index <= layers) {
             const auto& layer = terrain_materials.layers[source_material_index - 1];
             material.flags &= ~(gfx::k_material_uv_transform | gfx::k_material_ground_detail);
             if (layer.projection == scene::TerrainProjection::Map)
               material.flags |= gfx::k_material_terrain_map;
-            material.uv_scale = std::round(layer.tile_m * 1000.0f);
-            material.uv_transform = material.emissive;  // linear colour and roughness means
-            material.emissive = Vec4{};
-            material.uv_offset = Vec4{layer.weight, 0, 0, 0};
+            gfx::TerrainLayerFields fields;
+            fields.mean_colour =
+                Vec3{material.emissive.x, material.emissive.y, material.emissive.z};
+            fields.mean_roughness = material.emissive.w;  // the container's transport of the means
+            fields.weight = layer.weight;
+            fields.porosity = layer.porosity;
+            fields.pitch_mm = std::round(layer.tile_m * 1000.0f);
+            gfx::set_terrain_layer(material, fields);
+            // A layer with height detail reads it from its map's B through the metallic factor,
+            // which a terrain layer never uses as metallic.
+            material.emissive = Vec4{0, 0, 0, layer.height.empty() ? 0.0f : 1.0f};
+            if (!layer.height.empty()) material.flags |= gfx::k_material_terrain_height;
+          } else if (source_material_index == layers + 1) {
+            gfx::TerrainRecord record = terrain_mask_record;
+            record.first_layer = mesh_material_base[m] + 1;
+            record.layer_count = layers;
+            record.detail_near_m = terrain_materials.detail_near_m;
+            record.detail_far_m = terrain_materials.detail_far_m;
+            TerrainUvFrame frame;
+            if (!terrain_uv_frame(data_->terrain, frame, error)) return false;
+            record.map_x0_mm = static_cast<i32>(frame.x0_mm);
+            record.map_z0_mm = static_cast<i32>(frame.z0_mm);
+            record.map_per_mm = static_cast<f32>(1.0 / static_cast<f64>(frame.size_mm));
+            material = gfx::pack_terrain_record(record);
           }
         }
         ++source_material_index;
@@ -3681,6 +3722,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, lod_coverage);
+  gfx::destroy_buffer(device, terrain_masks);
   gfx::destroy_buffer(device, fade);
   gfx::destroy_buffer(device, materials);
   gfx::destroy_buffer(device, skin);

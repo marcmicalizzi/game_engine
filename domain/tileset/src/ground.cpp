@@ -5,11 +5,13 @@
 // it has no `evaluate`, `travel_m`, `wind` or `transport`, and a time-lapse moves nothing of it.
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 
 #include <memory>
+#include <mutex>
 #include <schemas/scene.h>
 
 namespace engine::tileset {
@@ -22,6 +24,16 @@ tunables::Int cache_mib{"tileset.cache_mib", 64, 1, 16384,
 struct TilesGround {
   TilesGround() : set(static_cast<u64>(cache_mib.get()) * 1024 * 1024) {}
   TileSet set;
+  // The terrain's `masks` block, built beside the set on first ask (`GroundOps::masks`), not at
+  // make: a sampler is made for every height a scene read asks, and the build's key hashes every
+  // image the block names.
+  bool has_masks = false;
+  MaskInputs mask_inputs;
+  std::string ddc;
+  std::mutex mask_mutex;
+  bool mask_tried = false;
+  std::string mask_error;
+  MaskLevel masks;
 };
 
 const TileSet& set_of(const void* state) noexcept {
@@ -44,6 +56,27 @@ f32 tiles_surface_mm(const void* state, i64 x_mm, i64 z_mm) noexcept {
 }
 
 scene_gen::TileSource tiles_source(const void* state) noexcept { return set_of(state).source(); }
+
+bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* error) {
+  out = scene_gen::GroundMasks{};
+  auto& g = *const_cast<TilesGround*>(static_cast<const TilesGround*>(state));
+  if (!g.has_masks) return true;
+  const std::lock_guard<std::mutex> lock(g.mask_mutex);
+  if (!g.mask_tried) {
+    g.mask_tried = true;
+    MaskBuildResult built;
+    std::string why;
+    if (!ensure_mask_level(g.set, g.mask_inputs, std::string(), g.ddc, false, built, why) ||
+        !g.masks.open(built.manifest, why))
+      g.mask_error = "the ground provider \"tiles\" could not build its masks: " + why;
+  }
+  if (!g.mask_error.empty()) {
+    if (error != nullptr) *error = g.mask_error;
+    return false;
+  }
+  out = g.masks.masks();
+  return true;
+}
 
 // A grid: the scene's own (its float coordinates' nearest millimetres) or a window of the world's
 // lattice. **It cannot refuse** (`GroundOps::grid` returns nothing), so a lattice filtered to a
@@ -80,6 +113,7 @@ constexpr scene_gen::GroundOps k_tiles_ops{
     .surface_mm = &tiles_surface_mm,
     .floor_mm = &tiles_surface_mm,
     .tile_source = &tiles_source,
+    .masks = &tiles_masks,
 };
 
 std::string resolve(std::string_view dir, const std::string& path) {
@@ -104,8 +138,10 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   }
   const scene::TerrainTileSet& t = *entry.tiles;
   std::string manifest;
+  std::string ddc = t.ddc.empty() ? std::string() : resolve(context.dir, t.ddc);
   if (!t.manifest.empty()) {
     manifest = resolve(context.dir, t.manifest);
+    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
   } else if (!t.heightfield.empty()) {
     // **The content step as a library call**, as a scene mesh's clusters are built on a miss: the
     // set of this heightfield and these options, from the derived-data cache, built there first
@@ -120,7 +156,6 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
     options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
     options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
     options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
-    std::string ddc = t.ddc.empty() ? std::string() : resolve(context.dir, t.ddc);
     if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
     BuildResult built;
     std::string why;
@@ -134,6 +169,14 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   std::string why;
   if (!ground->set.open(manifest, why))
     return fail("the ground provider \"tiles\" could not open its set: " + why);
+  if (entry.masks.has_value()) {
+    // The mask level, built beside the set on a miss as the set itself is (masks.h), on first ask.
+    if (!mask_inputs(entry, context.dir, ground->mask_inputs, why) ||
+        !validate_mask_inputs(ground->mask_inputs, why))
+      return fail("the ground provider \"tiles\" cannot build its masks: " + why);
+    ground->has_masks = true;
+    ground->ddc = ddc;
+  }
   out = scene_gen::GroundProvider(&k_tiles_ops, ground.release());
   return true;
 }

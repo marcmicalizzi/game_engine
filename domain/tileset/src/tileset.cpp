@@ -255,6 +255,8 @@ bool parse_synth_kind(std::string_view name, SynthKind& out) noexcept {
     out = SynthKind::steps;
   } else if (name == "flat") {
     out = SynthKind::flat;
+  } else if (name == "mountain") {
+    out = SynthKind::mountain;
   } else {
     return false;
   }
@@ -300,6 +302,24 @@ Heightfield synth_heightfield(SynthKind kind, u32 size, i64 spacing_mm, u64 seed
           break;
         }
         case SynthKind::flat: h = 0.0; break;
+        case SynthKind::mountain: {
+          // A mountain 180 m high centred at (0.35, -0.35), its foot 0.55 of the half-side out,
+          // with the profile (1 - d^2)^3, whose slope rises from the summit to about 48 degrees
+          // two-fifths of the way down on a 1 km grid — soil, scree and bedrock bands — on a plain
+          // rising 8 m across the grid, with two pond bowls 2.5 m deep, 0.06 of the half-side
+          // across, on it at nearly one height (ground-by-place, content/test-scenes).
+          const f64 mu = u - 0.35, mv = v + 0.35;
+          const f64 d2 = (mu * mu + mv * mv) / (0.55 * 0.55);
+          const f64 m = d2 < 1.0 ? (1.0 - d2) * (1.0 - d2) * (1.0 - d2) : 0.0;
+          h = 180.0 * m + 4.0 * (1.0 - v);
+          const f64 ponds[2][2] = {{-0.5, 0.45}, {0.1, 0.6}};
+          for (const auto& p : ponds) {
+            const f64 pu = u - p[0], pv = v - p[1];
+            const f64 q = (pu * pu + pv * pv) / (0.06 * 0.06);
+            if (q < 1.0) h -= 2.5 * (1.0 - q) * (1.0 - q);
+          }
+          break;
+        }
       }
       if (seed != 0) {
         const u64 r = mix64(hash_combine(seed, (u64{j} << 32) | i));

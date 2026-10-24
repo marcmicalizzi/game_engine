@@ -98,3 +98,41 @@ struct TileSetReport @version(1) {
   hash: string
   ms: f64
 }
+
+/// **A mask level's manifest** (docs/subsystems/tileset.md, "The mask level"): written last into the
+/// level's directory, so a level whose manifest is there is whole. The level is the material weights
+/// of a terrain's `masks` block over a tile set, keyed by the set's hash, the authored inputs (every
+/// image's bytes, never its path) and `k_mask_version`.
+struct MaskLevelManifest @version(1) {
+  format: string
+  version: u32 = 1
+  key: string
+  /// The tile set's hash (its manifest's `hash`) the priors read heights from.
+  set_hash: string
+  spacing_mm: i64
+  cells: u32
+  tile_min: i32[2]
+  tile_max: i32[2]
+  /// The palette's layer names, in the order the tables index them.
+  palette: string[]
+  budget: u32
+  wetness: f32
+  height_blend: f32
+  resident_mib: u32 = 256
+  /// The tiles written, as (x, z) pairs; a tile not listed holds nothing authored.
+  present: i32[]
+  /// The bytes of the tile files written, and the hash over them in the order listed.
+  bytes: u64
+  hash: string
+}
+
+/// What `engine-content terrain-masks` prints: one line of JSON.
+struct MaskLevelReport @version(1) {
+  manifest: string
+  key: string
+  hit: bool
+  tiles: u32
+  bytes: u64
+  hash: string
+  ms: f64
+}

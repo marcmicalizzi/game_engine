@@ -266,6 +266,12 @@ scene::Terrain terrain_entry(const TerrainDesc& desc) {
   t.provider = std::string(terrain_provider(desc));
   t.tiles = desc.tiles;
   if (desc.has_detail) t.detail = desc.detail;
+  // The masks and the palette they weigh, for the provider that builds them (tileset.md, "The
+  // mask level"); a terrain without masks hands its provider the entry it always did.
+  if (desc.masks.has_value()) {
+    t.materials = desc.materials;
+    t.masks = desc.masks;
+  }
   return t;
 }
 

@@ -99,6 +99,10 @@ struct TerrainDesc {
   // file's directory. Empty for every other ground.
   std::optional<scene::TerrainTileSet> tiles;
   std::optional<scene::TerrainMaterials> materials;
+  // Ground materials by place (`Terrain.masks`, version 9; renderer.md): the palette's per-tile
+  // weights, built by the `tiles` provider beside its set, its images' paths resolved and its water
+  // bodies' outlines copied in by the scene reader. Empty: the layers draw as W68 drew them.
+  std::optional<scene::TerrainMasks> masks;
   // With `dunes`: the wind's day and the storms' transport gains (terrain.md, "The day's wind",
   // "A storm scales transport"; `engine.scene.Terrain` version 5). The defaults are the record as
   // it was and leave the hash as it was.
