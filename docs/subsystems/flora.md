@@ -992,6 +992,12 @@ by 0.3 m, 1.5 m/s, 40° slope limit, 0.35 m step). **The case holds the first 15
 run as its wood left past the start less a metre** (since G79 a run is no longer than its wood could
 carry, and elder A's asked 24 m keeps 15.0):
 
+> **The numbers below are G79's (2026-10-22).** G85 (fa343854, 2026-10-23) raised elder A's limb
+> radius from 1.6 to 1.8 m for the fuller crown and halved the automatic runs' share, so the wood now
+> keeps a 13.64 m level run and the walk's figures moved; fa343854's measurement is in
+> [tree growth rules](../experiments/tree-growth-rules.md) (the walk: 8.73 m moved at six seconds).
+> This paragraph is kept as the G79 record until the case is re-measured and rewritten.
+
 - **The near-level run** (elder A, 30.0 m up, 3.6° above level, 15.0 m kept of the 24 asked, 2.9 m
   thick tapering to 2.48): the walker walks the 10.5 m of it past its start at 1.5 m/s, **its feet
   within 1.3 mm of the bark** and 0.06 mm aside at its end — the case holds those 9.5 m to 15 cm.
