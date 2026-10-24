@@ -320,6 +320,23 @@ world::TileWorldSummary ViewWorld::summary() const {
   summary.insert_ms = static_cast<f64>(s.sink_ns) / 1.0e6;
   summary.insert_ms_max = static_cast<f64>(s.max_sink_ns) / 1.0e6;
   summary.handed = s.handed;
+  const renderer::GpuScene& scene = renderer_->scene();
+  summary.prefix_pairs = scene.static_pair_count();
+  summary.slot_pairs = scene.ring_slot_pairs();
+  summary.pair_limit = scene.pair_limit();
+  summary.tail_pairs = s.pairs;
+  for (u32 r = 0; r < world_.params().ring_count && r < world::k_max_rings; ++r) {
+    summary.ring_tiles.push_back(s.ring_tiles[r]);
+    summary.ring_instances.push_back(s.ring_instances[r]);
+    summary.ring_pairs.push_back(s.ring_pairs[r]);
+    summary.ring_withheld.push_back(s.ring_withheld[r]);
+  }
+  const renderer::AuthoredStats& a = data_->authored;
+  summary.authored_streamed = a.streamed;
+  summary.authored_kept = a.kept_deformed + a.kept_reach + a.kept_paged;
+  summary.authored_forms = a.forms;
+  summary.authored_form_clusters = a.form_clusters;
+  summary.authored_tile_floor = data_->tail_floor_pairs;
   return summary;
 }
 

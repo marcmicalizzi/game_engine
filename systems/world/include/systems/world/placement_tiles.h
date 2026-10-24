@@ -94,6 +94,12 @@ struct PlacementTilesStats {
   u32 withheld = 0;
   u32 instances = 0;
   u32 pairs = 0;
+  // Now, by the ring each drawn tile is in: its tiles, instances and pairs, and the tiles withheld
+  // there — what a streamed world's accounting reports (renderer.md, "The pair accounting").
+  u32 ring_tiles[k_max_rings] = {};
+  u32 ring_instances[k_max_rings] = {};
+  u32 ring_pairs[k_max_rings] = {};
+  u32 ring_withheld[k_max_rings] = {};
 };
 
 class PlacementTiles {

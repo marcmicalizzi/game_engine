@@ -454,6 +454,9 @@ constexpr const char* k_usage =
     "                   and dropped when it lets them go. A scene file's \"world\" block does the\n"
     "                   same with its own rings; without either the scene is read whole. Rigid and\n"
     "                   rasterized: refuses --raster rt, --shadows rt and --deform\n"
+    "  --world-instances <how>  a streamed scene's own instances: tiles (default), each tile's\n"
+    "                   trees in the distance form its ring allows (renderer.md, \"Authored\n"
+    "                   instances per tile\"); whole, every one in the scene's prefix as before\n"
     "  --world-log <f>  --world: one engine.world.TileFrame per update (tiles, events, the ring's\n"
     "                   microseconds, each consumer's share), then the run's summary\n"
     "  --world-handover <f>  --world offscreen: fly the path again, untimed, and at every tile that\n"
@@ -692,6 +695,9 @@ struct Options {
   // A streamed world (world_view.h): `--world` asks for it on a scene file with no `world` block,
   // which has one of its own otherwise; the log and the handover pass are the measurements.
   bool world = false;
+  // `--world-instances tiles|whole`: a streamed scene's own instances a tile at a time in their
+  // distance forms, or in the prefix (renderer.md, "Authored instances per tile").
+  bool world_instances = true;
   std::string world_log;
   std::string world_handover;
   // The participating medium (brief-volumetrics; systems/volumetrics): `--no-medium` leaves a
@@ -2062,6 +2068,9 @@ int run_reference(Options& options) {
         exit_code = fail("scene", error);
         break;
       }
+      // A streamed world's own instances get forms cut for this session's projection and LOD.
+      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                               desc.authored);
     } else {
       desc.meshes.push_back(options.mesh);
     }
@@ -2423,11 +2432,15 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer::SceneFileOptions file_options;
       file_options.overlay = options.overlay;
       file_options.world = options.world;
+      file_options.world_instances = options.world_instances;
       renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
+      // A streamed world's own instances get forms cut for this session's projection and LOD.
+      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                               desc.authored);
     } else {
       desc.meshes.push_back(options.mesh);
     }
@@ -3875,6 +3888,15 @@ int run_view(int argc, char** argv) {
       options.verify_occlusion = true;
     } else if (a == "--world") {
       options.world = true;
+    } else if (a == "--world-instances") {
+      std::string how;
+      if (!next_value(argc, argv, i, a, how)) return k_exit_usage;
+      if (how != "tiles" && how != "whole") {
+        std::fprintf(stderr, "engine-view: --world-instances takes tiles or whole, not %s\n",
+                     how.c_str());
+        return k_exit_usage;
+      }
+      options.world_instances = how == "tiles";
     } else if (a == "--world-log") {
       if (!next_value(argc, argv, i, a, options.world_log)) return k_exit_usage;
     } else if (a == "--world-handover") {
@@ -4746,11 +4768,15 @@ int run_view(int argc, char** argv) {
       renderer::SceneFileOptions file_options;
       file_options.overlay = options.overlay;
       file_options.world = options.world;
+      file_options.world_instances = options.world_instances;
       renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
+      // A streamed world's own instances get forms cut for this session's projection and LOD.
+      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                               desc.authored);
     } else {
       desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
     }

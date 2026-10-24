@@ -233,6 +233,17 @@ DisplayLevels display_levels(const RenderSettings& settings) {
 // can be traced at all, and shadows decide whether two-pass occlusion culling may run (the
 // acceleration structures are built from one visible list, and pass 2's survivors are in a
 // second one). Everything after that only ever forces a switch *on*, never off.
+void authored_rules(const RenderSettings& settings, u32 height, f32 fov_y,
+                    AuthoredStreaming& out) noexcept {
+  const f32 tan_half = std::tan(0.5f * fov_y);
+  if (height > 0 && tan_half > 0.0f) out.proj_scale = static_cast<f32>(height) * 0.5f / tan_half;
+  out.threshold_px = settings.lod_px;
+  out.foliage_px =
+      settings.foliage_px >= 0.0f ? settings.foliage_px : static_cast<f32>(lod_foliage_px.get());
+  const f32 fade = settings.lod_fade >= 0.0f ? settings.lod_fade : static_cast<f32>(lod_fade.get());
+  out.fade = fade > 0.5f ? 0.5f : fade;
+}
+
 void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures& features,
                       const SceneData* scene, ResolvedSettings& out) {
   out = ResolvedSettings{};

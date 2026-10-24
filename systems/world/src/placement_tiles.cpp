@@ -439,9 +439,21 @@ void PlacementTiles::commit(void* context) {
   self->tail_.clear();
   self->tail_tags_.clear();
   u32 buildings = 0;
+  PlacementTilesStats& stats = self->stats_;
+  for (u32 r = 0; r < k_max_rings; ++r) {
+    stats.ring_tiles[r] = stats.ring_instances[r] = stats.ring_pairs[r] = 0;
+    stats.ring_withheld[r] = 0;
+  }
   for (u32 i = 0; i < self->tiles_.size(); ++i) {
     const TileBlock& block = self->tiles_.value_at(i);
-    if (block.withheld) continue;
+    const u32 ring = block.ring < k_max_rings ? block.ring : k_max_rings - 1;
+    if (block.withheld) {
+      ++stats.ring_withheld[ring];
+      continue;
+    }
+    ++stats.ring_tiles[ring];
+    stats.ring_instances[ring] += block.instances.size();
+    stats.ring_pairs[ring] += block.pairs;
     buildings += block.buildings;
     for (const renderer::SceneInstance& instance : block.instances)
       self->tail_.push_back(instance);

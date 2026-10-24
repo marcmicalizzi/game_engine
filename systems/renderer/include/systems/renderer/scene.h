@@ -209,6 +209,58 @@ struct SceneProp {
   std::optional<FireDesc> fire{};
 };
 
+// **A streamed world's own instances, a tile at a time** (renderer.md, "Authored instances per
+// tile"; docs/subsystems/authored.md). When a world streams and the scene-generator registry has
+// the placement generator "authored", `load_scene` hands the file's own instances over as that
+// generator's entry — every rigid one whose mesh reaches no farther than `max_reach_m` from its
+// origin — and gives each ring past the first a **distance form** of each such mesh: what it can
+// draw from the nearest a camera can be to an origin on a tile of that ring
+// (`geometry::extract_lod_form`), at this projection and these thresholds. The rest stay in the
+// prefix: a skinned or morphed mesh, an instance with an animation block, a mesh reaching farther
+// (the landmarks), and everything when the scene is paged.
+// The world capability's default rings (`world::RingParams`; schema `engine.scene.WorldRings`:
+// 1.5 tiles, 8 and 24), which a scene whose `world` block names none streams with. Mirrored here
+// because the renderer may not depend on the capability; the world's placement tests hold the two
+// equal.
+inline constexpr u32 k_default_world_ring_count = 3;
+inline constexpr f32 k_default_world_ring_radius[7] = {1.5f, 8.0f, 24.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+// The projection a form is cut for when the host names none: the default camera's (55 degrees) at
+// 1080p, cot(27.5 degrees) * 540.
+inline constexpr f32 k_default_form_proj_scale = 1037.33f;
+struct AuthoredStreaming {
+  bool enabled = true;
+  // The projection the forms are cut for (`LodView::proj_scale`: cot(fov_y / 2) * height / 2). 0
+  // is the default camera's at 1080p. A view with a larger one draws a form's frontier where the
+  // full mesh would draw finer (geometry.md, "Distance forms").
+  f32 proj_scale = 0.0f;
+  f32 threshold_px = 1.0f;  // `RenderSettings::lod_threshold`
+  f32 foliage_px = geometry::k_default_foliage_px;
+  f32 fade = 0.1f;          // `RenderSettings::lod_fade`
+  f32 max_reach_m = 0.0f;   // 0: the world's tile edge
+};
+
+// The rules a host's session cuts its forms for: its projection (the views' height and vertical
+// field of view; a surround's views are each as tall as the target) and its LOD thresholds, the
+// foliage threshold and the fade resolved from their tunables as `resolve_settings` resolves them.
+struct RenderSettings;
+void authored_rules(const RenderSettings& settings, u32 height, f32 fov_y,
+                    AuthoredStreaming& out) noexcept;
+
+// What `load_scene` did with a streamed world's own instances, for a host's summary.
+struct AuthoredStats {
+  u32 streamed = 0;  // handed to the "authored" entry
+  // Kept in the prefix: deformed (skinned or morphed mesh, or an animation block), reaching
+  // farther than `max_reach_m`, or every one because the scene is paged.
+  u32 kept_deformed = 0;
+  u32 kept_reach = 0;
+  u32 kept_paged = 0;
+  u32 forms = 0;          // distance-form meshes made
+  u32 form_clusters = 0;  // their clusters, all rings
+  // The pairs the streamed instances would hold whole, innermost form; and the largest one tile
+  // holds in it, which is the least a tail must have room for (`SceneData::tail_floor_pairs`).
+  u64 whole_pairs = 0;
+};
+
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
 struct SceneDesc {
   Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
@@ -280,6 +332,12 @@ struct SceneDesc {
   // instances in `instances`.
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // The file's own `instances` and its `scatters`' expansions:
+  // `instances[authored_first, authored_first + authored_count)`, the run a streamed world may hand
+  // to the "authored" generator (`authored`).
+  u32 authored_first = 0;
+  u32 authored_count = 0;
+  AuthoredStreaming authored;
   // The scene's sky (`engine.scene.Sky`; sky.h, ADR-0048): the entry as the file gave it, its
   // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
   // as before the field existed.
@@ -310,6 +368,10 @@ struct SceneFileOptions {
   // anything placed on the ground stands on it there, and a sky's one clock starts from it. A
   // file with no terrain is refused. Unset: the file's own time.
   std::optional<f64> ground_time_s;
+  // In a streamed world, hand the file's own instances to the "authored" generator a tile at a
+  // time (engine-view `--world-instances tiles`, the default) or keep them in the scene's prefix
+  // (`whole`): `SceneDesc::authored.enabled`.
+  bool world_instances = true;
 };
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,
@@ -441,6 +503,14 @@ struct SceneData {
   bool dynamic = false;
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // A streamed world's own instances (`AuthoredStreaming`): what was streamed and what kept, and
+  // the most pairs one tile of them holds in its innermost form — the least room a tail must have,
+  // which `GpuScene::create` accounts with the prefix and the terrain rings' slots before anything
+  // is made (renderer.md, "The pair accounting"). Zero for a scene that streams none.
+  AuthoredStats authored;
+  u32 tail_floor_pairs = 0;
+  // Per mesh, the mesh it is a distance form of, or itself (empty: no forms).
+  Vector<u32> form_source;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
