@@ -1280,7 +1280,7 @@ struct FrameTerrain @version(3) {
 /// record's walk"): where the frame's ticks spent wall time, against the simulated time beside it.
 /// Every number is this frame's, the difference of the walk's counters across its ticks, so a
 /// multi-second frame says which of these it went to. Wall milliseconds unless named otherwise.
-struct FrameWalk @version(1) {
+struct FrameWalk @version(2) {
   /// Wall seconds since the run's first frame, beside the record's simulated `time`: a stall is a
   /// jump in this that `time` does not make.
   wall_s: f64 = 0
@@ -1304,6 +1304,13 @@ struct FrameWalk @version(1) {
   activate_ground_ms: f64 = 0
   activate_placements_ms: f64 = 0
   activate_bodies_ms: f64 = 0
+  /// Version 2: the ground built ahead of the ring (docs/subsystems/scene_collision.md, "The
+  /// ground built ahead of the ring") — activations that found their tile's build finished, those
+  /// that waited for it running (and the wait), and those that built it on the tick.
+  prefetched: u32 = 0 @since(2)
+  prefetch_waits: u32 = 0 @since(2)
+  prefetch_wait_ms: f64 = 0 @since(2)
+  prefetch_inline: u32 = 0 @since(2)
   /// An authored ground's reader (tileset.md, "The reader's lock") over the frame: the frame's
   /// own thread — its lock waits and holds, the most it waited once, its tiles read from disk —
   /// and every thread, the terrain's workers included.

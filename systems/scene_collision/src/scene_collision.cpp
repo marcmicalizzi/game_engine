@@ -1,6 +1,7 @@
 // The scene's collision round a walker (scene_collision.h; docs/subsystems/scene_collision.md).
 
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/log/log.h>
 #include <core/time/time.h>
 #include <domain/physics/character.h>
@@ -49,6 +50,9 @@ tunables::Float collision_ground_error{"walk.collision.ground_error_m", 0.05, 0.
 tunables::Int collision_max_refreshes{"walk.collision.max_refreshes", 2, 1, 1 << 16,
                                       "Ground tiles the collision rebuilds per update under a "
                                       "time-lapse, nearest the walker first"};
+tunables::Float collision_prefetch{"walk.collision.prefetch_tiles", 1.0, 0.0, 8.0,
+                                   "How far past the collision ring, in tiles, a tile's ground "
+                                   "is built ahead on the job system; 0 builds nothing ahead"};
 
 i64 floor_div(i64 a, i64 b) noexcept {
   i64 q = a / b;
@@ -134,6 +138,7 @@ u32 max_tiles_tunable() noexcept { return static_cast<u32>(collision_max_tiles.g
 f32 mesh_error_tunable() noexcept { return static_cast<f32>(collision_mesh_error.get()); }
 f32 ground_error_tunable() noexcept { return static_cast<f32>(collision_ground_error.get()); }
 u32 max_refreshes_tunable() noexcept { return static_cast<u32>(collision_max_refreshes.get()); }
+f32 prefetch_tunable() noexcept { return static_cast<f32>(collision_prefetch.get()); }
 
 Config config_from_tunables(f32 tile_size) noexcept {
   Config c;
@@ -168,9 +173,46 @@ struct SceneCollision::Entry {
   }
 };
 
+// **A tile's ground built ahead of the ring** (docs: "The ground built ahead of the ring"): its
+// lattice window and the heights the activation would ask the tile source for, the same call with
+// the same arguments, so the floats are the same whichever thread asked. `state` is claimed by
+// whoever runs it first — the job, or the tick that activates the tile before the job started —
+// and `ran` is signalled by the job system when the job has returned, after which nothing touches
+// the build but its owner.
+struct SceneCollision::Build {
+  world::TileCoord coord;
+  i64 i0 = 0;
+  i64 j0 = 0;
+  u32 n = 0;
+  scene_gen::TileSource source;
+  f64 time_s = 0.0;
+  i64 spacing_mm = 1000;
+  Vector<f32> heights;
+  static constexpr u32 k_queued = 0, k_running = 1, k_done = 2, k_failed = 3;
+  std::atomic<u32> state{k_queued};
+  jobs::Counter ran;
+
+  void compute() noexcept {
+    const bool ok = source.heights(time_s, spacing_mm, static_cast<i32>(i0), static_cast<i32>(j0),
+                                   n, n, std::span<f32>(heights.data(), heights.size()));
+    state.store(ok ? k_done : k_failed, std::memory_order_release);
+  }
+  static void run(void* data) noexcept {
+    auto* build = static_cast<Build*>(data);
+    u32 expected = k_queued;
+    if (build->state.compare_exchange_strong(expected, k_running, std::memory_order_acq_rel))
+      build->compute();
+  }
+};
+
 SceneCollision::SceneCollision() = default;
 
 SceneCollision::~SceneCollision() {
+  // Every job that may still touch a build has run before the builds go.
+  for (const std::unique_ptr<Build>& build : builds_)
+    build->ran.wait_blocking();
+  for (const std::unique_ptr<Build>& build : retired_)
+    build->ran.wait_blocking();
   if (physics_ == nullptr) return;
   for (u32 i = 0; i < tiles_.size(); ++i) {
     Tile& tile = tiles_.value_at(i);
@@ -197,7 +239,8 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
 
 bool SceneCollision::create(physics::World& physics, const renderer::SceneData& scene,
                             const scene_gen::GroundProvider* ground, const Config& config,
-                            std::string* error, const scene_gen::TileSource* tiles) {
+                            std::string* error, const scene_gen::TileSource* tiles,
+                            jobs::JobSystem* jobs) {
   auto fail = [&](const std::string& why) {
     if (error != nullptr) *error = why;
     return false;
@@ -207,6 +250,7 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
     return fail("scene collision needs a positive tile size and ground spacing");
   }
   physics_ = &physics;
+  jobs_ = jobs;
   scene_ = &scene;
   ground_ = ground != nullptr && ground->valid() ? ground : nullptr;
   explicit_source_ = tiles != nullptr && tiles->valid();
@@ -418,26 +462,32 @@ void SceneCollision::drop_ground_body(Tile& tile) {
 // west edge to the one at or east of its east edge, an even count as the backend's blocks want, so
 // neighbouring tiles share their edge samples bit for bit — at the ground's own time, or, under a
 // time-lapse, the drawn pair of fields blended as it is drawn.
-bool SceneCollision::build_ground(Tile& tile) {
-  const i64 x0 = i64{tile.coord.x} * tile_mm_;
-  const i64 z0 = i64{tile.coord.z} * tile_mm_;
-  tile.i0 = floor_div(x0, spacing_mm_);
-  tile.j0 = floor_div(z0, spacing_mm_);
+bool SceneCollision::ground_window(world::TileCoord coord, i64& i0, i64& j0,
+                                   u32& n) const noexcept {
+  const i64 x0 = i64{coord.x} * tile_mm_;
+  const i64 z0 = i64{coord.z} * tile_mm_;
+  i0 = floor_div(x0, spacing_mm_);
+  j0 = floor_div(z0, spacing_mm_);
   const i64 xi = ceil_div(x0 + tile_mm_, spacing_mm_);
   const i64 zj = ceil_div(z0 + tile_mm_, spacing_mm_);
-  u32 n = static_cast<u32>(std::max(xi - tile.i0, zj - tile.j0)) + 1u;
+  n = static_cast<u32>(std::max(xi - i0, zj - j0)) + 1u;
   n = n < 4 ? 4 : n + (n & 1u);
-  tile.n = n;
   // The tile source's window is indexed in i32 (scene_gen/tile_source.h): past 2^31 lattice points
   // from the origin — 2.1e9 m at a metre, 2.7e8 m at the tunable's finest 12.5 cm — a tile has no
   // index to ask with, and is refused rather than asked for the heights of a wrapped one.
-  if (!fits_i32(tile.i0) || !fits_i32(tile.j0) || !fits_i32(tile.i0 + n) ||
-      !fits_i32(tile.j0 + n)) {
+  return fits_i32(i0) && fits_i32(j0) && fits_i32(i0 + n) && fits_i32(j0 + n);
+}
+
+bool SceneCollision::build_ground(Tile& tile) {
+  u32 n = 0;
+  if (!ground_window(tile.coord, tile.i0, tile.j0, n)) {
+    tile.n = n;
     ENGINE_LOG_WARN(log_collision, "a tile is past the tile source's lattice index",
                     log::field("x", tile.coord.x), log::field("z", tile.coord.z),
                     log::field("spacing_mm", spacing_mm_));
     return false;
   }
+  tile.n = n;
   const i32 i0 = static_cast<i32>(tile.i0);
   const i32 j0 = static_cast<i32>(tile.j0);
   tile.moving = time_.moving && source_.moves();
@@ -452,8 +502,14 @@ bool SceneCollision::build_ground(Tile& tile) {
     // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
     // time (a still source's one surface), which for the scene's own ground is the same bits.
     if (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr)) {
-      const bool ok = source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
-                                      std::span<f32>(tile.heights.data(), tile.heights.size()));
+      // Built ahead, when it was (`prefetch`): the same call's heights, taken or waited for.
+      bool failed = false;
+      bool ok = take_build(tile, failed);
+      if (!ok && !failed) {
+        tile.heights.resize(n * n);
+        ok = source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
+                             std::span<f32>(tile.heights.data(), tile.heights.size()));
+      }
       sampled();
       if (!ok) return false;
     } else {
@@ -895,6 +951,123 @@ bool SceneCollision::build_placements(Tile& tile) {
   }
   ++stats_.bodies_created;
   return ok;
+}
+
+// ---- the ground built ahead of the ring
+// ------------------------------------------------------------
+
+bool SceneCollision::can_prefetch() const noexcept {
+  // A still ground read through a tile source: a moving one is evaluated at the drawn time, which
+  // the activation's tick sets, and a provider's own `grid` is not one the job system may share.
+  return jobs_ != nullptr && config_.prefetch_radius_tiles > 0.0f && source_.valid() &&
+         !(time_.moving && source_.moves()) &&
+         (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr));
+}
+
+void SceneCollision::retire(std::unique_ptr<Build>&& build) {
+  if (build->ran.done()) return;  // its job has returned: nothing else touches it
+  retired_.push_back(std::move(build));
+}
+
+bool SceneCollision::take_build(Tile& tile, bool& failed) {
+  failed = false;
+  for (u32 k = 0; k < builds_.size(); ++k) {
+    Build& build = *builds_[k];
+    if (build.coord.x != tile.coord.x || build.coord.z != tile.coord.z) continue;
+    u32 expected = Build::k_queued;
+    if (build.state.compare_exchange_strong(expected, Build::k_running,
+                                            std::memory_order_acq_rel)) {
+      // Not started: built here, on the tick — its own cost, as without a build ahead.
+      build.compute();
+      ++stats_.prefetch_inline;
+    } else if (expected == Build::k_running) {
+      // Running on a worker: this tile's build alone is waited for.
+      const i64 from = time::monotonic_ns();
+      build.ran.wait_blocking();
+      const i64 waited = time::monotonic_ns() - from;
+      ++stats_.prefetch_waits;
+      stats_.prefetch_wait_ns += waited;
+      stats_.max_prefetch_wait_ns = std::max(stats_.max_prefetch_wait_ns, waited);
+    } else {
+      ++stats_.prefetched;
+    }
+    const bool ok = build.state.load(std::memory_order_acquire) == Build::k_done;
+    if (ok) tile.heights = std::move(build.heights);
+    failed = !ok;
+    std::unique_ptr<Build> taken = std::move(builds_[k]);
+    builds_[k] = std::move(builds_[builds_.size() - 1]);
+    builds_.pop_back();
+    retire(std::move(taken));
+    return ok;
+  }
+  return false;
+}
+
+void SceneCollision::prefetch(WorldPos at) {
+  // Builds let go whose jobs have returned are freed.
+  for (u32 k = 0; k < retired_.size();) {
+    if (retired_[k]->ran.done()) {
+      retired_[k] = std::move(retired_[retired_.size() - 1]);
+      retired_.pop_back();
+    } else {
+      ++k;
+    }
+  }
+  if (!can_prefetch()) return;
+  // Once a metre walked, not every tick: a tile's centre is 16 m from its edge.
+  if (prefetched_once_) {
+    const DVec3 moved = at - prefetched_at_;
+    if (moved.x * moved.x + moved.z * moved.z < 1.0) return;
+  }
+  prefetched_once_ = true;
+  prefetched_at_ = at;
+  const f64 tile_m = static_cast<f64>(tile_mm_) / 1000.0;
+  const f64 r = static_cast<f64>(config_.prefetch_radius_tiles);
+  const f64 fx = at.x / tile_m;
+  const f64 fz = at.z / tile_m;
+  const i64 cx = static_cast<i64>(std::floor(fx));
+  const i64 cz = static_cast<i64>(std::floor(fz));
+  const i64 reach = static_cast<i64>(std::ceil(r)) + 1;
+  auto within = [&](i64 x, i64 z, f64 radius) {
+    const f64 dx = static_cast<f64>(x) + 0.5 - fx;
+    const f64 dz = static_cast<f64>(z) + 0.5 - fz;
+    return dx * dx + dz * dz <= radius * radius;
+  };
+  // Builds the walker has left behind — past the radius and a tile — are let go.
+  for (u32 k = 0; k < builds_.size();) {
+    if (!within(builds_[k]->coord.x, builds_[k]->coord.z, r + 1.0)) {
+      std::unique_ptr<Build> gone = std::move(builds_[k]);
+      builds_[k] = std::move(builds_[builds_.size() - 1]);
+      builds_.pop_back();
+      ++stats_.prefetch_dropped;
+      retire(std::move(gone));
+    } else {
+      ++k;
+    }
+  }
+  for (i64 z = cz - reach; z <= cz + reach; ++z) {
+    for (i64 x = cx - reach; x <= cx + reach; ++x) {
+      if (!within(x, z, r) || !fits_i32(x) || !fits_i32(z)) continue;
+      const world::TileCoord coord{static_cast<i32>(x), static_cast<i32>(z)};
+      if (tiles_.find_value(world::tile_key(coord)) != nullptr) continue;
+      bool pending = false;
+      for (const std::unique_ptr<Build>& build : builds_)
+        pending = pending || (build->coord.x == coord.x && build->coord.z == coord.z);
+      if (pending) continue;
+      auto build = std::make_unique<Build>();
+      build->coord = coord;
+      if (!ground_window(coord, build->i0, build->j0, build->n)) continue;
+      build->source = source_;
+      build->time_s = own_time_s_;
+      build->spacing_mm = spacing_mm_;
+      build->heights.resize(build->n * build->n);
+      build->ran.add(1);
+      Build* raw = build.get();
+      builds_.push_back(std::move(build));
+      jobs_->schedule(jobs::Pool::Performance, jobs::Job{&Build::run, raw, &raw->ran});
+      ++stats_.prefetch_submitted;
+    }
+  }
 }
 
 // ---- the consumer

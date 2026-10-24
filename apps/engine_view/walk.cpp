@@ -13,6 +13,7 @@
 #include <systems/renderer/terrain.h>
 
 #if ENGINE_VIEW_WALK_PHYSICS
+#include <core/jobs/job_system.h>
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <systems/scene_collision/scene_collision.h>
@@ -256,6 +257,9 @@ struct Walker::Impl {
 
 #if ENGINE_VIEW_WALK_PHYSICS
   bool physical = false;
+  // The worker the collision builds tiles' ground ahead of the ring on (scene_collision.h,
+  // `prefetch`): before the consumer, so it outlives the builds the consumer waits for.
+  std::unique_ptr<jobs::JobSystem> jobs;
   physics::World world;
   world::World ring;
   scene_collision::SceneCollision consumer;
@@ -294,6 +298,9 @@ struct Walker::Impl {
     observers.clear();        // kept, so a tick allocates nothing
     observers.add(at, 1.0f);  // the walker's own f64 place (ADR-0053)
     consumer.set_ground_time(ground_time());
+    // The ground of the tiles about to come in, built ahead on the worker; the bodies are still
+    // made by the update below, in its order, so a replay makes the same ones.
+    consumer.prefetch(at);
     ring.update(observers, ring_tick++, unlimited);
   }
 #endif
@@ -438,6 +445,16 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   config.mesh_error_m = params.mesh_error_m;
   config.ground_error_m = params.ground_error_m;
   config.max_refreshes = params.max_refreshes;
+  // Built ahead a tile past the ring (`walk.collision.prefetch_tiles`): not in the walk's header,
+  // since it changes no body and no step.
+  const f32 ahead = scene_collision::prefetch_tunable();
+  config.prefetch_radius_tiles = ahead > 0.0f ? params.radius_tiles + ahead : 0.0f;
+  if (ahead > 0.0f) {
+    jobs::JobSystemConfig workers;
+    workers.performance_workers = 1;
+    workers.pin_threads = false;
+    w.jobs = std::make_unique<jobs::JobSystem>(workers);
+  }
   world::RingParams ring;
   ring.tile_size = tile;
   ring.ring_count = 1;
@@ -452,7 +469,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     why = "the physics world could not be made";
   } else if (!w.ring.configure(ring, &ring_error)) {
     why = std::string("the collision ring: ") + ring_error;
-  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles)) {
+  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles, w.jobs.get())) {
     // `why` says what
   } else {
     w.ring.add_consumer(w.consumer.consumer());
@@ -492,6 +509,10 @@ WalkTiming Walker::timing() const noexcept {
     out.ground_sample_ns = c.ground_sample_ns;
     out.placement_ns = c.placement_ns;
     out.body_ns = c.body_ns;
+    out.prefetched = c.prefetched;
+    out.prefetch_waits = c.prefetch_waits;
+    out.prefetch_wait_ns = c.prefetch_wait_ns;
+    out.prefetch_inline = c.prefetch_inline;
   }
 #endif
   return out;
@@ -754,6 +775,13 @@ JsonValue Walker::summary_json() const {
     ms.set("ground_sample_max", static_cast<f64>(s.max_ground_sample_ns) / 1.0e6);
     ms.set("placement_total", static_cast<f64>(s.placement_ns) / 1.0e6);
     ms.set("body_total", static_cast<f64>(s.body_ns) / 1.0e6);
+    ms.set("prefetch_wait_total", static_cast<f64>(s.prefetch_wait_ns) / 1.0e6);
+    ms.set("prefetch_wait_max", static_cast<f64>(s.max_prefetch_wait_ns) / 1.0e6);
+    ground.set("prefetch_submitted", s.prefetch_submitted);
+    ground.set("prefetched", s.prefetched);
+    ground.set("prefetch_waits", s.prefetch_waits);
+    ground.set("prefetch_inline", s.prefetch_inline);
+    ground.set("prefetch_dropped", s.prefetch_dropped);
   }
 #endif
   bodies.set("live", live);
@@ -875,6 +903,10 @@ scene::FrameWalk WalkProbe::end() noexcept {
   out.activate_ground_ms = ms_of(t.ground_sample_ns - timing_.ground_sample_ns);
   out.activate_placements_ms = ms_of(t.placement_ns - timing_.placement_ns);
   out.activate_bodies_ms = ms_of(t.body_ns - timing_.body_ns);
+  out.prefetched = count_of(t.prefetched - timing_.prefetched);
+  out.prefetch_waits = count_of(t.prefetch_waits - timing_.prefetch_waits);
+  out.prefetch_wait_ms = ms_of(t.prefetch_wait_ns - timing_.prefetch_wait_ns);
+  out.prefetch_inline = count_of(t.prefetch_inline - timing_.prefetch_inline);
   out.reader_locks = count_of(thread.locks - thread_.locks);
   out.reader_wait_ms = ms_of(thread.wait_ns - thread_.wait_ns);
   out.reader_max_wait_ms = ms_of(thread.max_wait_ns);

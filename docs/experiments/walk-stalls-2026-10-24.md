@@ -42,4 +42,28 @@ The reader's lock now guards the cache's index alone: a request pins its tiles, 
 | (d) to the grove, async | 24.0 ms | 0 | 0 | 4.6 ms | 0.010 / 0.02 ms | 3.3 ms | 97% / 11%, 0–84% |
 | cold at the grove | 44.3 ms | 0 | 1 | 0.94 ms | 0.001 / 0.02 ms | 0.0 ms | 10% / 7%, 0–6% |
 
-The first walking frame's activation of (b) is 1.03 ms (0.4 ms of it ground heights, 0.8 ms bodies) where it was 637.7 ms; the frame thread's longest wait for the lock is 3 µs where it was 488 ms, and every thread's wait over the walk is 7 ms where it was 37 s — the rebuild's workers no longer serialize on each other either. **The slow frames left are not the walker's**: in (a), (c) and both cold runs every frame over 33 ms has ticks of 0.1–0.3 ms and no reader wait, and they fall in runs where another process held the CPU at 90–100% (an agent's build, at the start or end of the run); the harness's `machine_state` says so, and they are upper bounds of nothing this change touches. (d)'s 4.6 ms activation is a tile of the grove's placements (proxies and compound, 4.0 ms over the walk), the work the next stage moves ahead of the ring.
+The first walking frame's activation of (b) is 1.03 ms (0.4 ms of it ground heights, 0.8 ms bodies) where it was 637.7 ms; the frame thread's longest wait for the lock is 3 µs where it was 488 ms, and every thread's wait over the walk is 7 ms where it was 37 s — the rebuild's workers no longer serialize on each other either. **The slow frames left are not the walker's**: in (a), (c) and both cold runs every frame over 33 ms has ticks of 0.1–0.3 ms and no reader wait, and they fall in runs where another process held the CPU at 90–100% (an agent's build, at the start or end of the run); the harness's `machine_state` says so, and they are upper bounds of nothing this change touches. (d)'s 4.6 ms activation is a tile of the grove's placements (proxies and compound, 4.0 ms over the walk), which the next change leaves on the tick (below).
+
+## After the ground was built ahead of the ring
+
+The collision now builds a tile's ground heights on a worker of the walker's own a tile ahead of its ring, and the tick that activates the tile takes them, waits for that tile's build if it is running, or builds it if it has not started; bodies are made on the tick in the ring's order as before ([scene_collision](../subsystems/scene_collision.md#the-ground-built-ahead-of-the-ring)). The same runs:
+
+| Case | Worst frame | Frames > 100 ms | > 33 ms | Activation max | Activations' ground heights, sum | Built ahead: ready / waited / on the tick | Frame thread's lock wait, most | Machine (others' CPU start / end, GPU) |
+|---|---:|---:|---:|---:|---:|---|---:|---|
+| (a) look only, async | 25.7 ms | 0 | 0 | 1.0 ms | 0.21 ms | 3 / 1 / 4 | 0.002 ms | 34% / 39%, 0–99% |
+| **(b) F and W, async** | **24.3 ms** | 0 | 0 | 1.7 ms | **0.29 ms** | 6 / 0 / 3 | 0.001 ms | 38% / 44%, 5–9% |
+| (b) F and W, waited | 61.5 ms | 0 | 4 | 0.86 ms | 0.19 ms | 5 / 0 / 4 | 0.001 ms | 30% / 72%, 0–34% |
+| (c) 30 s standing, then W | 39.3 ms | 0 | 1 | 0.21 ms | 0.01 ms | 1 / 0 / 0 | 0.001 ms | 28% / 42%, 25–28% |
+| cold at the summit | 14.7 ms | 0 | 0 | 0.16 ms | 0.00 ms | 1 / 0 / 0 | 0.000 ms | 26% / 28%, 0% |
+| (d) to the grove, async | 25.5 ms | 0 | 0 | 7.8 ms | 0.07 ms | 7 / 0 / 1 | 0.001 ms | 56% / 62%, 19–30% |
+| cold at the grove | 28.4 ms | 0 | 0 | 0.95 ms | 0.01 ms | 2 / 0 / 0 | 0.001 ms | 96% / 18%, 2–3% |
+
+The activations' ground is a few tenths of a millisecond in every case (636.8 ms before the reader's fix, 0.4 after it); the activations on the tick at the switch to walking are the drop's first fill, which builds what the worker had not reached yet — its own cost, as before. What is left of an activation is its bodies (0.7–1.6 ms over a walk) and, at the grove, its placements (7.9 ms over the walk on a machine 56–62% busy), which are not built ahead (scene_collision.md says why). Every frame over 33 ms in these runs has ticks under 1.5 ms and no reader wait; they are the renderer's and the machine's, and every run was taken beside another agent's builds at 26–96% of the CPU, so the frame times are upper bounds.
+
+**The replay holds.** The walker's state chain at the end of each walk is the same before and after both changes, async or waited: (b) `fb1e7776eea7a246` over 20.943 m, the grove `66d2d83db90d0523` over 15.057 m, the cold summit `fc50f6ba7c932b43` over 20.878 m, in every run of this page.
+
+## What was not done
+
+- **The window.** Every run here is offscreen (`--terrain-async` reproduces the window's concurrency without one on the owner's desktop); the owner's 4.4 s window frame has not been replayed in a window after the fix. A `--windowed` replay of the POC's `flight-walk` log is the before and after the owner can run.
+- **The placements are not built ahead**: a generator's tile, the proxies and the compound stay on the activation's tick, measured at 7.9 ms over the grove walk.
+- **No `--game` module** was loaded (the POC's binary is not run here), so the 52 animals and their ground queries are absent; their queries meet the same reader.

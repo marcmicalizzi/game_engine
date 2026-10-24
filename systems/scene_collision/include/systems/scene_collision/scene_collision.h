@@ -72,6 +72,9 @@ struct SceneData;
 namespace engine::physics {
 class CharacterBody;
 }
+namespace engine::jobs {
+class JobSystem;
+}
 
 namespace engine::scene_collision {
 
@@ -94,6 +97,9 @@ f32 mesh_error_tunable() noexcept;
 f32 ground_error_tunable() noexcept;
 // Ground tiles refreshed per update under a time-lapse: 2.
 u32 max_refreshes_tunable() noexcept;
+// How far past the collision ring a tile's ground is built ahead on the job system, in tiles: 1
+// (docs: "The ground built ahead of the ring"). 0 builds nothing ahead.
+f32 prefetch_tunable() noexcept;
 
 // How far the ground under the walker may stand off the drawn ground under a time-lapse before its
 // tile is rebuilt, metres (docs: "The ground moves"). A millimetre: the step a standing walker's
@@ -109,6 +115,11 @@ struct Config {
   f32 mesh_error_m = 0.05f;
   f32 ground_error_m = 0.05f;
   u32 max_refreshes = 2;
+  // **The ground built ahead of the ring** (docs): tiles whose centres are within this many tiles
+  // of the walker have their heights built on the job system `create` was handed, before the ring
+  // activates them; 0 (or no job system) builds nothing ahead. A host sets it to its ring's radius
+  // plus `prefetch_tunable()`. Changes no body: the heights are the same call's either way.
+  f32 prefetch_radius_tiles = 0.0f;
 };
 Config config_from_tunables(f32 tile_size) noexcept;
 // The consumer's ring: one ring of `radius_tunable()` tiles, the world's hysteresis, the budget.
@@ -175,6 +186,18 @@ struct Stats {
   i64 max_ground_sample_ns = 0;
   i64 placement_ns = 0;
   i64 body_ns = 0;
+  // The ground built ahead (docs: "The ground built ahead of the ring"): builds submitted, and of
+  // the activations that found one, those it had finished (`prefetched`), those whose build was
+  // running so the tick waited for that tile alone (`prefetch_waits`, the wait's total and most),
+  // and those whose build had not started so the tick built it itself (`prefetch_inline`); builds
+  // let go unused when the walker turned away.
+  u64 prefetch_submitted = 0;
+  u64 prefetched = 0;
+  u64 prefetch_waits = 0;
+  i64 prefetch_wait_ns = 0;
+  i64 max_prefetch_wait_ns = 0;
+  u64 prefetch_inline = 0;
+  u64 prefetch_dropped = 0;
   i64 deactivate_ns = 0;
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;
@@ -197,9 +220,13 @@ class SceneCollision {
   // when given — the one the renderer draws the world's tiles from, so what is walked on is what is
   // drawn — or `ground` seen as tiles (`GroundProvider::tiles()`), which is its own heights to the
   // bit. `ground` still stands the placements: a generator is handed its floor.
+  //
+  // `jobs`, when given with `Config::prefetch_radius_tiles`, builds tiles' ground ahead of the
+  // ring (`prefetch`); it must outlive the consumer.
   bool create(physics::World& physics, const renderer::SceneData& scene,
               const scene_gen::GroundProvider* ground, const Config& config,
-              std::string* error = nullptr, const scene_gen::TileSource* tiles = nullptr);
+              std::string* error = nullptr, const scene_gen::TileSource* tiles = nullptr,
+              jobs::JobSystem* jobs = nullptr);
   // The row to register: after the scene's ground and placements consumers where the world has
   // them (world.md, "The order"), acting in ring 0.
   world::TileConsumer consumer() noexcept;
@@ -230,6 +257,15 @@ class SceneCollision {
   // dropped, as a landing drops it, and the horizontal speed is the input's, which every step sets
   // anew. On still ground this is `refresh` and nothing else. Returns the tiles worked.
   u32 follow(physics::CharacterBody& walker);
+  // **The ground built ahead of the ring** (docs): every tile whose centre is within
+  // `Config::prefetch_radius_tiles` of `at` and is neither held nor already built has its ground's
+  // heights built on the job system, so the tick that activates it takes them ready. Body creation
+  // stays in the activation, on the tick and in the ring's order, so body ids — and a recorded
+  // walk — are what they were. A build of a tile the ring activates before it is done is waited
+  // for (running) or built on the tick (not started): one tile's cost at most, never the others'.
+  // A still ground read through a tile source only; under a time-lapse nothing is built ahead.
+  // Builds left behind by the walker are let go. Call before the ring's update, once a tick.
+  void prefetch(WorldPos at);
 
   // The collision ground's height under `at` (its y is not read), from the heights the tile holding
   // it was built with, interpolated across the cell as the backend's heightfield triangulates it.
@@ -244,6 +280,7 @@ class SceneCollision {
 
  private:
   struct Entry;
+  struct Build;
   struct Proxy {
     physics::ShapeId shape;
     u32 triangles = 0;
@@ -277,6 +314,13 @@ class SceneCollision {
   static void deactivate(void* context, const world::TileEvent& event);
   static void commit(void* context);
   bool build_ground(Tile& tile);
+  // The tile's lattice window (`build_ground`); false for one past the source's i32 index.
+  bool ground_window(world::TileCoord coord, i64& i0, i64& j0, u32& n) const noexcept;
+  bool can_prefetch() const noexcept;
+  // The tile's heights from a build ahead, when there is one: true with `tile.heights` filled, or
+  // false with nothing taken (no build) — `failed` then says whether there was one that failed.
+  bool take_build(Tile& tile, bool& failed);
+  void retire(std::unique_ptr<Build>&& build);
   bool ground_body(physics::BodyId body) const noexcept;
   bool pair_fields(Tile& tile);
   f64 stale_of(const Tile& tile) const noexcept;
@@ -320,6 +364,12 @@ class SceneCollision {
   FlatMap<u32, u32> proxy_remap_;
   scene_gen::Placements placed_;
   Vector<u64> order_;
+  // The ground built ahead: a build a tile, and builds let go whose job has yet to run.
+  jobs::JobSystem* jobs_ = nullptr;
+  Vector<std::unique_ptr<Build>> builds_;
+  Vector<std::unique_ptr<Build>> retired_;
+  WorldPos prefetched_at_{};
+  bool prefetched_once_ = false;
 };
 
 }  // namespace engine::scene_collision

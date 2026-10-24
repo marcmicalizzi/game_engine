@@ -5,6 +5,7 @@
 
 #include <core/containers/flat_map.h>
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/physics/character.h>
@@ -17,8 +18,11 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <string>
+#include <thread>
 
 using namespace engine;
 using namespace engine::scene_collision;
@@ -1312,6 +1316,7 @@ TEST_CASE("scene_collision: the tunables' defaults are the documented ones") {
   CHECK(mesh_error_tunable() == 0.05f);
   CHECK(ground_error_tunable() == 0.05f);
   CHECK(max_refreshes_tunable() == 2);
+  CHECK(prefetch_tunable() == 1.0f);
   const world::RingParams p = ring_params_from_tunables(32.0f);
   CHECK(p.ring_count == 1);
   CHECK(p.radius[0] == 1.5f);
@@ -1319,4 +1324,168 @@ TEST_CASE("scene_collision: the tunables' defaults are the documented ones") {
   CHECK(p.max_deactivations == 4);
   CHECK(world::valid_ring_params(p));
   CHECK(std::string(k_determinism) == "hashed");
+}
+
+namespace {
+
+// A tile source that takes `delay_ms` a call, as an authored ground's cold read or a rebuild's
+// queue can: the periodic ground's heights, after a sleep, counted.
+struct SlowSource {
+  u32 delay_ms = 0;
+  std::atomic<u32> calls{0};
+};
+bool slow_heights(const void* state, f64 t, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx,
+                  u32 nz, u32 b0, u32 b1, std::span<f32> out) noexcept {
+  auto* s = static_cast<SlowSource*>(const_cast<void*>(state));
+  s->calls.fetch_add(1);
+  if (s->delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(s->delay_ms));
+  return periodic_heights(nullptr, t, spacing_mm, filter_mm, i0, j0, nx, nz, b0, b1, out);
+}
+constexpr scene_gen::TileSourceOps k_slow_ops{.heights = &slow_heights};
+
+jobs::JobSystemConfig one_worker() {
+  jobs::JobSystemConfig c;
+  c.performance_workers = 1;
+  c.pin_threads = false;
+  return c;
+}
+
+struct WalkChain {
+  Vector<u64> hashes;  // the character's state after every step
+  Vector<WorldPos> feet;
+  Stats stats;
+};
+
+// A walker's host, as engine-view's: the ring updated once a tick from the feet before the step,
+// a budget of two tiles, the collision `follow`ed — with the ground built ahead or not.
+WalkChain walk_east(bool ahead) {
+  TestGround g;
+  scene_gen::GroundProvider ground(&k_still_ops, &g);
+  SlowSource slow;
+  const scene_gen::TileSource source{&k_slow_ops, &slow};
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  jobs::JobSystem workers(one_worker());
+  SceneCollision collision;
+  Config config;
+  config.prefetch_radius_tiles = ahead ? 2.5f : 0.0f;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, config, &error, &source,
+                                   ahead ? &workers : nullptr),
+                  error);
+  world::World world(ring(2));
+  world.add_consumer(collision.consumer());
+  sim::ObserverSet observers;
+  const WorldPos start{5.0, 0.0, 7.0};
+  collision.prefetch(start);
+  observers.add(start, 1.0f);
+  world.update(observers, 0, true);
+  physics::CharacterBody body;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  c.walk_speed = 12.0f;
+  f32 y = 0.0f;
+  REQUIRE(collision.ground_height(start, y));
+  REQUIRE(body.create(physics, c, start + DVec3{0.0, static_cast<f64>(y) + 0.02, 0.0}) ==
+          physics::Status::Ok);
+  physics::CharacterInput east;
+  east.move = Vec3{1.0f, 0.0f, 0.3f};
+  WalkChain out;
+  for (u64 tick = 1; tick <= 4800; ++tick) {
+    collision.prefetch(body.feet());
+    observers.clear();
+    observers.add(body.feet(), 1.0f);
+    world.update(observers, tick, false);
+    (void)collision.follow(body);
+    REQUIRE(body.step(east) == physics::Status::Ok);
+    out.hashes.push_back(body.hash());
+    out.feet.push_back(body.feet());
+  }
+  out.stats = collision.stats();
+  return out;
+}
+
+}  // namespace
+
+// **The ground built ahead of the ring changes no body** (scene_collision.md, "The ground built
+// ahead of the ring"). A walker crossing tiles at 12 m/s with each tile's heights built on a worker
+// before the ring takes it walks the same walk, state for state, as one whose ticks build every
+// tile themselves: the bodies are made on the same ticks in the same order, so they get the same
+// ids, and the heights are the same call's.
+TEST_CASE("scene_collision: the ground built ahead of the ring changes no body") {
+  const WalkChain plain = walk_east(false);
+  const WalkChain ahead = walk_east(true);
+  REQUIRE(plain.hashes.size() == ahead.hashes.size());
+  u32 differ = 0;
+  for (u32 k = 0; k < plain.hashes.size(); ++k)
+    differ += plain.hashes[k] == ahead.hashes[k] ? 0u : 1u;
+  const DVec3 walked = plain.feet.back() - plain.feet.front();
+  MESSAGE("walked " << std::sqrt(walked.x * walked.x + walked.z * walked.z) << " m; "
+                    << plain.stats.activated << " tiles activated; ahead: "
+                    << ahead.stats.prefetch_submitted << " built ahead, " << ahead.stats.prefetched
+                    << " taken ready, " << ahead.stats.prefetch_waits << " waited for, "
+                    << ahead.stats.prefetch_inline << " built on the tick, "
+                    << ahead.stats.prefetch_dropped << " let go; " << differ << " states differ");
+  CHECK(differ == 0);
+  CHECK(plain.feet.back() == ahead.feet.back());
+  CHECK(plain.stats.bodies_created == ahead.stats.bodies_created);
+  CHECK(plain.stats.activated == ahead.stats.activated);
+  CHECK(plain.stats.prefetch_submitted == 0);
+  CHECK(ahead.stats.prefetch_submitted > 0);
+  CHECK(ahead.stats.prefetched > 0);
+  CHECK(ahead.stats.prefetched + ahead.stats.prefetch_waits + ahead.stats.prefetch_inline <=
+        ahead.stats.activated);
+}
+
+// **A tile whose build is pending blocks only for its own tile.** A teleport's first fill
+// activates every tile of the ring at once, while the worker is still building them ahead from a
+// source that takes 40 ms a tile: each activation takes its finished build, waits for the one
+// running, or builds its own on the tick — one tile's 40 ms at most, never the queue's.
+TEST_CASE("scene_collision: a tile activated with its build pending waits for that tile alone") {
+  constexpr u32 k_delay_ms = 40;
+  TestGround g;
+  scene_gen::GroundProvider ground(&k_still_ops, &g);
+  SlowSource slow;
+  slow.delay_ms = k_delay_ms;
+  const scene_gen::TileSource source{&k_slow_ops, &slow};
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  jobs::JobSystem workers(one_worker());
+  SceneCollision collision;
+  Config config;
+  config.prefetch_radius_tiles = 2.5f;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, config, &error, &source, &workers),
+                  error);
+  world::World world(ring(2));
+  world.add_consumer(collision.consumer());
+  const WorldPos there{4016.0, 0.0, -2000.0};
+  collision.prefetch(there);
+  const u64 queued = collision.stats().prefetch_submitted;
+  const auto from = std::chrono::steady_clock::now();
+  world.update(observer_at(there), 0, true);
+  const f64 fill_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
+  const Stats& s = collision.stats();
+  const f64 most_ms = static_cast<f64>(s.max_activate_ns) / 1.0e6;
+  const f64 wait_ms = static_cast<f64>(s.max_prefetch_wait_ns) / 1.0e6;
+  MESSAGE(queued << " tiles queued at 40 ms each; the fill's " << s.activated
+                 << " activations took " << fill_ms << " ms, the slowest " << most_ms << " ms; "
+                 << s.prefetched << " ready, " << s.prefetch_waits << " waited for (the longest "
+                 << wait_ms << " ms), " << s.prefetch_inline << " built on the tick");
+  CHECK(s.tiles == 9);
+  CHECK(queued > s.activated);
+  CHECK(s.prefetched + s.prefetch_waits + s.prefetch_inline == s.activated);
+  // One tile's cost, with room for a shared machine: the queue behind it is 40 ms a tile more.
+  CHECK(most_ms < 3.0 * k_delay_ms);
+  CHECK(wait_ms < 3.0 * k_delay_ms);
+  // And the ground is the source's wherever it was built: (4016, -2000) is a lattice point.
+  f32 h = 0.0f;
+  REQUIRE(collision.ground_height(there, h));
+  f32 expect[1] = {0.0f};
+  REQUIRE(
+      periodic_heights(nullptr, 0.0, 1000, 0, 4016, -2000, 1, 1, 0, 1, std::span<f32>(expect, 1)));
+  CHECK(h == expect[0]);
 }

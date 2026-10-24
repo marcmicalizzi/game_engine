@@ -168,6 +168,12 @@ struct WalkTiming {
   i64 ground_sample_ns = 0;
   i64 placement_ns = 0;
   i64 body_ns = 0;
+  // The ground built ahead of the ring (scene_collision.h, `prefetch`): activations that found
+  // their tile's build finished, waited for it running, or built it themselves.
+  u64 prefetched = 0;
+  u64 prefetch_waits = 0;
+  i64 prefetch_wait_ns = 0;
+  u64 prefetch_inline = 0;
   // The most one step and one ground query took since `Walker::take_max_ns` last asked.
   i64 recent_max_step_ns = 0;
   i64 recent_max_query_ns = 0;
