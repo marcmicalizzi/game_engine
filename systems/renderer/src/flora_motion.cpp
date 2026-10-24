@@ -111,8 +111,12 @@ FloraStiffness flora_stiffness(std::string_view species) noexcept {
   // are its limbs and swing the most of any limb; a megaflora's limbs are the stiffest; a willow's
   // curtains are the most compliant leaves (flora.md, "Motion", has the table and why).
   if (species == "date_palm") return FloraStiffness{0.012f, 0.10f, 0.12f, 0.14f};
-  if (species == "broadleaf") return FloraStiffness{0.006f, 0.03f, 0.07f, 0.12f};
-  if (species == "conifer") return FloraStiffness{0.008f, 0.035f, 0.06f, 0.08f};
+  if (species == "broadleaf" || species == "oak" || species == "maple" || species == "elm" ||
+      species == "walnut" || species == "beech" || species == "ash")
+    return FloraStiffness{0.006f, 0.03f, 0.07f, 0.12f};
+  if (species == "conifer" || species == "pine" || species == "spruce" || species == "cedar" ||
+      species == "juniper")
+    return FloraStiffness{0.008f, 0.035f, 0.06f, 0.08f};
   if (species == "birch") return FloraStiffness{0.015f, 0.05f, 0.09f, 0.14f};
   if (species == "willow") return FloraStiffness{0.006f, 0.03f, 0.08f, 0.16f};
   if (species == "orchard") return FloraStiffness{0.006f, 0.025f, 0.06f, 0.10f};

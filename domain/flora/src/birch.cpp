@@ -407,6 +407,7 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
   out.materials.push_back(material("leaf", Vec4{0.20f, 0.36f, 0.08f, 1.0f}, 0.6f, true));
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = WoodProfile{0.25, 0.25, 0.035, 0.04, 0.04, p.seed};
 
   // The bark: every stem (load-bearing: a structure may lean a ladder on one; the first is part 0
   // and the others hang from it at their feet), every limb, then the recursion parents first.

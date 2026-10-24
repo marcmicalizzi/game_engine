@@ -8,8 +8,9 @@ the renderer's own waves (10 cm of relief, 256 m a side at 2 m):
 - **elder A** (`content/flora/ancient.flora.json`) at x = −30: 100 m, a 10 m trunk flaring into six
   buttresses with a doorway-sized hollow at its foot, and nine major limbs from 30 to 62 m whose
   first runs are straight and near level — where platforms go — and which then fork, meander and
-  turn up; the recipe spells out the limb fields the default tree had before the habits (G79), and
-  the wood keeps 15 m of the lowest run's asked 24;
+  turn up; the recipe asks for a 24 m run, shortened by the wood's mechanical cap. G85 increases
+  its limb radius from 1.6 to 1.8 m to carry the fuller crown while retaining the walk test's 8 m
+  clear span. Renewal on an explicit run stays beside the trunk;
 - **elder B** (`ancient-rising.flora.json`) at x = 30: 90 m, two hollows, eight limbs from 30 to
   55 m whose 24 m runs rise at 20 degrees and more — ramps rather than floors;
 - the willows (`willow.flora.json`), the birches (`birch.flora.json`, `birch-single.flora.json`)
@@ -21,6 +22,11 @@ limb runs on (`apps/engine_view/tests/walk_limb_view_tests.cpp`: a walker on eac
 run, offscreen; flora.md, "Walking a limb"). `camera-path.json` walks in from the orchard row to
 elder A's foot, looks up its trunk, rises beside it to its limbs at 30 m, into its canopy at 56 m,
 and out over both trees, in 38 s.
+
+**G85 (2026-10-23)** adds inner crown growth, supported collars and irregular wood; the older
+counts and timing measurements below describe their dated versions, not the revised trees.
+See [shared growth rules](../../../docs/experiments/tree-growth-rules.md) for the new geometry
+comparisons. Platform anchors must be revalidated after rebuilding.
 
 It needs no sample asset: every tree is solved from its parameters and built through the
 derived-data cache ([flora](../../../docs/subsystems/flora.md#in-a-scene)); the first load builds

@@ -86,7 +86,7 @@ constexpr Habit k_emergent{.low = 0.5,
                            .limb_share = 0.42,
                            .thinning = 0.45,
                            .spread = 0.6,
-                           .run_share = 0.25,
+                           .run_share = 0.12,
                            .rise_gain = 25.0,
                            .ascent0 = 50.0,
                            .ascent = 25.0,
@@ -107,7 +107,7 @@ constexpr Habit k_spreading{.low = 0.2,
                             .limb_share = 0.45,
                             .thinning = 0.15,
                             .spread = 1.5,
-                            .run_share = 0.3,
+                            .run_share = 0.15,
                             .rise_gain = 45.0,
                             .ascent0 = 15.0,
                             .ascent = 15.0,
@@ -127,7 +127,7 @@ constexpr Habit k_mixed{.low = 0.55,
                         .limb_share = 0.42,
                         .thinning = 0.2,
                         .spread = 0.9,
-                        .run_share = 0.3,
+                        .run_share = 0.15,
                         .rise_gain = 35.0,
                         .ascent0 = 15.0,
                         .ascent = 15.0,
@@ -521,7 +521,7 @@ Vector<LimbDraw> limb_draws(const Ancient& p, const Shape& s, const Layout& l) {
       d.run = static_cast<f64>(p.limb_run_m) * (1.0 - 0.35 * d.f);
     } else {
       d.run = h.run_share * reach;
-      if (d.run < k_run_inset * d.core + 4.0) d.run = k_run_inset * d.core + 4.0;
+      if (d.run < k_run_inset * d.core + 2.5) d.run = k_run_inset * d.core + 2.5;
     }
     if (d.run < d.run_min) d.run = d.run_min;
     if (p.limb_reach_m > 0.0f) {
@@ -602,6 +602,9 @@ struct LimbGeo {
   f64 run_r1 = 0.0;
   Vector<Segment> segs;
   f64 branch_length = 0.0;  // the recipe's: a segment's laterals over its length, by k_lateral
+  f64 renewal_length = 0.0;
+  f64 renewal_arc = 0.0;
+  f64 renewal_load_arc = 0.0;
 };
 
 struct LimbBuilder {
@@ -713,6 +716,10 @@ struct LimbBuilder {
     }
     const f64 past = d.past * k;
     geo.branch_length = static_cast<f64>(p.branch_length);
+    geo.renewal_length = geo.branch_length * (run + 0.35 * past);
+    geo.renewal_arc =
+        p.limb_run_m > 0.0f ? std::min(0.55 * run, k_run_inset * d.core + 0.25) : 0.55 * run;
+    geo.renewal_load_arc = p.limb_run_m > 0.0f ? geo.renewal_arc : 0.7 * run;
     segment(k_none, geo.run.point.back(), d.dir, geo.run_r1, past / sum, 0, false);
   }
 };
@@ -737,17 +744,27 @@ f64 load_ratios(const LimbGeo& g, const Shape& s, Vector<f64>& ratios) {
     }
   };
   add_axis(g.run, g.run_r0, k_none);
+  // Renewed shoots grow on the run too. Include their conservative wood-equivalent load in
+  // the same mechanics that caps the rest of the limb; fullness must not bypass that cap.
+  {
+    Sample sm;
+    const D3 t = g.run.tangent.back();
+    sm.at = axis_point(g.run, g.renewal_load_arc) + D3{t.x, 0.0, t.z} * (0.35 * g.renewal_length);
+    sm.w = s.weight * k_pi * g.run_r1 * g.run_r1 * 0.09 * (1.0 + k_crown_load) * g.renewal_length;
+    sm.seg = k_none;
+    samples.push_back(sm);
+  }
   for (u32 j = 0; j < g.segs.size(); ++j) {
     const Segment& seg = g.segs[j];
     add_axis(seg.axis, seg.r0, j);
-    if (seg.terminal) {
+    if (!seg.broken) {
       // The crown it carries, at a lever a third of its reach on along the segment's heading.
       const f64 reach = k_crown_load * k_lateral * g.branch_length * seg.axis.length;
       D3 heading = seg.axis.tangent.back();
       heading = D3{heading.x, 0.0, heading.z};
       Sample sm;
       sm.at = seg.axis.point.back() + heading * (0.35 * reach);
-      sm.w = s.weight * k_pi * seg.r0 * seg.r0 * reach;
+      sm.w = s.weight * k_pi * seg.r0 * seg.r0 * reach * (seg.terminal ? 1.0 : 0.363);
       sm.seg = j;
       samples.push_back(sm);
     }
@@ -905,6 +922,28 @@ Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& s
     const LimbGeo& g = limb.geo;
     const u32 run = crown_add_named(crown, g.run, g.run_r0, g.run_r1, named.trunk);
     named.runs.push_back(run);
+    // A separate carrier keeps every renewal vertex off the exact straight-run part. Otherwise
+    // fine shoots folded by the part budget would violate that part's anchor-envelope contract.
+    Rng renewal_rng = stream_of(p.seed, 800000ull + i);
+    const f64 renewal_length = g.renewal_length;
+    // An explicit run reserves an unobstructed platform/walking span. Keep its renewed upright
+    // at the trunk-side crotch; automatic runs can renew farther along their short scaffold.
+    const Axis renewal_axis =
+        grow_axis(axis_point(g.run, g.renewal_arc), normalized(k_up * 0.85 + d.dir * 0.35),
+                  renewal_length, 8, k_up, 0.4 / renewal_length, 0.05, renewal_rng);
+    const f64 renewal_radius = 0.3 * g.run_r1;
+    const u32 renewal_node = crown_add_named(crown, renewal_axis, renewal_radius,
+                                             crown_leader_radius(spec, renewal_radius), run);
+    named.forks.push_back(renewal_node);
+    CrownRoot renewal;
+    renewal.node = renewal_node;
+    renewal.radius = renewal_radius;
+    renewal.laterals = 4;
+    renewal.lateral_length = renewal_length;
+    renewal.from = 0.3;
+    renewal.to = 0.95;
+    renewal.spread_scale = 0.8;
+    roots.push_back(renewal);
     Vector<u32> nodes;
     AncientLimb report;
     report.height_m = static_cast<f32>(d.arc * l.t.y - k_sink_m);
@@ -946,10 +985,10 @@ Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& s
       } else {
         // A few shoots on the inner limb: an old limb's inside is mostly bare, its leaves out where
         // the light is.
-        root.radius = 0.4 * seg.r0;
-        root.laterals = 3;
-        root.lateral_length = 0.8 * k_lateral * g.branch_length * seg.axis.length;
-        root.from = 0.35;
+        root.radius = 0.55 * seg.r0;
+        root.laterals = 4;
+        root.lateral_length = 1.2 * k_lateral * g.branch_length * seg.axis.length;
+        root.from = 0.15;
         root.to = 0.85;
         root.spread_scale = 1.2;
       }
@@ -1313,8 +1352,8 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
   if (!(p.hollow_spacing_m >= 3.0f && p.hollow_spacing_m <= 60.0f))
     return bad("hollow_spacing_m", "3 to 60 m");
   // A limb field of 0 is the habit's.
-  if (!(p.limbs == 0u || (p.limbs >= 2u && p.limbs <= 12u)))
-    return bad("limbs", "0 (the habit's), or 2 to 12");
+  if (!(p.limbs == 0u || (p.limbs >= 2u && p.limbs <= 24u)))
+    return bad("limbs", "0 (the habit's), or 2 to 24");
   if (!(p.limb_low_m == 0.0f || (p.limb_low_m >= 8.0f && p.limb_low_m <= 110.0f)))
     return bad("limb_low_m", "0 (the habit's), or 8 to 110 m");
   if (!(p.limb_high_m >= 0.0f)) return bad("limb_high_m", "0 (the habit's), or a height");
@@ -1374,8 +1413,8 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
   const Shape s = shape_of(p);
   const f64 height = static_cast<f64>(p.height_m);
   if (!(s.low >= 8.0)) return bad("limb_low_m", "the lowest limb at least 8 m up");
-  if (!(s.high >= s.low && s.high <= 0.75 * height))
-    return bad("limb_high_m", "limb_low_m to 0.75 of height_m");
+  if (!(s.high >= s.low && s.high <= 0.85 * height))
+    return bad("limb_high_m", "limb_low_m to 0.85 of height_m");
   // A stated run must leave the trunk: past the core where it starts, at every limb's height.
   const Layout l = lay_out(p, s);
   if (p.limb_run_m > 0.0f) {
@@ -1440,6 +1479,7 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
   out.materials.push_back(material("leaf", Vec4{0.09f, 0.22f, 0.06f, 1.0f}, 0.6f, true));
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = WoodProfile{0.4, 0.0, 0.08, 0.06, 0.09, p.seed};
 
   // The trunk: its core is the structural row (the buttresses stand outside it, the hollows cut
   // into it), load-bearing and straight.

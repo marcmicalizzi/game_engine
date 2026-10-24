@@ -416,12 +416,12 @@ struct Ancient @version(4) {
   hollow_sill_m: f32 = 0.3 @unit(m)
   /// From one hollow's floor to the next one's: 3 to 60 m.
   hollow_spacing_m: f32 = 14.0 @unit(m)
-  /// Major limbs: 2 to 12; 0, the habit's (emergent 10, spreading 6, mixed 7).
+  /// Major limbs: 2 to 24; 0, the habit's (emergent 7, spreading 6, mixed 8).
   limbs: u32 = 0
   /// The lowest major limb leaves the trunk this high: 8 to 110 m; 0, the habit's share of the
   /// height (emergent 0.5, spreading 0.2, mixed 0.55).
   limb_low_m: f32 = 0.0 @unit(m)
-  /// The highest major limb leaves the trunk this high: `limb_low_m` to 0.75 of the height; 0, the
+  /// The highest major limb leaves the trunk this high: `limb_low_m` to 0.85 of the height; 0, the
   /// habit's share (emergent 0.75, spreading 0.3, mixed 0.7).
   limb_high_m: f32 = 0.0 @unit(m)
   /// The lowest limb's radius where it leaves the trunk: 0.5 to 2.5 m (1 to 5 m thick; the upper
@@ -723,13 +723,34 @@ struct Herb @version(1) {
   detail_tier: DetailTier = rich
 }
 
+/// Overrides for a named species' rules over the shared branching or evergreen growth structure.
+/// The reference size and crown habit come from the profile; leaves retain their species size.
+struct Tree @version(1) {
+  /// Seed for all shared growth streams. Any u64.
+  seed: u64 = 1
+  /// 0 selects the species' reference height; otherwise 3 to 40 m.
+  height_m: f32 = 0.0 @unit(m)
+  /// 0 follows the species' height/diameter allometry; otherwise 0.05 to 1.5 m.
+  trunk_radius_m: f32 = 0.0 @unit(m)
+  /// -1 selects the species' crown base; otherwise 0.1 to 0.8 of tree height.
+  crown_base: f32 = -1.0
+  /// Crown width multiplier, 0.5 to 1.5. Does not scale leaves or terminal shoots.
+  crown_scale: f32 = 1.0
+  /// Mesh budget, 8,000 to 2,000,000 triangles; changes detail, never the growth skeleton.
+  triangle_budget: u32 = 1000000
+  /// Broadleaf branch-card tile size, 0 or 16 to 256. Conifer profiles do not yet bake a chain.
+  card_bake_px: u32 = 64
+  /// Broadleaf whole-tree tile size, 0 or 32 to 1024.
+  impostor_px: u32 = 256
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
-/// build is keyed by these values (canonicalized: the species' own parameters and the materials,
-/// nothing of the species not chosen), the species and the solver's version.
-struct FloraFile @version(4) {
+/// build is keyed by the chosen species' canonical parameters, materials and solver version.
+struct FloraFile @version(5) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
-  /// "shrub", "fern", "tuft" or "herb"; the solver reads the parameters of the same name.
+  /// "shrub", "fern", "tuft" or "herb" read their own parameter block. Named tree profiles
+  /// (maple, oak, elm, walnut, beech, ash, pine, spruce, cedar, juniper) read `tree`.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
@@ -744,4 +765,7 @@ struct FloraFile @version(4) {
   fern: Fern @since(4)
   tuft: Tuft @since(4)
   herb: Herb @since(4)
+  /// Named growth profiles: maple, oak, elm, walnut, beech, ash, pine, spruce, cedar, juniper.
+  /// Existing broadleaf/conifer/birch/willow/orchard/ancient recipes retain their own blocks.
+  tree: Tree @since(5)
 }

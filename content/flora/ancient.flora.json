@@ -6,7 +6,7 @@
     "limbs": 9,
     "limb_low_m": 30.0,
     "limb_high_m": 62.0,
-    "limb_radius_m": 1.6,
+    "limb_radius_m": 1.8,
     "limb_run_m": 24.0,
     "limb_reach_m": 36.0,
     "triangle_budget": 1500000

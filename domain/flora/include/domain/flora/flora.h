@@ -57,7 +57,8 @@ namespace engine::flora {
 // 5: the megaflora's habits and limbs a wood could carry (G79; flora.md, "Megaflora"): an ancient
 //    tree's limbs fork, meander and are sized by their wood, so an entry built at 4 is the old
 //    straight-limbed tree.
-inline constexpr u32 k_flora_version = 5;
+// 6: shared species rules, supported irregular wood and renewed ancient crowns (G85).
+inline constexpr u32 k_flora_version = 6;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

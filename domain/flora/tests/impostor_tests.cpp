@@ -147,8 +147,10 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
       static_cast<unsigned long long>(hashes[2]), static_cast<unsigned long long>(hashes[3]));
   MESSAGE("bake hashes: " << line);
   // R91 moved all four: the plane fit by area (the cards) and the star's four planes (the tree).
-  constexpr u64 k_golden[4] = {0x469f99a1fc0d9277ull, 0xbcfe02bbf4e95fd4ull, 0x58ef0b36f35972d3ull,
-                               0x7afef0fcf6758503ull};
+  // G85 changes only the whole-tree pair: supported wood contours and their normals. MSVC and
+  // Clang reproduce both; the leaf-only cards remain byte-identical.
+  constexpr u64 k_golden[4] = {0x469f99a1fc0d9277ull, 0xbcfe02bbf4e95fd4ull, 0x2dadc33c6d0481b3ull,
+                               0xd80ce0bc824994c4ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

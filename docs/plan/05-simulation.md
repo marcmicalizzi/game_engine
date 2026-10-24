@@ -315,6 +315,12 @@ Nothing is `v1`; Phase 1 is the renderer core. A `planned` row is a hook, not a 
 
 **Status, 2026-10-17 (G54):** the tree solver exists for its first species — the flora capability's date palm ([flora](../subsystems/flora.md)), a deterministic mesh from parameters and a seed, its crown two-sided leaflet geometry rather than cards until R65, built through the derived-data cache and placed by a scene's mesh table (`content/test-scenes/oasis-palms/`) — so the palm this note's fixture wanted is the solver's, not E10's. The rod model, the wind field and the sway tiers (S66), textures (G60) and scattered placement (G55) remain.
 
+**Growth rules, 2026-10-23 (G85):** named deciduous and evergreen species are profiles over shared
+branching and shoot structures, with supported collars and irregular wood sections. Natural
+megaflora habits and authored fantasy village canopies remain distinct parameter choices in the
+same solver; the wide village form adds interior renewal and a connected crown without scaling
+up its leaves. Sources, budgets and validation are in [shared tree growth rules](../experiments/tree-growth-rules.md).
+
 The list is long on purpose. Ambition is the premise of the engine, and the capabilities above are the ones that let a small team get physical, systemic interaction out of rules rather than out of per-case authoring — which is the only way a small team gets it at all. The list is affordable because roughing in is cheap and because [11 §11.10](11-performance-principles.md#1110-absent-capabilities-are-free) holds: a row nobody uses must be invisible in the profile, or the inventory is a tax on every game built with the engine.
 
 ## 5.16 Characters at run time

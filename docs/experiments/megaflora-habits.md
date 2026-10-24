@@ -1,5 +1,11 @@
 # Megaflora habits: emergent and spreading crowns, limbs a wood could carry (G79, 2026-10-22)
 
+**2026-10-23 follow-up (G85):** the owner's newer review finds the village/spreading crowns too
+sparse as well as the emergent default. [Shared growth rules](tree-growth-rules.md) records the
+renewal growth and shorter default runs now under test. The measurements below describe G79,
+not the revised solver. Explicit long platform runs remain explicit requests; the proposed
+dwelling fixture revises them and requires platform positions to be checked again.
+
 The research `engine.flora.Ancient`'s habits and its limbs' mechanical cap are grounded in, the
 constants chosen from it, where the budget and the look traded against it, and what the recipes
 came to. The rules that follow are on the subsystem page: [flora](../subsystems/flora.md#megaflora),

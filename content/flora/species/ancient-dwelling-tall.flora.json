@@ -1,0 +1,19 @@
+{
+  "species": "ancient",
+  "ancient": {
+    "limb_rise_deg": 2.0,
+    "limb_run_m": 0,
+    "limbs": 14,
+    "triangle_budget": 1500000,
+    "limb_high_m": 56,
+    "seed": 101,
+    "limb_reach_m": 0,
+    "height_m": 80.0,
+    "trunk_radius_m": 4.5,
+    "limb_low_m": 22,
+    "leaf_length_m": 0.3,
+    "twig_length_m": 0.8,
+    "leaf_area_index": 4.5,
+    "habit": "mixed"
+  }
+}

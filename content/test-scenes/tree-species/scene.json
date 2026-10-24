@@ -1,0 +1,157 @@
+{
+  "format": "engine.scene.v1",
+  "name": "tree-species",
+  "description": "Ten representative species on shared growth structures. Front row maple oak elm walnut beech; rear row ash pine spruce cedar juniper. Untextured geometry inspection.",
+  "meshes": [
+    {
+      "path": "../../flora/species/maple.flora.json",
+      "name": "maple"
+    },
+    {
+      "path": "../../flora/species/oak.flora.json",
+      "name": "oak"
+    },
+    {
+      "path": "../../flora/species/elm.flora.json",
+      "name": "elm"
+    },
+    {
+      "path": "../../flora/species/walnut.flora.json",
+      "name": "walnut"
+    },
+    {
+      "path": "../../flora/species/beech.flora.json",
+      "name": "beech"
+    },
+    {
+      "path": "../../flora/species/ash.flora.json",
+      "name": "ash"
+    },
+    {
+      "path": "../../flora/species/pine.flora.json",
+      "name": "pine"
+    },
+    {
+      "path": "../../flora/species/spruce.flora.json",
+      "name": "spruce"
+    },
+    {
+      "path": "../../flora/species/cedar.flora.json",
+      "name": "cedar"
+    },
+    {
+      "path": "../../flora/species/juniper.flora.json",
+      "name": "juniper"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "ground": true,
+      "translation": [
+        -50,
+        0,
+        0.0
+      ],
+      "name": "maple"
+    },
+    {
+      "mesh": 1,
+      "ground": true,
+      "translation": [
+        -25,
+        0,
+        0.0
+      ],
+      "name": "oak"
+    },
+    {
+      "mesh": 2,
+      "ground": true,
+      "translation": [
+        0,
+        0,
+        0.0
+      ],
+      "name": "elm"
+    },
+    {
+      "mesh": 3,
+      "ground": true,
+      "translation": [
+        25,
+        0,
+        0.0
+      ],
+      "name": "walnut"
+    },
+    {
+      "mesh": 4,
+      "ground": true,
+      "translation": [
+        50,
+        0,
+        0.0
+      ],
+      "name": "beech"
+    },
+    {
+      "mesh": 5,
+      "ground": true,
+      "translation": [
+        -50,
+        0,
+        35.0
+      ],
+      "name": "ash"
+    },
+    {
+      "mesh": 6,
+      "ground": true,
+      "translation": [
+        -25,
+        0,
+        35.0
+      ],
+      "name": "pine"
+    },
+    {
+      "mesh": 7,
+      "ground": true,
+      "translation": [
+        0,
+        0,
+        35.0
+      ],
+      "name": "spruce"
+    },
+    {
+      "mesh": 8,
+      "ground": true,
+      "translation": [
+        25,
+        0,
+        35.0
+      ],
+      "name": "cedar"
+    },
+    {
+      "mesh": 9,
+      "ground": true,
+      "translation": [
+        50,
+        0,
+        35.0
+      ],
+      "name": "juniper"
+    }
+  ],
+  "terrain": {
+    "seed": 7,
+    "dune_wavelength": 40,
+    "dune_height": 0.0,
+    "size": 129,
+    "generator": "Waves",
+    "extent": 200
+  }
+}

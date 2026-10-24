@@ -1,6 +1,7 @@
 // The species solvers' shared shapes (kit.h): a grown axis, a tube along it, a spray of cards.
 #include "kit.h"
 
+#include <domain/flora/structure.h>
 #include <domain/geometry/cluster.h>
 
 #include <algorithm>
@@ -86,6 +87,34 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   const f64 u0 = static_cast<f64>(uv_offset.x);
   const f64 v0 = static_cast<f64>(uv_offset.y);
   const u32 first = out.mesh.positions.size();
+  // Preserve the exact cylindrical envelope promised to platform anchors. A relief changes
+  // neither the core radii nor the motion skeleton; it is sampled at the budget's ring count.
+  const bool straight = out.part < out.motion.structure.size() &&
+                        (out.motion.structure[out.part].flags & k_straight) != 0u;
+  const bool root = out.part < out.motion.parts.size() &&
+                    out.motion.parts[out.part].parent == geometry::k_motion_no_parent;
+  const WoodProfile& w = out.wood;
+  const bool shaped = !straight && (w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
+  Rng shape_rng = stream_of(w.seed, 9000000ull + out.part);
+  const f64 phase = shape_rng.unit() * 2.0 * k_pi;
+  const f64 knot_at = 0.2 + 0.6 * shape_rng.unit();
+  const f64 collar_span = std::min(0.3 * axis.length, 3.0 * r0);
+  const auto radius_at = [&](f64 arc, f64 phi, D3 radial, D3 tangent) {
+    const f64 u = clamp01(arc / axis.length);
+    const f64 core = lerp(r0, r1, u);
+    const f64 basal = 1.0 - smoothstep01(arc / (collar_span + 1e-9));
+    const f64 flute = det::cos(3.0 * phi + phase + 0.35 * u) * 0.65 +
+                      det::cos(5.0 * phi - phase + 0.6 * u) * 0.35;
+    const f64 gravity = dot(radial, k_up);
+    const f64 level = 1.0 - tangent.y * tangent.y;
+    const f64 oval =
+        w.oval * (root ? det::cos(2.0 * phi + phase) : 2.0 * gravity * gravity - level);
+    const f64 distance = (u - knot_at) / 0.07;
+    const f64 bump = clamp01(0.5 + 0.5 * det::cos(phi - phase));
+    const f64 knot = w.knots / (1.0 + distance * distance) * bump * bump * bump * bump;
+    const f64 collar = root ? w.flare : w.collar * (1.0 + 0.35 * gravity);
+    return core * (1.0 + basal * collar + w.fluting * flute * (1.0 - 0.65 * u) + oval + knot);
+  };
   for (u32 r = 0; r < rows; ++r) {
     const f64 s = axis.arc[r] / axis.length;
     out.weight = s;
@@ -96,7 +125,22 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
     for (u32 i = 0; i <= sides; ++i) {
       const f64 angle = 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(sides);
       const D3 radial = n * det::cos(angle) + b * det::sin(angle);
-      out.vertex(axis.point[r] + radial * radius, radial,
+      f64 actual_radius = radius;
+      D3 normal = radial;
+      if (shaped) {
+        actual_radius = radius_at(axis.arc[r], angle, radial, t);
+        constexpr f64 epsilon = 0.0001;
+        const auto around = [&](f64 phi) {
+          return radius_at(axis.arc[r], phi, n * det::cos(phi) + b * det::sin(phi), t);
+        };
+        const f64 angular = (around(angle + epsilon) - around(angle - epsilon)) / (2.0 * epsilon);
+        const f64 axial = (radius_at(axis.arc[r] + epsilon, angle, radial, t) -
+                           radius_at(axis.arc[r] - epsilon, angle, radial, t)) /
+                          (2.0 * epsilon);
+        normal = radial - (n * -det::sin(angle) + b * det::cos(angle)) * (angular / actual_radius) -
+                 t * axial;
+      }
+      out.vertex(axis.point[r] + radial * actual_radius, normal,
                  u0 + round * static_cast<f64>(i) / static_cast<f64>(sides), v0 + axis.arc[r]);
     }
   }
@@ -362,10 +406,17 @@ struct Grower {
       const Axis local = parent.axis != k_crown_none ? Axis{} : segment_axis(parent);
       const Axis& along = parent.axis != k_crown_none ? crown.axes[parent.axis] : local;
       const bool leader = j == laterals;
-      const f64 f = leader ? 1.0 : (static_cast<f64>(j) + 0.5) / static_cast<f64>(laterals);
+      const f64 f = leader ? 1.0
+                    : spec.opposite
+                        ? (static_cast<f64>(j / 2u) + 0.5) / static_cast<f64>((laterals + 1u) / 2u)
+                        : (static_cast<f64>(j) + 0.5) / static_cast<f64>(laterals);
       const f64 s = leader ? along.length : along.length * (from + (to - from) * f);
       const f64 jitter_around = place.symmetric();
-      const f64 around = turn + static_cast<f64>(j) * k_golden_angle + 0.2 * jitter_around;
+      const f64 around =
+          turn +
+          (spec.opposite ? static_cast<f64>(j / 2u) * 0.5 * k_pi + static_cast<f64>(j % 2u) * k_pi
+                         : static_cast<f64>(j) * k_golden_angle) +
+          0.2 * jitter_around;
       const f64 jitter_spread = place.symmetric();
       const f64 spread = (leader ? spec.leader_angle : spec.branch_angle * spread_scale) *
                          (1.0 + 0.1 * jitter_spread);
@@ -616,8 +667,10 @@ u32 crown_triangles(const Crown& crown, const CrownPlan& plan) {
     }
   }
   if (plan.merge == 0) {
-    for (const u32 t : crown.twigs)
+    for (const u32 t : crown.twigs) {
       n += spray_triangles(crown.nodes[t].cards);
+      if (crown.terminal_leaf && crown.nodes[t].cards > 0u) n += 2;
+    }
     return n;
   }
   Vector<u32> order;
@@ -668,6 +721,11 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
     out.part = crown.nodes[node.carrier].part;
     const u32 first = out.mesh.positions.size();
     build_spray(axis, from, cards, length, angle, lift, droop, normalized(side), out);
+    if (crown.terminal_leaf && plan.merge == 0) {
+      out.weight = 1.0;
+      build_leaf_card(axis.point.back(), axis.tangent.back(), normalized(side), length,
+                      length * 0.3, droop, out);
+    }
     if (sprays != nullptr) {
       SprayRange r;
       r.node = static_cast<u32>(&node - crown.nodes.data());

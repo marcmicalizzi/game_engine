@@ -266,6 +266,7 @@ bool solve_orchard(const Orchard& p, assets::MeshData& out, TreeReport* report, 
   }
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = WoodProfile{0.4, 0.35, 0.08, 0.06, 0.1, p.seed};
   Vector<u32> part_of(shoots.size(), 0u);
 
   u32 wood = 0;

@@ -1,5 +1,66 @@
 # flora (domain, capability)
 
+## Shared growth rules and named species (G85)
+
+The named profiles `maple`, `oak`, `elm`, `walnut`, `beech`, `ash`, `pine`, `spruce`, `cedar` and
+`juniper` use a common `tree` parameter block. The older `date_palm`, `broadleaf`, `conifer`,
+`birch`, `willow`, `orchard` and `ancient` names and parameter blocks remain valid. The first six
+new profiles share the pipe-model broadleaf crown; pine and spruce share whorled shoots; cedar
+and juniper use the same evergreen scaffold with staggered branch stations and scale sprays.
+`src/species.cpp` owns the profile table, not ten independent mesh generators.
+
+```json
+{"species":"maple","tree":{"seed":17,"height_m":18,"triangle_budget":1000000}}
+```
+
+`Tree.height_m` and `trunk_radius_m` default to 0 (the profile's reference height and its
+height/diameter allometry); `crown_base` defaults to -1 (the profile's), and `crown_scale` to 1.
+Height is 3–40 m when explicit, radius 0.05–1.5 m, crown base 0.1–0.8 and crown scale 0.5–1.5.
+The resolved family parameters must also pass their range checks: a combination whose derived
+radius or crown exceeds that family's limits is refused with the field named, not silently
+clamped. Triangle budgets are 8,000–2,000,000, default 1,000,000 source triangles so the reference
+deciduous trees keep their individual leaf dimensions. The runtime cluster cut and baked chain
+choose the rendered detail. An explicitly small source budget can still reach the existing coarse,
+merged-card fallback; it is a quality trade, not a new botanical leaf size. `card_bake_px` and `impostor_px` have the broadleaf
+fields' meanings; evergreen profiles still have no baked chain (G83). Canonical JSON and cache
+identity include only the active `tree` block, species name and materials.
+
+Maple and ash grow opposite, decussate lateral pairs; elm's ascending scaffolds carry spreading,
+drooping fine growth; beech carries a low layered crown. Walnut's terminal sprays represent a
+compound rachis with eight leaflet pairs, ash's three pairs and a terminal leaflet; their cards are leaflets, not enlarged
+simple leaves. Pine concentrates foliage towards erect branch ends in a broader crown. Cedar
+means western redcedar (*Thuja plicata*), with fluted bases and flat sprays; juniper means eastern
+redcedar (*Juniperus virginiana*), with denser irregular scale foliage. These are representative
+habits, not every species within each genus. Their source observations and the chosen, unmeasured
+visual parameters are separated in [shared growth rules](../experiments/tree-growth-rules.md).
+
+All branching tree families now use the kit's supported wood surface: an asymmetric branch
+collar fading over the base, root flare, low-frequency fluting, gravity-oriented oval branch
+sections and seeded local swellings. The ring topology and triangle count are unchanged; the
+surface and its derivative normals are sampled at the selected detail. The core axis, part IDs,
+weights and structural radii are unchanged by the relief. This is overlapping supported geometry,
+not a watertight union or a mechanical failure solver. Fine fissures and scars still need materials.
+Straight structural parts bypass the relief to preserve the exact platform-anchor envelope.
+
+The natural ancient habit defaults retain their limb counts, bands and fork levels. Explicit limb
+counts now accept 2–24 and the highest limb up to 0.85 of height, allowing a denser authored fantasy
+crown without changing every natural tree's silhouette.
+All habits reserve shorter straight platform runs by default, then fork and
+curve; an explicitly requested `limb_run_m` remains a straight run. Renewed shoots occupy short
+automatic runs and more of the inner limbs; on an explicitly reserved run the upright stays at
+the trunk-side crotch, leaving the walking span clear. Their wood-equivalent load is included in the mechanical
+cap. Leaves retain their size. A previously authored 20 m straight run remains that request;
+use a shorter run in a revised dwelling recipe and recheck its platform positions. Solver version
+6 invalidates old cached geometry. Revalidate ancient platform anchors even when retaining an
+old recipe: the additional crown load can shorten an explicitly requested run, and the renewed
+branches change the structural table. The renderer assigns new names their growth family's wind
+stiffness, so they retain motion rather than falling through to an unknown species.
+
+Tests in `growth_rules_tests.cpp` cover all ten profiles, repeatability, distinct geometry, valid
+motion, budget-invariant skeletons, canonical round trips, invalid input, wood relief and exact
+straight sections. Existing tests continue to cover the pipe rule, LAI, all three ancient habits,
+village recipes, mechanical caps, hollows and structural anchors.
+
 **Purpose.** The engine's tree solver: a species' parameters and a seed in, a mesh out, the same
 bytes every time and on every toolchain. Vegetation in this engine comes from a solver and not from
 modelled assets or image-to-3D, which is the owner's direction for it (plan 05 §5.15, "trees under
@@ -817,18 +878,19 @@ the habit's few **dead stubs** of shed limbs, short and drooping, never in a hol
 segments the [allometric recursion](#allometry) grows (`branches` laterals from 0.15 of the way out,
 each 2.5 × `branch_length` of the segment's own length, then self-similar orders by the pipe rule
 down to the species' twig, 6 mm in radius and 0.8 m long, whose cards are leaves 0.3 m long); an
-inner segment carries three short shoots sharing a sixth of its section, because an old limb's inside is
-mostly bare and its leaves are out where the light is, and the trunk's top a crown (an excurrent
+inner segment now carries four laterals from a crown rooted at 0.55 of its radius, with 1.2 times
+the terminal crown's lateral length, and the runs carry renewed uprights (G85). The trunk's top carries a crown (an excurrent
 trunk's) or a few shoots between its limbs (a decurrent one's).
 
-On the default 100 m tree: 7 limbs from 50 to 75 m up, 58 named segments past their runs (3 broken),
+**G79 measurements, before G85's renewal:** on the default 100 m tree, 7 limbs from 50 to 75 m up, 58 named segments past their runs (3 broken),
 4 stubs, and **496 parts** — the trunk, the runs, the segments, the stubs and the recursion's shoots
 of the part class and up; a crown 55 m across and 93 m tall. The spreading recipe
 (`ancient-spreading.flora.json`, 50 m) is 70 m across and 39 m tall on six limbs, 231 segments; the
 mixed (`ancient-mixed.flora.json`, 80 m) 67 by 81 m on eight, 308; `ancient-emergent.flora.json` is
 a 100 m emergent of another seed. **The old straight-limbed tree is gone**: `ancient.flora.json`
-(elder A) spells out the old defaults' limb fields — nine limbs from 30 to 62 m, 1.6 m thick, a
-24 m run and 36 m past it — and gets them as its wood allows, the lowest run 15.0 m.
+(elder A) retains nine limbs from 30 to 62 m, a requested 24 m run and 36 m past it. G85 increases
+its authored limb radius from 1.6 to 1.8 m to carry the denser crown while retaining an 8 m clear
+walking span; its renewal stays at the trunk-side crotch. The mechanical cap still sizes every run.
 
 ### Limbs a wood could carry
 

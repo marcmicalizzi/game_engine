@@ -268,6 +268,7 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
   out.materials.push_back(material("leaf", Vec4{0.24f, 0.36f, 0.10f, 1.0f}, 0.6f, true));
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = WoodProfile{0.4, 0.4, 0.08, 0.07, 0.08, p.seed};
   Vector<u32> part_of(shoots.size(), 0u);
 
   u32 wood = 0;

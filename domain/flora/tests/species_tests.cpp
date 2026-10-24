@@ -229,7 +229,7 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   full.stems = 1;
   full.triangle_budget = 400000;
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0xb8555e8ebde5d8eaull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x5ef02260be1776aeull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -396,14 +396,14 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.seed = 5;
   clump.triangle_budget = 400000;
   check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0x35e3f4c15bb79d5dull);
+                {50000u, 36000u, 12000u}, 0x0e3bd6e53177dc1dull);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {
   const flora::Willow p;
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.curtains;
   check_species(flora::k_species_willow, p, flora::solve_willow, parts, {20000u, 12000u},
-                0xab29e637ff287d6cull);
+                0x6ed17ceedeee2d85ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -431,12 +431,12 @@ TEST_CASE("flora: the orchard tree — a low broad crown, pruned flat or free, w
   const flora::Orchard p;
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs;
   check_species(flora::k_species_orchard, p, flora::solve_orchard, parts, {8000u},
-                0xa34242b45ea067f6ull);
+                0x6179cd3e0c98ee16ull);
   // With fruit: a third primitive, one-sided, its triangles eight a fruit.
   flora::Orchard fruiting = p;
   fruiting.fruit = 2;
   check_species(flora::k_species_orchard, fruiting, flora::solve_orchard, parts, {},
-                0xaed4db8cbb6228edull);
+                0x8399aaddf286a1cbull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -481,11 +481,11 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
   u32 parts = 0;
   for (const flora::CrownShoot& s : crown)
     parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
-  CHECK(parts == 496u);
+  CHECK(parts == 625u);
   // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72), 0xf43a0a8e4b677b3f
   // until the habits and the limbs a wood could carry (G79).
   check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 20000u},
-                0x19b81c05b8285745ull);
+                0x61446da58690bc66ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;

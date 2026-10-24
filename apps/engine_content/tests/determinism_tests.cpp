@@ -474,8 +474,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // megaflora's habits (G79, 2026-10-22): the ancient tree's limbs fork, meander and are sized by
 // their wood, and `k_flora_version` 5, which every flora container records, moved the broadleaf's
 // row with no byte of its mesh moving.
-constexpr u64 k_broadleaf_container_golden = 0x7ce40379c5c5c20bull;
-constexpr u64 k_ancient_container_golden = 0xa0dfab27e0849f1full;
+// G85 (2026-10-23): supported irregular wood, the ancient crown's renewal and solver version 6.
+// MSVC and Clang agree on both full-container folds, including the baked chain.
+constexpr u64 k_broadleaf_container_golden = 0xd7eee5e66c8230e4ull;
+constexpr u64 k_ancient_container_golden = 0xeb792d4ab6ed71a1ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

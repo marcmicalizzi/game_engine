@@ -4,6 +4,7 @@
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -29,8 +30,11 @@ f64 trunk_radius_of(const Broadleaf& p) {
                                        static_cast<f64>(p.allometry_exponent));
 }
 
-CrownSpec spec_of(const Broadleaf& p) {
+CrownSpec spec_of(const Broadleaf& p, const GrowthRules& rules = {}) {
   CrownSpec s;
+  s.opposite = rules.opposite;
+  s.droop = rules.droop;
+  s.droop_class = 1;
   s.area_exponent = static_cast<f64>(p.area_exponent);
   s.leader_share = static_cast<f64>(p.leader_share);
   u32 laterals = p.branching_ratio - 1;
@@ -52,8 +56,9 @@ CrownSpec spec_of(const Broadleaf& p) {
 
 // The structure: the trunk and the scaffold limbs (named, as before), and from every limb and the
 // trunk's top the recursion to the species' twig. Grown once; it never depends on the budget.
-Crown grow(const Broadleaf& p, const CrownSpec& spec) {
+Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules = {}) {
   Crown crown;
+  crown.terminal_leaf = rules.terminal_leaf;
   const f64 height = static_cast<f64>(p.height_m);
   const f64 r_trunk = trunk_radius_of(p);
   const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
@@ -69,7 +74,8 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec) {
   const f64 azimuth = trunk_rng.unit() * 2.0 * k_pi;
   const D3 heading{det::cos(azimuth), 0.0, det::sin(azimuth)};
   const Axis trunk =
-      grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean), height / det::cos(lean),
+      grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean),
+                height * rules.trunk_fraction / det::cos(lean),
                 k_fine_rows * 2, k_up, 0.3 / height, wander * 0.25, trunk_rng);
   crown_add_named(crown, trunk, r_trunk, r_top, k_crown_none);
 
@@ -77,10 +83,12 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec) {
   // third more upright.
   Rng limb_rng = stream_of(p.seed, static_cast<u64>(Stream::limbs));
   const f64 turn = limb_rng.unit() * 2.0 * k_pi;
-  const f64 base = static_cast<f64>(p.crown_base);
+  const f64 base = std::min(0.8, static_cast<f64>(p.crown_base) / rules.trunk_fraction);
   Vector<CrownRoot> roots;
   for (u32 i = 0; i < p.limbs; ++i) {
-    const f64 f = (static_cast<f64>(i) + 0.5) / static_cast<f64>(p.limbs);
+    const f64 f = rules.opposite
+                      ? (static_cast<f64>(i / 2u) + 0.5) / static_cast<f64>((p.limbs + 1u) / 2u)
+                      : (static_cast<f64>(i) + 0.5) / static_cast<f64>(p.limbs);
     const Axis& t_axis = crown.axes[0];
     const f64 s = t_axis.length * (base + (0.9 - base) * f);
     const f64 jitter_angle = limb_rng.symmetric();
@@ -88,12 +96,17 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec) {
                       (1.0 + 0.1 * jitter_angle);
     const f64 jitter_around = limb_rng.symmetric();
     D3 radial;
-    const D3 dir = branch_direction(
-        t_axis, s, turn + static_cast<f64>(i) * k_golden_angle + 0.15 * jitter_around, angle,
-        &radial);
+    const D3 dir = branch_direction(t_axis, s,
+                                    turn +
+                                        (rules.opposite ? static_cast<f64>(i / 2u) * 0.5 * k_pi +
+                                                              static_cast<f64>(i % 2u) * k_pi
+                                                        : static_cast<f64>(i) * k_golden_angle) +
+                                        0.15 * jitter_around,
+                                    angle, &radial);
     const f64 jitter_length = limb_rng.symmetric();
-    const f64 length =
-        static_cast<f64>(p.limb_length) * height * (1.0 - 0.5 * f) * (1.0 + 0.1 * jitter_length);
+    const f64 length = static_cast<f64>(p.limb_length) * height *
+                       (rules.layered ? (0.65 + 0.35 * det::sin(k_pi * f)) : (1.0 - 0.5 * f)) *
+                       (1.0 + 0.1 * jitter_length);
     const f64 r_here = lerp(r_trunk, r_top, s / t_axis.length);
     const Axis limb = grow_axis(axis_point(t_axis, s) + radial * (0.5 * r_here), dir, length,
                                 k_fine_rows, k_up, upturn / length, wander, limb_rng);
@@ -277,14 +290,20 @@ bool solve_broadleaf(const Broadleaf& p, assets::MeshData& out, TreeReport* repo
 
 bool solve_broadleaf_chain(const Broadleaf& p, assets::MeshData& out, TreeReport* report,
                            std::string* error, Motion* motion, TreeLevels* levels) {
+  return detail::solve_broadleaf_rules(p, GrowthRules{}, out, report, error, motion, levels);
+}
+
+bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
+                                   assets::MeshData& out, TreeReport* report, std::string* error,
+                                   Motion* motion, TreeLevels* levels) {
   out = assets::MeshData{};
   std::string message;
   if (!broadleaf_in_range(p, message)) {
     if (error != nullptr) *error = message;
     return false;
   }
-  const CrownSpec spec = spec_of(p);
-  Crown crown = grow(p, spec);
+  const CrownSpec spec = spec_of(p, rules);
+  Crown crown = grow(p, spec, rules);
   place_leaves(p, crown);
   Plan plan;
   u32 steps = 0;
@@ -301,6 +320,8 @@ bool solve_broadleaf_chain(const Broadleaf& p, assets::MeshData& out, TreeReport
   out.materials.push_back(material("leaf", Vec4{0.10f, 0.24f, 0.05f, 1.0f}, 0.6f, true));
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = rules.wood;
+  emit.wood.seed = p.seed;
 
   // The bark: the trunk and the limbs, then the recursion parents first, each part a tube.
   for (u32 i = 0; i < crown.first_recursion; ++i) {

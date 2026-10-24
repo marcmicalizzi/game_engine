@@ -1,4 +1,6 @@
 // The flora file, its key, and the container the solver's mesh is built into (flora.h).
+#include "species.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -43,7 +45,9 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     return false;
   }
   bool in_range = false;
-  if (out.species == k_species_date_palm) {
+  if (detail::is_tree_species(out.species)) {
+    in_range = detail::tree_in_range(out.species, out.tree, error);
+  } else if (out.species == k_species_date_palm) {
     in_range = palm_in_range(out.palm, error);
   } else if (out.species == k_species_broadleaf) {
     in_range = broadleaf_in_range(out.broadleaf, error);
@@ -71,7 +75,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
             "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" +
             k_species_orchard + "\", \"" + k_species_ancient + "\", \"" + k_species_shrub +
             "\", \"" + k_species_fern + "\", \"" + k_species_tuft + "\" and \"" + k_species_herb +
-            "\")";
+            "\", or the named tree profiles maple, oak, elm, walnut, beech, ash, pine, spruce, "
+            "cedar and juniper)";
     return false;
   }
   return in_range && materials_in_range(out, error);
@@ -122,7 +127,7 @@ constexpr PartRole k_herb_parts[] = {{"leaf", materials::UvLayout::card, Block::
 
 std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_date_palm) return k_palm_parts;
-  if (species == k_species_conifer) return k_conifer_parts;
+  if (species == k_species_conifer || detail::is_evergreen_species(species)) return k_conifer_parts;
   if (species == k_species_fern) return k_fern_parts;
   if (species == k_species_tuft) return k_tuft_parts;
   if (species == k_species_herb) return k_herb_parts;
@@ -188,6 +193,7 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
 namespace {
 // The member of `engine.flora.FloraFile` a species' parameters are in.
 const char* species_member(const std::string& species) {
+  if (detail::is_tree_species(species)) return "tree";
   if (species == k_species_broadleaf) return "broadleaf";
   if (species == k_species_conifer) return "conifer";
   if (species == k_species_birch) return "birch";
@@ -234,6 +240,8 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error,
                  TreeLevels* levels) {
   if (levels != nullptr) *levels = TreeLevels{};
+  if (detail::is_tree_species(file.species))
+    return detail::solve_tree(file.species, file.tree, mesh, tree_report, error, motion, levels);
   if (file.species == k_species_broadleaf)
     return solve_broadleaf_chain(file.broadleaf, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_conifer)
@@ -254,7 +262,10 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_tuft(file.tuft, mesh, tree_report, &error, &motion);
   if (file.species == k_species_herb)
     return solve_herb(file.herb, mesh, tree_report, &error, &motion);
-  return solve_palm(file.palm, mesh, palm_report, &error, &motion);
+  if (file.species == k_species_date_palm)
+    return solve_palm(file.palm, mesh, palm_report, &error, &motion);
+  error = "unknown flora species: " + file.species;
+  return false;
 }
 
 namespace {

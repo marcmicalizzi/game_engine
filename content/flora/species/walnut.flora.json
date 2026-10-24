@@ -1,0 +1,9 @@
+{
+  "species": "walnut",
+  "tree": {
+    "seed": 17,
+    "triangle_budget": 1000000,
+    "card_bake_px": 0,
+    "impostor_px": 0
+  }
+}

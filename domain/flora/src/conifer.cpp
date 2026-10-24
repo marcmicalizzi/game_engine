@@ -124,7 +124,7 @@ void grow_laterals(const Conifer& p, Branch& b, f64 step, u64 slot) {
   }
 }
 
-Structure grow(const Conifer& p) {
+Structure grow(const Conifer& p, const GrowthRules& rules) {
   Structure s;
   const f64 height = static_cast<f64>(p.height_m);
   Rng trunk_rng = stream_of(p.seed, static_cast<u64>(Stream::trunk));
@@ -132,8 +132,9 @@ Structure grow(const Conifer& p) {
   const f64 azimuth = trunk_rng.unit() * 2.0 * k_pi;
   const D3 heading{det::cos(azimuth), 0.0, det::sin(azimuth)};
   // A conifer's leader is straight: no wander, only the lean taken back towards the vertical.
-  s.trunk = grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean),
-                      height / det::cos(lean), 32, k_up, 0.5 / height, 0.0, trunk_rng);
+  s.trunk =
+      grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean), height / det::cos(lean), 32,
+                k_up, 0.5 / height, rules.irregular_stations ? 0.018 : 0.0, trunk_rng);
   s.trunk_r0 = static_cast<f64>(p.trunk_radius_m);
 
   Rng rng = stream_of(p.seed, static_cast<u64>(Stream::whorls));
@@ -153,7 +154,7 @@ Structure grow(const Conifer& p) {
   const auto whorl_arc = [&](f64 t) { return s.trunk.length * (base + (0.97 - base) * t); };
   // The crown's cone: the lowest branches reach `crown_radius_m`, the top ones a tenth of it.
   const auto whorl_length = [&](f64 t) {
-    return reach * lerp(1.0, 0.1, det::exp(det::log(t + 1e-9) * 0.9));
+    return reach * lerp(1.0, 0.1, det::exp(det::log(t + 1e-9) * rules.crown_power));
   };
   const auto whorl_angle = [&](f64 t) {
     return lerp(static_cast<f64>(p.bottom_angle_deg), static_cast<f64>(p.top_angle_deg), t) *
@@ -197,7 +198,7 @@ Structure grow(const Conifer& p) {
     if (br.cards > s.max_cards) s.max_cards = br.cards;
     // Shade shoots are flat and sun shoots bushy (Stenberg et al. 1999): the cards lift 10
     // degrees out of the spray's plane at the crown's foot, 35 at its top.
-    br.lift = lerp(10.0, 35.0, t) * k_degree;
+    br.lift = lerp(10.0, 35.0, t) * k_degree * rules.spray_lift;
     grow_laterals(p, br, step, here);
     for (const Lateral& l : br.laterals) {
       if (l.cards > s.max_cards) s.max_cards = l.cards;
@@ -224,7 +225,12 @@ Structure grow(const Conifer& p) {
       const f64 angle = angle_t * (1.0 + 0.05 * rng.symmetric());
       const D3 dir = normalized(tangent * det::cos(angle) + radial * det::sin(angle));
       const f64 len = length * (1.0 + 0.1 * rng.symmetric());
-      Axis axis = grow_axis(axis_point(s.trunk, arc) + radial * (0.5 * r_here), dir, len,
+      const f64 station = rules.irregular_stations
+                              ? arc + (static_cast<f64>(b) / static_cast<f64>(count) - 0.5) *
+                                          s.trunk.length * (0.97 - base) /
+                                          static_cast<f64>(p.whorls)
+                              : arc;
+      Axis axis = grow_axis(axis_point(s.trunk, station) + radial * (0.5 * r_here), dir, len,
                             k_fine_rows, k_up, upturn / len, 2.0 * k_degree, rng);
       add(std::move(axis), len, r_here, t, sparse);
     }
@@ -370,13 +376,18 @@ bool conifer_in_range(const Conifer& p, std::string& error) {
 
 bool solve_conifer(const Conifer& p, assets::MeshData& out, TreeReport* report, std::string* error,
                    Motion* motion) {
+  return detail::solve_conifer_rules(p, GrowthRules{}, out, report, error, motion);
+}
+
+bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, assets::MeshData& out,
+                                 TreeReport* report, std::string* error, Motion* motion) {
   out = assets::MeshData{};
   std::string message;
   if (!conifer_in_range(p, message)) {
     if (error != nullptr) *error = message;
     return false;
   }
-  const Structure s = grow(p);
+  const Structure s = grow(p, rules);
   Plan plan;
   u32 steps = 0;
   if (!plan_conifer(p, s, plan, steps)) {
@@ -392,6 +403,8 @@ bool solve_conifer(const Conifer& p, assets::MeshData& out, TreeReport* report, 
   out.materials.push_back(material("needles", Vec4{0.05f, 0.14f, 0.06f, 1.0f}, 0.7f, true));
   Motion parts;
   Emitter emit{out, parts};
+  emit.wood = rules.wood;
+  emit.wood.seed = p.seed;
 
   // The bark: the trunk (part 0) tapering to the leader's tip, then every branch's woody shoot,
   // each a part of its own hanging from the trunk; a dead branch's on every rung.

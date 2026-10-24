@@ -599,7 +599,8 @@ TEST_CASE(
   // 0x178ae32e3572bd96 was version 3's: the version is in the build key the container records, so
   // version 4 (the trees' impostor chain, R91) moved it with no byte of the palm's mesh moving,
   // and 0x1fc747f1b4eb758b was version 4's, until version 5 (the megaflora's habits, G79).
-  constexpr u64 k_golden = 0xf5eeb4a2203dcbbdull;
+  // Version 6 invalidates the tree geometry cache; palm geometry itself is unchanged.
+  constexpr u64 k_golden = 0xf5e8a710737c8bfaull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -607,8 +608,9 @@ TEST_CASE(
   REQUIRE_MESSAGE(flora::read_flora_file("{ \"palm\" : { \"seed\" : 1 } }", spelled, error), error);
   CHECK(flora::canonical_flora_json(spelled) == flora::canonical_flora_json(file));
   CHECK(flora::flora_source_hash(spelled) == flora::flora_source_hash(file));
-  CHECK_FALSE(flora::read_flora_file("{\"species\":\"oak\"}", spelled, error));
-  CHECK(error.find("oak") != std::string::npos);
+  CHECK(flora::read_flora_file("{\"species\":\"oak\"}", spelled, error));
+  CHECK_FALSE(flora::read_flora_file("{\"species\":\"unknown_tree\"}", spelled, error));
+  CHECK(error.find("unknown_tree") != std::string::npos);
   CHECK_FALSE(flora::read_flora_file("{\"palm\":{\"frond_count\":0}}", spelled, error));
   CHECK(error.find("frond_count") != std::string::npos);
 }
@@ -709,7 +711,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // moves only the contract is told apart from one that moves the mesh; 0x31af079d27301ce7 until
   // k_flora_version 4 moved the build key it records (R91; the palm's mesh did not move), and
   // 0x4cbe7ab61460f083 until version 5 did the same (G79, the megaflora's habits).
-  constexpr u64 k_rigid_golden = 0x1cbf4f684b7db8dfull;
+  constexpr u64 k_rigid_golden = 0xa290e40bd1940582ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -844,7 +846,8 @@ TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in
     parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
   CHECK(parts == 230u);
   // 0x80af7e3dd0bf4804 until the crown became the allometric recursion (G72).
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x1830133b376b6e08ull);
+  // G85 changes the wood surface; the growth skeleton and leaf budget are unchanged.
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x392de941ba5e9c9eull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {
@@ -856,7 +859,7 @@ TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, 
   REQUIRE_MESSAGE(flora::solve_conifer(p, mesh, &report, &error, &motion), error);
   // Parts: the trunk and every branch; the whorls thin upward, so the top has fewer.
   // 0xd849a6672e26415a until the laterals, the interwhorl branches and the branches' fates (G80).
-  check_species("conifer", p, flora::solve_conifer, report.parts, 0x2a62d51b98e2dd20ull);
+  check_species("conifer", p, flora::solve_conifer, report.parts, 0x404c4126ccb215f2ull);
   CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl + (p.whorls - 1) * p.interwhorl);
   CHECK(report.parts > 1 + p.whorls * 2);
   // A cone: the lowest branches reach furthest, the highest least.

@@ -85,11 +85,40 @@ inline Rng stream_of(u64 seed, u64 stream) {
 
 // Every vertex is emitted with the part it belongs to and its bend weight (motion.h): the part is
 // set once per part, the weight per station along it.
+// Cold build-time rules; no per-frame storage. Amplitudes are relative to the core radius.
+struct WoodProfile {
+  f64 collar = 0.0;
+  f64 flare = 0.0;
+  f64 fluting = 0.0;
+  f64 oval = 0.0;
+  f64 knots = 0.0;
+  u64 seed = 1;
+};
+
+struct GrowthRules {
+  bool terminal_leaf = false;
+  bool opposite = false;
+  bool layered = false;
+  bool irregular_stations = false;
+  f64 crown_power = 0.9;
+  f64 trunk_fraction = 1.0;  // decurrent scaffolds take over below the requested crown height
+  f64 spray_lift = 1.0;
+  f64 droop = 0.0;
+  WoodProfile wood{0.35, 0.3, 0.06, 0.04, 0.06, 1};
+};
+
+bool solve_broadleaf_rules(const Broadleaf& params, const GrowthRules& rules, assets::MeshData& out,
+                           TreeReport* report, std::string* error, Motion* motion,
+                           TreeLevels* levels);
+bool solve_conifer_rules(const Conifer& params, const GrowthRules& rules, assets::MeshData& out,
+                         TreeReport* report, std::string* error, Motion* motion);
+
 struct Emitter {
   assets::MeshData& mesh;
   Motion& motion;
   u32 part = k_trunk_part;
   f64 weight = 0.0;
+  WoodProfile wood{};
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));
@@ -264,6 +293,7 @@ inline constexpr u32 k_crown_part = 2u;      // a motion part with a grown axis
 inline constexpr u32 k_crown_named = 4u;     // a shoot of the species' named orders
 
 struct CrownSpec {
+  bool opposite = false;    // paired lateral buds, successive pairs decussate
   f64 area_exponent = 2.0;  // D in R^D = sum r^D
   f64 leader_share = 0.3;   // the leader's share of a node's cross-section
   u32 laterals = 3;         // laterals on a shoot of the recursion (Rb - 1, capped)
@@ -317,7 +347,8 @@ struct CrownRoot {
 };
 
 struct Crown {
-  Vector<CrownNode> nodes;  // the named shoots first, then the recursion depth-first
+  bool terminal_leaf = false;  // odd-pinnate compound sprays (ash), only at the finest leaf rung
+  Vector<CrownNode> nodes;     // the named shoots first, then the recursion depth-first
   Vector<Axis> axes;
   Vector<u32> twigs;  // node indices of the terminal twigs, depth-first
   u32 first_recursion = 0;
