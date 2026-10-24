@@ -29,6 +29,17 @@ Frames from the switch to walking on (the cold runs from their start), `msvc-rel
 
 **What that says.** The stall is the frame thread waiting for the reader's lock while the terrain's workers hold it in turn: its own work under the lock is under a millisecond, the wait is the workers' whole hold, and the workers wait on each other for tens of seconds. It is not the activation's physics (bodies 0.9 ms), not placements (none on the summit), not IO on the frame thread (0 of its own reads in the frame), and not the renderer (a waited run of the same path has no stall). It explains each of the owner's observations: **mouse-look** asks for no ground, so its frames are free; **W A S D** crosses cells and tiles, and every crossing asks the reader; the first walking frame activates a whole ring at once; and **waiting** lets the rebuild finish, after which the same walk is clean — (c) is as clean as the cold start. The offscreen magnitude (0.65 s) is below the window's (4.4 s) because the offscreen frames are not paced and fewer of the rebuild's jobs are queued when the walker asks; the mechanism and its attribution are the same.
 
-## After
+## After the reader stopped holding its lock across work
 
-(Filled in by the change that fixes it.)
+The reader's lock now guards the cache's index alone: a request pins its tiles, evaluates from them unlocked, and a miss is read outside the lock with an in-flight marker ([tileset](../subsystems/tileset.md#the-readers-lock)). The same runs, same flags and logs:
+
+| Case | Worst frame | Frames > 100 ms | > 33 ms | Activation max | Frame thread's lock wait (most / sum) | All threads' lock wait, sum | Machine (others' CPU start / end, GPU) |
+|---|---:|---:|---:|---:|---:|---:|---|
+| (a) look only, async | 54.6 ms | 0 | 15 | 1.1 ms | 0.000 / 0.00 ms | 0.0 ms | 100% / 100%, 0% |
+| **(b) F and W, async** | **25.2 ms** | 0 | 0 | **1.03 ms** | **0.003 / 0.02 ms** | **7.1 ms** | 24% / 9%, 4–33% |
+| (c) 30 s standing, then W | 106.7 ms | 1 | 31 | 0.19 ms | 0.001 / 0.01 ms | 6.8 ms | 7% / 100%, 0–1% |
+| cold at the summit | 37.6 ms | 0 | 3 | 0.21 ms | 0.003 / 0.02 ms | 2.4 ms | 36% / 90%, 6–20% |
+| (d) to the grove, async | 24.0 ms | 0 | 0 | 4.6 ms | 0.010 / 0.02 ms | 3.3 ms | 97% / 11%, 0–84% |
+| cold at the grove | 44.3 ms | 0 | 1 | 0.94 ms | 0.001 / 0.02 ms | 0.0 ms | 10% / 7%, 0–6% |
+
+The first walking frame's activation of (b) is 1.03 ms (0.4 ms of it ground heights, 0.8 ms bodies) where it was 637.7 ms; the frame thread's longest wait for the lock is 3 µs where it was 488 ms, and every thread's wait over the walk is 7 ms where it was 37 s — the rebuild's workers no longer serialize on each other either. **The slow frames left are not the walker's**: in (a), (c) and both cold runs every frame over 33 ms has ticks of 0.1–0.3 ms and no reader wait, and they fall in runs where another process held the CPU at 90–100% (an agent's build, at the start or end of the run); the harness's `machine_state` says so, and they are upper bounds of nothing this change touches. (d)'s 4.6 ms activation is a tile of the grove's placements (proxies and compound, 4.0 ms over the walk), the work the next stage moves ahead of the ring.

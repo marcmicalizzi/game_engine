@@ -45,7 +45,7 @@ The renderer's far levels ask the source for a lattice **filtered to** each far 
 
 ## The reader
 
-`TileSet::open(manifest)` checks the format, version and levels and reads no tile. Its cache is bounded by a tile payload budget (`TileSet(cache_bytes)`, 64 MiB by default; `tileset.cache_mib` for the registered provider), with a sparse index bounded by the same number of tiles, independent of the source's extent. Tiles enter on first use and the oldest entry is replaced when the cache fills; return travel may reread them. A lattice request holds the reader's lock while sampling, so another job cannot evict its data; a last-tile hint avoids a hash lookup at every adjacent point. No pointer escapes that lock. `cache_stats()` reports budget, held payload bytes, tile count and evictions; `reads()` counts successful reads, including rereads. A budget smaller than one tile is refused at open. `TileSet::source()` is the set as a `scene_gen::TileSource`:
+`TileSet::open(manifest)` checks the format, version and levels and reads no tile. Its cache is bounded by a tile payload budget (`TileSet(cache_bytes)`, 64 MiB by default; `tileset.cache_mib` for the registered provider), with a sparse index bounded by the same number of tiles, independent of the source's extent. Tiles enter on first use and the oldest entry is replaced when the cache fills; return travel may reread them. A request **pins** the tiles it reads and evaluates from them with no lock held, so another job cannot evict its data and nobody waits for its arithmetic ([The reader's lock](#the-readers-lock)); its last tile is looked up before the rest, so adjacent points take no hash lookup. No pointer escapes the request. `cache_stats()` reports budget, held payload bytes, tile count and evictions; `reads()` counts successful reads, including rereads. A budget smaller than one tile is refused at open. `TileSet::source()` is the set as a `scene_gen::TileSource`:
 
 - at `filter_mm` 0, **the ground at each point of any spacing**: the finest's own points where the spacing is a multiple of its own (every r-th, as the renderer's test set answers), and its bilinear surface at a spacing finer than or between them — so a renderer's 50 cm finest ring over a 1 m heightfield draws the surface between its points rather than being refused;
 - at a filter, **the chain level of that spacing**, point for point; a filter it was not built with, or one that is not its spacing, is **refused** (false), not answered with the wrong lattice;
@@ -55,7 +55,7 @@ A missing or invalid tile refuses the lattice request and increments `failures()
 
 The cache index admits at most 2²⁶ entries even if a larger payload budget could hold more; this
 bounds metadata for oversized budgets and does not restrict the source's extent. Admission also
-temporarily holds the incoming payload and its file-read buffer, each one tile in size.
+temporarily holds the incoming payload and its file-read buffer, each one tile in size. The index and the entries grow as tiles come in, reserved up to 1,024 at open rather than to the whole capacity, since a budget of small tiles is millions of entries whose metadata would outweigh the payload it bounds.
 
 `point_mm`/`height_mm(x_mm, z_mm)` are the bilinear surface at whole millimetres, the edge held: what placement and a camera key stand on.
 
@@ -63,7 +63,16 @@ temporarily holds the incoming payload and its file-read buffer, each one tile i
 
 **What it costs, and who waits** (2026-10-24, roadmap W69). `reader_stats()` counts, over every thread, the lock taken, the nanoseconds callers waited for it and held it (and the most of each once), tiles found resident and read from disk with their bytes and read time, and waits for another caller's read of the same tile; `TileSet::thread_reader_stats()` is the calling thread's share over every set, so a host's frame thread can tell its own waits from the terrain workers' (engine-view's records carry both, [apps](apps.md#walking)). `tile_set_of(source)` finds the set behind a `TileSet::source()`, for a host that holds only the renderer's source. Counters only: nothing a request answers reads them.
 
-**What they found.** One lock held over a whole window's evaluation, tile reads from disk included, put a walker's tick behind every terrain worker of a rebuild: after a flight to the forest POC's summit the frame thread waited 636 ms for it in one frame while holding it 0.4 ms ([the measurement](../experiments/walk-stalls-2026-10-24.md)).
+**What they found.** Until 2026-10-24 one lock was held over a whole window's evaluation, tile reads from disk included (since 4b31ac77, W67, which replaced the lock-free resident tiles of the first reader with the bounded cache): a walker's tick then queued behind every terrain worker of a rebuild, and after a flight to the forest POC's summit the frame thread waited 636 ms for it in one frame while holding it 0.4 ms, the workers 26 s among themselves ([the measurement](../experiments/walk-stalls-2026-10-24.md)).
+
+**The reader never holds its lock across work.** The lock guards the cache's index and its entries' pin counts, and nothing else:
+
+- **A request pins what it reads.** Under the lock, for the lookup alone, a resident tile's pin count goes up and its payload pointer is taken; the heights are then read with no lock, and the request's pins (at most eight at once; more are let go and taken again) are let go together when it returns. An entry is evicted only at a pin count of zero, so a pinned payload cannot move or go, and the oldest unpinned entry is the one replaced — the FIFO it was.
+- **A miss is read outside the lock, once.** The caller claims a slot under the lock — an entry in the index marked `loading`, pinned by it — reads and checks the file with the lock released, and publishes it under the lock again (or, on a failed read, frees the slot so the next asker tries afresh). A second caller asking for a tile being read waits on a condition for that read alone, never reads it twice, and never waits for the lock across another tile's IO.
+- **The budget holds unless every entry is pinned.** A claim with no unpinned entry first lets go the claimant's own pins (every height it read through them is already read); only with every entry pinned by other requests — more requests at once than the budget has tiles — does the cache grow past its budget by those pins, and the next evictions bring it back.
+- **The cache's numbers take no lock**: `cache_stats` reads atomics.
+
+So a point asked beside a long window costs its own lookup: `tileset: a point is not held behind another thread's long window` holds a 1,400 × 1,400 window on one thread (0.8 s in a debug build) against points asked on another, the slowest 0.75 ms — 748 ms, the whole window, with the old lock — and `tileset: concurrent callers missing the same tiles read each once` has eight callers ask one window of twenty tiles at once and the set read twenty. After the fix the POC's flight-and-walk frame thread waited 3 µs at most for the lock.
 
 ## The provider: `tiles`
 

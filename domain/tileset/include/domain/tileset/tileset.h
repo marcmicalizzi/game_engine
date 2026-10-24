@@ -139,9 +139,11 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ---- the reader ---------------------------------------------------------------------------------
 
 // **A built tile set, read back** (docs/subsystems/tileset.md, "The reader"). Tiles are read on
-// first ask and retained within a bounded cache. Concurrent lattice/point requests hold the
-// reader's lock while sampling, so eviction cannot invalidate their data. Not movable:
-// `source()` points at it. Open/reopen is exclusive with all requests.
+// first ask and retained within a bounded cache. **The reader never holds its lock across work**
+// ("The reader's lock"): a request pins the tiles it reads under a short lock on the cache's index
+// and evaluates from them with no lock, a tile not resident is read from disk outside the lock
+// with an in-flight marker so two callers never read it twice, and an entry a request pins is never
+// evicted. Not movable: `source()` points at it. Open/reopen is exclusive with all requests.
 class TileSet {
  public:
   // Tile payload budget; cache indices are bounded by the same number of tiles. Revisited
@@ -214,9 +216,12 @@ class TileSet {
   struct Counters;
 
  private:
-  const i32* tile(const Level& level, i32 tx, i32 tz) const noexcept;
-  f64 value(const Level& level, i64 i, i64 j) const noexcept;
-  f64 point_mm_locked(i64 x_mm, i64 z_mm) const noexcept;
+  struct Pins;
+  const i32* tile(const Level& level, i32 tx, i32 tz, Pins& pins) const noexcept;
+  f64 value(const Level& level, i64 i, i64 j, Pins& pins) const noexcept;
+  f64 point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept;
+  void unpin(Pins& pins) const noexcept;
+  void unpin_locked(Pins& pins) const noexcept;
 
   struct Cache;
   std::unique_ptr<Cache> cache_;
