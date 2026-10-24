@@ -1,5 +1,6 @@
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
+#include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
@@ -1181,6 +1182,7 @@ bool GpuScene::validate_tables(std::string* why) const {
 }
 
 bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* error) {
+  ENGINE_STARTUP_STAGE("upload geometry");
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
   // Positions go to the GPU on the mesh-wide 16-bit grid: six bytes a vertex instead of twelve.
@@ -1691,6 +1693,7 @@ void GpuScene::set_static_weights(std::span<const f32> weights) {
 // region starts at rest. The ground the wind is asked of is the sand detail's when the scene has
 // one, and one made here for a terrain that has none.
 bool GpuScene::create_flora(std::string* error) {
+  ENGINE_STARTUP_STAGE("flora motion");
   const gfx::Device& device = *device_;
   const u32 total_vertices = data_->lod.mesh.vertices.size();
   Vector<geometry::ClusterFileMotionVertex> stream(total_vertices,
@@ -1806,6 +1809,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
 // that, evaluates the fields off the frame, and hands them over through `terrain_upload` and
 // `terrain_show`. Level 0 is the scene's own grid, drawn by the terrain mesh's instance.
 bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* error) {
+  ENGINE_STARTUP_STAGE("terrain levels");
   (void)resolved;
   const gfx::Device& device = *device_;
   terrain_.clear();
@@ -2629,6 +2633,7 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
 }
 
 bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* error) {
+  ENGINE_STARTUP_STAGE("upload materials");
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) return false;
@@ -3137,6 +3142,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
 }
 
 bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string* error) {
+  ENGINE_STARTUP_STAGE("working set");
   const gfx::Device& device = *device_;
   // One visible list for the whole frame, in three runs per view: the hardware pass 1, the
   // hardware pass 2, and the software rasterizer. A visibility id names an entry of the whole
@@ -3224,6 +3230,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
 
 bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string* error) {
   if (!ray_tracing_) return true;
+  ENGINE_STARTUP_STAGE("ray tracing");
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
   // **What a frame could build is `views * pairs`; what it does build is its cut.** A pair's base

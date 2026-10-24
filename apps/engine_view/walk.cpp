@@ -491,6 +491,18 @@ bool Walker::on_ground() const noexcept {
   return !w.airborne;
 }
 
+bool Walker::ground_ready() const noexcept {
+  const Impl& w = *impl_;
+  if (w.ground == nullptr || !w.placed) return false;
+#if ENGINE_VIEW_WALK_PHYSICS
+  if (w.physical) {
+    f32 height = 0.0f;
+    return w.consumer.ground_height(w.feet, height);
+  }
+#endif
+  return true;
+}
+
 void Walker::set_speed_scale(f32 walk, f32 sprint) noexcept {
   const auto held = [](f32 s) { return s < 0.0f ? 0.0f : s > 4.0f ? 4.0f : s; };
   impl_->speed_scale = held(walk);

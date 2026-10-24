@@ -2,6 +2,7 @@
 
 #include <core/hash/hash.h>
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/physics/character.h>
 #include <foundation/tunables/tunables.h>
@@ -868,6 +869,7 @@ bool SceneCollision::build_placements(Tile& tile) {
 // ---------------------------------------------------------------------------------
 
 bool SceneCollision::activate(void* context, const world::TileEvent& event) {
+  ENGINE_STARTUP_STAGE("collision tile");  // the startup trace: the ring's first tiles
   auto* self = static_cast<SceneCollision*>(context);
   const i64 start = time::monotonic_ns();
   Tile tile;

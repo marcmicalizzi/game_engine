@@ -1,11 +1,13 @@
 #include <core/base/assert.h>
 #include <core/hash/hash.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/terrain_time.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <renderer_log.h>
@@ -13,6 +15,11 @@
 namespace engine::renderer {
 
 namespace {
+
+// The startup trace's stages of the workers' latest tasks, which a wait for them names (timing
+// only: profiling.md, "The startup trace").
+std::atomic<u32> g_terrain_task_stage{profiling::k_trace_none};
+std::atomic<u32> g_terrain_ring_stage{profiling::k_trace_none};
 
 // Read when a time-lapse starts (docs/subsystems/renderer.md, "The dunes in time-lapse").
 tunables::Float move_fraction{
@@ -759,10 +766,15 @@ void TerrainMotion::worker_main() {
     wake_.wait(lock, [&] { return stop_ || (busy_ && !task_.done); });
     if (busy_ && !task_.done) {
       lock.unlock();
-      if (task_.kind == Task::Kind::field) {
-        run_field(task_);
-      } else {
-        run_pairs(task_);
+      {
+        profiling::TraceStage stage(task_.kind == Task::Kind::field ? "terrain field"
+                                                                    : "terrain pairs");
+        g_terrain_task_stage.store(stage.id(), std::memory_order_relaxed);
+        if (task_.kind == Task::Kind::field) {
+          run_field(task_);
+        } else {
+          run_pairs(task_);
+        }
       }
       lock.lock();
       task_.done = true;
@@ -779,7 +791,11 @@ void TerrainMotion::ring_worker_main() {
     ring_wake_.wait(lock, [&] { return ring_stop_ || (ring_busy_ && !ring_task_.done); });
     if (ring_busy_ && !ring_task_.done) {
       lock.unlock();
-      run_rings(ring_task_);
+      {
+        profiling::TraceStage stage("terrain rebuild");
+        g_terrain_ring_stage.store(stage.id(), std::memory_order_relaxed);
+        run_rings(ring_task_);
+      }
       lock.lock();
       ring_task_.done = true;
       ring_done_.notify_all();
@@ -1030,6 +1046,8 @@ bool TerrainMotion::worker_busy() {
 
 void TerrainMotion::wait_worker() {
   {
+    const profiling::TraceWait wait("terrain worker wait",
+                                    g_terrain_task_stage.load(std::memory_order_relaxed));
     std::unique_lock<std::mutex> lock(mutex_);
     done_.wait(lock, [&] { return !busy_ || task_.done; });
   }
@@ -1265,7 +1283,11 @@ bool TerrainMotion::take_rings(bool block) {
   {
     std::unique_lock<std::mutex> lock(ring_mutex_);
     if (!ring_busy_) return false;
-    if (block) ring_done_.wait(lock, [&] { return ring_task_.done; });
+    if (block) {
+      const profiling::TraceWait wait("terrain rebuild wait",
+                                      g_terrain_ring_stage.load(std::memory_order_relaxed));
+      ring_done_.wait(lock, [&] { return ring_task_.done; });
+    }
     if (!ring_task_.done) return false;
     finished = std::move(ring_task_);
     ring_task_ = RingTask{};

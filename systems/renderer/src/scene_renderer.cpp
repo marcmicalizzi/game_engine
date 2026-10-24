@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/containers/small_vector.h>
 #include <core/platform/process.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
@@ -520,6 +521,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     if (io::exists(candidate)) manifest = candidate;
   }
   if (!manifest.empty()) {
+    ENGINE_STARTUP_STAGE_DETAIL("shader manifest", manifest);
     if (!shaders_.load_manifest(manifest, error)) {
       destroy();
       return false;
@@ -528,10 +530,12 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   }
   // The scene's sky, when it names one (sky.h): its provider made through the registry, its tables'
   // buffers and pipelines, its stars. Nothing for a scene that names none.
+  profiling::TraceStage sky_stage("sky");
   if (!sky_.create(device, scene.data(), shaders_, error)) {
     destroy();
     return false;
   }
+  sky_stage.end();
   // The ground's surface time, which the GPU scene keeps for a terrain with a detail block and a
   // moving terrain's motion updates every frame: a terrain with neither starts it here, at the
   // scene's own time, so a summary reads the ground's hour. The sky no longer stands on it — it
@@ -784,6 +788,7 @@ bool SceneRenderer::create_color_target(std::string* error) {
 }
 
 bool SceneRenderer::create_pipelines(std::string* error) {
+  ENGINE_STARTUP_STAGE("pipelines");
   const gfx::Device& device = *device_;
   // **The mesh-shader pipelines are built only for a path that draws with them**, and
   // `cluster_mesh` is not even loaded otherwise. On a device without VK_EXT_mesh_shader

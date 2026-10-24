@@ -6,6 +6,7 @@
 #include <core/json/json_value.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/protocol/session.h>
@@ -582,8 +583,41 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
 
 // ---- render.load -------------------------------------------------------------------------------
 
+// `render.load` with `startup_trace` (protocol.schema, `RenderLoadParams.startup_trace`): the
+// process's startup trace over the call, timed from its start, and its summary the answer's
+// `startup` — engine-view's block, with the load's two milestones. Reset however the call ends.
+constexpr const char* k_load_milestones[] = {"scene_read", "scene_loaded"};
+struct LoadTrace {
+  bool on = false;
+  ~LoadTrace() {
+    if (on) profiling::trace_reset();
+  }
+  JsonValue finish() {
+    profiling::trace_stop();
+    Vector<profiling::TraceEvent> events;
+    profiling::trace_snapshot(events);
+    JsonValue block = profiling::startup_summary_json(
+        std::span<const profiling::TraceEvent>(events.data(), events.size()), k_load_milestones,
+        "scene_loaded", profiling::trace_dropped());
+    block.set("origin", "the call");
+    profiling::trace_reset();
+    on = false;
+    return block;
+  }
+};
+
 bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& params,
                  protocol::RenderSceneInfo& out, protocol::RpcError& error) {
+  LoadTrace load_trace;
+  if (params.startup_trace) {
+    profiling::TraceOptions trace_options;
+    trace_options.origin_ns = profiling::trace_now_ns();
+    if (!profiling::trace_start(trace_options)) {
+      error = invalid("startup_trace: a startup trace is already recording in this process");
+      return false;
+    }
+    load_trace.on = true;
+  }
   RenderHost* host = host_of(ctx);
   if (host == nullptr) {
     error = unavailable("this host has no renderer attached");
@@ -677,6 +711,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     renderer::SceneFileOptions file_options;
     file_options.overlay = params.overlay;
     renderer::scene_file_options(request, file_options);
+    ENGINE_STARTUP_STAGE_DETAIL("scene file", params.scene);
     if (!renderer::read_scene_file(params.scene, file_options, desc, load_error)) {
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
@@ -684,14 +719,19 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   } else {
     desc.meshes.push_back(params.mesh);  // empty: the procedural heightfield
   }
+  (void)profiling::trace_milestone("scene_read");
 
   // Loaded into a local and resolved before the scene is registered, so a mesh that does not
   // load or a device that cannot draw it leaves no half-built scene behind holding an id.
   renderer::SceneData data;
-  if (!renderer::load_scene(desc, data, load_error)) {
-    error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
-    return false;
+  {
+    ENGINE_STARTUP_STAGE("load scene");
+    if (!renderer::load_scene(desc, data, load_error)) {
+      error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
+      return false;
+    }
   }
+  (void)profiling::trace_milestone("scene_loaded");
   renderer::RenderSettings settings;
   if (std::string message; !renderer::settings_for(request, data, settings, &message)) {
     error = invalid("settings.morph: " + message);
@@ -728,6 +768,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   }
 
   fill_scene_info(*scene, *device, out);
+  if (load_trace.on) out.startup = load_trace.finish();
   ENGINE_LOG_INFO(log_render, "scene loaded", log::field("scene", scene->id),
                   log::field("clusters", out.clusters), log::field("instances", out.instances),
                   log::field("pairs", out.pairs), log::field("cache", out.mesh_cache));

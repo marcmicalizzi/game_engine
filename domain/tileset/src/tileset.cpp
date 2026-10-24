@@ -2,6 +2,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
+#include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -709,6 +710,7 @@ TileSet::TileSet(u64 cache_bytes) : cache_(std::make_unique<Cache>()), cache_byt
 TileSet::~TileSet() = default;
 
 bool TileSet::open(const std::string& manifest_path, std::string& error) {
+  ENGINE_STARTUP_STAGE_DETAIL("tileset open", manifest_path);
   levels_.clear();
   *cache_ = Cache{};
   reads_.store(0, std::memory_order_relaxed);

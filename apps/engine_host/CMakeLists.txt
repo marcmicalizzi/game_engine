@@ -21,7 +21,8 @@
 # alone — which materializes nothing and says so — when it is not. `msvc-minimal` and the
 # `*-no-ecs` presets are the proof.
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
-               schemas bench time platform jobs geometry gfx sim content_build doc input net doc_scene)
+               schemas bench time platform jobs geometry gfx sim content_build doc input net doc_scene
+               profiling)
 set(_host_defs)
 foreach(_cap audio ecs animation audio_system kinematics npc scripting store tissue world)
   if(TARGET engine::${_cap})

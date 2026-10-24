@@ -1725,7 +1725,10 @@ struct FlythroughAnimation @version(1) {
 ///
 /// Version 14: `animation`, the animated world's block (`FlythroughAnimation`, declared above it
 /// because a type is named after it is declared).
-struct FlythroughSummary @version(14) {
+///
+/// Version 15: `startup`, the startup trace's summary (`--startup-trace`; docs/subsystems/apps.md,
+/// "--startup-trace: from launch to ready").
+struct FlythroughSummary @version(15) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1827,4 +1830,8 @@ struct FlythroughSummary @version(14) {
   /// "Animation in a session"): its LOD, its clock, and per animated instance the hashes of its clip,
   /// playhead and drawn pose at the run's end. Null when nothing animates.
   animation: FlythroughAnimation? @since(14)
+  /// The startup from the process's launch (`--startup-trace`, `profiling::startup_summary_json`):
+  /// the milestones, the main thread's stages, the other threads' busy time, and the process before
+  /// ready. Null without the flag.
+  startup: json @since(15)
 }

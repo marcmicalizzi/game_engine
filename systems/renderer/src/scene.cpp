@@ -4,6 +4,7 @@
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/content_build/content_build.h>
@@ -106,6 +107,8 @@ void build_cache_textures(const geometry::ClusterFileData& data, std::string_vie
     mesh_of.push_back(0u);
   }
   const i64 start_ns = time::monotonic_ns();
+  ENGINE_STARTUP_STAGE_DETAIL("cache textures", what);
+  profiling::trace_items(sources.size());
   jobs::JobSystem pool(content_build::job_config(0));
   Vector<content_build::TextureResult> results;
   content_build::run_texture_step(
@@ -601,7 +604,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     out.cache = "file";
   } else if (desc.cache || expected_hash != 0) {
     u64 source_hash = 0;
+    profiling::TraceStage hash_stage("source hash");
     if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
+    hash_stage.end();
     out.source_hash = source_hash;
     // A scene that names a mesh by its bytes gets those bytes or nothing: a number measured on a
     // different file would still carry this scene's name (plan 09 §9.4, "content-addressed").
@@ -624,7 +629,10 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   bool from_container = false;
   if (!container.empty()) {
     std::string read_error;
-    if (geometry::read_cluster_file(container, container_data, &read_error)) {
+    profiling::TraceStage read_stage("cluster read");
+    const bool read = geometry::read_cluster_file(container, container_data, &read_error);
+    read_stage.end();
+    if (read) {
       from_container = true;
       if (!cache_path.empty()) out.cache = "hit";
     } else if (cache_path.empty()) {
@@ -634,6 +642,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
       // A cache entry this build cannot read is not an error; it is a miss with a warning.
       ENGINE_LOG_WARN(log_renderer, "cluster cache entry ignored", log::field("path", container),
                       log::field("error", read_error));
+      profiling::trace_end(profiling::trace_begin("cache entry ignored", read_error));
     }
   }
   if (from_container) {
@@ -648,6 +657,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     adopt_container(container_data, container, desc, out, lod, pages);
     return true;
   }
+  ENGINE_STARTUP_STAGE("mesh build");  // a miss: the import, the repairs, the DAG, the write
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
   // The two repairs, exactly where `engine-content build` runs them — after the load, before the
@@ -1078,7 +1088,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     return false;
   }
   JsonValue root;
+  profiling::TraceStage parse_stage("json parse");
   const JsonParseResult parsed = parse_json(text, root);
+  parse_stage.end();
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
     return false;
@@ -1087,10 +1099,14 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
   scene::Scene file;
   schema::ReadContext ctx;
-  if (!schema::from_json(file, root, ctx) || !ctx.ok()) {
+  profiling::TraceStage schema_stage("schema read");
+  const bool schema_read = schema::from_json(file, root, ctx);
+  schema_stage.end();
+  if (!schema_read || !ctx.ok()) {
     error = path + ": " + schema_errors(ctx);
     return false;
   }
+  ENGINE_STARTUP_STAGE("scene expand");  // the providers, the placements, the instances
   if (!file.format.empty() && file.format != "engine.scene.v1") {
     error = path + ": format is '" + file.format + "', not engine.scene.v1";
     return false;
@@ -1393,7 +1409,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // ground provider is found and made (scene_gen.md): a name this executable does not carry, or an
   // entry the provider refuses — a dune time out of range, a band table the field cannot be built
   // from — refuses the file with the provider's sentence.
+  profiling::TraceStage sampler_stage("ground sampler");
   const TerrainSampler ground(out.terrain);
+  sampler_stage.end();
   if (out.terrain.enabled) {
     if (!ground.ok()) {
       error = path + ": " + ground.error();
@@ -1524,8 +1542,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // terrain levels drawn through the deformed-vertex pool, and a scene whose instances come and go
   // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
   // (renderer.md, "Instances that come and go").
+  profiling::TraceStage placements_stage("placements");
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  placements_stage.end();
+  profiling::TraceStage water_stage("water");
   if (!read_scene_water(file, path, dir, ground, out, error)) return false;  // water.md
+  water_stage.end();
   if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
       file.placements.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)
@@ -1588,6 +1610,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());
   for (u32 m = 0; m < resolved.meshes.size(); ++m) {
     const u64 expected = described ? resolved.mesh_info[m].hash : 0;
+    ENGINE_STARTUP_STAGE_DETAIL("mesh", resolved.meshes[m]);
     if (!load_source_mesh(resolved.meshes[m], resolved, expected, out.sources[m], dags[m],
                           tables[m], error)) {
       if (described && !resolved.mesh_info[m].name.empty())
@@ -1740,6 +1763,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
   u32 pair_count = 0;
   const u32 palette = out.lod.mesh.skin_joint_count;
+  ENGINE_STARTUP_STAGE("instances");
+  profiling::trace_items(instances.size());
   for (const SceneInstance& source : instances) {
     if (source.mesh >= out.parts.size()) {
       error = "an instance names mesh " + std::to_string(source.mesh) + ", which the scene has no";
