@@ -479,8 +479,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // G86: 0xd7eee5e66c8230e4 (broadleaf) and 0xeb792d4ab6ed71a1 (ancient) until
 // solver version 7. Broadleaf geometry is unchanged; its generator identity moves. Ancient
 // additionally seats continuation rings inside the parent tips, changing surfaces and bakes.
-constexpr u64 k_broadleaf_container_golden = 0x7fd0e2e92e3ce1deull;
-constexpr u64 k_ancient_container_golden = 0x8138cfd3401a1070ull;
+// G86 maple follow-up/version 8: both generator identities change, neither tree's geometry does.
+// Version 7 folds were 0x7fd0e2e92e3ce1de and 0x8138cfd3401a1070 respectively.
+constexpr u64 k_broadleaf_container_golden = 0xd58d791456f1a027ull;
+constexpr u64 k_ancient_container_golden = 0x76751862a5cebd29ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

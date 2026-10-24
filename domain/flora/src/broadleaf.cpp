@@ -58,6 +58,9 @@ CrownSpec spec_of(const Broadleaf& p, const GrowthRules& rules = {}) {
 // trunk's top the recursion to the species' twig. Grown once; it never depends on the budget.
 Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules = {}) {
   Crown crown;
+  crown.leaf_placement = rules.leaf_placement;
+  crown.leaf_seed = p.seed;
+  crown.leaf_width = static_cast<f64>(p.leaf_width);
   crown.terminal_leaf = rules.terminal_leaf;
   const f64 height = static_cast<f64>(p.height_m);
   const f64 r_trunk = trunk_radius_of(p);
@@ -160,7 +163,8 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
   plan.crown.edge_m = 0.06;
   plan.crown.max_sides = 8;
   plan.crown.row_m = 0.5;
-  plan.crown.wood_class = 1;
+  const bool simple = crown.leaf_placement == LeafPlacement::opposite_simple;
+  plan.crown.wood_class = simple ? 0 : 1;
   steps = 0;
   const auto fits = [&] { return count_triangles(p, crown, plan) <= p.triangle_budget; };
   if (fits()) return true;
@@ -169,7 +173,7 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
     ++steps;
     return fits();
   };
-  if (step([&] { plan.crown.wood_class = 2; })) return true;
+  if (!simple && step([&] { plan.crown.wood_class = 2; })) return true;
   if (step([&] {
         plan.crown.row_m = 1.0;
         plan.rows[1] = 8;
@@ -184,7 +188,7 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
       })) {
     return true;
   }
-  while (plan.crown.wood_class < crown.part_class) {
+  while (!simple && plan.crown.wood_class < crown.part_class) {
     if (step([&] { ++plan.crown.wood_class; })) return true;
   }
   if (step([&] {
@@ -197,7 +201,11 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
     return true;
   }
   while (plan.crown.merge < crown.orders) {
-    if (step([&] { ++plan.crown.merge; })) return true;
+    if (step([&] {
+          ++plan.crown.merge;
+          if (simple) plan.crown.wood_class = crown.part_class;
+        }))
+      return true;
   }
   for (u32 k = 0; k < 6; ++k) {
     if (step([&] { ++plan.crown.halvings; })) return true;
@@ -221,6 +229,15 @@ void place_leaves(const Broadleaf& p, Crown& crown) {
   crown.card_step = width / det::sin(angle);
   const f64 cards = static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
   crown_distribute_leaves(crown, cards, p.leaves);
+  if (crown.leaf_placement == LeafPlacement::opposite_simple) {
+    // Preserve the blade's aspect and leave room between nodes instead of squeezing the
+    // requested LAI into a short twig. The realised area is reported, not promised by the target.
+    for (const u32 t : crown.twigs) {
+      CrownNode& node = crown.nodes[t];
+      const u32 space = std::max(1u, static_cast<u32>(0.8 * node.length / (1.2 * width)));
+      node.cards = std::min(node.cards, space);
+    }
+  }
 }
 
 }  // namespace

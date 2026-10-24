@@ -257,6 +257,8 @@ Resolved resolve(const Profile& p, const Tree& tree) {
   const f32 base = tree.crown_base >= 0 ? tree.crown_base : p.crown_base;
   out.rules.opposite = p.opposite;
   out.rules.terminal_leaf = p.species == FloraSpecies::ash;
+  out.rules.leaf_placement =
+      p.species == FloraSpecies::maple ? LeafPlacement::opposite_simple : LeafPlacement::spray;
   out.rules.trunk_fraction = p.species == FloraSpecies::elm ? 0.6
                              : (p.species == FloraSpecies::oak || p.species == FloraSpecies::maple)
                                  ? 0.7

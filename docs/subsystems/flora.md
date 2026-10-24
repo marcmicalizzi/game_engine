@@ -56,7 +56,19 @@ curtain counts stay explicit. Leaf length is unchanged; a narrow willow atlas re
 refinement. Ancient named segment joins now start inside their parent's end and smoothly recover
 their centre and radius. This removes exposed flared rims without changing structural axes,
 platform anchors, triangle counts or the wide canopy. It is an overlapping join, not a watertight
-union. Solver cache version 7 invalidates previous builds.
+union. Solver cache version 8 invalidates previous builds, including the following maple correction.
+
+Maple selects the shared `opposite_simple` leaf placement rule. Unmerged crowns retain all woody
+orders through the terminal twig, with individual rectangular leaf quads whose image carries the stalk.
+Each pair shares a node; successive pairs turn around the twig, with seeded station, blade-size
+and orientation variation. The complete image maps once to each rectangle, bottom-centre stalk
+at the attachment, preserving the maple lobes instead of squeezing them along a connected strip.
+The 0.10 m card and 0.08 m width are unchanged. Node spacing limits leaf pairs
+to the available twig length, so the realised LAI can be below the 4.5 target. The report records
+that realised area. All terminal wood is counted before choosing the source budget;
+an insufficient budget uses the existing merged-spray fallback. The default 200,000 budget is
+unchanged. Other profiles retain their existing placement. Geometry and material expectations,
+source ranges and authored variation are recorded in the [profile audit](../experiments/tree-profile-audit.md#maple-terminal-shoot-correction).
 
 All branching tree families now use the kit's supported wood surface: an asymmetric branch
 collar fading over the base, root flare, low-frequency fluting, gravity-oriented oval branch

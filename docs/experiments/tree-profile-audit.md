@@ -334,6 +334,8 @@ approval of the complete Forest scene.
 
 ## Author validation (2026-10-24)
 
+This section records the first G86 refinement, before the maple correction below.
+
 `tools/dev.ps1 test -Affected -Preset msvc-debug` selected 122 test groups: 119 passed;
 the renderer grove fixture, engine-content container pins and viewer sampling error above
 accounted for all failures. After their corrections and the final rebuild:
@@ -350,3 +352,79 @@ accounted for all failures. After their corrections and the final rebuild:
 
 The full shared merge matrix and frame budgets belong to the coordinator's gate. Primary
 binaries are installed there, after integration; this branch's review does not replace that gate.
+
+## Maple terminal-shoot correction
+
+The owner's close-up exposed two shared-kit approximations: class-zero terminal wood was omitted
+even on the finest broadleaf rung, and leaf images repeated along a connected two-sided strip.
+The Forest purple maple image is one complete leaf, with its stalk at bottom centre; its PBR
+channels cannot supply the missing twig or fix the squeezed, uniformly coplanar placements.
+
+Grounding checked on 2026-10-24: [Minnesota DNR](https://www.dnr.state.mn.us/trees/sugar-maple.html)
+describes simple, opposite leaves 3–5 inches long. [Oregon State](https://landscapeplants.oregonstate.edu/plants/acer-saccharum)
+gives blades 7.5–15 cm long/across and petioles usually 5–7.5 cm. [Illinois' arrangement guide](https://woodyplantstutorial.nres.illinois.edu/arrangement/arr-opposite.html)
+distinguishes opposite leaves in distichous and decussate arrangements. The implementation uses
+decussate nodes as a representative arrangement; it does not assert that every maple shoot or
+every light environment maintains exact right angles between its blades.
+
+The shared `LeafPlacement::opposite_simple` rule, selected only by maple, keeps the existing
+0.10 m card and width ratio 0.8, and retains terminal twig tubes.
+The source image includes a short stalk as well, so its visible blade is shorter than the card;
+the stalk should meet the bottom-centre edge of a single-leaf image. The 15–95% leafy shoot extent,
+node spacing based on 1.2 card widths,
+90–100% blade scale, ±18% station jitter, ±8-degree spread and ±20-degree blade roll are authored
+approximations, not measured distributions. The node-spacing cap avoids compressing 24 pairs
+into a roughly half-metre twig; the report exposes the resulting LAI rather than silently
+claiming the target. Leaf area is card area before alpha, as with the existing report.
+
+Twig wood enters the triangle planner. Unmerged maple keeps all wood orders;
+smaller source budgets fall back to merged sprays and coarser wood as before. The existing baked
+branch-group and whole-tree levels remain the distance representation. No new motion parts,
+structural axes, public schema fields, textures or shaders are introduced. A dedicated leaf
+stream keeps seed determinism independent of skeleton growth. Solver version 8 invalidates
+cached meshes; unrelated solver geometry remains pinned.
+
+A trial with 0.05 m, three-sided geometric petioles cost 619,378 source triangles for Forest's
+seed-17 maple (versus 188,027 before this correction). It was rejected. The accepted representation
+uses the stalk already in the leaf image and spends geometry on the supporting twig instead.
+That stalk is shorter than the botanical range above: a documented budget/material approximation,
+not a claim that the current atlas reproduces sugar-maple petiole proportions.
+
+The final source mesh for Forest's seed-17 purple maple changes as follows (same recipe,
+materials and tool options; the recipe's explicit allowance is one million, but the new tree
+also fits the unchanged 200,000 default without merging):
+
+| Quantity | Before | After |
+|---|---:|---:|
+| Source triangles | 188,027 | 193,114 |
+| Wood triangles | 21,883 | 82,354 |
+| Leaf triangles | 166,144 | 110,760 |
+| Terminal twigs | 6,719 | 6,719 |
+| Motion parts | 250 | 250 |
+| Reported card-area LAI | 3.7302 | 2.7114 |
+| Built clusters, including the LOD hierarchy | 3,446 | 7,093 |
+| Built pages | 35 | 68 |
+
+Independent blades cannot share the old strip's vertices or collapse along its connections;
+retaining twig tubes also adds wood geometry. The source triangles rise 2.7%, while the built
+hierarchy is larger. Baked branch-group/tree levels remain important at distance. These are
+deterministic content counts, not a measured Forest frame-cost claim; frame budgets still belong
+to the shared merge gate. The smaller card-area LAI is deliberate spacing, not a new target.
+
+Three before/after camera pairs (crown, inside crown, underside), 1200×900, use Forest's actual
+purple leaf material and identical lighting with `--lod .01`. Inspection confirms separate,
+unsqueezed maple silhouettes on fine wood. At crown distance the existing baked cards still use
+the solver's green colour; material-aware baking is separate. Machine state: shared workstation,
+RTX 5090, captures under the GPU lock; no quiet timing measurement. Files and reproducible camera/
+capture scripts are in `D:\workspace\game_engine_local\tree-growth\2026-10-24\maple-followup\`,
+with `review.html` and `manifest.json`. The active Forest files and materials were not modified.
+
+Follow-up validation: Windows `test -Affected -Base HEAD` (the preceding G86 commit) passed all
+38 selected groups, including flora, the renderer, viewer, frame-loop, editor and content builder.
+Linux clang-debug ran the identical affected-module filter: 37/38 groups passed initially; the
+only failure was the two whole-container expectations that still recorded solver version 7.
+After updating those generator-identity pins, engine-content and docs passed 2/2. Maple's geometry
+hash agrees across MSVC and Clang. Linux device-dependent cases skip without an ICD; Windows
+provided the GPU coverage. Standalone format (1,193 files), lint and docs passed. This checkout's
+two Linux volumes were pruned (3.58 GB); the shared caches and other checkouts were retained.
+No full merge matrix or primary binary installation was performed by this author session.

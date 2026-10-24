@@ -95,7 +95,10 @@ struct WoodProfile {
   u64 seed = 1;
 };
 
+enum class LeafPlacement : u8 { spray, opposite_simple };
+
 struct GrowthRules {
+  LeafPlacement leaf_placement = LeafPlacement::spray;
   bool terminal_leaf = false;
   bool opposite = false;
   bool layered = false;
@@ -365,6 +368,9 @@ struct CrownRoot {
 };
 
 struct Crown {
+  LeafPlacement leaf_placement = LeafPlacement::spray;
+  u64 leaf_seed = 1;
+  f64 leaf_width = 0.8;        // independent leaf card width / length
   bool terminal_leaf = false;  // odd-pinnate compound sprays (ash), only at the finest leaf rung
   Vector<CrownNode> nodes;     // the named shoots first, then the recursion depth-first
   Vector<Axis> axes;
@@ -481,5 +487,10 @@ void build_blade(const Axis& axis, f64 width, D3 side, Emitter& out);
 inline constexpr u32 k_leaf_card_triangles = 2;
 void build_leaf_card(D3 base, D3 direction, D3 side, f64 length, f64 width, f64 droop,
                      Emitter& out);
+
+// Independent full-image quads on opposite nodes; the image's stalk is at bottom centre.
+// Successive pairs rotate about the shoot. A separate seed stream never moves woody axes.
+void build_opposite_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f64 angle, Rng& rng,
+                           Emitter& out);
 
 }  // namespace engine::flora::detail

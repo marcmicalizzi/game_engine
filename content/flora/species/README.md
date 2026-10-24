@@ -11,6 +11,14 @@ triangle targets. Production deciduous recipes can omit the two zero bake fields
 broadleaf chain. Inspect unbaked geometry with `--lod 0.01`: the view's `--finest` switch applies
 only to the reference tracer, and a normal simplified mesh cut can lose fine leaves.
 
+Maple's unmerged source retains terminal twig wood and places independent, opposing leaf pairs
+around each shoot. Use a single-leaf cutout with the stalk at the image's bottom centre; the full
+rectangle is mapped once per leaf. The default 200,000 budget is unchanged (seed 17: 193,114
+triangles). Node spacing limits foliage to what the twig can carry without squeezing the images;
+small explicit budgets can still select merged sprays. See the
+[maple correction](../../../docs/experiments/tree-profile-audit.md#maple-terminal-shoot-correction)
+for the geometry/material tradeoff and captures.
+
 `ancient-dwelling.flora.json` is the wide, full village canopy: spreading habit, twelve major limbs
 between 22 and 28 m, a 6 m core radius, LAI 5.5 and a 1.5-million-triangle source budget. Its crown
 is continuous above the main supports. `ancient-dwelling-tall.flora.json` offers a layered mixed

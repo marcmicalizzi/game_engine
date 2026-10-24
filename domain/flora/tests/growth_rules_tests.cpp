@@ -21,6 +21,68 @@ u64 shape_hash(const assets::MeshData& mesh) {
 }
 }  // namespace
 
+TEST_CASE("flora: maple blades have independent UV rectangles attached at opposite nodes") {
+  using namespace flora::detail;
+  Rng axis_rng(1);
+  const Axis axis = grow_axis({}, {0, 0, 1}, .55, 1, k_up, 0, 0, axis_rng);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  Emitter emit{mesh, motion};
+  Rng leaves_rng(13);
+  build_opposite_leaves(axis, 5, .1, .08, 60 * k_degree, leaves_rng, emit);
+  REQUIRE(mesh.positions.size() == 40);
+  REQUIRE(mesh.indices.size() == 60);
+  for (u32 leaf = 0; leaf < 10; ++leaf) {
+    const u32 v = leaf * 4;
+    for (u32 i = leaf * 6; i < leaf * 6 + 6; ++i) {
+      CHECK(mesh.indices[i] >= v);
+      CHECK(mesh.indices[i] < v + 4);  // no strip can join adjacent leaves
+    }
+    CHECK(mesh.uvs[v].x == 0);
+    CHECK(mesh.uvs[v].y == 1);  // image bottom (stalk) attaches to the twig
+    CHECK(mesh.uvs[v + 2].x == 1);
+    CHECK(mesh.uvs[v + 2].y == 0);
+    const Vec3 base = (mesh.positions[v] + mesh.positions[v + 1]) * .5f;
+    const Vec3 tip = (mesh.positions[v + 2] + mesh.positions[v + 3]) * .5f;
+    CHECK(std::abs(base.x) < 1e-6f);
+    CHECK(std::abs(base.y) < 1e-6f);
+    const u32 other = (leaf ^ 1u) * 4;
+    const Vec3 paired = (mesh.positions[other] + mesh.positions[other + 1]) * .5f;
+    CHECK(dot(base - paired, base - paired) < 1e-12f);
+    const f32 length = std::sqrt(dot(tip - base, tip - base));
+    const Vec3 width = mesh.positions[v + 1] - mesh.positions[v];
+    CHECK(std::sqrt(dot(width, width)) / length == doctest::Approx(.8));
+    CHECK(length >= .0899f);
+    CHECK(length <= .1001f);
+    CHECK(motion.vertex_weight[v] == motion.vertex_weight[v + 3]);
+  }
+  CHECK(std::abs(dot(mesh.normals[0], mesh.normals[8])) < .999f);
+}
+
+TEST_CASE("flora: reference maple retains terminal wood without squeezing leaf nodes") {
+  flora::FloraFile file;
+  file.species = "maple";
+  file.tree.seed = 17;
+  file.tree.card_bake_px = 0;
+  file.tree.impostor_px = 0;
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, &report, error), error);
+  CHECK(report.triangles <= 200000);
+  CHECK(report.triangles == mesh.indices.size() / 3);
+  CHECK(report.merge_level == 0);
+  CHECK(report.wood_class == 0);
+  CHECK(report.cards_per_side <= 6);
+  const auto& leaves = mesh.primitives[1];
+  for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; i += 6) {
+    const u32 first = *std::min_element(mesh.indices.begin() + i, mesh.indices.begin() + i + 6);
+    for (u32 k = i; k < i + 6; ++k)
+      REQUIRE((mesh.indices[k] >= first && mesh.indices[k] < first + 4));
+  }
+}
+
 TEST_CASE("flora: green wood limits a named scaffold while legacy growth remains unchanged") {
   using namespace flora::detail;
   GrowthRules rules;
@@ -95,8 +157,8 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
     CHECK(shape_hash(again) != low_hash);
   }
   const u64 combined = hash_bytes(shapes.data(), shapes.size() * sizeof(u64));
-  // G85: 7516634195967486933. G86 restores whole-shoot pine/spruce coverage.
-  CHECK_MESSAGE(combined == 10800499079816480223ull, "named profile geometry hash: " << combined);
+  // G86: 10800499079816480223 until maple gained terminal wood and independent leaf quads.
+  CHECK_MESSAGE(combined == 16620326556857323731ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {

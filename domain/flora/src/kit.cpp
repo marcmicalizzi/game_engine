@@ -740,7 +740,12 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
     if (dot(side, side) < 1e-6) side = D3{1.0, 0.0, 0.0};
     out.part = crown.nodes[node.carrier].part;
     const u32 first = out.mesh.positions.size();
-    build_spray(axis, from, cards, length, angle, lift, droop, normalized(side), out);
+    if (crown.leaf_placement == LeafPlacement::opposite_simple && plan.merge == 0) {
+      Rng rng = stream_of(crown.leaf_seed, 700000u + static_cast<u64>(&node - crown.nodes.data()));
+      build_opposite_leaves(axis, cards, length, length * crown.leaf_width, angle, rng, out);
+    } else {
+      build_spray(axis, from, cards, length, angle, lift, droop, normalized(side), out);
+    }
     if (crown.terminal_leaf && plan.merge == 0) {
       out.weight = 1.0;
       build_leaf_card(axis.point.back(), axis.tangent.back(), normalized(side), length,
@@ -901,6 +906,44 @@ void build_blade(const Axis& axis, f64 width, D3 side, Emitter& out) {
     }
     out.face(left[r], right[r], right[r + 1], facing[r]);
     out.face(left[r], right[r + 1], left[r + 1], facing[r]);
+  }
+}
+
+void build_opposite_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f64 angle, Rng& rng,
+                           Emitter& out) {
+  const f64 phase = rng.unit() * 2.0 * k_pi;
+  for (u32 k = 0; k < pairs; ++k) {
+    const f64 station =
+        (static_cast<f64>(k) + 0.5 + 0.18 * rng.symmetric()) / static_cast<f64>(pairs);
+    const f64 arc = axis.length * (0.15 + 0.8 * station);
+    const D3 tangent = axis_tangent(axis, arc);
+    const D3 base = axis_point(axis, arc);
+    const D3 reference =
+        perpendicular(tangent, (tangent.y > -.9 && tangent.y < .9) ? k_up : D3{1, 0, 0});
+    const D3 radial = rotate(reference, tangent, phase + static_cast<f64>(k) * .5 * k_pi);
+    const f64 spread = angle + 8.0 * k_degree * rng.symmetric();
+    const f64 scale = .9 + .1 * rng.unit();
+    out.weight = arc / axis.length;
+    for (u32 side = 0; side < 2; ++side) {
+      const f64 sign = side == 0 ? 1.0 : -1.0;
+      const D3 direction =
+          normalized(tangent * det::cos(spread) + radial * (sign * det::sin(spread)) - k_up * .12);
+      D3 across = cross(direction, k_up);
+      if (dot(across, across) < 1e-6) across = perpendicular(direction, reference);
+      across = rotate(normalized(across), direction, 20.0 * k_degree * rng.symmetric());
+      D3 normal = normalized(cross(across, direction));
+      if (normal.y < 0) normal = normal * -1.0;
+      const D3 half_width = across * (.5 * width * scale);
+      const D3 tip = base + direction * (length * scale);
+      // Full rectangular UV coverage preserves the lobes and the image's short petiole.
+      // No vertices are shared between blades or opposite pairs.
+      const u32 a = out.vertex(base - half_width, normal, 0, 1);
+      const u32 b = out.vertex(base + half_width, normal, 1, 1);
+      const u32 c = out.vertex(tip + half_width, normal, 1, 0);
+      const u32 d = out.vertex(tip - half_width, normal, 0, 0);
+      out.face(a, b, c, normal);
+      out.face(a, c, d, normal);
+    }
   }
 }
 
