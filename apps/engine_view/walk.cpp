@@ -13,12 +13,17 @@
 #include <systems/renderer/terrain.h>
 
 #if ENGINE_VIEW_WALK_PHYSICS
+#include <core/jobs/job_system.h>
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <systems/scene_collision/scene_collision.h>
 #include <systems/world/world.h>
 #endif
+#if ENGINE_VIEW_TILESET
+#include <domain/tileset/tileset.h>
+#endif
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -190,6 +195,19 @@ struct Walker::Impl {
   std::string why = "the walker has not started";
   DrawnGround drawn;
   WalkStats stats;
+  WalkTiming timing;
+  // A ground query's wall time, into `timing` (walk.h, `WalkTiming`).
+  struct Query {
+    WalkTiming& into;
+    i64 start = time::monotonic_ns();
+    ~Query() {
+      const i64 took = time::monotonic_ns() - start;
+      ++into.ground_queries;
+      into.ground_query_ns += took;
+      into.max_ground_query_ns = std::max(into.max_ground_query_ns, took);
+      into.recent_max_query_ns = std::max(into.recent_max_query_ns, took);
+    }
+  };
   WorldPos feet{};
   bool placed = false;
   // A game's scales on the speeds (walk.h, `set_speed_scale`); 1 leaves every float as it was.
@@ -202,7 +220,10 @@ struct Walker::Impl {
   // with no water, which multiplies nothing.
   f32 wade(WorldPos at, Vec3 direction) {
     if (depth == nullptr) return 1.0f;
+    const i64 asked = time::monotonic_ns();
     const f32 d = depth(depth_context, at);
+    ++timing.water_queries;
+    timing.water_ns += time::monotonic_ns() - asked;
     if (!(d > 0.0f)) return 1.0f;
     ++stats.wading_ticks;
     stats.max_depth_m = std::max(stats.max_depth_m, d);
@@ -236,6 +257,9 @@ struct Walker::Impl {
 
 #if ENGINE_VIEW_WALK_PHYSICS
   bool physical = false;
+  // The worker the collision builds tiles' ground ahead of the ring on (scene_collision.h,
+  // `prefetch`): before the consumer, so it outlives the builds the consumer waits for.
+  std::unique_ptr<jobs::JobSystem> jobs;
   physics::World world;
   world::World ring;
   scene_collision::SceneCollision consumer;
@@ -274,6 +298,9 @@ struct Walker::Impl {
     observers.clear();        // kept, so a tick allocates nothing
     observers.add(at, 1.0f);  // the walker's own f64 place (ADR-0053)
     consumer.set_ground_time(ground_time());
+    // The ground of the tiles about to come in, built ahead on the worker; the bodies are still
+    // made by the update below, in its order, so a replay makes the same ones.
+    consumer.prefetch(at);
     ring.update(observers, ring_tick++, unlimited);
   }
 #endif
@@ -284,6 +311,7 @@ struct Walker::Impl {
   // `scene_gen::GroundProvider::height_mm`): until 2026-10-05 it was an i32 index on a 1 mm
   // lattice, which overflows past 2,147 km, and the provider's float32 `height` on still ground.
   f32 ground_at(f64 x, f64 z) {
+    const Query query{timing};
     const i64 i = scene_gen::nearest_mm(x);
     const i64 j = scene_gen::nearest_mm(z);
     if (!drawn.moving || !ground->moves()) return ground->height_mm(scene->terrain.time_s, i, j);
@@ -328,6 +356,7 @@ struct Walker::Impl {
     const bool moving = drawn.moving && ground->moves();
     if (cell.i != i || cell.j != j || cell.moving != moving ||
         (moving && (cell.time_a != drawn.time_a || cell.time_b != drawn.time_b))) {
+      const Query query{timing};
       const i32 ci = static_cast<i32>(i);
       const i32 cj = static_cast<i32>(j);
       if (tiled) {
@@ -416,6 +445,16 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   config.mesh_error_m = params.mesh_error_m;
   config.ground_error_m = params.ground_error_m;
   config.max_refreshes = params.max_refreshes;
+  // Built ahead a tile past the ring (`walk.collision.prefetch_tiles`): not in the walk's header,
+  // since it changes no body and no step.
+  const f32 ahead = scene_collision::prefetch_tunable();
+  config.prefetch_radius_tiles = ahead > 0.0f ? params.radius_tiles + ahead : 0.0f;
+  if (ahead > 0.0f) {
+    jobs::JobSystemConfig workers;
+    workers.performance_workers = 1;
+    workers.pin_threads = false;
+    w.jobs = std::make_unique<jobs::JobSystem>(workers);
+  }
   world::RingParams ring;
   ring.tile_size = tile;
   ring.ring_count = 1;
@@ -430,7 +469,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     why = "the physics world could not be made";
   } else if (!w.ring.configure(ring, &ring_error)) {
     why = std::string("the collision ring: ") + ring_error;
-  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles)) {
+  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles, w.jobs.get())) {
     // `why` says what
   } else {
     w.ring.add_consumer(w.consumer.consumer());
@@ -458,6 +497,26 @@ const char* Walker::collision() const noexcept { return impl_->collision; }
 const std::string& Walker::why() const noexcept { return impl_->why; }
 const WalkParams& Walker::params() const noexcept { return impl_->params; }
 const WalkStats& Walker::stats() const noexcept { return impl_->stats; }
+
+WalkTiming Walker::timing() const noexcept {
+  WalkTiming out = impl_->timing;
+#if ENGINE_VIEW_WALK_PHYSICS
+  if (impl_->physical) {
+    const scene_collision::Stats& c = impl_->consumer.stats();
+    out.activations = c.activated;
+    out.activate_ns = c.activate_ns;
+    out.max_activate_ns = c.max_activate_ns;
+    out.ground_sample_ns = c.ground_sample_ns;
+    out.placement_ns = c.placement_ns;
+    out.body_ns = c.body_ns;
+    out.prefetched = c.prefetched;
+    out.prefetch_waits = c.prefetch_waits;
+    out.prefetch_wait_ns = c.prefetch_wait_ns;
+    out.prefetch_inline = c.prefetch_inline;
+  }
+#endif
+  return out;
+}
 
 void Walker::set_drawn(const DrawnGround& drawn) noexcept {
   const scene_gen::Lattice lattice = impl_->drawn.lattice;
@@ -585,6 +644,17 @@ WorldPos Walker::drop(WorldPos camera) {
 WorldPos Walker::step(const WalkInput& input) {
   Impl& w = *impl_;
   if (w.ground == nullptr || !w.placed) return eye();
+  struct Step {
+    WalkTiming& into;
+    i64 start = time::monotonic_ns();
+    ~Step() {
+      const i64 took = time::monotonic_ns() - start;
+      ++into.steps;
+      into.step_ns += took;
+      into.max_step_ns = std::max(into.max_step_ns, took);
+      into.recent_max_step_ns = std::max(into.recent_max_step_ns, took);
+    }
+  } const timed{w.timing};
   const Vec3 direction = heading_direction(input);
   const WorldPos before = w.feet;
   // Wading (walk.h): the depth at the feet before the step scales it, and at the chest a step that
@@ -594,8 +664,10 @@ WorldPos Walker::step(const WalkInput& input) {
   if (w.physical) {
     // The ground round the feet as this frame draws it, and the walker with it: carried by what a
     // refresh changed under it, never left under it (scene_collision.h, `follow`).
+    const i64 ring_start = time::monotonic_ns();
     w.move_ring(before, false);
     (void)w.consumer.follow(w.body);
+    w.timing.ring_ns += time::monotonic_ns() - ring_start;
     // What the step did, from where the sand left it: being carried up a rising dune is not
     // climbing it.
     const WorldPos from = w.body.feet();
@@ -711,6 +783,17 @@ JsonValue Walker::summary_json() const {
     ms.set("refresh_total", static_cast<f64>(s.refresh_ns) / 1.0e6);
     ms.set("refresh_max", static_cast<f64>(s.max_refresh_ns) / 1.0e6);
     ms.set("proxy_total", static_cast<f64>(s.proxy_ns) / 1.0e6);
+    ms.set("ground_sample_total", static_cast<f64>(s.ground_sample_ns) / 1.0e6);
+    ms.set("ground_sample_max", static_cast<f64>(s.max_ground_sample_ns) / 1.0e6);
+    ms.set("placement_total", static_cast<f64>(s.placement_ns) / 1.0e6);
+    ms.set("body_total", static_cast<f64>(s.body_ns) / 1.0e6);
+    ms.set("prefetch_wait_total", static_cast<f64>(s.prefetch_wait_ns) / 1.0e6);
+    ms.set("prefetch_wait_max", static_cast<f64>(s.max_prefetch_wait_ns) / 1.0e6);
+    ground.set("prefetch_submitted", s.prefetch_submitted);
+    ground.set("prefetched", s.prefetched);
+    ground.set("prefetch_waits", s.prefetch_waits);
+    ground.set("prefetch_inline", s.prefetch_inline);
+    ground.set("prefetch_dropped", s.prefetch_dropped);
   }
 #endif
   bodies.set("live", live);
@@ -726,6 +809,134 @@ void set_frame_walker(const Walker& walker, bool walking, renderer::FrameFlora& 
   out.walker_feet = walker.feet();
   out.walker_radius = walker.params().radius;
   out.walker_height = walker.params().height;
+}
+
+const scene_gen::GroundProvider* Walker::ground() const noexcept { return impl_->ground; }
+
+void Walker::take_max_ns(i64& step, i64& query) noexcept {
+  step = impl_->timing.recent_max_step_ns;
+  query = impl_->timing.recent_max_query_ns;
+  impl_->timing.recent_max_step_ns = 0;
+  impl_->timing.recent_max_query_ns = 0;
+}
+
+namespace {
+
+f64 ms_of(i64 ns) noexcept { return static_cast<f64>(ns) / 1.0e6; }
+f64 ms_of(u64 ns) noexcept { return static_cast<f64>(ns) / 1.0e6; }
+u32 count_of(u64 n) noexcept { return n > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<u32>(n); }
+
+}  // namespace
+
+void WalkProbe::start(Walker& walker, const scene_gen::TileSource* drawn) noexcept {
+  walker_ = &walker;
+  started_ns_ = time::monotonic_ns();
+  sets_[0] = sets_[1] = nullptr;
+#if ENGINE_VIEW_TILESET
+  // The renderer's set, which the terrain's workers read, and the walker's own provider's when it
+  // is another; the same set once.
+  if (drawn != nullptr) sets_[0] = tileset::tile_set_of(*drawn);
+  if (walker.ground() != nullptr) {
+    const tileset::TileSet* own = tileset::tile_set_of(*walker.ground());
+    if (own != sets_[0]) sets_[1] = own;
+  }
+#else
+  (void)drawn;
+#endif
+  timing_ = walker.timing();
+  thread_ = thread_reader();
+  all_ = all_readers();
+}
+
+WalkProbe::Reader WalkProbe::thread_reader() const noexcept {
+  Reader out;
+#if ENGINE_VIEW_TILESET
+  const tileset::TileSet::ReaderStats t = tileset::TileSet::thread_reader_stats(true);
+  out = Reader{t.locks,    t.lock_wait_ns, t.max_lock_wait_ns, t.lock_hold_ns, t.hits, t.misses,
+               t.io_bytes, t.io_ns,        t.load_waits};
+#endif
+  return out;
+}
+
+WalkProbe::Reader WalkProbe::all_readers() const noexcept {
+  Reader out;
+#if ENGINE_VIEW_TILESET
+  for (const void* set : sets_) {
+    if (set == nullptr) continue;
+    const tileset::TileSet::ReaderStats t =
+        static_cast<const tileset::TileSet*>(set)->reader_stats();
+    out.locks += t.locks;
+    out.wait_ns += t.lock_wait_ns;
+    out.hold_ns += t.lock_hold_ns;
+    out.hits += t.hits;
+    out.misses += t.misses;
+    out.io_bytes += t.io_bytes;
+    out.io_ns += t.io_ns;
+    out.load_waits += t.load_waits;
+  }
+#endif
+  return out;
+}
+
+void WalkProbe::begin(u32 terrain_stage) noexcept {
+  if (walker_ == nullptr) return;
+  stage_ = terrain_stage;
+  timing_ = walker_->timing();
+  i64 step = 0;
+  i64 query = 0;
+  walker_->take_max_ns(step, query);
+  thread_ = thread_reader();
+  all_ = all_readers();
+  ticks_ns_ = time::monotonic_ns();
+}
+
+scene::FrameWalk WalkProbe::end() noexcept {
+  scene::FrameWalk out;
+  if (walker_ == nullptr) return out;
+  const i64 now = time::monotonic_ns();
+  const WalkTiming t = walker_->timing();
+  i64 max_step = 0;
+  i64 max_query = 0;
+  walker_->take_max_ns(max_step, max_query);
+  const Reader thread = thread_reader();
+  const Reader all = all_readers();
+  out.wall_s = static_cast<f64>(now - started_ns_) / 1.0e9;
+  out.ticks_ms = ms_of(now - ticks_ns_);
+  out.steps = count_of(t.steps - timing_.steps);
+  out.max_step_ms = ms_of(max_step);
+  out.ground_queries = count_of(t.ground_queries - timing_.ground_queries);
+  out.ground_query_ms = ms_of(t.ground_query_ns - timing_.ground_query_ns);
+  out.max_ground_query_ms = ms_of(max_query);
+  out.water_queries = count_of(t.water_queries - timing_.water_queries);
+  out.water_ms = ms_of(t.water_ns - timing_.water_ns);
+  out.ring_ms = ms_of(t.ring_ns - timing_.ring_ns);
+  out.activations = count_of(t.activations - timing_.activations);
+  out.activate_ms = ms_of(t.activate_ns - timing_.activate_ns);
+  out.activate_ground_ms = ms_of(t.ground_sample_ns - timing_.ground_sample_ns);
+  out.activate_placements_ms = ms_of(t.placement_ns - timing_.placement_ns);
+  out.activate_bodies_ms = ms_of(t.body_ns - timing_.body_ns);
+  out.prefetched = count_of(t.prefetched - timing_.prefetched);
+  out.prefetch_waits = count_of(t.prefetch_waits - timing_.prefetch_waits);
+  out.prefetch_wait_ms = ms_of(t.prefetch_wait_ns - timing_.prefetch_wait_ns);
+  out.prefetch_inline = count_of(t.prefetch_inline - timing_.prefetch_inline);
+  out.reader_locks = count_of(thread.locks - thread_.locks);
+  out.reader_wait_ms = ms_of(thread.wait_ns - thread_.wait_ns);
+  out.reader_max_wait_ms = ms_of(thread.max_wait_ns);
+  out.reader_hold_ms = ms_of(thread.hold_ns - thread_.hold_ns);
+  out.reader_misses = count_of(thread.misses - thread_.misses);
+  out.all_reader_locks = all.locks - all_.locks;
+  out.all_reader_wait_ms = ms_of(all.wait_ns - all_.wait_ns);
+  out.all_reader_hold_ms = ms_of(all.hold_ns - all_.hold_ns);
+  out.all_reader_hits = all.hits - all_.hits;
+  out.all_reader_misses = count_of(all.misses - all_.misses);
+  out.all_reader_io_bytes = all.io_bytes - all_.io_bytes;
+  out.all_reader_io_ms = ms_of(all.io_ns - all_.io_ns);
+  out.all_reader_load_waits = count_of(all.load_waits - all_.load_waits);
+  out.terrain_stage = stage_;
+  timing_ = t;
+  thread_ = thread;
+  all_ = all;
+  return out;
 }
 
 }  // namespace engine::view

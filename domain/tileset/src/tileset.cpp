@@ -4,6 +4,7 @@
 #include <core/json/json_value.h>
 #include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
+#include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/tileset.h>
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -680,9 +682,14 @@ struct TileSet::Level {
   u32 ntx = 0, ntz = 0;
 };
 
-// Bounded FIFO, shared by every level. A lattice call holds the lock while reading, so eviction
-// cannot invalidate a tile a worker is sampling. The last-tile hint avoids a hash per point in
-// each row; neither the index nor the payloads are sized by the source extent.
+// **The cache: an index under a short lock, payloads read outside it** (tileset.md, "The reader's
+// lock"). A bounded FIFO shared by every level. A request **pins** the tiles it reads (`Pins`),
+// under the lock and only for the lookup, and then reads their heights with no lock at all; an
+// entry is evicted only when no request pins it, so a pinned payload cannot move or go. A tile not
+// resident is claimed under the lock (an entry marked `loading`, pinned by its claimant), read from
+// disk with the lock released, and published under it again: a second caller asking for the same
+// tile waits for that read alone (`ready`), never for the lock across someone else's IO, and never
+// reads it twice. Neither the index nor the payloads are sized by the source extent.
 struct TileSet::Cache {
   struct Key {
     i64 spacing;
@@ -693,26 +700,163 @@ struct TileSet::Cache {
     u64 operator()(const Key& key) const noexcept { return hash_bytes(&key, sizeof(key)); }
   };
   struct Entry {
-    Key key;
+    Key key{};
     std::unique_ptr<i32[]> grid;
+    u32 pins = 0;
+    bool loading = false;  // claimed: its read is in flight, outside the lock
+    bool live = false;     // in the index
   };
   HashMap<Key, u32, KeyHash> index;
   Vector<Entry> entries;
   u32 capacity = 0;
   u32 next = 0;
-  u32 evictions = 0;
   u64 payload_bytes = 0;
-  Key hint_key{};
-  const i32* hint = nullptr;
+  std::condition_variable ready;  // a claimed tile was published or failed
 };
 
-TileSet::TileSet(u64 cache_bytes) : cache_(std::make_unique<Cache>()), cache_bytes_(cache_bytes) {}
+// A request's pinned tiles: looked up here first, without the lock (the last one asked before the
+// rest, as the hint was), and unpinned together when the request ends.
+struct TileSet::Pins {
+  static constexpr u32 k_max = 8;
+  struct Pin {
+    Cache::Key key;
+    u32 entry;
+    const i32* grid;
+  };
+  explicit Pins(const TileSet& set) noexcept : set_(set) {}
+  ~Pins() { set_.unpin(*this); }
+  Pins(const Pins&) = delete;
+  Pins& operator=(const Pins&) = delete;
+  const TileSet& set_;
+  Pin pins[k_max];
+  u32 count = 0;
+  u32 last = 0;
+};
+
+// The reader's counters (`ReaderStats`) and the cache's own (`CacheStats`): relaxed atomics, the
+// most of each raised by a compare and swap, so reading them takes no lock. Nothing a request
+// answers reads them.
+struct TileSet::Counters {
+  std::atomic<u64> locks{0};
+  std::atomic<u64> lock_wait_ns{0};
+  std::atomic<u64> max_lock_wait_ns{0};
+  std::atomic<u64> lock_hold_ns{0};
+  std::atomic<u64> max_lock_hold_ns{0};
+  std::atomic<u64> hits{0};
+  std::atomic<u64> misses{0};
+  std::atomic<u64> io_bytes{0};
+  std::atomic<u64> io_ns{0};
+  std::atomic<u64> load_waits{0};
+  std::atomic<u64> load_wait_ns{0};
+  std::atomic<u32> resident{0};
+  std::atomic<u32> evictions{0};
+};
+
+namespace {
+
+// The calling thread's share, over every set (`TileSet::thread_reader_stats`).
+thread_local TileSet::ReaderStats t_reader;
+
+void raise(std::atomic<u64>& most, u64 value) noexcept {
+  u64 seen = most.load(std::memory_order_relaxed);
+  while (value > seen && !most.compare_exchange_weak(seen, value, std::memory_order_relaxed)) {
+  }
+}
+
+u64 elapsed_ns(i64 from, i64 to) noexcept { return to > from ? static_cast<u64>(to - from) : 0; }
+
+// The reader's lock, timed: the wait to take it and the time it was held, into the set's counters
+// and the calling thread's. A wait on `ready` inside it is a wait for another caller's read, and
+// counts as that (`load_wait_ns`), not as a hold.
+class TimedLock {
+ public:
+  TimedLock(std::mutex& mutex, TileSet::Counters& counters) noexcept
+      : lock_(mutex, std::defer_lock), counters_(counters) {
+    const i64 asked = time::monotonic_ns();
+    lock_.lock();
+    taken_ = time::monotonic_ns();
+    const u64 wait = elapsed_ns(asked, taken_);
+    counters_.locks.fetch_add(1, std::memory_order_relaxed);
+    counters_.lock_wait_ns.fetch_add(wait, std::memory_order_relaxed);
+    raise(counters_.max_lock_wait_ns, wait);
+    ++t_reader.locks;
+    t_reader.lock_wait_ns += wait;
+    t_reader.max_lock_wait_ns = std::max(t_reader.max_lock_wait_ns, wait);
+  }
+  ~TimedLock() {
+    const u64 hold = elapsed_ns(taken_, time::monotonic_ns()) - waited_;
+    lock_.unlock();
+    counters_.lock_hold_ns.fetch_add(hold, std::memory_order_relaxed);
+    raise(counters_.max_lock_hold_ns, hold);
+    t_reader.lock_hold_ns += hold;
+    t_reader.max_lock_hold_ns = std::max(t_reader.max_lock_hold_ns, hold);
+  }
+  TimedLock(const TimedLock&) = delete;
+  TimedLock& operator=(const TimedLock&) = delete;
+
+  // Waits on `ready` for another caller's read of a tile, the lock released meanwhile.
+  void wait(std::condition_variable& ready) {
+    const i64 from = time::monotonic_ns();
+    ready.wait(lock_);
+    const u64 waited = elapsed_ns(from, time::monotonic_ns());
+    waited_ += waited;
+    counters_.load_waits.fetch_add(1, std::memory_order_relaxed);
+    counters_.load_wait_ns.fetch_add(waited, std::memory_order_relaxed);
+    ++t_reader.load_waits;
+    t_reader.load_wait_ns += waited;
+  }
+
+ private:
+  std::unique_lock<std::mutex> lock_;
+  TileSet::Counters& counters_;
+  i64 taken_ = 0;
+  u64 waited_ = 0;
+};
+
+}  // namespace
+
+TileSet::TileSet(u64 cache_bytes)
+    : cache_(std::make_unique<Cache>()),
+      cache_bytes_(cache_bytes),
+      counters_(std::make_unique<Counters>()) {}
 TileSet::~TileSet() = default;
+
+TileSet::ReaderStats TileSet::reader_stats() const noexcept {
+  const Counters& c = *counters_;
+  ReaderStats out;
+  out.locks = c.locks.load(std::memory_order_relaxed);
+  out.lock_wait_ns = c.lock_wait_ns.load(std::memory_order_relaxed);
+  out.max_lock_wait_ns = c.max_lock_wait_ns.load(std::memory_order_relaxed);
+  out.lock_hold_ns = c.lock_hold_ns.load(std::memory_order_relaxed);
+  out.max_lock_hold_ns = c.max_lock_hold_ns.load(std::memory_order_relaxed);
+  out.hits = c.hits.load(std::memory_order_relaxed);
+  out.misses = c.misses.load(std::memory_order_relaxed);
+  out.io_bytes = c.io_bytes.load(std::memory_order_relaxed);
+  out.io_ns = c.io_ns.load(std::memory_order_relaxed);
+  out.load_waits = c.load_waits.load(std::memory_order_relaxed);
+  out.load_wait_ns = c.load_wait_ns.load(std::memory_order_relaxed);
+  return out;
+}
+
+TileSet::ReaderStats TileSet::thread_reader_stats(bool take_max) noexcept {
+  const ReaderStats out = t_reader;
+  if (take_max) {
+    t_reader.max_lock_wait_ns = 0;
+    t_reader.max_lock_hold_ns = 0;
+  }
+  return out;
+}
 
 bool TileSet::open(const std::string& manifest_path, std::string& error) {
   ENGINE_STARTUP_STAGE_DETAIL("tileset open", manifest_path);
   levels_.clear();
-  *cache_ = Cache{};
+  cache_->index.clear();
+  cache_->entries.clear();
+  cache_->capacity = 0;
+  cache_->next = 0;
+  cache_->payload_bytes = 0;
+  counters_->resident.store(0, std::memory_order_relaxed);
+  counters_->evictions.store(0, std::memory_order_relaxed);
   reads_.store(0, std::memory_order_relaxed);
   failures_.store(0, std::memory_order_relaxed);
   std::string bytes;
@@ -744,8 +888,11 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
   }
   cache_->payload_bytes = payload;
   cache_->capacity = static_cast<u32>(std::min<u64>(cache_bytes_ / payload, (u64{1} << 26)));
-  cache_->entries.reserve(cache_->capacity);
-  cache_->index.reserve(cache_->capacity);
+  // Grown as tiles come in rather than reserved whole: a budget of small tiles is millions of
+  // entries, and their metadata would outweigh the payload budget it is meant to bound.
+  const u32 reserve = std::min<u32>(cache_->capacity, 1024u);
+  cache_->entries.reserve(reserve);
+  cache_->index.reserve(reserve);
   for (const TileSetLevel& record : manifest_.levels) {
     auto level = std::make_unique<Level>();
     level->spacing = record.spacing_mm;
@@ -773,60 +920,162 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
   return true;
 }
 
-const i32* TileSet::tile(const Level& level, i32 tx, i32 tz) const noexcept {
+void TileSet::unpin(Pins& pins) const noexcept {
+  if (pins.count == 0) return;
+  TimedLock lock(mutex_, *counters_);
+  unpin_locked(pins);
+}
+
+void TileSet::unpin_locked(Pins& pins) const noexcept {
+  Cache& cache = *cache_;
+  for (u32 k = 0; k < pins.count; ++k) {
+    Cache::Entry& entry = cache.entries[pins.pins[k].entry];
+    if (entry.pins > 0) --entry.pins;
+  }
+  pins.count = 0;
+  pins.last = 0;
+}
+
+// The tile's payload, pinned for the rest of the request; null for a tile the set does not hold or
+// a read that failed. Under the lock only for the lookup, the claim and the publication.
+const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const noexcept {
   const i64 kx = i64{tx} - level.tx0;
   const i64 kz = i64{tz} - level.tz0;
   if (kx < 0 || kz < 0 || kx >= level.ntx || kz >= level.ntz) return nullptr;
-  Cache& cache = *cache_;
   const Cache::Key key{level.spacing, tx, tz};
-  if (cache.hint != nullptr && key == cache.hint_key) return cache.hint;
-  if (const u32* index = cache.index.find_value(key)) {
-    cache.hint_key = key;
-    cache.hint = cache.entries[*index].grid.get();
-    return cache.hint;
+  // The request's own pins first, with no lock: a row of points reads one tile many times.
+  if (pins.count > 0 && pins.pins[pins.last].key == key) return pins.pins[pins.last].grid;
+  for (u32 k = 0; k < pins.count; ++k) {
+    if (pins.pins[k].key == key) {
+      pins.last = k;
+      return pins.pins[k].grid;
+    }
   }
-  cache.hint = nullptr;
+  Cache& cache = *cache_;
+  u32 slot = 0;
+  {
+    TimedLock lock(mutex_, *counters_);
+    if (pins.count == Pins::k_max) unpin_locked(pins);
+    for (;;) {
+      const u32* found = cache.index.find_value(key);
+      if (found == nullptr) break;
+      Cache::Entry& entry = cache.entries[*found];
+      if (!entry.loading) {
+        ++entry.pins;
+        counters_->hits.fetch_add(1, std::memory_order_relaxed);
+        ++t_reader.hits;
+        pins.pins[pins.count] = Pins::Pin{key, *found, entry.grid.get()};
+        pins.last = pins.count++;
+        return entry.grid.get();
+      }
+      // Another caller is reading it: wait for that read, then look again (it may have failed).
+      lock.wait(cache.ready);
+    }
+    // Claim a slot: a free one while the cache has room, else the oldest no request pins — this
+    // request's own pins let go first if that is what it takes, since every height it read through
+    // them is already read. With every entry pinned by others — more requests at once than the
+    // budget has tiles — the cache grows past its budget by the pins, and the next evictions bring
+    // it back.
+    const u32 size = cache.entries.size();
+    if (size < cache.capacity) {
+      slot = size;
+      cache.entries.push_back(Cache::Entry{});
+    } else {
+      auto oldest_free = [&] {
+        for (u32 k = 0; k < size; ++k) {
+          const u32 at = (cache.next + k) % size;
+          const Cache::Entry& entry = cache.entries[at];
+          if (entry.pins == 0 && !entry.loading) return at;
+        }
+        return size;
+      };
+      slot = oldest_free();
+      if (slot == size && pins.count > 0) {
+        unpin_locked(pins);
+        slot = oldest_free();
+      }
+      if (slot == size) {
+        cache.entries.push_back(Cache::Entry{});
+      } else {
+        cache.next = (slot + 1) % size;
+      }
+    }
+    Cache::Entry& entry = cache.entries[slot];
+    if (entry.live) {
+      cache.index.erase(entry.key);
+      entry.live = false;
+      if (entry.grid != nullptr) {
+        counters_->evictions.fetch_add(1, std::memory_order_relaxed);
+        counters_->resident.fetch_sub(1, std::memory_order_relaxed);
+      }
+    }
+    entry.key = key;
+    entry.loading = true;
+    entry.live = true;
+    entry.pins = 1;
+    cache.index.insert_or_assign(key, slot);
+  }
+
+  // The read, with no lock held: another caller's lookups, hits and other tiles' reads go on.
   std::string bytes;
   const std::string path = io::join_path(dir_, tile_file(level.spacing, tx, tz));
+  const i64 read_start = time::monotonic_ns();
+  const io::Status status = io::read_file(path, bytes);
+  const u64 read_ns = elapsed_ns(read_start, time::monotonic_ns());
+  counters_->misses.fetch_add(1, std::memory_order_relaxed);
+  counters_->io_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+  counters_->io_ns.fetch_add(read_ns, std::memory_order_relaxed);
+  ++t_reader.misses;
+  t_reader.io_bytes += bytes.size();
+  t_reader.io_ns += read_ns;
+  std::unique_ptr<i32[]> grid;
   TileHeader header;
-  if (io::read_file(path, bytes) != io::Status::Ok || bytes.size() != tile_bytes(manifest_.cells)) {
+  if (status == io::Status::Ok && bytes.size() == tile_bytes(manifest_.cells)) {
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    if (std::memcmp(header.magic, "ETIL", 4) == 0 && header.version == k_tileset_version &&
+        header.cells == manifest_.cells && header.spacing_mm == level.spacing && header.tx == tx &&
+        header.tz == tz) {
+      const usize count = (bytes.size() - sizeof(header)) / sizeof(i32);
+      grid = std::make_unique<i32[]>(count);
+      std::memcpy(grid.get(), bytes.data() + sizeof(header), count * sizeof(i32));
+    }
+  }
+
+  const i32* held = grid.get();
+  {
+    TimedLock lock(mutex_, *counters_);
+    Cache::Entry& entry = cache.entries[slot];
+    entry.loading = false;
+    if (held != nullptr) {
+      entry.grid = std::move(grid);
+      counters_->resident.fetch_add(1, std::memory_order_relaxed);
+      if (pins.count == Pins::k_max) unpin_locked(pins);
+      pins.pins[pins.count] = Pins::Pin{key, slot, held};
+      pins.last = pins.count++;
+    } else {
+      // Nothing to publish: the slot is free again and the key is asked afresh next time.
+      cache.index.erase(key);
+      entry.live = false;
+      entry.pins = 0;
+      entry.grid.reset();
+    }
+  }
+  cache.ready.notify_all();
+  if (held == nullptr) {
     failures_.fetch_add(1, std::memory_order_relaxed);
     return nullptr;
   }
-  std::memcpy(&header, bytes.data(), sizeof(header));
-  if (std::memcmp(header.magic, "ETIL", 4) != 0 || header.version != k_tileset_version ||
-      header.cells != manifest_.cells || header.spacing_mm != level.spacing || header.tx != tx ||
-      header.tz != tz) {
-    failures_.fetch_add(1, std::memory_order_relaxed);
-    return nullptr;
-  }
-  const usize count = (bytes.size() - sizeof(header)) / sizeof(i32);
-  auto grid = std::make_unique<i32[]>(count);
-  std::memcpy(grid.get(), bytes.data() + sizeof(header), count * sizeof(i32));
-  u32 index = cache.entries.size();
-  if (index == cache.capacity) {
-    index = cache.next;
-    cache.next = (cache.next + 1) % cache.capacity;
-    cache.index.erase(cache.entries[index].key);
-    cache.entries[index] = Cache::Entry{key, std::move(grid)};
-    ++cache.evictions;
-  } else {
-    cache.entries.push_back(Cache::Entry{key, std::move(grid)});
-  }
-  cache.index.try_emplace(key, index);
-  cache.hint_key = key;
-  cache.hint = cache.entries[index].grid.get();
   reads_.fetch_add(1, std::memory_order_relaxed);
-  return cache.hint;
+  return held;
 }
 
-f64 TileSet::value(const Level& level, i64 i, i64 j) const noexcept {
+f64 TileSet::value(const Level& level, i64 i, i64 j, Pins& pins) const noexcept {
   const i64 c = manifest_.cells;
   const i64 ci = clamp_i64(i, level.imin, level.imax);
   const i64 cj = clamp_i64(j, level.jmin, level.jmax);
   const i32 tx = static_cast<i32>(floor_div(ci, c));
   const i32 tz = static_cast<i32>(floor_div(cj, c));
-  const i32* grid = tile(level, tx, tz);
+  const i32* grid = tile(level, tx, tz, pins);
   if (grid == nullptr) return std::numeric_limits<f64>::quiet_NaN();
   const i64 li = ci - i64{tx} * c + 1;
   const i64 lj = cj - i64{tz} * c + 1;
@@ -834,11 +1083,11 @@ f64 TileSet::value(const Level& level, i64 i, i64 j) const noexcept {
 }
 
 f64 TileSet::point_mm(i64 x_mm, i64 z_mm) const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return point_mm_locked(x_mm, z_mm);
+  Pins pins(*this);
+  return point_mm_pinned(x_mm, z_mm, pins);
 }
 
-f64 TileSet::point_mm_locked(i64 x_mm, i64 z_mm) const noexcept {
+f64 TileSet::point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept {
   if (!is_open()) return std::numeric_limits<f64>::quiet_NaN();
   // `bilinear` above, over the tiles: the same arithmetic, operation for operation, so a level a
   // build wrote from it and a point asked of the reader agree.
@@ -852,10 +1101,10 @@ f64 TileSet::point_mm_locked(i64 x_mm, i64 z_mm) const noexcept {
   const i64 cj = fz / s;
   const f64 u = static_cast<f64>(fx - ci * s) / static_cast<f64>(s);
   const f64 v = static_cast<f64>(fz - cj * s) / static_cast<f64>(s);
-  const f64 h00 = value(f, f.imin + ci, f.jmin + cj);
-  const f64 h10 = value(f, f.imin + ci + 1, f.jmin + cj);
-  const f64 h01 = value(f, f.imin + ci, f.jmin + cj + 1);
-  const f64 h11 = value(f, f.imin + ci + 1, f.jmin + cj + 1);
+  const f64 h00 = value(f, f.imin + ci, f.jmin + cj, pins);
+  const f64 h10 = value(f, f.imin + ci + 1, f.jmin + cj, pins);
+  const f64 h01 = value(f, f.imin + ci, f.jmin + cj + 1, pins);
+  const f64 h11 = value(f, f.imin + ci + 1, f.jmin + cj + 1, pins);
   const f64 top = h00 + u * (h10 - h00);
   const f64 bottom = h01 + u * (h11 - h01);
   return top + v * (bottom - top);
@@ -871,11 +1120,13 @@ bool TileSet::has_filter(i64 spacing_mm) const noexcept {
   return false;
 }
 
+// **A window evaluated from pinned tiles, never under the lock**: each point's tile is pinned on
+// first use (the lock taken for the lookup alone), its heights read with no lock, and every pin let
+// go when the request returns.
 bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32 nz,
                       u32 block_begin, u32 block_end, std::span<f32> out) const noexcept {
   if (!is_open() || spacing_mm < 1 || out.size() != static_cast<usize>(nx) * nz) return false;
   if (block_begin > block_end || block_end > scene_gen::window_blocks(nx, nz)) return false;
-  std::lock_guard<std::mutex> lock(mutex_);
   const Level* level = nullptr;
   i64 ratio = 0;  // world lattice index to the level's: times this; 0, the bilinear surface
   if (filter_mm > 0) {
@@ -889,6 +1140,7 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
     level = levels_[0].get();
     ratio = spacing_mm / levels_[0]->spacing;
   }
+  Pins pins(*this);
   const u32 per_side = (nx + scene_gen::k_height_block - 1) / scene_gen::k_height_block;
   for (u32 b = block_begin; b < block_end; ++b) {
     const u32 bx = (b % per_side) * scene_gen::k_height_block;
@@ -899,8 +1151,8 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
       const i64 j = i64{j0} + z;
       for (u32 x = bx; x < ex; ++x) {
         const i64 i = i64{i0} + x;
-        const f64 mm = level != nullptr ? value(*level, i * ratio, j * ratio)
-                                        : point_mm_locked(i * spacing_mm, j * spacing_mm);
+        const f64 mm = level != nullptr ? value(*level, i * ratio, j * ratio, pins)
+                                        : point_mm_pinned(i * spacing_mm, j * spacing_mm, pins);
         if (!std::isfinite(mm)) return false;
         out[static_cast<u32>(z) * nx + x] = static_cast<f32>(mm / 1000.0);
       }
@@ -909,10 +1161,11 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
   return true;
 }
 
+// Atomics only: a caller reading the cache's numbers waits for nobody.
 TileSet::CacheStats TileSet::cache_stats() const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return CacheStats{cache_bytes_, cache_->payload_bytes * cache_->entries.size(),
-                    cache_->entries.size(), cache_->evictions};
+  const u32 resident = counters_->resident.load(std::memory_order_relaxed);
+  return CacheStats{cache_bytes_, cache_->payload_bytes * resident, resident,
+                    counters_->evictions.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -928,6 +1181,11 @@ constexpr scene_gen::TileSourceOps k_set_ops{.heights = &set_heights, .travel_m 
 
 scene_gen::TileSource TileSet::source() const noexcept {
   return is_open() ? scene_gen::TileSource{&k_set_ops, this} : scene_gen::TileSource{};
+}
+
+const TileSet* tile_set_of(const scene_gen::TileSource& source) noexcept {
+  if (source.ops() != &k_set_ops || source.state() == nullptr) return nullptr;
+  return static_cast<const TileSet*>(source.state());
 }
 
 }  // namespace engine::tileset

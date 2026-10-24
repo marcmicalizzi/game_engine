@@ -139,9 +139,11 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ---- the reader ---------------------------------------------------------------------------------
 
 // **A built tile set, read back** (docs/subsystems/tileset.md, "The reader"). Tiles are read on
-// first ask and retained within a bounded cache. Concurrent lattice/point requests hold the
-// reader's lock while sampling, so eviction cannot invalidate their data. Not movable:
-// `source()` points at it. Open/reopen is exclusive with all requests.
+// first ask and retained within a bounded cache. **The reader never holds its lock across work**
+// ("The reader's lock"): a request pins the tiles it reads under a short lock on the cache's index
+// and evaluates from them with no lock, a tile not resident is read from disk outside the lock
+// with an in-flight marker so two callers never read it twice, and an entry a request pins is never
+// evicted. Not movable: `source()` points at it. Open/reopen is exclusive with all requests.
 class TileSet {
  public:
   // Tile payload budget; cache indices are bounded by the same number of tiles. Revisited
@@ -186,12 +188,40 @@ class TileSet {
   };
   CacheStats cache_stats() const noexcept;
 
+  // **What the reader's requests cost, and who waited** (tileset.md, "The reader's lock"): the
+  // reader's lock taken (`locks`), the nanoseconds callers waited for it and held it, the most of
+  // each once, tiles found resident (`hits`) and read from disk (`misses`) with the bytes and the
+  // nanoseconds the reads took, and the waits for another caller's read of the same tile
+  // (`load_waits`). `reader_stats` is this set's over every thread; `thread_reader_stats` the
+  // calling thread's over every set, so a frame's thread can tell its own waits from the workers'.
+  // Counters only: nothing a request answers depends on them.
+  struct ReaderStats {
+    u64 locks = 0;
+    u64 lock_wait_ns = 0;
+    u64 max_lock_wait_ns = 0;
+    u64 lock_hold_ns = 0;
+    u64 max_lock_hold_ns = 0;
+    u64 hits = 0;
+    u64 misses = 0;
+    u64 io_bytes = 0;
+    u64 io_ns = 0;
+    u64 load_waits = 0;
+    u64 load_wait_ns = 0;
+  };
+  ReaderStats reader_stats() const noexcept;
+  // `take_max`: the thread's maxima start again after this read, so a caller reads them per frame.
+  static ReaderStats thread_reader_stats(bool take_max = false) noexcept;
+
   struct Level;
+  struct Counters;
 
  private:
-  const i32* tile(const Level& level, i32 tx, i32 tz) const noexcept;
-  f64 value(const Level& level, i64 i, i64 j) const noexcept;
-  f64 point_mm_locked(i64 x_mm, i64 z_mm) const noexcept;
+  struct Pins;
+  const i32* tile(const Level& level, i32 tx, i32 tz, Pins& pins) const noexcept;
+  f64 value(const Level& level, i64 i, i64 j, Pins& pins) const noexcept;
+  f64 point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept;
+  void unpin(Pins& pins) const noexcept;
+  void unpin_locked(Pins& pins) const noexcept;
 
   struct Cache;
   std::unique_ptr<Cache> cache_;
@@ -201,6 +231,7 @@ class TileSet {
   std::string dir_;
   Vector<std::unique_ptr<Level>> levels_;
   mutable std::mutex mutex_;
+  std::unique_ptr<Counters> counters_;
   mutable std::atomic<u32> reads_{0};
   mutable std::atomic<u32> failures_{0};
 };
@@ -212,5 +243,8 @@ std::string tile_file(i64 spacing_mm, i32 tx, i32 tz);
 // ground another provider made. For capability-specific inspection; ordinary consumers use
 // `provider.tiles()`, which returns the same native source with its refusal contract.
 const TileSet* tile_set_of(const scene_gen::GroundProvider& provider) noexcept;
+// The set behind a tile source (`TileSet::source()`), or null for a source another made: how a host
+// that holds only the renderer's source reads that set's `reader_stats`.
+const TileSet* tile_set_of(const scene_gen::TileSource& source) noexcept;
 
 }  // namespace engine::tileset

@@ -37,6 +37,7 @@
 #include <domain/scene_gen/scene_gen.h>
 
 #include <memory>
+#include <schemas/scene.h>
 #include <string>
 
 namespace engine::renderer {
@@ -145,6 +146,39 @@ struct WalkStats {
   u64 stopped_ticks = 0;
 };
 
+// **Where a walker's ticks spend wall time** (apps.md, "The frame record's walk"), over the walk:
+// the steps, the ground asked for outside the collision (the drawn ground under the feet, the
+// ground-follow's height, a game's `ground_height`) and the water's depth, the ring's update and
+// the collision's refresh before each step (`ring_ns`, every activation inside it), and the
+// collision's activations by stage. Counters only: nothing the walker computes reads them, so a
+// replay walks the same whatever they say.
+struct WalkTiming {
+  u64 steps = 0;
+  i64 step_ns = 0;
+  i64 max_step_ns = 0;
+  u64 ground_queries = 0;
+  i64 ground_query_ns = 0;
+  i64 max_ground_query_ns = 0;
+  u64 water_queries = 0;
+  i64 water_ns = 0;
+  i64 ring_ns = 0;
+  u64 activations = 0;
+  i64 activate_ns = 0;
+  i64 max_activate_ns = 0;
+  i64 ground_sample_ns = 0;
+  i64 placement_ns = 0;
+  i64 body_ns = 0;
+  // The ground built ahead of the ring (scene_collision.h, `prefetch`): activations that found
+  // their tile's build finished, waited for it running, or built it themselves.
+  u64 prefetched = 0;
+  u64 prefetch_waits = 0;
+  i64 prefetch_wait_ns = 0;
+  u64 prefetch_inline = 0;
+  // The most one step and one ground query took since `Walker::take_max_ns` last asked.
+  i64 recent_max_step_ns = 0;
+  i64 recent_max_query_ns = 0;
+};
+
 class Walker {
  public:
   Walker();
@@ -186,6 +220,9 @@ class Walker {
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
   // and as a teleport; the eye returned.
   WorldPos teleport(WorldPos at);
+  // The most one step and one ground query took since the last call, nanoseconds, and those
+  // maxima started again: a frame record's own (`WalkProbe`).
+  void take_max_ns(i64& step, i64& query) noexcept;
   // A switch to walking: the feet on the ground under `camera` — the highest surface below it, or
   // the ground's own height where there is none — and the eye returned.
   WorldPos drop(WorldPos camera);
@@ -209,6 +246,11 @@ class Walker {
   bool ground_height(f64 x, f64 z, f64& out);
 
   const WalkStats& stats() const noexcept;
+  // The walk's wall time so far, by where it went (`WalkTiming`).
+  WalkTiming timing() const noexcept;
+  // The ground the walker follows and stands the placements on; null before `start` or without a
+  // terrain.
+  const scene_gen::GroundProvider* ground() const noexcept;
   // The summary's block (apps.md, "Walking"): the collision and its counts beside the stats.
   JsonValue summary_json() const;
 
@@ -223,5 +265,35 @@ class Walker {
 // no walker. A frame's walker is the last tick's feet, so a replay hands every frame the capsule
 // its recording did, and the trees' poses follow it bit for bit.
 void set_frame_walker(const Walker& walker, bool walking, renderer::FrameFlora& out) noexcept;
+
+// **A frame record's walk** (FrameRecord's `walk`, apps.md, "The frame record's walk"): the walk's
+// counters, the frame thread's share of an authored ground's reader and every thread's, taken
+// before a frame's ticks and after them, so a record says where a stalled frame's wall time went.
+// Reads counters only; the walk is the same with or without one.
+class WalkProbe {
+ public:
+  // `drawn`: the renderer's tile source, whose reader the terrain's workers share (null: none).
+  void start(Walker& walker, const scene_gen::TileSource* drawn) noexcept;
+  // Before the frame's ticks; `terrain_stage` is the terrain's re-centre then.
+  void begin(u32 terrain_stage) noexcept;
+  // After them: the frame's numbers.
+  scene::FrameWalk end() noexcept;
+
+ private:
+  struct Reader {
+    u64 locks = 0, wait_ns = 0, max_wait_ns = 0, hold_ns = 0, hits = 0, misses = 0, io_bytes = 0,
+        io_ns = 0, load_waits = 0;
+  };
+  Reader thread_reader() const noexcept;
+  Reader all_readers() const noexcept;
+  Walker* walker_ = nullptr;
+  const void* sets_[2] = {nullptr, nullptr};
+  i64 started_ns_ = 0;
+  i64 ticks_ns_ = 0;
+  u32 stage_ = 0;
+  WalkTiming timing_;
+  Reader thread_;
+  Reader all_;
+};
 
 }  // namespace engine::view

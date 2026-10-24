@@ -10,11 +10,14 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <schemas/scene.h>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::tileset;
@@ -561,4 +564,91 @@ TEST_CASE("tileset: a terrain naming a heightfield builds its set through the ca
   entry.tiles->origin = WorldPos{100.5, 0.0, 0.0};
   CHECK_FALSE(desc->make(entry, context, ground, &error));
   CHECK(error.find("whole number of its spacings") != std::string::npos);
+}
+
+// **The reader never holds its lock across work** (tileset.md, "The reader's lock"): a point asked
+// on one thread while another evaluates a long window is answered in about its own cost, not
+// after the window. Before 2026-10-24 the window held the reader's one lock for its whole
+// evaluation, and the point waited for all of it — which is what stalled a walker's tick behind
+// the terrain's rebuild after a flight (docs/experiments/walk-stalls-2026-10-24.md).
+TEST_CASE("tileset: a point is not held behind another thread's long window") {
+  SmallSet s;
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const Grid expected = grid_of(s.field, s.options);
+  // A window between the finest points (7 mm, the bilinear surface): every point four lookups.
+  constexpr u32 n = 1400;
+  std::vector<f32> window(static_cast<usize>(n) * n);
+  std::atomic<bool> started{false};
+  std::atomic<i64> window_ns{0};
+  std::thread worker([&] {
+    started.store(true);
+    const auto from = std::chrono::steady_clock::now();
+    CHECK(set.source().heights(0.0, 7, -3000, -2000, n, n, std::span<f32>(window)));
+    window_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - from)
+                        .count());
+  });
+  while (!started.load())
+    std::this_thread::yield();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  i64 slowest = 0;
+  u32 asked = 0;
+  while (window_ns.load() == 0 && asked < 200) {
+    const i32 x = -40 + static_cast<i32>(asked % 80);
+    const auto from = std::chrono::steady_clock::now();
+    f32 h = 0.0f;
+    REQUIRE(set.source().heights(0.0, 500, x, 8, 1, 1, std::span<f32>(&h, 1)));
+    slowest = std::max<i64>(slowest, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - from)
+                                         .count());
+    CHECK(h == metres(expected.at_world(x, 8)));
+    ++asked;
+  }
+  worker.join();
+  const f64 window_ms = static_cast<f64>(window_ns.load()) / 1.0e6;
+  const f64 slowest_ms = static_cast<f64>(slowest) / 1.0e6;
+  MESSAGE("a " << n << " x " << n << " window took " << window_ms << " ms; " << asked
+               << " points asked beside it, the slowest " << slowest_ms << " ms");
+  // The bound is generous for a shared machine and a debug build; held behind the window, the
+  // slowest point took the window's own time.
+  CHECK(slowest_ms < 50.0);
+  if (window_ms > 200.0) CHECK(slowest_ms < window_ms / 4.0);
+  CHECK(set.failures() == 0);
+}
+
+// **A tile is read once however many ask for it at once**: the first caller claims it and reads it
+// outside the lock, and the others wait for that read rather than reading it again.
+TEST_CASE("tileset: concurrent callers missing the same tiles read each once") {
+  SmallSet s;
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const Grid expected = grid_of(s.field, s.options);
+  constexpr u32 n = 64;
+  std::vector<std::thread> threads;
+  std::atomic<u32> mismatches{0};
+  for (u32 t = 0; t < 8; ++t) {
+    threads.emplace_back([&] {
+      std::vector<f32> out(static_cast<usize>(n) * n);
+      if (!set.source().heights(0.0, 500, -32, -24, n, n, std::span<f32>(out))) {
+        mismatches.fetch_add(1);
+        return;
+      }
+      for (u32 z = 0; z < n; ++z)
+        for (u32 x = 0; x < n; ++x)
+          if (out[z * n + x] !=
+              metres(expected.at_world(-32 + static_cast<i32>(x), -24 + static_cast<i32>(z))))
+            mismatches.fetch_add(1);
+    });
+  }
+  for (std::thread& t : threads)
+    t.join();
+  CHECK(mismatches.load() == 0);
+  // 64 points from -32 on 16-cell tiles: five tiles a side reached, read once each.
+  const TileSet::ReaderStats stats = set.reader_stats();
+  CHECK(set.reads() == stats.misses);
+  CHECK(set.reads() == set.cache_stats().tiles);
+  CHECK(set.cache_stats().evictions == 0);
+  MESSAGE(set.reads() << " tiles read for 8 callers; " << stats.load_waits
+                      << " waits for another's read, " << stats.hits << " hits");
 }

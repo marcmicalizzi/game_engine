@@ -21,8 +21,8 @@ engine_capability_requires(scene_collision physics world)
 # `geometry` for the DAG a proxy is cut from. No generator is a dependency: a host links the ones it
 # carries (ADR-0046).
 engine_module(NAME scene_collision LAYER systems OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash log time tunables schemas geometry gfx scene_gen renderer
-       physics world sim profiling
+  DEPS base containers math hash jobs log time tunables schemas geometry gfx scene_gen
+       renderer physics world sim profiling
   SOURCES src/scene_collision.cpp)
 
 set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp)

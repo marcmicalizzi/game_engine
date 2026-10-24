@@ -1276,6 +1276,62 @@ struct FrameTerrain @version(3) {
   host_ms: f64 = 0 @since(3)
 }
 
+/// A walking session's frame (`engine-view` with a walker, docs/subsystems/apps.md, "The frame
+/// record's walk"): where the frame's ticks spent wall time, against the simulated time beside it.
+/// Every number is this frame's, the difference of the walk's counters across its ticks, so a
+/// multi-second frame says which of these it went to. Wall milliseconds unless named otherwise.
+struct FrameWalk @version(2) {
+  /// Wall seconds since the run's first frame, beside the record's simulated `time`: a stall is a
+  /// jump in this that `time` does not make.
+  wall_s: f64 = 0
+  /// The frame's ticks: session.run, input to the last step, and the walker's steps within it.
+  ticks_ms: f64 = 0
+  steps: u32 = 0
+  max_step_ms: f64 = 0
+  /// The ground asked for outside the collision — the drawn ground under the feet, the
+  /// ground-follow's height, a game's `ground_height` — and the water's depth at the feet.
+  ground_queries: u32 = 0
+  ground_query_ms: f64 = 0
+  max_ground_query_ms: f64 = 0
+  water_queries: u32 = 0
+  water_ms: f64 = 0
+  /// The collision ring's update and refresh before the steps, activations included; and the
+  /// activations by stage: the ground's heights asked of the tile source, the placements gathered
+  /// with their proxies and compound, the shapes and bodies made.
+  ring_ms: f64 = 0
+  activations: u32 = 0
+  activate_ms: f64 = 0
+  activate_ground_ms: f64 = 0
+  activate_placements_ms: f64 = 0
+  activate_bodies_ms: f64 = 0
+  /// Version 2: the ground built ahead of the ring (docs/subsystems/scene_collision.md, "The
+  /// ground built ahead of the ring") — activations that found their tile's build finished, those
+  /// that waited for it running (and the wait), and those that built it on the tick.
+  prefetched: u32 = 0 @since(2)
+  prefetch_waits: u32 = 0 @since(2)
+  prefetch_wait_ms: f64 = 0 @since(2)
+  prefetch_inline: u32 = 0 @since(2)
+  /// An authored ground's reader (tileset.md, "The reader's lock") over the frame: the frame's
+  /// own thread — its lock waits and holds, the most it waited once, its tiles read from disk —
+  /// and every thread, the terrain's workers included.
+  reader_locks: u32 = 0
+  reader_wait_ms: f64 = 0
+  reader_max_wait_ms: f64 = 0
+  reader_hold_ms: f64 = 0
+  reader_misses: u32 = 0
+  all_reader_locks: u64 = 0
+  all_reader_wait_ms: f64 = 0
+  all_reader_hold_ms: f64 = 0
+  all_reader_hits: u64 = 0
+  all_reader_misses: u32 = 0
+  all_reader_io_bytes: u64 = 0
+  all_reader_io_ms: f64 = 0
+  all_reader_load_waits: u32 = 0
+  /// The terrain's re-centre at the frame's start (`TerrainMotion::recentre_stage`): 0 none,
+  /// 1 rebuilding, 2 uploading, 3 pairs asked, 4 pairing, 5 swapping.
+  terrain_stage: u32 = 0
+}
+
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
 ///
@@ -1285,7 +1341,9 @@ struct FrameTerrain @version(3) {
 ///
 /// Version 10: `allocations` and `buffers`, what the frame loop allocated on the frame's thread
 /// (AGENTS.md, "No allocations in the frame loop in steady state").
-struct FrameRecord @version(10) {
+///
+/// Version 11: `walk`, a walking session's frame (`FrameWalk`).
+struct FrameRecord @version(11) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1404,6 +1462,8 @@ struct FrameRecord @version(10) {
   /// count yet: the flight's (`fly_camera_path`, both hosts) is the one that does.
   allocations: u32 = 0 @since(10)
   buffers: u32 = 0 @since(10)
+  /// With a walker: where the frame's ticks spent wall time; null without one.
+  walk: FrameWalk? = null @since(11)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
