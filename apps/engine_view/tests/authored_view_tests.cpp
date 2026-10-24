@@ -110,8 +110,9 @@ TEST_CASE("engine-view: a world's own trees streamed per tile draw the whole rea
   REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
   REQUIRE(write_text(tmp.file("whole.json"), scene_text(nullptr)));
   // One ring of 30 tiles: every tile the trees stand on is in it, in the full mesh.
+  // The 32 m tiles also contain the enlarged three-plane foliage bounds (G87).
   REQUIRE(write_text(tmp.file("streamed.json"),
-                     scene_text(R"({"tile_size":16,"rings":[{"radius":30}]})")));
+                     scene_text(R"({"tile_size":32,"rings":[{"radius":30}]})")));
   REQUIRE(write_text(tmp.file("path.json"),
                      R"({"format":"engine.camera-path.v1","name":"over","fps":10,"keys":[)"
                      R"({"time":0,"position":[110,30,80],"target":[0,4,0]}]})"));

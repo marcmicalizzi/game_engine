@@ -16,6 +16,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/content_build/content_build.h>
+#include <domain/content_build/generator_hosts.h>
 #include <domain/flora/flora.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
@@ -131,7 +132,10 @@ int flora(int argc, char** argv) {
   if (!no_materials && materials_dir.empty())
     materials_dir = materials::default_pack_dir(platform::executable_directory());
   const materials::Pack* pack = no_materials ? nullptr : materials::pack_at(materials_dir);
-  const u64 source_hash = flora::flora_source_hash(file);
+  const content_build::GeneratorHosts hosts(input, lod, page_bytes, pack);
+  u64 source_hash = 0;
+  if (!flora::flora_source_hash_with(file, hosts.inputs(), source_hash, error))
+    return failed(input + ": " + error);
   const u64 build_key = flora::flora_build_key(source_hash, lod, page_bytes, pack);
   const std::string path = cache ? geometry::cluster_cache_path(ddc, build_key) : output;
 
@@ -147,7 +151,8 @@ int flora(int argc, char** argv) {
   flora::TreeReport tree;
   bool have_report = false;
   if (!cached) {
-    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error, pack, &tree))
+    if (!flora::build_flora_container(file, lod, page_bytes, data, &report, error, pack, &tree,
+                                      hosts.hooks()))
       return failed(input + ": " + error);
     have_report = true;
     data.source_path = input;

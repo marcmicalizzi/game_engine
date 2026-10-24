@@ -107,8 +107,15 @@ void check_tree(const std::string& species, const assets::MeshData& mesh,
   for (u32 p = 0; p < motion.parts.size(); ++p) {
     CAPTURE(p);
     if (p > 0) CHECK(motion.parts[p].parent < p);
-    CHECK(lo[p] <= 0.01f);
-    CHECK(hi[p] >= 0.99f);
+    // A budget-reduced willow curtain contains only independent leaves at their attachment
+    // stations. Its structural axis still spans root to tip, but neither endpoint needs a leaf.
+    if (species != flora::k_species_willow || motion.structure[p].base_radius > 0) {
+      CHECK(lo[p] <= 0.01f);
+      CHECK(hi[p] >= 0.99f);
+    } else {
+      CHECK(lo[p] >= 0);
+      CHECK(hi[p] <= 1);
+    }
     const flora::StructuralPart& s = motion.structure[p];
     CHECK(s.part == p);
     CHECK(s.tip_radius >= 0.0f);
@@ -229,7 +236,7 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   full.stems = 1;
   full.triangle_budget = 400000;
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x5ef02260be1776aeull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x7109f27fafca2eb2ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -396,7 +403,7 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.seed = 5;
   clump.triangle_budget = 400000;
   check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0x0e3bd6e53177dc1dull);
+                {50000u, 36000u, 12000u}, 0xdce95290d01a9607ull);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {
@@ -404,13 +411,13 @@ TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging 
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.curtains;
   check_species(flora::k_species_willow, p, flora::solve_willow, parts, {20000u, 12000u},
                 // G85: 0x6ed17ceedeee2d85. G86: 784 curtains and 30-degree spray lift.
-                0x02ea9f23128342d3ull, 4);  // denser curtains use the existing budget ladder
+                0x186fe6df146c3102ull, 5);  // G87: curtain wood and independent alternate leaves
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
   std::string error;
   REQUIRE(flora::solve_willow(p, mesh, &report, &error, &motion));
-  // Every curtain is its own part with no wood, hanging: its vertices' lowest is far below its
+  // Every curtain is its own hanging part: its vertices' lowest is far below its
   // pivot, and never under the ground.
   const u32 first_curtain = 1 + p.limbs + p.limbs * p.branches;
   Vector<f32> lowest(motion.parts.size(), 1e9f);

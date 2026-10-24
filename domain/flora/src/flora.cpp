@@ -14,6 +14,7 @@
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
 #include <optional>
@@ -187,6 +188,42 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
 }
 
+bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
+                            u64& out, std::string& error) {
+  out = flora_source_hash(file);
+  if (inputs.hosts == nullptr || inputs.hosts->read_image == nullptr) return true;
+  // Only base-colour images are sampled by the bake. Normal/roughness maps remain
+  // texture-build dependencies and do not cause the entire tree to be regenerated.
+  const bool baked = file.species == k_species_broadleaf || file.species == k_species_birch ||
+                     file.species == k_species_ancient || file.species == "maple" ||
+                     file.species == "oak" || file.species == "elm" || file.species == "beech" ||
+                     file.species == "ash" || file.species == "walnut";
+  if (!baked) return true;
+  const bool enabled = file.species == k_species_broadleaf
+                           ? file.broadleaf.card_bake_px != 0 || file.broadleaf.impostor_px != 0
+                       : file.species == k_species_birch
+                           ? file.birch.card_bake_px != 0 || file.birch.impostor_px != 0
+                       : file.species == k_species_ancient
+                           ? file.ancient.card_bake_px != 0 || file.ancient.impostor_px != 0
+                           : file.tree.card_bake_px != 0 || file.tree.impostor_px != 0;
+  if (!enabled) return true;
+  geometry::ClusterFileData materials;
+  materials.materials.resize(2);
+  materials.material_sampling.resize(2);
+  apply_flora_materials(file, inputs.materials, materials);
+  for (u32 material = 0; material < 2; ++material) {
+    const i32 slot = materials.materials[material].base_color_image;
+    if (slot < 0 || static_cast<u32>(slot) >= materials.image_paths.size() ||
+        materials.image_paths[slot].empty())
+      continue;
+    Vector<u8> bytes;
+    if (!inputs.hosts->read_image(inputs.hosts->context, materials.image_paths[slot], bytes, error))
+      return false;
+    out = hash_combine(out, hash_bytes(bytes.data(), bytes.size()));
+  }
+  return true;
+}
+
 namespace {
 // The member of `engine.flora.FloraFile` a species' parameters are in.
 const char* species_member(const std::string& species) {
@@ -272,13 +309,39 @@ namespace {
 // embedded image) and a material — white, masked at one half, two-sided, the atlas's colour and
 // tangent-space normal — at `mesh.materials.size() + k`, the index the clusters were given.
 bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
-                geometry::ClusterFileData& out, Vector<f32>& coverage, std::string& error) {
+                geometry::ClusterFileData& out, Vector<f32>& coverage, std::string& error,
+                const assets::MeshGeneratorHosts* hosts) {
   BakeLook look;
   look.bark = mesh.materials[0].base_color;
   look.leaf = mesh.materials.size() > 1 ? mesh.materials[1].base_color : look.leaf;
+  image::Image images[2];
+  if (hosts != nullptr && hosts->read_image != nullptr && out.materials.size() > 1) {
+    for (u32 material = 0; material < 2; ++material) {
+      const i32 slot = out.materials[material].base_color_image;
+      if (slot >= 0 && static_cast<u32>(slot) < out.image_paths.size() &&
+          !out.image_paths[slot].empty()) {
+        Vector<u8> bytes;
+        if (!hosts->read_image(hosts->context, out.image_paths[slot], bytes, error) ||
+            !image::decode_image(bytes, images[material], 4, &error))
+          return false;
+        if (material == 1) {
+          look.leaf_image = &images[1];
+          look.leaf = out.materials[1].base_color;
+        } else {
+          look.bark_image = &images[0];
+          look.bark = out.materials[0].base_color;
+          geometry::TextureSlotSampling slots[geometry::k_material_slots];
+          f32 occlusion = 0;
+          geometry::decode_material_sampling(out.material_sampling[0], slots, occlusion);
+          look.bark_scale = slots[geometry::k_slot_base_color].transform.scale;
+        }
+      }
+    }
+  }
   // A pack's leaf card is cut to the leaf (its image's alpha), so the far card is too.
   look.leaf_outline =
       out.materials.size() > 1 && geometry::alpha_word_mode(out.materials[1].alpha) != 0u;
+  if (look.leaf_outline) look.leaf_cutoff = geometry::alpha_word_cutoff(out.materials[1].alpha);
   if (out.images.size() < out.image_paths.size()) out.images.resize(out.image_paths.size());
   for (const TreeLevel& level : chain.levels) {
     BakedAtlas atlas;
@@ -355,8 +418,8 @@ bool flora_collides(const FloraFile& file) {
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
-                           std::string& error, const materials::Pack* pack,
-                           TreeReport* tree_report) {
+                           std::string& error, const materials::Pack* pack, TreeReport* tree_report,
+                           const assets::MeshGeneratorHosts* hosts) {
   out = geometry::ClusterFileData{};
   assets::MeshData mesh;
   Motion motion;
@@ -495,7 +558,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   }
   apply_flora_materials(file, pack, out);
   Vector<f32> coverage;
-  if (has_chain && !bake_chain(mesh, chain, out, coverage, error)) return false;
+  if (has_chain && !bake_chain(mesh, chain, out, coverage, error, hosts)) return false;
   // Section 39 (geometry.md, "Two errors"): each cluster's own and parent coverage error. An
   // authored level's are its own and the next level's; the leaves' parent is the first level's; the
   // bark's transitions all take the star's, which its hand-over meets, so both errors rise along
@@ -531,7 +594,9 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     out.materials[1].alpha = geometry::encode_alpha_word(
         assets::k_alpha_mask, geometry::alpha_word_double_sided(out.materials[1].alpha), 0.5f);
   }
-  out.source_hash = flora_source_hash(file);
+  if (!flora_source_hash_with(file, assets::MeshGeneratorInputs{pack, hosts}, out.source_hash,
+                              error))
+    return false;
   out.build_key = flora_build_key(out.source_hash, lod, page_bytes, pack);
   out.generator = "flora";
   out.generator_kind = file.species;
@@ -560,13 +625,23 @@ bool generator_build(std::span<const u8> bytes, const assets::MeshGeneratorInput
                      geometry::ClusterFileData& out, std::string& error) {
   FloraFile file;
   if (!read_flora_file(text_of(bytes), file, error)) return false;
-  return build_flora_container(file, lod, page_bytes, out, nullptr, error, inputs.materials);
+  return build_flora_container(file, lod, page_bytes, out, nullptr, error, inputs.materials,
+                               nullptr, inputs.hosts);
+}
+
+bool generator_source_hash_with(std::span<const u8> bytes,
+                                const assets::MeshGeneratorInputs& inputs, u64& out,
+                                std::string& error) {
+  FloraFile file;
+  return read_flora_file(text_of(bytes), file, error) &&
+         flora_source_hash_with(file, inputs, out, error);
 }
 
 constexpr assets::MeshGeneratorDesc k_flora_generator{
     .name = "flora",
     .source_hash = generator_source_hash,
     .build = generator_build,
+    .source_hash_with = generator_source_hash_with,
 };
 const assets::MeshGeneratorRegistrar k_flora_registrar{k_flora_generator};
 

@@ -3,12 +3,15 @@
 // The branching species (docs/subsystems/flora.md, "The broadleaf", "The conifer"):
 // `engine.flora.Broadleaf` or `engine.flora.Conifer` in, a mesh and its motion contract out.
 //
-// **What comes out.** An `assets::MeshData` with two primitives, each its own material:
+// **What comes out.** An `assets::MeshData` with bark and leaf primitives:
 //
 //   0  bark     the trunk and the woody shoots, closed tubes, one-sided, built with cones on
 //   1  leaves   the broadleaf's leaf cards or the conifer's foliated-shoot cards, two-sided sprays
 //               (one connected surface a twig, or a conifer's branch or lateral), built with cones
 //               off
+// Named simple-leaved species use independent full-UV blades on visible wood. Ash and walnut
+// additionally emit a green rachis primitive (material 2) between bark and leaves; select by
+// material rather than assuming the leaves are always primitive 1.
 //
 // and a `Motion` (motion.h): the trunk part 0, then every woody shoot, then — the broadleaf — every
 // twig, each hanging from the shoot it grew on; a conifer's needle sprays, its laterals' included,
@@ -33,7 +36,7 @@ namespace engine::flora {
 struct TreeReport {
   u32 triangles = 0;
   u32 wood_triangles = 0;  // the bark primitive
-  u32 leaf_triangles = 0;  // the leaves or needles
+  u32 leaf_triangles = 0;  // the leaves or needles, including compound-leaf rachises
   u32 vertices = 0;
   u32 parts = 0;           // motion parts
   u32 shoots = 0;          // woody axes, the trunk included

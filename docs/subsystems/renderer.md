@@ -1,5 +1,18 @@
 # renderer (systems)
 
+G87's authored-scene and viewer whole-scene streaming fixtures use 32 m tiles: ordinary trees,
+including the wider three-plane foliage bounds, fit a tile while the deliberately oversized
+renderer instance still stays outside streaming. The original instance, pair-accounting and
+exact-pixel assertions remain unchanged.
+
+The foliage fade fixture uses decoded level-zero images when comparing pixel IDs between ray
+and raster paths. Raster alpha tests sample derivative-selected mips while ray alpha tests
+intentionally sample level zero (see **The rays** below). The larger G87 atlases exposed that
+pre-existing difference: cached images disagreed on about 0.27% of the fixture's pixels; with
+matching level-zero images this falls below 0.008%, inside the unchanged 0.1% ID threshold.
+The fade, mixed-block and popping assertions are unchanged. This fixture isolates fade decisions;
+it does not claim that filtered raster masks and level-zero ray masks have identical coverage.
+
 **Named tree motion (G85):** maple, oak, elm, walnut, beech and ash use the broadleaf stiffness
 class; pine, spruce, cedar and juniper use the conifer class. Their species identity remains in
 the container for materials and provenance. See [flora's shared growth rules](flora.md#shared-growth-rules-and-named-species-g85).

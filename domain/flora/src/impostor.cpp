@@ -295,64 +295,74 @@ void crown_levels(const Crown& crown, const CrownPlan& plan, const Vector<SprayR
     TreeLevel level;
     level.kind = ImpostorKind::branch_group;
     level.merge = plan.merge + step;
-    level.groups = groups;
+    const u32 planes = ImpostorSpec::k_card_planes;
+    level.groups = groups * planes;
     level.tile_px = spec.card_px;
     const u32 tiles = spec.representatives < groups ? spec.representatives : groups;
     level.columns = 1;
-    while (level.columns * level.columns < tiles)
+    while (level.columns * level.columns < tiles * planes)
       ++level.columns;
-    level.rows = (tiles + level.columns - 1) / level.columns;
+    level.rows = (tiles * planes + level.columns - 1) / level.columns;
     f64 parallax = 0.0;
     f64 texel = 0.0;
     f64 card_area = 0.0;
     const f64 inner = static_cast<f64>(spec.card_px) - 2.0;
     for (u32 g = 0; g < groups; ++g) {
       const std::span<const u32> mine(members.data() + offsets[g], offsets[g + 1] - offsets[g]);
-      const Frame f = fit_frame(mesh, sprays, mine);
-      f64 lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
-      for (const u32 s : mine) {
-        const SprayRange& r = sprays[s];
-        for (u32 v = r.first_vertex; v < r.first_vertex + r.vertex_count; ++v) {
-          const D3 d = from_f32(mesh.positions[v]) - f.centre;
-          const f64 x = dot(d, f.e1);
-          const f64 y = dot(d, f.e2);
-          const f64 z = dot(d, f.e3);
-          lo1 = x < lo1 ? x : lo1;
-          hi1 = x > hi1 ? x : hi1;
-          lo2 = y < lo2 ? y : lo2;
-          hi2 = y > hi2 ? y : hi2;
-          const f64 off = z < 0.0 ? -z : z;
-          parallax = off > parallax ? off : parallax;
+      const Frame fitted = fit_frame(mesh, sprays, mine);
+      for (u32 plane = 0; plane < planes; ++plane) {
+        const Frame f = plane == 0   ? fitted
+                        : plane == 1 ? Frame{fitted.centre, fitted.e2, fitted.e3, fitted.e1}
+                                     : Frame{fitted.centre, fitted.e3, fitted.e1, fitted.e2};
+        f64 lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
+        for (const u32 s : mine) {
+          const SprayRange& r = sprays[s];
+          for (u32 v = r.first_vertex; v < r.first_vertex + r.vertex_count; ++v) {
+            const D3 d = from_f32(mesh.positions[v]) - f.centre;
+            const f64 x = dot(d, f.e1);
+            const f64 y = dot(d, f.e2);
+            const f64 z = dot(d, f.e3);
+            lo1 = x < lo1 ? x : lo1;
+            hi1 = x > hi1 ? x : hi1;
+            lo2 = y < lo2 ? y : lo2;
+            hi2 = y > hi2 ? y : hi2;
+            const f64 off = z < 0.0 ? -z : z;
+            parallax = off > parallax ? off : parallax;
+          }
         }
-      }
-      const f64 extent = (hi1 - lo1) > (hi2 - lo2) ? (hi1 - lo1) : (hi2 - lo2);
-      const f64 half_texel = 0.5 * extent / inner;
-      texel = half_texel > texel ? half_texel : texel;
-      // The tile: one of the representatives, by the sub-tree's own hash. The representatives are
-      // spread evenly over the groups' order and baked from their own sprays.
-      const u32 tile =
-          static_cast<u32>(mix(static_cast<u64>(group_node[g]) ^ (static_cast<u64>(step) << 40)) %
-                           static_cast<u64>(tiles));
-      const CrownNode& root = crown.nodes[group_node[g]];
-      out.part = crown.nodes[root.carrier].part;
-      out.weight = (root.flags & k_crown_part) != 0u ? 0.7 : root.weight;
-      emit_card(out, f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2,
-                tile_uv(tile, level.columns, level.rows, spec.card_px), level.indices);
-      level.element_of_triangle.push_back(g);
-      level.element_of_triangle.push_back(g);
-      card_area += (hi1 - lo1) * (hi2 - lo2);
-      // Representative i is group floor((2 i + 1) G / 2K): bake it into tile i.
-      for (u32 i = 0; i < tiles; ++i) {
-        if ((2u * static_cast<u64>(i) + 1u) * groups / (2u * static_cast<u64>(tiles)) != g)
-          continue;
-        BakeJob job;
-        job.view = view_of(f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2, spec.card_px);
-        job.tile = i;
-        job.card = exact_view(f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2);
-        job.card_tile = tile;
-        for (const u32 s : mine)
-          job.ranges.push_back(BakeRange{sprays[s].first_index, sprays[s].index_count});
-        level.jobs.push_back(std::move(job));
+        const f64 extent = (hi1 - lo1) > (hi2 - lo2) ? (hi1 - lo1) : (hi2 - lo2);
+        const f64 half_texel = 0.5 * extent / inner;
+        texel = half_texel > texel ? half_texel : texel;
+        // The tile: one of the representatives, by the sub-tree's own hash. The representatives are
+        // spread evenly over the groups' order and baked from their own sprays.
+        const u32 representative = groups == tiles
+                                       ? g
+                                       : static_cast<u32>(mix(static_cast<u64>(group_node[g]) ^
+                                                              (static_cast<u64>(step) << 40)) %
+                                                          static_cast<u64>(tiles));
+        const u32 tile = representative * planes + plane;
+        const CrownNode& root = crown.nodes[group_node[g]];
+        out.part = crown.nodes[root.carrier].part;
+        out.weight = (root.flags & k_crown_part) != 0u ? 0.7 : root.weight;
+        emit_card(out, f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2,
+                  tile_uv(tile, level.columns, level.rows, spec.card_px), level.indices);
+        level.element_of_triangle.push_back(g);
+        level.element_of_triangle.push_back(g);
+        card_area += (hi1 - lo1) * (hi2 - lo2);
+        // Representative i is group floor((2 i + 1) G / 2K): bake it into tile i.
+        for (u32 i = 0; i < tiles; ++i) {
+          if ((2u * static_cast<u64>(i) + 1u) * groups / (2u * static_cast<u64>(tiles)) != g)
+            continue;
+          BakeJob job;
+          job.view = view_of(f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2, spec.card_px);
+          job.tile = i * planes + plane;
+          job.group = i;
+          job.card = exact_view(f.centre, f.e1, f.e2, f.e3, lo1, hi1, lo2, hi2);
+          job.card_tile = tile;
+          for (const u32 s : mine)
+            job.ranges.push_back(BakeRange{sprays[s].first_index, sprays[s].index_count});
+          level.jobs.push_back(std::move(job));
+        }
       }
     }
     level.parallax_m = static_cast<f32>(parallax);
@@ -403,10 +413,12 @@ void tree_star(const ImpostorSpec& spec, u32 part, Emitter& out, TreeLevels& lev
   const D3 normals[4] = {{1.0, 0.0, 0.0}, {s, 0.0, s}, {0.0, 0.0, 1.0}, {-s, 0.0, s}};
   TreeLevel level;
   level.kind = ImpostorKind::tree;
-  level.groups = 4;
+  level.groups = 0;
   level.tile_px = spec.tree_px;
-  level.columns = 2;
-  level.rows = 2;
+  level.columns = 1;
+  while (level.columns * level.columns < 4 * ImpostorSpec::k_tree_slices)
+    ++level.columns;
+  level.rows = (4 * ImpostorSpec::k_tree_slices + level.columns - 1) / level.columns;
   // What the star stands in for: the last branch-group level's cards, or with none the leaves, by
   // the square root of an element's area.
   {
@@ -441,34 +453,63 @@ void tree_star(const ImpostorSpec& spec, u32 part, Emitter& out, TreeLevels& lev
     const D3 n = normals[k];
     const D3 v = k_up;
     const D3 u = normalized(cross(v, n));
-    f64 lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
+    f64 near = 1e300, far = -1e300;
     for (u32 i = 0; i < levels.leaf_index_end; ++i) {
-      const D3 d = from_f32(mesh.positions[mesh.indices[i]]) - centre;
-      const f64 x = dot(d, u);
-      const f64 y = dot(d, v);
-      const f64 z = dot(d, n);
-      lo1 = x < lo1 ? x : lo1;
-      hi1 = x > hi1 ? x : hi1;
-      lo2 = y < lo2 ? y : lo2;
-      hi2 = y > hi2 ? y : hi2;
-      // A pixel of this plane shows the nearest geometry behind it, which can be this far off it.
-      const f64 off = z < 0.0 ? -z : z;
-      parallax = off > parallax ? off : parallax;
+      const f64 z = dot(from_f32(mesh.positions[mesh.indices[i]]) - centre, n);
+      near = std::min(near, z);
+      far = std::max(far, z);
     }
-    const f64 extent = (hi1 - lo1) > (hi2 - lo2) ? (hi1 - lo1) : (hi2 - lo2);
-    const f64 half_texel = 0.5 * extent / inner;
-    texel = half_texel > texel ? half_texel : texel;
-    emit_card(out, centre, u, v, n, lo1, hi1, lo2, hi2,
-              tile_uv(k, level.columns, level.rows, spec.tree_px), level.indices);
-    for (u32 t = 0; t < 2; ++t)
-      level.element_of_triangle.push_back(0u);
-    BakeJob job;
-    job.view = view_of(centre, u, v, n, lo1, hi1, lo2, hi2, spec.tree_px);
-    job.tile = k;
-    job.card = exact_view(centre, u, v, n, lo1, hi1, lo2, hi2);
-    job.card_tile = k;
-    job.ranges.push_back(BakeRange{0, levels.leaf_index_end});
-    level.jobs.push_back(std::move(job));
+    for (u32 slice = 0; slice < ImpostorSpec::k_tree_slices; ++slice) {
+      BakeJob job;
+      job.tile = k * ImpostorSpec::k_tree_slices + slice;
+      job.card_tile = job.tile;
+      const f64 depth = near + (far - near) * (slice + .5) / ImpostorSpec::k_tree_slices;
+      const D3 origin = centre + n * depth;
+      for (u32 i = 0; i + 2 < levels.leaf_index_end; i += 3) {
+        const D3 centroid = (from_f32(mesh.positions[mesh.indices[i]]) +
+                             from_f32(mesh.positions[mesh.indices[i + 1]]) +
+                             from_f32(mesh.positions[mesh.indices[i + 2]])) *
+                            (1.0 / 3.0);
+        const f64 f = (dot(centroid - centre, n) - near) / std::max(1e-9, far - near);
+        const u32 bin = std::min(ImpostorSpec::k_tree_slices - 1,
+                                 static_cast<u32>(std::max(0.0, f) * ImpostorSpec::k_tree_slices));
+        if (bin != slice) continue;
+        if (!job.ranges.empty() &&
+            job.ranges.back().first_index + job.ranges.back().index_count == i)
+          job.ranges.back().index_count += 3;
+        else
+          job.ranges.push_back({i, 3});
+      }
+      if (job.ranges.empty()) continue;
+      f64 lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
+      for (const BakeRange& range : job.ranges) {
+        for (u32 i = range.first_index; i < range.first_index + range.index_count; ++i) {
+          const D3 d = from_f32(mesh.positions[mesh.indices[i]]) - origin;
+          const f64 x = dot(d, u);
+          const f64 y = dot(d, v);
+          const f64 z = dot(d, n);
+          lo1 = x < lo1 ? x : lo1;
+          hi1 = x > hi1 ? x : hi1;
+          lo2 = y < lo2 ? y : lo2;
+          hi2 = y > hi2 ? y : hi2;
+          // A pixel of this plane shows the nearest geometry behind it, which can be this far off
+          // it.
+          const f64 off = z < 0.0 ? -z : z;
+          parallax = off > parallax ? off : parallax;
+        }
+      }
+      const f64 extent = (hi1 - lo1) > (hi2 - lo2) ? (hi1 - lo1) : (hi2 - lo2);
+      const f64 half_texel = 0.5 * extent / inner;
+      texel = half_texel > texel ? half_texel : texel;
+      emit_card(out, origin, u, v, n, lo1, hi1, lo2, hi2,
+                tile_uv(job.tile, level.columns, level.rows, spec.tree_px), level.indices);
+      ++level.groups;
+      for (u32 t = 0; t < 2; ++t)
+        level.element_of_triangle.push_back(0u);
+      job.view = view_of(origin, u, v, n, lo1, hi1, lo2, hi2, spec.tree_px);
+      job.card = exact_view(origin, u, v, n, lo1, hi1, lo2, hi2);
+      level.jobs.push_back(std::move(job));
+    }
   }
   level.parallax_m = static_cast<f32>(parallax);
   level.texel_m = static_cast<f32>(texel);
@@ -496,7 +537,48 @@ constexpr u32 k_no_triangle = 0xFFFFFFFFu;
 struct Sample {
   f64 depth = -1e300;  // along the view's normal: larger is nearer the viewer
   u32 triangle = k_no_triangle;
+  u32 colour = 0;  // sampled sRGB; uses the former padding, still 16 bytes a sample
 };
+
+u32 pack_rgb(const Vec4& linear);
+
+bool surface_sample(const BakeLook& look, bool leaf, f64 u, f64 v, u32& rgb) {
+  const Vec4 factor = leaf ? look.leaf : look.bark;
+  rgb = pack_rgb(factor);
+  const image::Image* image = leaf ? look.leaf_image : look.bark_image;
+  if (image == nullptr || image->width == 0 || image->height == 0 || image->channels != 4) {
+    if (!leaf || !look.leaf_outline) return true;
+    const f64 x = (u - std::floor(u)) * 2.0 - 1.0;
+    const f64 y = (v < 0 ? -v : v) * 2.0 - 1.0;
+    return x * x + y * y <= 1.0;
+  }
+  if (!leaf) {
+    u *= static_cast<f64>(look.bark_scale.x);
+    v *= static_cast<f64>(look.bark_scale.y);
+  }
+  const f64 x = (u - std::floor(u)) * image->width - .5;
+  const f64 y = (v - std::floor(v)) * image->height - .5;
+  const i64 ix = static_cast<i64>(std::floor(x));
+  const i64 iy = static_cast<i64>(std::floor(y));
+  const f64 fx = x - std::floor(x), fy = y - std::floor(y);
+  f64 rgba[4]{};
+  for (u32 j = 0; j < 2; ++j) {
+    for (u32 i = 0; i < 2; ++i) {
+      const u32 sx = static_cast<u32>((ix + i + image->width) % image->width);
+      const u32 sy = static_cast<u32>((iy + j + image->height) % image->height);
+      const u32 at = (sy * image->width + sx) * 4;
+      const f64 weight = (i == 0 ? 1 - fx : fx) * (j == 0 ? 1 - fy : fy);
+      for (u32 c = 0; c < 3; ++c)
+        rgba[c] += weight * static_cast<f64>(texture::srgb8_to_linear(image->pixels[at + c]));
+      rgba[3] += weight * image->pixels[at + 3] / 255.0;
+    }
+  }
+  if (leaf && rgba[3] * static_cast<f64>(factor.w) < static_cast<f64>(look.leaf_cutoff))
+    return false;
+  rgb = pack_rgb({static_cast<f32>(rgba[0]) * factor.x, static_cast<f32>(rgba[1]) * factor.y,
+                  static_cast<f32>(rgba[2]) * factor.z, 1});
+  return true;
+}
 
 }  // namespace
 
@@ -550,7 +632,6 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         const Vec2 tb = mesh.uvs[mesh.indices[i + i1]];
         const Vec2 tc = mesh.uvs[mesh.indices[i + i2]];
         const bool leaf = i >= levels.leaf_first_index && i < levels.leaf_index_end;
-        const bool outline = leaf && look.leaf_outline;
         i64 lo_x = ax < bx ? ax : bx;
         lo_x = cx < lo_x ? cx : lo_x;
         i64 hi_x = ax > bx ? ax : bx;
@@ -589,19 +670,17 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
             const f64 depth = za * l0 + zb * l1 + zc * l2;
             Sample& sample = samples[static_cast<u32>(sy) * side + static_cast<u32>(sx)];
             if (depth < sample.depth || (depth == sample.depth && i < sample.triangle)) continue;
-            if (outline) {
-              // A pack's leaf image is one leaf a card, whole: its outline is near the ellipse
-              // the card's cell holds, petiole at v 0 and tip at |v| 1.
+            u32 colour = pack_rgb(leaf ? look.leaf : look.bark);
+            {
               const f64 tu = static_cast<f64>(ta.x) * l0 + static_cast<f64>(tb.x) * l1 +
                              static_cast<f64>(tc.x) * l2;
               const f64 tv = static_cast<f64>(ta.y) * l0 + static_cast<f64>(tb.y) * l1 +
                              static_cast<f64>(tc.y) * l2;
-              const f64 fu = (tu - std::floor(tu)) * 2.0 - 1.0;
-              const f64 fv = (tv < 0.0 ? -tv : tv) * 2.0 - 1.0;
-              if (fu * fu + fv * fv > 1.0) continue;
+              if (!surface_sample(look, leaf, tu, tv, colour)) continue;
             }
             sample.depth = depth;
             sample.triangle = i;
+            sample.colour = colour;
           }
         }
       }
@@ -621,7 +700,12 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
             ++covered;
             const bool leaf =
                 s.triangle >= levels.leaf_first_index && s.triangle < levels.leaf_index_end;
-            const Vec4 c = leaf ? look.leaf : look.bark;
+            Vec4 c = leaf ? look.leaf : look.bark;
+            if ((leaf ? look.leaf_image : look.bark_image) != nullptr) {
+              c.x = texture::srgb8_to_linear(static_cast<u8>(s.colour));
+              c.y = texture::srgb8_to_linear(static_cast<u8>(s.colour >> 8));
+              c.z = texture::srgb8_to_linear(static_cast<u8>(s.colour >> 16));
+            }
             rgb[0] += static_cast<f64>(c.x);
             rgb[1] += static_cast<f64>(c.y);
             rgb[2] += static_cast<f64>(c.z);
@@ -779,7 +863,12 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
   Vector<MeasureSample> cards;
   const u32 px = level.tile_px;
   for (u32 j = 0; j < cases; ++j) {
+    if (!star && j > 0 && level.jobs[j].group == level.jobs[j - 1].group) continue;
     const BakeJob& job = level.jobs[j];
+    const BakeRange whole{0, levels.leaf_index_end};
+    const std::span<const BakeRange> ranges =
+        star ? std::span<const BakeRange>(&whole, 1)
+             : std::span<const BakeRange>(job.ranges.data(), job.ranges.size());
     // The view's centre and reach: the card's centre and the farthest geometry from it.
     const D3 centre =
         from_f32(job.card.origin) +
@@ -788,7 +877,7 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
         from_f32(job.card.v_axis) *
             (0.5 * (static_cast<f64>(job.card.v_min) + static_cast<f64>(job.card.v_max)));
     f64 reach = 0.0;
-    for (const BakeRange& range : job.ranges)
+    for (const BakeRange& range : ranges)
       for (u32 i = range.first_index; i < range.first_index + range.index_count; ++i) {
         const f64 r = detail::length_of(from_f32(mesh.positions[mesh.indices[i]]) - centre);
         reach = r > reach ? r : reach;
@@ -810,7 +899,7 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
       truth.assign(count, MeasureSample{});
       cards.assign(count, MeasureSample{});
       // The geometry, shaded flat as the bake shades it and cut to the leaf where the bake cuts.
-      for (const BakeRange& range : job.ranges) {
+      for (const BakeRange& range : ranges) {
         for (u32 i = range.first_index; i + 2 < range.first_index + range.index_count; i += 3) {
           const D3 corners[3] = {from_f32(mesh.positions[mesh.indices[i]]),
                                  from_f32(mesh.positions[mesh.indices[i + 1]]),
@@ -821,22 +910,21 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
           const Vec2 tc = mesh.uvs[mesh.indices[i + 2]];
           measure_triangle(view, corners, truth, [&](f64 l1, f64 l2, u32& rgb) {
             rgb = leaf ? leaf_rgb : bark_rgb;
-            if (!(leaf && look.leaf_outline)) return true;
             const f64 l0 = 1.0 - l1 - l2;
             const f64 tu = static_cast<f64>(ta.x) * l0 + static_cast<f64>(tb.x) * l1 +
                            static_cast<f64>(tc.x) * l2;
             const f64 tv = static_cast<f64>(ta.y) * l0 + static_cast<f64>(tb.y) * l1 +
                            static_cast<f64>(tc.y) * l2;
-            const f64 fu = (tu - std::floor(tu)) * 2.0 - 1.0;
-            const f64 fv = (tv < 0.0 ? -tv : tv) * 2.0 - 1.0;
-            return fu * fu + fv * fv <= 1.0;
+            return surface_sample(look, leaf, tu, tv, rgb);
           });
         }
       }
       // The card or cards, each sampling its tile of the atlas at the nearest texel, kept where the
       // mask (alpha at one half) keeps it.
       const u32 first_card = star ? 0u : j;
-      const u32 last_card = star ? level.jobs.size() : j + 1;
+      u32 last_card = star ? level.jobs.size() : j + 1;
+      while (!star && last_card < level.jobs.size() && level.jobs[last_card].group == job.group)
+        ++last_card;
       for (u32 k = first_card; k < last_card; ++k) {
         const BakeView& card = level.jobs[k].card;
         const D3 o = from_f32(card.origin);

@@ -81,6 +81,10 @@ struct MeshGeneratorHosts {
   // The host's triangles. False, with a sentence, for a path that names no mesh this host reads.
   bool (*load)(void* context, std::string_view path, GeneratorHostMesh& out,
                std::string& error) = nullptr;
+  // Material image bytes, resolved beside the recipe (absolute pack paths stay absolute).
+  // Generators hash these same bytes before building baked representations.
+  bool (*read_image)(void* context, std::string_view path, Vector<u8>& out,
+                     std::string& error) = nullptr;
 };
 
 // A container's finest level as a host (`GeneratorHostMesh`): its leaf clusters' triangles over

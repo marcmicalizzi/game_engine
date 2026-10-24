@@ -171,7 +171,11 @@ TEST_CASE("impostor view: across a switch the levels mix by the dither, the path
   SceneDesc desc;
   desc.meshes.push_back(oak);
   desc.ddc = tmp.file("ddc");
-  desc.cache = true;
+  // Compare the fade decision with identical mask sampling. Rays intentionally sample level 0;
+  // raster masks use derivatives. Decoded images have only level 0, whereas cached BC7 mip
+  // chains can change coverage on oblique planes independently of the fade decision (G87).
+  // Cached texture coverage is exercised separately by texture_tests and alpha_mask_tests.
+  desc.cache = false;
   SceneData data;
   std::string error;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);

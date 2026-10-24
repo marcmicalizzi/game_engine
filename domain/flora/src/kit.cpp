@@ -81,7 +81,8 @@ Axis resample_axis(const Axis& a, u32 rows) {
   return r;
 }
 
-void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out) {
+void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
+                bool flat_tip) {
   const u32 rows = axis.point.size();
   const f64 round = 2.0 * k_pi * 0.5 * (r0 + r1);  // metres once round, at the mean radius
   const f64 u0 = static_cast<f64>(uv_offset.x);
@@ -178,9 +179,14 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   // The tip: a cone to a point one tip radius past the last row.
   const D3 tip_dir = axis.tangent[rows - 1];
   out.weight = 1.0;
+  const u32 last = first + (rows - 1) * (sides + 1);
+  if (flat_tip) {
+    for (u32 i = 1; i + 1 < sides; ++i)
+      out.face(last, last + i, last + i + 1, tip_dir);
+    return;
+  }
   const u32 tip = out.vertex(axis.point[rows - 1] + tip_dir * r1, tip_dir, u0 + 0.5 * round,
                              v0 + axis.length + r1);
-  const u32 last = first + (rows - 1) * (sides + 1);
   for (u32 i = 0; i < sides; ++i) {
     const Vec3 nv = out.mesh.normals[last + i];
     const D3 hint = from_f32(nv) + tip_dir;
@@ -676,20 +682,48 @@ u32 most_cards(const Crown& crown) {
 
 }  // namespace
 
+namespace {
+u32 group_cards(const Crown& crown, const CrownPlan& plan, u32 group, u32 sum, u32 legacy_cap) {
+  if (crown.leaf_placement != LeafPlacement::opposite_simple &&
+      crown.leaf_placement != LeafPlacement::alternate_simple)
+    return merged_cards(sum, plan.merge, plan.halvings, crown.laterals, legacy_cap);
+  // A retained shoot can carry several actual leaves. Do not inherit a terminal twig's tiny
+  // per-twig count after aggregating many twigs, and do not inflate blades to fill its extent.
+  const f64 spacing = crown.leaf_placement == LeafPlacement::alternate_simple ? .8 : 1.2;
+  const u32 space =
+      std::max(1u, static_cast<u32>(.8 * crown.nodes[group].length /
+                                    (spacing * crown.leaf_length * crown.leaf_width)));
+  u32 cards = std::min(sum, space);
+  for (u32 i = 0; i < plan.halvings; ++i)
+    cards = (cards + 1) / 2;
+  return cards;
+}
+}  // namespace
+
 u32 crown_triangles(const Crown& crown, const CrownPlan& plan) {
   u32 n = 0;
+  const bool compound =
+      plan.merge == 0 && (crown.leaf_placement == LeafPlacement::opposite_compound ||
+                          crown.leaf_placement == LeafPlacement::alternate_compound);
   for (u32 i = crown.first_recursion; i < crown.nodes.size(); ++i) {
     const CrownNode& node = crown.nodes[i];
+    if (compound && (node.flags & k_crown_terminal) != 0u) continue;
     if ((node.flags & k_crown_part) != 0u) {
       n += tube_triangles(crown_part_rows(plan, node.length), crown_tube_sides(plan, node.r0));
     } else if (node.cls >= plan.wood_class) {
-      n += tube_triangles(1, crown_tube_sides(plan, node.r0));
+      n += tube_triangles(1, crown_tube_sides(plan, node.r0)) - (plan.flat_folded_tips ? 2u : 0u);
     }
   }
   if (plan.merge == 0) {
     for (const u32 t : crown.twigs) {
-      n += spray_triangles(crown.nodes[t].cards);
-      if (crown.terminal_leaf && crown.nodes[t].cards > 0u) n += 2;
+      const u32 pairs = crown.nodes[t].cards;
+      if (crown.leaf_placement == LeafPlacement::opposite_compound ||
+          crown.leaf_placement == LeafPlacement::alternate_compound) {
+        n += compound_triangles(pairs, crown.leaf_placement == LeafPlacement::opposite_compound);
+      } else {
+        n += spray_triangles(pairs);
+        if (crown.terminal_leaf && pairs > 0u) n += 2;
+      }
     }
     return n;
   }
@@ -698,13 +732,22 @@ u32 crown_triangles(const Crown& crown, const CrownPlan& plan) {
   crown_groups(crown, plan.merge, order, sums);
   const u32 cap = most_cards(crown);
   for (const u32 g : order)
-    n += spray_triangles(merged_cards(sums[g], plan.merge, plan.halvings, crown.laterals, cap));
+    n += spray_triangles(group_cards(crown, plan, g, sums[g], cap));
   return n;
 }
 
 void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool structural) {
+  const bool compound =
+      plan.merge == 0 && (crown.leaf_placement == LeafPlacement::opposite_compound ||
+                          crown.leaf_placement == LeafPlacement::alternate_compound);
   for (u32 i = crown.first_recursion; i < crown.nodes.size(); ++i) {
     CrownNode& node = crown.nodes[i];
+    if (compound && (node.flags & k_crown_terminal) != 0u) {
+      if ((node.flags & k_crown_part) != 0u)
+        node.part = out.begin_part(node.base, normalized(node.tip - node.base), node.length,
+                                   crown.nodes[node.parent].part);
+      continue;
+    }
     if ((node.flags & k_crown_part) != 0u) {
       // A part's parent is a part (a class never grows from parent to child).
       const u32 parent_part = crown.nodes[node.parent].part;
@@ -723,7 +766,7 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
     out.part = crown.nodes[node.carrier].part;
     const u32 first = out.mesh.positions.size();
     build_tube(segment_axis(node), node.r0, node.r1, crown_tube_sides(plan, node.r0),
-               Vec2{0.0f, 0.0f}, out);
+               Vec2{0.0f, 0.0f}, out, plan.flat_folded_tips);
     for (u32 v = first; v < out.mesh.positions.size(); ++v)
       out.motion.vertex_weight[v] = static_cast<f32>(node.weight);
   }
@@ -740,13 +783,22 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
     if (dot(side, side) < 1e-6) side = D3{1.0, 0.0, 0.0};
     out.part = crown.nodes[node.carrier].part;
     const u32 first = out.mesh.positions.size();
-    if (crown.leaf_placement == LeafPlacement::opposite_simple && plan.merge == 0) {
+    const bool simple = crown.leaf_placement == LeafPlacement::opposite_simple ||
+                        crown.leaf_placement == LeafPlacement::alternate_simple;
+    if (simple || (crown.leaf_placement != LeafPlacement::spray && plan.merge == 0)) {
       Rng rng = stream_of(crown.leaf_seed, 700000u + static_cast<u64>(&node - crown.nodes.data()));
-      build_opposite_leaves(axis, cards, length, length * crown.leaf_width, angle, rng, out);
+      if (crown.leaf_placement == LeafPlacement::opposite_compound ||
+          crown.leaf_placement == LeafPlacement::alternate_compound) {
+        build_compound_leaves(axis, cards, length, length * crown.leaf_width, angle,
+                              crown.leaf_placement, rng, out);
+      } else {
+        build_simple_leaves(axis, cards, length, length * crown.leaf_width, angle,
+                            crown.leaf_placement, rng, out);
+      }
     } else {
       build_spray(axis, from, cards, length, angle, lift, droop, normalized(side), out);
     }
-    if (crown.terminal_leaf && plan.merge == 0) {
+    if (crown.terminal_leaf && crown.leaf_placement == LeafPlacement::spray && plan.merge == 0) {
       out.weight = 1.0;
       build_leaf_card(axis.point.back(), axis.tangent.back(), normalized(side), length,
                       length * 0.3, droop, out);
@@ -797,9 +849,10 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
   const u32 most = most_cards(crown);
   for (const u32 g : order) {
     const CrownNode& root = crown.nodes[g];
-    const f64 length = extent[g] > card_length ? extent[g] : card_length;
-    spray(root, 0.3 * root.length,
-          merged_cards(sums[g], plan.merge, plan.halvings, crown.laterals, most), length);
+    const bool simple = crown.leaf_placement == LeafPlacement::opposite_simple ||
+                        crown.leaf_placement == LeafPlacement::alternate_simple;
+    const f64 length = simple ? card_length : (extent[g] > card_length ? extent[g] : card_length);
+    spray(root, 0.3 * root.length, group_cards(crown, plan, g, sums[g], most), length);
     if (length > longest) longest = length;
   }
   return longest;
@@ -911,6 +964,13 @@ void build_blade(const Axis& axis, f64 width, D3 side, Emitter& out) {
 
 void build_opposite_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f64 angle, Rng& rng,
                            Emitter& out) {
+  build_simple_leaves(axis, pairs, length, width, angle, LeafPlacement::opposite_simple, rng, out);
+}
+
+void build_simple_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f64 angle,
+                         LeafPlacement placement, Rng& rng, Emitter& out) {
+  const bool alternate = placement == LeafPlacement::alternate_simple;
+  if (alternate) pairs *= 2;
   const f64 phase = rng.unit() * 2.0 * k_pi;
   for (u32 k = 0; k < pairs; ++k) {
     const f64 station =
@@ -920,11 +980,12 @@ void build_opposite_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f
     const D3 base = axis_point(axis, arc);
     const D3 reference =
         perpendicular(tangent, (tangent.y > -.9 && tangent.y < .9) ? k_up : D3{1, 0, 0});
-    const D3 radial = rotate(reference, tangent, phase + static_cast<f64>(k) * .5 * k_pi);
+    const D3 radial = rotate(
+        reference, tangent, phase + static_cast<f64>(k) * (alternate ? k_golden_angle : .5 * k_pi));
     const f64 spread = angle + 8.0 * k_degree * rng.symmetric();
     const f64 scale = .9 + .1 * rng.unit();
     out.weight = arc / axis.length;
-    for (u32 side = 0; side < 2; ++side) {
+    for (u32 side = 0; side < (alternate ? 1u : 2u); ++side) {
       const f64 sign = side == 0 ? 1.0 : -1.0;
       const D3 direction =
           normalized(tangent * det::cos(spread) + radial * (sign * det::sin(spread)) - k_up * .12);
@@ -947,6 +1008,52 @@ void build_opposite_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f
   }
 }
 
+u32 compound_triangles(u32 pairs, bool terminal) {
+  return pairs == 0 ? 0u : 4u * pairs + (terminal ? 2u : 0u) + tube_triangles(1, 3) - 2u;
+}
+
+void build_compound_leaves(const Axis& twig, u32 pairs, f64 length, f64 width, f64 angle,
+                           LeafPlacement placement, Rng& rng, Emitter& out, bool rachises) {
+  if (pairs == 0) return;
+  const bool ash = placement == LeafPlacement::opposite_compound;
+  // A terminal unit is one whole compound leaf. The crown's growth rules place those units
+  // oppositely for ash and alternately for walnut; there is no extra woody twig underneath it.
+  const D3 direction = twig.tangent[0];
+  const D3 reference = perpendicular(direction, twig.normal[0]);
+  const f64 phase = rng.unit() * 2.0 * k_pi;
+  const f64 reach = ash ? .30 : .45;
+  const Axis rachis = grow_axis(twig.point[0], direction, reach, 1, D3{0, -1, 0}, .25, 0, rng);
+  if (rachises) {
+    build_tube(rachis, .0008, .00025, 3, {}, out, true);
+    return;
+  }
+  const D3 across = rotate(reference, direction, phase);
+  for (u32 node = 0; node < pairs + (ash ? 1u : 0u); ++node) {
+    const bool terminal = node == pairs;
+    const f64 at = terminal ? reach : reach * (.2 + .7 * (node + .5) / pairs);
+    const D3 base = axis_point(rachis, at);
+    const D3 along = axis_tangent(rachis, at);
+    out.weight = at / reach;
+    for (u32 side = 0; side < (terminal ? 1u : 2u); ++side) {
+      const D3 d = terminal ? along
+                            : normalized(along * det::cos(angle) +
+                                         across * ((side == 0 ? 1.0 : -1.0) * det::sin(angle)));
+      D3 lateral = cross(d, k_up);
+      if (dot(lateral, lateral) < 1e-6) lateral = perpendicular(d, reference);
+      lateral = normalized(lateral);
+      const D3 normal = normalized(cross(lateral, d));
+      const f64 scale = .9 + .1 * rng.unit();
+      const D3 half = lateral * (.5 * width * scale);
+      const D3 tip = base + d * (length * scale);
+      const u32 a = out.vertex(base - half, normal, 0, 1);
+      const u32 b = out.vertex(base + half, normal, 1, 1);
+      const u32 c = out.vertex(tip + half, normal, 1, 0);
+      const u32 e = out.vertex(tip - half, normal, 0, 0);
+      out.face(a, b, c, normal);
+      out.face(a, c, e, normal);
+    }
+  }
+}
 void build_leaf_card(D3 base, D3 direction, D3 side, f64 length, f64 width, f64 droop,
                      Emitter& out) {
   const D3 d = normalized(direction);

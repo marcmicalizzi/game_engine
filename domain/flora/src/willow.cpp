@@ -150,6 +150,7 @@ struct Plan {
   u32 sides[3] = {14, 8, 5};  // trunk, limbs, branches
   u32 rows[3] = {12, 14, 8};
   u32 cards = 0;  // per side of a curtain
+  u32 curtain_rows = 6;
 };
 
 u32 count_triangles(const Willow& p, const Plan& plan) {
@@ -159,7 +160,8 @@ u32 count_triangles(const Willow& p, const Plan& plan) {
   return tube_triangles(plan.rows[0], plan.sides[0]) +
          limbs * tube_triangles(plan.rows[1], plan.sides[1]) +
          branches * tube_triangles(plan.rows[2], plan.sides[2]) +
-         curtains * spray_triangles(plan.cards);
+         curtains * (spray_triangles(plan.cards) +
+                     (plan.curtain_rows > 0 ? tube_triangles(plan.curtain_rows, 3) : 0u));
 }
 
 // The ladder: the shoots' rows, then their cross-sections, then fewer and longer leaf cards on
@@ -193,9 +195,11 @@ bool plan_willow(const Willow& p, Plan& plan, u32& steps) {
     return true;
   }
   if (step([&] { plan.rows[0] = plan.rows[0] / 2 < 4 ? 4 : plan.rows[0] / 2; })) return true;
+  if (step([&] { plan.curtain_rows = 1; })) return true;
   while (plan.cards > 1) {
     if (step([&] { plan.cards = (plan.cards + 1) / 2; })) return true;
   }
+  if (step([&] { plan.curtain_rows = 0; })) return true;
   if (step([&] {
         plan.rows[2] = 2;
         plan.rows[1] = 4;
@@ -274,8 +278,14 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
   u32 wood = 0;
   for (u32 i = 0; i < shoots.size(); ++i) {
     const Shoot& s = shoots[i];
-    if (s.order > 2) continue;
     const u32 parent = i == 0 ? geometry::k_motion_no_parent : part_of[s.parent];
+    if (s.order == 3) {
+      part_of[i] = begin_structural_part(emit, s.axis.point[0], s.axis.tangent[0], s.axis.length,
+                                         parent, 0, 0, 0);
+      if (plan.curtain_rows > 0)
+        build_tube(resample_axis(s.axis, plan.curtain_rows), .0015, .0004, 3, {}, emit);
+      continue;
+    }
     part_of[i] = emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order],
                                 parent, s.order == 0 ? k_load_bearing : 0u);
     ++wood;
@@ -294,9 +304,12 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
   for (u32 i = 0; i < shoots.size(); ++i) {
     const Shoot& s = shoots[i];
     if (s.order != 3) continue;
-    part_of[i] = emit_spray_part(
-        emit, s.axis, part_of[s.parent], plan.cards, static_cast<f64>(p.leaf_length_m),
-        static_cast<f64>(p.leaf_angle_deg) * k_degree, 30.0 * k_degree, 0.1);
+    emit.part = part_of[i];
+    Rng rng = stream_of(p.seed, 700000u + i);
+    build_simple_leaves(s.axis, plan.cards, static_cast<f64>(p.leaf_length_m),
+                        static_cast<f64>(p.leaf_length_m) * .16,
+                        static_cast<f64>(p.leaf_angle_deg) * k_degree,
+                        LeafPlacement::alternate_simple, rng, emit);
     ++sprays;
   }
   assets::Primitive leaves;

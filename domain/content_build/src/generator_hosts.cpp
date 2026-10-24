@@ -20,6 +20,19 @@ bool load_hook(void* context, std::string_view path, assets::GeneratorHostMesh& 
   return static_cast<const GeneratorHosts*>(context)->load(path, out, error);
 }
 
+bool image_hook(void* context, std::string_view path, Vector<u8>& out, std::string& error) {
+  const std::string native = static_cast<const GeneratorHosts*>(context)->resolve(path);
+  std::string bytes;
+  const io::Status status = io::read_file(native, bytes);
+  if (status != io::Status::Ok) {
+    error = "cannot read generator material image " + native + ": " + io::status_name(status);
+    return false;
+  }
+  out.assign(reinterpret_cast<const u8*>(bytes.data()),
+             reinterpret_cast<const u8*>(bytes.data()) + bytes.size());
+  return true;
+}
+
 std::span<const u8> bytes_of(const std::string& text) {
   return std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size());
 }
@@ -36,6 +49,7 @@ GeneratorHosts::GeneratorHosts(std::string dependant, const geometry::ClusterLod
   hooks_.context = this;
   hooks_.identify = identify_hook;
   hooks_.load = load_hook;
+  hooks_.read_image = image_hook;
 }
 
 std::string GeneratorHosts::resolve(std::string_view path) const {

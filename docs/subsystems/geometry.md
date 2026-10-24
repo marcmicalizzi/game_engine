@@ -1061,3 +1061,8 @@ it is available when the optional flora solver is absent, like the persisted mot
 Growth rules and green wood mechanics remain in flora. Compile-time checks reject duplicate names,
 missing motion values and incomplete profile coverage; renderer ingestion rejects unknown species.
 No persisted struct layout or frame-loop allocation changes.
+
+G87 raises the reference source ceilings for ash to 400,000 triangles and elm/walnut to
+1,000,000, retaining independent blades/leaflets and crown coverage at their reference sizes.
+The source solver still reports actual cost and reduces detail for an explicit smaller budget;
+these catalogue ceilings do not change the runtime LOD policy.

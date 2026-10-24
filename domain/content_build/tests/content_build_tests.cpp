@@ -9,6 +9,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/content_build/container_stats.h>
 #include <domain/content_build/content_build.h>
+#include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
@@ -22,6 +23,25 @@
 #include <vector>
 
 using namespace engine;
+
+TEST_CASE("content_build: generator images resolve beside their recipe and propagate read errors") {
+  test::TempDir tmp("generator_image");
+  const std::string pixels("image\0bytes", 11);
+  {
+    std::ofstream file(tmp.file("leaf.png"), std::ios::binary);
+    file.write(pixels.data(), static_cast<std::streamsize>(pixels.size()));
+  }
+  content_build::GeneratorHosts host(tmp.file("tree.flora.json"), {}, 0, nullptr);
+  const auto* hooks = host.hooks();
+  REQUIRE(hooks->read_image != nullptr);
+  Vector<u8> bytes;
+  std::string error;
+  REQUIRE(hooks->read_image(hooks->context, "leaf.png", bytes, error));
+  REQUIRE(bytes.size() == pixels.size());
+  CHECK(std::memcmp(bytes.data(), pixels.data(), pixels.size()) == 0);
+  CHECK_FALSE(hooks->read_image(hooks->context, "missing.png", bytes, error));
+  CHECK(!error.empty());
+}
 
 namespace {
 

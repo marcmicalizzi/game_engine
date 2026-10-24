@@ -602,7 +602,8 @@ TEST_CASE(
   // Version 6 invalidates the tree geometry cache; palm geometry itself is unchanged.
   // G86/version 7 changes the build key only: version 6 was 0xf5e8a710737c8bfa.
   // Version 8 changes only the generator key; version 7 was 0x9606eab973575a61.
-  constexpr u64 k_golden = 0x44f25152b9ff5df9ull;
+  // G87/version 9 changes only the generator key; version 8 was 0x44f25152b9ff5df9.
+  constexpr u64 k_golden = 0xa0b3f23ef08c7c83ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -715,7 +716,8 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // 0x4cbe7ab61460f083 until version 5 did the same (G79, the megaflora's habits).
   // G86/version 7 changes the build key only: version 6 was 0xa290e40bd1940582.
   // Version 8 changes only the generator key; version 7 was 0x340996a15b4ed8a3.
-  constexpr u64 k_rigid_golden = 0x85aa5f48e32c6182ull;
+  // G87/version 9 changes only the generator key; version 8 was 0x85aa5f48e32c6182.
+  constexpr u64 k_rigid_golden = 0xaacb4ccdf77de126ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));

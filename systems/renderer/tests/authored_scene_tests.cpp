@@ -58,7 +58,7 @@ std::string scene_text(bool world) {
       R"("scale_min":0.8,"scale_max":1.2},)"
       R"({"mesh":1,"center":[0,0,0],"radius_min":5,"radius_max":80,"count":60,"seed":12}])";
   if (world) {
-    text += R"(,"world":{"tile_size":16,"rings":[{"radius":1.5},{"radius":4},{"radius":9}]})";
+    text += R"(,"world":{"tile_size":32,"rings":[{"radius":1.5},{"radius":4},{"radius":9}]})";
   }
   return text + "}";
 }
@@ -132,7 +132,8 @@ TEST_CASE("authored scene: a streamed world's own instances become the generator
   CHECK(whole.data.instances.size() == 124);
   CHECK_FALSE(whole.data.dynamic);
 
-  // Streamed: the giant (it reaches past a 16 m tile) and the walker (an animation block) stay in
+  // The 32 m tile leaves margin for the three-plane foliage bounds; the sixfold giant still
+  // exceeds it. Streamed: the giant and the walker (an animation block) stay in
   // the prefix with the terrain; the rest are the entry's, last among the streamed entries.
   const AuthoredStats& stats = streamed.data.authored;
   CHECK(stats.streamed == 121);
@@ -172,7 +173,7 @@ TEST_CASE("authored scene: a streamed world's own instances become the generator
   const scene_gen::PlacementGeneratorDesc* g =
       scene_gen::GeneratorRegistry::global().find_placement("authored");
   scene_gen::Context context;
-  context.tile_size = 16.0f;
+  context.tile_size = 32.0f;
   void* state = nullptr;
   REQUIRE_MESSAGE(g->open(entry.params, context, &state, &error), error);
   scene::AuthoredSet set;

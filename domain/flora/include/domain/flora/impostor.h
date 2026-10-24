@@ -17,6 +17,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
+#include <foundation/image/decode.h>
 
 namespace engine::flora {
 
@@ -48,12 +49,13 @@ struct BakeJob {
   // job's own: what the coverage bake compares the geometry against ("The coverage bake").
   BakeView card;
   u32 card_tile = 0;
+  u32 group = 0;  // jobs of one volume are contiguous and are measured together
 };
 
 // What an authored level stands for.
 enum class ImpostorKind : u32 {
-  branch_group = 1,  // one card a sub-tree, merged `merge` orders up its twigs
-  tree = 2,          // the whole tree: a star of planes through the trunk
+  branch_group = 1,  // three orthogonal cards per subtree, merged `merge` orders up its twigs
+  tree = 2,          // the whole tree: four vertical directions, each split into depth slices
 };
 
 // One authored level above the finest leaves.
@@ -85,13 +87,17 @@ struct TreeLevel {
   f32 coverage_m = 0.0f;
 };
 
-// The colours the bake shades with: the species' own factors, linear, whatever a material pack
-// later puts on the near parts (flora.md, "The impostor chain", has why), and whether a leaf card
-// is cut to a leaf's outline (a pack's card image is) or drawn whole.
+// Linear factors and optional decoded material images. Pure callers without images use the
+// solver colours and optional ellipse outline; content-build hosts supply actual material pixels.
 struct BakeLook {
   Vec4 bark{0.27f, 0.22f, 0.17f, 1.0f};
   Vec4 leaf{0.09f, 0.22f, 0.06f, 1.0f};
   bool leaf_outline = false;
+  // Optional decoded sRGB base-colour image from the build host, with straight alpha.
+  const image::Image* leaf_image = nullptr;
+  const image::Image* bark_image = nullptr;
+  Vec2 bark_scale{1, 1};
+  f32 leaf_cutoff = .5f;
 };
 
 // Everything the solver hands the container build beyond its mesh: the levels above the finest
@@ -112,6 +118,8 @@ struct ImpostorSpec {
   u32 tree_px = 256;
   u32 representatives = 16;  // tiles a branch-group level's cards share (flora.md has why)
   u32 most_levels = 6;       // branch-group levels at most
+  static constexpr u32 k_card_planes = 3;  // orthogonal views retain edge-on volume
+  static constexpr u32 k_tree_slices = 4;  // depth layers in each far-tree vertical view
 };
 
 // A baked atlas: RGBA8 colour (sRGB, alpha the coverage the leaves cut) and RGBA8 tangent-space

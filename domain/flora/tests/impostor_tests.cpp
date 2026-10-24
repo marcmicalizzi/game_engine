@@ -3,10 +3,12 @@
 // levels sit in the DAG where their errors put them, and the container carries them.
 
 #include <core/hash/hash.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/impostor.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster_file.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
@@ -70,7 +72,7 @@ TEST_CASE("impostor chain: the solver's mesh is its bytes with the chain asked f
   // Branch-group levels with rising errors and falling card counts, the tree's star last.
   REQUIRE(levels.levels.size() >= 2);
   CHECK(levels.levels.back().kind == flora::ImpostorKind::tree);
-  CHECK(levels.levels.back().groups == 4);  // four vertical planes (R91 dropped the level one)
+  CHECK(levels.levels.back().groups == 16);  // four depth slices per vertical view
   for (u32 k = 0; k < levels.levels.size(); ++k) {
     const flora::TreeLevel& level = levels.levels[k];
     MESSAGE("level " << k << ": merge " << level.merge << ", " << level.groups << " cards, error "
@@ -79,7 +81,7 @@ TEST_CASE("impostor chain: the solver's mesh is its bytes with the chain asked f
     CHECK(level.indices.size() == level.groups * 6u);
     // The nesting: an element a card (the star is one), and every card's parent in the next level.
     CHECK(level.element_of_triangle.size() * 3u == level.indices.size());
-    CHECK(level.elements == (level.kind == flora::ImpostorKind::tree ? 1u : level.groups));
+    CHECK(level.elements == (level.kind == flora::ImpostorKind::tree ? 1u : level.groups / 3u));
     if (k + 1 < levels.levels.size()) {
       REQUIRE(level.parent_of_element.size() == level.elements);
       for (const u32 parent : level.parent_of_element)
@@ -119,8 +121,8 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   flora::BakedAtlas t;
   flora::bake_level(mesh, levels, tree, look, t);
   maybe_keep(tmp, t, "tree");
-  CHECK(t.width == 2 * tree.tile_px);
-  CHECK(t.height == 2 * tree.tile_px);
+  CHECK(t.width == tree.columns * tree.tile_px);
+  CHECK(t.height == tree.rows * tree.tile_px);
   // Something is drawn in the four planes' tiles.
   u32 covered = 0;
   for (u32 i = 3; i < t.colour.size(); i += 4)
@@ -149,8 +151,9 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // R91 moved all four: the plane fit by area (the cards) and the star's four planes (the tree).
   // G85 changes only the whole-tree pair: supported wood contours and their normals. MSVC and
   // Clang reproduce both; the leaf-only cards remain byte-identical.
-  constexpr u64 k_golden[4] = {0x469f99a1fc0d9277ull, 0xbcfe02bbf4e95fd4ull, 0x2dadc33c6d0481b3ull,
-                               0xd80ce0bc824994c4ull};
+  // G87: three orthogonal group planes and four depth slices per far-tree direction.
+  constexpr u64 k_golden[4] = {0xb6da212fd4200fbaull, 0x02d0b8198d59cf02ull, 0x2883bddc25f08387ull,
+                               0xb95c99474fe365ccull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -253,4 +256,118 @@ TEST_CASE("impostor chain: off is the container it was") {
   CHECK(data.lod_coverage.empty());
   CHECK(data.materials.size() == 2);
   CHECK(data.images.empty());
+}
+
+TEST_CASE(
+    "impostor chain: real leaf colour and alpha are baked and image edits invalidate the tree") {
+  flora::FloraFile file;
+  std::string error;
+  REQUIRE(flora::read_flora_file(
+      R"({"species":"maple","tree":{"height_m":6,"trunk_radius_m":0.15,"card_bake_px":16,"impostor_px":32},)"
+      R"("materials":{"leaf":{"base_color":"leaves.png","tile_m":1}}})",
+      file, error));
+  Vector<u8> pixels(4 * 4 * 4, 0u);
+  for (u32 p = 0; p < 16; ++p) {
+    pixels[p * 4] = 220;
+    pixels[p * 4 + 1] = 15;
+    pixels[p * 4 + 2] = 30;
+    pixels[p * 4 + 3] = p % 4 < 2 ? 255 : 0;
+  }
+  Vector<u8> bytes;
+  REQUIRE(image::encode_png(4, 4, 4, pixels, bytes));
+  assets::MeshGeneratorHosts hosts;
+  hosts.context = &bytes;
+  hosts.read_image = [](void* context, std::string_view path, Vector<u8>& out, std::string&) {
+    if (path != "leaves.png") return false;
+    out = *static_cast<Vector<u8>*>(context);
+    return true;
+  };
+  const assets::MeshGeneratorInputs inputs{nullptr, &hosts};
+  u64 red_hash = 0;
+  REQUIRE(flora::flora_source_hash_with(file, inputs, red_hash, error));
+  geometry::ClusterFileData red;
+  REQUIRE_MESSAGE(
+      flora::build_flora_container(file, {}, 0, red, nullptr, error, nullptr, nullptr, &hosts),
+      error);
+  CHECK(red.source_hash == red_hash);
+  REQUIRE(!red.impostors.empty());
+  REQUIRE(red.impostors.front().kind == static_cast<u32>(flora::ImpostorKind::branch_group));
+  const i32 slot = red.materials[red.impostors.front().material].base_color_image;
+  REQUIRE(slot >= 0);
+  image::Image atlas;
+  REQUIRE(image::decode_image(red.images[slot].bytes, atlas, 4, &error));
+  u64 r = 0, g = 0;
+  u32 occupied = 0, empty = 0;
+  for (u32 p = 0; p < atlas.width * atlas.height; ++p) {
+    if (atlas.pixels[4 * p + 3] < 128) {
+      ++empty;
+      continue;
+    }
+    ++occupied;
+    r += atlas.pixels[4 * p];
+    g += atlas.pixels[4 * p + 1];
+  }
+  CHECK(occupied > 0);
+  CHECK(empty > 0);
+  CHECK(r > g * 4);  // the far foliage is red, regardless of the solver's green default
+  for (u32 p = 0; p < 16; ++p) {
+    pixels[4 * p] = 15;
+    pixels[4 * p + 1] = 220;
+  }
+  REQUIRE(image::encode_png(4, 4, 4, pixels, bytes));
+  u64 green_hash = 0;
+  REQUIRE(flora::flora_source_hash_with(file, inputs, green_hash, error));
+  CHECK(green_hash != red_hash);  // same path and recipe, different image bytes
+  CHECK(flora::flora_build_key(green_hash, {}, 0) != red.build_key);
+  hosts.read_image = [](void*, std::string_view, Vector<u8>&, std::string& e) {
+    e = "missing leaf image";
+    return false;
+  };
+  CHECK_FALSE(flora::flora_source_hash_with(file, inputs, green_hash, error));
+  CHECK(error == "missing leaf image");
+}
+
+TEST_CASE("impostor chain: leaf alpha cuts actual pixels and bark ignores image alpha") {
+  assets::MeshData mesh;
+  mesh.positions = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  mesh.uvs = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  mesh.indices = {0, 1, 2, 0, 2, 3};
+  flora::TreeLevels chain;
+  chain.leaf_index_end = 6;
+  flora::TreeLevel level;
+  level.tile_px = 16;
+  flora::BakeJob job;
+  job.ranges.push_back({0, 6});
+  level.jobs.push_back(job);
+  image::Image texture;
+  texture.width = 4;
+  texture.height = 4;
+  texture.channels = 4;
+  texture.pixels.assign(64, u8{255});
+  for (u32 p = 0; p < 16; ++p) {
+    texture.pixels[4 * p + 1] = 0;
+    texture.pixels[4 * p + 2] = 0;
+    texture.pixels[4 * p + 3] = p % 4 < 2 ? 255 : 0;
+  }
+  flora::BakeLook look;
+  look.leaf = {1, 1, 1, 1};
+  look.bark = {1, 1, 1, 1};
+  look.leaf_image = &texture;
+  look.bark_image = &texture;
+  flora::BakedAtlas half, opaque;
+  flora::bake_level(mesh, chain, level, look, half);
+  chain.leaf_first_index = 6;  // same quad and texture, now an opaque bark surface
+  flora::bake_level(mesh, chain, level, look, opaque);
+  u64 half_alpha = 0, full_alpha = 0;
+  for (u32 p = 0; p < 16 * 16; ++p) {
+    half_alpha += half.colour[4 * p + 3];
+    full_alpha += opaque.colour[4 * p + 3];
+    if (half.colour[4 * p + 3] != 0) {
+      CHECK(half.colour[4 * p] > 200);
+      CHECK(half.colour[4 * p + 1] == 0);
+    }
+  }
+  REQUIRE(full_alpha > 0);
+  CHECK(static_cast<f64>(half_alpha) / full_alpha == doctest::Approx(.5).epsilon(.01));
 }

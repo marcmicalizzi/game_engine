@@ -19,8 +19,9 @@ Height is 3–40 m when explicit, radius 0.05–1.5 m, crown base 0.1–0.8 and 
 The resolved family parameters must also pass their range checks: a combination whose derived
 radius or crown exceeds that family's limits is refused with the field named, not silently
 clamped. Explicit triangle budgets are 8,000–2,000,000. Omission or zero selects the species'
-source budget from the shared geometry catalogue (G86): maple 200,000; oak 400,000; elm and
-walnut 800,000; beech 900,000; ash 240,000; pine and spruce 60,000; cedar 80,000; juniper 30,000.
+source budget from the shared geometry catalogue (G86, foliage ceilings revised in G87): maple
+200,000; oak and ash 400,000; elm and walnut 1,000,000; beech 900,000; pine and spruce 60,000;
+cedar 80,000; juniper 30,000.
 These provisional, owner-tunable budgets retain individual leaves on the reference trees;
 a million or more is an explicit allowance for a particularly large tree. The runtime cluster cut and baked chain
 choose the rendered detail. An explicitly small source budget can still reach the existing coarse,
@@ -66,8 +67,14 @@ at the attachment, preserving the maple lobes instead of squeezing them along a 
 The 0.10 m card and 0.08 m width are unchanged. Node spacing limits leaf pairs
 to the available twig length, so the realised LAI can be below the 4.5 target. The report records
 that realised area. All terminal wood is counted before choosing the source budget;
-an insufficient budget uses the existing merged-spray fallback. The default 200,000 budget is
-unchanged. Other profiles retain their existing placement. Geometry and material expectations,
+an insufficient budget places real-sized blades on retained higher-order shoots. The default
+200,000 budget is unchanged. G87 extends independent leaves to oak, elm and beech with alternate
+nodes, birch when its source budget holds the full foliage, willow's hanging shoots, and the
+spreading/mixed ancient crowns. Ash and walnut carry separate green rachises with independent
+leaflets; their opaque rachis primitive is material 2, between the bark and leaf primitives.
+`leaf_triangles` includes rachises, while `leaf_cards` and leaf area count the blades alone.
+Willow's curtain stems share the existing motion parts and remain non-colliding; their rows are
+reduced before leaves and omitted only on the smallest budgets. Geometry and material expectations,
 source ranges and authored variation are recorded in the [profile audit](../experiments/tree-profile-audit.md#maple-terminal-shoot-correction).
 
 All branching tree families now use the kit's supported wood surface: an asymmetric branch
@@ -488,6 +495,29 @@ foliage ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipeline
 
 ### The impostor chain
 
+**G87 (2026-10-24):** branch-group representations now contain three orthogonal masked quads
+in the fitted frame, sharing one subtree element and transition. Sixteen representative subtrees
+need 48 tiles (a 7 × 7 atlas at the default); when every group has a representative, it samples its
+own tiles. The far tree keeps four vertical viewing directions but partitions each into four
+depth slices: at most 16 planes, each baking only its slice's whole triangles. The default far
+atlas is 1024 × 1024. Coverage compares each entire three-plane group, and the whole source tree
+against all far slices. These replace the single-plane groups and unsliced star described in the
+historical R89/R91 measurements below. They preserve volume across viewing angles without a
+runtime camera-facing billboard or a new shader; high overhead views remain an approximation.
+
+The build host now supplies encoded images through `MeshGeneratorHosts::read_image`. The CPU
+bake samples actual base-colour RGB and leaf alpha, with sRGB decoding, bilinear repeat sampling,
+material factors, bark UV scale and the material's alpha cutoff. Its coverage measurement uses
+the same sampler. A red maple therefore stays red through the baked levels. The canonical flora
+source hash additionally covers the bytes of both consumed base-colour images; same-path edits
+invalidate the tree. The renderer's generator host and `engine-content flora` share this path.
+Direct pure calls without an image host retain solver colours and the ellipse fallback. Normal
+and roughness textures are not baked; the existing geometric normals and leaf roughness remain
+the approximation. Solver cache version **9** invalidates the previous geometry and atlases.
+
+The geometric foliage changes and explicit source-budget compromises are recorded in
+[G87's audit](../experiments/tree-profile-audit.md#terminal-foliage-and-distance-follow-up).
+
 Roadmap R89 (2026-10-21; the grounding and the switch distances are in [tree
 allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)). The
 budget ladder above picks **one** rung for a whole tree; the chain gives the same tree's coarser
@@ -646,6 +676,14 @@ four rungs; on 8,000 it is 3,514 (laterals folded); everything at its most expen
 10, six interwhorl branches, 20 laterals a metre of 2.5 m, 60 cards, 60 m) holds 8,000 with 4,066.
 
 ### The birch
+
+G87 adds a full-detail path with visible terminal wood and independent, alternate 5 cm leaf
+blades, each sampling the full leaf image. It first attempts the complete foliage and wood within
+the requested source budget. If they do not fit, it retains the established aggregate-card ladder
+below: a low-budget source mesh must not become bare just because physical leaves cost more.
+Close inspection should use a source budget large enough for the full path; distance reduction
+then uses the baked hierarchy. Aggregate cards are an explicit source approximation, not larger
+botanical leaves. `card_length`, triangle counts and realised area expose the chosen tradeoff.
 
 `engine.flora.Birch` (`src/birch.cpp`; version 2 since G81, 2026-10-22, grounded in
 [the birch](../experiments/birch.md); recipes `birch.flora.json`, 14 m and two stems,
@@ -824,6 +862,15 @@ error is under the threshold; the harness's question — does a dense mesh colla
 and the default or `ancient-1m` for the trees the camera walks under.
 
 ## Megaflora
+
+`Ancient` version 5 adds `primary_length_scale` and `secondary_length_scale` (0.5–3, default 1).
+They scale the first curved scaffold after a run and its first fork daughters independently.
+The straight platform run, later fork lengths, renewal shoots, fine lateral lengths and leaf
+dimensions do not inherit these multipliers. The enlarged wood and its relocated crown loads
+enter the existing strength calculation; if overloaded, its common length cap still shortens the
+whole limb system, including finer branches. `AncientLimb::asked_m` includes the expansion.
+The village comparison uses 2 and 1.5, authored fantasy proportions rather than botanical
+constants. Defaults preserve existing natural-tree proportions.
 
 `engine.flora.Ancient` (`src/ancient.cpp`; `ancient-emergent.flora.json`, `ancient-spreading.flora.json`
 and `ancient-mixed.flora.json`, one of each habit; `ancient.flora.json` and `ancient-rising.flora.json`,

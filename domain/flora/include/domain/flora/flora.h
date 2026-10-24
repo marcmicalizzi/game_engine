@@ -36,6 +36,10 @@
 namespace engine::materials {
 struct Pack;
 }
+namespace engine::assets {
+struct MeshGeneratorInputs;
+struct MeshGeneratorHosts;
+}  // namespace engine::assets
 
 namespace engine::flora {
 
@@ -60,7 +64,8 @@ namespace engine::flora {
 // 6: shared species rules, supported irregular wood and renewed ancient crowns (G85).
 // 7: fuller conifer/willow foliage and seated ancient segment joins (G86).
 // 8: maple terminal wood and independent opposite leaf blades (G86 follow-up).
-inline constexpr u32 k_flora_version = 8;
+// 9: species-correct terminal foliage and material-dependent canopy LOD (G87).
+inline constexpr u32 k_flora_version = 9;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
@@ -94,6 +99,11 @@ std::string canonical_flora_json(const FloraFile& file);
 // The source hash a flora container records and its cache key is taken over: the canonical
 // parameters' bytes, the species, and `k_flora_version`.
 u64 flora_source_hash(const FloraFile& file);
+
+// Includes the bytes of base-colour images consumed by the LOD bake. Pure without a host;
+// a host that supplies images must successfully read every referenced bake input.
+bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
+                            u64& out, std::string& error);
 
 // The build key over that hash: `assets::generated_mesh_build_key` —
 // `cluster_cache_key(source_hash, lod, false, page_bytes)`, no weld, since the solver's vertices
@@ -148,6 +158,7 @@ bool flora_collides(const FloraFile& file);
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, PalmReport* report,
                            std::string& error, const materials::Pack* pack = nullptr,
-                           TreeReport* tree_report = nullptr);
+                           TreeReport* tree_report = nullptr,
+                           const assets::MeshGeneratorHosts* hosts = nullptr);
 
 }  // namespace engine::flora

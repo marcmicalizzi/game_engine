@@ -587,6 +587,7 @@ Axis grow_limb(D3 base, D3 direction, f64 length, u32 rows, f64 sag, f64 rise, f
 // `end`.
 struct Segment {
   Axis axis;
+  f64 crown_length = 0.0;  // unexpanded scaffold length: fine shoots do not inherit its stretch
   f64 r0 = 0.0;
   f64 r1 = 0.0;
   u32 parent = k_none;  // into the limb's segments; k_none for the first, whose parent is the run
@@ -632,6 +633,9 @@ struct LimbBuilder {
     const f64 broken_j = r.unit();
     f64 length = nominal * (0.85 + 0.3 * length_j);
     if (broken) length *= 0.3;
+    const f64 scaffold_scale = static_cast<f64>(
+        level == 0 ? p.primary_length_scale : (level == 1 ? p.secondary_length_scale : 1.0f));
+    length *= scaffold_scale;
     const f64 level_c2 = 1.0 - dir.y * dir.y;  // cos^2 of its elevation: only a level limb sags
     const f64 ratio = sag != nullptr && index < sag->size() ? (*sag)[index] : 0.0;
     const f64 droop = k_sag_deg * k_degree * ratio * level_c2;
@@ -649,6 +653,7 @@ struct LimbBuilder {
     {
       Segment& seg = geo.segs[index];
       seg.axis = std::move(axis);
+      seg.crown_length = seg.axis.length / scaffold_scale;
       seg.r0 = r0;
       seg.r1 = r1;
       seg.parent = parent;
@@ -759,7 +764,7 @@ f64 load_ratios(const LimbGeo& g, const Shape& s, Vector<f64>& ratios) {
     add_axis(seg.axis, seg.r0, j);
     if (!seg.broken) {
       // The crown it carries, at a lever a third of its reach on along the segment's heading.
-      const f64 reach = k_crown_load * k_lateral * g.branch_length * seg.axis.length;
+      const f64 reach = k_crown_load * k_lateral * g.branch_length * seg.crown_length;
       D3 heading = seg.axis.tangent.back();
       heading = D3{heading.x, 0.0, heading.z};
       Sample sm;
@@ -908,6 +913,12 @@ Vector<Stub> stubs_of(const Ancient& p, const Shape& s, const Layout& l, f64 lim
 
 Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& spec, Named& named) {
   Crown crown;
+  if (p.habit != AncientHabit::emergent) {
+    crown.leaf_placement = LeafPlacement::alternate_simple;
+    crown.leaf_seed = p.seed;
+    crown.leaf_width = static_cast<f64>(p.leaf_width);
+    crown.leaf_length = static_cast<f64>(p.leaf_length_m);
+  }
   {
     Rng none(0);
     const Axis trunk = grow_axis(l.base, l.t, l.length, 32, k_up, 0.0, 0.0, none);
@@ -948,7 +959,15 @@ Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& s
     AncientLimb report;
     report.height_m = static_cast<f32>(d.arc * l.t.y - k_sink_m);
     report.base_radius_m = static_cast<f32>(g.run_r0);
-    report.asked_m = static_cast<f32>(d.run + d.past);
+    f64 total = 0.0, expanded = 0.0, term = 1.0;
+    for (u32 level = 0; level <= s.forks; ++level) {
+      total += term;
+      expanded +=
+          term * static_cast<f64>(level == 0 ? p.primary_length_scale
+                                             : (level == 1 ? p.secondary_length_scale : 1.0f));
+      term *= s.h->shrink;
+    }
+    report.asked_m = static_cast<f32>(d.run + d.past * expanded / total);
     report.scale = static_cast<f32>(limb.scale);
     report.allowable_mpa = static_cast<f32>(s.allowable * 1.0e-6);
     f64 peak = 0.0;
@@ -979,7 +998,7 @@ Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& s
       if (seg.terminal) {
         root.radius = seg.r0;
         root.laterals = p.branches;
-        root.lateral_length = k_lateral * g.branch_length * seg.axis.length;
+        root.lateral_length = k_lateral * g.branch_length * seg.crown_length;
         root.from = 0.15;
         root.to = 0.95;
       } else {
@@ -987,7 +1006,7 @@ Crown grow(const Ancient& p, const Shape& s, const Layout& l, const CrownSpec& s
         // the light is.
         root.radius = 0.55 * seg.r0;
         root.laterals = 4;
-        root.lateral_length = 1.2 * k_lateral * g.branch_length * seg.axis.length;
+        root.lateral_length = 1.2 * k_lateral * g.branch_length * seg.crown_length;
         root.from = 0.15;
         root.to = 0.85;
         root.spread_scale = 1.2;
@@ -1034,6 +1053,13 @@ void place_leaves(const Ancient& p, Crown& crown) {
   crown.card_step = width / det::sin(angle);
   const f64 cards = static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
   crown_distribute_leaves(crown, cards, p.leaves);
+  if (crown.leaf_placement == LeafPlacement::alternate_simple) {
+    for (const u32 t : crown.twigs) {
+      CrownNode& n = crown.nodes[t];
+      const u32 space = std::max(1u, static_cast<u32>(.8 * n.length / (.8 * width)));
+      n.cards = std::min(n.cards, space);
+    }
+  }
 }
 
 // ---- the plan ----------------------------------------------------------------------------------
@@ -1095,8 +1121,9 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, const N
   plan.crown.edge_m = 0.1;
   plan.crown.max_sides = 12;
   plan.crown.row_m = 1.0;
-  plan.crown.wood_class =
-      2;  // shoots under two pipe steps over a twig (2.6 cm) fold from the start
+  const bool simple = crown.leaf_placement == LeafPlacement::alternate_simple;
+  plan.crown.flat_folded_tips = simple;
+  plan.crown.wood_class = simple ? 0 : 2;
   steps = 0;
   const auto fits = [&] { return count_triangles(p, l, crown, named, plan) <= p.triangle_budget; };
   if (fits()) return true;
@@ -1128,7 +1155,7 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, const N
       })) {
     return true;
   }
-  while (plan.crown.wood_class < crown.part_class) {
+  while (!simple && plan.crown.wood_class < crown.part_class) {
     if (step([&] { ++plan.crown.wood_class; })) return true;
   }
   if (step([&] { plan.trunk_rows = halve(plan.trunk_rows, 16); })) return true;
@@ -1148,7 +1175,11 @@ bool plan_ancient(const Ancient& p, const Layout& l, const Crown& crown, const N
     return true;
   }
   while (plan.crown.merge < crown.orders) {
-    if (step([&] { ++plan.crown.merge; })) return true;
+    if (step([&] {
+          ++plan.crown.merge;
+          if (simple) plan.crown.wood_class = static_cast<i32>(plan.crown.merge);
+        }))
+      return true;
   }
   for (u32 k = 0; k < 6; ++k) {
     if (step([&] { ++plan.crown.halvings; })) return true;
@@ -1365,6 +1396,10 @@ bool ancient_in_range(const Ancient& p, std::string& error) {
     return bad("limb_run_m", "0 (the habit's), or 4 to 60 m");
   if (!(p.limb_reach_m == 0.0f || (p.limb_reach_m >= 4.0f && p.limb_reach_m <= 80.0f)))
     return bad("limb_reach_m", "0 (the habit's), or 4 to 80 m");
+  if (!(p.primary_length_scale >= 0.5f && p.primary_length_scale <= 3.0f))
+    return bad("primary_length_scale", "0.5 to 3");
+  if (!(p.secondary_length_scale >= 0.5f && p.secondary_length_scale <= 3.0f))
+    return bad("secondary_length_scale", "0.5 to 3");
   if (!(p.branches >= 2u && p.branches <= 10u)) return bad("branches", "2 to 10");
   if (!(p.branch_angle_deg >= 15.0f && p.branch_angle_deg <= 80.0f))
     return bad("branch_angle_deg", "15 to 80 degrees");

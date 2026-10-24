@@ -481,8 +481,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // additionally seats continuation rings inside the parent tips, changing surfaces and bakes.
 // G86 maple follow-up/version 8: both generator identities change, neither tree's geometry does.
 // Version 7 folds were 0x7fd0e2e92e3ce1de and 0x8138cfd3401a1070 respectively.
-constexpr u64 k_broadleaf_container_golden = 0xd58d791456f1a027ull;
-constexpr u64 k_ancient_container_golden = 0x76751862a5cebd29ull;
+// G87/version 9: volumetric group cards and sliced far trees; Ancient schema v5 adds scaffold
+// controls.
+constexpr u64 k_broadleaf_container_golden = 0x54c70017bde5f334ull;
+constexpr u64 k_ancient_container_golden = 0x7bf037d37a86a498ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

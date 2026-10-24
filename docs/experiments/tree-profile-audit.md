@@ -428,3 +428,177 @@ hash agrees across MSVC and Clang. Linux device-dependent cases skip without an 
 provided the GPU coverage. Standalone format (1,193 files), lint and docs passed. This checkout's
 two Linux volumes were pruned (3.58 GB); the shared caches and other checkouts were retained.
 No full merge matrix or primary binary installation was performed by this author session.
+
+## Terminal foliage and distance follow-up
+
+G87, 2026-10-24, implemented and author-validated; shared merge gate pending. The owner's maple review extends the visible supporting twig and
+independent blade approach to oak, elm, beech, birch, willow, ash, walnut and the broadleaf
+(spreading/mixed) village ancient canopies. The emergent conifer habit keeps its foliage rule.
+
+Botanical grounding: NC State describes simple alternate leaves for
+[white oak](https://plants.ces.ncsu.edu/plants/quercus-alba/),
+[American elm](https://plants.ces.ncsu.edu/plants/ulmus-americana/),
+[American beech](https://plants.ces.ncsu.edu/plants/fagus-grandifolia/),
+[silver birch](https://plants.ces.ncsu.edu/plants/betula-pendula/) and
+[weeping willow](https://plants.ces.ncsu.edu/plants/salix-babylonica/).
+Willow's leaves are narrow and its leafy shoots pendulous; birch also retains its fine drooping
+shoots. These sources support alternate attachment, not copying maple's paired nodes. The
+representative alternate azimuth and seeded angular/size variation are authored approximations.
+Oregon State describes [black walnut](https://landscapeplants.oregonstate.edu/plants/juglans-nigra)
+as alternate, pinnately compound (15–23 leaflets, terminal often absent), and
+[white ash](https://landscapeplants.oregonstate.edu/plants/fraxinus-americana) as opposite and
+pinnately compound (usually 7 leaflets). A compound leaf therefore needs a rachis attached to a
+woody twig; the leaflet-bearing axis is not another woody branch. Existing species leaf dimensions
+remain the starting point, and any spacing/count limit must report realised area rather than
+inflate a blade to satisfy the LAI target.
+
+LOD investigation: before G87 the shared path decimated bark, replaced foliage subtrees with single
+planes using 16 representative tiles, then replaced the tree with four static vertical planes.
+The CPU bake shaded generic solver factors and substituted an ellipse for textured
+alpha. These were approximation sources relevant to the owner's Forest symptom.
+The [SpeedTree card generator](https://docs9.speedtree.com/modeler/doku.php?id=card_generator)
+and [Unity tree LOD documentation](https://docs.unity.com/en-us/engine/6000.7/manual/creating-environments/script-terrain/terrain-trees/terrain-tree-lod)
+distinguish geometric foliage reduction and far billboards: baking is one rung, not all LOD.
+Acceptance requires actual-material near/middle/far captures, including below and across a large
+canopy; source budgets and built hierarchy footprint must be reported alongside the pictures.
+
+G87 implements alternate independent blades for oak, elm, beech, full-detail birch, willow and
+broadleaf ancient crowns. Ash uses opposite whole leaves with three paired leaflet nodes and a
+terminal leaflet; walnut uses alternate whole leaves with eight pairs and no terminal leaflet.
+The 0.30/0.45 m rachises are thin green geometry, not additional woody motion parts. Leaflet
+dimensions remain the species profile's. Conifer foliage and maple's opposite placement retain
+their specialized rules. Each compound terminal unit is one whole leaf: its rachis replaces
+the terminal woody tube, rather than adding two whole leaves and another twig at every tip.
+Ash and walnut retain their 2 mm terminal-radius growth rule. Oak uses 3.5 mm, an authored
+density/budget choice rather than a universal measured twig radius. Reference budgets increase
+to 400,000 triangles for ash and 1,000,000 for walnut and elm to retain their individual leaves
+and crown coverage; these are ceilings, not quotas.
+
+Alternate-node capacity allows overlapping leaves pointing in different azimuths: the selected
+simple-leaf capacity is one node per 0.4 leaf widths (two nodes per stored pair), with
+seeded station and orientation variation. This spacing is an authored coverage compromise, not
+a measured internode constant. Realised blade area includes the 0.9–1 size variation. Merged
+simple-leaf sources retain actual blade dimensions on retained shoots instead of scaling each
+blade to the missing subtree's entire extent. A birch source budget too small to retain its
+physical leaves uses the existing aggregate-card fallback rather than sacrificing crown coverage;
+the full-detail path requires a larger source budget before the distance hierarchy can reduce it.
+
+The three-plane subtree volumes and four-slice/four-view far tree are a bounded authored
+approximation motivated by [Decoret et al., *Billboard Clouds for Extreme Model Simplification*
+(2003)](https://graphics.cs.yale.edu/publications/billboard-clouds-extreme-model-simplification).
+That work represents geometry with textured transparent planes; this implementation does not
+claim its optimized greedy plane selection. Actual base-colour images and alpha now supply both
+the CPU bake and coverage comparison; image-byte dependencies prevent a stale green bake after
+changing a maple's leaf texture. Bark UV tiling is included; normal/roughness texture detail is
+still approximated by the existing geometric-normal bake and material roughness.
+
+The owner's mushroom-crown direction adds independent `Ancient` scaffold controls (schema v5).
+The village comparison requests primary 2× and secondary 1.5×, keeping the straight run and all
+finer nominal lengths unchanged. The same mechanical cap includes the longer scaffold and its
+crown's new lever arms. A short, strong-limb regression isolates these multipliers and checks
+every other shoot's length; an overloaded real recipe may still shorten the entire limb under
+the pre-existing safety rule. Default multipliers are 1, so natural habits are not widened by
+this new authoring option. These ratios are the fantasy art direction, not research constants.
+
+Alternate broadleaf and broadleaf ancient fine tubes use a closed polygon tip instead of an extra cone beyond the end
+ring, saving two triangles per folded tube. Named load-bearing limbs retain their seated joins
+and existing surface. The saving is spent retaining foliage before moving to a coarser source
+representation; it does not remove supporting axes or change the structural table.
+
+The non-mega profiles still describe a mature architectural tree, not an ageing simulation.
+The owner's autumn oak photograph (2026-10-24) is a useful structural reference: a clear lower
+trunk, substantial unequal ascending forks and progressively finer twig networks. Crown base,
+spread and seed can approximate that outline today. Age-dependent leader replacement, selective
+shedding and reiteration remain [G74](tree-allometry.md#g74-what-self-organising-growth-would-add);
+this foliage/LOD change does not claim to implement them or infer the photographed tree's age.
+Growth context also matters independently of size: the [USFS white-oak account](https://research.fs.usda.gov/silvics/white-oak)
+distinguishes the spreading crown and shorter bole of open-grown trees from the taller clear
+trunk and compact crown of forest-grown trees. That supports separate maturity and exposure
+controls in a future profile pass; it is not an identification of the photographed oak. The
+[Palubicki et al. model](https://www.algorithmicbotany.org/papers/selforg.sig2009.html) underlying
+G74 uses competition for light/space and internal signals to generate development. A static
+mature-tree profile could improve the architecture sooner without claiming that simulation.
+
+### G87 source cost and coverage
+
+Actual Forest v8 seed-17 recipes, with their explicit one-million-triangle ceilings and material
+paths, produce the following source geometry. LAI here is the solver's blade-area accounting;
+alpha masks further reduce visible area. These deterministic counts are not timing measurements.
+
+| Profile | Source triangles | Leaf cards | Realised LAI | Source merge |
+|---|---:|---:|---:|---:|
+| Oak | 311,751 | 123,822 | 3.943 | 0 |
+| Elm | 825,319 | 345,144 | 4.065 | 0 |
+| Beech | 708,969 | 293,094 | 3.169 | 0 |
+| Ash | 301,995 | 91,609 | 1.257 | 0 |
+| Walnut | 848,883 | 324,928 | 3.196 | 0 |
+
+The corresponding G86 gallery LAIs were 4.380, 4.099, 2.726, 1.258 and 3.452. An intermediate
+attempt reduced fine-shoot counts and lost roughly half the leaf area; it was rejected. The
+final compound construction retains the original terminal growth radius, and the alternate
+simple leaves use overlapping azimuths to preserve coverage. Reference-tree regressions require
+full-detail source leaves and conservative per-profile coverage floors, not one LAI for all trees.
+
+For the actual 80 m village ancient (seed 101, 1.5-million source ceiling), the matched baseline
+and 2x/1.5x scaffold recipes use the same final solver and leaf rules:
+
+| Measure | Baseline lengths | Wider scaffold |
+|---|---:|---:|
+| Source triangles | 1,192,295 | 1,422,959 |
+| Wood triangles | 536,895 | 537,047 |
+| Leaf cards | 327,700 | 442,956 |
+| Crown footprint, m2 | 3,217.421 | 4,349.029 |
+| Realised LAI | 4.968 | 4.968 |
+| Blade length, m | 0.3 | 0.3 |
+| Source merge | 2 | 2 |
+| Motion parts | 850 | 850 |
+| Built hierarchy clusters | 50,355 | 56,983 |
+| Built hierarchy vertices | 2,968,399 | 3,441,086 |
+| Pages | 429 | 497 |
+
+The wider footprint is about 35% larger while leaf area per footprint is maintained. Near/far
+review uses matched 60/150/350/800 m cameras at 1200x900, full geometry versus normal LOD. The
+static planes remain an approximation: reduced crowns can look fuller and overhead views are
+not view-facing billboards. Tiny compound rachises currently share bark shading in the far
+whole-tree bake. Willow retains geometric LOD, without a new authored bake chain.
+
+Actual red and green Forest maples are also captured at matched 25/60/140/350 m cameras. The
+red variant retains its red colour in reduced detail. All review artifacts and staged Forest
+recipes are external under `D:/workspace/game_engine_local/tree-growth/2026-10-24/species-lod`
+and `forest-staged`; the active Forest scene and primary engine binaries are unchanged.
+
+The Windows GPU run exposed the documented raster/ray alpha-filtering difference in the fade
+fixture: raster masks use implicit mips, ray masks level zero. The new oblique card planes and
+larger atlases produced 12,652/4,608,000 differing pixel IDs with fading and 12,421 without it.
+Using decoded level-zero images to isolate the fade decision reduces those to 355 and 329;
+vertex/mesh raster IDs match exactly. The original 0.1% ID limit and all fade/popping assertions
+remain unchanged. This is a fixture correction, not a change to production filtering: cached
+raster and ray masks can still differ at distance. The focused GPU case passes 264 assertions.
+
+The viewer's whole-scene streaming fixture exposed the same 16 m tile-bound assumption as the
+renderer fixture: two enlarged transparent card bounds stayed in the persistent prefix, leaving
+138 streamed trees where the fixture requires all 140. The picture still matched all 57,600
+pixels. Its tile size is now 32 m, retaining the all-140 assertion and exact-pixel comparison;
+the separate ring-handover fixture retains its original 16 m tiles.
+
+### G87 author validation
+
+The final Windows `test -Preset msvc-debug -Affected -Base HEAD` selected 59 CTest groups and
+completed with 57 passing. Its two failures are preserved in the external evidence: the renderer
+passed 247 of 248 cases with only the two fade ID-agreement assertions failing, and the viewer
+passed 122 of 123 cases with only the streamed-tree count failing. Corrected focused Windows
+runs pass the fade case (264 assertions), both renderer authored-scene cases (1,539 assertions),
+and both viewer authored-scene cases (25 assertions). The viewer matches all 57,600 pixels and
+records 120 handovers over 45,797 tile pixels with none changed. The unchanged remainder of the
+affected run passed, including frame-loop, editor, content builder, lint, licences and docs.
+These are a 57/59 run plus focused corrections, not a claim of one green 59/59 Windows run.
+The standalone flora suite also passes all 62 cases and 63,931,321 assertions.
+
+Linux Clang debug passes all 59 affected groups (714.11 s). Following the fixture-only changes,
+renderer plus docs passes 2/2 (51.92 s), and viewer plus docs passes 2/2 (15.13 s). Production
+code did not change after the full Linux run. Device-dependent Linux cases skip without an ICD;
+the focused Windows cases ran on the RTX 5090. Format and the final docs/whitespace checks pass.
+This checkout's recreated Linux volumes are pruned after the follow-ups, retaining shared caches
+and other checkouts. The complete logs, including original failures, are under the external
+`species-lod/validation` directory named above. Full integrated matrices, remote GPU checks and
+frame budgets remain the shared merge gate's; G86/G87 are not marked merged and G74 remains open.

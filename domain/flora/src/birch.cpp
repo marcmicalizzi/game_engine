@@ -6,6 +6,7 @@
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -79,6 +80,10 @@ f64 ovoid(f64 f) {
 // never depends on the budget.
 Crown grow(const Birch& p, const CrownSpec& spec) {
   Crown crown;
+  crown.leaf_placement = LeafPlacement::alternate_simple;
+  crown.leaf_seed = p.seed;
+  crown.leaf_width = static_cast<f64>(p.leaf_width);
+  crown.leaf_length = static_cast<f64>(p.leaf_length_m);
   const u32 stems = stem_count_of(p);
   const f64 height = static_cast<f64>(p.height_m);
   const f64 r_stem = static_cast<f64>(p.stem_radius_m);
@@ -234,7 +239,7 @@ f64 place_leaves(const Birch& p, Crown& crown, f64 cards) {
 // wood folded into their parts, the limbs' and the crown's tubes at their coarsest. Then cards up
 // to four times the finest, and only past that the cards merged up the hierarchy, halved, and the
 // last rows. No rung moves a shoot or drops a part.
-bool plan_birch(const Birch& p, Crown& crown, u32 stems, Plan& plan, u32& steps) {
+bool plan_birch_aggregate(const Birch& p, Crown& crown, u32 stems, Plan& plan, u32& steps) {
   plan = Plan{};
   const u32 stem_rows = static_cast<u32>(static_cast<f64>(p.height_m) / 0.5);
   plan.rows[0] = stem_rows < 6 ? 6 : (stem_rows > 28 ? 28 : stem_rows);
@@ -315,6 +320,33 @@ bool plan_birch(const Birch& p, Crown& crown, u32 stems, Plan& plan, u32& steps)
   });
 }
 
+// Full geometry uses independent leaves on their supporting twigs. A budget that cannot hold
+// the requested leaf area uses the established aggregate-card representation instead of making
+// the crown bare. Callers requesting close inspection must budget for the physical leaves.
+bool plan_birch(const Birch& p, Crown& crown, u32 stems, Plan& plan, u32& steps) {
+  plan = Plan{};
+  plan.rows[0] = std::clamp(static_cast<u32>(p.height_m / .5f), 6u, 28u);
+  plan.crown.edge_m = .05;
+  plan.crown.max_sides = 6;
+  plan.crown.row_m = .6;
+  plan.crown.wood_class = 0;
+  plan.card_length = static_cast<f64>(p.leaf_length_m);
+  const f64 width = static_cast<f64>(p.leaf_length_m * p.leaf_width);
+  crown.card_step = width / det::sin(static_cast<f64>(p.leaf_angle_deg) * k_degree);
+  crown_distribute_leaves(crown,
+                          static_cast<f64>(p.leaf_area_index) * crown.footprint /
+                              (width * static_cast<f64>(p.leaf_length_m)),
+                          p.leaves);
+  for (const u32 t : crown.twigs) {
+    CrownNode& n = crown.nodes[t];
+    const u32 capacity = std::max(1u, static_cast<u32>(.8 * n.length / (.8 * width)));
+    n.cards = std::min(n.cards, capacity);
+  }
+  steps = 0;
+  if (count_triangles(crown, stems, plan) <= p.triangle_budget) return true;
+  crown.leaf_placement = LeafPlacement::spray;
+  return plan_birch_aggregate(p, crown, stems, plan, steps);
+}
 }  // namespace
 
 bool birch_in_range(const Birch& p, std::string& error) {

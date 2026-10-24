@@ -386,7 +386,7 @@ enum AncientHabit : u8 {
 /// limb no longer than its wood could carry, down to the allometric crown. Its parts carry the
 /// structural table (section 37). Defaults make a 100 m emergent tree; a limb field left at 0 is
 /// the habit's.
-struct Ancient @version(4) {
+struct Ancient @version(5) {
   /// Everything left to chance: the buttresses', hollows' and limbs' azimuths, every shoot's turn.
   seed: u64 = 1
   /// The crown's top above the ground: 40 to 150 m.
@@ -437,6 +437,11 @@ struct Ancient @version(4) {
   /// The lowest limb's length past its first run, meandering and forking: 4 to 80 m; 0, what the
   /// habit's crown width leaves. Asked, not promised, like the run.
   limb_reach_m: f32 = 0.0 @unit(m)
+  /// Length multiplier of the first curved scaffold after the reserved straight run: 0.5 to 3.
+  /// Does not scale later forks or fine shoots. The wood-strength cap still applies.
+  primary_length_scale: f32 = 1.0 @since(5)
+  /// Length multiplier of the first fork daughters only: 0.5 to 3. Finer orders keep their lengths.
+  secondary_length_scale: f32 = 1.0 @since(5)
   /// Branches on every limb past its run, and on the trunk's top: 2 to 10.
   branches: u32 = 6
   /// A branch's angle from its parent: 15 to 80 degrees.

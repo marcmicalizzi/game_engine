@@ -83,6 +83,45 @@ TEST_CASE("flora: reference maple retains terminal wood without squeezing leaf n
   }
 }
 
+TEST_CASE("flora: alternate blades occupy distinct twig nodes and compound leaves have rachises") {
+  using namespace flora::detail;
+  Rng rng(1);
+  const Axis axis = grow_axis({}, {0, 0, 1}, .65, 1, k_up, 0, 0, rng);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  Emitter emit{mesh, motion};
+  build_simple_leaves(axis, 4, .12, .06, 60 * k_degree, LeafPlacement::alternate_simple, rng, emit);
+  REQUIRE(mesh.positions.size() == 32);
+  f32 previous = -1;
+  for (u32 leaf = 0; leaf < 8; ++leaf) {
+    const u32 v = leaf * 4;
+    const Vec3 base = (mesh.positions[v] + mesh.positions[v + 1]) * .5f;
+    CHECK(base.z > previous);
+    CHECK(std::abs(base.x) + std::abs(base.y) < 1e-6f);
+    previous = base.z;
+  }
+  for (const LeafPlacement placement :
+       {LeafPlacement::opposite_compound, LeafPlacement::alternate_compound}) {
+    assets::MeshData compound;
+    flora::Motion cm;
+    Emitter ce{compound, cm};
+    const bool ash = placement == LeafPlacement::opposite_compound;
+    const u32 pairs = ash ? 3u : 8u;
+    Rng stems(31), blades(31);
+    build_compound_leaves(axis, pairs, .08, .025, 65 * k_degree, placement, stems, ce, true);
+    const u32 first = compound.positions.size();
+    const u32 stem_indices = compound.indices.size();
+    build_compound_leaves(axis, pairs, .08, .025, 65 * k_degree, placement, blades, ce);
+    CHECK(compound.indices.size() / 3 == compound_triangles(pairs, ash));
+    CHECK((compound.indices.size() - stem_indices) / 6 == (ash ? 7u : 16u));
+    CHECK(compound.positions.size() - first == (ash ? 28u : 64u));
+    // One terminal unit is one whole leaf, with no extra woody branching tier.
+    CHECK(cm.parts.empty());
+    for (const f32 w : cm.vertex_weight)
+      CHECK((w >= 0 && w <= 1));
+  }
+}
+
 TEST_CASE("flora: green wood limits a named scaffold while legacy growth remains unchanged") {
   using namespace flora::detail;
   GrowthRules rules;
@@ -158,7 +197,9 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   }
   const u64 combined = hash_bytes(shapes.data(), shapes.size() * sizeof(u64));
   // G86: 10800499079816480223 until maple gained terminal wood and independent leaf quads.
-  CHECK_MESSAGE(combined == 16620326556857323731ull, "named profile geometry hash: " << combined);
+  // G87: alternate simple blades and compound leaves; maple's previous aggregate was
+  // 16620326556857323731.
+  CHECK_MESSAGE(combined == 7127305501285355394ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {
@@ -191,7 +232,82 @@ TEST_CASE("flora: every named species reference tree fits the default mesh budge
     CHECK(report.triangles <= geometry::flora_species_info(name)->triangle_budget);
     CHECK(report.leaf_triangles > 0);
     CHECK(report.merge_level == 0);  // reference trees retain their botanical leaf dimensions
+    // Coverage floors for these authored reference crowns, not botanical LAI requirements.
+    // Separate blades must not silently halve their foliage while retaining the same outline.
+    const std::string_view species(name);
+    const f32 minimum_lai = species == "ash"      ? 1.0f
+                            : species == "walnut" ? 2.6f
+                            : species == "oak"    ? 3.3f
+                            : species == "elm"    ? 3.4f
+                            : species == "beech"  ? 2.4f
+                                                  : 0.0f;
+    CHECK(report.leaf_area_index >= minimum_lai);
   }
+}
+
+TEST_CASE("flora: ancient scaffold expansion leaves tertiary and fine shoot lengths alone") {
+  flora::Ancient p;
+  p.habit = flora::AncientHabit::spreading;
+  p.height_m = 40;
+  p.trunk_radius_m = 3;
+  p.buttress_height_m = 4;
+  p.limbs = 3;
+  p.limb_low_m = 12;
+  p.limb_high_m = 18;
+  p.limb_run_m = 6;
+  p.limb_reach_m = 8;
+  p.branch_length = .2f;
+  // Short, strong limbs isolate the length controls from the separate mechanical cap.
+  p.wood_density = 300;
+  p.wood_rupture_mpa = 150;
+  Vector<flora::CrownShoot> before, after;
+  std::string error;
+  REQUIRE_MESSAGE(flora::ancient_in_range(p, error), error);
+  REQUIRE(flora::ancient_crown(p, before));
+  p.primary_length_scale = 2;
+  p.secondary_length_scale = 1.5f;
+  REQUIRE(flora::ancient_crown(p, after));
+  REQUIRE(before.size() == after.size());
+  Vector<flora::AncientLimb> limbs;
+  REQUIRE(flora::ancient_limbs(p, limbs));
+  for (const auto& limb : limbs) {
+    REQUIRE(limb.scale == 1.0f);
+    CHECK(limb.peak_stress_mpa <= limb.allowable_mpa);
+  }
+  u32 primaries = 0, secondaries = 0;
+  for (u32 i = 0; i < before.size(); ++i) {
+    CAPTURE(i);
+    const auto& a = before[i];
+    const auto& b = after[i];
+    CHECK(a.parent == b.parent);
+    f32 expected = 1;
+    if ((a.flags & flora::k_crown_shoot_named) != 0 && i > 2 && a.parent != 0) {
+      // Named order: trunk, then each run, its renewal upright, and its curved fork system.
+      const u32 parent = a.parent;
+      if (before[parent].parent == 0 && i != parent + 1) {
+        expected = 2;
+        ++primaries;
+      } else if (before[parent].parent != 0 && before[before[parent].parent].parent == 0 &&
+                 parent != before[parent].parent + 1) {
+        expected = 1.5f;
+        ++secondaries;
+      }
+    }
+    CHECK(b.length == doctest::Approx(a.length * expected).epsilon(1e-5));
+  }
+  CHECK(primaries == p.limbs);
+  CHECK(secondaries >= 2 * p.limbs);
+  p.limb_reach_m = 40;
+  p.limb_radius_m = .5f;
+  p.wood_density = 1300;
+  p.wood_rupture_mpa = 20;
+  REQUIRE(flora::ancient_limbs(p, limbs));
+  for (const auto& limb : limbs) {
+    CHECK(limb.scale < 1);
+    CHECK(limb.peak_stress_mpa <= limb.allowable_mpa * 1.001f);
+  }
+  p.primary_length_scale = std::numeric_limits<f32>::quiet_NaN();
+  CHECK_FALSE(flora::ancient_in_range(p, error));
 }
 
 TEST_CASE("flora: supported wood has a collar and irregular sections without moving its axis") {

@@ -95,7 +95,13 @@ struct WoodProfile {
   u64 seed = 1;
 };
 
-enum class LeafPlacement : u8 { spray, opposite_simple };
+enum class LeafPlacement : u8 {
+  spray,
+  opposite_simple,
+  alternate_simple,
+  opposite_compound,
+  alternate_compound
+};
 
 struct GrowthRules {
   LeafPlacement leaf_placement = LeafPlacement::spray;
@@ -228,7 +234,8 @@ Axis resample_axis(const Axis& axis, u32 rows);
 // part.
 
 inline u32 tube_triangles(u32 rows, u32 sides) { return rows * sides * 2 + sides; }
-void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out);
+void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
+                bool flat_tip = false);
 
 // ---- a spray of cards ---------------------------------------------------------------------------
 //
@@ -245,6 +252,13 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
 inline u32 spray_triangles(u32 cards) { return cards * 4; }
 void build_spray(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 angle, f64 lift,
                  f64 droop, D3 side, Emitter& out);
+
+// Independent blades on a supporting twig, or compound leaves on their own nonwoody rachises.
+void build_simple_leaves(const Axis& axis, u32 pairs, f64 length, f64 width, f64 angle,
+                         LeafPlacement placement, Rng& rng, Emitter& out);
+void build_compound_leaves(const Axis& twig, u32 pairs, f64 length, f64 width, f64 angle,
+                           LeafPlacement placement, Rng& rng, Emitter& out, bool rachises = false);
+u32 compound_triangles(u32 pairs, bool terminal);
 
 // ---- the second batch of species: the birch, the willow, the orchard tree, the ancient tree ----
 //
@@ -370,7 +384,8 @@ struct CrownRoot {
 struct Crown {
   LeafPlacement leaf_placement = LeafPlacement::spray;
   u64 leaf_seed = 1;
-  f64 leaf_width = 0.8;        // independent leaf card width / length
+  f64 leaf_width = 0.8;  // independent leaf card width / length
+  f64 leaf_length = 0.1;
   bool terminal_leaf = false;  // odd-pinnate compound sprays (ash), only at the finest leaf rung
   Vector<CrownNode> nodes;     // the named shoots first, then the recursion depth-first
   Vector<Axis> axes;
@@ -403,10 +418,11 @@ void crown_distribute_leaves(Crown& crown, f64 cards, u32 cap);
 struct CrownPlan {
   f64 edge_m = 0.12;  // a tube's circumference step: sides = 2 pi r / edge, 3 to `max_sides`
   u32 max_sides = 12;
-  f64 row_m = 1.0;     // a part tube's rows: one per this many metres, 1 to 8
-  i32 wood_class = 0;  // folded shoots of this class and up are tubes
-  u32 merge = 0;       // leaf cards merged this many generations up their twigs
-  u32 halvings = 0;    // merged sprays' cards halved this many times
+  f64 row_m = 1.0;                // a part tube's rows: one per this many metres, 1 to 8
+  i32 wood_class = 0;             // folded shoots of this class and up are tubes
+  u32 merge = 0;                  // leaf cards merged this many generations up their twigs
+  u32 halvings = 0;               // merged sprays' cards halved this many times
+  bool flat_folded_tips = false;  // a closed polygon cap saves two triangles per fine tube
 };
 
 u32 crown_tube_sides(const CrownPlan& plan, f64 radius);

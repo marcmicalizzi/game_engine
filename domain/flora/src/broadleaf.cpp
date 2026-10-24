@@ -61,6 +61,7 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   crown.leaf_placement = rules.leaf_placement;
   crown.leaf_seed = p.seed;
   crown.leaf_width = static_cast<f64>(p.leaf_width);
+  crown.leaf_length = static_cast<f64>(p.leaf_length_m);
   crown.terminal_leaf = rules.terminal_leaf;
   const f64 height = static_cast<f64>(p.height_m);
   const f64 r_trunk = trunk_radius_of(p);
@@ -163,7 +164,8 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
   plan.crown.edge_m = 0.06;
   plan.crown.max_sides = 8;
   plan.crown.row_m = 0.5;
-  const bool simple = crown.leaf_placement == LeafPlacement::opposite_simple;
+  const bool simple = crown.leaf_placement != LeafPlacement::spray;
+  plan.crown.flat_folded_tips = simple && crown.leaf_placement != LeafPlacement::opposite_simple;
   plan.crown.wood_class = simple ? 0 : 1;
   steps = 0;
   const auto fits = [&] { return count_triangles(p, crown, plan) <= p.triangle_budget; };
@@ -203,7 +205,7 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
   while (plan.crown.merge < crown.orders) {
     if (step([&] {
           ++plan.crown.merge;
-          if (simple) plan.crown.wood_class = crown.part_class;
+          if (simple) plan.crown.wood_class = static_cast<i32>(plan.crown.merge);
         }))
       return true;
   }
@@ -229,12 +231,14 @@ void place_leaves(const Broadleaf& p, Crown& crown) {
   crown.card_step = width / det::sin(angle);
   const f64 cards = static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
   crown_distribute_leaves(crown, cards, p.leaves);
-  if (crown.leaf_placement == LeafPlacement::opposite_simple) {
+  if (crown.leaf_placement == LeafPlacement::opposite_simple ||
+      crown.leaf_placement == LeafPlacement::alternate_simple) {
     // Preserve the blade's aspect and leave room between nodes instead of squeezing the
     // requested LAI into a short twig. The realised area is reported, not promised by the target.
     for (const u32 t : crown.twigs) {
       CrownNode& node = crown.nodes[t];
-      const u32 space = std::max(1u, static_cast<u32>(0.8 * node.length / (1.2 * width)));
+      const f64 spacing = crown.leaf_placement == LeafPlacement::alternate_simple ? .8 : 1.2;
+      const u32 space = std::max(1u, static_cast<u32>(0.8 * node.length / (spacing * width)));
       node.cards = std::min(node.cards, space);
     }
   }
@@ -357,6 +361,38 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   bark.material = 0;
   out.primitives.push_back(bark);
 
+  if (plan.crown.merge == 0 && (crown.leaf_placement == LeafPlacement::opposite_compound ||
+                                crown.leaf_placement == LeafPlacement::alternate_compound)) {
+    out.materials.push_back(material("rachis", Vec4{.18f, .27f, .07f, 1}, .8f, false));
+    assets::Primitive rachises;
+    rachises.first_index = out.indices.size();
+    rachises.material = 2;
+    const WoodProfile saved = emit.wood;
+    emit.wood = {};
+    for (const u32 t : crown.twigs) {
+      const CrownNode& node = crown.nodes[t];
+      Rng rng = stream_of(crown.leaf_seed, 700000u + t);
+      const bool part = (node.flags & k_crown_part) != 0u;
+      Rng straight(0);
+      const Axis local =
+          part ? Axis{}
+               : grow_axis(node.base, node.tip - node.base, node.length, 1, k_up, 0, 0, straight);
+      const Axis& axis = part ? crown.axes[node.axis] : local;
+      emit.part = crown.nodes[node.carrier].part;
+      const u32 first = out.positions.size();
+      build_compound_leaves(axis, node.cards, static_cast<f64>(p.leaf_length_m),
+                            static_cast<f64>(p.leaf_length_m) * crown.leaf_width,
+                            static_cast<f64>(p.leaf_angle_deg) * k_degree, crown.leaf_placement,
+                            rng, emit, true);
+      if (!part)
+        for (u32 v = first; v < out.positions.size(); ++v)
+          parts.vertex_weight[v] = static_cast<f32>(node.weight);
+    }
+    emit.wood = saved;
+    rachises.index_count = out.indices.size() - rachises.first_index;
+    out.primitives.push_back(rachises);
+  }
+
   // The leaves: one spray a leafy twig, its plane laid level so the cards face the sky.
   const u32 leaf_vertex = out.positions.size();
   const u32 leaf_first = out.indices.size();
@@ -376,7 +412,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
     *report = TreeReport{};
     report->triangles = out.indices.size() / 3;
     report->wood_triangles = bark.index_count / 3;
-    report->leaf_triangles = leaves.index_count / 3;
+    report->leaf_triangles = report->triangles - report->wood_triangles;
     report->vertices = out.positions.size();
     report->parts = parts.parts.size();
     report->shoots = crown.nodes.size();
@@ -393,7 +429,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
     report->steps = steps;
     report->twigs = crown.twigs.size();
     report->orders = crown.orders;
-    report->leaf_cards = report->leaf_triangles / 2;
+    report->leaf_cards = leaves.index_count / 6;
     report->merge_level = plan.crown.merge;
     report->wood_class = static_cast<u32>(plan.crown.wood_class);
     report->part_class = static_cast<u32>(crown.part_class);
