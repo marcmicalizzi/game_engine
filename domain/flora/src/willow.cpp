@@ -294,9 +294,9 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
   for (u32 i = 0; i < shoots.size(); ++i) {
     const Shoot& s = shoots[i];
     if (s.order != 3) continue;
-    part_of[i] = emit_spray_part(emit, s.axis, part_of[s.parent], plan.cards,
-                                 static_cast<f64>(p.leaf_length_m),
-                                 static_cast<f64>(p.leaf_angle_deg) * k_degree, 0.0, 0.1);
+    part_of[i] = emit_spray_part(
+        emit, s.axis, part_of[s.parent], plan.cards, static_cast<f64>(p.leaf_length_m),
+        static_cast<f64>(p.leaf_angle_deg) * k_degree, 30.0 * k_degree, 0.1);
     ++sprays;
   }
   assets::Primitive leaves;

@@ -94,14 +94,17 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   const bool root = out.part < out.motion.parts.size() &&
                     out.motion.parts[out.part].parent == geometry::k_motion_no_parent;
   const WoodProfile& w = out.wood;
-  const bool shaped = !straight && (w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
+  const bool shaped =
+      !straight && (out.seated || w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
   Rng shape_rng = stream_of(w.seed, 9000000ull + out.part);
   const f64 phase = shape_rng.unit() * 2.0 * k_pi;
   const f64 knot_at = 0.2 + 0.6 * shape_rng.unit();
   const f64 collar_span = std::min(0.3 * axis.length, 3.0 * r0);
   const auto radius_at = [&](f64 arc, f64 phi, D3 radial, D3 tangent) {
     const f64 u = clamp01(arc / axis.length);
-    const f64 core = lerp(r0, r1, u);
+    const f64 blend = out.seated ? smoothstep01(arc / (2.0 * r0)) : 1.0;
+    const f64 nominal = lerp(r0, r1, u);
+    const f64 core = out.seated ? lerp(out.seat_radius, nominal, blend) : nominal;
     const f64 basal = 1.0 - smoothstep01(arc / (collar_span + 1e-9));
     const f64 flute = det::cos(3.0 * phi + phase + 0.35 * u) * 0.65 +
                       det::cos(5.0 * phi - phase + 0.6 * u) * 0.35;
@@ -113,6 +116,11 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
     const f64 bump = clamp01(0.5 + 0.5 * det::cos(phi - phase));
     const f64 knot = w.knots / (1.0 + distance * distance) * bump * bump * bump * bump;
     const f64 collar = root ? w.flare : w.collar * (1.0 + 0.35 * gravity);
+    // A continuing axis has no exposed collar rim. Relief grows out of the buried seat;
+    // ordinary lateral attachments retain their existing supported collar.
+    if (out.seated)
+      return core * (1.0 + blend * (w.fluting * flute * (1.0 - 0.65 * u) + oval + knot));
+    // Preserve the existing operation order, including derivative normals, for other species.
     return core * (1.0 + basal * collar + w.fluting * flute * (1.0 - 0.65 * u) + oval + knot);
   };
   for (u32 r = 0; r < rows; ++r) {
@@ -139,8 +147,20 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
                           (2.0 * epsilon);
         normal = radial - (n * -det::sin(angle) + b * det::cos(angle)) * (angular / actual_radius) -
                  t * axial;
+        if (out.seated) {
+          const f64 q = clamp01(axis.arc[r] / (2.0 * r0));
+          const D3 derivative =
+              t - (out.seat_origin - axis.point[0]) * (6.0 * q * (1.0 - q) / (2.0 * r0));
+          const f64 along = dot(derivative, t);
+          normal = radial -
+                   (n * -det::sin(angle) + b * det::cos(angle)) * (angular / actual_radius) -
+                   t * ((axial + dot(radial, derivative)) / along);
+        }
       }
-      out.vertex(axis.point[r] + radial * actual_radius, normal,
+      const f64 join = out.seated ? 1.0 - smoothstep01(axis.arc[r] / (2.0 * r0)) : 0.0;
+      const D3 centre =
+          out.seated ? axis.point[r] + (out.seat_origin - axis.point[0]) * join : axis.point[r];
+      out.vertex(centre + radial * actual_radius, normal,
                  u0 + round * static_cast<f64>(i) / static_cast<f64>(sides), v0 + axis.arc[r]);
     }
   }

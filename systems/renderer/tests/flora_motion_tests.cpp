@@ -3,6 +3,7 @@
 // part tables whose answers can be worked out — then, where the flora capability is linked, a
 // generated palm drawn through the pool's flora stage: in no wind it is the rigid palm to the bit,
 // in a wind it sways, and the same frames with the same walker draw the same bytes.
+#include <domain/geometry/flora_species.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/flora_motion.h>
 #include <systems/renderer/capture.h>
@@ -88,6 +89,18 @@ f32 capsule_distance(const FloraPush& push, Vec3 p) {
 }
 
 }  // namespace
+
+TEST_CASE("flora motion: every catalogued species has explicit compliance; unknown is rejected") {
+  const auto parts = palm_parts();
+  for (const auto& info : geometry::k_flora_species) {
+    CAPTURE(info.name);
+    FloraMesh mesh;
+    REQUIRE(flora_mesh({parts.data(), parts.size()}, {}, info.name, mesh));
+    CHECK(flora_stiffness(info.name).leaf == info.compliance[3]);
+  }
+  FloraMesh mesh;
+  CHECK_FALSE(flora_mesh({parts.data(), parts.size()}, {}, "missing_profile", mesh));
+}
 
 TEST_CASE("flora motion: no wind and no walker leave every part at rest") {
   const Vector<ClusterFileMotionPart> parts = palm_parts();

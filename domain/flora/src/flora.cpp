@@ -10,6 +10,7 @@
 #include <domain/flora/trees.h>
 #include <domain/flora/understory.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
@@ -70,13 +71,9 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
   } else if (out.species == k_species_herb) {
     in_range = herb_in_range(out.herb, error);
   } else {
-    error = "species \"" + out.species + "\" is not one the solver has (it has \"" +
-            k_species_date_palm + "\", \"" + k_species_broadleaf + "\", \"" + k_species_conifer +
-            "\", \"" + k_species_birch + "\", \"" + k_species_willow + "\", \"" +
-            k_species_orchard + "\", \"" + k_species_ancient + "\", \"" + k_species_shrub +
-            "\", \"" + k_species_fern + "\", \"" + k_species_tuft + "\" and \"" + k_species_herb +
-            "\", or the named tree profiles maple, oak, elm, walnut, beech, ash, pine, spruce, "
-            "cedar and juniper)";
+    error = "unknown flora species \"" + out.species + "\"; available:";
+    for (const auto& info : geometry::k_flora_species)
+      error += " " + std::string(info.name);
     return false;
   }
   return in_range && materials_in_range(out, error);

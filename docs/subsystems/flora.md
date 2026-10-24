@@ -10,7 +10,7 @@ and juniper use the same evergreen scaffold with staggered branch stations and s
 `src/species.cpp` owns the profile table, not ten independent mesh generators.
 
 ```json
-{"species":"maple","tree":{"seed":17,"height_m":18,"triangle_budget":1000000}}
+{"species":"maple","tree":{"seed":17,"height_m":18}}
 ```
 
 `Tree.height_m` and `trunk_radius_m` default to 0 (the profile's reference height and its
@@ -18,8 +18,11 @@ height/diameter allometry); `crown_base` defaults to -1 (the profile's), and `cr
 Height is 3–40 m when explicit, radius 0.05–1.5 m, crown base 0.1–0.8 and crown scale 0.5–1.5.
 The resolved family parameters must also pass their range checks: a combination whose derived
 radius or crown exceeds that family's limits is refused with the field named, not silently
-clamped. Triangle budgets are 8,000–2,000,000, default 1,000,000 source triangles so the reference
-deciduous trees keep their individual leaf dimensions. The runtime cluster cut and baked chain
+clamped. Explicit triangle budgets are 8,000–2,000,000. Omission or zero selects the species'
+source budget from the shared geometry catalogue (G86): maple 200,000; oak 400,000; elm and
+walnut 800,000; beech 900,000; ash 240,000; pine and spruce 60,000; cedar 80,000; juniper 30,000.
+These provisional, owner-tunable budgets retain individual leaves on the reference trees;
+a million or more is an explicit allowance for a particularly large tree. The runtime cluster cut and baked chain
 choose the rendered detail. An explicitly small source budget can still reach the existing coarse,
 merged-card fallback; it is a quality trade, not a new botanical leaf size. `card_bake_px` and `impostor_px` have the broadleaf
 fields' meanings; evergreen profiles still have no baked chain (G83). Canonical JSON and cache
@@ -33,6 +36,27 @@ means western redcedar (*Thuja plicata*), with fluted bases and flat sprays; jun
 redcedar (*Juniperus virginiana*), with denser irregular scale foliage. These are representative
 habits, not every species within each genus. Their source observations and the chosen, unmeasured
 visual parameters are separated in [shared growth rules](../experiments/tree-growth-rules.md).
+
+The [G86 profile audit](../experiments/tree-profile-audit.md) gives every profile's current values,
+source comparisons and remaining unmeasured controls. Species names, default profile budgets and
+motion compliance live in `geometry/flora_species.h`; `species.cpp` refers to IDs. The renderer
+rejects unknown motion species, and compile-time checks reject missing profile or motion coverage.
+Legacy families retain their schema budgets. The catalogue stays available with flora disabled.
+
+Named profiles use their own green wood strength/density for a first-order scaffold self-weight
+limit, independent of triangle budget. It caps broadleaf scaffold and evergreen primary branch
+length before fine shoots grow; it does not replace the ancient's recursive load model or account
+for snow, wind, dwelling loads or total recursive crown mass. LAI belongs to each broadleaf profile
+(currently the retained 4.5 target); evergreen coverage uses cohorts and sprays. Pine and spruce
+use 0.45 m whole-shoot cards; these are not individual needles.
+
+G86 raises willow's default sprays from 210 to 784 (7 limbs, 7 branches, 16 curtains), with a
+30-degree spray lift. The existing ladder keeps its 60,000 source budget; explicit branch and
+curtain counts stay explicit. Leaf length is unchanged; a narrow willow atlas remains a material
+refinement. Ancient named segment joins now start inside their parent's end and smoothly recover
+their centre and radius. This removes exposed flared rims without changing structural axes,
+platform anchors, triangle counts or the wide canopy. It is an overlapping join, not a watertight
+union. Solver cache version 7 invalidates previous builds.
 
 All branching tree families now use the kit's supported wood surface: an asymmetric branch
 collar fading over the base, root flare, low-frequency fluting, gravity-oriented oval branch

@@ -1,10 +1,11 @@
 # Megaflora habits: emergent and spreading crowns, limbs a wood could carry (G79, 2026-10-22)
 
-**2026-10-23 follow-up (G85):** the owner's newer review finds the village/spreading crowns too
-sparse as well as the emergent default. [Shared growth rules](tree-growth-rules.md) records the
-renewal growth and shorter default runs now under test. The measurements below describe G79,
-not the revised solver. Explicit long platform runs remain explicit requests; the proposed
-dwelling fixture revises them and requires platform positions to be checked again.
+**Current follow-up (G85–G86):** [Shared growth rules](tree-growth-rules.md) records the landed
+renewal growth and shorter automatic runs. The proportions table and village section below include
+those changes; the later G79 capture/timing tables remain historical measurements.
+[G86's audit](tree-profile-audit.md) records the seated segment joints and new paired captures.
+Explicit platform runs remain explicit requests; adopting a different dwelling recipe requires
+checking its platform positions against that recipe's structural table.
 
 The research `engine.flora.Ancient`'s habits and its limbs' mechanical cap are grounded in, the
 constants chosen from it, where the budget and the look traded against it, and what the recipes
@@ -40,12 +41,38 @@ to draw from and a third, rarer, for fantasy:
 | spreading | the trunk | decurrent: ends just above its highest limb | the oak's trunk dissolving into its scaffold limbs |
 | spreading | forks | 4 levels, the daughters splaying near level | the oak's and the monkeypod's repeatedly forking limbs (sympodial, decurrent branching) |
 | mixed | first limb, crown width | 0.55, 0.9 | an emergent's bole with a spreading crown; the tropical emergents (kapok, tualang) come closest; their proportions are not pinned to a source — this is the fantasy habit |
+| all, G85 | automatic straight-run fraction | emergent 0.12; spreading/mixed 0.15 | authored reduction of G79's long straight spans, followed by the same mechanical cap; explicit run lengths override it |
+| all, G85 | renewal | one upright at each run; radius 0.3 of run tip; length branch_length × (run + 0.35 × past) | authored reiteration approximation; its load enters the mechanical sum |
+| all, G85 | inner segment crowns | radius 0.55 of segment, lateral length multiplier 1.2 | authored interior fullness; its load also enters the cap |
 
 The angles (the runs' rise, the turn up past them, the fork angle and its plane's tilt, the side to
 side swing) are not measured from a source; they were set against the reference photographs, capture
 by capture (below), and are the look's, not the literature's.
 
 ## Limbs a wood could carry
+
+### Village habits: an authored fantasy requirement
+
+The wide dwelling recipe uses the spreading growth structure with nominal height 80 m, 6 m core
+radius, twelve limbs from 22 to 28 m, requested crown spread 1.8, upturn 0.25, branch length 0.65,
+LAI 5.5 and .30 m leaf cards under an explicit 1.5-million source budget. The taller dwelling uses
+the mixed structure, fourteen limbs from 22 to 56 m, a 4.5 m core and LAI 4.5. These proportions
+serve the owner's broad, full village canopy and forest-landmark requirements. They are **authored
+fantasy trees**, not measurements of sequoias, oaks or tropical emergents. Natural habits retain
+their own limb bands and counts.
+
+Both leave automatic run lengths to the habit and strength cap. Renewal growth fills the
+interior above supports. Where a run length is explicit, the upright stays at the trunk-side
+crotch instead of blocking the reserved walking span. Its radius fraction contributes 0.09 of
+the run section to the load approximation; an inner crown contributes 0.55² × 1.2 = 0.363.
+
+G86 changes only the surface seating at the ancient's named segment joints: a small ring starts
+inside the parent and smoothly grows to the child's nominal wood, without an exposed flared rim.
+No structural axis, radius, run length, part ID or crown topology changes. The natural emergent,
+spreading and mixed trees, original game anchor and wide village each have paired captures.
+This is not a watertight union and neither solver certifies real platform loads.
+
+### Mechanical model
 
 **The model.** A limb system carries about its base's cross-section of wood all the way out to its
 tips: the pipe model ([Shinozaki et al. 1964](tree-allometry.md#the-model-and-its-sources)),

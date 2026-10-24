@@ -476,8 +476,11 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // row with no byte of its mesh moving.
 // G85 (2026-10-23): supported irregular wood, the ancient crown's renewal and solver version 6.
 // MSVC and Clang agree on both full-container folds, including the baked chain.
-constexpr u64 k_broadleaf_container_golden = 0xd7eee5e66c8230e4ull;
-constexpr u64 k_ancient_container_golden = 0xeb792d4ab6ed71a1ull;
+// G86: 0xd7eee5e66c8230e4 (broadleaf) and 0xeb792d4ab6ed71a1 (ancient) until
+// solver version 7. Broadleaf geometry is unchanged; its generator identity moves. Ancient
+// additionally seats continuation rings inside the parent tips, changing surfaces and bakes.
+constexpr u64 k_broadleaf_container_golden = 0x7fd0e2e92e3ce1deull;
+constexpr u64 k_ancient_container_golden = 0x8138cfd3401a1070ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

@@ -49,7 +49,7 @@ inline bool grove_tree(u32 limbs, u32 twigs, f32 height, FloraMesh& out) {
     }
   }
   return flora_mesh(std::span<const geometry::ClusterFileMotionPart>(parts.data(), parts.size()),
-                    {}, "grove", out);
+                    {}, "broadleaf", out);  // synthetic geometry, catalogued motion traits
 }
 
 struct Grove {

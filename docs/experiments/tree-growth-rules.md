@@ -1,5 +1,10 @@
 # Shared tree growth rules (G85, 2026-10-23)
 
+**G86 follow-up:** [Profile audit and foliage refinement](tree-profile-audit.md) supersedes this
+page's blanket source budget and small pine/spruce shoot cards. The measurements below remain
+the G85 record. The audit records current budgets, green wood traits, retained visual parameters,
+willow coverage and seated ancient joints.
+
 The owner's forest POC asks for species expressed by shared growth structures, supported branch
 junctions, irregular trunks, and fuller ancient landmark and dwelling trees. The forest's
 `reports/quality-v4/engine-week-plan.md` also requires stable branch/perch anchors across detail

@@ -1503,9 +1503,15 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
   };
   const auto emit_segment = [&](u32 node) {
     CrownNode& seg = crown.nodes[node];
+    const CrownNode& parent = crown.nodes[seg.parent];
+    const Axis& parent_axis = crown.axes[parent.axis];
+    emit.seated = true;
+    emit.seat_origin = parent_axis.point.back() - parent_axis.tangent.back() * (0.75 * parent.r1);
+    emit.seat_radius = 0.45 * std::min(seg.r0, parent.r1);
     seg.part =
         emit_tube_part(emit, crown.axes[seg.axis], seg.r0, seg.r1, segment_rows(plan, seg.length),
                        segment_sides(plan, seg.r0), crown.nodes[seg.parent].part, bearing(seg.r0));
+    emit.seated = false;
   };
   for (u32 i = 0; i < named.runs.size(); ++i) {
     CrownNode& run = crown.nodes[named.runs[i]];

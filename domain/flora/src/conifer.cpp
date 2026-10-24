@@ -178,6 +178,16 @@ Structure grow(const Conifer& p, const GrowthRules& rules) {
     if (br.r0 > 0.5 * r_here) br.r0 = 0.5 * r_here;
     if (br.r0 < 0.006) br.r0 = 0.006;
     br.r1 = 0.004;
+    const f64 supported = supported_length(br.axis.length, br.r0, rules);
+    if (supported < br.axis.length) {
+      const f64 scale = supported / br.axis.length;
+      const D3 origin = br.axis.point[0];
+      for (u32 i = 0; i < br.axis.point.size(); ++i) {
+        br.axis.point[i] = origin + (br.axis.point[i] - origin) * scale;
+        br.axis.arc[i] *= scale;
+      }
+      br.axis.length = supported;
+    }
     if (gone || t < dead_share) {
       // A broken stub keeps one row of its twelve; a dead branch of the self-pruned zone 35 to
       // 90 % of its length, broken where it broke.

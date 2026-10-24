@@ -278,7 +278,7 @@ struct Birch @version(2) {
 /// its top, branches along their outer half, and from the branches long hanging curtains of twigs —
 /// each a chain of leaf cards drooping under gravity, a part of its own. Defaults make an 11 m
 /// willow.
-struct Willow @version(1) {
+struct Willow @version(2) {
   /// Everything left to chance: every limb's turn, every branch's spread, every curtain's length.
   seed: u64 = 1
   /// The crown's top above the ground: 4 to 25 m.
@@ -294,11 +294,11 @@ struct Willow @version(1) {
   /// A limb's length as a share of the height: 0.3 to 1.
   limb_length: f32 = 0.62
   /// Branches along the outer half of every limb: 1 to 10.
-  branches: u32 = 5
+  branches: u32 = 7
   /// A branch's length over its limb's: 0.15 to 0.8.
   branch_length: f32 = 0.4
   /// Hanging curtains of twigs along every branch: 1 to 16.
-  curtains: u32 = 6
+  curtains: u32 = 16
   /// A curtain's length, before the ground shortens it: 0.5 to 15 m.
   curtain_length_m: f32 = 5.0 @unit(m)
   /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
@@ -725,7 +725,7 @@ struct Herb @version(1) {
 
 /// Overrides for a named species' rules over the shared branching or evergreen growth structure.
 /// The reference size and crown habit come from the profile; leaves retain their species size.
-struct Tree @version(1) {
+struct Tree @version(2) {
   /// Seed for all shared growth streams. Any u64.
   seed: u64 = 1
   /// 0 selects the species' reference height; otherwise 3 to 40 m.
@@ -736,8 +736,8 @@ struct Tree @version(1) {
   crown_base: f32 = -1.0
   /// Crown width multiplier, 0.5 to 1.5. Does not scale leaves or terminal shoots.
   crown_scale: f32 = 1.0
-  /// Mesh budget, 8,000 to 2,000,000 triangles; changes detail, never the growth skeleton.
-  triangle_budget: u32 = 1000000
+  /// 0 uses the species catalogue budget; otherwise 8,000 to 2,000,000 triangles.
+  triangle_budget: u32 = 0
   /// Broadleaf branch-card tile size, 0 or 16 to 256. Conifer profiles do not yet bake a chain.
   card_bake_px: u32 = 64
   /// Broadleaf whole-tree tile size, 0 or 32 to 1024.
@@ -750,7 +750,7 @@ struct Tree @version(1) {
 struct FloraFile @version(5) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft" or "herb" read their own parameter block. Named tree profiles
-  /// (maple, oak, elm, walnut, beech, ash, pine, spruce, cedar, juniper) read `tree`.
+  /// in domain/geometry/flora_species.h read `tree`.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
@@ -765,7 +765,7 @@ struct FloraFile @version(5) {
   fern: Fern @since(4)
   tuft: Tuft @since(4)
   herb: Herb @since(4)
-  /// Named growth profiles: maple, oak, elm, walnut, beech, ash, pine, spruce, cedar, juniper.
+  /// Named growth profiles from the shared species catalogue.
   /// Existing broadleaf/conifer/birch/willow/orchard/ancient recipes retain their own blocks.
   tree: Tree @since(5)
 }

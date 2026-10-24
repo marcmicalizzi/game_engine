@@ -2,7 +2,6 @@
   "species": "spruce",
   "tree": {
     "seed": 17,
-    "triangle_budget": 60000,
     "card_bake_px": 0,
     "impostor_px": 0
   }

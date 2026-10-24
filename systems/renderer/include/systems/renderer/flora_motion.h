@@ -55,7 +55,8 @@ struct FloraStiffness {
   f32 twig = 0.09f;
   f32 leaf = 0.14f;
 };
-// The species' numbers (flora.md, "Motion"); a species this build does not name takes the defaults.
+// Shared geometry species catalogue (flora.md, "Motion"). An unknown species returns zero
+// compliance here and is rejected by flora_mesh; it never silently receives another habit.
 FloraStiffness flora_stiffness(std::string_view species) noexcept;
 
 inline constexpr f32 k_flora_load_bearing = 0.25f;  // a load-bearing part's share of its class's

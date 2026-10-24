@@ -129,7 +129,7 @@ void check_tree(const std::string& species, const assets::MeshData& mesh,
 
 template <typename Params, typename Solve>
 u64 check_species(const std::string& species, const Params& params, Solve solve, u32 expected_parts,
-                  std::initializer_list<u32> budgets, u64 golden) {
+                  std::initializer_list<u32> budgets, u64 golden, u32 expected_steps = 0) {
   CAPTURE(species);
   assets::MeshData mesh;
   flora::Motion motion;
@@ -141,7 +141,7 @@ u64 check_species(const std::string& species, const Params& params, Solve solve,
                   << "), " << report.parts << " parts (" << report.load_bearing
                   << " load-bearing), " << report.sprays << " sprays of " << report.cards_per_side
                   << " cards a side, " << report.steps << " budget steps");
-  CHECK(report.steps == 0);
+  CHECK(report.steps == expected_steps);
   CHECK(report.parts == expected_parts);
   check_tree(species, mesh, motion, report, params.triangle_budget);
   // Every rung holds and names the same parts with the same structure.
@@ -403,7 +403,8 @@ TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging 
   const flora::Willow p;
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.curtains;
   check_species(flora::k_species_willow, p, flora::solve_willow, parts, {20000u, 12000u},
-                0x6ed17ceedeee2d85ull);
+                // G85: 0x6ed17ceedeee2d85. G86: 784 curtains and 30-degree spray lift.
+                0x02ea9f23128342d3ull, 4);  // denser curtains use the existing budget ladder
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -485,7 +486,8 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
   // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72), 0xf43a0a8e4b677b3f
   // until the habits and the limbs a wood could carry (G79).
   check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 20000u},
-                0x61446da58690bc66ull);
+                // G85: 0x61446da58690bc66. G86 seats segment rims inside parent wood.
+                0xfbaf29c9d6486049ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;

@@ -58,7 +58,7 @@ namespace engine::flora {
 //    tree's limbs fork, meander and are sized by their wood, so an entry built at 4 is the old
 //    straight-limbed tree.
 // 6: shared species rules, supported irregular wood and renewed ancient crowns (G85).
-inline constexpr u32 k_flora_version = 6;
+inline constexpr u32 k_flora_version = 7;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

@@ -104,8 +104,21 @@ struct GrowthRules {
   f64 trunk_fraction = 1.0;  // decurrent scaffolds take over below the requested crown height
   f64 spray_lift = 1.0;
   f64 droop = 0.0;
+  // Zero preserves legacy solvers. Named profiles use green wood values, not dry specific gravity.
+  f64 wood_rupture_mpa = 0.0;
+  f64 wood_density = 0.0;
   WoodProfile wood{0.35, 0.3, 0.06, 0.04, 0.06, 1};
 };
+
+// First-order scaffold bound for a level pipe-model cantilever under its green self-weight:
+// sigma = 2 rho g L^2 / r. Same 0.6 duration / 2 safety allowance as the ancient.
+// This is not the ancient's recursive crown-load model (nor a wind/snow/platform load check).
+inline f64 supported_length(f64 requested, f64 radius, const GrowthRules& rules) {
+  if (rules.wood_rupture_mpa <= 0.0 || rules.wood_density <= 0.0) return requested;
+  const f64 limit =
+      std::sqrt(rules.wood_rupture_mpa * 1.0e6 * 0.3 * radius / (2.0 * rules.wood_density * 9.81));
+  return requested < limit ? requested : limit;
+}
 
 bool solve_broadleaf_rules(const Broadleaf& params, const GrowthRules& rules, assets::MeshData& out,
                            TreeReport* report, std::string* error, Motion* motion,
@@ -119,6 +132,11 @@ struct Emitter {
   u32 part = k_trunk_part;
   f64 weight = 0.0;
   WoodProfile wood{};
+  // Optional meshing-only seat for an end-on scaffold joint. Its first ring is buried in
+  // the parent's terminal wood; the structural axis and motion pivot remain unchanged.
+  bool seated = false;
+  D3 seat_origin{};
+  f64 seat_radius = 0.0;
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));

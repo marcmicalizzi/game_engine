@@ -315,7 +315,9 @@ TEST_CASE("engine-view: a walker walks along a megaflora's major limb, offscreen
   // never beside it.
   const f32 held = std::min(15.0f, level.length - start - 1.0f);
   REQUIRE(held >= 8.0f);
-  const u32 fifteen = static_cast<u32>(std::ceil(held / params.speed)) + 1;
+  // Markers begin after one second, not at t=0. Adding one checked a point beyond the
+  // shortened run; the old continuation's flared collar happened to catch that walker.
+  const u32 fifteen = static_cast<u32>(std::ceil(held / params.speed));
   REQUIRE(walked.markers.size() > fifteen);
   const Vec3 flat = Vec3{level.direction.x, 0.0f, level.direction.z} *
                     (1.0f / std::sqrt(level.direction.x * level.direction.x +
@@ -325,6 +327,7 @@ TEST_CASE("engine-view: a walker walks along a megaflora's major limb, offscreen
     const Vec3 d = walked.markers[m] - level.top(start);
     const f32 along = d.x * flat.x + d.z * flat.z;
     const f32 s = start + along / (flat.x * level.direction.x + flat.z * level.direction.z);
+    REQUIRE(s <= level.length);  // the height contract is for the straight walkable run
     const f32 above = walked.markers[m].y - params.eye_height - level.top(s).y;
     CHECK(above > -0.15f);
     CHECK(above < 0.3f);

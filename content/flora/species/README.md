@@ -3,9 +3,10 @@
 The ten named species use the `tree` block and a shared family solver. Their reference habits and
 parameter ranges are described in [flora](../../../docs/subsystems/flora.md#shared-growth-rules-and-named-species-g85)
 and grounded in [growth rules](../../../docs/experiments/tree-growth-rules.md). These fixtures use
-seed 17 and no baked impostors so captures compare the actual solver geometry. Deciduous and cedar recipes
-allow 1,000,000 source triangles to retain individual leaves and trunk relief; the other evergreen recipes allow 60,000 and
-their cards represent foliated shoots or scale fans. These are source budgets, not per-frame
+seed 17 and no baked impostors so captures compare the actual solver geometry. They omit the
+budget to use each species' default, listed in flora.md and the
+[G86 audit](../../../docs/experiments/tree-profile-audit.md). Evergreen cards represent foliated
+shoots or scale fans, not individual needles. These are source budgets, not per-frame
 triangle targets. Production deciduous recipes can omit the two zero bake fields to use the
 broadleaf chain. Inspect unbaked geometry with `--lod 0.01`: the view's `--finest` switch applies
 only to the reference tracer, and a normal simplified mesh cut can lose fine leaves.

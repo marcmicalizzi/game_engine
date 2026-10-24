@@ -3,6 +3,7 @@
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/structure.h>
+#include <domain/geometry/flora_species.h>
 
 #include <doctest/doctest.h>
 
@@ -19,6 +20,19 @@ u64 shape_hash(const assets::MeshData& mesh) {
                       hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32)));
 }
 }  // namespace
+
+TEST_CASE("flora: green wood limits a named scaffold while legacy growth remains unchanged") {
+  using namespace flora::detail;
+  GrowthRules rules;
+  CHECK(supported_length(100, .1, rules) == 100);
+  rules.wood_rupture_mpa = 34;
+  rules.wood_density = 561;
+  const f64 length = supported_length(100, .1, rules);
+  CHECK(2 * 561 * 9.81 * length * length / .1 == doctest::Approx(34e6 * .3));
+  CHECK(supported_length(1, .1, rules) == 1);
+  rules.wood_density *= 2;
+  CHECK(supported_length(100, .1, rules) == doctest::Approx(length / std::sqrt(2.0)));
+}
 
 TEST_CASE("flora: named species share growth and preserve their skeleton across budgets") {
   const char* names[] = {"maple", "oak",  "elm",    "walnut", "beech",
@@ -37,7 +51,7 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
     flora::Motion motion;
     flora::TreeReport report;
     REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, &report, error), error);
-    CHECK(report.triangles <= file.tree.triangle_budget);
+    CHECK(report.triangles <= geometry::flora_species_info(name)->triangle_budget);
     CHECK(report.triangles == mesh.indices.size() / 3u);
     CHECK(report.wood_triangles > 0);
     CHECK(report.leaf_triangles > 0);
@@ -81,7 +95,8 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
     CHECK(shape_hash(again) != low_hash);
   }
   const u64 combined = hash_bytes(shapes.data(), shapes.size() * sizeof(u64));
-  CHECK_MESSAGE(combined == 7516634195967486933ull, "named profile geometry hash: " << combined);
+  // G85: 7516634195967486933. G86 restores whole-shoot pine/spruce coverage.
+  CHECK_MESSAGE(combined == 10800499079816480223ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {
@@ -111,7 +126,7 @@ TEST_CASE("flora: every named species reference tree fits the default mesh budge
     flora::TreeReport report;
     std::string error;
     REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, &report, error), error);
-    CHECK(report.triangles <= file.tree.triangle_budget);
+    CHECK(report.triangles <= geometry::flora_species_info(name)->triangle_budget);
     CHECK(report.leaf_triangles > 0);
     CHECK(report.merge_level == 0);  // reference trees retain their botanical leaf dimensions
   }
@@ -183,5 +198,36 @@ TEST_CASE("flora: renewal stays beside the trunk on an explicitly reserved ancie
       ++renewals;
     }
     CHECK(renewals == 1u);
+  }
+}
+
+TEST_CASE("flora: a seated continuation buries its open rim without moving its structural axis") {
+  using namespace flora::detail;
+  for (const f64 angle : {0.0, 30.0, 65.0}) {
+    Rng rng(31);
+    const D3 direction{det::sin(angle * k_degree), det::cos(angle * k_degree), 0};
+    const Axis axis = grow_axis({0, 6, 0}, direction, 4, 24, direction, 0, 0, rng);
+    assets::MeshData mesh;
+    flora::Motion motion;
+    Emitter emit{mesh, motion};
+    begin_structural_part(emit, axis.point[0], direction, 4, 0, .8, .3, 0);
+    emit.seated = true;
+    emit.seat_origin = {0, 5.25, 0};
+    emit.seat_radius = .36;
+    build_tube(axis, .8, .3, 24, {}, emit);
+    for (u32 i = 0; i <= 24; ++i) {
+      const Vec3 p = mesh.positions[i];
+      CHECK(p.x * p.x + p.z * p.z < 1.0f);  // inside the parent of radius 1
+      CHECK(p.y < 6.0f);                    // below its end plane
+    }
+    CHECK(motion.parts[0].pivot.y == 6.0f);
+    CHECK(motion.parts[0].length == 4.0f);
+    CHECK(mesh.indices.size() / 3 == tube_triangles(24, 24));
+    for (const Vec3 normal : mesh.normals) {
+      CHECK(std::isfinite(normal.x));
+      CHECK(std::isfinite(normal.y));
+      CHECK(std::isfinite(normal.z));
+      CHECK(length(normal) == doctest::Approx(1.0f).epsilon(.001));
+    }
   }
 }

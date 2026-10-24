@@ -1,4 +1,5 @@
 // The flora stage's CPU half (flora_motion.h; renderer.md, "The flora stage").
+#include <domain/geometry/flora_species.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
 
@@ -107,29 +108,10 @@ FloraWindDefault flora_wind_default() noexcept {
 }
 
 FloraStiffness flora_stiffness(std::string_view species) noexcept {
-  // Trunk, limb, twig, leaf: radians of steady lean at the record's mean wind. A palm's fronds
-  // are its limbs and swing the most of any limb; a megaflora's limbs are the stiffest; a willow's
-  // curtains are the most compliant leaves (flora.md, "Motion", has the table and why).
-  if (species == "date_palm") return FloraStiffness{0.012f, 0.10f, 0.12f, 0.14f};
-  if (species == "broadleaf" || species == "oak" || species == "maple" || species == "elm" ||
-      species == "walnut" || species == "beech" || species == "ash")
-    return FloraStiffness{0.006f, 0.03f, 0.07f, 0.12f};
-  if (species == "conifer" || species == "pine" || species == "spruce" || species == "cedar" ||
-      species == "juniper")
-    return FloraStiffness{0.008f, 0.035f, 0.06f, 0.08f};
-  if (species == "birch") return FloraStiffness{0.015f, 0.05f, 0.09f, 0.14f};
-  if (species == "willow") return FloraStiffness{0.006f, 0.03f, 0.08f, 0.16f};
-  if (species == "orchard") return FloraStiffness{0.006f, 0.025f, 0.06f, 0.10f};
-  if (species == "ancient") return FloraStiffness{0.0015f, 0.008f, 0.04f, 0.10f};
-  // The understory (flora.md, "The understory"): the most compliant of all. Each one's part 0 is
-  // its root, with no geometry; a shrub's stems are its limbs and sway like a tree's twigs, a
-  // fern's fronds, a tuft's blades and a herb's leaves and flowers have no wood (the leaf class),
-  // and a herb's stem is its limb.
-  if (species == "shrub") return FloraStiffness{0.01f, 0.07f, 0.10f, 0.14f};
-  if (species == "fern") return FloraStiffness{0.01f, 0.18f, 0.20f, 0.22f};
-  if (species == "tuft") return FloraStiffness{0.01f, 0.20f, 0.22f, 0.26f};
-  if (species == "herb") return FloraStiffness{0.01f, 0.16f, 0.18f, 0.20f};
-  return FloraStiffness{};
+  const auto* info = geometry::flora_species_info(species);
+  if (info == nullptr) return FloraStiffness{0, 0, 0, 0};
+  return FloraStiffness{info->compliance[0], info->compliance[1], info->compliance[2],
+                        info->compliance[3]};
 }
 
 bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure,
@@ -147,6 +129,7 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
                 std::string_view species, FloraMesh& out) {
   out = FloraMesh{};
   if (parts.empty() || parts.size() > 65536u) return false;
+  if (geometry::flora_species_info(species) == nullptr) return false;
   const FloraStiffness stiffness = flora_stiffness(species);
   const bool structured = structure.size() == parts.size();
   const u32 n = static_cast<u32>(parts.size());

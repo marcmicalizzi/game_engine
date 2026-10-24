@@ -73,10 +73,9 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   const f64 lean = static_cast<f64>(p.lean_deg) * k_degree;
   const f64 azimuth = trunk_rng.unit() * 2.0 * k_pi;
   const D3 heading{det::cos(azimuth), 0.0, det::sin(azimuth)};
-  const Axis trunk =
-      grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean),
-                height * rules.trunk_fraction / det::cos(lean),
-                k_fine_rows * 2, k_up, 0.3 / height, wander * 0.25, trunk_rng);
+  const Axis trunk = grow_axis(D3{}, k_up * det::cos(lean) + heading * det::sin(lean),
+                               height * rules.trunk_fraction / det::cos(lean), k_fine_rows * 2,
+                               k_up, 0.3 / height, wander * 0.25, trunk_rng);
   crown_add_named(crown, trunk, r_trunk, r_top, k_crown_none);
 
   // The limbs, up the crown on the golden angle: the lowest longest, the upper ones shorter and a
@@ -104,9 +103,10 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
                                         0.15 * jitter_around,
                                     angle, &radial);
     const f64 jitter_length = limb_rng.symmetric();
-    const f64 length = static_cast<f64>(p.limb_length) * height *
-                       (rules.layered ? (0.65 + 0.35 * det::sin(k_pi * f)) : (1.0 - 0.5 * f)) *
-                       (1.0 + 0.1 * jitter_length);
+    const f64 requested = static_cast<f64>(p.limb_length) * height *
+                          (rules.layered ? (0.65 + 0.35 * det::sin(k_pi * f)) : (1.0 - 0.5 * f)) *
+                          (1.0 + 0.1 * jitter_length);
+    const f64 length = supported_length(requested, r_limb, rules);
     const f64 r_here = lerp(r_trunk, r_top, s / t_axis.length);
     const Axis limb = grow_axis(axis_point(t_axis, s) + radial * (0.5 * r_here), dir, length,
                                 k_fine_rows, k_up, upturn / length, wander, limb_rng);
