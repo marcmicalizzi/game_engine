@@ -1373,7 +1373,7 @@ int main(int argc, char** argv) {
   if (command == "ruins-kit") return content::ruins_kit_command(argc, argv);
   if (command == "ruins-block-kit") return content::ruins_block_kit_command(argc, argv);
   if (command == "terrain") return content::terrain_command(argc, argv);
-  if (command == "terrain-synth" || command == "terrain-tiles")
+  if (command == "terrain-synth" || command == "terrain-tiles" || command == "terrain-masks")
     return content::tileset_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);

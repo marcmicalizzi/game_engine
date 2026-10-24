@@ -37,6 +37,7 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/scene_gen/ground_masks.h>
 #include <domain/scene_gen/tile_source.h>
 
 #include <schemas/scene.h>
@@ -508,7 +509,20 @@ struct GroundOps {
   // Native lattice requests, including their filter/refusal contract (ADR-0057). Null keeps the
   // procedural adapter through evaluate/grid. Non-owning: this state outlives every reader.
   TileSource (*tile_source)(const void* state) noexcept = nullptr;
+  // **Its material masks** (ground_masks.h; tileset.md, "The mask level"): the per-tile palette
+  // weights a terrain's `masks` block was built into, built on the first ask (a cache hit after).
+  // Null, or true with an invalid answer: none, and the terrain draws its layers as before. False,
+  // with a sentence: masks named and not built. Thread-safe; non-owning, like `tile_source`.
+  bool (*masks)(const void* state, GroundMasks& out, std::string* error) = nullptr;
 };
+
+// **A mask region that names a scene water body takes its outline** (ground_masks.h): its polygon,
+// or its circle's centre and radius, copied into the region, so the build and its key see the shape
+// and never the name. False, with a sentence naming the region, for a body the scene does not have
+// or a region that names a body and an outline of its own. Every host that reads a scene file calls
+// it before the terrain entry reaches a provider.
+bool resolve_mask_water(std::span<const scene::WaterBody> water, scene::TerrainMasks& masks,
+                        std::string* error);
 
 class GroundProvider {
  public:
@@ -561,6 +575,12 @@ class GroundProvider {
   bool transport(f64 time_s, f64& moved_m2, f32& strength) const noexcept {
     return ops_ != nullptr && ops_->transport != nullptr &&
            ops_->transport(state_, time_s, moved_m2, strength);
+  }
+  // The masks a terrain's `masks` block was built into (`GroundOps::masks`): true with an invalid
+  // answer for none, false with a sentence when they could not be built.
+  bool masks(GroundMasks& out, std::string* error) const {
+    out = GroundMasks{};
+    return ops_ == nullptr || ops_->masks == nullptr || ops_->masks(state_, out, error);
   }
   bool has_rings() const noexcept { return ops_ != nullptr && ops_->make_rings != nullptr; }
   bool make_rings(i64 extent_mm, i64 spacing_mm, GroundRings& out, std::string* error) const;

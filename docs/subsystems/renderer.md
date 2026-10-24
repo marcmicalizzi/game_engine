@@ -580,12 +580,23 @@ by the existing texture mips. These are content settings, not geological altitud
 The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
 The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged
 scene objects or reflections. Separate `_terrain` modules are selected only for scenes that
-name layers. `ResolveMaterial` remains 112 bytes; the root stores an absolute first-layer index
-and count and the map frame, and each layer adds one table entry with ordinary texture slots.
-Its occlusion slot carries coverage; it is never applied as ambient occlusion. Cold containers
-transport the decoded colour/roughness means in the unreferenced layer materials' emissive and
-metallic factors; upload moves them into the layer's otherwise-unused UV transform and clears
-emission/metallicity. No cluster directly names those entries.
+name layers. `ResolveMaterial` remains 112 bytes. **The root is an ordinary material plus its flag
+and one word** (2026-10-24): `uv_offset.z` names the terrain's **record** (`gfx::TerrainRecord`,
+`gfx::set_terrain_root`), a table entry after the layers that no cluster names, holding the
+layers' range, the detail distances, the map frame and the mask level's addressing under names.
+Until then (W68) the root bit-cast the layers' range into `uv_offset.zw` and kept the near/far
+distances in its `normal_scale` and `occlusion_strength`, so any reader not gated on
+`k_material_terrain_layers` — an occlusion view, a normal map on the root — read distances as a
+material's; now only an alpha-tested material reads `uv_offset.z`, and a root is refused as one.
+Each layer adds one table entry with ordinary texture slots, its terrain fields set and read by
+name (`gfx::set_terrain_layer`, `terrain_layer_*` in the shader): its occlusion slot carries
+coverage and is never applied as ambient occlusion; cold containers transport the decoded
+colour/roughness means in the unreferenced layer materials' emissive and metallic factors, and
+upload moves them into the layer's otherwise-unused UV transform. `tools/lint.ps1`
+(`terrain-ungated`) holds every shader call of `sample_terrain_material` behind the root's flag.
+The map frame's offset is converted to float exactly to 17,000 km (split at whole 1,024 mm past
+16.7 km from the map's corner, where a float no longer holds the millimetre; W68's arithmetic,
+operation for operation, within it).
 
 Sources and choices, costs and validation: [native terrain materials](../experiments/native-terrain-materials.md).
 `terrain_materials.h` provides validation, source-image preparation and content hashing; every
@@ -596,6 +607,70 @@ arbitrarily large coverage image.
 Changing a layer or image currently rebuilds the grid's cached container too; geometry and material
 cache identities are not split. A streamed terrain keeps that grid as its small material carrier.
 
+### Ground materials by place
+
+**A palette, per-tile selection and authored regions** (roadmap W69, 2026-10-24; the grounding:
+[ground materials](../experiments/ground-materials-grounding.md); the level's format:
+[tileset](tileset.md#the-mask-level)). With a `masks` block (`engine.scene.TerrainMasks`, `Terrain`
+version 9) the terrain's `materials.layers` are a **palette** of any number of substrates (up to
+254) and `layer_budget` is the **per-tile** budget, 1 to 4: each 32 m tile of the mask level names
+at most that many palette layers and carries their weights at every metre, so a 10 km world has
+fifteen substrates and a tile four. The `tiles` provider builds the level beside its set on first
+ask (`scene_gen::GroundOps::masks`), the renderer uploads it whole at scene load
+(`prepare_terrain_masks`: a page table over the level's tiles, then every tile's words) and names
+its address in the record; a terrain without masks draws exactly as before.
+
+```json
+"masks": {
+  "spacing_mm": 1000, "tile_cells": 32, "height_blend": 0.2, "wetness": 0,
+  "priors": {"soil": "soil", "scree": "scree", "bedrock": "bedrock", "snow": "snow",
+             "snowline_m": 150, "snow_aspect_m": 25},
+  "paint": [{"material": "moss", "image": "moss-weight.png"}],
+  "index": {"image": "zones.png", "materials": ["trail", "clearing_grass"]},
+  "regions": [
+    {"name": "alpine", "center": [179, 0, -179], "radius_m": 250, "base": "alpine_meadow"},
+    {"name": "sandy pond", "water_body": "sandy-pond", "bed": "sand", "margin": "gravel",
+     "margin_m": 3, "wet_m": 8}
+  ]
+}
+```
+
+**The authoring**: generated priors (soil, scree, bedrock, snow by slope, elevation and aspect)
+under painted weight maps under the index map under the regions, each laid over the last; a
+region gives a layer outright (`material`), stands in for the priors' soil (`base`), or, for a
+scene water body named by `water_body`, gives its own `bed` and `margin` and wets the ground out
+to `wet_m` — so two ponds at one height have different beds. `engine-content terrain-masks
+--write-priors` writes the priors as images an author edits and paints back. Refusals, each a
+sentence: masks without materials or without a tile set, a budget outside 1 to 4, a name the
+palette lacks, a region with no outline or two, `material` beside `base`, a water body the scene
+does not have, and **a tile whose points name more layers than the budget** (named, with its place
+and its layers) — never a silent drop, which would show on one side of a seam only.
+
+**The resolve** (`terrain_material.slang`, every path: the resolve, the ray-shadow resolve, the
+reference path tracer and the water's bottom): the point's mask tile from the frame's integer cell
+and its local millimetres — never a world float — its table, and its four weights filtered across
+the two mips the pixel's ground footprint selects (the path tracer reads mip 0, as its texture
+reads take level 0); each named layer is evaluated as W68 evaluates one (map or triplanar at its
+own `tile_m`, faded to its means past the detail distances), the four are blended by weight, or by
+**height** where a palette layer names a `height` map (its R carried in the metallic-roughness
+map's B; Mishkinis' blend at `height_blend`, linear without one), and the blend is laid over the
+ground palette by the weights' sum. **Wetness** is a separate scalar — the larger of the scene's
+`wetness` and the mask's (a water region's `wet_m`) — that darkens the substrate by
+`lerp(1, 0.2, porosity)` and multiplies its roughness by half that factor (Lagarde 2013), so wet
+sand turns dark and a little smoother and wet rock barely changes; nothing turns glossy dry.
+
+**Why identity survives the levels.** The material is a function of the point and the pixel's
+footprint alone: every geometry level, tile, chunk and cut that draws a point reads the same mask
+tile at the same place, so a tile boundary or a level handover changes no material; a seam is
+continuous because the two tiles hold the same edge points (tileset.md, "The mask level"), and the
+mips' edge points are filtered along the edge alone so that holds at every mip.
+
+**Costs** (`msvc-debug`, RTX 5090, 1600 × 900, the ground-by-place camera path, terrain tiles and
+two far levels; machine state in [the costs](../experiments/native-terrain-materials.md#ground-materials-by-place-costs)):
+the resolve's median per frame against the plain palette, and the level's bytes, are in that
+section. The level is held whole (`resident_mib`, 256 by default, refused above): the 1 km test
+scene is 1,089 tiles and 8.2 MB, 7.5 KB a 32 m tile; streaming it with the terrain's tiles is
+W25's remainder.
 **What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
 material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
 occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.

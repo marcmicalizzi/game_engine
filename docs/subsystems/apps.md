@@ -228,8 +228,9 @@ engine-content ruins <kit.json> <world seed> <x,z | - --region ...> --blocks <bl
 engine-content ruins-kit <directory> [--e33-sizes] [--inside-corner]
 engine-content ruins-block-kit <directory> [--fidelity low|mid|high] [--thickness <m>] [--course <m>] [--stretcher <m>]
 engine-content terrain <scene.json> --tile <x,z> [--time <s>] [--cells <n>] [--detail full|dunes|coarse|floor] [--tile-size <m>] [--crests] [--storms] [--stats [--stats-side <m>] [--stats-spacing <m>] [--jobs <n>]]
-engine-content terrain-synth <out.json> --kind ridge|basin|steps|flat --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]
+engine-content terrain-synth <out.json> --kind ridge|basin|steps|flat|mountain --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]
 engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--cells <n>] [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>] [--vertical-scale <v>] [--offset-mm <x,y,z>] [--force]
+engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--write-priors <dir>]
 engine-content city params <params.json>
 engine-content city plan <params.json> (--out <dir> | --cache [--ddc <dir>] | --no-write) [--jobs <n>]
 engine-content city building --plan <dir|plan.json> --lot <id> [--stage massing|floors|rooms] [--out <building.json>]
@@ -340,6 +341,8 @@ engine-content terrain content/test-scenes/desert-dunes/scene.json --tile 0,0 --
 ```
 
 ## engine-content terrain-synth and terrain-tiles: an authored terrain
+
+**`terrain-masks`** (2026-10-24, W69) builds a scene terrain's mask level — ground materials by place — beside its set; see [content build](content_build.md#terrain-masks-ground-materials-by-place) for the command and [tileset](tileset.md#the-mask-level) for the level. `terrain-synth --kind mountain` writes the test shape `content/test-scenes/ground-by-place` stands on: a 180 m mountain whose slopes cross the soil, scree and bedrock bands, on a plain with two pond bowls at nearly one height.
 
 **Static streamed drawing** (2026-10-23, W67): a scene naming `tiles` can use `engine-view --terrain-tiles --time-rate 0`, protocol `settings.terrain_tiles`, or a scene's `world.ground`. Build the set's mip chain for the requested outer-ring spacing and far-level count; an absent filter is refused, so a set built for 2–64 m cannot silently supply a requested 128 m level. `--terrain-far 0` explicitly requests no filtered far levels. This layout does not enable geometry-page `--stream`; trees and loaded animated animals may keep moving while authored terrain stays still. The cache budget is `--tunable tileset.cache_mib=<MiB>` per provider. See [the source contract](tileset.md#the-reader) and [the terrain layout](renderer.md#the-ground-from-the-worlds-tiles).
 

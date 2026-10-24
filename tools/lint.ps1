@@ -172,6 +172,32 @@ foreach ($dir in $scanRoots) {
   }
 }
 
+# `terrain-ungated` (renderer.md, "Ground materials by place"; 2026-10-24). A terrain root's layers
+# and record are table entries no cluster names, whose fields mean what `sample_terrain_material`
+# reads them as and nothing else (gfx::TerrainRecord, gfx::set_terrain_layer); a reader not gated on
+# the root's `k_material_terrain_layers` flag would read a mask buffer's address as a material. So
+# every shader call of it is held behind the flag: the flag is tested within the eight lines before
+# the call. Shaders only, since nothing on the CPU evaluates a terrain material.
+$terrainCall = '\bsample_terrain_material\s*\('
+foreach ($dir in $scanRoots) {
+  $shaders = Get-ChildItem -Path $dir -Recurse -Include *.slang -File |
+    Where-Object { $_.FullName -notmatch '[\\/](third_party|build|_deps)[\\/]' }
+  foreach ($file in $shaders) {
+    $rel = ([IO.Path]::GetRelativePath($Root, $file.FullName)) -replace '\\', '/'
+    $lines = @(Get-Content -LiteralPath $file.FullName)
+    $scanned++
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+      $code = $lines[$i] -replace '//.*$', ''
+      if ($code -notmatch $terrainCall -or $code -match '^\s*MaterialSample\s+sample_terrain_material') { continue }
+      $from = [Math]::Max(0, $i - 8)
+      $window = ($lines[$from..$i] -join "`n")
+      if ($window -notmatch 'k_material_terrain_layers' -and $lines[$i] -notmatch 'engine-lint:\s*allow-terrain-ungated') {
+        $violations.Add(("{0}:{1}: [terrain-ungated] a call of sample_terrain_material is gated on the root's k_material_terrain_layers flag within the eight lines before it, since the entries it reads are a terrain's alone (renderer.md, ""Ground materials by place"")`n    {2}" -f $rel, ($i + 1), $lines[$i].Trim()))
+      }
+    }
+  }
+}
+
 if ($pending.Count -gt 0) {
   Write-Host "lint: $($pending.Count) known violation(s) on a rule's Pending list (not a failure)" -ForegroundColor Yellow
   $pending | ForEach-Object { Write-Host $_ }

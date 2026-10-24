@@ -1,0 +1,61 @@
+{
+  "format": "engine.scene.v1",
+  "name": "ground-by-place",
+  "description": "Ground materials authored by place (roadmap W69; docs/subsystems/renderer.md 'Ground materials by place'): a 1 km authored heightfield with a 185 m mountain and two ponds at nearly one height on a forest plain, drawn from a palette of eleven substrates of which each 32 m mask tile names at most four. The generated priors lay alpine meadow, scree, bedrock and snow on the mountain by slope, height and aspect; regions give the plain its forest litter, a trail and a clearing, and each pond its own bed: wave-washed sand with a gravel margin in one, organic mud in the other. Its heightfield is written first by engine-content terrain-synth (README.md).",
+  "camera_path": "camera-path.json",
+  "sky": {"latitude_deg": 46.5, "day_of_year": 200, "turbidity": 2.5},
+  "terrain": {
+    "size": 17,
+    "extent": 512,
+    "provider": "tiles",
+    "tiles": {"heightfield": "ground.json", "cells": 64},
+    "materials": {
+      "layer_budget": 4, "detail_near_m": 32, "detail_far_m": 128,
+      "layers": [
+      {"name": "forest_litter", "tint": [0.16, 0.11, 0.07], "roughness_factor": 0.95, "porosity": 0.8, "tile_m": 2.3},
+      {"name": "soil", "tint": [0.22, 0.17, 0.12], "roughness_factor": 0.9, "porosity": 0.7, "tile_m": 1.5},
+      {"name": "alpine_meadow", "tint": [0.19, 0.23, 0.11], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1.5},
+      {"name": "scree", "tint": [0.24, 0.23, 0.21], "roughness_factor": 0.85, "porosity": 0.3, "tile_m": 1.2},
+      {"name": "bedrock", "tint": [0.12, 0.115, 0.11], "roughness_factor": 0.75, "porosity": 0.05, "tile_m": 1.8},
+      {"name": "snow", "tint": [0.86, 0.88, 0.92], "roughness_factor": 0.6, "porosity": 0.2, "tile_m": 2},
+      {"name": "trail", "tint": [0.31, 0.24, 0.16], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1},
+      {"name": "clearing_grass", "tint": [0.24, 0.3, 0.11], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1.5},
+      {"name": "sand", "tint": [0.62, 0.55, 0.42], "roughness_factor": 0.85, "porosity": 0.9, "tile_m": 1},
+      {"name": "gravel", "tint": [0.45, 0.43, 0.4], "roughness_factor": 0.8, "porosity": 0.4, "tile_m": 1},
+      {"name": "organic_mud", "tint": [0.1, 0.08, 0.05], "roughness_factor": 0.9, "porosity": 1, "tile_m": 1.3}
+      ]
+    },
+    "masks": {
+      "spacing_mm": 1000,
+      "tile_cells": 32,
+      "height_blend": 0.2,
+      "priors": {
+        "soil": "soil", "scree": "scree", "bedrock": "bedrock", "snow": "snow",
+        "snowline_m": 150, "snow_blend_m": 20, "snow_aspect_m": 25
+      },
+      "regions": [
+        {"name": "alpine", "center": [179.2, 0, -179.2], "radius_m": 250, "base": "alpine_meadow", "feather_m": 40},
+        {"name": "forest floor", "polygon": [[-512, 0, -512], [512, 0, -512], [512, 0, 512], [-512, 0, 512]],
+         "base": "forest_litter", "feather_m": 0},
+        {"name": "clearing", "center": [-140, 0, 120], "radius_m": 22, "material": "clearing_grass", "feather_m": 6},
+        {"name": "trail", "polygon": [[-232, 0, 214], [-140, 0, 118], [-40, 0, 40], [-20, 0, 25],
+                                      [-17.5, 0, 28], [-37.5, 0, 43], [-137.5, 0, 121], [-229.5, 0, 217]],
+         "material": "trail", "feather_m": 0.75},
+        {"name": "sandy pond", "water_body": "sandy-pond", "bed": "sand", "margin": "gravel",
+         "margin_m": 3, "feather_m": 1.5, "wet_m": 8},
+        {"name": "boggy pond", "water_body": "boggy-pond", "bed": "organic_mud", "margin": "organic_mud",
+         "margin_m": 5, "feather_m": 3, "wet_m": 16}
+      ]
+    }
+  },
+  "water": [
+    {"name": "sandy-pond", "level_m": 1.9, "shape": {"circle": {"center": [-256, 0, 230.4], "radius_m": 25}},
+     "shore_m": 1.5},
+    {"name": "boggy-pond", "level_m": 1.3, "shape": {"circle": {"center": [51.2, 0, 307.2], "radius_m": 25}},
+     "shore_m": 2, "turbidity": 1.5}
+  ],
+  "fires": [
+    {"name": "shore fire", "position": [-236.5, 0.05, 209.2], "ground": true, "radius_m": 0.3,
+     "height_m": 0.8, "intensity": 250, "color_k": 1800, "flicker": 0.6}
+  ]
+}

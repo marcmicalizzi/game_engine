@@ -67,7 +67,8 @@ engine_module_tests(NAME gfx
 engine_shaders(NAME gfx_tests
   SOURCES shaders/fill.slang shaders/scale.slang shaders/bindless_copy.slang shaders/bda_fill.slang
           shaders/triangle.slang shaders/sky_probe.slang shaders/reconstruct_probe.slang
-          shaders/world_eye_probe.slang shaders/terrain_material_probe.slang)
+          shaders/world_eye_probe.slang shaders/terrain_material_probe.slang
+          shaders/terrain_mask_probe.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp

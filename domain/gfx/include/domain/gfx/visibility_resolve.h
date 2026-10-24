@@ -29,6 +29,7 @@
 #include <core/math/math.h>
 #include <domain/gfx/cluster_cull.h>
 
+#include <bit>
 #include <cmath>
 
 namespace engine::gfx {
@@ -260,13 +261,80 @@ inline constexpr u32 k_material_ground_detail = 8u;
 // UV transform never reads, so every other reader of the table — the path tracer, a debug view —
 // sees a plain untextured dielectric of the shallow colour, which is what stage 1 drew.
 inline constexpr u32 k_material_water = 16u;
-// Optional native terrain layers (renderer.md, "Native authored terrain materials"). The root
-// material's uv_offset.zw bit-cast the absolute first layer index and count; normal_scale and
-// occlusion_strength hold the near/far detail distances. Layer entries retain ordinary texture
-// slots; uv_offset.x is coverage and uv_scale is the integer repeat pitch in millimetres.
-// Their occlusion slot is a linear coverage mask, not AO. No hot record grows (112 bytes).
+// Optional native terrain layers (renderer.md, "Native authored terrain materials", "Ground
+// materials by place"). **A terrain root is an ordinary material plus a flag and one index**: the
+// root keeps every field a reader not gated on `k_material_terrain_layers` reads with its ordinary
+// meaning (its own normal scale and occlusion strength, no UV transform), and names its
+// `TerrainRecord` — a table entry of its own, below — by `terrain_record_index`, the one word it
+// overloads, `uv_offset.z`, which only an alpha-tested material reads (a root never is; upload
+// refuses one). The record holds what W68 bit-cast into the root until 2026-10-24 (the layers'
+// range, the detail distances, the map frame) and the mask level's addressing, under names.
+// Layer entries are named by the record, never by a cluster, and read only by
+// `sample_terrain_material`, through the accessors below; `tools/lint.ps1` (`terrain-ungated`)
+// holds every shader call of it behind the flag. No hot record grows (112 bytes).
 inline constexpr u32 k_material_terrain_layers = 512u;
 inline constexpr u32 k_material_terrain_map = 1024u;
+// A layer whose metallic-roughness map carries height detail in B (the palette's `height`).
+inline constexpr u32 k_material_terrain_height = 2048u;
+
+// TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
+inline constexpr u32 k_terrain_masked = 1u;
+
+// **The terrain's record**, one material-table entry (112 bytes) no cluster names, mirrored in
+// terrain_material.slang. The mask buffer is the page table — `mask_tiles_x * mask_tiles_z` words,
+// a resident slot or `k_terrain_no_mask_tile` per tile from (`mask_tile_x0`, `mask_tile_z0`) —
+// then the slots, `mask_words` words each in `scene_gen::GroundMasks`'s tile layout.
+struct TerrainRecord {
+  u32 first_layer = 0;  // absolute index of the first layer (the palette with masks)
+  u32 layer_count = 0;
+  f32 detail_near_m = 32.0f;  // triplanar detail fades to the layer's means over these distances
+  f32 detail_far_m = 128.0f;
+  i32 map_x0_mm = 0;  // the map frame's corner (`terrain_uv_frame`) and 1 / its side, f32 of f64
+  i32 map_z0_mm = 0;
+  f32 map_per_mm = 1.0f;
+  u32 flags = 0;  // k_terrain_masked
+  u64 mask = 0;   // device address of the mask buffer
+  i32 mask_tile_x0 = 0;
+  i32 mask_tile_z0 = 0;
+  u32 mask_tiles_x = 0;
+  u32 mask_tiles_z = 0;
+  u32 mask_spacing_mm = 0;
+  u32 mask_cells = 0;
+  u32 mask_words = 0;  // per resident tile
+  u32 mask_mips = 0;
+  f32 wetness = 0.0f;       // the scene's, everywhere
+  f32 height_blend = 0.0f;  // depth of the height blend; 0 linear
+  u32 pad[8] = {};
+};
+static_assert(sizeof(TerrainRecord) == 112, "a terrain record is one material-table entry");
+inline constexpr u32 k_terrain_no_mask_tile = 0xFFFFFFFFu;
+
+// The root's one terrain word: its record's absolute table index.
+inline void set_terrain_root(ResolveMaterial& root, u32 record_index) noexcept {
+  root.flags |= k_material_terrain_layers;
+  root.uv_offset.z = std::bit_cast<f32>(record_index);
+}
+inline u32 terrain_record_index(const ResolveMaterial& root) noexcept {
+  return std::bit_cast<u32>(root.uv_offset.z);
+}
+inline ResolveMaterial pack_terrain_record(const TerrainRecord& record) noexcept {
+  return std::bit_cast<ResolveMaterial>(record);
+}
+// A layer entry's terrain fields, by name: its linear colour and roughness means (what far detail
+// fades to), its authored weight, the substrate's porosity, and the triplanar repeat in whole
+// millimetres. Its occlusion slot is its W68 coverage mask, not AO.
+struct TerrainLayerFields {
+  Vec3 mean_colour{1.0f, 1.0f, 1.0f};
+  f32 mean_roughness = 1.0f;
+  f32 weight = 1.0f;
+  f32 porosity = 0.5f;
+  f32 pitch_mm = 1000.0f;
+};
+inline void set_terrain_layer(ResolveMaterial& layer, const TerrainLayerFields& f) noexcept {
+  layer.uv_scale = f.pitch_mm;
+  layer.uv_transform = Vec4{f.mean_colour.x, f.mean_colour.y, f.mean_colour.z, f.mean_roughness};
+  layer.uv_offset = Vec4{f.weight, f.porosity, 0.0f, 0.0f};
+}
 // `k_material_alpha_mask`: an alpha-tested material (glTF `alphaMode` MASK; docs/subsystems/
 // renderer.md, "Alpha-tested geometry"). Its clusters are drawn by the rasterizers' masked
 // variants, which discard where the base colour's alpha times `uv_offset.w` is below `uv_offset.z`,
