@@ -20,9 +20,25 @@ namespace {
 
 tunables::Int cache_mib{"tileset.cache_mib", 64, 1, 16384,
                         "Resident authored terrain tile payload per provider, MiB"};
+// How a provider's set reads its misses (tileset.md, "Reading a level"; the depth is the
+// measurement's, docs/experiments/tile-archives-2026-10-24.md).
+tunables::Int read_depth{"tileset.read_depth", 32, 1, 256,
+                         "Authored terrain tile reads in flight at once in one batch"};
+tunables::Int read_run_kib{"tileset.read_run_kib", 256, 0, 65536,
+                           "Adjacent authored terrain tiles read as one run up to this, KiB"};
+tunables::Bool unbuffered{"tileset.unbuffered", false,
+                          "Read authored terrain archives past the OS's file cache"};
+
+TileSet::ReadOptions read_options() {
+  TileSet::ReadOptions o;
+  o.depth = static_cast<u32>(read_depth.get());
+  o.run_bytes = static_cast<u64>(read_run_kib.get()) * 1024;
+  o.unbuffered = unbuffered.get();
+  return o;
+}
 
 struct TilesGround {
-  TilesGround() : set(static_cast<u64>(cache_mib.get()) * 1024 * 1024) {}
+  TilesGround() : set(static_cast<u64>(cache_mib.get()) * 1024 * 1024, read_options()) {}
   TileSet set;
   // The terrain's `masks` block, built beside the set on first ask (`GroundOps::masks`), not at
   // make: a sampler is made for every height a scene read asks, and the build's key hashes every

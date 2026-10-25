@@ -40,8 +40,10 @@ inline constexpr std::string_view k_heightfield_format = "engine.terrain.heightf
 inline constexpr u32 k_heightfield_version = 1;
 inline constexpr std::string_view k_tileset_format = "engine.tileset";
 // Bumped whenever a build's output for the same source and options changes, so a set built by an
-// older build is never mistaken for this one's.
-inline constexpr u32 k_tileset_version = 1;
+// older build is never mistaken for this one's. 2 (2026-10-24, roadmap W76): a level is one
+// archive (`<spacing_mm>.tiles`) instead of a directory of tile files; every tile's bytes are
+// what its file held, so every level's hash is unchanged and the set's moves through its key.
+inline constexpr u32 k_tileset_version = 2;
 // The name the ground provider registers under (scene_gen.md, "The registrar pattern").
 inline constexpr std::string_view k_ground_provider = "tiles";
 // The file a set's manifest is, in its directory.
@@ -119,12 +121,12 @@ struct BuildResult {
   bool hit = false;  // the set was already there: nothing was written
   u32 levels = 0;
   u32 tiles = 0;
-  u64 bytes = 0;  // of the tiles written (or, on a hit, recorded)
+  u64 bytes = 0;  // of the level archives written (or, on a hit, recorded)
   u64 hash = 0;   // every level's hash combined
 };
 
-// Builds `field` (whose header hashed to `source_hash`) into `dir`: a directory a level of tile
-// files and `manifest.json` written last, so a set whose manifest is there is whole.
+// Builds `field` (whose header hashed to `source_hash`) into `dir`: one archive a level
+// (`level_archive`) and `manifest.json` written last, so a set whose manifest is there is whole.
 bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view source_name,
                    const BuildOptions& options, const std::string& dir, BuildResult& out,
                    std::string& error);
@@ -143,14 +145,32 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ("The reader's lock"): a request pins the tiles it reads under a short lock on the cache's index
 // and evaluates from them with no lock, a tile not resident is read from disk outside the lock
 // with an in-flight marker so two callers never read it twice, and an entry a request pins is never
-// evicted. Not movable: `source()` points at it. Open/reopen is exclusive with all requests.
+// evicted. **A window's misses are one batch** ("Reading a level"): claimed together and read from
+// the level's archive with up to `ReadOptions::depth` range reads in flight. Not movable:
+// `source()` points at it. Open/reopen is exclusive with all requests.
 class TileSet {
  public:
+  // How misses are read (tileset.md, "Reading a level"): `depth` range reads in flight at once
+  // (`io::read_queued`), records adjacent in the archive coalesced into runs of up to `run_bytes`
+  // (0: every record its own read), and `unbuffered` the archives read past the OS's cache
+  // (sector-aligned, through a staging ring) — for a cold measurement, and the provider's
+  // `tileset.unbuffered`. The provider fills them from `tileset.read_depth`, `tileset.read_run_kib`
+  // and `tileset.unbuffered`.
+  struct ReadOptions {
+    u32 depth = 32;
+    u64 run_bytes = 256 * 1024;
+    bool unbuffered = false;
+  };
   // Tile payload budget; cache indices are bounded by the same number of tiles. Revisited
   // tiles may be read again after eviction. The index holds at most 2^26 entries even with a
   // larger budget; this limits cache metadata, not source extent. The provider uses
   // tileset.cache_mib.
+  // (Two constructors rather than a defaulted `ReadOptions` argument: a nested struct's member
+  // initializers are not usable in a default argument inside its enclosing class, which Clang
+  // refuses and MSVC accepts.)
   explicit TileSet(u64 cache_bytes = 64ull * 1024 * 1024);
+  TileSet(u64 cache_bytes, ReadOptions read);
+  const ReadOptions& read_options() const noexcept { return read_; }
   ~TileSet();
   TileSet(const TileSet&) = delete;
   TileSet& operator=(const TileSet&) = delete;
@@ -176,6 +196,14 @@ class TileSet {
   // f64; `height_mm` the float32 metres, one division of it.
   f64 point_mm(i64 x_mm, i64 z_mm) const noexcept;
   f32 height_mm(i64 x_mm, i64 z_mm) const noexcept;
+
+  // **Reading ahead, as one batch**: the tiles of level `level` (the manifest's order, the finest
+  // first) in the rectangle [tx0, tx1] × [tz0, tz1], or the whole level in file order — the shape
+  // of a load that will stand a region's placements on the ground — that are not resident, read
+  // with one queue of range reads, as many as the cache has room for. Returns the tiles read. A
+  // window (`heights`) does this itself for the tiles it reads.
+  u32 prefetch(u32 level, i32 tx0, i32 tz0, i32 tx1, i32 tz1) const noexcept;
+  u32 prefetch_level(u32 level) const noexcept;
 
   // Tiles read so far, and reads that failed (a tile missing or not the manifest's).
   u32 reads() const noexcept { return reads_.load(std::memory_order_relaxed); }
@@ -207,6 +235,12 @@ class TileSet {
     u64 io_ns = 0;
     u64 load_waits = 0;
     u64 load_wait_ns = 0;
+    // Batches of misses read together (a window's, a prefetch's), the tiles they read, the runs
+    // of adjacent records they read them in, and the deepest a batch's queue was.
+    u64 batches = 0;
+    u64 batch_tiles = 0;
+    u64 runs = 0;
+    u64 most_in_flight = 0;
   };
   ReaderStats reader_stats() const noexcept;
   // `take_max`: the thread's maxima start again after this read, so a caller reads them per frame.
@@ -217,15 +251,25 @@ class TileSet {
 
  private:
   struct Pins;
+  struct Batch;
+  static constexpr u32 k_no_slot = ~u32{0};
   const i32* tile(const Level& level, i32 tx, i32 tz, Pins& pins) const noexcept;
   f64 value(const Level& level, i64 i, i64 j, Pins& pins) const noexcept;
   f64 point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept;
   void unpin(Pins& pins) const noexcept;
   void unpin_locked(Pins& pins) const noexcept;
+  u32 claim_locked(i32 tx, i32 tz, i64 spacing_mm, Pins* pins) const noexcept;
+  // Claims and reads, as one batch, the tiles of `keys` (archive keys, ascending) that are neither
+  // resident nor being read, at most `limit`; returns the tiles read.
+  u32 fetch(const Level& level, std::span<const u64> keys, u32 limit) const noexcept;
+  static void landed(void* context, u32 first, u32 count) noexcept;
+  bool valid_record(const i32* record, const Level& level, i32 tx, i32 tz) const noexcept;
+  u32 record_words() const noexcept;
 
   struct Cache;
   std::unique_ptr<Cache> cache_;
   u64 cache_bytes_;
+  ReadOptions read_;
 
   TileSetManifest manifest_;
   std::string dir_;
@@ -236,8 +280,8 @@ class TileSet {
   mutable std::atomic<u32> failures_{0};
 };
 
-// The tile file's name inside a set's directory: "<spacing_mm>/<x>_<z>.tile".
-std::string tile_file(i64 spacing_mm, i32 tx, i32 tz);
+// A level's archive inside a set's directory: "<spacing_mm>.tiles".
+std::string level_archive(i64 spacing_mm);
 
 // **The set behind a `tiles` ground** (the capability's typed accessor, scene_gen.md): null for a
 // ground another provider made. For capability-specific inspection; ordinary consumers use

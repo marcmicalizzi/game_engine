@@ -39,7 +39,7 @@ endif()
 # building, the proxy fragment and E18's yield. Its golden hashes live in tests/determinism_tests.cpp
 # beside the ruins', and are compiled only where the command exists.
 if(TARGET engine::tileset)
-  list(APPEND _content_deps tileset tileset_schemas schema schemas)
+  list(APPEND _content_deps tileset tileset_schemas schema schemas bench)
   list(APPEND _content_tests tests/tileset_tests.cpp)
 endif()
 if(TARGET engine::city)

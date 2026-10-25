@@ -3,6 +3,8 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -376,4 +378,173 @@ TEST_CASE("io: many ranges of one file read concurrently on the efficiency pool"
   CHECK(tail[0].read == 100);
   CHECK_FALSE(tail[0].complete());
   CHECK(tail[1].status == Status::InvalidArgument);
+}
+
+// ---- queued reads (W54) ------------------------------------------------------------------------
+
+namespace {
+
+struct Order {
+  Vector<u32> seen;
+};
+void note(void* context, u32 index) noexcept {
+  static_cast<Order*>(context)->seen.push_back(index);
+}
+
+}  // namespace
+
+// **A deep queue from one thread** (io.md, "Queued reads"): 128 scattered ranges of one handle
+// with up to `depth` in flight, each checked against the offset that produced it, completed in the
+// requests' order at every depth; a request naming no file fails alone.
+TEST_CASE("io: queued reads land every range at every depth, in order") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "queued.bin");
+  const std::string data = range_fixture(1 << 20);
+  REQUIRE(write_file(path, data) == Status::Ok);
+  FileHandle file;
+  REQUIRE(file.open(path) == Status::Ok);
+  CHECK_FALSE(file.unbuffered());
+  constexpr u32 k_count = 128;
+  constexpr u64 k_span = 3000;
+  for (const u32 depth : {1u, 8u, 32u, 128u, 1000u}) {
+    Vector<AsyncRangeRead> requests;
+    requests.resize(k_count + 1);
+    std::string dst((k_count + 1) * k_span, '\0');
+    for (u32 i = 0; i < k_count; ++i) {
+      requests[i].file = &file;
+      requests[i].offset = (u64{i} * 7919u) % (data.size() - k_span);
+      requests[i].bytes = k_span;
+      requests[i].dst = dst.data() + u64{i} * k_span;
+    }
+    requests[k_count].bytes = 16;  // no file
+    requests[k_count].dst = dst.data();
+    Order order;
+    QueuedReadStats stats;
+    CHECK_FALSE(read_queued(std::span<AsyncRangeRead>(requests.data(), requests.size()), depth,
+                            &note, &order, &stats));
+    CHECK(stats.requests == k_count + 1);
+    CHECK(stats.most_in_flight >= 1);
+    CHECK(stats.most_in_flight <= std::min(depth, k_count + 1));
+    REQUIRE(order.seen.size() == k_count + 1);
+    for (u32 i = 0; i <= k_count; ++i)
+      CHECK(order.seen[i] == i);
+    for (u32 i = 0; i < k_count; ++i) {
+      CHECK(requests[i].complete());
+      CHECK_MESSAGE(
+          std::string_view(dst).substr(u64{i} * k_span, k_span) ==
+              std::string_view(data).substr(static_cast<usize>(requests[i].offset), k_span),
+          "depth " << depth << ", range " << i << " at " << requests[i].offset);
+    }
+    CHECK(requests[k_count].status == Status::InvalidArgument);
+  }
+  // Past the end is short, as `read_at` is; a zero-length request is complete and reads nothing.
+  AsyncRangeRead tail[2];
+  std::string small(4096, '\0');
+  tail[0].file = &file;
+  tail[0].offset = data.size() - 100;
+  tail[0].bytes = 4096;
+  tail[0].dst = small.data();
+  tail[1].file = &file;
+  tail[1].offset = 5;
+  CHECK_FALSE(read_queued(std::span<AsyncRangeRead>(tail, 2), 4));
+  CHECK(tail[0].status == Status::Ok);
+  CHECK(tail[0].read == 100);
+  CHECK(tail[1].complete());
+  CHECK(tail[1].read == 0);
+}
+
+namespace {
+
+constexpr u32 k_ring_depth = 4;
+constexpr u64 k_ring_span = 4000;
+struct Ring {
+  std::string buffers[k_ring_depth];
+  Vector<AsyncRangeRead>* requests = nullptr;
+  std::string copied;
+};
+void copy_out(void* context, u32 index) noexcept {
+  auto& r = *static_cast<Ring*>(context);
+  r.copied.append(r.buffers[index % k_ring_depth].data(), (*r.requests)[index].read);
+}
+
+}  // namespace
+
+// **A ring of `depth` buffers serves any number of requests**: request i + depth is issued only
+// after request i's completion ran, so the completion may copy out of the buffer the next request
+// will read into.
+TEST_CASE("io: a queued read's buffer is reusable depth requests on") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "ring.bin");
+  const std::string data = range_fixture(256 * 1024);
+  REQUIRE(write_file(path, data) == Status::Ok);
+  FileHandle file;
+  REQUIRE(file.open(path) == Status::Ok);
+  constexpr u32 k_count = 64;
+  Ring ring;
+  for (std::string& b : ring.buffers)
+    b.assign(k_ring_span, '\0');
+  Vector<AsyncRangeRead> requests;
+  requests.resize(k_count);
+  for (u32 i = 0; i < k_count; ++i) {
+    requests[i].file = &file;
+    requests[i].offset = u64{i} * k_ring_span;
+    requests[i].bytes = k_ring_span;
+    requests[i].dst = ring.buffers[i % k_ring_depth].data();
+  }
+  ring.requests = &requests;
+  CHECK(read_queued(std::span<AsyncRangeRead>(requests.data(), requests.size()), k_ring_depth,
+                    &copy_out, &ring));
+  CHECK(ring.copied == std::string_view(data).substr(0, k_count * k_ring_span));
+}
+
+// **Unbuffered reads**: aligned ranges read through the device and not the cache, the same bytes;
+// a misaligned offset, length or destination is refused alone, never read wrong. A file system
+// that cannot read unbuffered (a container's overlay) refuses at open, and the case says so.
+TEST_CASE("io: an unbuffered handle reads aligned ranges and refuses misaligned ones") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "direct.bin");
+  const std::string data = range_fixture(64 * 1024 + 300);
+  REQUIRE(write_file(path, data) == Status::Ok);
+  FileHandle file;
+  const Status opened = file.open(path, ReadMode::unbuffered);
+  if (opened != Status::Ok) {
+    MESSAGE("this file system does not read unbuffered: " << status_name(opened));
+    return;
+  }
+  CHECK(file.unbuffered());
+  constexpr u64 a = k_unbuffered_alignment;
+  // An aligned buffer: over-allocated and rounded up.
+  std::string storage(9 * a, '\0');
+  const auto base = reinterpret_cast<std::uintptr_t>(storage.data());
+  char* dst = storage.data() + ((a - base % a) % a);
+  AsyncRangeRead r[4];
+  r[0].file = &file;  // two sectors from the second
+  r[0].offset = a;
+  r[0].bytes = 2 * a;
+  r[0].dst = dst;
+  r[1].file = &file;  // the last sectors, running past the end: short, to the byte
+  r[1].offset = 16 * a;
+  r[1].bytes = 2 * a;
+  r[1].dst = dst + 2 * a;
+  r[2].file = &file;  // a misaligned offset
+  r[2].offset = 100;
+  r[2].bytes = a;
+  r[2].dst = dst + 4 * a;
+  r[3].file = &file;  // a misaligned destination
+  r[3].offset = 0;
+  r[3].bytes = a;
+  r[3].dst = dst + 4 * a + 1;
+  CHECK_FALSE(read_queued(std::span<AsyncRangeRead>(r, 4), 4));
+  CHECK(r[0].complete());
+  CHECK(std::string_view(dst, 2 * a) == std::string_view(data).substr(a, 2 * a));
+  CHECK(r[1].status == Status::Ok);
+  CHECK(r[1].read == data.size() - 16 * a);
+  CHECK(std::string_view(dst + 2 * a, r[1].read) == std::string_view(data).substr(16 * a));
+  CHECK(r[2].status == Status::InvalidArgument);
+  CHECK(r[3].status == Status::InvalidArgument);
+  u64 got = 0;
+  CHECK(file.read_at(3, dst, a, got) == Status::InvalidArgument);
+  CHECK(file.read_at(0, dst, a, got) == Status::Ok);
+  CHECK(got == a);
+  CHECK(std::string_view(dst, a) == std::string_view(data).substr(0, a));
 }

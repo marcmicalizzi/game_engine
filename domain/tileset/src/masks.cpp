@@ -1,6 +1,8 @@
 // The mask level (masks.h; docs/subsystems/tileset.md, "The mask level"). Every decision is
 // integers or f64 polynomials and square roots — no libm call — so a level is the same bytes from
 // every toolchain, as the heights are (determinism_tests.cpp pins it).
+#include "archive.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -13,6 +15,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <mutex>
 
 namespace engine::tileset {
 
@@ -321,9 +325,13 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
   }
 }
 
+// A tile's record in the level's archive (archive.h), byte for byte what its own `.mask` file held
+// before the archive (k_mask_version 1). Its version is the record's own, and moves only when a
+// record's layout does.
+inline constexpr u32 k_mask_record_version = 1;
 struct MaskHeader {
   char magic[4] = {'E', 'M', 'S', 'K'};
-  u32 version = k_mask_version;
+  u32 version = k_mask_record_version;
   u32 cells = 0;
   u32 words = 0;
   i64 spacing_mm = 0;
@@ -332,8 +340,10 @@ struct MaskHeader {
 };
 static_assert(sizeof(MaskHeader) == 32);
 
-u64 tile_key(i32 tx, i32 tz) noexcept {
-  return (static_cast<u64>(static_cast<u32>(tx)) << 32) | static_cast<u32>(tz);
+using archive::tile_key;
+
+u32 record_bytes(u32 cells) noexcept {
+  return static_cast<u32>(sizeof(MaskHeader)) + scene_gen::mask_tile_words(cells) * 4;
 }
 
 // The mips of one channel (or the wetness): mip m's point is mip 0's filtered over the points its
@@ -513,9 +523,7 @@ std::string mask_cache_dir(std::string_view ddc, u64 key) {
   return io::join_path(io::join_path(ddc, "tilemasks"), hex(key));
 }
 
-std::string mask_tile_file(i32 tx, i32 tz) {
-  return std::to_string(tx) + "_" + std::to_string(tz) + ".mask";
-}
+std::string mask_archive(i64 spacing_mm) { return std::to_string(spacing_mm) + ".masks"; }
 
 bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Vector<f64>& weights,
                 f64& wetness, std::string& error) {
@@ -575,6 +583,7 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
   Vector<u32> tile_words(words);
   std::string bytes;
   u64 level_hash = hash_combine(k_hash_seed, out.key);
+  archive::Writer writer("EMSK", s, record_bytes(c));
   for (i32 tz = tz0; tz <= tz1; ++tz) {
     for (i32 tx = tx0; tx <= tx1; ++tx) {
       bool any_wet = false;
@@ -645,9 +654,9 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
       bytes.assign(sizeof(header) + static_cast<u32>(words) * 4, '\0');
       std::memcpy(bytes.data(), &header, sizeof(header));
       std::memcpy(bytes.data() + sizeof(header), tile_words.data(), static_cast<u32>(words) * 4);
-      const std::string path = io::join_path(dir, mask_tile_file(tx, tz));
-      if (io::write_file_atomic(path, bytes) != io::Status::Ok) {
-        error = "'" + path + "' could not be written";
+      if (!writer.add(tx, tz, bytes)) {
+        error = "terrain.masks: the tile (" + std::to_string(tx) + ", " + std::to_string(tz) +
+                ") is out of the archive's order";
         return false;
       }
       level_hash = hash_combine(level_hash, hash_bytes(bytes.data(), bytes.size()));
@@ -657,6 +666,10 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
       ++out.tiles;
     }
   }
+  // The level as one file: the present tiles' records in the order written, and their table.
+  manifest.archive = mask_archive(s);
+  if (!writer.write(io::join_path(dir, manifest.archive), manifest.archive_bytes, error))
+    return false;
   out.hash = level_hash;
   manifest.bytes = out.bytes;
   manifest.hash = hex(level_hash);
@@ -758,9 +771,41 @@ bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::stri
 
 // ---- the reader ---------------------------------------------------------------------------------
 
-bool MaskLevel::open(const std::string& manifest_path, std::string& error) {
+// The archive and the read-ahead window (masks.h): the records from `first` onwards in file order,
+// `count` of them, each `ok` when it arrived whole.
+struct MaskLevel::Reading {
+  archive::Reader archive;
+  std::mutex mutex;
+  Vector<u8> window;
+  Vector<u8> ok;
+  u32 first = 0;
+  u32 count = 0;
+  ReadStats stats;
+};
+
+namespace {
+// The window: about 2 MiB, read as runs of 256 KiB, eight in flight.
+constexpr u64 k_mask_window_bytes = 2u << 20;
+}  // namespace
+
+MaskLevel::MaskLevel() : reading_(std::make_unique<Reading>()) {}
+MaskLevel::~MaskLevel() = default;
+MaskLevel::MaskLevel(MaskLevel&&) noexcept = default;
+MaskLevel& MaskLevel::operator=(MaskLevel&&) noexcept = default;
+
+MaskLevel::ReadStats MaskLevel::read_stats() const noexcept {
+  if (reading_ == nullptr) return ReadStats{};
+  const std::lock_guard<std::mutex> lock(reading_->mutex);
+  return reading_->stats;
+}
+
+bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool unbuffered) {
   info_ = scene_gen::GroundMaskInfo{};
   present_.clear();
+  if (reading_ == nullptr) reading_ = std::make_unique<Reading>();
+  reading_->archive.close();
+  reading_->count = 0;
+  reading_->stats = ReadStats{};
   std::string bytes;
   if (io::read_file(manifest_path, bytes) != io::Status::Ok) {
     error = "'" + manifest_path + "' could not be read";
@@ -798,6 +843,18 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error) {
   for (u32 i = 0; i < manifest_.present.size(); i += 2)
     present_.push_back(tile_key(manifest_.present[i], manifest_.present[i + 1]));
   std::sort(present_.begin(), present_.end());
+  // The archive, opened once, its table read: at most the tiles the manifest lists.
+  std::string why;
+  if (manifest_.archive.empty() ||
+      !reading_->archive.open(io::join_path(dir_, manifest_.archive), "EMSK", manifest_.spacing_mm,
+                              record_bytes(manifest_.cells), manifest_.present.size() / 2,
+                              unbuffered ? io::ReadMode::unbuffered : io::ReadMode::buffered,
+                              why)) {
+    error = "'" + manifest_path + "' has no archive it can read" +
+            (why.empty() ? std::string() : ": " + why);
+    info_ = scene_gen::GroundMaskInfo{};
+    return false;
+  }
   return true;
 }
 
@@ -807,18 +864,46 @@ bool MaskLevel::present(i32 tx, i32 tz) const noexcept {
 
 bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
   const u32 n = scene_gen::mask_tile_words(info_.cells);
-  if (!present(tx, tz) || words.size() < n) return false;
-  std::string bytes;
-  if (io::read_file(io::join_path(dir_, mask_tile_file(tx, tz)), bytes) != io::Status::Ok ||
-      bytes.size() != sizeof(MaskHeader) + static_cast<u32>(n) * 4)
-    return false;
+  if (!present(tx, tz) || words.size() < n || reading_ == nullptr) return false;
+  Reading& r = *reading_;
+  const u32 at = r.archive.find(tx, tz);
+  if (at == archive::Reader::k_absent) return false;
+  const u32 rb = record_bytes(info_.cells);
+  const std::lock_guard<std::mutex> lock(r.mutex);
+  if (at < r.first || at >= r.first + r.count) {
+    // Not in the window: fill it from this tile onwards, the records' destinations contiguous so
+    // each run is read straight into place.
+    const u32 table = static_cast<u32>(r.archive.table().size());
+    const u32 count =
+        std::min<u32>(table - at, std::max<u32>(1, static_cast<u32>(k_mask_window_bytes / rb)));
+    r.window.resize(count * rb);
+    r.ok.assign(count, u8{0});
+    Vector<archive::Fetch> fetches;
+    fetches.reserve(count);
+    for (u32 k = 0; k < count; ++k)
+      fetches.push_back(archive::Fetch{at + k, r.window.data() + u64{k} * rb, false});
+    archive::FetchOptions options;
+    options.depth = 8;
+    options.run_bytes = 256 * 1024;
+    archive::FetchStats stats;
+    r.archive.fetch(std::span<archive::Fetch>(fetches.data(), fetches.size()), options, nullptr,
+                    nullptr, &stats);
+    for (u32 k = 0; k < count; ++k)
+      r.ok[k] = fetches[k].ok ? 1 : 0;
+    r.first = at;
+    r.count = count;
+    ++r.stats.windows;
+    r.stats.bytes += stats.bytes;
+  }
+  if (r.ok[at - r.first] == 0) return false;
+  const u8* bytes = r.window.data() + u64{at - r.first} * rb;
   MaskHeader header;
-  std::memcpy(&header, bytes.data(), sizeof(header));
-  if (std::memcmp(header.magic, "EMSK", 4) != 0 || header.version != k_mask_version ||
+  std::memcpy(&header, bytes, sizeof(header));
+  if (std::memcmp(header.magic, "EMSK", 4) != 0 || header.version != k_mask_record_version ||
       header.cells != info_.cells || header.words != n || header.tx != tx || header.tz != tz ||
       header.spacing_mm != info_.spacing_mm)
     return false;
-  std::memcpy(words.data(), bytes.data() + sizeof(header), static_cast<u32>(n) * 4);
+  std::memcpy(words.data(), bytes + sizeof(header), static_cast<u32>(n) * 4);
   return true;
 }
 
