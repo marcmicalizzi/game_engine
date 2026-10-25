@@ -274,6 +274,10 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::CoverMask, static_cast<u32>(sizeof(u32)),
                 data.cover_mask.size(), data.cover_mask.data());
   }
+  if (!data.sward_vertices.empty()) {
+    add_section(payloads, ClusterSection::SwardVertex, sizeof(ClusterFileSwardVertex),
+                data.sward_vertices.size(), data.sward_vertices.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -452,6 +456,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Impostors: return "impostors";
     case ClusterSection::LodCoverage: return "lod_coverage";
     case ClusterSection::CoverMask: return "cover_mask";
+    case ClusterSection::SwardVertex: return "sward_vertex";
   }
   return "unknown";
 }
@@ -686,6 +691,14 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(mask->element_size) + "-byte elements, expected 4");
     }
     copy_section(bytes, *mask, result.cover_mask);
+  }
+
+  if (const ClusterFileSection* sward = found[static_cast<u32>(ClusterSection::SwardVertex)];
+      sward != nullptr && sward->element_count != 0) {
+    if (sward->element_size != sizeof(ClusterFileSwardVertex) ||
+        sward->element_count != result.mesh.mesh.vertices.size())
+      return fail(error, "cluster file sward_vertex is not four bytes per vertex");
+    copy_section(bytes, *sward, result.sward_vertices);
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -1143,7 +1156,7 @@ constexpr ClusterSection k_resident_kinds[] = {
 constexpr ClusterSection k_paged_kinds[] = {
     ClusterSection::Vertices,     ClusterSection::Attributes,     ClusterSection::Triangles,
     ClusterSection::VertexSource, ClusterSection::Quantized,      ClusterSection::Skin,
-    ClusterSection::VertexIds,    ClusterSection::MotionVertices,
+    ClusterSection::VertexIds,    ClusterSection::MotionVertices, ClusterSection::SwardVertex,
 };
 
 bool read_exact(const io::FileHandle& file, u64 offset, void* dst, u64 bytes, const char* what,

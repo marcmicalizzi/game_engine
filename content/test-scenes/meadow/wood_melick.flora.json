@@ -1,0 +1,9 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "wood_melick",
+    "seed": 8801,
+    "blades_m2": 256,
+    "growth": 1
+  }
+}

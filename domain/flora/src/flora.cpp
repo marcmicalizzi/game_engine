@@ -7,6 +7,7 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/sward.h>
 #include <domain/flora/trees.h>
 #include <domain/flora/understory.h>
 #include <domain/geometry/cluster_pages.h>
@@ -71,6 +72,12 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = tuft_in_range(out.tuft, error);
   } else if (out.species == k_species_herb) {
     in_range = herb_in_range(out.herb, error);
+  } else if (out.species == "sward") {
+    if (out.materials.has_value()) {
+      error = "sward v1 bakes its own blade colour; external material sets are unsupported";
+      return false;
+    }
+    in_range = sward_in_range(out.sward, error);
   } else {
     error = "unknown flora species \"" + out.species + "\"; available:";
     for (const auto& info : geometry::k_flora_species)
@@ -128,6 +135,7 @@ std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_conifer || detail::is_evergreen_species(species)) return k_conifer_parts;
   if (species == k_species_fern) return k_fern_parts;
   if (species == k_species_tuft) return k_tuft_parts;
+  if (species == "sward") return k_tuft_parts;
   if (species == k_species_herb) return k_herb_parts;
   return k_tree_parts;
 }
@@ -171,6 +179,7 @@ std::string flora_role(const std::string& species, u32 material) {
 
 void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
                            geometry::ClusterFileData& out) {
+  if (file.species == "sward") return;  // one baked source for blades, cards and ground
   const std::span<const PartRole> parts = parts_of(file.species);
   for (u32 i = 0; i < out.materials.size() && i < parts.size(); ++i) {
     materials::MaterialSet recipe;
@@ -249,6 +258,7 @@ const char* species_member(const std::string& species) {
   if (species == k_species_shrub) return "shrub";
   if (species == k_species_fern) return "fern";
   if (species == k_species_tuft) return "tuft";
+  if (species == "sward") return "sward";
   if (species == k_species_herb) return "herb";
   return "palm";
 }
@@ -272,7 +282,7 @@ u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
-  return hash_combine(h, k_flora_version);
+  return hash_combine(h, file.species == "sward" ? k_sward_version : k_flora_version);
 }
 
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
@@ -306,6 +316,8 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_fern(file.fern, mesh, tree_report, &error, &motion);
   if (file.species == k_species_tuft)
     return solve_tuft(file.tuft, mesh, tree_report, &error, &motion);
+  if (file.species == "sward")
+    return solve_sward(file.sward, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_herb)
     return solve_herb(file.herb, mesh, tree_report, &error, &motion);
   if (file.species == k_species_date_palm)
@@ -326,6 +338,8 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
   BakeLook look;
   look.bark = mesh.materials[0].base_color;
   look.leaf = mesh.materials.size() > 1 ? mesh.materials[1].base_color : look.leaf;
+  const bool sward = out.generator_kind == "sward";
+  if (sward) look.leaf = mesh.materials[0].base_color;
   image::Image images[2];
   if (hosts != nullptr && hosts->read_image != nullptr && out.materials.size() > 1) {
     for (u32 material = 0; material < 2; ++material) {
@@ -356,6 +370,14 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
   if (look.leaf_outline) look.leaf_cutoff = geometry::alpha_word_cutoff(out.materials[1].alpha);
   if (out.images.size() < out.image_paths.size()) out.images.resize(out.image_paths.size());
   for (const TreeLevel& level : chain.levels) {
+    if (sward && level.jobs.empty()) {
+      // Geometric coarse ribbons retain the blade material. No fictitious baked image or
+      // impostor record for this level; section 38 describes only actual clump cards.
+      out.materials.push_back(out.materials[0]);
+      out.material_sampling.push_back(out.material_sampling[0]);
+      coverage.push_back(level.error);
+      continue;
+    }
     BakedAtlas atlas;
     bake_level(mesh, chain, level, look, atlas);
     // The coverage error ("The coverage bake"): the feature the level stands in for, times what it
@@ -380,11 +402,12 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     assets::Material m;
     m.name = level.kind == ImpostorKind::tree ? "impostor" : "branch_cards";
     m.base_color = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
-    m.roughness = mesh.materials.size() > 1 ? mesh.materials[1].roughness : 0.6f;
+    m.roughness = sward ? mesh.materials[0].roughness
+                        : (mesh.materials.size() > 1 ? mesh.materials[1].roughness : 0.6f);
     m.metallic = 0.0f;
     m.double_sided = true;
     m.alpha_mode = assets::k_alpha_mask;
-    m.alpha_cutoff = 0.5f;
+    m.alpha_cutoff = level.alpha_cutoff;
     geometry::ClusterFileMaterial material;
     material.base_color = m.base_color;
     material.metallic = m.metallic;
@@ -418,11 +441,13 @@ DetailTier flora_detail_tier(const FloraFile& file) {
   if (file.species == k_species_shrub) return file.shrub.detail_tier;
   if (file.species == k_species_fern) return file.fern.detail_tier;
   if (file.species == k_species_tuft) return file.tuft.detail_tier;
+  if (file.species == "sward") return file.sward.detail_tier;
   if (file.species == k_species_herb) return file.herb.detail_tier;
   return DetailTier::essential;
 }
 
 bool flora_collides(const FloraFile& file) {
+  if (file.species == "sward") return false;
   if (file.species == k_species_shrub) return shrub_collides(file.shrub);
   return !(file.species == k_species_fern || file.species == k_species_tuft ||
            file.species == k_species_herb);
@@ -436,7 +461,17 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   assets::MeshData mesh;
   Motion motion;
   TreeLevels chain;
-  if (!solve_flora(file, mesh, motion, report, tree_report, error, &chain)) return false;
+  Vector<geometry::ClusterFileSwardVertex> sward_attributes;
+  if (file.species == "sward") {
+    if (file.materials.has_value()) {
+      error = "sward v1 does not accept external material sets";
+      return false;
+    }
+    if (!solve_sward(file.sward, mesh, tree_report, &error, &motion, &chain, &sward_attributes))
+      return false;
+    out.generator_kind = "sward";
+  } else if (!solve_flora(file, mesh, motion, report, tree_report, error, &chain))
+    return false;
   // The impostor chain (impostor.h, flora.md "The impostor chain"): the leaves' primitive takes the
   // levels above its finest, every other primitive hands over to the whole-tree impostor where it
   // stands, and every level's view is baked from the finest geometry.
@@ -548,6 +583,15 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   }
   out.motion_parts = std::move(motion.parts);
   out.structural_parts = std::move(motion.structure);  // section 37, where the species emits it
+  if (!sward_attributes.empty()) {
+    for (u32 source : out.mesh.mesh.vertex_source) {
+      if (source >= sward_attributes.size()) {
+        error = "sward attributes do not cover cluster source vertices";
+        return false;
+      }
+      out.sward_vertices.push_back(sward_attributes[source]);
+    }
+  }
   out.cluster_material.reserve(part_of_cluster.size());
   for (const u32 part : part_of_cluster)
     out.cluster_material.push_back(part_material[part]);
@@ -605,6 +649,9 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
       geometry::alpha_word_mode(out.materials[1].alpha) == assets::k_alpha_opaque) {
     out.materials[1].alpha = geometry::encode_alpha_word(
         assets::k_alpha_mask, geometry::alpha_word_double_sided(out.materials[1].alpha), 0.5f);
+  }
+  if (file.species == "sward") {
+    out.materials[0].alpha = geometry::encode_alpha_word(assets::k_alpha_mask, true, .5f);
   }
   if (!flora_source_hash_with(file, assets::MeshGeneratorInputs{pack, hosts}, out.source_hash,
                               error))

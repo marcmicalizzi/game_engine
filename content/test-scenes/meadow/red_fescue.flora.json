@@ -1,0 +1,9 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "red_fescue",
+    "seed": 8801,
+    "blades_m2": 256,
+    "growth": 0.25
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "meadow",
+  "interpolation": "Smooth",
+  "fps": 30,
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "position": [0, 0.4, 1], "target": [0, 0.1, 0]},
+    {"time": 2, "position": [0, 1.4, 5], "target": [0, 0.1, 0]},
+    {"time": 4, "position": [0, 3, 20], "target": [0, 0.1, 0]},
+    {"time": 6, "position": [0, 10, 80], "target": [0, 0.1, 0]}
+  ]
+}

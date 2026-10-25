@@ -1,5 +1,79 @@
 # flora (domain, capability)
 
+## Grass sward (G88)
+
+`engine.flora.Sward` in a `.flora.json` (`species: "sward"`) builds grass as square patches,
+distinct from the unchanged Tuft solver. [Grounding and limitations](../experiments/grass-sward.md)
+record the eight botanical profiles, field tiller counts, source dimensions and rendering papers.
+The public pure API is `sward_profiles`, `sward_profile`, `sward_in_range`, `solve_sward` and
+`bake_sward_ground` and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
+does not invalidate or change accepted tree/understory meshes. The shared catalogue has one
+`sward` kind, with the old CPU blade compliance until the separately briefed field kind lands.
+
+A cell is 1 or 2 m, centred on its anchor. Dimensions stay within the profile's source ranges;
+roots are stratified, then translated inward with their entire blade to keep all geometry inside
+the cell. The near ribbon has 2–3 segments and twist. The coarse rung pairs adjacent headings,
+keeps the longer blade's axis and widens it by the pair's nominal width-times-length area ratio,
+retaining the near ribbon's tessellation. Sixteen clumps/m² each have three orthogonal baked
+quads, with 128-pixel tiles, one-texel margins and an explicit alpha cutoff (default 0.5).
+The default 256 blade samples/m² costs at most 1280 near + 640 coarse + 96 card triangles/m²;
+the 2400/m² default budget counts all emitted levels. A smaller explicit budget is refused with
+the required count, not silently interpreted as permission to alter botanical widths. This
+sample count is far below measured tiller density and does not imply a full biological LAI.
+
+Every blade has a parentless motion part; coarse blades reuse it and clumps add parentless
+parts. Section 36 is linear arc fraction, not squared flex; the posing formula applies the bend.
+Section 37 has no load-bearing or collider flags. Section 41 is ao/thickness/hue/age, four
+unorm8 bytes per **cluster** vertex after page reordering. Phase needs no stored attribute.
+Current main ignores section 41 in shading; its gradient AO and colour controls are not yet
+visually effective. UVs cover each blade, and cards address their own atlas rectangle.
+
+`engine-content flora patch.flora.json patch.clusters --no-materials --sward-assets <outside-dir>`
+also writes a 256² top-view colour/normal/height/roughness set, a `distance.clusters` cut at
+20 m (projection scale 2160, 1000 px geometric/coverage thresholds, fade 0.1), and `provenance.json`.
+It remaps motion and section 41 with `LodFormMap`; the form records a distinct build key. The
+ground uses actual top-view geometry depth and normals, roughness 0.7, and dark blade colour
+under uncovered samples. The dark base is authored and declared in provenance. The deliberately
+permissive cut selects the authored card rung; the cook rejects any retained non-card cluster.
+This is a ring policy, **not** a one-pixel error guarantee. Ground, blades and cards share
+roughness 0.7. External material overrides are refused for sward to preserve the bake's source.
+Generated files stay outside
+the checkout. The optional `bake_level` depth output leaves existing atlas bytes unchanged.
+
+The `sward` placement generator reads `SwardPlacements`: a bounded tile window, 1/2 m cells,
+the mask's **palette** layer index, and ascending density families of near/card mesh paths.
+The same cooked `TerrainMaskPaint` is the runtime density field. Family choice interpolates
+stochastically with stable cell hashes; this matches density in expectation, not exactly in each
+texel. The finite lattice gives collision-free nonzero u32 IDs; windows exceeding that ID space
+are refused. Ring 0 uses the near list, ring 1 the card list, and later rings return empty.
+Shade and excluded regions can be cooked into paint before runtime, so the generator does not
+apply those factors twice. The meadow cook uses an authored canopy-light proxy and mask regions;
+wetness-dependent height/colour and slope-dependent stature are not implemented. Earlier
+footprints exclude the entire patch, but do not repaint the ground beneath the exclusion.
+Place this entry last: the host still derives footprints from mesh bounds, so a zero-footprint
+override needs an engine seam. It is not hidden behind the collider flag.
+
+**Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
+`scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
+exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
+cut. There is no per-frame solver state or tick; placement work occurs at tile activation.
+
+**Tests.** `tools/dev.ps1 test -Filter flora` includes range/bounds/budget checks, motion parents,
+section-41 roundtrips, an eight-variant geometry/attribute hash, palette/ID/ring placement checks
+and four-view projected coverage of the seed-8801 full-density ryegrass reference. Its coarse
+rung differs by less than 1%, cards by less than 5%. Across all 32 cooked patches coarse
+coverage differs by at most 3.86%, cards by 20.67%; that test does not imply acceptance of
+the family. Full-density containers have 86–87 clusters and ring-one forms exactly three,
+at most 22272/768/0 source pairs per fully occupied 16 m tile in rings 0/1/2+. Author handover
+additionally runs `test -Affected` and the matching Linux container. Meadow capture acceptance,
+frame-loop allocation and 11520×2160 pair/shadow budgets remain open. G88 stays in progress.
+
+**Not yet.** Seasonal phenology and seed-head geometry; measured patch sky AO and calibrated
+thickness/colour; sparse-family card coverage; exact per-texel density conservation;
+wetness/slope morphology and slope-conforming patches; zero-footprint
+host support; field sway and caster policy on the engine side; far-ground wind sheen. The
+current-main shadow stand-in is CSM with a short shadow distance, never claimed as final policy.
+
 ## Shared growth rules and named species (G85)
 
 The named profiles `maple`, `oak`, `elm`, `walnut`, `beech`, `ash`, `pine`, `spruce`, `cedar` and

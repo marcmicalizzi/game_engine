@@ -749,10 +749,40 @@ struct Tree @version(2) {
   impostor_px: u32 = 256
 }
 
+/// Grass ground cover (G88, docs/experiments/grass-sward.md). Dimensions come from the named
+/// species profile; budget controls sampled blades, never silently enlarges their near width.
+struct Sward @version(1) {
+  /// tall_fescue, perennial_ryegrass, timothy, cocksfoot, wood_melick, wavy_hairgrass, bent, red_fescue.
+  species: string = "perennial_ryegrass"
+  /// Independent family seed. Variant uses a separate stream, 0..15.
+  seed: u64 = 1
+  variant: u32 = 0
+  /// Square patch edge, metres: exactly 1 or 2; placement tiles must divide evenly by it.
+  cell_m: f32 = 1.0 @unit(m)
+  /// Rendered blade samples per square metre, 16..1024; not biological tiller density.
+  blades_m2: u32 = 256
+  /// Density multiplier, 0.0625..1; family recipes use 0.25, 0.5, 0.75, 1.
+  density: f32 = 1.0
+  /// Growth fraction between profile minimum and maximum length, 0..1; not calendar phenology.
+  growth: f32 = 1.0
+  /// Dry blade share, 0..1. Authored appearance, not a measured species constant.
+  straw_share: f32 = 0.1
+  /// Ribbon segments: 2 or 3. Coarse ribbons retain the same taper resolution.
+  segments: u32 = 3
+  /// All emitted near, coarse and card triangles, 0 for kind default (2400 per square metre).
+  triangle_budget: u32 = 0
+  /// Clump card tile edge in pixels, power of two from 32..256.
+  card_px: u32 = 128
+  /// Clump alpha cutoff, 0.05..0.95. Coverage-tested appearance knob, not alpha-to-coverage.
+  card_cutoff: f32 = 0.5
+  /// Rich by default, never collides.
+  detail_tier: DetailTier = rich
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(5) {
+struct FloraFile @version(6) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft" or "herb" read their own parameter block. Named tree profiles
   /// in domain/geometry/flora_species.h read `tree`.
@@ -773,4 +803,30 @@ struct FloraFile @version(5) {
   /// Named growth profiles from the shared species catalogue.
   /// Existing broadleaf/conifer/birch/willow/orchard/ancient recipes retain their own blocks.
   tree: Tree @since(5)
+  /// Ground-cover patches; distinct from isolated Tuft.
+  sward: Sward @since(6)
+}
+
+/// One density class, shared patches in two resident forms. Paths resolve relative to the scene.
+struct SwardFamily {
+  /// Rendered density fraction: (0,1], ascending across the placement entry's families.
+  density: f32 = 1.0
+  /// Equal nonempty lists, 1..16 variants. Cards are cooked distance forms of the same meshes.
+  near: string[]
+  cards: string[]
+}
+/// The sward placement registry's parameters. The paint already contains shade, wet margins,
+/// slopes and excluded trails; do not apply those factors twice at runtime.
+struct SwardPlacements {
+  seed: u64 = 1
+  /// Patch edge, metres: 1 or 2. Must divide the context tile size.
+  cell_m: f32 = 1.0 @unit(m)
+  /// Palette index of the cooked grass paint, 0..253 (not a tile-local channel).
+  layer: u32 = 0
+  /// Inclusive tile window. Limited to 2^32-1 cells for collision-free stable IDs.
+  min_x: i32 = 0
+  min_z: i32 = 0
+  max_x: i32 = 0
+  max_z: i32 = 0
+  families: SwardFamily[]
 }

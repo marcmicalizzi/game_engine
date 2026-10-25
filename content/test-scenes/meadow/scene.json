@@ -1,0 +1,41 @@
+{
+  "format": "engine.scene.v1",
+  "name": "meadow-sward",
+  "description": "G88 cook template: paths resolve in the external sward-cook output. Field, crown-shaded edge, gentle slope, pond margin and trail. Acceptance pending.",
+  "camera_path": "camera-path.json",
+  "meshes": [{"path": "edge-tree.clusters", "name": "edge birch"}],
+  "instances": [
+    {"mesh": 0, "ground": true, "translation": [-18,0,-12], "yaw_deg": 0},
+    {"mesh": 0, "ground": true, "translation": [-23,0,-14], "yaw_deg": 70},
+    {"mesh": 0, "ground": true, "translation": [-15,0,-18], "yaw_deg": 150}
+  ],
+  "sky": {"latitude_deg": 46.5, "day_of_year": 200, "turbidity": 2.5},
+  "terrain": {
+    "size": 129, "extent": 64, "provider": "tiles",
+    "tiles": {"heightfield": "ground.json", "cells": 32, "ddc": "ddc"},
+    "materials": {
+      "layer_budget": 4,
+      "layers": [
+        {"name": "soil", "tint": [0.08,0.06,0.025], "roughness_factor": 0.9},
+        {"name": "sward", "base_color": "d100-v0/ground-colour.png", "normal": "d100-v0/ground-normal.png",
+         "height": "d100-v0/ground-height.png", "roughness": "d100-v0/ground-roughness.png", "tile_m": 1},
+        {"name": "trail", "tint": [0.2,0.15,0.08], "roughness_factor": 0.9},
+        {"name": "mud", "tint": [0.05,0.04,0.02], "roughness_factor": 0.8}
+      ]
+    },
+    "masks": {
+      "spacing_mm": 500, "tile_cells": 32, "height_blend": 0,
+      "priors": {"soil": "soil"},
+      "paint": [{"material": "sward", "image": "density.png"}],
+      "regions": [
+        {"name": "trail", "polygon": [[-7,0,-64],[-5,0,-64],[19,0,64],[17,0,64]], "material": "trail", "feather_m": 0.5},
+        {"name": "pond", "water_body": "pond", "bed": "mud", "margin": "sward", "margin_m": 2, "wet_m": 5, "feather_m": 0.5}
+      ]
+    }
+  },
+  "water": [{"name": "pond", "level_m": 0.038, "shape": {"circle": {"center": [-32,0,28.8], "radius_m": 3.2}}, "shore_m": 0.3}],
+  "world": {"tile_size": 16, "rings": [{"radius": 2}, {"radius": 4}, {"radius": 6}]},
+  "placements": [{"generator": "sward", "params": {"seed": 8801, "cell_m": 1, "layer": 1,
+    "min_x": -2, "max_x": 1, "min_z": -2, "max_z": 1,
+    "families": [{"density": 1, "near": ["d100-v0/patch.clusters"], "cards": ["d100-v0/distance.clusters"]}]}}]
+}

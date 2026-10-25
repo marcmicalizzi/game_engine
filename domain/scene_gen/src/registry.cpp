@@ -196,7 +196,10 @@ f64 floor_of(const void* context, i64 x_mm, i64 z_mm) noexcept {
 
 Ground GroundProvider::view() const noexcept {
   if (!valid()) return Ground{};
-  return Ground{&surface_of, &floor_of, this};
+  return Ground{&surface_of, &floor_of, this,
+                [](const void* provider, GroundMasks& out, std::string* error) {
+                  return static_cast<const GroundProvider*>(provider)->masks(out, error);
+                }};
 }
 
 SkyProvider& SkyProvider::operator=(SkyProvider&& other) noexcept {

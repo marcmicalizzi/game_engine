@@ -1,5 +1,10 @@
 # content_build (domain)
 
+G88's sward uses the existing flora derived step. `engine-content flora --sward-assets <dir>`
+additionally bakes the matching ground images and a distance form outside the checkout, with
+recipe/source/version provenance. See [flora](flora.md#grass-sward-g88) for the cut parameters
+and the distinction between these authored appearance values and botanical measurements.
+
 G87 extends the shared GeneratorHosts image callback used by flora: recipe-relative base-colour images are read as encoded bytes for both source hashing and CPU LOD baking. The command-line flora build and renderer-generated trees therefore share material colour, alpha and cache invalidation behavior. Image decode failures are build errors; see [flora](flora.md#the-impostor-chain).
 
 

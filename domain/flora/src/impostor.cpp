@@ -583,12 +583,13 @@ bool surface_sample(const BakeLook& look, bool leaf, f64 u, f64 v, u32& rgb) {
 }  // namespace
 
 void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
-                const BakeLook& look, BakedAtlas& out) {
+                const BakeLook& look, BakedAtlas& out, Vector<f32>* depth_out) {
   const u32 px = level.tile_px;
   out.width = level.columns * px;
   out.height = level.rows * px;
   out.colour.assign(static_cast<u32>(out.width) * out.height * 4u, u8{0});
   out.normal.assign(static_cast<u32>(out.width) * out.height * 4u, u8{0});
+  if (depth_out != nullptr) depth_out->assign(out.width * out.height, 0.0f);
   const u32 side = px * k_samples;
   Vector<Sample> samples;
   for (const BakeJob& job : level.jobs) {
@@ -693,11 +694,13 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         u32 covered = 0;
         f64 rgb[3] = {0.0, 0.0, 0.0};
         D3 normal{0.0, 0.0, 0.0};
+        f64 depth_sum = 0;
         for (u32 sy = 0; sy < k_samples; ++sy) {
           for (u32 sx = 0; sx < k_samples; ++sx) {
             const Sample& s = samples[(py * k_samples + sy) * side + pxi * k_samples + sx];
             if (s.triangle == k_no_triangle) continue;
             ++covered;
+            if (depth_out != nullptr) depth_sum += s.depth;
             const bool leaf =
                 s.triangle >= levels.leaf_first_index && s.triangle < levels.leaf_index_end;
             Vec4 c = leaf ? look.leaf : look.bark;
@@ -720,6 +723,7 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         if (covered == 0) continue;
         const u32 at = ((ty + py) * out.width + tx + pxi) * 4u;
         const f64 inv = 1.0 / static_cast<f64>(covered);
+        if (depth_out != nullptr) (*depth_out)[at / 4] = static_cast<f32>(depth_sum * inv);
         for (u32 k = 0; k < 3; ++k)
           out.colour[at + k] = texture::linear_to_srgb8(static_cast<f32>(rgb[k] * inv));
         const u8 alpha = static_cast<u8>((covered * 255u + k_samples * k_samples / 2u) /
@@ -952,7 +956,7 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
             fx = fx < 0.0 ? 0.0 : (fx > baked.width - 1.0 ? baked.width - 1.0 : fx);
             fy = fy < 0.0 ? 0.0 : (fy > baked.height - 1.0 ? baked.height - 1.0 : fy);
             const u32 at = (static_cast<u32>(fy) * baked.width + static_cast<u32>(fx)) * 4u;
-            if (baked.colour[at + 3] < 128u) return false;
+            if (static_cast<f32>(baked.colour[at + 3]) / 255.0f < level.alpha_cutoff) return false;
             rgb = static_cast<u32>(baked.colour[at]) |
                   (static_cast<u32>(baked.colour[at + 1]) << 8) |
                   (static_cast<u32>(baked.colour[at + 2]) << 16);

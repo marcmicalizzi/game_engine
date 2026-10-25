@@ -5,8 +5,8 @@
 // engine's vegetation instead of modelled or image-to-3D assets, which E10 found lose their detail
 // past a person's size (docs/experiments/e10-generated-props.md). Its first species is the date
 // palm (palm.h). It owns the species' parameter types (schemas/flora.schema) and the solver; it
-// does not own placement (a scatter layer or a scene's instances place what it makes), wind
-// (roadmap S66), or the textures its materials will sample (G60).
+// owns the sward placement generator (G88); trees use scatter or authored instances. Runtime
+// wind posing and material texture streaming belong to their existing engine systems.
 //
 // The registration points, ADR-0027 decision 2:
 //

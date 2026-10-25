@@ -85,6 +85,7 @@ struct TreeLevel {
   f32 feature_m = 0.0f;
   f32 difference = 0.0f;
   f32 coverage_m = 0.0f;
+  f32 alpha_cutoff = 0.5f;  // baked card material and coverage measurement use the same threshold
 };
 
 // Linear factors and optional decoded material images. Pure callers without images use the
@@ -135,7 +136,7 @@ struct BakedAtlas {
 // mesh's triangles are leaves (shaded by `look.leaf`, cut by the outline when it asks) and which
 // bark. Pure and single-threaded; the same bytes on every toolchain.
 void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
-                const BakeLook& look, BakedAtlas& out);
+                const BakeLook& look, BakedAtlas& out, Vector<f32>* depth = nullptr);
 
 // **The coverage bake** (flora.md, "The coverage bake"; R91): every job's geometry and the card or
 // cards that stand for it (the level's own atlas, `baked`), drawn on the CPU by the bake's

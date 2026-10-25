@@ -84,6 +84,13 @@ struct Ground {
   HeightFn surface_fn = nullptr;
   HeightFn floor_fn = nullptr;  // null: the surface
   const void* context = nullptr;
+  // Borrow the same cooked mask level the tile source exposes. False propagates a cook error;
+  // true with an invalid view means no masks, never an implicit uniform grass field.
+  bool (*masks_fn)(const void*, GroundMasks&, std::string*) = nullptr;
+  bool masks(GroundMasks& out, std::string* error = nullptr) const {
+    out = {};
+    return masks_fn == nullptr || masks_fn(context, out, error);
+  }
   bool present() const noexcept { return surface_fn != nullptr; }
   f64 surface_mm(i64 x_mm, i64 z_mm) const noexcept {
     return surface_fn != nullptr ? surface_fn(context, x_mm, z_mm) : 0.0;

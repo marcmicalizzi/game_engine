@@ -212,10 +212,12 @@ enum class ClusterSection : u32 {
   // host stays the bytes it was; it is what the blended cover layer (roadmap R90) will read through
   // the attribute path. **Written only by the cover generator**, like 34 to 38.
   CoverMask = 40,
+  // G88: ao, thickness, hue, age as four u8 unorms, parallel to Vertices.
+  SwardVertex = 41,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::CoverMask) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::SwardVertex) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -364,6 +366,14 @@ struct ClusterFileMotionVertex {
   u16 weight = 0;
 };
 
+struct ClusterFileSwardVertex {
+  u8 ao = 255;
+  u8 thickness = 128;
+  u8 hue = 128;
+  u8 age = 0;
+};
+static_assert(sizeof(ClusterFileSwardVertex) == 4);
+
 // One part's thickness, as section 37 records it (flora.md, "The structural table"). 16 bytes.
 // `part` is the part's id in section 35, the records in ascending id and so parents first; the
 // part's axis is the segment from its `pivot` along its `direction` for its `length`, and its
@@ -490,6 +500,7 @@ struct ClusterFileData {
   // The cover mask (section 40), empty for every mesh but a cover's companion; one packed word per
   // host vertex. Written only when not empty.
   Vector<u32> cover_mask;
+  Vector<ClusterFileSwardVertex> sward_vertices;
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

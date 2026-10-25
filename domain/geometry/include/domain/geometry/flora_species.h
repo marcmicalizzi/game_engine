@@ -28,7 +28,8 @@ enum class FloraSpecies : u8 {
   pine,
   spruce,
   cedar,
-  juniper
+  juniper,
+  sward
 };
 struct FloraSpeciesInfo {
   FloraSpecies id;
@@ -60,6 +61,8 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     {FloraSpecies::spruce, "spruce", true, 60000, {.008f, .035f, .06f, .08f}},
     {FloraSpecies::cedar, "cedar", true, 80000, {.008f, .035f, .06f, .08f}},
     {FloraSpecies::juniper, "juniper", true, 30000, {.008f, .035f, .06f, .08f}},
+    // Temporary main's CPU pose: same blade compliance as Tuft; field posing is engine-side.
+    {FloraSpecies::sward, "sward", false, 2400, {.20f, .20f, .20f, .20f}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {

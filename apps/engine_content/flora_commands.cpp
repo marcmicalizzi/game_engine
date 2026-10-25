@@ -6,6 +6,7 @@
 #include "content_commands.h"
 
 #include <core/base/types.h>
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 
 #include <cstdio>
@@ -18,10 +19,17 @@
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/generator_hosts.h>
 #include <domain/flora/flora.h>
+#include <domain/flora/sward.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/materials/materials.h>
+#include <domain/texture/material_textures.h>
+#include <domain/texture/texture_build.h>
+#include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+
+#include <algorithm>
+#include <filesystem>
 #endif
 
 namespace engine::content {
@@ -43,6 +51,8 @@ const char* k_flora_usage =
     "      --ddc <dir>    the cache root (default: <repo>/ddc, found beside AGENTS.md); implies\n"
     "                     --cache when no output is named\n"
     "      --force        build even when the output is already the answer\n"
+    "      --sward-assets <dir>  bake ground PBR and a 20 m distance form beside a sward recipe;\n"
+    "                     directory must be outside a checkout (contains no ancestor AGENTS.md)\n"
     "      --materials <dir>  the material pack a part with no set of its own takes its role's\n"
     "                     default from (default: <repo>/content/materials, found beside "
     "AGENTS.md)\n"
@@ -68,8 +78,131 @@ void print_json(const JsonValue& value) {
   std::fwrite(text.data(), 1, text.size(), stdout);
 }
 
+bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData& data,
+                  const std::string& directory, std::string& error) {
+  if (file.species != "sward") {
+    error = "--sward-assets needs species sward";
+    return false;
+  }
+  const auto target = std::filesystem::absolute(directory).lexically_normal();
+  for (auto ancestor = target; !ancestor.empty(); ancestor = ancestor.parent_path()) {
+    if (std::filesystem::exists(ancestor / "AGENTS.md")) {
+      error = "sward generated assets must be outside a checkout";
+      return false;
+    }
+    if (ancestor == ancestor.parent_path()) break;
+  }
+  if (io::make_directories(target.generic_string()) != io::Status::Ok) {
+    error = "cannot create sward assets directory";
+    return false;
+  }
+  const auto path = [&](const char* name) { return (target / name).generic_string(); };
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeLevels chain;
+  if (!flora::solve_sward(file.sward, mesh, nullptr, &error, &motion, &chain)) return false;
+  flora::BakedAtlas ground;
+  Vector<f32> depth;
+  constexpr u32 pixels = 256;
+  flora::bake_sward_ground(mesh, chain, file.sward.cell_m, pixels, ground, &depth);
+  Vector<u8> heights(pixels * pixels, 0), roughness(pixels * pixels, 179);
+  const auto* profile = flora::sward_profile(file.sward.species);
+  for (u32 i = 0; i < pixels * pixels; ++i) {
+    const f32 cover = static_cast<f32>(ground.colour[i * 4 + 3]) / 255;
+    // A dark substrate of the same blade colour fills uncovered samples. This authored base is
+    // explicit in provenance; it is not reported as measured biological coverage.
+    const Vec4 green = mesh.materials[0].base_color;
+    const f32 rgb[3] = {green.x, green.y, green.z};
+    for (u32 c = 0; c < 3; ++c)
+      ground.colour[i * 4 + c] = texture::linear_to_srgb8(rgb[c] * (.35f + .65f * cover));
+    ground.colour[i * 4 + 3] = 255;
+    if (cover == 0) {
+      ground.normal[i * 4] = ground.normal[i * 4 + 1] = 128;
+      ground.normal[i * 4 + 2] = 255;
+    }
+    ground.normal[i * 4 + 3] = 255;
+    heights[i] = static_cast<u8>(std::clamp(depth[i] / profile->length_max_m, 0.0f, 1.0f) * 255);
+  }
+  for (const auto& item : {std::pair{"ground-colour.png", &ground.colour},
+                           std::pair{"ground-normal.png", &ground.normal}}) {
+    if (image::write_png(path(item.first), pixels, pixels, 4, *item.second) != io::Status::Ok) {
+      error = "cannot write sward ground image";
+      return false;
+    }
+  }
+  if (image::write_png(path("ground-height.png"), pixels, pixels, 1, heights) != io::Status::Ok ||
+      image::write_png(path("ground-roughness.png"), pixels, pixels, 1, roughness) !=
+          io::Status::Ok) {
+    error = "cannot write sward scalar images";
+    return false;
+  }
+  geometry::LodFormCut cut;
+  cut.distance = 20;
+  cut.proj_scale = 2160;
+  // Ring one explicitly chooses the authored card rung. This is a representation policy,
+  // not a claim that its silhouette is within one pixel at the ring boundary.
+  cut.threshold_px = 1000;
+  cut.foliage_px = 1000;
+  cut.fade = .1f;
+  geometry::ClusterFileData form = data;
+  geometry::LodFormMap map;
+  if (!geometry::extract_lod_form(data.mesh, data.lod_coverage, cut, form.mesh, form.lod_coverage,
+                                  map, &error))
+    return false;
+  form.pages = {};
+  form.cluster_material.clear();
+  form.motion_vertices.clear();
+  form.sward_vertices.clear();
+  for (u32 c : map.clusters) {
+    if (data.impostors.empty() || data.cluster_material[c] != data.impostors[0].material) {
+      error = "sward ring-one form retained a non-card cluster";
+      return false;
+    }
+    form.cluster_material.push_back(data.cluster_material[c]);
+  }
+  for (u32 v : map.vertices) {
+    form.motion_vertices.push_back(data.motion_vertices[v]);
+    form.sward_vertices.push_back(data.sward_vertices[v]);
+  }
+  // A derived form has a distinct key; it must never impersonate the full source in the DDC.
+  const f32 form_parameters[] = {cut.origin.x,     cut.origin.y,   cut.origin.z,
+                                 cut.distance,     cut.znear,      cut.proj_scale,
+                                 cut.threshold_px, cut.foliage_px, cut.fade};
+  form.build_key =
+      hash_combine(hash_combine(data.build_key, Hash<std::string_view>{}("sward-distance-v1")),
+                   hash_bytes(form_parameters, sizeof(form_parameters)));
+  if (!geometry::write_cluster_file(path("distance.clusters"), form, &error)) return false;
+  JsonValue provenance = JsonValue::object();
+  provenance.set("generator", JsonValue("engine.flora.Sward"));
+  provenance.set("version", JsonValue(flora::k_sward_version));
+  provenance.set("recipe", JsonValue(flora::canonical_flora_json(file)));
+  provenance.set("source_hash", JsonValue(data.source_hash));
+  provenance.set("full_clusters", JsonValue(data.mesh.mesh.clusters.size()));
+  provenance.set("form_clusters", JsonValue(form.mesh.mesh.clusters.size()));
+  provenance.set("distance_m", JsonValue(20.0));
+  provenance.set("projection_scale", JsonValue(2160.0));
+  provenance.set("threshold_px", JsonValue(static_cast<f64>(cut.threshold_px)));
+  provenance.set("foliage_px", JsonValue(static_cast<f64>(cut.foliage_px)));
+  provenance.set("form_policy",
+                 JsonValue("authored clump cards only; transition acceptance pending"));
+  provenance.set("ground_height_scale_m", JsonValue(static_cast<f64>(profile->length_max_m)));
+  provenance.set("substrate", JsonValue("0.35 times blade linear colour; authored, not scanned"));
+  provenance.set("roughness", JsonValue(0.7));
+  const auto measured = flora::measure_sward_coverage(mesh, chain);
+  JsonValue coverage = JsonValue::array();
+  for (const auto& tier : measured.fraction) {
+    JsonValue row = JsonValue::array();
+    for (f32 value : tier)
+      row.push_back(JsonValue(static_cast<f64>(value)));
+    coverage.push_back(std::move(row));
+  }
+  provenance.set("projected_coverage_near_coarse_cards", std::move(coverage));
+  return io::write_file(path("provenance.json"), write_json(provenance)) == io::Status::Ok;
+}
+
 int flora(int argc, char** argv) {
   std::string input;
+  std::string sward_directory;
   std::string output;
   std::string ddc;
   std::string materials_dir;
@@ -83,6 +216,9 @@ int flora(int argc, char** argv) {
       cache = true;
     } else if (a == "--force") {
       force = true;
+    } else if (a == "--sward-assets") {
+      if (i + 1 >= argc) return usage("--sward-assets needs a directory");
+      sward_directory = argv[++i];
     } else if (a == "--no-materials") {
       no_materials = true;
     } else if (a == "--materials") {
@@ -165,13 +301,16 @@ int flora(int argc, char** argv) {
     if (!geometry::write_cluster_file(path, data, &error)) return failed(error);
   }
 
+  if (!sward_directory.empty() && !sward_assets(file, data, sward_directory, error))
+    return failed(error);
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(path));
   summary.set("cached", JsonValue(cached));
   summary.set("species", JsonValue(file.species));
   summary.set("source_hash", JsonValue(source_hash));
   summary.set("build_key", JsonValue(build_key));
-  summary.set("flora_version", JsonValue(flora::k_flora_version));
+  summary.set("flora_version",
+              JsonValue(file.species == "sward" ? flora::k_sward_version : flora::k_flora_version));
   summary.set("triangles", JsonValue(data.mesh.leaf_triangle_count));
   summary.set("clusters", JsonValue(data.mesh.mesh.clusters.size()));
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));
