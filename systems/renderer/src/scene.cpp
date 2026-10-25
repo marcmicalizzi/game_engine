@@ -1,5 +1,6 @@
 #include "scene_flora.h"
 
+#include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
@@ -8,6 +9,7 @@
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/content_build/content_build.h>
+#include <domain/content_build/image_identities.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
@@ -15,6 +17,8 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
+#include <domain/texture/texture_build.h>
+#include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/flora_motion.h>
@@ -24,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <renderer_log.h>
@@ -85,58 +90,282 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
   }
 }
 
-// The texture step `engine-content build --cache` runs, for a mesh this load reads through the
-// derived-data cache (`content_build::run_texture_step`, the same function, so the two apps build
-// the same `.tex` under the same keys): every image the container's records name is built into
-// `<ddc>/textures/<key>.tex` unless an entry with that identity is already there, which costs a
-// read and a hash per image on a warm cache. Without it a mesh the renderer clustered itself on a
-// cold cache drew its textures decoded at one level — no mips, shimmering at a distance — until
-// someone ran engine-content over it, because only engine-content built textures. A texture that
-// cannot be built is a warning and the mesh draws through the decode, as it always could.
-// `source_dir` is what the records' image paths are relative to.
-void build_cache_textures(const geometry::ClusterFileData& data, std::string_view source_dir,
-                          const std::string& ddc, const std::string& what) {
-  if (ddc.empty()) return;
-  Vector<content_build::TextureSource> sources;
-  content_build::collect_texture_sources(data, source_dir, sources);
-  if (sources.empty()) return;
-  Vector<const content_build::TextureSource*> pointers;
-  Vector<u32> mesh_of;
-  pointers.reserve(sources.size());
-  mesh_of.reserve(sources.size());
-  for (const content_build::TextureSource& source : sources) {
-    pointers.push_back(&source);
-    mesh_of.push_back(0u);
-  }
+// ---- The load's textures (renderer.md, "What the load reads"; roadmap W75) ---------------------
+//
+// One pass for the whole load, after every mesh is in, where until 2026-10-24 each mesh ran the
+// content build's texture step on its own — reading and hashing every image its materials name to
+// find the `.tex` the image's bytes address, and making and joining a job pool to do it — so a
+// forest whose 42 trees share a pack's bark and leaves read the pack 42 times, and the GPU upload
+// read and hashed every one again (2.7 GB of the v7 forest's 4.4 GB read before ready). Now:
+//
+//   1. Every (mesh, image) a material samples, in mesh order. An image the container carries has
+//      the key its record says (the container's identity covers those bytes); one named by path is
+//      found by its file, **one identity per distinct file for the whole load**, through the load's
+//      table (`content_build::ImageIdentities`): a material pack's file from the pack's index under
+//      the derived-data root without a read, any other file read and hashed once. The distinct
+//      files are identified on the job system, each its own job.
+//   2. Every distinct key's `.tex` is **trusted from its header** — it exists, it is the size its
+//      header says, and its recorded identity is this key's (`texture::probe_texture_file`): a few
+//      hundred bytes of derived data, not the texture and not its source.
+//   3. Only a key whose `.tex` is missing or refused is built, all of them in one run of the
+//      content build's step over one pool, from the bytes the container carries or the file read
+//      now — and a pack file whose bytes no longer give its index's hash is built under the key
+//      its bytes give.
+//   4. The keys go back into each mesh's texture records, so the GPU upload finds every built
+//      texture by key and never hashes a source again (`find_built_textures`, gpu_scene.cpp).
+//
+// Without a derived-data root nothing is built or looked up, as before, and the upload decodes.
+
+struct TextureRef {
+  u32 mesh = 0;
+  u32 image = 0;
+  u32 file = ~0u;  // into the distinct files; ~0u for an image the container carries
+  u32 options = 0;
+  u64 source_hash = 0;
+  u64 key = 0;
+};
+
+struct FileWork {
+  std::string path;
+  content_build::ImageIdentities* identities = nullptr;
+  u64 hash = 0;
+  u64 size = 0;
+  bool ok = false;
+  std::string error;
+};
+
+void identify_file(void* data) {
+  FileWork& work = *static_cast<FileWork*>(data);
+  work.ok = work.identities->identify(work.path, work.hash, work.size, work.error);
+}
+
+struct KeyWork {
+  u64 source_hash = 0;
+  u64 key = 0;
+  u32 first_ref = 0;  // the reference whose bytes build it when it has to be built
+  std::string path;   // its `.tex`
+  bool trusted = false;
+  u64 bytes = 0;
+  std::string why;
+};
+
+void probe_key(void* data) {
+  KeyWork& work = *static_cast<KeyWork*>(data);
+  u64 recorded_hash = 0;
+  u64 recorded_key = 0;
+  if (!texture::probe_texture_file(work.path, recorded_hash, recorded_key, work.bytes, &work.why))
+    return;
+  work.trusted = recorded_hash == work.source_hash && recorded_key == work.key;
+  if (!work.trusted) work.why = "built from other bytes or options";
+}
+
+// One job of `fn` per item on the performance pool, the calling thread helping; returns when all
+// are done.
+template <typename T>
+void run_jobs(jobs::JobSystem& pool, Vector<T>& items, void (*fn)(void*)) {
+  if (items.empty()) return;
+  Vector<jobs::Job> list;
+  list.reserve(items.size());
+  jobs::Counter counter;
+  for (T& item : items)
+    list.push_back(jobs::Job{fn, &item, &counter});
+  pool.schedule(jobs::Pool::Performance, std::span<const jobs::Job>(list.data(), list.size()),
+                counter);
+  pool.wait(counter);
+}
+
+void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
+                            content_build::ImageIdentities& identities, jobs::JobSystem& pool,
+                            SceneLoadReport& report) {
+  if (!desc.cache || desc.ddc.empty()) return;
   const i64 start_ns = time::monotonic_ns();
-  ENGINE_STARTUP_STAGE_DETAIL("cache textures", what);
-  profiling::trace_items(sources.size());
-  jobs::JobSystem pool(content_build::job_config(0));
-  Vector<content_build::TextureResult> results;
-  content_build::run_texture_step(
-      std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
-      std::span<const u32>(mesh_of.data(), mesh_of.size()), ddc, pool, results);
-  u32 built = 0;
-  u32 found = 0;
-  for (const content_build::TextureResult& result : results) {
-    switch (result.state) {
-      case content_build::TextureState::Built: ++built; break;
-      case content_build::TextureState::Skipped:
-      case content_build::TextureState::Shared: ++found; break;
-      case content_build::TextureState::Missing:
-      case content_build::TextureState::Failed:
-      case content_build::TextureState::Unreadable:
-        ENGINE_LOG_WARN(log_renderer, "texture not built", log::field("mesh", what),
-                        log::field("image", result.image),
-                        log::field("state", content_build::texture_state_name(result.state)),
-                        log::field("error", result.error));
-        break;
+  ENGINE_STARTUP_STAGE("cache textures");
+  // 1. The references, and the distinct files among them.
+  Vector<TextureRef> refs;
+  Vector<FileWork> files;
+  HashMap<u64, u32> file_of;
+  for (u32 m = 0; m < sources.size(); ++m) {
+    const SourceMesh& mesh = sources[m];
+    if (mesh.textures.size() != mesh.data.images.size()) continue;
+    for (u32 i = 0; i < mesh.textures.size(); ++i) {
+      const geometry::ClusterFileTexture& record = mesh.textures[i];
+      texture::TextureBuildOptions options;
+      if (record.options == 0 || !texture::unpack_texture_options(record.options, options))
+        continue;
+      TextureRef ref;
+      ref.mesh = m;
+      ref.image = i;
+      ref.options = record.options;
+      const assets::ImageRef& image = mesh.data.images[i];
+      if (!image.bytes.empty()) {
+        ref.source_hash = record.key != 0 ? record.source_hash
+                                          : hash_bytes(image.bytes.data(), image.bytes.size());
+        ref.key =
+            record.key != 0 ? record.key : texture::texture_cache_key(ref.source_hash, options);
+      } else if (!image.uri.empty()) {
+        std::string path = io::normalize_path(
+            mesh.image_dir.empty() ? image.uri : io::join_path(mesh.image_dir, image.uri));
+        const u64 path_hash = hash_bytes(path.data(), path.size());
+        const u32* found = file_of.find_value(path_hash);
+        if (found != nullptr && files[*found].path == path) {
+          ref.file = *found;
+        } else {
+          ref.file = files.size();
+          if (found == nullptr) file_of.try_emplace(path_hash, ref.file);
+          FileWork work;
+          work.path = std::move(path);
+          work.identities = &identities;
+          files.push_back(std::move(work));
+        }
+      } else {
+        continue;  // neither bytes nor a path: the upload says so
+      }
+      refs.push_back(ref);
     }
   }
-  ENGINE_LOG_INFO(log_renderer, "mesh textures built", log::field("mesh", what),
-                  log::field("built", built), log::field("found", found),
-                  log::field("images", results.size()),
-                  log::field("ms", static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6));
+  report.references = refs.size();
+  {
+    ENGINE_STARTUP_STAGE("texture identities");
+    profiling::trace_items(files.size());
+    run_jobs(pool, files, identify_file);
+  }
+  for (TextureRef& ref : refs) {
+    if (ref.file == ~0u) continue;
+    const FileWork& file = files[ref.file];
+    if (!file.ok) continue;
+    texture::TextureBuildOptions options;
+    (void)texture::unpack_texture_options(ref.options, options);
+    ref.source_hash = file.hash;
+    ref.key = texture::texture_cache_key(file.hash, options);
+  }
+  // 2. The distinct keys, each `.tex` trusted from its header.
+  Vector<KeyWork> keys;
+  HashMap<u64, u32> key_of;
+  Vector<u32> key_of_ref(refs.size(), ~0u);
+  for (u32 r = 0; r < refs.size(); ++r) {
+    const TextureRef& ref = refs[r];
+    if (ref.key == 0) continue;
+    if (const u32* found = key_of.find_value(ref.key);
+        found != nullptr && keys[*found].source_hash == ref.source_hash) {
+      key_of_ref[r] = *found;
+      continue;
+    }
+    key_of_ref[r] = keys.size();
+    key_of.try_emplace(ref.key, keys.size());
+    KeyWork work;
+    work.source_hash = ref.source_hash;
+    work.key = ref.key;
+    work.first_ref = r;
+    work.path = texture::texture_cache_path(desc.ddc, ref.key);
+    keys.push_back(std::move(work));
+  }
+  report.textures = keys.size();
+  {
+    ENGINE_STARTUP_STAGE("texture probe");
+    profiling::trace_items(keys.size());
+    run_jobs(pool, keys, probe_key);
+  }
+  // 3. What has to be built, from the bytes it was keyed by, in one run of the step.
+  Vector<content_build::TextureSource> build;
+  Vector<u32> build_key;  // the key each build is for
+  for (u32 k = 0; k < keys.size(); ++k) {
+    KeyWork& work = keys[k];
+    if (work.trusted) {
+      ++report.trusted;
+      continue;
+    }
+    const TextureRef& ref = refs[work.first_ref];
+    content_build::TextureSource source;
+    source.image = ref.image;
+    source.options = ref.options;
+    if (ref.file == ~0u) {
+      const Vector<u8>& bytes = sources[ref.mesh].data.images[ref.image].bytes;
+      source.view = std::span<const u8>(bytes.data(), bytes.size());
+      source.source_hash = ref.source_hash;
+    } else {
+      std::string bytes;
+      u64 hash = 0;
+      std::string why;
+      if (!identities.read(files[ref.file].path, bytes, hash, why)) {
+        ENGINE_LOG_WARN(log_renderer, "texture not built",
+                        log::field("image", files[ref.file].path), log::field("error", why));
+        ++report.unbuilt;
+        continue;
+      }
+      if (hash != work.source_hash) {
+        // The file is not the bytes its identity said (a pack edited without its manifest): every
+        // reference to it takes the key its bytes give, and that is what is built.
+        texture::TextureBuildOptions options;
+        for (u32 r = 0; r < refs.size(); ++r) {
+          TextureRef& other = refs[r];
+          if (other.file != ref.file) continue;
+          (void)texture::unpack_texture_options(other.options, options);
+          other.source_hash = hash;
+          other.key = texture::texture_cache_key(hash, options);
+        }
+      }
+      source.bytes.assign(reinterpret_cast<const u8*>(bytes.data()),
+                          reinterpret_cast<const u8*>(bytes.data()) + bytes.size());
+      source.source_hash = hash;
+    }
+    build.push_back(std::move(source));
+    build_key.push_back(k);
+  }
+  if (!build.empty()) {
+    ENGINE_STARTUP_STAGE("texture build");
+    profiling::trace_items(build.size());
+    Vector<const content_build::TextureSource*> pointers;
+    Vector<u32> mesh_of;
+    for (u32 b = 0; b < build.size(); ++b) {
+      pointers.push_back(&build[b]);
+      mesh_of.push_back(refs[keys[build_key[b]].first_ref].mesh);
+    }
+    Vector<content_build::TextureResult> results;
+    content_build::run_texture_step(
+        std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
+        std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc, pool, results);
+    for (const content_build::TextureResult& result : results) {
+      switch (result.state) {
+        case content_build::TextureState::Built: ++report.built; break;
+        case content_build::TextureState::Skipped:
+        case content_build::TextureState::Shared: ++report.trusted; break;
+        case content_build::TextureState::Missing:
+        case content_build::TextureState::Failed:
+        case content_build::TextureState::Unreadable:
+          ++report.unbuilt;
+          ENGINE_LOG_WARN(log_renderer, "texture not built", log::field("image", result.image),
+                          log::field("state", content_build::texture_state_name(result.state)),
+                          log::field("error", result.error));
+          break;
+      }
+    }
+  }
+  // 4. Every reference's key into its mesh's records, which the upload reads.
+  for (const TextureRef& ref : refs) {
+    if (ref.key == 0) continue;
+    geometry::ClusterFileTexture& record = sources[ref.mesh].textures[ref.image];
+    record.source_hash = ref.source_hash;
+    record.key = ref.key;
+  }
+  identities.save();
+  const content_build::ImageIdentities::Counts counts = identities.counts();
+  report.images_from_index = counts.from_index;
+  report.images_hashed = counts.hashed;
+  report.source_image_reads = counts.reads;
+  report.source_image_bytes = counts.read_bytes;
+  report.textures_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+  char detail[96];
+  std::snprintf(detail, sizeof(detail), "trusted=%u built=%u hashed=%u from_index=%u",
+                report.trusted, report.built, report.images_hashed, report.images_from_index);
+  profiling::trace_end(profiling::trace_begin("textures trusted", detail));
+  ENGINE_LOG_INFO(
+      log_renderer, "scene textures checked", log::field("references", report.references),
+      log::field("textures", report.textures), log::field("trusted", report.trusted),
+      log::field("built", report.built), log::field("unbuilt", report.unbuilt),
+      log::field("from_index", report.images_from_index),
+      log::field("hashed", report.images_hashed),
+      log::field("source_reads", report.source_image_reads),
+      log::field("source_bytes", report.source_image_bytes), log::field("ms", report.textures_ms));
 }
 
 // Writes a mesh that was just imported and clustered into the derived-data cache, byte for byte
@@ -147,9 +376,10 @@ void build_cache_textures(const geometry::ClusterFileData& data, std::string_vie
 // are moved into the container and back out again, so neither is ever copied. A cache that
 // cannot be written is a warning and nothing more: the picture does not depend on it.
 // True when the entry landed, which is what tells the caller its pages may be read back out of it.
-// The textures its records name are built into `ddc` beside it (`build_cache_textures`), landed or
-// not, because the texture lookup reads the records this function hands back, not the file.
-bool write_cluster_cache(const std::string& path, const std::string& source, const std::string& ddc,
+// The textures its records name are built by the load's texture pass once every mesh is in
+// (`prepare_scene_textures`), landed or not, because that pass reads the records this function
+// hands back, not the file.
+bool write_cluster_cache(const std::string& path, const std::string& source,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
@@ -223,7 +453,6 @@ bool write_cluster_cache(const std::string& path, const std::string& source, con
     ENGINE_LOG_WARN(log_renderer, "cluster cache not written", log::field("path", path),
                     log::field("error", error));
   }
-  build_cache_textures(data, io::parent_path(source), ddc, source.empty() ? path : source);
   lod = std::move(data.mesh);
   pages = std::move(data.pages);
   textures = std::move(data.textures);
@@ -484,9 +713,8 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("fold_unsimplified", lod.fold_guard.unsimplified),
                   log::field("sloppy", lod.fold_guard.sloppy),
                   log::field("sloppy_folded", lod.fold_guard.sloppy_folded));
-  if (!cache_path.empty() &&
-      write_cluster_cache(cache_path, "", desc.ddc, out.data, out.part_material,
-                          out.part_of_cluster, lod, built, out.textures)) {
+  if (!cache_path.empty() && write_cluster_cache(cache_path, "", out.data, out.part_material,
+                                                 out.part_of_cluster, lod, built, out.textures)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -498,9 +726,11 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
 // so every cluster has a single material, merged, and written into the cache for the next run).
 // An empty `path` builds the scene's terrain when it has one and the procedural scene otherwise.
 // `expected_hash`, when not zero, is the source hash the file must have (a scene file's `hash`).
+// `identities` is the load's table of its source images, when it has one (load_scene's); its
+// textures are not this function's — the load's pass builds or trusts them after every mesh is in.
 bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                       SourceMesh& out, geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
-                      std::string& error) {
+                      std::string& error, content_build::ImageIdentities* identities = nullptr) {
   auto page_layout = [&](const char* what, u32 page_bytes) {
     lay_out_pages(desc, what, page_bytes, out, lod, pages);
   };
@@ -586,14 +816,11 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     geometry::ClusterFileData generated;
     std::string where;
     if (!load_generated_mesh(path, desc, expected_hash, generated, where, out.cache,
-                             out.source_hash, error)) {
+                             out.source_hash, error, identities)) {
       return false;
     }
-    // The images its parts sample — a recipe's sets, a material pack's — built into the cache's
-    // textures as a glTF's are, so they draw block-compressed and mipmapped; without a cache they
-    // draw through the decode (renderer.md, "Built textures").
-    if (desc.cache && !generated.image_paths.empty())
-      build_cache_textures(generated, io::parent_path(path), desc.ddc, path);
+    // The images its parts sample — a recipe's sets, a material pack's — are the load's texture
+    // pass's, as a glTF's are (`prepare_scene_textures`; renderer.md, "Built textures").
     adopt_container(generated, where, desc, out, lod, pages);
     return true;
   }
@@ -650,12 +877,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   if (from_container) {
     // A container found in or named beside the cache may have been written before its textures
     // were built (an older engine-view, a cache that lost them, `engine-content build` without
-    // `--cache`): the step builds whatever of them is missing and finds the rest.
-    if (desc.cache) {
-      const std::string& source = container_data.source_path;
-      build_cache_textures(container_data, io::parent_path(source.empty() ? container : source),
-                           desc.ddc, container);
-    }
+    // `--cache`): the load's texture pass builds whatever of them is missing and trusts the rest.
     adopt_container(container_data, container, desc, out, lod, pages);
     return true;
   }
@@ -744,8 +966,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // Into the cache for the next run, as the same container engine-content build writes: either
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
-    if (write_cluster_cache(cache_path, path, desc.ddc, out.data, out.part_material,
-                            out.part_of_cluster, lod, built, out.textures)) {
+    if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
+                            built, out.textures)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;
@@ -795,7 +1017,8 @@ struct PlacementRef {
 };
 
 // The job system's performance pool, made the first time a generator asks for it: a read of a few
-// tiles never starts one, and a read of many shares one, as `build_cache_textures` makes one.
+// tiles never starts one, and a read of many shares one, as the load's meshes and textures share
+// one.
 struct LazyPool {
   std::optional<jobs::JobSystem> pool;
   static jobs::JobSystem* get(void* context) {
@@ -1932,16 +2155,81 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());
-  for (u32 m = 0; m < resolved.meshes.size(); ++m) {
-    const u64 expected = described ? resolved.mesh_info[m].hash : 0;
-    ENGINE_STARTUP_STAGE_DETAIL("mesh", resolved.meshes[m]);
-    if (!load_source_mesh(resolved.meshes[m], resolved, expected, out.sources[m], dags[m],
-                          tables[m], error)) {
+  // **The meshes load on the job system**, one job each, the calling thread helping (renderer.md,
+  // "What the load reads"; roadmap W75): every mesh's read, hash, container and build is its own
+  // and lands in its own slot, so nothing about the result depends on the thread count or on which
+  // finished first, and the first failure reported is the lowest mesh index's, as the serial loop
+  // reported it. A path a later mesh repeats loads in a second wave, after the first has written
+  // the entry it shares, so it is a cache hit as it was serially rather than a second build of the
+  // same entry. One pool for the whole load: these jobs, then the texture pass's.
+  const i64 meshes_start_ns = time::monotonic_ns();
+  std::optional<jobs::JobSystem> pool;
+  pool.emplace(content_build::job_config(resolved.load_jobs));
+  out.load.meshes = resolved.meshes.size();
+  out.load.threads = pool->total_worker_count() + 1;
+  content_build::ImageIdentities identities(resolved.cache ? resolved.ddc : std::string(),
+                                            materials::pack_at(resolved.materials));
+  {
+    struct MeshJob {
+      const SceneDesc* desc = nullptr;
+      const std::string* path = nullptr;
+      u64 expected = 0;
+      SourceMesh* source = nullptr;
+      geometry::ClusterLodMesh* lod = nullptr;
+      geometry::ClusterPages* pages = nullptr;
+      content_build::ImageIdentities* identities = nullptr;
+      bool ok = false;
+      std::string error;
+    };
+    Vector<MeshJob> mesh_jobs(resolved.meshes.size());
+    Vector<u32> wave(resolved.meshes.size(), 0u);
+    for (u32 m = 0; m < resolved.meshes.size(); ++m) {
+      MeshJob& job = mesh_jobs[m];
+      job.desc = &resolved;
+      job.path = &resolved.meshes[m];
+      job.expected = described ? resolved.mesh_info[m].hash : 0;
+      job.source = &out.sources[m];
+      job.lod = &dags[m];
+      job.pages = &tables[m];
+      job.identities = &identities;
+      for (u32 e = 0; e < m; ++e) {
+        if (resolved.meshes[e] == resolved.meshes[m] && !resolved.meshes[m].empty()) {
+          wave[m] = 1;
+          break;
+        }
+      }
+    }
+    const auto run = [](void* data) {
+      MeshJob& job = *static_cast<MeshJob*>(data);
+      ENGINE_STARTUP_STAGE_DETAIL("mesh", *job.path);
+      job.ok = load_source_mesh(*job.path, *job.desc, job.expected, *job.source, *job.lod,
+                                *job.pages, job.error, job.identities);
+    };
+    ENGINE_STARTUP_STAGE("meshes");
+    profiling::trace_items(resolved.meshes.size());
+    for (u32 w = 0; w < 2; ++w) {
+      Vector<jobs::Job> list;
+      jobs::Counter counter;
+      for (u32 m = 0; m < mesh_jobs.size(); ++m)
+        if (wave[m] == w) list.push_back(jobs::Job{run, &mesh_jobs[m], &counter});
+      if (list.empty()) continue;
+      pool->schedule(jobs::Pool::Performance, std::span<const jobs::Job>(list.data(), list.size()),
+                     counter);
+      pool->wait(counter);
+    }
+    for (u32 m = 0; m < mesh_jobs.size(); ++m) {
+      if (mesh_jobs[m].ok) continue;
+      error = std::move(mesh_jobs[m].error);
       if (described && !resolved.mesh_info[m].name.empty())
         error = resolved.mesh_info[m].name + ": " + error;
       return false;
     }
   }
+  out.load.meshes_ms = static_cast<f64>(time::monotonic_ns() - meshes_start_ns) / 1.0e6;
+  // Every mesh's textures at once: one identity per distinct image, a built one trusted from its
+  // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
+  // below copy the records, so a form carries its mesh's keys.
+  prepare_scene_textures(resolved, out.sources, identities, *pool, out.load);
   // A streamed world's own instances, before the merge: their forms are meshes of their own
   // (renderer.md, "Authored instances per tile").
   {

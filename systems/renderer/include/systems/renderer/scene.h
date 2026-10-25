@@ -329,6 +329,10 @@ struct SceneDesc {
   // heightfield has no cache entry, so a caller that wants many small pages — a test, or a
   // measurement of what a budget does — may say so. Zero is the default target.
   u32 page_bytes = 0;
+  // The workers the load's meshes and textures run over (renderer.md, "What the load reads"): 0
+  // one per performance CPU, as `engine-content --jobs 0`. The result does not depend on it — a
+  // test loads a scene at 1 and at 0 and requires the same tables.
+  u32 load_jobs = 0;
   // ---- what a scene file adds (schema `engine.scene.Scene`) ------------------------------------
   // Per mesh: a name, the hash its bytes must have, and a fit. Empty, or parallel to `meshes`.
   Vector<SceneMeshInfo> mesh_info;
@@ -453,7 +457,10 @@ struct SourceMesh {
   u64 source_hash = 0;
   // Where each image's built texture is (`geometry::ClusterFileTexture`,
   // docs/subsystems/texture.md), parallel to `data.images` or empty: the container's own records,
-  // or the ones this load wrote into the cache entry it made. Empty — every image decoded as
+  // or the ones this load wrote into the cache entry it made — with, after `load_scene`'s texture
+  // pass, the key and source hash of every image named by path filled in from the load's one
+  // identity of its file, so the upload finds a built texture by key and hashes no source
+  // (renderer.md, "What the load reads"). Empty — every image decoded as
   // before — for a glTF loaded with no cache and for a container that records none.
   Vector<geometry::ClusterFileTexture> textures;
   // The derived-data root those textures are looked up under; empty when the load reads no cache
@@ -471,8 +478,36 @@ struct SourceMesh {
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 
+// What `load_scene` read and did to have the scene's meshes and their textures (renderer.md, "What
+// the load reads"; roadmap W75): the numbers a test holds a cooked load to — no source image read —
+// and engine-view's summary prints as `load`.
+struct SceneLoadReport {
+  u32 meshes = 0;   // loaded by the per-mesh pass
+  u32 threads = 0;  // the job system's workers it ran over, plus the calling thread
+  // The texture pass: images the meshes' materials sample (`references`), the distinct built
+  // textures they name (`textures`), of those the ones whose `.tex` was trusted from its header
+  // and the ones built now, and the ones neither (the image could not be read or built; drawn
+  // through the decode).
+  u32 references = 0;
+  u32 textures = 0;
+  u32 trusted = 0;
+  u32 built = 0;
+  u32 unbuilt = 0;
+  // Source images: answered by a material pack's index without a read, read and hashed (once
+  // each), and every open of one this load made with the bytes it returned — zero for a scene
+  // whose images are all embedded or a pack's and all built.
+  u32 images_from_index = 0;
+  u32 images_hashed = 0;
+  u32 source_image_reads = 0;
+  u64 source_image_bytes = 0;
+  // The pass's wall milliseconds: the per-mesh loads, and the texture pass after them.
+  f64 meshes_ms = 0.0;
+  f64 textures_ms = 0.0;
+};
+
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
 struct SceneData {
+  SceneLoadReport load;
   geometry::ClusterLodMesh lod;             // every mesh of the scene, merged
   Vector<geometry::ClusterMeshPart> parts;  // one per mesh: its clusters and its 16-bit grid
   // The scene's one page table, filled only under `SceneDesc::stream`: every mesh's pages, one

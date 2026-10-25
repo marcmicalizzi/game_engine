@@ -1,6 +1,8 @@
 // The hosts a generated mesh grows over (generator_hosts.h).
+#include <core/hash/hash.h>
 #include <domain/assets/gltf.h>
 #include <domain/content_build/generator_hosts.h>
+#include <domain/content_build/image_identities.h>
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
@@ -21,15 +23,44 @@ bool load_hook(void* context, std::string_view path, assets::GeneratorHostMesh& 
 }
 
 bool image_hook(void* context, std::string_view path, Vector<u8>& out, std::string& error) {
-  const std::string native = static_cast<const GeneratorHosts*>(context)->resolve(path);
+  const auto* hosts = static_cast<const GeneratorHosts*>(context);
+  const std::string native = hosts->resolve(path);
   std::string bytes;
-  const io::Status status = io::read_file(native, bytes);
-  if (status != io::Status::Ok) {
+  if (ImageIdentities* identities = hosts->identities(); identities != nullptr) {
+    u64 hash = 0;
+    std::string why;
+    if (!identities->read(native, bytes, hash, why)) {
+      error = "cannot read generator material image " + native + ": " + why;
+      return false;
+    }
+  } else if (const io::Status status = io::read_file(native, bytes); status != io::Status::Ok) {
     error = "cannot read generator material image " + native + ": " + io::status_name(status);
     return false;
   }
   out.assign(reinterpret_cast<const u8*>(bytes.data()),
              reinterpret_cast<const u8*>(bytes.data()) + bytes.size());
+  return true;
+}
+
+// The image's hash from the load's table when there is one — a pack's file from its index, any
+// other file read once for the whole load — and otherwise from its bytes, read now. The same
+// number either way, which is what keeps a baked tree's source hash the same whichever host asked.
+bool hash_hook(void* context, std::string_view path, u64& out, std::string& error) {
+  const auto* hosts = static_cast<const GeneratorHosts*>(context);
+  const std::string native = hosts->resolve(path);
+  if (ImageIdentities* identities = hosts->identities(); identities != nullptr) {
+    u64 size = 0;
+    std::string why;
+    if (identities->identify(native, out, size, why)) return true;
+    error = "cannot read generator material image " + native + ": " + why;
+    return false;
+  }
+  std::string bytes;
+  if (const io::Status status = io::read_file(native, bytes); status != io::Status::Ok) {
+    error = "cannot read generator material image " + native + ": " + io::status_name(status);
+    return false;
+  }
+  out = hash_bytes(bytes.data(), bytes.size());
   return true;
 }
 
@@ -50,6 +81,7 @@ GeneratorHosts::GeneratorHosts(std::string dependant, const geometry::ClusterLod
   hooks_.identify = identify_hook;
   hooks_.load = load_hook;
   hooks_.read_image = image_hook;
+  hooks_.hash_image = hash_hook;
 }
 
 std::string GeneratorHosts::resolve(std::string_view path) const {
@@ -79,7 +111,8 @@ bool GeneratorHosts::identify(std::string_view path, u64& out, std::string& erro
       error = "cannot read the host " + native + ": " + io::status_name(status);
       return false;
     }
-    const GeneratorHosts inner(native, lod_, page_bytes_, pack_, depth_ + 1);
+    GeneratorHosts inner(native, lod_, page_bytes_, pack_, depth_ + 1);
+    inner.set_identities(identities_);
     if (!assets::generated_source_hash(*generator, bytes_of(text), inner.inputs(), out, error)) {
       error = native + ": " + error;
       return false;
@@ -122,7 +155,8 @@ bool GeneratorHosts::load(std::string_view path, assets::GeneratorHostMesh& out,
         error = "cannot read the host " + native;
         return false;
       }
-      const GeneratorHosts inner(native, lod_, page_bytes_, pack_, depth_ + 1);
+      GeneratorHosts inner(native, lod_, page_bytes_, pack_, depth_ + 1);
+      inner.set_identities(identities_);
       if (!generator->build(bytes_of(text), inner.inputs(), lod_, page_bytes_, data, error)) {
         error = "the host " + native + ": " + error;
         return false;

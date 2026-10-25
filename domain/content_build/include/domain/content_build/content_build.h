@@ -146,6 +146,13 @@ struct TextureSource {
   u32 options = 0;
   std::string file;  // the image file, resolved against the source's directory; empty if embedded
   Vector<u8> bytes;  // the embedded bytes; empty when `file` names them
+  // Bytes the caller holds and outlives the step with — a loaded mesh's embedded image — read in
+  // place of `bytes` when both `bytes` and `file` are empty, so a load builds without a copy.
+  std::span<const u8> view;
+  // Nonzero: `hash_bytes` over exactly the bytes above, which the caller already took (the
+  // renderer's load, image_identities.h), so the step does not hash them again. Zero: the step
+  // hashes them, as it always did.
+  u64 source_hash = 0;
 };
 
 // The images of a container's records that have a texture to build, in image order. `dir` is what

@@ -96,7 +96,12 @@ A directory holding `pack.json` and the maps, one directory per role:
 outside the pack, a convention other than `opengl` (the renderer reads glTF's tangent space; a
 DirectX map lit from below is the packer's to flip, not a guess here) or a number out of range. The
 SHA-256s, resolutions, provenance and licences are for `tools/fetch-materials.ps1` and for people;
-the engine reads the files and the numbers. `pack_at(dir)` reads a directory's pack once per
+the engine reads the files and the numbers — and **takes the manifest's text as the pin of its files'
+bytes**: `Pack::hash` is over that text, so a load that hashed a pack's file once keeps the answer in
+the derived-data root under the pack's hash and never reads it again while the pack is the same
+(roadmap W75; [content_build](content_build.md#one-hash-per-image-and-a-packs-from-its-manifest)). A
+pack is changed by repacking it, which moves its hash; one edited in place without its manifest is
+caught only where a missing texture is built from it. `pack_at(dir)` reads a directory's pack once per
 process and keeps it (null for no `pack.json`, said once in the log); `default_pack_dir(start)` is
 `<repo>/content/materials` beside the `<repo>/ddc` that `geometry::find_ddc_root` finds.
 

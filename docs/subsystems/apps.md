@@ -977,6 +977,11 @@ Today the per-frame milestones are recorded by a **replay** (`--replay-input`, o
 
 **Over the protocol** `render.load` with `"startup_trace": true` records the load and answers the same block in `RenderSceneInfo.startup`, timed from the call, its milestones `scene_read` and `scene_loaded`; it is refused while another trace records in the process.
 
+## The summary's `load` block
+
+**What the load read and what the pipeline cache did** (`FlythroughSummary.load`, version 17; roadmap W75): `meshes` and the `threads` they loaded over (the load's job system's workers and the calling thread), `meshes_ms`; `textures` — the (mesh, image) `references` a material samples, the `distinct` built textures they name, of those `trusted` from their `.tex` header and `built` now, `unbuilt` (neither: drawn through the decode, with a warning), and the pass's `ms`; `source_images` — `from_index` (a material pack's files answered by the pack's index, no read), `hashed` (read and hashed once), and every open of a source image the load made, `reads` and `bytes`: **zero for a cooked scene whose images are all embedded or a pack's**; and `pipeline_cache` — `enabled`, the file's `path`, whether it `loaded`, `loaded_bytes`, and why a file that was there was `ignored`. Offscreen runs print it (`run_offscreen`); see [renderer](renderer.md#what-the-load-reads) and [gfx](gfx.md#the-pipeline-cache).
+
+**engine-view's pipeline cache** is `<ddc>/pipeline-cache/` — the root `--ddc` names, or the one found above the executable — and none with `--no-cache`; `ENGINE_PIPELINE_CACHE=0` turns it off for one run. engine-host and engine-editor do not give their devices one yet.
 ## `--report`: what a tester sends back
 
 **One file, written at exit whichever way the run ended** (`report.h`, `report.cpp`; roadmap P21). A build that reaches another person's machine — a packaged game, a bundle of tests — comes back as whatever that person attaches, and someone with no checkout and no idea which console line matters can attach one file. `--report <file.json>` writes it: on success, on a failure the process can still write after (a scene that does not load, a device that is not there, a game module that fails), and after a window was closed or Escape ended the session. It says where it is on stderr.

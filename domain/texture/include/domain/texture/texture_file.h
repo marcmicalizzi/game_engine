@@ -185,6 +185,16 @@ bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out,
 bool read_texture_file_identity(std::string_view path, u64& source_hash, u64& build_key,
                                 std::string* error = nullptr);
 
+// **What a load trusts a built texture by** (texture.md, "Trusted, not read"; roadmap W75): the
+// header, the section table and the `SourceHash` section, read by range — a few hundred bytes,
+// not the payload — with the file's size held to the header's `total_bytes`. The content hash is
+// not checked here; the upload's full read (`read_texture_file`) checks it, and a file that fails
+// it there draws through the decode with the reason. `bytes` is the file's size. False with the
+// reason when the file cannot be opened, is not a texture file this build reads, or is not the
+// size its header says.
+bool probe_texture_file(std::string_view path, u64& source_hash, u64& build_key, u64& bytes,
+                        std::string* error = nullptr);
+
 // The content hash the writer stores in the header, computed without writing anything.
 u64 texture_file_hash(const TextureData& data);
 

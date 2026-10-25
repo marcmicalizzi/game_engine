@@ -2,6 +2,7 @@
 #include "volk_instance.h"
 
 #include <core/base/assert.h>
+#include <core/base/macros.h>
 #include <core/containers/vector.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
@@ -10,9 +11,11 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <foundation/gpu_lock/device_hold.h>
+#include <foundation/io/vfs.h>
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -101,6 +104,78 @@ void set_error(std::string* error, const char* what, VkResult result) {
   error->append(result_name(result));
 }
 
+// ENGINE_PIPELINE_CACHE=0 turns the cache off for one process (gfx.md, "The pipeline cache").
+bool pipeline_cache_switched_off() {
+#if ENGINE_COMPILER_MSVC
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, "ENGINE_PIPELINE_CACHE") != 0 || value == nullptr) return false;
+  const bool off = value[0] == '0' && value[1] == '\0';
+  std::free(value);
+  return off;
+#else
+  const char* value = std::getenv("ENGINE_PIPELINE_CACHE");
+  return value != nullptr && value[0] == '0' && value[1] == '\0';
+#endif
+}
+
+// The device's cache, filled from its file when the file is this device's (pipeline_cache.h).
+// Nothing here can fail creation: a cache that cannot be made leaves every pipeline uncached.
+void open_pipeline_cache(const DeviceOptions& options, Handles& h, PipelineCacheReport& report,
+                         u64& cache_bytes) {
+  if (options.pipeline_cache_dir.empty() || pipeline_cache_switched_off()) return;
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(h.physical, &props);
+  PipelineCacheIdentity identity;
+  identity.vendor_id = props.vendorID;
+  identity.device_id = props.deviceID;
+  identity.driver_version = props.driverVersion;
+  std::memcpy(identity.uuid, props.pipelineCacheUUID, sizeof(identity.uuid));
+  report.enabled = true;
+  report.path = pipeline_cache_file(options.pipeline_cache_dir, identity);
+  std::string bytes;
+  if (io::exists(report.path)) {
+    if (io::read_file(report.path, bytes) != io::Status::Ok) {
+      report.ignored = "unreadable";
+      bytes.clear();
+    } else if (!pipeline_cache_header_matches(
+                   std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()),
+                   identity)) {
+      report.ignored = bytes.size() < k_pipeline_cache_header_bytes
+                           ? "shorter than a header"
+                           : "another device's or driver's header";
+      bytes.clear();
+    }
+  }
+  VkPipelineCacheCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+  info.initialDataSize = bytes.size();
+  info.pInitialData = bytes.empty() ? nullptr : bytes.data();
+  VkResult r = vkCreatePipelineCache(h.device, &info, nullptr, &h.pipeline_cache);
+  if (r != VK_SUCCESS && !bytes.empty()) {
+    // The driver refused what the header promised: start empty, as with any other bad file.
+    report.ignored = "refused by the driver";
+    bytes.clear();
+    info.initialDataSize = 0;
+    info.pInitialData = nullptr;
+    r = vkCreatePipelineCache(h.device, &info, nullptr, &h.pipeline_cache);
+  }
+  if (r != VK_SUCCESS) {
+    h.pipeline_cache = VK_NULL_HANDLE;
+    report.enabled = false;
+    ENGINE_LOG_WARN(log_device, "pipeline cache not made", log::field("error", result_name(r)));
+    return;
+  }
+  report.loaded = !bytes.empty();
+  report.loaded_bytes = bytes.size();
+  size_t size = 0;
+  if (vkGetPipelineCacheData(h.device, h.pipeline_cache, &size, nullptr) == VK_SUCCESS)
+    cache_bytes = size;
+  ENGINE_LOG_INFO(log_device, "pipeline cache", log::field("path", report.path),
+                  log::field("loaded", report.loaded), log::field("bytes", report.loaded_bytes),
+                  log::field("ignored", report.ignored));
+}
+
 }  // namespace
 
 const char* result_name(VkResult result) noexcept {
@@ -135,6 +210,10 @@ struct Device::Impl {
   // vkCreateDevice and let go just after the device is destroyed — when the test environment's
   // switch is on, and not otherwise (foundation/gpu_lock/device_hold.h, ADR-0049).
   gpu_lock::DeviceHold gpu_hold;
+  // The pipeline cache's file and what happened to it (pipeline_cache.h); `cache_bytes` is the
+  // driver's size of the cache as it was loaded or last saved, which a save compares against.
+  PipelineCacheReport pipeline_cache;
+  u64 cache_bytes = 0;
 };
 
 Device::~Device() { destroy(); }
@@ -187,6 +266,40 @@ bool Device::memory_budget(MemoryBudget& out) const noexcept {
       out.used_bytes += budget.heapUsage[i];
     }
   }
+  return true;
+}
+
+const PipelineCacheReport& Device::pipeline_cache() const noexcept {
+  static const PipelineCacheReport k_none;
+  return impl_ != nullptr ? impl_->pipeline_cache : k_none;
+}
+
+// Written only when the driver's cache is larger than what was loaded or last saved: a cache
+// only grows, so an equal size is the same pipelines, and a launch that compiled nothing new
+// writes nothing. Atomic, so a second process reading it meanwhile sees the old file or the new.
+bool Device::save_pipeline_cache() noexcept {
+  if (impl_ == nullptr || impl_->handles.pipeline_cache == VK_NULL_HANDLE) return true;
+  Handles& h = impl_->handles;
+  size_t size = 0;
+  if (vkGetPipelineCacheData(h.device, h.pipeline_cache, &size, nullptr) != VK_SUCCESS)
+    return false;
+  if (size <= impl_->cache_bytes) return true;
+  std::string bytes(size, '\0');
+  if (vkGetPipelineCacheData(h.device, h.pipeline_cache, &size, bytes.data()) != VK_SUCCESS)
+    return false;
+  bytes.resize(size);
+  const std::string_view dir = io::parent_path(impl_->pipeline_cache.path);
+  if (io::make_directories(dir) != io::Status::Ok ||
+      io::write_file_atomic(impl_->pipeline_cache.path, bytes) != io::Status::Ok) {
+    ENGINE_LOG_WARN(log_device, "pipeline cache not saved",
+                    log::field("path", impl_->pipeline_cache.path));
+    return false;
+  }
+  impl_->cache_bytes = size;
+  impl_->pipeline_cache.saved_bytes = size;
+  ENGINE_LOG_INFO(log_device, "pipeline cache saved",
+                  log::field("path", impl_->pipeline_cache.path),
+                  log::field("bytes", static_cast<u64>(size)));
   return true;
 }
 
@@ -656,6 +769,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     return fail("vkCreateCommandPool", r);
   }
 
+  // ---- pipeline cache (pipeline_cache.h): never a reason to fail ----
+  open_pipeline_cache(options, h, impl->pipeline_cache, impl->cache_bytes);
+
   impl_ = impl;
   ENGINE_LOG_INFO(log_device, "device created",
                   log::field("adapter", std::string_view(impl->adapter.name)),
@@ -675,6 +791,11 @@ void Device::destroy() noexcept {
   if (impl_ == nullptr) return;
   Handles& h = impl_->handles;
   if (h.device != VK_NULL_HANDLE) vkDeviceWaitIdle(h.device);
+  if (h.pipeline_cache != VK_NULL_HANDLE) {
+    (void)save_pipeline_cache();
+    vkDestroyPipelineCache(h.device, h.pipeline_cache, nullptr);
+    h.pipeline_cache = VK_NULL_HANDLE;
+  }
   if (h.immediate_pool != VK_NULL_HANDLE) vkDestroyCommandPool(h.device, h.immediate_pool, nullptr);
   if (h.allocator != nullptr) vmaDestroyAllocator(h.allocator);
   if (h.device != VK_NULL_HANDLE) vkDestroyDevice(h.device, nullptr);
@@ -933,7 +1054,7 @@ bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, co
   info.layout = layout;
   VkPipeline pipeline = VK_NULL_HANDLE;
   if (const VkResult r =
-          vkCreateComputePipelines(h.device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+          vkCreateComputePipelines(h.device, h.pipeline_cache, 1, &info, nullptr, &pipeline);
       r != VK_SUCCESS) {
     set_error(error, "vkCreateComputePipelines", r);
     vkDestroyPipelineLayout(h.device, layout, nullptr);
@@ -1038,8 +1159,8 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
   VkPipeline pipeline = VK_NULL_HANDLE;
-  const VkResult r = vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info,
-                                               nullptr, &pipeline);
+  const VkResult r = vkCreateGraphicsPipelines(
+      device.handles().device, device.handles().pipeline_cache, 1, &info, nullptr, &pipeline);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateGraphicsPipelines", r);
     out = {};
@@ -1138,8 +1259,8 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Pi
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
   VkPipeline pipeline = VK_NULL_HANDLE;
-  const VkResult r = vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info,
-                                               nullptr, &pipeline);
+  const VkResult r = vkCreateGraphicsPipelines(
+      device.handles().device, device.handles().pipeline_cache, 1, &info, nullptr, &pipeline);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateGraphicsPipelines(mesh)", r);
     out = {};

@@ -85,6 +85,11 @@ struct MeshGeneratorHosts {
   // Generators hash these same bytes before building baked representations.
   bool (*read_image)(void* context, std::string_view path, Vector<u8>& out,
                      std::string& error) = nullptr;
+  // `hash_bytes` over those same bytes, without them where the host already knows it — a load's
+  // table of its images, a material pack's index (content_build/image_identities.h, roadmap W75).
+  // A generator that only hashes an image asks this first and falls back to `read_image`; the two
+  // must agree, so a source hash is the same number whichever the host answered.
+  bool (*hash_image)(void* context, std::string_view path, u64& out, std::string& error) = nullptr;
 };
 
 // A container's finest level as a host (`GeneratorHostMesh`): its leaf clusters' triangles over

@@ -216,10 +216,22 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
     if (slot < 0 || static_cast<u32>(slot) >= materials.image_paths.size() ||
         materials.image_paths[slot].empty())
       continue;
-    Vector<u8> bytes;
-    if (!inputs.hosts->read_image(inputs.hosts->context, materials.image_paths[slot], bytes, error))
-      return false;
-    out = hash_combine(out, hash_bytes(bytes.data(), bytes.size()));
+    // The host's hash of the image when it has one (a load's table, a pack's index: no read;
+    // roadmap W75), else the bytes' — the same number, so the key does not depend on which
+    // answered.
+    u64 image_hash = 0;
+    if (inputs.hosts->hash_image != nullptr) {
+      if (!inputs.hosts->hash_image(inputs.hosts->context, materials.image_paths[slot], image_hash,
+                                    error))
+        return false;
+    } else {
+      Vector<u8> bytes;
+      if (!inputs.hosts->read_image(inputs.hosts->context, materials.image_paths[slot], bytes,
+                                    error))
+        return false;
+      image_hash = hash_bytes(bytes.data(), bytes.size());
+    }
+    out = hash_combine(out, image_hash);
   }
   return true;
 }

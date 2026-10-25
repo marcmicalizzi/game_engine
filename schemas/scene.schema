@@ -1928,7 +1928,10 @@ struct FlythroughAnimation @version(1) {
 /// Version 16: `flora`, the trees' sway — how many sway, how many of them a streamed world's tail
 /// holds, the tail's records and their bytes, and the CPU's posing per frame (renderer.md,
 /// "Streamed trees sway").
-struct FlythroughSummary @version(16) {
+///
+/// Version 17: `load`, what the load read for its meshes and textures and what the device's
+/// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
+struct FlythroughSummary @version(17) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2038,4 +2041,9 @@ struct FlythroughSummary @version(16) {
   /// instances, parts, the poser's chunks and workers, the tail's records and bytes, and the posing's
   /// mean and longest CPU milliseconds a frame. Null when no tree sways.
   flora: json @since(16)
+  /// The load (`renderer::SceneLoadReport`, `gfx::PipelineCacheReport`): the meshes and the
+  /// threads they loaded over, the texture pass's references, distinct textures, trusted, built and
+  /// unbuilt, the source images answered from a pack's index, hashed and read (count and bytes),
+  /// and the pipeline cache's file, whether it loaded and why not. Null where nothing was loaded.
+  load: json @since(17)
 }

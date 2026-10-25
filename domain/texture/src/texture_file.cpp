@@ -345,6 +345,61 @@ bool read_texture_file_identity(std::string_view path, u64& source_hash, u64& bu
                        source_hash, build_key, error);
 }
 
+bool probe_texture_file(std::string_view path, u64& source_hash, u64& build_key, u64& bytes,
+                        std::string* error) {
+  source_hash = 0;
+  build_key = 0;
+  bytes = 0;
+  io::FileHandle file;
+  if (const io::Status status = file.open(path); status != io::Status::Ok) {
+    return fail(error,
+                "cannot open texture file '" + std::string(path) + "': " + io::status_name(status));
+  }
+  TextureFileHeader header;
+  u64 got = 0;
+  if (file.read_at(0, &header, k_header_bytes, got) != io::Status::Ok || got != k_header_bytes)
+    return fail(error, "texture file is truncated: no whole header");
+  if (std::memcmp(header.magic, "TEXF", 4) != 0)
+    return fail(error, "not a texture file: the magic is not \"TEXF\"");
+  if (header.version != k_texture_file_version) {
+    return fail(error, "unsupported texture file version " + std::to_string(header.version) +
+                           ": this build reads version " + std::to_string(k_texture_file_version));
+  }
+  // The size the header says against the size the file is: a write that did not finish, or a
+  // file something else appended to, is not the texture its identity names.
+  if (file.size() != header.total_bytes) {
+    return fail(error, "texture file is " + std::to_string(file.size()) +
+                           " bytes, and its header says " + std::to_string(header.total_bytes));
+  }
+  const u64 table_end = k_header_bytes + k_record_bytes * u64{header.section_count};
+  if (table_end > header.total_bytes)
+    return fail(error, "texture file's section table does not fit");
+  Vector<TextureFileSection> sections(header.section_count);
+  if (header.section_count > 0 &&
+      (file.read_at(k_header_bytes, sections.data(), k_record_bytes * header.section_count, got) !=
+           io::Status::Ok ||
+       got != k_record_bytes * header.section_count)) {
+    return fail(error, "texture file's section table cannot be read");
+  }
+  for (const TextureFileSection& section : sections) {
+    if (section.kind != static_cast<u32>(TextureSection::SourceHash)) continue;
+    if (section.element_count == 0) break;
+    if (section.element_size != sizeof(u64) || section.offset > header.total_bytes ||
+        u64{section.element_count} * sizeof(u64) > header.total_bytes - section.offset) {
+      return fail(error, "texture file section source_hash is malformed");
+    }
+    u64 words[2] = {0, 0};
+    const u64 want = section.element_count >= 2 ? 2 * sizeof(u64) : sizeof(u64);
+    if (file.read_at(section.offset, words, want, got) != io::Status::Ok || got != want)
+      return fail(error, "texture file section source_hash cannot be read");
+    source_hash = words[0];
+    build_key = words[1];
+    break;
+  }
+  bytes = header.total_bytes;
+  return true;
+}
+
 bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::string* error) {
   out = TextureData{};
   TextureFileHeader header;

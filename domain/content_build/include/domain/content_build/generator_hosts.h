@@ -34,6 +34,8 @@ namespace engine::content_build {
 
 inline constexpr u32 k_host_depth = 4;
 
+class ImageIdentities;
+
 class GeneratorHosts {
  public:
   // `dependant` is the path of the file whose host paths are resolved against its directory.
@@ -54,12 +56,19 @@ class GeneratorHosts {
   bool identify(std::string_view path, u64& out, std::string& error) const;
   bool load(std::string_view path, assets::GeneratorHostMesh& out, std::string& error) const;
 
+  // The load's table of its source images (image_identities.h), which the image hooks read and
+  // hash through — once per image per load, a pack's from its index — and which a host's own
+  // hosts share. Null reads every image each time it is asked for, as before.
+  void set_identities(ImageIdentities* identities) noexcept { identities_ = identities; }
+  ImageIdentities* identities() const noexcept { return identities_; }
+
  private:
   std::string dependant_;
   geometry::ClusterLodOptions lod_;
   u32 page_bytes_ = 0;
   const materials::Pack* pack_ = nullptr;
   u32 depth_ = 0;
+  ImageIdentities* identities_ = nullptr;
   assets::MeshGeneratorHosts hooks_;
 };
 

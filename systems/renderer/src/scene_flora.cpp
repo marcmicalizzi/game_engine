@@ -25,7 +25,8 @@ bool is_generated_mesh(const std::string& path) { return !assets::mesh_generator
 
 bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                          geometry::ClusterFileData& data, std::string& container,
-                         const char*& cache, u64& source_hash, std::string& error) {
+                         const char*& cache, u64& source_hash, std::string& error,
+                         content_build::ImageIdentities* identities) {
   container.clear();
   cache = "none";
   const std::string_view name = assets::mesh_generator_of(path);
@@ -46,8 +47,9 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
   // one engine-content uses, under this scene's LOD options and pack: the two build one container.
   const u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
   profiling::TraceStage inputs_stage("generator inputs");
-  const content_build::GeneratorHosts hosts(path, desc.lod, page_bytes,
-                                            materials::pack_at(desc.materials));
+  content_build::GeneratorHosts hosts(path, desc.lod, page_bytes,
+                                      materials::pack_at(desc.materials));
+  hosts.set_identities(identities);
   const assets::MeshGeneratorInputs inputs = hosts.inputs();
   std::string generator_error;
   if (!assets::generated_source_hash(*generator, bytes, inputs, source_hash, generator_error)) {

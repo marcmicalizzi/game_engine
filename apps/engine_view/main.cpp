@@ -46,6 +46,7 @@
 #include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/backend/vulkan/swapchain.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
@@ -2060,6 +2061,49 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
   return true;
 }
 
+// The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary line"): what the
+// load read for its meshes and textures (`renderer::SceneLoadReport`) and what the device's
+// pipeline cache did (`gfx::PipelineCacheReport`).
+JsonValue load_summary(const renderer::SceneLoadReport& load,
+                       const gfx::PipelineCacheReport& cache) {
+  JsonValue out = JsonValue::object();
+  out.set("meshes", JsonValue(load.meshes));
+  out.set("threads", JsonValue(load.threads));
+  out.set("meshes_ms", JsonValue(load.meshes_ms));
+  JsonValue textures = JsonValue::object();
+  textures.set("references", JsonValue(load.references));
+  textures.set("distinct", JsonValue(load.textures));
+  textures.set("trusted", JsonValue(load.trusted));
+  textures.set("built", JsonValue(load.built));
+  textures.set("unbuilt", JsonValue(load.unbuilt));
+  textures.set("ms", JsonValue(load.textures_ms));
+  out.set("textures", std::move(textures));
+  JsonValue images = JsonValue::object();
+  images.set("from_index", JsonValue(load.images_from_index));
+  images.set("hashed", JsonValue(load.images_hashed));
+  images.set("reads", JsonValue(load.source_image_reads));
+  images.set("bytes", JsonValue(load.source_image_bytes));
+  out.set("source_images", std::move(images));
+  JsonValue pipelines = JsonValue::object();
+  pipelines.set("enabled", JsonValue(cache.enabled));
+  pipelines.set("path", JsonValue(cache.path));
+  pipelines.set("loaded", JsonValue(cache.loaded));
+  pipelines.set("loaded_bytes", JsonValue(cache.loaded_bytes));
+  pipelines.set("ignored", JsonValue(cache.ignored));
+  out.set("pipeline_cache", std::move(pipelines));
+  return out;
+}
+
+// The pipeline cache's directory (gfx.md, "The pipeline cache"): `<ddc>/pipeline-cache` beside the
+// derived data the load reads — the root `--ddc` names, or the one found above the executable —
+// and none with `--no-cache`, which reads and writes no derived data at all.
+std::string pipeline_cache_dir(const Options& options) {
+  if (!options.cache) return {};
+  const std::string ddc =
+      options.ddc.empty() ? geometry::find_ddc_root(platform::executable_directory()) : options.ddc;
+  return ddc.empty() ? std::string() : io::join_path(ddc, "pipeline-cache");
+}
+
 // `--reference <spp>`: the whole run offscreen, with no window, no surface and no swapchain
 // (docs/plan/04-renderer.md §4.8, docs/subsystems/renderer.md "Reference renderer"). A converged
 // picture is minutes of compute showing nothing until it is done, the machines that run the
@@ -2072,6 +2116,7 @@ int run_reference(Options& options) {
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
   device_options.validation = options.validation;
+  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
   gfx::Device device;
   if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
 
@@ -2372,6 +2417,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
   device_options.validation = options.validation;
+  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
   gfx::Device device;
   view::StartupTrace& startup = view::startup_trace();  // `--startup-trace` (startup.h)
   {
@@ -3348,6 +3394,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
+    summary.load = load_summary(scene_data.load, device.pipeline_cache());
     if (startup.on()) {
       std::string why;
       summary.startup = startup.finish(&why);
@@ -4661,6 +4708,7 @@ int run_view(int argc, char** argv) {
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
   device_options.validation = options.validation;
+  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
   device_options.instance_extensions = extensions.data();
   device_options.instance_extension_count = static_cast<u32>(extensions.size());
   gfx::Device device;

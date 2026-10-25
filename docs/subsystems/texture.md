@@ -247,11 +247,36 @@ bytes ([renderer](renderer.md#one-upload-per-distinct-image)); the summary's `di
 `bytes_saved` say so for any scene.
 
 **Whoever fills the cache builds the textures.** The renderer's load through the cache runs the
-content build's texture step (`content_build::run_texture_step`) beside the container it writes
-when it clusters a glTF itself, and on a hit for whatever of the container's textures is missing
-([renderer](renderer.md#built-textures)), so a scene on a cold cache samples built, mipmapped
+content build's texture step (`content_build::run_texture_step`) for whatever of its meshes'
+textures is missing — beside a container it writes when it clusters a glTF itself, and on a hit
+([renderer](renderer.md#what-the-load-reads)) — so a scene on a cold cache samples built, mipmapped
 textures from its first frame. Until 2026-09-24 only engine-content built them, and a scene flown
 without running it first drew them decoded at one level and shimmered at a distance.
+
+### Trusted, not read
+
+**A load trusts a built texture from its header** (since 2026-10-24, roadmap W75). The renderer's
+load takes every distinct key its meshes' records name once (`prepare_scene_textures`, scene.cpp)
+and asks `probe_texture_file` for it: the 32-byte header, the section table and the `SourceHash`
+section, read by range — a few hundred bytes, not the payload — the file's size held to the
+header's `total_bytes`, and the recorded source hash and build key compared with the ones the key
+was taken from. A `.tex` that passes is used without reading its source; one that is missing, torn
+(a size other than its header's) or recorded from other bytes is built again, once, and trusted
+from then on. The content hash is not checked by the probe: the upload's full read
+(`read_texture_file`) checks it, and a file whose payload fails it draws through the decode with the
+reason, as any unreadable texture does. The probe replaced `read_texture_file_identity` on the
+load's path, which read and hashed the whole file to answer the same question, so a warm forest
+read every `.tex` twice. `engine-content build-all` keeps the full check: the cook is where a
+corrupt entry should be found and rebuilt, the load is where it should cost nothing.
+
+**Where the key of an image named by path comes from.** The container still records no key for it
+(above), and the load does not write one in: it finds the image's hash through the load's table of
+its source images (`content_build::ImageIdentities`, [content_build](content_build.md#one-hash-per-image-and-a-packs-from-its-manifest)),
+**one identity per distinct file for the whole load**, and a material pack's file from the pack's
+index without a read. The keys it found go into each mesh's in-memory records, so the upload reads
+them and never hashes a source again. A file covered by nothing the load reads — a glTF's sibling
+PNG, a recipe's own set — is still hashed as it is now, once a load, which is what keeps a repainted
+one finding its new texture.
 
 ## Samplers and texture transforms
 
@@ -480,7 +505,8 @@ pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `s
   `TextureFileHeader`, `TextureFileSection`, `TextureFileDesc`, `TextureFileLevel`, `TextureData`
   (`level_bytes`), `validate_texture`, `write_texture_file`, `read_texture_file`,
   `read_texture_file_memory`, `read_texture_file_identity`, `read_texture_file_table`,
-  `texture_file_hash`, `is_texture_file`.
+  `probe_texture_file` (the identity and the size from the header, by range: what a load trusts a
+  built texture by), `texture_file_hash`, `is_texture_file`.
 - `domain/texture/texture_build.h` — `k_texture_cache_version`, `FormatChoice`,
   `EdgeMode`, `TextureBuildOptions` (with `edge_x` and `edge_y`), `format_choice_name`,
   `parse_format_choice`, `edge_mode_name`, `parse_edge_mode`, `pack_texture_options`,
@@ -503,7 +529,9 @@ record the glue fills); `bc7enc` (the vendored encoders, MIT or public domain).
 `tools/dev.ps1 test -Filter texture`:
 
 - `texture_file_tests.cpp` — a 37x21 BC7 chain (odd sides: partial blocks at every level) written,
-  read back field by field, read from memory, and its identity read alone; every payload and level
+  read back field by field, read from memory, and its identity read alone, and probed — the identity
+  and the size from the header, a file one byte short or long or not a texture refused, a flipped
+  payload byte left to the full read; every payload and level
   aligned; an inserted section of an unknown kind skipped; a texture with no identity reading zero;
   the writer refusing a wrong extent, a wrong byte count, BC5 claiming sRGB and a chain longer than
   the image allows; and a truncated file, a wrong magic, a wrong version, a section past the end, a
