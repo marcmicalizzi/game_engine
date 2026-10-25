@@ -344,6 +344,9 @@ class TerrainTileSet final : public TerrainLevelSet {
   void index_chunks();
   TerrainTileMeshSpec spec_of(i32 x, i32 z, u8 level, const HashMap<u64, u8>& level_of,
                               const TerrainRingLayout& layout) const noexcept;
+  // Why a tile `build_tile` refused could not be made: its level, the lattice it asked for, and
+  // whether the source had no heights there or its cluster LOD failed (roadmap W77).
+  std::string refusal_of(const TerrainTileMeshSpec& spec, f64 time_s) const;
   bool build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 time_s, TerrainChunk& chunk,
                   Vector<f32>& h, TerrainTileMesh& mesh, std::atomic<i64>& heights_ns,
                   std::atomic<i64>& mesh_ns) const;

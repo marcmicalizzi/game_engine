@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <renderer_log.h>
+#include <string>
 
 namespace engine::renderer {
 
@@ -36,6 +38,57 @@ tunables::Int far_levels_tunable{
 i64 floor_div(i64 a, i64 b) noexcept {
   const i64 q = a / b;
   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// Millimetres as a sentence says them: "4 m", "0.5 m".
+std::string metres(i64 mm) {
+  if (mm % 1000 == 0) return std::to_string(mm / 1000) + " m";
+  char text[32];
+  std::snprintf(text, sizeof(text), "%g m", static_cast<f64>(mm) / 1000.0);
+  return text;
+}
+
+// **A far level the source has no ground for** (renderer.md, "The ground from the world's
+// tiles"): the sentence names the level, the lattice it asks for and where that came from — the
+// outermost ring's spacing, which the world block's rings and cells decide — and what a tile set
+// would have to be built for to answer it. Until 2026-10-24 a world of four rings over a set built
+// for three stopped with "a tile's heights or its cluster LOD could not be made" (roadmap W77).
+std::string far_level_refusal(const TerrainTilesDesc& t, u32 k) {
+  const TerrainFarLevel f = terrain_far_level(t, k);
+  const u32 outer = t.ring_count - 1;
+  const u32 cells = terrain_tile_cells(t, outer);
+  const i64 tile_mm = std::llround(static_cast<f64>(t.tile_size) * 1000.0);
+  const i64 outer_mm = tile_mm / static_cast<i64>(cells);
+  std::string s = "world tiles: far level " + std::to_string(k) + " of " +
+                  std::to_string(t.far_levels) + " asks the ground for heights every " +
+                  metres(f.spacing) + ", filtered to " + metres(f.spacing) + " (" +
+                  std::to_string(t.far_ratio) + " times ring " + std::to_string(outer) + "'s " +
+                  metres(outer_mm) + ", the outermost ring's: " + metres(tile_mm) + " tiles at " +
+                  std::to_string(cells) + " cells";
+  if (k > 1) s += ", doubled " + std::to_string(k - 1) + (k == 2 ? " time" : " times");
+  s += "), and the tile source has none: a tile set holds the far levels it was built for — a "
+       "terrain `tiles` block's `ring_spacing_mm`, `far_ratio` and `far_levels`, 2000, 4 and 6 by "
+       "default — so build it for this world's outermost ring (`ring_spacing_mm` " +
+       std::to_string(outer_mm) + ", `far_ratio` " + std::to_string(t.far_ratio) +
+       ", `far_levels` " + std::to_string(t.far_levels) + ") or draw fewer far levels";
+  return s;
+}
+
+// **A tile that could not be made**, said by what failed: the source's heights for it (asked again
+// for its first point, which costs one point) or, with them, its cluster LOD.
+std::string tile_refusal(const scene_gen::TileSource& source, const TerrainTileMeshSpec& spec,
+                         i64 filter_mm, f64 time_s, const std::string& level) {
+  f32 h = 0.0f;
+  const i32 i0 = spec.x * static_cast<i32>(spec.cells) - 1;
+  const i32 j0 = spec.z * static_cast<i32>(spec.cells) - 1;
+  const bool heights =
+      source.filtered(time_s, spec.spacing_mm, filter_mm, i0, j0, 1, 1, std::span<f32>(&h, 1));
+  std::string s = "world tiles: " + level + "'s tile (" + std::to_string(spec.x) + ", " +
+                  std::to_string(spec.z) + ") ";
+  if (heights) return s + "has its heights, and its cluster LOD could not be made";
+  s += "has no heights from the tile source every " + metres(spec.spacing_mm);
+  if (filter_mm != 0) s += ", filtered to " + metres(filter_mm);
+  return s;
 }
 
 // The world's tile order: x, then z, signed (world.md, "Why this shape").
@@ -841,6 +894,23 @@ bool TerrainTileSet::build(const TerrainDesc& terrain, const TerrainTilesDesc& t
     margin_mm_[level] = std::llround(margin_tiles * t * 1000.0);
     half_mm_[level] = static_cast<i64>(std::ceil(reach_tiles)) * tile_mm_;
   }
+  // **Every far level is one the source answers** (roadmap W77), asked once at the camera's
+  // lattice point before anything is built: a tile set holds the filtered lattices it was built
+  // for, and a far level it lacks would otherwise be found by its first tile, seconds into the
+  // build, as a tile that "could not be made".
+  for (u32 level = 1; level <= far_; ++level) {
+    const i64 s = lattice_[level].spacing_mm;
+    const i64 i = floor_div(static_cast<i64>(std::floor(camera.x * 1000.0)), s);
+    const i64 j = floor_div(static_cast<i64>(std::floor(camera.z * 1000.0)), s);
+    f32 h = 0.0f;
+    const bool fits = i >= std::numeric_limits<i32>::min() && i < std::numeric_limits<i32>::max() &&
+                      j >= std::numeric_limits<i32>::min() && j < std::numeric_limits<i32>::max();
+    if (fits && !source.filtered(terrain.time_s, s, lattice_[level].filter_mm, static_cast<i32>(i),
+                                 static_cast<i32>(j), 1, 1, std::span<f32>(&h, 1))) {
+      levels_ = 0;
+      return fail(far_level_refusal(tiles, far_index(level)));
+    }
+  }
   // The first layout: every window on the camera's tile, the world ring's first fill round it.
   layout_ = TerrainRingLayout{};
   for (u32 level = 1; level < levels_; ++level) {
@@ -1215,10 +1285,9 @@ bool TerrainTileSet::rebuild_changes(const TerrainRingLayout& target, f64 time_s
     jobs->parallel_for(jobs::Pool::Performance, todo.size(), 1,
                        [&](u32 begin, u32 end) { run(begin, end); });
   }
-  for (const u8 f : failed) {
-    if (f != 0) {
-      if (error != nullptr)
-        *error = "world tiles: a tile's heights or its cluster LOD could not be made";
+  for (u32 t = 0; t < failed.size(); ++t) {
+    if (failed[t] != 0) {
+      if (error != nullptr) *error = refusal_of(todo[t].spec, time_s);
       return false;
     }
   }
@@ -1299,6 +1368,13 @@ bool TerrainTileSet::rebuild_changes(const TerrainRingLayout& target, f64 time_s
                    log::field("far_built", last_phases_.far_built),
                    log::field("far_moved", last_phases_.far_moved));
   return true;
+}
+
+std::string TerrainTileSet::refusal_of(const TerrainTileMeshSpec& spec, f64 time_s) const {
+  const std::string level = is_far(spec.level)
+                                ? "far level " + std::to_string(far_index(spec.level))
+                                : "ring " + std::to_string(ring_of_level(spec.level));
+  return tile_refusal(source_, spec, lattice_[spec.level].filter_mm, time_s, level);
 }
 
 bool TerrainTileSet::build_tile(const TerrainTileMeshSpec& spec, u64 key, f64 time_s,
@@ -1504,10 +1580,9 @@ bool TerrainTileSet::rebuild(const TerrainRingLayout& target, f64 time_s, jobs::
     const bool m = target.cx[level] != layout_.cx[level] || target.cz[level] != layout_.cz[level];
     last_phases_.far_moved |= m ? 1u << level : 0u;
   }
-  for (const u8 f : failed) {
-    if (f != 0) {
-      if (error != nullptr)
-        *error = "world tiles: a tile's heights or its cluster LOD could not be made";
+  for (u32 t = 0; t < failed.size(); ++t) {
+    if (failed[t] != 0) {
+      if (error != nullptr) *error = refusal_of(want[todo[t].level][todo[t].index].spec, time_s);
       return false;
     }
   }

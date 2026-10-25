@@ -889,3 +889,93 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
                   error);
   check_tiling(out, "50 km out");
 }
+
+namespace {
+
+// **A tile set's chain, as a source** (tileset.md): the waves at every point (filter 0), and
+// filtered only to the far spacings a set built for rings ending at `ring_spacing_mm` holds —
+// `far_ratio` times it, doubled `far_levels - 1` times — refusing any other, as an authored set
+// does.
+struct Chain {
+  i64 ring_spacing_mm = 0;
+  u32 far_ratio = 4;
+  u32 far_levels = 0;
+};
+bool chain_heights(const void* state, f64 time_s, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0,
+                   u32 nx, u32 nz, u32 begin, u32 end, std::span<f32> out) noexcept {
+  const Chain& c = *static_cast<const Chain*>(state);
+  if (filter_mm != 0) {
+    bool held = false;
+    i64 s = c.ring_spacing_mm * static_cast<i64>(c.far_ratio);
+    for (u32 k = 0; k < c.far_levels; ++k, s *= 2)
+      held = held || (filter_mm == s && spacing_mm == s);
+    if (!held) return false;
+  }
+  return wave_heights(nullptr, time_s, spacing_mm, filter_mm, i0, j0, nx, nz, begin, end, out);
+}
+constexpr scene_gen::TileSourceOps k_chain_ops{.heights = &chain_heights};
+
+// Four rings of 8 m tiles at 16, 8, 4 and 2 cells — 50 cm, 1 m, 2 m and then 4 m, the fourth
+// ring's — and two far levels twice the outermost ring's spacing and on: 8 and 16 m.
+TerrainTilesDesc four_rings() {
+  TerrainTilesDesc t;
+  t.tile_size = 8.0f;
+  t.ring_count = 4;
+  const f32 radius[4] = {1.5f, 3.0f, 6.0f, 9.0f};
+  const u32 cells[4] = {16, 8, 4, 2};
+  for (u32 r = 0; r < 4; ++r) {
+    t.radius[r] = radius[r];
+    t.cells[r] = cells[r];
+  }
+  t.far_levels = 2;
+  t.far_cells = 4;
+  t.far_ratio = 2;
+  return t;
+}
+
+}  // namespace
+
+// **A world of four rings over a tile set's chain** (roadmap W77; renderer.md, "The ground from
+// the world's tiles"). The first far level is `far_ratio` times the outermost ring's spacing, so a
+// fourth ring at 4 m asks for 8 and 16 m where a set built for three rings ending at 2 m holds 4
+// and 8 m. Over that set the build is refused before anything is built, by a sentence that names
+// the far level, the lattice it asks for, the fourth ring's spacing it came from, and the
+// `ring_spacing_mm` a set must be built with — where it used to stop seconds in with "a tile's
+// heights or its cluster LOD could not be made". Over a set built for the fourth ring it builds,
+// seamed, every ring and far level on its lattice.
+TEST_CASE("world tiles: four rings ask a tile set for the far levels of their outermost ring") {
+  const TerrainDesc grid = grid_desc();
+  const TerrainTilesDesc t = four_rings();
+  std::string error;
+  REQUIRE_MESSAGE(validate_terrain_tiles(t, &error), error);
+  CHECK(terrain_tile_cells(t, 3) == 2);
+  CHECK(terrain_far_level(t, 1).spacing == 8000);
+  CHECK(terrain_far_level(t, 2).spacing == 16000);
+
+  // A set built for three rings ending at 2 m: 4 and 8 m.
+  const Chain three{2000, 2, 2};
+  const scene_gen::TileSource for_three{&k_chain_ops, &three};
+  TerrainTileSet refused;
+  CHECK_FALSE(refused.build(grid, t, for_three, ground_at(1.0f, 2.0f), nullptr, &error));
+  MESSAGE(error);
+  CHECK(error.find("far level 2 of 2") != std::string::npos);
+  CHECK(error.find("every 16 m, filtered to 16 m") != std::string::npos);
+  CHECK(error.find("ring 3's 4 m, the outermost ring's: 8 m tiles at 2 cells") !=
+        std::string::npos);
+  CHECK(error.find("`ring_spacing_mm` 4000") != std::string::npos);
+  CHECK(refused.level_count() == 0);
+
+  // A set built for the fourth ring: 8 and 16 m.
+  const Chain four{4000, 2, 2};
+  const scene_gen::TileSource for_four{&k_chain_ops, &four};
+  TerrainTileSet set;
+  REQUIRE_MESSAGE(set.build(grid, t, for_four, ground_at(1.0f, 2.0f), nullptr, &error), error);
+  CHECK(set.level_count() == 7);  // the grid, two far levels, four rings
+  CHECK(set.far_count() == 2);
+  CHECK(set.lattice(set.level_of_ring(3)).spacing_mm == 4000);  // the fourth ring's 4 m
+  CHECK(set.lattice(set.level_of_ring(3)).filter_mm == 0);
+  CHECK(set.lattice(set.level_of_ring(0)).spacing_mm == 500);
+  CHECK(set.lattice(1).spacing_mm == 16000);  // the coarsest far level
+  CHECK(set.lattice(2).filter_mm == 8000);
+  check_tiling(set, "four rings");
+}
