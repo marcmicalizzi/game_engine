@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| Rock structure | [rock-structure.md](rock-structure.md) | Joint-directed rock detail, physical feature scales, budget filtering and the owner's photographic references |
 | G86 | [tree-profile-audit.md](tree-profile-audit.md) | species parameter provenance, green wood scaffold limits, per-species source budgets, pine/spruce and willow coverage, and ancient segment seating |
 | Static authored terrain streaming | [authored-terrain-streaming.md](authored-terrain-streaming.md) | native source refusals through the registry, a bounded authored tile cache, stock viewer/editor travel at zero terrain rate, and the steep-cliff normal that exposed an ambiguous stitch marker |
 | W69 | [startup-trace-forest-2026-10-24.md](startup-trace-forest-2026-10-24.md) | Where the forest's load-in goes, from the process's launch to nearby-stable: cold and warm caches, three spawns, the critical path and the bytes read before ready |

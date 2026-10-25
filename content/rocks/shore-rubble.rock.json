@@ -1,0 +1,15 @@
+{
+  "shape": "Scree",
+  "scree": {
+    "seed": 19,
+    "type": "Granite",
+    "size_x": 3.5, "size_z": 2.5,
+    "count": 48, "fragment_m": 0.65,
+    "rounding": 0.08, "buried": 0.15,
+    "triangle_budget": 320000,
+    "surface": {
+      "joint_spacing_m": 0.35, "joint_width_m": 0.1, "joint_depth_m": 0.045,
+      "wavelength_m": 0.2, "relief_m": 0.015
+    }
+  }
+}

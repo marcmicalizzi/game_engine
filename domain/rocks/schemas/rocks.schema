@@ -48,11 +48,25 @@ struct RockMaterial @version(2) {
   normal_scale: f32 = 1.0 @since(2)
 }
 
-/// One boulder (rocks.md, "The boulder"): a seeded convex body — an ellipsoid of the three
-/// half-extents cut by the type's joint planes and a few seeded facets — weathered (edges rounded,
-/// a low-frequency warp, a fine surface noise), banded along a bedding direction when it has
-/// layers, and lowered so `buried` of its height is under the origin.
-struct Boulder @version(1) {
+/// Surface structure in metres, shared across an outcrop. These are authoring controls, not
+/// measurements of a particular site. Unresolved features fade out with the mesh budget.
+struct RockSurface @version(1) {
+  /// Blend of structural weathering, 0 (simple body) to 1 (full detail).
+  strength: f32 = 1.0
+  /// Mean separation of weathered joints, 0.05 to 20 m.
+  joint_spacing_m: f32 = 0.65 @unit(m)
+  /// Full width of a joint recess, 0.005 m to half the joint spacing.
+  joint_width_m: f32 = 0.12 @unit(m)
+  /// Maximum joint recess, 0 to 2 m; also limited by the body's radius.
+  joint_depth_m: f32 = 0.12 @unit(m)
+  /// Largest surface-relief wavelength, 0.02 to 10 m.
+  wavelength_m: f32 = 0.4 @unit(m)
+  /// Relief amplitude, 0 to 0.5 m, at most a quarter of wavelength_m.
+  relief_m: f32 = 0.018 @unit(m)
+}
+
+/// A seeded cut body with bedding, physical surface detail and burial (rocks.md, "The boulder").
+struct Boulder @version(2) {
   /// Everything the parameters leave to chance. Any u64.
   seed: u64 = 1
   /// The half-extents before cutting, x, y (up) and z: each 0.05 to 20 m.
@@ -70,14 +84,15 @@ struct Boulder @version(1) {
   buried: f32 = 0.15
   /// The most triangles the mesh may have: 500 to 500,000. The solver takes the finest rung of
   /// its ladder that fits (rocks.md, "The budget ladder").
-  triangle_budget: u32 = 20000
+  triangle_budget: u32 = 80000
+  surface: RockSurface @since(2)
   material: RockMaterial
 }
 
 /// An outcrop (rocks.md, "The outcrop"): `count` boulders grown from one bedding plane inside the
 /// half-extents, sharing one joint set, the largest in the middle, sunk deeper than a boulder, as
 /// one mesh.
-struct Outcrop @version(1) {
+struct Outcrop @version(2) {
   seed: u64 = 1
   /// The outcrop's half-extents, x, y (up) and z: each 0.2 to 50 m.
   size_x: f32 = 4.0 @unit(m)
@@ -92,13 +107,14 @@ struct Outcrop @version(1) {
   /// The share of each boulder's height under the bedding plane: 0 to 0.8.
   buried: f32 = 0.3
   /// The most triangles of every boulder together: 1,000 to 1,000,000.
-  triangle_budget: u32 = 60000
+  triangle_budget: u32 = 240000
+  surface: RockSurface @since(2)
   material: RockMaterial
 }
 
 /// Scree (rocks.md, "Scree"): `count` small angular fragments lying on the ground inside the
 /// footprint's half-extents, as one mesh.
-struct Scree @version(1) {
+struct Scree @version(2) {
   seed: u64 = 1
   /// The footprint's half-extents, x and z: each 0.1 to 20 m.
   size_x: f32 = 1.0 @unit(m)
@@ -112,7 +128,8 @@ struct Scree @version(1) {
   /// The share of each fragment's height under the ground: 0 to 0.8.
   buried: f32 = 0.2
   /// The most triangles of every fragment together: 500 to 500,000.
-  triangle_budget: u32 = 8000
+  triangle_budget: u32 = 24000
+  surface: RockSurface @since(2)
   material: RockMaterial
 }
 

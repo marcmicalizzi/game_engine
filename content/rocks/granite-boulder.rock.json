@@ -6,6 +6,6 @@
     "type": "Granite",
     "joint_sets": 3,
     "buried": 0.15,
-    "triangle_budget": 20000
+    "triangle_budget": 80000
   }
 }
