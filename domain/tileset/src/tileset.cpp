@@ -868,6 +868,8 @@ class TimedLock {
 
 }  // namespace
 
+TileSet::TileSet(u64 cache_bytes) : TileSet(cache_bytes, ReadOptions{}) {}
+
 TileSet::TileSet(u64 cache_bytes, ReadOptions read)
     : cache_(std::make_unique<Cache>()),
       cache_bytes_(cache_bytes),

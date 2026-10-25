@@ -165,7 +165,11 @@ class TileSet {
   // tiles may be read again after eviction. The index holds at most 2^26 entries even with a
   // larger budget; this limits cache metadata, not source extent. The provider uses
   // tileset.cache_mib.
-  explicit TileSet(u64 cache_bytes = 64ull * 1024 * 1024, ReadOptions read = ReadOptions{});
+  // (Two constructors rather than a defaulted `ReadOptions` argument: a nested struct's member
+  // initializers are not usable in a default argument inside its enclosing class, which Clang
+  // refuses and MSVC accepts.)
+  explicit TileSet(u64 cache_bytes = 64ull * 1024 * 1024);
+  TileSet(u64 cache_bytes, ReadOptions read);
   const ReadOptions& read_options() const noexcept { return read_; }
   ~TileSet();
   TileSet(const TileSet&) = delete;
