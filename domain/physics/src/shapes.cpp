@@ -102,9 +102,11 @@ Status World::create_convex_hull(std::span<const Vec3> points, ShapeId& out) {
   return impl_->adopt_shape(shape, out);
 }
 
-Status World::create_mesh(std::span<const Vec3> positions, std::span<const u32> indices,
-                          ShapeId& out) {
-  if (impl_ == nullptr) return Status::InvalidArgument;
+namespace {
+
+// `create_mesh`'s and `build_mesh`'s shape: touches nothing of any world's.
+Status make_mesh(std::span<const Vec3> positions, std::span<const u32> indices,
+                 JPH::RefConst<JPH::Shape>& shape) {
   if (positions.empty() || indices.empty() || indices.size() % 3 != 0)
     return Status::InvalidArgument;
   const u32 vertex_count = static_cast<u32>(positions.size());
@@ -125,8 +127,49 @@ Status World::create_mesh(std::span<const Vec3> positions, std::span<const u32> 
 
   JPH::MeshShapeSettings settings(std::move(vertices), std::move(triangles));
   settings.SetEmbedded();
+  return finish(settings.Create(), "mesh", shape);
+}
+
+// `create_compound`'s and `build_compound`'s shape over `count` children, each a backend shape and
+// a transform: a compound of one is a placed shape, since Jolt's static compound refuses fewer than
+// two children, so it builds what the caller meant instead of refusing.
+template <typename ShapeOf, typename TransformOf>
+Status make_compound(usize count, ShapeOf shape_of, TransformOf transform_of,
+                     JPH::RefConst<JPH::Shape>& shape) {
+  if (count == 1) {
+    const Transform3& t = transform_of(0);
+    JPH::RotatedTranslatedShapeSettings settings(to_jph(t.position), to_jph(t.rotation),
+                                                 shape_of(0));
+    settings.SetEmbedded();
+    return finish(settings.Create(), "compound", shape);
+  }
+  JPH::StaticCompoundShapeSettings settings;
+  settings.SetEmbedded();
+  for (usize k = 0; k < count; ++k) {
+    const Transform3& t = transform_of(k);
+    settings.AddShape(to_jph(t.position), to_jph(t.rotation), shape_of(k));
+  }
+  return finish(settings.Create(), "compound", shape);
+}
+
+// A shape's bytes and triangles as `shape_memory` reports them.
+void shape_stats(const JPH::Shape* jph_shape, bool children, u64& bytes, u32& triangles) {
+  JPH::Shape::Stats stats = jph_shape->GetStats();
+  if (children) {
+    JPH::Shape::VisitedShapes visited;
+    stats = jph_shape->GetStatsRecursive(visited);
+  }
+  bytes = static_cast<u64>(stats.mSizeBytes);
+  triangles = static_cast<u32>(stats.mNumTriangles);
+}
+
+}  // namespace
+
+Status World::create_mesh(std::span<const Vec3> positions, std::span<const u32> indices,
+                          ShapeId& out) {
+  if (impl_ == nullptr) return Status::InvalidArgument;
   JPH::RefConst<JPH::Shape> shape;
-  const Status status = finish(settings.Create(), "mesh", shape);
+  const Status status = make_mesh(positions, indices, shape);
   if (status != Status::Ok) return status;
   return impl_->adopt_shape(shape, out);
 }
@@ -154,29 +197,90 @@ Status World::create_compound(std::span<const CompoundChild> children, ShapeId& 
   if (children.empty()) return Status::InvalidArgument;
   for (const CompoundChild& child : children)
     if (impl_->shape_ptr(child.shape) == nullptr) return Status::NotFound;
-
   JPH::RefConst<JPH::Shape> shape;
-  Status status = Status::Ok;
-  if (children.size() == 1) {
-    // A compound of one is a placed shape, and Jolt's static compound refuses fewer than two
-    // children, so build what the caller meant instead of refusing.
-    const CompoundChild& child = children[0];
-    JPH::RotatedTranslatedShapeSettings settings(to_jph(child.transform.position),
-                                                 to_jph(child.transform.rotation),
-                                                 impl_->shape_ptr(child.shape));
-    settings.SetEmbedded();
-    status = finish(settings.Create(), "compound", shape);
-  } else {
-    JPH::StaticCompoundShapeSettings settings;
-    settings.SetEmbedded();
-    for (const CompoundChild& child : children) {
-      settings.AddShape(to_jph(child.transform.position), to_jph(child.transform.rotation),
-                        impl_->shape_ptr(child.shape));
-    }
-    status = finish(settings.Create(), "compound", shape);
-  }
+  const Status status = make_compound(
+      children.size(), [&](usize k) { return impl_->shape_ptr(children[k].shape); },
+      [&](usize k) -> const Transform3& { return children[k].transform; }, shape);
   if (status != Status::Ok) return status;
   return impl_->adopt_shape(shape, out);
+}
+
+// ---- shapes built on a worker (physics.md, "Shapes built on a worker") --------------------------
+
+BuiltShape::~BuiltShape() { reset(); }
+
+BuiltShape::BuiltShape(BuiltShape&& other) noexcept : shape_(other.shape_), world_(other.world_) {
+  other.shape_ = nullptr;
+  other.world_ = nullptr;
+}
+
+BuiltShape& BuiltShape::operator=(BuiltShape&& other) noexcept {
+  if (this != &other) {
+    reset();
+    shape_ = other.shape_;
+    world_ = other.world_;
+    other.shape_ = nullptr;
+    other.world_ = nullptr;
+  }
+  return *this;
+}
+
+void BuiltShape::reset() noexcept {
+  if (shape_ == nullptr) return;
+  static_cast<const JPH::Shape*>(shape_)->Release();
+  static_cast<World::Impl*>(world_)->built_shapes.fetch_sub(1, std::memory_order_relaxed);
+  shape_ = nullptr;
+  world_ = nullptr;
+}
+
+Status World::build_mesh(std::span<const Vec3> positions, std::span<const u32> indices,
+                         BuiltShape& out) const {
+  out.reset();
+  if (impl_ == nullptr) return Status::InvalidArgument;
+  JPH::RefConst<JPH::Shape> shape;
+  const Status status = make_mesh(positions, indices, shape);
+  if (status != Status::Ok) return status;
+  shape->AddRef();
+  impl_->built_shapes.fetch_add(1, std::memory_order_relaxed);
+  out.shape_ = shape.GetPtr();
+  out.world_ = impl_;
+  return Status::Ok;
+}
+
+Status World::build_compound(std::span<const BuiltChild> children, BuiltShape& out) const {
+  out.reset();
+  if (impl_ == nullptr) return Status::InvalidArgument;
+  if (children.empty()) return Status::InvalidArgument;
+  for (const BuiltChild& child : children)
+    if (child.shape == nullptr || child.shape->shape_ == nullptr) return Status::NotFound;
+  JPH::RefConst<JPH::Shape> shape;
+  const Status status = make_compound(
+      children.size(),
+      [&](usize k) { return static_cast<const JPH::Shape*>(children[k].shape->shape_); },
+      [&](usize k) -> const Transform3& { return children[k].transform; }, shape);
+  if (status != Status::Ok) return status;
+  shape->AddRef();
+  impl_->built_shapes.fetch_add(1, std::memory_order_relaxed);
+  out.shape_ = shape.GetPtr();
+  out.world_ = impl_;
+  return Status::Ok;
+}
+
+bool World::built_memory(const BuiltShape& shape, bool children, u64& bytes, u32& triangles) const {
+  if (impl_ == nullptr || shape.shape_ == nullptr) return false;
+  shape_stats(static_cast<const JPH::Shape*>(shape.shape_), children, bytes, triangles);
+  return true;
+}
+
+u32 World::built_shape_count() const noexcept {
+  return impl_ != nullptr ? impl_->built_shapes.load(std::memory_order_relaxed) : 0u;
+}
+
+Status World::adopt_shape(const BuiltShape& shape, ShapeId& out) {
+  if (impl_ == nullptr || shape.shape_ == nullptr || shape.world_ != impl_)
+    return Status::InvalidArgument;
+  return impl_->adopt_shape(JPH::RefConst<JPH::Shape>(static_cast<const JPH::Shape*>(shape.shape_)),
+                            out);
 }
 
 bool World::destroy_shape(ShapeId shape) {
@@ -194,13 +298,7 @@ bool World::shape_memory(ShapeId shape, bool children, u64& bytes, u32& triangle
   if (impl_ == nullptr) return false;
   const JPH::Shape* jph_shape = impl_->shape_ptr(shape);
   if (jph_shape == nullptr) return false;
-  JPH::Shape::Stats stats = jph_shape->GetStats();
-  if (children) {
-    JPH::Shape::VisitedShapes visited;
-    stats = jph_shape->GetStatsRecursive(visited);
-  }
-  bytes = static_cast<u64>(stats.mSizeBytes);
-  triangles = static_cast<u32>(stats.mNumTriangles);
+  shape_stats(jph_shape, children, bytes, triangles);
   return true;
 }
 

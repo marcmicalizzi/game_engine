@@ -130,6 +130,37 @@ struct CompoundChild {
   Transform3 transform;
 };
 
+// **A shape built away from the world's thread** (physics.md, "Shapes built on a worker"): an
+// immutable shape that holds the backend's own reference and is in no world's table, so a worker
+// can make it while the world's thread steps, casts and makes bodies. `World::build_mesh` and
+// `build_compound` make one on any thread; `World::adopt_shape` puts it into the table on the
+// world's thread, where it is a shape like any `create_*` made. Move-only; releasing the last one
+// lets the backend free it unless a compound or an adopted copy still holds it. Every built shape
+// must be released before its world shuts down (`World::built_shape_count` says how many are
+// alive, which is what a caller that builds on workers checks it leaks none by).
+class BuiltShape {
+ public:
+  BuiltShape() noexcept = default;
+  ~BuiltShape();
+  BuiltShape(BuiltShape&& other) noexcept;
+  BuiltShape& operator=(BuiltShape&& other) noexcept;
+  BuiltShape(const BuiltShape&) = delete;
+  BuiltShape& operator=(const BuiltShape&) = delete;
+  explicit operator bool() const noexcept { return shape_ != nullptr; }
+  void reset() noexcept;
+
+ private:
+  friend class World;
+  const void* shape_ = nullptr;  // the backend's shape, one reference held
+  void* world_ = nullptr;        // the world's impl, whose count of live built shapes this is in
+};
+
+// One child of a built compound: a built shape (not consumed: the compound takes a reference).
+struct BuiltChild {
+  const BuiltShape* shape = nullptr;
+  Transform3 transform;
+};
+
 // A regular grid of heights. The surface is `local_offset + scale * (x, heights[z * sample_count +
 // x], z)` for integer x and z, **in the body's frame**: the body that carries the shape puts it in
 // the world (`BodyDesc::transform`), so a tile of ground far from the origin is a body at its
@@ -232,6 +263,21 @@ class World {
   bool shape_memory(ShapeId shape, bool children, u64& bytes, u32& triangles) const;
   u32 shape_count() const noexcept;
 
+  // --- shapes built on a worker (`BuiltShape`). **Thread-safe**: these four may be called on any
+  // thread, any number at once, while the world is alive and beside every other call of the
+  // world's own thread; they read and change no table. `build_mesh` is `create_mesh`'s shape,
+  // `build_compound` `create_compound`'s over built children.
+  Status build_mesh(std::span<const Vec3> positions, std::span<const u32> indices,
+                    BuiltShape& out) const;
+  Status build_compound(std::span<const BuiltChild> children, BuiltShape& out) const;
+  // `shape_memory` of a built shape.
+  bool built_memory(const BuiltShape& shape, bool children, u64& bytes, u32& triangles) const;
+  // Built shapes alive (made and not yet released), whichever thread holds them.
+  u32 built_shape_count() const noexcept;
+  // **The world's thread**: the built shape into the table, as `create_*` would have put it; the
+  // built shape keeps its own reference until it is released, which the caller may do at once.
+  Status adopt_shape(const BuiltShape& shape, ShapeId& out);
+
   // --- bodies
   Status create_body(const BodyDesc& desc, BodyId& out);
   bool destroy_body(BodyId body);
@@ -310,6 +356,7 @@ class World {
   // The character is swept through the backend's own queries and its scratch arena, which live in
   // `Impl`; it is a class of its own because it is not a body (character.h).
   friend class CharacterBody;
+  friend class BuiltShape;
   struct Impl;
   Impl* impl_ = nullptr;
 };

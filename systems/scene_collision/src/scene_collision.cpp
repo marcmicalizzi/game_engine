@@ -174,14 +174,19 @@ struct SceneCollision::Entry {
   }
 };
 
-// **A tile's ground built ahead of the ring** (docs: "The ground built ahead of the ring"): its
-// lattice window and the heights the activation would ask the tile source for, the same call with
-// the same arguments, so the floats are the same whichever thread asked. `state` is claimed by
-// whoever runs it first — the job, or the tick that activates the tile before the job started —
-// and `ran` is signalled by the job system when the job has returned, after which nothing touches
-// the build but its owner.
+// **A tile built ahead of the ring** (docs: "The ground built ahead of the ring", "The placements
+// built ahead"): its lattice window and the heights the activation would ask the tile source for —
+// the same call with the same arguments, so the floats are the same whichever thread asked — and
+// its placements as the activation would gather them, the compound's shape built and not yet in
+// the physics world's table. `state` is claimed by whoever runs it first — the job, or the tick
+// that activates the tile before the job started — and `ran` is signalled by the job system when
+// the job has returned, after which nothing touches the build but its owner. A build dropped
+// before its tile was activated releases its compound with it.
 struct SceneCollision::Build {
+  SceneCollision* owner = nullptr;
   world::TileCoord coord;
+  // The ground's heights, when `ground`.
+  bool ground = false;
   i64 i0 = 0;
   i64 j0 = 0;
   u32 n = 0;
@@ -189,14 +194,29 @@ struct SceneCollision::Build {
   f64 time_s = 0.0;
   i64 spacing_mm = 1000;
   Vector<f32> heights;
-  static constexpr u32 k_queued = 0, k_running = 1, k_done = 2, k_failed = 3;
+  bool heights_ok = false;
+  // The placements, when `placements`.
+  bool placements = false;
+  PlacementScratch scratch;
+  TilePlacements placed;
+  // Where its time went, on whichever thread ran it.
+  i64 ground_ns = 0;
+  i64 placement_ns = 0;
+  static constexpr u32 k_queued = 0, k_running = 1, k_done = 2;
   std::atomic<u32> state{k_queued};
   jobs::Counter ran;
 
   void compute() noexcept {
-    const bool ok = source.heights(time_s, spacing_mm, static_cast<i32>(i0), static_cast<i32>(j0),
-                                   n, n, std::span<f32>(heights.data(), heights.size()));
-    state.store(ok ? k_done : k_failed, std::memory_order_release);
+    const i64 start = time::monotonic_ns();
+    if (ground) {
+      heights_ok = source.heights(time_s, spacing_mm, static_cast<i32>(i0), static_cast<i32>(j0), n,
+                                  n, std::span<f32>(heights.data(), heights.size()));
+    }
+    const i64 sampled = time::monotonic_ns();
+    if (placements) owner->gather_placements(coord, scratch, placed);
+    ground_ns = sampled - start;
+    placement_ns = time::monotonic_ns() - sampled;
+    state.store(k_done, std::memory_order_release);
   }
   static void run(void* data) noexcept {
     auto* build = static_cast<Build*>(data);
@@ -209,19 +229,25 @@ struct SceneCollision::Build {
 SceneCollision::SceneCollision() = default;
 
 SceneCollision::~SceneCollision() {
-  // Every job that may still touch a build has run before the builds go.
+  // Every job that may still touch a build has run before the builds go, and the builds' and the
+  // proxies' shapes are released before the physics world they were built in goes.
   for (const std::unique_ptr<Build>& build : builds_)
     build->ran.wait_blocking();
   for (const std::unique_ptr<Build>& build : retired_)
     build->ran.wait_blocking();
-  if (physics_ == nullptr) return;
-  for (u32 i = 0; i < tiles_.size(); ++i) {
-    Tile& tile = tiles_.value_at(i);
-    drop_ground_body(tile);
-    if (tile.placements) physics_->destroy_body(tile.placements);
-    if (tile.placements_shape) physics_->destroy_shape(tile.placements_shape);
+  builds_.clear();
+  retired_.clear();
+  if (physics_ != nullptr) {
+    for (u32 i = 0; i < tiles_.size(); ++i) {
+      Tile& tile = tiles_.value_at(i);
+      drop_ground_body(tile);
+      if (tile.placements) physics_->destroy_body(tile.placements);
+      if (tile.placements_shape) physics_->destroy_shape(tile.placements_shape);
+    }
   }
   tiles_.clear();
+  tick_scratch_.children.clear();
+  proxies_.clear();
   entries_.clear();
 }
 
@@ -391,7 +417,14 @@ void SceneCollision::note_bodies() noexcept {
   stats_.ground_samples = samples;
   stats_.max_bodies = bodies > stats_.max_bodies ? bodies : stats_.max_bodies;
   stats_.max_placements = pieces > stats_.max_placements ? pieces : stats_.max_placements;
+  // The proxies are built on whichever thread asks first; their counters are copied here, on the
+  // tick, under their lock.
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
   stats_.proxies = proxies_.size();
+  stats_.proxy_triangles = proxy_stats_.triangles;
+  stats_.flora_triangles_left_out = proxy_stats_.flora_left_out;
+  stats_.proxy_bytes = proxy_stats_.bytes;
+  stats_.proxy_ns = proxy_stats_.ns;
 }
 
 // ---- the ground
@@ -479,7 +512,7 @@ bool SceneCollision::ground_window(world::TileCoord coord, i64& i0, i64& j0,
   return fits_i32(i0) && fits_i32(j0) && fits_i32(i0 + n) && fits_i32(j0 + n);
 }
 
-bool SceneCollision::build_ground(Tile& tile) {
+bool SceneCollision::build_ground(Tile& tile, Build* build) {
   u32 n = 0;
   if (!ground_window(tile.coord, tile.i0, tile.j0, n)) {
     tile.n = n;
@@ -503,11 +536,12 @@ bool SceneCollision::build_ground(Tile& tile) {
     // The ground at its own time: the provider's `grid`, or a tile source's heights at the scene's
     // time (a still source's one surface), which for the scene's own ground is the same bits.
     if (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr)) {
-      // Built ahead, when it was (`prefetch`): the same call's heights, taken or waited for.
-      bool failed = false;
-      bool ok = take_build(tile, failed);
-      if (!ok && !failed) {
-        tile.heights.resize(n * n);
+      // Built ahead, when it was (`prefetch`): the same call's heights, taken as they are.
+      bool ok = false;
+      if (build != nullptr && build->ground) {
+        ok = build->heights_ok;
+        if (ok) tile.heights = std::move(build->heights);
+      } else {
         ok = source_.heights(own_time_s_, spacing_mm_, i0, j0, n, n,
                              std::span<f32>(tile.heights.data(), tile.heights.size()));
       }
@@ -752,13 +786,19 @@ u32 SceneCollision::follow(physics::CharacterBody& walker) {
 // error is within `mesh_error_m` and its parent's is not (`geometry::lod_selects`' rule with the
 // threshold in metres rather than pixels) — the coarsest level that stays that close to the
 // surface — welded by source vertex so the backend sees shared edges, scaled into the instance's
-// size. One shape per (mesh, scale), shared by every instance.
-bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
+// size. One shape per (mesh, scale), shared by every instance. **Thread-safe**: a build ahead on a
+// worker and the tick may both ask, so the cache is looked in and a proxy built under its lock —
+// one proxy is built at a time, whoever asks, and every asker of a key gets the one shape. The
+// scene's DAG is read only, and the cut is made in the asker's scratch.
+const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
+                                                     PlacementScratch& scratch) {
   const u64 key = proxy_key(mesh, scale);
-  if (const Proxy* proxy = proxies_.find_value(key)) {
-    out = proxy->shape;
-    return static_cast<bool>(out);
-  }
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
+    return (*proxy)->shape ? &(*proxy)->shape : nullptr;
+  Vector<Vec3>& vertices = scratch.vertices;
+  Vector<u32>& indices = scratch.indices;
+  FlatMap<u32, u32>& remap = scratch.remap;
   const i64 start = time::monotonic_ns();
   const geometry::ClusterMeshPart& part = scene_->parts[mesh];
   const geometry::ClusterLodMesh& lod = scene_->lod;
@@ -767,9 +807,9 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
   // The threshold is in the mesh's own units: the instance's scale (its fit included, since the
   // scale was taken from the whole world matrix) multiplies every error by up to `largest`.
   const f32 threshold = config_.mesh_error_m / (largest > 0.0f ? largest : 1.0f);
-  proxy_vertices_.clear();
-  proxy_indices_.clear();
-  proxy_remap_.clear();
+  vertices.clear();
+  indices.clear();
+  remap.clear();
   const bool has_lod = lod.lod.size() == lod.mesh.clusters.size();
   // **A tree collides by its wood** (scene_collision.md, "What gets no body"): a mesh that carries
   // the motion contract keeps a triangle only when all three corners are of a part that stays a
@@ -804,106 +844,105 @@ bool SceneCollision::proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out) {
       if (tree != nullptr &&
           !(wooden(cluster.vertex_offset + local[0]) && wooden(cluster.vertex_offset + local[1]) &&
             wooden(cluster.vertex_offset + local[2]))) {
-        ++stats_.flora_triangles_left_out;
+        ++proxy_stats_.flora_left_out;
         continue;
       }
       u32 corner[3];
       for (u32 k = 0; k < 3; ++k) {
         const u32 v = cluster.vertex_offset + local[k];
         const u32 source = v < lod.mesh.vertex_source.size() ? lod.mesh.vertex_source[v] : v;
-        if (const u32* seen = proxy_remap_.find_value(source)) {
+        if (const u32* seen = remap.find_value(source)) {
           corner[k] = *seen;
           continue;
         }
         const Vec3 p = lod.mesh.vertices[v];
-        corner[k] = proxy_vertices_.size();
-        proxy_vertices_.push_back(Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z});
-        proxy_remap_.insert(source, corner[k]);
+        corner[k] = vertices.size();
+        vertices.push_back(Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z});
+        remap.insert(source, corner[k]);
       }
       if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2]) continue;
       // A mirror's scale — an odd number of negative axes — reverses the winding; put it back, so
       // the faces face out.
       const bool mirrored = ((scale.x < 0.0f) != (scale.y < 0.0f)) != (scale.z < 0.0f);
-      proxy_indices_.push_back(corner[0]);
-      proxy_indices_.push_back(mirrored ? corner[2] : corner[1]);
-      proxy_indices_.push_back(mirrored ? corner[1] : corner[2]);
+      indices.push_back(corner[0]);
+      indices.push_back(mirrored ? corner[2] : corner[1]);
+      indices.push_back(mirrored ? corner[1] : corner[2]);
     }
   }
-  Proxy proxy;
-  if (!proxy_indices_.empty() &&
-      physics_->create_mesh(std::span<const Vec3>(proxy_vertices_.data(), proxy_vertices_.size()),
-                            std::span<const u32>(proxy_indices_.data(), proxy_indices_.size()),
-                            proxy.shape) == physics::Status::Ok) {
-    proxy.triangles = proxy_indices_.size() / 3;
-    stats_.proxy_triangles += proxy.triangles;
+  auto proxy = std::make_unique<Proxy>();
+  if (!indices.empty() &&
+      physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
+                           std::span<const u32>(indices.data(), indices.size()),
+                           proxy->shape) == physics::Status::Ok) {
+    proxy->triangles = indices.size() / 3;
+    proxy_stats_.triangles += proxy->triangles;
     u64 bytes = 0;
     u32 triangles = 0;
-    if (physics_->shape_memory(proxy.shape, false, bytes, triangles)) stats_.proxy_bytes += bytes;
+    if (physics_->built_memory(proxy->shape, false, bytes, triangles)) proxy_stats_.bytes += bytes;
   }
-  proxies_.insert(key, proxy);
-  stats_.proxy_ns += time::monotonic_ns() - start;
-  out = proxy.shape;
-  return static_cast<bool>(out);
+  const physics::BuiltShape* out = proxy->shape ? &proxy->shape : nullptr;
+  proxies_.try_emplace(key, std::move(proxy));
+  proxy_stats_.ns += time::monotonic_ns() - start;
+  return out;
 }
 
-WorldPos SceneCollision::tile_corner(const Tile& tile) const noexcept {
-  return WorldPos{static_cast<f64>(i64{tile.coord.x} * tile_mm_) / 1000.0, 0.0,
-                  static_cast<f64>(i64{tile.coord.z} * tile_mm_) / 1000.0};
+WorldPos SceneCollision::tile_corner(world::TileCoord coord) const noexcept {
+  return WorldPos{static_cast<f64>(i64{coord.x} * tile_mm_) / 1000.0, 0.0,
+                  static_cast<f64>(i64{coord.z} * tile_mm_) / 1000.0};
 }
 
 bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
-                               Vector<physics::CompoundChild>& children) {
+                               PlacementScratch& scratch) {
   if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
   if (water_mesh(*scene_, mesh)) return false;
   Placement placed;
   if (!decompose(linear, placed)) return false;
-  physics::ShapeId shape;
-  if (!proxy_for(mesh, placed.scale, shape)) return false;
-  physics::CompoundChild child;
+  const physics::BuiltShape* shape = proxy_for(mesh, placed.scale, scratch);
+  if (shape == nullptr) return false;
+  physics::BuiltChild child;
   child.shape = shape;
   // In the compound's frame, which is the tile's corner: a few tens of metres at most, the
   // difference taken in f64 and rounded once.
   child.transform.position = relative(at, corner);
   child.transform.rotation = placed.rotation;
-  children.push_back(child);
+  scratch.children.push_back(child);
   return true;
 }
 
 // Every piece on the tile as one static compound of shared proxies: one body a tile whatever the
 // tile holds (a ruin laid in blocks is hundreds of pieces), with the compound's own tree doing the
-// culling the broadphase would otherwise do per piece.
-bool SceneCollision::build_placements(Tile& tile) {
-  const i64 start = time::monotonic_ns();
-  const i64 bodies_before = stats_.body_ns;
-  struct Count {
-    i64 start;
-    i64 bodies_before;
-    Stats& stats;
-    // The placements' share, less the body made at the end, which is counted as a body.
-    ~Count() {
-      stats.placement_ns += time::monotonic_ns() - start - (stats.body_ns - bodies_before);
-    }
-  } count{start, bodies_before, stats_};
-  children_.clear();
-  bool ok = true;
-  const u64 key = world::tile_key(tile.coord);
-  const WorldPos corner = tile_corner(tile);
+// culling the broadphase would otherwise do per piece. Its shape is built here, on whichever thread
+// asks, and the body made of it on the tick (`build_placements`).
+void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch& scratch,
+                                       TilePlacements& out) {
+  out.compound.reset();
+  out.pieces = 0;
+  out.compound_bytes = 0;
+  out.ok = true;
+  scratch.children.clear();
+  const u64 key = world::tile_key(coord);
+  const WorldPos corner = tile_corner(coord);
   if (!entries_.empty()) {
-    const scene_gen::TileCoord at{tile.coord.x, tile.coord.z};
+    const scene_gen::TileCoord at{coord.x, coord.z};
     for (const std::unique_ptr<Entry>& entry_ptr : entries_) {
       const Entry& entry = *entry_ptr;
       if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
         continue;
-      placed_.clear();
+      scratch.placed.clear();
       std::string why;
-      if (!entry.generator->tile(entry.state, at, context_for(entry), placed_, &why)) {
-        ok = false;
+      bool made = false;
+      {
+        std::lock_guard<std::mutex> lock(generators_mutex_);
+        made = entry.generator->tile(entry.state, at, context_for(entry), scratch.placed, &why);
+      }
+      if (!made) {
+        out.ok = false;
         ENGINE_LOG_WARN(log_collision, "a tile's placements were not made",
-                        log::field("entry", entry.source->where), log::field("x", tile.coord.x),
-                        log::field("z", tile.coord.z), log::field("error", why));
+                        log::field("entry", entry.source->where), log::field("x", coord.x),
+                        log::field("z", coord.z), log::field("error", why));
         continue;
       }
-      for (const scene_gen::Placement& p : placed_.instances) {
+      for (const scene_gen::Placement& p : scratch.placed.instances) {
         if (p.mesh >= entry.source->meshes.size()) continue;
         const u32 mesh = entry.source->meshes[p.mesh];
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
@@ -912,57 +951,82 @@ bool SceneCollision::build_placements(Tile& tile) {
         // sum with the placement's `WorldPos` in f64 — where its generator put it, anywhere.
         const Mat4 linear = mat4_from_transform(p.turn()) * fit;
         const WorldPos stands = p.position + DVec3{linear.c[3].xyz()};
-        (void)add_piece(mesh, linear, stands, corner, children_);
+        (void)add_piece(mesh, linear, stands, corner, scratch);
       }
     }
   } else if (const Vector<u32>* bin = bins_.find_value(key)) {
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
       (void)add_piece(instance.mesh, cell_frame_matrix(instance),
-                      to_world(gfx::instance_cell(instance)), corner, children_);
+                      to_world(gfx::instance_cell(instance)), corner, scratch);
     }
   }
-  tile.pieces = children_.size();
-  if (children_.empty()) return ok;
-  if (physics_->create_compound(
-          std::span<const physics::CompoundChild>(children_.data(), children_.size()),
-          tile.placements_shape) != physics::Status::Ok) {
-    tile.pieces = 0;
-    return false;
+  if (scratch.children.empty()) return;
+  if (physics_->build_compound(
+          std::span<const physics::BuiltChild>(scratch.children.data(), scratch.children.size()),
+          out.compound) != physics::Status::Ok) {
+    out.ok = false;
+    return;
   }
+  out.pieces = scratch.children.size();
   u32 triangles = 0;
-  (void)physics_->shape_memory(tile.placements_shape, false, tile.compound_bytes, triangles);
+  (void)physics_->built_memory(out.compound, false, out.compound_bytes, triangles);
+}
+
+// The tile's compound body, from what a build ahead gathered or, without one, gathered here: the
+// shape adopted into the physics world's table and the body made, on the tick, after the ground's
+// — the order and the ids every activation has always had.
+bool SceneCollision::build_placements(Tile& tile, Build* build) {
+  TilePlacements here;
+  TilePlacements* placed = &here;
+  if (build != nullptr && build->placements) {
+    placed = &build->placed;
+    ++stats_.placements_ahead;
+  } else {
+    const i64 start = time::monotonic_ns();
+    gather_placements(tile.coord, tick_scratch_, here);
+    stats_.placement_ns += time::monotonic_ns() - start;
+  }
+  tile.pieces = 0;
+  if (!placed->compound) return placed->ok;
   const i64 body_start = time::monotonic_ns();
   struct BodyCount {
     i64 start;
     i64& into;
     ~BodyCount() { into += time::monotonic_ns() - start; }
   } body_count{body_start, stats_.body_ns};
+  if (physics_->adopt_shape(placed->compound, tile.placements_shape) != physics::Status::Ok)
+    return false;
+  // The table holds the shape now; the build's own reference goes with it.
+  placed->compound.reset();
+  tile.compound_bytes = placed->compound_bytes;
   physics::BodyDesc body;
   body.shape = tile.placements_shape;
-  body.transform.position = corner;
+  body.transform.position = tile_corner(tile.coord);
   body.motion = physics::MotionType::Static;
   body.layer = physics::Layer::Static;
   body.friction = 0.8f;
   if (physics_->create_body(body, tile.placements) != physics::Status::Ok) {
     physics_->destroy_shape(tile.placements_shape);
     tile.placements_shape = {};
-    tile.pieces = 0;
     return false;
   }
+  tile.pieces = placed->pieces;
   ++stats_.bodies_created;
-  return ok;
+  return placed->ok;
 }
 
-// ---- the ground built ahead of the ring
-// ------------------------------------------------------------
+// ---- the tile built ahead of the ring
+// --------------------------------------------------------------
 
 bool SceneCollision::can_prefetch() const noexcept {
-  // A still ground read through a tile source: a moving one is evaluated at the drawn time, which
-  // the activation's tick sets, and a provider's own `grid` is not one the job system may share.
-  return jobs_ != nullptr && config_.prefetch_radius_tiles > 0.0f && source_.valid() &&
-         !(time_.moving && source_.moves()) &&
-         (explicit_source_ || (ground_ != nullptr && ground_->ops()->tile_source != nullptr));
+  if (jobs_ == nullptr || !(config_.prefetch_radius_tiles > 0.0f)) return false;
+  // A moving ground is evaluated at the drawn time, which the activation's tick sets; and a
+  // generator is handed the ground to stand its placements on, which a worker may read only where
+  // the ground is a tile source's (a provider's own `grid` is not one the job system may share).
+  if (ground_ == nullptr) return has_placements();
+  return source_.valid() && !(time_.moving && source_.moves()) &&
+         (explicit_source_ || ground_->ops()->tile_source != nullptr);
 }
 
 void SceneCollision::retire(std::unique_ptr<Build>&& build) {
@@ -970,17 +1034,18 @@ void SceneCollision::retire(std::unique_ptr<Build>&& build) {
   retired_.push_back(std::move(build));
 }
 
-bool SceneCollision::take_build(Tile& tile, bool& failed) {
-  failed = false;
+std::unique_ptr<SceneCollision::Build> SceneCollision::take_build(world::TileCoord coord) {
   for (u32 k = 0; k < builds_.size(); ++k) {
     Build& build = *builds_[k];
-    if (build.coord.x != tile.coord.x || build.coord.z != tile.coord.z) continue;
+    if (build.coord.x != coord.x || build.coord.z != coord.z) continue;
     u32 expected = Build::k_queued;
+    bool here = false;
     if (build.state.compare_exchange_strong(expected, Build::k_running,
                                             std::memory_order_acq_rel)) {
       // Not started: built here, on the tick — its own cost, as without a build ahead.
       build.compute();
       ++stats_.prefetch_inline;
+      here = true;
     } else if (expected == Build::k_running) {
       // Running on a worker: this tile's build alone is waited for.
       const i64 from = time::monotonic_ns();
@@ -992,20 +1057,25 @@ bool SceneCollision::take_build(Tile& tile, bool& failed) {
     } else {
       ++stats_.prefetched;
     }
-    const bool ok = build.state.load(std::memory_order_acquire) == Build::k_done;
-    if (ok) tile.heights = std::move(build.heights);
-    failed = !ok;
+    // Where its time went: the activation's own split when the tick ran it, the worker's otherwise.
+    if (here) {
+      stats_.ground_sample_ns += build.ground_ns;
+      stats_.max_ground_sample_ns = std::max(stats_.max_ground_sample_ns, build.ground_ns);
+      stats_.placement_ns += build.placement_ns;
+    } else {
+      stats_.ahead_ground_ns += build.ground_ns;
+      stats_.ahead_placement_ns += build.placement_ns;
+    }
     std::unique_ptr<Build> taken = std::move(builds_[k]);
     builds_[k] = std::move(builds_[builds_.size() - 1]);
     builds_.pop_back();
-    retire(std::move(taken));
-    return ok;
+    return taken;
   }
-  return false;
+  return nullptr;
 }
 
 void SceneCollision::prefetch(WorldPos at) {
-  // Builds let go whose jobs have returned are freed.
+  // Builds let go whose jobs have returned are freed, and with them any shape they built.
   for (u32 k = 0; k < retired_.size();) {
     if (retired_[k]->ran.done()) {
       retired_[k] = std::move(retired_[retired_.size() - 1]);
@@ -1046,6 +1116,10 @@ void SceneCollision::prefetch(WorldPos at) {
       ++k;
     }
   }
+  // The ground's heights where the activation would read them from a tile source, and the
+  // placements wherever a tile can hold some.
+  const bool ground = ground_ != nullptr;
+  const bool placements = has_placements();
   for (i64 z = cz - reach; z <= cz + reach; ++z) {
     for (i64 x = cx - reach; x <= cx + reach; ++x) {
       if (!within(x, z, r) || !fits_i32(x) || !fits_i32(z)) continue;
@@ -1056,12 +1130,17 @@ void SceneCollision::prefetch(WorldPos at) {
         pending = pending || (build->coord.x == coord.x && build->coord.z == coord.z);
       if (pending) continue;
       auto build = std::make_unique<Build>();
+      build->owner = this;
       build->coord = coord;
       if (!ground_window(coord, build->i0, build->j0, build->n)) continue;
-      build->source = source_;
-      build->time_s = own_time_s_;
-      build->spacing_mm = spacing_mm_;
-      build->heights.resize(build->n * build->n);
+      build->ground = ground;
+      if (ground) {
+        build->source = source_;
+        build->time_s = own_time_s_;
+        build->spacing_mm = spacing_mm_;
+        build->heights.resize(build->n * build->n);
+      }
+      build->placements = placements;
       build->ran.add(1);
       Build* raw = build.get();
       builds_.push_back(std::move(build));
@@ -1081,8 +1160,12 @@ bool SceneCollision::activate(void* context, const world::TileEvent& event) {
   Tile tile;
   tile.coord = event.tile;
   bool ok = true;
-  if (self->ground_ != nullptr && !self->build_ground(tile)) ok = false;
-  if (!self->build_placements(tile)) ok = false;
+  // Its build ahead, finished (taken, waited for, or run here); the bodies are made below, in the
+  // order they always were: the ground's, then the compound's.
+  std::unique_ptr<Build> build = self->take_build(event.tile);
+  if (self->ground_ != nullptr && !self->build_ground(tile, build.get())) ok = false;
+  if (!self->build_placements(tile, build.get())) ok = false;
+  if (build != nullptr) self->retire(std::move(build));
   if (!ok) ++self->stats_.failures;
   self->tiles_.insert_or_assign(world::tile_key(event.tile), std::move(tile));
   ++self->stats_.activated;

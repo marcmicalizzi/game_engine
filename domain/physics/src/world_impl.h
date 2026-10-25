@@ -14,6 +14,8 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
+#include <atomic>
+
 namespace engine::physics {
 
 // A contact as the listener sees it, before it is turned into a public event. The JPH body
@@ -100,6 +102,9 @@ struct World::Impl {
   };
 
   SlotMap<ShapeEntry> shapes;
+  // Built shapes alive (`BuiltShape`, physics.md "Shapes built on a worker"): made and released on
+  // any thread, so the one count of them is atomic.
+  std::atomic<u32> built_shapes{0};
   SlotMap<BodyEntry> bodies;
   SlotMap<SoftEntry> soft_bodies;
 
