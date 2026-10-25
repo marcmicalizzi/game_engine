@@ -226,6 +226,11 @@ class Walker {
   // A switch to walking: the feet on the ground under `camera` — the highest surface below it, or
   // the ground's own height where there is none — and the eye returned.
   WorldPos drop(WorldPos camera);
+  // A tick of flying: the collision tiles round the camera built ahead on the walker's worker
+  // (scene_collision.md, "The placements built ahead"), so a switch to walking here finds them
+  // ready instead of building them on its tick. It makes no body and changes no step, so a
+  // recorded session replays the same with it.
+  void look_ahead(WorldPos camera);
   // One tick of walking; the eye.
   WorldPos step(const WalkInput& input);
   WorldPos eye() const noexcept;

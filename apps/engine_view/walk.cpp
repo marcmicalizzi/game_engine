@@ -590,6 +590,19 @@ WorldPos Walker::teleport(WorldPos at) {
   return drop(at);
 }
 
+void Walker::look_ahead(WorldPos camera) {
+#if ENGINE_VIEW_WALK_PHYSICS
+  Impl& w = *impl_;
+  if (w.ground == nullptr || !w.physical) return;
+  // The drawn ground's time first, as before the ring's update: under a time-lapse nothing is
+  // built ahead, and the consumer must know.
+  w.consumer.set_ground_time(w.ground_time());
+  w.consumer.prefetch(camera);
+#else
+  (void)camera;
+#endif
+}
+
 WorldPos Walker::drop(WorldPos camera) {
   Impl& w = *impl_;
   if (w.ground == nullptr) return camera;
