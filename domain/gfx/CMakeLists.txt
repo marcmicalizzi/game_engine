@@ -28,7 +28,7 @@ engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io gpu_lock time
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
-          src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
+          src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp
           src/display_probe.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
@@ -71,6 +71,7 @@ engine_shaders(NAME gfx_tests
           shaders/terrain_mask_probe.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
+                                          tests/pipeline_cache_tests.cpp
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp
                                           tests/capture_tests.cpp tests/swapchain_tests.cpp

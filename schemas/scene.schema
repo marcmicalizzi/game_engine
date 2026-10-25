@@ -1924,7 +1924,10 @@ struct FlythroughAnimation @version(1) {
 ///
 /// Version 15: `startup`, the startup trace's summary (`--startup-trace`; docs/subsystems/apps.md,
 /// "--startup-trace: from launch to ready").
-struct FlythroughSummary @version(15) {
+///
+/// Version 16: `load`, what the load read for its meshes and textures and what the device's
+/// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
+struct FlythroughSummary @version(16) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2030,4 +2033,9 @@ struct FlythroughSummary @version(15) {
   /// the milestones, the main thread's stages, the other threads' busy time, and the process before
   /// ready. Null without the flag.
   startup: json @since(15)
+  /// The load (`renderer::SceneLoadReport`, `gfx::PipelineCacheReport`): the meshes and the
+  /// threads they loaded over, the texture pass's references, distinct textures, trusted, built and
+  /// unbuilt, the source images answered from a pack's index, hashed and read (count and bytes),
+  /// and the pipeline cache's file, whether it loaded and why not. Null where nothing was loaded.
+  load: json @since(16)
 }

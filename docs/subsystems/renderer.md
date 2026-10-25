@@ -443,10 +443,11 @@ as `"textures":{"built","decoded","distinct","shared","bytes","bytes_saved","sha
 
 **The renderer builds them itself on a cold cache.** A load through the derived-data cache
 (`SceneDesc::cache`) runs the content build's texture step (`content_build::run_texture_step`,
-the function `engine-content build --cache` runs) for every mesh it reads: beside the container it
-writes when it clusters a glTF itself, and on a cache hit for whatever of the container's textures
-is missing. An entry whose recorded identity already matches is found, not rebuilt, so a warm load
-pays a read and a hash per image. Until 2026-09-24 only engine-content built textures, so a scene
+the function `engine-content build --cache` runs) once, after every mesh is in, over whatever of
+its meshes' textures is missing — beside a container it wrote when it clustered a glTF itself, or
+behind a cache hit. A texture already built is trusted from its header and its source is not read
+([What the load reads](#what-the-load-reads)); until 2026-10-24 a warm load paid a read and a hash
+per image per mesh, and the upload the same again. Until 2026-09-24 only engine-content built textures, so a scene
 flown without running it first — every `engine-view --mesh <file.gltf>` on a fresh cache, and every
 scene file whose meshes the renderer clustered itself — drew its textures decoded at one level,
 with no mips, and shimmered at a distance; the session-diagnosis run on the desert overlook is
@@ -555,6 +556,61 @@ the heat maps, at 32 samples), before and after, whose meshes have no image twic
 it already had from the derived-data root and uploading them; a release build spends less on each,
 and the same ninety-three fewer.
 
+## What the load reads
+
+**A cooked scene's load reads derived data and the scene's own small files, and no source image**
+(since 2026-10-24, roadmap W75; the measurements are in the
+[startup trace's page](../experiments/startup-trace-forest-2026-10-24.md#after-w75)). `load_scene`
+does its work in this order:
+
+1. **The meshes, on the job system.** One job per mesh on one `jobs::JobSystem` made for the load
+   (`SceneDesc::load_jobs` workers, 0 one per performance CPU), the calling thread helping: each
+   mesh's source hash, container read, generator inputs, or — on a miss — import, repairs, DAG and
+   cache write is its own and lands in its own slot of `sources`, `dags` and `tables`, so nothing
+   depends on the thread count or on completion order (`cooked_load_tests.cpp` loads at one worker
+   and at every one and requires the same tables, hashed), and the first failure reported is the
+   lowest mesh index's, as the serial loop reported it. A path a later mesh repeats loads in a
+   second wave, after the first wrote the entry they share, so it is a hit as it was serially and
+   not a second build of the same entry. The trace's `meshes` stage holds the main thread's wait;
+   each `mesh` stage is on the thread that ran it.
+2. **The textures, once for the whole load** (`prepare_scene_textures`, scene.cpp; the trace's
+   `cache textures`), where until W75 every mesh ran the content build's texture step on its own —
+   a read and a hash of every image it named, and a job pool made and joined to do it:
+   - every (mesh, image) a material samples, in mesh order: an image the container carries by the
+     key its record says, one named by path by **one identity per distinct file for the load**,
+     through the load's table of its source images (`content_build::ImageIdentities`): a material
+     pack's file from the pack's index under the derived-data root without a read, any other file
+     read and hashed once ([content_build](content_build.md#one-hash-per-image-and-a-packs-from-its-manifest)),
+     the distinct files one job each (`texture identities`);
+   - every distinct key's `.tex` **trusted from its header** — there, the size its header says,
+     recording this key's identity (`texture::probe_texture_file`, a few hundred bytes;
+     `texture probe`; [texture](texture.md#trusted-not-read));
+   - only a key whose `.tex` is missing or refused built, all of them in one run of
+     `content_build::run_texture_step` on the same pool (`texture build`), from the bytes the
+     container carries (`TextureSource::view`, no copy) or the file read now — and a pack file whose
+     bytes no longer give its index's hash built under the key its bytes give;
+   - the keys written into every mesh's in-memory records (`SourceMesh::textures`), before the
+     authored forms copy them, so the upload's `find_built_textures` finds every built texture by
+     key and **never hashes a source again**. The container on disk is untouched: an image named by
+     path still records no key there (geometry.md, section 32).
+   The trace's `textures trusted` names the counts (`trusted=… built=… hashed=… from_index=…`), and
+   `SceneData::load` (`SceneLoadReport`) carries them and the source images opened and their bytes
+   for a test and for engine-view's summary (`load`, [apps](apps.md#the-summarys-load-block)).
+3. The authored forms, the merge, the instances, as before.
+
+**What it still reads before the first frame**, warm, for the forest v7 (2,074 MiB of 4,498): the
+`.clusters` containers (281 MiB) and the GLBs' own bytes for their source hash (195 MiB), every
+`.tex` whole at the upload (357 MiB, its content hash checked), the scene file and the region's
+tile files under every placement (174 MiB, `scene expand`, item (1) above), the animation clips
+(131 MiB), the geometry's upload (112 MiB), and the ground's tiles and the walker's with the renderer's
+sky and flora tables (about 640 MiB over `ground prepare`, `ground start`, `session` and `renderer`). **A GLB's source hash** is the one source read a
+cooked load still makes: the container is found by the hash of the GLB's bytes, and nothing cheaper
+names those bytes yet (a scene file's `hash` field is checked against it, not trusted in its place).
+
+**What did not move**: `GpuScene::create`'s upload (`gpu_scene.cpp`) is still serial on the main
+thread after the load — reading each `.tex` and uploading it — so uploads do not yet overlap the
+next mesh's read; that is the residency work's ([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency),
+W47), which also bounds what is loaded to the spawn's neighbourhood.
 ## Materials
 
 ### Native authored terrain materials
@@ -1998,10 +2054,11 @@ equal — and the prefix's kept instances at load. (2) Every mesh of the scene a
 materials name are loaded and uploaded whole (6–8.5 s of the load); the residency design (roadmap
 W47, W10) is to load the observer's neighbourhood first — the meshes and textures the inner rings'
 tiles name, then outward — with a tile withheld until its meshes are resident, as the pair budget
-withholds one now. (3) `build_cache_textures` reads and hashes every source image once per mesh that
-uses it, with a job pool made and joined per mesh, and `find_built_textures` does it again: one hash
-per distinct image and one pool per load would save about 4 s and 2.7 GB of reads. None of the three
-is built here; each is a stage of its own.
+withholds one now. (3) `build_cache_textures` read and hashed every source image once per mesh that
+used it, with a job pool made and joined per mesh, and `find_built_textures` did it again — **done**
+(W75, [What the load reads](#what-the-load-reads)): one identity per distinct image, a pack's from
+its index, a built texture trusted from its header, one pool per load, the meshes on it. (1) and (2)
+are stages of their own.
 
 ### The pair accounting
 

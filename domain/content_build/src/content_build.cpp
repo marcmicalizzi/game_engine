@@ -1065,6 +1065,7 @@ void run_texture_step(std::span<const TextureSource* const> sources, std::span<c
     r.mesh = mesh_of[i];
     r.image = source.image;
     task.bytes = std::span<const u8>(source.bytes.data(), source.bytes.size());
+    if (source.bytes.empty() && source.file.empty()) task.bytes = source.view;
     if (!source.file.empty()) {
       const io::Status status = io::read_file(source.file, task.file_bytes);
       if (status != io::Status::Ok) {
@@ -1083,7 +1084,10 @@ void run_texture_step(std::span<const TextureSource* const> sources, std::span<c
       continue;
     }
     r.source_bytes = task.bytes.size();
-    r.source_hash = hash_bytes(task.bytes.data(), task.bytes.size());
+    // A caller that hashed exactly these bytes says so; every other source is hashed here.
+    r.source_hash = source.source_hash != 0 && source.file.empty()
+                        ? source.source_hash
+                        : hash_bytes(task.bytes.data(), task.bytes.size());
     r.key = texture::texture_cache_key(r.source_hash, task.options);
     r.path = texture::texture_cache_path(ddc, r.key);
     bool shared = false;

@@ -20,6 +20,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/pipeline_cache.h>
 #include <domain/gfx/requirements.h>
 
 #include <span>
@@ -47,6 +48,11 @@ struct DeviceOptions {
   // refusal a 2014 Kepler laptop would get and the clamping a Surface Pro would get; nothing in
   // the engine sets it.
   DeviceOverrides overrides;
+  // Where the pipeline cache lives (pipeline_cache.h): a directory, `<ddc>/pipeline-cache` for the
+  // hosts, whose `<vendor>-<device>-<driver>.bin` is read at creation and written back at
+  // `destroy` when the driver's cache grew. Empty, or ENGINE_PIPELINE_CACHE=0 in the environment,
+  // makes every pipeline without one, as before. Never a reason for creation to fail.
+  std::string pipeline_cache_dir;
 };
 
 // What the created device has enabled, beyond the required core features.
@@ -138,6 +144,12 @@ class Device {
   // device has VK_EXT_memory_budget. False with `out` untouched when there is no device. It is
   // a driver query, not a frame path — sample it around a measurement, not inside one.
   bool memory_budget(MemoryBudget& out) const noexcept;
+
+  // What the pipeline cache did (pipeline_cache.h). `save_pipeline_cache` writes it now when it
+  // grew since it was loaded or last saved — `destroy` does the same — and is true when there was
+  // nothing to write or the write landed.
+  const PipelineCacheReport& pipeline_cache() const noexcept;
+  bool save_pipeline_cache() noexcept;
 
   // The backend's handles, for gfx internals, its tests, and a module that presents; declared
   // here and defined only in the backend set, so nothing else can read them.

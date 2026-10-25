@@ -510,7 +510,10 @@ bake samples actual base-colour RGB and leaf alpha, with sRGB decoding, bilinear
 material factors, bark UV scale and the material's alpha cutoff. Its coverage measurement uses
 the same sampler. A red maple therefore stays red through the baked levels. The canonical flora
 source hash additionally covers the bytes of both consumed base-colour images; same-path edits
-invalidate the tree. The renderer's generator host and `engine-content flora` share this path.
+invalidate the tree. The renderer's generator host and `engine-content flora` share this path. The
+hash takes each image's hash from the host's `hash_image` when it has one (since W75: a load's one
+identity per image, a material pack's from its index, so a cooked forest reads no base colour to key
+its trees) and from the bytes otherwise — the same number either way.
 Direct pure calls without an image host retain solver colours and the ellipse fallback. Normal
 and roughness textures are not baked; the existing geometric normals and leaf roughness remain
 the approximation. Solver cache version **9** invalidates the previous geometry and atlases.

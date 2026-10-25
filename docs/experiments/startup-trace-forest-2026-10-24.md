@@ -89,3 +89,51 @@ Measured, not fixed here (the files are the residency agent's and the stall agen
 - None of the above was changed: each is in `systems/renderer/src/scene.cpp`, `gpu_scene.cpp` (timing only, tonight) or the tile set's reads (the stall agent's).
 - `ground prepare`'s `tile rebuild` runs on the frame thread (2.4 s of its CPU) where an offscreen run waits for it anyway; in a window it is the same work behind the first frame.
 - Offscreen hides the window's lag: here readiness follows the first frame because the frame waits for its layout. The window's live session records its stages but not yet the per-frame milestones (apps.md).
+
+## After W75
+
+Roadmap W75 built three of the fixes above in this page's own instrument ([renderer](../subsystems/renderer.md#what-the-load-reads), [texture](../subsystems/texture.md#trusted-not-read), [content_build](../subsystems/content_build.md#one-hash-per-image-and-a-packs-from-its-manifest), [gfx](../subsystems/gfx.md#the-pipeline-cache)): one identity per distinct source image per load and a material pack's from its index, a built texture trusted from its `.tex` header, one job pool per load with the meshes loaded on it, and the engine's own pipeline cache on disk. Measured on the v7 scene at the lake with this page's arguments and replay, offscreen 1600×900, `msvc-release`, the before binary main at d70d34bc and the after the W75 branch on it (both built in the same worktree, copied out so their paths stay fixed), over a scratch copy of the POC's `world/v7/ddc` (the first run of d70d34bc rebuilt the trees into it, G87 having moved `k_flora_version`; every row below reads the same entries). Each run waited for the CPU under 30% for six seconds; `machine_state`'s other processes' CPU at the run's start and end is in the last column. The machine: i9-10980XE (18 cores, 36 threads), RTX 5090 at driver 617.42, Windows 11 26200, shared with other agents.
+
+**Milestones and bytes**, milliseconds from launch:
+
+| run | caches | scene_loaded | gpu_scene | first_frame | nearby_stable | read before ready | peak commit | others' CPU |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| before | OS-warm | 7,805 | 12,250 | 13,484 | **13,853** | 4,498 MiB | 13.3 GiB | 7% / 14% |
+| after | OS-warm | 3,308 | 7,115 | 8,298 | **8,697** | **2,074 MiB** | 5.0 GiB | 19% / 10% |
+| before | OS-cold copy (`robocopy /J`) | 47,299 | 53,444 | 55,488 | **55,861** | 4,498 MiB | 13.3 GiB | 27% / 24% |
+| after | OS-cold copy | 40,946 | 46,515 | 48,654 | **49,050** | 2,074 MiB | 5.0 GiB | 21% / 17% |
+| before | uncooked (empty cache) | 96,061 | 107,986 | 110,526 | **110,871** | 4,400 MiB | 13.5 GiB | 21% / 15% |
+| after | uncooked | 38,746 | 42,707 | 44,778 | **45,445** | 2,449 MiB | 5.1 GiB | 75% / 72% |
+| before | that cache, next run | 18,227 | 23,737 | 25,527 | 25,891 | 4,498 MiB | 13.3 GiB | 43% / 52% |
+| after | that cache, next run | 3,341 | 7,537 | 8,825 | 9,184 | 2,074 MiB | 5.0 GiB | 19% / 12% |
+
+The uncooked "after" ran beside other work holding 72–75% of the CPU, so its 45.4 s is an upper bound; the "before" row beside it had 15–21%. The before row's next run (25.9 s) was slow in `scene expand` (10.5 s wall over 2.4 s CPU: the tile files it had just written, read back beside 43–52% of other load), not in anything W75 touched.
+
+**The stages W75 changed** (main thread, wall / CPU ms / MiB read while the stage ran):
+
+| run | caches | `load scene` | `gpu scene` | `renderer` |
+|---|---|---|---|---|
+| before | OS-warm | 4,807 / 3,625 / 2,270 | 1,676 / 1,562 / 1,282 | 172 / 172 / 114 |
+| after | OS-warm | **414 / 188 / 659** | 1,063 / 953 / 469 | 168 / 156 / 112 |
+| before | OS-cold copy | 6,757 / 3,438 / 2,270 | 2,019 / 1,703 / 1,282 | 178 |
+| after | OS-cold copy | **838 / 281 / 659** | 1,476 / 1,125 / 469 | 204 |
+| before | uncooked | 84,213 / 57,781 / 2,171 | 2,386 / 1,516 / 1,282 | 190 |
+| after | uncooked | **27,169 / 12,516 / 1,034** | 1,053 / 859 / 469 | 305 |
+
+- **Source images read**: before, every texture's source once per mesh that named it in `cache textures` (1,593 MiB over 59 calls and 319 images) and again in `upload materials`; after, **0 bytes and 0 opens** on a cooked load — 146 distinct textures over 332 references, all trusted from their headers, the 24 pack files they come from answered by the pack's index (`textures trusted`: `trusted=146 built=0 hashed=0 from_index=24`). The first after-run over a cache the index did not cover yet read the 24 pack files once (96 MiB) and wrote it. `upload materials` fell from 1,266 ms and 1,170 MiB to 649 ms and 357 MiB: it reads each `.tex` once and no source.
+- **Off the main thread**: the 64 meshes load as jobs over 36 workers and the main thread (`meshes` 241 ms wall on the main thread, 1.6–1.7 s of other threads' busy time warm; 73 s of it uncooked, where the trees are built in parallel and the main thread's `load scene` CPU fell from 57.8 s to 12.5 s). The serial loop's 4.4 s of warm mesh work is 0.24 s of wall.
+- **Peak commit** fell from 13.3 to 5.0 GiB. Not traced here; the one change that touches it is that the load now makes one job system where it made 59, each of 37 threads, and this is consistent with a per-thread allocator cache outliving its thread (seen, not fixed; below).
+- **The new critical path, warm (8.7 s)**: before `main` 0.4 s, `device` 0.5 s, `scene file` 1.8 s (`scene expand`: every placement stood on the ground), `animation clips` 0.2 s, `load scene` 0.4 s, `ground prepare` 2.7 s (`tile rebuild` on the frame thread), `gpu scene` 1.1 s (the upload, serial), `renderer` 0.2 s, `ground start` 0.3 s, `session` 0.3 s, three frames 1.2 s. Cold, `scene expand` is 38.9 s of the 49 s. Neither is W75's (the residency and the tile set's agents' tonight).
+
+**The pipeline cache**, with the driver's own cache pointed at a new empty directory each run (`__GL_SHADER_DISK_CACHE_PATH`), so every launch stands for the first launch of a new build:
+
+| run | `renderer` (wall / CPU ms) | of which `pipelines` | nearby_stable | others' CPU |
+|---|---:|---:|---:|---|
+| before (no cache of the engine's) | 8,400 / 8,172 | 6,610 | 21,780 | 17% / 14% |
+| after, first launch (cache empty, written at exit: 2.0 MiB) | 7,444 / 7,406 | | 15,964 | 12% / 11% |
+| after, second launch (cache loaded) | **336 / 328** | | 8,791 | 8% / 6% |
+| after, `ENGINE_PIPELINE_CACHE=0` | 8,070 / 8,078 | | 16,671 | 19% / 21% |
+
+**The streamed forest** (`content/test-scenes/streamed-forest`, its camera path, 120 frames, a cache of its own, the repository's material pack absent so its trees draw their recipes' maps): `load scene` uncooked 12,852 → **8,210 ms** (five trees and the terrain built in parallel; 34 textures built in one run of the step), next run 372 → **260 ms** with its 34 textures trusted (others' CPU 12–24% at the starts).
+
+**Seen and not fixed**: the upload (`GpuScene::create`) is still serial after the load and does not overlap the next mesh's read (gpu_scene.cpp, tonight another agent's); a GLB's source hash (195 MiB warm) is the one source read a cooked load still makes; the peak commit's fall above wants its own look at `core/memory`'s per-thread caches; `scene expand` and `tile rebuild` are this page's items (1) and the ground's, unchanged.

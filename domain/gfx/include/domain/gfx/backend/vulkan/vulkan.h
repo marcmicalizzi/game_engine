@@ -46,6 +46,9 @@ struct Handles {
   VmaAllocator allocator = nullptr;
   VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
   VkCommandPool immediate_pool = VK_NULL_HANDLE;  // graphics family, transient
+  // Every pipeline the device makes is made through this (pipeline_cache.h); VK_NULL_HANDLE when
+  // the device has no cache directory, which the create calls take as "no cache".
+  VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
   // Presentation extras the device enabled beside VK_KHR_swapchain, which only a presenting
   // module reads (the swapchain, backend/vulkan/swapchain.h), so they are here rather than in the
   // engine-neutral DeviceFeatures: present ids and waits (VK_KHR_present_id2,

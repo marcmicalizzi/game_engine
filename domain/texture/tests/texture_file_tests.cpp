@@ -338,3 +338,48 @@ TEST_CASE("texture file: sizes, names and the chain arithmetic") {
   CHECK(std::string(texture_section_name(3)) == "data");
   CHECK(std::string(texture_section_name(99)) == "unknown");
 }
+
+// The load's trust (texture.md, "Trusted, not read"; roadmap W75): the identity and the size from
+// the header, the table and the identity section, without the payload — and a file that is not the
+// size its header says, or not a texture file at all, refused with the reason.
+TEST_CASE("texture file: a probe reads the identity and the size, and refuses a torn file") {
+  const test::TempDir tmp("texture_probe");
+  REQUIRE(tmp.ok());
+  const TextureData data = make_fixture();
+  const std::string path = tmp.file("probe.tex");
+  std::string error;
+  REQUIRE_MESSAGE(write_texture_file(path, data, &error), error);
+  std::string bytes;
+  REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+
+  u64 source_hash = 0;
+  u64 build_key = 0;
+  u64 size = 0;
+  REQUIRE_MESSAGE(probe_texture_file(path, source_hash, build_key, size, &error), error);
+  CHECK(source_hash == data.source_hash);
+  CHECK(build_key == data.build_key);
+  CHECK(size == bytes.size());
+
+  // One byte short: the write did not finish.
+  REQUIRE(io::write_file(path, std::string_view(bytes.data(), bytes.size() - 1)) == io::Status::Ok);
+  CHECK_FALSE(probe_texture_file(path, source_hash, build_key, size, &error));
+  CHECK(error.find("header says") != std::string::npos);
+  // One byte long: something appended to it.
+  REQUIRE(io::write_file(path, bytes + "x") == io::Status::Ok);
+  CHECK_FALSE(probe_texture_file(path, source_hash, build_key, size, &error));
+  // Not a texture file, and no file.
+  REQUIRE(io::write_file(path, std::string(64, 'q')) == io::Status::Ok);
+  CHECK_FALSE(probe_texture_file(path, source_hash, build_key, size, &error));
+  CHECK(error.find("TEXF") != std::string::npos);
+  CHECK_FALSE(probe_texture_file(tmp.file("none.tex"), source_hash, build_key, size, &error));
+  // A payload byte flipped is not the probe's to see — the upload's full read checks the content
+  // hash — so the probe still answers the identity the header names.
+  std::string flipped = bytes;
+  // In the middle of the file: the level data, not the identity section the writer puts last.
+  flipped[flipped.size() / 2] = static_cast<char>(flipped[flipped.size() / 2] ^ 0x55);
+  REQUIRE(io::write_file(path, flipped) == io::Status::Ok);
+  REQUIRE(probe_texture_file(path, source_hash, build_key, size, &error));
+  CHECK(build_key == data.build_key);
+  TextureData full;
+  CHECK_FALSE(read_texture_file(path, full, &error));
+}

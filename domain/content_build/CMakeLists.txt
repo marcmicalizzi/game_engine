@@ -10,10 +10,11 @@
 # configuration leaves out.
 engine_module(NAME content_build LAYER domain
   DEPS base containers math hash time jobs log io json geometry materials assets atlas texture
-  SOURCES src/content_build.cpp src/container_stats.cpp src/generator_hosts.cpp)
+  SOURCES src/content_build.cpp src/container_stats.cpp src/generator_hosts.cpp
+          src/image_identities.cpp)
 
 # The protocol's `ContentBuildOptions` states the same defaults `MeshOptions` has, and the test
 # that holds them together reads both, so it links the generated protocol types.
 engine_module_tests(NAME content_build
-  SOURCES tests/content_build_tests.cpp
+  SOURCES tests/content_build_tests.cpp tests/image_identities_tests.cpp
   DEPS schemas schema)
