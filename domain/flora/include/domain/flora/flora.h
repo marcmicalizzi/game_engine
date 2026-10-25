@@ -65,7 +65,8 @@ namespace engine::flora {
 // 7: fuller conifer/willow foliage and seated ancient segment joins (G86).
 // 8: maple terminal wood and independent opposite leaf blades (G86 follow-up).
 // 9: species-correct terminal foliage and material-dependent canopy LOD (G87).
-inline constexpr u32 k_flora_version = 9;
+// 10: species maturity, four profiles, sapling taper, and bounded trunk-tip crowns (G88).
+inline constexpr u32 k_flora_version = 10;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

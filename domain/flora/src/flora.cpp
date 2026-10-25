@@ -1,4 +1,5 @@
 // The flora file, its key, and the container the solver's mesh is built into (flora.h).
+#include "maturity.h"
 #include "species.h"
 
 #include <core/hash/hash.h>
@@ -46,33 +47,39 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = text_errors.empty() ? std::string("not an engine.flora.FloraFile") : text_errors;
     return false;
   }
+  if (!detail::maturity_in_range(out.species, out.tree, error)) return false;
+  FloraFile resolved;
+  if (!detail::is_tree_species(out.species) &&
+      !detail::resolve_legacy_maturity(out, resolved, error))
+    return false;
+  const FloraFile& checked = detail::is_tree_species(out.species) ? out : resolved;
   bool in_range = false;
-  if (detail::is_tree_species(out.species)) {
-    in_range = detail::tree_in_range(out.species, out.tree, error);
-  } else if (out.species == k_species_date_palm) {
-    in_range = palm_in_range(out.palm, error);
-  } else if (out.species == k_species_broadleaf) {
-    in_range = broadleaf_in_range(out.broadleaf, error);
-  } else if (out.species == k_species_conifer) {
-    in_range = conifer_in_range(out.conifer, error);
-  } else if (out.species == k_species_birch) {
-    in_range = birch_in_range(out.birch, error);
-  } else if (out.species == k_species_willow) {
-    in_range = willow_in_range(out.willow, error);
-  } else if (out.species == k_species_orchard) {
-    in_range = orchard_in_range(out.orchard, error);
-  } else if (out.species == k_species_ancient) {
-    in_range = ancient_in_range(out.ancient, error);
-  } else if (out.species == k_species_shrub) {
-    in_range = shrub_in_range(out.shrub, error);
-  } else if (out.species == k_species_fern) {
-    in_range = fern_in_range(out.fern, error);
-  } else if (out.species == k_species_tuft) {
-    in_range = tuft_in_range(out.tuft, error);
-  } else if (out.species == k_species_herb) {
-    in_range = herb_in_range(out.herb, error);
+  if (detail::is_tree_species(checked.species)) {
+    in_range = detail::tree_in_range(checked.species, checked.tree, error);
+  } else if (checked.species == k_species_date_palm) {
+    in_range = palm_in_range(checked.palm, error);
+  } else if (checked.species == k_species_broadleaf) {
+    in_range = broadleaf_in_range(checked.broadleaf, error);
+  } else if (checked.species == k_species_conifer) {
+    in_range = conifer_in_range(checked.conifer, error);
+  } else if (checked.species == k_species_birch) {
+    in_range = birch_in_range(checked.birch, error);
+  } else if (checked.species == k_species_willow) {
+    in_range = willow_in_range(checked.willow, error);
+  } else if (checked.species == k_species_orchard) {
+    in_range = orchard_in_range(checked.orchard, error);
+  } else if (checked.species == k_species_ancient) {
+    in_range = ancient_in_range(checked.ancient, error);
+  } else if (checked.species == k_species_shrub) {
+    in_range = shrub_in_range(checked.shrub, error);
+  } else if (checked.species == k_species_fern) {
+    in_range = fern_in_range(checked.fern, error);
+  } else if (checked.species == k_species_tuft) {
+    in_range = tuft_in_range(checked.tuft, error);
+  } else if (checked.species == k_species_herb) {
+    in_range = herb_in_range(checked.herb, error);
   } else {
-    error = "unknown flora species \"" + out.species + "\"; available:";
+    error = "unknown flora species \"" + checked.species + "\"; available:";
     for (const auto& info : geometry::k_flora_species)
       error += " " + std::string(info.name);
     return false;
@@ -263,6 +270,8 @@ std::string canonical_flora_json(const FloraFile& file) {
     const JsonValue* value = whole.find(key);
     if (value != nullptr && !value->is_null()) canonical.set(key, *value);
   }
+  if (!detail::is_tree_species(file.species) && file.tree.age_years > 0)
+    canonical.set("tree", schema::to_json(file.tree));
   JsonWriteOptions compact;
   compact.pretty = false;
   return write_json(canonical, compact);
@@ -285,9 +294,22 @@ u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error,
                  TreeLevels* levels) {
+  if (!detail::maturity_in_range(file.species, file.tree, error)) return false;
   if (levels != nullptr) *levels = TreeLevels{};
   if (detail::is_tree_species(file.species))
     return detail::solve_tree(file.species, file.tree, mesh, tree_report, error, motion, levels);
+  if (file.tree.age_years > 0) {
+    FloraFile resolved;
+    detail::GrowthRules rules;
+    if (!detail::resolve_legacy_maturity(file, resolved, error, &rules)) return false;
+    if (file.species == k_species_broadleaf)
+      return detail::solve_broadleaf_rules(resolved.broadleaf, rules, mesh, tree_report, &error,
+                                           &motion, levels);
+    if (file.species == k_species_conifer)
+      return detail::solve_conifer_rules(resolved.conifer, rules, mesh, tree_report, &error,
+                                         &motion);
+    return solve_flora(resolved, mesh, motion, palm_report, tree_report, error, levels);
+  }
   if (file.species == k_species_broadleaf)
     return solve_broadleaf_chain(file.broadleaf, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_conifer)

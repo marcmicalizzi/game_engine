@@ -176,8 +176,13 @@ Structure grow(const Conifer& p, const GrowthRules& rules) {
     // The pipe of the whorl: the thickest branch at the crown's foot, thinner as they shorten.
     br.r0 = r_max * det::exp(det::log(len / reach + 1e-9) * 0.8);
     if (br.r0 > 0.5 * r_here) br.r0 = 0.5 * r_here;
-    if (br.r0 < 0.006) br.r0 = 0.006;
-    br.r1 = 0.004;
+    if (p.trunk_radius_m < .03f) {
+      br.r0 = std::min(br.r0, .5 * r_here);
+      br.r1 = std::min(.004, .65 * br.r0);
+    } else {
+      if (br.r0 < 0.006) br.r0 = 0.006;
+      br.r1 = 0.004;
+    }
     const f64 supported = supported_length(br.axis.length, br.r0, rules);
     if (supported < br.axis.length) {
       const f64 scale = supported / br.axis.length;
@@ -227,7 +232,7 @@ Structure grow(const Conifer& p, const GrowthRules& rules) {
     const D3 tangent = axis_tangent(s.trunk, arc);
     const D3 normal = perpendicular(tangent, s.trunk.normal[0]);
     const D3 binormal = cross(tangent, normal);
-    const f64 r_here = lerp(s.trunk_r0, 0.01, arc / s.trunk.length);
+    const f64 r_here = lerp(s.trunk_r0, std::min(.01, s.trunk_r0 * .3), arc / s.trunk.length);
     for (u32 b = 0; b < count; ++b) {
       const f64 a = turn + 2.0 * k_pi * static_cast<f64>(b) / static_cast<f64>(count) +
                     0.15 * rng.symmetric();
@@ -254,7 +259,7 @@ Structure grow(const Conifer& p, const GrowthRules& rules) {
       const D3 tangent_k = axis_tangent(s.trunk, arc_k);
       const D3 normal_k = perpendicular(tangent_k, s.trunk.normal[0]);
       const D3 binormal_k = cross(tangent_k, normal_k);
-      const f64 r_k = lerp(s.trunk_r0, 0.01, arc_k / s.trunk.length);
+      const f64 r_k = lerp(s.trunk_r0, std::min(.01, s.trunk_r0 * .3), arc_k / s.trunk.length);
       const f64 a = between.unit() * 2.0 * k_pi;
       const D3 radial = normal_k * det::cos(a) + binormal_k * det::sin(a);
       const f64 angle = whorl_angle(tk) * (1.0 + 0.05 * between.symmetric());
@@ -345,17 +350,17 @@ bool conifer_in_range(const Conifer& p, std::string& error) {
     error = std::string("engine.flora.Conifer.") + field + " is out of range (" + range + ")";
     return false;
   };
-  if (!(p.height_m >= 1.0f && p.height_m <= 60.0f)) return bad("height_m", "1 to 60 m");
-  if (!(p.trunk_radius_m >= 0.03f && p.trunk_radius_m <= 1.5f))
-    return bad("trunk_radius_m", "0.03 to 1.5 m");
+  if (!(p.height_m >= .35f && p.height_m <= 60.0f)) return bad("height_m", "0.35 to 60 m");
+  if (!(p.trunk_radius_m >= .003f && p.trunk_radius_m <= 2.0f))
+    return bad("trunk_radius_m", "0.003 to 2 m");
   if (!(p.crown_base >= 0.0f && p.crown_base <= 0.8f)) return bad("crown_base", "0 to 0.8");
   if (!(p.lean_deg >= 0.0f && p.lean_deg <= 20.0f)) return bad("lean_deg", "0 to 20 degrees");
   if (!(p.whorls >= 2u && p.whorls <= 60u)) return bad("whorls", "2 to 60");
   if (!(p.branches_per_whorl >= 2u && p.branches_per_whorl <= 10u))
     return bad("branches_per_whorl", "2 to 10");
   if (!(p.thinning >= 0.0f && p.thinning <= 0.8f)) return bad("thinning", "0 to 0.8");
-  if (!(p.crown_radius_m >= 0.2f && p.crown_radius_m <= 12.0f))
-    return bad("crown_radius_m", "0.2 to 12 m");
+  if (!(p.crown_radius_m >= .08f && p.crown_radius_m <= 16.0f))
+    return bad("crown_radius_m", "0.08 to 16 m");
   if (!(p.bottom_angle_deg >= 60.0f && p.bottom_angle_deg <= 130.0f))
     return bad("bottom_angle_deg", "60 to 130 degrees");
   if (!(p.top_angle_deg >= 20.0f && p.top_angle_deg <= 100.0f))
@@ -420,8 +425,8 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   // each a part of its own hanging from the trunk; a dead branch's on every rung.
   emit.begin_part(s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
                   geometry::k_motion_no_parent);
-  build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, 0.01, plan.trunk_sides,
-             Vec2{0.0f, 0.0f}, emit);
+  build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, std::min(.01, s.trunk_r0 * .3),
+             plan.trunk_sides, Vec2{0.0f, 0.0f}, emit);
   Vector<u32> part_of(s.branches.size());
   u32 laterals = 0;
   for (u32 i = 0; i < s.branches.size(); ++i) {

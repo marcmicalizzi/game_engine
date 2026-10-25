@@ -3,6 +3,9 @@
 // part tables whose answers can be worked out — then, where the flora capability is linked, a
 // generated palm drawn through the pool's flora stage: in no wind it is the rigid palm to the bit,
 // in a wind it sways, and the same frames with the same walker draw the same bytes.
+#if ENGINE_RENDERER_TESTS_FLORA
+#include <domain/flora/flora.h>
+#endif
 #include <domain/geometry/flora_species.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/flora_motion.h>
@@ -488,3 +491,195 @@ TEST_CASE("flora motion: a walker through the crown is replayed to the same byte
 }
 
 #endif  // ENGINE_RENDERER_TESTS_FLORA
+
+#if ENGINE_RENDERER_TESTS_FLORA
+TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong wind") {
+  struct Case {
+    const char* species;
+    u32 budget;
+    u32 age;
+  };
+  for (const Case entry :
+       {Case{"maple", 0, 0}, Case{"beech", 0, 0}, Case{"birch", 0, 0}, Case{"maple", 8000, 0},
+        Case{"beech", 8000, 0}, Case{"birch", 8000, 0}, Case{"oak", 24000, 600}}) {
+    const char* species = entry.species;
+    CAPTURE(entry.budget);
+    CAPTURE(entry.age);
+    CAPTURE(std::string_view(species));
+    flora::FloraFile file;
+    file.species = species;
+    file.tree.seed = 17;
+    file.tree.age_years = static_cast<f32>(entry.age);
+    if (entry.budget != 0) file.tree.triangle_budget = file.birch.triangle_budget = entry.budget;
+    if (entry.age != 0) {
+      file.tree.height_m = 12;
+      file.tree.trunk_radius_m = .6f;
+      file.tree.site_quality = 1.5f;
+      file.tree.growing_space = 1;
+    }
+    file.tree.card_bake_px = file.tree.impostor_px = 0;
+    file.birch.seed = 17;
+    file.birch.stems = 1;
+    file.birch.card_bake_px = file.birch.impostor_px = 0;
+    assets::MeshData generated;
+    flora::Motion motion;
+    std::string error;
+    REQUIRE_MESSAGE(flora::solve_flora(file, generated, motion, nullptr, nullptr, error), error);
+    struct Ring {
+      u32 first;
+      u32 count;
+      u32 part;
+      f32 weight;
+      Vec3 center;
+    };
+    Vector<Ring> rings;
+    // Tube rings are contiguous and duplicate the UV seam. Restrict this scan to named wood:
+    // the parent-first trunk is followed by its scaffold tubes, before recursive shoots/leaves.
+    for (u32 first = 0; first < generated.positions.size();) {
+      const u32 part = motion.vertex_part[first];
+      if (part > 0 && motion.parts[part].parent != 0) break;
+      const f32 weight = motion.vertex_weight[first];
+      u32 end = first + 1;
+      while (end < generated.positions.size() && motion.vertex_part[end] == part &&
+             motion.vertex_weight[end] == weight)
+        ++end;
+      if (end - first >= 4 &&
+          length(generated.positions[first] - generated.positions[end - 1]) < 1e-5f) {
+        Vec3 center{};
+        for (u32 v = first; v + 1 < end; ++v)
+          center = center + generated.positions[v];
+        center = center * (1.0f / static_cast<f32>(end - first - 1));
+        rings.push_back({first, end - first - 1, part, weight, center});
+      }
+      first = end;
+    }
+    const Ring* bridge = nullptr;
+    const Ring* cap = nullptr;
+    for (u32 i = 0; i + 1 < rings.size(); ++i) {
+      if (rings[i].part == 0 && rings[i].weight == 1) {
+        bridge = &rings[i];
+        cap = &rings[i + 1];
+        break;
+      }
+    }
+    REQUIRE(bridge != nullptr);
+    REQUIRE(cap != nullptr);
+    REQUIRE(cap->part != 0);
+    REQUIRE(cap->count == bridge->count);
+    const Ring* child = nullptr;
+    f32 best = 1e30f;
+    for (const Ring& ring : rings) {
+      if (&ring == cap || ring.part != cap->part) continue;
+      const f32 distance = length(ring.center - cap->center);
+      if (distance < best) {
+        child = &ring;
+        best = distance;
+      }
+    }
+    REQUIRE(child != nullptr);
+    REQUIRE(best < .03f);
+    REQUIRE(child->weight == cap->weight);
+    const FloraMesh mesh = mesh_of(motion.parts, motion.structure, species);
+    Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+    Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+    Vector<u32> child_indices;
+    for (u32 t = 0; t < generated.primitives[0].index_count; t += 3) {
+      const u32 a = generated.indices[t], b = generated.indices[t + 1],
+                c = generated.indices[t + 2];
+      if (motion.vertex_part[a] == child->part && motion.vertex_part[b] == child->part &&
+          motion.vertex_part[c] == child->part) {
+        child_indices.push_back(a);
+        child_indices.push_back(b);
+        child_indices.push_back(c);
+      }
+    }
+    f32 worst_margin = 1e30f;
+    u32 outside = 0;
+    f32 least_area_ratio = 1e30f, greatest_area_ratio = 0, least_orientation = 1;
+    for (u32 direction = 0; direction < 8; ++direction) {
+      const f32 angle = static_cast<f32>(direction) * .785398163f;
+      const FloraWind wind{Vec3{std::cos(angle), 0, std::sin(angle)}, k_flora_max_wind};
+      for (u32 sample = 0; sample < 24; ++sample) {
+        pose(mesh, wind, static_cast<f64>(sample) * .375, FloraPush{}, 1, state, poses);
+        const auto deform = [&](const Ring& ring, u32 offset) {
+          Vec3 p, n;
+          gfx::flora_bend(poses[ring.part],
+                          flora::decode_bend_weight(flora::encode_bend_weight(ring.weight)),
+                          generated.positions[ring.first + offset],
+                          generated.normals[ring.first + offset], p, n);
+          return p;
+        };
+        for (u32 side = 0; side < cap->count; ++side) {
+          const u32 next = (side + 1) % cap->count;
+          for (u32 tri = 0; tri < 2; ++tri) {
+            const Vec3 rest_a = generated.positions[bridge->first + side];
+            const Vec3 rest_b = generated.positions[(tri == 0 ? bridge->first : cap->first) + next];
+            const Vec3 rest_c = generated.positions[cap->first + (tri == 0 ? next : side)];
+            const Vec3 moved_a = deform(*bridge, side);
+            const Vec3 moved_b = tri == 0 ? deform(*bridge, next) : deform(*cap, next);
+            const Vec3 moved_c = deform(*cap, tri == 0 ? next : side);
+            const Vec3 rest_area = cross(rest_b - rest_a, rest_c - rest_a);
+            const Vec3 moved_area = cross(moved_b - moved_a, moved_c - moved_a);
+            const f32 ratio = length(moved_area) / length(rest_area);
+            least_area_ratio = std::min(least_area_ratio, ratio);
+            greatest_area_ratio = std::max(greatest_area_ratio, ratio);
+            least_orientation =
+                std::min(least_orientation, dot(normalize(rest_area), normalize(moved_area)));
+          }
+        }
+        const Vec3 a0 = deform(*child, 0), a1 = deform(*child, 1), a2 = deform(*child, 2);
+        const Vec3 normal = normalize(cross(a1 - a0, a2 - a1));
+        // Test the actual deformed scaffold surface as well as its projected ring. Cast along
+        // the ring normal toward the branch tip, so a cap sliding axially out is detected too.
+        const auto hit = [&](Vec3 origin, Vec3 a, Vec3 b, Vec3 c) {
+          const Vec3 e1 = b - a, e2 = c - a;
+          const Vec3 h = cross(normal, e2);
+          const f32 det = dot(e1, h);
+          if (std::abs(det) < 1e-9f) return false;
+          const f32 inv = 1.0f / det;
+          const Vec3 delta = origin - a;
+          const f32 u = inv * dot(delta, h);
+          if (u < 0 || u > 1) return false;
+          const Vec3 q = cross(delta, e1);
+          const f32 v = inv * dot(normal, q);
+          return v >= 0 && u + v <= 1 && inv * dot(e2, q) > 1e-6f;
+        };
+        const auto bent_vertex = [&](u32 index) {
+          Vec3 p, n;
+          gfx::flora_bend(
+              poses[child->part],
+              flora::decode_bend_weight(flora::encode_bend_weight(motion.vertex_weight[index])),
+              generated.positions[index], generated.normals[index], p, n);
+          return p;
+        };
+        for (u32 v = 0; v < cap->count; ++v) {
+          const Vec3 point = deform(*cap, v);
+          u32 crossings = 0;
+          for (u32 t = 0; t < child_indices.size(); t += 3) {
+            const u32 a = child_indices[t], b = child_indices[t + 1], c = child_indices[t + 2];
+            if (hit(point, bent_vertex(a), bent_vertex(b), bent_vertex(c))) ++crossings;
+          }
+          if ((crossings & 1u) == 0u) ++outside;
+        }
+        for (u32 edge = 0; edge < child->count; ++edge) {
+          const Vec3 a = deform(*child, edge);
+          const Vec3 b = deform(*child, (edge + 1) % child->count);
+          for (u32 v = 0; v < cap->count; ++v) {
+            const f32 margin = dot(cross(b - a, deform(*cap, v) - a), normal) / length(b - a);
+            worst_margin = std::min(worst_margin, margin);
+          }
+        }
+      }
+    }
+    MESSAGE(std::string_view(species) << " strong-wind cap containment margin: " << worst_margin
+                                      << " m; outside samples: " << outside);
+    MESSAGE("bridge area ratios " << least_area_ratio << ".." << greatest_area_ratio
+                                  << "; least normal agreement " << least_orientation);
+    CHECK(least_area_ratio > .25f);
+    CHECK(greatest_area_ratio < 4.0f);
+    CHECK(least_orientation > 0);
+    CHECK(outside == 0);
+    CHECK(worst_margin >= -1e-5f);
+  }
+}
+#endif

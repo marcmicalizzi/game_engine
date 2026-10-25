@@ -45,6 +45,11 @@ Axis grow_axis(D3 base, D3 direction, f64 length, u32 rows, D3 pull, f64 pull_pe
 namespace {
 u32 segment_of(const Axis& a, f64 arc) {
   const u32 rows = a.point.size() - 1;
+  if (!a.uniform_steps) {
+    const auto upper = std::upper_bound(a.arc.begin(), a.arc.end(), arc);
+    const u32 index = static_cast<u32>(upper - a.arc.begin());
+    return index == 0 ? 0 : std::min(index - 1, rows - 1);
+  }
   const f64 step = a.length / static_cast<f64>(rows);
   f64 f = arc / step;
   if (f < 0.0) f = 0.0;
@@ -81,8 +86,132 @@ Axis resample_axis(const Axis& a, u32 rows) {
   return r;
 }
 
+f64 continuation_radius(f64 r0, f64 r1, f64 length, const StemContinuation& join, f64 arc) {
+  const f64 slope = (join.reference_tip - r0) / join.reference_length;
+  if (arc <= join.from) return lerp(r0, join.reference_tip, arc / join.reference_length);
+  const f64 span = length - join.from;
+  const f64 u = clamp01((arc - join.from) / span);
+  const f64 u2 = u * u;
+  const f64 u3 = u2 * u;
+  const f64 start = r0 + slope * join.from;
+  // Monotone endpoint slopes cannot overshoot the positive radius envelope.
+  const f64 limit = 1.5 * (start - r1) / span;
+  const f64 m0 = std::clamp(slope, -limit, 0.0) * span;
+  const f64 m1 = std::clamp(join.end_slope, -limit, 0.0) * span;
+  return (2 * u3 - 3 * u2 + 1) * start + (u3 - 2 * u2 + u) * m0 + (-2 * u3 + 3 * u2) * r1 +
+         (u3 - u2) * m1;
+}
+
+Axis resample_continuation(const Axis& a, u32 rows, const StemContinuation& join) {
+  Axis r;
+  r.length = a.length;
+  r.uniform_steps = false;
+  D3 n = a.normal[0];
+  for (u32 i = 0; i <= rows + k_continuation_rows; ++i) {
+    const f64 s = i == rows                         ? join.from
+                  : i == rows + k_continuation_rows ? a.length
+                  : i <= rows ? join.from * static_cast<f64>(i) / rows
+                              : join.from + (a.length - join.from) * static_cast<f64>(i - rows) /
+                                                k_continuation_rows;
+    const D3 t = axis_tangent(a, s);
+    n = perpendicular(t, n);
+    r.point.push_back(i == rows + k_continuation_rows ? a.point.back() : axis_point(a, s));
+    r.tangent.push_back(t);
+    r.normal.push_back(n);
+    r.arc.push_back(s);
+  }
+  return r;
+}
+
+Axis resample_continuing_child(const Axis& a, u32 rows, f64 station) {
+  Axis r;
+  r.length = a.length;
+  r.uniform_steps = false;
+  D3 n = a.normal[0];
+  const u32 before =
+      std::clamp(static_cast<u32>(static_cast<f64>(rows + 1) * station / a.length + .5), 1u, rows);
+  for (u32 i = 0; i <= rows + 1; ++i) {
+    const f64 s = i == before     ? station
+                  : i == rows + 1 ? a.length
+                  : i <= before   ? station * static_cast<f64>(i) / before
+                                  : station + (a.length - station) * static_cast<f64>(i - before) /
+                                                  (rows + 1 - before);
+    const D3 t = axis_tangent(a, s);
+    n = perpendicular(t, n);
+    r.point.push_back(i == rows + 1 ? a.point.back() : axis_point(a, s));
+    r.tangent.push_back(t);
+    r.normal.push_back(n);
+    r.arc.push_back(s);
+  }
+  return r;
+}
+
+void crown_continue_stem(Crown& crown, u32 stem, u32 child, f64 station) {
+  CrownNode& node = crown.nodes[stem];
+  const CrownNode& branch = crown.nodes[child];
+  const Axis original = crown.axes[node.axis];
+  const Axis& target = crown.axes[branch.axis];
+  StemContinuation join;
+  join.from = station;
+  join.reference_length = original.length;
+  join.reference_tip = node.r1;
+  const f64 radius = lerp(node.r0, node.r1, station / original.length);
+  // The shoulder has physical extent, but cannot consume more than the available scaffold.
+  const f64 reach = std::min(.65 * target.length, std::max(4.0 * radius, .12 * target.length));
+  const D3 start = axis_point(original, station);
+  const D3 end = axis_point(target, reach);
+  const D3 t0 = axis_tangent(original, station);
+  const D3 t1 = axis_tangent(target, reach);
+  const D3 delta = end - start;
+  const f64 distance = length_of(delta);
+  // A thick short stem can have much more lateral offset than rise. Bound the handles by
+  // displacement along both tangents as well, so the shoulder cannot fold back on itself.
+  const f64 handle =
+      std::min(.7 * distance, std::max(1e-6 * distance, std::min(dot(delta, t0), dot(delta, t1))));
+  const D3 m0 = t0 * handle;
+  const D3 m1 = t1 * handle;
+  Axis axis;
+  axis.uniform_steps = false;
+  for (u32 i = 0; i < original.point.size() && original.arc[i] < station; ++i) {
+    axis.point.push_back(original.point[i]);
+    axis.tangent.push_back(original.tangent[i]);
+    axis.normal.push_back(original.normal[i]);
+    axis.arc.push_back(original.arc[i]);
+  }
+  D3 n = perpendicular(t0, axis.normal.back());
+  axis.point.push_back(start);
+  axis.tangent.push_back(t0);
+  axis.normal.push_back(n);
+  axis.arc.push_back(station);
+  constexpr u32 samples = 32;  // structure resolution; independent of the polygon ladder
+  for (u32 i = 1; i <= samples; ++i) {
+    const f64 u = static_cast<f64>(i) / samples;
+    const f64 u2 = u * u;
+    const f64 u3 = u2 * u;
+    const D3 p = start * (2 * u3 - 3 * u2 + 1) + m0 * (u3 - 2 * u2 + u) + end * (-2 * u3 + 3 * u2) +
+                 m1 * (u3 - u2);
+    const D3 t = normalized(start * (6 * u2 - 6 * u) + m0 * (3 * u2 - 4 * u + 1) +
+                            end * (-6 * u2 + 6 * u) + m1 * (3 * u2 - 2 * u));
+    n = perpendicular(t, n);
+    axis.arc.push_back(axis.arc.back() + length_of(p - axis.point.back()));
+    axis.point.push_back(p);
+    axis.tangent.push_back(t);
+    axis.normal.push_back(n);
+  }
+  axis.length = axis.arc.back();
+  // A flat cap is buried in the continuing branch, whose outer axis and pipe remain unchanged.
+  node.r1 = std::min(.9 * radius, .25 * lerp(branch.r0, branch.r1, reach / target.length));
+  join.end_slope = .25 * (branch.r1 - branch.r0) / target.length;
+  join.child = child;
+  join.child_arc = reach;
+  node.tip = axis.point.back();
+  node.length = axis.length;
+  crown.axes[node.axis] = std::move(axis);
+  crown.continuations.push_back(join);
+}
+
 void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
-                bool flat_tip) {
+                bool flat_tip, const StemContinuation* continuation) {
   const u32 rows = axis.point.size();
   const f64 round = 2.0 * k_pi * 0.5 * (r0 + r1);  // metres once round, at the mean radius
   const f64 u0 = static_cast<f64>(uv_offset.x);
@@ -95,16 +224,21 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   const bool root = out.part < out.motion.parts.size() &&
                     out.motion.parts[out.part].parent == geometry::k_motion_no_parent;
   const WoodProfile& w = out.wood;
-  const bool shaped =
-      !straight && (out.seated || w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
+  const bool shaped = !straight && (continuation != nullptr || out.seated ||
+                                    w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
   Rng shape_rng = stream_of(w.seed, 9000000ull + out.part);
   const f64 phase = shape_rng.unit() * 2.0 * k_pi;
   const f64 knot_at = 0.2 + 0.6 * shape_rng.unit();
   const f64 collar_span = std::min(0.3 * axis.length, 3.0 * r0);
+  const auto nominal_radius = [&](f64 u) {
+    return continuation != nullptr
+               ? continuation_radius(r0, r1, axis.length, *continuation, u * axis.length)
+               : lerp(r0, r1, u);
+  };
   const auto radius_at = [&](f64 arc, f64 phi, D3 radial, D3 tangent) {
     const f64 u = clamp01(arc / axis.length);
     const f64 blend = out.seated ? smoothstep01(arc / (2.0 * r0)) : 1.0;
-    const f64 nominal = lerp(r0, r1, u);
+    const f64 nominal = nominal_radius(u);
     const f64 core = out.seated ? lerp(out.seat_radius, nominal, blend) : nominal;
     const f64 basal = 1.0 - smoothstep01(arc / (collar_span + 1e-9));
     const f64 flute = det::cos(3.0 * phi + phase + 0.35 * u) * 0.65 +
@@ -127,7 +261,7 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   for (u32 r = 0; r < rows; ++r) {
     const f64 s = axis.arc[r] / axis.length;
     out.weight = s;
-    const f64 radius = lerp(r0, r1, s);
+    const f64 radius = nominal_radius(s);
     const D3 t = axis.tangent[r];
     const D3 n = axis.normal[r];
     const D3 b = cross(t, n);
@@ -194,6 +328,28 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   }
 }
 
+void bind_continuation_cap(const Axis& sampled, f64 r0, f64 r1, u32 sides, u32 first,
+                           const StemContinuation& join, u32 stem_part, u32 child_part,
+                           f64 child_length, Motion& motion) {
+  const u32 last = sampled.arc.size() - 1;
+  const f64 stem_length = sampled.arc[last - 1];
+  motion.parts[stem_part].length = static_cast<f32>(stem_length);
+  if (stem_part < motion.structure.size()) {
+    motion.structure[stem_part].tip_radius =
+        static_cast<f32>(continuation_radius(r0, r1, sampled.length, join, stem_length));
+  }
+  for (u32 ring = 0; ring <= last; ++ring) {
+    const bool cap = ring == last;
+    const u32 part = cap ? child_part : stem_part;
+    const f32 weight =
+        static_cast<f32>(cap ? join.child_arc / child_length : sampled.arc[ring] / stem_length);
+    for (u32 side = 0; side <= sides; ++side) {
+      const u32 vertex = first + ring * (sides + 1) + side;
+      motion.vertex_part[vertex] = part;
+      motion.vertex_weight[vertex] = weight;
+    }
+  }
+}
 void build_spray(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 angle, f64 lift,
                  f64 droop, D3 side, Emitter& out) {
   // The centre line's stations, shared by the cards either side of them.
@@ -284,6 +440,7 @@ Axis truncate_axis(const Axis& axis, u32 rows) {
     r.arc.push_back(axis.arc[i]);
   }
   r.length = axis.arc[rows];
+  r.uniform_steps = axis.uniform_steps;
   return r;
 }
 
@@ -292,6 +449,7 @@ D3 branch_direction(const Axis& parent, f64 arc, f64 azimuth, f64 angle, D3* rad
   const f64 f = arc / parent.length * static_cast<f64>(rows);
   u32 i = static_cast<u32>(f);
   if (i > rows) i = rows;
+  if (!parent.uniform_steps) i = arc >= parent.length ? rows : segment_of(parent, arc);
   const D3 t = axis_tangent(parent, arc);
   const D3 n = perpendicular(t, parent.normal[i]);
   const D3 b = cross(t, n);
@@ -349,7 +507,7 @@ f64 ceil_of(f64 x) {
 f64 power(f64 x, f64 e) { return det::exp(det::log(x) * e); }
 
 f64 lateral_share(const CrownSpec& spec, u32 laterals) {
-  return (1.0 - spec.leader_share) / static_cast<f64>(laterals);
+  return laterals == 0 ? 0 : (1.0 - spec.leader_share) / static_cast<f64>(laterals);
 }
 f64 smallest_share(const CrownSpec& spec, u32 laterals) {
   const f64 lateral = lateral_share(spec, laterals);
@@ -423,8 +581,8 @@ struct Grower {
   void children(u32 index, f64 radius, u32 laterals, f64 lateral_length, f64 leader_length,
                 f64 from, f64 to, f64 spread_scale) {
     const f64 inv = 1.0 / spec.area_exponent;
-    const f64 r_lateral = radius * power(lateral_share(spec, laterals), inv);
-    const f64 r_leader = radius * power(spec.leader_share, inv);
+    const f64 r_lateral = laterals == 0 ? 0 : radius * power(lateral_share(spec, laterals), inv);
+    const f64 r_leader = laterals == 0 ? radius : radius * power(spec.leader_share, inv);
     Rng place = stream_of(spec.seed, spec.stream + 2u * static_cast<u64>(index));
     const f64 turn = place.unit() * 2.0 * k_pi;
     for (u32 j = 0; j <= laterals; ++j) {
@@ -607,7 +765,8 @@ void crown_grow(Crown& crown, const CrownSpec& spec, const Vector<CrownRoot>& ro
     grower.children(root.node, root.radius, root.laterals, root.lateral_length,
                     root.lateral_length * 0.65, root.from, root.to, root.spread_scale);
   }
-  crown.footprint = footprint_of(grower.tips);
+  crown.footprint =
+      std::max(footprint_of(grower.tips), 4.0 * crown.leaf_length * crown.leaf_length);
 }
 
 void crown_distribute_leaves(Crown& crown, f64 cards, u32 cap) {

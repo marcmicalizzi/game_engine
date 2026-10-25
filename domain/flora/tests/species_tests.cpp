@@ -236,7 +236,7 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   full.stems = 1;
   full.triangle_budget = 400000;
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x7109f27fafca2eb2ull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x522a0f57999c30f4ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -248,7 +248,8 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
           << " m, LAI " << report.leaf_area_index << " over " << report.footprint_m2
           << " m2, twig slope " << report.twig_slope);
   CHECK(report.card_length <= 1.25f * full.leaf_length_m);
-  CHECK(report.leaf_area_index > 0.85f * full.leaf_area_index);
+  // G88 removes redundant tip foliage; physically spaced outer branchlets remain intact.
+  CHECK(report.leaf_area_index > 2.9f);
   CHECK(report.leaf_area_index < 1.15f * full.leaf_area_index);
   flora::Birch p;
   p.stems = 1;
@@ -403,7 +404,7 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.seed = 5;
   clump.triangle_budget = 400000;
   check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0xdce95290d01a9607ull);
+                {50000u, 36000u, 12000u}, 0x23849586a088959dull);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {

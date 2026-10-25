@@ -28,7 +28,11 @@ enum class FloraSpecies : u8 {
   pine,
   spruce,
   cedar,
-  juniper
+  juniper,
+  aspen,
+  fir,
+  hemlock,
+  alder
 };
 struct FloraSpeciesInfo {
   FloraSpecies id;
@@ -60,6 +64,10 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     {FloraSpecies::spruce, "spruce", true, 60000, {.008f, .035f, .06f, .08f}},
     {FloraSpecies::cedar, "cedar", true, 80000, {.008f, .035f, .06f, .08f}},
     {FloraSpecies::juniper, "juniper", true, 30000, {.008f, .035f, .06f, .08f}},
+    {FloraSpecies::aspen, "aspen", true, 300000, {.012f, .05f, .09f, .14f}},
+    {FloraSpecies::fir, "fir", true, 60000, {.008f, .035f, .06f, .08f}},
+    {FloraSpecies::hemlock, "hemlock", true, 80000, {.008f, .04f, .08f, .12f}},
+    {FloraSpecies::alder, "alder", true, 400000, {.01f, .04f, .08f, .12f}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {

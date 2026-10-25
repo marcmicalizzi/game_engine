@@ -136,8 +136,8 @@ TEST_CASE("flora: green wood limits a named scaffold while legacy growth remains
 }
 
 TEST_CASE("flora: named species share growth and preserve their skeleton across budgets") {
-  const char* names[] = {"maple", "oak",  "elm",    "walnut", "beech",
-                         "ash",   "pine", "spruce", "cedar",  "juniper"};
+  const char* names[] = {"maple",  "oak",   "elm",     "walnut", "beech", "ash",     "pine",
+                         "spruce", "cedar", "juniper", "aspen",  "fir",   "hemlock", "alder"};
   Vector<u64> shapes;
   for (const char* name : names) {
     CAPTURE(std::string_view(name));
@@ -198,8 +198,9 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   const u64 combined = hash_bytes(shapes.data(), shapes.size() * sizeof(u64));
   // G86: 10800499079816480223 until maple gained terminal wood and independent leaf quads.
   // G87: alternate simple blades and compound leaves; maple's previous aggregate was
-  // 16620326556857323731.
-  CHECK_MESSAGE(combined == 7127305501285355394ull, "named profile geometry hash: " << combined);
+  // 16620326556857323731. G88 adds four profiles and bounds the local tip crown;
+  // the prior ten-profile aggregate was 7127305501285355394.
+  CHECK_MESSAGE(combined == 6585964004099755467ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {
@@ -219,8 +220,8 @@ TEST_CASE("flora: named species reject invalid input and keep distinct material 
 }
 
 TEST_CASE("flora: every named species reference tree fits the default mesh budget") {
-  for (const char* name :
-       {"maple", "oak", "elm", "walnut", "beech", "ash", "pine", "spruce", "cedar", "juniper"}) {
+  for (const char* name : {"maple", "oak", "elm", "walnut", "beech", "ash", "pine", "spruce",
+                           "cedar", "juniper", "aspen", "fir", "hemlock", "alder"}) {
     CAPTURE(std::string_view(name));
     flora::FloraFile file;
     file.species = name;
@@ -233,13 +234,15 @@ TEST_CASE("flora: every named species reference tree fits the default mesh budge
     CHECK(report.leaf_triangles > 0);
     CHECK(report.merge_level == 0);  // reference trees retain their botanical leaf dimensions
     // Coverage floors for these authored reference crowns, not botanical LAI requirements.
-    // Separate blades must not silently halve their foliage while retaining the same outline.
+    // G88 removes the redundant trunk-tip knot but preserves named scaffold pipes/lengths.
+    // Matched alpha-textured whole/top views validate these retained-crown floors; do not
+    // restore the old total LAI by crowding leaves onto the remaining shoots.
     const std::string_view species(name);
-    const f32 minimum_lai = species == "ash"      ? 1.0f
-                            : species == "walnut" ? 2.6f
-                            : species == "oak"    ? 3.3f
+    const f32 minimum_lai = species == "ash"      ? .59f
+                            : species == "walnut" ? 2.2f
+                            : species == "oak"    ? 3.0f
                             : species == "elm"    ? 3.4f
-                            : species == "beech"  ? 2.4f
+                            : species == "beech"  ? 1.6f
                                                   : 0.0f;
     CHECK(report.leaf_area_index >= minimum_lai);
   }

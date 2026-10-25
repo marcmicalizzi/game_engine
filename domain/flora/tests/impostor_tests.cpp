@@ -152,8 +152,9 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // G85 changes only the whole-tree pair: supported wood contours and their normals. MSVC and
   // Clang reproduce both; the leaf-only cards remain byte-identical.
   // G87: three orthogonal group planes and four depth slices per far-tree direction.
-  constexpr u64 k_golden[4] = {0xb6da212fd4200fbaull, 0x02d0b8198d59cf02ull, 0x2883bddc25f08387ull,
-                               0xb95c99474fe365ccull};
+  // G88: the local trunk-tip crown changes leaf/wood groups and their coverage.
+  constexpr u64 k_golden[4] = {0x2c54e962dfb33177ull, 0x814e39ddea5d3d29ull, 0x10d253a81a6aa4ccull,
+                               0x66dc658f1c1b0cc2ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

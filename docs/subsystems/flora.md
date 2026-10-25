@@ -15,7 +15,7 @@ and juniper use the same evergreen scaffold with staggered branch stations and s
 
 `Tree.height_m` and `trunk_radius_m` default to 0 (the profile's reference height and its
 height/diameter allometry); `crown_base` defaults to -1 (the profile's), and `crown_scale` to 1.
-Height is 3–40 m when explicit, radius 0.05–1.5 m, crown base 0.1–0.8 and crown scale 0.5–1.5.
+Height is .35–60 m when explicit, radius .003–2 m, crown base 0.1–0.8 and crown scale 0.5–1.5.
 The resolved family parameters must also pass their range checks: a combination whose derived
 radius or crown exceeds that family's limits is refused with the field named, not silently
 clamped. Explicit triangle budgets are 8,000–2,000,000. Omission or zero selects the species'
@@ -456,7 +456,7 @@ Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending 
 | A child is `length_ratio` of its parent's length; a root's laterals `branch_length` of its length | `length_ratio` (0.63) the species' | WBE's n^(−1/3) |
 | A shoot whose thinnest child would be thinner than `twig_radius_m` is a **terminal twig**, `twig_length_m` long | the twig's radius and length are the species', never the tree's | Corner's rules; WBE's invariant terminal unit |
 | So the twigs number about (R / r_twig)^Δ and the orders about 1 + log_Rb of that | both scale with size: the oak's 3,384 twigs over 8 orders, the ancient tree's 214,834 over 12 (its wide crown before the habits, G79) | follows |
-| The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side | LAI and the leaf the species'; the footprint (the convex hull of every shoot tip from above) scales | the leaf area index (Asner et al. 2003) |
+| The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side | LAI and the leaf the species'; the tip-hull footprint scales (with a `4 * leaf_length²` allocation floor for first sapling leaves) | the leaf area index (Asner et al. 2003) |
 | The broadleaf's `trunk_radius_m` of 0 is 0.35 m × (H / 12 m)^(1 / `allometry_exponent`) | the exponent the species' (2/3) | McMahon's elastic similarity, H ∝ D^(2/3) |
 | The crown's radius is the limbs' reach, a share of the height for the broadleaf | scales as H ∝ D^(2/3) | crown ∝ D^0.6–0.8 |
 | The lowest limbs shed, apical control weak in an old crown | `crown_base` / `limb_low_m` and `leader_share`, the recipe's | Hallé, Oldeman and Tomlinson 1978; deriving them from age is G74 |
@@ -598,27 +598,27 @@ limbs** leave the trunk between `crown_base` and nine tenths of it on the golden
 `limb_angle_deg` (the upper ones a third more upright), `limb_length` of the height long (the upper
 ones down to half); by the pipe rule the trunk's top keeps `leader_share` of its cross-section and
 the limbs share the rest. From every limb (`branches` laterals from a quarter of the way out, each
-`branch_length` of the limb) and from the trunk's top the [allometric recursion](#allometry) grows to
+`branch_length` of the limb) the [allometric recursion](#allometry) grows to
 the 4 mm, 0.7 m twig; a leafy twig is a spray of its cards a side, `leaf_length_m` long and
 `leaf_width` of that wide, at the twig's tip, its plane laid level so the cards face the sky. On the
-default: 3,384 twigs over 8 orders, 4,501 shoots, 16,638 cards over a 120 m² footprint — a realised
-LAI of 3.9 (3.67 measured over the leaves' own hull) — and **230 parts**: the trunk, the 8 limbs
-and the 221 recursion shoots of the part class (3) and up. The broadleaf emits no structural table.
+default: 2,312 twigs over 7 orders, 3,073 shoots, 16,638 cards over a 120 m² footprint — a realised
+LAI of 3.9 (3.67 measured over the leaves' own hull) — and **145 parts**: the trunk, the 8 limbs
+and the 136 recursion shoots of the part class (3) and up. The stem continues through a curved shoulder into an existing upper scaffold, with no extra top crown; named outer scaffold pipes retain their envelope. The broadleaf emits no structural table.
 
-**The budget** (default 60,000; 8,000 to 2,000,000). The default is 49,157 triangles at full detail
-(bark 15,881: the trunk 12 sides × 30 rows, limbs 8 × 14, the recursion's parts by the plan's edge
+**The budget** (default 60,000; 8,000 to 2,000,000). The default is 45,280 triangles at full detail
+(bark 12,004: the trunk 12 sides × 38 rows (including eight shoulder intervals), limbs 8 × 14, the recursion's parts by the plan's edge
 and row steps and its shoots of class 1 and up a row each; leaves 33,276) with no rung walked. The
 ladder ([above](#the-budget-of-a-crown)): class 2's wood folded; limb rows 8 and the parts' rows
 halved; the cross-sections; the folded classes one by one to the part class; the trunk's rows
-halved; then the merges and the halvings; then the last rows. On 40,000 it is 38,396 (merge 0); on
-25,000, 13,576 (merge 1, cards to 1.04 m); on 8,000, 6,364 (merge 2, 2.2 m); everything at its most
+halved; then the merges and the halvings; then the last rows. On 40,000 it is 39,736 (merge 0); on
+25,000, 12,178 (merge 1, cards to 1.04 m); on 8,000, 5,282 (merge 2, 2.2 m); everything at its most
 expensive (12 limbs, 8 branches, 10 twigs, 40 leaves) holds 8,000.
 
 ### The conifer
 
 A spruce by default (16 m; `spruce-tall.flora.json` is 22 m, `spruce-young.flora.json` 4 m). The
 **trunk** is straight (no wander, a lean taken back towards the vertical), tapering from
-`trunk_radius_m` to a centimetre at the leader's tip. `whorls` **whorls** stand from `crown_base` to
+`trunk_radius_m` to a centimetre at the leader's tip (or 30% of the basal radius for a thin sapling). `whorls` **whorls** stand from `crown_base` to
 the top, each of `branches_per_whorl` branches spaced evenly round the trunk from a seeded turn —
 fewer up the crown by `thinning`, so the top tiers are sparse — at an angle from vertical running
 from `bottom_angle_deg` at the lowest (past 90°: hanging below level) to `top_angle_deg` at the
@@ -705,7 +705,7 @@ clump's stems are sprouts from one stump's root collar: their feet on a ring nin
 stoutest stem's radius out at the ground, each leaning outwards by about `stem_spread_deg` (the
 stoutest half that) and straightening towards the light, the stoutest the tallest, the others 0.6
 to 0.95 of its radius and shorter by elastic similarity (H ∝ D^(2/3)). Every stem is a
-**load-bearing** part: the stoutest part 0, the others hanging from it at their feet.
+**load-bearing** part when its radius meets `load_bearing_min_radius_m`: the stoutest part 0, the others hanging from it at their feet.
 
 **The crown.** `limbs` scaffold limbs on the stoutest stem (a clump's others in proportion to
 their radius) leave it between `crown_base` and nine tenths of its height on the golden angle,
@@ -713,33 +713,32 @@ their radius) leave it between `crown_base` and nine tenths of its height on the
 the stem's height along an ellipse widest two fifths of the way up the crown — the ovoid — their
 ends arching down by a quarter of the droop. By the pipe rule the stem's top keeps `leader_share`
 (0.35: the leader runs to the top) and the limbs share the rest. From every limb (`branches`
-laterals) and every stem's top the recursion grows to the 1.5 mm, 0.6 m branchlet, and **the
+laterals) the recursion grows to the 1.5 mm, 0.6 m branchlet, and **the
 branchlets hang**: a shoot of radius class `droop_class` or finer leaves its parent turned towards
 the ground by `droop` × 80° (its parents' class half that, never past straight down; `CrownSpec`'s
-`droop`, which no other species sets, so their bytes are as they were) — the default's terminal
+the shared `droop` rule) — the default's terminal
 twigs point 40° below level on average, and above level with no droop. The leaves are cards of the
 species' own leaf (5 cm, `leaf_width` 0.7), as many as `leaf_area_index` (4.5) over the crown's
 footprint asks, end to end along each side of a branchlet from its tip, lifted 30° out of the
 spray's plane so a hanging branchlet's cards are not edge-on from half the azimuths. The default
 reaches 4.3 m from its foot at 14 m. The bark is white (`bark`, cones on), its tubes' UVs in metres.
-Parts: every stem and limb and the recursion's shoots of the part class and up (at most 160) — 42
+Parts: every stem and limb and the recursion's shoots of the part class and up (at most 160 recursive parts) — 161
 on the default; the birch emits the structural table (stems load-bearing, the rest not) and builds
 the [impostor chain](#the-impostor-chain) like the broadleaf (`card_bake_px`, `impostor_px`).
 
-**The budget** (default 50,000; 8,000 to 2,000,000). A full crown is more leaves than any forest
-budget holds — the default at full detail is 69,498 cards of 6.0 cm, 152,945 triangles — so **the
-cards stand for more leaves rather than the crown losing them**: the leaves fill what the wood
-leaves of the budget, two triangles a card, each card grown to keep the leaf area. While the cards
-would have to be larger than twice the finest the branchlets hold, the wood gives way first (the
-broadleaf's rungs: the finest wood folded, rows, cross-sections, the folded orders up to the part
-class, the coarsest tubes); then cards up to four times the finest; only past that the broadleaf's
-merge into branch-group cards, the halvings and the last rows. No rung moves a shoot or drops a
-part, and every rung short of the merge keeps the LAI. The default is 49,997 (bark 13,949: no rung
-walked; 18,024 cards of 11.7 cm, LAI 4.23 over 38.4 m²); on the forest's 36,000, 35,997 (bark
-1,141, five rungs, 17,428 cards of 11.9 cm); a clump of two to five stems on 36,000 has cards of
-13.8 to 15.7 cm and never merges; everything at its most expensive (five 30 m stems of 0.5 m, 24
-limbs of 8 laterals, branching ratio 6, 1 mm branchlets, 30 cards) holds 8,000 with 6,941, merged.
-The `birch` and `birch-single` rows of the harness table below are version 1's.
+**The budget** (default 50,000; 8,000 to 2,000,000). At unrestricted physical leaf detail the
+single-stem default has 2,340 branchlets, 73,210 cards of 5 cm and 178,240 triangles (31,820 wood).
+Its realised LAI is 2.964 over a 39.03 m² allocation footprint: the finite branchlets and physical
+leaf spacing bound coverage. At the normal forest budget the existing aggregate-card mode
+represents more leaves with each card: 50,000 triangles, 19,620 cards of 11.31 cm, LAI 4.227.
+Wood gives way before the cards grow beyond the configured aggregate range; only then does the
+ladder merge into branch-group cards, halve cards and reduce the last rows. No rung moves a
+shoot or drops a part. The default on 36,000/20,000/12,000/8,000 produces
+36,000/20,000/11,998/7,998 triangles. These are the default-seed solver fixtures; the seed-17
+visual review has a different footprint. The removed extra stem-tip crown does not reduce the
+physical leaf size or spacing to recover its redundant leaf area; see
+[G88's matched review](../experiments/tree-maturity.md#trunk-tip-density).
+The `birch` and `birch-single` rows of the harness table below are version 1's historical results.
 
 ### The willow
 
@@ -1116,7 +1115,7 @@ forest's floor is made of, `engine.flora.Shrub`, `Fern`, `Tuft` and `Herb`, each
 flora schema with its ranges (`shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`
 refuse a field out of range by name), a solver file of its own (`src/shrub.cpp`, `fern.cpp`,
 `tuft.cpp`, `herb.cpp`, over the kit) and the same `.flora.json` dispatch (`include/domain/flora/understory.h`).
-Saplings are not a species: a tree species at a small `height_m` is its sapling since the allometric
+Saplings are not a species: use the age controls in [Species maturity](#species-maturity) for young architecture. Size-only recipes still use the allometric
 crown (`oak-sapling.flora.json`, a 3 m broadleaf). Leaf litter is the ground's material, and moss,
 lichen and fungi are roadmap G78's, grown over a host rather than standing on the ground.
 
@@ -1627,7 +1626,7 @@ data, rebuilt from its parameters.
   the realised LAI, measured as the leaf cards' area over the convex hull of their vertices, is
   within a fifth of the field on the default broadleaf and ancient tree; a recipe setting the old
   fields (`sub_branches`, `twigs`, `leaves`) validates, builds and is capped by them; the parts are
-  dense and parent-first, 230 on the default broadleaf and 496 on the default ancient tree
+  dense and parent-first, 145 on the default broadleaf and 625 on the default ancient tree
   (`flora_tests.cpp`, `species_tests.cpp`); and down the ladder every rung holds its budget, merges
   no less finely than the rung above, and keeps the part list and the structural table byte for
   byte, with the load-bearing surfaces' movement between the finest rung and the floor measured;
@@ -1702,3 +1701,63 @@ the scheduler, or another capability, and it can be removed from the build the s
 **Removing it.** `cmake --preset msvc-minimal` (or `-DENGINE_WITH_FLORA=OFF`) drops the
 module, its schema types and its tests; the module disappears from `build/<preset>/modules.json`
 and is listed there under `disabled_capabilities`. Everything else must still build and pass.
+
+## Species maturity
+
+G88 adds `aspen` (Populus tremuloides), `fir` (Abies balsamea), `hemlock` (Tsuga canadensis),
+and western `alder` (Alnus rubra). They share the branching/evergreen structures and append
+stable motion species IDs. Materials use `<species>/bark`, then `/leaf` for aspen/alder and
+`/needles` for fir/hemlock. Defaults remain static reference trees.
+
+All twenty non-megaflora tree kinds accept maturity controls in the recipe's `tree` block:
+
+```json
+{"species":"hemlock","tree":{"seed":17,"age_years":400,"site_quality":0.3,
+ "growing_space":0.4,"vitality":1,"height_m":0,"trunk_radius_m":0}}
+```
+
+Build it with `engine-content flora tree.flora.json tree.clusters --force`. These are recipe
+fields, not additional CLI switches. `age_years` is 0 (disabled, the default), or 1–2000 stem
+years; aspen clone age is not stem age. The year limit is an authoring safety bound, not a claim
+that all species live that long. Source-checked species scales and the authored equations are
+in [tree maturity](../experiments/tree-maturity.md).
+
+- `site_quality` .05–1.5 (default 1) controls growth rate and size potential.
+- `growing_space` 0–1 (default .5) controls crown spread, lower branch retention and girth.
+- `vitality` 0–1 (default 1) controls live-tree foliage vigor, independently of age. Zero means
+  severely sparse living foliage (15% target, native minimum card/LAI floors; palm 25%), not a dead
+  or leafless tree. Conifers also gain dead lower branches as vigor falls.
+- Positive `tree.height_m` (.35–60 m) and `tree.trunk_radius_m` (.003–2 m) override final woody
+  dimensions without resetting age. Native legacy upper bounds still apply: birch 30 m/1 m,
+  willow 25 m/2 m, orchard 12 m/1.5 m, palm 30 m/1 m. Crown and leaf tips can extend above nominal
+  woody height. Zero uses the species envelope; in a legacy recipe its native dimensions are
+  the potential/reference dimensions instead. The existing native seed remains authoritative.
+- `tree.crown_base` is a final crown-base override for branching/conifer/birch forms;
+  willow/orchard retain their native fork-height contract, and palm its crown at the growing point.
+  `tree.crown_scale` multiplies spread; individual broadleaf blades retain species dimensions.
+  Native legacy budgets and bake settings remain authoritative; named profiles use `tree` budgets
+  and bake settings, as before. Age zero leaves maturity controls dormant.
+
+Young trees have fewer scaffold branches/whorls, stronger leaders, short shoots and narrow crowns.
+Older crowns broaden, their apical control weakens in branching forms, load/support bounds still
+apply, and wood relief grows. Old broadleaf crowns put shoots farther inward on existing limbs.
+Birch keeps its native clump and drooping-branchlet rules; willow its curtains; orchard its pruning
+choice and no fruit below five years; palm develops girth early and then grows taller without
+invented cambial thickening. A suppressed old tree can remain small and retain healthy foliage.
+These are independent deterministic content builds, **not temporally persistent branch lineage**.
+No per-frame work or neighboring-tree simulation is added; G74 stays open.
+
+The native solver minimum height is now .35 m and minimum stem radius .003 m. Small conifers
+use subordinate branch/tip radii rather than adult absolute floors; small willow/orchard scaffold
+length floors follow height. Load-bearing flags still require the published radius threshold.
+The broadleaf/birch stem-tip density correction intentionally improves age-zero defaults too:
+the redundant extra tip crown is removed. The stem retains its lower radius profile through the
+last scaffold station, then a tangent-matched cubic shoulder joins an existing upper scaffold.
+Eight shoulder intervals and the child's exact junction ring are reserved on every budget rung.
+The buried cap stays inside the child's coarse polygon and shares that ring's runtime bend
+transform. Stem motion ends at the preceding fixed shoulder ring; its arc weights are
+renormalized, preserving the same motion table across budgets. Existing scaffold axes and pipes stay
+unchanged; removing the redundant tip knot lowers total physical LAI without changing the size
+or spacing of individual leaves. The footprint used for allocation has a four-leaf-length-squared sapling floor.
+Cache version 10 invalidates old meshes;
+the canonical identity records maturity fields for age-enabled legacy recipes as well as profiles.

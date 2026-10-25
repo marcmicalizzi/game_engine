@@ -67,7 +67,7 @@ Vector<Shoot> grow(const Orchard& p) {
     f64 length = static_cast<f64>(p.limb_length) * height * (0.9 + 0.2 * limb_rng.unit());
     const f64 rise = det::cos(angle) > 0.2 ? det::cos(angle) : 0.2;
     if (p.pruned && base.y + length * rise > top) length = (top - base.y) / rise;
-    if (length < 0.3) length = 0.3;
+    if (length < std::min(.3, .3 * height)) length = std::min(.3, .3 * height);
     Shoot limb;
     limb.axis =
         grow_axis(base + radial * (0.4 * shoots[0].r1), dir, length, k_limb_rows, k_up,
@@ -208,15 +208,15 @@ bool orchard_in_range(const Orchard& p, std::string& error) {
     return false;
   };
   const auto unit = [](f32 v) { return v >= 0.0f && v <= 1.0f; };
-  if (!(p.height_m >= 2.0f && p.height_m <= 12.0f)) return bad("height_m", "2 to 12 m");
-  if (!(p.trunk_radius_m >= 0.04f && p.trunk_radius_m <= 0.6f))
-    return bad("trunk_radius_m", "0.04 to 0.6 m");
+  if (!(p.height_m >= .35f && p.height_m <= 12.0f)) return bad("height_m", "0.35 to 12 m");
+  if (!(p.trunk_radius_m >= .003f && p.trunk_radius_m <= 1.5f))
+    return bad("trunk_radius_m", "0.003 to 1.5 m");
   if (!(p.trunk_height >= 0.12f && p.trunk_height <= 0.5f))
     return bad("trunk_height", "0.12 to 0.5");
   if (!(p.limbs >= 2u && p.limbs <= 8u)) return bad("limbs", "2 to 8");
   if (!(p.limb_angle_deg >= 25.0f && p.limb_angle_deg <= 80.0f))
     return bad("limb_angle_deg", "25 to 80 degrees");
-  if (!(p.limb_length >= 0.3f && p.limb_length <= 1.2f)) return bad("limb_length", "0.3 to 1.2");
+  if (!(p.limb_length >= .15f && p.limb_length <= 1.2f)) return bad("limb_length", "0.15 to 1.2");
   if (!(p.branches >= 1u && p.branches <= 8u)) return bad("branches", "1 to 8");
   if (!(p.twigs >= 1u && p.twigs <= 12u)) return bad("twigs", "1 to 12");
   if (!(p.twig_length_m >= 0.1f && p.twig_length_m <= 1.5f))
@@ -274,8 +274,11 @@ bool solve_orchard(const Orchard& p, assets::MeshData& out, TreeReport* report, 
     const Shoot& s = shoots[i];
     if (s.order > 2) continue;
     const u32 parent = i == 0 ? geometry::k_motion_no_parent : part_of[s.parent];
-    part_of[i] = emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order],
-                                parent, s.order == 0 ? k_load_bearing : 0u);
+    part_of[i] =
+        emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order], parent,
+                       s.order == 0 && s.r0 >= static_cast<f64>(load_bearing_min_radius("orchard"))
+                           ? k_load_bearing
+                           : 0u);
     ++wood;
   }
   assets::Primitive bark;
@@ -351,7 +354,7 @@ bool solve_orchard(const Orchard& p, assets::MeshData& out, TreeReport* report, 
     report->trunk_sides = plan.sides[0];
     report->shoot_sides = plan.sides[2];
     report->steps = steps;
-    report->load_bearing = 1;
+    report->load_bearing = p.trunk_radius_m >= load_bearing_min_radius("orchard") ? 1u : 0u;
   }
   if (motion != nullptr) *motion = std::move(parts);
   return true;

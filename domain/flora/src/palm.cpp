@@ -880,10 +880,10 @@ bool palm_in_range(const Palm& p, std::string& error) {
     return false;
   };
   // Written so that a NaN fails every test.
-  if (!(p.height_m >= 1.0f && p.height_m <= 30.0f)) return bad("height_m", "1 to 30 m");
-  if (!(p.trunk_base_radius_m >= 0.05f && p.trunk_base_radius_m <= 1.0f))
-    return bad("trunk_base_radius_m", "0.05 to 1 m");
-  if (!(p.trunk_top_radius_m >= 0.03f && p.trunk_top_radius_m <= p.trunk_base_radius_m))
+  if (!(p.height_m >= .35f && p.height_m <= 30.0f)) return bad("height_m", "0.35 to 30 m");
+  if (!(p.trunk_base_radius_m >= .003f && p.trunk_base_radius_m <= 1.0f))
+    return bad("trunk_base_radius_m", "0.003 to 1 m");
+  if (!(p.trunk_top_radius_m >= .001f && p.trunk_top_radius_m <= p.trunk_base_radius_m))
     return bad("trunk_top_radius_m", "0.03 m to trunk_base_radius_m");
   if (!(p.lean_deg >= 0.0f && p.lean_deg <= 40.0f)) return bad("lean_deg", "0 to 40 degrees");
   if (!(p.curve >= 0.0f && p.curve <= 1.0f)) return bad("curve", "0 to 1");

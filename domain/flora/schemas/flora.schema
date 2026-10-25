@@ -11,12 +11,12 @@ struct Palm @version(1) {
   /// Everything the parameters leave to chance — the lean's azimuth, each ring's twist, each
   /// frond's turn and spread — is drawn from this. Any u64.
   seed: u64 = 1
-  /// The trunk's apex above its base, where the fronds spring: 1 to 30 m.
+  /// The trunk's apex above its base, where the fronds spring: 0.35 to 30 m.
   height_m: f32 = 9.0 @unit(m)
-  /// The trunk's radius at the ground, over the ring scars: 0.05 to 1 m.
+  /// The trunk's radius at the ground, over the ring scars: 0.003 to 1 m.
   trunk_base_radius_m: f32 = 0.24 @unit(m)
   /// The trunk's radius where the crown's leaf sheaths begin, which swell it by 40% by the apex:
-  /// 0.03 m up to the base radius.
+  /// 0.001 m up to the base radius.
   trunk_top_radius_m: f32 = 0.18 @unit(m)
   /// How far from vertical the trunk leaves the ground: 0 to 40 degrees.
   lean_deg: f32 = 7.0 @unit(deg)
@@ -56,9 +56,9 @@ struct Palm @version(1) {
 struct Broadleaf @version(3) {
   /// Everything left to chance: the lean's azimuth, every shoot's turn, spread and wander.
   seed: u64 = 1
-  /// The leader's top above the ground: 3 to 40 m.
+  /// The leader's top above the ground: 0.35 to 60 m.
   height_m: f32 = 12.0 @unit(m)
-  /// The trunk's radius at the ground: 0.05 to 2 m, or 0 for the allometric radius of the height
+  /// The trunk's radius at the ground: 0.003 to 2 m, or 0 for the allometric radius of the height
   /// (`allometry_exponent`: 0.35 m at 12 m). Every shoot's radius follows from it by the pipe model.
   trunk_radius_m: f32 = 0.0 @unit(m)
   /// Where the crown begins, as a share of the height: the lowest limb leaves the trunk here,
@@ -141,9 +141,9 @@ struct Conifer @version(2) {
   /// Everything left to chance: the lean's azimuth, every whorl's turn, every branch's spread, and
   /// (on streams of their own) the laterals and which branches are missing or dead.
   seed: u64 = 1
-  /// The leader's top above the ground: 1 to 60 m.
+  /// The leader's top above the ground: 0.35 to 60 m.
   height_m: f32 = 16.0 @unit(m)
-  /// The trunk's radius at the ground: 0.03 to 1.5 m.
+  /// The trunk's radius at the ground: 0.003 to 2 m.
   trunk_radius_m: f32 = 0.3 @unit(m)
   /// Where the lowest whorl is, as a share of the height: 0 to 0.8.
   crown_base: f32 = 0.12
@@ -155,7 +155,7 @@ struct Conifer @version(2) {
   branches_per_whorl: u32 = 6
   /// The share of a whorl's branches the top of the crown has lost: 0 to 0.8.
   thinning: f32 = 0.4
-  /// The lowest branches' reach from the trunk: 0.2 to 12 m; the crown's cone narrows to the top.
+  /// The lowest branches' reach from the trunk: 0.08 to 16 m; the crown's cone narrows to the top.
   crown_radius_m: f32 = 3.2 @unit(m)
   /// The lowest whorl's angle from vertical: 60 to 130 degrees (more than 90 hangs below level).
   bottom_angle_deg: f32 = 105.0 @unit(deg)
@@ -205,9 +205,9 @@ struct Birch @version(2) {
   /// Everything left to chance: the stem count (when `stems` is 0), the stems' azimuths, every
   /// limb's and shoot's turn and spread.
   seed: u64 = 1
-  /// The tallest stem's top above the ground: 3 to 30 m (a clump's others shorter).
+  /// The tallest stem's top above the ground: 0.35 to 30 m (a clump's others shorter).
   height_m: f32 = 14.0 @unit(m)
-  /// The stoutest stem's radius at the ground: 0.03 to 0.5 m (a clump's others 0.6 to 0.95 of it).
+  /// The stoutest stem's radius at the ground: 0.003 to 1 m (a clump's others 0.6 to 0.95 of it).
   stem_radius_m: f32 = 0.13 @unit(m)
   /// Stems from the root collar: 1 to 5, or 0 for the seed's choice by `clump_chance` and
   /// `max_stems` (version 1 read 1 to 3, default 2).
@@ -281,9 +281,9 @@ struct Birch @version(2) {
 struct Willow @version(2) {
   /// Everything left to chance: every limb's turn, every branch's spread, every curtain's length.
   seed: u64 = 1
-  /// The crown's top above the ground: 4 to 25 m.
+  /// The crown's top above the ground: 0.35 to 25 m.
   height_m: f32 = 11.0 @unit(m)
-  /// The trunk's radius at the ground: 0.08 to 1.5 m.
+  /// The trunk's radius at the ground: 0.003 to 2 m.
   trunk_radius_m: f32 = 0.45 @unit(m)
   /// Where the trunk divides into its limbs, as a share of the height: 0.15 to 0.6.
   trunk_height: f32 = 0.3
@@ -291,7 +291,7 @@ struct Willow @version(2) {
   limbs: u32 = 7
   /// A limb's angle from vertical where it leaves the trunk: 20 to 80 degrees.
   limb_angle_deg: f32 = 50.0 @unit(deg)
-  /// A limb's length as a share of the height: 0.3 to 1.
+  /// A limb's length as a share of the height: 0.15 to 1.
   limb_length: f32 = 0.62
   /// Branches along the outer half of every limb: 1 to 10.
   branches: u32 = 7
@@ -299,7 +299,7 @@ struct Willow @version(2) {
   branch_length: f32 = 0.4
   /// Hanging curtains of twigs along every branch: 1 to 16.
   curtains: u32 = 16
-  /// A curtain's length, before the ground shortens it: 0.5 to 15 m.
+  /// A curtain's length, before the ground shortens it: 0.1 to 15 m.
   curtain_length_m: f32 = 5.0 @unit(m)
   /// How far a shoot wanders from straight at every step: 0 to 20 degrees.
   wander_deg: f32 = 5.0 @unit(deg)
@@ -320,9 +320,9 @@ struct Willow @version(2) {
 struct Orchard @version(1) {
   /// Everything left to chance: every limb's turn, every shoot's spread and wander.
   seed: u64 = 1
-  /// The crown's top above the ground: 2 to 12 m.
+  /// The crown's top above the ground: 0.35 to 12 m.
   height_m: f32 = 4.5 @unit(m)
-  /// The trunk's radius at the ground: 0.04 to 0.6 m.
+  /// The trunk's radius at the ground: 0.003 to 1.5 m.
   trunk_radius_m: f32 = 0.14 @unit(m)
   /// Where the trunk divides into its scaffold limbs, as a share of the height: 0.12 to 0.5.
   trunk_height: f32 = 0.25
@@ -330,7 +330,7 @@ struct Orchard @version(1) {
   limbs: u32 = 5
   /// A limb's angle from vertical: 25 to 80 degrees.
   limb_angle_deg: f32 = 52.0 @unit(deg)
-  /// A limb's length as a share of the height: 0.3 to 1.2.
+  /// A limb's length as a share of the height: 0.15 to 1.2.
   limb_length: f32 = 0.7
   /// Branches on every limb: 1 to 8.
   branches: u32 = 5
@@ -730,12 +730,20 @@ struct Herb @version(1) {
 
 /// Overrides for a named species' rules over the shared branching or evergreen growth structure.
 /// The reference size and crown habit come from the profile; leaves retain their species size.
-struct Tree @version(2) {
+struct Tree @version(3) {
   /// Seed for all shared growth streams. Any u64.
   seed: u64 = 1
-  /// 0 selects the species' reference height; otherwise 3 to 40 m.
+  /// 0 preserves the reference recipe; otherwise stem age in years, 1 to 2000.
+  age_years: f32 = 0.0 @since(3)
+  /// Growth rate and size potential, 0.05 to 1.5; 1 is the representative site.
+  site_quality: f32 = 1.0 @since(3)
+  /// Available growing space, 0 to 1; 1 is open-grown, 0.5 partly crowded.
+  growing_space: f32 = 0.5 @since(3)
+  /// Foliage vigor, 0 to 1; independent of chronological age.
+  vitality: f32 = 1.0 @since(3)
+  /// 0 selects the species reference or age-derived height; otherwise 0.35 to 60 m.
   height_m: f32 = 0.0 @unit(m)
-  /// 0 follows the species' height/diameter allometry; otherwise 0.05 to 1.5 m.
+  /// 0 follows species allometry or age-derived girth; otherwise 0.003 to 2 m.
   trunk_radius_m: f32 = 0.0 @unit(m)
   /// -1 selects the species' crown base; otherwise 0.1 to 0.8 of tree height.
   crown_base: f32 = -1.0

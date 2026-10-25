@@ -4,6 +4,7 @@
 #include "species.h"
 
 #include "kit.h"
+#include "maturity.h"
 
 #include <domain/geometry/flora_species.h>
 
@@ -34,6 +35,78 @@ struct Profile {
 
 // Reference dimensions are representative authored trees. They are not genus-wide limits.
 constexpr Profile k_profiles[] = {
+    {FloraSpecies::aspen,
+     Family::branching,
+     22,
+     .20f,
+     .42f,
+     .24f,
+     48,
+     .065f,
+     .4f,
+     .55f,
+     .7f,
+     .08f,
+     false,
+     false,
+     {.2, .2, .02, .025, .04, 1},
+     35,
+     746,
+     3.5f},
+    {FloraSpecies::alder,
+     Family::branching,
+     25,
+     .30f,
+     .35f,
+     .32f,
+     52,
+     .10f,
+     .5f,
+     .45f,
+     .65f,
+     .12f,
+     false,
+     false,
+     {.25, .3, .03, .04, .06, 1},
+     45,
+     729,
+     4.0f},
+    {FloraSpecies::fir,
+     Family::whorled,
+     16,
+     .23f,
+     .12f,
+     .18f,
+     85,
+     .32f,
+     .55f,
+     .6f,
+     .45f,
+     .1f,
+     false,
+     false,
+     {.2, .25, .035, .03, .04, 1},
+     38,
+     901,
+     0},
+    {FloraSpecies::hemlock,
+     Family::whorled,
+     28,
+     .45f,
+     .15f,
+     .22f,
+     100,
+     .25f,
+     .6f,
+     .55f,
+     .25f,
+     .55f,
+     false,
+     true,
+     {.35, .4, .08, .05, .07, 1},
+     44,
+     832,
+     0},
     {FloraSpecies::oak,
      Family::branching,
      16,
@@ -346,6 +419,27 @@ Resolved resolve(const Profile& p, const Tree& tree) {
     out.rules.spray_lift = p.species == FloraSpecies::cedar ? .12 : .65;
     out.rules.crown_power = p.species == FloraSpecies::cedar ? .9 : 1.4;
   }
+  if (p.species == FloraSpecies::aspen) b.leaf_width = .85f;
+  if (p.species == FloraSpecies::alder) b.leaf_width = .65f;
+  if (p.species == FloraSpecies::hemlock) {
+    out.rules.irregular_stations = true;
+    out.rules.spray_lift = .25;
+    c.interwhorl = 2;
+    c.needle_years = 4;
+  }
+  if (p.species == FloraSpecies::fir) {
+    c.needle_years = 6;
+    c.interwhorl = 1;
+    c.missing_branches = .03f;
+    c.sparse_whorls = .02f;
+  }
+  if (tree.age_years > 0) {
+    const MaturityState age = maturity_state(geometry::flora_species_info(p.species).name, tree);
+    if (p.family == Family::branching)
+      mature_broadleaf(b, out.rules, tree, age);
+    else
+      mature_conifer(c, out.rules, tree, age);
+  }
   return out;
 }
 }  // namespace
@@ -366,8 +460,10 @@ bool tree_in_range(std::string_view species, const Tree& tree, std::string& erro
     error = std::string("engine.flora.Tree.") + field + " is out of range";
     return false;
   };
-  if (!(tree.height_m == 0 || (tree.height_m >= 3 && tree.height_m <= 40))) return bad("height_m");
-  if (!(tree.trunk_radius_m == 0 || (tree.trunk_radius_m >= .05f && tree.trunk_radius_m <= 1.5f)))
+  if (!maturity_in_range(species, tree, error)) return false;
+  if (!(tree.height_m == 0 || (tree.height_m >= .35f && tree.height_m <= 60)))
+    return bad("height_m");
+  if (!(tree.trunk_radius_m == 0 || (tree.trunk_radius_m >= .003f && tree.trunk_radius_m <= 2.0f)))
     return bad("trunk_radius_m");
   if (!(tree.crown_base == -1 || (tree.crown_base >= .1f && tree.crown_base <= .8f)))
     return bad("crown_base");
