@@ -8,8 +8,9 @@ param(
   [Parameter(Mandatory)][string]$Out,
   [string]$Preset = 'msvc-debug',
   [ValidateRange(1,16)][int]$Variants = 8,
+  [string]$Recipe = (Join-Path $PSScriptRoot '../content/test-scenes/meadow/dense.flora.json'),
   [ValidateSet('tall_fescue','perennial_ryegrass','timothy','cocksfoot','wood_melick',
-               'wavy_hairgrass','bent','red_fescue')][string]$Species = 'perennial_ryegrass'
+               'wavy_hairgrass','bent','red_fescue')][string]$Species
 )
 $ErrorActionPreference = 'Stop'
 $swardRoot = Split-Path $PSScriptRoot
@@ -23,15 +24,21 @@ $swardExe = Join-Path $swardRoot "build/$Preset/bin/engine-content.exe"
 if (-not (Test-Path -LiteralPath $swardExe)) { throw "Build $Preset first." }
 New-Item -ItemType Directory -Path $swardOut -Force | Out-Null
 $swardFamilies = @()
+$swardSource = Get-Content -LiteralPath $Recipe -Raw | ConvertFrom-Json -AsHashtable
+if ($swardSource.species -ne 'sward') { throw 'Recipe must name the sward solver.' }
+if ($PSBoundParameters.ContainsKey('Species')) { $swardSource.sward.species = $Species }
+$swardDensity = if ($swardSource.sward.ContainsKey('density')) { $swardSource.sward.density } else { 1.0 }
 foreach ($density in @(0.25,0.5,0.75,1.0)) {
   $near = @(); $cards = @()
   for ($variant = 0; $variant -lt $Variants; ++$variant) {
     $name = 'd{0}-v{1}' -f [int]($density*100),$variant
     $folder = Join-Path $swardOut $name
     New-Item -ItemType Directory -Path $folder -Force | Out-Null
-    $recipe = @{species='sward'; sward=@{species=$Species; seed=8801; variant=$variant;
-      density=$density; blades_m2=256; card_px=128}}
-    $recipe | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $folder 'patch.flora.json')
+    $swardPatch = $swardSource | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+    $swardPatch.sward.seed = 8801
+    $swardPatch.sward.variant = $variant
+    $swardPatch.sward.density = $density * $swardDensity
+    $swardPatch | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $folder 'patch.flora.json')
     & $swardExe flora (Join-Path $folder 'patch.flora.json') (Join-Path $folder 'patch.clusters') `
       --no-materials --sward-assets $folder > (Join-Path $folder 'build.json')
     if ($LASTEXITCODE -ne 0) { throw "Sward build failed: $name" }
@@ -78,7 +85,7 @@ $scene | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $swardOu
 Copy-Item -LiteralPath (Join-Path $swardRoot 'content/test-scenes/meadow/camera-path.json') -Destination (Join-Path $swardOut 'camera-path.json')
 & $swardExe terrain-masks (Join-Path $swardOut 'scene.json') --ddc (Join-Path $swardOut 'ddc') > (Join-Path $swardOut 'masks-build.json')
 if ($LASTEXITCODE -ne 0) { throw 'Meadow mask cook failed.' }
-@{generator='tools/sward-cook.ps1';species=$Species;variants=$Variants;seed=8801;
+@{generator='tools/sward-cook.ps1';species=$swardSource.sward.species;recipe=$swardSource;variants=$Variants;seed=8801;
   density='linear R, authoritative cooked palette weight';shade='authored LAI=3, extinction k=0.6; POC proxy, not irradiance';
   source='content/test-scenes/meadow';runtime_paint=$false} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $swardOut 'cook-provenance.json')
 Write-Output (Join-Path $swardOut 'scene.json')

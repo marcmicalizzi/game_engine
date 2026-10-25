@@ -751,7 +751,7 @@ struct Tree @version(2) {
 
 /// Grass ground cover (G88, docs/experiments/grass-sward.md). Dimensions come from the named
 /// species profile; budget controls sampled blades, never silently enlarges their near width.
-struct Sward @version(1) {
+struct Sward @version(2) {
   /// tall_fescue, perennial_ryegrass, timothy, cocksfoot, wood_melick, wavy_hairgrass, bent, red_fescue.
   species: string = "perennial_ryegrass"
   /// Independent family seed. Variant uses a separate stream, 0..15.
@@ -777,6 +777,21 @@ struct Sward @version(1) {
   card_cutoff: f32 = 0.5
   /// Rich by default, never collides.
   detail_tier: DetailTier = rich
+  /// Rendered leaves sharing a basal shoot, 1..8; an authored sampling choice, not tiller density.
+  leaves_per_tiller: u32 = 4 @since(2)
+  /// Shoots gathered around each crown, 1..32.
+  tillers_per_clump: u32 = 4 @since(2)
+  /// 0 spreads shoots through the crown's cell; 1 gathers them inside clump_radius_m.
+  clumpiness: f32 = 0.35 @since(2)
+  clump_radius_m: f32 = 0.06 @unit(m) @since(2)
+  /// Lower fraction of the natural leaf-length range, 0..growth. Dense mature stands use >0.
+  growth_min: f32 = 0.0 @since(2)
+  /// Horizontal cutting height, metres; 0 leaves natural pointed ends. Does not scale blade width.
+  cut_height_m: f32 = 0.0 @unit(m) @since(2)
+  /// Relative cutting-height variation, 0..0.9: 0 for mowing, greater for grazing.
+  cut_variation: f32 = 0.0 @since(2)
+  /// Fit coarse width and card threshold to four-view near coverage at cook time.
+  fit_lods: bool = true @since(2)
 }
 
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names

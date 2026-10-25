@@ -17,6 +17,7 @@ TEST_CASE("sward: source dimensions, finite cell bounds, budget and parentless m
   for (const auto& profile : flora::sward_profiles()) {
     flora::Sward p;
     p.species = profile.name;
+    p.fit_lods = false;  // dimensions/bounds are independent of the separate LOD-fit checks
     assets::MeshData mesh;
     flora::Motion motion;
     flora::TreeReport report;
@@ -33,6 +34,8 @@ TEST_CASE("sward: source dimensions, finite cell bounds, budget and parentless m
       CHECK(motion.parts[i].parent == geometry::k_motion_no_parent);
       CHECK(motion.parts[i].length >= profile.length_min_m);
       CHECK(motion.parts[i].length <= profile.length_max_m);
+      CHECK(std::abs(motion.parts[i].pivot.x) <= .500001f);
+      CHECK(std::abs(motion.parts[i].pivot.z) <= .500001f);
       // Each ribbon has seven vertices; its base span is the botanical width.
       const f32 width = length(mesh.positions[i * 7] - mesh.positions[i * 7 + 1]);
       CHECK(width >= profile.width_min_m - 1e-7f);
@@ -44,8 +47,9 @@ TEST_CASE("sward: source dimensions, finite cell bounds, budget and parentless m
       CHECK(std::isfinite(v.x));
       CHECK(std::isfinite(v.y));
       CHECK(std::isfinite(v.z));
-      CHECK(std::abs(v.x) <= .500001f);
-      CHECK(std::abs(v.z) <= .500001f);
+      const f32 bound = .500001f + profile.length_max_m + profile.width_max_m;
+      CHECK(std::abs(v.x) <= bound);
+      CHECK(std::abs(v.z) <= bound);
     }
     for (const auto& part : motion.structure)
       CHECK(part.flags == 0);
@@ -58,6 +62,16 @@ TEST_CASE("sward: invalid external recipes and insufficient total budgets are re
   p.density = std::numeric_limits<f32>::quiet_NaN();
   CHECK_FALSE(flora::sward_in_range(p, error));
   p = {};
+  p.leaves_per_tiller = 0;
+  CHECK_FALSE(flora::sward_in_range(p, error));
+  p = {};
+  p.growth_min = .9f;
+  p.growth = .5f;
+  CHECK_FALSE(flora::sward_in_range(p, error));
+  p = {};
+  p.cut_height_m = std::numeric_limits<f32>::infinity();
+  CHECK_FALSE(flora::sward_in_range(p, error));
+  p = {};
   p.species = "not_a_grass";
   CHECK_FALSE(flora::sward_in_range(p, error));
   p = {};
@@ -65,6 +79,65 @@ TEST_CASE("sward: invalid external recipes and insufficient total budgets are re
   assets::MeshData mesh;
   CHECK_FALSE(flora::solve_sward(p, mesh, nullptr, &error, nullptr));
   CHECK(mesh.positions.empty());
+}
+
+TEST_CASE("sward: dense cover groups leaves into shoots and clips rather than shrinks them") {
+  flora::Sward p;
+  p.species = "tall_fescue";
+  p.fit_lods = false;
+  p.blades_m2 = 1024;
+  p.growth_min = .45f;
+  p.triangle_budget = 11000;
+  assets::MeshData natural, clipped;
+  flora::Motion natural_motion, cut_motion;
+  flora::TreeReport report;
+  flora::TreeLevels levels;
+  std::string error;
+  REQUIRE(flora::solve_sward(p, natural, &report, &error, &natural_motion, &levels));
+  CHECK(report.leaf_area_m2 > 2);
+  CHECK(report.triangles <= p.triangle_budget);
+  u32 overhang[4]{};
+  for (const auto& v : natural.positions) {
+    overhang[0] += v.x < -.5f ? 1u : 0u;
+    overhang[1] += v.x > .5f ? 1u : 0u;
+    overhang[2] += v.z < -.5f ? 1u : 0u;
+    overhang[3] += v.z > .5f ? 1u : 0u;
+  }
+  for (u32 vertices : overhang)
+    CHECK(vertices > 16);  // no bald cell-edge confinement
+  for (u32 i = 0; i < p.blades_m2; ++i) {
+    const auto& root = natural_motion.parts[i].pivot;
+    const auto& shared = natural_motion.parts[i - i % p.leaves_per_tiller].pivot;
+    CHECK(root.x == shared.x);
+    CHECK(root.y == shared.y);
+    CHECK(root.z == shared.z);
+  }
+  p.cut_height_m = .05f;
+  REQUIRE(flora::solve_sward(p, clipped, &report, &error, &cut_motion, &levels));
+  CHECK(report.triangles <= p.triangle_budget);
+  REQUIRE(clipped.primitives[0].index_count == 1024 * 6 * 3);
+  for (u32 i = 0; i < p.blades_m2; ++i) {
+    // Eight vertices per clipped ribbon: the end keeps two distinct vertices at the cut plane.
+    CHECK(clipped.positions[i * 8 + 6].y == doctest::Approx(.05));
+    CHECK(clipped.positions[i * 8 + 7].y == doctest::Approx(.05));
+    CHECK(length(clipped.positions[i * 8 + 6] - clipped.positions[i * 8 + 7]) > .0029f);
+    CHECK(length(clipped.positions[i * 8] - clipped.positions[i * 8 + 1]) ==
+          doctest::Approx(length(natural.positions[i * 7] - natural.positions[i * 7 + 1]))
+              .epsilon(.0001));
+    CHECK(cut_motion.vertex_weight[i * 8 + 6] == doctest::Approx(1));
+    CHECK(cut_motion.parts[i].length < natural_motion.parts[i].length);
+  }
+  p.cut_variation = .5f;
+  REQUIRE(flora::solve_sward(p, clipped, &report, &error, &cut_motion, &levels));
+  f32 min_height = 1, max_height = 0;
+  for (u32 i = 0; i < p.blades_m2; ++i) {
+    const f32 height = (clipped.positions[i * 8 + 6].y + clipped.positions[i * 8 + 7].y) * .5f;
+    min_height = std::min(min_height, height);
+    max_height = std::max(max_height, height);
+  }
+  CHECK(min_height >= .025f - 1e-6f);
+  CHECK(max_height <= .075f + 1e-6f);
+  CHECK(max_height - min_height > .045f);
 }
 
 TEST_CASE("sward: full-density reference patch holds four-view projected coverage") {
@@ -102,9 +175,9 @@ TEST_CASE("sward: section 41 survives container roundtrip in cluster vertex orde
   CHECK(std::memcmp(back.sward_vertices.data(), data.sward_vertices.data(),
                     data.sward_vertices.size() * sizeof(geometry::ClusterFileSwardVertex)) == 0);
   const u64 pin = hash_bytes(data.sward_vertices.data(), data.sward_vertices.size() * 4);
-  // G88 v3: heading-paired coarse ribbons, three segments; includes remapped card vertices.
-  // Development v1: 11938167440745581753; v2: 660343445336747083 (coarse tessellation).
-  CHECK(pin == 17839441404926445449ull);
+  // G88 v5: tillered arched blades, coarse curve rung and remapped card vertices.
+  // v4: 17839441404926445449; new arc stations change the flex/AO bytes and cluster ordering.
+  CHECK(pin == 8707601967473198806ull);
 }
 
 namespace {
@@ -123,8 +196,10 @@ u64 family_pin() {
         hash_combine(pin, hash_bytes(mesh.positions.data(), mesh.positions.size() * sizeof(Vec3)));
     pin = hash_combine(pin, hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32)));
     pin = hash_combine(pin, hash_bytes(attrs.data(), attrs.size() * 4));
-    for (const auto& level : levels.levels)
+    for (const auto& level : levels.levels) {
       pin = hash_combine(pin, hash_bytes(level.indices.data(), level.indices.size() * sizeof(u32)));
+      pin = hash_combine(pin, hash_bytes(&level.alpha_cutoff, sizeof(level.alpha_cutoff)));
+    }
   }
   return pin;
 }
@@ -148,8 +223,9 @@ const scene_gen::GroundMaskOps k_masks{
 }  // namespace
 TEST_CASE("sward: eight-variant geometry and attribute family is deterministic") {
   const u64 pin = family_pin();
-  // First MSVC v3 family: positions, all three index streams and source attributes.
-  CHECK(pin == 3702055350956951526ull);
+  // V5 adds fitted card cutoff to positions, all three index streams and source attributes.
+  // v4 before the tiller/fan model and LOD fit: 3702055350956951526.
+  CHECK(pin == 2792296357357641801ull);
 }
 TEST_CASE("sward: palette density, stable IDs across tile order and empty outer rings") {
   MaskGround ground;

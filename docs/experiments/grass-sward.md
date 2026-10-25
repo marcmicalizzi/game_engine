@@ -11,6 +11,47 @@ and caster policies are separately briefed engine work. The owner confirmed on
 Research, implementation and acceptance are in progress. Measurements below distinguish
 the passing reference patch from the unfinished family. The owner's visual acceptance remains required.
 
+## Dense cover and management states (continuation, 2026-10-25)
+
+The owner prioritizes dense grass to walk through, tall stands, short trodden/mown/grazed cover,
+and sparse clumps, with AAA-quality assets and distance representations independently of future
+AO, atmosphere and bloom. The continuation changes the unit of construction from an isolated
+leaf to a basal shoot with several leaves, then gathers shoots into crowns. Oregon State's
+[Bunch and Sod-forming grasses](https://forages.oregonstate.edu/regrowth/how-does-grass-grow/grass-types/bunch-and-sod-forming-grasses)
+distinguishes crown-bound tillers from lateral sod growth; its examples include ryegrass and
+cocksfoot as bunch grasses and bentgrasses as stoloniferous. Blair, Nippert and Briggs,
+[Grassland Ecology (2014), morphology, pp. 398–401](https://www.k-state.edu/ecophyslab/pdf%27s/Grassland%20Ecology_Springer_Reference_series.pdf),
+describe shoots as repeated sheath/blade units and explain protected basal growth after defoliation.
+These sources justify grouping and clipping, not the authored sample counts or crown radius.
+
+Implementation v5 uses 1–8 rendered leaves per shoot, 1–32 shoots per crown, a 0–1 gathering
+parameter and a 0–0.25 m crown radius. Those ranges are authoring controls, not botanical constants.
+Alternating leaf directions form a fan around a common root. Boundary correction moves whole crowns, preserving shared roots. Roots stay inside their cells; foliage overhang is included in actual mesh bounds. The near/coarse rungs share every shoot and taper shoulder; the
+coarse rung reduces curve tessellation instead of replacing unrelated leaves with wider blades.
+Cutting truncates the axis at a horizontal height and keeps the blade's remaining width, rather
+than shortening a pointed leaf. Variable cutting height represents uneven grazing; it is an
+appearance model, not a grazing ecology simulation. Species dimensions still bound uncut blades.
+
+The dense candidate uses 1024 tall-fescue blades/m², growth range 0.45–1, and an explicit 8500
+triangle/m² all-rung cap (5120 near + 3072 coarse + at most 96 cards = 8288). This is a high-quality
+candidate, not a new silently enlarged default or a measured frame-budget allowance. The 2400
+kind default remains; the low-cost candidate uses 384 blades and two segments (2400 all-rung).
+Mown/grazed candidates budget the extra triangles at cut ends explicitly. Rendered leaf area
+and projected coverage must be reported separately from biological shoot density.
+
+Persistent walked tracks need runtime state beyond wind: a spatial bend-direction/flattening
+field sampled at world roots, stamped by swept contacts, with decay/recovery and tile lifetime
+rules. High graphics quality may retain that visual field; low quality must allocate none.
+Long-term wear (shorter/sparser grass) is a separate authoring/gameplay mask, not the same as a
+recovering bend. Existing sections 35/36 already supply roots, lengths and bend weights; section
+41 remains exactly AO/thickness/hue/age. No extra section or CPU object per blade is proposed.
+The engine-side field contract needs contact/history support before a persistent-track demo can
+be claimed. The current branch's runtime does not implement that history.
+
+The ComfyUI material lab remains available for appearance comparisons. First establish geometric
+coverage and management silhouettes; then feed any selected leaf appearance consistently into
+near material, cards and ground with provenance. A photographed/generated whole-sward tile must
+not be pasted onto each individual blade. No new generated material is claimed in this step.
 ## Sources and chosen bounds
 
 Leaf dimensions are leaf dimensions, **not culm height**. Growth interpolates within them;
@@ -51,7 +92,7 @@ documents distance animation, terrain colour data and distinct visual/shadow geo
 procedural-placement talk is different. These motivate colour continuity and reduced shadow
 work, not this engine's performance or its nearest-cascade policy.
 
-Current ladder: 256 blades/m² × 5 triangles near, half as many × 5 coarse with width scaled by
+Historical v4 ladder: 256 blades/m² × 5 triangles near, half as many × 5 coarse with width scaled by
 paired nominal leaf area, sixteen clumps/m² × three quads (96 triangles). Default 2400
 triangles/m² covers **all levels** (2016 at full density). Up to sixteen variants use independent
 deterministic streams. Pairing adjacent headings, keeping the longer axis, avoids the directional
@@ -75,7 +116,7 @@ paint image through `TerrainMaskPaint`; placements read the same cooked mask. Th
 ends at ring 1's floor, with no placements in outer rings. Runtime paint and far-ground wind
 sheen remain future work.
 
-## Measurements and unresolved acceptance, 2026-10-25
+## Historical v4 measurements and unresolved acceptance, 2026-10-25
 
 The CPU coverage probe rasterizes near geometry, coarse geometry and masked cards into the same
 256² orthographic frame, at four cardinal azimuths and 30° elevation, with 4×4 samples per pixel.
@@ -126,10 +167,10 @@ necessary. This v1 diagnostic predates the heading-paired ladder and guaranteed 
 
 Development pins: section 41 moved from 11938167440745581753 (v1) to 660343445336747083
 (v2, three-segment coarse ribbons) to 17839441404926445449 (v3, heading pairing). The eight-variant
-geometry/attribute family pin is 3702055350956951526. Version 4 also fixes card roughness to
+geometry/attribute family pin was 3702055350956951526. Version 4 also fixes card roughness to
 match blades/ground; the geometry pins remain v3's. Existing kinds retain their old bake defaults.
 
-## Static diagnostics and verification
+## Historical v4 static diagnostics and verification
 
 The completed 32-patch meadow was flown at sky hours 12 and 18, wind strength zero, with
 CSM and shadow distance 8 m. The sky record reports sun elevations 64.42° and 14.98°;
@@ -166,3 +207,132 @@ machine), including lint/docs, renderer and the existing frame-loop paths. Linux
 all 25 selected tests (522.59 s), including both new deterministic pins; its two worktree volumes
 were pruned. Clang required explicit f32-to-f64 promotions; those preserve the original arithmetic.
 The final Windows follow-up rebuilt successfully and passed flora (247.70 s) after that portability-only correction; both deterministic pins remain unchanged.
+
+The walking-height review also calls for layered fans: the authored outer-leaf fraction now
+raises horizontal curvature from the inner leaf's 0.2–0.55 toward 0.9–1.25 and vertical droop
+from 0 to 0.65 in the normalized quadratic axis. Arc length is still normalized to the source
+range. These are appearance choices, not measured species mechanics. Cutting retains the first
+upward crossing so an arched tip beyond the cut is removed. Coarse width fitting is limited to
+0.75–1.25 of natural width and never modifies near blades. Near/card captures remain necessary:
+four-view covered area alone did not reveal the earlier cell seams.
+
+## Engine hand-back for walked tracks
+
+The CPU compatibility fix makes structurally non-woody `sward` roots pushable, including part
+zero. It changes no tree-root policy and allocates nothing new per frame. Its existing 12-tick
+recovery is useful for contact verification but too short for the requested visible walked path.
+
+The field-kind implementation should treat these as three independent concerns:
+
+- Immediate contact: stamp swept actor capsules/feet in world coordinates and sample the result
+  at each blade root. Bend by the section-36 arc weight, keep roots fixed, and apply the same
+  deformation to every position reader through the deformed-vertex pool. No per-blade CPU state.
+- High-quality visual history: retain direction and flattening in optional tiled storage, with
+  authored recovery time and bounded spatial/temporal lifetime. Clear/reinitialize newly mapped
+  tiles, handle origin movement and teleport explicitly, and test departure/re-entry. Low quality
+  allocates no history field and schedules no history update pass. This is a proposed interface,
+  not an implemented allocation or a sourced biological recovery constant.
+- Lasting wear: authored/gameplay management state selects shorter/sparser grass and matching
+  ground paint. It must not disappear when graphics quality changes. Mown, grazed and worn recipes
+  now provide distinct asset states; the transient bend field must not silently rewrite them.
+
+The root cell may have leaf overhang; use actual mesh bounds and do not shrink those bounds to
+the placement footprint. Section 41 and the motion sections are unchanged. No new container
+section is requested. Final field/caster integration and a terrain walking replay remain open.
+
+The v5 isolated captures deliberately omit terrain, wind and shadows. Dense cover now fills
+most of the walking-height picture; the old cell-edge seams are absent. Card forms still
+flatten the canopy from elevated angles, even where covered area matches. Mown/grazed outputs
+correctly distinguish clipped and uneven tips but remain sparse as standalone lawn geometry
+(modeled LAI approximately 0.27/0.30 in these authored samples). A dense short-grass surface
+needs further representation work within the draw/streaming budgets; simply claiming the
+covered-area fit as visual acceptance would hide both defects. The external comparison page
+switches identical near/card cameras among close, walking height and overview.
+
+## V5 asset measurements, 2026-10-25
+
+Independent 256² four-view coverage measurements of seed 8801, variant 0, after fitting with
+128² probes. These are geometry/coverage results, not frame timings. Each isolated stand has
+64 copies of its patch, no terrain masking gaps, wind zero and shadows off; raw 1600×900
+captures use matching near/card close, walking-height and overview cameras. Camera overview
+is at 10 m for inspection, closer than the intended outer-ring card use. The table is these
+seven authored recipes, not a claim that every species/density/seed has been accepted.
+
+| State | Rendered blades/m² | Modeled LAI | All-rung triangles | Coarse max difference (%) | Card max difference (%) | Full/card clusters |
+|---|---:|---:|---:|---:|---:|---:|
+| Dense | 1024 | 3.531 | 8288 | 0.71 | 1.79 | 348 / 3 |
+| Dense low | 384 | 1.303 | 2400 | 0.00 | 3.29 | 103 / 3 |
+| Mown | 1024 | 0.265 | 10096 | 0.91 | 1.08 | 411 / 3 |
+| Grazed | 768 | 0.304 | 7186 | 0.48 | 2.24 | 296 / 3 |
+| Trodden | 192 | 0.034 | 1976 | 2.15 | 2.90 | 83 / 3 |
+| Clumps | 192 | 0.454 | 1578 | 0.61 | 1.55 | 69 / 2 |
+| Tall | 768 | 3.202 | 6240 | 0.50 | 2.14 | 262 / 3 |
+
+Counts include geometric near/coarse rungs and actual nonempty card groups. Budgets conservatively
+reserve every possible group and a cut-end triangle for every blade; a blade already below the
+cut height stays pointed. The lower actual mown/grazed triangle counts follow from those uncut
+leaves, not dropped cuts. Reference raw data and 42 PNGs live in the external
+`sward/2026-10-25-v5/final-showcase`, with `comparison.html`, `measurements.json`, individual
+recipes and provenance. The low recipe gives up coverage; it is a candidate, not a final quality
+policy. The full patch library and ground transitions remain to be visually accepted.
+
+V5 deterministic pins: section41 **8707601967473198806** and eight-variant geometry/attributes/
+fitted-cutoff family **2792296357357641801**. Linux Clang reproduced both and passed all 25 selected
+tests (649.46 s, 11m43s including build); its two worktree volumes were pruned. The focused CPU
+contact regression passed 12 assertions. Windows `msvc-debug test -Affected -Base 84e83f84`
+passed all 122 selected tests (3861.44 s), including renderer, content, viewport and frame-loop
+checks. Committed content makes the current affected selector choose the whole suite.
+
+Build notes: after the Sward schema grew, MSVC incremental links reported LNK1236 for existing
+fern/companion object members in several consumers. Recompiling those objects was not sufficient
+for every consumer; clearing only this worktree's `.ilk` files completed the links. No shared
+compiler cache was purged and no compiler-cache launcher was enabled here. In the recipe-driven
+PowerShell cook, the parameter `$Recipe` and local `$recipe` collide case-insensitively; the
+local must use `$swardPatch` so a hashtable is not coerced to the parameter's string type.
+
+The dense terrain family also cooked successfully: two variants at each of 25%, 50%, 75% and
+100% density. Across these eight patches, the independent four-view maximum is 1.21% for the
+coarse ribbons and 2.82% for cards. Full-density modeled LAI is 3.531/3.422; exact source values
+and per-patch counts are retained in external `dense-meadow/family-measurements.json`.
+
+The dense terrain replay completed with raw captures inside the stand, at the 5 m walking view,
+20 m and 80 m. Near cover is continuous and the authored trail stays clear. The 80 m image has
+an obvious card-to-ground boundary; the shared colour source alone does not make the transition
+invisible. This remains a failed visual acceptance item. Captures use the RTX 5090, `msvc-debug`,
+1600x900, wind zero, sky hour 12 (sun elevation 64.42 degrees), CSM with 8 m shadow distance as
+the temporary stand-in for the absent caster policy. They are not quiet benchmark runs:
+`machine_state=null`, `quiet=false`, uncollected GPU timings are zero. Do not interpret those
+zeros as measured costs.
+
+The final replay record retains 7,861,937 motion parts and 2,616,732,832 motion-tail bytes;
+tail storage is not deformed-pool bytes. Final ring instances are `[0,1310,0]` and pairs
+`[0,3930,0]`, with 5841 prefix pairs. These are final-camera values, not peak near-view counts.
+They do not establish the pair/shadow budget. `frame_loop.last_frame=-1` likewise supplies no
+allocation proof. The dense path still needs the engine's GPU field motion, explicit pool-byte
+statistics, quality ladder and quiet frame-budget run. All camera, scene, density, provenance,
+PNGs and the complete record are in external `sward/2026-10-25-v5/dense-meadow`.
+
+The owner selected **mostly knee height** for the first tall-grass walkthrough on 2026-10-25.
+Use that visual target for the dense/tall variants and subsequent stem/seed-head work, keeping
+botanical dimensions within the cited species ranges. Waist/chest-height stands are not the
+default acceptance target. This is an art-direction reference, not a new botanical constant.
+
+### Next representation experiment
+
+AMD's [procedural grass example](https://gpuopen.com/learn/mesh_shaders/mesh_shaders-procedural_grass_rendering/)
+uses curved blades grouped into patches, reduces blade count while increasing width with distance,
+and applies root darkening and spatial colour variation. Its later
+[procedural generation sample](https://gpuopen.com/learn/work_graphs_mesh_nodes/work_graphs_mesh_nodes-procedural_generation/)
+replaces dense patches with quads for its sparse LOD. These are concrete examples of multiple
+representations, not evidence that one technique is universal across AAA games or a performance
+prediction for this renderer.
+
+For short turf, the next proposed comparison is a baked dense basal layer plus a smaller set of
+geometric leaves, against a higher-count geometric patch, with identical footprint and cameras.
+The source lawn used for baking can be denser than the runtime mesh. This is a proposal prompted
+by the sparse clipped captures, not an implemented new tier. For tall cards, test vertical fans
+and additional depth samples against the current three orthogonal planes: covered area must be
+accompanied by elevated-view silhouette and parallax review. Both experiments must retain one
+appearance source for near geometry, cards and ground. ComfyUI leaf-material variants can then
+be compared through that same bake route; unrelated whole-grass textures would not establish
+cross-tier consistency.

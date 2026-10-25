@@ -11,7 +11,7 @@
 #include <string_view>
 
 namespace engine::flora {
-inline constexpr u32 k_sward_version = 4;
+inline constexpr u32 k_sward_version = 5;
 struct SwardProfile {
   std::string_view name;
   f32 length_min_m, length_max_m, width_min_m, width_max_m;

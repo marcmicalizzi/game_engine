@@ -1,0 +1,16 @@
+{
+  "sward": {
+    "blades_m2": 384,
+    "clumpiness": 0.2,
+    "species": "tall_fescue",
+    "card_px": 128,
+    "segments": 2,
+    "growth": 1.0,
+    "leaves_per_tiller": 3,
+    "seed": 8801,
+    "triangle_budget": 2400,
+    "growth_min": 0.45,
+    "tillers_per_clump": 4
+  },
+  "species": "sward"
+}

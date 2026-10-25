@@ -181,7 +181,9 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     out.reach[p] = wood > 0.0f ? wood : k_flora_leaf_reach * part.length;
     // A part that collides is never pushed: the walker stops at it rather than bending it.
     const bool collider = structured && (structure[p].flags & geometry::k_structural_collider) != 0;
-    out.pushable[p] = (!root && p != 0 && !load_bearing && !collider) ? u8{1} : u8{0};
+    // Sward's contract is one parentless non-woody part per blade, including part zero.
+    const bool blade = species == "sward" && structured && !wooden;
+    out.pushable[p] = ((blade || (!root && p != 0)) && !load_bearing && !collider) ? u8{1} : u8{0};
   }
   return true;
 }

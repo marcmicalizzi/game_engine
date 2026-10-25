@@ -10,17 +10,29 @@ The public pure API is `sward_profiles`, `sward_profile`, `sward_in_range`, `sol
 does not invalidate or change accepted tree/understory meshes. The shared catalogue has one
 `sward` kind, with the old CPU blade compliance until the separately briefed field kind lands.
 
-A cell is 1 or 2 m, centred on its anchor. Dimensions stay within the profile's source ranges;
-roots are stratified, then translated inward with their entire blade to keep all geometry inside
-the cell. The near ribbon has 2–3 segments and twist. The coarse rung pairs adjacent headings,
-keeps the longer blade's axis and widens it by the pair's nominal width-times-length area ratio,
-retaining the near ribbon's tessellation. Sixteen clumps/m² each have three orthogonal baked
-quads, with 128-pixel tiles, one-texel margins and an explicit alpha cutoff (default 0.5).
-The default 256 blade samples/m² costs at most 1280 near + 640 coarse + 96 card triangles/m²;
-the 2400/m² default budget counts all emitted levels. A smaller explicit budget is refused with
-the required count, not silently interpreted as permission to alter botanical widths. This
-sample count is far below measured tiller density and does not imply a full biological LAI.
+A cell is 1 or 2 m, centred on its anchor. Natural blade dimensions stay within the profile's
+source ranges. Sward v2 groups `leaves_per_tiller` (1–8, default 4) into a common basal shoot,
+and `tillers_per_clump` (1–32, default 4) around a crown. `clumpiness` (0–1, default 0.35)
+blends dispersed shoots toward `clump_radius_m` (0–0.25 m, default 0.06); boundary correction
+moves entire crowns to keep shared roots intact. Only roots are confined to the cell; leaves overhang naturally, and actual mesh bounds include them. Confining leaves produced bald seams. `growth_min` (0–growth) sets the lower natural
+length fraction, useful for mature dense stands. These are authored sampling controls; they do
+not claim a measured biological shoot count or full reproductive morphology.
 
+`cut_height_m` (0–1 m, zero disables) clips leaves at a horizontal cutting plane, preserving
+width and leaving a flat end. `cut_variation` (0–0.9) varies that plane per leaf for uneven
+grazing. It does not scale whole blades down or regrow pointed tips. A clipped leaf may be
+shorter than the natural source range. Both rungs sample the taper shoulder; coarse ribbons
+retain every shoot and reduce curve tessellation. Sixteen spatial bake groups/m² each have
+three orthogonal cards, 128-pixel tiles and one-texel margins. `fit_lods` (default true) fits coarse width (0.75–1.25 scale) and card alpha cutoff at cook time against four 128-pixel near projections; the public 256-pixel probe checks the result independently. `card_cutoff` is the initial fit candidate, or the exact cutoff when fitting is off. Fitting preserves near geometry and costs no runtime work. It fits covered area, not pixelwise silhouettes or parallax. Coverage acceptance is measured,
+not implied by those geometry counts.
+
+The 2400/m² default budget still counts every emitted level and refuses an insufficient cap.
+Uncut default patches cost 1280 near + 768 coarse + at most 96 card triangles. Dense candidate
+recipes explicitly request a larger cap; no default quality tier silently spends that budget.
+[Meadow recipes](../../content/test-scenes/meadow/README.md) cover dense/tall, sparse crowns,
+mown, grazed and authored worn areas. `tools/sward-showcase.ps1` cooks their small isolated stands
+outside the repository and can capture near/card forms with matching cameras. These tests judge
+silhouette, coverage and repetition before later AO/atmosphere/postprocessing improvements.
 Every blade has a parentless motion part; coarse blades reuse it and clumps add parentless
 parts. Section 36 is linear arc fraction, not squared flex; the posing formula applies the bend.
 Section 37 has no load-bearing or collider flags. Section 41 is ao/thickness/hue/age, four
@@ -58,20 +70,19 @@ override needs an engine seam. It is not hidden behind the collider flag.
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
 cut. There is no per-frame solver state or tick; placement work occurs at tile activation.
 
-**Tests.** `tools/dev.ps1 test -Filter flora` includes range/bounds/budget checks, motion parents,
-section-41 roundtrips, an eight-variant geometry/attribute hash, palette/ID/ring placement checks
-and four-view projected coverage of the seed-8801 full-density ryegrass reference. Its coarse
-rung differs by less than 1%, cards by less than 5%. Across all 32 cooked patches coarse
-coverage differs by at most 3.86%, cards by 20.67%; that test does not imply acceptance of
-the family. Full-density containers have 86–87 clusters and ring-one forms exactly three,
-at most 22272/768/0 source pairs per fully occupied 16 m tile in rings 0/1/2+. Author handover
-additionally runs `test -Affected` and the matching Linux container. Meadow capture acceptance,
-frame-loop allocation and 11520×2160 pair/shadow budgets remain open. G88 stays in progress.
-
+**Tests.** `tools/dev.ps1 test -Filter flora` includes source dimensions, bounded roots and
+finite foliage overhang, budgets, shared shoot roots, clipped widths/heights, variable grazing
+cuts, motion parents, section-41 roundtrips, eight-variant geometry/attribute/cutoff determinism,
+palette/ID/ring placement and independent four-view LOD coverage. Renderer tests check the
+parentless blade contact contract and recovery. The v4 32-patch result (up to 20.67% card error)
+is historical; v5 changes the geometry and fits coverage, so its new measurements are recorded
+in the [grounding page](../experiments/grass-sward.md). Author handover runs affected Windows
+tests and the matching Linux container. G88 stays in progress until visual, streaming, motion
+and release pair/shadow budgets are accepted.
 **Not yet.** Seasonal phenology and seed-head geometry; measured patch sky AO and calibrated
 thickness/colour; sparse-family card coverage; exact per-texel density conservation;
 wetness/slope morphology and slope-conforming patches; zero-footprint
-host support; field sway and caster policy on the engine side; far-ground wind sheen. The
+host support; field sway, persistent contact/recovery fields and caster policy on the engine side; far-ground wind sheen. The
 current-main shadow stand-in is CSM with a short shadow distance, never claimed as final policy.
 
 ## Shared growth rules and named species (G85)

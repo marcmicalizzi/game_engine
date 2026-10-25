@@ -1,0 +1,16 @@
+{
+  "sward": {
+    "blades_m2": 384,
+    "clumpiness": 1.0,
+    "species": "cocksfoot",
+    "card_px": 128,
+    "density": 0.5,
+    "seed": 8801,
+    "leaves_per_tiller": 4,
+    "clump_radius_m": 0.025,
+    "triangle_budget": 2400,
+    "growth_min": 0.45,
+    "tillers_per_clump": 8
+  },
+  "species": "sward"
+}

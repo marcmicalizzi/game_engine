@@ -2356,3 +2356,13 @@ optional generator's profile IDs and diagnostics. Known species keep their exist
 coefficients. `flora_mesh` rejects an unknown species instead of silently applying a default;
 `flora_stiffness` returns zero coefficients for that invalid name. This validates mesh ingestion,
 not the per-frame hot loop. See [the profile audit](../experiments/tree-profile-audit.md).
+
+### Sward contact compatibility (G88)
+
+Sward uses a parentless non-woody motion part for each blade, including part zero. The CPU
+compatibility poser permits those parts to receive the existing walker-capsule push when they
+have a structural table and no load-bearing/collider flags. Tree roots keep their existing
+policy. A regression checks contact, fixed roots, a distant unaffected blade and recovery.
+This remains the existing 12-tick (0.2 s at 60 Hz) recovery, not persistent walked-track history.
+The separately briefed field-motion path needs a quality-gated world-space contact/history
+field before long-lived flattened paths can be claimed; the solver adds no such frame allocation.

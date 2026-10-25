@@ -246,6 +246,36 @@ TEST_CASE("flora motion: the walker pushes a frond's tip out of its capsule and 
   CHECK(state[1].ease == 0.0f);
 }
 
+TEST_CASE("flora motion: parentless sward blades bend at contact and recover with fixed roots") {
+  Vector<ClusterFileMotionPart> parts;
+  parts.push_back(make_part({.1f, 0, 0}, {0, 1, 0}, .5f, geometry::k_motion_no_parent));
+  parts.push_back(make_part({2, 0, 0}, {0, 1, 0}, .5f, geometry::k_motion_no_parent));
+  Vector<ClusterFileStructuralPart> structure(2, ClusterFileStructuralPart{});
+  const FloraMesh mesh = mesh_of(parts, structure, "sward");
+  REQUIRE(mesh.pushable[0] != 0);
+  Vector<FloraPartState> state(2, FloraPartState{});
+  Vector<gfx::FloraPartPose> poses(2, gfx::FloraPartPose{});
+  FloraPush push;
+  push.active = true;
+  const FloraWind calm{{1, 0, 0}, 0};
+  for (u32 k = 1; k <= k_flora_push_ease_ticks; ++k)
+    pose(mesh, calm, k / 60.0, push, 1, state, poses);
+  CHECK(poses[0].pivot_angle.w > 0);
+  CHECK(bent(poses, mesh, 0, 1).x > .1f);
+  CHECK(bent(poses, mesh, 0, 0).x == .1f);
+  CHECK(bent(poses, mesh, 0, 0).y == 0);
+  CHECK(poses[1].axis.w == 0);
+  push.active = false;
+  pose(mesh, calm, 1, push, 1, state, poses);
+  CHECK(state[0].ease > 0);  // brief recovery, not persistent walked-track history
+  for (u32 k = 0; k < k_flora_push_ease_ticks; ++k)
+    pose(mesh, calm, 1 + k / 60.0, push, 1, state, poses);
+  CHECK(state[0].ease == 0);
+  CHECK(poses[0].axis.w == 0);
+  const FloraMesh palm = mesh_of(parts, structure, "date_palm");
+  CHECK(palm.pushable[0] == 0);  // tree-root policy is unchanged
+}
+
 TEST_CASE("flora motion: the same inputs give the same poses, bit for bit") {
   const Vector<ClusterFileMotionPart> parts = palm_parts();
   const FloraMesh mesh = mesh_of(parts, {}, "date_palm");

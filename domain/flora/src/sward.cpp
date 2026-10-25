@@ -22,10 +22,15 @@ constexpr SwardProfile k_profiles[] = {
 };
 struct Blade {
   D3 root, heading;
-  f64 length, width, lean, twist, angle;
+  f64 length, width, lean, droop, twist;
+  f64 tip = 1;
   u32 group;
   u8 hue, age;
 };
+SwardCoverage measure_sward_impl(const assets::MeshData& mesh, const TreeLevels& levels,
+                                 const image::Image& card_image, u32 pixels, u32 first, u32 end);
+void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
+              const Vector<Blade>& blades);
 
 // A quadratic centre line, normalized to the requested polyline arc length. Both rungs use
 // these same fine samples, so lowering tessellation does not redraw the plant's random choices.
@@ -35,10 +40,10 @@ Axis blade_axis(const Blade& b) {
   f64 arc = 0;
   for (u32 r = 0; r <= rows; ++r) {
     const f64 t = static_cast<f64>(r) / rows;
-    const D3 p = k_up * t + b.heading * (b.lean * t * t);
+    const D3 p = k_up * (t - b.droop * t * t) + b.heading * (b.lean * t * t);
     if (r != 0) arc += length_of(p - axis.point.back());
     axis.point.push_back(p);
-    axis.tangent.push_back(normalized(k_up + b.heading * (2 * b.lean * t)));
+    axis.tangent.push_back(normalized(k_up * (1 - 2 * b.droop * t) + b.heading * (2 * b.lean * t)));
     axis.normal.push_back(normalized(cross(b.heading, k_up)));
     axis.arc.push_back(arc);
   }
@@ -51,27 +56,59 @@ Axis blade_axis(const Blade& b) {
   return axis;
 }
 
+// Defoliation removes the upper axis, retaining the original taper and a full-width cut end.
+// Keep the first upward crossing, removing the detached tip even when an outer leaf arches down.
+void clip_blade(Blade& b, Axis& axis, f64 height) {
+  if (!(height > 0)) return;
+  for (u32 r = 1; r < axis.point.size(); ++r) {
+    if (axis.point[r].y < height) continue;
+    const f64 t = (height - axis.point[r - 1].y) / (axis.point[r].y - axis.point[r - 1].y);
+    axis.point[r] = axis.point[r - 1] + (axis.point[r] - axis.point[r - 1]) * t;
+    axis.tangent[r] = normalized(axis.tangent[r - 1] * (1 - t) + axis.tangent[r] * t);
+    axis.arc[r] = lerp(axis.arc[r - 1], axis.arc[r], t);
+    axis.length = axis.arc[r];
+    b.tip = axis.length / b.length;
+    b.length = axis.length;
+    axis.point.resize(r + 1);
+    axis.tangent.resize(r + 1);
+    axis.normal.resize(r + 1);
+    axis.arc.resize(r + 1);
+    return;
+  }
+}
+
 void ribbon(const Blade& b, const Axis& fine, u32 segments, f64 width_scale, Emitter& emit) {
-  const Axis axis = resample_axis(fine, segments);
   const u32 first = emit.mesh.positions.size();
   for (u32 r = 0; r <= segments; ++r) {
-    const f64 t = static_cast<f64>(r) / segments;
-    const D3 side = rotate(normalized(cross(b.heading, k_up)), axis.tangent[r], b.twist * t);
-    const D3 normal = normalized(cross(side, axis.tangent[r]));
-    emit.weight = axis.arc[r] / axis.length;
-    if (r == segments) {
-      emit.vertex(axis.point[r], normal, .5, 1);
+    // Both rungs include the taper shoulder: uniform samples lost leaf area at two segments.
+    const f64 t = r == segments ? 1
+                                : (b.tip > .65 ? .65 / b.tip * r / (segments - 1)
+                                               : static_cast<f64>(r) / segments);
+    const f64 arc = t * fine.length;
+    u32 row = 1;
+    while (row + 1 < fine.arc.size() && fine.arc[row] < arc)
+      ++row;
+    const f64 blend = (arc - fine.arc[row - 1]) / (fine.arc[row] - fine.arc[row - 1]);
+    const D3 point = fine.point[row - 1] + (fine.point[row] - fine.point[row - 1]) * blend;
+    const D3 tangent = normalized(fine.tangent[row - 1] * (1 - blend) + fine.tangent[row] * blend);
+    D3 side = rotate(normalized(cross(b.heading, k_up)), tangent, b.twist * t);
+    if (r == segments && b.tip < 1) side = normalized(D3{side.x, 0, side.z});
+    const D3 normal = normalized(cross(side, tangent));
+    emit.weight = t;
+    if (r == segments && b.tip == 1) {
+      emit.vertex(point, normal, .5, 1);
     } else {
-      const f64 taper = t <= .65 ? 1 : (1 - t) / .35;
+      const f64 natural_t = t * b.tip;
+      const f64 taper = natural_t <= .65 ? 1 : (1 - natural_t) / .35;
       const D3 half = side * (b.width * width_scale * taper * .5);
-      emit.vertex(axis.point[r] - half, normal, 0, t);
-      emit.vertex(axis.point[r] + half, normal, 1, t);
+      emit.vertex(point - half, normal, 0, t);
+      emit.vertex(point + half, normal, 1, t);
     }
   }
   for (u32 r = 0; r < segments; ++r) {
     const u32 a = first + r * 2;
     emit.triangle(a, a + 1, a + 2);
-    if (r + 1 < segments) emit.triangle(a + 1, a + 3, a + 2);
+    if (r + 1 < segments || b.tip < 1) emit.triangle(a + 1, a + 3, a + 2);
   }
 }
 
@@ -114,6 +151,20 @@ bool sward_in_range(const Sward& p, std::string& error) {
     field = "density (0.0625..1)";
   else if (!(p.growth >= 0 && p.growth <= 1))
     field = "growth (0..1)";
+  else if (!(p.growth_min >= 0 && p.growth_min <= p.growth))
+    field = "growth_min (0..growth)";
+  else if (p.leaves_per_tiller < 1 || p.leaves_per_tiller > 8)
+    field = "leaves_per_tiller (1..8)";
+  else if (p.tillers_per_clump < 1 || p.tillers_per_clump > 32)
+    field = "tillers_per_clump (1..32)";
+  else if (!(p.clumpiness >= 0 && p.clumpiness <= 1))
+    field = "clumpiness (0..1)";
+  else if (!(p.clump_radius_m >= 0 && p.clump_radius_m <= .25f))
+    field = "clump_radius_m (0..0.25)";
+  else if (!(p.cut_height_m >= 0 && p.cut_height_m <= 1))
+    field = "cut_height_m (0..1)";
+  else if (!(p.cut_variation >= 0 && p.cut_variation <= .9f))
+    field = "cut_variation (0..0.9)";
   else if (!(p.straw_share >= 0 && p.straw_share <= 1))
     field = "straw_share (0..1)";
   else if (!(p.card_cutoff >= .05f && p.card_cutoff <= .95f))
@@ -148,7 +199,10 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   const u32 count = std::max(2u, static_cast<u32>(p.blades_m2 * area * p.density));
   const u32 group_side = 4u * static_cast<u32>(p.cell_m);
   const u32 groups = group_side * group_side;
-  const u32 triangles = (count + (count + 1) / 2) * blade_triangles(p.segments) + groups * 6;
+  // A cut leaf can have one extra end triangle. Budget conservatively before allocating.
+  const u32 cut_extra = p.cut_height_m > 0 ? 1u : 0u;
+  const u32 triangles =
+      count * (blade_triangles(p.segments) + blade_triangles(2) + 2 * cut_extra) + groups * 6;
   const u32 budget = p.triangle_budget != 0 ? p.triangle_budget : 2400u * area;
   if (triangles > budget) {
     if (error)
@@ -163,57 +217,92 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   Vector<Blade> blades;
   Vector<Axis> axes;
   Vector<BakeRange> ranges;
+  const u32 leaves_per_crown = p.leaves_per_tiller * p.tillers_per_clump;
+  const u32 crowns = (count + leaves_per_crown - 1) / leaves_per_crown;
   u32 side = 1;
-  while (side * side < count)
+  while (side * side < crowns)
     ++side;
   const f64 cell = static_cast<f64>(p.cell_m);
   const f64 half = cell * .5;
   const u64 seed = p.seed ^ (static_cast<u64>(p.variant) * 0x9e3779b97f4a7c15ull);
   for (u32 i = 0; i < count; ++i) {
     Rng rng = stream_of(seed, i + 1);
+    const u32 crown = i / leaves_per_crown;
+    const u32 tiller = i / p.leaves_per_tiller;
+    Rng crng = stream_of(seed ^ 0x63726f776eull, crown + 1);
+    Rng trng = stream_of(seed ^ 0x74696c6c6572ull, tiller + 1);
+    const u32 row_count = std::min(side, crowns - (crown / side) * side);
+    const u32 rows = (crowns + side - 1) / side;
+    const D3 centre{((crown % side + crng.unit()) / row_count - .5) * cell, 0,
+                    ((crown / side + crng.unit()) / rows - .5) * cell};
+    const f64 shoot_angle = trng.unit() * 2 * k_pi;
+    const f64 radius = std::sqrt(trng.unit()) * static_cast<f64>(p.clump_radius_m);
+    const f64 spread = cell / side * .45;
+    const f64 gather = static_cast<f64>(p.clumpiness);
     Blade b{};
-    b.root = {((i % side + rng.unit()) / side - .5) * cell, 0,
-              ((i / side + rng.unit()) / side - .5) * cell};
-    const f64 angle = rng.unit() * 2 * k_pi;
-    b.angle = angle;
+    b.root = centre + D3{lerp(trng.symmetric() * spread, det::cos(shoot_angle) * radius, gather), 0,
+                         lerp(trng.symmetric() * spread, det::sin(shoot_angle) * radius, gather)};
+    // Leaves alternate around a shared basal shoot; a little twist avoids identical fans.
+    const f64 angle = shoot_angle + (i % p.leaves_per_tiller % 2) * k_pi + .15 * rng.symmetric();
     b.heading = {det::cos(angle), 0, det::sin(angle)};
     b.length = lerp(static_cast<f64>(profile.length_min_m), static_cast<f64>(profile.length_max_m),
-                    rng.unit() * static_cast<f64>(p.growth));
+                    lerp(static_cast<f64>(p.growth_min), static_cast<f64>(p.growth), rng.unit()));
     b.width = lerp(static_cast<f64>(profile.width_min_m), static_cast<f64>(profile.width_max_m),
                    rng.unit());
-    b.lean = .15 + .4 * rng.unit();
+    const f64 outer = p.leaves_per_tiller > 1
+                          ? static_cast<f64>(i % p.leaves_per_tiller) / (p.leaves_per_tiller - 1)
+                          : 0;
+    b.lean = .2 + .7 * outer + .35 * rng.unit();
+    b.droop = .65 * outer;
     b.twist = .2 * rng.symmetric();
     b.hue = static_cast<u8>(102 + rng.next() % 52);
     b.age = rng.unit() < static_cast<f64>(p.straw_share) ? 255 : 0;
     Axis axis = blade_axis(b);
-    // Leave enough room for the coarse blade too. Translation, not clamping vertices, preserves
-    // the source length and avoids collapsed triangles at patch boundaries.
-    D3 lo = axis.point[0], hi = lo;
-    for (D3 v : axis.point) {
+    clip_blade(b, axis,
+               static_cast<f64>(p.cut_height_m) *
+                   (1 + static_cast<f64>(p.cut_variation) * rng.symmetric()));
+    blades.push_back(b);
+    axes.push_back(std::move(axis));
+  }
+  // Roots belong to the cell; foliage may overhang it. Confining the entire leaf created bald
+  // seams between tiled stands. Actual mesh bounds include the overhang for culling/streaming.
+  // Translate a whole crown at a boundary so individual shoots keep their shared roots.
+  for (u32 crown = 0; crown < crowns; ++crown) {
+    const u32 first = crown * leaves_per_crown, end = std::min(count, first + leaves_per_crown);
+    D3 lo{1e30, 0, 1e30}, hi{-1e30, 0, -1e30};
+    for (u32 i = first; i < end; ++i) {
+      const D3 v = blades[i].root;
       lo.x = std::min(lo.x, v.x);
       lo.z = std::min(lo.z, v.z);
       hi.x = std::max(hi.x, v.x);
       hi.z = std::max(hi.z, v.z);
     }
-    const D3 shift{std::max(0.0, -half + b.width - lo.x) - std::max(0.0, hi.x + b.width - half), 0,
-                   std::max(0.0, -half + b.width - lo.z) - std::max(0.0, hi.z + b.width - half)};
-    b.root = b.root + shift;
-    for (D3& v : axis.point)
-      v = v + shift;
-    const u32 gx = std::min(group_side - 1, static_cast<u32>((b.root.x + half) * 4));
-    const u32 gz = std::min(group_side - 1, static_cast<u32>((b.root.z + half) * 4));
+    const D3 shift{std::max(0.0, -half - lo.x) - std::max(0.0, hi.x - half), 0,
+                   std::max(0.0, -half - lo.z) - std::max(0.0, hi.z - half)};
+    for (u32 i = first; i < end; ++i) {
+      blades[i].root = blades[i].root + shift;
+      for (D3& v : axes[i].point)
+        v = v + shift;
+    }
+  }
+  for (u32 i = 0; i < count; ++i) {
+    Blade& b = blades[i];
+    const Axis& axis = axes[i];
+    const u32 gx =
+        static_cast<u32>(std::clamp((b.root.x + half) * 4, 0.0, static_cast<f64>(group_side - 1)));
+    const u32 gz =
+        static_cast<u32>(std::clamp((b.root.z + half) * 4, 0.0, static_cast<f64>(group_side - 1)));
     b.group = gz * group_side + gx;
     begin_structural_part(emit, b.root, axis.tangent[0], axis.length, geometry::k_motion_no_parent,
                           0, 0, 0);
     const u32 first = out.indices.size();
     ribbon(b, axis, p.segments, 1, emit);
     ranges.push_back({first, out.indices.size() - first});
-    blades.push_back(b);
-    axes.push_back(std::move(axis));
   }
   const u32 near_end = out.indices.size();
   const f32 near_area = static_cast<f32>(triangles_area(out, 0));
   out.primitives.push_back({0, near_end, 0});
+  const u32 coarse_first_vertex = out.positions.size();
   TreeLevels chain;
   chain.leaf_first_index = 0;
   chain.leaf_index_end = near_end;
@@ -221,35 +310,11 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   coarse.error = profile.width_max_m * 2;
   coarse.feature_m = profile.length_max_m;
   // Empty jobs distinguish a geometric rung from baked impostors in the sward build.
-  // Pair adjacent headings so removing a blade does not bias the projected width toward
-  // whichever directions happened to occur at even lattice indices. Keep the longer axis.
-  Vector<u32> order;
-  for (u32 i = 0; i < count; ++i)
-    order.push_back(i);
-  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
-    return blades[a].angle == blades[b].angle ? a < b : blades[a].angle < blades[b].angle;
-  });
-  for (u32 pair = 0; pair < count; pair += 2) {
-    u32 i = order[pair], j = order[std::min(pair + 1, count - 1)];
-    if (blades[i].length < blades[j].length) std::swap(i, j);
+  // Keep every shoot and its width. Removing leaves from unrelated crowns made sparse
+  // patches shift across the LOD boundary; reduce curve sampling instead.
+  for (u32 i = 0; i < count; ++i) {
     emit.part = i;
-    const Blade& a = blades[i];
-    const Blade& b = blades[j];
-    const f64 scale = pair + 1 < count ? 1 + b.width * b.length / (a.width * a.length) : 1;
-    Axis coarse_axis = axes[i];
-    const f64 margin = a.width * scale * .5;
-    D3 lo = coarse_axis.point[0], hi = lo;
-    for (D3 v : coarse_axis.point) {
-      lo.x = std::min(lo.x, v.x);
-      lo.z = std::min(lo.z, v.z);
-      hi.x = std::max(hi.x, v.x);
-      hi.z = std::max(hi.z, v.z);
-    }
-    const D3 shift{std::max(0.0, -half + margin - lo.x) - std::max(0.0, hi.x + margin - half), 0,
-                   std::max(0.0, -half + margin - lo.z) - std::max(0.0, hi.z + margin - half)};
-    for (D3& v : coarse_axis.point)
-      v = v + shift;
-    ribbon(a, coarse_axis, p.segments, scale, emit);
+    ribbon(blades[i], axes[i], 2, 1, emit);
   }
   for (u32 i = near_end; i < out.indices.size(); ++i)
     coarse.indices.push_back(out.indices[i]);
@@ -330,6 +395,7 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   cards.texel_m = profile.length_max_m / (2 * p.card_px);
   cards.parallax_m = cards.error;
   chain.levels.push_back(std::move(cards));
+  if (p.fit_lods) fit_lods(out, chain, coarse_first_vertex, blades);
   if (attributes != nullptr) {
     for (u32 v = 0; v < parts.vertex_part.size(); ++v) {
       const u32 part = parts.vertex_part[v];
@@ -348,6 +414,7 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
     report->parts = parts.parts.size();
     report->sprays = count;
     report->leaf_area_m2 = near_area;
+    report->leaf_area_index = near_area / static_cast<f32>(area);
   }
   if (motion != nullptr) *motion = std::move(parts);
   if (levels != nullptr) *levels = std::move(chain);
@@ -371,18 +438,25 @@ void bake_sward_ground(const assets::MeshData& mesh, const TreeLevels& levels, f
   look.leaf = mesh.materials[0].base_color;
   bake_level(mesh, levels, level, look, out, height);
 }
-SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels) {
-  SwardCoverage result;
-  if (levels.levels.size() != 2 || mesh.materials.empty()) return result;
+namespace {
+image::Image card_image_for(const assets::MeshData& mesh, const TreeLevels& levels) {
   BakeLook look;
   look.leaf = mesh.materials[0].base_color;
   BakedAtlas cards;
   bake_level(mesh, levels, levels.levels[1], look, cards);
-  image::Image card_image;
-  card_image.width = cards.width;
-  card_image.height = cards.height;
-  card_image.channels = 4;
-  card_image.pixels = std::move(cards.colour);
+  image::Image image;
+  image.width = cards.width;
+  image.height = cards.height;
+  image.channels = 4;
+  image.pixels = std::move(cards.colour);
+  return image;
+}
+SwardCoverage measure_sward_impl(const assets::MeshData& mesh, const TreeLevels& levels,
+                                 const image::Image& card_image, u32 pixels, u32 first, u32 end) {
+  SwardCoverage result;
+  if (levels.levels.size() != 2 || mesh.materials.empty()) return result;
+  BakeLook look;
+  look.leaf = mesh.materials[0].base_color;
   for (u32 view = 0; view < 4; ++view) {
     const f64 angle = view * .5 * k_pi;
     const D3 n{det::cos(angle) * .8660254037844386, .5, det::sin(angle) * .8660254037844386};
@@ -405,13 +479,13 @@ SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLev
     frame.u_max = static_cast<f32>(u1);
     frame.v_min = static_cast<f32>(v0);
     frame.v_max = static_cast<f32>(v1);
-    for (u32 tier = 0; tier < 3; ++tier) {
+    for (u32 tier = first; tier < end; ++tier) {
       assets::MeshData source = mesh;
       if (tier != 0) source.indices = levels.levels[tier - 1].indices;
       TreeLevels source_levels;
       source_levels.leaf_index_end = source.indices.size();
       TreeLevel probe;
-      probe.tile_px = 256;
+      probe.tile_px = pixels;
       BakeJob job;
       job.view = job.card = frame;
       job.ranges.push_back({0, source.indices.size()});
@@ -428,9 +502,77 @@ SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLev
       for (u32 i = 3; i < projected.colour.size(); i += 4)
         coverage += projected.colour[i];
       result.fraction[tier][view] =
-          static_cast<f32>(static_cast<f64>(coverage) / (256 * 256 * 255));
+          static_cast<f32>(static_cast<f64>(coverage) / (pixels * pixels * 255));
     }
   }
   return result;
+}
+
+void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
+              const Vector<Blade>& blades) {
+  // Cold cook only. Four directions prevent fitting one flattering side; the public 256 px
+  // probe independently measures the result. This fits area, not pixelwise shape or parallax.
+  constexpr u32 pixels = 128;
+  const image::Image empty;
+  const auto reference = measure_sward_impl(mesh, levels, empty, pixels, 0, 2);
+  auto measured = reference;
+  f64 near_sum = 0;
+  for (f32 v : measured.fraction[0])
+    near_sum += static_cast<f64>(v);
+  if (!(near_sum > 0)) return;
+  f64 width = 1;
+  // Coarse proxy width may change by at most a quarter; the natural near leaves never change.
+  for (u32 iteration = 0; iteration < 3; ++iteration) {
+    f64 coarse_sum = 0;
+    for (f32 v : measured.fraction[1])
+      coarse_sum += static_cast<f64>(v);
+    if (!(coarse_sum > 0)) break;
+    const f64 next = std::clamp(width * near_sum / coarse_sum, .75, 1.25);
+    if (std::abs(next - width) < .001) break;
+    const f32 factor = static_cast<f32>(next / width);
+    // Each ribbon is pairs of edge vertices, optionally followed by one pointed tip.
+    u32 at = coarse_first;
+    for (const auto& blade : blades) {
+      const u32 pairs = blade.tip < 1 ? 3u : 2u;
+      for (u32 row = 0; row < pairs; ++row) {
+        const Vec3 centre = (mesh.positions[at] + mesh.positions[at + 1]) * .5f;
+        mesh.positions[at] = centre + (mesh.positions[at] - centre) * factor;
+        mesh.positions[at + 1] = centre + (mesh.positions[at + 1] - centre) * factor;
+        at += 2;
+      }
+      if (blade.tip == 1) ++at;
+    }
+    width = next;
+    measured = measure_sward_impl(mesh, levels, empty, pixels, 1, 2);
+  }
+  const auto image = card_image_for(mesh, levels);
+  f32 low = .05f, high = .95f, best = levels.levels[1].alpha_cutoff;
+  f64 best_error = 1e30;
+  for (u32 iteration = 0; iteration < 7; ++iteration) {
+    const auto cards = measure_sward_impl(mesh, levels, image, pixels, 2, 3);
+    f64 error = 0, sum = 0;
+    for (u32 view = 0; view < 4; ++view) {
+      const f64 near = static_cast<f64>(reference.fraction[0][view]);
+      if (near > 0)
+        error = std::max(error, std::abs(static_cast<f64>(cards.fraction[2][view]) / near - 1));
+      sum += static_cast<f64>(cards.fraction[2][view]);
+    }
+    const f32 cutoff = levels.levels[1].alpha_cutoff;
+    if (error < best_error) {
+      best_error = error;
+      best = cutoff;
+    }
+    if (sum > near_sum)
+      low = cutoff;
+    else
+      high = cutoff;
+    levels.levels[1].alpha_cutoff = (low + high) * .5f;
+  }
+  levels.levels[1].alpha_cutoff = best;
+}
+}  // namespace
+SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels) {
+  if (levels.levels.size() != 2 || mesh.materials.empty()) return {};
+  return measure_sward_impl(mesh, levels, card_image_for(mesh, levels), 256, 0, 3);
 }
 }  // namespace engine::flora

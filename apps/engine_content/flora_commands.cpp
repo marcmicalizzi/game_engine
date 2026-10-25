@@ -100,7 +100,8 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeLevels chain;
-  if (!flora::solve_sward(file.sward, mesh, nullptr, &error, &motion, &chain)) return false;
+  flora::TreeReport report;
+  if (!flora::solve_sward(file.sward, mesh, &report, &error, &motion, &chain)) return false;
   flora::BakedAtlas ground;
   Vector<f32> depth;
   constexpr u32 pixels = 256;
@@ -188,6 +189,12 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
   provenance.set("ground_height_scale_m", JsonValue(static_cast<f64>(profile->length_max_m)));
   provenance.set("substrate", JsonValue("0.35 times blade linear colour; authored, not scanned"));
   provenance.set("roughness", JsonValue(0.7));
+  provenance.set("rendered_blades", JsonValue(report.sprays));
+  provenance.set("triangles_all_rungs", JsonValue(report.triangles));
+  provenance.set("modeled_leaf_area_m2", JsonValue(static_cast<f64>(report.leaf_area_m2)));
+  provenance.set("modeled_leaf_area_index", JsonValue(static_cast<f64>(report.leaf_area_index)));
+  provenance.set("effective_card_cutoff",
+                 JsonValue(static_cast<f64>(chain.levels[1].alpha_cutoff)));
   const auto measured = flora::measure_sward_coverage(mesh, chain);
   JsonValue coverage = JsonValue::array();
   for (const auto& tier : measured.fraction) {

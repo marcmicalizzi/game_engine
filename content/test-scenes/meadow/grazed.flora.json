@@ -1,0 +1,16 @@
+{
+  "sward": {
+    "tillers_per_clump": 4,
+    "blades_m2": 768,
+    "clumpiness": 0.3,
+    "species": "perennial_ryegrass",
+    "card_px": 128,
+    "cut_height_m": 0.08,
+    "leaves_per_tiller": 4,
+    "seed": 8801,
+    "triangle_budget": 8000,
+    "growth_min": 0.5,
+    "cut_variation": 0.5
+  },
+  "species": "sward"
+}
