@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::physics;
@@ -334,4 +336,97 @@ TEST_CASE("physics: a convex hull and a compound build from engine data") {
   REQUIRE(world.shape_bounds(single, bounds));
   CHECK(bounds.min.x == doctest::Approx(-1.5f).epsilon(0.02));
   CHECK(bounds.max.x == doctest::Approx(-0.5f).epsilon(0.02));
+}
+
+// **Shapes built on a worker are the shapes the world builds** (physics.md, "Shapes built on a
+// worker"). Four threads each build a mesh and a compound of two of it while the world's thread
+// makes bodies of its own; adopted, each is hit by a ray exactly where the same shapes made with
+// `create_mesh` and `create_compound` are, and once released none is alive.
+TEST_CASE("physics: shapes built on workers collide as the world's own") {
+  World world;
+  REQUIRE(world.init(small_world_options()) == Status::Ok);
+  // A unit box as triangles, wound outwards.
+  const Vec3 corners[8] = {{-0.5f, 0, -0.5f}, {0.5f, 0, -0.5f}, {-0.5f, 1, -0.5f}, {0.5f, 1, -0.5f},
+                           {-0.5f, 0, 0.5f},  {0.5f, 0, 0.5f},  {-0.5f, 1, 0.5f},  {0.5f, 1, 0.5f}};
+  const u32 faces[6][4] = {{0, 2, 6, 4}, {1, 5, 7, 3}, {0, 4, 5, 1},
+                           {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 6, 7, 5}};
+  Vector<u32> indices;
+  for (const auto& f : faces) {
+    for (const u32 v : {f[0], f[1], f[2], f[0], f[2], f[3]})
+      indices.push_back(v);
+  }
+  const std::span<const Vec3> positions(corners);
+  const std::span<const u32> triangles(indices.data(), indices.size());
+
+  constexpr u32 k_threads = 4;
+  BuiltShape meshes[k_threads];
+  BuiltShape compounds[k_threads];
+  Status results[k_threads] = {};
+  {
+    std::vector<std::thread> threads;
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.push_back(std::thread([&, t] {
+        Status s = world.build_mesh(positions, triangles, meshes[t]);
+        BuiltChild children[2];
+        children[0].shape = &meshes[t];
+        children[0].transform.position = Vec3(-1.0f, 0.0f, 0.0f);
+        children[1].shape = &meshes[t];
+        children[1].transform.position = Vec3(1.5f, 0.0f, 0.0f);
+        if (s == Status::Ok)
+          s = world.build_compound(std::span<const BuiltChild>(children, 2), compounds[t]);
+        results[t] = s;
+      }));
+    }
+    // The world's thread goes on making bodies of its own meanwhile.
+    for (u32 k = 0; k < 8; ++k)
+      (void)add_ground(world, Vec3(1.0f, 0.5f, 1.0f), place(Vec3(100.0f + 4.0f * k, 0.0f, 0.0f)));
+    for (std::thread& thread : threads)
+      thread.join();
+  }
+  CHECK(world.built_shape_count() == 2 * k_threads);
+
+  // The world's own, for comparison.
+  ShapeId mesh;
+  REQUIRE(world.create_mesh(positions, triangles, mesh) == Status::Ok);
+  CompoundChild own[2];
+  own[0].shape = mesh;
+  own[0].transform.position = Vec3(-1.0f, 0.0f, 0.0f);
+  own[1].shape = mesh;
+  own[1].transform.position = Vec3(1.5f, 0.0f, 0.0f);
+  ShapeId compound;
+  REQUIRE(world.create_compound(std::span<const CompoundChild>(own, 2), compound) == Status::Ok);
+  const auto hit_of = [&](ShapeId shape, f32 z) {
+    BodyDesc desc;
+    desc.shape = shape;
+    desc.motion = MotionType::Static;
+    desc.layer = Layer::Static;
+    desc.transform.position = place(Vec3(0.0f, 0.0f, z));
+    BodyId body;
+    REQUIRE(world.create_body(desc, body) == Status::Ok);
+    RayHit hit;
+    // Down at x = 1.7, over the second piece's top, slanted so the fraction carries every bit.
+    REQUIRE(world.cast_ray(place(Vec3(1.7f, 5.0f, z + 0.1f)), Vec3(-0.01f, -10.0f, 0.03f), hit));
+    CHECK(hit.body == body);
+    return hit.fraction;
+  };
+  const f32 expect = hit_of(compound, 0.0f);
+  for (u32 t = 0; t < k_threads; ++t) {
+    REQUIRE(results[t] == Status::Ok);
+    u64 bytes = 0;
+    u32 tris = 0;
+    REQUIRE(world.built_memory(meshes[t], false, bytes, tris));
+    CHECK(tris == 12);
+    const u32 before = world.shape_count();
+    ShapeId adopted;
+    REQUIRE(world.adopt_shape(compounds[t], adopted) == Status::Ok);
+    CHECK(world.shape_count() == before + 1);
+    // Released at once: the table's reference keeps it.
+    compounds[t].reset();
+    meshes[t].reset();
+    CHECK(hit_of(adopted, 10.0f * static_cast<f32>(t + 1)) == expect);
+  }
+  CHECK(world.built_shape_count() == 0);
+  BuiltShape empty;
+  ShapeId none;
+  CHECK(world.adopt_shape(empty, none) == Status::InvalidArgument);
 }

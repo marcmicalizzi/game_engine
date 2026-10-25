@@ -62,6 +62,7 @@
 #include <systems/world/world.h>
 
 #include <memory>
+#include <mutex>
 #include <schemas/scene.h>
 #include <span>
 #include <string>
@@ -198,6 +199,13 @@ struct Stats {
   i64 max_prefetch_wait_ns = 0;
   u64 prefetch_inline = 0;
   u64 prefetch_dropped = 0;
+  // What the worker spent on the builds ahead (docs: "The placements built ahead"), off every
+  // tick: the ground's heights, and the placements — generators' tiles, proxies cut and built, the
+  // compound built. An activation that took a finished build spends none of it.
+  i64 ahead_ground_ns = 0;
+  i64 ahead_placement_ns = 0;
+  // Activations whose placements came from a build ahead (finished or waited for).
+  u64 placements_ahead = 0;
   i64 deactivate_ns = 0;
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;
@@ -257,14 +265,17 @@ class SceneCollision {
   // dropped, as a landing drops it, and the horizontal speed is the input's, which every step sets
   // anew. On still ground this is `refresh` and nothing else. Returns the tiles worked.
   u32 follow(physics::CharacterBody& walker);
-  // **The ground built ahead of the ring** (docs): every tile whose centre is within
-  // `Config::prefetch_radius_tiles` of `at` and is neither held nor already built has its ground's
-  // heights built on the job system, so the tick that activates it takes them ready. Body creation
-  // stays in the activation, on the tick and in the ring's order, so body ids — and a recorded
-  // walk — are what they were. A build of a tile the ring activates before it is done is waited
-  // for (running) or built on the tick (not started): one tile's cost at most, never the others'.
-  // A still ground read through a tile source only; under a time-lapse nothing is built ahead.
-  // Builds left behind by the walker are let go. Call before the ring's update, once a tick.
+  // **The tile built ahead of the ring** (docs: "The ground built ahead of the ring", "The
+  // placements built ahead"): every tile whose centre is within `Config::prefetch_radius_tiles` of
+  // `at` and is neither held nor already built has its ground's heights and its placements — the
+  // generators' tile or the scene's bins, the proxies' shapes, the compound's shape — built on the
+  // job system, so the tick that activates it takes them ready. Every body is still made in the
+  // activation, on the tick and in the ring's order, so body ids — and a recorded walk — are what
+  // they were. A build of a tile the ring activates before it is done is waited for (running) or
+  // built on the tick (not started): one tile's cost at most, never the others'. Only where the
+  // ground is still and read through a tile source, or there is none; under a time-lapse nothing
+  // is built ahead. Builds left behind by the walker are let go, and every shape a build made that
+  // no tile took is released with it. Call before the ring's update, once a tick.
   void prefetch(WorldPos at);
 
   // The collision ground's height under `at` (its y is not read), from the heights the tile holding
@@ -281,9 +292,36 @@ class SceneCollision {
  private:
   struct Entry;
   struct Build;
+  // A proxy is built once, on whichever thread first asks for it, and shared for the consumer's
+  // life by every compound of every tile (each holds the backend's reference): its address is
+  // stable, so a compound being built on a worker can name it while the tick adds others.
   struct Proxy {
-    physics::ShapeId shape;
+    physics::BuiltShape shape;
     u32 triangles = 0;
+  };
+  // The proxies' counters, kept under the proxies' lock and copied into `Stats` on the tick.
+  struct ProxyStats {
+    u32 proxies = 0;
+    u32 triangles = 0;
+    u32 flora_left_out = 0;
+    u64 bytes = 0;
+    i64 ns = 0;
+  };
+  // What one thread's placements build uses, reused: the tick has one, a build ahead its own.
+  struct PlacementScratch {
+    Vector<physics::BuiltChild> children;
+    Vector<Vec3> vertices;
+    Vector<u32> indices;
+    FlatMap<u32, u32> remap;
+    scene_gen::Placements placed;
+  };
+  // A tile's placements as built (`gather_placements`): its compound's shape, not yet in the
+  // physics world's table, and what it holds.
+  struct TilePlacements {
+    physics::BuiltShape compound;
+    u32 pieces = 0;
+    u64 compound_bytes = 0;
+    bool ok = true;  // false: a generator refused the tile or the backend a shape
   };
   struct Tile {
     world::TileCoord coord;
@@ -313,13 +351,16 @@ class SceneCollision {
   static bool activate(void* context, const world::TileEvent& event);
   static void deactivate(void* context, const world::TileEvent& event);
   static void commit(void* context);
-  bool build_ground(Tile& tile);
+  // The tile's ground body, from `build`'s heights when it built them.
+  bool build_ground(Tile& tile, Build* build);
   // The tile's lattice window (`build_ground`); false for one past the source's i32 index.
   bool ground_window(world::TileCoord coord, i64& i0, i64& j0, u32& n) const noexcept;
   bool can_prefetch() const noexcept;
-  // The tile's heights from a build ahead, when there is one: true with `tile.heights` filled, or
-  // false with nothing taken (no build) — `failed` then says whether there was one that failed.
-  bool take_build(Tile& tile, bool& failed);
+  // Whether a tile can hold placements at all: a streamed scene's entries or a whole read's bins.
+  bool has_placements() const noexcept { return !entries_.empty() || bins_.size() != 0; }
+  // The tile's build ahead, when there is one, finished: taken ready, waited for while a worker
+  // runs it, or run here when it had not started. Null when the tile has none.
+  std::unique_ptr<Build> take_build(world::TileCoord coord);
   void retire(std::unique_ptr<Build>&& build);
   bool ground_body(physics::BodyId body) const noexcept;
   bool pair_fields(Tile& tile);
@@ -328,14 +369,22 @@ class SceneCollision {
   void blend_heights(Tile& tile, f64 blend);
   bool make_ground_body(Tile& tile);
   void drop_ground_body(Tile& tile);
-  bool build_placements(Tile& tile);
-  // Where the tile's bodies stand: its corner at y 0 (`Tile::coord` times the tile's millimetres).
-  WorldPos tile_corner(const Tile& tile) const noexcept;
+  // The tile's compound body, from `build`'s placements when it built them; on the tick.
+  bool build_placements(Tile& tile, Build* build);
+  // **Thread-safe** (docs: "The placements built ahead"): the tile's placements gathered — each
+  // streamed entry's generator asked for the tile under the generators' lock, or the whole read's
+  // bin — their proxies found or built under the proxies' lock, and their compound's shape built,
+  // all into `out` and `scratch`; nothing of the physics world's table or of `Stats` is touched.
+  void gather_placements(world::TileCoord coord, PlacementScratch& scratch, TilePlacements& out);
+  // Where the tile's bodies stand: its corner at y 0 (`coord` times the tile's millimetres).
+  WorldPos tile_corner(world::TileCoord coord) const noexcept;
   // One piece of the tile's compound: `linear`'s rotation and scale (its translation column is not
   // read) standing at `at`, placed in the compound relative to the tile's `corner`.
   bool add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
-                 Vector<physics::CompoundChild>& children);
-  bool proxy_for(u32 mesh, Vec3 scale, physics::ShapeId& out);
+                 PlacementScratch& scratch);
+  // The proxy of a mesh at a scale, built on first ask; null for a mesh with no surface to stand
+  // on. Thread-safe.
+  const physics::BuiltShape* proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
   scene_gen::Context context_for(const Entry& entry) const noexcept;
   void note_bodies() noexcept;
 
@@ -354,15 +403,18 @@ class SceneCollision {
   Vector<std::unique_ptr<Entry>> entries_;
   // A scene read whole: for every tile its instances reach, their indices.
   FlatMap<u64, Vector<u32>> bins_;
-  FlatMap<u64, Proxy> proxies_;  // by (mesh, scale)
+  // By (mesh, scale), under `proxies_mutex_`: a worker building a tile ahead and the tick building
+  // one itself may ask at once.
+  FlatMap<u64, std::unique_ptr<Proxy>> proxies_;
+  ProxyStats proxy_stats_;
+  std::mutex proxies_mutex_;
+  // A generator's state is its own and may be scratch it writes (the ruins' assemblers), so its
+  // `tile` is asked by one thread at a time.
+  std::mutex generators_mutex_;
   FlatMap<u64, Tile> tiles_;
   Stats stats_;
-  // Scratch, reused.
-  Vector<physics::CompoundChild> children_;
-  Vector<Vec3> proxy_vertices_;
-  Vector<u32> proxy_indices_;
-  FlatMap<u32, u32> proxy_remap_;
-  scene_gen::Placements placed_;
+  // Scratch, reused: the tick's placements, and the refresh's order.
+  PlacementScratch tick_scratch_;
   Vector<u64> order_;
   // The ground built ahead: a build a tile, and builds let go whose job has yet to run.
   jobs::JobSystem* jobs_ = nullptr;

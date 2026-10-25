@@ -765,6 +765,9 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     self.state_.position = self.walker_->step(in);
   } else {
     fly_tick(self.state_, state, self.actions_, self.header_.params);
+    // The ground and placements under the camera built ahead, so that walking here starts on
+    // tiles already made (walk.h, `look_ahead`); nothing of the flight depends on it.
+    if (self.can_walk()) self.walker_->look_ahead(self.state_.position);
   }
   self.tick_ = tick;
   // The capture and view-control presses are counted before the observer runs, so the game runner

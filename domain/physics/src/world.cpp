@@ -199,6 +199,8 @@ void World::shutdown() noexcept {
   if (impl_ == nullptr) return;
   Impl* impl = impl_;
   impl_ = nullptr;
+  // A built shape outliving its world would release into freed memory (physics.h, `BuiltShape`).
+  ENGINE_ASSERT(impl->built_shapes.load() == 0, "a built shape outlived its physics world");
 
   JPH::BodyInterface& bodies = impl->system.GetBodyInterface();
   for (const Impl::BodyEntry& entry : impl->bodies.values()) {

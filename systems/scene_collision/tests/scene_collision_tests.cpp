@@ -1354,16 +1354,77 @@ struct WalkChain {
   Vector<u64> hashes;  // the character's state after every step
   Vector<WorldPos> feet;
   Stats stats;
+  u32 built_alive = 0;  // the physics world's built shapes alive after the walk
 };
 
+// A placement generator of the test's own with many pieces a tile: on every tile within 12 of the
+// origin, 24 low slabs in a 4 × 6 grid, each scaled by one of four factors that change with the
+// tile and the slab — so a tile holds as many pieces as a grove of trees and asks for proxies at
+// four scales. It counts the tiles it is asked for, which is how a test knows every build ran.
+struct ManyState {
+  std::atomic<u32> asked{0};
+};
+constexpr u32 k_many_pieces = 24;
+bool many_open(const JsonValue&, const scene_gen::Context&, void** state, std::string*) {
+  *state = new ManyState();
+  return true;
+}
+void many_close(void* state) noexcept { delete static_cast<ManyState*>(state); }
+bool many_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& context,
+               scene_gen::Placements& out, std::string*) {
+  static_cast<ManyState*>(state)->asked.fetch_add(1);
+  if (tile.x < -12 || tile.x > 12 || tile.z < -12 || tile.z > 12) return true;
+  const f64 size = static_cast<f64>(context.tile_size);
+  for (u32 k = 0; k < k_many_pieces; ++k) {
+    scene_gen::Placement p;
+    p.mesh = 0;
+    const f32 s = 1.0f + 0.25f * static_cast<f32>((tile.x + tile.z + static_cast<i32>(k)) & 3);
+    p.scale = Vec3{s, s, s};
+    p.position = WorldPos{(static_cast<f64>(tile.x) + 0.125 + 0.25 * (k % 4)) * size, 0.0,
+                          (static_cast<f64>(tile.z) + 0.08 + 0.16 * (k / 4)) * size};
+    // On the walk's ground (`periodic_heights`, 2.0 to 2.28 m): its top a few centimetres out of
+    // it where it is low, which a walker steps onto, and under it where it is high.
+    p.position.y = 2.02;
+    out.instances.push_back(p);
+  }
+  out.things = 1;
+  return true;
+}
+bool many_occupies(const void*, scene_gen::TileCoord) noexcept { return true; }
+constexpr scene_gen::PlacementGeneratorDesc k_many{.name = "collision_test_many",
+                                                   .open = &many_open,
+                                                   .close = &many_close,
+                                                   .expand = &posts_expand,
+                                                   .meshes = &posts_meshes,
+                                                   .tile = &many_tile,
+                                                   .occupies = &many_occupies};
+const scene_gen::Registrar k_many_registrar{k_many};
+
+// A streamed scene of the many-piece generator's slabs: 3 × 0.03 × 2.4 m, which a walker steps
+// onto and over at every scale.
+void many_scene(renderer::SceneData& scene) {
+  const MeshSource meshes[] = {box_mesh(Vec3{1.5f, 0.015f, 1.2f})};
+  build_scene(meshes, {}, scene);
+  renderer::StreamedPlacements entry;
+  entry.generator = "collision_test_many";
+  entry.params = JsonValue::object();
+  entry.where = "test.json: placements 0";
+  entry.meshes.push_back(0);
+  scene.streamed.push_back(entry);
+  scene.world.enabled = true;
+  scene.dynamic = true;
+}
+
 // A walker's host, as engine-view's: the ring updated once a tick from the feet before the step,
-// a budget of two tiles, the collision `follow`ed — with the ground built ahead or not.
-WalkChain walk_east(bool ahead) {
+// a budget of two tiles, the collision `follow`ed — with the tiles built ahead or not, and with the
+// many-piece generator's slabs on them or none.
+WalkChain walk_east(bool ahead, bool pieces = false) {
   TestGround g;
   scene_gen::GroundProvider ground(&k_still_ops, &g);
   SlowSource slow;
   const scene_gen::TileSource source{&k_slow_ops, &slow};
   renderer::SceneData scene;
+  if (pieces) many_scene(scene);
   physics::World physics;
   REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
   jobs::JobSystem workers(one_worker());
@@ -1403,6 +1464,7 @@ WalkChain walk_east(bool ahead) {
     out.feet.push_back(body.feet());
   }
   out.stats = collision.stats();
+  out.built_alive = physics.built_shape_count();
   return out;
 }
 
@@ -1436,6 +1498,127 @@ TEST_CASE("scene_collision: the ground built ahead of the ring changes no body")
   CHECK(ahead.stats.prefetched > 0);
   CHECK(ahead.stats.prefetched + ahead.stats.prefetch_waits + ahead.stats.prefetch_inline <=
         ahead.stats.activated);
+}
+
+// **The placements built ahead of the ring change no body** (scene_collision.md, "The placements
+// built ahead"). The same walk over tiles of 24 slabs each, at four scales: built ahead, each
+// tile's generator call, its proxies' cut and their shapes and its compound's shape are a worker's,
+// and the tick only adopts the compound and makes the bodies, in the ring's order — so the walker,
+// which steps onto and over slabs all the way, walks the same walk state for state as one whose
+// ticks build everything themselves, and nothing a build made outlives the walk.
+TEST_CASE("scene_collision: the placements built ahead of the ring change no body") {
+  const WalkChain plain = walk_east(false, true);
+  const WalkChain ahead = walk_east(true, true);
+  REQUIRE(plain.hashes.size() == ahead.hashes.size());
+  u32 differ = 0;
+  for (u32 k = 0; k < plain.hashes.size(); ++k)
+    differ += plain.hashes[k] == ahead.hashes[k] ? 0u : 1u;
+  const DVec3 walked = plain.feet.back() - plain.feet.front();
+  MESSAGE("walked " << std::sqrt(walked.x * walked.x + walked.z * walked.z) << " m over "
+                    << plain.stats.activated << " tiles of " << k_many_pieces << " slabs ("
+                    << plain.stats.max_placements << " pieces held at most, " << plain.stats.proxies
+                    << " proxies); ahead: " << ahead.stats.prefetch_submitted << " built ahead, "
+                    << ahead.stats.placements_ahead << " activations' placements "
+                    << "from a build, " << ahead.stats.prefetched << " ready, "
+                    << ahead.stats.prefetch_waits << " waited for, " << ahead.stats.prefetch_inline
+                    << " on the tick; the tick's placements " << plain.stats.placement_ns / 1000
+                    << " us without, " << ahead.stats.placement_ns / 1000
+                    << " us with (the worker's " << ahead.stats.ahead_placement_ns / 1000
+                    << " us); " << differ << " states differ");
+  CHECK(differ == 0);
+  CHECK(plain.feet.back() == ahead.feet.back());
+  CHECK(plain.stats.bodies_created == ahead.stats.bodies_created);
+  CHECK(plain.stats.activated == ahead.stats.activated);
+  CHECK(plain.stats.max_placements == ahead.stats.max_placements);
+  CHECK(plain.stats.proxies == ahead.stats.proxies);
+  CHECK(plain.stats.max_placements >= 9 * k_many_pieces / 2);
+  CHECK(plain.stats.placements_ahead == 0);
+  CHECK(ahead.stats.placements_ahead > 0);
+  CHECK(ahead.stats.prefetched > 0);
+  CHECK(ahead.stats.ahead_placement_ns > 0);
+  // The walk went over the slabs, not round them: it is as long as the plain ground's.
+  const WalkChain bare = walk_east(false, false);
+  const DVec3 bare_walked = bare.feet.back() - bare.feet.front();
+  CHECK(std::sqrt(walked.x * walked.x + walked.z * walked.z) >
+        0.9 * std::sqrt(bare_walked.x * bare_walked.x + bare_walked.z * bare_walked.z));
+  CHECK(bare.hashes.back() != plain.hashes.back());  // and the slabs were walked on
+  // Without a build ahead the only built shapes are the cached proxies.
+  CHECK(plain.built_alive == plain.stats.proxies);
+}
+
+// **A build the walker turned away from leaks no shape** (docs: "The placements built ahead"). A
+// tile's compound is built on the worker before the ring takes it; one whose tile the ring never
+// activates is released with its build. Builds ahead of a camera at the origin finish, the ring
+// takes its nine tiles, and the walker jumps 3 km away, to a tile's centre where the generator puts
+// nothing: the builds left behind are dropped and freed, and the physics world holds the shapes of
+// the tiles it holds and the cached proxies, and nothing else.
+TEST_CASE("scene_collision: a tile left before activation leaks no shape") {
+  renderer::SceneData scene;
+  many_scene(scene);
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  jobs::JobSystem workers(one_worker());
+  u32 proxies = 0;
+  {
+    SceneCollision collision;
+    Config config;
+    config.prefetch_radius_tiles = 3.5f;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error, nullptr, &workers),
+                    error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    // Every build has run once the built shapes alive reach its compounds and the proxies: each
+    // build near the origin makes its tile's compound before it returns.
+    const auto all_built = [&](u64 shapes) {
+      const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+      while (std::chrono::steady_clock::now() < until) {
+        if (physics.built_shape_count() >= shapes) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      return false;
+    };
+    const WorldPos origin{16.0, 0.0, 16.0};
+    collision.prefetch(origin);
+    const u64 submitted = collision.stats().prefetch_submitted;
+    CHECK(submitted > 9);
+    // Each build makes its tile's compound; the proxies are four, one per scale.
+    REQUIRE(all_built(submitted + 4));
+    CHECK(physics.shape_count() == 0);  // nothing is in the world's table before an activation
+    world.update(observer_at(origin), 0, true);
+    const Stats& s = collision.stats();
+    CHECK(s.tiles == 9);
+    // Ready, or a last job about to return.
+    CHECK(s.prefetched + s.prefetch_waits == 9);
+    CHECK(s.placements_ahead == 9);
+    proxies = s.proxies;
+    CHECK(proxies == 4);
+    // The nine tiles' compounds are the world's now; the builds round them still hold theirs.
+    CHECK(physics.shape_count() == 9);
+    CHECK(physics.built_shape_count() == proxies + (submitted - 9));
+    // Away: the builds left behind are let go, and freed once their jobs have returned (they all
+    // have), with every compound they held.
+    const WorldPos away{3024.0, 0.0, 16.0};
+    collision.prefetch(away);
+    CHECK(collision.stats().prefetch_dropped == submitted - 9);
+    // A build whose job had not quite returned is freed at the next call, which a tick makes.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    collision.prefetch(away);
+    CHECK(physics.built_shape_count() == proxies);
+    world.update(observer_at(away), 1, true);
+    CHECK(collision.stats().tiles == 9);
+    CHECK(collision.stats().placements == 0);  // nothing out here
+    CHECK(physics.shape_count() == 0);
+    // Back: the tiles are built again, from the proxies already cached.
+    collision.prefetch(origin);
+    world.update(observer_at(origin), 2, true);
+    CHECK(collision.stats().placements == 9 * k_many_pieces);
+    CHECK(collision.stats().proxies == proxies);
+    CHECK(physics.shape_count() == 9);
+  }
+  // The consumer gone, nothing it built is alive.
+  CHECK(physics.built_shape_count() == 0);
+  CHECK(physics.shape_count() == 0);
 }
 
 // **A tile whose build is pending blocks only for its own tile.** A teleport's first fill

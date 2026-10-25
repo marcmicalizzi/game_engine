@@ -287,7 +287,107 @@ TEST_CASE(
   resolve_settings(settings, gpu.device.features(), &data, resolved);
   MovingGround unsupported;
   CHECK_FALSE(unsupported.prepare(data, resolved, camera, &error));
-  CHECK_FALSE(error.empty());
+  // Refused before anything is built, naming the level the set lacks (roadmap W77): the second
+  // far level at 16 m, which a set built with one far level does not hold.
+  MESSAGE(error);
+  CHECK(error.find("far level 2 of 2 asks the ground for heights every 16 m") != std::string::npos);
+  CHECK(error.find("`far_levels` 2") != std::string::npos);
+}
+
+// **Four rings over an authored set** (roadmap W77; renderer.md, "The ground from the world's
+// tiles"). The fourth ring of 32 m tiles at 8 cells is 4 m, so the first far level, four times it,
+// is 16 m — where a set built for the stock three rings (2 m, `ring_spacing_mm` 2000) holds 8 m.
+// Built for the fourth ring (`ring_spacing_mm` 4000) the world builds and draws, the fourth ring's
+// tiles on its 4 m lattice; built for three, it is refused before anything is built, by the
+// sentence naming the far level and the spacing to build for.
+TEST_CASE("authored ground: four rings over a set built for their outermost ring draw") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  test::TempDir tmp{"authored_four_rings"};
+  const auto field =
+      tileset::synth_heightfield(tileset::SynthKind::ridge, 257, 1000, 11, -128000, -128000);
+  std::string error;
+  REQUIRE(tileset::write_heightfield(tmp.file("ridge.json"), field, error));
+  const auto load = [&](i64 ring_spacing_mm, SceneData& data) {
+    tileset::BuildOptions options;
+    options.cells = 16;
+    options.ring_spacing_mm = ring_spacing_mm;
+    options.far_levels = 1;
+    tileset::BuildResult built;
+    REQUIRE(tileset::ensure_tileset(tmp.file("ridge.json"), options, "", tmp.file("ddc"), false,
+                                    built, error));
+    SceneDesc desc = dune_scene(tmp.file("ddc"));
+    desc.terrain.provider = "tiles";
+    desc.terrain.tiles.emplace();
+    desc.terrain.tiles->manifest = built.manifest;
+    desc.world.enabled = desc.world.ground = true;
+    desc.world.ring_count = 4;
+    const f32 radius[4] = {1.5f, 3.0f, 6.0f, 10.0f};
+    for (u32 r = 0; r < 4; ++r) {
+      desc.world.radius[r] = radius[r];
+      desc.world.ground_cells[r] = 64u >> r;  // 50 cm, 1 m, 2 m and the fourth ring's 4 m
+    }
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  };
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.terrain_far_levels = 1;
+  const Camera camera = camera_between(Vec3{3, 120, 7}, Vec3{200, 0, -150}, 0.1f);
+
+  SceneData data;
+  load(4000, data);
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  REQUIRE(resolved.terrain_tiles);
+  MovingGround ground;
+  REQUIRE_MESSAGE(ground.prepare(data, resolved, camera, &error), error);
+  // Levels coarsest first: the grid, the far level, then the rings outermost first.
+  const TerrainLevelSet* levels = ground.level_set();
+  REQUIRE(levels != nullptr);
+  CHECK(levels->level_count() == 6);
+  CHECK(levels->far_levels() == 1);
+  CHECK(levels->lattice(1).filter_mm == 16000);  // the far level, four times the fourth ring's
+  CHECK(levels->lattice(2).spacing_mm == 4000);  // the fourth ring's
+  CHECK(levels->lattice(5).spacing_mm == 500);   // the first's
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error, ground.level_set()), error);
+  REQUIRE_MESSAGE(ground.start(scene, resolved, true, &error), error);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 128;
+  rd.height = 96;
+  REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+  CaptureChannels channels;
+  channels.depth = true;
+  channels.ids = true;
+  CapturedFrame frame_out;
+  FrameDesc frame;
+  frame.camera = camera;
+  ground.frame(camera);
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, frame_out, &error), error);
+  u32 drawn = 0;
+  for (const f32 d : frame_out.depth)
+    drawn += d > 0.0f ? 1u : 0u;
+  MESSAGE(drawn << " of " << frame_out.depth.size() << " pixels drawn over four rings");
+  CHECK(drawn > frame_out.depth.size() / 2);  // ground to the horizon below it
+  CHECK(ground.motion().ring_stats().failed == 0);
+  ground.finish();
+  renderer.destroy();
+  scene.destroy();
+
+  // The same world over a set built for three rings ending at 2 m: refused, by name.
+  SceneData three;
+  load(2000, three);
+  resolve_settings(settings, gpu.device.features(), &three, resolved);
+  MovingGround refused;
+  CHECK_FALSE(refused.prepare(three, resolved, camera, &error));
+  MESSAGE(error);
+  CHECK(error.find("far level 1 of 1 asks the ground for heights every 16 m") != std::string::npos);
+  CHECK(error.find("ring 3's 4 m") != std::string::npos);
+  CHECK(error.find("`ring_spacing_mm` 4000") != std::string::npos);
 }
 
 TEST_CASE("authored ground: a built tile set draws its heightfield, pixel for pixel") {

@@ -590,6 +590,19 @@ WorldPos Walker::teleport(WorldPos at) {
   return drop(at);
 }
 
+void Walker::look_ahead(WorldPos camera) {
+#if ENGINE_VIEW_WALK_PHYSICS
+  Impl& w = *impl_;
+  if (w.ground == nullptr || !w.physical) return;
+  // The drawn ground's time first, as before the ring's update: under a time-lapse nothing is
+  // built ahead, and the consumer must know.
+  w.consumer.set_ground_time(w.ground_time());
+  w.consumer.prefetch(camera);
+#else
+  (void)camera;
+#endif
+}
+
 WorldPos Walker::drop(WorldPos camera) {
   Impl& w = *impl_;
   if (w.ground == nullptr) return camera;
@@ -789,6 +802,11 @@ JsonValue Walker::summary_json() const {
     ms.set("body_total", static_cast<f64>(s.body_ns) / 1.0e6);
     ms.set("prefetch_wait_total", static_cast<f64>(s.prefetch_wait_ns) / 1.0e6);
     ms.set("prefetch_wait_max", static_cast<f64>(s.max_prefetch_wait_ns) / 1.0e6);
+    // The worker's share of the builds ahead, off every tick (scene_collision.md, "The placements
+    // built ahead").
+    ms.set("ahead_ground_total", static_cast<f64>(s.ahead_ground_ns) / 1.0e6);
+    ms.set("ahead_placement_total", static_cast<f64>(s.ahead_placement_ns) / 1.0e6);
+    ground.set("placements_ahead", s.placements_ahead);
     ground.set("prefetch_submitted", s.prefetch_submitted);
     ground.set("prefetched", s.prefetched);
     ground.set("prefetch_waits", s.prefetch_waits);

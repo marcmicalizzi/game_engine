@@ -55,7 +55,9 @@ constants and `cage_size_verdict`, `volume_compliance_for`, and `SoftBodyBudget`
 `WorldStats`, `temp_allocator_size_for`, `CompoundChild`, `HeightfieldDesc`, `BodyDesc`,
 `RayHit`, `ShapeHit`, `ContactPhase`, `ContactEvent`, and `World` itself — shape creation
 (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), what the backend holds
-for a shape (`shape_memory`: bytes and triangles, its own or with its children), body creation and
+for a shape (`shape_memory`: bytes and triangles, its own or with its children), shapes built on
+a worker and adopted on the world's thread (`BuiltShape`, `BuiltChild`, `build_mesh`,
+`build_compound`, `built_memory`, `built_shape_count`, `adopt_shape`; [below](#shapes-built-on-a-worker)), body creation and
 destruction, transform and velocity access, `move_kinematic`, activation and sleep, the batch
 `read_transforms`, `spawn_debris`, soft-body creation and `read_soft_body_vertices` (relative to
 an origin the caller names), `cast_ray`, `cast_shape`, `step`, `contact_events`, and `stats`. `domain/physics/character.h`
@@ -67,6 +69,34 @@ an origin the caller names), `cast_ray`, `cast_shape`, `step`, `contact_events`,
 `jobs`, `log`.
 
 ---
+
+## Shapes built on a worker
+
+**A mesh or a compound shape can be built off the world's thread, and put into its table on it**
+(2026-10-24, roadmap W71). The world's calls are the stepping thread's: its shape and body tables
+are plain slot maps, and a body is made from a shape by looking it up there. But a shape is
+immutable once built, and building one — for a triangle mesh, the backend's bounding-volume tree
+over its triangles; for a static compound, the tree over its children — touches nothing of the
+world's. So `World::build_mesh` and `build_compound` (`const`, and **thread-safe**: any thread, any
+number at once, beside every call of the world's own thread) return a `BuiltShape`: a move-only
+handle holding the backend's own reference, in no table. `World::adopt_shape`, on the world's
+thread, puts it into the table as `create_*` would have — a slot and a reference — and the built
+handle may be released at once. A compound is built over built children (`BuiltChild`) and takes
+its own references to them, so a child cached by its builder serves every compound placed from
+it, adopted or not.
+
+Its first user is the walker's collision, which builds a tile's proxies and compound ahead of its
+ring on a worker and makes the bodies on its tick ([scene_collision](scene_collision.md#the-placements-built-ahead)).
+**Nothing about a built shape depends on the thread**: `create_mesh` and `create_compound` are now
+the same builds followed by the same adoption, so a shape built on a worker is the one the world
+would have built. `physics: shapes built on workers collide as the world's own` holds it: four
+threads build a mesh and a compound of two of it while the world's thread makes bodies of its own,
+and a ray meets each adopted compound at the fraction it meets the world's own, to the bit.
+
+**The count of them is the leak check.** `built_shape_count` is how many built shapes are alive
+(made and not yet released), whichever thread holds them: a caller that builds on workers checks
+its counts by it and by `shape_count`. Every built shape must be released before its world shuts
+down — a release after would reach freed memory — and `shutdown` asserts that none is alive.
 
 ## Why nothing from Jolt is public
 

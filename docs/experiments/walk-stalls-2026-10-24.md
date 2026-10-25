@@ -62,8 +62,45 @@ The activations' ground is a few tenths of a millisecond in every case (636.8 ms
 
 **The replay holds.** The walker's state chain at the end of each walk is the same before and after both changes, async or waited: (b) `fb1e7776eea7a246` over 20.943 m, the grove `66d2d83db90d0523` over 15.057 m, the cold summit `fc50f6ba7c932b43` over 20.878 m, in every run of this page.
 
+## After the placements were built ahead too (W71)
+
+The build ahead now also asks the generators for the tile, cuts and builds the proxies' shapes and the tile's compound shape on the worker; the tick adopts the compound and makes the bodies in the ring's order ([scene_collision](../subsystems/scene_collision.md#the-placements-built-ahead)). A first run showed what was left: the walk's first fill is made on the tick F is pressed, so builds queued on that tick were mostly not started — at the grove three of seven, their placements on the tick — and the walker now also builds ahead round the camera while it flies (`view::Walker::look_ahead`). The same cases (b) and (d), the same flags, logs and scene, `msvc-release`, offscreen, `--terrain-async`; "before" is this change's base (d70d34bc, the gate's head), each binary run beside the other on the same machine; the activation's largest frame is split as the frame record splits it.
+
+| Case | Worst frame | > 33 ms | Ticks, most in a frame | Activation, most in a frame | of it: ground / placements / bodies | Built ahead: ready / waited / on the tick | Machine (others' CPU start / end, GPU) |
+|---|---:|---:|---:|---:|---|---|---|
+| (b) F and W, before | 57.1 ms | 1 | 9.71 ms | 2.08 ms (8 tiles) | 0.30 / 0.00 / 1.75 ms | 6 / 0 / 3 | 6% / 15%, 2–5% |
+| (b) placements ahead | 37.7 ms | 1 | 1.56 ms | 1.06 ms | 0.14 / 0.00 / 0.88 ms | 6 / 1 / 2 | 24% / 13%, 4–35% |
+| **(b) and built while flying** | **24.0 ms** | 0 | **1.30 ms** | **0.90 ms** | 0.01 / 0.00 / 0.87 ms | **9 / 0 / 0** | 18% / 21%, 4–36% |
+| (d) to the grove, before | 38.6 ms | 4 | 5.52 ms | 5.12 ms (7 tiles) | 0.87 / **3.34** / 0.89 ms | 7 / 0 / 1 | 20% / 17%, 79–93% |
+| (d) before, again | 37.0 ms | 3 | 4.32 ms | 3.77 ms | 0.08 / **2.82** / 0.86 ms | 7 / 0 / 1 | 40% / 40%, 5–86% |
+| (d) placements ahead | 171.9 ms | 174 | 39.5 ms | 11.4 ms | 0.23 / 5.56 / 1.20 ms | 5 / 0 / 3 | **91% / 100%**, 2–19% |
+| **(d) and built while flying** | 60.2 ms | 13 | 5.81 ms | 2.68 ms | 0.02 / **0.00** / 2.64 ms | **8 / 0 / 0** | 22% / 35%, 3–83% |
+| **(d) and built while flying, again** | 44.9 ms | 3 | **1.73 ms** | **1.11 ms** | 0.02 / **0.00** / 1.08 ms | **8 / 0 / 0** | 11% / 21%, 3–81% |
+
+**What it says.** With the tiles built while flying and the placements built ahead, every activation after both flights took a finished build, and none of a tile's placements is paid on the tick: the grove's largest activation is its seven tiles' bodies, 1.1 ms where it was 3.8–5.1 ms (2.8–3.3 ms of it placements), and the frame's ticks at most 1.7 ms where they were 4.3–5.5. The worker spent 6.8 and 13.2 ms on placements over the two grove runs, the tiles the flight passed over included. The run of placements ahead without the flight's builds was taken while another process held 91–100% of the CPU, and its worst frame and its 11.4 ms activation are that machine's (the tick built three tiles itself, each on a starved core); it is kept for what it shows of the order, not its times. The second (d) "built while flying" run's bodies, 2.6 ms against 1.1 ms in its repeat, is the same kind of noise: the bodies are made the same way in both. Every frame over 33 ms left has ticks under 6 ms and no activation over 3 ms; they are the renderer's and the machine's.
+
+**The replay still holds**: (b) `fb1e7776eea7a246` over 20.943 m and the grove `66d2d83db90d0523` over 15.057 m, in every run of this table — the chains of W70's runs above.
+
+**What it costs**: the proxies the worker built for tiles the walker never took stay in the consumer's cache (one per mesh and scale, about 1.6 KB a tree's trunk at the grove): 16 proxies after the grove walk before, 238 with the tiles built under the flight, 504 after the flight to the summit (scene_collision.md, "Not yet").
+
+## Four rings over the forest's authored tiles (W77)
+
+**The failure reproduced**: the POC's full v8 scene streamed (W73's scratch copy, rings 1.5, 6 and 40 tiles of 32 m) with a fourth ring added (1.5, 6, 16, 40), `--terrain-tiles --terrain-far 6`, on the gate's head: `engine-view: terrain-tiles: world tiles: a tile's heights or its cluster LOD could not be made`, after 134 s. **The cause**: the first far level is `far_ratio` (4) times the outermost ring's spacing; the fourth ring at the default 8 cells is 4 m, so the six far levels ask 16 to 512 m, and the scene's set was built for the default `ring_spacing_mm` 2000 — 8 to 256 m — which refuses the 512 m filter. The engine's fault was the sentence; the build now refuses before it builds anything with "far level 6 of 6 asks the ground for heights every 512 m … build it for this world's outermost ring (`ring_spacing_mm` 4000, …)" ([renderer](../subsystems/renderer.md#ground-to-the-horizon)). **With the scene's `tiles.ring_spacing_mm` set to 4000** (a scratch copy; its set built into a scratch cache) the four-ring forest builds and draws.
+
+The same binary (this change's), offscreen 1600 × 900, `--raster hw --shadows csm`, W73's flags, the hardwoods view (600 frames) and W73's 60 s crossing at 40 m over the ground (1,800 frames); `pairs` is the scene's whole count at its largest frame, prefix and slots and tail; GPU and frame milliseconds median / p95 / p99.
+
+| Run | Rings | Tiles per ring | Trees per ring | Ring pairs | Pairs, largest frame | Withheld | GPU ms | Frame ms | GPU memory | Machine (others' CPU start / end, GPU) |
+|---|---|---|---|---|---:|---|---|---|---:|---|
+| hardwoods, three rings | 1.5 / 6 / 40 | 6 / 104 / 2,421 | 20 / 267 / 13,041 | 0.08 / 1.57 / 4.22 M | 11.45 M | none | 5.96 / 6.50 / 6.78 | 6.05 / 6.63 / 7.03 | 5,206 MiB | 22% / 16%, 5% |
+| **hardwoods, four rings** | 1.5 / 6 / 16 / 40 | 6 / 104 / 533 / 1,888 | 20 / 267 / 2,601 / 10,440 | 0.08 / 1.57 / 1.02 / 0.28 M | **8.07 M** | none | 5.56 / 6.19 / 6.42 | 5.64 / 6.26 / 6.62 | 4,209 MiB | 54% / 85%, 3–99% |
+| crossing, three rings | 1.5 / 6 / 40 | (at the end) 0 / 22 / 1,601 | 0 / 39 / 3,618 | 0 / 0.17 / 2.18 M | 15.76 M | none | 4.73 / 9.12 / 9.98 | 15.94 / 40.77 / 53.15 | 5,271 MiB | 21% / 14%, 4–17% |
+| **crossing, four rings** | 1.5 / 6 / 16 / 40 | 0 / 22 / 256 / 1,345 | 0 / 39 / 406 / 3,212 | 0 / 0.17 / 0.28 / 0.16 M | **11.44 M** | none | 4.36 / 8.79 / 9.58 | 16.09 / 42.77 / 49.47 | 4,203 MiB | 21% / 20%, 4–9% |
+
+**What it says.** The fourth ring carries the forest from 512 m to 1,280 m in its own, coarser forms, where the third had carried it in the 192–1,280 m ring's: at the hardwoods view the rings' pairs are 2.95 M against 5.88 M, the scene's largest count 8.07 M against 11.45 M, and along the crossing 11.44 M against 15.76 M — the three-ring crossing came within 1.0 M of the visibility id's 16.78 M, the four-ring one is 5.3 M under it. The GPU's median is 0.4 ms lower at both and its memory a gigabyte smaller; the frame's wall time along the crossing is the world's builds in both (W73). Both runs of a pair were taken minutes apart on the same machine, the four-ring hardwoods one with others at 54–85% of the CPU, so its times are upper bounds. The prefix in this gate's build is 5.0–5.3 M pairs where W73 measured 0.90 M (230 instances kept against 119): the scene's recipes, read live from the POC, changed since (G86, G87); it is the same in both rows of a pair.
+
 ## What was not done
 
 - **The window.** Every run here is offscreen (`--terrain-async` reproduces the window's concurrency without one on the owner's desktop); the owner's 4.4 s window frame has not been replayed in a window after the fix. A `--windowed` replay of the POC's `flight-walk` log is the before and after the owner can run.
-- **The placements are not built ahead**: a generator's tile, the proxies and the compound stay on the activation's tick, measured at 7.9 ms over the grove walk.
+- ~~**The placements are not built ahead**~~: they are since W71 (above).
+- **The owner's windowed replay** of the POC's `flight-walk` log after W70 and W71 is the owner's to run.
 - **No `--game` module** was loaded (the POC's binary is not run here), so the 52 animals and their ground queries are absent; their queries meet the same reader.
