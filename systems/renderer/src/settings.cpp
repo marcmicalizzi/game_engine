@@ -242,6 +242,12 @@ void authored_rules(const RenderSettings& settings, u32 height, f32 fov_y,
       settings.foliage_px >= 0.0f ? settings.foliage_px : static_cast<f32>(lod_foliage_px.get());
   const f32 fade = settings.lod_fade >= 0.0f ? settings.lod_fade : static_cast<f32>(lod_fade.get());
   out.fade = fade > 0.5f ? 0.5f : fade;
+  // A form sways only where the trees do (renderer.md, "Streamed trees sway"), and a streamed
+  // (paged) scene's never do.
+  out.sway_m =
+      settings.flora_motion && !settings.stream && flora_motion_tunable() && flora_tail_tunable()
+          ? flora_sway_m_tunable()
+          : 0.0f;
 }
 
 void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures& features,

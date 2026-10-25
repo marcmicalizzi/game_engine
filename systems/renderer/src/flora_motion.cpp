@@ -18,6 +18,18 @@ tunables::Float flora_wind_strength{
 tunables::Float flora_wind_deg{"renderer.flora.wind_deg", 0.0, -360.0, 360.0,
                                "Where that wind blows to: degrees in the ground plane from +x "
                                "towards +z"};
+// **The streamed trees** (renderer.md, "Streamed trees sway"; roadmap W74). A tree a streamed world
+// hands over with its tile sways as a loaded one does; `tail` false draws the tail rigid, as before
+// W74, for a before-and-after. `sway_m` is the farthest ring floor whose distance form still sways:
+// at 100 m a 0.1 m flutter is about a pixel at 900 lines and 55 degrees, and past it the posing
+// would be paid for thousands of trees nobody can see move (the v8 forest's third ring, 13,110).
+tunables::Bool flora_tail{"renderer.flora.tail", true,
+                          "Sway the trees a streamed world hands over with their tiles, as the "
+                          "loaded ones do; false draws the tail rigid (renderer.md, \"Streamed "
+                          "trees sway\")"};
+tunables::Float flora_sway_m{"renderer.flora.sway_m", 100.0, 0.0, 100'000.0,
+                             "Metres: a ring's distance form of a tree sways when the ring's tiles "
+                             "come nearer the camera than this, and is drawn rigid past it"};
 
 constexpr f32 k_tau = 6.28318530717958647692f;
 
@@ -101,6 +113,8 @@ void closest_on_segments(Vec3 p0, Vec3 p1, Vec3 q0, Vec3 q1, f32& s, f32& t) noe
 }  // namespace
 
 bool flora_motion_tunable() noexcept { return flora_motion.get(); }
+bool flora_tail_tunable() noexcept { return flora_tail.get(); }
+f32 flora_sway_m_tunable() noexcept { return static_cast<f32>(flora_sway_m.get()); }
 FloraWindDefault flora_wind_default() noexcept {
   const f64 a = flora_wind_deg.get() * (3.14159265358979323846 / 180.0);
   return FloraWindDefault{Vec2{static_cast<f32>(std::cos(a)), static_cast<f32>(std::sin(a))},

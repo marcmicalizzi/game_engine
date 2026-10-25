@@ -290,6 +290,57 @@ TEST_CASE(
   CHECK(flown.allocations == 0);
   CHECK(flown.buffers == 0);
 }
+
+#if ENGINE_VIEW_TESTS_FLORA
+// Roadmap W74 (renderer.md, "Streamed trees sway"): a streamed world's own trees sway with their
+// tiles, each taking a record of its mesh's free list when its tile arrives and giving it back when
+// it leaves. The first flight makes the records a mesh needs at most; the second (`--repeat`
+// starts the world over, so every tile arrives and leaves again) reuses them, and allocates nothing
+// the same flight with the tail drawn rigid does not.
+TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in their second flight" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_trees");
+  // authored_view_tests.cpp's trees, small enough for a debug build, in two rings of 32 m tiles.
+  const std::string oak =
+      R"({"species":"broadleaf","broadleaf":{"seed":3,"height_m":8,"trunk_radius_m":0.25,)"
+      R"("triangle_budget":8000,"card_bake_px":16,"impostor_px":32}})";
+  const std::string spruce =
+      R"({"species":"conifer","conifer":{"seed":5,"height_m":6,"trunk_radius_m":0.1,)"
+      R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000}})";
+  REQUIRE(io::write_file(tmp.file("oak.flora.json"), oak) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("spruce.flora.json"), spruce) == io::Status::Ok);
+  const std::string scene =
+      R"({"format":"engine.scene.v1","name":"frame-loop-trees",)"
+      R"("terrain":{"size":65,"extent":400,"seed":7,"dune_height":0.3,"dune_wavelength":60,)"
+      R"("generator":"Waves"},)"
+      R"("meshes":[{"name":"oak","path":"oak.flora.json"},)"
+      R"({"name":"spruce","path":"spruce.flora.json"}],)"
+      R"("scatters":[{"mesh":0,"center":[0,0,0],"radius_min":2,"radius_max":120,"count":70,)"
+      R"("seed":11,"scale_min":0.8,"scale_max":1.2},)"
+      R"({"mesh":1,"center":[0,0,0],"radius_min":2,"radius_max":120,"count":70,"seed":12}],)"
+      R"("world":{"tile_size":32,"rings":[{"radius":1.5},{"radius":3}]}})";
+  REQUIRE(io::write_file(tmp.file("trees.json"), scene) == io::Status::Ok);
+  // Low across the grove, so tiles cross both rings both ways.
+  const std::string path = R"({"format":"engine.camera-path.v1","name":"across","fps":60,"keys":[)"
+                           R"({"time":0,"position":[-220,14,10],"target":[0,4,0]},)"
+                           R"({"time":1.6,"position":[220,14,-10],"target":[400,4,0]}]})";
+  REQUIRE(io::write_file(tmp.file("path.json"), path) == io::Status::Ok);
+  // **Against the same flight with the tail rigid**, not against zero: the world's own streaming of
+  // these tiles still allocates a few times a tile change in its second flight (308 over the
+  // flight on 2026-10-24, with the sway on or off — W73's, stated in renderer.md, "Streamed trees
+  // sway"), so what this holds is that the sway adds nothing to it.
+  const Flown rigid = fly(tmp, "streamed-trees-rigid", tmp.file("trees.json"),
+                          tmp.file("path.json"), {"--tunable", "renderer.flora.tail=false"});
+  if (!rigid.ran) return;
+  const Flown flown = fly(tmp, "streamed-trees", tmp.file("trees.json"), tmp.file("path.json"), {});
+  if (!flown.ran) return;
+  MESSAGE("second flight, swaying: " << flown.allocations << " allocations, " << flown.buffers
+                                     << " buffers; rigid: " << rigid.allocations << ", "
+                                     << rigid.buffers);
+  CHECK(flown.allocations == rigid.allocations);
+  CHECK(flown.buffers == 0);
+}
+#endif  // ENGINE_VIEW_TESTS_FLORA
 #endif  // ENGINE_VIEW_WORLD
 
 #endif  // ENGINE_VIEW_TESTS_DUNES

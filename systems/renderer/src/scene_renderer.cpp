@@ -363,7 +363,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     return false;
   }
   // And the trees' part-pose table (GpuScene::flora_frame).
-  if (scene.flora() && desc.frames_in_flight > k_joint_slots) {
+  if ((scene.flora() || scene.flora_tail()) && desc.frames_in_flight > k_joint_slots) {
     if (error != nullptr) {
       *error = "a scene whose trees sway supports at most " + std::to_string(k_joint_slots) +
                " frames in flight; its part-pose table has one region per frame slot";
@@ -1945,7 +1945,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     const u32 channels = scene.morph_channel_count();
     const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
     f32* region = scene.morph_weight_slot(slot);
-    for (u32 d = 0; d < statics.size(); ++d) {
+    // The load's entries carry weights; a streamed world's trees past them carry none
+    // (renderer.md, "Streamed trees sway").
+    const u32 weighted = scene.load_deform_count();
+    for (u32 d = 0; d < weighted; ++d) {
       f32* pose = region + u64{d} * 2 * channels + channels;
       const u32 first = statics[d].first_channel;
       for (u32 c = 0; c < statics[d].channel_count; ++c) {
@@ -1959,7 +1962,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     const u64 weights_base = scene.morph_weight_slot_address(slot);
     for (u32 d = 0; d < statics.size(); ++d) {
       if (!scene.skinned()) table[d] = statics[d];
-      table[d].weights = weights_base + u64{d} * 2 * channels * sizeof(f32);
+      if (d < weighted) table[d].weights = weights_base + u64{d} * 2 * channels * sizeof(f32);
     }
     deform_table_address = scene.deform_frame_address(slot);
     if (scene.static_cache_dirty()) {

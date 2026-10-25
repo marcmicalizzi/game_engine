@@ -107,8 +107,15 @@ class FloraPoser {
   // job system of `workers` threads (0: automatic; one chunk: none, every frame inline).
   // `chunk_parts` is the fewest parts a chunk is cut to, `k_flora_chunk_parts` but for the bench
   // that measured it. Allocates: call it at load, after the instances are laid out.
+  // `grows`: the instances will change between frames (a streamed world's trees, renderer.md,
+  // "Streamed trees sway"), so the pool, once a cut first needs one, is made for `workers` threads
+  // rather than for the chunks of the cut that made it.
   void prepare(std::span<const FloraInstance> instances, std::span<const FloraMesh> meshes,
-               u32 workers, u32 chunk_parts = k_flora_chunk_parts);
+               u32 workers, u32 chunk_parts = k_flora_chunk_parts, bool grows = false);
+  // Cuts again, for instances that changed between frames, by the rules `prepare` cut by. Writes
+  // the chunk table in place (it holds the most chunks there can be) and allocates nothing — but
+  // the first time a growing poser's cut needs a pool, which it then makes.
+  void recut(std::span<const FloraInstance> instances, std::span<const FloraMesh> meshes);
   void reset() noexcept;
 
   // One frame: every chunk on the pool, the calling thread helping, or every instance inline when
@@ -121,6 +128,9 @@ class FloraPoser {
  private:
   Vector<u32> chunks_;  // chunk_count() + 1 instance indices: chunk c is [chunks_[c], chunks_[c+1])
   std::unique_ptr<jobs::JobSystem> jobs_;
+  u32 workers_ = 0;  // resolved: 0 is none
+  u32 chunk_parts_ = k_flora_chunk_parts;
+  bool grows_ = false;
 };
 
 }  // namespace engine::renderer

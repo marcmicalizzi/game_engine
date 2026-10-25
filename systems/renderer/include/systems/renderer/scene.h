@@ -78,7 +78,17 @@ struct SceneInstance {
   // for what still hands over a float32 world position in `transform.position`: `grid_instances`,
   // a few metres round the origin by construction.
   WorldPos origin{};
+  // **Where a swaying instance's phase comes from** (renderer.md, "Streamed trees sway"): the
+  // number its seed is hashed from, `key * 0x9e3779b9 + 0x632be5ab`. `k_motion_key_load` is its
+  // place among the loaded instances, which is what every instance of a scene read whole has
+  // always used; a streamed read gives an instance the place the whole read would have given it,
+  // so the two draw the same sway (a kept landmark's by `load_scene`, a streamed tree's from its
+  // `authored` id through `StreamedPlacements::motion_key_base`). A tail instance with neither
+  // hashes where it stands, in millimetres: a function of the instance, never of when it came.
+  u32 motion_key = ~0u;
 };
+
+inline constexpr u32 k_motion_key_load = ~0u;
 
 // The world position `source` stands at once a fit's translation has gone through its rotation and
 // scale: `origin + transform.position + (R S)(fit's translation)`, in f64. What `load_scene` and
@@ -194,6 +204,10 @@ struct StreamedPlacements {
   // The generator's resident meshes (`scene_gen::PlacementGeneratorDesc::meshes`), in its order, as
   // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`.
   Vector<u32> meshes;
+  // For an entry whose placement ids name the whole read's instances (the `authored` entry's: its
+  // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
+  // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
+  u32 motion_key_base = ~0u;
 };
 
 // A prop of a scene file (`engine.scene.Prop`): a mesh the load places nowhere, kept for a game
@@ -237,6 +251,12 @@ struct AuthoredStreaming {
   f32 foliage_px = geometry::k_default_foliage_px;
   f32 fade = 0.1f;         // `RenderSettings::lod_fade`
   f32 max_reach_m = 0.0f;  // 0: the world's tile edge
+  // **Which forms sway** (renderer.md, "Streamed trees sway"): a ring's form of a mesh with the
+  // motion contract sways when the nearest an origin on that ring can be is under this many
+  // metres, and is cut for the sway's padded spheres, so the cull's choice over it is the full
+  // mesh's swaying; past it the form is cut and drawn rigid. Negative: `renderer.flora.sway_m`;
+  // 0: every form rigid (`authored_rules` sets 0 when the trees do not sway at all).
+  f32 sway_m = -1.0f;
 };
 
 // The rules a host's session cuts its forms for: its projection (the views' height and vertical
@@ -511,6 +531,12 @@ struct SceneData {
   u32 tail_floor_pairs = 0;
   // Per mesh, the mesh it is a distance form of, or itself (empty: no forms).
   Vector<u32> form_source;
+  // Per mesh, 1 for a distance form cut for a ring past `AuthoredStreaming::sway_m`, which a tail
+  // instance draws rigid (empty: none).
+  Vector<u8> form_rigid;
+  // Per loaded instance, the key its sway's seed is hashed from (`SceneInstance::motion_key`, its
+  // index when the source named none). Empty: every instance's index.
+  Vector<u32> motion_keys;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;

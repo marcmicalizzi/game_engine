@@ -79,6 +79,8 @@ FloraPoser::~FloraPoser() { reset(); }
 void FloraPoser::reset() noexcept {
   jobs_.reset();
   chunks_.clear();
+  workers_ = 0;
+  grows_ = false;
 }
 
 u32 FloraPoser::worker_count() const noexcept {
@@ -86,28 +88,41 @@ u32 FloraPoser::worker_count() const noexcept {
 }
 
 void FloraPoser::prepare(std::span<const FloraInstance> instances,
-                         std::span<const FloraMesh> meshes, u32 workers, u32 chunk_parts) {
+                         std::span<const FloraMesh> meshes, u32 workers, u32 chunk_parts,
+                         bool grows) {
   reset();
+  if (workers == 0) {
+    const u32 cpus = platform::topology().performance_cpus.count();
+    workers = cpus > 1 ? cpus - 1 : 0;  // the frame's thread is the one left
+  }
+  workers_ = workers;
+  chunk_parts_ = chunk_parts > 0 ? chunk_parts : 1u;
+  grows_ = grows;
+  // Room for the most chunks there can be, so a cut again after the instances change writes in
+  // place.
+  chunks_.reserve(k_flora_max_chunks + 1);
+  recut(instances, meshes);
+}
+
+void FloraPoser::recut(std::span<const FloraInstance> instances,
+                       std::span<const FloraMesh> meshes) {
+  chunks_.clear();
   const u32 n = static_cast<u32>(instances.size());
   if (n == 0) return;
   u64 total = 0;
   for (const FloraInstance& fi : instances)
     total += meshes[fi.mesh].part_count();
-  if (workers == 0) {
-    const u32 cpus = platform::topology().performance_cpus.count();
-    workers = cpus > 1 ? cpus - 1 : 0;  // the frame's thread is the one left
-  }
+  const u32 workers = workers_;
   // Four chunks a thread, so a thread that started late or was preempted is evened out by the
   // others; never fewer parts a chunk than pay for a wake-up; never more chunks than parallel_for
   // keeps in place, nor than instances (an instance is never split: its parts compose in order).
   const u64 threads = u64{workers} + 1;
   u64 count = std::min<u64>(k_flora_max_chunks, threads * 4);
-  count = std::min<u64>(count, total / (chunk_parts > 0 ? chunk_parts : 1u));
+  count = std::min<u64>(count, total / chunk_parts_);
   count = std::min<u64>(count, n);
   if (workers == 0 || count < 2) count = 1;
   // Cut at equal shares of the parts, so a grove of one large species and many small ones splits
   // by the work and not by the count.
-  chunks_.reserve(static_cast<u32>(count) + 1);
   chunks_.push_back(0);
   u64 acc = 0;
   u64 c = 1;
@@ -121,10 +136,12 @@ void FloraPoser::prepare(std::span<const FloraInstance> instances,
   }
   if (chunks_.back() != n) chunks_.push_back(n);
   const u32 chunks = chunks_.size() - 1;
-  if (chunks < 2) return;
+  if (chunks < 2 || jobs_ != nullptr) return;
   jobs::JobSystemConfig config;
-  // Never more threads than chunks to run beside the frame's own.
-  config.performance_workers = std::min<u32>(workers, chunks - 1);
+  // Never more threads than chunks to run beside the frame's own — unless the instances come and
+  // go (a streamed world's trees), when the pool is made once, the first time it pays, for as many
+  // chunks as there may later be.
+  config.performance_workers = grows_ ? workers : std::min<u32>(workers, chunks - 1);
   config.efficiency_workers = 1;  // the class's pool is never used here; 0 would be its default
   // Unpinned, as the time-lapse's pool is: two pools pinned to the same CPUs would contend for them
   // by placement where the OS can balance them.

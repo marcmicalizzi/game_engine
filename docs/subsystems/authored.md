@@ -34,7 +34,14 @@ anchoring by bounds would have made a tile's contents depend on its neighbours'.
 (`scene_gen::Placement::id`, which sat in that struct's padding), and a tile's placements come in
 the order of their ids, so a tile's instances, their order and their names are a function of the
 file and the tile — never of which tiles came in first, and the same on every reload
-(`authored_tests.cpp`).
+(`authored_tests.cpp`). **The id is also what a swaying tree's phase comes from** (2026-10-24,
+roadmap W74): the scene reader gives the entry the loaded index of id 1
+(`StreamedPlacements::motion_key_base`), the world's placements consumer turns a placement's id into
+`SceneInstance::motion_key`, the index a whole read gives that instance, and the renderer hashes
+the sway's seed from it — so a streamed tree sways in the whole read's phase whenever its tile came
+([renderer](renderer.md#streamed-trees-sway)). Nothing here changed: the generator still hands over
+ids and no motion; the meshes' motion is the renderer's, and which ring's forms sway is decided where
+they are cut.
 
 ## Owned data
 
