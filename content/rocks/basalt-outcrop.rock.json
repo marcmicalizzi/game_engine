@@ -7,6 +7,7 @@
     "count": 7,
     "joint_sets": 3,
     "buried": 0.3,
-    "triangle_budget": 60000
+    "triangle_budget": 320000,
+    "surface": {"joint_spacing_m": 1.2, "joint_width_m": 0.35, "joint_depth_m": 0.22, "wavelength_m": 0.8, "relief_m": 0.03}
   }
 }

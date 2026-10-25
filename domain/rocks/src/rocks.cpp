@@ -37,6 +37,17 @@ bool material_in_range(const RockMaterial& m, Check& c) {
   return c.f(m.normal_scale, 0.0f, 4.0f, "material.normal_scale", "0 to 4");
 }
 
+bool surface_in_range(const RockSurface& s, Check& c) {
+  return c.f(s.strength, 0.0f, 1.0f, "surface.strength", "0 to 1") &&
+         c.f(s.joint_spacing_m, 0.05f, 20.0f, "surface.joint_spacing_m", "0.05 to 20 m") &&
+         c.f(s.joint_width_m, 0.005f, s.joint_spacing_m * 0.5f, "surface.joint_width_m",
+             "0.005 m to half joint_spacing_m") &&
+         c.f(s.joint_depth_m, 0.0f, 2.0f, "surface.joint_depth_m", "0 to 2 m") &&
+         c.f(s.wavelength_m, 0.02f, 10.0f, "surface.wavelength_m", "0.02 to 10 m") &&
+         c.f(s.relief_m, 0.0f, s.wavelength_m * 0.25f < 0.5f ? s.wavelength_m * 0.25f : 0.5f,
+             "surface.relief_m", "0 to min(0.5 m, wavelength_m / 4)");
+}
+
 // The block's set in the shape domain/materials takes.
 materials::MaterialSet set_of(const RockMaterial& m) {
   materials::MaterialSet out;
@@ -100,7 +111,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, p.layers, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 500u, 500000u, "triangle_budget", "500 to 500,000") &&
-             material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c);
     }
     case RockShape::Outcrop: {
       if (file.boulder.has_value()) return other("boulder");
@@ -116,7 +127,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, p.layers, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 1000u, 1000000u, "triangle_budget", "1,000 to 1,000,000") &&
-             material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c);
     }
     case RockShape::Scree: {
       if (file.boulder.has_value()) return other("boulder");
@@ -131,7 +142,7 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, std::nullopt, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 500u, 500000u, "triangle_budget", "500 to 500,000") &&
-             material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c);
     }
     case RockShape::Cliff: {
       if (file.boulder.has_value()) return other("boulder");

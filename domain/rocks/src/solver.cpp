@@ -123,7 +123,58 @@ struct Body {
   u64 noise_seed = 0;
   u32 n = 4;  // the rung
   f64 budget_share = 1.0;
+  RockSurface surface;
+  D3 joints[4]{};
+  u32 joint_count = 0;
+  u64 surface_seed = 0;
 };
+
+// Physical-scale structure, evaluated in the common formation frame. Joint positions are
+// jittered along each set rather than redrawn per vertex or per body. Every feature is filtered
+// by its own width (not the distance between cracks), preventing sub-cell razor trenches.
+f64 surface_recess(const Body& b, D3 p, f64 cell) {
+  const RockSurface& s = b.surface;
+  if (s.strength == 0.0f) return 0.0;
+  const auto resolved = [cell](f64 width) { return fade(clamp01((width / cell - 2.0) * 0.5)); };
+  const f64 spacing = wide(s.joint_spacing_m);
+  const f64 width = wide(s.joint_width_m);
+  const f64 joint_weight = resolved(width);
+  f64 joint = 0.0;
+  for (u32 set = 0; set < b.joint_count && joint_weight > 0.0; ++set) {
+    const f64 coordinate = dot(p, b.joints[set]) / spacing;
+    const i64 nearest = static_cast<i64>(std::floor(coordinate));
+    // A plane lies within +/-0.3 spacings of its integer station; these three suffice.
+    for (i64 k = nearest - 1; k <= nearest + 1; ++k) {
+      const f64 station =
+          static_cast<f64>(k) + 0.6 * (lattice_value(b.surface_seed, k, set, 0) - 0.5);
+      const f64 wandering =
+          0.08 * (noise3(b.surface_seed + set + 0x71u, p * (0.7 / spacing)) - 0.5);
+      const f64 distance = std::fabs(coordinate - station + wandering) * spacing;
+      const f64 profile = clamp01(1.0 - distance / (0.5 * width));
+      // Unequal penetration along a joint leaves intact bridges and chipped intersections.
+      const f64 exposure = noise3(b.surface_seed + set, p * (0.9 / spacing));
+      const f64 penetration = fade(clamp01((exposure - 0.25) / 0.5));
+      const f64 own_depth = 0.35 + 0.65 * lattice_value(b.surface_seed, k, set, 1);
+      const f64 recess = wide(s.joint_depth_m) * joint_weight * profile * profile *
+                         (3.0 - 2.0 * profile) * penetration * own_depth;
+      if (recess > joint) joint = recess;
+    }
+  }
+  f64 relief = 0.0;
+  f64 wavelength = wide(s.wavelength_m);
+  f64 amplitude = wide(s.relief_m);
+  // Five octaves are a representation bound, not a geological smallest feature. The material
+  // carries finer scales. The 0.6 amplitude ratio is an explicit authoring approximation.
+  for (u32 octave = 0; octave < 5; ++octave) {
+    const f64 weight = resolved(wavelength);
+    if (weight == 0.0) break;
+    const f64 v = noise3(b.surface_seed + 0x91u * (octave + 1), p * (1.0 / wavelength));
+    relief += amplitude * weight * (b.pitted ? std::fabs(2.0 * v - 1.0) : 2.0 * v - 1.0);
+    wavelength *= 0.5;
+    amplitude *= 0.6;
+  }
+  return wide(s.strength) * (joint + relief);
+}
 
 // The body's radius along unit direction `u`, in the unit body, with the noise the rung carries.
 f64 radius(const Body& b, D3 u) {
@@ -172,7 +223,17 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
   // The surface's positions by lattice point first, then the charts index into them.
   Vector<D3> local;
   Vector<u32> lattice_of;  // per emitted vertex, its lattice point's slot in `local`
-  Vector<u32> slot(side * side * side, ~0u);
+  // Only the cube's shell exists. A volume lookup made high detail pay O(n^3) temporary memory.
+  Vector<u32> slot(6u * n * n + 2u, ~0u);
+  const auto shell_key = [n, side](u32 x, u32 y, u32 z) {
+    if (x == 0) return y * side + z;
+    if (x == n) return side * side + y * side + z;
+    const u32 middle = 2u * side * side;
+    if (y == 0) return middle + (x - 1u) * side + z;
+    if (y == n) return middle + (n - 1u) * side + (x - 1u) * side + z;
+    return middle + 2u * (n - 1u) * side + (z == n ? (n - 1u) * (n - 1u) : 0u) +
+           (x - 1u) * (n - 1u) + y - 1u;
+  };
   const f64 cell = (k_pi * 0.5) *
                    (b.half.x > b.half.y ? (b.half.x > b.half.z ? b.half.x : b.half.z)
                                         : (b.half.y > b.half.z ? b.half.y : b.half.z)) /
@@ -223,8 +284,8 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
         c[face.axis] = face.sign > 0 ? static_cast<i64>(n) : 0;
         c[face.b] = static_cast<i64>(i);
         c[face.c] = static_cast<i64>(j);
-        const u32 key = static_cast<u32>(c[0]) * side * side + static_cast<u32>(c[1]) * side +
-                        static_cast<u32>(c[2]);
+        const u32 key =
+            shell_key(static_cast<u32>(c[0]), static_cast<u32>(c[1]), static_cast<u32>(c[2]));
         if (slot[key] == ~0u) {
           slot[key] = local.size();
           local.push_back(position_of(c[0], c[1], c[2]));
@@ -293,6 +354,13 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
         const f64 s = l > 0.0 ? 1.0 - groove * depth * g / l : 1.0;
         p = p * (s > 0.3 ? s : 0.3);
       }
+      // Use the intended resting frame for the formation-wide field, before the final burial
+      // correction. Recession remains radial and positive, retaining the closed shell.
+      const D3 sample = p + b.at + D3{0.0, b.half.y * (1.0 - 2.0 * b.buried), 0.0};
+      const f64 recess = surface_recess(b, sample, cell);
+      const f64 len = length(p);
+      const f64 scale_detail = len > 0.0 ? 1.0 - recess / len : 1.0;
+      p = p * (scale_detail < 0.8 ? 0.8 : (scale_detail > 1.05 ? 1.05 : scale_detail));
       q = p;
     }
   }
@@ -329,6 +397,28 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
     const D3 nn = normalized(normal[s]);
     out.positions[v] = Vec3{static_cast<f32>(p.x), static_cast<f32>(p.y), static_cast<f32>(p.z)};
     out.normals[v] = Vec3{static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
+  }
+  // A deep joint may put a face beyond the smooth vertex normal's hemisphere. It is a hard
+  // fracture edge: give that triangle its own normal rather than shading it inside-out. Position
+  // and UV remain exact copies, so the welded shell and triangle budget are unchanged.
+  for (u32 t = index_first; b.surface.strength > 0.0f && t < out.indices.size(); t += 3) {
+    const Vec3 a = out.positions[out.indices[t]];
+    const Vec3 fn =
+        cross(out.positions[out.indices[t + 1]] - a, out.positions[out.indices[t + 2]] - a);
+    const Vec3 vn = out.normals[out.indices[t]] + out.normals[out.indices[t + 1]] +
+                    out.normals[out.indices[t + 2]];
+    if (dot(fn, vn) > 0.0f) continue;
+    const D3 nn = normalized(D3{wide(fn.x), wide(fn.y), wide(fn.z)});
+    for (u32 corner = 0; corner < 3; ++corner) {
+      const u32 old = out.indices[t + corner];
+      const Vec3 position = out.positions[old];
+      const Vec2 uv = out.uvs[old];
+      out.indices[t + corner] = out.positions.size();
+      out.positions.push_back(position);
+      out.uvs.push_back(uv);
+      out.normals.push_back(
+          Vec3{static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)});
+    }
   }
 }
 
@@ -368,6 +458,10 @@ void weather_body(Body& b, const Weather& w, u64 seed, u32 part) {
 // facets in seeded directions.
 void cut_body(Body& b, const D3 joints[4], u32 sets, u32 facets, u64 seed, u32 part, f64 lo,
               f64 hi) {
+  b.joint_count = sets;
+  b.surface_seed = mix64(seed ^ 0x524F434B53555246ull);
+  for (u32 s = 0; s < sets; ++s)
+    b.joints[s] = joints[s];
   Rng rng = stream(seed, part, Stream::cuts);
   for (u32 s = 0; s < sets; ++s) {
     b.cuts.push_back(Cut{joints[s], rng.range(lo, hi)});
@@ -459,6 +553,8 @@ void detail::emit_fragment(RockType type, D3 half, D3 at, f64 yaw, f64 buried, u
   b.yaw = yaw;
   b.buried = buried;
   b.n = n;
+  // Cliff talus keeps its existing coarse profile; its face and block budgets are independent.
+  b.surface.strength = 0.0f;
   weather_body(b, weather, seed, 1);
   Rng joint_rng = stream(seed, 1, Stream::joints);
   D3 joints[4];
@@ -538,6 +634,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
     Body b;
     b.half = D3{wide(p.size_x), wide(p.size_y), wide(p.size_z)};
     b.buried = wide(p.buried);
+    b.surface = p.surface;
     weather_body(b, weather, p.seed, 0);
     cut_body(b, joints, p.joint_sets, weather.model.facets, p.seed, 0, 0.5, 0.75);
     Rng bed = stream(p.seed, 0, Stream::bedding);
@@ -574,6 +671,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
                   det::sin(a) * r * (wide(p.size_z) - b.half.z * 0.6)};
       }
       b.buried = wide(p.buried);
+      b.surface = p.surface;
       weather_body(b, weather, p.seed, i + 1);
       b.bedding = bedding;
       b.layer_phase = phase + dot(b.at, bedding);  // the beds run on through the boulders
@@ -614,6 +712,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
       b.at = at;
       b.yaw = layout.range(0.0, 2.0 * k_pi);
       b.buried = wide(p.buried);
+      b.surface = p.surface;
       weather_body(b, weather, p.seed, i + 1);
       Rng joint_rng = stream(p.seed, i + 1, Stream::joints);
       D3 joints[4];

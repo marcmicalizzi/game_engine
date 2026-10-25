@@ -33,6 +33,31 @@ at all but a box bent along a line ([Cliffs](#cliffs)).
 
 ## The model by type
 
+**Structural detail, G88 (2026-10-25).** The original cuts, warp and bedding below now carry
+`RockSurface` on boulders, outcrops and scree. Its joint recesses follow the body's joint
+directions, with irregular plane spacing and variable penetration along the plane. An outcrop
+uses one seeded field in its intended resting frame across all bodies; scree samples each
+fragment's joint frame and layout offset before applying its yaw. This is a surface representation of weathered fractures,
+not a volume-fracture or rockfall simulation. The final burial adjustment can shift a body's
+pattern vertically by the change in its extrema.
+
+Five octaves of physical-scale surface relief add smaller features. Granite, sandstone and
+basalt have signed relief; limestone has pits. Each octave fades independently from absent at
+two cells across its wavelength to full at four. A joint fades by its **opening width**, not
+its spacing, so a wide spacing cannot enable an unresolved narrow trench. Recession is clamped
+to 20% of the local radius and outward relief to 5% to protect extreme authoring inputs. The
+shell remains radial; hard fracture triangles whose averaged normals would face inward receive
+split flat normals at identical positions and UVs. Triangle counts are unchanged by this split.
+
+The schema's physical controls are `strength` (0–1, default 1), `joint_spacing_m` (0.05–20,
+default 0.65), `joint_width_m` (0.005 to half the spacing, default 0.12), `joint_depth_m`
+(0–2, default 0.12), `wavelength_m` (0.02–10, default 0.4), and `relief_m` (0 to the smaller
+of 0.5 and a quarter wavelength, default 0.018). These are authoring values, not inferred
+measurements of the owner's photographs. [Rock structure](../experiments/rock-structure.md)
+records the source evidence, engineering bounds and budget trades. `strength: 0` retains the
+simple surface, useful at low budgets and for comparison. The engine's normal runtime cluster
+LOD still controls draw cost; these source budgets are not a new runtime graphics-preset switch.
+
 A body's radius along a unit direction `u` is the **smooth minimum** (the polynomial one, a band
 `0.25 rounding` wide) of the unit sphere's radius and every planar cut's: a cut is a plane of unit
 normal `n` at distance `d` from the centre, `d / (u · n)` away along `u`. Before weathering that is
@@ -43,8 +68,9 @@ radius: the body's shape, at every rung) and the **grain** (up to three octaves 
 present only where its wavelength spans four cells of the rung, so a coarse rung is the same rock
 with the detail it cannot carry left out). The cut body is then **stretched** per axis so its box
 is exactly the half-extents asked (an affine map, so a cut stays a plane), **banded** along its
-bedding direction when it has layers, and **lowered** so the share `buried` of its height is under
-y = 0.
+bedding direction when it has layers, and given the structural surface above. Those last two
+steps change the nominal extents. It is then **lowered** so the share `buried` of its final height
+is under y = 0.
 
 | Type | Joints | Facets | Rounding | Layers | Warp / grain | Colour (linear), roughness |
 |---|---|---|---|---|---|---|
@@ -282,12 +308,14 @@ keeps the face in front of the whole profile is what fixed it.
 
 ## The parameters and ranges
 
-`domain/rocks/schemas/rocks.schema` (`engine.rocks.*`, version 1). A rock file,
+`domain/rocks/schemas/rocks.schema` owns `engine.rocks.*`. Boulder, Outcrop and Scree are
+version 2 with `RockSurface` (version 1); Cliff and CliffPoint remain version 1. A rock file,
 `<name>.rock.json`, is an `engine.rocks.RockFile`: `shape` (`Boulder`, `Outcrop`, `Scree`, `Cliff`)
 and only that shape's block (absent is its defaults, except a cliff's, whose line it must give;
 another shape's block is refused). `RockFile` is version 2 since the cliff: its `cliff` block is
 **left out of the canonical parameters when absent**, so a boulder's, an outcrop's or a scree's
-canonical bytes — and every key and container pin over them — are what they were. A cliff's fields
+canonical bytes did not change when cliffs were introduced. G88 adds canonical surface fields
+and changes their defaults; solver version 2 invalidates every rock container. A cliff's fields
 and ranges are the schema's (`engine.rocks.Cliff`, `CliffPoint`): a line of 2 to 4,096 vertices
 1 to 1,000 m long, `height` 1–200 m (40), `batter` 0–1.5 (0.1), `buried` 0–20 m (2), `depth` 2–200
 m (absent: the carving's reach plus 2 m), `relief` 0–20 m (the type's: granite 4, sandstone 3.5,
@@ -307,7 +335,8 @@ are counted from), `triangle_budget` 2,000–4,000,000 (250,000) and the materia
 | `rounding` | 0–1, absent the type's | the same | the same (absent: 40% of the type's) |
 | `layers` | 0–64, absent the type's | the same | — |
 | `buried` | 0–0.8 (0.15) | 0–0.8 (0.3) | 0–0.8 (0.2) |
-| `triangle_budget` | 500–500,000 (20,000) | 1,000–1,000,000 (60,000) | 500–500,000 (8,000) |
+| `triangle_budget` | 500–500,000 (80,000) | 1,000–1,000,000 (240,000) | 500–500,000 (24,000) |
+| `surface` | `RockSurface`, above | the same, shared field | the same, fragment frame |
 | `material` | `RockMaterial` | the same | the same |
 
 A parameter out of range is refused with a sentence naming `engine.rocks.<Shape>.<field>` and its
@@ -316,7 +345,7 @@ range; NaN fails every test.
 ## The budget ladder
 
 A body is a cube-sphere of `n × n` cells a face, `12 n²` triangles; `n` is a rung of
-`k_grid_rungs` = 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128. **Every part
+`k_grid_rungs` = 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192. **Every part
 gets the coarsest rung first** (192 triangles), so a small fragment is never priced out by a large
 one, and the rest of the budget is shared by surface (`xy + yz + zx` of the half-extents); each part
 then takes the finest rung its share holds. The shares sum to the budget and each rung fits its
@@ -325,14 +354,15 @@ needs. The default boulder, budget by budget:
 
 | Budget | n | Triangles | Steps down |
 |---|---|---|---|
-| 500,000 | 128 | 196,608 | 0 |
-| 200,000 | 128 | 196,608 | 0 |
-| 60,000 | 64 | 49,152 | 4 |
-| 20,000 (default) | 40 | 19,200 | 7 |
-| 8,000 | 24 | 6,912 | 10 |
-| 3,000 | 12 | 1,728 | 13 |
-| 1,200 | 10 | 1,200 | 14 |
-| 500 | 6 | 432 | 16 |
+| 500,000 | 192 | 442,368 | 0 |
+| 200,000 | 128 | 196,608 | 2 |
+| 80,000 (default) | 80 | 76,800 | 5 |
+| 60,000 | 64 | 49,152 | 6 |
+| 20,000 | 40 | 19,200 | 9 |
+| 8,000 | 24 | 6,912 | 12 |
+| 3,000 | 12 | 1,728 | 15 |
+| 1,200 | 10 | 1,200 | 16 |
+| 500 | 6 | 432 | 18 |
 
 At every rung down to 500 the boulder is still the rock: closed, its box within a tenth of the
 finest's on every axis and its volume within 15% (the test). What the coarse rungs lose is the grain
@@ -422,6 +452,10 @@ the ball and added the stretch, so a joint face is most of a side.
 
 ## What the harness taught
 
+The following is **historical G62/G71 evidence**, before G88 changed the default surface and
+four demonstration budgets. It is not validation of the revised meshes; current results are
+recorded in [rock structure](../experiments/rock-structure.md).
+
 E10's judge (`tools/e10-harness.ps1 -Offscreen`, [e10](../experiments/e10-generated-props.md)) over
 the four recipes written as GLBs by `engine-content rocks --glb`, which it imports through `build`
 (the GLB path welds; the solver's own container does not, and draws the same triangles). msvc-debug,
@@ -497,10 +531,13 @@ data, rebuilt from its parameters.
   has no degenerate triangle, has exactly `parts` connected components, a positive signed volume,
   and no face wound against its corners' normals;
 - the triangle count never exceeds the budget, falls as the budget does, and at every rung down to
-  500 the boulder keeps its box to a tenth and its volume to 15%; an outcrop's parts all fit, and a
+  500 the tested default boulder keeps its box to a tenth and its volume to 15%; an outcrop's parts all fit, and a
   budget under `192 × parts` is refused;
 - `buried` is the share of the box under y = 0, to 1e-4; scree lies on the ground;
 - one seed is one rock, another seed another, and the type changes the shape;
+- unresolved surface features vanish at low budgets, zero strength reproduces the old simple
+  mesh, doubling all physical lengths doubles positions exactly, and extreme valid surface
+  settings retain closed shells for all four lithologies;
 - the file canonicalizes (spacing, order, spelled-out defaults, an absent block) and refuses an out
   of range or unknown field (a material's `tile_m` and `normal_scale` among them) and another
   shape's block, each with its name;

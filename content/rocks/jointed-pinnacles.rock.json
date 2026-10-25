@@ -1,0 +1,16 @@
+{
+  "shape": "Outcrop",
+  "outcrop": {
+    "seed": 42,
+    "type": "Granite",
+    "size_x": 3.8, "size_y": 7.5, "size_z": 2.8,
+    "count": 8, "joint_sets": 3, "rounding": 0.12,
+    "buried": 0.3,
+    "triangle_budget": 400000,
+    "surface": {
+      "joint_spacing_m": 1.3, "joint_width_m": 0.6, "joint_depth_m": 0.22,
+      "wavelength_m": 1.2, "relief_m": 0.03
+    },
+    "material": {"tile_m": 2.0}
+  }
+}
