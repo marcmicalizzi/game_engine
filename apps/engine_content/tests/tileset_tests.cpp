@@ -166,6 +166,7 @@ u64 count(const JsonValue& v, const char* key) {
 }  // namespace
 
 // **The measurement** (tileset.md, "Reading a level"): `terrain-read` reads the finest level whole,
+// raw through the queue and the pool (W54),
 // as windows and point by point, every tile once in each, and prints what it cost with the
 // machine's state; its usage errors exit 2 and a set that does not open 1.
 TEST_CASE("engine-content terrain-read: a level read whole, as windows and point by point") {
@@ -180,7 +181,7 @@ TEST_CASE("engine-content terrain-read: a level read whole, as windows and point
   std::string error;
   REQUIRE_MESSAGE(set.open(manifest, error), error);
   const u64 finest = set.manifest().levels[0].tiles;
-  for (const char* pattern : {"level", "windows", "points"}) {
+  for (const char* pattern : {"level", "windows", "points", "queue", "pool"}) {
     const Output out =
         run({"terrain-read", manifest, "--pattern", pattern, "--depth", "8", "--window", "3"});
     REQUIRE_MESSAGE(out.exit_code == 0, out.text);

@@ -22,9 +22,10 @@
 // `engine.tileset.TileSetReport`. It is not a `build-all` step: `content_build::DerivedStep::build`
 // is handed a source's bytes and no path, and a heightfield's header names its grid beside it.
 //
-//   terrain-read <manifest.json | dir> [--pattern level|windows|points|files] [--level <n>]
+//   terrain-read <manifest.json | dir> [--pattern level|windows|points|pool|queue|files] [--level
+//   <n>]
 //                [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--unbuffered]
-//                [--masks]
+//                [--pool-workers <n>] [--masks]
 //
 // `terrain-read` is a measurement, not a build: it reads a set's level the way a load does — whole
 // in file order, as windows that are each one batch, or point by point — or a directory of the old
@@ -40,6 +41,7 @@
 
 #if ENGINE_CONTENT_TILESET
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
@@ -53,6 +55,7 @@
 
 #include <charconv>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <schemas/scene.h>
 #endif
@@ -107,7 +110,10 @@ constexpr int k_exit_error = 1;
     "                               level in a scattered order, each window one batch; points: a\n"
     "                               point query a tile in a scattered order, each miss its own\n"
     "                               read (the scene load's standing); files: every file of <dir>\n"
-    "                               read whole, one at a time (a level before its archive)\n"
+    "                               read whole, one at a time (a level before its archive); pool:\n"
+    "                               the level's records, a job each on the Efficiency pool;\n"
+    "                               queue: the same reads queued --depth deep from one thread\n"
+    "      --pool-workers <n>       the pool's workers for --pattern pool (default 4)\n"
     "      --level <n>              the manifest's level, the finest 0 (default 0)\n"
     "      --depth <n>              range reads in flight in one batch (default 32)\n"
     "      --run-kib <n>            adjacent tiles read as one run up to this (default 256)\n"
@@ -394,6 +400,7 @@ int read_command(int argc, char** argv) {
   u32 window = 8;
   u64 cache_mib = 1024;
   bool masks = false;
+  u32 pool_workers = 4;
   tileset::TileSet::ReadOptions read;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -416,12 +423,16 @@ int read_command(int argc, char** argv) {
       read.unbuffered = true;
     } else if (a == "--masks") {
       masks = true;
+    } else if (a == "--pool-workers" && has && parse_int(argv[i + 1], pool_workers) &&
+               pool_workers >= 1) {
+      ++i;
     } else {
       return usage(k_read_usage, "unknown or incomplete option '" + std::string(a) + "'");
     }
   }
-  if (pattern != "level" && pattern != "windows" && pattern != "points" && pattern != "files")
-    return usage(k_read_usage, "--pattern is level, windows, points or files");
+  if (pattern != "level" && pattern != "windows" && pattern != "points" && pattern != "files" &&
+      pattern != "pool" && pattern != "queue")
+    return usage(k_read_usage, "--pattern is level, windows, points, pool, queue or files");
 
   const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
   JsonValue report = JsonValue::object();
@@ -449,6 +460,59 @@ int read_command(int argc, char** argv) {
       bytes += data.size();
     }
     end = time::monotonic_ns();
+  } else if (pattern == "pool" || pattern == "queue") {
+    // The same level's records through the job system's Efficiency pool, one job a record
+    // (`io::read_ranges_async`): as many in flight as the pool has workers, each blocking in its
+    // read. The archive's layout is the page's (tileset.md, "The archive").
+    tileset::TileSet set(1024 * 1024, read);
+    if (!set.open(target, error)) return failed("terrain-read", error);
+    const tileset::TileSetManifest& m = set.manifest();
+    if (level_index >= m.levels.size())
+      return failed("terrain-read", "the set has " + std::to_string(m.levels.size()) + " levels");
+    const std::string archive =
+        io::join_path(io::parent_path(target), m.levels[level_index].archive);
+    io::FileHandle file;
+    if (file.open(archive) != io::Status::Ok)
+      return failed("terrain-read", "'" + archive + "' could not be opened");
+    u8 header[64];
+    u64 got = 0;
+    if (file.read_at(0, header, sizeof(header), got) != io::Status::Ok || got != sizeof(header))
+      return failed("terrain-read", "'" + archive + "' has no header");
+    u32 n = 0;
+    u32 record = 0;
+    std::memcpy(&n, header + 12, 4);
+    std::memcpy(&record, header + 40, 4);
+    jobs::JobSystemConfig config;
+    config.efficiency_workers = pool_workers;
+    config.performance_workers = 1;
+    config.pin_threads = false;
+    jobs::JobSystem js(config);
+    Vector<io::AsyncRangeRead> requests(n);
+    Vector<u8> data(n * record);
+    for (u32 k = 0; k < n; ++k) {
+      requests[k].file = &file;
+      requests[k].offset = 64 + u64{k} * record;
+      requests[k].bytes = record;
+      requests[k].dst = data.data() + u64{k} * record;
+    }
+    jobs::Counter counter;
+    begin = time::monotonic_ns();
+    if (pattern == "pool") {
+      io::read_ranges_async(js, std::span<io::AsyncRangeRead>(requests.data(), requests.size()),
+                            counter);
+      js.wait(counter);
+    } else {
+      // The same reads queued from this thread, `--depth` in flight, nothing done between them.
+      (void)io::read_queued(std::span<io::AsyncRangeRead>(requests.data(), requests.size()),
+                            read.depth);
+    }
+    end = time::monotonic_ns();
+    for (const io::AsyncRangeRead& r : requests) {
+      if (!r.complete()) return failed("terrain-read", "a record did not read whole");
+      ++tiles;
+      bytes += r.read;
+    }
+    if (pattern == "pool") report.set("pool_workers", static_cast<u64>(pool_workers));
   } else if (masks) {
     tileset::MaskLevel level;
     if (!level.open(target, error, read.unbuffered)) return failed("terrain-read", error);
