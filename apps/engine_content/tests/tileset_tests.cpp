@@ -153,3 +153,47 @@ TEST_CASE("engine-content terrain-tiles: a set built, a hit the second time, thr
       run({"terrain-tiles", source, tmp.file("o"), "--ring-spacing-mm", "1500", "--far-ratio", "1"})
           .exit_code == 1);
 }
+
+namespace {
+
+u64 count(const JsonValue& v, const char* key) {
+  const JsonValue* f = v.find(key);
+  u64 n = 0;
+  if (f != nullptr) (void)f->get_u64(n);
+  return n;
+}
+
+}  // namespace
+
+// **The measurement** (tileset.md, "Reading a level"): `terrain-read` reads the finest level whole,
+// as windows and point by point, every tile once in each, and prints what it cost with the
+// machine's state; its usage errors exit 2 and a set that does not open 1.
+TEST_CASE("engine-content terrain-read: a level read whole, as windows and point by point") {
+  const test::TempDir tmp("engine_content_terrain_read");
+  const std::string source = tmp.file("ridge.json");
+  REQUIRE(run({"terrain-synth", source, "--kind", "ridge", "--size", "129", "--spacing-mm", "1000"})
+              .exit_code == 0);
+  const Output built = run({"terrain-tiles", source, tmp.file("set"), "--cells", "16"});
+  REQUIRE_MESSAGE(built.exit_code == 0, built.text);
+  const std::string manifest = text(line(built), "manifest");
+  tileset::TileSet set;
+  std::string error;
+  REQUIRE_MESSAGE(set.open(manifest, error), error);
+  const u64 finest = set.manifest().levels[0].tiles;
+  for (const char* pattern : {"level", "windows", "points"}) {
+    const Output out =
+        run({"terrain-read", manifest, "--pattern", pattern, "--depth", "8", "--window", "3"});
+    REQUIRE_MESSAGE(out.exit_code == 0, out.text);
+    const JsonValue r = line(out);
+    CHECK(text(r, "pattern") == pattern);
+    CHECK_MESSAGE(count(r, "tiles") == finest, pattern);
+    CHECK(count(r, "failures") == 0);
+    CHECK(r.find("machine_state") != nullptr);
+    CHECK(r.find("mb_per_s") != nullptr);
+    if (std::string_view(pattern) != "points") CHECK(count(r, "most_in_flight") <= 8);
+  }
+  CHECK(run({"terrain-read"}).exit_code == 2);
+  CHECK(run({"terrain-read", manifest, "--pattern", "sideways"}).exit_code == 2);
+  CHECK(run({"terrain-read", manifest, "--depth", "0"}).exit_code == 2);
+  CHECK(run({"terrain-read", tmp.file("missing.json")}).exit_code == 1);
+}

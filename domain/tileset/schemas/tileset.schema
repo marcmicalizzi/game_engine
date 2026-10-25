@@ -44,13 +44,17 @@ struct TileSetLevel @version(1) {
   tile_min: i32[2]
   tile_max: i32[2]
   tiles: u32
-  /// `hash_bytes` over each of the level's tile files, in order of z then x, combined: what the
-  /// determinism test pins.
+  /// `hash_bytes` over each of the level's tile records, in order of z then x, combined: what the
+  /// determinism test pins. A record is the bytes a tile's own file held before the archive.
   hash: string
+  /// The level's archive beside the manifest (`<spacing_mm>.tiles`: every tile's record and a
+  /// table of contents, tileset.md "The archive"), and its size in bytes.
+  archive: string
+  archive_bytes: u64
 }
 
-/// **A built tile set** (`manifest.json`, beside a directory a level holding its tiles,
-/// `<spacing_mm>/<x>_<z>.tile`): what the `tiles` ground provider opens.
+/// **A built tile set** (`manifest.json`, beside one archive a level, `<spacing_mm>.tiles`): what
+/// the `tiles` ground provider opens.
 struct TileSetManifest @version(1) {
   /// "engine.tileset".
   format: string
@@ -121,9 +125,13 @@ struct MaskLevelManifest @version(1) {
   resident_mib: u32 = 256
   /// The tiles written, as (x, z) pairs; a tile not listed holds nothing authored.
   present: i32[]
-  /// The bytes of the tile files written, and the hash over them in the order listed.
+  /// The bytes of the tile records written, and the hash over them in the order listed.
   bytes: u64
   hash: string
+  /// The level's archive beside the manifest (`<spacing_mm>.masks`: every present tile's record
+  /// and a table of contents), and its size in bytes.
+  archive: string
+  archive_bytes: u64
 }
 
 /// What `engine-content terrain-masks` prints: one line of JSON.

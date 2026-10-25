@@ -16,8 +16,14 @@
 // serves any number of concurrent reads from any number of threads with no shared file pointer
 // between them, which is exactly the shape `read_ranges_async` puts on the Efficiency pool.
 //
+// `read_queued` is the deep queue (roadmap W54): a group of ranged reads issued from the calling
+// thread with up to `depth` in flight at once — overlapped reads on Windows — instead of one read a
+// job, so a caller with four hundred small ranges keeps the device's queue full without a pool of
+// threads to block in each read. A handle opened `ReadMode::unbuffered` bypasses the OS's cache.
+//
 // Not here (yet): memory mapping, file watching, the content-addressed blob store (domain/ddc),
-// io_uring, and DirectStorage-style GPU decompression behind the same request shape.
+// io_uring (POSIX `read_queued` reads in order, one at a time), and DirectStorage-style GPU
+// decompression behind the same request shape.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -178,6 +184,18 @@ bool wait_all(jobs::JobSystem& jobs, std::span<AsyncRead> requests);
 // The handle is movable so it can live in a `Vector` beside the rest of a mesh's state, and
 // closes itself. Nothing is buffered: a range read is one system call, which is what a caller
 // reading 128 KB at a time wants and what a caller reading four bytes at a time must not do.
+
+// How a handle reads. `buffered` goes through the OS's file cache, as every other read here does.
+// `unbuffered` bypasses it (Windows `FILE_FLAG_NO_BUFFERING`, Linux `O_DIRECT`): every offset,
+// length and destination address must then be a multiple of `k_unbuffered_alignment` or the read
+// is refused (`InvalidArgument`), and a read past the end comes back short as a buffered one does.
+// It is how a measurement reads a file cold without the rights to drop the cache, and how a large
+// sequential read avoids copying through it (docs/subsystems/io.md, "Queued reads").
+enum class ReadMode : u8 { buffered, unbuffered };
+// The alignment an unbuffered read needs: a 4 KiB sector, which covers 512-byte-emulating and
+// 4K-native drives alike.
+inline constexpr u64 k_unbuffered_alignment = 4096;
+
 class FileHandle {
  public:
   FileHandle() noexcept = default;
@@ -186,11 +204,15 @@ class FileHandle {
   FileHandle(FileHandle&& other) noexcept;
   FileHandle& operator=(FileHandle&& other) noexcept;
 
-  // Opens for reading. Replaces whatever the handle held.
-  Status open(std::string_view native_path);
+  // Opens for reading. Replaces whatever the handle held. A file system that cannot read
+  // unbuffered (a tmpfs, some overlay mounts) refuses `ReadMode::unbuffered` at open.
+  Status open(std::string_view native_path, ReadMode mode = ReadMode::buffered);
   void close() noexcept;
+  bool unbuffered() const noexcept { return unbuffered_; }
 #if ENGINE_PLATFORM_WINDOWS
   bool valid() const noexcept { return handle_ != nullptr; }
+  // The `HANDLE`, for `read_queued`'s overlapped reads; null when closed.
+  void* native() const noexcept { return handle_; }
 #else
   bool valid() const noexcept { return handle_ >= 0; }
 #endif
@@ -217,6 +239,7 @@ class FileHandle {
   int handle_ = -1;
 #endif
   u64 size_ = 0;
+  bool unbuffered_ = false;
   std::string path_;
 };
 
@@ -242,6 +265,34 @@ struct AsyncRangeRead {
 void read_ranges_async(jobs::JobSystem& jobs, std::span<AsyncRangeRead> requests,
                        jobs::Counter& counter);
 void read_range_async(jobs::JobSystem& jobs, AsyncRangeRead& request, jobs::Counter& counter);
+
+// ---- queued reads (roadmap W54) ---------------------------------------------------------------
+
+// Called on the issuing thread as each request of `read_queued` completes, in the requests' order.
+using ReadCompleted = void (*)(void* context, u32 index) noexcept;
+inline constexpr u32 k_max_queue_depth = 256;
+
+struct QueuedReadStats {
+  u32 requests = 0;
+  u32 most_in_flight = 0;  // the deepest the queue was: min(depth, requests) unless one failed
+};
+
+// **Reads every request with up to `depth` of them in flight at once**, issued from the calling
+// thread, and returns when all have landed: true when every one is `complete()`. Each request
+// names its own handle, offset, length and destination, as `read_range_async`'s do; a request with
+// no handle, or a misaligned one on an unbuffered handle, fails alone (`InvalidArgument`) and the
+// rest are still read.
+//
+// On Windows each read is an overlapped `ReadFile` with an event of its own (a pool kept per
+// thread), so `depth` reads are queued at the device together and no thread blocks in one; on
+// POSIX the reads are `pread` in order, one at a time (io_uring is the next step, W54). Requests
+// **complete in order**: `on_completed(context, i)` runs after request i has landed and before
+// request `i + depth` is issued, so a caller may reuse the destination of request i for request
+// i + depth — a ring of `depth` buffers serves any number of requests. `depth` is clamped to 1 ..
+// `k_max_queue_depth`. Allocates nothing once the thread's event pool is as deep as asked.
+bool read_queued(std::span<AsyncRangeRead> requests, u32 depth,
+                 ReadCompleted on_completed = nullptr, void* context = nullptr,
+                 QueuedReadStats* stats = nullptr) noexcept;
 
 // The synchronous form, for a caller with one range and no job system: opens, reads, closes.
 // A caller with more than one range of the same file opens a `FileHandle` instead.

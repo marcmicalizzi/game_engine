@@ -21,6 +21,15 @@
 // there records this build's key: a second build is a hit. It prints one JSON line,
 // `engine.tileset.TileSetReport`. It is not a `build-all` step: `content_build::DerivedStep::build`
 // is handed a source's bytes and no path, and a heightfield's header names its grid beside it.
+//
+//   terrain-read <manifest.json | dir> [--pattern level|windows|points|files] [--level <n>]
+//                [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--unbuffered]
+//                [--masks]
+//
+// `terrain-read` is a measurement, not a build: it reads a set's level the way a load does — whole
+// in file order, as windows that are each one batch, or point by point — or a directory of the old
+// format's tile files one at a time, and prints the seconds, the bytes and the machine's state
+// (docs/experiments/tile-archives-2026-10-24.md).
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -30,13 +39,16 @@
 #include <string_view>
 
 #if ENGINE_CONTENT_TILESET
+#include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
+#include <foundation/bench/machine_state.h>
 #include <foundation/io/vfs.h>
 
 #include <charconv>
@@ -84,6 +96,25 @@ constexpr int k_exit_error = 1;
     "                               repository's round the scene)\n"
     "      --force                  build even when the cache holds the key\n"
     "      --write-priors <dir>     also write the priors as greyscale PNGs, one per role\n";
+
+[[maybe_unused]] const char* k_read_usage =
+    "usage: engine-content terrain-read <manifest.json | dir> [options]\n"
+    "  reads a built tile set (or mask level) the way a load does and prints one JSON line of\n"
+    "  what it cost: seconds, bytes, MB/s, the reader's batches, runs and queue depth, and the\n"
+    "  machine's state at both ends (a measurement: tileset.md, \"Reading a level\")\n"
+    "      --pattern <p>            level: the level whole, in file order, one batch (default);\n"
+    "                               windows: square windows of --window tiles a side over the\n"
+    "                               level in a scattered order, each window one batch; points: a\n"
+    "                               point query a tile in a scattered order, each miss its own\n"
+    "                               read (the scene load's standing); files: every file of <dir>\n"
+    "                               read whole, one at a time (a level before its archive)\n"
+    "      --level <n>              the manifest's level, the finest 0 (default 0)\n"
+    "      --depth <n>              range reads in flight in one batch (default 32)\n"
+    "      --run-kib <n>            adjacent tiles read as one run up to this (default 256)\n"
+    "      --window <n>             tiles a side of a window (default 8)\n"
+    "      --cache-mib <n>          the reader's tile budget (default 1024)\n"
+    "      --unbuffered             read past the OS's file cache (cold reads, no rights needed)\n"
+    "      --masks                  the manifest is a mask level's: every tile in order, twice\n";
 
 [[maybe_unused]] int usage(const char* text, const std::string& message) {
   if (!message.empty()) std::fprintf(stderr, "engine-content: %s\n", message.c_str());
@@ -342,6 +373,157 @@ int masks_command(int argc, char** argv) {
   return k_exit_ok;
 }
 
+// A permutation of [0, n): a scattered order that is the same on every run, as a load's placements
+// are scattered over a region and the same on every launch.
+Vector<u32> scattered(u32 n) {
+  Vector<u32> order(n);
+  for (u32 i = 0; i < n; ++i)
+    order[i] = i;
+  for (u32 i = n; i > 1; --i) {
+    const u32 j = static_cast<u32>(mix64(hash_combine(0x7465727261696eull, i)) % i);
+    std::swap(order[i - 1], order[j]);
+  }
+  return order;
+}
+
+int read_command(int argc, char** argv) {
+  if (argc < 3) return usage(k_read_usage, "");
+  const std::string target = argv[2];
+  std::string pattern = "level";
+  u32 level_index = 0;
+  u32 window = 8;
+  u64 cache_mib = 1024;
+  bool masks = false;
+  tileset::TileSet::ReadOptions read;
+  for (int i = 3; i < argc; ++i) {
+    const std::string_view a = argv[i];
+    const bool has = i + 1 < argc;
+    u64 n = 0;
+    if (a == "--pattern" && has) {
+      pattern = argv[++i];
+    } else if (a == "--level" && has && parse_int(argv[i + 1], level_index)) {
+      ++i;
+    } else if (a == "--depth" && has && parse_int(argv[i + 1], read.depth) && read.depth >= 1) {
+      ++i;
+    } else if (a == "--run-kib" && has && parse_int(argv[i + 1], n)) {
+      read.run_bytes = n * 1024;
+      ++i;
+    } else if (a == "--window" && has && parse_int(argv[i + 1], window) && window >= 1) {
+      ++i;
+    } else if (a == "--cache-mib" && has && parse_int(argv[i + 1], cache_mib) && cache_mib >= 1) {
+      ++i;
+    } else if (a == "--unbuffered") {
+      read.unbuffered = true;
+    } else if (a == "--masks") {
+      masks = true;
+    } else {
+      return usage(k_read_usage, "unknown or incomplete option '" + std::string(a) + "'");
+    }
+  }
+  if (pattern != "level" && pattern != "windows" && pattern != "points" && pattern != "files")
+    return usage(k_read_usage, "--pattern is level, windows, points or files");
+
+  const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
+  JsonValue report = JsonValue::object();
+  report.set("pattern", masks ? std::string("masks") : pattern);
+  report.set("depth", static_cast<u64>(read.depth));
+  report.set("run_kib", read.run_bytes / 1024);
+  report.set("unbuffered", read.unbuffered);
+  u64 tiles = 0;
+  u64 bytes = 0;
+  i64 begin = 0;
+  i64 end = 0;
+  std::string error;
+  if (pattern == "files") {
+    // A level before its archive: every file of the directory, whole, one at a time.
+    Vector<io::DirEntry> entries;
+    if (io::list_directory(target, entries) != io::Status::Ok)
+      return failed("terrain-read", "'" + target + "' is not a directory it can list");
+    std::string data;
+    begin = time::monotonic_ns();
+    for (const io::DirEntry& e : entries) {
+      if (e.is_directory) continue;
+      if (io::read_file(io::join_path(target, e.name), data) != io::Status::Ok)
+        return failed("terrain-read", "'" + e.name + "' could not be read");
+      ++tiles;
+      bytes += data.size();
+    }
+    end = time::monotonic_ns();
+  } else if (masks) {
+    tileset::MaskLevel level;
+    if (!level.open(target, error, read.unbuffered)) return failed("terrain-read", error);
+    const scene_gen::GroundMaskInfo& info = level.info();
+    Vector<u32> words(scene_gen::mask_tile_words(info.cells));
+    begin = time::monotonic_ns();
+    // The renderer's two passes: one to count, one to copy (terrain_materials.cpp).
+    for (u32 pass = 0; pass < 2; ++pass)
+      for (i32 tz = info.tile_min_z; tz <= info.tile_max_z; ++tz)
+        for (i32 tx = info.tile_min_x; tx <= info.tile_max_x; ++tx)
+          if (level.tile(tx, tz, {words.data(), words.size()}) && pass == 0) ++tiles;
+    end = time::monotonic_ns();
+    const tileset::MaskLevel::ReadStats stats = level.read_stats();
+    bytes = stats.bytes;
+    report.set("windows", stats.windows);
+  } else {
+    tileset::TileSet set(cache_mib * 1024 * 1024, read);
+    if (!set.open(target, error)) return failed("terrain-read", error);
+    const tileset::TileSetManifest& m = set.manifest();
+    if (level_index >= m.levels.size())
+      return failed("terrain-read", "the set has " + std::to_string(m.levels.size()) + " levels");
+    const tileset::TileSetLevel& level = m.levels[level_index];
+    const i32 tx0 = level.tile_min[0], tz0 = level.tile_min[1];
+    const u32 ntx = static_cast<u32>(level.tile_max[0] - tx0 + 1);
+    const u32 ntz = static_cast<u32>(level.tile_max[1] - tz0 + 1);
+    const i64 cells = m.cells;
+    begin = time::monotonic_ns();
+    if (pattern == "level") {
+      tiles = set.prefetch_level(level_index);
+    } else if (pattern == "windows") {
+      const u32 wx = (ntx + window - 1) / window;
+      const u32 wz = (ntz + window - 1) / window;
+      for (const u32 w : scattered(wx * wz)) {
+        const i32 ax = tx0 + static_cast<i32>((w % wx) * window);
+        const i32 az = tz0 + static_cast<i32>((w / wx) * window);
+        tiles += set.prefetch(level_index, ax, az, ax + static_cast<i32>(window) - 1,
+                              az + static_cast<i32>(window) - 1);
+      }
+    } else {
+      // A point at each tile's centre, the tiles in a scattered order: each a miss read alone.
+      volatile f64 sink = 0;
+      for (const u32 t : scattered(ntx * ntz)) {
+        const i64 i = (tx0 + static_cast<i64>(t % ntx)) * cells + cells / 2;
+        const i64 j = (tz0 + static_cast<i64>(t / ntx)) * cells + cells / 2;
+        sink = sink + set.point_mm(i * level.spacing_mm, j * level.spacing_mm);
+      }
+      tiles = set.reads();
+    }
+    end = time::monotonic_ns();
+    const tileset::TileSet::ReaderStats stats = set.reader_stats();
+    bytes = stats.io_bytes;
+    report.set("level_mm", level.spacing_mm);
+    report.set("batches", stats.batches);
+    report.set("runs", stats.runs);
+    report.set("most_in_flight", stats.most_in_flight);
+    report.set("failures", static_cast<u64>(set.failures()));
+  }
+  const bench::MachineState machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+  const f64 seconds = static_cast<f64>(end - begin) / 1.0e9;
+  report.set("tiles", tiles);
+  report.set("bytes", bytes);
+  report.set("seconds", seconds);
+  report.set("mb_per_s", seconds > 0 ? static_cast<f64>(bytes) / 1.0e6 / seconds : 0.0);
+  JsonValue machine = JsonValue::object();
+  machine.set("start", bench::machine_state_json(machine_start));
+  machine.set("end", bench::machine_state_json(machine_end));
+  report.set("machine_state", std::move(machine));
+  (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                            stderr);
+  std::string text = write_json(report, JsonWriteOptions{.pretty = false});
+  text.push_back('\n');
+  std::fwrite(text.data(), 1, text.size(), stdout);
+  return k_exit_ok;
+}
+
 #endif
 
 }  // namespace
@@ -351,6 +533,7 @@ int tileset_command(int argc, char** argv) {
 #if ENGINE_CONTENT_TILESET
   if (command == "terrain-synth") return synth_command(argc, argv);
   if (command == "terrain-masks") return masks_command(argc, argv);
+  if (command == "terrain-read") return read_command(argc, argv);
   return tiles_command(argc, argv);
 #else
   (void)argc;

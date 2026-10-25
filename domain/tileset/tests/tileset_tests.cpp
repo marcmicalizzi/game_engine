@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <schemas/scene.h>
 #include <string>
@@ -184,9 +185,13 @@ TEST_CASE("tileset: every tile of every level reads back as the build computed i
   u32 tiles = 0;
   for (const TileSetLevel& level : m.levels) {
     tiles += level.tiles;
-    for (i32 tz = level.tile_min[1]; tz <= level.tile_max[1]; ++tz)
-      for (i32 tx = level.tile_min[0]; tx <= level.tile_max[0]; ++tx)
-        CHECK(io::exists(io::join_path(s.tmp.file("set"), tile_file(level.spacing_mm, tx, tz))));
+    // One archive a level: its header, a record a tile, a 24-byte entry a tile.
+    CHECK(level.archive == level_archive(level.spacing_mm));
+    io::FileInfo info;
+    REQUIRE(io::stat_file(io::join_path(s.tmp.file("set"), level.archive), info) == io::Status::Ok);
+    const u64 record = 32 + u64{s.options.cells + 3} * (s.options.cells + 3) * 4;
+    CHECK(info.size == 64 + u64{level.tiles} * (record + 24));
+    CHECK(level.archive_bytes == info.size);
   }
   CHECK(tiles == s.built.tiles);
   CHECK(s.built.levels == 4);
@@ -472,25 +477,55 @@ TEST_CASE("tileset: residency is bounded across travel, eviction, return and con
 
 TEST_CASE("tileset: missing or corrupt tile data is refused, never zero ground") {
   SmallSet s;
-  // The source covers (0,0); use a fresh reader so an earlier cached copy cannot mask damage.
-  const std::string file = io::join_path(io::parent_path(s.built.manifest), tile_file(500, 0, 0));
+  // The source covers (0,0); use a fresh reader so an earlier cached copy cannot mask damage. The
+  // archive's layout is the page's (tileset.md, "The archive"): a 64-byte header with the count at
+  // byte 12 and the table's offset at byte 24, the records back to back in order of z then x, and
+  // the table of 24-byte entries at the end.
+  const std::string file = io::join_path(io::parent_path(s.built.manifest), level_archive(500));
   std::string original;
   REQUIRE(io::read_file(file, original) == io::Status::Ok);
+  TileSetLevel finest;
+  {
+    TileSet probe;
+    REQUIRE_MESSAGE(probe.open(s.built.manifest, s.error), s.error);
+    finest = probe.manifest().levels[0];
+  }
+  const u32 ntx = static_cast<u32>(finest.tile_max[0] - finest.tile_min[0] + 1);
+  const u32 index =
+      static_cast<u32>(0 - finest.tile_min[1]) * ntx + static_cast<u32>(0 - finest.tile_min[0]);
+  const u64 record = 32 + u64{s.options.cells + 3} * (s.options.cells + 3) * 4;
+  u32 count = 0;
+  u64 toc = 0;
+  std::memcpy(&count, original.data() + 12, 4);
+  std::memcpy(&toc, original.data() + 24, 8);
+  REQUIRE(count == finest.tiles);
   for (const bool corrupt : {false, true}) {
-    if (corrupt)
-      REQUIRE(io::write_file(file, "broken") == io::Status::Ok);
-    else {
-      std::error_code ec;
-      REQUIRE(std::filesystem::remove(file, ec));
+    std::string damaged = original;
+    if (corrupt) {
+      // The record's header overwritten: it no longer says it is tile (0, 0).
+      std::memset(damaged.data() + 64 + index * record, 0x5A, 32);
+    } else {
+      // The table's entry gone: the archive no longer holds tile (0, 0).
+      damaged.erase(static_cast<usize>(toc + u64{index} * 24), 24);
+      const u32 fewer = count - 1;
+      std::memcpy(damaged.data() + 12, &fewer, 4);
     }
-    TileSet set;
-    REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+    REQUIRE(io::write_file(file, damaged) == io::Status::Ok);
     f32 h = 123.0f;
-    CHECK_FALSE(set.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
-    CHECK(set.failures() > 0);
-    CHECK(std::isnan(set.height_mm(0, 0)));
+    {
+      TileSet set;
+      REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+      CHECK_FALSE(set.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+      CHECK(set.failures() > 0);
+      CHECK(std::isnan(set.height_mm(0, 0)));
+    }
+    // Repaired, the archive answers a reader opened after it (the table is read at open; on
+    // Windows a reader holding the archive open keeps a build from replacing it, tileset.md).
     REQUIRE(io::write_file(file, original) == io::Status::Ok);
-    CHECK(set.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+    TileSet again;
+    REQUIRE_MESSAGE(again.open(s.built.manifest, s.error), s.error);
+    CHECK(again.source().heights(0, 500, 0, 0, 1, 1, std::span<f32>(&h, 1)));
+    CHECK(again.failures() == 0);
   }
 }
 
@@ -646,11 +681,180 @@ TEST_CASE("tileset: concurrent callers missing the same tiles read each once") {
   for (std::thread& t : threads)
     t.join();
   CHECK(mismatches.load() == 0);
-  // 64 points from -32 on 16-cell tiles: five tiles a side reached, read once each.
+  // 64 points from -32 on 16-cell tiles: four by five tiles reached, read once each.
   const TileSet::ReaderStats stats = set.reader_stats();
   CHECK(set.reads() == stats.misses);
   CHECK(set.reads() == set.cache_stats().tiles);
   CHECK(set.cache_stats().evictions == 0);
-  MESSAGE(set.reads() << " tiles read for 8 callers; " << stats.load_waits
+  // The window's misses went as batches (the first caller's claimed them all; the rest waited).
+  CHECK(set.reads() == 20);
+  CHECK(stats.batches >= 1);
+  CHECK(stats.batch_tiles == stats.misses);
+  MESSAGE(set.reads() << " tiles read for 8 callers in " << stats.batches << " batches of "
+                      << stats.runs << " runs; " << stats.load_waits
                       << " waits for another's read, " << stats.hits << " hits");
+}
+
+namespace {
+
+u32 read_u32(const std::string& b, u64 at) {
+  u32 v = 0;
+  std::memcpy(&v, b.data() + at, 4);
+  return v;
+}
+i32 read_i32(const std::string& b, u64 at) {
+  i32 v = 0;
+  std::memcpy(&v, b.data() + at, 4);
+  return v;
+}
+u64 read_u64(const std::string& b, u64 at) {
+  u64 v = 0;
+  std::memcpy(&v, b.data() + at, 8);
+  return v;
+}
+
+}  // namespace
+
+// **A level is one archive** (tileset.md, "The archive"): its table lists every tile of the level
+// in order of z then x, each record names its own tile, and the records hashed in the table's order
+// are the manifest's level hash — the same bytes the build hashed, which before the archive were
+// the tile files.
+TEST_CASE("tileset: every level's archive holds its tiles' records in order, found by its table") {
+  SmallSet s;
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const u64 record = 32 + u64{s.options.cells + 3} * (s.options.cells + 3) * 4;
+  for (const TileSetLevel& level : set.manifest().levels) {
+    std::string file;
+    REQUIRE(io::read_file(io::join_path(s.tmp.file("set"), level.archive), file) == io::Status::Ok);
+    CHECK(std::memcmp(file.data(), "ETAR", 4) == 0);
+    CHECK(std::memcmp(file.data() + 8, "ETIL", 4) == 0);
+    const u32 count = read_u32(file, 12);
+    const u64 toc = read_u64(file, 24);
+    REQUIRE(count == level.tiles);
+    u64 h = hash_combine(k_hash_seed, static_cast<u64>(level.spacing_mm));
+    i32 tz = level.tile_min[1];
+    i32 tx = level.tile_min[0];
+    for (u32 i = 0; i < count; ++i) {
+      const u64 entry = toc + u64{i} * 24;
+      CHECK(read_i32(file, entry) == tx);
+      CHECK(read_i32(file, entry + 4) == tz);
+      const u64 offset = read_u64(file, entry + 8);
+      CHECK(read_u32(file, entry + 16) == record);
+      // The record's own header: "ETIL", record version 1, its cells, spacing and tile.
+      CHECK(std::memcmp(file.data() + offset, "ETIL", 4) == 0);
+      CHECK(read_u32(file, offset + 4) == 1);
+      CHECK(read_i32(file, offset + 24) == tx);
+      CHECK(read_i32(file, offset + 28) == tz);
+      h = hash_combine(h, hash_bytes(file.data() + offset, record));
+      if (++tx > level.tile_max[0]) {
+        tx = level.tile_min[0];
+        ++tz;
+      }
+    }
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+    CHECK_MESSAGE(std::string(hex) == level.hash, "level " << level.spacing_mm);
+  }
+}
+
+// **The whole level at once** (tileset.md, "Reading a level"): read in file order in large runs,
+// every tile once, and a window over all of it afterwards reads nothing; with a cache smaller than
+// the level it reads what fits and evicts nothing it read.
+TEST_CASE(
+    "tileset: a whole level is read in order in large runs, and a window after it reads none") {
+  SmallSet s;
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const TileSetLevel& finest = set.manifest().levels[0];
+  CHECK(set.prefetch_level(0) == finest.tiles);
+  CHECK(set.prefetch_level(0) == 0);  // resident already
+  const TileSet::ReaderStats stats = set.reader_stats();
+  CHECK(stats.batches == 1);
+  CHECK(stats.batch_tiles == finest.tiles);
+  // 49 records of 1,476 bytes are one run of 72 KB under the 256 KiB run.
+  CHECK(stats.runs == 1);
+  const u32 nx = static_cast<u32>(finest.index_max[0] - finest.index_min[0] + 1);
+  const u32 nz = static_cast<u32>(finest.index_max[1] - finest.index_min[1] + 1);
+  Vector<f32> h(nx * nz);
+  REQUIRE(set.source().heights(0.0, 500, static_cast<i32>(finest.index_min[0]),
+                               static_cast<i32>(finest.index_min[1]), nx, nz,
+                               std::span<f32>(h.data(), h.size())));
+  CHECK(set.reads() == finest.tiles);
+  CHECK(set.reader_stats().misses == finest.tiles);
+  const Grid g = grid_of(s.field, s.options);
+  u32 differ = 0;
+  for (u32 z = 0; z < nz; ++z)
+    for (u32 x = 0; x < nx; ++x)
+      differ +=
+          h[z * nx + x] == metres(g.at_world(finest.index_min[0] + x, finest.index_min[1] + z))
+              ? 0u
+              : 1u;
+  CHECK(differ == 0);
+
+  const u64 payload = u64{s.options.cells + 3} * (s.options.cells + 3) * sizeof(i32);
+  TileSet small(payload * 10);
+  REQUIRE_MESSAGE(small.open(s.built.manifest, s.error), s.error);
+  CHECK(small.prefetch_level(0) == 10);
+  CHECK(small.cache_stats().tiles == 10);
+  CHECK(small.cache_stats().evictions == 0);
+  // Ten tiles are the first row's seven and three of the second: a rectangle three by two over the
+  // second and third rows' first three holds three resident, and reads the other three, evicting
+  // the oldest.
+  CHECK(small.prefetch(0, finest.tile_min[0], finest.tile_min[1] + 1, finest.tile_min[0] + 2,
+                       finest.tile_min[1] + 2) == 3);
+  CHECK(small.cache_stats().evictions == 3);
+}
+
+// **Every way of reading reads the same heights**: one record a read at depth one, small runs at
+// depth eight, runs of a megabyte at depth 128, and the archive unbuffered through its staging
+// ring — each a window over every level against the default reader, bit for bit, each tile read
+// once. A file system that cannot read unbuffered (a container's overlay) is said and skipped.
+TEST_CASE("tileset: every depth, run and unbuffered reading answers the same heights") {
+  SmallSet s;
+  TileSet reference;
+  REQUIRE_MESSAGE(reference.open(s.built.manifest, s.error), s.error);
+  struct Way {
+    u32 depth;
+    u64 run;
+    bool unbuffered;
+  };
+  const Way ways[] = {
+      {1, 0, false}, {8, 4096, false}, {128, 1u << 20, false}, {32, 64 * 1024, true}};
+  for (const Way& way : ways) {
+    TileSet::ReadOptions o;
+    o.depth = way.depth;
+    o.run_bytes = way.run;
+    o.unbuffered = way.unbuffered;
+    TileSet set(64ull * 1024 * 1024, o);
+    std::string why;
+    if (!set.open(s.built.manifest, why)) {
+      REQUIRE(way.unbuffered);
+      MESSAGE("unbuffered reads are not available here: " << why);
+      continue;
+    }
+    u32 differ = 0;
+    for (const TileSetLevel& level : set.manifest().levels) {
+      const u32 nx = static_cast<u32>(level.index_max[0] - level.index_min[0] + 3);
+      const u32 nz = static_cast<u32>(level.index_max[1] - level.index_min[1] + 3);
+      Vector<f32> a(nx * nz), b(nx * nz);
+      const i32 i0 = static_cast<i32>(level.index_min[0] - 1);
+      const i32 j0 = static_cast<i32>(level.index_min[1] - 1);
+      REQUIRE(set.source().filtered(0.0, level.spacing_mm, level.filter_mm, i0, j0, nx, nz,
+                                    std::span<f32>(a.data(), a.size())));
+      REQUIRE(reference.source().filtered(0.0, level.spacing_mm, level.filter_mm, i0, j0, nx, nz,
+                                          std::span<f32>(b.data(), b.size())));
+      for (u32 k = 0; k < a.size(); ++k)
+        differ += a[k] == b[k] ? 0u : 1u;
+    }
+    const TileSet::ReaderStats stats = set.reader_stats();
+    MESSAGE("depth " << way.depth << ", runs of " << way.run << " bytes"
+                     << std::string(way.unbuffered ? ", unbuffered" : "") << ": " << set.reads()
+                     << " tiles in " << stats.runs << " runs, " << stats.io_bytes
+                     << " bytes, at most " << stats.most_in_flight << " in flight");
+    CHECK(differ == 0);
+    CHECK(set.failures() == 0);
+    CHECK(set.reads() == s.built.tiles);
+    CHECK(stats.most_in_flight <= way.depth);
+  }
 }

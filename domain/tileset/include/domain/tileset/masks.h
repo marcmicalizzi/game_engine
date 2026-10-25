@@ -20,8 +20,10 @@
 namespace engine::tileset {
 
 inline constexpr std::string_view k_mask_format = "engine.tileset.masks";
-// Bumped whenever a build's output for the same set and inputs changes.
-inline constexpr u32 k_mask_version = 1;
+// Bumped whenever a build's output for the same set and inputs changes. 2 (2026-10-24, roadmap
+// W76): the level is one archive (`<spacing_mm>.masks`) instead of a file a tile; every tile's
+// bytes are what its file held.
+inline constexpr u32 k_mask_version = 2;
 
 // **The authored inputs**, as a build takes them: the block with its image paths resolved and its
 // water bodies' outlines copied in (`scene_gen::resolve_mask_water`), the palette's names in order,
@@ -79,11 +81,19 @@ bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::stri
 bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Vector<f64>& weights,
                 f64& wetness, std::string& error);
 
-// **A built level, read back.** Tiles are read whole when asked (the renderer reads every tile once
-// at load); nothing is cached.
+// **A built level, read back.** Its archive is opened once and its table read; a tile is copied
+// out of a **read-ahead window** — the tiles from the one asked onwards in file order, up to 2 MiB,
+// read as one queue of large ranges — because the renderer asks every tile in that order at load
+// (twice: once to count, once to copy), so a level costs a few dozen reads rather than one a tile.
+// Safe to call from several threads (the window is behind a lock).
 class MaskLevel {
  public:
-  bool open(const std::string& manifest_path, std::string& error);
+  MaskLevel();
+  ~MaskLevel();
+  MaskLevel(MaskLevel&&) noexcept;
+  MaskLevel& operator=(MaskLevel&&) noexcept;
+  // `unbuffered`: the archive read past the OS's file cache (a cold measurement).
+  bool open(const std::string& manifest_path, std::string& error, bool unbuffered = false);
   bool is_open() const noexcept { return info_.cells != 0; }
   const MaskLevelManifest& manifest() const noexcept { return manifest_; }
   const scene_gen::GroundMaskInfo& info() const noexcept { return info_; }
@@ -98,14 +108,23 @@ class MaskLevel {
               f32& wetness) const;
   scene_gen::GroundMasks masks() const noexcept;
 
+  // Reads of the archive so far: windows filled and the bytes they read.
+  struct ReadStats {
+    u64 windows = 0;
+    u64 bytes = 0;
+  };
+  ReadStats read_stats() const noexcept;
+
  private:
   MaskLevelManifest manifest_;
   scene_gen::GroundMaskInfo info_;
   std::string dir_;
   Vector<u64> present_;  // sorted keys of the tiles written
+  struct Reading;
+  std::unique_ptr<Reading> reading_;
 };
 
-// "<x>_<z>.mask" inside a level's directory.
-std::string mask_tile_file(i32 tx, i32 tz);
+// "<spacing_mm>.masks" inside a level's directory: its archive.
+std::string mask_archive(i64 spacing_mm);
 
 }  // namespace engine::tileset

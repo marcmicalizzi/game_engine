@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <system_error>
@@ -562,13 +563,17 @@ bool wait_all(jobs::JobSystem& jobs, std::span<AsyncRead> requests) {
 // ---- ranged reads ------------------------------------------------------------------------------
 
 FileHandle::FileHandle(FileHandle&& other) noexcept
-    : handle_(other.handle_), size_(other.size_), path_(std::move(other.path_)) {
+    : handle_(other.handle_),
+      size_(other.size_),
+      unbuffered_(other.unbuffered_),
+      path_(std::move(other.path_)) {
 #if ENGINE_PLATFORM_WINDOWS
   other.handle_ = nullptr;
 #else
   other.handle_ = -1;
 #endif
   other.size_ = 0;
+  other.unbuffered_ = false;
 }
 
 FileHandle& FileHandle::operator=(FileHandle&& other) noexcept {
@@ -576,6 +581,7 @@ FileHandle& FileHandle::operator=(FileHandle&& other) noexcept {
   close();
   handle_ = other.handle_;
   size_ = other.size_;
+  unbuffered_ = other.unbuffered_;
   path_ = std::move(other.path_);
 #if ENGINE_PLATFORM_WINDOWS
   other.handle_ = nullptr;
@@ -583,6 +589,7 @@ FileHandle& FileHandle::operator=(FileHandle&& other) noexcept {
   other.handle_ = -1;
 #endif
   other.size_ = 0;
+  other.unbuffered_ = false;
   return *this;
 }
 
@@ -595,11 +602,13 @@ void FileHandle::close() noexcept {
   handle_ = -1;
 #endif
   size_ = 0;
+  unbuffered_ = false;
   path_.clear();
 }
 
-Status FileHandle::open(std::string_view native_path) {
+Status FileHandle::open(std::string_view native_path, ReadMode mode) {
   close();
+  const bool unbuffered = mode == ReadMode::unbuffered;
 #if ENGINE_PLATFORM_WINDOWS
   // FILE_FLAG_OVERLAPPED, because the point of this handle is concurrent positional reads: a
   // synchronous handle serializes them on the file object even when each names its own offset.
@@ -607,14 +616,16 @@ Status FileHandle::open(std::string_view native_path) {
   // replacing it — `write_cluster_file` renames over the target, and a reader with an open
   // handle keeps reading the bytes it opened.
   const fs::path p = to_path(native_path);
+  const DWORD flags = FILE_FLAG_OVERLAPPED | (unbuffered ? FILE_FLAG_NO_BUFFERING : 0);
   HANDLE h =
       ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+                    nullptr, OPEN_EXISTING, flags, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     const DWORD err = ::GetLastError();
     if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return Status::NotFound;
     if (err == ERROR_ACCESS_DENIED) return Status::PermissionDenied;
     if (err == ERROR_SHARING_VIOLATION) return Status::PermissionDenied;
+    if (err == ERROR_INVALID_PARAMETER) return Status::InvalidArgument;
     return Status::IoError;
   }
   LARGE_INTEGER size{};
@@ -626,8 +637,15 @@ Status FileHandle::open(std::string_view native_path) {
   size_ = static_cast<u64>(size.QuadPart);
 #else
   std::string native(native_path);
-  const int fd = ::open(native.c_str(), O_RDONLY);
-  if (fd < 0) return status_from_errno(errno);
+#if defined(O_DIRECT)
+  const int open_flags = O_RDONLY | (unbuffered ? O_DIRECT : 0);
+#else
+  if (unbuffered) return Status::InvalidArgument;
+  const int open_flags = O_RDONLY;
+#endif
+  const int fd = ::open(native.c_str(), open_flags);
+  if (fd < 0)
+    return unbuffered && errno == EINVAL ? Status::InvalidArgument : status_from_errno(errno);
   struct stat st{};
   if (::fstat(fd, &st) != 0) {
     ::close(fd);
@@ -640,19 +658,36 @@ Status FileHandle::open(std::string_view native_path) {
   handle_ = fd;
   size_ = static_cast<u64>(st.st_size);
 #endif
+  unbuffered_ = unbuffered;
   path_.assign(native_path);
   return Status::Ok;
 }
+
+namespace {
+
+bool aligned(u64 v) noexcept { return v % k_unbuffered_alignment == 0; }
+
+// What a read of `bytes` at `offset` asks the OS for: clamped to the file's size so that "past the
+// end" is one answer on both platforms, a short read, not an error — except unbuffered, where the
+// length must stay a whole number of sectors and the OS itself stops at the end.
+u64 wanted(u64 offset, u64 bytes, u64 size, bool unbuffered) noexcept {
+  if (offset >= size) return 0;
+  if (unbuffered) return bytes;
+  return bytes <= size - offset ? bytes : size - offset;
+}
+
+}  // namespace
 
 Status FileHandle::read_at(u64 offset, void* dst, u64 bytes, u64& read_out) const noexcept {
   read_out = 0;
   if (!valid()) return Status::InvalidArgument;
   if (bytes == 0) return Status::Ok;
   if (dst == nullptr) return Status::InvalidArgument;
-  // Clamped here rather than left to the OS so that "past the end" is one answer on both
-  // platforms: a short read, not an error (see the header).
-  if (offset >= size_) return Status::Ok;
-  const u64 want = bytes <= size_ - offset ? bytes : size_ - offset;
+  if (unbuffered_ &&
+      (!aligned(offset) || !aligned(bytes) || !aligned(reinterpret_cast<std::uintptr_t>(dst))))
+    return Status::InvalidArgument;
+  const u64 want = wanted(offset, bytes, size_, unbuffered_);
+  if (want == 0) return Status::Ok;
   auto* out = static_cast<u8*>(dst);
 #if ENGINE_PLATFORM_WINDOWS
   // One event per call. It costs a couple of microseconds against a read of tens of kilobytes,
@@ -684,9 +719,10 @@ Status FileHandle::read_at(u64 offset, void* dst, u64 bytes, u64& read_out) cons
     }
     if (moved == 0) break;  // end of file
     done += moved;
+    if (moved < chunk) break;  // the end of the file (an unbuffered read stops there short)
   }
   ::CloseHandle(event);
-  read_out = done;
+  read_out = std::min(done, size_ - offset);
   return status;
 #else
   u64 done = 0;
@@ -700,8 +736,10 @@ Status FileHandle::read_at(u64 offset, void* dst, u64 bytes, u64& read_out) cons
     }
     if (moved == 0) break;  // end of file
     done += static_cast<u64>(moved);
+    // An unbuffered read stops short at the end; asking again would be a misaligned offset.
+    if (unbuffered_) break;
   }
-  read_out = done;
+  read_out = std::min(done, size_ - offset);
   return Status::Ok;
 #endif
 }
@@ -733,6 +771,153 @@ void read_ranges_async(jobs::JobSystem& jobs, std::span<AsyncRangeRead> requests
                        jobs::Counter& counter) {
   for (AsyncRangeRead& request : requests)
     read_range_async(jobs, request, counter);
+}
+
+// ---- queued reads --------------------------------------------------------------------------
+
+namespace {
+
+// A request `read_queued` cannot issue: no handle, or misaligned on an unbuffered one.
+bool refuse(AsyncRangeRead& r) noexcept {
+  r.read = 0;
+  if (r.file == nullptr || !r.file->valid() || (r.bytes != 0 && r.dst == nullptr)) {
+    r.status = Status::InvalidArgument;
+    return true;
+  }
+  if (r.file->unbuffered() && (!aligned(r.offset) || !aligned(r.bytes) ||
+                               !aligned(reinterpret_cast<std::uintptr_t>(r.dst)))) {
+    r.status = Status::InvalidArgument;
+    return true;
+  }
+  r.status = Status::Ok;
+  return false;
+}
+
+#if ENGINE_PLATFORM_WINDOWS
+
+// The events a thread's queued reads signal, one per slot of its deepest queue, made on first use
+// and closed when the thread ends: a read in flight has an event of its own, so two queued reads
+// never share the handle's.
+struct ThreadEvents {
+  HANDLE events[k_max_queue_depth] = {};
+  u32 count = 0;
+  ~ThreadEvents() {
+    for (u32 k = 0; k < count; ++k)
+      ::CloseHandle(events[k]);
+  }
+  u32 ensure(u32 depth) noexcept {
+    while (count < depth) {
+      HANDLE e = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      if (e == nullptr) break;
+      events[count++] = e;
+    }
+    return count < depth ? count : depth;
+  }
+};
+thread_local ThreadEvents t_events;
+
+struct QueueSlot {
+  OVERLAPPED ov{};
+  u64 want = 0;
+  bool pending = false;  // a ReadFile was issued and its result is to be collected
+};
+
+// The largest single read the queue issues; a longer request is read synchronously.
+constexpr u64 k_queued_chunk = 0x4000'0000ull;
+
+void issue(AsyncRangeRead& r, QueueSlot& slot, HANDLE event) noexcept {
+  slot.pending = false;
+  if (refuse(r)) return;
+  slot.want = wanted(r.offset, r.bytes, r.file->size(), r.file->unbuffered());
+  if (slot.want == 0) return;
+  if (slot.want > k_queued_chunk) {
+    r.status = r.file->read_at(r.offset, r.dst, r.bytes, r.read);
+    return;
+  }
+  slot.ov = OVERLAPPED{};
+  slot.ov.Offset = static_cast<DWORD>(r.offset & 0xFFFF'FFFFull);
+  slot.ov.OffsetHigh = static_cast<DWORD>(r.offset >> 32);
+  slot.ov.hEvent = event;
+  ::ResetEvent(event);
+  // Through the handle the file was opened with (its own `const` contract): the read names its
+  // offset and its event, so it touches nothing another read in flight uses.
+  HANDLE h = static_cast<HANDLE>(r.file->native());
+  if (::ReadFile(h, r.dst, static_cast<DWORD>(slot.want), nullptr, &slot.ov) != 0) {
+    slot.pending = true;  // done at once (cached); its count is collected like the rest
+    return;
+  }
+  const DWORD err = ::GetLastError();
+  if (err == ERROR_IO_PENDING) {
+    slot.pending = true;
+  } else if (err != ERROR_HANDLE_EOF) {
+    r.status = Status::IoError;
+  }
+}
+
+void collect(AsyncRangeRead& r, QueueSlot& slot) noexcept {
+  if (!slot.pending) return;
+  slot.pending = false;
+  DWORD moved = 0;
+  if (::GetOverlappedResult(static_cast<HANDLE>(r.file->native()), &slot.ov, &moved, TRUE) == 0) {
+    if (::GetLastError() != ERROR_HANDLE_EOF) r.status = Status::IoError;
+    moved = 0;
+  }
+  const u64 left = r.file->size() > r.offset ? r.file->size() - r.offset : 0;
+  r.read = std::min<u64>(moved, left);
+}
+
+#endif
+
+}  // namespace
+
+bool read_queued(std::span<AsyncRangeRead> requests, u32 depth, ReadCompleted on_completed,
+                 void* context, QueuedReadStats* stats) noexcept {
+  const u32 n = static_cast<u32>(requests.size());
+  if (stats != nullptr) *stats = QueuedReadStats{n, 0};
+  if (n == 0) return true;
+  depth = std::clamp<u32>(depth, 1, k_max_queue_depth);
+  if (depth > n) depth = n;
+  bool ok = true;
+#if ENGINE_PLATFORM_WINDOWS
+  depth = t_events.ensure(depth);
+  if (depth == 0) {
+    // No event could be made: read them one at a time, as `read_at` does with its own.
+    for (u32 i = 0; i < n; ++i) {
+      AsyncRangeRead& r = requests[i];
+      if (!refuse(r)) r.status = r.file->read_at(r.offset, r.dst, r.bytes, r.read);
+      ok = ok && r.complete();
+      if (on_completed != nullptr) on_completed(context, i);
+    }
+    if (stats != nullptr) stats->most_in_flight = n > 0 ? 1 : 0;
+    return ok;
+  }
+  QueueSlot slots[k_max_queue_depth];
+  u32 issued = 0;
+  u32 most = 0;
+  for (; issued < depth; ++issued)
+    issue(requests[issued], slots[issued], t_events.events[issued]);
+  most = issued;
+  for (u32 done = 0; done < n; ++done) {
+    const u32 s = done % depth;
+    collect(requests[done], slots[s]);
+    ok = ok && requests[done].complete();
+    if (on_completed != nullptr) on_completed(context, done);
+    if (issued < n) {
+      issue(requests[issued], slots[s], t_events.events[s]);
+      ++issued;
+    }
+  }
+  if (stats != nullptr) stats->most_in_flight = most;
+#else
+  for (u32 i = 0; i < n; ++i) {
+    AsyncRangeRead& r = requests[i];
+    if (!refuse(r)) r.status = r.file->read_at(r.offset, r.dst, r.bytes, r.read);
+    ok = ok && r.complete();
+    if (on_completed != nullptr) on_completed(context, i);
+  }
+  if (stats != nullptr) stats->most_in_flight = 1;
+#endif
+  return ok;
 }
 
 Status read_file_range(std::string_view native_path, u64 offset, void* dst, u64 bytes,

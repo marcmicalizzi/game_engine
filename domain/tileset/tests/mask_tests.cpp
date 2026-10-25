@@ -1,6 +1,7 @@
 // The mask level (masks.h; docs/subsystems/tileset.md, "The mask level"): the build composites the
 // inputs deterministically, a seam holds the same weights in both tiles, a tile naming more layers
 // than its budget is refused, and the level reads back as the field it was built from.
+#include <core/hash/hash.h>
 #include <domain/scene_gen/ground_masks.h>
 #include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
@@ -12,6 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
 
 using namespace engine;
 using namespace engine::tileset;
@@ -295,17 +299,85 @@ TEST_CASE(
   CHECK(key != first.key);
 }
 
+// **The level is one archive** (tileset.md, "The archive"): every present tile's record, in the
+// order the manifest lists them, hashes to the manifest's level hash, so each is byte for byte what
+// the build wrote; the reader finds each through the table, refuses a tile the level lacks, and
+// reads the whole level, asked in the renderer's order, in a few windows rather than a read a tile.
+TEST_CASE("tileset masks: the level's archive holds every tile and reads it in windows") {
+  Fixture fx;
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_mask_level(fx.set, fx.in, fx.tmp.file("masks"), "", false, built, fx.error), fx.error);
+  MaskLevel level;
+  REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+  const MaskLevelManifest& m = level.manifest();
+  CHECK(m.archive == mask_archive(m.spacing_mm));
+  std::string file;
+  REQUIRE(io::read_file(io::join_path(fx.tmp.file("masks"), m.archive), file) == io::Status::Ok);
+  CHECK(file.size() == m.archive_bytes);
+  // The layout: a 64-byte header (count at 12, the table's offset at 24), the records, the table.
+  u32 count = 0;
+  u64 toc = 0;
+  std::memcpy(&count, file.data() + 12, 4);
+  std::memcpy(&toc, file.data() + 24, 8);
+  REQUIRE(count == built.tiles);
+  const u32 words = scene_gen::mask_tile_words(m.cells);
+  const u64 record = 32 + u64{words} * 4;
+  CHECK(toc == 64 + u64{count} * record);
+  u64 h = hash_combine(k_hash_seed, std::stoull(m.key, nullptr, 16));
+  for (u32 i = 0; i < count; ++i) {
+    i32 tx = 0, tz = 0;
+    u64 offset = 0;
+    std::memcpy(&tx, file.data() + toc + u64{i} * 24, 4);
+    std::memcpy(&tz, file.data() + toc + u64{i} * 24 + 4, 4);
+    std::memcpy(&offset, file.data() + toc + u64{i} * 24 + 8, 8);
+    CHECK(tx == m.present[2 * i]);
+    CHECK(tz == m.present[2 * i + 1]);
+    h = hash_combine(h, hash_bytes(file.data() + offset, record));
+  }
+  char hex[17];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+  CHECK(std::string(hex) == m.hash);
+  // Every present tile through the reader, in the renderer's order (z, then x), twice.
+  Vector<u32> got(words);
+  u32 read = 0;
+  for (u32 pass = 0; pass < 2; ++pass)
+    for (u32 i = 0; i < count; ++i) {
+      REQUIRE(level.tile(m.present[2 * i], m.present[2 * i + 1], {got.data(), words}));
+      const u64 offset = 64 + u64{i} * record + 32;
+      CHECK(std::memcmp(got.data(), file.data() + offset, words * 4) == 0);
+      ++read;
+    }
+  CHECK_FALSE(level.tile(m.tile_max[0] + 1, m.tile_max[1] + 1, {got.data(), words}));
+  const MaskLevel::ReadStats stats = level.read_stats();
+  MESSAGE(read << " tiles read in " << stats.windows << " windows, " << stats.bytes << " bytes");
+  // 289 tiles of 7.5 KB are 2.2 MB: two windows a pass.
+  CHECK(stats.windows <= 6);
+}
+
 TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned value") {
-  // Pinned 2026-10-24 on MSVC (msvc-debug), k_mask_version 1, k_tileset_version 1; the same bytes
-  // from GCC and Clang at v3 (the containers' run of this case).
-  constexpr const char* k_level = "8127dd57bf0cee9c";
+  // Pinned 2026-10-24 on MSVC (msvc-debug), k_mask_version 2, k_tileset_version 2; the same bytes
+  // from GCC and Clang at v3 (the containers' run of this case). Version 1's was
+  // "8127dd57bf0cee9c": the records are the bytes they were, and the hash, seeded with the key,
+  // moved with the two versions the key names (W76's archive). The archive's own hash is every
+  // byte of the file.
+  constexpr const char* k_level = "558a6a74fd7c454a";
+  constexpr const char* k_archive = "75eef7ec443e0e7e";
   Fixture fx;
   MaskBuildResult built;
   REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("pinned"), built, fx.error),
                   fx.error);
   MaskLevel level;
   REQUIRE(level.open(built.manifest, fx.error));
-  MESSAGE("level hash " << level.manifest().hash << ", " << built.tiles << " tiles, " << built.bytes
-                        << " bytes, key " << level.manifest().key);
+  std::string bytes;
+  REQUIRE(io::read_file(io::join_path(fx.tmp.file("pinned"), level.manifest().archive), bytes) ==
+          io::Status::Ok);
+  char archive[17];
+  std::snprintf(archive, sizeof(archive), "%016llx",
+                static_cast<unsigned long long>(hash_bytes(bytes.data(), bytes.size())));
+  MESSAGE("level hash " << level.manifest().hash << ", archive " << archive << ", " << built.tiles
+                        << " tiles, " << built.bytes << " bytes, key " << level.manifest().key);
   CHECK(level.manifest().hash == std::string(k_level));
+  CHECK(std::string(archive) == std::string(k_archive));
+  CHECK(level.manifest().archive_bytes == bytes.size());
 }
