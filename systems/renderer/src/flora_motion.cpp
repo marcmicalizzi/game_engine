@@ -20,14 +20,17 @@ tunables::Float flora_wind_deg{"renderer.flora.wind_deg", 0.0, -360.0, 360.0,
                                "towards +z"};
 // **The streamed trees** (renderer.md, "Streamed trees sway"; roadmap W74). A tree a streamed world
 // hands over with its tile sways as a loaded one does; `tail` false draws the tail rigid, as before
-// W74, for a before-and-after. `sway_m` is the farthest ring floor whose distance form still sways:
-// at 100 m a 0.1 m flutter is about a pixel at 900 lines and 55 degrees, and past it the posing
-// would be paid for thousands of trees nobody can see move (the v8 forest's third ring, 13,110).
+// W74, for a before-and-after. `sway_m` is the farthest ring floor whose distance form still sways;
+// 0, the default, sways the inner ring's full meshes alone. The second ring's sway is visible (at
+// 48 m a 0.24 m frond tip is five pixels at 900 lines), but in the v8 forest that ring holds 5,122
+// swaying plants at the hardwoods view against the first ring's 261, and took the frame from 8.2
+// to 9.3 ms of GPU (renderer.md, "Streamed trees sway", the costs): an operator's choice, not a
+// default. At 100 m a 0.1 m flutter is about a pixel, so past that no ring should sway at all.
 tunables::Bool flora_tail{"renderer.flora.tail", true,
                           "Sway the trees a streamed world hands over with their tiles, as the "
                           "loaded ones do; false draws the tail rigid (renderer.md, \"Streamed "
                           "trees sway\")"};
-tunables::Float flora_sway_m{"renderer.flora.sway_m", 100.0, 0.0, 100'000.0,
+tunables::Float flora_sway_m{"renderer.flora.sway_m", 0.0, 0.0, 100'000.0,
                              "Metres: a ring's distance form of a tree sways when the ring's tiles "
                              "come nearer the camera than this, and is drawn rigid past it"};
 

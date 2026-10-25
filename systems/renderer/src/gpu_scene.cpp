@@ -825,28 +825,84 @@ void GpuScene::release_tail_tree(u32 slot) noexcept {
   }
   flora_instances_.pop_back();
   tree.at = ~0u;
-  tree.next_free = tail_tree_free_[tree.mesh];
+  // Free: first in its mesh's list, last in its class's by age.
+  tree.released = flora_frames_;
+  tree.mesh_prev = ~0u;
+  tree.mesh_next = tail_tree_free_[tree.mesh];
+  if (tree.mesh_next != ~0u) tail_trees_[tree.mesh_next].mesh_prev = t;
   tail_tree_free_[tree.mesh] = t;
+  tree.old_next = ~0u;
+  tree.old_prev = tail_old_tail_[tree.cls];
+  if (tree.old_prev != ~0u) {
+    tail_trees_[tree.old_prev].old_next = t;
+  } else {
+    tail_old_head_[tree.cls] = t;
+  }
+  tail_old_tail_[tree.cls] = t;
   tail_tree_of_slot_[slot] = ~0u;
   flora_recut_ = true;
+}
+
+void GpuScene::unlink_tail_tree(u32 t) noexcept {
+  TailTree& tree = tail_trees_[t];
+  if (tree.mesh_prev != ~0u) {
+    tail_trees_[tree.mesh_prev].mesh_next = tree.mesh_next;
+  } else {
+    tail_tree_free_[tree.mesh] = tree.mesh_next;
+  }
+  if (tree.mesh_next != ~0u) tail_trees_[tree.mesh_next].mesh_prev = tree.mesh_prev;
+  if (tree.old_prev != ~0u) {
+    tail_trees_[tree.old_prev].old_next = tree.old_next;
+  } else {
+    tail_old_head_[tree.cls] = tree.old_next;
+  }
+  if (tree.old_next != ~0u) {
+    tail_trees_[tree.old_next].old_prev = tree.old_prev;
+  } else {
+    tail_old_tail_[tree.cls] = tree.old_prev;
+  }
+  tree.mesh_prev = tree.mesh_next = tree.old_prev = tree.old_next = ~0u;
 }
 
 void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
   const u32 mesh = source.mesh;
   const FloraMesh& shape = flora_meshes_[mesh];
+  const geometry::ClusterMeshPart& part = data_->parts[mesh];
+  const u32 parts = shape.part_count();
+  const u32 cls = parts <= 1 ? 0u : static_cast<u32>(std::bit_width(parts - 1u));
   u32 t = tail_tree_free_[mesh];
+  const u32 oldest = tail_old_head_[cls];
   if (t != ~0u) {
     // A record its mesh gave back: the same stage, vertices and run of parts, so its entry in the
     // deform table is already what it should be.
-    tail_tree_free_[mesh] = tail_trees_[t].next_free;
+    unlink_tail_tree(t);
+  } else if (oldest != ~0u &&
+             flora_frames_ >= tail_trees_[oldest].released + u64{k_joint_slots} + 1) {
+    // **Another mesh's, of the same run size, given back long enough ago that no frame in flight
+    // can still draw the tree that held it**: its entry is rewritten for this mesh. Without this a
+    // world's records were the sum of every mesh's most at once — 15,101 records and 211 MB along
+    // the v8 crossing, where 365 trees swayed at its end — because the species change as a
+    // flight crosses the region and each kept the room its own peak took.
+    t = oldest;
+    unlink_tail_tree(t);
+    TailTree& tree = tail_trees_[t];
+    tree.mesh = mesh;
+    gfx::DeformDesc& desc = deform_descs_[tree.deform];
+    desc.first_vertex = part.first_vertex;
+    desc.joint_count = parts;
+    deform_mesh_clusters_[tree.deform] = part.cluster_count;
+    if (tree.deform < deform_capacity_ && deform_table.mapped != nullptr)
+      static_cast<gfx::DeformDesc*>(deform_table.mapped)[tree.deform] = desc;
+    ++flora_stats_.tail_repurposed;
   } else {
-    // A new record past every other: an entry of the deform table and a run of the pose table no
-    // frame has read, written now if they fit what the tables hold, and by `relayout`'s growth,
-    // before the next frame, if not.
-    const geometry::ClusterMeshPart& part = data_->parts[mesh];
+    // A new record past every other: an entry of the deform table and a run of the pose table
+    // (its class's size, so another mesh of the class can take it later) that no frame has read,
+    // written now if they fit what the tables hold, and by `relayout`'s growth, before the next
+    // frame, if not.
     t = tail_trees_.size();
     TailTree tree;
     tree.mesh = mesh;
+    tree.cls = cls;
     tree.deform = deform_descs_.size();
     tree.first_part = flora_parts_;
     tail_trees_.push_back(tree);
@@ -854,11 +910,11 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
     desc.stages = gfx::k_deform_stage_flora;
     desc.first_vertex = part.first_vertex;
     desc.first_part = flora_parts_;
-    desc.joint_count = shape.part_count();
+    desc.joint_count = parts;
     deform_descs_.push_back(desc);
     deform_instance_.push_back(slot);
     deform_mesh_clusters_.push_back(part.cluster_count);
-    flora_parts_ += shape.part_count();
+    flora_parts_ += 1u << cls;
     flora_state_.resize(flora_parts_, FloraPartState{});
     if (deform_descs_.size() > deform_capacity_ || flora_parts_ > flora_part_capacity_) {
       flora_grow_ = true;
@@ -1622,6 +1678,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       deform_mesh_clusters_.reserve(deform_capacity_);
       tail_trees_.reserve(deform_capacity_ - load_deforms_);
       tail_tree_free_.assign(flora_meshes_.size(), ~0u);
+      std::fill(std::begin(tail_old_head_), std::end(tail_old_head_), ~0u);
+      std::fill(std::begin(tail_old_tail_), std::end(tail_old_tail_), ~0u);
       tail_tree_of_slot_.assign(instance_capacity_, ~0u);
       flora_instances_.reserve(load_flora_ + instance_capacity_);
     }
@@ -2028,6 +2086,7 @@ bool GpuScene::make_deform_tables(bool frames, std::string* error) {
 
 u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                           f64 sky_time_s) noexcept {
+  ++flora_frames_;  // what a given-back record's age is counted in
   if (flora_instances_.empty() || flora_poses_.mapped == nullptr || slot >= k_joint_slots) {
     flora_moving_ = false;  // a tail whose trees have all left: nothing sways, nothing is written
     return 0;
@@ -4015,6 +4074,7 @@ void GpuScene::destroy() noexcept {
   tail_tree_free_.clear();
   tail_tree_of_slot_.clear();
   flora_tail_ = flora_recut_ = flora_grow_ = false;
+  flora_frames_ = 0;
   load_deforms_ = load_flora_ = load_flora_parts_ = deform_capacity_ = flora_part_capacity_ = 0;
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);

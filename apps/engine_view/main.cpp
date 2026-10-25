@@ -1106,6 +1106,7 @@ JsonValue flora_summary(const renderer::GpuScene& scene) {
   out.set("workers", JsonValue(static_cast<u64>(f.workers)));
   out.set("tail", JsonValue(scene.flora_tail()));
   out.set("tail_records", JsonValue(static_cast<u64>(f.tail_records)));
+  out.set("tail_repurposed", JsonValue(f.tail_repurposed));
   out.set("tail_bytes", JsonValue(f.tail_bytes));
   const f64 frames = static_cast<f64>(f.posed_frames);
   out.set("pose_ms_mean",

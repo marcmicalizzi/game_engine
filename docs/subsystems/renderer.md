@@ -2029,7 +2029,16 @@ the device idle, as for the stride's growth) makes the deform table, its per-fra
 pose table again, half as much again as the records need. The per-frame copies of a skinned or
 morphed prefix are `deform_capacity()` entries a region, and only the load's entries carry morph
 weights (`load_deform_count()`). The motion vertex stream already covers every mesh the scene holds,
-forms included, so nothing about it changes.
+forms included, so nothing about it changes. **A record another mesh can take.** Per mesh alone, a
+world's records were the sum of every mesh's most at once — 15,101 records and 211 MB along the v8
+crossing, where 365 trees swayed at its end, because the species change as a flight crosses the
+region and each mesh kept the room its own peak took. So a record's run of the pose table is a power
+of two of parts (its **class**), a free record is also on its class's list by age, and when a mesh
+has none of its own the oldest of its class is taken once `k_joint_slots + 1` frames have been posed
+since it was given back — no frame in flight can then draw the tree that held it — and its entry is
+rewritten (`FloraStats::tail_repurposed`). The same crossing then made 10,677 records with both rings
+swaying and 4,852 with the inner ring alone: the class lists cut it by a third, and what is left is
+the peaks of a dense understory, below.
 
 **The phase is the instance's, never its tile's arrival.** A sway's seed is `key * 0x9e3779b9 +
 0x632be5ab`, the hash the load always used with the instance's index as the key. A streamed read
@@ -2050,26 +2059,65 @@ scene is the budget unclamped — 96 MiB under `renderer.flora.pool_mib` — bec
 what the tiles will bring (as the vertex path's index budget already said); a scene with no tail
 clamps to its whole meshes exactly as before.
 
-**Which rings sway: those whose tiles come within `renderer.flora.sway_m` (100 m).** A ring past the
-first draws a distance form, cut at the nearest an origin on its tiles can be. A form sways when that
-floor is under the range, and is then **cut for the sway's padded spheres** — from the padding nearer
-(`stream_authored` measures `flora_bounds_padding` of the source mesh, the bound the cull pads its
-instances by, and the form's instances take the source's padding), so the clusters the cull can choose
-over it are the full mesh's swaying ones and the handover stays invisible with the trees moving. Past
-the range the form is drawn and cut rigid (`SceneData::form_rigid`). Why 100 m: at 900 lines and a 55°
-field of view a pixel there is 0.116 m, about the flutter a leaf spray travels in a mean wind, and the
-v8 forest's third ring (from 161 m) holds 13,110 trees at the hardwoods view, which would cost the
-posing forty times what the first two rings do for motion nobody can see. In the v8 scene and the
-streamed forest that is rings 0 and 1 (floors 0 and 17 m; ring 2's is 161 m).
+**Which rings sway: the inner ring's full meshes, and a ring's forms when its tiles come within
+`renderer.flora.sway_m` (default 0: none).** A ring past the first draws a distance form, cut at the
+nearest an origin on its tiles can be. A form sways when that floor is under the range, and is then
+**cut for the sway's padded spheres** — from the padding nearer (`stream_authored` measures
+`flora_bounds_padding` of the source mesh, the bound the cull pads its instances by, and the form's
+instances take the source's padding), so the clusters the cull can choose over it are the full mesh's
+swaying ones and the handover stays invisible with the trees moving. Past the range the form is drawn
+and cut rigid (`SceneData::form_rigid`). **Why the default keeps the second ring rigid**, although its
+sway is visible (at 48 m a frond tip's 0.24 m is five pixels at 900 lines and 55°): in the v8 forest
+that ring holds **5,122** swaying plants at the hardwoods view, its understory included, against the
+first ring's 261, and took the frame from 8.2 to 9.3 ms of GPU, the posing from 1.1 to 1.8 ms, and the
+tail's room from 28 to 153 MB (below). `renderer.flora.sway_m=100` sways it for whoever wants that;
+past about 100 m (a pixel is 0.116 m there, about a spray's flutter in a mean wind) no ring should,
+and the v8 forest's third ring, from 161 m, holds 13,110 trees.
 
 **What holds it.** `authored_view_tests.cpp`: the scene's 140 trees read whole and streamed in one
-ring and in two (the second ring's forms swaying), thirty frames into the sway, **0 pixels** different
+ring and in two (the second ring's forms swaying under `renderer.flora.sway_m=100`), thirty frames into the sway, **0 pixels** different
 in both, where the sway moves 76 of the whole read's pixels and the tail drawn rigid differs by those
 76; and a flight out past the outer ring and back draws, at the same world time, the picture a camera
 that never moved draws, to the pixel. `frame_loop_tests.cpp` flies the same trees across two rings
-twice and the second flight allocates exactly what it allocates with the tail rigid. **What it does
-not fix**: that second flight allocates 308 times on the frames that change tiles, with or without
-the sway — the world's streaming of the authored tiles, W73's, not yet held to the frame-loop rule.
+twice and the second flight allocates exactly what it allocates with the tail rigid.
+
+**What it costs** (2026-10-24; RTX 5090, i9-10980XE, `msvc-release` engine-view, offscreen 1600 × 900,
+`--raster hw --shadows csm`, `--wait-quiet 120`; GPU total ms median / p95 / p99; `before` is the
+same binary with `renderer.flora.tail=false`; the v8 runs are W73's: the proof of concept's scene as
+read-only data with its caches copied to scratch, `--deform-pool-mib 64`, wind 0.7. The base is the
+gate's d70d34bc, whose G86/G87 trees are heavier than W73's, so the before rows are not W73's 0.62
+and 2.46 ms. The machine was shared with other agents' builds; each row's `machine_state`, CPU by
+others and GPU busy at the start → the end, says how much, and every time is an upper bound):
+
+| Scene, run | GPU total | shadow | deform | swaying (tail) | pose ms mean | tail room | machine_state |
+|---|---|---|---|---|---|---|---|
+| streamed forest, before | 1.34 / 1.89 / 2.06 | 1.01 | 0.014 | 1 (0) | 0.19 | — | 8% / 3% → 18% / 3% |
+| streamed forest, ring 0 (default) | 2.17 / 4.81 / 6.69 | 1.60 | 0.043 | 80 (79) | 0.28 | 11.8 MB | 69% / 99% → 41% / 5% |
+| streamed forest, rings 0–1 | 1.76 / 2.43 / 2.57 | 1.37 | 0.043 | 108 (107) | 0.62 | 13.0 MB | 67% / 3% → 65% / 4% |
+| v8 hardwoods, before | 5.99 / 6.60 / 6.81 | 4.48 | 0.069 | 178 (0) | 0.60 | — | 21% / 5% → 95% / 98% |
+| v8 hardwoods, ring 0 (default) | 8.16 / 8.84 / 9.15 | 6.49 | 0.197 | 439 (261) | 1.06 | 28.4 MB | 12% / 5% → 13% / 4% |
+| v8 hardwoods, rings 0–1 | 9.32 / 9.97 / 10.41 | 7.47 | 0.315 | 5,300 (5,122) | 1.79 | 153 MB | 24% / 3% → 23% / 84% |
+| v8 crossing, before | 5.06 / 9.92 / 13.05 | 3.47 | 0.077 | 178 (0) | 1.52 | — | 100% / 23% → 100% / 5% |
+| v8 crossing, ring 0 (default) | 5.66 / 14.03 / 16.87 | 4.05 | 0.111 | 209 (31) at its end | 0.73 | 117 MB | 17% / 4% → 100% / 19% |
+| v8 crossing, rings 0–1 | 6.25 / 22.56 / 26.35 | 4.61 | 0.119 | 543 (365) at its end | 1.31 | 254 MB | 37% / 5% → 61% / 58% |
+
+The streamed forest's ring-0 row ran beside a GPU 99% busy at its start, which is why it reads above
+the rows that sway more. **Where the time goes**: the shadow cascades, not the pool pass. A swaying
+plant is padded and never cone-tested, and every cascade deforms its own copy of its cut, so the
+hardwoods' 261 tail plants add 2.0 ms of cascades and 0.13 ms of pool pass; the pose is the CPU's
+and runs on the poser's pool (0.5 ms more). The pair count barely moves (the forms cut for the
+padding hold 5,877,921 pairs at the hardwoods view against 5,877,845). The tail room is the records'
+entries, three slots' part poses (80 bytes each) and the push state, and it keeps the high-water of
+the flight: 4,852 records after the crossing for the 31 plants swaying at its end.
+
+**What it does not fix.** (1) The tail's room never shrinks: the crossing ends holding 117 MB for 31
+swaying plants with the default, because records are kept for the next tile of their class; a
+trim of records free for many frames, or poses in a pool sized by the visible plants rather than the
+resident ones, is the next stage. (2) A swaying plant's cascades are most of its cost; a sway LOD
+(far or small plants drawn rigid, or their shadows cast from the rest pose) would buy most of it
+back. (3) The same flight's second pass allocates 308 times on the frames that change tiles, with or
+without the sway — the world's streaming of the authored tiles, W73's, not yet held to the frame-loop
+rule.
 
 ### The pair accounting
 

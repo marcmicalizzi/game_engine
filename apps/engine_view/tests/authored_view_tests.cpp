@@ -259,7 +259,10 @@ TEST_CASE("engine-view: a world's streamed trees sway as the whole read's do") {
   REQUIRE_MESSAGE(rigid.exit_code == 0, rigid.output);
   const Run inner = capture("inner.json", true, "inner.png");
   REQUIRE_MESSAGE(inner.exit_code == 0, inner.output);
-  const Run rings = capture("rings.json", true, "rings.png");
+  // The second ring sways only when the range reaches its floor (the default, 0, keeps forms
+  // rigid).
+  const Run rings =
+      capture("rings.json", true, "rings.png", {"--tunable", "renderer.flora.sway_m=100"});
   REQUIRE_MESSAGE(rings.exit_code == 0, rings.output);
   // Before W74: the same streamed world with its tail drawn rigid.
   const Run before =
@@ -309,7 +312,9 @@ TEST_CASE("engine-view: a streamed tree that leaves and comes back sways in its 
                      R"({"time":4,"position":[110,30,80],"target":[0,4,0]}]})"));
   const auto fly = [&](const char* path, const char* png) {
     std::vector<std::string> args = base_args(tmp, "streamed.json", path, true);
-    for (const char* a : {"--frames", "40", "--lod-fade", "0", "--capture"})
+    // Both rings swaying, so every one of the 140 trees leaves and comes back with a phase.
+    for (const char* a : {"--tunable", "renderer.flora.sway_m=100", "--frames", "40", "--lod-fade",
+                          "0", "--capture"})
       args.push_back(a);
     args.push_back(tmp.file(png));
     return view(args);

@@ -599,6 +599,7 @@ class GpuScene {
     u32 tail_instances = 0;
     u32 tail_records = 0;
     u64 tail_bytes = 0;
+    u64 tail_repurposed = 0;  // records another mesh took, their entry rewritten
     // The CPU's posing, on the frame's thread with the poser's pool: summed over the frames that
     // posed, and the longest.
     u64 pose_ns_sum = 0;
@@ -1171,15 +1172,27 @@ class GpuScene {
   // of the pose table, made for one mesh and reused by the next tree of that mesh to arrive: its
   // entry never changes once written, so a frame in flight that still draws the tree that left
   // reads what it always read. `at` is its place in `flora_instances_` (~0u: free).
+  // A free record is in two lists: its mesh's (taken first, nothing rewritten) and its run-size
+  // class's by age (taken by another mesh once no frame in flight can read it, `released` frames
+  // ago, its entry rewritten).
   struct TailTree {
     u32 mesh = 0;
     u32 deform = 0;
     u32 first_part = 0;
-    u32 next_free = ~0u;
+    u32 cls = 0;  // its run of the pose table is 2^cls parts
     u32 at = ~0u;
+    u32 mesh_prev = ~0u;
+    u32 mesh_next = ~0u;
+    u32 old_prev = ~0u;
+    u32 old_next = ~0u;
+    u64 released = 0;  // `flora_frames_` when it was given back
   };
+  void unlink_tail_tree(u32 t) noexcept;
   Vector<TailTree> tail_trees_;
   Vector<u32> tail_tree_free_;     // per mesh: the first free record, ~0u for none
+  u32 tail_old_head_[33] = {};     // per class: the free record given back longest ago
+  u32 tail_old_tail_[33] = {};     // and the latest
+  u64 flora_frames_ = 0;           // frames `flora_frame` was called for
   Vector<u32> tail_tree_of_slot_;  // per instance slot: its record, ~0u for none
   bool flora_tail_ = false;
   bool flora_recut_ = false;  // the poser's chunks no longer match the trees
