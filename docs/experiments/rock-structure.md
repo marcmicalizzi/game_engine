@@ -1,6 +1,6 @@
 # Rock structure and detail (2026-10-25)
 
-Work in progress: G88. The owner's ten photographs motivate joint-bounded pinnacles,
+G88 structural-detail pass, implemented in `83b89894`. The owner's ten photographs motivate joint-bounded pinnacles,
 layered escarpments, angular shore boulders and dense debris. They are visual references,
 not measurements or enough evidence to identify lithology.
 
@@ -145,3 +145,22 @@ threshold or a fix to the remaining column-like silhouette. Reports are preserve
 `e10-refined/` and `e10-budget/` under the capture directory. The two sparse rubble pictures
 cover less than 15% of their frames; their object-only FLIP estimates are unreliable, so the
 reported metric is whole-frame mean and the heat maps were also inspected.
+
+### Build and test validation
+
+- `tools/dev.ps1 test -Preset msvc-debug -Affected`: 122/122 passed. Content recipe changes
+  make the affected selector include every test; no additional Windows preset was run.
+  This shared-machine run took 4,348.83 seconds, not a solver performance measurement.
+- `tools/linux-build.ps1 -Preset linux-clang-debug -Test -Filter
+  'rocks|scatter|renderer|engine_view|engine_content|world|scene_collision|docs|lint'`:
+  17/17 passed. After refining the pinnacle recipe, a final `^rocks$` run passed 1/1,
+  reproducing its MSVC mesh hash and all other rock pins. Both temporary Linux volumes
+  were pruned after completion; shared fetch/compiler caches were retained.
+- The rock module's 25 cases cover closed topology, outward normals, physical scaling,
+  budget filtering, invalid parameters, strongest valid surface settings, burial,
+  deterministic meshes/containers and the unchanged cliff geometry.
+- Lint, documentation validation, formatting and `git diff --check` passed. Frame-loop
+  allocation tests passed in the Windows affected run.
+
+The merge-time multi-preset/frame-budget gate and the owner's visual acceptance remain the
+normal next review steps. Passing these checks does not close the visual gaps listed above.
