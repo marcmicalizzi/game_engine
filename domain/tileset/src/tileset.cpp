@@ -1162,7 +1162,9 @@ u32 TileSet::record_words() const noexcept {
 // spacing and its own coordinates.
 bool TileSet::valid_record(const i32* record, const Level& level, i32 tx, i32 tz) const noexcept {
   TileHeader header;
-  std::memcpy(&header, record, sizeof(header));
+  // Through void*: the header is trivially copyable, and GCC's -Wclass-memaccess would otherwise
+  // object to filling a type with member initializers from an array of i32.
+  std::memcpy(static_cast<void*>(&header), static_cast<const void*>(record), sizeof(header));
   return std::memcmp(header.magic, "ETIL", 4) == 0 && header.version == k_tile_record_version &&
          header.cells == manifest_.cells && header.spacing_mm == level.spacing && header.tx == tx &&
          header.tz == tz;
