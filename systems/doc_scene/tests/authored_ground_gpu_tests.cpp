@@ -290,15 +290,14 @@ TEST_CASE(
   // Refused before anything is built, naming the level the set lacks (roadmap W77): the second
   // far level at 16 m, which a set built with one far level does not hold.
   MESSAGE(error);
-  CHECK(error.find("far level 2 of 2 asks the ground for heights every 16 m") !=
-        std::string::npos);
+  CHECK(error.find("far level 2 of 2 asks the ground for heights every 16 m") != std::string::npos);
   CHECK(error.find("`far_levels` 2") != std::string::npos);
 }
 
 // **Four rings over an authored set** (roadmap W77; renderer.md, "The ground from the world's
 // tiles"). The fourth ring of 32 m tiles at 8 cells is 4 m, so the first far level, four times it,
-// is 16 m — where a set built for the stock three rings (2 m, `ring_spacing_mm` 2000) holds 8 m. Built
-// for the fourth ring (`ring_spacing_mm` 4000) the world builds and draws, the fourth ring's
+// is 16 m — where a set built for the stock three rings (2 m, `ring_spacing_mm` 2000) holds 8 m.
+// Built for the fourth ring (`ring_spacing_mm` 4000) the world builds and draws, the fourth ring's
 // tiles on its 4 m lattice; built for three, it is refused before anything is built, by the
 // sentence naming the far level and the spacing to build for.
 TEST_CASE("authored ground: four rings over a set built for their outermost ring draw") {
@@ -386,8 +385,7 @@ TEST_CASE("authored ground: four rings over a set built for their outermost ring
   MovingGround refused;
   CHECK_FALSE(refused.prepare(three, resolved, camera, &error));
   MESSAGE(error);
-  CHECK(error.find("far level 1 of 1 asks the ground for heights every 16 m") !=
-        std::string::npos);
+  CHECK(error.find("far level 1 of 1 asks the ground for heights every 16 m") != std::string::npos);
   CHECK(error.find("ring 3's 4 m") != std::string::npos);
   CHECK(error.find("`ring_spacing_mm` 4000") != std::string::npos);
 }
