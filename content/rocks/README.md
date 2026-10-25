@@ -16,7 +16,7 @@ derived-data cache. Nothing binary lives here: the meshes are solved from these 
 | `sandstone-escarpment.rock.json` | Cliff | a sandstone face 298 m along a gentle bend, 24 to 44 m high, undercut, a talus skirt and thirty fallen blocks ([rocks](../../docs/subsystems/rocks.md#cliffs)) | 162,064 (250,000) |
 
 The original G62/G71 recipes passed E10's four thresholds (rocks.md, "What the harness taught");
-that historical result does not qualify the G88 revisions. Current review and validation are in
+that historical result does not qualify the G89 revisions. Current review and validation are in
 [rock structure](../../docs/experiments/rock-structure.md). Each one's mesh is
 pinned by hash in `domain/rocks/tests/rocks_tests.cpp`: change a number here and that test says
 so — update the pin in the same commit. [`content/test-scenes/rock-field/`](../test-scenes/rock-field/README.md)

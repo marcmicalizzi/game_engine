@@ -359,3 +359,16 @@ Integrated debug checks: flora, geometry, scene_gen, world, scene_collision and 
 passed (the eight-entry run took 470.92 s). Its docs check found three old G88 heading anchors;
 those were corrected and `dev.ps1 docs` then passed (256 pages, 5753 links). Both sward pins
 remain unchanged on the combined tree. No code fix was needed after conflict resolution.
+
+Integrated release checks passed: 9/9 CTest entries including frame-loop allocations (169.81 s),
+20 focused renderer cases / 1999 assertions, 4 authored-streaming viewport cases / 82 assertions,
+and 9 flora/content determinism cases / 578 assertions. Cases outside those source-file filters
+were deliberately not selected. The live release dense cook passed and retained source hash
+2250113272344848541, 348 full clusters and 8288 all-rung triangles.
+
+Linux Clang passed all 9 selected integration entries (358.75 s; 6m29s including build).
+Both deterministic sward pins remain unchanged. The persistent gate's volumes remain warm.
+The tested code is integration commit `51ef062a`; the follow-up changes only this record and
+roadmap status. Raw results and the reproducible release harness are retained under external
+`sward/2026-10-25-v5/integration`. This focused gate does not close the open grass visual or
+performance acceptance items, nor claim the deferred full matrix has run on this tip.
