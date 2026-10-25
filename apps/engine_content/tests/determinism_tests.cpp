@@ -483,8 +483,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // Version 7 folds were 0x7fd0e2e92e3ce1de and 0x8138cfd3401a1070 respectively.
 // G87/version 9: volumetric group cards and sliced far trees; Ancient schema v5 adds scaffold
 // controls.
-constexpr u64 k_broadleaf_container_golden = 0x54c70017bde5f334ull;
-constexpr u64 k_ancient_container_golden = 0x7bf037d37a86a498ull;
+// G88/version 10: broadleaf tip-crown geometry and its bakes change. Ancient's only changed
+// section is SourceHash (15), from the solver-version identity; every mesh/bake section matches v9.
+constexpr u64 k_broadleaf_container_golden = 0x50be5dcf910f9bf5ull;
+constexpr u64 k_ancient_container_golden = 0x6d4e6b50d6180080ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

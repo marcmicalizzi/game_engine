@@ -58,7 +58,7 @@ foreach ($style in $Styles) {
       ConvertTo-Json -Depth 10 | Set-Content "$folder/camera.json"
     if ($Capture) {
       $command="& `"$view`" --scene `"$folder/$form.scene.json`" --camera-path `"$folder/camera.json`" --ddc `"$swardOut/ddc`" --offscreen --width 1600 --height 900 --frames 60 --marker-captures `"$folder/$form-captures`" --shadows off --time-rate 0 --time-of-day 12 --tunable renderer.flora.wind_strength=0"
-      & (Join-Path $PSScriptRoot 'gpu-lock.ps1') run -Purpose "G88 $style $form morphology" `
+      & (Join-Path $PSScriptRoot 'gpu-lock.ps1') run -Purpose "G90 $style $form morphology" `
         -Exec $command *> "$folder/$form-capture.log"
       if ($LASTEXITCODE -ne 0) { throw "Grass capture failed: $style $form" }
     }

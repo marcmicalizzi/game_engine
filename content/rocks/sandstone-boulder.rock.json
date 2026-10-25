@@ -7,6 +7,7 @@
     "joint_sets": 2,
     "layers": 9,
     "buried": 0.2,
-    "triangle_budget": 24000
+    "triangle_budget": 120000,
+    "surface": {"joint_spacing_m": 0.85, "joint_width_m": 0.16, "joint_depth_m": 0.10, "relief_m": 0.015}
   }
 }

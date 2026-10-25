@@ -1,6 +1,6 @@
 #pragma once
 
-// G88: pure build-time sward geometry and the baked source of cards and ground.
+// G90: pure build-time sward geometry and the baked source of cards and ground.
 #include <domain/flora/impostor.h>
 #include <domain/flora/motion.h>
 #include <domain/flora/trees.h>

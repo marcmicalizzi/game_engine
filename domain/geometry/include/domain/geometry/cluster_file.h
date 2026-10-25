@@ -212,7 +212,7 @@ enum class ClusterSection : u32 {
   // host stays the bytes it was; it is what the blended cover layer (roadmap R90) will read through
   // the attribute path. **Written only by the cover generator**, like 34 to 38.
   CoverMask = 40,
-  // G88: ao, thickness, hue, age as four u8 unorms, parallel to Vertices.
+  // G90: ao, thickness, hue, age as four u8 unorms, parallel to Vertices.
   SwardVertex = 41,
 };
 

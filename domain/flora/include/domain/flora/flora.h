@@ -5,7 +5,7 @@
 // engine's vegetation instead of modelled or image-to-3D assets, which E10 found lose their detail
 // past a person's size (docs/experiments/e10-generated-props.md). Its first species is the date
 // palm (palm.h). It owns the species' parameter types (schemas/flora.schema) and the solver; it
-// owns the sward placement generator (G88); trees use scatter or authored instances. Runtime
+// owns the sward placement generator (G90); trees use scatter or authored instances. Runtime
 // wind posing and material texture streaming belong to their existing engine systems.
 //
 // The registration points, ADR-0027 decision 2:
@@ -65,7 +65,8 @@ namespace engine::flora {
 // 7: fuller conifer/willow foliage and seated ancient segment joins (G86).
 // 8: maple terminal wood and independent opposite leaf blades (G86 follow-up).
 // 9: species-correct terminal foliage and material-dependent canopy LOD (G87).
-inline constexpr u32 k_flora_version = 9;
+// 10: species maturity, four profiles, sapling taper, and bounded trunk-tip crowns (G88).
+inline constexpr u32 k_flora_version = 10;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

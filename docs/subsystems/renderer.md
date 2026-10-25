@@ -2357,7 +2357,7 @@ coefficients. `flora_mesh` rejects an unknown species instead of silently applyi
 `flora_stiffness` returns zero coefficients for that invalid name. This validates mesh ingestion,
 not the per-frame hot loop. See [the profile audit](../experiments/tree-profile-audit.md).
 
-### Sward contact compatibility (G88)
+### Sward contact compatibility (G90)
 
 Sward uses a parentless non-woody motion part for each blade, including part zero. The CPU
 compatibility poser permits those parts to receive the existing walker-capsule push when they

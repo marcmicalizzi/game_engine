@@ -541,7 +541,7 @@ TEST_CASE("flora: every parameter at the ends of its range builds a valid palm i
 
 TEST_CASE("flora: a parameter out of range is refused with its name") {
   flora::Palm p = default_palm();
-  p.height_m = 0.5f;
+  p.height_m = 0.2f;
   std::string error;
   CHECK_FALSE(flora::palm_in_range(p, error));
   CHECK(error.find("height_m") != std::string::npos);
@@ -603,7 +603,7 @@ TEST_CASE(
   // G86/version 7 changes the build key only: version 6 was 0xf5e8a710737c8bfa.
   // Version 8 changes only the generator key; version 7 was 0x9606eab973575a61.
   // G87/version 9 changes only the generator key; version 8 was 0x44f25152b9ff5df9.
-  constexpr u64 k_golden = 0xa0b3f23ef08c7c83ull;
+  constexpr u64 k_golden = 0x5b129fa9fcd0414aull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -717,7 +717,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // G86/version 7 changes the build key only: version 6 was 0xa290e40bd1940582.
   // Version 8 changes only the generator key; version 7 was 0x340996a15b4ed8a3.
   // G87/version 9 changes only the generator key; version 8 was 0x85aa5f48e32c6182.
-  constexpr u64 k_rigid_golden = 0xaacb4ccdf77de126ull;
+  constexpr u64 k_rigid_golden = 0xc4e36e9b78c1c2b2ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -850,10 +850,10 @@ TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in
   u32 parts = 0;
   for (const flora::CrownShoot& s : crown)
     parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
-  CHECK(parts == 230u);
+  CHECK(parts == 145u);  // G88 removes the dense extra trunk-tip crown.
   // 0x80af7e3dd0bf4804 until the crown became the allometric recursion (G72).
   // G85 changes the wood surface; the growth skeleton and leaf budget are unchanged.
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x392de941ba5e9c9eull);
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x828f1d81f018bc92ull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {

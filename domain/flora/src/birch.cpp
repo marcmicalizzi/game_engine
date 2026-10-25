@@ -75,9 +75,8 @@ f64 ovoid(f64 f) {
   return e < 0.12 ? 0.35 : std::sqrt(e);
 }
 
-// The structure: the stems from one root collar, the scaffold limbs up every stem's crown, and
-// from every limb and every stem's top the recursion to the species' branchlet. Grown once; it
-// never depends on the budget.
+// The structure: stems from one root collar continue into existing upper scaffolds; every limb
+// bears recursion to the species' branchlet. Grown once; it never depends on the budget.
 Crown grow(const Birch& p, const CrownSpec& spec) {
   Crown crown;
   crown.leaf_placement = LeafPlacement::alternate_simple;
@@ -136,6 +135,8 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
     const f64 r_top = crown.nodes[k].r1;
     const f64 r_limb =
         r0 * det::exp(det::log((1.0 - spec.leader_share) / static_cast<f64>(limbs)) * inv);
+    u32 continuation = 0;
+    f64 last_station = 0;
     for (u32 i = 0; i < limbs; ++i) {
       const Axis& stem = crown.axes[k];
       const f64 f = (static_cast<f64>(i) + 0.5) / static_cast<f64>(limbs);
@@ -154,27 +155,20 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
       const Axis limb =
           grow_axis(axis_point(stem, s) + radial * (0.5 * r_here), dir, length, k_fine_rows,
                     D3{0.0, -1.0, 0.0}, droop * 0.25 * (1.0 - f) / length, wander, limb_rng);
+      const f64 branch_radius = r0 < .03 ? std::min(r_limb, .7 * r_here) : r_limb;
       CrownRoot root;
-      root.node = crown_add_named(crown, limb, r_limb, crown_leader_radius(spec, r_limb), k);
-      root.radius = r_limb;
+      root.node =
+          crown_add_named(crown, limb, branch_radius, crown_leader_radius(spec, branch_radius), k);
+      root.radius = branch_radius;
       root.laterals = p.branches;
       root.lateral_length = 0.4 * length;
       root.from = 0.2;
       root.to = 0.95;
       roots.push_back(root);
+      continuation = root.node;
+      last_station = s;
     }
-  }
-  // Every stem's top: a crown of the recursion where its limbs stop.
-  for (u32 k = 0; k < stems; ++k) {
-    CrownRoot top;
-    top.node = k;
-    top.radius = crown.nodes[k].r1;
-    top.laterals = spec.laterals;
-    top.lateral_length = static_cast<f64>(p.limb_length) * crown.axes[k].length * 0.3;
-    top.from = 0.9;
-    top.to = 1.0;
-    top.spread_scale = 0.7;
-    roots.push_back(top);
+    crown_continue_stem(crown, k, continuation, last_station);
   }
   crown_grow(crown, spec, roots, 2);
   return crown;
@@ -190,9 +184,9 @@ struct Plan {
 };
 
 u32 count_triangles(const Crown& crown, u32 stems, const Plan& plan) {
-  return stems * tube_triangles(plan.rows[0], plan.sides[0]) +
+  return stems * (tube_triangles(plan.rows[0] + k_continuation_rows, plan.sides[0]) - 2) +
          (crown.first_recursion - stems) * tube_triangles(plan.rows[1], plan.sides[1]) +
-         crown_triangles(crown, plan.crown);
+         stems * 2 * plan.sides[1] + crown_triangles(crown, plan.crown);
 }
 
 // The smallest card the branchlets hold with the whole leaf area on them: one leaf of the species'
@@ -354,9 +348,9 @@ bool birch_in_range(const Birch& p, std::string& error) {
     error = std::string("engine.flora.Birch.") + field + " is out of range (" + range + ")";
     return false;
   };
-  if (!(p.height_m >= 3.0f && p.height_m <= 30.0f)) return bad("height_m", "3 to 30 m");
-  if (!(p.stem_radius_m >= 0.03f && p.stem_radius_m <= 0.5f))
-    return bad("stem_radius_m", "0.03 to 0.5 m");
+  if (!(p.height_m >= .35f && p.height_m <= 30.0f)) return bad("height_m", "0.35 to 30 m");
+  if (!(p.stem_radius_m >= .003f && p.stem_radius_m <= 1.0f))
+    return bad("stem_radius_m", "0.003 to 1 m");
   if (!(p.stems <= 5u)) return bad("stems", "0 for the seed's choice, or 1 to 5");
   if (!(p.stem_spread_deg >= 0.0f && p.stem_spread_deg <= 35.0f))
     return bad("stem_spread_deg", "0 to 35 degrees");
@@ -444,15 +438,34 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
   // The bark: every stem (load-bearing: a structure may lean a ladder on one; the first is part 0
   // and the others hang from it at their feet), every limb, then the recursion parents first.
   u32 load_bearing = 0;
+  Vector<u32> named_first;
   for (u32 i = 0; i < crown.first_recursion; ++i) {
     CrownNode& n = crown.nodes[i];
     const bool stem = i < stems;
     const u32 parent = i == 0 ? geometry::k_motion_no_parent
                               : (stem ? crown.nodes[0].part : crown.nodes[n.parent].part);
     const u32 order = stem ? 0u : 1u;
-    n.part = emit_tube_part(emit, crown.axes[n.axis], n.r0, n.r1, plan.rows[order],
-                            plan.sides[order], parent, stem ? k_load_bearing : 0u);
-    if (stem) ++load_bearing;
+    const Axis& axis = crown.axes[n.axis];
+    const StemContinuation& stem_join = crown.continuations[stem ? i : n.parent];
+    const StemContinuation* join = stem ? &stem_join : nullptr;
+    n.part = begin_structural_part(
+        emit, axis.point[0], axis.tangent[0], axis.length, parent, n.r0, n.r1,
+        stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch")) ? k_load_bearing : 0u);
+    named_first.push_back(out.positions.size());
+    build_tube(join != nullptr ? resample_continuation(axis, plan.rows[order], *join)
+               : i == stem_join.child
+                   ? resample_continuing_child(axis, plan.rows[order], stem_join.child_arc)
+                   : resample_axis(axis, plan.rows[order]),
+               n.r0, n.r1, plan.sides[order], {}, emit, join != nullptr, join);
+    if (stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch"))) ++load_bearing;
+  }
+  for (u32 i = 0; i < stems; ++i) {
+    const StemContinuation& join = crown.continuations[i];
+    const CrownNode& stem = crown.nodes[i];
+    const CrownNode& child = crown.nodes[join.child];
+    bind_continuation_cap(resample_continuation(crown.axes[stem.axis], plan.rows[0], join), stem.r0,
+                          stem.r1, plan.sides[0], named_first[i], join, stem.part, child.part,
+                          crown.axes[child.axis].length, parts);
   }
   crown_emit_wood(crown, plan.crown, emit, true);
   assets::Primitive bark;

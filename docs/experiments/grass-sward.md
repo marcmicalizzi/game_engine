@@ -1,4 +1,4 @@
-# Grass sward: research and acceptance (G88)
+# Grass sward: research and acceptance (G90)
 
 Reserved on 2026-10-25 for the sward solver: grass as ground coverage, with blade
 patches near the eye, clump cards beyond them, and the ground material far away.
@@ -336,3 +336,26 @@ accompanied by elevated-view silhouette and parallax review. Both experiments mu
 appearance source for near geometry, cards and ground. ComfyUI leaf-material variants can then
 be compared through that same bake route; unrelated whole-grass textures would not establish
 cross-tier consistency.
+
+## Local-main integration, 2026-10-25
+
+The owner authorized a targeted merge check, with the full matrix deferred to tonight's run.
+The combined tree includes main `4a48e749` (tree maturity and rock detail). Main's tree catalogue
+IDs remain unchanged and sward is appended after alder; the resolved maturity validation path
+also validates sward. Both new test families and registrations remain present.
+
+Independent branches had reserved G88 three times. Tree maturity keeps G88, rock detail is G89,
+and sward is G90. Historical external capture labels and commit subjects retain their original
+G88 label; the checked-in references now use the unique rows.
+
+The scoped checks use existing controls: debug flora, geometry, scene generation, world,
+scene collision, lint and docs; release counterparts plus the frame-loop allocation test,
+renderer flora/motion/streamed-tail cases, authored streaming viewport cases, flora/content
+canonical determinism cases and a live sward cook; one filtered Linux Clang run. No global gate
+policy is changed. The unrelated Windows suites, remote GPU matrix and full frame-budget set
+are deferred at the owner's request. Results are recorded when these integration checks finish.
+
+Integrated debug checks: flora, geometry, scene_gen, world, scene_collision and both lint checks
+passed (the eight-entry run took 470.92 s). Its docs check found three old G88 heading anchors;
+those were corrected and `dev.ps1 docs` then passed (256 pages, 5753 links). Both sward pins
+remain unchanged on the combined tree. No code fix was needed after conflict resolution.

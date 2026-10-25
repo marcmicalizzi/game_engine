@@ -175,7 +175,7 @@ TEST_CASE("sward: section 41 survives container roundtrip in cluster vertex orde
   CHECK(std::memcmp(back.sward_vertices.data(), data.sward_vertices.data(),
                     data.sward_vertices.size() * sizeof(geometry::ClusterFileSwardVertex)) == 0);
   const u64 pin = hash_bytes(data.sward_vertices.data(), data.sward_vertices.size() * 4);
-  // G88 v5: tillered arched blades, coarse curve rung and remapped card vertices.
+  // G90 v5: tillered arched blades, coarse curve rung and remapped card vertices.
   // v4: 17839441404926445449; new arc stations change the flex/AO bytes and cluster ordering.
   CHECK(pin == 8707601967473198806ull);
 }

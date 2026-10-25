@@ -51,15 +51,15 @@ struct TreeReport {
   u32 hollows = 0;          // the ancient tree's
   // The allometric crown (G72: the broadleaf and the ancient tree; zero for the others, except that
   // the conifer (G80) fills leaf_cards and leaf_area_m2).
-  u32 twigs = 0;               // terminal twigs in the structure, leafy or not
-  u32 orders = 0;              // the most orders from the trunk to a twig, both counted
-  u32 leaf_cards = 0;          // cards built, both sides of every spray
-  u32 merge_level = 0;         // 0: one card a leaf; m: a card stands for a sub-tree m orders up
-  u32 wood_class = 0;          // the finest radius class meshed as wood (0: the twigs themselves)
-  u32 part_class = 0;          // the finest radius class that is a motion part of its own
-  f32 card_length = 0.0f;      // the longest card built, metres (the leaf's own at merge 0)
-  f32 footprint_m2 = 0.0f;     // the crown's footprint: the convex hull of its tips from above
-  f32 leaf_area_m2 = 0.0f;     // the one-sided area of the cards built
+  u32 twigs = 0;            // terminal twigs in the structure, leafy or not
+  u32 orders = 0;           // the most orders from the trunk to a twig, both counted
+  u32 leaf_cards = 0;       // cards built, both sides of every spray
+  u32 merge_level = 0;      // 0: one card a leaf; m: a card stands for a sub-tree m orders up
+  u32 wood_class = 0;       // the finest radius class meshed as wood (0: the twigs themselves)
+  u32 part_class = 0;       // the finest radius class that is a motion part of its own
+  f32 card_length = 0.0f;   // the longest card built, metres (the leaf's own at merge 0)
+  f32 footprint_m2 = 0.0f;  // allocation area: tip hull, floored at 4 * leaf_length^2 for saplings
+  f32 leaf_area_m2 = 0.0f;  // the one-sided area of the cards built
   f32 leaf_area_index = 0.0f;  // the realised LAI: leaf_area_m2 over footprint_m2
   // The understory (G75; understory.h).
   u32 colliders = 0;  // a shrub's stems flagged k_structural_collider

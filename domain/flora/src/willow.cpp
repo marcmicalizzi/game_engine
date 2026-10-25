@@ -68,7 +68,7 @@ Vector<Shoot> grow(const Willow& p) {
     const f64 room = (height - base.y) / (det::cos(angle) > 0.35 ? det::cos(angle) : 0.35);
     f64 length = static_cast<f64>(p.limb_length) * height * (0.9 + 0.2 * limb_rng.unit());
     if (length > room) length = room;
-    if (length < 0.5) length = 0.5;
+    if (length < std::min(.5, .3 * height)) length = std::min(.5, .3 * height);
     Shoot limb;
     limb.axis = grow_axis(base + radial * (0.4 * shoots[0].r1), dir, length, k_limb_rows, k_up,
                           0.4 * 40.0 * k_degree / length, wander, limb_rng);
@@ -222,21 +222,21 @@ bool willow_in_range(const Willow& p, std::string& error) {
     error = std::string("engine.flora.Willow.") + field + " is out of range (" + range + ")";
     return false;
   };
-  if (!(p.height_m >= 4.0f && p.height_m <= 25.0f)) return bad("height_m", "4 to 25 m");
-  if (!(p.trunk_radius_m >= 0.08f && p.trunk_radius_m <= 1.5f))
-    return bad("trunk_radius_m", "0.08 to 1.5 m");
+  if (!(p.height_m >= .35f && p.height_m <= 25.0f)) return bad("height_m", "0.35 to 25 m");
+  if (!(p.trunk_radius_m >= .003f && p.trunk_radius_m <= 2.0f))
+    return bad("trunk_radius_m", "0.003 to 2 m");
   if (!(p.trunk_height >= 0.15f && p.trunk_height <= 0.6f))
     return bad("trunk_height", "0.15 to 0.6");
   if (!(p.limbs >= 2u && p.limbs <= 12u)) return bad("limbs", "2 to 12");
   if (!(p.limb_angle_deg >= 20.0f && p.limb_angle_deg <= 80.0f))
     return bad("limb_angle_deg", "20 to 80 degrees");
-  if (!(p.limb_length >= 0.3f && p.limb_length <= 1.0f)) return bad("limb_length", "0.3 to 1");
+  if (!(p.limb_length >= .15f && p.limb_length <= 1.0f)) return bad("limb_length", "0.15 to 1");
   if (!(p.branches >= 1u && p.branches <= 10u)) return bad("branches", "1 to 10");
   if (!(p.branch_length >= 0.15f && p.branch_length <= 0.8f))
     return bad("branch_length", "0.15 to 0.8");
   if (!(p.curtains >= 1u && p.curtains <= 16u)) return bad("curtains", "1 to 16");
-  if (!(p.curtain_length_m >= 0.5f && p.curtain_length_m <= 15.0f))
-    return bad("curtain_length_m", "0.5 to 15 m");
+  if (!(p.curtain_length_m >= .1f && p.curtain_length_m <= 15.0f))
+    return bad("curtain_length_m", "0.1 to 15 m");
   if (!(p.wander_deg >= 0.0f && p.wander_deg <= 20.0f)) return bad("wander_deg", "0 to 20 degrees");
   if (!(p.leaves >= 2u && p.leaves <= 40u)) return bad("leaves", "2 to 40");
   if (!(p.leaf_length_m >= 0.03f && p.leaf_length_m <= 0.4f))
@@ -286,8 +286,10 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
         build_tube(resample_axis(s.axis, plan.curtain_rows), .0015, .0004, 3, {}, emit);
       continue;
     }
-    part_of[i] = emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order],
-                                parent, s.order == 0 ? k_load_bearing : 0u);
+    part_of[i] = emit_tube_part(
+        emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order], parent,
+        s.order == 0 && s.r0 >= static_cast<f64>(load_bearing_min_radius("willow")) ? k_load_bearing
+                                                                                    : 0u);
     ++wood;
   }
   assets::Primitive bark;
@@ -332,7 +334,7 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
     report->trunk_sides = plan.sides[0];
     report->shoot_sides = plan.sides[2];
     report->steps = steps;
-    report->load_bearing = 1;
+    report->load_bearing = p.trunk_radius_m >= load_bearing_min_radius("willow") ? 1u : 0u;
   }
   if (motion != nullptr) *motion = std::move(parts);
   return true;

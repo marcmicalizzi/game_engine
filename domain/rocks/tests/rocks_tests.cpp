@@ -106,9 +106,9 @@ TEST_CASE("rocks: the budget ladder holds every budget, and the coarsest rung is
   }());
   RockReport finest;
   const assets::MeshData fine = solve(top, &finest);
-  CHECK(finest.finest_grid == 128u);
+  CHECK(finest.finest_grid == 192u);
   CHECK(finest.steps == 0u);
-  CHECK(finest.triangles == triangles_of_grid(128));
+  CHECK(finest.triangles == triangles_of_grid(192));
   const Box fine_box = bounds(fine);
   const f64 fine_volume = volume_of(fine);
   u32 last = finest.triangles;
@@ -168,6 +168,72 @@ TEST_CASE("rocks: `buried` is the share of the box under the ground") {
   const Box pile = bounds(solve(scree()));
   CHECK(pile.hi.y < Scree{}.fragment_m * 1.5f);
   CHECK(pile.hi.x <= Scree{}.size_x + Scree{}.fragment_m);
+}
+
+TEST_CASE("rocks: physical surface detail filters away below its sampling scale") {
+  Boulder detailed;
+  detailed.triangle_budget = 500;
+  Boulder plain = detailed;
+  plain.surface.strength = 0.0f;
+  CHECK(mesh_hash(solve(boulder(detailed))) == mesh_hash(solve(boulder(plain))));
+  detailed.triangle_budget = plain.triangle_budget = 80000;
+  const auto mesh = solve(boulder(detailed));
+  const auto smooth = solve(boulder(plain));
+  CHECK(mesh.indices.size() == smooth.indices.size());
+  CHECK(mesh_hash(mesh) != mesh_hash(smooth));
+  check_closed(mesh, 1);
+  // Recesses remove material, without collapsing the body or spending extra triangles.
+  CHECK(volume_of(mesh) < volume_of(smooth));
+  CHECK(volume_of(mesh) > 0.8 * volume_of(smooth));
+  plain.triangle_budget = 20000;
+  // G62's default mesh: strength zero is also the exact baseline for the G89 capture pairs.
+  CHECK(mesh_hash(solve(boulder(plain))) == 0xee8f6918ba577fabull);
+}
+
+TEST_CASE("rocks: surface lengths scale with the rock and validate as physical lengths") {
+  Boulder b;
+  const auto original = solve(boulder(b));
+  b.size_x *= 2.0f;
+  b.size_y *= 2.0f;
+  b.size_z *= 2.0f;
+  b.material.tile_m *= 2.0f;
+  b.surface.joint_spacing_m *= 2.0f;
+  b.surface.joint_width_m *= 2.0f;
+  b.surface.joint_depth_m *= 2.0f;
+  b.surface.wavelength_m *= 2.0f;
+  b.surface.relief_m *= 2.0f;
+  const auto enlarged = solve(boulder(b));
+  REQUIRE(original.positions.size() == enlarged.positions.size());
+  for (u32 i = 0; i < original.positions.size(); ++i) {
+    CHECK(enlarged.positions[i].x == 2.0f * original.positions[i].x);
+    CHECK(enlarged.positions[i].y == 2.0f * original.positions[i].y);
+    CHECK(enlarged.positions[i].z == 2.0f * original.positions[i].z);
+  }
+  std::string error;
+  for (const char* bad : {R"({"boulder":{"surface":{"strength":1.1}}})",
+                          R"({"boulder":{"surface":{"joint_spacing_m":0}}})",
+                          R"({"boulder":{"surface":{"joint_width_m":1}}})",
+                          R"({"boulder":{"surface":{"joint_depth_m":-1}}})",
+                          R"({"boulder":{"surface":{"wavelength_m":0}}})",
+                          R"({"boulder":{"surface":{"relief_m":0.5}}})"}) {
+    RockFile f;
+    CHECK_FALSE(read_rock_file(bad, f, error));
+    CHECK(error.find("surface.") != std::string::npos);
+  }
+}
+
+TEST_CASE("rocks: strongest valid recesses retain closed shells across lithologies") {
+  for (const RockType type :
+       {RockType::Granite, RockType::Sandstone, RockType::Basalt, RockType::Limestone}) {
+    Boulder b = typed(type);
+    b.surface.joint_depth_m = 2.0f;
+    b.surface.joint_width_m = 0.3f;
+    b.surface.wavelength_m = 2.0f;
+    b.surface.relief_m = 0.5f;
+    b.triangle_budget = 80000;
+    CAPTURE(rock_type_name(type));
+    check_closed(solve(boulder(b)), 1);
+  }
 }
 
 TEST_CASE("rocks: one seed is one rock, and another seed another") {
@@ -261,10 +327,12 @@ TEST_CASE("rocks: the mesh generator \"rock\" builds what the capability builds"
 TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain") {
   // Taken on MSVC; GCC and Clang at v3 and GCC at v2 must reproduce them. A change that moves
   // them bumps k_rocks_version and these numbers in the same commit.
-  constexpr u64 k_mesh = 0xee8f6918ba577fabull;
+  // G89, rocks version 2: 0xee8f6918ba577fab until physical surface detail and the 80k default.
+  constexpr u64 k_mesh = 0xe7f94e4304b6ea53ull;
   // 0x7865d56fc786dbd1 until RockMaterial gained `normal_scale` (version 2), which the canonical
   // parameters in the generator section spell out; the mesh did not move.
-  constexpr u64 k_container = 0x420fa50ebc8196ffull;
+  // G89 supersedes 0x420fa50ebc8196ff: new mesh, canonical surface fields and solver version.
+  constexpr u64 k_container = 0xb2611b877ab5bd4eull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;
@@ -290,10 +358,14 @@ TEST_CASE("rocks: the committed recipes are closed, hold their budgets, and are 
     u64 mesh;
   };
   constexpr Recipe k_recipes[] = {
-      {"granite-boulder.rock.json", 1, 0xe943fb204d0466dcull},
-      {"sandstone-boulder.rock.json", 1, 0xb7abeb70a637033aull},
-      {"basalt-outcrop.rock.json", 7, 0x6a2ffb1198db5539ull},
-      {"granite-scree.rock.json", 14, 0x511edd62e55ef986ull},
+      // G89 surface + budgets; old pins e943fb204d0466dc, b7abeb70a637033a,
+      // 6a2ffb1198db5539, 511edd62e55ef986 respectively (G62).
+      {"granite-boulder.rock.json", 1, 0x5fc64fb011e5cdfaull},
+      {"sandstone-boulder.rock.json", 1, 0xa9cf86119ec92a02ull},
+      {"basalt-outcrop.rock.json", 7, 0xc8a7870ce261e0acull},
+      {"granite-scree.rock.json", 14, 0x74b4161bbefd5f1cull},
+      {"jointed-pinnacles.rock.json", 8, 0x21756d998264c659ull},
+      {"shore-rubble.rock.json", 48, 0x2eb5fb5c3e42b304ull},
   };
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   if (!test::path_exists(dir)) {

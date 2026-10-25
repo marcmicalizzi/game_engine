@@ -1,8 +1,8 @@
 # content_build (domain)
 
-G88's sward uses the existing flora derived step. `engine-content flora --sward-assets <dir>`
+G90's sward uses the existing flora derived step. `engine-content flora --sward-assets <dir>`
 additionally bakes the matching ground images and a distance form outside the checkout, with
-recipe/source/version provenance. See [flora](flora.md#grass-sward-g88) for the cut parameters
+recipe/source/version provenance. See [flora](flora.md#grass-sward-g90) for the cut parameters
 and the distinction between these authored appearance values and botanical measurements.
 
 G87 extends the shared GeneratorHosts image callback used by flora: recipe-relative base-colour images are read as encoded bytes for both source hashing and CPU LOD baking. The command-line flora build and renderer-generated trees therefore share material colour, alpha and cache invalidation behavior. Image decode failures are build errors; see [flora](flora.md#the-impostor-chain).
@@ -65,7 +65,7 @@ Why an index beside the derived data and not a key in the container: a container
 
 **Performance notes.** The build's own numbers are engine-content's and are in [apps](apps.md) ("engine-content"); moving the code into a library changed none of them. A second host adds one cost of its own: `content.build` makes a job system per call, which is a few milliseconds of thread start-up against builds that take tens to hundreds.
 
-The G88 `--sward-assets` provenance also reports rendered blade count, total triangles across
+The G90 `--sward-assets` provenance also reports rendered blade count, total triangles across
 rungs, modeled leaf area and LAI, and the effective fitted card cutoff. These are render-sample
 statistics, not biological shoot-density measurements. `tools/sward-cook.ps1` now starts from
 an explicit recipe (dense tall fescue by default); `tools/sward-showcase.ps1` cooks and optionally

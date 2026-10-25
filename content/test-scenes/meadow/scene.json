@@ -1,7 +1,7 @@
 {
   "format": "engine.scene.v1",
   "name": "meadow-sward",
-  "description": "G88 cook template: paths resolve in the external sward-cook output. Field, crown-shaded edge, gentle slope, pond margin and trail. Acceptance pending.",
+  "description": "G90 cook template: paths resolve in the external sward-cook output. Field, crown-shaded edge, gentle slope, pond margin and trail. Acceptance pending.",
   "camera_path": "camera-path.json",
   "meshes": [{"path": "edge-tree.clusters", "name": "edge birch"}],
   "instances": [

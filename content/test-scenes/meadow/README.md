@@ -1,8 +1,8 @@
-# Meadow sward (G88)
+# Meadow sward (G90)
 
 Eight source-bounded botanical recipes for the sward solver, separate from G75 tufts.
 [Grounding](../../../docs/experiments/grass-sward.md) and
-[contract](../../../docs/subsystems/flora.md#grass-sward-g88) state what is implemented and
+[contract](../../../docs/subsystems/flora.md#grass-sward-g90) state what is implemented and
 what still needs acceptance. `camera-path.json` moves through 1, 5, 20 and 80 m.
 
 `tools/sward-cook.ps1 -Out D:/workspace/game_engine_local/sward/2026-10-25/meadow` cooks a

@@ -62,7 +62,7 @@ inline constexpr const char* k_determinism = "derived";
 // makes from the same parameters is a new key and never an old container read as the answer. Bump
 // it with any change that moves a byte of a committed recipe's mesh (the determinism test says
 // when one did).
-inline constexpr u32 k_rocks_version = 1;
+inline constexpr u32 k_rocks_version = 2;
 
 // ---- the budget ladder (rocks.md, "The budget ladder") -----------------------------------------
 //
@@ -71,8 +71,8 @@ inline constexpr u32 k_rocks_version = 1;
 // budget walks down the ladder and the coarsest (n = 4, 192 triangles) is still the same rock —
 // the same cuts, warp and bedding sampled more coarsely, with the noise finer than the grid can
 // carry left out.
-inline constexpr u32 k_grid_rungs[] = {4,  6,  8,  10, 12, 16, 20, 24,  28,
-                                       32, 40, 48, 56, 64, 80, 96, 112, 128};
+inline constexpr u32 k_grid_rungs[] = {4,  6,  8,  10, 12, 16, 20,  24,  28,  32,
+                                       40, 48, 56, 64, 80, 96, 112, 128, 160, 192};
 inline constexpr u32 k_grid_rung_count = sizeof(k_grid_rungs) / sizeof(k_grid_rungs[0]);
 constexpr u32 triangles_of_grid(u32 n) noexcept { return 12u * n * n; }
 
@@ -83,7 +83,7 @@ struct RockReport {
   u32 parts = 0;          // bodies: 1, or the outcrop's or the scree's count
   u32 finest_grid = 0;    // the largest part's `n`
   u32 coarsest_grid = 0;  // the smallest part's `n`
-  u32 steps = 0;          // rungs below the top of the ladder the largest part took; 0 is n = 128
+  u32 steps = 0;          // rungs below the top of the ladder the largest part took; 0 is n = 192
   u32 cuts = 0;           // planar cuts across every part
   u32 layers = 0;         // bedding layers as built (the type's default when the file gave none)
   f32 rounding = 0.0f;    // as built

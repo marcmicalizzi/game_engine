@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-  Cook the G88 meadow fixture outside the checkout, with a shared density paint and patch family.
+  Cook the G90 meadow fixture outside the checkout, with a shared density paint and patch family.
 #>
 [CmdletBinding()]
 param(

@@ -7,6 +7,7 @@
     "count": 14,
     "fragment_m": 0.22,
     "buried": 0.2,
-    "triangle_budget": 16000
+    "triangle_budget": 32000,
+    "surface": {"joint_spacing_m": 0.18, "joint_width_m": 0.04, "joint_depth_m": 0.015, "wavelength_m": 0.08, "relief_m": 0.006}
   }
 }

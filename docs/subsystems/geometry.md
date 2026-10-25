@@ -1,6 +1,6 @@
 # geometry (domain)
 
-G88 appends `ClusterSection::SwardVertex = 41`: `ClusterFileSwardVertex` is four bytes in order
+G90 appends `ClusterSection::SwardVertex = 41`: `ClusterFileSwardVertex` is four bytes in order
 ao, thickness, hue, age, all unorm8, parallel to cluster vertices. It is absent on other meshes,
 paged with vertices, and validated for stride/count on full read. Unknown readers skip it.
 `ClusterFileData::sward_vertices` holds it; external-stream form callers remap it using
