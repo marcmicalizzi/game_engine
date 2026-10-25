@@ -532,12 +532,18 @@ class GpuScene {
   // matrices are per frame) and so do morph channels (the pose weights are), and a frame writes
   // it and passes its address instead of the scene's static one.
   bool has_frame_table() const noexcept { return deform_frames.mapped != nullptr; }
+  // A region a slot, `deform_capacity()` entries apart: the entries a scene read whole has, and
+  // room past them for a streamed world's trees (renderer.md, "Streamed trees sway").
   gfx::DeformDesc* deform_frame(u32 slot) noexcept {
-    return static_cast<gfx::DeformDesc*>(deform_frames.mapped) + u64{slot} * deform_count();
+    return static_cast<gfx::DeformDesc*>(deform_frames.mapped) + u64{slot} * deform_capacity_;
   }
   u64 deform_frame_address(u32 slot) const noexcept {
-    return deform_frames.address + u64{slot} * deform_count() * sizeof(gfx::DeformDesc);
+    return deform_frames.address + u64{slot} * deform_capacity_ * sizeof(gfx::DeformDesc);
   }
+  u32 deform_capacity() const noexcept { return deform_capacity_; }
+  // The load's entries: the ones a morph weight, a joint run or a static cache can belong to. A
+  // streamed world's trees follow them.
+  u32 load_deform_count() const noexcept { return load_deforms_; }
 
   // ---- morph channels (geometry.md, "Morph channels"; gfx.md, "The deform chain") -------------
   //
@@ -560,10 +566,14 @@ class GpuScene {
   // Every loaded instance of a mesh that carries the motion contract, under
   // `ResolvedSettings::flora_motion`, is a deformed instance of the flora stage: laid out at load
   // as the deform records are, its parts given a run of the frame's part-pose table, its spheres
-  // padded by the sway's bound. A dynamic scene's tail is rigid. What lives here is the scene's
+  // padded by the sway's bound. A dynamic scene's tail sways too since W74 (renderer.md, "Streamed
+  // trees sway"): a tail instance of a mesh with the contract takes a record of its mesh's free
+  // list when its tile arrives and gives it back when it leaves. What lives here is the scene's
   // motion vertex stream (one u32 per scene-wide vertex), the table (`k_joint_slots` regions of
   // every tree's parts, host-visible), and the push's state between frames.
   bool flora() const noexcept { return !flora_instances_.empty(); }
+  // Whether the tail's trees sway: a dynamic scene with a mesh the tail may name that does.
+  bool flora_tail() const noexcept { return flora_tail_; }
   u64 flora_motion_address() const noexcept { return flora() ? flora_motion_.address : 0; }
   // Poses every tree's parts for this frame into `slot`'s region and returns its address (0 with no
   // trees): the wind the frame names, or the ground's record at the sky's hour `sky_time_s` (the
@@ -582,6 +592,19 @@ class GpuScene {
     Vec2 wind_to{};            // where it blew to, x and z
     u32 chunks = 0;            // the poser's chunks (1: one run on the frame's thread)
     u32 workers = 0;           // its pool's threads besides the frame's; 0 is no pool
+    // A streamed world's trees (renderer.md, "Streamed trees sway"): how many of `instances` are
+    // the tail's now, the records the tail has made (each its mesh's, reused when a tree of that
+    // mesh leaves), and the bytes its room costs — the deform records and their per-frame copies,
+    // the part poses of every slot's region, the push state.
+    u32 tail_instances = 0;
+    u32 tail_records = 0;
+    u64 tail_bytes = 0;
+    u64 tail_repurposed = 0;  // records another mesh took, their entry rewritten
+    // The CPU's posing, on the frame's thread with the poser's pool: summed over the frames that
+    // posed, and the longest.
+    u64 pose_ns_sum = 0;
+    u64 pose_ns_max = 0;
+    u64 posed_frames = 0;
   };
   const FloraStats& flora_stats() const noexcept { return flora_stats_; }
   // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
@@ -750,9 +773,7 @@ class GpuScene {
   f32* morph_weight_slot(u32 slot) noexcept {
     return static_cast<f32*>(morph_weights.mapped) + u64{slot} * morph_weight_floats();
   }
-  u64 morph_weight_floats() const noexcept {
-    return u64{deform_count()} * 2 * morph_channel_count_;
-  }
+  u64 morph_weight_floats() const noexcept { return u64{load_deforms_} * 2 * morph_channel_count_; }
   u64 morph_weight_slot_address(u32 slot) const noexcept {
     return morph_weights.address + u64{slot} * morph_weight_floats() * sizeof(f32);
   }
@@ -998,6 +1019,16 @@ class GpuScene {
   bool create_morph(const ResolvedSettings& resolved, std::string* error);
   bool create_terrain(const ResolvedSettings& resolved, std::string* error);
   bool create_flora(std::string* error);
+  bool make_flora_poses(std::string* error);
+  bool make_deform_tables(bool frames, std::string* error);
+  void flora_counts() noexcept;
+  // The tail's trees (renderer.md, "Streamed trees sway").
+  bool tail_sways(u32 mesh) const noexcept;
+  f32 flora_padding_of(u32 mesh);
+  FloraInstance flora_instance(u32 instance, u32 mesh, u32 first_part, u32 key) const noexcept;
+  void release_tail_tree(u32 slot) noexcept;
+  void acquire_tail_tree(u32 slot, const SceneInstance& source);
+  bool grow_flora_tail(std::string* error);
   // One terrain level's device side (above).
   struct TerrainLevel {
     TerrainLattice lattice;
@@ -1136,6 +1167,41 @@ class GpuScene {
   FloraStats flora_stats_;
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
+  Vector<f32> flora_padding_;                // per mesh, the sway's bound; -1 until measured
+  // **The tail's trees** (renderer.md, "Streamed trees sway"). A record is a deform entry and a run
+  // of the pose table, made for one mesh and reused by the next tree of that mesh to arrive: its
+  // entry never changes once written, so a frame in flight that still draws the tree that left
+  // reads what it always read. `at` is its place in `flora_instances_` (~0u: free).
+  // A free record is in two lists: its mesh's (taken first, nothing rewritten) and its run-size
+  // class's by age (taken by another mesh once no frame in flight can read it, `released` frames
+  // ago, its entry rewritten).
+  struct TailTree {
+    u32 mesh = 0;
+    u32 deform = 0;
+    u32 first_part = 0;
+    u32 cls = 0;  // its run of the pose table is 2^cls parts
+    u32 at = ~0u;
+    u32 mesh_prev = ~0u;
+    u32 mesh_next = ~0u;
+    u32 old_prev = ~0u;
+    u32 old_next = ~0u;
+    u64 released = 0;  // `flora_frames_` when it was given back
+  };
+  void unlink_tail_tree(u32 t) noexcept;
+  Vector<TailTree> tail_trees_;
+  Vector<u32> tail_tree_free_;     // per mesh: the first free record, ~0u for none
+  u32 tail_old_head_[33] = {};     // per class: the free record given back longest ago
+  u32 tail_old_tail_[33] = {};     // and the latest
+  u64 flora_frames_ = 0;           // frames `flora_frame` was called for
+  Vector<u32> tail_tree_of_slot_;  // per instance slot: its record, ~0u for none
+  bool flora_tail_ = false;
+  bool flora_recut_ = false;  // the poser's chunks no longer match the trees
+  bool flora_grow_ = false;   // a record past the tables' room: `relayout` grows them
+  u32 load_deforms_ = 0;      // deform entries the load made; the tail's follow
+  u32 load_flora_ = 0;        // swaying instances the load made; the tail's follow
+  u32 load_flora_parts_ = 0;
+  u32 deform_capacity_ = 0;      // the deform table's entries, and its per-frame regions' stride
+  u32 flora_part_capacity_ = 0;  // the pose table's parts a region
   f64 ground_time_s_ = 0.0;
   f64 ground_previous_s_ = 0.0;
 

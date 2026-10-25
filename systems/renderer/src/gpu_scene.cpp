@@ -1,6 +1,7 @@
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
+#include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
@@ -52,6 +53,13 @@ constexpr gfx::BufferUsage k_transfer =
 tunables::Int flora_pool_mib{"renderer.flora.pool_mib", 96, 1, 16'384,
                              "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
                              "trees sway"};
+
+// **The tail's trees' first room** (renderer.md, "Streamed trees sway"): records and parts a
+// dynamic scene with trees reserves past the load's before any tile arrives, grown half as much
+// again by `relayout` when a tile needs more. 1,024 records (16 KiB each copy of the table) and
+// 8,192 parts (1.9 MiB of poses over the three slots' regions), a hundred of the forest's trees.
+constexpr u32 k_tail_deform_reserve = 1024;
+constexpr u32 k_tail_part_reserve = 8192;
 
 tunables::Int terrain_pool_mib{
     "renderer.terrain.pool_mib", 768, 1, 16'384,
@@ -115,7 +123,10 @@ u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertic
   u64 vertices = kib * 1024 / (3 * sizeof(f32));
   if (vertices < 1) vertices = 1;
   if (vertices > whole_mesh_vertices) vertices = whole_mesh_vertices;
-  return static_cast<u32>(vertices);
+  // Never empty: a scene whose only deformable meshes are a tail's drawn rigid has nothing whole to
+  // clamp to, and a buffer of no bytes is no buffer.
+  if (vertices < 1) vertices = 1;
+  return static_cast<u32>(vertices > 0xFFFFFFFFull ? 0xFFFFFFFFull : vertices);
 }
 
 // The GPU format a built texture is sampled as: the format and colour space the build decided,
@@ -417,15 +428,16 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
-  // **The tail is rigid; the prefix deforms as any scene's does** (renderer.md, "The pool and the
-  // chain over the tail"). The deformed-vertex pool's per-instance table is laid out once, here,
-  // for the load's instances — the terrain levels, and since 2026-10-18 a skinned or morphed
-  // authored instance — whose slots never move, and a tail instance is placed with
-  // `k_invalid_deform`. The pool's per-frame blocks follow whatever the cull emits, and the per-
-  // entry slot table is laid out by the stride (`relayout`), so nothing else had to change. Still
-  // refused: `--deform`, which deforms *every* instance, the tail's too (`resolve_settings` turns
-  // it off for such a scene), a deformed instance in the tail (`set_dynamic_instances` names it),
-  // and cluster templates, built once from the load's clusters.
+  // **The tail is rigid but for its trees; the prefix deforms as any scene's does** (renderer.md,
+  // "The pool and the chain over the tail", "Streamed trees sway"). The deformed-vertex pool's
+  // per-instance table is laid out here for the load's instances — the terrain levels, and since
+  // 2026-10-18 a skinned or morphed authored instance — whose slots never move; a tail instance is
+  // placed with `k_invalid_deform` unless its mesh sways (W74), when it takes a record past the
+  // load's from its mesh's free list. The pool's per-frame blocks follow whatever the cull emits,
+  // and the per-entry slot table is laid out by the stride (`relayout`). Still refused: `--deform`,
+  // which deforms *every* instance, the tail's too (`resolve_settings` turns it off for such a
+  // scene), a skinned or morphed instance in the tail (`set_dynamic_instances` names it), and
+  // cluster templates, built once from the load's clusters.
   if (dynamic_ && (resolved.settings.deform || (ray_tracing_ && resolved.settings.rt_templates))) {
     if (error != nullptr) {
       *error = resolved.settings.rt_templates && ray_tracing_
@@ -670,6 +682,7 @@ void GpuScene::mark_instance_written(u32 instance) {
 bool GpuScene::relayout(std::string* error) {
   if (!relayout_pending_) return true;
   relayout_pending_ = false;
+  if (flora_grow_ && !grow_flora_tail(error)) return false;
   // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
   if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
     gfx::destroy_buffer(*device_, deform_slots);
@@ -723,6 +736,232 @@ bool GpuScene::upload_pair_table(std::string* error) {
   }
   return gfx::upload_buffer(*device_, table.data(), u64{table.size()} * sizeof(u32), k_storage,
                             pair_table, error);
+}
+
+// ---- the tail's trees (renderer.md, "Streamed trees sway"; roadmap W74) -----------------------
+
+bool GpuScene::tail_sways(u32 mesh) const noexcept {
+  return mesh < flora_meshes_.size() && flora_meshes_[mesh].part_count() > 0 &&
+         !(mesh < data_->form_rigid.size() && data_->form_rigid[mesh] != 0);
+}
+
+// A swaying instance's padding: its mesh's sway bound, or for a distance form its source's — the
+// bound the form was cut for (scene.cpp, `stream_authored`), so the cull's choice over the form is
+// the full mesh's.
+f32 GpuScene::flora_padding_of(u32 mesh) {
+  const u32 source_mesh = mesh < data_->form_source.size() ? data_->form_source[mesh] : mesh;
+  const u32 m = source_mesh < flora_meshes_.size() && flora_meshes_[source_mesh].part_count() > 0
+                    ? source_mesh
+                    : mesh;
+  if (flora_padding_[m] < 0.0f) {
+    const SourceMesh& source = data_->sources[m];
+    const geometry::ClusterMeshPart& part = data_->parts[m];
+    flora_padding_[m] = flora_bounds_padding(
+        flora_meshes_[m],
+        std::span<const Vec3>(data_->lod.mesh.vertices.data() + part.first_vertex,
+                              source.motion_vertices.size()),
+        std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
+                                                           source.motion_vertices.size()));
+  }
+  return flora_padding_[m];
+}
+
+FloraInstance GpuScene::flora_instance(u32 instance, u32 mesh, u32 first_part,
+                                       u32 key) const noexcept {
+  const gfx::InstanceDesc& placed = instance_table_[instance];
+  FloraInstance fi;
+  fi.instance = instance;
+  fi.mesh = mesh;
+  fi.first_part = first_part;
+  fi.seed = key * 0x9e3779b9u + 0x632be5abu;
+  // World to mesh: the instance's 3x3 inverted, once.
+  const Vec3 r0 = placed.rows[0].xyz();
+  const Vec3 r1 = placed.rows[1].xyz();
+  const Vec3 r2 = placed.rows[2].xyz();
+  const Vec3 c0{r0.x, r1.x, r2.x};
+  const Vec3 c1{r0.y, r1.y, r2.y};
+  const Vec3 c2{r0.z, r1.z, r2.z};
+  const f32 det = dot(c0, cross(c1, c2));
+  if (det != 0.0f) {
+    const f32 inv = 1.0f / det;
+    fi.inverse[0] = cross(c1, c2) * inv;
+    fi.inverse[1] = cross(c2, c0) * inv;
+    fi.inverse[2] = cross(c0, c1) * inv;
+  }
+  fi.inverse_scale = placed.scale_max > 0.0f ? 1.0f / placed.scale_max : 1.0f;
+  return fi;
+}
+
+namespace {
+
+u32 tail_motion_key(const SceneInstance& source) noexcept {
+  if (source.motion_key != k_motion_key_load) return source.motion_key;
+  // No stable name: where it stands, in whole millimetres of x and z, hashed — a function of the
+  // instance, never of when its tile came.
+  const f64 x = source.origin.x + static_cast<f64>(source.transform.position.x);
+  const f64 z = source.origin.z + static_cast<f64>(source.transform.position.z);
+  const u64 mx = static_cast<u64>(static_cast<i64>(std::llround(x * 1000.0)));
+  const u64 mz = static_cast<u64>(static_cast<i64>(std::llround(z * 1000.0)));
+  u64 h = mx * 0x9e3779b97f4a7c15ull ^ (mz + 0x632be59bd9b4e019ull + (mx << 6) + (mx >> 2));
+  h ^= h >> 31;
+  h *= 0xbf58476d1ce4e5b9ull;
+  h ^= h >> 29;
+  return static_cast<u32>(h) | 0x80000000u;  // past any loaded index a scene can have
+}
+
+}  // namespace
+
+void GpuScene::release_tail_tree(u32 slot) noexcept {
+  if (slot >= tail_tree_of_slot_.size()) return;
+  const u32 t = tail_tree_of_slot_[slot];
+  if (t == ~0u) return;
+  TailTree& tree = tail_trees_[t];
+  // Out of the poser's list by the last one taking its place: a pose is a function of the
+  // instance alone, so the order the poser runs them in reaches no byte.
+  const u32 last = flora_instances_.size() - 1;
+  if (tree.at != last) {
+    flora_instances_[tree.at] = flora_instances_[last];
+    tail_trees_[tail_tree_of_slot_[flora_instances_[tree.at].instance]].at = tree.at;
+  }
+  flora_instances_.pop_back();
+  tree.at = ~0u;
+  // Free: first in its mesh's list, last in its class's by age.
+  tree.released = flora_frames_;
+  tree.mesh_prev = ~0u;
+  tree.mesh_next = tail_tree_free_[tree.mesh];
+  if (tree.mesh_next != ~0u) tail_trees_[tree.mesh_next].mesh_prev = t;
+  tail_tree_free_[tree.mesh] = t;
+  tree.old_next = ~0u;
+  tree.old_prev = tail_old_tail_[tree.cls];
+  if (tree.old_prev != ~0u) {
+    tail_trees_[tree.old_prev].old_next = t;
+  } else {
+    tail_old_head_[tree.cls] = t;
+  }
+  tail_old_tail_[tree.cls] = t;
+  tail_tree_of_slot_[slot] = ~0u;
+  flora_recut_ = true;
+}
+
+void GpuScene::unlink_tail_tree(u32 t) noexcept {
+  TailTree& tree = tail_trees_[t];
+  if (tree.mesh_prev != ~0u) {
+    tail_trees_[tree.mesh_prev].mesh_next = tree.mesh_next;
+  } else {
+    tail_tree_free_[tree.mesh] = tree.mesh_next;
+  }
+  if (tree.mesh_next != ~0u) tail_trees_[tree.mesh_next].mesh_prev = tree.mesh_prev;
+  if (tree.old_prev != ~0u) {
+    tail_trees_[tree.old_prev].old_next = tree.old_next;
+  } else {
+    tail_old_head_[tree.cls] = tree.old_next;
+  }
+  if (tree.old_next != ~0u) {
+    tail_trees_[tree.old_next].old_prev = tree.old_prev;
+  } else {
+    tail_old_tail_[tree.cls] = tree.old_prev;
+  }
+  tree.mesh_prev = tree.mesh_next = tree.old_prev = tree.old_next = ~0u;
+}
+
+void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
+  const u32 mesh = source.mesh;
+  const FloraMesh& shape = flora_meshes_[mesh];
+  const geometry::ClusterMeshPart& part = data_->parts[mesh];
+  const u32 parts = shape.part_count();
+  const u32 cls = parts <= 1 ? 0u : static_cast<u32>(std::bit_width(parts - 1u));
+  u32 t = tail_tree_free_[mesh];
+  const u32 oldest = tail_old_head_[cls];
+  if (t != ~0u) {
+    // A record its mesh gave back: the same stage, vertices and run of parts, so its entry in the
+    // deform table is already what it should be.
+    unlink_tail_tree(t);
+  } else if (oldest != ~0u &&
+             flora_frames_ >= tail_trees_[oldest].released + u64{k_joint_slots} + 1) {
+    // **Another mesh's, of the same run size, given back long enough ago that no frame in flight
+    // can still draw the tree that held it**: its entry is rewritten for this mesh. Without this a
+    // world's records were the sum of every mesh's most at once — 15,101 records and 211 MB along
+    // the v8 crossing, where 365 trees swayed at its end — because the species change as a
+    // flight crosses the region and each kept the room its own peak took.
+    t = oldest;
+    unlink_tail_tree(t);
+    TailTree& tree = tail_trees_[t];
+    tree.mesh = mesh;
+    gfx::DeformDesc& desc = deform_descs_[tree.deform];
+    desc.first_vertex = part.first_vertex;
+    desc.joint_count = parts;
+    deform_mesh_clusters_[tree.deform] = part.cluster_count;
+    if (tree.deform < deform_capacity_ && deform_table.mapped != nullptr)
+      static_cast<gfx::DeformDesc*>(deform_table.mapped)[tree.deform] = desc;
+    ++flora_stats_.tail_repurposed;
+  } else {
+    // A new record past every other: an entry of the deform table and a run of the pose table
+    // (its class's size, so another mesh of the class can take it later) that no frame has read,
+    // written now if they fit what the tables hold, and by `relayout`'s growth, before the next
+    // frame, if not.
+    t = tail_trees_.size();
+    TailTree tree;
+    tree.mesh = mesh;
+    tree.cls = cls;
+    tree.deform = deform_descs_.size();
+    tree.first_part = flora_parts_;
+    tail_trees_.push_back(tree);
+    gfx::DeformDesc desc{};
+    desc.stages = gfx::k_deform_stage_flora;
+    desc.first_vertex = part.first_vertex;
+    desc.first_part = flora_parts_;
+    desc.joint_count = parts;
+    deform_descs_.push_back(desc);
+    deform_instance_.push_back(slot);
+    deform_mesh_clusters_.push_back(part.cluster_count);
+    flora_parts_ += 1u << cls;
+    flora_state_.resize(flora_parts_, FloraPartState{});
+    if (deform_descs_.size() > deform_capacity_ || flora_parts_ > flora_part_capacity_) {
+      flora_grow_ = true;
+      relayout_pending_ = true;
+    } else {
+      static_cast<gfx::DeformDesc*>(deform_table.mapped)[tree.deform] = desc;
+    }
+  }
+  TailTree& tree = tail_trees_[t];
+  deform_instance_[tree.deform] = slot;
+  // A tree that comes back starts at rest, and sways in the phase its key gives it.
+  for (u32 p = 0; p < shape.part_count(); ++p)
+    flora_state_[tree.first_part + p] = FloraPartState{};
+  gfx::InstanceDesc& placed = instance_table_[slot];
+  placed.deform = tree.deform;
+  const f32 padding = flora_padding_of(mesh);
+  if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+  flora_stats_.max_padding =
+      std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
+  tree.at = flora_instances_.size();
+  flora_instances_.push_back(flora_instance(slot, mesh, tree.first_part, tail_motion_key(source)));
+  tail_tree_of_slot_[slot] = t;
+  flora_recut_ = true;
+}
+
+// Made again with the device idle (`relayout`): the deform table, its per-frame copies and the
+// pose table, half as much again as the records need, every record the CPU holds copied in.
+bool GpuScene::grow_flora_tail(std::string* error) {
+  flora_grow_ = false;
+  bool grew = false;
+  if (deform_descs_.size() > deform_capacity_) {
+    deform_capacity_ = deform_descs_.size() + deform_descs_.size() / 2;
+    grew = true;
+  }
+  if (flora_parts_ > flora_part_capacity_) {
+    flora_part_capacity_ = flora_parts_ + flora_parts_ / 2;
+    if (!make_flora_poses(error)) return false;
+  }
+  flora_state_.reserve(flora_part_capacity_);
+  deform_descs_.reserve(deform_capacity_);
+  deform_instance_.reserve(deform_capacity_);
+  deform_mesh_clusters_.reserve(deform_capacity_);
+  tail_trees_.reserve(deform_capacity_ - load_deforms_);
+  // The table is written whole again whether or not it grew: a record made past it was not.
+  if (!make_deform_tables(grew ? deform_frames.buffer.valid() : false, error)) return false;
+  flora_counts();
+  return true;
 }
 
 bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
@@ -826,6 +1065,14 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   }
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.grew) tables_changed_ = true;
+  // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
+  if (flora_recut_) {
+    flora_recut_ = false;
+    flora_poser_.recut(
+        std::span<const FloraInstance>(flora_instances_.data(), flora_instances_.size()),
+        std::span<const FloraMesh>(flora_meshes_.data(), flora_meshes_.size()));
+    flora_counts();
+  }
   return true;
 }
 
@@ -834,6 +1081,12 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
                            u32& written, std::string* error) {
   written = 0;
   const u32 end = layout_.instance_end();
+  // A tree past the layout's new end gives its record back before its slot goes.
+  if (flora_tail_) {
+    for (u32 slot = end; slot < instance_table_.size(); ++slot)
+      release_tail_tree(slot);
+    if (tail_tree_of_slot_.size() < end) tail_tree_of_slot_.resize(end, ~0u);
+  }
   instance_table_.resize(end);
   tail_keys_.resize(end);
   for (const SlotWrite& write : writes) {
@@ -842,6 +1095,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
     const DynamicBlock* block = write.source < blocks.size() ? &blocks[write.source] : nullptr;
     for (u32 k = 0; k < write.inst_count; ++k) {
       const u32 slot = write.inst_begin + k;
+      // Whatever tree the slot held gives its record back; the instance it now holds takes one
+      // if its mesh sways in the tail (renderer.md, "Streamed trees sway").
+      if (flora_tail_) release_tail_tree(slot);
       if (block != nullptr && k < write.live) {
         const SceneInstance& source = tail[block->first + k];
         gfx::InstanceDesc& desc = instance_table_[slot];
@@ -850,6 +1106,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
             source.mesh < mesh_material_base_.size() ? mesh_material_base_[source.mesh] : 0u;
         tail_keys_[slot] = key_of(source);
         first_pair += data_->parts[source.mesh].cluster_count;
+        if (flora_tail_ && tail_sways(source.mesh)) acquire_tail_tree(slot, source);
       } else {
         // Past the live instances: a null instance at the pairs' end, so a pair of the slack lands
         // on it and the slots stay sorted by `first_pair`.
@@ -909,6 +1166,12 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     capacity = (capacity + 1023) / 1024 * 1024;
     instance_capacity_ = static_cast<u32>(capacity);
     sets_again = true;
+    // The tail's trees' per-slot arrays follow the slots, so tiles that come and go inside the
+    // capacity never allocate.
+    if (flora_tail_) {
+      tail_tree_of_slot_.reserve(instance_capacity_);
+      flora_instances_.reserve(load_flora_ + instance_capacity_);
+    }
   }
   // The pool's per-entry slots follow the stride and the chain's tables the stride and the
   // instance capacity; both are read by the frames in flight by address, so they are made again
@@ -1315,7 +1578,15 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     }
     flora_instances_.clear();
     flora_parts_ = 0;
-    Vector<f32> flora_padding(flora_meshes_.size(), -1.0f);  // computed for a mesh once
+    flora_padding_.assign(flora_meshes_.size(), -1.0f);  // computed for a mesh once
+    // **A streamed world's trees sway too** (renderer.md, "Streamed trees sway"): when a mesh the
+    // tail may name carries the motion contract, the tail's trees get records of their own past
+    // the load's, made and given back as their tiles come and go.
+    flora_tail_ = false;
+    if (dynamic_ && resolved.flora_motion && flora_tail_tunable()) {
+      for (u32 m = 0; m < flora_meshes_.size() && !flora_tail_; ++m)
+        flora_tail_ = tail_sways(m);
+    }
     for (u32 i = 0; i < instance_count_; ++i) {
       // A skinned instance is deformed whatever the settings say; a rigid one only under
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
@@ -1361,39 +1632,11 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         desc.stages = gfx::k_deform_stage_flora;
         desc.first_part = flora_parts_;
         desc.joint_count = tree.part_count();
-        if (flora_padding[mesh_index] < 0.0f) {
-          const SourceMesh& source = data_->sources[mesh_index];
-          flora_padding[mesh_index] = flora_bounds_padding(
-              tree,
-              std::span<const Vec3>(lod.mesh.vertices.data() + part.first_vertex,
-                                    source.motion_vertices.size()),
-              std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
-                                                                 source.motion_vertices.size()));
-        }
         gfx::InstanceDesc& placed = instance_table_[i];
-        if (flora_padding[mesh_index] > placed.bounds_padding)
-          placed.bounds_padding = flora_padding[mesh_index];
-        FloraInstance fi;
-        fi.instance = i;
-        fi.mesh = mesh_index;
-        fi.first_part = flora_parts_;
-        fi.seed = i * 0x9e3779b9u + 0x632be5abu;
-        // World to mesh: the instance's 3x3 inverted, once.
-        const Vec3 r0 = placed.rows[0].xyz();
-        const Vec3 r1 = placed.rows[1].xyz();
-        const Vec3 r2 = placed.rows[2].xyz();
-        const Vec3 c0{r0.x, r1.x, r2.x};
-        const Vec3 c1{r0.y, r1.y, r2.y};
-        const Vec3 c2{r0.z, r1.z, r2.z};
-        const f32 det = dot(c0, cross(c1, c2));
-        if (det != 0.0f) {
-          const f32 inv = 1.0f / det;
-          fi.inverse[0] = cross(c1, c2) * inv;
-          fi.inverse[1] = cross(c2, c0) * inv;
-          fi.inverse[2] = cross(c0, c1) * inv;
-        }
-        fi.inverse_scale = placed.scale_max > 0.0f ? 1.0f / placed.scale_max : 1.0f;
-        flora_instances_.push_back(fi);
+        const f32 padding = flora_padding_of(mesh_index);
+        if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+        const u32 key = i < data_->motion_keys.size() ? data_->motion_keys[i] : i;
+        flora_instances_.push_back(flora_instance(i, mesh_index, flora_parts_, key));
         flora_parts_ += tree.part_count();
         flora_stats_.max_padding =
             std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
@@ -1417,8 +1660,29 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     // neither — never two of them — so the caster run shares its view's allowance. Until
     // 2026-10-18 the views were left out (one allowance for every view), which a surround's
     // second and third view could overflow on a scene small enough to promise it never would.
+    // A tail that may carry trees takes the budget unclamped: no load can bound what its tiles will
+    // bring, as no load can bound its index budget (renderer.md, "Streamed trees sway").
     deform_pool_vertices_ = pool_budget_vertices(
-        resolved, whole_mesh_vertices * (u64{view_count_} + u64{cascade_count_}));
+        resolved,
+        flora_tail_ ? ~u64{0} : whole_mesh_vertices * (u64{view_count_} + u64{cascade_count_}));
+    // The load's records, and room past them for the tail's trees (a free list per mesh, grown
+    // between frames by `relayout`).
+    load_deforms_ = deform_descs_.size();
+    load_flora_ = flora_instances_.size();
+    load_flora_parts_ = flora_parts_;
+    deform_capacity_ = load_deforms_ + (flora_tail_ ? k_tail_deform_reserve : 0u);
+    flora_part_capacity_ = flora_parts_ + (flora_tail_ ? k_tail_part_reserve : 0u);
+    if (flora_tail_) {
+      deform_descs_.reserve(deform_capacity_);
+      deform_instance_.reserve(deform_capacity_);
+      deform_mesh_clusters_.reserve(deform_capacity_);
+      tail_trees_.reserve(deform_capacity_ - load_deforms_);
+      tail_tree_free_.assign(flora_meshes_.size(), ~0u);
+      std::fill(std::begin(tail_old_head_), std::end(tail_old_head_), ~0u);
+      std::fill(std::begin(tail_old_tail_), std::end(tail_old_tail_), ~0u);
+      tail_tree_of_slot_.assign(instance_capacity_, ~0u);
+      flora_instances_.reserve(load_flora_ + instance_capacity_);
+    }
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
                                               gfx::BufferUsage::TransferSrc |
@@ -1433,36 +1697,23 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             device, sizeof(gfx::DeformAlloc),
             k_address | gfx::BufferUsage::TransferSrc | gfx::BufferUsage::TransferDst, false,
             deform_alloc, error) &&
-        gfx::upload_buffer(device, deform_descs_.data(),
-                           deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
-                           error) &&
         gfx::create_buffer(
             device, u64{gfx::k_draw_args_bytes} * (k_visible_runs * view_count_ + cascade_count_),
             k_args, false, deform_args, error);
     // The per-frame side of skinning: `k_joint_slots` regions of bone matrices and the same
     // number of copies of the deform table, both host-visible and persistently mapped, so a tick
-    // is one memcpy of the span plus one rewrite of a table of 24-byte records. Nothing here is
-    // touched again after `create`.
+    // is one memcpy of the span plus one rewrite of a table of 24-byte records. Every region starts
+    // as the static table, so a frame only ever rewrites the two words that change and a slot that
+    // has never been written is still a valid rest pose.
+    ok = ok && make_deform_tables(skinned_, error);
     if (ok && skinned_) {
       const u64 joint_region = joint_bytes();
-      ok = gfx::create_buffer(device, joint_region * k_joint_slots, k_address, true, joints,
-                              error) &&
-           gfx::create_buffer(device,
-                              u64{deform_descs_.size()} * sizeof(gfx::DeformDesc) * k_joint_slots,
-                              k_address, true, deform_frames, error);
-      if (ok) {
-        // Every region starts as the static table, so a frame only ever rewrites the two words
-        // that change and a slot that has never been written is still a valid rest pose.
-        for (u32 slot = 0; slot < k_joint_slots; ++slot) {
-          std::memcpy(deform_frame(slot), deform_descs_.data(),
-                      deform_descs_.size() * sizeof(gfx::DeformDesc));
-        }
-        std::memset(joints.mapped, 0, joint_region * k_joint_slots);
-      }
+      ok = gfx::create_buffer(device, joint_region * k_joint_slots, k_address, true, joints, error);
+      if (ok) std::memset(joints.mapped, 0, joint_region * k_joint_slots);
     }
     if (ok && !lod.mesh.morph_channels.empty()) ok = create_morph(resolved, error);
     if (ok && resolved.terrain_levels) ok = create_terrain(resolved, error);
-    if (ok && !flora_instances_.empty()) ok = create_flora(error);
+    if (ok && (!flora_instances_.empty() || flora_tail_)) ok = create_flora(error);
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
@@ -1684,26 +1935,11 @@ bool GpuScene::create_morph(const ResolvedSettings& resolved, std::string* error
     gfx::InstanceDesc& instance = instance_table_[deform_instance_[d]];
     instance.bounds_padding += padding;
   }
-  // Re-upload the table now that the caches and the weights are on it.
-  gfx::destroy_buffer(device, deform_table);
-  if (!gfx::upload_buffer(device, deform_descs_.data(),
-                          deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
-                          error)) {
-    return false;
-  }
-  // A morphed scene needs the **per-frame** table even when nothing is skinned, because the pose
-  // weights live in a per-slot region and the record has to point at this slot's. A skinned scene
-  // already has one; this is the case where morphs alone force it.
-  if (!has_frame_table() &&
-      !gfx::create_buffer(device,
-                          u64{deform_descs_.size()} * sizeof(gfx::DeformDesc) * k_joint_slots,
-                          k_address, true, deform_frames, error)) {
-    return false;
-  }
-  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
-    std::memcpy(deform_frame(slot), deform_descs_.data(),
-                deform_descs_.size() * sizeof(gfx::DeformDesc));
-  }
+  // Re-upload the table now that the caches and the weights are on it. A morphed scene needs the
+  // **per-frame** table even when nothing is skinned, because the pose weights live in a per-slot
+  // region and the record has to point at this slot's. A skinned scene already has one; this is
+  // the case where morphs alone force it.
+  if (!make_deform_tables(true, error)) return false;
   ENGINE_LOG_INFO(log_renderer, "morph channels", log::field("channels", morph_channel_count_),
                   log::field("deltas", mesh.morph_delta_count),
                   log::field("slices", mesh.morph_slices.size()),
@@ -1750,15 +1986,14 @@ bool GpuScene::create_flora(std::string* error) {
     for (u32 v = 0; v < source.motion_vertices.size(); ++v)
       stream[first + v] = source.motion_vertices[v];
   }
-  const u64 table_bytes = u64{k_joint_slots} * flora_parts_ * sizeof(gfx::FloraPartPose);
   if (!gfx::upload_buffer(device, stream.data(),
                           u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex), k_address,
                           flora_motion_, error) ||
-      !gfx::create_buffer(device, table_bytes, k_address, true, flora_poses_, error)) {
+      !make_flora_poses(error)) {
     return false;
   }
-  std::memset(flora_poses_.mapped, 0, table_bytes);  // axis.w 0: every part at rest
   flora_state_.clear();
+  flora_state_.reserve(flora_part_capacity_);
   flora_state_.resize(flora_parts_, FloraPartState{});
   if (!deform_normals.buffer.valid() &&
       !gfx::create_buffer(device, u64{deform_pool_vertices_} * sizeof(u32), k_address, false,
@@ -1771,24 +2006,91 @@ bool GpuScene::create_flora(std::string* error) {
   flora_poser_.prepare(
       std::span<const FloraInstance>(flora_instances_.data(), flora_instances_.size()),
       std::span<const FloraMesh>(flora_meshes_.data(), flora_meshes_.size()),
-      flora_workers_tunable());
-  flora_stats_.instances = flora_instances_.size();
-  flora_stats_.parts = flora_parts_;
-  flora_stats_.chunks = flora_poser_.chunk_count();
-  flora_stats_.workers = flora_poser_.worker_count();
+      flora_workers_tunable(), k_flora_chunk_parts, flora_tail_);
+  flora_counts();
   ENGINE_LOG_INFO(
       log_renderer, "trees sway", log::field("instances", flora_stats_.instances),
       log::field("parts", flora_parts_), log::field("chunks", flora_poser_.chunk_count()),
       log::field("workers", flora_poser_.worker_count()),
       log::field("motion_bytes", u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex)),
-      log::field("table_bytes", table_bytes),
+      log::field("table_bytes", flora_poses_.size), log::field("tail", flora_tail_),
       log::field("max_padding_m", flora_stats_.max_padding));
+  return true;
+}
+
+void GpuScene::flora_counts() noexcept {
+  flora_stats_.instances = flora_instances_.size();
+  flora_stats_.tail_instances = flora_instances_.size() - load_flora_;
+  flora_stats_.parts = flora_parts_;
+  flora_stats_.chunks = flora_poser_.chunk_count();
+  flora_stats_.workers = flora_poser_.worker_count();
+  flora_stats_.tail_records = tail_trees_.size();
+  // What the tail's room costs: its records in the table and every per-frame copy, and its parts'
+  // poses in every slot's region and their push state.
+  const u64 tail_parts = u64{flora_part_capacity_ - load_flora_parts_};
+  flora_stats_.tail_bytes =
+      u64{deform_capacity_ - load_deforms_} * sizeof(gfx::DeformDesc) *
+          (deform_frames.buffer.valid() ? u64{k_joint_slots} + 1 : u64{1}) +
+      tail_parts * (u64{k_joint_slots} * sizeof(gfx::FloraPartPose) + sizeof(FloraPartState));
+}
+
+// **The pose table**: `k_joint_slots` regions of `flora_part_capacity_` poses, host-visible and
+// persistently mapped, every part at rest (axis.w 0) until a frame poses it.
+bool GpuScene::make_flora_poses(std::string* error) {
+  gfx::destroy_buffer(*device_, flora_poses_);
+  const u64 table_bytes = u64{k_joint_slots} * flora_part_capacity_ * sizeof(gfx::FloraPartPose);
+  if (table_bytes == 0) return true;
+  if (!gfx::create_buffer(*device_, table_bytes, k_address, true, flora_poses_, error))
+    return false;
+  std::memset(flora_poses_.mapped, 0, table_bytes);
+  return true;
+}
+
+// The deform table and, when `frames`, its per-frame copies, `deform_capacity_` entries a region:
+// written once and device-local for a scene whose deform records are the load's alone, as always;
+// host-visible and persistently mapped for one whose tail takes records of its own, so a tree's
+// record is written between frames into an entry no frame in flight reads (renderer.md, "Streamed
+// trees sway").
+bool GpuScene::make_deform_tables(bool frames, std::string* error) {
+  const gfx::Device& device = *device_;
+  const u64 used = u64{deform_descs_.size()} * sizeof(gfx::DeformDesc);
+  gfx::destroy_buffer(device, deform_table);
+  if (flora_tail_) {
+    if (!gfx::create_buffer(device, u64{deform_capacity_} * sizeof(gfx::DeformDesc), k_address,
+                            true, deform_table, error)) {
+      return false;
+    }
+    if (used > 0) std::memcpy(deform_table.mapped, deform_descs_.data(), used);
+  } else if (used == 0) {
+    // No record yet — a scene whose only trees are in a tail drawn rigid: one entry nobody reads,
+    // for the address every frame passes.
+    if (!gfx::create_buffer(device, sizeof(gfx::DeformDesc), k_address, false, deform_table,
+                            error)) {
+      return false;
+    }
+  } else if (!gfx::upload_buffer(device, deform_descs_.data(), used, k_storage, deform_table,
+                                 error)) {
+    return false;
+  }
+  if (!frames) return true;
+  gfx::destroy_buffer(device, deform_frames);
+  if (!gfx::create_buffer(device, u64{deform_capacity_} * sizeof(gfx::DeformDesc) * k_joint_slots,
+                          k_address, true, deform_frames, error)) {
+    return false;
+  }
+  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+    if (used > 0) std::memcpy(deform_frame(slot), deform_descs_.data(), used);
+  }
   return true;
 }
 
 u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                           f64 sky_time_s) noexcept {
-  if (flora_instances_.empty() || flora_poses_.mapped == nullptr || slot >= k_joint_slots) return 0;
+  ++flora_frames_;  // what a given-back record's age is counted in
+  if (flora_instances_.empty() || flora_poses_.mapped == nullptr || slot >= k_joint_slots) {
+    flora_moving_ = false;  // a tail whose trees have all left: nothing sways, nothing is written
+    return 0;
+  }
   // The wind in the ground plane: the frame's, the ground's record at the sky's hour (the weather
   // follows the day, clocks.h), or the tunables'.
   Vec2 to{1.0f, 0.0f};
@@ -1841,11 +2143,17 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   inputs.placed =
       std::span<const gfx::InstanceDesc>(instance_table_.data(), instance_table_.size());
   inputs.state = std::span<FloraPartState>(flora_state_.data(), flora_state_.size());
-  inputs.region = static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_parts_;
+  inputs.region =
+      static_cast<gfx::FloraPartPose*>(flora_poses_.mapped) + u64{slot} * flora_part_capacity_;
+  const i64 pose_start = time::monotonic_ns();
   const FloraPoseResult posed = flora_poser_.pose(inputs, pose_frame);
+  const i64 pose_ns = time::monotonic_ns() - pose_start;
+  flora_stats_.pose_ns_sum += static_cast<u64>(pose_ns);
+  flora_stats_.pose_ns_max = std::max(flora_stats_.pose_ns_max, static_cast<u64>(pose_ns));
+  ++flora_stats_.posed_frames;
   flora_stats_.pushed_parts = posed.pushed_parts;
   flora_moving_ = posed.moving;
-  return flora_poses_.address + u64{slot} * flora_parts_ * sizeof(gfx::FloraPartPose);
+  return flora_poses_.address + u64{slot} * flora_part_capacity_ * sizeof(gfx::FloraPartPose);
 }
 // ---- terrain levels (renderer.md, "The dunes in time-lapse")
 // -------------------------------------
@@ -3761,6 +4069,13 @@ void GpuScene::destroy() noexcept {
   flora_stats_ = FloraStats{};
   flora_moving_ = false;
   flora_wind_source_ = nullptr;
+  flora_padding_.clear();
+  tail_trees_.clear();
+  tail_tree_free_.clear();
+  tail_tree_of_slot_.clear();
+  flora_tail_ = flora_recut_ = flora_grow_ = false;
+  flora_frames_ = 0;
+  load_deforms_ = load_flora_ = load_flora_parts_ = deform_capacity_ = flora_part_capacity_ = 0;
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);

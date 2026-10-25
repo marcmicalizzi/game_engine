@@ -1093,6 +1093,29 @@ bool start_medium(ViewMedium& medium, const gfx::Device& device, renderer::Scene
 #endif
 }
 
+// The summary's `flora` block (renderer.md, "Streamed trees sway"): null when no tree sways and no
+// tail can bring one.
+JsonValue flora_summary(const renderer::GpuScene& scene) {
+  if (!scene.flora() && !scene.flora_tail()) return JsonValue{};
+  const renderer::GpuScene::FloraStats& f = scene.flora_stats();
+  JsonValue out = JsonValue::object();
+  out.set("instances", JsonValue(static_cast<u64>(f.instances)));
+  out.set("tail_instances", JsonValue(static_cast<u64>(f.tail_instances)));
+  out.set("parts", JsonValue(static_cast<u64>(f.parts)));
+  out.set("chunks", JsonValue(static_cast<u64>(f.chunks)));
+  out.set("workers", JsonValue(static_cast<u64>(f.workers)));
+  out.set("tail", JsonValue(scene.flora_tail()));
+  out.set("tail_records", JsonValue(static_cast<u64>(f.tail_records)));
+  out.set("tail_repurposed", JsonValue(f.tail_repurposed));
+  out.set("tail_bytes", JsonValue(f.tail_bytes));
+  const f64 frames = static_cast<f64>(f.posed_frames);
+  out.set("pose_ms_mean",
+          JsonValue(f.posed_frames > 0 ? static_cast<f64>(f.pose_ns_sum) / frames / 1.0e6 : 0.0));
+  out.set("pose_ms_max", JsonValue(static_cast<f64>(f.pose_ns_max) / 1.0e6));
+  out.set("posed_frames", JsonValue(f.posed_frames));
+  return out;
+}
+
 // The summary's `medium` block: null for a scene that names none.
 JsonValue medium_summary(const ViewMedium& medium, const renderer::Stats& stats) {
   if (!medium.named) return JsonValue{};
@@ -3303,6 +3326,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     summary.sun =
         renderer::sun_summary(resolved.settings, day_state(sun, world), view_renderer.stats());
     summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
+    summary.flora = flora_summary(view_renderer.scene());
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
 #if ENGINE_VIEW_ANIMATION
     if (animated) summary.animation = view::animation_summary(*animated, rendered);
@@ -4707,6 +4731,8 @@ int run_view(int argc, char** argv) {
   // Read out of the GPU scene while it is alive, because the summary prints after it is gone.
   u64 deform_pool_bytes = 0;
   u64 deform_whole_mesh_bytes = 0;
+  // The trees' sway (renderer.md, "The flora stage", "Streamed trees sway"): the summary's `flora`.
+  std::string flora_text = "null";
   // The morph chain's summary numbers and the pose stage's per-frame array.
   u32 morph_channels = 0;
   u64 static_cache_bytes = 0;
@@ -5054,6 +5080,7 @@ int run_view(int argc, char** argv) {
     static_cached_instances = scene.static_cached_instances();
     deform_pool_bytes = scene.deform_pool_bytes();
     deform_whole_mesh_bytes = scene.deform_whole_mesh_bytes();
+    flora_text = write_json(flora_summary(scene), JsonWriteOptions{.pretty = false});
     template_bytes = scene.template_bytes();
     rt_bytes = scene.rt_bytes();
     geometry_bytes = scene.geometry_bytes();
@@ -6055,6 +6082,7 @@ int run_view(int argc, char** argv) {
       summary.sun =
           renderer::sun_summary(resolved.settings, day_state(sun, world), view_renderer.stats());
       summary.medium = medium_summary(medium, view_renderer.stats());  // brief-volumetrics
+      summary.flora = flora_summary(view_renderer.scene());
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
@@ -6150,7 +6178,7 @@ int run_view(int argc, char** argv) {
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
-        "\"output\":%s,\"medium\":%s}\n",
+        "\"output\":%s,\"medium\":%s,\"flora\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -6191,7 +6219,7 @@ int run_view(int argc, char** argv) {
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str(), output_text.c_str(), medium_text.c_str());
+        sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

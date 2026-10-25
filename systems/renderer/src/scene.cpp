@@ -17,6 +17,7 @@
 #include <domain/texture/material_textures.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
@@ -1103,6 +1104,37 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   out.form_source.resize(meshes);
   for (u32 m = 0; m < meshes; ++m)
     out.form_source[m] = m;
+  out.form_rigid.assign(meshes, 0);
+  // **A swaying form is cut for the sway's padded spheres** (renderer.md, "Streamed trees sway"):
+  // the cull pads a swaying instance's spheres by `flora_bounds_padding`, which makes its cut
+  // finer, so a form that sways is cut from that much nearer, and the clusters the cull can choose
+  // over it from its ring are the full mesh's swaying. Measured in the mesh's own units, as the cut
+  // is.
+  const f32 sway_m = rules.sway_m >= 0.0f                             ? rules.sway_m
+                     : flora_motion_tunable() && flora_tail_tunable() ? flora_sway_m_tunable()
+                                                                      : 0.0f;
+  Vector<f32> sway_padding(meshes, -1.0f);  // -1: the mesh does not sway
+  if (sway_m > 0.0f) {
+    for (u32 m = 0; m < meshes; ++m) {
+      const SourceMesh& source = sources[m];
+      if (!(scale_max[m] > 0.0f) || !source.has_motion() ||
+          source.motion_vertices.size() != dags[m].mesh.vertices.size()) {
+        continue;
+      }
+      FloraMesh tree;
+      if (!flora_mesh(std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
+                                                                       source.motion_parts.size()),
+                      std::span<const geometry::ClusterFileStructuralPart>(
+                          source.structural_parts.data(), source.structural_parts.size()),
+                      source.species, tree)) {
+        continue;
+      }
+      sway_padding[m] = flora_bounds_padding(
+          tree, std::span<const Vec3>(dags[m].mesh.vertices.data(), dags[m].mesh.vertices.size()),
+          std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
+                                                             source.motion_vertices.size()));
+    }
+  }
   scene::AuthoredSet set;
   set.tile_size = tile;
   Vector<u32> set_of(meshes, ~0u);
@@ -1126,9 +1158,11 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     for (u32 r = 1; r < rings; ++r) {
       const f32 floor_m = ring_floor_m(resolved.world, r);
       if (floor_m > 0.0f) {
+        const bool sways = sway_padding[m] >= 0.0f && floor_m < sway_m;
         geometry::LodFormCut cut;
         cut.origin = fit[m].anchor;
         cut.distance = floor_m / (fit[m].scale * scale_max[m]);
+        if (sways) cut.distance = std::max(0.0f, cut.distance - sway_padding[m]);
         cut.proj_scale = proj;
         cut.threshold_px = rules.threshold_px;
         cut.foliage_px = rules.foliage_px;
@@ -1172,6 +1206,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
           sources.push_back(std::move(copy));
           dags.push_back(std::move(form));
           out.form_source.push_back(m);
+          out.form_rigid.push_back(sways ? 0 : 1);
           ++stats.forms;
           stats.form_clusters += kept;
         }
@@ -1192,7 +1227,11 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   for (u32 i = 0; i < resolved.instances.size(); ++i) {
     const SceneInstance& instance = resolved.instances[i];
     if (i < first || i >= first + count || take[i - first] == 0) {
+      // Kept, at the place the whole read would have given it (`SceneInstance::motion_key`), so a
+      // swaying landmark has the whole read's phase.
       kept_instances.push_back(instance);
+      if (kept_instances.back().motion_key == k_motion_key_load)
+        kept_instances.back().motion_key = i;
       continue;
     }
     scene::AuthoredInstance a;
@@ -1229,6 +1268,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   entry.params = schema::to_json(set);
   entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
   entry.meshes = std::move(resident);
+  entry.motion_key_base = first;  // id n is instance first + n - 1 of the whole read
   resolved.streamed.push_back(std::move(entry));
   stats.streamed = taken;
   ENGINE_LOG_INFO(log_renderer, "instances streamed by the world", log::field("streamed", taken),
@@ -2085,6 +2125,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       return false;
     }
     out.instance_joints.push_back(joints);
+    // The key a swaying instance's seed is hashed from: its place here unless the source named
+    // the place a whole read gives it (renderer.md, "Streamed trees sway").
+    out.motion_keys.push_back(source.motion_key != k_motion_key_load ? source.motion_key
+                                                                     : out.motion_keys.size());
     out.skinned_instances += joints > 0 ? 1u : 0u;
     out.instances.push_back(instance);
   }

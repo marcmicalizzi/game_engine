@@ -71,6 +71,11 @@ inline constexpr f32 k_flora_leaf_reach = 0.12f;    // a part's reach past its a
 // wind they sway in where the scene's ground says none — where it blows to in the ground plane
 // (x, z) and its strength over a record's mean.
 bool flora_motion_tunable() noexcept;
+// `renderer.flora.tail` and `renderer.flora.sway_m` (renderer.md, "Streamed trees sway"): whether a
+// streamed world's trees sway with their tiles, and the farthest ring floor, metres, whose distance
+// form still does.
+bool flora_tail_tunable() noexcept;
+f32 flora_sway_m_tunable() noexcept;
 struct FloraWindDefault {
   Vec2 to{1.0f, 0.0f};
   f32 strength = 1.0f;

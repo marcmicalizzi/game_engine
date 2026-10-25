@@ -69,7 +69,8 @@ std::string scene_text(const char* world) {
   return text + "}";
 }
 
-std::vector<std::string> base_args(const test::TempDir& tmp, const char* scene, const char* path) {
+std::vector<std::string> base_args(const test::TempDir& tmp, const char* scene, const char* path,
+                                   bool sway = false) {
   return {"--scene",
           tmp.file(scene),
           "--camera-path",
@@ -82,9 +83,28 @@ std::vector<std::string> base_args(const test::TempDir& tmp, const char* scene, 
           "--shadows",
           "off",
           "--tunable",
-          "renderer.flora.motion=false",
+          sway ? "renderer.flora.motion=true" : "renderer.flora.motion=false",
           "--ddc",
           tmp.file("ddc")};
+}
+
+// The pixels whose colour differs between two captures of one size.
+u32 differing_pixels(const std::string& a_path, const std::string& b_path) {
+  image::Image a;
+  image::Image b;
+  REQUIRE(image::read_image(a_path, a) == io::Status::Ok);
+  REQUIRE(image::read_image(b_path, b) == io::Status::Ok);
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  u32 differing = 0;
+  const u32 pixels = a.width * a.height;
+  for (u32 p = 0; p < pixels; ++p) {
+    bool d = false;
+    for (u32 c = 0; c < 3; ++c)
+      d = d || a.pixels[p * 4 + c] != b.pixels[p * 4 + c];
+    differing += d ? 1u : 0u;
+  }
+  return differing;
 }
 
 JsonValue summary_of(const std::string& output) {
@@ -199,6 +219,122 @@ TEST_CASE("engine-view: a tree handed to its next ring's distance form changes n
   CHECK(handovers > 0);
   CHECK(drawn > 0);
   CHECK(changed == 0);
+}
+
+// Roadmap W74 (renderer.md, "Streamed trees sway"): the trees a tile brings sway as the whole
+// read's do, at the same world time — in the inner ring's full mesh, and in the next ring's
+// distance form, which is cut for the sway's padded spheres and sways with its source's parts.
+TEST_CASE("engine-view: a world's streamed trees sway as the whole read's do") {
+  const test::TempDir tmp("engine_view_authored_sway");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("whole.json"), scene_text(nullptr)));
+  REQUIRE(write_text(tmp.file("inner.json"),
+                     scene_text(R"({"tile_size":32,"rings":[{"radius":30}]})")));
+  // Two rings: the trees within two tiles of the camera are full meshes, the rest their ring-1
+  // form, whose floor (33 m) is inside the sway's range.
+  REQUIRE(write_text(tmp.file("rings.json"),
+                     scene_text(R"({"tile_size":32,"rings":[{"radius":2},{"radius":30}]})")));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"over","fps":10,"keys":[)"
+                     R"({"time":0,"position":[110,30,80],"target":[0,4,0]}]})"));
+  // Thirty frames: the sway's clock at half a second, every tree off its rest pose.
+  const auto capture = [&](const char* scene, bool sway, const char* png,
+                           const std::vector<const char*>& extra = {}) {
+    std::vector<std::string> args = base_args(tmp, scene, "path.json", sway);
+    for (const char* a : {"--frames", "30", "--lod-fade", "0", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    for (const char* a : extra)
+      args.push_back(a);
+    return view(args);
+  };
+  const Run whole = capture("whole.json", true, "whole.png");
+  if (whole.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << whole.output);
+    return;
+  }
+  REQUIRE_MESSAGE(whole.exit_code == 0, whole.output);
+  const Run rigid = capture("whole.json", false, "rigid.png");
+  REQUIRE_MESSAGE(rigid.exit_code == 0, rigid.output);
+  const Run inner = capture("inner.json", true, "inner.png");
+  REQUIRE_MESSAGE(inner.exit_code == 0, inner.output);
+  // The second ring sways only when the range reaches its floor (the default, 0, keeps forms
+  // rigid).
+  const Run rings =
+      capture("rings.json", true, "rings.png", {"--tunable", "renderer.flora.sway_m=100"});
+  REQUIRE_MESSAGE(rings.exit_code == 0, rings.output);
+  // Before W74: the same streamed world with its tail drawn rigid.
+  const Run before =
+      capture("inner.json", true, "before.png", {"--tunable", "renderer.flora.tail=false"});
+  REQUIRE_MESSAGE(before.exit_code == 0, before.output);
+
+  for (const Run* run : {&inner, &rings}) {
+    const JsonValue summary = summary_of(run->output);
+    const JsonValue* flora = summary.find("flora");
+    REQUIRE(flora != nullptr);
+    REQUIRE(flora->is_object());
+    CHECK(field_u64(*flora, "tail_instances") == 140);
+    CHECK(field_u64(*flora, "tail_records") >= 140);
+  }
+  const u32 swayed = differing_pixels(tmp.file("whole.png"), tmp.file("rigid.png"));
+  const u32 inner_diff = differing_pixels(tmp.file("whole.png"), tmp.file("inner.png"));
+  const u32 rings_diff = differing_pixels(tmp.file("whole.png"), tmp.file("rings.png"));
+  const u32 before_diff = differing_pixels(tmp.file("whole.png"), tmp.file("before.png"));
+  MESSAGE("the sway moves " << swayed << " pixels of the whole read; streamed in one ring "
+                            << inner_diff << " differ, in two " << rings_diff
+                            << ", with the tail rigid " << before_diff);
+  CHECK(swayed > 20);  // 76 at 320 x 180 from 136 m, half a second in (2026-10-24)
+  CHECK(inner_diff == 0);
+  CHECK(rings_diff == 0);
+  CHECK(before_diff > 20);
+}
+
+// A tile that leaves and comes back brings its trees back in the phase they had: a tree's seed is
+// its place in the scene file, never the order the tiles came in, so a flight out of every ring
+// and back draws, at the same world time, what a camera that never moved draws.
+TEST_CASE("engine-view: a streamed tree that leaves and comes back sways in its own phase") {
+  const test::TempDir tmp("engine_view_authored_return");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("streamed.json"),
+                     scene_text(R"({"tile_size":32,"rings":[{"radius":2},{"radius":30}]})")));
+  REQUIRE(write_text(tmp.file("stay.json"),
+                     R"({"format":"engine.camera-path.v1","name":"stay","fps":10,"keys":[)"
+                     R"({"time":0,"position":[110,30,80],"target":[0,4,0]},)"
+                     R"({"time":4,"position":[110,30,80],"target":[0,4,0]}]})"));
+  // Out past the outer ring's 960 m, where every tile has gone, and back for the last two seconds.
+  REQUIRE(write_text(tmp.file("away.json"),
+                     R"({"format":"engine.camera-path.v1","name":"away","fps":10,"keys":[)"
+                     R"({"time":0,"position":[110,30,80],"target":[0,4,0]},)"
+                     R"({"time":1,"position":[2600,30,80],"target":[2500,4,0]},)"
+                     R"({"time":2,"position":[110,30,80],"target":[0,4,0]},)"
+                     R"({"time":4,"position":[110,30,80],"target":[0,4,0]}]})"));
+  const auto fly = [&](const char* path, const char* png) {
+    std::vector<std::string> args = base_args(tmp, "streamed.json", path, true);
+    // Both rings swaying, so every one of the 140 trees leaves and comes back with a phase.
+    for (const char* a : {"--tunable", "renderer.flora.sway_m=100", "--frames", "40", "--lod-fade",
+                          "0", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    return view(args);
+  };
+  const Run stay = fly("stay.json", "stay.png");
+  if (stay.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << stay.output);
+    return;
+  }
+  REQUIRE_MESSAGE(stay.exit_code == 0, stay.output);
+  const Run away = fly("away.json", "away.png");
+  REQUIRE_MESSAGE(away.exit_code == 0, away.output);
+  const JsonValue summary = summary_of(away.output);
+  const JsonValue* flora = summary.find("flora");
+  REQUIRE(flora != nullptr);
+  REQUIRE(flora->is_object());
+  CHECK(field_u64(*flora, "tail_instances") == 140);
+  const u32 differing = differing_pixels(tmp.file("stay.png"), tmp.file("away.png"));
+  MESSAGE("away and back against staying: " << differing << " pixels differ");
+  CHECK(differing == 0);
 }
 
 #endif

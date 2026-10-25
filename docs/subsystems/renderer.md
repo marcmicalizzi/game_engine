@@ -221,7 +221,7 @@ The last row is the point: **13.1× less allocated, and the frame used 0.77 MB o
 
 **Parent-first on the CPU, not a chain walk on the GPU.** The renderer composes each part's frame from its parent's — the parent's frame times the parent's own bend at the weight where the child leaves it — once per instance per frame (`renderer::flora_part_poses`), so a vertex costs one table read, one sine and cosine and two small products whatever the depth of its part. The alternative, walking the parent chain per vertex with a bounded depth, costs the depth in every vertex of the cut — the ancient tree's leaf cards are four parts deep — to save a CPU pass over the parts that is a few microseconds a tree. The wind's bend, the push and the species' stiffness are the model's ([flora](flora.md#motion) has the numbers and why); what follows is what the renderer lays out and pays.
 
-**The table, per frame.** Laid out at load for the **loaded** instances, as every deform record is: each instance of a mesh with the motion contract (`SourceMesh::has_motion`, sections 35 to 37 read by `adopt_container`) gets a `DeformDesc` of the flora stage, a run of the part-pose table (`first_part`, its part count), a seed (its index, hashed), and its 3x3's inverse for taking the wind and the walker into its mesh frame. **A dynamic scene's tail is rigid** for now, as its skinned instances would be. The table is `k_joint_slots` regions of every tree's parts, host-visible and persistently mapped like the joint matrices; `GpuScene::flora_frame` writes this slot's region in place from the frame's wind and walker before the pool pass — allocation-free, the push state preallocated per part — and the scene's motion vertex stream (4 bytes a scene-wide vertex) is uploaded once. The wind is the frame's (`FrameDesc::flora`), else the scene ground's record at the sky's hour (`epoch_s() + FrameDesc::sky_time_s`, the weather following the day: the dunes' record says where and how strong; [One world clock](#one-world-clock-and-the-days-length)), else `renderer.flora.wind_deg`/`wind_strength`; the sway's clock is the world's (`FrameDesc::world_time_s`: the frame index at 60 Hz it was, for a host at 60 frames at real time, so the same number; a world rate scales it, a day length never does), which a replay reproduces. A frame on which no part of any tree is off its rest pose passes no normal pool (`frame_normal_pool_address`) when the trees are its only tenant, so the resolve shades a calm tree from the rigid path's own normals.
+**The table, per frame.** Laid out at load for the **loaded** instances, as every deform record is: each instance of a mesh with the motion contract (`SourceMesh::has_motion`, sections 35 to 37 read by `adopt_container`) gets a `DeformDesc` of the flora stage, a run of the part-pose table (`first_part`, its part count), a seed (its motion key hashed — its index in a scene read whole, the index the whole read would give it in a streamed one: `SceneInstance::motion_key`), and its 3x3's inverse for taking the wind and the walker into its mesh frame. **A dynamic scene's tail sways too** since W74, through records of its own taken and given back as its tiles come and go ([Streamed trees sway](#streamed-trees-sway)); its skinned and morphed instances are still refused. The table is `k_joint_slots` regions of every tree's parts, host-visible and persistently mapped like the joint matrices; `GpuScene::flora_frame` writes this slot's region in place from the frame's wind and walker before the pool pass — allocation-free, the push state preallocated per part — and the scene's motion vertex stream (4 bytes a scene-wide vertex) is uploaded once. The wind is the frame's (`FrameDesc::flora`), else the scene ground's record at the sky's hour (`epoch_s() + FrameDesc::sky_time_s`, the weather following the day: the dunes' record says where and how strong; [One world clock](#one-world-clock-and-the-days-length)), else `renderer.flora.wind_deg`/`wind_strength`; the sway's clock is the world's (`FrameDesc::world_time_s`: the frame index at 60 Hz it was, for a host at 60 frames at real time, so the same number; a world rate scales it, a day length never does), which a replay reproduces. A frame on which no part of any tree is off its rest pose passes no normal pool (`frame_normal_pool_address`) when the trees are its only tenant, so the resolve shades a calm tree from the rigid path's own normals.
 
 **Bounds.** A swaying tree is a deformed instance, so it pads its spheres by a bound on how far its vertices leave the rest pose (`flora_bounds_padding`: per vertex, the sum over its part chain of each part's largest bend at the saturating wind times its distance from that part's pivot, the larger of that and any padding it had) — the young palm of the test pads by 1.77 m — and, like every deformed instance, **it is never cone-tested** ([geometry](geometry.md#normal-cones-fit-to-what-is-drawn)): a palm's trunk loses the backfacing clusters the cone test dropped, and the padding makes the cut finer (a padded sphere is nearer the camera, so its projected error is larger). The **push is not in the padding**: a pushed part is within a metre of the walker, whose eye is the camera, and turns away from it, and 0.9 rad over a 4 m frond would pad every palm by 3.6 m at any distance. **The casters and the cascades take the deformed trees too** (R84's blocks for the caster run and the cascades), so a swaying tree's shadow sways; its cut in every cascade is a pool block of its own. A scene with trees takes a pool of at least `renderer.flora.pool_mib` (96 MiB), clamped as every budget is to what its whole meshes need over the views and cascades, because an entry the budget refuses draws its rest pose beside neighbours that sway.
 
@@ -255,7 +255,7 @@ The pool pass is the small part; the rest of the GPU's 0.04 to 0.10 ms is the cu
 | 256 (6,656) | 1.46 ms | 0.30 ms | 0.32 ms |
 | 4,096 (106,496) | 12.26 ms | 1.50 ms | 1.85 ms |
 
-A pool pays from three chunks of 70 parts; a 32-part cut already loses at four trees and costs more everywhere past eight, because each extra job is a wake-up and a steal. A cold part costs about 0.5 µs on the frame's thread (four trees, after a sleep) and a warm one 0.115 µs (the forest row), which is why the small rows are slower per part than the large. The forest row's eightfold is what 35 workers and the frame thread buy over memory the posing streams through. Its threads are **`renderer.flora.workers`** (read once, at load): 0, the default, is one per performance CPU but the frame thread's, and never more than the chunks less one; 1 is one worker beside the frame thread. They are unpinned, as the time-lapse's are, because two pools pinned to the same CPUs contend by placement where the OS can balance them; the pool's efficiency class gets the one thread the job system insists on, idle. A frame allocates nothing: the chunk table is the load's, the per-chunk answers live on the frame thread's stack, and `schedule` and `wait` push into fixed queues. The log's `trees sway` line and `GpuScene::FloraStats` say how many chunks and workers a scene got. **The posing stays on the CPU** rather than moving to the GPU, because a host's own simulation (perching, a walker's push) needs the trees' motion where it can read it, the same motion the GPU draws.
+A pool pays from three chunks of 70 parts; a 32-part cut already loses at four trees and costs more everywhere past eight, because each extra job is a wake-up and a steal. A cold part costs about 0.5 µs on the frame's thread (four trees, after a sleep) and a warm one 0.115 µs (the forest row), which is why the small rows are slower per part than the large. The forest row's eightfold is what 35 workers and the frame thread buy over memory the posing streams through. Its threads are **`renderer.flora.workers`** (read once, at load): 0, the default, is one per performance CPU but the frame thread's, and never more than the chunks less one; 1 is one worker beside the frame thread. They are unpinned, as the time-lapse's are, because two pools pinned to the same CPUs contend by placement where the OS can balance them; the pool's efficiency class gets the one thread the job system insists on, idle. A frame allocates nothing: the chunk table is the load's (cut again in place, between frames, when a streamed world's trees come and go — `FloraPoser::recut`, room for the most chunks reserved at load; a growing poser's pool is made once, for the tunable's threads, the first time a cut needs one), the per-chunk answers live on the frame thread's stack, and `schedule` and `wait` push into fixed queues. The log's `trees sway` line and `GpuScene::FloraStats` say how many chunks and workers a scene got. **The posing stays on the CPU** rather than moving to the GPU, because a host's own simulation (perching, a walker's push) needs the trees' motion where it can read it, the same motion the GPU draws.
 
 ### Bounds: the cluster spheres are the rest pose's, and a skinned vertex is not in them
 
@@ -1952,9 +1952,10 @@ never a hole; a tile waiting on the ring's per-update promotion budget draws its
 promoted (engine-view's world on tile ground runs the ring with no budget); and the cross-fade's
 dither seeds by the instance slot (R91), so a handover whose tile block is not rewritten in place
 (growing back into a larger form) changes which of a fading transition's pixels each side keeps for
-the frames that fade lasts. **Streamed trees are rigid**: a tail instance has no deform entry
-(above), so the trees streamed this way do not sway in the wind, and the prefix's — the landmarks —
-still do; a deformed tail is that stage of its own.
+the frames that fade lasts. **Streamed trees sway** since W74, in the inner ring's full mesh and in
+every form whose ring is within `renderer.flora.sway_m` — cut, then, for the sway's padded spheres
+([Streamed trees sway](#streamed-trees-sway)); until then a tail instance had no deform entry and
+only the prefix's landmarks moved.
 
 **What it measured** (2026-10-24, RTX 5090, release, offscreen 1600 × 900, `--raster hw --shadows
 csm`; the machine was shared with the frame-budget gate's flights and other agents' builds throughout
@@ -2002,6 +2003,121 @@ withholds one now. (3) `build_cache_textures` reads and hashes every source imag
 uses it, with a job pool made and joined per mesh, and `find_built_textures` does it again: one hash
 per distinct image and one pool per load would save about 4 s and 2.7 GB of reads. None of the three
 is built here; each is a stage of its own.
+
+### Streamed trees sway
+
+Roadmap W74 (2026-10-24). **A tree a tile brings sways as the whole read's does.** Until this date a
+tail instance was placed with `k_invalid_deform`, so W73's streamed forest stood rigid while its
+prefix's landmarks moved: the owner would have seen a forest where only the ancients sway. The rule
+now is that a whole read and a streamed read of the same scene draw the same animated picture at the
+same world time, and the tests hold it to the pixel.
+
+**A record per resident tree, from its mesh's free list.** A dynamic scene whose meshes the tail may
+name carry the motion contract (`GpuScene::flora_tail()`, under `renderer.flora.motion` and
+`renderer.flora.tail`) lays out past the load's deform records room for the tail's
+(`k_tail_deform_reserve`, 1,024) and past the load's parts room in the pose table
+(`k_tail_part_reserve`, 8,192). When `write_slots` writes a slot with an instance of a swaying mesh,
+the slot takes a **record** — a deform entry of the flora stage (the mesh's first vertex, a run of
+the pose table, its part count) — from that mesh's free list, or makes one past every other; when a
+slot is rewritten, nulled, or dropped off the layout's end, its record goes back to its mesh's list.
+Why per mesh: a record's entry depends on its mesh alone, so a reused record's entry is already
+right and is **never written again**, and a frame in flight that still draws the tree that left
+reads what it always read. A new record is written into the deform table in place — the table is
+host-visible and mapped for such a scene, and no frame in flight reads an entry that did not exist —
+unless it passes the room, when `relayout` (which `SceneRenderer::set_dynamic_instances` runs with
+the device idle, as for the stride's growth) makes the deform table, its per-frame copies and the
+pose table again, half as much again as the records need. The per-frame copies of a skinned or
+morphed prefix are `deform_capacity()` entries a region, and only the load's entries carry morph
+weights (`load_deform_count()`). The motion vertex stream already covers every mesh the scene holds,
+forms included, so nothing about it changes. **A record another mesh can take.** Per mesh alone, a
+world's records were the sum of every mesh's most at once — 15,101 records and 211 MB along the v8
+crossing, where 365 trees swayed at its end, because the species change as a flight crosses the
+region and each mesh kept the room its own peak took. So a record's run of the pose table is a power
+of two of parts (its **class**), a free record is also on its class's list by age, and when a mesh
+has none of its own the oldest of its class is taken once `k_joint_slots + 1` frames have been posed
+since it was given back — no frame in flight can then draw the tree that held it — and its entry is
+rewritten (`FloraStats::tail_repurposed`). The same crossing then made 10,677 records with both rings
+swaying and 4,852 with the inner ring alone: the class lists cut it by a third, and what is left is
+the peaks of a dense understory, below.
+
+**The phase is the instance's, never its tile's arrival.** A sway's seed is `key * 0x9e3779b9 +
+0x632be5ab`, the hash the load always used with the instance's index as the key. A streamed read
+gives every instance the key the whole read gives it (`SceneInstance::motion_key`): `stream_authored`
+keeps a landmark's index among the file's instances, and gives the `authored` entry the loaded index
+of its id 1 (`StreamedPlacements::motion_key_base`), from which the world's placements consumer sets
+a placement's key from its stable id. A tail instance with no id — another generator's — hashes its
+position in whole millimetres. A tree whose tile comes back starts at rest in the push and in its
+own phase in the wind; so does a tree a compaction moves, which costs a walker's push its ease and
+nothing else.
+
+**The pose pass covers the tail.** A tail tree is one more `FloraInstance` after the load's,
+removed by the last one taking its place (a pose is a function of the instance alone, so the order
+reaches no byte), and `FloraPoser::recut` cuts the chunks again after a change, in place. The pool
+pass's per-frame blocks follow the cull's visible list as before, and a swaying tail tree is padded
+by its mesh's sway bound and never cone-tested, as a loaded one is. **The pool's budget** for such a
+scene is the budget unclamped — 96 MiB under `renderer.flora.pool_mib` — because no load can bound
+what the tiles will bring (as the vertex path's index budget already said); a scene with no tail
+clamps to its whole meshes exactly as before.
+
+**Which rings sway: the inner ring's full meshes, and a ring's forms when its tiles come within
+`renderer.flora.sway_m` (default 0: none).** A ring past the first draws a distance form, cut at the
+nearest an origin on its tiles can be. A form sways when that floor is under the range, and is then
+**cut for the sway's padded spheres** — from the padding nearer (`stream_authored` measures
+`flora_bounds_padding` of the source mesh, the bound the cull pads its instances by, and the form's
+instances take the source's padding), so the clusters the cull can choose over it are the full mesh's
+swaying ones and the handover stays invisible with the trees moving. Past the range the form is drawn
+and cut rigid (`SceneData::form_rigid`). **Why the default keeps the second ring rigid**, although its
+sway is visible (at 48 m a frond tip's 0.24 m is five pixels at 900 lines and 55°): in the v8 forest
+that ring holds **5,122** swaying plants at the hardwoods view, its understory included, against the
+first ring's 261, and took the frame from 8.2 to 9.3 ms of GPU, the posing from 1.1 to 1.8 ms, and the
+tail's room from 28 to 153 MB (below). `renderer.flora.sway_m=100` sways it for whoever wants that;
+past about 100 m (a pixel is 0.116 m there, about a spray's flutter in a mean wind) no ring should,
+and the v8 forest's third ring, from 161 m, holds 13,110 trees.
+
+**What holds it.** `authored_view_tests.cpp`: the scene's 140 trees read whole and streamed in one
+ring and in two (the second ring's forms swaying under `renderer.flora.sway_m=100`), thirty frames into the sway, **0 pixels** different
+in both, where the sway moves 76 of the whole read's pixels and the tail drawn rigid differs by those
+76; and a flight out past the outer ring and back draws, at the same world time, the picture a camera
+that never moved draws, to the pixel. `frame_loop_tests.cpp` flies the same trees across two rings
+twice and the second flight allocates exactly what it allocates with the tail rigid.
+
+**What it costs** (2026-10-24; RTX 5090, i9-10980XE, `msvc-release` engine-view, offscreen 1600 × 900,
+`--raster hw --shadows csm`, `--wait-quiet 120`; GPU total ms median / p95 / p99; `before` is the
+same binary with `renderer.flora.tail=false`; the v8 runs are W73's: the proof of concept's scene as
+read-only data with its caches copied to scratch, `--deform-pool-mib 64`, wind 0.7. The base is the
+gate's d70d34bc, whose G86/G87 trees are heavier than W73's, so the before rows are not W73's 0.62
+and 2.46 ms. The machine was shared with other agents' builds; each row's `machine_state`, CPU by
+others and GPU busy at the start → the end, says how much, and every time is an upper bound):
+
+| Scene, run | GPU total | shadow | deform | swaying (tail) | pose ms mean | tail room | machine_state |
+|---|---|---|---|---|---|---|---|
+| streamed forest, before | 1.34 / 1.89 / 2.06 | 1.01 | 0.014 | 1 (0) | 0.19 | — | 8% / 3% → 18% / 3% |
+| streamed forest, ring 0 (default) | 2.17 / 4.81 / 6.69 | 1.60 | 0.043 | 80 (79) | 0.28 | 11.8 MB | 69% / 99% → 41% / 5% |
+| streamed forest, rings 0–1 | 1.76 / 2.43 / 2.57 | 1.37 | 0.043 | 108 (107) | 0.62 | 13.0 MB | 67% / 3% → 65% / 4% |
+| v8 hardwoods, before | 5.99 / 6.60 / 6.81 | 4.48 | 0.069 | 178 (0) | 0.60 | — | 21% / 5% → 95% / 98% |
+| v8 hardwoods, ring 0 (default) | 8.16 / 8.84 / 9.15 | 6.49 | 0.197 | 439 (261) | 1.06 | 28.4 MB | 12% / 5% → 13% / 4% |
+| v8 hardwoods, rings 0–1 | 9.32 / 9.97 / 10.41 | 7.47 | 0.315 | 5,300 (5,122) | 1.79 | 153 MB | 24% / 3% → 23% / 84% |
+| v8 crossing, before | 5.06 / 9.92 / 13.05 | 3.47 | 0.077 | 178 (0) | 1.52 | — | 100% / 23% → 100% / 5% |
+| v8 crossing, ring 0 (default) | 5.66 / 14.03 / 16.87 | 4.05 | 0.111 | 209 (31) at its end | 0.73 | 117 MB | 17% / 4% → 100% / 19% |
+| v8 crossing, rings 0–1 | 6.25 / 22.56 / 26.35 | 4.61 | 0.119 | 543 (365) at its end | 1.31 | 254 MB | 37% / 5% → 61% / 58% |
+
+The streamed forest's ring-0 row ran beside a GPU 99% busy at its start, which is why it reads above
+the rows that sway more. **Where the time goes**: the shadow cascades, not the pool pass. A swaying
+plant is padded and never cone-tested, and every cascade deforms its own copy of its cut, so the
+hardwoods' 261 tail plants add 2.0 ms of cascades and 0.13 ms of pool pass; the pose is the CPU's
+and runs on the poser's pool (0.5 ms more). The pair count barely moves (the forms cut for the
+padding hold 5,877,921 pairs at the hardwoods view against 5,877,845). The tail room is the records'
+entries, three slots' part poses (80 bytes each) and the push state, and it keeps the high-water of
+the flight: 4,852 records after the crossing for the 31 plants swaying at its end.
+
+**What it does not fix.** (1) The tail's room never shrinks: the crossing ends holding 117 MB for 31
+swaying plants with the default, because records are kept for the next tile of their class; a
+trim of records free for many frames, or poses in a pool sized by the visible plants rather than the
+resident ones, is the next stage. (2) A swaying plant's cascades are most of its cost; a sway LOD
+(far or small plants drawn rigid, or their shadows cast from the rest pose) would buy most of it
+back. (3) The same flight's second pass allocates 308 times on the frames that change tiles, with or
+without the sway — the world's streaming of the authored tiles, W73's, not yet held to the frame-loop
+rule.
 
 ### The pair accounting
 

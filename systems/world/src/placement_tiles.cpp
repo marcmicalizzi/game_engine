@@ -222,6 +222,11 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       instance.mesh = meshes[p.mesh];
       instance.transform = p.turn();
       instance.origin = p.position;
+      // The whole read's place, for an entry whose ids name it (the `authored` entry's): what a
+      // swaying tree's phase is hashed from, so it sways as it would loaded, whenever its tile came
+      // (renderer.md, "Streamed trees sway").
+      if (entry.source->motion_key_base != renderer::k_motion_key_load && p.id != 0)
+        instance.motion_key = entry.source->motion_key_base + (p.id - 1);
       out.instances.push_back(instance);
       out.tags.push_back(p.tag);
       if (e + 1 < entries_.size()) {

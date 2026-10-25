@@ -1924,7 +1924,11 @@ struct FlythroughAnimation @version(1) {
 ///
 /// Version 15: `startup`, the startup trace's summary (`--startup-trace`; docs/subsystems/apps.md,
 /// "--startup-trace: from launch to ready").
-struct FlythroughSummary @version(15) {
+///
+/// Version 16: `flora`, the trees' sway — how many sway, how many of them a streamed world's tail
+/// holds, the tail's records and their bytes, and the CPU's posing per frame (renderer.md,
+/// "Streamed trees sway").
+struct FlythroughSummary @version(16) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2030,4 +2034,8 @@ struct FlythroughSummary @version(15) {
   /// the milestones, the main thread's stages, the other threads' busy time, and the process before
   /// ready. Null without the flag.
   startup: json @since(15)
+  /// The trees' sway (renderer.md, "The flora stage", "Streamed trees sway"): instances, tail
+  /// instances, parts, the poser's chunks and workers, the tail's records and bytes, and the posing's
+  /// mean and longest CPU milliseconds a frame. Null when no tree sways.
+  flora: json @since(16)
 }
