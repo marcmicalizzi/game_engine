@@ -226,8 +226,10 @@ void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
   const f64 ez = static_cast<f64>(eye.cell.z) * k_world_cell_m + static_cast<f64>(eye.local.z) +
                  static_cast<f64>(eye.residual.z);
   const f64 base = std::atan2(static_cast<f64>(to.y), static_cast<f64>(to.x));
-  const f64 lengths[2] = {k_flora_field_honami_m, k_flora_field_sweep_m};
-  const f64 speeds[2] = {k_flora_field_honami_mps, k_flora_field_sweep_mps};
+  const f64 lengths[2] = {static_cast<f64>(k_flora_field_honami_m),
+                          static_cast<f64>(k_flora_field_sweep_m)};
+  const f64 speeds[2] = {static_cast<f64>(k_flora_field_honami_mps),
+                         static_cast<f64>(k_flora_field_sweep_mps)};
   f32 k[8];
   f32 phase[4];
   for (u32 j = 0; j < 4; ++j) {
