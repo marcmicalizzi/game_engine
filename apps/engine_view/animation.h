@@ -85,6 +85,15 @@ struct AnimatedScene {
   u32 joints = 0;                         // the widest skeleton attached
   u32 instances = 0;                      // entities attached
   std::string clip_name;                  // what the summary reports
+  // **The whole read's index of each scene instance, and back** (renderer.md, "The whole read's
+  // index"): everything above is indexed by the loaded instance, and everything a scene file or a
+  // game names — an animation block, an actor's handle, the summary's `instance` — by the whole
+  // read's, which a streamed world's load does not keep (it hands some instances to the tail).
+  // Taken from `renderer::read_instance` and `SceneData::loaded_of_read` at `attach_instances`;
+  // for a scene read whole both are the identity and `loaded_of_read` is empty.
+  Vector<u32> read_instance;   // per scene instance
+  Vector<u32> loaded_of_read;  // per instance of the whole read; `renderer::k_not_loaded`: the tail
+  u32 read_count = 0;          // the whole read's instances
 
   // ---- the clock ----------------------------------------------------------------------------
   u64 steps = 0;               // world steps taken
@@ -232,6 +241,13 @@ class GameActors final : public ActorHost {
   // whose instance did not animate (a rigid mesh under `--animate`) is left out and said once.
   // `tick_hz` paces the path's samples. Then the hooks onto `ticks`. Every scene moves its actors,
   // a dynamic one (props, a world) included (`SceneRenderer::move_instances`).
+  //
+  // **An actor's handle is the whole read's index** (`DeclaredActor::instance`), and `desc` is the
+  // whole read; the animated world and the renderer are indexed by the loaded instance, which the
+  // bind finds once through `loaded_actor` (game_props.h). A declared actor whose instance a
+  // streamed world handed to its tail is refused, false with a sentence naming the actor and its
+  // instance: `keep_actors` (game_props.h) is what keeps one in the prefix, and a host that did not
+  // call it has a game that would hear `NotFound` for an actor its scene names.
   bool bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
             const Vector<DeclaredActor>& declared, u32 tick_hz, std::string& error);
   void hook(AnimationTicks& ticks) noexcept;

@@ -319,4 +319,28 @@ bool read_scene_actors(const std::string& path, bool animate, Vector<DeclaredAct
   return true;
 }
 
+void keep_actors(const Vector<DeclaredActor>& declared, renderer::SceneDesc& desc) {
+  desc.authored.keep.clear();
+  desc.authored.keep.reserve(declared.size());
+  for (const DeclaredActor& a : declared)
+    desc.authored.keep.push_back(a.instance);
+}
+
+bool loaded_actor(const DeclaredActor& actor, std::span<const u32> loaded_of_read, u32 read_count,
+                  u32 loaded_count, u32& loaded, std::string& error) {
+  if (loaded_of_read.empty()) {
+    loaded = actor.instance < loaded_count ? actor.instance : renderer::k_not_loaded;
+    return true;
+  }
+  loaded = actor.instance < loaded_of_read.size() ? loaded_of_read[actor.instance]
+                                                  : renderer::k_not_loaded;
+  if (loaded != renderer::k_not_loaded || actor.instance >= read_count) return true;
+  error = "game: the actor \"" + actor.name + "\" is the scene's instance " +
+          std::to_string(actor.instance) +
+          ", which the streamed world handed to its tail, where nothing animates or moves it; an "
+          "actor stays in the loaded prefix when the host names it before the load (keep_actors; "
+          "renderer.md, \"An actor is never streamed\")";
+  return false;
+}
+
 }  // namespace engine::view

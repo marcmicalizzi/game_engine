@@ -1292,6 +1292,13 @@ bool attach_game_scene(renderer::SceneData& scene, std::string& error) {
   if (g_game->props().declared()) scene.dynamic = true;
   return true;
 }
+// **An actor is never streamed** (game_props.h `keep_actors`; renderer.md): the game's declared
+// actors kept in the loaded prefix of a streamed world. Before `renderer::load_scene`; nothing for
+// a run without a game or a scene that names no actor.
+void keep_game_actors(renderer::SceneDesc& desc) {
+  if (g_game != nullptr && !g_game->declared_actors().empty())
+    view::keep_actors(g_game->declared_actors(), desc);
+}
 // The game's props to the renderer, on a frame a prop changed and on no other: through the
 // streamed world's hand-over where there is one (`World` is `view::ViewWorld`), so the tiles'
 // blocks and the game's go over as one tail; otherwise the props are the whole tail, one block.
@@ -1422,6 +1429,7 @@ void set_hud_display_scale(f32) {}
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 bool attach_game_scene(renderer::SceneData&, std::string&) { return true; }
+void keep_game_actors(renderer::SceneDesc&) {}
 template <class World>
 bool hand_over_game_props(World*, renderer::SceneRenderer&, std::string*) {
   return true;
@@ -2562,6 +2570,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
     }
 #endif
+    keep_game_actors(desc);
     {
       ENGINE_STARTUP_STAGE("load scene");
       if (!renderer::load_scene(desc, scene_data, error)) {
@@ -4978,6 +4987,7 @@ int run_view(int argc, char** argv) {
     }
 #endif
 
+    keep_game_actors(desc);
     if (!renderer::load_scene(desc, scene_data, error)) {
       exit_code = fail("mesh", error);
       break;

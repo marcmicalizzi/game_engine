@@ -257,6 +257,13 @@ struct AuthoredStreaming {
   // mesh's swaying; past it the form is cut and drawn rigid. Negative: `renderer.flora.sway_m`;
   // 0: every form rigid (`authored_rules` sets 0 when the trees do not sway at all).
   f32 sway_m = -1.0f;
+  // **The instances a host moves — a game's actors — which stay in the prefix** (renderer.md,
+  // "An actor is never streamed"), by their index in the whole read (`SceneDesc::instances`), in
+  // any order. A game moves, plays and asks after an actor every tick, so its entity, its joints
+  // and its row of the instance table must exist from the first frame to the last; a streamed
+  // placement exists only while the ring holds its tile. The declarations are the scene file's and
+  // are known before the load (engine-view's `keep_game_actors`).
+  Vector<u32> keep;
 };
 
 // The rules a host's session cuts its forms for: its projection (the views' height and vertical
@@ -269,8 +276,10 @@ void authored_rules(const RenderSettings& settings, u32 height, f32 fov_y,
 // What `load_scene` did with a streamed world's own instances, for a host's summary.
 struct AuthoredStats {
   u32 streamed = 0;  // handed to the "authored" entry
-  // Kept in the prefix: deformed (skinned or morphed mesh, or an animation block), reaching
-  // farther than `max_reach_m`, or every one because the scene is paged.
+  // Kept in the prefix: a host's actor (`AuthoredStreaming::keep`), deformed (skinned or morphed
+  // mesh, or an animation block), reaching farther than `max_reach_m`, or every one because the
+  // scene is paged. An actor is counted as an actor whatever else it is.
+  u32 kept_actors = 0;
   u32 kept_deformed = 0;
   u32 kept_reach = 0;
   u32 kept_paged = 0;
@@ -572,6 +581,13 @@ struct SceneData {
   // Per loaded instance, the key its sway's seed is hashed from (`SceneInstance::motion_key`, its
   // index when the source named none). Empty: every instance's index.
   Vector<u32> motion_keys;
+  // **The whole read's index to the loaded instance** (renderer.md, "The whole read's index"): per
+  // instance of the whole read (`SceneDesc::instances`), its index among `instances`, or
+  // `k_not_loaded` for one handed to the world's tail. Built once, by a load that streamed; empty
+  // for a scene read whole, where the two are the same number. Read through `loaded_instance` and
+  // the inverse through `read_instance`, never by hand: a host's handles — a game's actors, a scene
+  // file's indices — are the whole read's.
+  Vector<u32> loaded_of_read;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
@@ -603,6 +619,18 @@ struct SceneData {
 // Loads every mesh of `desc`, merges them into one set of buffers, expands the instances, and
 // computes the bounds. `error` says which mesh failed and why.
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
+
+// **Between the whole read's instances and the loaded ones** (`SceneData::loaded_of_read`). A
+// streamed world keeps a prefix of the scene's instances and hands the rest to the tail, so a
+// loaded instance's index is not the file's; these are the one way across. `loaded_instance` is
+// `k_not_loaded` for an instance in the tail or past the whole read; `read_instance` is the whole
+// read's index of a loaded one (the load gives every kept instance that place as its
+// `motion_key`), the index itself for a scene read whole; `read_instance_count` is how many the
+// whole read has, the loaded ones and the tail's.
+inline constexpr u32 k_not_loaded = ~0u;
+u32 loaded_instance(const SceneData& scene, u32 read) noexcept;
+u32 read_instance(const SceneData& scene, u32 loaded) noexcept;
+u32 read_instance_count(const SceneData& scene) noexcept;
 
 // One instance in GPU shape, placed as `load_scene` places the instances it expands: the mesh's
 // fit, then the instance's transform, at `first_pair` in the prefix sum. For an instance added

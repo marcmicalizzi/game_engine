@@ -43,6 +43,14 @@ the sway's seed from it — so a streamed tree sways in the whole read's phase w
 ids and no motion; the meshes' motion is the renderer's, and which ring's forms sway is decided where
 they are cut.
 
+**What the set never holds: a host's actors** (2026-10-25, roadmap W78). An instance a game moves
+stays in the prefix — the reader skips what the host names in `AuthoredStreaming::keep` before
+anything is filed ([renderer](renderer.md#an-actor-is-never-streamed)) — because a placement exists
+only while the ring holds its tile and an actor must exist every tick. The ids stay the file's places
+whatever is kept, and the reader's map from the whole read's index to the loaded one
+(`SceneData::loaded_of_read`, [renderer](renderer.md#the-whole-reads-index)) is how a host finds a
+kept instance; nothing here changed.
+
 ## Owned data
 
 The opened set: the instances (`scene::AuthoredInstance`, 64 bytes, pinned in `tests/size_table.cpp`),

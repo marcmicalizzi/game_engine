@@ -1272,6 +1272,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   const AuthoredStreaming& rules = resolved.authored;
   const u32 first = resolved.authored_first;
   const u32 count = resolved.authored_count;
+  out.loaded_of_read.clear();  // a scene read whole: the whole read's index is the loaded one
   if (!resolved.world.enabled || !rules.enabled || count == 0) return true;
   if (scene_gen::GeneratorRegistry::global().find_placement("authored") == nullptr) return true;
   if (resolved.mesh_info.size() != resolved.meshes.size() ||
@@ -1290,11 +1291,22 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   Vector<f32> reach(meshes, -1.0f);
   Vector<f32> scale_max(meshes, 0.0f);
   Vector<u8> take(count, 0);
+  // **An actor is never streamed** (renderer.md, "An actor is never streamed"): what a host names
+  // in `keep` stays in the prefix, so the game finds its entity, its joints and its instance row
+  // on every frame, wherever the ring is.
+  Vector<u8> actor(count, 0);
+  for (const u32 k : rules.keep) {
+    if (k >= first && k - first < count) actor[k - first] = 1;
+  }
   u32 taken = 0;
   for (u32 i = 0; i < count; ++i) {
     const SceneInstance& instance = resolved.instances[first + i];
     const u32 m = instance.mesh;
     const geometry::ClusterMesh& mesh = dags[m].mesh;
+    if (actor[i] != 0) {
+      ++stats.kept_actors;
+      continue;
+    }
     if (instance.animation.play || instance.joints > 0 || !mesh.skin.empty() ||
         !mesh.morph_channels.empty() || resolved.meshes[m].empty()) {
       ++stats.kept_deformed;
@@ -1447,11 +1459,14 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   Vector<std::pair<u64, u64>> tile_pairs;  // (tile key, pairs), sorted afterwards
   tile_pairs.reserve(taken);
   set.instances.reserve(taken);
+  // The whole read's index to the loaded one (`SceneData::loaded_of_read`), the tail's none.
+  out.loaded_of_read.assign(resolved.instances.size(), k_not_loaded);
   for (u32 i = 0; i < resolved.instances.size(); ++i) {
     const SceneInstance& instance = resolved.instances[i];
     if (i < first || i >= first + count || take[i - first] == 0) {
       // Kept, at the place the whole read would have given it (`SceneInstance::motion_key`), so a
       // swaying landmark has the whole read's phase.
+      out.loaded_of_read[i] = kept_instances.size();
       kept_instances.push_back(instance);
       if (kept_instances.back().motion_key == k_motion_key_load)
         kept_instances.back().motion_key = i;
@@ -1495,6 +1510,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   resolved.streamed.push_back(std::move(entry));
   stats.streamed = taken;
   ENGINE_LOG_INFO(log_renderer, "instances streamed by the world", log::field("streamed", taken),
+                  log::field("kept_actors", stats.kept_actors),
                   log::field("kept_deformed", stats.kept_deformed),
                   log::field("kept_reach", stats.kept_reach), log::field("forms", stats.forms),
                   log::field("form_clusters", stats.form_clusters),
@@ -1504,6 +1520,23 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
 }
 
 }  // namespace
+
+u32 loaded_instance(const SceneData& scene, u32 read) noexcept {
+  if (scene.loaded_of_read.empty()) return read < scene.instances.size() ? read : k_not_loaded;
+  return read < scene.loaded_of_read.size() ? scene.loaded_of_read[read] : k_not_loaded;
+}
+
+u32 read_instance(const SceneData& scene, u32 loaded) noexcept {
+  // The load gives every kept instance the whole read's place as its `motion_key`; checked
+  // against the map, so a key from anywhere else can never pass for one.
+  if (scene.loaded_of_read.empty() || loaded >= scene.motion_keys.size()) return loaded;
+  const u32 read = scene.motion_keys[loaded];
+  return read < scene.loaded_of_read.size() && scene.loaded_of_read[read] == loaded ? read : loaded;
+}
+
+u32 read_instance_count(const SceneData& scene) noexcept {
+  return scene.loaded_of_read.empty() ? scene.instances.size() : scene.loaded_of_read.size();
+}
 
 void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
                  f32& radius) {

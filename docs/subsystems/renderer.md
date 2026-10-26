@@ -1975,7 +1975,7 @@ and the sentence it got blamed the terrain rings.
 the placement generator `authored` ([authored](authored.md)), `load_scene` hands the file's own
 instances to it as the last streamed entry (`engine.scene.AuthoredSet`), in the file's order, each
 with its place in that order as a stable id. **What stays in the prefix**, counted in
-`SceneData::authored` by why: an instance with an animation block, a skinned or morphed mesh (a
+`SceneData::authored` by why: a host's actor (`AuthoredStreaming::keep`, [below](#an-actor-is-never-streamed)), an instance with an animation block, a skinned or morphed mesh (a
 deformed tail instance is refused, above), a mesh that reaches farther from its origin than a tile
 edge (`AuthoredStreaming::max_reach_m`, 0 the tile: the landmarks — the v8 forest's two ancients
 reach 56 m — so they stay where the scene put them, visible from anywhere, as a landmark must be),
@@ -2062,6 +2062,44 @@ used it, with a job pool made and joined per mesh, and `find_built_textures` did
 (W75, [What the load reads](#what-the-load-reads)): one identity per distinct image, a pack's from
 its index, a built texture trusted from its header, one pool per load, the meshes on it. (1) and (2)
 are stages of their own.
+
+#### An actor is never streamed
+
+Roadmap W78 (2026-10-25). **The instances a host moves stay in the prefix**: a host names them, by
+their index in the whole read, in `SceneDesc::authored.keep` before `load_scene`, and the load keeps
+them whatever else they are (`AuthoredStats::kept_actors`; an actor is counted there and not as
+deformed or far-reaching). engine-view fills it with the game's declared actors (`keep_actors`,
+[apps](apps.md#actors-the-characters-a-game-moves)), which are read with the scene file before the
+module loads and so before the scene does. **Why**: a game moves, plays and asks after an actor on
+every tick, so its entity, its joint run and its row of the instance table must exist from the first
+frame to the last, wherever the camera is. A streamed placement exists only while the ring holds its
+tile — the ring would stream it out from under the game, and a tail instance has no joints anyway
+(a deformed tail instance is refused, above). Today every declared actor has an animation block and
+so was kept already by the deformed rule; the set makes the rule the actor's own, so an actor that
+stops being "deformed" by that test (a rigid prop a game drives, a skin moved to the tail when R84
+lands) still is not streamed by accident.
+
+#### The whole read's index
+
+**A streamed load's instance indices are not the file's.** The prefix keeps a subset of the whole
+read's instances in their order, so a kept instance's loaded index is its whole-read index minus the
+streamed instances before it; the forest PoC's 52 animals, all kept, sat at loaded indices below
+their handles, and engine-view's bind looked the handles up among the loaded instances, found
+rigid trees or nothing, and the game failed at its first `actor_state` (`forest: actor_state
+failed`). **One map, owned by the load**: `SceneData::loaded_of_read`, per instance of the whole read
+its loaded index or `k_not_loaded` for one in the tail, built once by `stream_authored` beside W74's
+`motion_key` (the whole read's index each kept instance already carries), and empty for a scene read
+whole, where the two are the same number. `loaded_instance(scene, read)`, `read_instance(scene,
+loaded)` (through the `motion_key`, checked against the map) and `read_instance_count(scene)` are the
+only way across. **Every whole-read index user in engine-view goes through it**
+([apps](apps.md#actors-the-characters-a-game-moves)): an actor's handle stays the whole read's
+index, and its entity, joint run, tier and instance-table row are found once at the bind through the
+map; the animated world takes an instance's animation block, its phase (the whole read's index over
+the whole read's count), its entity id and its summary row from its whole-read index, so a streamed
+world's animation summary and every actor's state are the whole read's to the bit (the actor test in
+`game_actors_view_tests.cpp`). A declared actor whose instance is in the tail anyway — a host that did
+not name it in `keep` — is refused at the bind by a sentence naming the actor and its instance, never
+a silent `NotFound`.
 
 ### Streamed trees sway
 
