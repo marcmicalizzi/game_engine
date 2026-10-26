@@ -1068,6 +1068,8 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   }
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.grew) tables_changed_ = true;
+  // The drop order follows the tables (renderer.md, "The ray tracing chain's memory").
+  if (ray_tracing_ && (change.slots_written > 0 || change.grew)) lay_out_rt_order();
   // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
   if (flora_recut_) {
     flora_recut_ = false;
@@ -1112,6 +1114,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
             source.mesh < mesh_material_base_.size() ? mesh_material_base_[source.mesh] : 0u;
         // A rigid form's instance references its mesh's structure, built once (renderer.md,
         // "Static structures for rigid forms").
+        // Its rank in the drop order: the ring its tile is drawn in, past the prefix's 0.
+        if (slot_rank_.size() <= slot) slot_rank_.resize(slot + 1, 0u);
+        slot_rank_[slot] = block->ring + 1;
         if (static_build_ && static_mesh(source.mesh)) {
           desc.flags |= gfx::k_instance_static_rt;
           ++static_instances_live_;
@@ -3926,6 +3931,12 @@ bool GpuScene::build_static_forms(std::string* error) {
   gfx::destroy_buffer(device, blas_records_once);
   gfx::destroy_buffer(device, scratch);
   if (!ok) {
+    for (gfx::BufferResource& buffer : rt_order_buffers_)
+      gfx::destroy_buffer(device, buffer);
+    rt_order_buffers_.clear();
+    rt_order_written_.clear();
+    rt_order_.clear();
+    slot_rank_.clear();
     gfx::destroy_cluster_set(device, static_clas_);
     gfx::destroy_cluster_blas_set(device, static_blas_);
     return false;
@@ -3946,6 +3957,44 @@ void GpuScene::uncount_static(u32 slot) noexcept {
   if ((desc.flags & gfx::k_instance_static_rt) == 0) return;
   --static_instances_live_;
   static_pairs_live_ -= data_->parts[desc.mesh].cluster_count;
+}
+
+// The prefix, then every live block by its ring's rank and its key (`rt_drop_order`); a block's
+// slack and the holes are null instances, which want nothing and are left out.
+void GpuScene::lay_out_rt_order() {
+  rt_order_blocks_.clear();
+  for (const TileBlock& block : layout_.blocks()) {
+    if (block.instances == 0) continue;
+    RtDropBlock drop;
+    drop.key = block.key;
+    drop.rank = block.inst_begin < slot_rank_.size() ? slot_rank_[block.inst_begin] : 1u;
+    drop.first_slot = block.inst_begin;
+    drop.slots = block.instances;
+    rt_order_blocks_.push_back(drop);
+  }
+  rt_drop_order(static_instances_,
+                std::span<RtDropBlock>(rt_order_blocks_.data(), rt_order_blocks_.size()),
+                rt_order_);
+  ++rt_order_version_;
+}
+
+u64 GpuScene::rt_drop_order_address(u32 slot, std::string* error) {
+  if (!ray_tracing_ || !dynamic_ || rt_order_.empty()) return 0;
+  if (rt_order_buffers_.size() <= slot) {
+    rt_order_buffers_.resize(slot + 1);
+    rt_order_written_.resize(slot + 1, ~u64{0});
+  }
+  gfx::BufferResource& buffer = rt_order_buffers_[slot];
+  if (rt_order_written_[slot] == rt_order_version_) return buffer.address;
+  const u64 bytes = u64{rt_order_.size()} * sizeof(u32);
+  if (buffer.size < bytes) {
+    // This slot's own copy: its previous frame has finished, and no other frame reads it.
+    gfx::destroy_buffer(*device_, buffer);
+    if (!gfx::create_buffer(*device_, bytes + bytes / 2, k_address, true, buffer, error)) return 0;
+  }
+  std::memcpy(buffer.mapped, rt_order_.data(), bytes);
+  rt_order_written_[slot] = rt_order_version_;
+  return buffer.address;
 }
 
 void GpuScene::destroy_ray_tracing_layout() noexcept {
@@ -4103,10 +4152,14 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
   // otherwise. The renderer grows or shrinks it from the frames' own demand; a relayout keeps the
   // capacity the frames had grown it to.
-  const u32 initial = std::min(rt_capacity_limit_, k_initial_rt_clusters);
-  const u32 first = keep_capacity != 0              ? keep_capacity
-                    : rt_union_clusters_ <= initial ? rt_union_clusters_
-                                                    : initial;
+  // Since 2026-10-25 from what the scene knows (`first_rt_capacity`): every pair a frame could
+  // build, less the static forms', in every view, clamped to the budget and the union, at least
+  // `renderer.rt.initial_clusters` where the union is larger — so a scene past the budget starts at
+  // it rather than growing over its first frames, and one inside it can never drop anything.
+  const u32 first = keep_capacity != 0
+                        ? keep_capacity
+                        : first_rt_capacity(rt_capacity_limit_, rt_union_clusters_,
+                                            rt_frame_estimate(), rt_initial_clusters_tunable());
   if (!resize_ray_tracing(first, error)) return false;
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
@@ -4215,6 +4268,12 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, ring_pairs_);
   gfx::destroy_buffer(device, meshes);
   gfx::destroy_cluster_templates(device, clas_templates);
+  for (gfx::BufferResource& buffer : rt_order_buffers_)
+    gfx::destroy_buffer(device, buffer);
+  rt_order_buffers_.clear();
+  rt_order_written_.clear();
+  rt_order_.clear();
+  slot_rank_.clear();
   gfx::destroy_cluster_set(device, static_clas_);
   gfx::destroy_cluster_blas_set(device, static_blas_);
   static_forms_ = static_build_ = false;

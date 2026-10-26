@@ -110,7 +110,9 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // built non-opaque (renderer.md, "Alpha-tested geometry"). Past the 128 bytes of push constants
 // every device guarantees, which this pass may take: it runs only on devices with
 // VK_NV_cluster_acceleration_structure, and every one of them has 256.
-ENGINE_EXPECT_SIZE(144, 8, gfx::ClusterRecordParams);
+// 152, not 144: the drop order, which spends a frame's capacity nearest rank first (renderer.md,
+// "The ray tracing chain's memory", 2026-10-25).
+ENGINE_EXPECT_SIZE(152, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).

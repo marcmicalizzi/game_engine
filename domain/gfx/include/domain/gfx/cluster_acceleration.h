@@ -224,7 +224,8 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // keeps what fits and drops the rest **whole instances at a time, casters before drawn clusters**:
 // every instance's drawn clusters are taken in instance order while they fit, an instance whose
 // drawn clusters do not fit is skipped entirely (its casters with them), and the other instances'
-// casters are then taken the same way from what is left. Whole instances because a partial one
+// casters are then taken the same way from what is left — a rank of `drop_order` at a time when it
+// names one (below), nearest rank first. Whole instances because a partial one
 // would keep whichever clusters the atomics happened to bucket first, which is not the same twice;
 // casters last because a caster only adds a shadow of a surface facing away from the camera,
 // while a drawn cluster that loses its structure loses its shadow and, under the ray path, its
@@ -298,8 +299,14 @@ struct ClusterRecordParams {
   // extension has 256 bytes of push constants) are asked to take.
   u64 mask_materials = 0;
   u64 mask_cluster_materials = 0;
+  // **The drop order** (renderer.md, "The ray tracing chain's memory", 2026-10-25): what
+  // `ranges_main` keeps when a frame wants more than `capacity` — `u32 count, u32 pad`, then
+  // `count` `{instance, rank}` pairs in the order the capacity is spent, nearest rank first. A rank
+  // is kept drawn clusters first, then casters, before the next rank is touched; an instance the
+  // order does not name keeps nothing. 0 is instance order in one rank, the rule before.
+  u64 drop_order = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 144);
+static_assert(sizeof(ClusterRecordParams) == 152);
 // `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
 // implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
 // into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level

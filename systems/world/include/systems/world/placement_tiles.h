@@ -149,6 +149,9 @@ class PlacementTiles {
     u64 key = 0;
     u32 first = 0;
     u32 count = 0;
+    // The ring the tile is drawn in: what the renderer's ray tracing chain drops by, farthest first
+    // (renderer.md, "The ray tracing chain's memory").
+    u8 ring = 0;
   };
   void tile_ranges(Vector<TileRange>& out) const;
   // Whether the pair budget left an active tile's placements out of the tail at the last commit.

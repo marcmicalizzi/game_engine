@@ -36,6 +36,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
+#include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
@@ -463,6 +464,14 @@ class GpuScene {
   // structure, its address and size words, its record, its share of the bottom-level set and of
   // the scratch. It is what turns the byte budget into `rt_capacity_limit()`.
   u64 rt_bytes_per_cluster() const noexcept { return rt_bytes_per_cluster_; }
+  // The most structures a frame can ask for, from what the scene knows now: its pairs — the
+  // prefix, the rings' slots and the tail as laid out, holes included — less the static forms'
+  // (built once), in every view. What the first capacity is sized from (`first_rt_capacity`).
+  u64 rt_frame_estimate() const noexcept {
+    const u64 pairs =
+        u64{pair_stride_} > static_pairs_live_ ? pair_stride_ - static_pairs_live_ : 0;
+    return pairs * view_count_;
+  }
   // Reallocates the per-frame part for `clusters` structures (clamped to the limit). The device
   // must be idle with respect to every buffer of the chain: the caller waits first. Nothing else
   // changes — the top-level structure, its bindless slot and the scene-sized buffers stay — so a
@@ -488,6 +497,11 @@ class GpuScene {
   u32 static_clusters() const noexcept { return static_clusters_; }
   u64 static_bytes() const noexcept { return static_bytes_; }
   u32 static_instances() const noexcept { return static_instances_live_; }
+  // **The drop order** for frame slot `slot` (`gfx::ClusterRecordParams::drop_order`;
+  // `rt_drop_order` in rt_capacity.h): the device address of that slot's copy, brought up to date
+  // with the tables first — written while recording, after the slot's previous frame has finished,
+  // so no frame in flight reads it. 0 for a scene read whole, whose order is instance order.
+  u64 rt_drop_order_address(u32 slot, std::string* error = nullptr);
   u64 static_pairs() const noexcept { return static_pairs_live_; }
   // u64 per mesh: its static bottom-level structure's address, or 0 (TlasReferenceParams); 0 for
   // a scene with none. The static set has one record per mesh, so its address table is this.
@@ -1351,6 +1365,16 @@ class GpuScene {
   void plan_static_forms();
   bool build_static_forms(std::string* error);
   void uncount_static(u32 slot) noexcept;
+  // The drop order (`rt_drop_order_address`): each slot's rank (0 the prefix, ring + 1 a tail
+  // block's), the order laid out from it when the tables change, and per frame slot a host-visible
+  // copy and the version it holds.
+  Vector<u32> slot_rank_;
+  Vector<RtDropBlock> rt_order_blocks_;
+  Vector<u32> rt_order_;
+  u64 rt_order_version_ = 0;
+  Vector<gfx::BufferResource> rt_order_buffers_;
+  Vector<u64> rt_order_written_;
+  void lay_out_rt_order();
   bool deform_ = false;
   bool streamed_ = false;
   u32 page_count_ = 0;

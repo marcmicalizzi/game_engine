@@ -13,6 +13,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -390,15 +391,126 @@ TEST_CASE("engine-view: a rigid form's structures built once trace the per-frame
     REQUIRE(every_rt != nullptr);
     const u32 differing = differing_pixels(tmp.file("once.png"), tmp.file("every.png"));
     MESSAGE(std::string(c.name) << ": " << field_u64(*once_rt, "static_forms") << " forms of "
-                   << field_u64(*once_rt, "static_clusters") << " clusters built once, "
-                   << field_u64(*once_rt, "static_instances") << " instances referencing them; "
-                   << differing << " pixels differ from the per-frame build");
+                                << field_u64(*once_rt, "static_clusters")
+                                << " clusters built once, "
+                                << field_u64(*once_rt, "static_instances")
+                                << " instances referencing them; " << differing
+                                << " pixels differ from the per-frame build");
     CHECK(field_u64(*once_rt, "static_forms") > 0);
     CHECK(field_u64(*once_rt, "static_instances") > 0);
     CHECK(field_u64(*once_rt, "static_bytes") > 0);
     CHECK(field_u64(*every_rt, "static_instances") == 0);
     CHECK(differing == 0);
   }
+}
+
+namespace {
+
+// A denser grove than `scene_text`'s — 400 of each tree, a wider inner ring — so that a frame
+// under traced shadows wants a few thousand structures, past what 16 MiB of them hold.
+std::string dense_scene_text() {
+  std::string text = scene_text(R"({"tile_size":16,"rings":[{"radius":4},{"radius":8}]})");
+  for (usize at = text.find(R"("count":70)"); at != std::string::npos;
+       at = text.find(R"("count":70)", at)) {
+    text.replace(at, 10, R"("count":400)");
+  }
+  return text;
+}
+
+// Traced shadows over the dense grove at 640 x 360, `frames` frames into `bench` and `png`.
+Run traced_dense(const test::TempDir& tmp, const char* bench, const char* png, u32 frames,
+                 const std::vector<const char*>& extra) {
+  std::vector<std::string> args = base_args(tmp, "dense.json", "path.json");
+  args[6] = "640";
+  args[8] = "360";
+  args[10] = "rt";  // --shadows rt
+  for (const std::string& a :
+       {std::string("--frames"), std::to_string(frames), std::string("--benchmark"),
+        tmp.file(bench), std::string("--capture"), tmp.file(png)})
+    args.push_back(a);
+  for (const char* a : extra)
+    args.push_back(a);
+  return view(args);
+}
+
+}  // namespace
+
+// R94: the first capacity is what the scene could want — its pairs less the static forms', in
+// every view — clamped to the budget, so a streamed world's first frame is drawn complete and no
+// growth lands as its first tiles arrive. The floor is lowered to 256 (`renderer.rt.initial_
+// clusters`), under which the old first capacity (the union or the floor) dropped instances over
+// the first frames while the policy grew towards what they wanted.
+TEST_CASE("engine-view: a streamed world's first frames under traced shadows are complete") {
+  const test::TempDir tmp("engine_view_rt_first_capacity");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run run = traced_dense(tmp, "bench.jsonl", "first.png", 60,
+                               {"--tunable", "renderer.rt.initial_clusters=256"});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  const JsonValue summary = summary_of(run.output);
+  const JsonValue* rt = summary.find("rt");
+  REQUIRE(rt != nullptr);
+  std::ifstream log(tmp.file("bench.jsonl"), std::ios::binary);
+  std::string line;
+  u32 frames = 0;
+  u32 incomplete = 0;
+  u64 wanted_max = 0;
+  while (std::getline(log, line)) {
+    JsonValue record;
+    if (!parse_json(line, record).ok || record.find("frame") == nullptr) continue;
+    ++frames;
+    const u64 built = field_u64(record, "rt_built");
+    const u64 wanted = field_u64(record, "rt_wanted");
+    wanted_max = std::max(wanted_max, wanted);
+    incomplete += built < wanted ? 1u : 0u;
+  }
+  MESSAGE(frames << " frames, " << incomplete << " incomplete, at most " << wanted_max
+                 << " structures wanted, " << field_u64(*rt, "grows") << " growths, peak capacity "
+                 << field_u64(*rt, "peak_capacity"));
+  CHECK(frames >= 60);
+  CHECK(wanted_max > 256);  // the floor alone would not have held the first frame
+  CHECK(incomplete == 0);
+  CHECK(field_u64(*rt, "overflow_frames") == 0);
+  CHECK(field_u64(*rt, "grows") == 0);
+}
+
+// R94: past the budget a frame keeps the nearest ring first and, within one ring, drawn clusters
+// before casters (`gfx::ClusterRecordParams::drop_order`), and which structures it drops is a
+// function of the scene and the camera — two runs draw the same traced shadows.
+TEST_CASE("engine-view: past the budget the chain drops the same structures every run") {
+  const test::TempDir tmp("engine_view_rt_drop_order");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run a = traced_dense(tmp, "a.jsonl", "a.png", 3, {"--rt-budget-mib", "16"});
+  if (a.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << a.output);
+    return;
+  }
+  REQUIRE_MESSAGE(a.exit_code == 0, a.output);
+  const Run b = traced_dense(tmp, "b.jsonl", "b.png", 3, {"--rt-budget-mib", "16"});
+  REQUIRE_MESSAGE(b.exit_code == 0, b.output);
+  for (const Run* run : {&a, &b}) {
+    const JsonValue summary = summary_of(run->output);
+    const JsonValue* rt = summary.find("rt");
+    REQUIRE(rt != nullptr);
+    MESSAGE(field_u64(*rt, "overflow_frames")
+            << " frames past " << field_u64(*rt, "limit") << " structures, "
+            << field_u64(*rt, "dropped_caster_instances") << " casters' instances dropped");
+    CHECK(field_u64(*rt, "overflow_frames") > 0);
+  }
+  CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);
 }
 
 #endif

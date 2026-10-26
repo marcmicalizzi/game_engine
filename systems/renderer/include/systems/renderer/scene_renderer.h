@@ -896,7 +896,8 @@ class SceneRenderer {
   bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
   bool shadow_fallback_warned_ = false;  // the same, for a shadow cascade's cut
   bool rt_overflow_warned_ = false;      // a frame dropped instances' structures, said once
-  bool rt_hold_ = false;  // render_offscreen is redrawing a frame it grew the chain for
+  bool rt_hold_ = false;      // render_offscreen is redrawing a frame it grew the chain for
+  bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.
   RtCapacity rt_capacity_;

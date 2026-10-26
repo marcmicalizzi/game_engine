@@ -171,7 +171,7 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
   for (u32 i = 0; i < tiles_.size(); ++i) {
     if (tiles_.value_at(i).withheld) continue;
     const u32 count = tiles_.value_at(i).instances.size();
-    out.push_back(TileRange{tiles_.key_at(i), first, count});
+    out.push_back(TileRange{tiles_.key_at(i), first, count, tiles_.value_at(i).ring});
     first += count;
   }
 }

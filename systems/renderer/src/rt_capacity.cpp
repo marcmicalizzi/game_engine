@@ -1,6 +1,8 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/rt_capacity.h>
 
+#include <algorithm>
+
 namespace engine::renderer {
 
 namespace {
@@ -33,6 +35,11 @@ tunables::Bool rt_static_build{
     "With static forms, build their structures once; false draws them at "
     "their fixed cut but builds them every frame, to compare against"};
 
+tunables::Int rt_initial_clusters{"renderer.rt.initial_clusters", k_initial_rt_clusters, 1, 1 << 24,
+                                  "The ray tracing chain's first capacity is at least this many "
+                                  "clusters where the scene could want more, before the first "
+                                  "frame has said what it builds"};
+
 u64 round_up(u64 value, u64 step) noexcept { return (value + step - 1) / step * step; }
 
 }  // namespace
@@ -43,6 +50,39 @@ u32 rt_shrink_frames_tunable() noexcept { return static_cast<u32>(rt_shrink_fram
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
+u32 rt_initial_clusters_tunable() noexcept { return static_cast<u32>(rt_initial_clusters.get()); }
+
+void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {
+  std::sort(blocks.begin(), blocks.end(), [](const RtDropBlock& a, const RtDropBlock& b) {
+    return a.rank != b.rank ? a.rank < b.rank
+           : a.key != b.key ? a.key < b.key
+                            : a.first_slot < b.first_slot;
+  });
+  u64 count = prefix_slots;
+  for (const RtDropBlock& block : blocks)
+    count += block.slots;
+  out.resize(static_cast<u32>(2 + 2 * count));
+  out[0] = static_cast<u32>(count);
+  out[1] = 0;
+  u32 at = 2;
+  for (u32 s = 0; s < prefix_slots; ++s) {
+    out[at++] = s;
+    out[at++] = 0;
+  }
+  for (const RtDropBlock& block : blocks) {
+    for (u32 s = 0; s < block.slots; ++s) {
+      out[at++] = block.first_slot + s;
+      out[at++] = block.rank;
+    }
+  }
+}
+
+u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept {
+  u64 first = estimate > floor ? estimate : u64{floor};
+  if (first > union_clusters) first = union_clusters;
+  if (first > limit) first = limit;
+  return static_cast<u32>(first > 0 ? first : 1);
+}
 
 void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity) noexcept {
   config_ = config;

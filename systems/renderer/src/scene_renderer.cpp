@@ -1104,6 +1104,7 @@ void SceneRenderer::destroy() noexcept {
   scene_ = nullptr;
   width_ = height_ = 0;
   submitted_ = 0;
+  rt_observed_ = false;
   recorded_ = 0;
   collected_ = 0;
   flags_dirty_ = true;
@@ -1124,6 +1125,7 @@ void SceneRenderer::reset_stats() noexcept {
   note_rt_bytes();  // what the chain holds is state, not a count: it survives a reset
   fill_view_layout();
   submitted_ = 0;
+  rt_observed_ = false;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
 
@@ -1194,6 +1196,24 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
     ++stats_.tiles.relayouts;
     stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
+  }
+  // **The first capacity from what the scene knows** (renderer.md, "The ray tracing chain's
+  // memory"): until a frame has said what it builds, a tail that brings more than the chain was
+  // sized for at create — a streamed world's first tiles — sizes it again, before any frame wants
+  // it, so the first frame is drawn complete instead of growing over its first frames. Not a growth
+  // when no frame has been submitted, since nothing waited for it.
+  if (resolved_.rt_chain && !rt_observed_) {
+    const u32 first = first_rt_capacity(scene_->rt_capacity_limit(), scene_->rt_union_clusters(),
+                                        scene_->rt_frame_estimate(), rt_initial_clusters_tunable());
+    if (first > scene_->rt_capacity()) {
+      if (submitted_ > 0) {
+        if (!apply_rt_capacity(first, error)) return false;
+      } else {
+        frames_.wait_idle();
+        if (!scene_->resize_ray_tracing(first, error)) return false;
+        rt_capacity_.resized(scene_->rt_capacity());
+      }
+    }
   }
   // The static forms' instances the tail now holds, and the chain's bytes after any relayout.
   note_rt_bytes();
@@ -1512,6 +1532,7 @@ void SceneRenderer::begin_frame() {
     // the device, so it happens here — before this frame records anything — and only when the
     // demand crossed a threshold, never as a matter of course.
     if (resolved_.rt_chain && !rt_hold_) {
+      rt_observed_ = true;
       const u32 next = rt_capacity_.observe(stats_.rt.wanted);
       if (next != scene_->rt_capacity() && !apply_rt_capacity(next, nullptr)) {
         // The allocation failed: the device is out of memory. Say so and fall back to the smallest
@@ -2647,6 +2668,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.capacity = scene.rt_capacity();
     record_params.mask_materials = mask_tables.materials;  // a masked pair is built non-opaque
     record_params.mask_cluster_materials = mask_tables.cluster_materials;
+    // Past the capacity, what the frame keeps: nearest rank first (renderer.md, "The ray tracing
+    // chain's memory"). This frame slot's copy, brought up to date while recording.
+    record_params.drop_order = scene.rt_drop_order_address(frames_.slot());
   }
 
   gfx::RenderGraph& graph = *graph_;
