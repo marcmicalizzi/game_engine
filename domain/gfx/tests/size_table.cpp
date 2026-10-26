@@ -119,7 +119,7 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // VK_NV_cluster_acceleration_structure, and every one of them has 256.
 // 152, not 144: the drop order, which spends a frame's capacity nearest rank first (renderer.md,
 // "The ray tracing chain's memory", 2026-10-25).
-ENGINE_EXPECT_SIZE(152, 8, gfx::ClusterRecordParams);
+ENGINE_EXPECT_SIZE(160, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
@@ -236,7 +236,7 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // nits — for the HDR encodes E39 measures (display.h, "HDR output"; 2026-10-09). No pad word was
 // left, so it is a row of its own. 432, not 416: the cross-fade's table for the shadow rays
 // (`fade`, R91; renderer.md, "The cross-fade"), a row of its own again.
-ENGINE_EXPECT_SIZE(432, 8, gfx::ResolveParams);
+ENGINE_EXPECT_SIZE(448, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
@@ -279,7 +279,7 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // 352, not 336: the scene grid's UV frame, the resolve's three words, which a world tile's material
 // lookup places its corner in (2026-10-06). The block had no pad word to take them, so it grew a
 // row.
-ENGINE_EXPECT_SIZE(352, 8, gfx::PathTraceParams);
+ENGINE_EXPECT_SIZE(368, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
 // slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a

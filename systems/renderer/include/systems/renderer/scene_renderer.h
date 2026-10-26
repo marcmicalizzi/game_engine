@@ -273,6 +273,10 @@ struct TileStats {
 // which is zero on any run whose demand stays under the budget and moves by less than the headroom
 // between two resizes.
 struct RtStats {
+  u32 caster_index_fallbacks = 0;  // settings dropped casters before admitting tiles
+  u64 frame_estimate = 0;
+  u64 bytes_per_cluster = 0;
+  u64 geometry_index_need = 0;
   u32 capacity = 0;
   u32 limit = 0;
   u32 union_clusters = 0;  // what the chain would be sized for if it were sized by the scene

@@ -305,8 +305,11 @@ struct ClusterRecordParams {
   // is kept drawn clusters first, then casters, before the next rank is touched; an instance the
   // order does not name keeps nothing. 0 is instance order in one rank, the rule before.
   u64 drop_order = 0;
+  // Optional compact geometry indices: emit writes the original visible entry at the record's
+  // dense index. Zero preserves the direct visible-index records used by low-level callers.
+  u64 hit_entries = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 152);
+static_assert(sizeof(ClusterRecordParams) == 160);
 // `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
 // implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
 // into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level

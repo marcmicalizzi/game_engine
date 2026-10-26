@@ -72,10 +72,6 @@ constexpr u32 k_tail_part_reserve = 8192;
 // before the class lists).
 // The species' caster policies (renderer.md, "The caster policy"): false casts every species as a
 // tree does — traced, every cascade, its swaying pose — for the before-and-after measurement.
-tunables::Bool flora_caster_policy{
-    "renderer.flora.caster_policy", true,
-    "Cast each flora species by its catalogue policy (grass: no traced structures, the nearest "
-    "cascade only, its rest pose); false casts every species as the trees do"};
 
 tunables::Int flora_tail_budget_mib{
     "renderer.flora.tail_budget_mib", 1024, 1, 65'536,
@@ -341,8 +337,11 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
 GpuScene::~GpuScene() { destroy(); }
 
 bool GpuScene::create(const gfx::Device& device, const SceneData& data,
-                      const ResolvedSettings& resolved, std::string* error,
+                      const ResolvedSettings& requested, std::string* error,
                       TerrainLevelSet* rings) {
+  ResolvedSettings resolved;
+  const PairAccount account = account_pairs(data, requested, rings);
+  resolve_settings(requested.settings, device.features(), &data, resolved, &account);
   destroy();
   device_ = &device;
   data_ = &data;
@@ -384,20 +383,8 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // `write_slots` for the tail's. A mesh with no species, or a species with the trees' defaults,
   // has none, and its instances keep exactly the flags they had.
   mesh_policy_.assign(data.parts.size(), 0u);
-  for (u32 m = 0; m < data.parts.size() && m < data.sources.size() && flora_caster_policy.get();
-       ++m) {
-    if (data.sources[m].species.empty()) continue;
-    const geometry::FloraSpeciesInfo* info = geometry::flora_species_info(data.sources[m].species);
-    if (info == nullptr) continue;
-    u32 policy = 0;
-    if (info->casters.cascades != geometry::k_flora_all_cascades) {
-      const u32 nearest = info->casters.cascades < 6u ? info->casters.cascades : 6u;
-      policy |= (nearest + 1u) << gfx::k_instance_cascade_shift;
-    }
-    if (info->casters.rest_pose) policy |= gfx::k_instance_shadow_rest;
-    if (!info->casters.traced) policy |= gfx::k_instance_untraced;
-    mesh_policy_[m] = policy;
-  }
+  for (u32 m = 0; m < data.parts.size(); ++m)
+    mesh_policy_[m] = mesh_caster_policy(data, m);
   for (gfx::InstanceDesc& placed : instance_table_) {
     if (placed.mesh < mesh_policy_.size()) placed.flags |= mesh_policy_[placed.mesh];
   }
@@ -419,41 +406,10 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // chain, what the device's cluster geometry indices name over the views (`pair_limit`). Until
   // 2026-10-24 the rings were checked level by level as they were laid out, with a sentence that
   // named no number, and the full v8 forest was refused there with its prefix the real cause.
-  {
-    u64 slot_pairs = 0;
-    if (rings != nullptr && resolved.terrain_levels && rings->valid() && !streamed_) {
-      for (u32 level = 1; level < rings->level_count(); ++level) {
-        const TerrainLevelSet::Capacity c = rings->capacity(level);
-        if (c.slots != 0 && c.clusters_per_slot != 0)
-          slot_pairs += u64{c.slots} * c.clusters_per_slot;
-      }
-    }
-    u64 limit = k_max_pairs;
-    const char* named = "the visibility id names";
-    if (dynamic_ && ray_tracing_) {
-      gfx::ClusterAsProperties props;
-      if (gfx::cluster_as_properties(device, props) && props.max_geometry_index > 0) {
-        const u64 per_pair =
-            u64{view_count_} * (resolved.casters ? u64{gfx::k_caster_run + 1} : u64{1});
-        const u64 rt = (u64{props.max_geometry_index} + 1) / per_pair;
-        if (rt < limit) {
-          limit = rt;
-          named = "the ray tracing chain's geometry indices name over the views";
-        }
-      }
-    }
-    accounted_slot_pairs_ = slot_pairs;
-    PairAccount account;
-    account.instances = data.instances.size();
-    account.prefix_pairs = pair_count_;
-    account.slot_pairs = slot_pairs;
-    account.tail_floor = dynamic_ ? u64{data.tail_floor_pairs} : 0u;
-    account.limit = limit;
-    account.named = named;
-    if (!pairs_fit(account, error)) {
-      destroy();
-      return false;
-    }
+  accounted_slot_pairs_ = resolved.pairs.slot_pairs;
+  if (!pairs_fit(resolved.pairs, error)) {
+    destroy();
+    return false;
   }
   if (rings != nullptr && resolved.terrain_levels && rings->valid() && !streamed_) {
     if (!lay_out_rings(resolved, *rings, error)) {
@@ -502,16 +458,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     // tables are), in pages of 1,024 slots with half as much again.
     instance_capacity_ =
         static_cast<u32>((u64{instance_count_} + u64{instance_count_} / 2 + 1024) / 1024 * 1024);
-    // With the chain, the tail may reach no more pairs than the device's cluster geometry
-    // indices name over the views' runs (renderer.md, "The ray tracing chain's index space").
-    pair_limit_ = k_max_pairs;
-    gfx::ClusterAsProperties props;
-    if (ray_tracing_ && gfx::cluster_as_properties(device, props) && props.max_geometry_index > 0) {
-      const u64 per_pair =
-          u64{view_count_} * (resolved.casters ? u64{gfx::k_caster_run + 1} : u64{1});
-      const u64 limit = (u64{props.max_geometry_index} + 1) / per_pair;
-      if (limit < pair_limit_) pair_limit_ = static_cast<u32>(limit);
-    }
+    pair_limit_ = static_cast<u32>(resolved.pairs.limit);
   }
 
   if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
@@ -1167,7 +1114,8 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   if (change.slots_written > 0 || change.grew) tables_changed_ = true;
   // The drop order follows the tables (renderer.md, "The ray tracing chain's memory").
   if (ray_tracing_ && (change.slots_written > 0 || change.grew)) lay_out_rt_order();
-  if (change.slots_written > 0) policy_counts();
+  // Trimming the last block writes no surviving slots, but its excluded pairs have gone too.
+  if (change.slots_written > 0 || change.layout.freed > 0) policy_counts();
   // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
   if (flora_recut_) {
     flora_recut_ = false;
@@ -2248,6 +2196,7 @@ bool GpuScene::create_flora(std::string* error) {
 // The field kind's instances and the caster policy's, over the instance table: when the instances
 // change, never per frame (a meadow's 126,309 instances are a fraction of a millisecond).
 void GpuScene::policy_counts() noexcept {
+  untraced_pairs_live_ = 0;
   u32 field = 0;
   u32 nearest = 0;
   u32 rest = 0;
@@ -2261,7 +2210,11 @@ void GpuScene::policy_counts() noexcept {
     if (placed.flags == 0) continue;
     if ((placed.flags & gfx::k_instance_cascade_mask) != 0) ++nearest;
     if ((placed.flags & gfx::k_instance_shadow_rest) != 0) ++rest;
-    if ((placed.flags & gfx::k_instance_untraced) != 0) ++untraced;
+    if ((placed.flags & gfx::k_instance_untraced) != 0) {
+      ++untraced;
+      if (placed.mesh < data_->parts.size() && (placed.flags & gfx::k_instance_static_rt) == 0)
+        untraced_pairs_live_ += data_->parts[placed.mesh].cluster_count;
+    }
   }
   flora_stats_.field_instances = field;
   flora_stats_.casters_nearest = nearest;
@@ -2756,21 +2709,6 @@ void GpuScene::give_range(Vector<Range>& free, Range range) noexcept {
     free[at - 1].count += free[at].count;
     free.erase(free.begin() + at);
   }
-}
-
-bool pairs_fit(const PairAccount& a, std::string* error) noexcept {
-  const u64 total = a.prefix_pairs + a.slot_pairs + a.tail_floor;
-  if (total <= a.limit) return true;
-  if (error != nullptr) {
-    *error = "the scene's pairs do not fit: its " + std::to_string(a.instances) +
-             " loaded instances hold " + std::to_string(a.prefix_pairs) +
-             " pairs, the terrain rings' slots " + std::to_string(a.slot_pairs) +
-             " and one tile of its streamed instances " + std::to_string(a.tail_floor) + ", " +
-             std::to_string(total) + " of the " + std::to_string(a.limit) + " " + a.named +
-             "; stream the scene's instances (--world), place fewer, or lower terrain.rings.* "
-             "and --terrain-far";
-  }
-  return false;
 }
 
 bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainLevelSet& rings,
@@ -4244,6 +4182,7 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, blas_records);
   gfx::destroy_buffer(device, records);
+  gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
   gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_buffer(device, rt_scratch);
@@ -4263,33 +4202,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   rt_union_clusters_ = pair_stride_ * view_count_;
   gfx::ClusterSetLimits limits = rt_limits_;
   limits.max_clusters = rt_union_clusters_;
-  // A shadow caster's geometry index is its visible index too, and the casters are the list's run
-  // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
-  // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
-  // runs still holds at most `views * pair_count` clusters. A dynamic scene's visible list is laid
-  // out by its stride, which `pair_limit_` keeps under the device's limit.
-  //
-  // **The device bounds that index, and the frame's size does not move it** (renderer.md, "The
-  // ray tracing chain's index space"). `resolve_settings` drops the casters, or the chain, when
-  // the scene's pairs in every view would pass `cluster_max_geometry_index`; a caller that went
-  // around it is refused here with both numbers, where it used to learn only that "the driver gave
-  // no sizes" — which is what the ashlar ruins on a three-view surround said, at any resolution.
-  const u64 max_index = rt_max_geometry_index(pair_stride_, view_count_, resolved_.casters);
+  // The emit pass names a dense record and writes its original visible entry to hit_entries.
+  // Static forms and untraced instances produce no record, so neither consumes this index space.
   gfx::ClusterAsProperties cluster_props;
-  const u32 device_max =
-      gfx::cluster_as_properties(device, cluster_props) ? cluster_props.max_geometry_index : 0u;
-  if (max_index > device_max) {
-    if (error != nullptr) {
-      *error = "the scene's " + std::to_string(pair_stride_) + " pairs in " +
-               std::to_string(view_count_) + " view(s)" +
-               (resolved_.casters ? " with shadow casters" : "") +
-               " name cluster geometry indices up to " + std::to_string(max_index) +
-               "; the device allows " + std::to_string(device_max) +
-               " (resolve_settings drops the casters or the chain for such a scene)";
-    }
-    return false;
-  }
-  limits.max_geometry_index = static_cast<u32>(max_index);
+  if (!gfx::cluster_as_properties(device, cluster_props)) return false;
+  const u32 device_max = cluster_props.max_geometry_index;
+  limits.max_geometry_index = device_max;
   rt_limits_ = limits;
   // One instance's structure can reference at most its mesh's clusters in every view (a ring
   // slot's: the clusters it has room for). A tail may place any of the scene's meshes.
@@ -4372,15 +4290,35 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   }
   const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
                                               : gfx::k_cluster_build_record_bytes;
-  const u64 probe_bytes = set_sizes.data_bytes + blas_sizes.data_bytes +
-                          std::max(set_sizes.scratch_bytes, blas_sizes.scratch_bytes) +
-                          u64{k_probe} * (record_bytes + sizeof(u64) + sizeof(u32));
-  rt_bytes_per_cluster_ = (probe_bytes + k_probe - 1) / k_probe;
+  // Per-instance storage is scene-sized. Charging its complete cost at a 65,536-cluster probe
+  // as a per-cluster slope made grass slots lower the budget even though grass builds nothing.
+  // Two driver queries at the same instance count cancel that fixed cost.
+  const auto bytes = [&](const gfx::ClusterBuildSizes& set, const gfx::ClusterBuildSizes& blas,
+                         u32 count) {
+    return set.data_bytes + blas.data_bytes +
+           std::max({set.scratch_bytes, blas.scratch_bytes, tlas.build_scratch_bytes}) +
+           u64{count} * (record_bytes + sizeof(u64) + 2 * sizeof(u32));
+  };
+  const u64 probe_bytes = bytes(set_sizes, blas_sizes, k_probe);
+  probe.max_clusters = 2 * k_probe;
+  if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
+      !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, 2 * k_probe,
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+    if (error != nullptr) *error = "the driver gave no sizes for the second frame-budget probe";
+    return false;
+  }
+  const u64 twice_bytes = bytes(set_sizes, blas_sizes, 2 * k_probe);
+  rt_bytes_per_cluster_ =
+      twice_bytes > probe_bytes ? (twice_bytes - probe_bytes + k_probe - 1) / k_probe : 0;
+  if (rt_bytes_per_cluster_ == 0) {
+    if (error != nullptr) *error = "the driver gave no marginal frame storage cost";
+    return false;
+  }
   const u32 budget_mib = resolved_.settings.rt_budget_mib != 0 ? resolved_.settings.rt_budget_mib
                                                                : rt_budget_mib_tunable();
   const u64 budget_clusters = u64{budget_mib} * 1024 * 1024 / rt_bytes_per_cluster_;
-  rt_capacity_limit_ =
-      static_cast<u32>(std::max<u64>(1, std::min<u64>(budget_clusters, u64{rt_union_clusters_})));
+  rt_capacity_limit_ = static_cast<u32>(
+      std::max<u64>(1, std::min({budget_clusters, u64{rt_union_clusters_}, u64{device_max} + 1})));
   // The first capacity, before any frame has said what it builds: the whole union when that fits
   // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
   // otherwise. The renderer grows or shrinks it from the frames' own demand; a relayout keeps the
@@ -4414,19 +4352,25 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   const gfx::Device& device = *device_;
   const u32 ceiling =
       beyond_budget || rt_capacity_limit_ == 0 ? rt_union_clusters_ : rt_capacity_limit_;
-  capacity = std::max(1u, std::min(capacity, ceiling));
+  capacity = static_cast<u32>(
+      std::max<u64>(1, std::min({u64{capacity}, u64{ceiling},
+                                 u64{device.features().cluster_max_geometry_index} + 1})));
   gfx::destroy_buffer(device, records);
+  gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
   gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_buffer(device, rt_scratch);
   rt_capacity_ = 0;
   gfx::ClusterSetLimits limits = rt_limits_;
   limits.max_clusters = capacity;
+  limits.max_geometry_index = capacity - 1;
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
   const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
                                               : gfx::k_cluster_build_record_bytes;
   bool ok =
       gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, records, error) &&
+      gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false, hit_entries,
+                         error) &&
       gfx::create_cluster_set(device, limits, clas_set, error) &&
       gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity,
                                    std::min(rt_max_per_instance_, capacity), blas_set, error);
@@ -4438,6 +4382,7 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   if (!ok) {
     gfx::destroy_buffer(device, records);
+    gfx::destroy_buffer(device, hit_entries);
     gfx::destroy_cluster_set(device, clas_set);
     gfx::destroy_cluster_blas_set(device, blas_set);
     gfx::destroy_buffer(device, rt_scratch);
@@ -4445,8 +4390,9 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
     return false;
   }
   rt_capacity_ = capacity;
-  rt_bytes_ = rt_scene_bytes_ + records.size + clas_set.data.size + clas_set.addresses.size +
-              clas_set.sizes.size + blas_set.data.size + blas_set.addresses.size + rt_scratch.size;
+  rt_bytes_ = rt_scene_bytes_ + records.size + hit_entries.size + clas_set.data.size +
+              clas_set.addresses.size + clas_set.sizes.size + blas_set.data.size +
+              blas_set.addresses.size + rt_scratch.size;
   return true;
 }
 
@@ -4523,6 +4469,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, record_count);
   gfx::destroy_buffer(device, records);
+  gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_buffer(device, indices8);
   gfx::destroy_buffer(device, page_stage);
   gfx::destroy_buffer(device, stream_params);

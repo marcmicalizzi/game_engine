@@ -564,6 +564,15 @@ uint2 hit_pair(uint64_t visible, uint64_t instances, uint64_t meshes, uint geome
   return visible_entry(visible, geometry);
 }
 
+// Compact per-frame indices recover the rasterizer's entry, including its pool block.
+// Static forms keep their mesh-local index and do not read the frame's table.
+uint hit_visible_entry(uint64_t entries, uint64_t instances, uint geometry, uint instance_id) {
+  if (entries == 0) return geometry;
+  InstanceDesc* table = (InstanceDesc*)instances;
+  if ((table[instance_id].flags & k_instance_static_rt) != 0) return geometry;
+  return ((uint*)entries)[geometry];
+}
+
 // The scene's pair index of `cluster` drawn by `instance`: the inverse of the cull pass's
 // `first_cluster + (pair - first_pair)`. It is what the visibility id carries in its high 24 bits,
 // so that the id is a function of the scene alone — the same for every run of the visible list,

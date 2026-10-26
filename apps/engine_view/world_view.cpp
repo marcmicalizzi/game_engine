@@ -87,6 +87,7 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     // world draws one, is registered above. The pair budget is the renderer's own: with the ray
     // tracing chain, what the device's geometry indices name over the views.
     placements_config_.max_pairs = renderer.scene().pair_limit();
+    placements_config_.fixed_pairs = renderer.scene().static_pair_count();
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_sink(&ViewWorld::hand_over, this);
     world::add_scene_consumers(world_, nullptr, &placements_);

@@ -64,6 +64,8 @@ struct PlacementTilesConfig {
                                   RingRuins::Walls};
   // The scene's pair budget, its load's instances included.
   u32 max_pairs = renderer::k_max_pairs;
+  // The renderer's prefix plus all reserved terrain slots. Zero uses the file prefix.
+  u32 fixed_pairs = 0;
 };
 
 // Where the tail goes once an update. False with `error` is logged and counted, and the tail is

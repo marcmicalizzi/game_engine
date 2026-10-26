@@ -123,6 +123,8 @@ struct PathTraceParams {
   i32 terrain_uv_z0_mm = 0;
   f32 terrain_uv_per_mm = 0.0f;
   u32 terrain_uv_pad = 0;
+  u64 hit_entries = 0;
+  u64 hit_pad = 0;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the
@@ -134,7 +136,7 @@ inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
   };
   return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
 }
-static_assert(sizeof(PathTraceParams) == 352);
+static_assert(sizeof(PathTraceParams) == 368);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // Russian roulette starts after this many scattering events, so a short path is never cut and a

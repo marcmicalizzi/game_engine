@@ -52,7 +52,7 @@ struct RayVisibilityParams {
   uint64_t meshes;     // MeshDesc[]
   uint64_t triangles;  // uint[]: packed local indices, for a masked candidate's UV
   uint64_t clusters;   // ClusterDesc[]
-  uint64_t pad;
+  uint64_t hit_entries;
   MaskTables masks;    // 0: no alpha-tested material (renderer.md, "Alpha-tested geometry")
 };
 
@@ -74,7 +74,8 @@ uint hit_entry(RayVisibilityParams* params, uint geometry, uint instance_id) {
 // an entry of the casters' run, which a static structure has none of.
 uint2 hit_of(RayVisibilityParams* params, uint geometry, uint instance_id, out bool caster) {
   bool is_static = false;
-  const uint entry = hit_entry(params, geometry, instance_id);
+  const uint entry = hit_visible_entry(params->hit_entries, params->instances,
+                                       hit_entry(params, geometry, instance_id), instance_id);
   const uint2 pair =
       hit_pair(params->visible, params->instances, params->meshes, entry, instance_id, is_static);
   caster = !is_static && entry >= params->caster_base;

@@ -50,13 +50,13 @@ struct RayVisibilityParams {
   u32 height = 0;
   u32 scene = 0;                  // bindless slot of the top-level structure
   u32 caster_base = 0xFFFFFFFFu;  // the first shadow caster's visible entry; ~0 when there are none
-  u64 visible = 0;    // u32x2[]: the visible list GeometryIndex (+ instance_base) is an entry of
-  u64 instances = 0;  // InstanceDesc[] (cluster_cull.h)
-  u64 meshes = 0;     // MeshDesc[] (cluster_cull.h)
-  u64 triangles = 0;  // u32[]: packed local indices, for a masked candidate's UV
-  u64 clusters = 0;   // geometry::ClusterDesc[]
-  u64 pad = 0;        // keeps the block a whole number of float4 rows
-  MaskTables masks;   // 0: no alpha-tested material in the frame
+  u64 visible = 0;      // u32x2[]: the visible list GeometryIndex (+ instance_base) is an entry of
+  u64 instances = 0;    // InstanceDesc[] (cluster_cull.h)
+  u64 meshes = 0;       // MeshDesc[] (cluster_cull.h)
+  u64 triangles = 0;    // u32[]: packed local indices, for a masked candidate's UV
+  u64 clusters = 0;     // geometry::ClusterDesc[]
+  u64 hit_entries = 0;  // u32[]: compact geometry index to original visible entry; 0: direct
+  MaskTables masks;     // 0: no alpha-tested material in the frame
 };
 static_assert(sizeof(RayVisibilityParams) == 256);
 

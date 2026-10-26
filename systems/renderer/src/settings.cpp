@@ -252,7 +252,7 @@ void authored_rules(const RenderSettings& settings, u32 height, f32 fov_y,
 }
 
 void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures& features,
-                      const SceneData* scene, ResolvedSettings& out) {
+                      const SceneData* scene, ResolvedSettings& out, const PairAccount* account) {
   out = ResolvedSettings{};
   RenderSettings s = requested;
   if (s.foliage_px < 0.0f) s.foliage_px = static_cast<f32>(lod_foliage_px.get());
@@ -278,30 +278,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     ENGINE_LOG_WARN(log_renderer, "deformation off",
                     log::field("reason", "a scene whose instances come and go draws them rigid"));
   }
-  // **The chain's index space** (renderer.md, "The ray tracing chain's index space"). Every
-  // cluster the chain builds carries its visible index as its geometry index, and that range is
-  // the scene's pairs times the views (times three with the shadow casters' run), which the
-  // device bounds. It is not the frame's size — `RtCapacity` bounds what a frame *holds*, not what
-  // it can *name* — so nothing a frame drops brings it under: past the limit the chain cannot be
-  // built at all, and the answer is to draw without the part that does not fit. The drawn clusters
-  // first, here, because they decide which path runs; the casters below, where they are decided.
+  // Final admission waits for GpuScene's terrain reservations. Compact records name only
+  // eligible pairs; the per-frame capacity bounds the actual geometry index.
+  if (account != nullptr) out.pairs = *account;
   const u32 index_limit = features.cluster_max_geometry_index;
   const bool index_known =
-      scene != nullptr && index_limit != 0 && features.cluster_acceleration_structure;
+      account != nullptr && index_limit != 0 && features.cluster_acceleration_structure;
   const u32 index_views = view_count_of(s.views);
-  const u64 drawn_index =
-      index_known ? rt_max_geometry_index(scene->pair_count, index_views, false) : 0;
-  const bool drawn_fit = drawn_index <= index_limit || !index_known;
-  if (!drawn_fit && s.raster == RasterMode::RayTrace) {
-    s.raster = features.mesh_shader ? RasterMode::Hardware : RasterMode::Vertex;
-    ENGINE_LOG_WARN(log_renderer, "the ray path is off",
-                    log::field("reason",
-                               "the scene's pairs in every view need more cluster "
-                               "geometry indices than the device has"),
-                    log::field("pairs", scene->pair_count), log::field("views", index_views),
-                    log::field("geometry_index", drawn_index),
-                    log::field("device_limit", index_limit));
-  }
   out.direct = s.raster == RasterMode::Direct;
   out.vertex_path = s.raster == RasterMode::Vertex;
   out.ray_path = s.raster == RasterMode::RayTrace;
@@ -315,22 +298,6 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
   out.shadows = (s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto) &&
                 shadow_device && shadow_mode;
-  // The drawn clusters do not fit the device's geometry indices: the sun's shadow comes from the
-  // cascaded maps instead, for an explicit `rt` as for `auto` — the limit is the scene's and the
-  // layout's, not the device's lack of anything, so refusing would stop a flag that works with one
-  // view from working with three. The ray path has already fallen back above, so this path
-  // rasterizes and the maps can be drawn.
-  if (out.shadows && !drawn_fit) {
-    out.shadows = false;
-    s.shadows = ShadowMode::Cascaded;
-    ENGINE_LOG_WARN(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
-                    log::field("reason",
-                               "the scene's pairs in every view need more cluster "
-                               "geometry indices than the device has"),
-                    log::field("pairs", scene->pair_count), log::field("views", index_views),
-                    log::field("geometry_index", drawn_index),
-                    log::field("device_limit", index_limit));
-  }
   // **Cascaded shadow maps** are the baseline tier's shadow (04 §4.4, the 2026-09-23 direction
   // note). They are drawn by the cull pass and the rasterizers from the light and read by the
   // resolve, so they need a path that rasterizes the picture into the visibility buffer and
@@ -550,16 +517,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // so a caster could not be kept out of a primary ray. Templates are for deforming meshes, whose
   // instances are never cone-tested at all, so what they give up is a rigid instance's casters.
   out.casters = out.shadows && s.cone && s.shadow_casters && !s.rt_templates;
-  // The casters are the list's run `k_caster_run`, so keeping them triples the chain's index
-  // space. A scene whose drawn clusters fit and whose casters do not keeps its traced shadows and
-  // loses what the casters add — the shadows of surfaces facing away from the camera, the part a
-  // viewer is least likely to miss, as the capacity's own rule has it — rather than trading the
-  // whole traced shadow for the maps. The ashlar ruins on a surround are this case: 3,699,274
-  // pairs in three views name 11.1 million drawn clusters and 33.3 million with the casters,
-  // against 16.8 million on the RTX 5090.
+  // Drawn and caster entries partition each view's pairs. Past the compact bound, drop
+  // casters first; the capacity counts any remaining drops without refusing the scene.
   if (out.casters && index_known) {
-    const u64 caster_index = rt_max_geometry_index(scene->pair_count, index_views, true);
+    const u64 caster_index =
+        rt_max_geometry_index(static_cast<u32>(out.pairs.frame_pairs()), index_views, true);
     if (caster_index > index_limit) {
+      out.caster_index_fallback = true;
       out.casters = false;
       s.shadow_casters = false;
       ENGINE_LOG_WARN(log_renderer, "shadow casters off",
@@ -609,7 +573,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
 u64 rt_max_geometry_index(u32 pair_count, u32 views, bool casters) noexcept {
   const u64 drawn = u64{pair_count} * (views > 0 ? views : 1u);
   if (drawn == 0) return 0;
-  return (casters ? u64{gfx::k_caster_run + 1} * drawn : drawn) - 1;
+  (void)casters;  // drawn and caster entries partition the same pairs
+  return drawn - 1;
 }
 
 RenderAvailability check_availability(const ResolvedSettings& resolved,

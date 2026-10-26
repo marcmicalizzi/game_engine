@@ -284,7 +284,7 @@ TEST_CASE(
     for (u32 i = 0; i < world.ring().active_count(); ++i) {
       const TileCoord tile = tile_of_key(world.ring().active_keys()[i]);
       ring_pairs[world.ring().active_rings()[i]] +=
-          static_cast<u32>(ruins.tile_instances(tile).size());
+          renderer::reserved_tile_pairs(static_cast<u32>(ruins.tile_instances(tile).size()));
     }
   }
   REQUIRE(ring_pairs[0] > 0);
@@ -294,7 +294,8 @@ TEST_CASE(
   // for ones at the edge (E35's first run of the ashlar kit under the default rings).
   PlacementTilesConfig config;
   config.tile_size = 24.0f;
-  config.max_pairs = f.scene.pair_count + ring_pairs[0] + ring_pairs[1] / 2;
+  config.fixed_pairs = f.scene.pair_count + 100'000;  // terrain slots absent from the file prefix
+  config.max_pairs = config.fixed_pairs + ring_pairs[0] + ring_pairs[1] / 2;
   PlacementTiles ruins;
   std::string error;
   REQUIRE_MESSAGE(ruins.create(f.scene, config, &error), error);
@@ -312,6 +313,24 @@ TEST_CASE(
     CHECK(ruins.stats().withheld > 0);
     CHECK(f.scene.pair_count + ruins.stats().pairs <= config.max_pairs);
     CHECK(sink.last.size() == ruins.stats().pairs);
+    Vector<PlacementTiles::TileRange> ranges;
+    ruins.tile_ranges(ranges);
+    Vector<renderer::TileLayout::Request> requests;
+    u64 reserved = config.fixed_pairs;
+    for (const PlacementTiles::TileRange& range : ranges) {
+      requests.push_back({range.key, range.first, range.count, range.count, false});
+      reserved += renderer::reserved_tile_pairs(range.count);  // fixture: one cluster per mesh
+    }
+    CHECK(reserved <= config.max_pairs);
+    renderer::TileLayout layout;
+    layout.reset(32, config.fixed_pairs);
+    Vector<renderer::SlotWrite> writes;
+    renderer::TileLayoutChange change;
+    REQUIRE_MESSAGE(layout.apply(std::span(requests.data(), requests.size()), 25, false,
+                                 config.max_pairs, writes, change, &error),
+                    error);
+    CHECK_FALSE(change.tight);
+    CHECK(layout.pair_end() == reserved);
     // Every tile drawn outranks every tile withheld: by ring, then by the ring's score.
     f32 worst_drawn[3] = {-1.0f, -1.0f, -1.0f};
     u8 best_withheld_ring = k_inactive;

@@ -279,7 +279,10 @@ void SceneRenderer::Targets::destroy(const gfx::Device& device) noexcept {
 SceneRenderer::~SceneRenderer() { destroy(); }
 
 bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
-                           const ResolvedSettings& resolved, const Desc& desc, std::string* error) {
+                           const ResolvedSettings& requested, const Desc& desc,
+                           std::string* error) {
+  (void)requested;
+  const ResolvedSettings& resolved = scene.resolved();
   destroy();
   device_ = &device;
   scene_ = &scene;
@@ -288,6 +291,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
   resolved_ = resolved;
+  stats_.rt.caster_index_fallbacks = resolved.caster_index_fallback ? 1u : 0u;
   desc_ = desc;
   width_ = desc.width;
   height_ = desc.height;
@@ -1586,6 +1590,9 @@ void SceneRenderer::note_rt_bytes() noexcept {
   if (scene_ == nullptr || !resolved_.rt_chain) return;
   RtStats& chain = stats_.rt;
   chain.capacity = scene_->rt_capacity();
+  chain.frame_estimate = scene_->rt_frame_estimate();
+  chain.bytes_per_cluster = scene_->rt_bytes_per_cluster();
+  chain.geometry_index_need = chain.capacity == 0 ? 0 : chain.capacity - 1;
   chain.limit = scene_->rt_capacity_limit();
   chain.union_clusters = scene_->rt_union_clusters();
   chain.bytes = scene_->rt_bytes();
@@ -2376,6 +2383,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.mesh = scene.meshes.address;
     resolve.instances = scene.instances.address;
     resolve.visible = settings.cull ? scene.visible.address : 0;
+    resolve.hit_entries = scene.hit_entries.address;
     // A pixel's id is the scene's pair: the scene's pair table decodes it, and this view's
     // pair-to-entry table says which entry the frame drew it as, which only a deformed instance's
     // pool block needs. Without culling the list is null and the pair is the entry.
@@ -2476,6 +2484,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // The id the pass writes is the entry's pair (gfx.md, "The tie rule"), and its second look
       // at a tied distance leaves the shadow casters' run out.
       ray.visible = scene.visible.address;
+      ray.hit_entries = scene.hit_entries.address;
       ray.instances = scene.instances.address;
       ray.meshes = scene.meshes.address;
       ray.clusters = scene.clusters.address;
@@ -2665,6 +2674,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // in; the runs themselves are `gfx::k_caster_run` of every view, where the shader looks.
     record_params.caster_count = casters ? scene.sw_args.address : 0;
     record_params.records = scene.records.address;
+    record_params.hit_entries = scene.hit_entries.address;
     record_params.record_count = scene.record_count.address;
     record_params.blas_records = scene.blas_records.address;
     record_params.clas_addresses = scene.clas_set.addresses.address;
@@ -2900,11 +2910,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   };
   struct RtBuffers {
-    gfx::RgBuffer records, record_count, slots, instance_counts, blas_records;
+    gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries;
     gfx::RgBuffer clas_data, clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
   } rt{};
   if (rt_chain) {
     rt.records = graph.import_buffer("clas records", scene.records);
+    rt.hit_entries = graph.import_buffer("clas hit entries", scene.hit_entries);
     rt.record_count = graph.import_buffer("clas record count", scene.record_count);
     rt.slots = graph.import_buffer("clas slots", scene.slots);
     rt.instance_counts = graph.import_buffer("clas instance counts", scene.instance_counts);
@@ -3773,6 +3784,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.write(rt.slots, gfx::Access::ComputeReadWrite);
               b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
               if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);
+              if (p == 2) b.write(rt.hit_entries, gfx::Access::ComputeWrite);
               if (p == 1) {
                 b.write(rt.record_count, gfx::Access::ComputeWrite);
                 b.write(rt.blas_records, gfx::Access::ComputeWrite);
@@ -3870,6 +3882,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           "trace", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
             b.read(rt.tlas, gfx::Access::RayQueryRead);
+            b.read(rt.hit_entries, gfx::Access::ComputeRead);
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
             b.read(rt.clas_data, gfx::Access::RayQueryRead);
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
@@ -3966,6 +3979,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
+            b.read(rt.hit_entries, gfx::Access::FragmentRead);
             b.read(rt.blas_data, gfx::Access::FragmentRayQueryRead);
             b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
           }

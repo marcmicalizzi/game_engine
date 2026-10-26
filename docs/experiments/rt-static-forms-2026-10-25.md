@@ -115,3 +115,4 @@ chain's index space over three runs (5.59 M pairs) is smaller than the clearing'
 on the v8 forest the placements consumer's budget and the renderer's layout disagree by the blocks'
 slack, so the tail is refused whole. Static forms change neither, because the forms' pairs are still
 pairs of the visible list.
+2026-10-26: [R100](rt-pair-accounting-2026-10-26.md) takes up the caster/index and tile-admission defects above, including the four-ring sward's inflated per-cluster memory charge. Its measurements distinguish the original R94 results from the caster-on path.

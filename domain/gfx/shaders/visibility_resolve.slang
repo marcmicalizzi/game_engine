@@ -143,6 +143,8 @@ struct ResolveParams {
 #endif
   uint64_t fade;         // MaskTables::fade for the shadow rays (R91); 0 in a frame with no fade
   uint64_t fade_meshes;  // MeshDesc[], read with ade: a caster's entry to its scene pair
+  uint64_t hit_entries;
+  uint64_t hit_pad;
 };
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
@@ -326,7 +328,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
       bool is_static = false;
       const uint2 entry =
           hit_pair(params->visible, params->instances, params->mesh,
-                   masked.CandidateGeometryIndex(), masked.CandidateInstanceID(), is_static);
+                   hit_visible_entry(params->hit_entries, params->instances, masked.CandidateGeometryIndex(), masked.CandidateInstanceID()), masked.CandidateInstanceID(), is_static);
       InstanceDesc* instances = (InstanceDesc*)params->instances;
       const InstanceDesc instance = instances[entry.x];
       // The pair, for the fade's table; read only in a frame with a fade.

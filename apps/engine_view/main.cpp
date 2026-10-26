@@ -939,6 +939,10 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   out.set("overflow_frames", rt.overflow_frames);
   out.set("dropped_instances", rt.dropped_instances);
   out.set("dropped_caster_instances", rt.dropped_caster_instances);
+  out.set("caster_index_fallbacks", rt.caster_index_fallbacks);
+  out.set("frame_estimate", rt.frame_estimate);
+  out.set("bytes_per_cluster", rt.bytes_per_cluster);
+  out.set("geometry_index_need", rt.geometry_index_need);
   // Rigid forms' structures built once, and the instances and pairs that reference them now
   // (renderer.md, "Static structures for rigid forms").
   JsonValue fixed = JsonValue::object();
@@ -5437,6 +5441,7 @@ int run_view(int argc, char** argv) {
       exit_code = fail("scene", error);
       break;
     }
+    resolved = scene.resolved();
     gpu_scene_stage.end();
     startup.milestone("gpu_scene");
     // The pose stage's per-frame array and the defaults it is refilled from, sized once.

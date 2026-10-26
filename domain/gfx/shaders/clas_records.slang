@@ -90,7 +90,7 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (152 bytes: past the 128 every device guarantees, which this
+// Mirrors gfx::ClusterRecordParams (160 bytes: past the 128 every device guarantees, which this
 // pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
 // such device has 256).
 struct RecordParams {
@@ -122,6 +122,7 @@ struct RecordParams {
   // `count` {instance, rank} pairs, nearest rank first — the prefix, then a streamed world's rings
   // inside out, each by tile key and slot — or 0 for instance order in one rank.
   uint64_t drop_order;
+  uint64_t hit_entries;
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
@@ -390,13 +391,18 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   MeshDesc* meshes = (MeshDesc*)g_params.meshes;
   const MeshDesc mesh = meshes[instance.mesh];
   const uint dense = instance_first()[instance_index] + dense_local;
+  const uint geometry_index = g_params.hit_entries != 0 ? dense : visible_index;
+  if (g_params.hit_entries != 0) {
+    uint* entries = (uint*)g_params.hit_entries;
+    entries[dense] = visible_index;
+  }
   const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster, visible_index);
 
   if (instantiating()) {
     uint64_t* templates = (uint64_t*)mesh.templates;
     InstantiateRecord record;
-    record.cluster_id_offset = visible_index;
-    record.geometry_index_offset = visible_index & 0xffffff;
+    record.cluster_id_offset = geometry_index;
+    record.geometry_index_offset = geometry_index & 0xffffff;
     record.template_address = templates[cluster_id];
     record.vertex_address = vertex_address;
     record.vertex_stride = 12;
@@ -406,7 +412,7 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   }
 
   ClusterRecord record;
-  record.cluster_id = visible_index;
+  record.cluster_id = geometry_index;
   record.cluster_flags = 0;
   record.counts = (cluster.triangle_count & 0x1ff) | ((cluster.vertex_count & 0x1ff) << 9) |
                   (k_index_type_8bit << 24);
@@ -419,7 +425,7 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   masks.cluster_materials = g_params.mask_cluster_materials;
   const bool opaque = (g_params.caster_count == 0 || visible_index < caster_base()) &&
                       !pair_masked(masks, instance, cluster_id);
-  record.geometry = (visible_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);
+  record.geometry = (geometry_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);
   record.strides0 = 1 | (12 << 16);
   record.strides1 = 0;
   record.index_buffer = g_params.indices8 + uint64_t(cluster.triangle_offset) * 3;
