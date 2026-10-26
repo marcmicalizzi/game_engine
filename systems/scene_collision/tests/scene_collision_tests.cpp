@@ -676,6 +676,10 @@ TEST_CASE("scene_collision: a tree's fronds are walked through and its trunk sto
   build_scene(meshes, std::span<const renderer::SceneInstance>(&at_origin, 1), scene);
   scene.sources.resize(scene.parts.size());
   renderer::SourceMesh& source = scene.sources[0];
+  source.species = "date_palm";
+  source.structural_parts.push_back(
+      geometry::ClusterFileStructuralPart{0, 0.2f, 0.2f, geometry::k_structural_load_bearing});
+  source.structural_parts.push_back(geometry::ClusterFileStructuralPart{1, 0.0f, 0.0f, 0u});
   geometry::ClusterFileMotionPart trunk;
   trunk.pivot = Vec3{0.0f, 0.0f, 20.0f};
   trunk.direction = Vec3{0.0f, 1.0f, 0.0f};
@@ -774,6 +778,7 @@ TEST_CASE(
     part.parent = p == 0 ? geometry::k_motion_no_parent : 0u;
     source.motion_parts.push_back(part);
   }
+  source.species = "shrub";
   source.structural_parts.push_back(geometry::ClusterFileStructuralPart{0, 0.25f, 0.25f, 0u});
   source.structural_parts.push_back(geometry::ClusterFileStructuralPart{1, 0.0f, 0.0f, 0u});
   source.structural_parts.push_back(geometry::ClusterFileStructuralPart{2, 0.009f, 0.004f, 0u});
@@ -844,6 +849,7 @@ TEST_CASE("scene_collision: a vine's or a cover's companion gets no body at all"
   build_scene(meshes, std::span<const renderer::SceneInstance>(&at_origin, 1), scene);
   scene.sources.resize(scene.parts.size());
   renderer::SourceMesh& source = scene.sources[0];
+  source.species = "ivy";
   for (u32 p = 0; p < 2; ++p) {
     geometry::ClusterFileMotionPart part;
     part.pivot = Vec3{0.0f, 0.0f, 10.0f};
@@ -883,6 +889,101 @@ TEST_CASE("scene_collision: a vine's or a cover's companion gets no body at all"
   CHECK(top == doctest::Approx(0.0f).epsilon(1.0e-3));
 }
 
+TEST_CASE("scene_collision: dense sward has no proxy, including blade zero; a trunk still stops") {
+  // Four hundred parentless, flagless blades, including zero. Closed slender boxes deliberately
+  // make conservative blockers: blade zero lies across the capsule's route at z = 8.
+  MeshSource patch;
+  constexpr u32 count = 400;
+  for (u32 p = 0; p < count; ++p) {
+    const MeshSource blade = box_mesh(Vec3{0.025f, 0.6f, 0.015f});
+    const u32 base = patch.positions.size();
+    for (const Vec3& v : blade.positions)
+      patch.positions.push_back(
+          v + Vec3{static_cast<f32>(p % 20) * 0.08f, 0.0f, 8.0f + static_cast<f32>(p / 20) * 0.1f});
+    for (const u32 i : blade.indices)
+      patch.indices.push_back(base + i);
+  }
+  MeshSource trunk = box_mesh(Vec3{0.2f, 2.0f, 0.2f});
+  for (Vec3& p : trunk.positions)
+    p.z += 12.0f;
+  const MeshSource meshes[] = {patch, trunk};
+  for (const bool with_trunk : {false, true}) {
+    CAPTURE(with_trunk);
+    renderer::SceneInstance placed[2];
+    placed[1].mesh = 1;
+    renderer::SceneData scene;
+    build_scene(meshes, {placed, with_trunk ? 2u : 1u}, scene);
+    scene.sources.resize(2);
+    auto& grass = scene.sources[0];
+    grass.species = "sward";
+    for (u32 p = 0; p < count; ++p) {
+      geometry::ClusterFileMotionPart part;
+      part.pivot =
+          Vec3{static_cast<f32>(p % 20) * 0.08f, 0.0f, 8.0f + static_cast<f32>(p / 20) * 0.1f};
+      part.direction = Vec3{0, 1, 0};
+      part.length = 1.2f;
+      part.parent = geometry::k_motion_no_parent;
+      grass.motion_parts.push_back(part);
+      grass.structural_parts.push_back(geometry::ClusterFileStructuralPart{p, 0, 0, 0});
+    }
+    const auto& mesh = scene.parts[0];
+    for (u32 v = mesh.first_vertex; v < scene.parts[1].first_vertex; ++v) {
+      // The mesh builder carries each cluster vertex's original source, including LOD vertices.
+      const u32 p = scene.lod.mesh.vertex_source[v] / 8;
+      REQUIRE(p < count);
+      grass.motion_vertices.push_back(
+          geometry::ClusterFileMotionVertex{static_cast<u16>(p), 65535});
+    }
+    REQUIRE(grass.has_motion());
+    auto& wood = scene.sources[1];
+    wood.species = "oak";
+    wood.motion_parts.push_back(geometry::ClusterFileMotionPart{});
+    wood.structural_parts.push_back(
+        geometry::ClusterFileStructuralPart{0, 0.2f, 0.2f, geometry::k_structural_load_bearing});
+    for (u32 v = scene.parts[1].first_vertex; v < scene.lod.mesh.vertices.size(); ++v)
+      wood.motion_vertices.push_back(geometry::ClusterFileMotionVertex{0, 0});
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    physics::ShapeId floor_shape;
+    REQUIRE(physics.create_box(Vec3{100, 0.5f, 100}, floor_shape) == physics::Status::Ok);
+    physics::BodyDesc floor;
+    floor.shape = floor_shape;
+    floor.transform.position = place(Vec3{0, -0.5f, 0});
+    floor.motion = physics::MotionType::Static;
+    floor.layer = physics::Layer::Static;
+    physics::BodyId floor_body;
+    REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+    SceneCollision collision;
+    std::string error;
+    Config config;
+    config.mesh_error_m = 0;  // finest cut: every one of the 400 blades is tested
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(at(0, 10), 0, true);
+    const auto& stats = collision.stats();
+    MESSAGE("400 blades: " << stats.flora_triangles_left_out << " triangles excluded; "
+                           << stats.proxy_triangles << " proxy triangles; trunk " << with_trunk);
+    CHECK(stats.flora_triangles_left_out == 4800);
+    CHECK(stats.proxy_triangles == (with_trunk ? 12u : 0u));
+    physics::CharacterBody walker;
+    physics::CharacterConfig c;
+    c.step_hz = 240;
+    REQUIRE(walker.create(physics, c, place(Vec3{0, 0.02f, 6})) == physics::Status::Ok);
+    physics::CharacterInput north;
+    north.move = Vec3{0, 0, 1};
+    for (u32 k = 0; k < 8 * 240; ++k)
+      REQUIRE(walker.step(north) == physics::Status::Ok);
+    const f32 z = local_of(walker.feet()).z;
+    MESSAGE("walker from z = 6, after 8 s: z = " << z << "; trunk " << with_trunk);
+    if (with_trunk) {
+      CHECK(z > 11.8f - c.radius - 0.1f);
+      CHECK(z < 11.8f - c.radius + 0.03f);
+    } else {
+      CHECK(z > 14.0f);
+    }
+  }
+}
 TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the error") {
   const MeshSource meshes[] = {ball_mesh(3.0f, 5)};  // 8,192 triangles
   Vector<renderer::SceneInstance> placed(1);

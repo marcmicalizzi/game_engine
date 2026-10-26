@@ -173,3 +173,12 @@ Each placement generator is tested through the registry in its own capability (`
 ## Performance notes
 
 A lookup by name is a walk of a handful of descriptors, once per scene read or world made. A generator's per-point height is a call through a pointer, which is why every grid is one call a block: the mesh's grid, the time-lapse's 64 × 64 blocks, a ring's chunk. Nothing here runs per frame.
+
+## Mask presence at load
+
+`GroundMaskOps::present(state, tx, tz)` (W76, 2026-10-26) answers manifest presence without
+payload I/O. Providers that expose masks supply it alongside `info` and `tile`; the tileset
+adapter delegates to `MaskLevel::present`. The renderer uses presence for its resident-budget
+count and reads each present tile only in the copy pass. A failed read of a present tile is an
+error, not absence. This is a cold callback table (one extra function pointer), not frame state;
+the frame's GPU material layout and hot-type sizes do not change.

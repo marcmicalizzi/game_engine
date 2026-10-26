@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
@@ -186,6 +187,7 @@ u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
 
 namespace engine::renderer {
 bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, std::string* error) {
+  ENGINE_STARTUP_STAGE("terrain masks");
   out = TerrainMaskUpload{};
   const auto fail = [&](const std::string& why) {
     if (error != nullptr) *error = "terrain.masks: " + why;
@@ -204,14 +206,14 @@ bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, s
   const u64 tiles_z = static_cast<u64>(info.tile_max_z - info.tile_min_z + 1);
   const u32 words = scene_gen::mask_tile_words(info.cells);
   const u64 pages = tiles_x * tiles_z;
-  // Count first, so the budget is checked before anything is held.
-  Vector<u32> one(words);
+  // Count the manifest's presence, never payloads, before holding the resident level (W76).
+  if (masks.ops->present == nullptr) return fail("the ground provider has no mask presence query");
   u64 present = 0;
   Vector<u8> has(static_cast<u32>(pages), u8{0});
   for (u64 z = 0; z < tiles_z; ++z)
     for (u64 x = 0; x < tiles_x; ++x)
-      if (masks.ops->tile(masks.state, info.tile_min_x + static_cast<i32>(x),
-                          info.tile_min_z + static_cast<i32>(z), {one.data(), one.size()})) {
+      if (masks.ops->present(masks.state, info.tile_min_x + static_cast<i32>(x),
+                             info.tile_min_z + static_cast<i32>(z))) {
         has[static_cast<u32>(z * tiles_x + x)] = 1;
         ++present;
       }

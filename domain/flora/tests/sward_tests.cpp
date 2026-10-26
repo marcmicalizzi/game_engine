@@ -208,6 +208,7 @@ struct MaskGround {
   Vector<u32> words;
 };
 const scene_gen::GroundMaskOps k_masks{
+    .present = [](const void*, i32, i32) noexcept { return true; },
     .info =
         [](const void* state, scene_gen::GroundMaskInfo& out) noexcept {
           out = static_cast<const MaskGround*>(state)->info;

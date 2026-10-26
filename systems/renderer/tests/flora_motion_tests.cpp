@@ -118,6 +118,13 @@ TEST_CASE("flora motion: every catalogued species has explicit compliance; unkno
   CHECK_FALSE(sward->casters.traced);
   CHECK(sward->casters.cascades == 1);
   CHECK(sward->casters.rest_pose);
+  const auto* ivy = geometry::flora_species_info("ivy");
+  REQUIRE(ivy != nullptr);
+  CHECK(ivy->motion == geometry::FloraMotionKind::parts);
+  CHECK(ivy->casters.traced);
+  CHECK(ivy->casters.cascades == geometry::k_flora_all_cascades);
+  CHECK_FALSE(ivy->casters.rest_pose);
+  CHECK(ivy->compliance[1] == doctest::Approx(2.8f * flora_stiffness("oak").limb));
   const geometry::FloraSpeciesInfo* maple = geometry::flora_species_info("maple");
   REQUIRE(maple != nullptr);
   CHECK(maple->motion == geometry::FloraMotionKind::parts);
@@ -201,6 +208,15 @@ TEST_CASE("flora motion: a load-bearing limb moves less than the twig and the le
       std::span<const ClusterFileStructuralPart>(structure.data(), structure.size()), 2));
   CHECK(flora_part_collides({}, 0));  // with no table, the trunk alone
   CHECK_FALSE(flora_part_collides({}, 1));
+  // The table decides even for zero; field/none kinds never collide, even if flagged.
+  const ClusterFileStructuralPart root[] = {{0, 0.0f, 0.0f, 0u}};
+  CHECK_FALSE(flora_part_collides(root, 0, geometry::FloraMotionKind::parts));
+  CHECK_FALSE(flora_part_collides({}, 0, geometry::FloraMotionKind::field));
+  CHECK_FALSE(flora_part_collides({}, 0, geometry::FloraMotionKind::none));
+  CHECK_FALSE(flora_part_collides({structure.data(), structure.size()}, 0,
+                                  geometry::FloraMotionKind::field));
+  CHECK_FALSE(flora_part_collides({structure.data(), structure.size()}, 0,
+                                  geometry::FloraMotionKind::none));
   // A shrub's stout stem is a collider though nothing hangs from it, and is never pushed
   // (flora.md, "The shrub").
   Vector<ClusterFileStructuralPart> stout = structure;

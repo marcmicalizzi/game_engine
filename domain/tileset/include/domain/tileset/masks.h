@@ -84,7 +84,7 @@ bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Ve
 // **A built level, read back.** Its archive is opened once and its table read; a tile is copied
 // out of a **read-ahead window** — the tiles from the one asked onwards in file order, up to 2 MiB,
 // read as one queue of large ranges — because the renderer asks every tile in that order at load
-// (twice: once to count, once to copy), so a level costs a few dozen reads rather than one a tile.
+// once (presence is counted from the manifest), so a level costs a few dozen reads, not one a tile.
 // Safe to call from several threads (the window is behind a lock).
 class MaskLevel {
  public:

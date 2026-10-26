@@ -7,6 +7,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 | Experiment | Page | Settles |
 |---|---|---|
 | G90 | [grass-sward.md](grass-sward.md) | species grounding, patch/card/ground coverage, placement and the sward budget ladder; work in progress |
+| R95 ivy | [ivy-stem-mechanics.md](ivy-stem-mechanics.md) | published stem mechanics, the explicit climber analogue and the catalogue's ivy compliance |
 | Rock structure | [rock-structure.md](rock-structure.md) | Joint-directed rock detail, physical feature scales, budget filtering and the owner's photographic references |
 | G86 | [tree-profile-audit.md](tree-profile-audit.md) | species parameter provenance, green wood scaffold limits, per-species source budgets, pine/spruce and willow coverage, and ancient segment seating |
 | Static authored terrain streaming | [authored-terrain-streaming.md](authored-terrain-streaming.md) | native source refusals through the registry, a bounded authored tile cache, stock viewer/editor travel at zero terrain rate, and the steep-cliff normal that exposed an ambiguous stitch marker |

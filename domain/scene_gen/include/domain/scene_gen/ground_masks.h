@@ -72,6 +72,8 @@ struct GroundMaskInfo {
 };
 
 struct GroundMaskOps {
+  // Manifest presence only, no payload I/O. A resident upload counts this before reading tiles.
+  bool (*present)(const void* state, i32 tx, i32 tz) noexcept = nullptr;
   bool (*info)(const void* state, GroundMaskInfo& out) noexcept = nullptr;
   // Tile (tx, tz)'s words (`mask_tile_words(cells)` of them). False: no tile there (no layer is
   // authored on it, or it lies past the level), and nothing written.

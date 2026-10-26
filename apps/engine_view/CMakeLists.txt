@@ -172,6 +172,9 @@ if(TARGET engine_engine_view_tests)
     # The cases over a dune scene skip only in a build whose engine-view has no dunes to draw it.
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_DUNES=1)
   endif()
+  if(TARGET engine::cover)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_COVER=1)
+  endif()
   if(TARGET engine::flora)
     # The mixed animated scene's palm (mesh_view_tests.cpp) only where a `.flora.json` draws.
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_FLORA=1)

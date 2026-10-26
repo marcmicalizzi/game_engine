@@ -39,6 +39,7 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/gfx/flora_motion.h>
 
 #include <span>
@@ -183,11 +184,13 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
 
 // **Whether a part stays a collider** (scene_collision.md, "What gets no body"): the trunk, a
 // load-bearing limb and a part flagged `k_structural_collider` (a shrub's stout stem) do; with no
-// structural table, the trunk alone. The understory's part 0 is a root with no geometry, so a
+// structural table, a parts-kind tree's legacy trunk alone. Field/none kinds never collide, and
+// a structural table must flag even part zero. The understory's part 0 has no geometry, so a
 // fern, a tuft and a herb have no body at all. Fronds, leaves, curtains and
 // twigs are walked through, and the push bends them aside.
-bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure,
-                         u32 part) noexcept;
+bool flora_part_collides(
+    std::span<const geometry::ClusterFileStructuralPart> structure, u32 part,
+    geometry::FloraMotionKind kind = geometry::FloraMotionKind::parts) noexcept;
 
 // The gust at `time_s` for an instance's seed, in [0, 1].
 f32 flora_gust(f64 time_s, u32 seed) noexcept;

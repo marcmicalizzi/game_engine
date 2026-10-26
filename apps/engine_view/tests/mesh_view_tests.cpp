@@ -9,12 +9,14 @@
 
 #include <core/json/json.h>
 #include <core/math/math.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1097,5 +1099,77 @@ TEST_CASE("engine-view: an offscreen replay animates exactly as the window it wa
   CHECK(block_text(replay_anim, "hash") == block_text(live_anim, "hash"));
   MESSAGE("window and replay: " << block_text(live_anim, "hash") << " "
                                 << block_text(replay_anim, "hash"));
+#endif
+}
+
+TEST_CASE("engine-view: two ivy vines sway in wind and are rigid in calm without warnings") {
+#if ENGINE_VIEW_TESTS_COVER
+  const test::TempDir tmp("ivy_motion");
+  REQUIRE(tmp.ok());
+  const std::string host = tmp.file("host.glb");
+  REQUIRE(write_cube_glb(host));
+  const std::string camera = tmp.file("camera.json");
+  {
+    std::ofstream out(camera);
+    out << R"({"fps":60,"keys":[{"time":0,"position":[0,0.5,3],"target":[0,0.3,0]},)"
+           R"({"time":1,"position":[0,0.5,3],"target":[0,0.3,0]}]})";
+  }
+  for (u32 variant = 0; variant < 2; ++variant) {
+    CAPTURE(variant);
+    const std::string recipe = tmp.file("ivy-" + n(variant) + ".vine.json");
+    {
+      std::ofstream out(recipe);
+      // A smooth host leaves free, weighted tips. The species and contract are the cover solver's.
+      out << R"({"species":"ivy","host":"host.glb","site":{"ground_y_m":-1},"vine":{)"
+          << R"("seed":)" << (variant == 0 ? 3 : 7)
+          << R"(,"seeds":4,"anchors":[[0,0.5,0.5]],"hold_roughness":1,)"
+             R"("max_length_m":2,"max_free_m":1,"leaf_length_m":0.1,"stem_radius_m":0.008}})";
+    }
+    auto shot = [&](const std::string& label, const char* tunable, image::Image& pixels) {
+      const std::string capture = tmp.file(n(variant) + label + ".png");
+      const Run run = view({"--offscreen",   "--mesh",      recipe,  "--camera-path",
+                            camera,          "--width",     "320",   "--height",
+                            "320",           "--frames",    "2",     "--lod",
+                            ".01",           "--raster",    "hw",    "--shadows",
+                            "off",           "--time-rate", "0",     "--ddc",
+                            tmp.file("ddc"), "--tunable",   tunable, "--capture",
+                            capture});
+      if (run.exit_code == 3) {
+        MESSAGE("ivy capture unavailable: " << run.output);
+        return false;
+      }
+      REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+      CHECK(run.output.find("drawn rigid") == std::string::npos);
+      std::string error;
+      REQUIRE_MESSAGE(image::read_image(capture, pixels, 4, &error) == io::Status::Ok, error);
+      return true;
+    };
+    image::Image rigid, calm, wind;
+    if (!shot("rigid", "renderer.flora.motion=false", rigid)) return;
+    REQUIRE(shot("calm", "renderer.flora.motion=true,renderer.flora.wind_strength=0", calm));
+    REQUIRE(shot("wind", "renderer.flora.motion=true,renderer.flora.wind_strength=2", wind));
+    REQUIRE(rigid.pixels.size() == calm.pixels.size());
+    REQUIRE(wind.pixels.size() == calm.pixels.size());
+    u32 calm_changed = 0, wind_changed = 0, worst = 0;
+    for (u32 p = 0; p < calm.pixels.size(); p += 4) {
+      bool off = false, moved = false;
+      for (u32 c = 0; c < 4; ++c) {
+        const u32 a = calm.pixels[p + c], b = rigid.pixels[p + c];
+        const u32 d = a > b ? a - b : b - a;
+        worst = std::max(worst, d);
+        off |= d != 0;
+        moved |= calm.pixels[p + c] != wind.pixels[p + c];
+      }
+      calm_changed += off ? 1u : 0u;
+      wind_changed += moved ? 1u : 0u;
+    }
+    MESSAGE("ivy " << variant << ": calm " << calm_changed << " pixels, worst " << worst
+                   << "/255; wind " << wind_changed << " of 102400 pixels changed");
+    CHECK(calm_changed <= 4);
+    CHECK(worst <= 1);
+    CHECK(wind_changed > 10);
+  }
+#else
+  MESSAGE("cover capability is off; no ivy generator in this build");
 #endif
 }
