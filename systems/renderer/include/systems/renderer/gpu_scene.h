@@ -571,7 +571,9 @@ class GpuScene {
   // list when its tile arrives and gives it back when it leaves. What lives here is the scene's
   // motion vertex stream (one u32 per scene-wide vertex), the table (`k_joint_slots` regions of
   // every tree's parts, host-visible), and the push's state between frames.
-  bool flora() const noexcept { return !flora_instances_.empty(); }
+  // A scene with grass posed as a field (renderer.md, "The field kind") has the stage whether or
+  // not a tree sways: its frame block is what the pool pass bends the blades from.
+  bool flora() const noexcept { return !flora_instances_.empty() || flora_field_; }
   // Whether the tail's trees sway: a dynamic scene with a mesh the tail may name that does.
   bool flora_tail() const noexcept { return flora_tail_; }
   u64 flora_motion_address() const noexcept { return flora() ? flora_motion_.address : 0; }
@@ -581,8 +583,10 @@ class GpuScene {
   // (clocks.h), and the push's ease advances by the frame ticks since the last call. Allocates
   // nothing; the instances are posed on the poser's pool when the scene made one (flora_poser.h),
   // to the same bytes as on this thread.
+  // `eye` is the frame's origin: the field kind's gust waves are phased at it (renderer.md, "The
+  // field kind"), and the region's field block is written every frame a field mesh exists.
   u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
-                  f64 sky_time_s) noexcept;
+                  f64 sky_time_s, const WorldEye& eye = WorldEye{}) noexcept;
   struct FloraStats {
     u32 instances = 0;         // swaying instances
     u32 parts = 0;             // their parts, the table's length a slot
@@ -600,6 +604,20 @@ class GpuScene {
     u32 tail_records = 0;
     u64 tail_bytes = 0;
     u64 tail_repurposed = 0;  // records another mesh took, their entry rewritten
+    // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy";
+    // R95): the meshes posed as a field and their instances now (loaded and the tail's, every one
+    // sharing its mesh's record), and the instances by what their species' policy keeps them out
+    // of — the farther cascades, the pool in a cascade, the ray tracing chain. Counted when the
+    // instances change, never per frame.
+    u32 field_meshes = 0;
+    u32 field_instances = 0;
+    u32 casters_nearest = 0;   // cast into fewer than every cascade
+    u32 casters_rest = 0;      // a cascade draws them at rest
+    u32 untraced = 0;          // never in the chain's records
+    u64 pose_table_bytes = 0;  // the part-pose table, every slot's region with its field block
+    // Commits the tail's budget refused (`renderer.flora.tail_budget_mib`; renderer.md, "A refused
+    // commit keeps the device").
+    u64 tail_refused = 0;
     // The CPU's posing, on the frame's thread with the poser's pool: summed over the frames that
     // posed, and the longest.
     u64 pose_ns_sum = 0;
@@ -1202,6 +1220,22 @@ class GpuScene {
   u32 load_flora_parts_ = 0;
   u32 deform_capacity_ = 0;      // the deform table's entries, and its per-frame regions' stride
   u32 flora_part_capacity_ = 0;  // the pose table's parts a region
+  // **The field kind** (renderer.md, "The field kind"): per scene mesh its shared deform record
+  // (~0u: not a field mesh), the scene's static part table of every field mesh's blades
+  // (`gfx::FloraFieldPart`), and whether any mesh is one. Per scene mesh the InstanceDesc flag bits
+  // of its species' caster policy, ORed into every instance of it, the load's and the tail's.
+  Vector<u32> field_deform_;
+  gfx::BufferResource flora_field_parts_;
+  bool flora_field_ = false;
+  bool flora_tail_parts_ = false;  // the tail may name a mesh posed by parts: it reserves room
+  Vector<u32> mesh_policy_;
+  void policy_counts() noexcept;
+  // The tail's room past which a commit is refused, bytes (`renderer.flora.tail_budget_mib`).
+  u64 tail_budget_bytes_ = 0;
+  // A region of the pose table: the field block, then the poses.
+  u64 flora_region_bytes() const noexcept {
+    return gfx::k_flora_field_frame_bytes + u64{flora_part_capacity_} * sizeof(gfx::FloraPartPose);
+  }
   f64 ground_time_s_ = 0.0;
   f64 ground_previous_s_ = 0.0;
 

@@ -42,7 +42,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1712 bytes).
+// Read through a device address; mirrors gfx::CullParams (1728 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -112,6 +112,10 @@ struct CullParams {
   uint caster_volume_count;
   float foliage_px;  // the coverage errors' threshold
   float fade;        // the cross-fade's half band, a fraction of the threshold; 0 switches at once
+  uint cascade;      // 0 a camera run; c + 1 the sun's cascade c (the caster policy, below)
+  uint pad0;
+  uint pad1;
+  uint pad2;
 };
 
 struct CullPush {
@@ -372,6 +376,14 @@ void cull_pair(uint pair, bool vertex_draw) {
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const uint instance_index = instance_of_pair(instances, params->instance_count, pair);
   const InstanceDesc instance = instances[instance_index];
+  // **The caster policy** (renderer.md, "The caster policy"; R95): an instance whose species casts
+  // into the `n` nearest cascades alone (flags bits 2-4 hold n + 1; 0 is every cascade) is no
+  // pair of a farther cascade's run, before anything about its cluster is read. Grass in the
+  // nearest cascade only is what keeps a meadow's shadow from costing every cascade its blades.
+  if (params->cascade != 0) {
+    const uint nearest = (instance.flags & k_instance_cascade_mask) >> k_instance_cascade_shift;
+    if (nearest != 0 && params->cascade >= nearest) return;
+  }
   MeshDesc* meshes = (MeshDesc*)params->meshes;
   const MeshDesc mesh = meshes[instance.mesh];
   // A **hole** of a streamed world's pair space (docs/subsystems/renderer.md, "Instances that come
@@ -574,6 +586,9 @@ void cull_pair(uint pair, bool vertex_draw) {
   // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion
   // pass to read them, because the ray tracing chain turns occlusion culling off.
   if (caster) {
+    // An instance the policy keeps out of the ray tracing chain (`k_instance_untraced`) casts no
+    // traced shadow, so it is no caster: the chain would build it only to have nothing trace it.
+    if ((instance.flags & k_instance_untraced) != 0) return;
     Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
     const uint slot = count->add(1);
     uint2* casters = (uint2*)params->casters;

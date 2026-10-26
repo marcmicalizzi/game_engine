@@ -8,7 +8,10 @@ record the eight botanical profiles, field tiller counts, source dimensions and 
 The public pure API is `sward_profiles`, `sward_profile`, `sward_in_range`, `solve_sward` and
 `bake_sward_ground` and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
 does not invalidate or change accepted tree/understory meshes. The shared catalogue has one
-`sward` kind, with the old CPU blade compliance until the separately briefed field kind lands.
+`sward` kind whose motion kind is `field` and whose caster policy is "never traced, the nearest
+cascade only, its rest pose" (R95, 2026-10-25): the renderer poses its blades on the GPU from a
+travelling gust field with no CPU state and no pose table, at Tuft's blade compliance (0.20), and
+the CPU poser no longer sees a sward ([renderer: the field kind](renderer.md#the-field-kind)).
 
 A cell is 1 or 2 m, centred on its anchor. Natural blade dimensions stay within the profile's
 source ranges. Sward v2 groups `leaves_per_tiller` (1–8, default 4) into a common basal shoot,

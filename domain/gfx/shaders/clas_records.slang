@@ -174,6 +174,9 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[instance_index];
+  // **The caster policy's `traced = false`** (renderer.md, "The caster policy"; R95): grass is never
+  // in the frame's structures — no record, no slot, no count — so it costs the chain nothing.
+  if ((instance.flags & k_instance_untraced) != 0) return;
   uint* slots = (uint*)g_params.slots;
   if (caster) {
     // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A

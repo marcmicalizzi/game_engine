@@ -290,6 +290,220 @@ TEST_CASE("engine-view: a world's streamed trees sway as the whole read's do") {
   CHECK(before_diff > 20);
 }
 
+// Roadmap R95 (renderer.md, "The field kind"): a sward is posed by the pool pass from the frame's
+// field block alone, so a streamed read draws the whole read's swaying grass to the pixel, in one
+// ring and in two, takes no tail record and no part of the pose table, and a second run of the
+// same frames draws the same bytes. The caster policy keeps it out of every cascade but the
+// nearest and out of the pool there.
+constexpr const char* k_sward =
+    R"({"species":"sward","sward":{"species":"perennial_ryegrass","blades_m2":192,"density":0.5,)"
+    R"("tillers_per_clump":4,"leaves_per_tiller":3,"clumpiness":0.6,"seed":8801,)"
+    R"("triangle_budget":2400,"card_px":32}})";
+
+std::string sward_text(const char* world) {
+  std::string text =
+      R"({"format":"engine.scene.v1","name":"sward-view",)"
+      R"("terrain":{"size":65,"extent":200,"seed":7,"dune_height":0.05,"dune_wavelength":60,)"
+      R"("generator":"Waves"},)"
+      R"("meshes":[{"name":"sward","path":"sward.flora.json"}],)"
+      R"("scatters":[{"mesh":0,"center":[0,0,0],"radius_min":0.5,"radius_max":28,"count":160,)"
+      R"("seed":21}])";
+  if (world != nullptr) text += std::string(R"(,"world":)") + world;
+  return text + "}";
+}
+
+TEST_CASE("engine-view: a streamed sward sways as a field, as the whole read's does") {
+  const test::TempDir tmp("engine_view_sward_field");
+  REQUIRE(write_text(tmp.file("sward.flora.json"), k_sward));
+  REQUIRE(write_text(tmp.file("whole.json"), sward_text(nullptr)));
+  REQUIRE(write_text(tmp.file("inner.json"),
+                     sward_text(R"({"tile_size":16,"rings":[{"radius":30}]})")));
+  REQUIRE(write_text(tmp.file("rings.json"),
+                     sward_text(R"({"tile_size":16,"rings":[{"radius":1.5},{"radius":30}]})")));
+  // Knee height, looking along the grass.
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"low","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-3,0.9,-3],"target":[6,0.1,6]}]})"));
+  const auto capture = [&](const char* scene, bool sway, const char* png,
+                           const std::vector<const char*>& extra = {}) {
+    std::vector<std::string> args = base_args(tmp, scene, "path.json", sway);
+    for (const char* a : {"--frames", "30", "--lod-fade", "0", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    for (const char* a : extra)
+      args.push_back(a);
+    return view(args);
+  };
+  const Run whole = capture("whole.json", true, "whole.png");
+  if (whole.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << whole.output);
+    return;
+  }
+  REQUIRE_MESSAGE(whole.exit_code == 0, whole.output);
+  const Run again = capture("whole.json", true, "again.png");
+  REQUIRE_MESSAGE(again.exit_code == 0, again.output);
+  const Run rigid = capture("whole.json", false, "rigid.png");
+  REQUIRE_MESSAGE(rigid.exit_code == 0, rigid.output);
+  const Run inner = capture("inner.json", true, "inner.png");
+  REQUIRE_MESSAGE(inner.exit_code == 0, inner.output);
+  const Run rings =
+      capture("rings.json", true, "rings.png", {"--tunable", "renderer.flora.sway_m=100"});
+  REQUIRE_MESSAGE(rings.exit_code == 0, rings.output);
+
+  const JsonValue whole_summary = summary_of(whole.output);
+  const JsonValue* whole_flora = whole_summary.find("flora");
+  REQUIRE(whole_flora != nullptr);
+  REQUIRE(whole_flora->is_object());
+  CHECK(field_u64(*whole_flora, "field_instances") == 160);
+  CHECK(field_u64(*whole_flora, "instances") == 0);  // nothing the CPU poses
+  CHECK(field_u64(*whole_flora, "parts") == 0);
+  CHECK(field_u64(*whole_flora, "untraced") == 160);
+  CHECK(field_u64(*whole_flora, "casters_nearest") == 160);
+  CHECK(field_u64(*whole_flora, "casters_rest") == 160);
+  for (const Run* run : {&inner, &rings}) {
+    const JsonValue summary = summary_of(run->output);
+    const JsonValue* flora = summary.find("flora");
+    REQUIRE(flora != nullptr);
+    REQUIRE(flora->is_object());
+    MESSAGE("streamed: " << field_u64(*flora, "field_instances") << " field instances, "
+                         << field_u64(*flora, "tail_records") << " tail records, "
+                         << field_u64(*flora, "tail_bytes") << " tail bytes, "
+                         << field_u64(*flora, "pose_table_bytes") << " pose-table bytes");
+    CHECK(field_u64(*flora, "field_instances") == 160);
+    CHECK(field_u64(*flora, "tail_records") == 0);
+    CHECK(field_u64(*flora, "tail_bytes") == 0);
+    // The table is the field block a slot and nothing else: three slots of 160 bytes.
+    CHECK(field_u64(*flora, "pose_table_bytes") == 480);
+  }
+  const u32 swayed = differing_pixels(tmp.file("whole.png"), tmp.file("rigid.png"));
+  const u32 replay = differing_pixels(tmp.file("whole.png"), tmp.file("again.png"));
+  const u32 inner_diff = differing_pixels(tmp.file("whole.png"), tmp.file("inner.png"));
+  const u32 rings_diff = differing_pixels(tmp.file("whole.png"), tmp.file("rings.png"));
+  MESSAGE("the field moves " << swayed << " pixels of the whole read; again " << replay
+                             << " differ; streamed in one ring " << inner_diff << ", in two "
+                             << rings_diff);
+  CHECK(swayed > 100);
+  CHECK(replay == 0);
+  CHECK(inner_diff == 0);
+  CHECK(rings_diff == 0);
+}
+
+// A refused commit keeps the device (renderer.md; R95): with the tail's ceiling at 1 MiB the
+// streamed trees' room cannot grow, so their tiles' commits are refused with a sentence before
+// anything changes, and the frames go on — the run ends well, its capture written, and nothing
+// reaches the device as an out-of-memory loss.
+TEST_CASE("engine-view: a tile commit past the tail's budget is refused and the device lives") {
+  const test::TempDir tmp("engine_view_tail_refused");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("inner.json"),
+                     scene_text(R"({"tile_size":32,"rings":[{"radius":30}]})")));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"over","fps":10,"keys":[)"
+                     R"({"time":0,"position":[110,30,80],"target":[0,4,0]}]})"));
+  std::vector<std::string> args = base_args(tmp, "inner.json", "path.json", true);
+  for (const char* a :
+       {"--frames", "8", "--tunable", "renderer.flora.tail_budget_mib=1", "--capture"})
+    args.push_back(a);
+  args.push_back(tmp.file("refused.png"));
+  const Run run = view(args);
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  const JsonValue summary = summary_of(run.output);
+  const JsonValue* flora = summary.find("flora");
+  REQUIRE(flora != nullptr);
+  REQUIRE(flora->is_object());
+  const u64 refused = field_u64(*flora, "tail_refused");
+  const usize sentence = run.output.find("renderer.flora.tail_budget_mib");
+  MESSAGE("refused " << refused << " commits; "
+                     << (sentence != std::string::npos ? run.output.substr(sentence, 200) : ""));
+  CHECK(refused > 0);
+  CHECK(sentence != std::string::npos);
+  CHECK(field_u64(*flora, "tail_instances") == 0);  // the frame went on without the tiles
+  image::Image picture;
+  CHECK(image::read_image(tmp.file("refused.png"), picture) == io::Status::Ok);
+}
+
+// The caster policy (renderer.md, "The caster policy"): the sward's species casts into the nearest
+// cascade alone, from its rest pose, and is never in the ray tracing chain's structures. Against a
+// run with the policy off (every cascade, the swaying pose, traced): fewer cascade pairs, no pool
+// block for a cascade's grass, and no cluster of it in the frame's structures.
+TEST_CASE("engine-view: a sward casts into the nearest cascade at rest and is never traced") {
+  const test::TempDir tmp("engine_view_sward_policy");
+  REQUIRE(write_text(tmp.file("sward.flora.json"), k_sward));
+  REQUIRE(write_text(tmp.file("whole.json"), sward_text(nullptr)));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"low","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-3,0.9,-3],"target":[6,0.1,6]}]})"));
+  const auto run_with = [&](const char* shadows, bool policy, const char* png) {
+    std::vector<std::string> args = base_args(tmp, "whole.json", "path.json", true);
+    for (std::string& a : args) {
+      if (a == "off") a = shadows;  // base_args' `--shadows off`
+    }
+    for (const char* a : {"--frames", "12", "--lod-fade", "0", "--tunable"})
+      args.push_back(a);
+    args.push_back(policy ? "renderer.flora.caster_policy=true"
+                          : "renderer.flora.caster_policy=false");
+    args.push_back("--capture");
+    args.push_back(tmp.file(png));
+    args.push_back("--benchmark");
+    args.push_back(tmp.file(std::string(png) + ".jsonl"));
+    return view(args);
+  };
+  // The flight's summary, the benchmark file's last line: the median of a per-frame count.
+  const auto median_of = [&](const char* png, const char* name,
+                             const char* inner = nullptr) -> f64 {
+    std::ifstream file(tmp.file(std::string(png) + ".jsonl"), std::ios::binary);
+    std::string line;
+    std::string last;
+    while (std::getline(file, line))
+      if (!line.empty()) last = line;
+    JsonValue record;
+    if (!parse_json(last, record).ok) return -1.0;
+    const JsonValue* value = record.find(name);
+    if (inner != nullptr && value != nullptr && value->is_object()) value = value->find(inner);
+    if (value == nullptr || !value->is_object()) return -1.0;
+    const JsonValue* median = value->find("median");
+    f64 out = -1.0;
+    if (median != nullptr) median->get_f64(out);
+    return out;
+  };
+  const Run csm = run_with("csm", true, "csm.png");
+  if (csm.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << csm.output);
+    return;
+  }
+  REQUIRE_MESSAGE(csm.exit_code == 0, csm.output);
+  const Run csm_all = run_with("csm", false, "csm_all.png");
+  REQUIRE_MESSAGE(csm_all.exit_code == 0, csm_all.output);
+  const f64 pairs = median_of("csm.png", "shadow_pairs");
+  const f64 pairs_all = median_of("csm_all.png", "shadow_pairs");
+  MESSAGE("cascades: " << pairs << " shadow pairs with the policy, " << pairs_all
+                       << " without; the pictures differ by "
+                       << differing_pixels(tmp.file("csm.png"), tmp.file("csm_all.png"))
+                       << " pixels");
+  CHECK(pairs >= 0.0);
+  CHECK(pairs < pairs_all);
+
+  const Run rt = run_with("rt", true, "rt.png");
+  if (rt.exit_code == 0) {
+    const Run rt_all = run_with("rt", false, "rt_all.png");
+    REQUIRE_MESSAGE(rt_all.exit_code == 0, rt_all.output);
+    // The chain's structures built a frame (the benchmark's `rt.built`): the ground's alone with
+    // the policy, the ground's and the grass's without it.
+    const f64 built = median_of("rt.png", "rt", "built");
+    const f64 built_all = median_of("rt_all.png", "rt", "built");
+    MESSAGE("the chain: " << built << " structures built a frame with the policy, " << built_all
+                          << " without it");
+    if (built >= 0.0 && built_all >= 0.0) CHECK(built < built_all);
+  } else {
+    MESSAGE("no traced shadows on this device: " << rt.output.substr(0, 200));
+  }
+}
+
 // A tile that leaves and comes back brings its trees back in the phase they had: a tree's seed is
 // its place in the scene file, never the order the tiles came in, so a flight out of every ring
 // and back draws, at the same world time, what a camera that never moved draws.

@@ -54,7 +54,11 @@ struct AllocParams {
   // cascades' runs, which follow every view's three, it is the first cascade's entry.
   uint first_entry;
   uint reset;  // 1: the frame's first allocation dispatch, which zeroes the record
-  uint pad;
+  // The cascades' rest pose (R95; gfx::DeformAllocParams): negative on a camera run's dispatch. On
+  // the cascades', an entry of a `k_instance_shadow_rest` instance takes no block, nor with a
+  // positive distance one whose instance is farther than it from the eye.
+  float rest_beyond_m;
+  uint64_t eye;  // FrameEye*, read only for a positive `rest_beyond_m`
 };
 
 [[vk::push_constant]] ConstantBuffer<AllocParams> g_params;
@@ -98,7 +102,20 @@ void deform_alloc_main(uint3 group_thread : SV_GroupThreadID) {
       uint need = 0;
       if (index < count) {
         const uint2 pair = visible[base_entry + index];
-        if (instances[pair.x].deform != k_invalid_deform) need = clusters[pair.y].vertex_count;
+        const InstanceDesc instance = instances[pair.x];
+        if (instance.deform != k_invalid_deform) need = clusters[pair.y].vertex_count;
+        // **A cascade at rest** (renderer.md, "The caster policy"): the species says its shadow is
+        // its rest pose, or it stands past the distance the trees' shadows stop swaying at. Its
+        // entry gets `k_no_pool_slot`, which every reader draws from the grid, and is counted as
+        // no overflow because it asked for nothing.
+        if (need != 0 && g_params.rest_beyond_m >= 0.0) {
+          if ((instance.flags & k_instance_shadow_rest) != 0) {
+            need = 0;
+          } else if (g_params.rest_beyond_m > 0.0) {
+            const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
+            if (dot(from_eye, from_eye) > g_params.rest_beyond_m * g_params.rest_beyond_m) need = 0;
+          }
+        }
       }
       s_scan[lane] = need;
       GroupMemoryBarrierWithGroupSync();

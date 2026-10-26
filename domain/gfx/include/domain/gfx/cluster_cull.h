@@ -163,7 +163,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1712 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1728 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -276,8 +276,13 @@ struct CullParams {
   // its masked replacement is whole before it goes (`geometry::lod_fade_split`).
   f32 foliage_px = 0.0f;
   f32 fade = 0.0f;
+  // **Which cascade this block culls for** (R95): 0 a camera run, c + 1 the sun's cascade c, which
+  // keeps out an instance whose caster policy names fewer nearest cascades
+  // (`k_instance_cascade_mask`). Three words of padding keep the block a multiple of 16.
+  u32 cascade = 0;
+  u32 pad[3] = {};
 };
-static_assert(sizeof(CullParams) == 1712);
+static_assert(sizeof(CullParams) == 1728);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
@@ -503,6 +508,13 @@ inline constexpr u32 k_deform_stage_terrain = 1u << 13;
 // the terrain stage it never runs beside the others: a tree has no skin, no morphs and no cage, and
 // its record's palette words name its run of the frame's part-pose table instead.
 inline constexpr u32 k_deform_stage_flora = 1u << 14;
+// **Grass posed as a field** (renderer.md, "The field kind"; flora_motion.h, `FloraFieldFrame`;
+// R95): with the flora stage, the record is its **mesh's**, shared by every instance of it, and the
+// pool pass bends each blade from the wind at its root with no pose of the CPU's. `first_part` is
+// then 0, `joint_count` the mesh's part count, `joints` the address of its run of the scene's field
+// part table (`gfx::FloraFieldPart`), and `first_channel` the bits of its compliance —
+// `channel_count` stays 0, so nothing reads the morph words as morphs.
+inline constexpr u32 k_deform_flora_field = 1u << 15;
 inline constexpr u32 k_deform_stage_mask = k_deform_stage_static | k_deform_stage_pose |
                                            k_deform_stage_skin | k_deform_stage_procedural |
                                            k_deform_stage_terrain | k_deform_stage_flora;
@@ -632,6 +644,16 @@ inline constexpr u32 k_instance_uniform_scale = 1u;
 // UVs and the cluster DAG simplified from them — is a function of its key and its heights alone,
 // wherever it is. Bit 1 took no new word.
 inline constexpr u32 k_instance_uv_from_corner = 2u;
+// InstanceDesc::flags, bits 2 to 6: **the caster policy** of the instance's species
+// (geometry::FloraCasterPolicy; renderer.md, "The caster policy"; R95), all zero for everything
+// that has none, which casts as it always did. Bits 2-4: 0 every cascade, n + 1 the `n` nearest
+// alone (the cull's `CullParams::cascade`). Bit 5: a cascade draws it from its rest pose (the
+// cascades' pool allocation gives its entries no block). Bit 6: never in the ray tracing chain's
+// records, and never a shadow caster of a camera run.
+inline constexpr u32 k_instance_cascade_shift = 2u;
+inline constexpr u32 k_instance_cascade_mask = 7u << k_instance_cascade_shift;
+inline constexpr u32 k_instance_shadow_rest = 1u << 5;
+inline constexpr u32 k_instance_untraced = 1u << 6;
 
 // GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
 // a device address. One per instance of the scene, in order of `first_pair`.
@@ -927,9 +949,15 @@ struct DeformAllocParams {
   // run index until the cascades needed a run the run-major formula cannot name.
   u32 first_entry = 0;
   u32 reset = 0;  // 1: the frame's first allocation dispatch, which zeroes the record
-  u32 pad = 0;
+  // **The cascades' rest pose** (renderer.md, "The caster policy"; R95). Negative on a camera
+  // run's dispatch, which gives every deformed entry its block. On the cascades' dispatch, 0 or
+  // more: an entry of an instance flagged `k_instance_shadow_rest` takes no block, and with a
+  // positive distance neither does one whose instance is farther than it from the frame's eye
+  // (`eye`), so the cascade draws it from the grid (`k_no_pool_slot`). Took the pad word.
+  f32 rest_beyond_m = -1.0f;
+  u64 eye = 0;  // FrameEye*: the frame's origin, read only for a positive `rest_beyond_m`
 };
-static_assert(sizeof(DeformAllocParams) == 72);
+static_assert(sizeof(DeformAllocParams) == 80);
 
 inline constexpr u32 k_deform_workgroup_size = 128;   // numthreads in deform.slang
 inline constexpr u32 k_deform_alloc_workgroup = 256;  // numthreads in deform_alloc.slang

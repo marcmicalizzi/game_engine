@@ -406,6 +406,13 @@ struct PageRequest {
 };
 
 static const uint k_instance_uniform_scale = 1u;
+// gfx::k_instance_cascade_* / k_instance_shadow_rest / k_instance_untraced: the caster policy of
+// the instance's species (R95). Bits 2-4: 0 every cascade, n + 1 the n nearest alone; bit 5: the
+// cascades draw it at rest; bit 6: never in the ray tracing chain.
+static const uint k_instance_cascade_shift = 2u;
+static const uint k_instance_cascade_mask = 7u << 2;
+static const uint k_instance_shadow_rest = 1u << 5;
+static const uint k_instance_untraced = 1u << 6;
 static const uint k_invalid_deform = 0xffffffffu;
 // gfx::k_no_pool_slot: this visible entry has no block in the frame's pool, so every reader takes
 // its rest pose. That is the *only* overflow behaviour there is — never garbage, never a crash.
@@ -422,6 +429,8 @@ static const uint k_deform_stage_procedural = 0x800u;
 static const uint k_deform_stage_rebuild_cache = 0x1000u;
 static const uint k_deform_stage_terrain = 0x2000u;
 static const uint k_deform_stage_flora = 0x4000u;
+// gfx::k_deform_flora_field: with the flora stage, a mesh's shared record posed as a field (R95).
+static const uint k_deform_flora_field = 0x8000u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that
 // contain them. The stream is padded to an even u16 count on the CPU, so the last word read is

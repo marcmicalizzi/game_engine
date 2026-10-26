@@ -1072,3 +1072,17 @@ G87 raises the reference source ceilings for ash to 400,000 triangles and elm/wa
 1,000,000, retaining independent blades/leaflets and crown coverage at their reference sizes.
 The source solver still reports actual cost and reduces detail for an explicit smaller budget;
 these catalogue ceilings do not change the runtime LOD policy.
+
+**A motion kind and a caster policy per species** (R95, 2026-10-25). A row also says how the
+species moves — `FloraMotionKind::parts` (posed per part on the CPU, the trees) or `field` (posed
+by the renderer's pool pass from the wind at the vertex, no CPU state: the sward) — and how it
+casts, `FloraCasterPolicy {traced, cascades, rest_pose}`: in the ray tracing chain at all, how
+many of the sun's nearest cascades it is drawn into (`k_flora_all_cascades` for every one), and
+whether a cascade draws it from its rest pose. The defaults are a tree's, `parts` and
+`{true, all, false}`, so only the rows that differ name them; `sward` is `field` and
+`{false, 1, true}`, the owner's policy in [grass-sward.md](../experiments/grass-sward.md#confirmed-wire-contract-owner-2026-10-25).
+The compile-time check refuses a `field` species that casts into every cascade: grass bent once
+per cascade would pay the pool pass for every blade in every map. Both structs are pinned in the
+size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the policy into
+`InstanceDesc` flag bits per mesh ([renderer](renderer.md#the-caster-policy)), and nothing but
+the catalogue names a species.

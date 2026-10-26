@@ -5,6 +5,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/geometry/surface_binding.h>
 
 using namespace engine;
@@ -75,3 +76,10 @@ ENGINE_EXPECT_SIZE(128, 4, geometry::ClusterFileMaterialSampling);
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,
 // so its ten bytes are the per-vertex cost of a region; the plan budgets 10, 12 with a region id.
 ENGINE_EXPECT_SIZE(10, 2, geometry::SurfaceBinding);
+
+// The flora catalogue (R95): a species' caster policy is three bytes of flags, alignment 1, and a
+// catalogue row carries it with its motion kind after the compliance, 52 bytes with the name's
+// view and its padding (56). Neither reaches the GPU; the renderer turns the policy into
+// InstanceDesc flag bits.
+ENGINE_EXPECT_SIZE(3, 1, geometry::FloraCasterPolicy);
+ENGINE_EXPECT_SIZE(56, 8, geometry::FloraSpeciesInfo);
