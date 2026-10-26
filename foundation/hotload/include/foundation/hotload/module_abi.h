@@ -318,12 +318,12 @@ struct GameLoadProgress {
   u32 size = sizeof(GameLoadProgress);
   u32 stages_done = 0;
   u32 stages_expected = 0;
-  u32 milestones = 0;    // bit i: `GameMilestone` i has been reached
-  f32 fraction = 0.0f;   // [0, 1], never falls during one load
-  u32 ready = 0;         // 1 once the milestone the module asked for is reached (the last call)
-  u64 bytes_read = 0;    // the process's reads since the load began
-  u64 items = 0;         // what the load's stages counted: meshes, tiles, instances stood
-  u64 elapsed_ns = 0;    // since the load began
+  u32 milestones = 0;       // bit i: `GameMilestone` i has been reached
+  f32 fraction = 0.0f;      // [0, 1], never falls during one load
+  u32 ready = 0;            // 1 once the milestone the module asked for is reached (the last call)
+  u64 bytes_read = 0;       // the process's reads since the load began
+  u64 items = 0;            // what the load's stages counted: meshes, tiles, instances stood
+  u64 elapsed_ns = 0;       // since the load began
   const char* stage = "";   // the load's stage now ("load scene")
   const char* detail = "";  // what it is doing inside ("cluster read: tree.clusters"), or ""
 };

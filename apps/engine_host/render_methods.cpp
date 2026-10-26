@@ -625,8 +625,7 @@ struct LoadProgressScope {
   }
 };
 
-bool render_progress(protocol::Context&, protocol::RenderProgressResult& out,
-                     protocol::RpcError&) {
+bool render_progress(protocol::Context&, protocol::RenderProgressResult& out, protocol::RpcError&) {
   profiling::LoadProgress p;
   profiling::progress_read(p);
   out.active = p.active;
@@ -1753,12 +1752,12 @@ void add_render_methods(protocol::Dispatcher& d) {
       "render.unload",
       "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
       "host arrays. The id names nothing afterwards; the device stays open for the next load.")));
-  d.add(protocol::read_only(protocol::method_no_params<protocol::RenderProgressResult,
-                                                       &render_progress>(
-      "render.progress",
-      "Where the process's scene load is: its stage and what runs inside it, stages done over "
-      "expected, a fraction that never falls, the milestones reached, bytes read and items "
-      "counted; the last load's record once it is done.")));
+  d.add(protocol::read_only(
+      protocol::method_no_params<protocol::RenderProgressResult, &render_progress>(
+          "render.progress",
+          "Where the process's scene load is: its stage and what runs inside it, stages done over "
+          "expected, a fraction that never falls, the milestones reached, bytes read and items "
+          "counted; the last load's record once it is done.")));
   d.add(protocol::read_only(protocol::method_no_params<protocol::RenderScenesResult,
                                                        &render_scenes>(
       "render.scenes",

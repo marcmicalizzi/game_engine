@@ -189,7 +189,7 @@ struct ProgressPlan {
 
 // One consistent read of the progress.
 struct LoadProgress {
-  u64 sequence = 0;  // grows with every change; equal between two reads means nothing changed
+  u64 sequence = 0;     // grows with every change; equal between two reads means nothing changed
   bool active = false;  // a plan is being followed (`progress_start` .. `progress_stop`)
   bool done = false;    // `progress_finish`: the load is ready, the fraction is 1
   bool from_previous = false;
@@ -197,12 +197,12 @@ struct LoadProgress {
   char detail[k_trace_detail_bytes] = {};  // the stage's detail, or the stage running inside it
   u32 stages_done = 0;
   u32 stages_expected = 0;
-  f32 fraction = 0.0f;   // [0, 1], monotone over reads
-  u32 milestones = 0;    // bit i: the plan's milestone i has been reached
+  f32 fraction = 0.0f;  // [0, 1], monotone over reads
+  u32 milestones = 0;   // bit i: the plan's milestone i has been reached
   u32 milestone_count = 0;
-  u64 bytes_read = 0;    // the process's OS reads since `progress_start`
-  u64 items = 0;         // what the stages counted (`trace_items`) since `progress_start`
-  i64 elapsed_ns = 0;    // since `progress_start`
+  u64 bytes_read = 0;        // the process's OS reads since `progress_start`
+  u64 items = 0;             // what the stages counted (`trace_items`) since `progress_start`
+  i64 elapsed_ns = 0;        // since `progress_start`
   i64 stage_elapsed_ns = 0;  // since the current stage began
 };
 

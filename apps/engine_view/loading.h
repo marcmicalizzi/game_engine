@@ -107,8 +107,7 @@ class LoadingPresenter final : public OverlayTextures {
   // One frame: the swapchain's next image cleared and `overlay` (may be null) drawn over it. An
   // out-of-date or suboptimal chain is resized to the window's `width` x `height` and the frame
   // skipped. False only for a failure the session cannot continue past.
-  bool present(const renderer::OverlayDrawData* overlay, u32 width, u32 height,
-               std::string* error);
+  bool present(const renderer::OverlayDrawData* overlay, u32 width, u32 height, std::string* error);
   u32 width() const noexcept;
   u32 height() const noexcept;
   u64 presented() const noexcept { return presented_; }
@@ -130,8 +129,8 @@ class LoadingPresenter final : public OverlayTextures {
 
 // The stages engine-view's load goes through, in order: the plan when no earlier run left one.
 inline constexpr const char* k_load_stages[] = {
-    "scene file",   "animation clips", "load scene",  "attach",  "ground prepare",
-    "gpu scene",    "renderer",        "ground start", "world create", "session"};
+    "scene file", "animation clips", "load scene",   "attach",       "ground prepare",
+    "gpu scene",  "renderer",        "ground start", "world create", "session"};
 
 // `<ddc>/startup/<key as 16 hex digits>.json`; empty when `ddc` is.
 std::string progress_plan_path(const std::string& ddc, u64 key);

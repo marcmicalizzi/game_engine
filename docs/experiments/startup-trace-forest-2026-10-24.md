@@ -137,3 +137,23 @@ The uncooked "after" ran beside other work holding 72–75% of the CPU, so its 4
 **The streamed forest** (`content/test-scenes/streamed-forest`, its camera path, 120 frames, a cache of its own, the repository's material pack absent so its trees draw their recipes' maps): `load scene` uncooked 12,852 → **8,210 ms** (five trees and the terrain built in parallel; 34 textures built in one run of the step), next run 372 → **260 ms** with its 34 textures trusted (others' CPU 12–24% at the starts).
 
 **Seen and not fixed**: the upload (`GpuScene::create`) is still serial after the load and does not overlap the next mesh's read (gpu_scene.cpp, tonight another agent's); a GLB's source hash (195 MiB warm) is the one source read a cooked load still makes; the peak commit's fall above wants its own look at `core/memory`'s per-thread caches; `scene expand` and `tile rebuild` are this page's items (1) and the ground's, unchanged.
+
+## The window (W79)
+
+Roadmap W79 ([apps](../subsystems/apps.md#the-loading-presentation)) moved a window's CPU stages onto a load thread and made the device's stages pump between their slices. Measured on 2026-10-25 with the v7 staged scene at the lake in a **window** — the case this is about, which `--offscreen` cannot show — 1600×900, `msvc-release` on the W79 branch, the arguments above (`--raster hw --shadows csm --lod 1 --terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --time-of-day 15 --no-lights --deform-pool-mib 64 --rt-budget-mib 1024`, flora motion on, no `--game`), a five-second camera path held at the lake spawn (80, 12, 130) instead of a walk, `--no-vsync`. The window was on a **private desktop** of the measuring script's own (`CreateDesktopW`, as the tests' `test_desktop.h` does), never the owner's, and the process took the GPU lock itself (`ENGINE_GPU_LOCK_ON_DEVICE=1`). The derived data was a scratch copy of the POC's `world/v7/ddc` with the scene's tile `ddc` pointed at it (the first run rebuilt W76's tile archives into it; every row below reads them). "Before" is the same binary with `--load-on-main`, which is the load as it was: every stage on the main thread and no message pumped until the hand-over. The machine was shared with other agents' builds all evening and **every row is an upper bound**: others' CPU at the run's start and end is in the last column.
+
+| run | longest gap between two pumps | where | ready (`player_controllable`) from `main` | loading frames | ms a loading frame | others' CPU |
+|---|---:|---|---:|---:|---:|---|
+| before (`--load-on-main`) | **6,848 ms** | the whole load | 8,843 | — | — | 61% / 47% |
+| after, the stages' boundaries pumping | 739 ms | `gpu scene` | 8,627 | 145 | 0.55 | 44% / 46% |
+| after, the same | 949 ms | `gpu scene` | 9,181 | 148 | 0.61 | 50% / 41% |
+| before | **9,230 ms** | the whole load | 11,251 | — | — | 100% / 93% |
+| before | **8,373 ms** | the whole load | 11,022 | — | — | 80% / 89% |
+| after, and a pump between texture uploads | **180 ms** | `gpu scene` | 15,726 | 271 | 1.01 | 52% / 43% |
+| after, the same | **287 ms** | `gpu scene` | 10,113 | 180 | 0.80 | 93% / 93% |
+| after, the same, OS-cold derived data (a `robocopy /J` copy) | **377 ms** | `gpu scene` | 13,098 | 244 | 1.19 | 58% / 80% |
+
+- **The longest unpumped gap** fell from the whole load (6.8–9.2 s: Windows marks a window *Not Responding* after 5 s) to **0.18–0.38 s**, warm and OS-cold. With only the stage boundaries pumping, `gpu scene`'s `upload materials` (one stage of ~0.6 s of texture uploads) left 0.7–0.95 s; one `profiling::progress_pump()` after each texture's upload in `GpuScene::create` took that to under 0.3 s. The load thread's own gaps were 8–88 ms (the main thread waits in 5 ms looks and draws a frame every 33 ms).
+- **The pump does not slow the load beyond the noise**: at the quietest comparable pair (others' CPU 41–61%), ready came at 8,843 ms before and 8,627 and 9,181 ms after (−2.4 % and +3.8 %). The rows at 80–100 % others' CPU say only that a busy machine stretches both.
+- **A loading frame costs 0.55–1.2 ms** of the main thread (ImGui's layout of one line and a bar, the presenter's clear, overlay and present), 145–271 of them over a load.
+- **Not measured here**: the first launch of a new build, where `renderer` compiles its pipelines for seconds — those are one `vkCreate*Pipelines` call each and pump between pipelines only at the stage's boundaries; and `nearby_stable` in a window (the path's five seconds end before the ring settles at the lake, as the offscreen rows above say it settles 0.3–0.5 s after the first frame there).

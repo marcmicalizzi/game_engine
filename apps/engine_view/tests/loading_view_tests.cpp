@@ -68,9 +68,8 @@ std::string text(const JsonValue& object, const char* key) {
 
 // A small window over the procedural heightfield, six frames and closed; `extra` after.
 Run window_run(const std::string& ddc, std::vector<std::string> extra) {
-  std::vector<std::string> args = {"--width", "320",    "--height", "200",     "--frames",
-                                    "6",       "--grid", "33",       "--ddc",    ddc,
-                                    "--no-vsync"};
+  std::vector<std::string> args = {"--width", "320", "--height", "200", "--frames",  "6",
+                                   "--grid",  "33",  "--ddc",    ddc,   "--no-vsync"};
   args.insert(args.end(), extra.begin(), extra.end());
   return run_view(args);
 }
@@ -139,8 +138,9 @@ TEST_CASE("engine-view: --load-on-main is the load as it was: one gap as long as
   CHECK(number(*loading, "job_pumps") == 0.0);
 }
 
-TEST_CASE("engine-view: --no-loading-overlay draws no line and bar, and the picture after ready "
-          "is the same bytes") {
+TEST_CASE(
+    "engine-view: --no-loading-overlay draws no line and bar, and the picture after ready "
+    "is the same bytes") {
   const test::TempDir tmp("engine_view_loading_overlay");
   const std::string with = tmp.file("with.png");
   const std::string without = tmp.file("without.png");

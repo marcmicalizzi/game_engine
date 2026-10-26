@@ -14,7 +14,8 @@
 
 namespace engine::view {
 
-// ---- textures ------------------------------------------------------------------------------------
+// ---- textures
+// ------------------------------------------------------------------------------------
 
 u32 RendererTextures::add_texture(u32 width, u32 height, const void* rgba, std::string* error) {
   return renderer_.overlay().add_texture(width, height, rgba, error);
@@ -22,7 +23,8 @@ u32 RendererTextures::add_texture(u32 width, u32 height, const void* rgba, std::
 
 void RendererTextures::remove_texture(u32 texture) { renderer_.remove_overlay_texture(texture); }
 
-// ---- the default overlay -------------------------------------------------------------------------
+// ---- the default overlay
+// -------------------------------------------------------------------------
 
 namespace {
 constexpr f32 k_imgui_default_px = 13.0f;  // ImGui's own font's size, which its style is sized for
@@ -107,12 +109,11 @@ bool LoadingOverlay::build(const profiling::LoadProgress& progress, u32 width, u
   // The line: the stage, what it is doing inside, and the fraction; the bar under it.
   const f32 percent = std::clamp(progress.fraction, 0.0f, 1.0f) * 100.0f;
   if (progress.detail[0] != '\0') {
-    std::snprintf(line_, sizeof(line_), "%s \xC2\xB7 %s", progress.stage[0] != '\0' ? progress.stage
-                                                                                    : "loading",
-                  progress.detail);
+    std::snprintf(line_, sizeof(line_), "%s \xC2\xB7 %s",
+                  progress.stage[0] != '\0' ? progress.stage : "loading", progress.detail);
   } else {
-    std::snprintf(line_, sizeof(line_), "%s", progress.stage[0] != '\0' ? progress.stage
-                                                                          : "loading");
+    std::snprintf(line_, sizeof(line_), "%s",
+                  progress.stage[0] != '\0' ? progress.stage : "loading");
   }
   const f32 bar_width = std::round(static_cast<f32>(width) * 0.4f);
   const ImGuiWindowFlags flags =
@@ -150,8 +151,8 @@ bool LoadingOverlay::build(const profiling::LoadProgress& progress, u32 width, u
           error = "ImGui asked for a texture format the overlay does not take";
           return false;
         }
-        const u32 id = textures.add_texture(static_cast<u32>(tex->Width),
-                                            static_cast<u32>(tex->Height), tex->GetPixels(), &error);
+        const u32 id = textures.add_texture(
+            static_cast<u32>(tex->Width), static_cast<u32>(tex->Height), tex->GetPixels(), &error);
         if (id == renderer::OverlayPass::k_no_texture) return false;
         tex->SetTexID(static_cast<ImTextureID>(id) + 1);
         tex->SetStatus(ImTextureStatus_OK);
@@ -198,7 +199,8 @@ bool LoadingOverlay::build(const profiling::LoadProgress& progress, u32 width, u
   return true;
 }
 
-// ---- the presenter -------------------------------------------------------------------------------
+// ---- the presenter
+// -------------------------------------------------------------------------------
 
 LoadingPresenter::~LoadingPresenter() { destroy(); }
 
@@ -323,7 +325,8 @@ bool LoadingPresenter::present(const renderer::OverlayDrawData* overlay, u32 wid
   return true;
 }
 
-// ---- the plan ------------------------------------------------------------------------------------
+// ---- the plan
+// ------------------------------------------------------------------------------------
 
 std::string progress_plan_path(const std::string& ddc, u64 key) {
   if (ddc.empty()) return {};

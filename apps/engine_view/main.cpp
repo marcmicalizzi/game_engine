@@ -23,8 +23,8 @@
 // that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
-#include "pacing.h"
 #include "loading.h"
+#include "pacing.h"
 #include "report.h"
 #include "startup.h"
 #if ENGINE_VIEW_GAME
@@ -3563,7 +3563,7 @@ struct WindowLoad {
   view::GameHudOverlay game_hud;  // a module's own loading HUD, through the presenter
 #endif
   renderer::OverlayDrawData data;
-  bool show = true;        // the default's line and bar (--no-loading-overlay: cleared frames)
+  bool show = true;         // the default's line and bar (--no-loading-overlay: cleared frames)
   bool game_draws = false;  // the module exports game_loading
   bool in_job = false;
   i64 started_ns = 0;
@@ -3636,8 +3636,8 @@ struct WindowLoad {
         failed = true;
       }
     }
-    if (!failed && !presenter.present(drawn, window->pixel_width(), window->pixel_height(),
-                                      &error)) {
+    if (!failed &&
+        !presenter.present(drawn, window->pixel_width(), window->pixel_height(), &error)) {
       failed = true;
     }
     if (failed) {
@@ -5219,7 +5219,8 @@ int run_view(int argc, char** argv) {
       (void)profiling::progress_start(plan);
       profiling::progress_milestone("main");
       startup.milestone("device");
-      profiling::progress_set_pump(&WindowLoad::pump_fn, &load);
+      // `--load-on-main` is the load as it was: nothing pumps until the hand-over.
+      if (!options.load_on_main) profiling::progress_set_pump(&WindowLoad::pump_fn, &load);
       load.pump();
     }
 
@@ -5229,170 +5230,173 @@ int run_view(int argc, char** argv) {
     // the meshes, the settings against them and the ground's first layout. Nothing here touches the
     // window or the device's queue; a failure says why and the session ends as it always did.
     const auto load_cpu = [&]() -> bool {
-    if (options.test_slow_load_ms != 0) {
-      ENGINE_STARTUP_STAGE("test slow load");
-      std::this_thread::sleep_for(std::chrono::milliseconds(options.test_slow_load_ms));
-    }
-    profiling::TraceStage scene_file_stage("scene file", options.scene);
-    desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
-                                                             : renderer::Procedural::heightfield;
-    desc.lod = options.lod;
-    desc.heightfield_grid = options.grid;
-    desc.grid_instances = options.grid_instances;
-    desc.ddc = options.ddc;
-    desc.materials = options.materials;
-    desc.cache = options.cache;
-    desc.stream = options.settings.stream;  // keep the page table for the residency manager
-    if (!options.scene.empty()) {
-      renderer::SceneFileOptions file_options;
-      file_options.overlay = options.overlay;
-      file_options.world = options.world;
-      file_options.world_instances = options.world_instances;
-      renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
-      if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
-        exit_code = fail("scene", error);
+      if (options.test_slow_load_ms != 0) {
+        ENGINE_STARTUP_STAGE("test slow load");
+        std::this_thread::sleep_for(std::chrono::milliseconds(options.test_slow_load_ms));
+      }
+      profiling::TraceStage scene_file_stage("scene file", options.scene);
+      desc.procedural = options.procedural == "shredded-atlas"
+                            ? renderer::Procedural::shredded_atlas
+                            : renderer::Procedural::heightfield;
+      desc.lod = options.lod;
+      desc.heightfield_grid = options.grid;
+      desc.grid_instances = options.grid_instances;
+      desc.ddc = options.ddc;
+      desc.materials = options.materials;
+      desc.cache = options.cache;
+      desc.stream = options.settings.stream;  // keep the page table for the residency manager
+      if (!options.scene.empty()) {
+        renderer::SceneFileOptions file_options;
+        file_options.overlay = options.overlay;
+        file_options.world = options.world;
+        file_options.world_instances = options.world_instances;
+        renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
+        if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
+          exit_code = fail("scene", error);
+          return false;
+        }
+        // A streamed world's own instances get forms cut for this session's projection and LOD.
+        renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                                 desc.authored);
+      } else {
+        desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
+      }
+      if (options.world && !desc.world.enabled) {
+        exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
         return false;
       }
-      // A streamed world's own instances get forms cut for this session's projection and LOD.
-      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
-                               desc.authored);
-    } else {
-      desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
-    }
-    if (options.world && !desc.world.enabled) {
-      exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
-      return false;
-    }
-    // The flags' own conflicts were refused before anything was read; these are the file's.
-    if (desc.world.enabled && (options.verify_occlusion || options.animate ||
-                               options.morph_animate || options.reference != 0)) {
-      exit_code = fail("world",
-                       "the scene file's \"world\" block streams its instances between frames, "
-                       "which --verify-occlusion, --animate, --morph-animate and --reference do "
-                       "not draw");
-      return false;
-    }
-    scene_file_stage.end();
+      // The flags' own conflicts were refused before anything was read; these are the file's.
+      if (desc.world.enabled && (options.verify_occlusion || options.animate ||
+                                 options.morph_animate || options.reference != 0)) {
+        exit_code = fail("world",
+                         "the scene file's \"world\" block streams its instances between frames, "
+                         "which --verify-occlusion, --animate, --morph-animate and --reference do "
+                         "not draw");
+        return false;
+      }
+      scene_file_stage.end();
 
 #if ENGINE_VIEW_ANIMATION
-    // ---- the animated world, part one: the clips, and which instances play them --------------
-    profiling::TraceStage clips_stage("animation clips");
-    if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
-      exit_code = fail("clips", error);
-      return false;
-    }
-    clips_stage.end();
+      // ---- the animated world, part one: the clips, and which instances play them --------------
+      profiling::TraceStage clips_stage("animation clips");
+      if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
+        exit_code = fail("clips", error);
+        return false;
+      }
+      clips_stage.end();
 #endif
 
-    profiling::TraceStage load_stage("load scene");
-    if (!renderer::load_scene(desc, scene_data, error)) {
-      exit_code = fail("mesh", error);
-      return false;
-    }
-    load_stage.end();
-    startup.milestone("scene_loaded");
-    profiling::TraceStage attach_stage("attach");
-    look_overrides(options, scene_data);  // `--sky-disc-scale`
-    if (!attach_game_scene(scene_data, error)) {
-      exit_code = fail("game", error);
-      return false;
-    }
-    sky_offset = sky_offset_s(options, scene_data);
-    // A budget as a fraction of what this scene's pages come to, which cannot be known until the
-    // page table has been built, is `renderer::settings_for`'s, below, with the morph weights.
-    // A camera path, read against the scene it flies over: a key may hold a height above its
-    // terrain. With no `--frames` the window flies the path once at its own rate and closes.
-    if (!options.camera_path.empty()) {
-      if (!renderer::read_camera_path(options.camera_path,
-                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
-                                      window_path, error)) {
-        exit_code = fail("camera path", error);
+      profiling::TraceStage load_stage("load scene");
+      if (!renderer::load_scene(desc, scene_data, error)) {
+        exit_code = fail("mesh", error);
         return false;
       }
-      // An interactive session only starts at the path's first camera; it ends when it ends.
-      if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
-    }
-    // A live session given neither a path nor `--start` begins where the scene's own path does
-    // (`Scene.camera_path`), which is where the scene is meant to be seen from; nothing flies it.
-    if (live && options.camera_path.empty() && !options.start_given && !desc.camera_path.empty()) {
-      if (!renderer::read_camera_path(desc.camera_path,
-                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
-                                      scene_path, error)) {
-        exit_code = fail("camera path", desc.camera_path + ": " + error);
+      load_stage.end();
+      startup.milestone("scene_loaded");
+      profiling::TraceStage attach_stage("attach");
+      look_overrides(options, scene_data);  // `--sky-disc-scale`
+      if (!attach_game_scene(scene_data, error)) {
+        exit_code = fail("game", error);
         return false;
       }
-    }
+      sky_offset = sky_offset_s(options, scene_data);
+      // A budget as a fraction of what this scene's pages come to, which cannot be known until the
+      // page table has been built, is `renderer::settings_for`'s, below, with the morph weights.
+      // A camera path, read against the scene it flies over: a key may hold a height above its
+      // terrain. With no `--frames` the window flies the path once at its own rate and closes.
+      if (!options.camera_path.empty()) {
+        if (!renderer::read_camera_path(options.camera_path,
+                                        scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                        window_path, error)) {
+          exit_code = fail("camera path", error);
+          return false;
+        }
+        // An interactive session only starts at the path's first camera; it ends when it ends.
+        if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
+      }
+      // A live session given neither a path nor `--start` begins where the scene's own path does
+      // (`Scene.camera_path`), which is where the scene is meant to be seen from; nothing flies it.
+      if (live && options.camera_path.empty() && !options.start_given &&
+          !desc.camera_path.empty()) {
+        if (!renderer::read_camera_path(desc.camera_path,
+                                        scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                        scene_path, error)) {
+          exit_code = fail("camera path", desc.camera_path + ": " + error);
+          return false;
+        }
+      }
 
 #if ENGINE_VIEW_ANIMATION
-    // ---- part two: the entities, their clips, and the bounds a moving character needs --------
-    if (animated) {
-      if (!view::attach_instances(*animated, desc, scene_data, animation_options(options), error)) {
-        exit_code = fail("animate", error);
+      // ---- part two: the entities, their clips, and the bounds a moving character needs --------
+      if (animated) {
+        if (!view::attach_instances(*animated, desc, scene_data, animation_options(options),
+                                    error)) {
+          exit_code = fail("animate", error);
+          return false;
+        }
+        skinned_instances = animated->instances;
+        joint_matrices = static_cast<u32>(animated->system.joint_matrices().size());
+        clip_text = animated->clip_name;
+        // The summary is a JSON line, so a clip name with a quote or a backslash in it would break
+        // whatever reads it. Names come from a file nobody here wrote; replace rather than escape,
+        // since this is a label and not an identifier.
+        for (char& c : clip_text) {
+          if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
+        }
+        ENGINE_LOG_INFO(
+            log_view, "animated", log::field("instances", animated->instances),
+            log::field("clip", animated->clip_name), log::field("joints", animated->joints),
+            log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
+      }
+#endif
+      // The settings against the loaded scene — the page budget's percentage and the morph weights
+      // — through the renderer's function, which `render.*` calls too.
+      if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
+        exit_code = fail("morph", error);
         return false;
       }
-      skinned_instances = animated->instances;
-      joint_matrices = static_cast<u32>(animated->system.joint_matrices().size());
-      clip_text = animated->clip_name;
-      // The summary is a JSON line, so a clip name with a quote or a backslash in it would break
-      // whatever reads it. Names come from a file nobody here wrote; replace rather than escape,
-      // since this is a label and not an identifier.
-      for (char& c : clip_text) {
-        if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
+      renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+      report_device(device, resolved, options.width, options.height);
+      const renderer::RenderAvailability availability =
+          renderer::check_availability(resolved, device.features());
+      if (availability != renderer::RenderAvailability::Ok) {
+        const std::string why = renderer::unavailable_reason(availability, device);
+        exit_code = unavailable(why.c_str(), "");
+        return false;
       }
-      ENGINE_LOG_INFO(
-          log_view, "animated", log::field("instances", animated->instances),
-          log::field("clip", animated->clip_name), log::field("joints", animated->joints),
-          log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
-    }
-#endif
-    // The settings against the loaded scene — the page budget's percentage and the morph weights
-    // — through the renderer's function, which `render.*` calls too.
-    if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
-      exit_code = fail("morph", error);
-      return false;
-    }
-    renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
-    report_device(device, resolved, options.width, options.height);
-    const renderer::RenderAvailability availability =
-        renderer::check_availability(resolved, device.features());
-    if (availability != renderer::RenderAvailability::Ok) {
-      const std::string why = renderer::unavailable_reason(availability, device);
-      exit_code = unavailable(why.c_str(), "");
-      return false;
-    }
-    // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
-    // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
-    // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
-    // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`, which
-    // `MovingGround::prepare` reads for a window).
-    terrain_camera =
-        !window_path.keys.empty()
-            ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
-        : !scene_path.keys.empty()
-            ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
-            : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
-    // An interactive session starts where its header says — `--start`, a replay's recorded start —
-    // and the first layout is built round that, not round the orbit: on the endless desert the
-    // orbit is the old erg's centre, and a session started 2 km from it began with a whole ring to
-    // rebuild behind its frames, the camera at 100 m/s outrunning each catch-up for its first tens
-    // of seconds (the owner's first flight, 2026-10-02). A live header is built here for that
-    // reason, where the scene's bounds and the paths are known.
-    if (interactive.on) {
-      if (!interactive.replay) {
-        const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
-                                                 : !scene_path.keys.empty() ? &scene_path
-                                                                            : nullptr;
-        interactive.header = live_header(options, scene_data, start_path);
+      // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
+      // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
+      // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
+      // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`, which
+      // `MovingGround::prepare` reads for a window).
+      terrain_camera =
+          !window_path.keys.empty()
+              ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
+          : !scene_path.keys.empty()
+              ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+      // An interactive session starts where its header says — `--start`, a replay's recorded start
+      // — and the first layout is built round that, not round the orbit: on the endless desert the
+      // orbit is the old erg's centre, and a session started 2 km from it began with a whole ring
+      // to rebuild behind its frames, the camera at 100 m/s outrunning each catch-up for its first
+      // tens of seconds (the owner's first flight, 2026-10-02). A live header is built here for
+      // that reason, where the scene's bounds and the paths are known.
+      if (interactive.on) {
+        if (!interactive.replay) {
+          const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
+                                                   : !scene_path.keys.empty() ? &scene_path
+                                                                              : nullptr;
+          interactive.header = live_header(options, scene_data, start_path);
+        }
+        terrain_camera.position = interactive.header.start.position;
       }
-      terrain_camera.position = interactive.header.start.position;
-    }
-    attach_stage.end();
-    profiling::TraceStage ground_stage("ground prepare");
-    if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
-      exit_code = fail(ground.stage(), error);
-      return false;
-    }
-    return true;
+      attach_stage.end();
+      profiling::TraceStage ground_stage("ground prepare");
+      if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
+        exit_code = fail(ground.stage(), error);
+        return false;
+      }
+      return true;
     };
     if (!load.run(options.load_on_main, load_cpu)) break;
     if (load.quit) {  // closed while loading: the session ends as a closed window's does

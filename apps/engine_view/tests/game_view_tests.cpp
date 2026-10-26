@@ -573,8 +573,9 @@ TEST_CASE("engine-view: a live --game walk replays to the same module state") {
   MESSAGE("live and replayed: " << live_state);
 }
 
-TEST_CASE("engine-view: a module's game_loading draws the load and game_ready_milestone holds its "
-          "first tick") {
+TEST_CASE(
+    "engine-view: a module's game_loading draws the load and game_ready_milestone holds its "
+    "first tick") {
   // ABI 7 (apps.md, "The loading presentation"): the loading build of the fixture says its own
   // loading line every loading frame — so the host's default steps aside — and asks for
   // ground_collision_ready before its first tick. Live in a window, recorded; then replayed
@@ -587,10 +588,28 @@ TEST_CASE("engine-view: a module's game_loading draws the load and game_ready_mi
   const std::string recorded = tmp.file("recorded.jsonl");
   const std::string module = fixture(tmp, WALK_POC_LOADING_PATH);
   const std::string ddc = tmp.file("ddc");
-  const Run live = run_view({"--interactive", "--walk", "--start", "20,40,10", "28.6,-11.5",
-                             "--inject-input", inject, "--record-input", recorded, "--scene",
-                             scene, "--game", module, "--width", "160", "--height", "96",
-                             "--no-vsync", "--ddc", ddc, "--test-slow-load", "500"});
+  const Run live = run_view({"--interactive",
+                             "--walk",
+                             "--start",
+                             "20,40,10",
+                             "28.6,-11.5",
+                             "--inject-input",
+                             inject,
+                             "--record-input",
+                             recorded,
+                             "--scene",
+                             scene,
+                             "--game",
+                             module,
+                             "--width",
+                             "160",
+                             "--height",
+                             "96",
+                             "--no-vsync",
+                             "--ddc",
+                             ddc,
+                             "--test-slow-load",
+                             "500"});
   if (live.exit_code == 3 || refused_without_dunes(live)) {
     MESSAGE("engine-view unavailable here: " << live.output);
     return;

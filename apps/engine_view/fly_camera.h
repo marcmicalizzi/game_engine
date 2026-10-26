@@ -274,9 +274,9 @@ struct SessionHeader {
   // file, which the live session overwrote at its end: so a replay from a restored state is a
   // replay.
   JsonValue game_restored;
-  // **The tick the module's first `game_tick` waited for** (2026-10-25, ABI 7, roadmap W79): a module
-  // that asked for a later hand-over (`game_ready_milestone`) was held until its milestone, and a
-  // replay holds it until this tick instead of its own milestones. 0, and absent: no hold.
+  // **The tick the module's first `game_tick` waited for** (2026-10-25, ABI 7, roadmap W79): a
+  // module that asked for a later hand-over (`game_ready_milestone`) was held until its milestone,
+  // and a replay holds it until this tick instead of its own milestones. 0, and absent: no hold.
   u64 game_release_tick = 0;
   // **The clocks the session ran on** (2026-10-20, roadmap R88; renderer/clocks.h), written as the
   // header's `clock` block when `has_clock` (every live session since): the day's rate (the sun

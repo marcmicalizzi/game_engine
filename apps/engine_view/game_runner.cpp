@@ -1213,9 +1213,7 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   self.tick(in);
 }
 
-bool GameRunner::has_loading() const noexcept {
-  return impl_->host && impl_->game_loading.valid();
-}
+bool GameRunner::has_loading() const noexcept { return impl_->host && impl_->game_loading.valid(); }
 
 void GameRunner::loading(const hotload::GameLoadProgress& progress) {
   Impl& g = *impl_;

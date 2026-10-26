@@ -1,10 +1,9 @@
 #include <systems/renderer/overlay.h>
 
-#include <shaders/overlay.spv.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <shaders/overlay.spv.h>
 
 namespace engine::renderer {
 

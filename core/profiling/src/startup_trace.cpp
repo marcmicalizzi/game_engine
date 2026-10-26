@@ -33,7 +33,7 @@ namespace engine::profiling {
 namespace detail {
 std::atomic<bool> g_trace_on{false};
 std::atomic<bool> g_progress_on{false};
-}
+}  // namespace detail
 
 namespace {
 
@@ -984,7 +984,8 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   return out;
 }
 
-// ---- the live progress ----------------------------------------------------------------------------
+// ---- the live progress
+// ----------------------------------------------------------------------------
 
 bool ProgressPlan::add_stage(std::string_view name, f64 weight) noexcept {
   if (stage_count >= k_progress_max_stages || name.empty() || find(name) < stage_count)

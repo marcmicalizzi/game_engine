@@ -565,7 +565,8 @@ load's stages say where it is while it runs** (roadmap W79): every `ENGINE_START
 in `GpuScene::create` feeds the live progress record whether or not a trace records
 ([profiling](profiling.md#the-trace-is-live)) — the scene file's expand, `meshes` and each `mesh`
 stage as the current stage's detail, `trace_items` as the items — and a stage that runs on a thread
-that owns a window pumps its messages as it begins and ends, which is how engine-view keeps its
+that owns a window pumps its messages as it begins and ends, as does each texture upload in
+`GpuScene::create` (`profiling::progress_pump()`), which is how engine-view keeps its
 window answering through `gpu scene` without the renderer knowing it has one
 ([apps](apps.md#the-loading-presentation)). `load_scene` itself can run on any thread; engine-view
 runs it on a load thread. `load_scene` does its work in this order:

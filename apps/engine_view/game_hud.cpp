@@ -675,8 +675,7 @@ bool GameHudOverlay::upload(OverlayTextures& textures, std::string& error) {
 // An image's overlay texture (ABI 6): decoded from the file the runner found, uploaded once, kept
 // while an element names it. The upload is a blocking submission in the HUD's build, before the
 // frame is recorded, the first time a frame draws the image — never in a steady frame.
-bool GameHudOverlay::image_texture(OverlayTextures& textures, u32 image,
-                                   std::string& error) {
+bool GameHudOverlay::image_texture(OverlayTextures& textures, u32 image, std::string& error) {
   if (image >= GameHud::k_images || hud_ == nullptr || image >= hud_->image_count) {
     error = "an image element names no image the runner holds";
     return false;
@@ -688,8 +687,7 @@ bool GameHudOverlay::image_texture(OverlayTextures& textures, u32 image,
     error = "the HUD image " + std::string(file.path) + " cannot be read: " + error;
     return false;
   }
-  const u32 id =
-      textures.add_texture(decoded.width, decoded.height, decoded.pixels.data(), &error);
+  const u32 id = textures.add_texture(decoded.width, decoded.height, decoded.pixels.data(), &error);
   if (id == renderer::OverlayPass::k_no_texture) return false;
   image_texture_[image] = id;
   ++image_uploads_;

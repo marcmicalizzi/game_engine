@@ -301,7 +301,8 @@ TEST_CASE("the chrome trace round-trips a recorded set") {
   CHECK(samples >= 4);  // four counter tracks a sample, at least one sample
 }
 
-// ---- the live progress (W79) ----------------------------------------------------------------------
+// ---- the live progress (W79)
+// ----------------------------------------------------------------------
 
 namespace {
 constexpr const char* k_ladder[] = {"main", "device", "scene_loaded", "ready"};
@@ -326,7 +327,9 @@ struct Following {
 
 TEST_CASE("progress follows the plan's stages, rises monotonically and reaches every milestone") {
   CHECK_FALSE(progress_enabled());
-  { ENGINE_STARTUP_STAGE("read"); }  // off: a stage feeds nothing
+  {
+    ENGINE_STARTUP_STAGE("read");
+  }  // off: a stage feeds nothing
   for (const bool previous : {false, true}) {
     CAPTURE(previous);
     Following following(three_stages(previous));
@@ -379,7 +382,9 @@ TEST_CASE("progress follows the plan's stages, rises monotonically and reaches e
     }
     look();
     CHECK(p.stages_done == 2);
-    { ENGINE_STARTUP_STAGE("upload"); }
+    {
+      ENGINE_STARTUP_STAGE("upload");
+    }
     look();
     CHECK(p.stages_done == 3);
     CHECK(p.fraction == doctest::Approx(1.0));
@@ -475,7 +480,7 @@ TEST_CASE("the pump runs on its own thread's stage boundaries and nowhere else")
     {
       ENGINE_STARTUP_STAGE("long");  // its begin: 1
       for (u32 slice = 0; slice < 4; ++slice)
-        progress_pump();               // 4
+        progress_pump();                // 4
       ENGINE_STARTUP_STAGE("a slice");  // its begin and its end: 2
     }  // the long stage's end: 1
     CHECK(counter.calls == 8);
@@ -490,7 +495,9 @@ TEST_CASE("the pump runs on its own thread's stage boundaries and nowhere else")
     CHECK(counter.calls == 8);
   }
   progress_set_pump(&PumpCounter::pump, &counter);
-  { ENGINE_STARTUP_STAGE("long"); }  // progress off: nothing pumps at a boundary
+  {
+    ENGINE_STARTUP_STAGE("long");
+  }  // progress off: nothing pumps at a boundary
   CHECK(counter.calls == 8);
   progress_set_pump(nullptr, nullptr);
 }
