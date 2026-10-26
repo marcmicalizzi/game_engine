@@ -573,6 +573,59 @@ TEST_CASE("engine-view: a live --game walk replays to the same module state") {
   MESSAGE("live and replayed: " << live_state);
 }
 
+TEST_CASE("engine-view: a module's game_loading draws the load and game_ready_milestone holds its "
+          "first tick") {
+  // ABI 7 (apps.md, "The loading presentation"): the loading build of the fixture says its own
+  // loading line every loading frame — so the host's default steps aside — and asks for
+  // ground_collision_ready before its first tick. Live in a window, recorded; then replayed
+  // offscreen, where the recording's header holds the module to the tick the live session
+  // released it at.
+  const test::TempDir tmp("engine_view_game_loading");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string inject = walk_session(tmp, scene, 600, "inject.jsonl");
+  const std::string recorded = tmp.file("recorded.jsonl");
+  const std::string module = fixture(tmp, WALK_POC_LOADING_PATH);
+  const std::string ddc = tmp.file("ddc");
+  const Run live = run_view({"--interactive", "--walk", "--start", "20,40,10", "28.6,-11.5",
+                             "--inject-input", inject, "--record-input", recorded, "--scene",
+                             scene, "--game", module, "--width", "160", "--height", "96",
+                             "--no-vsync", "--ddc", ddc, "--test-slow-load", "500"});
+  if (live.exit_code == 3 || refused_without_dunes(live)) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  JsonValue a;
+  REQUIRE_MESSAGE(summary_of(live, a), live.output);
+  const JsonValue* game = game_of(a);
+  REQUIRE(game != nullptr);
+  MESSAGE("game: " << write_json(*game, JsonWriteOptions{.pretty = false}));
+  REQUIRE(a.find("loading") != nullptr);
+  CHECK(text_at(a, {"loading", "overlay"}) == "game");
+  CHECK(text_at(a, {"loading", "ready_milestone"}) == "ground_collision_ready");
+  // Called every loading frame, with a fraction that rose and never fell.
+  CHECK(number_at(*game, {"loading_calls"}) >= 5.0);
+  CHECK(number_at(*game, {"state", "loading_calls"}) == number_at(*game, {"loading_calls"}));
+  CHECK(number_at(*game, {"state", "loading_falls"}) == 0.0);
+  CHECK(number_at(*game, {"state", "loading_fraction"}) > 0.5);
+  CHECK(number_at(*game, {"ready_milestone"}) == 6.0);
+  // Held: the module's first tick came after the session's first, at the milestone.
+  CHECK(number_at(*game, {"first_tick"}) > 0.0);
+  CHECK(number_at(*game, {"held_ticks"}) > 0.0);
+
+  const Run replay = run_view({"--replay-input", recorded, "--offscreen", "--game", module,
+                               "--width", "160", "--height", "96", "--ddc", ddc});
+  REQUIRE_MESSAGE(replay.exit_code == 0, replay.output);
+  JsonValue b;
+  REQUIRE_MESSAGE(summary_of(replay, b), replay.output);
+  REQUIRE(game_of(b) != nullptr);
+  CHECK(number_at(*game_of(b), {"first_tick"}) == number_at(*game, {"first_tick"}));
+  CHECK(number_at(*game_of(b), {"ticks"}) == number_at(*game, {"ticks"}));
+  CHECK(number_at(*game_of(b), {"state", "walked_m"}) == number_at(*game, {"state", "walked_m"}));
+  CHECK(number_at(*game_of(b), {"loading_calls"}) == 0.0);  // offscreen draws no loading frames
+}
+
 #if defined(_WIN32) && defined(ENGINE_PWSH_PATH) && defined(ENGINE_BUILD_DIR_PATH)
 namespace {
 

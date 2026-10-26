@@ -4,7 +4,7 @@
 namespace engine.walk_poc
 
 /// What the fixture remembers between ticks and runs.
-struct Survivor @version(3) {
+struct Survivor @version(4) {
   /// Thirst, 100 full and 0 the end of the run.
   thirst: f64 = 100
   /// Game seconds survived, a tick's dt at a time, and metres walked.
@@ -37,4 +37,10 @@ struct Survivor @version(3) {
   actor_started: bool = false @since(3)
   actor_ticks: u64 = 0 @since(3)
   actor_pose: u64 = 0 @since(3)
+  /// The loading build's (WALK_POC_TEST 6, `walk_poc_loading`; ABI 7, apps.md "The loading
+  /// presentation"): the calls `game_loading` had, the fraction the last one carried, and how many
+  /// times a call's fraction fell below the one before it (never, if the host keeps its promise).
+  loading_calls: u32 = 0 @since(4)
+  loading_fraction: f64 = 0 @since(4)
+  loading_falls: u32 = 0 @since(4)
 }

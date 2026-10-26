@@ -44,13 +44,16 @@ thirst, seconds, metres, days, the run's start, the spring, the counters, `over`
 the can's id and whether it was placed and taken, and the markers placed), so a rebuild carries the
 run and `--game-state` saves it. It resolves the `GameTick` fields it reads, declares `interact` and
 `use` and asks for the two props in `on_load`, exports `game_tick`, and allocates nothing there: the
-HUD's text is formatted into a stack buffer the host copies. Five test builds of the same source
+HUD's text is formatted into a stack buffer the host copies. Six test builds of the same source
 (`WALK_POC_TEST=1`, an action no map has; `2`, a failure at tick 30; `3`, no props and no walker
 calls, so a scene with and without the game draws the same picture; `4`, named `walk_poc_teleport`,
 a teleport 10 m ahead at tick 50; `5`, named `walk_poc_actor`, which finds the scene's actor `bar`
 (hotload ABI 5) and walks it round a 3 m circle on the ground it asks for with `ground_height`,
-playing `bend`, at twice the rate from tick 120, fading to rest from 240) are what engine-view's
-tests check the refusals, the tail, the actors and the replay rules with.
+playing `bend`, at twice the rate from tick 120, fading to rest from 240; `6`, named
+`walk_poc_loading`, which exports ABI 7's `game_loading` — its own loading line, and the calls,
+the last fraction and any fall counted in its state (`@since(4)`) — and `game_ready_milestone`,
+asking for `ground_collision_ready`) are what engine-view's tests check the refusals, the tail,
+the actors, the loading hooks and the replay rules with.
 
 **Its own art** (hotload ABI 6): with `hud/panel.png` beside the scene file (or the module), every
 build draws that image nine-sliced as a panel behind the `[E] Pick up` prompt, and with

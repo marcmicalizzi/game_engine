@@ -757,7 +757,7 @@ Status ModuleHost::load_build(Module& build, const std::string& copy_path) {
   }
   for (u32 i = 0; i < desc.export_count; ++i) {
     const Export& e = desc.exports[i];
-    if (e.name == nullptr || e.function == nullptr || e.signature == 0 || e.signature > 5) {
+    if (e.name == nullptr || e.function == nullptr || e.signature == 0 || e.signature > k_signature_max) {
       fail(Status::BadDescriptor,
            "export " + std::to_string(i) + " has no name, no function or an unknown signature");
       return Status::BadDescriptor;

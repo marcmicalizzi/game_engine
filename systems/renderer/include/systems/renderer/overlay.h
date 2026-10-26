@@ -98,6 +98,12 @@ struct OverlayDrawParams {
 };
 static_assert(sizeof(OverlayDrawParams) == 56, "OverlayDrawParams mirrors overlay.slang");
 
+// Puts the pass's own shader (`overlay`, the embedded bytes `SceneRenderer` registers) into a
+// library of the caller's, for a host that draws an overlay before it has a `SceneRenderer`:
+// engine-view's loading frames, presented while the scene loads (apps.md, "The loading
+// presentation"; roadmap W79).
+void add_overlay_shader(gfx::ShaderLibrary& library);
+
 // The pass itself: two pipelines (alpha-blended, `gfx::BlendMode::Alpha`: one for the target's
 // format, one for the UI layer's), one linear sampler, the
 // overlay's textures in the scene's bindless set, and per frame slot a host-visible vertex buffer
