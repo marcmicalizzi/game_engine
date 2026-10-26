@@ -571,6 +571,39 @@ TEST_CASE("render: unload and scenes answer on a machine with or without a GPU")
 // load added came back", because the allocator may keep an emptied block for its next allocation;
 // measured on the RTX 5090 the figure went from 137.7 MB to 849.4 MB and back to 139.5 MB. And
 // nothing leaks: a second cycle of the same scene ends at no more than the first one did.
+TEST_CASE("render: progress says where a load is, and after it the load's own record") {
+  // roadmap W79 (protocol.md, `render.progress`): before any load nothing is followed; after one,
+  // the record is that load's — both stages done, both milestones in their order, the fraction 1.
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue before = result_of(host.call("render.progress", "{}"));
+  REQUIRE(before.find("active") != nullptr);
+  CHECK(before.find("done") != nullptr);
+  const JsonValue loaded = host.call("render.load", R"({"grid":33,"settings":{"shadows":"off"}})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(loaded));
+    return;
+  }
+  (void)result_of(loaded);
+  const JsonValue after = result_of(host.call("render.progress", "{}"));
+  bool done = false;
+  REQUIRE(after.find("done") != nullptr);
+  REQUIRE(after.find("done")->get_bool(done));
+  CHECK(done);
+  CHECK(number(after, "fraction") == 1.0);
+  CHECK(number(after, "stages_expected") == 2.0);
+  CHECK(number(after, "stages_done") == 2.0);
+  CHECK(text(after, "stage") == "load scene");
+  const JsonValue* milestones = after.find("milestones");
+  REQUIRE(milestones != nullptr);
+  REQUIRE(milestones->size() == 2);
+  std::string_view first;
+  std::string_view second;
+  CHECK(((*milestones)[0].get_string(first) && first == "scene_read"));
+  CHECK(((*milestones)[1].get_string(second) && second == "scene_loaded"));
+  CHECK(number(after, "sequence") > number(before, "sequence"));
+}
+
 TEST_CASE("render: unload releases a scene and scenes lists what the host holds") {
   const test::TempDir tmp("engine_render_unload");
   const std::string out_dir = tmp.path();
