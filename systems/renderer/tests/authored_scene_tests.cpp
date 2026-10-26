@@ -164,6 +164,42 @@ TEST_CASE("authored scene: a streamed world's own instances become the generator
     }
   }
   CHECK(forms == stats.forms);
+  // **A form carries only the parts its vertices use** (R95): every form's table is pruned to the
+  // parts its motion records name and their ancestors, renumbered with parents first, its
+  // structural ids its own, and each part's source id kept for the phase.
+  MESSAGE("the forms' motion parts: " << stats.form_parts_before << " before the pruning, "
+                                      << stats.form_parts_after << " after");
+  CHECK(stats.form_parts_after < stats.form_parts_before);
+  for (u32 m = 0; m < streamed.data.parts.size(); ++m) {
+    const u32 src = streamed.data.form_source[m];
+    const SourceMesh& form = streamed.data.sources[m];
+    if (src == m || !form.has_motion()) continue;
+    CAPTURE(m);
+    const u32 n = form.motion_parts.size();
+    MESSAGE("form " << m << ": " << streamed.data.sources[src].motion_parts.size() << " parts -> "
+                    << n);
+    CHECK(n <= streamed.data.sources[src].motion_parts.size());
+    REQUIRE(form.motion_part_ids.size() == n);
+    Vector<u8> used(n, u8{0});
+    for (const geometry::ClusterFileMotionVertex& v : form.motion_vertices) {
+      REQUIRE(v.part < n);
+      used[v.part] = 1;
+    }
+    for (u32 p = 0; p < n; ++p) {
+      const geometry::ClusterFileMotionPart& part = form.motion_parts[p];
+      const geometry::ClusterFileMotionPart& was =
+          streamed.data.sources[src].motion_parts[form.motion_part_ids[p]];
+      CHECK((part.pivot.x == was.pivot.x && part.pivot.y == was.pivot.y &&
+             part.pivot.z == was.pivot.z && part.length == was.length));
+      if (part.parent != geometry::k_motion_no_parent) {
+        CHECK(part.parent < p);
+        used[part.parent] = 1;
+      }
+      if (form.structural_parts.size() == n) CHECK(form.structural_parts[p].part == p);
+    }
+    for (u32 p = 0; p < n; ++p)
+      CHECK(used[p] == 1);  // a kept part is named by a vertex or is an ancestor of one
+  }
   CHECK(streamed.data.tail_floor_pairs > 0);
   CHECK(streamed.data.tail_floor_pairs <= stats.whole_pairs);
 

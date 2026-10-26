@@ -76,6 +76,9 @@ bool flora_motion_tunable() noexcept;
 // form still does.
 bool flora_tail_tunable() noexcept;
 f32 flora_sway_m_tunable() noexcept;
+// `renderer.flora.rest_pose_cascades_m` (renderer.md, "The caster policy"; R95): metres from the
+// eye past which a swaying instance casts its rest pose into the cascades; 0, the default, is off.
+f32 flora_rest_pose_cascades_m_tunable() noexcept;
 struct FloraWindDefault {
   Vec2 to{1.0f, 0.0f};
   f32 strength = 1.0f;
@@ -124,20 +127,59 @@ struct FloraPartState {
 
 // What a mesh's motion contract becomes at load: per part its compliance, the parent's bend weight
 // at its pivot, its reach past its axis, and whether a walker may push it.
+//
+// `field` is the catalogue's motion kind (geometry::FloraMotionKind; renderer.md, "The field
+// kind"): such a mesh is posed by the pool pass alone, from the frame's `gfx::FloraFieldFrame`, and
+// takes no run of the pose table, no push state and no tail record — `field_compliance` is the
+// species' leaf compliance, the one number its blades bend by.
 struct FloraMesh {
   Vector<geometry::ClusterFileMotionPart> parts;
   Vector<f32> compliance;
   Vector<f32> attach;
   Vector<f32> reach;
   Vector<u8> pushable;
+  Vector<u32> phase_id;  // per part, the id its phase is taken from: its own, or its source's
+  bool field = false;
+  f32 field_compliance = 0.0f;
   u32 part_count() const noexcept { return parts.size(); }
 };
 
+// ---- the field kind's travelling gust (renderer.md, "The field kind"; grass-sward.md, "Engine
+// hand-back: field sway")
+// --------------------------------------------------------------------------
+//
+// Two scales of coherent gust, each two plane waves 20 degrees either side of the wind, travelling
+// downwind. The mixing-layer analogy for canopies (Raupach, Finnigan & Brunet 1996; Finnigan 2000)
+// puts the streamwise spacing of the canopy-top eddies at about 8 shear lengths, Ls = U(h)/U'(h),
+// roughly h/3 for a dense canopy (h/alpha with alpha about 2.8), and their convection at about 1.8
+// U(h): the honami of a knee-high (0.5 m) sward is a 1.4 m wave at 1.8 m/s with U(h) taken as 1 m/s
+// on a mean day, and the sweeps a 20 m forest edge sheds over a clearing a 57 m one at 4.5 m/s
+// (U(h) 2.5 m/s). The flutter's 1.26 Hz is the honami's own frequency, 1.8 / 1.4, between Py et
+// al.'s alfalfa (1.05 Hz) and wheat (2.50 Hz). The speeds are fixed, not scaled by the strength:
+// a speed that followed a varying wind would make the phase jump by the change times the clock.
+inline constexpr f32 k_flora_field_honami_m = 1.4f;
+inline constexpr f32 k_flora_field_honami_mps = 1.8f;
+inline constexpr f32 k_flora_field_sweep_m = 57.0f;
+inline constexpr f32 k_flora_field_sweep_mps = 4.5f;
+inline constexpr f32 k_flora_field_spread_rad = 0.349066f;  // 20 degrees off the wind
+inline constexpr f32 k_flora_field_flutter_hz = 1.26f;
+inline constexpr f32 k_flora_field_weights[4] = {0.2f, 0.2f, 0.3f, 0.3f};  // honami, then sweeps
+
+// The frame's field block: the wind (`to` in the ground plane, unit; `strength` over a record's
+// mean), the gust waves' phases at the eye reduced in double (the GPU adds the root's offset from
+// the eye), the flutter's phase, and the walker's capsule from the eye when the frame names one.
+// A function of its arguments alone: the field kind has no CPU state.
+void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
+                       const FrameFlora& frame, gfx::FloraFieldFrame& out) noexcept;
+
 // Builds `out` from a mesh's sections 35 and 37 and its species. False for a table that breaks the
-// contract (a parent at or after its child, a part count past 65,536).
+// contract (a parent at or after its child, a part count past 65,536). `ids`, when it is as long as
+// `parts`, is each part's id in the mesh a distance form was cut from
+// (SourceMesh::motion_part_ids): the sway's phase is taken from it, so a pruned form sways as its
+// source does.
 bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
                 std::span<const geometry::ClusterFileStructuralPart> structure,
-                std::string_view species, FloraMesh& out);
+                std::string_view species, FloraMesh& out, std::span<const u32> ids = {});
 
 // **Whether a part stays a collider** (scene_collision.md, "What gets no body"): the trunk, a
 // load-bearing limb and a part flagged `k_structural_collider` (a shrub's stout stem) do; with no

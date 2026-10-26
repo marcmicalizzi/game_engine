@@ -249,6 +249,52 @@ needs further representation work within the draw/streaming budgets; simply clai
 covered-area fit as visual acceptance would hide both defects. The external comparison page
 switches identical near/card cameras among close, walking height and overview.
 
+## Engine hand-back: field sway (R95)
+
+**Done on the engine side, 2026-10-25** (roadmap R95; [renderer: the field kind](../subsystems/renderer.md#the-field-kind),
+[the caster policy](../subsystems/renderer.md#the-caster-policy)). The `sward` catalogue row is
+`FloraMotionKind::field` with the caster policy `{traced: false, cascades: 1, rest_pose: true}`.
+The pool pass bends each blade about its root from a per-frame block (wind, gust field, flutter
+clock, walker) and the blade table; no CPU state, no pose table run, no tail record. The walker's
+push is the immediate-contact term of the list above, in the same pass with no history: walked-track
+history and lasting wear stay open.
+
+**The travelling gust, grounded.** The mixing-layer analogy for plant canopies puts the coherent
+canopy-top eddies' streamwise spacing at about eight shear lengths, `Λx ≈ 8 Ls` with
+`Ls = U(h)/U'(h)`, and their convection at about `1.8 U(h)`
+([Raupach, Finnigan & Brunet 1996](https://doi.org/10.1007/BF00120941); [Finnigan 2000](https://www.annualreviews.org/content/journals/10.1146/annurev.fluid.32.1.519);
+the constants as applied in [a study of wind over emergent wetland vegetation, arXiv:1601.07960](https://arxiv.org/abs/1601.07960),
+which also derives `Ls ≈ h/α` with `α ≈ 2.8` for an exponential canopy profile and measures
+`Ls = 0.58 m` at `h = 1.75 m`). Chosen numbers, and where they were traded:
+
+| Quantity | Value | From |
+|---|---|---|
+| honami wavelength | 1.4 m | `8 h/2.8` at the owner's knee height, `h = 0.5 m` |
+| honami speed | 1.8 m/s | `1.8 U(h)` with `U(h) = 1 m/s` on a mean day: an assumption, not a measurement |
+| sweep wavelength | 57 m | the same rule for a 20 m forest edge upwind of a clearing |
+| sweep speed | 4.5 m/s | `1.8 U(h)` with `U(h) = 2.5 m/s` at the forest top: an assumption |
+| flutter | 1.26 Hz | the honami's own `1.8 / 1.4`, between Py et al.'s alfalfa 1.05 Hz and wheat 2.50 Hz |
+| wave pairs | ±20° of the wind, shares 0.2, 0.2, 0.3, 0.3 | authored, so fronts break into patches rather than run as lines |
+
+Lean and flutter amplitudes are the trees' (`0.6 + 0.8 g`, `0.25 + 0.35 g` of the compliance) and
+the compliance is Tuft's 0.20: still compatibility values, not a measured blade EI (de Langre 2008,
+above). The speeds do not scale with the wind's strength, which would make the phase jump by the
+change times the clock; a turning wind re-phases the gust far from the world's origin (the mean lean
+does not jump).
+
+**Measured** (renderer.md, "The field kind", has the table and the machine's state): the cooked
+dense meadow's flight at 1920×1080 went from 35.7 ms of GPU (13.0 ms cascades, 22.3 ms pool pass,
+15.3 ms CPU posing, 2.6 GB of tail room for 4,514 card records) to 1.42 ms (0.11, 0.09, 0.14 ms, no
+grass record), and at 11520×2160 from 60.1 to 6.9 ms; cascade pairs fell from 370,918 to 3,526 at
+1080p. The POC's bounded 64 × 64 m dense sward, 173 ms of GPU on 51ef062a, draws in 7.6 ms
+offscreen at 1920×1080 (4.6 ms cascades, 0.44 ms pool) and 23.9 ms at 11520×2160. A full-density
+card container keeps 16 of its 1,040 blades once loaded (1,040 parts before). None of these is a
+quiet run.
+
+**Still open on the engine side**: section 41 in the resolve (`ao` on the sky's ambient, `hue` and
+`age` on the base colour; `thickness` waits for R22) — not reached in R95's budget; walked-track
+history; a gust field that follows a turning wind without re-phasing.
+
 ## V5 asset measurements, 2026-10-25
 
 Independent 256² four-view coverage measurements of seed 8801, variant 0, after fitting with

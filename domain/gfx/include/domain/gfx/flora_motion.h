@@ -26,6 +26,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/cluster_cull.h>
 
 #include <cmath>
 
@@ -45,6 +46,54 @@ struct FloraPartPose {
   Vec4 axis{0.0f, 0.0f, 1.0f, 0.0f};
 };
 static_assert(sizeof(FloraPartPose) == 80);
+
+// ---- the field kind (renderer.md, "The field kind"; R95)
+// -----------------------------------------
+//
+// **Grass is posed on the GPU, from the wind at the blade's root, with nothing of the CPU's but
+// this one block a frame.** A field mesh's record is its mesh's (`k_deform_flora_field`), its part
+// table is the scene's, static (`FloraFieldPart`: the blade's root and length, mesh space), and the
+// frame's wind, gust field, flutter clock and walker are this block, written at the head of the
+// frame's part-pose region, `k_flora_field_frame_bytes` before the address `DeformParams::flora`
+// carries (the trees' poses follow it, so nothing about a tree moved). A blade bends about its
+// root by the angle
+//
+//     a = compliance * s * ((0.6 + 0.8 g) + (0.25 + 0.35 g) sin(phi_f + phi_b)) + push
+//
+// about the horizontal axis across the wind, the trees' lean and flutter with the gust `g` taken
+// from a field over the world instead of a clock per tree: four plane waves at the root,
+// `g = clamp(0.5 + 0.5 sum_j w_j sin(phases_j + k_j . root), 0, 1)`, whose phases at the eye the
+// CPU reduces in double so the GPU adds only the root's offset from the eye (ADR-0053). `phi_f` is
+// the frame's flutter clock, `phi_b` the blade's own phase, hash(part, the instance's placement).
+// The vertex's arc fraction scales the angle, so a straight blade's displacement rises as the
+// square of the fraction and the root stays: the cantilever's shape. A blade at rest — no wind, no
+// walker — writes its rest pose, bit for bit.
+
+// One blade of a field mesh: its root (the part's pivot) and its length, mesh space. 16 bytes.
+struct FloraFieldPart {
+  Vec3 root{};
+  f32 length = 0.0f;
+};
+static_assert(sizeof(FloraFieldPart) == 16);
+
+// The frame's field, GPU-mirrored (deform.slang's `FloraFieldFrame`). 160 bytes, two poses' worth,
+// at the head of every frame slot's part-pose region.
+struct FloraFieldFrame {
+  FrameEye eye{};  // the frame's origin: the root's offset from it is what the waves read
+  // Where the wind blows to in the ground plane (x, z; unit), its strength over a record's mean
+  // held to k_flora_max_wind, and the flutter's phase this frame, radians in [0, 2 pi).
+  Vec4 wind{1.0f, 0.0f, 0.0f, 0.0f};
+  Vec4 waves[2] = {};  // the four waves' (x, z) wave vectors, radians a metre: two per Vec4
+  Vec4 phases{};       // each wave's phase at the eye, radians in [0, 2 pi)
+  Vec4 weights{};      // each wave's share of the gust; they sum to 1
+  // The walker: its feet from the eye (xyz) and its radius (w; 0 or less: no walker).
+  Vec4 walker{};
+  Vec4 push{};  // the walker's height, the push's most radians, its margin metres, 0
+};
+static_assert(sizeof(FloraFieldFrame) == 160);
+inline constexpr u64 k_flora_field_frame_bytes = sizeof(FloraFieldFrame);
+static_assert(k_flora_field_frame_bytes == 2 * sizeof(FloraPartPose),
+              "the block is two poses' room at the head of a region");
 
 // Rodrigues' rotation of `v` about the unit `k` by the angle whose cosine and sine are `c`, `s`:
 // v c + (k x v) s + k (k . v)(1 - c). The shader's `flora_rotate` is the same expression in the

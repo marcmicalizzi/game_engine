@@ -183,6 +183,9 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   // static structure (tlas_references.slang). Left out before it is counted, so it is neither
   // built, wanted nor dropped.
   if ((instance.flags & k_instance_static_rt) != 0) return;
+  // **The caster policy's `traced = false`** (renderer.md, "The caster policy"; R95): grass is never
+  // in the frame's structures — no record, no slot, no count — so it costs the chain nothing.
+  if ((instance.flags & k_instance_untraced) != 0) return;
   uint* slots = (uint*)g_params.slots;
   if (caster) {
     // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A

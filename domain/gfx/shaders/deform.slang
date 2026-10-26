@@ -584,6 +584,129 @@ void flora_vertex(MeshDesc mesh, DeformDesc deform, uint vertex, out float3 posi
   if (len > 0.0) normal_word = encode_oct_normal(m / len);
 }
 
+// ---- the field kind (renderer.md, "The field kind"; gfx/flora_motion.h; R95) ---------------------
+//
+// Grass, posed here and nowhere else: a field mesh's record is its mesh's, its blades' roots are
+// the scene's static field part table (`DeformDesc::joints`), and the frame's wind, gust field,
+// flutter clock and walker are one `FloraFieldFrame` just before the trees' poses. A blade bends
+// about its root, across the wind, by the trees' lean and flutter with the gust read off a field of
+// four travelling plane waves at the root, plus the walker's push away from its capsule; the arc
+// fraction scales the angle, so a straight blade's tip travels as the square of the fraction (the
+// cantilever) and the root stays. Crack-free as the trees are: everything a vertex reads is its
+// rest position, its part and its fraction, and its instance, which every copy shares.
+
+// Mirrors gfx::FloraFieldFrame (160 bytes).
+struct FloraFieldFrame {
+  FrameEye eye;
+  float4 wind;     // to.x, to.z, strength, the flutter's phase
+  float4 waves[2]; // the four waves' (x, z) vectors, rad/m
+  float4 phases;   // their phases at the eye
+  float4 weights;  // their shares of the gust
+  float4 walker;   // the walker's feet from the eye, radius (<= 0: none)
+  float4 push;     // height, the push's most radians, margin, 0
+};
+
+static const float k_field_lean = 0.6;     // renderer::flora_part_poses' constants, the trees'
+static const float k_field_lean_gust = 0.8;
+static const float k_field_flutter = 0.25;
+static const float k_field_flutter_gust = 0.35;
+
+uint field_hash(uint x) {  // lowbias32, as flora_motion.cpp's hash32
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
+
+// The instance's seed from its placement alone — its cell and its offset into it — so a whole read
+// and a streamed one, which place it at the same bits, give each blade the same phase.
+uint field_seed(InstanceDesc instance) {
+  uint h = field_hash(uint(instance.cell.x) * 0x9e3779b9u ^ asuint(instance.rows[0].w));
+  h = field_hash(h ^ (uint(instance.cell.z) * 0x85ebca6bu) ^ asuint(instance.rows[2].w));
+  return field_hash(h ^ asuint(instance.rows[1].w));
+}
+
+void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint vertex,
+                  out float3 position, out uint normal_word) {
+  position = load_quantized_position(mesh, vertex);
+  if (g_params.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    normal_word = attributes[vertex].normal_oct;
+  } else {
+    normal_word = encode_oct_normal(rest_normal(mesh, vertex, position));
+  }
+  if (g_params.motion == 0 || g_params.flora == 0 || deform.joints == 0) return;
+  const uint record = ((uint*)g_params.motion)[vertex];
+  const uint part = record & 0xffffu;
+  const uint fraction = record >> 16;
+  if (part >= deform.joint_count || fraction == 0) return;  // the root stays where it is
+  const FloraFieldFrame field = ((FloraFieldFrame*)(g_params.flora - 160))[0];
+  const float4 blade = ((float4*)deform.joints)[part];  // root xyz, length
+  const float strength = field.wind.z;
+  const bool walker = field.walker.w > 0.0;
+  if (strength <= 0.0 && !walker) return;  // calm and untouched: the rest pose, to the bit
+  const float3 from_eye = instance_from_eye(instance, field.eye);
+  const float3 root = instance_point(instance, from_eye, blade.xyz);  // in the frame's space
+  // ---- the wind: lean and flutter about the axis across it, the gust from the field at the root
+  float3 omega = float3(0.0, 0.0, 0.0);
+  if (strength > 0.0) {
+    const float g4 = field.weights.x * sin(field.phases.x + dot(field.waves[0].xy, root.xz)) +
+                     field.weights.y * sin(field.phases.y + dot(field.waves[0].zw, root.xz)) +
+                     field.weights.z * sin(field.phases.z + dot(field.waves[1].xy, root.xz)) +
+                     field.weights.w * sin(field.phases.w + dot(field.waves[1].zw, root.xz));
+    const float gust = saturate(0.5 + 0.5 * g4);
+    // The blade's phase from its root's bits rather than its part index: a distance form prunes
+    // and renumbers its parts (renderer.md, "A form carries only the parts it uses") but copies
+    // the roots, so a card sways in its patch's phases.
+    const uint h = field_hash(field_hash(asuint(blade.x) * 0x9e3779b9u ^ asuint(blade.z)) ^
+                              asuint(blade.y) ^ field_seed(instance));
+    const float phase = float(h >> 8) * (k_tau / 16777216.0);
+    const float compliance = asfloat(deform.first_channel);
+    const float angle =
+        compliance * strength *
+        ((k_field_lean + k_field_lean_gust * gust) +
+         (k_field_flutter + k_field_flutter_gust * gust) * sin(field.wind.w + phase));
+    // cross(up, to): the axis that turns up towards where the wind blows.
+    omega = float3(field.wind.y, 0.0, -field.wind.x) * angle;
+  }
+  // ---- the walker: a blade whose root is within its radius plus the blade's length of the
+  // capsule's axis, and within its height, is turned away from it, most at the capsule's skin.
+  if (walker) {
+    const float2 away = root.xz - field.walker.xz;
+    const float d = length(away);
+    const float length_m = blade.w;
+    const float reach = field.walker.w + field.push.z + length_m;
+    if (length_m > 0.0 && d < reach && d > 1.0e-4 && root.y > field.walker.y - length_m &&
+        root.y < field.walker.y + field.push.x) {
+      const float t = saturate((reach - d) / length_m);
+      const float2 a = away / d;
+      omega += float3(a.y, 0.0, -a.x) * (field.push.y * t);
+    }
+  }
+  const float angle_world = length(omega);
+  if (angle_world <= 0.0) return;
+  // The rotation's axis into the instance's mesh frame: the 3x3's inverse by its cofactors.
+  const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
+  const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);
+  const float3 c2 = float3(instance.rows[0].z, instance.rows[1].z, instance.rows[2].z);
+  const float3 w = omega / angle_world;
+  const float3 k_mesh = float3(dot(cross(c1, c2), w), dot(cross(c2, c0), w), dot(cross(c0, c1), w));
+  const float det = dot(c0, cross(c1, c2));
+  const float k_length = length(k_mesh);
+  if (k_length <= 0.0 || det == 0.0) return;
+  const float3 k = k_mesh * (sign(det) / k_length);
+  const float a = angle_world * (float(fraction) * (1.0 / 65535.0));
+  const float c = cos(a);
+  const float s = sin(a);
+  position = flora_rotate(position - blade.xyz, k, c, s) + blade.xyz;
+  if (g_params.normal_pool == 0) return;
+  const float3 n = flora_rotate(decode_oct(normal_word), k, c, s);
+  const float len = length(n);
+  if (len > 0.0) normal_word = encode_oct_normal(n / len);
+}
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
@@ -640,10 +763,15 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
     return;
   }
   if ((deform.stages & k_deform_stage_flora) != 0) {
+    const bool field = (deform.stages & k_deform_flora_field) != 0;
     for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
       float3 moved;
       uint normal_word;
-      flora_vertex(mesh, deform, cluster.vertex_offset + i, moved, normal_word);
+      if (field) {
+        field_vertex(mesh, instance, deform, cluster.vertex_offset + i, moved, normal_word);
+      } else {
+        flora_vertex(mesh, deform, cluster.vertex_offset + i, moved, normal_word);
+      }
       const uint slot = (base + i) * 3;
       pool[slot] = moved.x;
       pool[slot + 1] = moved.y;

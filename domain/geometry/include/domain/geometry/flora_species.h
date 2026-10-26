@@ -33,7 +33,26 @@ enum class FloraSpecies : u8 {
   fir,
   hemlock,
   alder,
-  sward
+  sward,
+  cover
+};
+// **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
+// CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
+// on the GPU by the pool pass from the wind at the vertex, with no CPU state and no pose table —
+// one parentless part per blade, its root the part's pivot (the sward, grass-sward.md's contract).
+// `none`: a contract that does not move at all — the cover capability's moss and lichen mats
+// (domain/cover), whose part 0 is a geometry-less root only so collision leaves them out. The
+// renderer draws such a mesh rigid without a warning, rather than refusing it as a tree.
+enum class FloraMotionKind : u8 { parts, field, none };
+// **How a species casts** (renderer.md, "The caster policy"; R95). `traced`: in the ray tracing
+// chain's records at all; `cascades`: how many of the sun's nearest cascades it is drawn into (0
+// none, `k_flora_all_cascades` every one); `rest_pose`: a cascade draws it from the grid, never
+// from the deformed-vertex pool. Three bytes, alignment 1.
+inline constexpr u8 k_flora_all_cascades = 0xFF;
+struct FloraCasterPolicy {
+  bool traced = true;
+  u8 cascades = k_flora_all_cascades;
+  bool rest_pose = false;
 };
 struct FloraSpeciesInfo {
   FloraSpecies id;
@@ -41,6 +60,9 @@ struct FloraSpeciesInfo {
   bool profile;
   u32 triangle_budget;
   f32 compliance[4];
+  // A tree's defaults: posed by parts, traced, in every cascade, casting its swaying pose.
+  FloraMotionKind motion = FloraMotionKind::parts;
+  FloraCasterPolicy casters{};
 };
 // Named profiles own their budgets here; legacy solvers retain their schema defaults (zero here).
 inline constexpr FloraSpeciesInfo k_flora_species[] = {
@@ -69,16 +91,33 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     {FloraSpecies::fir, "fir", true, 60000, {.008f, .035f, .06f, .08f}},
     {FloraSpecies::hemlock, "hemlock", true, 80000, {.008f, .04f, .08f, .12f}},
     {FloraSpecies::alder, "alder", true, 400000, {.01f, .04f, .08f, .12f}},
-    // Temporary main's CPU pose: same blade compliance as Tuft; field posing is engine-side.
-    {FloraSpecies::sward, "sward", false, 2400, {.20f, .20f, .20f, .20f}},
+    // Posed as a field on the GPU (R95), with Tuft's blade compliance (the leaf class, read once
+    // per mesh). It casts into the nearest cascade alone, from its rest pose, and is never traced:
+    // grass-sward.md's "Confirmed wire contract", the owner's policy of 2026-10-25.
+    {FloraSpecies::sward,
+     "sward",
+     false,
+     2400,
+     {.20f, .20f, .20f, .20f},
+     FloraMotionKind::field,
+     {false, 1, true}},
+    // The cover capability's mats (cover.md): they stand still, so no compliance and no sway; they
+    // cast as anything rigid does.
+    {FloraSpecies::cover, "cover", false, 0, {0.0f, 0.0f, 0.0f, 0.0f}, FloraMotionKind::none},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {
     const auto& info = k_flora_species[i];
     if (static_cast<u32>(info.id) != i || info.name.empty()) return false;
     if (info.profile && info.triangle_budget < 8000) return false;
-    for (const f32 value : info.compliance)
-      if (!(value > 0.0f && value <= 1.0f)) return false;
+    for (const f32 value : info.compliance) {
+      if (info.motion == FloraMotionKind::none ? value != 0.0f : !(value > 0.0f && value <= 1.0f))
+        return false;
+    }
+    // A field species casts from a bounded set of cascades: one that cast its swaying pose into
+    // every cascade would pay the pool pass once a cascade for every blade of grass.
+    if (info.motion == FloraMotionKind::field && info.casters.cascades == k_flora_all_cascades)
+      return false;
     for (u32 j = 0; j < i; ++j)
       if (k_flora_species[j].name == info.name) return false;
   }

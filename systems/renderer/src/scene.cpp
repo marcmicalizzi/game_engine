@@ -12,6 +12,7 @@
 #include <domain/content_build/image_identities.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -40,6 +41,8 @@
 namespace engine::renderer {
 
 namespace {
+
+void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
 std::string schema_errors(const schema::ReadContext& ctx) {
   std::string text;
@@ -539,6 +542,20 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     out.motion_vertices = std::move(container_data.motion_vertices);
     out.structural_parts = std::move(container_data.structural_parts);
     out.species = container_data.generator_kind;
+    // **A cooked grass container carries only the blades its vertices use** (R95): a sward's card
+    // container (`distance.clusters`) was cooked with its patch's whole table — 1,040 blades for
+    // three clusters' 192 vertices. Grass alone, because a field's blades have no collider a
+    // vertexless part could stand for; a tree's table is kept whole for the collision.
+    const geometry::FloraSpeciesInfo* info = geometry::flora_species_info(out.species);
+    if (info != nullptr && info->motion == geometry::FloraMotionKind::field) {
+      const u32 before = out.motion_parts.size();
+      prune_form_parts(out);
+      if (out.motion_parts.size() < before) {
+        ENGINE_LOG_INFO(log_renderer, "a grass container's blades pruned to the ones it draws",
+                        log::field("before", before),
+                        log::field("after", static_cast<u32>(out.motion_parts.size())));
+      }
+    }
   }
   out.part_of_cluster = std::move(container_data.cluster_material);
   if (container_data.lod_coverage.size() == lod.mesh.clusters.size())
@@ -1260,6 +1277,54 @@ u32 world_ring_count(const WorldDesc& world) noexcept {
   return world.ring_count > 0 ? world.ring_count : k_default_world_ring_count;
 }
 
+// **A distance form carries only the parts its vertices use** (renderer.md, "A form carries only
+// the parts it uses"; R95). The copy kept its source's whole table, so a three-cluster sward card
+// carried its patch's 1,040 blades and, swaying in a tail, took the 2,048-part class of the pose
+// table: about 480 KiB a card over the three slots. The parts its motion records name are kept,
+// with their ancestors (a part's frame is its parent chain's), in their order, so parents still
+// come first; the records, the parents and the structural table's ids are remapped, and each kept
+// part's source id is kept for the sway's phase (`SourceMesh::motion_part_ids`).
+void prune_form_parts(SourceMesh& form) {
+  const u32 n = form.motion_parts.size();
+  if (n == 0) return;
+  Vector<u8> keep(n, u8{0});
+  for (const geometry::ClusterFileMotionVertex& v : form.motion_vertices) {
+    u32 p = v.part;
+    for (u32 guard = 0; p < n && keep[p] == 0 && guard <= n; ++guard) {
+      keep[p] = 1;
+      p = form.motion_parts[p].parent;
+    }
+  }
+  Vector<u32> remap(n, ~0u);
+  Vector<geometry::ClusterFileMotionPart> parts;
+  Vector<u32> ids;
+  const bool had_ids = form.motion_part_ids.size() == n;
+  for (u32 p = 0; p < n; ++p) {
+    if (keep[p] == 0) continue;
+    remap[p] = parts.size();
+    geometry::ClusterFileMotionPart part = form.motion_parts[p];
+    if (part.parent != geometry::k_motion_no_parent)
+      part.parent = part.parent < n ? remap[part.parent] : geometry::k_motion_no_parent;
+    parts.push_back(part);
+    ids.push_back(had_ids ? form.motion_part_ids[p] : p);
+  }
+  if (form.structural_parts.size() == n) {
+    Vector<geometry::ClusterFileStructuralPart> structure;
+    for (u32 p = 0; p < n; ++p) {
+      if (keep[p] == 0) continue;
+      geometry::ClusterFileStructuralPart record = form.structural_parts[p];
+      record.part = remap[p];
+      structure.push_back(record);
+    }
+    form.structural_parts = std::move(structure);
+  }
+  for (geometry::ClusterFileMotionVertex& v : form.motion_vertices) {
+    if (v.part < n) v.part = static_cast<u16>(remap[v.part]);
+  }
+  form.motion_parts = std::move(parts);
+  form.motion_part_ids = std::move(ids);
+}
+
 // Hands the file's own rigid instances to the "authored" generator (authored.md) and makes each
 // ring's distance form of their meshes (geometry.md, "Distance forms"): appended after every mesh
 // the scene has, each a mesh of its own with its source's fit, materials and grid. Nothing happens
@@ -1426,6 +1491,10 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
             copy.motion_vertices.clear();
             for (const u32 v : map.vertices)
               copy.motion_vertices.push_back(source.motion_vertices[v]);
+            const u32 before = copy.motion_parts.size();
+            prune_form_parts(copy);
+            stats.form_parts_before += before;
+            stats.form_parts_after += copy.motion_parts.size();
           } else {
             copy.motion_vertices.clear();
             copy.motion_parts.clear();
@@ -1514,6 +1583,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                   log::field("kept_deformed", stats.kept_deformed),
                   log::field("kept_reach", stats.kept_reach), log::field("forms", stats.forms),
                   log::field("form_clusters", stats.form_clusters),
+                  log::field("form_parts_before", stats.form_parts_before),
+                  log::field("form_parts_after", stats.form_parts_after),
                   log::field("whole_pairs", stats.whole_pairs),
                   log::field("tile_floor_pairs", out.tail_floor_pairs));
   return true;

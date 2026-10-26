@@ -213,7 +213,7 @@ The last row is the point: **13.1× less allocated, and the frame used 0.77 MB o
 
 ### The flora stage
 
-**Trees move** (2026-10-19, roadmap S66): a generated tree — a mesh whose container carries the motion contract, sections 35 to 37 ([flora](flora.md#motion)) — is a deformed instance whose stage is **`gfx::k_deform_stage_flora`**, beside the terrain stage and like it never run with the chain's others (a tree has no skin, morphs or cage). The stages' fixed order is otherwise untouched: static shape, pose morphs, skinning, the procedural stand-in; terrain and flora are each a branch of their own in `deform_main`.
+**Trees move** (2026-10-19, roadmap S66): a generated tree — a mesh whose container carries the motion contract, sections 35 to 37 ([flora](flora.md#motion)) — is a deformed instance whose stage is **`gfx::k_deform_stage_flora`**, beside the terrain stage and like it never run with the chain's others (a tree has no skin, morphs or cage). The stages' fixed order is otherwise untouched: static shape, pose morphs, skinning, the procedural stand-in; terrain and flora are each a branch of their own in `deform_main`. **Grass is the stage's second kind** since R95: a species the catalogue makes `field` is posed by this pass alone, from the frame's wind and gust field, with no pose of the CPU's ([The field kind](#the-field-kind)); what follows is the `parts` kind, the trees'.
 
 **What the stage does with a vertex** (`domain/gfx/shaders/deform.slang`, `flora_vertex`; the CPU mirror is `gfx::flora_bend` in `domain/gfx/flora_motion.h`). The vertex's part and bend weight come from the scene's **motion vertex stream** (`DeformParams::motion`: one `geometry::ClusterFileMotionVertex`, u16 part and u16 weight, per scene-wide vertex — zero for every mesh that is not a tree), and the part's **pose** for the frame from the frame's part-pose table (`DeformParams::flora`, at `DeformDesc::first_part`, whose `joint_count` is then the part count — the two palette words a tree has no use for). A pose (`gfx::FloraPartPose`, 80 bytes) is a bend — `angle` radians about a unit `axis` through the part's `pivot` — scaled per vertex by the bend weight, so the root stays and the tip travels, and then the rigid **frame** its ancestors' bends carried the whole part to:
 
@@ -2256,6 +2256,176 @@ back. (3) The same flight's second pass allocates 308 times on the frames that c
 without the sway — the world's streaming of the authored tiles, W73's, not yet held to the frame-loop
 rule.
 
+### The field kind
+
+Roadmap R95 (2026-10-25), G90's engine half. **Grass is posed on the GPU, from the wind at the
+blade's root, with no CPU state, no pose table and no tail record.** Until this date a sward patch
+was posed as a tree: its 1,040 parentless parts went through the CPU poser every frame, each a run of
+the pose table, and a streamed patch took a record of the 2,048-part class — 480 KiB of poses over
+the three slots for a three-cluster card. The proof of concept's 126,309-instance sward failed its
+commit with `VK_ERROR_OUT_OF_DEVICE_MEMORY` and lost the device on it.
+
+**The catalogue says which** (`geometry::FloraMotionKind`, [geometry](geometry.md#flora-species-catalogue-g86)):
+`parts` for the trees, `field` for `sward`. A field mesh's `FloraMesh` is built as a tree's (its
+padding is the same bound) and marked `field`, and then:
+
+- **One record per mesh, made at load whether or not the load places it**, which every instance of
+  the mesh points at — the load's and every tile's (`GpuScene::field_deform_`). Its stage is the
+  flora stage with `gfx::k_deform_flora_field`; `joints` is the address of the mesh's run of the
+  scene's static blade table (`gfx::FloraFieldPart`: the root, which is the part's pivot, and the
+  length, 16 bytes a blade), `joint_count` its blade count and `first_channel` its compliance's bits
+  (`channel_count` stays 0, so no morph code reads them). The record is a function of the mesh
+  alone, so it is derived rather than allocated: a tile of a meadow costs the tail's room nothing,
+  and `acquire_tail_tree` points a grass instance at it and returns.
+- **One block a frame** (`gfx::FloraFieldFrame`, 160 bytes): the frame's eye, the wind (where it
+  blows to and its strength, as the trees read it: the frame's, the ground's record at the sky's
+  hour, or the tunables'), the four gust waves' vectors, phases at the eye and shares, the flutter's
+  phase, and the walker's capsule from the eye. It is written at the head of each slot's region of
+  the pose table, two poses' room before the address `DeformParams::flora` carries, so a tree's
+  `first_part` did not move and a scene of grass alone has a table of 480 bytes.
+
+**What a blade does** (`deform.slang`, `field_vertex`). It bends about its root, across the wind
+(the axis `up × to`), by the trees' lean and flutter with the gust read off a field instead of a
+clock per tree:
+
+    a = compliance · s · ((0.6 + 0.8 g) + (0.25 + 0.35 g) · sin(φ_f + φ_b)) + push,
+    g = clamp(0.5 + 0.5 Σ_j w_j sin(phase_j + k_j · root), 0, 1)
+
+`root` is the blade's root in the frame's space (the instance's offset from the eye, then its 3×3:
+ADR-0053), `k_j` four plane waves 20° either side of the wind at two scales, their phases at the eye
+reduced in double on the CPU (`renderer::flora_field_frame`), so the GPU adds only the root's offset
+from the eye and never holds a world position. The vertex's arc fraction (section 36) scales the
+angle and the rotation is about the root, so a straight blade's tip travels as the square of its
+fraction — the cantilever's shape — and the root stays put. The axis is taken into the instance's
+mesh frame by its 3×3's cofactors. `φ_f` is the frame's flutter phase and `φ_b` the blade's own,
+a hash of its root's bits and the instance's placement (its cell and offset): **not** of its part
+index, because a distance form prunes and renumbers its parts (below) but copies the roots, so a
+card sways in its patch's phases, and whole and streamed reads, which place an instance at the same
+bits, give a blade the same phase. Calm and untouched, a blade writes its rest pose to the bit.
+
+**The gust's numbers are the literature's** ([grass-sward.md](../experiments/grass-sward.md#engine-hand-back-field-sway-r95)):
+the canopy mixing-layer analogy (Raupach, Finnigan & Brunet 1996; Finnigan 2000) spaces the
+coherent eddies at about 8 shear lengths, L_s ≈ h/3 for a dense canopy, and convects them at about
+1.8 U(h): a knee-high sward's honami is a 1.4 m wave at 1.8 m/s, the sweeps a 20 m forest edge
+sheds over a clearing a 57 m one at 4.5 m/s, and the flutter is the honami's own 1.26 Hz, between
+Py et al.'s alfalfa and wheat. The speeds are fixed rather than scaled by the strength: a speed that
+followed a varying wind would jump the phase by the change times the clock. **When the wind turns**
+the field's wave vectors turn with it about the world's origin, so far from it a change of
+direction re-phases the gust (the mean lean does not jump); an advected offset integrated per frame
+would fix that and is left.
+
+**The walker's push** is a term of the same pass with no history: a blade whose root is within the
+capsule's radius, a margin and its own length of the capsule's axis, and within its height, is
+turned away from the axis by up to `k_flora_push_max`, most at the capsule's skin. It springs back
+the frame the walker leaves: the CPU path's 12-tick ease and a walked track's history
+(grass-sward.md, "Engine hand-back for walked tracks") need state this kind deliberately has not.
+
+**What it costs per vertex**: the motion record (4 bytes), the blade (16), the instance's offset
+from the eye (once per thread), a 3×3 product for the root, four sines for the gust, one for the
+flutter, two integer hashes, the cofactor axis (three cross products), and the rotation's sine and
+cosine — about 120 ALU operations and 20 bytes read, against the tree's 4 + 80.
+
+**What it bought** (2026-10-25; RTX 5090, i9-10980XE, `msvc-release` engine-view, offscreen,
+`--shadows csm --time-of-day 12`, `--repeat 2 --warmup 60 --wait-quiet 120` (never quiet: other
+agents' builds), GPU ms median / p95 / p99; `before` is dcd77811, `after` 7668a437; the meadow is
+G90's cooked dense meadow (`dense-meadow`, 1,310 patches in its ring 1 at the path's end, three
+edge birches) copied to scratch; `machine_state` is CPU by others / GPU busy at start → end, and
+every time is an upper bound):
+
+| Run | GPU total | shadow | pool | resolve | CPU pose ms | parts posed | tail room | shadow pairs | machine_state |
+|---|---|---|---|---|---|---|---|---|---|
+| meadow 1920×1080, before | 35.65 / 41.20 / 41.62 | 12.97 | 22.26 | 0.307 | 15.35 | 8,819,377 | 2,616,732,832 B | 370,918 | 18% / 1% → 22% / 16% |
+| meadow 1920×1080, after | 1.42 / 1.65 / 1.73 | 0.106 | 0.093 | 0.303 | 0.135 | 177 | 2,146,304 B | 3,526 | 40% / 2% → 53% / 99% |
+| meadow 11520×2160, before | 60.06 / 63.46 / 63.85 | 4.45 | 48.09 | 2.652 | 21.24 | 8,819,377 | 2,616,732,832 B | 596,875 | 100% / 1% → 100% / 1% |
+| meadow 11520×2160, after | 6.94 / 7.58 / 7.72 | 0.191 | 0.157 | 2.657 | 1.150 | 177 | 2,146,304 B | 10,707 | 100% / 0% → 100% / 1% |
+| POC v12 bounded sward 1920×1080, after | 7.58 / 8.17 / 8.38 | 4.60 | 0.438 | 0.37 | 1.20 | 160,883 | 24,226,048 B | 555,373 | 50% / 1% → 32% / 72% |
+| POC v12 bounded sward 11520×2160, after | 23.89 / 24.79 / 25.27 | 11.44 | 1.019 | 3.44 | 1.27 | 160,883 | 25,184,512 B | 1,684,604 | 61% / 3% → 26% / 99% |
+
+The tail's room "after" is the birches' reserve: grass takes none (4,514 records before, 0 after),
+and the pose table is the three field blocks and the trees' 177 parts, 2,009,040 bytes. A full
+dense patch's card took a 2,048-part class, 491,520 bytes of poses over three slots, before; it
+takes none now, and its cooked card container keeps 16 of its 1,040 blades (below). The POC's
+bounded dense sward (its `world/v12/comparisons/bounded-sward.json` read as data, its terrain cache
+copied to scratch, `--raster hw --deform-pool-mib 64`, wind 0.7, the grass-clearing view, 4,067
+sward instances) reported 173.2 ms of GPU with 147.8 ms of shadows and 25.5 ms of deformation on
+51ef062a in a window; offscreen here it is 7.6 ms, 4.6 and 0.44. Both frame loops allocate the same
+(26 frames, 1,180 allocations over the flight, the world's streaming of the placements: W73's,
+unchanged by this).
+
+**What holds it.** `authored_view_tests.cpp`: 160 sward patches read whole and streamed in one ring
+and in two, thirty frames into the sway, **0 pixels** different, where the field moves 337 of the
+whole read's pixels against the rigid picture; a second run of the same frames 0 pixels; the
+streamed summary's 160 field instances, 0 tail records, 0 tail bytes and a 480-byte pose table. The
+tree tests (`flora_scene_tests`, `flora_motion_tests`, the authored sway, return and handover
+cases) draw what they drew.
+
+### The caster policy
+
+Also R95. **Per species: in the ray tracing chain at all, how many of the sun's nearest cascades,
+and whether a cascade draws its rest pose** (`geometry::FloraCasterPolicy`). The renderer turns the
+policy into `InstanceDesc::flags` bits 2–6 per mesh at load (`GpuScene::mesh_policy_`, the species
+the generator section names, a distance form's its source's) and ORs them into every instance of
+the mesh, the load's and every tile's (`write_slots`): bits 2–4 hold `n + 1` for "the `n` nearest
+cascades", bit 5 `k_instance_shadow_rest`, bit 6 `k_instance_untraced`; a species with the trees'
+defaults sets none, so every existing scene's instances are the bytes they were.
+
+- **The cascades.** Each cascade's cull block names its cascade (`CullParams::cascade`, c + 1;
+  0 on a camera run), and the cull drops a pair of an instance whose species casts into fewer
+  cascades before it reads the cluster. With `rest_pose`, the cascades' pool allocation
+  (`deform_alloc.slang`, `DeformAllocParams::rest_beyond_m` ≥ 0 on that dispatch) gives the
+  instance's entries no block, so the cascade draws it from the grid (`k_no_pool_slot`) and the pool
+  pass bends it once, for the picture. The sward is `{false, 1, true}`: one cascade, at rest.
+- **The chain.** `traced = false` keeps the instance out of a camera run's caster run in the cull,
+  and out of `clas_records.slang`'s `records_main` (one test of the flag, before the entry is counted
+  — the chain's own file, coordinated with its owner), so no structure is built for grass and no
+  shadow ray meets it. Under `--raster rt` such an instance is therefore not drawn at all; grass is
+  drawn by the rasterizers.
+- **The trees' sway LOD** falls out of the same switch: `renderer.flora.rest_pose_cascades_m`
+  (default 0, off) is a distance past which every deformed instance casts its rest pose into the
+  cascades — its entries in the cascades' runs take no pool block. Measured at the POC v12
+  bounded scene's hardwoods view (1600 × 900, the same build and flags as the table above, 1,090
+  swaying plants): GPU total 3.83 / 3.30 ms at 0 (off) / 100 m and the pool pass 0.097 / 0.093 ms,
+  with the 50 m run (6.00 ms) taken beside a busy GPU (3% → 98%). Ring 0's trees are near enough
+  that the option moves little there; it stays off until a view with swaying trees far off asks.
+- `renderer.flora.caster_policy=false` casts every species as a tree does, for a before-and-after.
+  `FloraStats::casters_nearest`, `casters_rest` and `untraced` count the instances by policy, when
+  the instances change.
+
+**What holds it**: the sward scene above under `--shadows csm` draws 140 cascade pairs a frame with
+the policy against 1,400 without it, and under `--shadows rt` the chain builds 46 structures a frame
+(the ground's) against 350.
+
+### A form carries only the parts it uses
+
+Also R95. A ring's distance form copied its source's whole motion table and restricted only the
+vertex records, so a sward card carried its patch's 1,040 blades and a tree's card form its whole
+crown's parts. `stream_authored`'s copy now keeps the parts its motion records name and their
+ancestors (a part's frame is its parent chain's), in their order so parents still come first, and
+remaps the records, the parents and the structural table's ids (`prune_form_parts`); each kept
+part's id in its source stays beside the table (`SourceMesh::motion_part_ids`), and the trees'
+phase is taken from it (`FloraMesh::phase_id`), so a pruned form sways as its source and the
+streamed-sway tests still differ by 0 pixels. `AuthoredStats::form_parts_before/after` count it; the
+authored test's oak and spruce forms keep 144 of their 151 parts (the oak's cards name every part of
+its crown; the spruce's forms keep 26 and 21 of 27). **A cooked grass container is pruned the same
+way at load** (`adopt_container`, grass alone, since a tree's table also feeds the collision): the
+meadow's card containers keep 14 to 16 blades of 270 to 1,040 — `d100-v0/distance.clusters`
+1,040 → 16.
+
+### A refused commit keeps the device
+
+Also R95. **The tail's room never grows past `renderer.flora.tail_budget_mib`** (default 1,024 MiB).
+`set_dynamic_instances` computes, before anything changes, the most the room could reach if every
+swaying tree of every changed block took a new record — the deform records and their per-frame
+copies, the pose table's tail regions and the push state, each grown half as much again as
+`relayout` would — and a commit past the ceiling is refused with a sentence naming the buffer and
+the bytes ("the part-pose table's tail regions to 4032000 bytes, 4349952 bytes in all; the commit is
+refused and its tiles are not placed"). The bound counts a record a tree gives back and the next
+takes again twice, so it errs towards refusing. The world's consumer counts the refusal in its log
+and the frame draws what the scene has (`FloraStats::tail_refused`); nothing reaches the device as an
+out-of-memory loss. Grass takes no record and costs it nothing. `authored_view_tests.cpp` streams the
+140 trees with the ceiling at 1 MiB: the commit is refused, the tail holds no instance, and the run
+ends well with its capture written.
+
 ### The pair accounting
 
 **Before anything is made, the scene's fixed parts and the least its tail must hold are counted
@@ -2437,6 +2607,9 @@ not the per-frame hot loop. See [the profile audit](../experiments/tree-profile-
 
 ### Sward contact compatibility (G90)
 
+**Superseded for drawing by R95**: a `sward` mesh is now posed as a field on the GPU
+([The field kind](#the-field-kind)) and the CPU poser never sees it; what follows still holds for
+`flora_mesh` and `flora_part_poses` called on a sward table directly, which the regression keeps.
 Sward uses a parentless non-woody motion part for each blade, including part zero. The CPU
 compatibility poser permits those parts to receive the existing walker-capsule push when they
 have a structural table and no load-bearing/collider flags. Tree roots keep their existing

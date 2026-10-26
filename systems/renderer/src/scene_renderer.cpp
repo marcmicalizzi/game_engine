@@ -1930,8 +1930,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // in place, before the pool pass reads them. Zero, and nothing written, in a scene with no tree.
   // The frame's clocks (clocks.h): the sky's hour, the scene's epoch plus the frame's sky seconds.
   const f64 sky_time_s = scene.epoch_s() + frame.sky_time_s;
-  const u64 flora_table =
-      scene.flora_frame(slot, frame.flora, frame.frame_index, frame.world_time_s, sky_time_s);
+  const u64 flora_table = scene.flora_frame(slot, frame.flora, frame.frame_index,
+                                            frame.world_time_s, sky_time_s, frame_origin);
   if (scene.skinned()) {
     const u32 span = static_cast<u32>(frame.joints.size());
     const u32 uploaded = span < scene.max_joints() ? span : scene.max_joints();
@@ -2529,6 +2529,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
     cull.cone_cull = 0;
+    cull.cascade =
+        c + 1;  // the caster policy's nearest cascades (renderer.md, "The caster policy")
     cull.clusters = scene.clusters.address;
     cull.lods = scene.lods.address;
     cull.visible = run_address;
@@ -2594,6 +2596,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     shadow_alloc.views = cascades_drawn;
     shadow_alloc.first_entry = scene.cascade_base(0);
     shadow_alloc.reset = 0;
+    // **The cascades at rest** (renderer.md, "The caster policy"): a species whose policy says so
+    // always, and with `renderer.flora.rest_pose_cascades_m` every deformed instance past it, cast
+    // from the grid and take no pool block for it.
+    shadow_alloc.rest_beyond_m = flora_rest_pose_cascades_m_tunable();
+    shadow_alloc.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2) +
+                       gfx::k_cull_params_eye_offset;
   }
 
   // ---- the pool's allocator, one block per run ------------------------------------------------

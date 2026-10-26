@@ -285,6 +285,9 @@ struct AuthoredStats {
   u32 kept_paged = 0;
   u32 forms = 0;          // distance-form meshes made
   u32 form_clusters = 0;  // their clusters, all rings
+  // Their motion parts before and after the pruning to the parts their vertices use (R95).
+  u64 form_parts_before = 0;
+  u64 form_parts_after = 0;
   // The pairs the streamed instances would hold whole, innermost form; and the largest one tile
   // holds in it, which is the least a tail must have room for (`SceneData::tail_floor_pairs`).
   u64 whole_pairs = 0;
@@ -484,6 +487,12 @@ struct SourceMesh {
   Vector<geometry::ClusterFileMotionPart> motion_parts;
   Vector<geometry::ClusterFileMotionVertex> motion_vertices;
   Vector<geometry::ClusterFileStructuralPart> structural_parts;
+  // **A distance form's parts are the ones its vertices use** (renderer.md, "A form carries only
+  // the parts it uses"; R95): `stream_authored` prunes a form's copy of the table to the parts its
+  // motion records name and their ancestors, remapping the records, the parents and the structural
+  // table's ids, and keeps here each kept part's id in its source, which the sway's phase is taken
+  // from so the form sways as the full mesh does. Empty for a mesh that is its own source.
+  Vector<u32> motion_part_ids;
   std::string species;
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };

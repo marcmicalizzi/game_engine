@@ -71,6 +71,11 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::DeformParams);
 // 80: one part's pose for a frame (flora_motion.h) — the 3x4 its ancestors' bends carried it to,
 // then its pivot and bend angle, then the bend's axis with an at-rest flag. A vertex reads one.
 ENGINE_EXPECT_SIZE(80, 4, gfx::FloraPartPose);
+// The field kind (R95): a blade is its root and length, one float4 load; the frame's field is the
+// eye, the wind and flutter clock, four waves' vectors, phases and shares, and the walker — 160
+// bytes, two poses' room at the head of each region, so the trees' poses keep their indices.
+ENGINE_EXPECT_SIZE(16, 4, gfx::FloraFieldPart);
+ENGINE_EXPECT_SIZE(160, 4, gfx::FloraFieldFrame);
 
 // A terrain level's height field and its frame (gfx.md, "The deform chain"; renderer.md, "The dunes
 // in time-lapse"): 24 bytes a field — the heights' address, the window's lattice origin and its
@@ -83,7 +88,9 @@ ENGINE_EXPECT_SIZE(96, 8, gfx::TerrainLevelDesc);
 
 // 72: the allocator's push block. One dispatch per run of the visible list, one workgroup, every
 // view inside it — so it carries the run and the view count rather than a per-view block.
-ENGINE_EXPECT_SIZE(72, 8, gfx::DeformAllocParams);
+// 80, not 72 (R95): `rest_beyond_m` took the pad word and `eye` was added, so the cascades'
+// dispatch gives no block to an entry whose caster policy or distance says it casts at rest.
+ENGINE_EXPECT_SIZE(80, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record
@@ -154,8 +161,10 @@ ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
 // the vertex attributes) right after `eye`, so a rasterizer that reads the eye through
 // `ClusterDrawParams::eye` reaches them too (renderer.md, "Alpha-tested geometry"); the caster
 // volumes moved 32 bytes back, and nothing reads them by offset.
-// 1728, not 1712: the caster horizon and its pad (renderer.md, "Shadows", R94, 2026-10-25).
-ENGINE_EXPECT_SIZE(1728, 8, gfx::CullParams);
+// 1744, not 1712: the caster horizon and its pad (renderer.md, "Shadows", R94) and `cascade`, the
+// cascade a block culls for, with three words of padding (R95); both landed on 2026-10-25 and the
+// merge keeps both, in that order, as cluster_cull.slang mirrors them.
+ENGINE_EXPECT_SIZE(1744, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

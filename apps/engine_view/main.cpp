@@ -1131,6 +1131,14 @@ JsonValue flora_summary(const renderer::GpuScene& scene) {
   out.set("tail_records", JsonValue(static_cast<u64>(f.tail_records)));
   out.set("tail_repurposed", JsonValue(f.tail_repurposed));
   out.set("tail_bytes", JsonValue(f.tail_bytes));
+  // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy").
+  out.set("field_meshes", JsonValue(static_cast<u64>(f.field_meshes)));
+  out.set("field_instances", JsonValue(static_cast<u64>(f.field_instances)));
+  out.set("casters_nearest", JsonValue(static_cast<u64>(f.casters_nearest)));
+  out.set("casters_rest", JsonValue(static_cast<u64>(f.casters_rest)));
+  out.set("untraced", JsonValue(static_cast<u64>(f.untraced)));
+  out.set("pose_table_bytes", JsonValue(f.pose_table_bytes));
+  out.set("tail_refused", JsonValue(f.tail_refused));
   const f64 frames = static_cast<f64>(f.posed_frames);
   out.set("pose_ms_mean",
           JsonValue(f.posed_frames > 0 ? static_cast<f64>(f.pose_ns_sum) / frames / 1.0e6 : 0.0));

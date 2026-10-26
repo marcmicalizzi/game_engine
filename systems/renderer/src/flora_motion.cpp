@@ -34,6 +34,15 @@ tunables::Float flora_sway_m{"renderer.flora.sway_m", 0.0, 0.0, 100'000.0,
                              "Metres: a ring's distance form of a tree sways when the ring's tiles "
                              "come nearer the camera than this, and is drawn rigid past it"};
 
+// **The trees' shadows stop swaying past a distance** (renderer.md, "The caster policy"; R95):
+// a cascade's texel past a few tens of metres is larger than a twig's travel, so a tree there can
+// cast its rest pose and spare the pool pass its cascade blocks. Off by default: the measured
+// option at the v8 hardwoods view is in renderer.md.
+tunables::Float flora_rest_pose_cascades_m{
+    "renderer.flora.rest_pose_cascades_m", 0.0, 0.0, 100'000.0,
+    "Metres: a swaying instance farther than this from the eye casts its rest pose into the "
+    "cascaded shadow maps (0: off; grass casts at rest by its species' policy whatever this says)"};
+
 constexpr f32 k_tau = 6.28318530717958647692f;
 
 // A 32-bit integer hash (the "lowbias32" finalizer): the seed's phases, nothing that needs more.
@@ -118,6 +127,9 @@ void closest_on_segments(Vec3 p0, Vec3 p1, Vec3 q0, Vec3 q1, f32& s, f32& t) noe
 bool flora_motion_tunable() noexcept { return flora_motion.get(); }
 bool flora_tail_tunable() noexcept { return flora_tail.get(); }
 f32 flora_sway_m_tunable() noexcept { return static_cast<f32>(flora_sway_m.get()); }
+f32 flora_rest_pose_cascades_m_tunable() noexcept {
+  return static_cast<f32>(flora_rest_pose_cascades_m.get());
+}
 FloraWindDefault flora_wind_default() noexcept {
   const f64 a = flora_wind_deg.get() * (3.14159265358979323846 / 180.0);
   return FloraWindDefault{Vec2{static_cast<f32>(std::cos(a)), static_cast<f32>(std::sin(a))},
@@ -143,11 +155,18 @@ bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> st
 
 bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
                 std::span<const geometry::ClusterFileStructuralPart> structure,
-                std::string_view species, FloraMesh& out) {
+                std::string_view species, FloraMesh& out, std::span<const u32> ids) {
   out = FloraMesh{};
   if (parts.empty() || parts.size() > 65536u) return false;
+  out.phase_id.resize(static_cast<u32>(parts.size()));
+  for (u32 p = 0; p < parts.size(); ++p)
+    out.phase_id[p] = ids.size() == parts.size() ? ids[p] : p;
   if (geometry::flora_species_info(species) == nullptr) return false;
   const FloraStiffness stiffness = flora_stiffness(species);
+  const geometry::FloraSpeciesInfo& info = *geometry::flora_species_info(species);
+  if (info.motion == geometry::FloraMotionKind::none) return false;  // it never moves
+  out.field = info.motion == geometry::FloraMotionKind::field;
+  out.field_compliance = stiffness.leaf;
   const bool structured = structure.size() == parts.size();
   const u32 n = static_cast<u32>(parts.size());
   out.parts.resize(n);
@@ -186,6 +205,58 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     out.pushable[p] = ((blade || (!root && p != 0)) && !load_bearing && !collider) ? u8{1} : u8{0};
   }
   return true;
+}
+
+void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
+                       const FrameFlora& frame, gfx::FloraFieldFrame& out) noexcept {
+  out = gfx::FloraFieldFrame{};
+  out.eye = gfx::frame_eye(eye);
+  const f32 s =
+      strength < 0.0f ? 0.0f : (strength > k_flora_max_wind ? k_flora_max_wind : strength);
+  const f64 tau = 6.28318530717958647692;
+  const auto reduce = [tau](f64 phase) {
+    const f64 r = std::fmod(phase, tau);
+    return static_cast<f32>(r < 0.0 ? r + tau : r);
+  };
+  out.wind =
+      Vec4{to.x, to.y, s, reduce(time_s * (tau * static_cast<f64>(k_flora_field_flutter_hz)))};
+  // The eye in the world, in double: the cell's corner plus its offset and what rounding left.
+  const f64 ex = static_cast<f64>(eye.cell.x) * k_world_cell_m + static_cast<f64>(eye.local.x) +
+                 static_cast<f64>(eye.residual.x);
+  const f64 ez = static_cast<f64>(eye.cell.z) * k_world_cell_m + static_cast<f64>(eye.local.z) +
+                 static_cast<f64>(eye.residual.z);
+  const f64 base = std::atan2(static_cast<f64>(to.y), static_cast<f64>(to.x));
+  const f64 lengths[2] = {static_cast<f64>(k_flora_field_honami_m),
+                          static_cast<f64>(k_flora_field_sweep_m)};
+  const f64 speeds[2] = {static_cast<f64>(k_flora_field_honami_mps),
+                         static_cast<f64>(k_flora_field_sweep_mps)};
+  f32 k[8];
+  f32 phase[4];
+  for (u32 j = 0; j < 4; ++j) {
+    const u32 scale = j / 2;
+    const f64 angle = base + (j % 2 == 0 ? 1.0 : -1.0) * static_cast<f64>(k_flora_field_spread_rad);
+    const f64 number = tau / lengths[scale];
+    const f64 kx = std::cos(angle) * number;
+    const f64 kz = std::sin(angle) * number;
+    k[2 * j] = static_cast<f32>(kx);
+    k[2 * j + 1] = static_cast<f32>(kz);
+    // A crest travels downwind: phase = k . x - omega t, with omega = |k| times the speed. The
+    // phase seeds of the four waves keep their crests from lining up at the world's origin.
+    phase[j] = reduce(kx * ex + kz * ez - number * speeds[scale] * time_s +
+                      static_cast<f64>(j) * 2.39996322972865332);
+  }
+  out.waves[0] = Vec4{k[0], k[1], k[2], k[3]};
+  out.waves[1] = Vec4{k[4], k[5], k[6], k[7]};
+  out.phases = Vec4{phase[0], phase[1], phase[2], phase[3]};
+  out.weights = Vec4{k_flora_field_weights[0], k_flora_field_weights[1], k_flora_field_weights[2],
+                     k_flora_field_weights[3]};
+  if (frame.walker) {
+    const f64 ey = static_cast<f64>(eye.cell.y) * k_world_cell_m + static_cast<f64>(eye.local.y) +
+                   static_cast<f64>(eye.residual.y);
+    const Vec3 feet = relative(frame.walker_feet, WorldPos{ex, ey, ez});
+    out.walker = Vec4{feet, frame.walker_radius > 0.0f ? frame.walker_radius : 0.0f};
+    out.push = Vec4{frame.walker_height, k_flora_push_max, k_flora_push_margin, 0.0f};
+  }
 }
 
 f32 flora_gust(f64 time_s, u32 seed) noexcept {
@@ -230,8 +301,9 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
         const Vec3 k = cross(d, perp * (1.0f / pl));
         const f32 kl = length(k);
         if (kl > 1.0e-4f) {
-          const f32 phase = k_tau * (seed_phase + 0.37f * part.pivot.x + 0.11f * part.pivot.y +
-                                     0.53f * part.pivot.z + 0.618034f * static_cast<f32>(p));
+          const f32 phase =
+              k_tau * (seed_phase + 0.37f * part.pivot.x + 0.11f * part.pivot.y +
+                       0.53f * part.pivot.z + 0.618034f * static_cast<f32>(mesh.phase_id[p]));
           const f32 hz = k_flora_flutter_hz / std::sqrt(part.length > 0.25f ? part.length : 0.25f);
           const f32 sway = static_cast<f32>(
               std::sin(time_s * static_cast<f64>(k_tau * hz) + static_cast<f64>(phase)));
