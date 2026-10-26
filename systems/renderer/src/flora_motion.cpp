@@ -143,10 +143,13 @@ FloraStiffness flora_stiffness(std::string_view species) noexcept {
                         info->compliance[3]};
 }
 
-bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure,
-                         u32 part) noexcept {
-  if (part == 0) return true;
-  if (structure.empty() || part >= structure.size()) return false;
+bool flora_part_collides(std::span<const geometry::ClusterFileStructuralPart> structure, u32 part,
+                         geometry::FloraMotionKind kind) noexcept {
+  if (kind != geometry::FloraMotionKind::parts) return false;
+  // Old trees without section 37 still name their trunk as part zero. A present table is
+  // authoritative for every part, including zero: a flagless root is no trunk (G90).
+  if (structure.empty()) return part == 0;
+  if (part >= structure.size()) return false;
   // A load-bearing limb, or a part flagged a collider: a shrub's stem stout enough to stop a
   // walker (flora.md, "The shrub").
   return (structure[part].flags &

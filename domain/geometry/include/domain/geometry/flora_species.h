@@ -34,7 +34,8 @@ enum class FloraSpecies : u8 {
   hemlock,
   alder,
   sward,
-  cover
+  cover,
+  ivy
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -104,6 +105,9 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     // The cover capability's mats (cover.md): they stand still, so no compliance and no sway; they
     // cast as anything rigid does.
     {FloraSpecies::cover, "cover", false, 0, {0.0f, 0.0f, 0.0f, 0.0f}, FloraMotionKind::none},
+    // Hanging ivy stems use a bounded young-climber analogue: 2.8 times oak's compliance,
+    // from 8600 / 3074 MPa (ivy-stem-mechanics.md). This is not a measured Hedera modulus.
+    {FloraSpecies::ivy, "ivy", false, 0, {.0168f, .084f, .196f, .336f}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {

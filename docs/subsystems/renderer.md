@@ -580,6 +580,15 @@ and the same ninety-three fewer.
 
 ## What the load reads
 
+The mask upload (W76, 2026-10-26) counts `GroundMasks::ops->present` from the provider's
+manifest before its resident-budget check, then reads each present payload once into its final
+slot. `terrain masks` is a startup-trace child of `gpu scene`; it includes provider opening and
+the resident page table's construction. A missing/corrupt present tile now fails the copy with
+its coordinates instead of being silently treated as absent during counting. Sparse slots keep
+`k_terrain_no_mask_tile`; resident bytes and shader layout are unchanged. The
+[matched measurements](../experiments/tile-archives-2026-10-24.md#one-mask-payload-pass-at-load)
+separate payload reads from read-ahead I/O and report the machine state.
+
 **A cooked scene's load reads derived data and the scene's own small files, and no source image**
 (since 2026-10-24, roadmap W75; the measurements are in the
 [startup trace's page](../experiments/startup-trace-forest-2026-10-24.md#after-w75)). **The

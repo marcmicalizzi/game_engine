@@ -823,10 +823,12 @@ const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       tree != nullptr ? std::span<const geometry::ClusterFileStructuralPart>(
                             tree->structural_parts.data(), tree->structural_parts.size())
                       : std::span<const geometry::ClusterFileStructuralPart>();
+  const auto* species = tree != nullptr ? geometry::flora_species_info(tree->species) : nullptr;
+  const auto kind = species != nullptr ? species->motion : geometry::FloraMotionKind::none;
   auto wooden = [&](u32 v) {
     const u32 at = v - part.first_vertex;
     return at < tree->motion_vertices.size() &&
-           renderer::flora_part_collides(structure, tree->motion_vertices[at].part);
+           renderer::flora_part_collides(structure, tree->motion_vertices[at].part, kind);
   };
   for (u32 c = 0; c < part.cluster_count; ++c) {
     const u32 index = part.first_cluster + c;

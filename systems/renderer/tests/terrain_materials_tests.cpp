@@ -290,7 +290,22 @@ bool probe_info(const void*, scene_gen::GroundMaskInfo& out) noexcept {
   out.budget = 2;
   return true;
 }
+struct ProbeReads {
+  u32 reads = 0;
+  u32 resident_mib = 256;
+  bool sparse = false;
+  bool fail_tile = false;
+};
+thread_local ProbeReads* probe_reads = nullptr;
+bool probe_present(const void*, i32 tx, i32 tz) noexcept {
+  return tx >= -2 && tx <= 1 && tz >= -2 && tz <= 1 &&
+         !(probe_reads != nullptr && probe_reads->sparse && tx == -1 && tz == -1);
+}
 bool probe_tile(const void*, i32 tx, i32 tz, std::span<u32> words) noexcept {
+  if (probe_reads != nullptr) {
+    ++probe_reads->reads;
+    if (probe_reads->fail_tile) return false;
+  }
   if (tx < -2 || tx > 1 || tz < -2 || tz > 1) return false;
   for (u32& w : words)
     w = 0;
@@ -310,7 +325,13 @@ bool probe_tile(const void*, i32 tx, i32 tz, std::span<u32> words) noexcept {
   }
   return true;
 }
-constexpr scene_gen::GroundMaskOps k_probe_mask_ops{.info = &probe_info, .tile = &probe_tile};
+bool counted_probe_info(const void* state, scene_gen::GroundMaskInfo& out) noexcept {
+  if (!probe_info(state, out)) return false;
+  if (probe_reads != nullptr) out.resident_mib = probe_reads->resident_mib;
+  return true;
+}
+constexpr scene_gen::GroundMaskOps k_probe_mask_ops{
+    .present = &probe_present, .info = &counted_probe_info, .tile = &probe_tile};
 bool probe_masks(const void*, scene_gen::GroundMasks& out, std::string*) {
   out = scene_gen::GroundMasks{&k_probe_mask_ops, nullptr};
   return true;
@@ -341,6 +362,40 @@ constexpr scene_gen::GroundProviderDesc k_probe_provider{
 const scene_gen::Registrar k_probe_registrar{k_probe_provider};
 }  // namespace
 
+TEST_CASE("renderer: mask upload reads present tiles once and checks budget before payloads") {
+  struct Counting {
+    ProbeReads state;
+    Counting() { probe_reads = &state; }
+    ~Counting() { probe_reads = nullptr; }
+  } counted;
+  TerrainDesc desc;
+  desc.enabled = true;
+  desc.provider = "mask_probe";
+  desc.size = 17;
+  desc.extent = 32;
+  TerrainMaskUpload upload;
+  std::string error;
+  counted.state.sparse = true;
+  REQUIRE_MESSAGE(prepare_terrain_masks(desc, upload, &error), error);
+  CHECK(upload.tiles == 15);
+  CHECK(counted.state.reads == 15);
+  CHECK(upload.words.size() == 16 + 15 * scene_gen::mask_tile_words(k_probe_cells));
+  CHECK(upload.words[5] == gfx::k_terrain_no_mask_tile);
+  for (u32 p = 0, slot = 0; p < 16; ++p) {
+    if (p == 5) continue;
+    CHECK(upload.words[p] == slot++);
+  }
+  counted.state.reads = 0;
+  counted.state.resident_mib = 0;
+  CHECK_FALSE(prepare_terrain_masks(desc, upload, &error));
+  CHECK(counted.state.reads == 0);
+  CHECK(error.find("resident_mib") != std::string::npos);
+  counted.state.resident_mib = 256;
+  counted.state.fail_tile = true;
+  CHECK_FALSE(prepare_terrain_masks(desc, upload, &error));
+  CHECK(counted.state.reads == 1);
+  CHECK(error.find("(-2, -2)") != std::string::npos);
+}
 TEST_CASE("renderer: ground masks shade their layers, wet them, and agree with the path tracer") {
   gfx::Device device;
   std::string error;

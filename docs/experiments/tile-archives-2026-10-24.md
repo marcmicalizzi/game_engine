@@ -84,3 +84,57 @@ Unbuffered, the level read whole is 0.12 s at depth 32 against 0.14 s through th
 - `scene expand` still stands every instance in the region before the first frame, point by point; the batches are there for it (`TileSet::prefetch_level`, or the standing moved to tile activation), and `systems/renderer/src/scene.cpp` is the load agent's tonight.
 - The renderer's mask load reads every tile twice, once only to count them (`terrain_materials.cpp`); with the archive's windows that costs 0.03 s, but the count is the table's size and needs no read.
 - `ground prepare`'s `tile rebuild` (2.4 s warm) is still on the frame thread and is now CPU, not IO.
+## One mask payload pass at load
+
+W76 follow-up, 2026-10-26. The count pass now queries manifest presence through the ground
+provider seam; only the copy pass reads tile payloads. A present-but-unreadable tile is an error.
+The CPU regression uses a sparse 16-slot level: 15 payload reads, the hole retains its sentinel,
+zero payload reads on a resident-budget refusal, and a coordinate-bearing error for a failed read.
+
+Matched `msvc-debug` worktree binaries on the i9-10980XE / RTX 5090 shared workstation, Windows
+11, 320×180, offscreen hardware raster, shadows off, two frames, zero warmup frames, one repeat,
+time/world rates zero, `--wait-quiet 30`, `--startup-trace` and `--benchmark`. One untabled warmup
+launch precedes three measured launches per scene and version. The `before-view.exe` snapshot
+retains the original two-pass mask algorithm, with the same added `terrain masks` trace scope
+as the after build. The existing parent stage is `gpu scene` in the
+[startup-trace investigation](startup-trace-forest-2026-10-24.md#the-critical-path-os-warm-lake-157-s).
+The child scope isolates provider opening and mask-table preparation from unrelated GPU uploads.
+Timings are wall time, not isolated costs; machine state is quoted per row below.
+
+Inputs are scratch copies of `content/test-scenes/ground-by-place` (the documented 1025²
+mountain heightfield) and `content/test-scenes/meadow`, cooked with the repository's
+`sward-cook.ps1 -Variants 1` (all four density families, unchanged mask inputs). Ground-by-place
+names its scratch `tiles.ddc` explicitly because scene expansion precedes the CLI cache root.
+It uses `--terrain-far 2`; meadow uses `--terrain-far 0`, because the template's 1 m outer ring
+requests a far level absent from its default 2 m tileset cook. No POC input or cache is written.
+
+| Scene | Version / run | `terrain masks` ms | Bytes read | `machine_state.cpu_others_pct` start → end | `gpu_util_pct` start → end |
+|---|---|---:|---:|---:|---:|
+| ground-by-place | before / 1 | 86.2686 | 20,692,950 | 5.90 → 7.12 | 5 → 32 |
+| ground-by-place | before / 2 | 86.1434 | 20,692,950 | 8.85 → 9.01 | 3 → 19 |
+| ground-by-place | before / 3 | 89.3627 | 20,692,950 | 5.73 → 10.59 | 4 → 3 |
+| ground-by-place | after / 1 | 81.2858 | 12,499,314 | 41.84 → 36.97 | 3 → 19 |
+| ground-by-place | after / 2 | 98.5515 | 12,499,314 | 34.75 → 32.99 | 3 → 2 |
+| ground-by-place | after / 3 | 84.6537 | 12,499,314 | 31.95 → 27.08 | 2 → 3 |
+| meadow | before / 1 | 15.0855 | 693,643 | 9.57 → 6.42 | 3 → 1 |
+| meadow | before / 2 | 15.2248 | 693,643 | 9.08 → 10.03 | 3 → 1 |
+| meadow | before / 3 | 14.6919 | 693,643 | 10.94 → 9.90 | 3 → 1 |
+| meadow | after / 1 | 15.1593 | 693,643 | 10.30 → 18.53 | 1 → 1 |
+| meadow | after / 2 | 14.9323 | 693,643 | 8.73 → 8.51 | 2 → 1 |
+| meadow | after / 3 | 15.0272 | 693,643 | 7.80 → 9.03 | 1 → 1 |
+Median stage times are **86.2686 → 84.6537 ms** for ground-by-place and
+**15.0855 → 15.0272 ms** for meadow. Ground-by-place saves **8,193,636 bytes per load**;
+meadow reads the same bytes because its archive fits one window. These wall-time differences
+are within the shared-machine variation, not a reliable speedup claim. `machine_state` above
+quotes others' CPU and total GPU utilization (which includes the engine); all rows report the
+GPU lock as `mine: true`, session unlocked, and CPU-own sample 0. The before/after PE files are
+both **39,146,496 bytes** (file-size delta zero). Full machine-state JSON is retained in the
+scratch evidence. No hot type grows; the cold `GroundMaskOps` table gains one pointer and the
+count pass drops its temporary tile buffer. The 2 MiB read-ahead window and resident mask buffer
+are unchanged.
+
+Read bytes here are the trace's per-thread I/O counter, including provider/manifest reads,
+not resident bytes or a claim of physical disk traffic. Read-ahead can keep a small archive
+resident even across the old second pass, so halving payload calls need not halve I/O bytes.
+The archive format, hashes, mask words, GPU layout and per-frame work do not change.
+Evidence and command scripts are under `D:/workspace/ge-codex-scratch/sol/`.

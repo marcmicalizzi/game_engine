@@ -934,7 +934,11 @@ bool level_info(const void* state, scene_gen::GroundMaskInfo& out) noexcept {
 bool level_tile(const void* state, i32 tx, i32 tz, std::span<u32> words) noexcept {
   return static_cast<const MaskLevel*>(state)->tile(tx, tz, words);
 }
-constexpr scene_gen::GroundMaskOps k_level_ops{.info = &level_info, .tile = &level_tile};
+bool level_present(const void* state, i32 tx, i32 tz) noexcept {
+  return static_cast<const MaskLevel*>(state)->present(tx, tz);
+}
+constexpr scene_gen::GroundMaskOps k_level_ops{
+    .present = &level_present, .info = &level_info, .tile = &level_tile};
 }  // namespace
 
 scene_gen::GroundMasks MaskLevel::masks() const noexcept {

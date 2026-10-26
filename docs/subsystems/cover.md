@@ -102,6 +102,8 @@ a held vertex weighs 0 (it is fixed to the host); along a free run the weight ri
 leaves thin, alternately, until the triangles fit. Two primitives, `vine/stem` (one-sided) and
 `vine/leaf` (two-sided).
 
+The vine's ivy species is in the shared flora catalogue (parts, tree caster policy), with [grounded, bounded compliance](../experiments/ivy-stem-mechanics.md) for its free tips (R95, 2026-10-26).
+
 **Climbing strategies.** The root climber is modelled; a rambler's leaning falls out of it on a
 smooth host. Twining stems and tendrils round thin supports are not (vine-cover.md).
 
@@ -198,6 +200,9 @@ the scene; placement of companions by the generators that place hosts; the blend
 cover that weathers the host's own material (Dorsey and Hanrahan's patinas).
 
 ## How to test
+
+The viewer case `two ivy vines sway in wind and are rigid in calm without warnings` renders two smooth-host vines offscreen at 320×320: calm changes 0 pixels against rigid, wind changes 2,520 / 2,237 pixels, with no rigid warning (R95, 2026-10-26). It skips when the cover capability or rendering device is unavailable.
+
 
 `tools/dev.ps1 test -Filter cover`: `tests/cover_tests.cpp` — the BVH's closest point against brute
 force on a sphere and a cube, occlusion and the weld; a vine on a cube keeps within 2 mm of the

@@ -36,6 +36,12 @@ recipes explicitly request a larger cap; no default quality tier silently spends
 mown, grazed and authored worn areas. `tools/sward-showcase.ps1` cooks their small isolated stands
 outside the repository and can capture near/card forms with matching cameras. These tests judge
 silhouette, coverage and repetition before later AO/atmosphere/postprocessing improvements.
+A sward contributes no collision-proxy triangles: its catalogue kind is `field`, including blade
+part zero, and `field`/`none` species have no collider parts (G90, 2026-10-26;
+[collision rule](scene_collision.md#owned-data)). The dense-sward test excludes 4,800 triangles
+from 400 flagless parentless parts; its paired flagged tree trunk still stops the walker.
+The forest POC's recorded-route grass-on/off investigation remains the POC session's to resume.
+
 Every blade has a parentless motion part; coarse blades reuse it and clumps add parentless
 parts. Section 36 is linear arc fraction, not squared flex; the posing formula applies the bend.
 Section 37 has no load-bearing or collider flags. Section 41 is ao/thickness/hue/age, four
@@ -458,13 +464,19 @@ the ancient tree's limbs, which a village hangs from, nearly still.
 | `shrub` | 0.01 | 0.07 | 0.10 | 0.14 |
 | `fern` | 0.01 | 0.18 | 0.20 | 0.22 |
 | `tuft` | 0.01 | 0.20 | 0.22 | 0.26 |
-| `herb` | 0.01 | 0.16 | 0.18 | 0.20 |
+| herb | 0.01 | 0.16 | 0.18 | 0.20 |
+| ivy | 0.0168 | 0.084 | 0.196 | 0.336 |
+
+The `ivy` row (R95, 2026-10-26) is `parts`, with the trees' caster policy; its coefficients are
+2.8 times oak's, from a published young-climber stem modulus relative to green white oak.
+[The derivation and the missing Hedera dataset](../experiments/ivy-stem-mechanics.md) distinguish
+the bounded analogue from a species measurement. `cover` remains `none`, with zero compliance.
 
 At a mean wind a 6 m palm trunk's top leans 6.6 cm and its 3 m fronds' tips move 0.24 m downwind on
 average over ten seconds (the renderer's test), the flutter swinging them either side of that; at
 the strength the sway saturates at (2), twice that. They are chosen by eye against how a palm, an
 oak and a willow move in a breeze, not measured, and the table is the one place to change them. The
-understory is the most compliant (G75): its part 0 is a root with no geometry, a shrub's stems are
+understory is compliant (G75): its part 0 is a root with no geometry, a shrub's stems are
 its limbs and sway like a tree's twigs, and a fern's fronds, a tuft's blades and a herb's leaves and
 flowers have no wood and take the leaf class — a tuft's blade leans 0.26 rad at a mean wind, the
 most of any part; a herb's stem is its limb. A part flagged `k_structural_collider` (a shrub's
