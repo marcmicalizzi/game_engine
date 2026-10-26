@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -298,4 +299,198 @@ TEST_CASE("the chrome trace round-trips a recorded set") {
   CHECK(milestones == 1);
   CHECK(flows == 2);    // one edge: its start and its end
   CHECK(samples >= 4);  // four counter tracks a sample, at least one sample
+}
+
+// ---- the live progress (W79) ----------------------------------------------------------------------
+
+namespace {
+constexpr const char* k_ladder[] = {"main", "device", "scene_loaded", "ready"};
+
+ProgressPlan three_stages(bool from_previous) {
+  ProgressPlan plan;
+  plan.from_previous = from_previous;
+  REQUIRE(plan.add_stage("read", from_previous ? 2.0 : 1.0));
+  REQUIRE(plan.add_stage("build", from_previous ? 6.0 : 1.0));
+  REQUIRE(plan.add_stage("upload", from_previous ? 2.0 : 1.0));
+  CHECK_FALSE(plan.add_stage("read", 1.0));  // named already
+  for (const char* m : k_ladder)
+    REQUIRE(plan.add_milestone(m));
+  return plan;
+}
+
+struct Following {
+  explicit Following(const ProgressPlan& plan) { REQUIRE(progress_start(plan)); }
+  ~Following() { progress_stop(); }
+};
+}  // namespace
+
+TEST_CASE("progress follows the plan's stages, rises monotonically and reaches every milestone") {
+  CHECK_FALSE(progress_enabled());
+  { ENGINE_STARTUP_STAGE("read"); }  // off: a stage feeds nothing
+  for (const bool previous : {false, true}) {
+    CAPTURE(previous);
+    Following following(three_stages(previous));
+    CHECK(progress_enabled());
+    LoadProgress p;
+    progress_read(p);
+    CHECK(p.active);
+    CHECK(p.stages_expected == 3);
+    CHECK(p.stages_done == 0);
+    CHECK(p.fraction == 0.0f);
+    CHECK(p.milestone_count == 4);
+    f32 last = 0.0f;
+    const auto look = [&] {
+      progress_read(p);
+      CHECK(p.fraction >= last);
+      last = p.fraction;
+    };
+    progress_milestone("main");
+    progress_milestone("device");
+    {
+      ENGINE_STARTUP_STAGE_DETAIL("read", "scene.json");
+      look();
+      CHECK(std::string(p.stage) == "read");
+      CHECK(std::string(p.detail) == "scene.json");
+      {
+        ENGINE_STARTUP_STAGE_DETAIL("cluster read", "tree.clusters");  // not the plan's: detail
+        trace_items(5);
+        spin_us(2000);
+        look();
+        CHECK(std::string(p.stage) == "read");
+        CHECK(std::string(p.detail) == "cluster read: tree.clusters");
+        CHECK(p.items == 5);
+      }
+    }
+    look();
+    CHECK(p.stages_done == 1);
+    CHECK(p.fraction == doctest::Approx(previous ? 0.2 : 1.0 / 3.0).epsilon(0.001));
+    progress_milestone("scene_loaded");
+    {
+      ENGINE_STARTUP_STAGE("build");
+      spin_us(4000);  // 4 of the previous run's 6 ms: a share of the stage, under 0.9 of it
+      look();
+      if (previous) {
+        CHECK(p.fraction > 0.2f);
+        CHECK(p.fraction <= 0.2f + 0.6f * 0.9f + 1e-4f);
+      } else {
+        CHECK(p.fraction == doctest::Approx(1.0 / 3.0).epsilon(0.001));  // equal weights: no share
+      }
+      CHECK(p.stage_elapsed_ns >= 4'000'000);
+    }
+    look();
+    CHECK(p.stages_done == 2);
+    { ENGINE_STARTUP_STAGE("upload"); }
+    look();
+    CHECK(p.stages_done == 3);
+    CHECK(p.fraction == doctest::Approx(1.0));
+    progress_milestone("not on the ladder");
+    progress_milestone("ready");
+    progress_finish();
+    look();
+    CHECK(p.done);
+    CHECK(p.fraction == 1.0f);
+    CHECK(p.milestones == 0b1111u);  // every rung, each its own bit in ladder order
+    // What the next run's plan is made of: the three, measured.
+    ProgressPlan measured;
+    progress_measured(measured);
+    CHECK(measured.from_previous);
+    REQUIRE(measured.stage_count == 3);
+    CHECK(std::string(measured.stages[1]) == "build");
+    CHECK(measured.weights[1] >= 4.0);
+    CHECK(measured.milestone_count == 4);
+  }
+  CHECK_FALSE(progress_enabled());
+}
+
+TEST_CASE("a progress token from an earlier plan finishes nothing in the next") {
+  u32 stale = k_trace_none;
+  {
+    Following first(three_stages(false));
+    stale = progress_stage_begin("read", {});
+    CHECK(stale != k_trace_none);
+  }
+  Following second(three_stages(false));
+  progress_stage_end(stale);
+  LoadProgress p;
+  progress_read(p);
+  CHECK(p.stages_done == 0);
+  progress_milestone("scene_loaded");
+  progress_read(p);
+  CHECK(p.milestones == 0b0100u);
+}
+
+TEST_CASE("progress reads are consistent while stages begin and end on other threads") {
+  ProgressPlan plan;
+  REQUIRE(plan.add_stage("alpha", 1.0));
+  REQUIRE(plan.add_stage("beta", 1.0));
+  Following following(plan);
+  std::atomic<bool> stop{false};
+  std::thread writers[3];
+  for (std::thread& w : writers) {
+    w = std::thread([&] {
+      while (!stop.load(std::memory_order_relaxed)) {
+        ENGINE_STARTUP_STAGE_DETAIL("alpha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        ENGINE_STARTUP_STAGE_DETAIL("beta", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+      }
+    });
+  }
+  u32 torn = 0;
+  f32 last = 0.0f;
+  for (u32 i = 0; i < 20000; ++i) {
+    LoadProgress p;
+    progress_read(p);
+    const std::string stage(p.stage);
+    const std::string detail(p.detail);
+    // A stage and its own detail, never one stage with the other's half-written.
+    if (!((stage == "alpha" && (detail.empty() || detail == "aaaaaaaaaaaaaaaaaaaaaaaaaaaa")) ||
+          (stage == "beta" && detail == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")))
+      ++torn;
+    if (p.fraction < last) ++torn;
+    last = p.fraction;
+  }
+  stop = true;
+  for (std::thread& w : writers)
+    w.join();
+  CHECK(torn == 0);
+}
+
+namespace {
+struct PumpCounter {
+  u32 calls = 0;
+  static void pump(void* user) {
+    ++static_cast<PumpCounter*>(user)->calls;
+    ENGINE_STARTUP_STAGE("inside the pump");  // a nested pump is ignored
+    progress_pump();
+  }
+};
+}  // namespace
+
+TEST_CASE("the pump runs on its own thread's stage boundaries and nowhere else") {
+  PumpCounter counter;
+  ProgressPlan plan;
+  REQUIRE(plan.add_stage("long", 1.0));
+  {
+    Following following(plan);
+    progress_set_pump(&PumpCounter::pump, &counter);
+    {
+      ENGINE_STARTUP_STAGE("long");  // its begin: 1
+      for (u32 slice = 0; slice < 4; ++slice)
+        progress_pump();               // 4
+      ENGINE_STARTUP_STAGE("a slice");  // its begin and its end: 2
+    }  // the long stage's end: 1
+    CHECK(counter.calls == 8);
+    std::thread other([] {
+      ENGINE_STARTUP_STAGE("elsewhere");
+      progress_pump();
+    });
+    other.join();
+    CHECK(counter.calls == 8);
+    progress_set_pump(nullptr, nullptr);
+    progress_pump();
+    CHECK(counter.calls == 8);
+  }
+  progress_set_pump(&PumpCounter::pump, &counter);
+  { ENGINE_STARTUP_STAGE("long"); }  // progress off: nothing pumps at a boundary
+  CHECK(counter.calls == 8);
+  progress_set_pump(nullptr, nullptr);
 }
