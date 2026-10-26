@@ -446,7 +446,11 @@ try {
     $surprise = ([regex]'"asset_provenance":\s*\{').Replace($sideText, '"asset_provenance": { "surprise": 1,', 1)
     Test-That 'and a block with a field the schema lacks does not, as a validation failure rather than an unread schema' {
       $v = Test-Strict $surprise
-      $surprise -ne $sideText -and -not $v.Valid -and ($v.Ids -join ' ') -match 'InvalidJsonAgainstSchema' -and $v.Text -match '/asset_provenance/surprise' }
+      # 7.4.12 and 7.6.6 record an InvalidJsonAgainstSchema naming the path; 7.6.9 (2026-10-25)
+      # answers $false and records nothing, so the path is held only where a record exists — and
+      # `verify`, through the tool's own reader, names it on either (below).
+      $surprise -ne $sideText -and -not $v.Valid -and @($v.Ids | Where-Object { $_ -like 'InvalidJsonSchema,*' }).Count -eq 0 -and
+        ($v.Ids.Count -eq 0 -or (($v.Ids -join ' ') -match 'InvalidJsonAgainstSchema' -and $v.Text -match '/asset_provenance/surprise')) }
     $big = ([regex]'"prompt_hash":\s*\d+').Replace($sideText, '"prompt_hash": 18446744073709551615', 1)
     Test-That 'a u64 above 2^63 (half of all prompt hashes) is a number to the validator' { $big -ne $sideText -and (Test-Strict $big).Valid }
     $wrongType = ([regex]'"commercial_ok":\s*(true|false)').Replace($sideText, '"commercial_ok": "no"', 1)
@@ -462,6 +466,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $wrongType)
     $r = Invoke-Gen verify -Path $vdir -LocalRoot $local -Schema $schemaFile.FullName
     Test-That 'and fails one whose asset_provenance has a field of the wrong type' { $r.Code -ne 0 -and ($r.Json[0].problems -join ' ') -match '/asset_provenance/commercial_ok' }
+    [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $surprise)
+    $r = Invoke-Gen verify -Path $vdir -LocalRoot $local -Schema $schemaFile.FullName
+    Test-That 'and names a field the schema lacks by its path, whatever the cmdlet recorded' { $r.Code -ne 0 -and ($r.Json[0].problems -join ' ') -match '/asset_provenance/surprise' }
     $brokenSchema = Join-Path $root 'broken.schema.json'
     [IO.File]::WriteAllText($brokenSchema, '{"$defs": {"AssetProvenance": {"type": 5}}}')
     [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $sideText)

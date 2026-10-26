@@ -2265,6 +2265,15 @@ $AssetProvenanceFields = @('generator', 'model_id', 'model_version', 'prompt_has
 #     Dockerfile's pin): the one check that expects a *failure* was the only one that noticed.
 #     So neither text is ever round-tripped: the schema is wrapped by splicing text, and a sidecar
 #     is validated as the bytes on disk.
+#   - PowerShell 7.6.9 (installed here 2026-10-25) answers $false for a document that does not
+#     validate and records *no* error at all — not in the error variable, not with -ErrorAction
+#     Stop, not in any stream — where 7.4.12 and 7.6.6 recorded an `InvalidJsonAgainstSchema`
+#     naming the path (`/asset_provenance/commercial_ok`). `InvalidJsonSchema` and `InvalidJson`
+#     are still recorded, so the first trap's rule holds. The verdict is still the cmdlet's; when it
+#     comes with no record, `Find-SchemaProblems` names the field itself, one level inside the
+#     sidecar's block — a field the definition lacks, a required one missing, a type the property
+#     does not allow — which is every failure `verify` has met, and says so when it finds nothing
+#     (a nested pattern or bound the cmdlet saw and it does not read).
 function Get-ProvenanceSchemaFile {
   if ($Schema) {
     if (-not (Test-Path -LiteralPath $Schema)) { throw "no JSON Schema at $Schema" }
@@ -2286,6 +2295,72 @@ function Get-SidecarSchemaText([string]$schemaFile) {
   return $text.Substring(0, $at + 1) + $wrap + $text.Substring($at + 1)
 }
 
+# The JSON type a value read by ConvertFrom-Json stands for: what JSON Schema's `type` names. An
+# integral double is an integer, as the schema reads 1.0.
+function Get-JsonTypeName($v) {
+  if ($null -eq $v) { return 'null' }
+  if ($v -is [bool]) { return 'boolean' }
+  if ($v -is [string]) { return 'string' }
+  if ($v -is [System.Collections.IList]) { return 'array' }
+  if ($v -is [System.Management.Automation.PSCustomObject] -or $v -is [System.Collections.IDictionary]) { return 'object' }
+  if ($v -is [System.Numerics.BigInteger]) { return 'integer' }
+  if ($v -is [double] -or $v -is [single] -or $v -is [decimal]) { return $(if ([math]::Floor([double]$v) -eq [double]$v) { 'integer' } else { 'number' }) }
+  if ($v -is [byte] -or $v -is [int16] -or $v -is [int] -or $v -is [long] -or $v -is [uint16] -or $v -is [uint32] -or $v -is [uint64]) { return 'integer' }
+  return 'unknown'
+}
+
+# The types a property's schema allows: its `type`, or the `type` of each `oneOf`/`anyOf` branch.
+# Empty for a `$ref` or anything else this reader does not follow, which is then not checked.
+function Get-SchemaTypes($ps) {
+  $types = @()
+  if ($ps.PSObject.Properties['type']) { $types += @($ps.type) }
+  foreach ($k in @('oneOf', 'anyOf')) {
+    if ($ps.PSObject.Properties[$k]) { foreach ($o in @($ps.$k)) { if ($o.PSObject.Properties['type']) { $types += @($o.type) } } }
+  }
+  return @($types | Select-Object -Unique)
+}
+
+# What a sidecar's `asset_provenance` block gets wrong against the definition the wrapped schema
+# refers it to, one level deep: a field the definition lacks where it allows none, a required field
+# missing, a value of a type the property does not allow. Each problem names its path as the cmdlet
+# used to (`/asset_provenance/<field>`). Empty when both texts parse and nothing at that level is
+# wrong, or when either does not parse here — never a verdict, only the detail beside the cmdlet's.
+function Find-SchemaProblems([string]$json, [string]$schemaText) {
+  $found = New-Object System.Collections.Generic.List[string]
+  try { $doc = ConvertFrom-Json -InputObject $json; $schema = ConvertFrom-Json -InputObject $schemaText } catch { return @() }
+  if (-not $schema.PSObject.Properties['properties']) { return @() }
+  foreach ($prop in $schema.properties.PSObject.Properties) {
+    $name = $prop.Name
+    $def = $prop.Value
+    if ($def.PSObject.Properties['$ref'] -and $def.'$ref' -match '^#/\$defs/([A-Za-z0-9_]+)$') {
+      $def = $schema.'$defs'.PSObject.Properties[$Matches[1]].Value
+    }
+    if (-not $doc.PSObject.Properties[$name]) {
+      if ($schema.PSObject.Properties['required'] -and @($schema.required) -contains $name) { $found.Add("/$name`: required, missing") }
+      continue
+    }
+    $block = $doc.$name
+    if ($null -eq $def -or (Get-JsonTypeName $block) -ne 'object' -or -not $def.PSObject.Properties['properties']) { continue }
+    $closed = $def.PSObject.Properties['additionalProperties'] -and $def.additionalProperties -eq $false
+    foreach ($field in $block.PSObject.Properties) {
+      $ps = $def.properties.PSObject.Properties[$field.Name]
+      if ($null -eq $ps) {
+        if ($closed) { $found.Add("/$name/$($field.Name)`: not a field of the definition, which allows no others") }
+        continue
+      }
+      $types = Get-SchemaTypes $ps.Value
+      if ($types.Count -eq 0) { continue }
+      $t = Get-JsonTypeName $field.Value
+      if ($t -in $types -or ($t -eq 'integer' -and 'number' -in $types)) { continue }
+      $found.Add("/$name/$($field.Name)`: is $t, and the schema allows $($types -join ' or ')")
+    }
+    if ($def.PSObject.Properties['required']) {
+      foreach ($r in @($def.required)) { if (-not $block.PSObject.Properties[$r]) { $found.Add("/$name/$r`: required, missing") } }
+    }
+  }
+  return @($found)
+}
+
 function Test-JsonStrict([string]$json, [string]$schemaText) {
   $errs = $null
   $ok = Test-Json -Json $json -Schema $schemaText -ErrorAction SilentlyContinue -ErrorVariable errs
@@ -2294,7 +2369,14 @@ function Test-JsonStrict([string]$json, [string]$schemaText) {
   if ($unparsed.Count -gt 0) {
     throw "the JSON Schema does not parse under PowerShell $($PSVersionTable.PSVersion) ($($unparsed[0].Exception.Message) $($unparsed[0].Exception.InnerException.Message)); nothing was validated"
   }
-  return [pscustomobject]@{ Valid = ([bool]$ok -and $list.Count -eq 0); Errors = @($list | ForEach-Object { $_.Exception.Message }) }
+  $errors = @($list | ForEach-Object { $_.Exception.Message })
+  if (-not [bool]$ok -and $errors.Count -eq 0) {
+    # The third trap above: the verdict without a record. Name the field, or say that nothing one
+    # level in names it.
+    $errors = @(Find-SchemaProblems $json $schemaText)
+    if ($errors.Count -eq 0) { $errors = @("the document does not validate against the schema, and PowerShell $($PSVersionTable.PSVersion) records no detail; nothing one level inside the block names it (a nested pattern or bound?)") }
+  }
+  return [pscustomobject]@{ Valid = ([bool]$ok -and $list.Count -eq 0); Errors = $errors }
 }
 
 function Invoke-Verify {
