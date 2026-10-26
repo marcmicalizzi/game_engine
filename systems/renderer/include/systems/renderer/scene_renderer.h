@@ -69,7 +69,10 @@ struct ViewStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;   // see Stats::shadow_casters
+  u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;  // see Stats::shadow_casters
   u32 triangles_hw = 0;     // see Stats::triangles_hw
   u32 vertex_fallback = 0;  // see Stats::vertex_fallback
   f64 gpu_cull = 0.0;
@@ -144,7 +147,10 @@ struct FrameStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;     // Stats::shadow_casters: built into the structures, not drawn
+  u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;    // Stats::shadow_casters: built into the structures, not drawn
   u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
   f64 gpu_shadow = 0.0;       // the cascaded maps' passes, cull included
   f64 gpu_shadow_cull = 0.0;  // of which the light-view cull
@@ -290,6 +296,8 @@ struct RtStats {
   u64 static_bytes = 0;
   u32 static_instances = 0;
   u64 static_pairs = 0;
+  // The last frame's casters the horizon kept out of the structures (Stats::horizon_casters).
+  u32 horizon_casters = 0;
 };
 
 struct Stats {
@@ -302,6 +310,9 @@ struct Stats {
   // structures anyway, so that they cast shadows (ResolvedSettings::casters). Not visible pairs:
   // nothing draws them, and `visible_pairs()` does not count them. One frame late, like the rest.
   u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex

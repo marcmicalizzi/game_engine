@@ -1273,6 +1273,7 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.visible_pass2 = 0;
   stats_.visible_sw = 0;
   stats_.shadow_casters = 0;
+  stats_.horizon_casters = 0;
   stats_.triangles_hw = 0;
   stats_.vertex_fallback = 0;
   for (u32 v = 0; v < view_count(); ++v) {
@@ -1284,10 +1285,15 @@ void SceneRenderer::fold_visible(u32 slot) {
     // shadows, which has no software pass — the shadow casters, which are not visible pairs.
     view.visible_sw = resolved_.casters ? 0u : block[6];
     view.shadow_casters = resolved_.casters ? block[6] : 0u;
+    // The casters past the horizon, in the software block's second word, which the frame fills
+    // with 1 and never dispatches when it has casters.
+    view.horizon_casters = resolved_.caster_horizon && block[7] > 0 ? block[7] - 1u : 0u;
     stats_.visible_hw += view.visible_hw;
     stats_.visible_pass2 += view.visible_pass2;
     stats_.visible_sw += view.visible_sw;
     stats_.shadow_casters += view.shadow_casters;
+    stats_.horizon_casters += view.horizon_casters;
+    stats_.rt.horizon_casters = stats_.horizon_casters;
     if (resolved_.vertex_indexed) {
       view.triangles_hw = block[9] + block[11];
       view.vertex_fallback = block[10] + block[12];
@@ -2254,6 +2260,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (casters) {
       cull.casters = vf.run_address[gfx::k_caster_run];
       cull.caster_count = scene.sw_args.address + vf.args_offset;
+      // The caster horizon: none farther from the eye than the shadows' distance (R94).
+      cull.caster_horizon = resolved_.caster_horizon ? settings.shadow_distance : 0.0f;
       // And what its frustum rejects but a ray towards a shadowed light could still meet:
       // this view's caster volumes (caster_volume.h), fit from its own frustum, since every view's
       // cull run has its own planes.

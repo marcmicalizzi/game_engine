@@ -197,6 +197,13 @@ struct RenderSettings {
   // the forms cut by distance as without the chain. It changes what a rigid form draws, which is
   // why it lives here.
   bool rt_static_forms = true;
+  // **The caster horizon** (docs/subsystems/renderer.md, "Shadows"; R94): with traced shadows, a
+  // shadow caster — a cluster the cone test or the frustum kept out of the picture — farther from
+  // the eye than `shadow_distance` is not built, and is counted (`Stats::horizon_casters`), the
+  // cascades' rule for the rays. Without a `shadow_distance` the horizon is the far side of the
+  // scene's bounds, which no caster passes. Off (and the `renderer.rt.caster_horizon` tunable
+  // false) keeps every caster the volumes reach.
+  bool rt_caster_horizon = false;
   // One upload per distinct image per scene (docs/subsystems/renderer.md, "One upload per distinct
   // image"): every (mesh, image) a material samples is keyed by its content — the `.tex` build key,
   // or the hash of the image's encoded bytes when it is decoded — and every mesh that samples the
@@ -300,6 +307,9 @@ struct ResolvedSettings {
   // `renderer.rt.static_forms` tunable, and build records rather than templates. A scene with no
   // rigid form is unchanged by it.
   bool static_forms = false;
+  // The casters are bounded by the horizon (`RenderSettings::rt_caster_horizon`): casters on, the
+  // setting or the `renderer.rt.caster_horizon` tunable, and a `shadow_distance` to bound them by.
+  bool caster_horizon = false;
   // The vertex path draws a culled cut with one indexed draw per run (cluster_vertex_indexed.slang)
   // rather than every cluster's triangle capacity: `vertex_path`, the cull pass on, and a device
   // with geometryShader, which the draw's SV_PrimitiveID needs, and fullDrawIndexUint32, which

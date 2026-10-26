@@ -276,8 +276,14 @@ struct CullParams {
   // its masked replacement is whole before it goes (`geometry::lod_fade_split`).
   f32 foliage_px = 0.0f;
   f32 fade = 0.0f;
+  // **The caster horizon** (renderer.md, "Shadows"; `RenderSettings::rt_caster_horizon`, R94): a
+  // shadow caster — cone-culled or outside the frustum — whose sphere lies farther than this from
+  // the eye is not kept, and is counted instead in the second word of the view's software argument
+  // block (`caster_count + 4`), which a frame with casters never dispatches. 0 keeps every caster.
+  f32 caster_horizon = 0.0f;
+  u32 horizon_pad[3] = {};
 };
-static_assert(sizeof(CullParams) == 1712);
+static_assert(sizeof(CullParams) == 1728);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

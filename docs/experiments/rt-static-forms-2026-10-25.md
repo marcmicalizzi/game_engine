@@ -56,3 +56,62 @@ path did not draw. The cost is the raster's: the frontier is the cut a camera at
 edge asks for, so the hardwoods' raster cut quadrupled and the hardware raster went from 0.20 to
 0.47 ms, while the chain fell from 2.30 to 1.76 ms. Every number is an upper bound by the
 harness's rule: the machine was shared throughout.
+
+## Stages 2 and 3: the first capacity, the drop order, the caster horizon
+
+The same scenes and flags. "s1" is static forms alone; "all" is every stage of R94 that was built —
+static forms, the first capacity from the scene's estimate, the drop order by distance, and the
+caster horizon, which is off by default and inert here: all three scenes run with
+`--no-shadow-casters` (above), so they have no casters for it to bound. Peak bytes are the chain's
+largest `rt_bytes`, the end bytes its last.
+
+| scene | run | wanted max / mean | built max | overflow frames | dropped instances | growths (hitch ms) | capacity end / peak | chain bytes end / peak | chain | hw raster | frame median / p95 | machine_state |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| clearing | before | 475,281 / 475,281 | 118,214 | 216 | 11,688,402 | 1 (43.4) | 118,214 / 118,214 | 1.24 / 1.24 GB | 18.17 | — | 43.38 / 44.47 | 34% / 1% → 32% / 100% |
+| clearing | s1 | 110,282 / 110,282 | 110,282 | 2 | 14,284 | 1 (49.0) | 118,214 / 118,214 | 1.38 / 1.38 GB | 3.90 | — | 39.73 / 42.23 | 28% / 0% → 30% / 2% |
+| clearing | all | 110,282 / 110,282 | 110,282 | **0** | **0** | **0** | 118,214 / 150,047 | 1.38 / 1.38 GB | 4.34 | — | 41.20 / 43.85 | 55% / 4% → 72% / 4% |
+| hardwoods | before | 56,510 / 56,510 | 56,510 | 0 | 0 | 0 | 65,536 / 65,536 | 0.65 / 0.65 GB | 2.30 | 0.20 | 5.16 / 5.87 | 17% / 6% → 17% / 99% |
+| hardwoods | all | 36,884 / 36,884 | 36,884 | 0 | 0 | 0 | 49,152 / 150,447 | 0.80 / 1.39 GB | 1.86 | 0.47 | 5.57 / 6.17 | 40% / 3% → 40% / 14% |
+| crossing | before | 81,720 / 33,607 | 81,720 | 2 | 16,968 | 5 | 28,672 / 98,304 | 0.49 / 0.88 GB | 1.51 | 0.08 | 4.06 / 7.11 | 45% / 5% → 69% / 3% |
+| crossing | all | 38,279 / 16,865 | 38,279 | **0** | **0** | **0** | 20,480 / 150,447 | 0.61 / 1.40 GB | 1.29 | 0.27 | 4.54 / 9.91 | 35% / 2% → 23% / 3% |
+
+**The new critical number is the structures built per frame**: at the clearing 110,282 (was 475,281),
+at the hardwoods 36,884 (56,510), along the crossing at most 38,279 and 16,865 on average (81,720
+and 33,607). What is built once is per form, not per instance: three forms of 53 clusters in the
+test grove, and on the forest the forms' frontiers (a few tens of thousands of clusters over 90–148
+forms) for all their tens of thousands of instances.
+
+**What the stages bought.** The clearing's first frame is complete and nothing grows: before, frame 0
+dropped 60,530 instances and the one growth took 43–49 ms. The crossing's five growths and two
+overflow frames are gone. **What they cost**: memory up front — a scene past the budget now holds
+the budget from its first frame (1.38–1.40 GB of chain at the peak on all three, where the hardwoods
+and the crossing had peaked at 0.65 and 0.88 GB) until the first shrink window passes, which the
+hardwoods' and the crossing's end bytes show — and the raster's finer far trees (0.20 → 0.47 ms at
+the hardwoods, 0.08 → 0.27 ms along the crossing, where the visible cut is 5.5 times larger). The
+crossing's frame p95 rose from 7.1 to 9.9 ms with the machine as shared as it was; its median moved by
+0.5 ms. Every time is an upper bound.
+
+**The caster horizon** is measured on the test grove, since the forest's scenes run without casters:
+800 trees on 16 m tiles in rings of 4 and 8, 640×360, traced shadows, `--shadow-distance 30`: 7,051
+casters without the horizon, 1,283 within it and 5,768 counted past it, and no pixel of the traced
+shadows changed (`engine-view: a shadow caster past the caster horizon casts nothing and is
+counted`).
+
+## What was not built
+
+**The rays' LOD bias** (`renderer.rt.lod_bias_px`, a coarser cut for the structures than for the
+picture) was not built. A structure cut coarser than the picture puts a coarser surface beside the
+picture's own receivers, and where it stands above them a shadow ray leaving the receiver meets it
+within a few centimetres — the shards [One cut for every view](../subsystems/renderer.md#one-cut-for-every-view)
+describes for two views' cuts, and the self-shadowing the cascades showed at a coarser cut
+([cascaded shadow maps](cascaded-shadow-maps.md)): the cost is not a traced shadow's edge moving
+by the cut's error but its receivers shadowing themselves. Avoiding that needs either a ray offset as
+large as both cuts' errors (which loses every contact shadow smaller than the error) or a second cull
+run for the structures and a per-receiver test, and with the forms built once the clearing's frame
+already fits its budget. It is left for a measured case that needs it.
+
+**The forest's casters.** None of the three scenes can run with shadow casters on this engine: the
+chain's index space over three runs (5.59 M pairs) is smaller than the clearing's fixed pairs, and
+on the v8 forest the placements consumer's budget and the renderer's layout disagree by the blocks'
+slack, so the tail is refused whole. Static forms change neither, because the forms' pairs are still
+pairs of the visible list.

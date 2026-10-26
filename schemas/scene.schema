@@ -1756,6 +1756,8 @@ struct FlythroughRt @version(2) {
   static_bytes: u64 = 0 @since(2)
   static_instances: u32 = 0 @since(2)
   static_pairs: u64 = 0 @since(2)
+  /// The last frame's shadow casters the caster horizon kept out (renderer.md, "Shadows").
+  horizon_casters: u32 = 0 @since(2)
   /// Per frame, over the path: what the chain built and what the frame wanted.
   built: Percentiles
   wanted: Percentiles

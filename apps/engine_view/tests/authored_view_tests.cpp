@@ -417,6 +417,12 @@ std::string dense_scene_text() {
   return text;
 }
 
+// The most shadow casters a frame of the run kept (the summary's percentiles; still frames).
+u64 casters_max(const JsonValue& summary) {
+  const JsonValue* casters = summary.find("shadow_casters");
+  return casters != nullptr ? field_u64(*casters, "max") : 0u;
+}
+
 // Traced shadows over the dense grove at 640 x 360, `frames` frames into `bench` and `png`.
 Run traced_dense(const test::TempDir& tmp, const char* bench, const char* png, u32 frames,
                  const std::vector<const char*>& extra) {
@@ -511,6 +517,50 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures ever
     CHECK(field_u64(*rt, "overflow_frames") > 0);
   }
   CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);
+}
+
+// R94: the caster horizon. With `--shadow-distance` and `renderer.rt.caster_horizon`, a shadow
+// caster farther from the eye than the distance is not built and is counted; one nearer is built
+// as before, so the casters kept and the casters past it are the casters without it.
+TEST_CASE("engine-view: a shadow caster past the caster horizon casts nothing and is counted") {
+  const test::TempDir tmp("engine_view_rt_caster_horizon");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run all = traced_dense(tmp, "all.jsonl", "all.png", 3, {"--shadow-distance", "30"});
+  if (all.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << all.output);
+    return;
+  }
+  REQUIRE_MESSAGE(all.exit_code == 0, all.output);
+  const Run near =
+      traced_dense(tmp, "near.jsonl", "near.png", 3,
+                   {"--shadow-distance", "30", "--tunable", "renderer.rt.caster_horizon=true"});
+  REQUIRE_MESSAGE(near.exit_code == 0, near.output);
+
+  const JsonValue all_summary = summary_of(all.output);
+  const JsonValue near_summary = summary_of(near.output);
+
+  const JsonValue* all_rt = all_summary.find("rt");
+  const JsonValue* near_rt = near_summary.find("rt");
+
+  REQUIRE(all_rt != nullptr);
+  REQUIRE(near_rt != nullptr);
+
+  const u64 casters_all = casters_max(all_summary);
+  const u64 casters_near = casters_max(near_summary);
+  const u32 changed = differing_pixels(tmp.file("all.png"), tmp.file("near.png"));
+
+  MESSAGE("casters " << casters_all << " without the horizon, " << casters_near << " within 30 m ("
+                     << field_u64(*near_rt, "horizon_casters") << " past it); " << changed
+                     << " pixels of the traced shadows change");
+  CHECK(field_u64(*all_rt, "horizon_casters") == 0);
+  CHECK(field_u64(*near_rt, "horizon_casters") > 0);
+  CHECK(casters_near < casters_all);
+  CHECK(casters_near + field_u64(*near_rt, "horizon_casters") == casters_all);
 }
 
 #endif

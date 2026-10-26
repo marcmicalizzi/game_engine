@@ -63,6 +63,8 @@ bool rt_static_forms_tunable() noexcept;
 // the forms' fixed cut and builds it every frame — the comparison the tests and the measurement
 // make.
 bool rt_static_build_tunable() noexcept;
+// `renderer.rt.caster_horizon` (false): `RenderSettings::rt_caster_horizon` from the command line.
+bool rt_caster_horizon_tunable() noexcept;
 inline constexpr u32 k_default_rt_budget_mib = 1024;
 // The first capacity of a scene too large to hold whole within the budget, before any frame has
 // said what it builds: 65,536 clusters is 400 MB on the RTX 5090, above every first frame the

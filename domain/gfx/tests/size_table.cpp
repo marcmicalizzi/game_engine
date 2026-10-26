@@ -154,7 +154,8 @@ ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
 // the vertex attributes) right after `eye`, so a rasterizer that reads the eye through
 // `ClusterDrawParams::eye` reaches them too (renderer.md, "Alpha-tested geometry"); the caster
 // volumes moved 32 bytes back, and nothing reads them by offset.
-ENGINE_EXPECT_SIZE(1712, 8, gfx::CullParams);
+// 1728, not 1712: the caster horizon and its pad (renderer.md, "Shadows", R94, 2026-10-25).
+ENGINE_EXPECT_SIZE(1728, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

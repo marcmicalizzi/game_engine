@@ -576,6 +576,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // their structures are built once and referenced per instance, and the frame builds the rest.
   // It needs the cut (a form's frontier is a cut the cull selects), and build records, since a
   // template instantiation is the per-frame path for a deforming mesh.
+  // **The caster horizon**: the cascades' bound for the rays' casters, when there is one.
+  out.caster_horizon = out.casters && (s.rt_caster_horizon || rt_caster_horizon_tunable()) &&
+                       s.shadow_distance > 0.0f;
   out.static_forms = out.rt_chain && s.cull && s.rt_static_forms && rt_static_forms_tunable() &&
                      !s.rt_templates && !out.stream;
   // **A morphed mesh is not streamed**, and the reason is said out loud rather than discovered as

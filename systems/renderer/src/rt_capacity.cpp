@@ -40,6 +40,11 @@ tunables::Int rt_initial_clusters{"renderer.rt.initial_clusters", k_initial_rt_c
                                   "clusters where the scene could want more, before the first "
                                   "frame has said what it builds"};
 
+tunables::Bool rt_caster_horizon{
+    "renderer.rt.caster_horizon", false,
+    "With traced shadows and a shadow distance, build no shadow caster "
+    "farther from the eye than that distance"};
+
 u64 round_up(u64 value, u64 step) noexcept { return (value + step - 1) / step * step; }
 
 }  // namespace
@@ -50,6 +55,7 @@ u32 rt_shrink_frames_tunable() noexcept { return static_cast<u32>(rt_shrink_fram
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
+bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }
 u32 rt_initial_clusters_tunable() noexcept { return static_cast<u32>(rt_initial_clusters.get()); }
 
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {

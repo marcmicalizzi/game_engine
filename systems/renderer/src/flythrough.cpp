@@ -129,6 +129,7 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.static_bytes = stats.static_bytes;
   out.static_instances = stats.static_instances;
   out.static_pairs = stats.static_pairs;
+  out.horizon_casters = stats.horizon_casters;
 }
 
 void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
