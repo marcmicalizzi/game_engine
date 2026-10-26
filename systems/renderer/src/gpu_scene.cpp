@@ -3,6 +3,7 @@
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
 #include <domain/texture/texture_build.h>
@@ -1556,15 +1557,30 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         const geometry::ClusterMeshPart& part = data_->parts[m];
         const u32 end =
             m + 1 < data_->parts.size() ? data_->parts[m + 1].first_vertex : total_vertices;
-        if (end - part.first_vertex != source.motion_vertices.size() ||
+        const u32 mesh_vertices = end - part.first_vertex;
+        if (mesh_vertices != source.motion_vertices.size() ||
             !flora_mesh(std::span<const geometry::ClusterFileMotionPart>(
                             source.motion_parts.data(), source.motion_parts.size()),
                         std::span<const geometry::ClusterFileStructuralPart>(
                             source.structural_parts.data(), source.structural_parts.size()),
                         source.species, flora_meshes_[m])) {
           flora_meshes_[m] = FloraMesh{};
+          // Named so the next reader need not guess (roadmap W78): which mesh, from where, its
+          // vertices against its motion records, its parts, its species, and which test failed.
+          const bool counts = mesh_vertices != source.motion_vertices.size();
+          const char* why = counts ? "its motion records do not cover its vertices"
+                            : geometry::flora_species_info(source.species) == nullptr
+                                ? "its species is not in the flora catalogue"
+                            : source.motion_parts.size() > 65536u
+                                ? "more than 65536 motion parts"
+                                : "a motion part's parent follows it";
           ENGINE_LOG_WARN(log_renderer, "a tree drawn rigid", log::field("mesh", m),
-                          log::field("reason", "its motion contract does not cover its mesh"));
+                          log::field("name", m < data_->mesh_info.size() ? data_->mesh_info[m].name
+                                                                         : std::string()),
+                          log::field("path", source.path), log::field("vertices", mesh_vertices),
+                          log::field("motion_vertices", source.motion_vertices.size()),
+                          log::field("parts", source.motion_parts.size()),
+                          log::field("species", source.species), log::field("reason", why));
           continue;
         }
         Vec3 lo = lod.mesh.vertices[part.first_vertex];

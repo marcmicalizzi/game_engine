@@ -432,14 +432,22 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   scene.instance_clip.resize(count, animation::Library::k_not_found);
   // The grid is expanded inside `load_scene`, so its instances have no `SceneInstance` of their
   // own to carry a block; they take the command line's clip and speed and a phase each. Every
-  // other instance the scene has is `desc.instances[i]` at the same index; what follows them —
-  // a game's props, appended at the load — is rigid.
+  // other instance the scene has is `desc.instances[read]`, `read` its index in the whole read
+  // (renderer.md, "The whole read's index"): the loaded index for a scene read whole, and for a
+  // streamed world's, whose load handed some instances to the tail, the place the whole read
+  // gives it — so a kept character's block, phase, entity id and summary row are the whole read's.
+  // What follows them — a game's props, appended at the load — is rigid.
   const bool from_grid = desc.instances.empty();
+  scene.read_instance.resize(count);
+  for (u32 i = 0; i < count; ++i)
+    scene.read_instance[i] = renderer::read_instance(data, i);
+  scene.loaded_of_read = data.loaded_of_read;
+  scene.read_count = renderer::read_instance_count(data);
 
   ecs::WorldCommands commands(scene.sim.world());
   for (u32 i = 0; i < count; ++i) {
     if (data.instance_joints.empty() || data.instance_joints[i] == 0) continue;
-    commands.create(instance_id(i));
+    commands.create(instance_id(scene.read_instance[i]));
   }
   commands.apply();
 
@@ -457,23 +465,24 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     const u32 skeleton_index = mesh < scene.mesh_skeleton.size() ? scene.mesh_skeleton[mesh]
                                                                  : animation::Library::k_not_found;
     if (skeleton_index == animation::Library::k_not_found) continue;
+    const u32 read = scene.read_instance[i];
     renderer::SceneAnimation request;
-    if (from_grid || i >= desc.instances.size()) {
+    if (from_grid || read >= desc.instances.size()) {
       request.clip = options.clip;
       request.speed = options.speed;
     } else {
-      request = desc.instances[i].animation;
+      request = desc.instances[read].animation;
       if (request.clip.empty()) request.clip = options.clip;
       request.speed *= options.speed;
     }
     const u32 clip_index = find_clip(scene.library, skeleton_index, request.clip);
     if (clip_index == animation::Library::k_not_found) {
       error = request.clip.empty()
-                  ? "instance " + std::to_string(i) + ": the skin has no animation to play"
-                  : "instance " + std::to_string(i) + ": no clip named '" + request.clip + "'";
+                  ? "instance " + std::to_string(read) + ": the skin has no animation to play"
+                  : "instance " + std::to_string(read) + ": no clip named '" + request.clip + "'";
       return false;
     }
-    const Id128 id = instance_id(i);
+    const Id128 id = instance_id(read);
     if (!scene.system.attach(id, scene.library.skeleton(skeleton_index).id,
                              scene.library.clip(clip_index).id)) {
       error = "the animation library does not hold this skin's skeleton";
@@ -481,11 +490,12 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     }
     // The phase: what the scene file asked for, or a spread over the clip so that a crowd of one
     // clip is not a crowd of clones. Every copy still starts at a value that is a function of its
-    // index alone, so two runs of `--frames N` draw the same picture.
+    // index alone, so two runs of `--frames N` draw the same picture — the whole read's index over
+    // the whole read's count, so a streamed world's kept character is at the whole read's phase.
     const f32 duration = scene.library.clip_data(clip_index).duration;
     f32 phase = request.phase;
-    if (phase == 0.0f && count > 1 && duration > 0.0f)
-      phase = duration * static_cast<f32>(i) / static_cast<f32>(count);
+    if (phase == 0.0f && scene.read_count > 1 && duration > 0.0f)
+      phase = duration * static_cast<f32>(read) / static_cast<f32>(scene.read_count);
     if (duration > 0.0f) phase = std::fmod(phase, duration);
     scene.system.set_playhead(id, phase, request.speed);
     scene.entities[i] = id;
@@ -611,8 +621,11 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
   const std::span<const anim::JointMatrix> matrices = scene.system.joint_matrices();
   for (u32 i = 0; i < scene.entities.size(); ++i) {
     if (scene.entities[i].is_null()) continue;
+    // Named and hashed by the whole read's index, so a streamed world's summary is the whole
+    // read's (renderer.md, "The whole read's index").
+    const u32 read = i < scene.read_instance.size() ? scene.read_instance[i] : i;
     scene::AnimatedInstance entry;
-    entry.instance = i;
+    entry.instance = read;
     entry.tier = i < scene.instance_tier.size() ? scene.instance_tier[i] : 0u;
     const u32 clip_index = scene.instance_clip[i];
     if (clip_index != animation::Library::k_not_found)
@@ -636,8 +649,8 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
     entry.clip_hash = renderer::hash_hex(clip_hash);
     entry.playhead_hash = renderer::hash_hex(playhead_hash);
     entry.pose_hash = renderer::hash_hex(pose_hash);
-    all = hash_combine(hash_combine(hash_combine(hash_combine(all, i), clip_hash), playhead_hash),
-                       pose_hash);
+    all = hash_combine(
+        hash_combine(hash_combine(hash_combine(all, read), clip_hash), playhead_hash), pose_hash);
     out.animated.push_back(std::move(entry));
   }
   out.hash = renderer::hash_hex(all);
@@ -685,7 +698,8 @@ struct GameActors::Impl {
   };
   struct Actor {
     std::string name;
-    u32 instance = 0;
+    u32 instance = 0;  // the handle: the whole read's index (`DeclaredActor::instance`)
+    u32 loaded = 0;    // the loaded instance: the animated world's and the renderer's index
     Id128 entity;
     u32 skeleton = animation::Library::k_not_found;
     u32 row = ~0u;  // the tier row, `AnimatedScene::row_instance`
@@ -744,7 +758,7 @@ struct GameActors::Impl {
   // The pose the last step left, as the summary hashes it (`animation_summary`).
   u64 pose_hash(const Actor& a) const {
     const std::span<const anim::JointMatrix> matrices = scene->system.joint_matrices();
-    const renderer::InstanceJoints& run = scene->runs[a.instance];
+    const renderer::InstanceJoints& run = scene->runs[a.loaded];
     return run.count > 0 && run.first + run.count <= matrices.size()
                ? hash_bytes(matrices.data() + run.first,
                             usize{run.count} * sizeof(anim::JointMatrix))
@@ -825,8 +839,16 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
   g.sample_every = hz / 4 > 0 ? hz / 4 : 1u;
   g.actors.clear();
   for (const DeclaredActor& d : declared) {
-    if (d.instance >= scene.entities.size() || d.instance >= desc.instances.size() ||
-        scene.entities[d.instance].is_null()) {
+    // The handle is the whole read's index; the world's tables are the loaded instance's
+    // (renderer.md, "The whole read's index"), found once here.
+    u32 loaded = renderer::k_not_loaded;
+    if (!loaded_actor(
+            d, std::span<const u32>(scene.loaded_of_read.data(), scene.loaded_of_read.size()),
+            scene.read_count, scene.entities.size(), loaded, error)) {
+      return false;
+    }
+    if (loaded == renderer::k_not_loaded || loaded >= scene.entities.size() ||
+        d.instance >= desc.instances.size() || scene.entities[loaded].is_null()) {
       std::fprintf(stderr,
                    "engine-view: game: the scene names instance %u \"%s\", which does not animate "
                    "(its mesh has no skin); it is not an actor\n",
@@ -836,7 +858,8 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
     Impl::Actor a;
     a.name = d.name;
     a.instance = d.instance;
-    a.entity = scene.entities[d.instance];
+    a.loaded = loaded;
+    a.entity = scene.entities[loaded];
     const renderer::SceneInstance& source = desc.instances[d.instance];
     a.skeleton = source.mesh < scene.mesh_skeleton.size() ? scene.mesh_skeleton[source.mesh]
                                                           : animation::Library::k_not_found;
@@ -844,7 +867,7 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
     a.position = source.origin + DVec3{source.transform.position};
     a.yaw = yaw_of(source.transform.rotation);
     for (u32 r = 0; r < scene.row_instance.size(); ++r) {
-      if (scene.row_instance[r] == d.instance) a.row = r;
+      if (scene.row_instance[r] == loaded) a.row = r;
     }
     if (a.row != ~0u) {
       const DVec3 offset = scene.positions[a.row] - a.position;
@@ -1001,7 +1024,7 @@ void GameActors::Impl::fill(const Actor& a, hotload::ActorState& out) const {
       out.clip[n] = '\0';
     }
   }
-  out.tier = a.instance < scene->instance_tier.size() ? scene->instance_tier[a.instance] : 0u;
+  out.tier = a.loaded < scene->instance_tier.size() ? scene->instance_tier[a.loaded] : 0u;
   out.pose_hash = pose_hash(a);
 }
 
@@ -1193,7 +1216,7 @@ bool GameActors::flush(renderer::SceneRenderer& renderer, std::string* error) {
   for (Impl::Actor& a : g.actors) {
     if (!a.moved) continue;
     a.moved = false;
-    g.move_indices.push_back(a.instance);
+    g.move_indices.push_back(a.loaded);  // the renderer's index
     g.move_placements.push_back(a.placement);
   }
   if (g.move_indices.empty()) return true;

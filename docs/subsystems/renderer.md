@@ -225,6 +225,8 @@ The last row is the point: **13.1× less allocated, and the frame used 0.77 MB o
 
 **Bounds.** A swaying tree is a deformed instance, so it pads its spheres by a bound on how far its vertices leave the rest pose (`flora_bounds_padding`: per vertex, the sum over its part chain of each part's largest bend at the saturating wind times its distance from that part's pivot, the larger of that and any padding it had) — the young palm of the test pads by 1.77 m — and, like every deformed instance, **it is never cone-tested** ([geometry](geometry.md#normal-cones-fit-to-what-is-drawn)): a palm's trunk loses the backfacing clusters the cone test dropped, and the padding makes the cut finer (a padded sphere is nearer the camera, so its projected error is larger). The **push is not in the padding**: a pushed part is within a metre of the walker, whose eye is the camera, and turns away from it, and 0.9 rad over a 4 m frond would pad every palm by 3.6 m at any distance. **The casters and the cascades take the deformed trees too** (R84's blocks for the caster run and the cascades), so a swaying tree's shadow sways; its cut in every cascade is a pool block of its own. A scene with trees takes a pool of at least `renderer.flora.pool_mib` (96 MiB), clamped as every budget is to what its whole meshes need over the views and cascades, because an entry the budget refuses draws its rest pose beside neighbours that sway.
 
+**A mesh whose contract the stage cannot read is drawn rigid, and says which and why** (`a tree drawn rigid`, once per scene mesh at create): its index and name, the path the scene named it by (`SourceMesh::path`; a distance form's is its source's), its vertices against its motion records, its parts, its species, and which test failed — the records not covering the vertices, a species the flora catalogue (`geometry::flora_species_info`) lacks, more than 65,536 parts, or a part whose parent follows it (roadmap W78; until then the line named the index alone). On the forest PoC's v12 full scene (2026-10-25) all 27 lines were the second: the cover capability's companions ([cover](cover.md)) carry the motion contract — part 0 a root with no geometry, which is how collision leaves them out — with the species `cover` (seven rock covers) and `ivy` (two rock vines), neither in the catalogue, each line three times, for the mesh and its two ring forms; the counts matched in every one. A cover is meant to stand still, so for it the line is noise; a vine's hanging tips are what its contract says the wind moves, so for it the catalogue's missing entry is a vine that does not sway.
+
 **What it costs** (2026-10-19; RTX 5090, `msvc-debug` engine-view, 1920×1080 offscreen, each scene's camera path flown once with `--repeat 1 --warmup 60`, traced shadows, `--tunable renderer.flora.motion=false` for the rigid run; the harness's `machine_state` had other processes on 46–99% of the CPU and the GPU 0–2% busy, so these are upper bounds, and the CPU figures are a debug build's):
 
 | Scene | Trees, parts | GPU total ms, median / p95 / p99 | pool pass ms (median / p95) | visible pairs (median) | shadow casters (median) | frame thread ms (median) |
@@ -1975,7 +1977,7 @@ and the sentence it got blamed the terrain rings.
 the placement generator `authored` ([authored](authored.md)), `load_scene` hands the file's own
 instances to it as the last streamed entry (`engine.scene.AuthoredSet`), in the file's order, each
 with its place in that order as a stable id. **What stays in the prefix**, counted in
-`SceneData::authored` by why: an instance with an animation block, a skinned or morphed mesh (a
+`SceneData::authored` by why: a host's actor (`AuthoredStreaming::keep`, [below](#an-actor-is-never-streamed)), an instance with an animation block, a skinned or morphed mesh (a
 deformed tail instance is refused, above), a mesh that reaches farther from its origin than a tile
 edge (`AuthoredStreaming::max_reach_m`, 0 the tile: the landmarks — the v8 forest's two ancients
 reach 56 m — so they stay where the scene put them, visible from anywhere, as a landmark must be),
@@ -2062,6 +2064,53 @@ used it, with a job pool made and joined per mesh, and `find_built_textures` did
 (W75, [What the load reads](#what-the-load-reads)): one identity per distinct image, a pack's from
 its index, a built texture trusted from its header, one pool per load, the meshes on it. (1) and (2)
 are stages of their own.
+
+#### An actor is never streamed
+
+Roadmap W78 (2026-10-25). **The instances a host moves stay in the prefix**: a host names them, by
+their index in the whole read, in `SceneDesc::authored.keep` before `load_scene`, and the load keeps
+them whatever else they are (`AuthoredStats::kept_actors`; an actor is counted there and not as
+deformed or far-reaching). engine-view fills it with the game's declared actors (`keep_actors`,
+[apps](apps.md#actors-the-characters-a-game-moves)), which are read with the scene file before the
+module loads and so before the scene does. **Why**: a game moves, plays and asks after an actor on
+every tick, so its entity, its joint run and its row of the instance table must exist from the first
+frame to the last, wherever the camera is. A streamed placement exists only while the ring holds its
+tile — the ring would stream it out from under the game, and a tail instance has no joints anyway
+(a deformed tail instance is refused, above). Today every declared actor has an animation block and
+so was kept already by the deformed rule; the set makes the rule the actor's own, so an actor that
+stops being "deformed" by that test (a rigid prop a game drives, a skin moved to the tail when R84
+lands) still is not streamed by accident.
+
+**What keeping them costs** (2026-10-25, RTX 5090, `msvc-debug` engine-view offscreen at 1600 × 900,
+the first 120 frames of `streamed-forest`'s path, two flights each; shared machine, others at 36–49 %
+of the CPU and 1–8 % of the GPU, so the GPU numbers are the trustworthy ones): the scene as committed
+against the same scene with 52 of the Fox sample walking near the path's first look (the forest
+PoC's count, each an instance with an animation block): **+52 loaded instances and +988 pairs** (19
+a fox) on 324,319, GPU median 1.313–1.336 ms without them and 1.324–1.329 ms with them, the deform
+pass 0.117–0.131 ms either way — within the flights' own spread. Actors are a handful of small
+skinned meshes; what a prefix cannot afford is thousands of trees, which is what W73 moved out.
+
+#### The whole read's index
+
+**A streamed load's instance indices are not the file's.** The prefix keeps a subset of the whole
+read's instances in their order, so a kept instance's loaded index is its whole-read index minus the
+streamed instances before it; the forest PoC's 52 animals, all kept, sat at loaded indices below
+their handles, and engine-view's bind looked the handles up among the loaded instances, found
+rigid trees or nothing, and the game failed at its first `actor_state` (`forest: actor_state
+failed`). **One map, owned by the load**: `SceneData::loaded_of_read`, per instance of the whole read
+its loaded index or `k_not_loaded` for one in the tail, built once by `stream_authored` beside W74's
+`motion_key` (the whole read's index each kept instance already carries), and empty for a scene read
+whole, where the two are the same number. `loaded_instance(scene, read)`, `read_instance(scene,
+loaded)` (through the `motion_key`, checked against the map) and `read_instance_count(scene)` are the
+only way across. **Every whole-read index user in engine-view goes through it**
+([apps](apps.md#actors-the-characters-a-game-moves)): an actor's handle stays the whole read's
+index, and its entity, joint run, tier and instance-table row are found once at the bind through the
+map; the animated world takes an instance's animation block, its phase (the whole read's index over
+the whole read's count), its entity id and its summary row from its whole-read index, so a streamed
+world's animation summary and every actor's state are the whole read's to the bit (the actor test in
+`game_actors_view_tests.cpp`). A declared actor whose instance is in the tail anyway — a host that did
+not name it in `keep` — is refused at the bind by a sentence naming the actor and its instance, never
+a silent `NotFound`.
 
 ### Streamed trees sway
 

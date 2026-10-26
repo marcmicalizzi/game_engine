@@ -324,6 +324,78 @@ TEST_CASE(
   CHECK(moved > 20);
 }
 
+#if ENGINE_VIEW_WORLD
+// The actor scene with six rigid boxes before the bar, so the bar is the file's instance 6: read
+// whole, or with a `world` block that streams the boxes (renderer.md, "Authored instances per
+// tile") and keeps the bar — the loaded prefix is then the bar and the terrain, and the bar's
+// loaded index is 0 where its handle is 6 (renderer.md, "The whole read's index"; roadmap W78).
+std::string streamed_actor_scene(const test::TempDir& tmp, bool world) {
+  REQUIRE(view_test::write_skinned_bar_glb(tmp.file("bar.glb")));
+  REQUIRE(view_test::write_box_glb(tmp.file("box.glb")));
+  const std::string scene = tmp.file(world ? "streamed.json" : "whole.json");
+  std::string body = R"({"format":"engine.scene.v1","name":"actors-streamed",
+      "terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},
+      "meshes":[{"path":"bar.glb"},{"path":"box.glb"}],
+      "instances":[{"mesh":1,"translation":[-6,0,-4],"ground":true},
+                   {"mesh":1,"translation":[6,0,-4],"ground":true},
+                   {"mesh":1,"translation":[-10,0,6],"ground":true},
+                   {"mesh":1,"translation":[10,0,6],"ground":true},
+                   {"mesh":1,"translation":[-3,0,-12],"ground":true},
+                   {"mesh":1,"translation":[3,0,-12],"ground":true},
+                   {"mesh":0,"name":"bar","translation":[0,0,0],"ground":true,
+                    "animation":{"clip":"bend"}}])";
+  if (world) body += R"(,"world":{"tile_size":32,"rings":[{"radius":4}]})";
+  REQUIRE(io::write_file(scene, body + "}") == io::Status::Ok);
+  return scene;
+}
+
+TEST_CASE(
+    "engine-view: in a streamed world the game's actor is kept, bound by its whole-read index, and "
+    "walks and poses as it does in the whole read") {
+  // Until W78 the bind looked the handle (6) up among the loaded instances, found the terrain or
+  // nothing, and the game failed at its first `actor_state` ("forest: actor_state failed").
+  const test::TempDir tmp("engine_view_actors_streamed");
+  const std::string whole_scene = streamed_actor_scene(tmp, false);
+  const std::string streamed_scene = streamed_actor_scene(tmp, true);
+  const std::string module = fixture(tmp, WALK_POC_ACTOR_PATH, "walk_poc_actor");
+  JsonValue summaries[2];
+  for (u32 s = 0; s < 2; ++s) {
+    const std::string& scene = s == 0 ? whole_scene : streamed_scene;
+    const std::string session =
+        stand_session(tmp, scene, 60, s == 0 ? "whole.jsonl" : "streamed.jsonl");
+    const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                              "320", "--height", "200", "--ddc", tmp.file("ddc"),
+                              "--anim-lod-scale", "100000", "--game", module});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output.substr(0, 300));
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    REQUIRE_MESSAGE(summary_of(run, summaries[s]), run.output);
+    CHECK(run.output.find("does not animate") == std::string::npos);
+  }
+  const JsonValue& whole = summaries[0];
+  const JsonValue& streamed = summaries[1];
+  // The world streamed the six boxes and kept the bar.
+  CHECK(number(at(streamed, {"world", "authored_streamed"})) == 6.0);
+  CHECK(number(at(streamed, {"world", "authored_kept"})) == 1.0);
+  const JsonValue* bar = bar_of(streamed);
+  REQUIRE_MESSAGE(bar != nullptr, write_json(streamed).substr(0, 2000));
+  CHECK(number(bar->find("instance")) == 6.0);  // the handle is the whole read's
+  const JsonValue* calls = at(streamed, {"interactive", "game", "actor_calls"});
+  REQUIRE(calls != nullptr);
+  CHECK(number(calls->find("actors")) == 1.0);
+  CHECK(number(calls->find("places")) == 60.0);
+  CHECK(number(calls->find("refused")) == 0.0);
+  CHECK(number(at(streamed, {"interactive", "game", "state", "actor_ticks"})) == 60.0);
+  // The same actor, to the bit: its place, clip, playhead, pose hash and path — and the same world.
+  REQUIRE(bar_of(whole) != nullptr);
+  CHECK(write_json(*bar) == write_json(*bar_of(whole)));
+  CHECK(text(at(streamed, {"animation", "hash"})) == text(at(whole, {"animation", "hash"})));
+  MESSAGE("the streamed bar: " << write_json(*bar).substr(0, 600));
+}
+#endif  // ENGINE_VIEW_WORLD
+
 TEST_CASE("engine-view: a cold restore from --game-state stands the actor where the state says") {
   // 200 ticks of the actor build: the bar mid-circle, playing `bend` at twice its rate. The state
   // file carries where it stood and its player; the plain fixture, which moves nothing, run from

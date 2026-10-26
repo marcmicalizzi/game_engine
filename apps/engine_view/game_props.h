@@ -154,7 +154,9 @@ class GameProps {
 
 // One actor the scene file declares: an instance with a `name` that animates — an `animation`
 // block, or any instance under `--animate` — by its index in the file's instances, which is its
-// index in the scene (the file's instances come first, before scatters and generators).
+// index in the scene's **whole read** (the file's instances come first, before scatters and
+// generators). A streamed world's load keeps only some of them and the loaded index can differ;
+// the animated world maps the one to the other (`loaded_actor`, below).
 struct DeclaredActor {
   std::string name;
   u32 instance = 0;
@@ -164,6 +166,22 @@ struct DeclaredActor {
 // second is said once on stderr). False with `error` for a file that does not read.
 bool read_scene_actors(const std::string& path, bool animate, Vector<DeclaredActor>& out,
                        std::string& error);
+
+// **An actor is never streamed** (renderer.md, "An actor is never streamed"): every declared
+// actor's instance into `desc.authored.keep`, before `renderer::load_scene`, so a streamed world
+// keeps it in the loaded prefix — its entity, joints and instance row there on every frame — and
+// never hands it to the ring that would stream it out from under the game.
+void keep_actors(const Vector<DeclaredActor>& declared, renderer::SceneDesc& desc);
+
+// **A declared actor's loaded instance** (renderer.md, "The whole read's index"): its handle is
+// the whole read's index, and `loaded_of_read` (`SceneData::loaded_of_read`; empty for a scene
+// read whole, `read_count` instances of which `loaded_count` are loaded) takes it to the animated
+// world's and the renderer's. `loaded` is `renderer::k_not_loaded` for an instance past the scene.
+// False, with a sentence naming the actor and its instance, for one a streamed world handed to its
+// tail — where nothing animates or moves it, so the game would hear `NotFound` for an actor its
+// scene names; never a silent miss.
+bool loaded_actor(const DeclaredActor& actor, std::span<const u32> loaded_of_read, u32 read_count,
+                  u32 loaded_count, u32& loaded, std::string& error);
 
 // What the runner forwards an actor's commands to, by scene instance (`DeclaredActor::instance`;
 // the runner has already checked it is one). Implemented by the animated world (animation.h).

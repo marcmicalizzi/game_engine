@@ -557,3 +557,46 @@ TEST_CASE(
 }
 
 #endif  // WALK_POC_PATH && WALK_POC_NO_PROPS_PATH
+
+// ---- actors in a streamed world (renderer.md, "An actor is never streamed" and "The whole read's
+// index"; roadmap W78) ----------------------------------------------------------------------------
+
+TEST_CASE(
+    "game actors: a declared actor is kept, mapped to its loaded instance, and refused by name "
+    "when a streamed world handed it to the tail") {
+  // The scene file's actors become the load's keep set, in their order.
+  Vector<view::DeclaredActor> declared;
+  declared.push_back(view::DeclaredActor{"fox", 7});
+  declared.push_back(view::DeclaredActor{"deer", 2});
+  renderer::SceneDesc desc;
+  desc.authored.keep.push_back(99);  // a previous call's: replaced
+  view::keep_actors(declared, desc);
+  REQUIRE(desc.authored.keep.size() == 2);
+  CHECK(desc.authored.keep[0] == 7);
+  CHECK(desc.authored.keep[1] == 2);
+
+  // A scene read whole: no map, the whole read's index is the loaded one.
+  u32 loaded = 0;
+  std::string error;
+  CHECK(view::loaded_actor(declared[0], {}, 10, 10, loaded, error));
+  CHECK(loaded == 7);
+  CHECK(view::loaded_actor(view::DeclaredActor{"far", 12}, {}, 10, 10, loaded, error));
+  CHECK(loaded == renderer::k_not_loaded);  // past the scene: not an actor, said by the bind
+
+  // A streamed one: ten instances in the whole read, 2, 3 and 7 kept, the rest in the tail.
+  const u32 n = renderer::k_not_loaded;
+  const u32 map[10] = {n, n, 0, 1, n, n, n, 2, n, n};
+  CHECK(view::loaded_actor(declared[0], map, 10, 3, loaded, error));
+  CHECK(loaded == 2);
+  CHECK(view::loaded_actor(declared[1], map, 10, 3, loaded, error));
+  CHECK(loaded == 0);
+  CHECK(error.empty());
+  CHECK_FALSE(view::loaded_actor(view::DeclaredActor{"hare", 5}, map, 10, 3, loaded, error));
+  CHECK(error.find("the actor \"hare\" is the scene's instance 5") != std::string::npos);
+  CHECK(error.find("handed to its tail") != std::string::npos);
+  CHECK(error.find("keep_actors") != std::string::npos);
+  error.clear();
+  CHECK(view::loaded_actor(view::DeclaredActor{"far", 12}, map, 10, 3, loaded, error));
+  CHECK(loaded == renderer::k_not_loaded);
+  CHECK(error.empty());
+}

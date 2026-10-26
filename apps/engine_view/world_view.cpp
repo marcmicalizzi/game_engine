@@ -333,7 +333,7 @@ world::TileWorldSummary ViewWorld::summary() const {
   }
   const renderer::AuthoredStats& a = data_->authored;
   summary.authored_streamed = a.streamed;
-  summary.authored_kept = a.kept_deformed + a.kept_reach + a.kept_paged;
+  summary.authored_kept = a.kept_actors + a.kept_deformed + a.kept_reach + a.kept_paged;
   summary.authored_forms = a.forms;
   summary.authored_form_clusters = a.form_clusters;
   summary.authored_tile_floor = data_->tail_floor_pairs;

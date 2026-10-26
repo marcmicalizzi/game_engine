@@ -227,6 +227,77 @@ TEST_CASE("authored scene: a streamed world's own instances become the generator
   REQUIRE_MESSAGE(load_scene(kept, kept_data, error), error);
   CHECK(kept_data.authored.streamed == 0);
   CHECK(kept_data.instances.size() == 124);
+  // A scene read whole has no map: the whole read's index is the loaded one.
+  CHECK(kept_data.loaded_of_read.empty());
+  CHECK(loaded_instance(kept_data, 17) == 17);
+  CHECK(loaded_instance(kept_data, 124) == k_not_loaded);
+  CHECK(read_instance(kept_data, 17) == 17);
+  CHECK(read_instance_count(kept_data) == 124);
+}
+
+TEST_CASE(
+    "authored scene: an actor the host names is kept in the prefix, and the whole read's index "
+    "maps to the loaded one") {
+  // renderer.md, "An actor is never streamed" and "The whole read's index" (roadmap W78). The
+  // first oak and a scattered spruce are rigid and small, so the file's order streams both; named
+  // in `keep`, both stay in the prefix beside the giant, the walker and the terrain, and the map
+  // takes every instance of the whole read to its loaded place or to none.
+  if (!generator_present()) {
+    MESSAGE("no authored generator in this build");
+    return;
+  }
+  const test::TempDir tmp("renderer_authored_keep");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("streamed.json"), scene_text(true)));
+  std::string error;
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("streamed.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  const u32 first = desc.authored_first;
+  const u32 oak = first + 0;
+  const u32 spruce = first + 3 + 60 + 7;  // the spruce scatter's eighth
+  REQUIRE(desc.instances[spruce].mesh == 1);
+  desc.authored.keep.push_back(spruce);  // in any order
+  desc.authored.keep.push_back(oak);
+  desc.authored.keep.push_back(9999);  // past the whole read: nothing
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+
+  const AuthoredStats& stats = data.authored;
+  CHECK(stats.kept_actors == 2);
+  CHECK(stats.kept_reach == 1);
+  CHECK(stats.kept_deformed == 1);
+  CHECK(stats.streamed == 119);
+  REQUIRE(data.instances.size() == 5);
+  REQUIRE(data.loaded_of_read.size() == desc.instances.size());
+  CHECK(read_instance_count(data) == desc.instances.size());
+
+  // Every kept instance of the whole read maps to its loaded place and back, in the file's order;
+  // every streamed one to none.
+  u32 kept = 0;
+  u32 previous = 0;
+  for (u32 r = 0; r < desc.instances.size(); ++r) {
+    const u32 loaded = loaded_instance(data, r);
+    if (loaded == k_not_loaded) continue;
+    CAPTURE(r);
+    REQUIRE(loaded < data.instances.size());
+    CHECK(read_instance(data, loaded) == r);
+    CHECK(data.instances[loaded].mesh == desc.instances[r].mesh);
+    if (kept > 0) CHECK(loaded == previous + 1);
+    previous = loaded;
+    ++kept;
+  }
+  CHECK(kept == 5);
+  CHECK(loaded_instance(data, oak) == 0);        // first in the file, first in the prefix
+  CHECK(loaded_instance(data, first + 1) == 1);  // the giant
+  CHECK(loaded_instance(data, first + 2) == 2);  // the walker
+  CHECK(loaded_instance(data, spruce) == 3);
+  CHECK(loaded_instance(data, first + 4) == k_not_loaded);  // a scattered oak, streamed
+  CHECK(loaded_instance(data, 9999) == k_not_loaded);
+  CHECK(read_instance(data, 99) == 99);  // past the table: itself
 }
 
 #endif
