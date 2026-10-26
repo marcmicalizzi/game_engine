@@ -2263,6 +2263,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
   // below copy the records, so a form carries its mesh's keys.
   prepare_scene_textures(resolved, out.sources, identities, *pool, out.load);
+  // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
+  for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
+    out.sources[m].path = resolved.meshes[m];
   // A streamed world's own instances, before the merge: their forms are meshes of their own
   // (renderer.md, "Authored instances per tile").
   {

@@ -225,6 +225,8 @@ The last row is the point: **13.1× less allocated, and the frame used 0.77 MB o
 
 **Bounds.** A swaying tree is a deformed instance, so it pads its spheres by a bound on how far its vertices leave the rest pose (`flora_bounds_padding`: per vertex, the sum over its part chain of each part's largest bend at the saturating wind times its distance from that part's pivot, the larger of that and any padding it had) — the young palm of the test pads by 1.77 m — and, like every deformed instance, **it is never cone-tested** ([geometry](geometry.md#normal-cones-fit-to-what-is-drawn)): a palm's trunk loses the backfacing clusters the cone test dropped, and the padding makes the cut finer (a padded sphere is nearer the camera, so its projected error is larger). The **push is not in the padding**: a pushed part is within a metre of the walker, whose eye is the camera, and turns away from it, and 0.9 rad over a 4 m frond would pad every palm by 3.6 m at any distance. **The casters and the cascades take the deformed trees too** (R84's blocks for the caster run and the cascades), so a swaying tree's shadow sways; its cut in every cascade is a pool block of its own. A scene with trees takes a pool of at least `renderer.flora.pool_mib` (96 MiB), clamped as every budget is to what its whole meshes need over the views and cascades, because an entry the budget refuses draws its rest pose beside neighbours that sway.
 
+**A mesh whose contract the stage cannot read is drawn rigid, and says which and why** (`a tree drawn rigid`, once per scene mesh at create): its index and name, the path the scene named it by (`SourceMesh::path`; a distance form's is its source's), its vertices against its motion records, its parts, its species, and which test failed — the records not covering the vertices, a species the flora catalogue (`geometry::flora_species_info`) lacks, more than 65,536 parts, or a part whose parent follows it (roadmap W78; until then the line named the index alone). On the forest PoC's v12 full scene (2026-10-25) all 27 lines were the second: the cover capability's companions ([cover](cover.md)) carry the motion contract — part 0 a root with no geometry, which is how collision leaves them out — with the species `cover` (seven rock covers) and `ivy` (two rock vines), neither in the catalogue, each line three times, for the mesh and its two ring forms; the counts matched in every one. A cover is meant to stand still, so for it the line is noise; a vine's hanging tips are what its contract says the wind moves, so for it the catalogue's missing entry is a vine that does not sway.
+
 **What it costs** (2026-10-19; RTX 5090, `msvc-debug` engine-view, 1920×1080 offscreen, each scene's camera path flown once with `--repeat 1 --warmup 60`, traced shadows, `--tunable renderer.flora.motion=false` for the rigid run; the harness's `machine_state` had other processes on 46–99% of the CPU and the GPU 0–2% busy, so these are upper bounds, and the CPU figures are a debug build's):
 
 | Scene | Trees, parts | GPU total ms, median / p95 / p99 | pool pass ms (median / p95) | visible pairs (median) | shadow casters (median) | frame thread ms (median) |
@@ -2078,6 +2080,15 @@ tile — the ring would stream it out from under the game, and a tail instance h
 so was kept already by the deformed rule; the set makes the rule the actor's own, so an actor that
 stops being "deformed" by that test (a rigid prop a game drives, a skin moved to the tail when R84
 lands) still is not streamed by accident.
+
+**What keeping them costs** (2026-10-25, RTX 5090, `msvc-debug` engine-view offscreen at 1600 × 900,
+the first 120 frames of `streamed-forest`'s path, two flights each; shared machine, others at 36–49 %
+of the CPU and 1–8 % of the GPU, so the GPU numbers are the trustworthy ones): the scene as committed
+against the same scene with 52 of the Fox sample walking near the path's first look (the forest
+PoC's count, each an instance with an animation block): **+52 loaded instances and +988 pairs** (19
+a fox) on 324,319, GPU median 1.313–1.336 ms without them and 1.324–1.329 ms with them, the deform
+pass 0.117–0.131 ms either way — within the flights' own spread. Actors are a handful of small
+skinned meshes; what a prefix cannot afford is thousands of trees, which is what W73 moved out.
 
 #### The whole read's index
 
